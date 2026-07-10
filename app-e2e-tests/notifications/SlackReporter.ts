@@ -436,8 +436,11 @@ export default class SlackReporter implements Reporter {
       "No reason provided";
 
     // Integration-not-active skips are handled by a single @qa alert sent by
-    // IntegrationStatusCache — suppress per-test spam for these.
-    if (/integration is not Active/i.test(skipReason)) return;
+    // IntegrationStatusCache — suppress per-test spam for these. "nothing to
+    // delete" is a cleanup no-op (the Delete-if-present step found nothing) and
+    // is never worth an alert — suppress it too so an absent integration yields
+    // just the one consolidated alert, not that plus a delete-skip message.
+    if (/integration is not Active|nothing to delete/i.test(skipReason)) return;
 
     this.skipAlertSent.add(testId);
 

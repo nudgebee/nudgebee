@@ -5,6 +5,18 @@ import { PLAYWRIGHT_REPORT_DIR } from "./paths";
 
 export type CloudProvider = "aws" | "azure" | "gcp";
 
+/**
+ * Optional presentation overrides for named (non-cloud) integrations — e.g.
+ * Confluence config-presence checks. Cloud call sites omit these and get the
+ * legacy "<PROVIDER> Integration Not Active" wording.
+ */
+export interface IntegrationAlertOptions {
+  /** Human name in the Slack alert (e.g. "Confluence"). Default: derived from key. */
+  displayName?: string;
+  /** Status phrase in the alert (e.g. "Not Available"). Default: "Not Active". */
+  statusLabel?: string;
+}
+
 interface CacheEntry {
   active: boolean;
   notified: boolean;
@@ -13,11 +25,11 @@ interface CacheEntry {
 // Cache is valid for 30 min — covers a full test run without re-checking
 const CACHE_TTL_MS = 30 * 60 * 1000;
 
-function getCacheFile(provider: CloudProvider): string {
+function getCacheFile(provider: string): string {
   return path.join(PLAYWRIGHT_REPORT_DIR, `integration-status-${provider}.json`);
 }
 
-function readCache(provider: CloudProvider): CacheEntry | null {
+function readCache(provider: string): CacheEntry | null {
   const file = getCacheFile(provider);
   try {
     if (!existsSync(file)) return null;
@@ -29,7 +41,7 @@ function readCache(provider: CloudProvider): CacheEntry | null {
   }
 }
 
-function writeCache(provider: CloudProvider, entry: CacheEntry): void {
+function writeCache(provider: string, entry: CacheEntry): void {
   try {
     mkdirSync(PLAYWRIGHT_REPORT_DIR, { recursive: true });
     writeFileSync(getCacheFile(provider), JSON.stringify(entry, null, 2));
@@ -70,11 +82,39 @@ export async function checkIntegrationWithCache(
   return active;
 }
 
-async function sendIntegrationAlert(provider: CloudProvider): Promise<boolean> {
+// Alert dedup for named integrations — in-memory, one @qa alert per key per
+// worker process. Kept separate from the file cache above on purpose: named
+// integrations (e.g. Confluence) are created/deleted DURING a run, so their
+// presence must be re-checked every time and never cached — only the alert is
+// deduped so Disable + Enable don't each fire a message.
+const missingAlertSent = new Set<string>();
+
+/**
+ * Sends ONE `@qa` Slack alert that `key`'s integration is missing, then
+ * suppresses further alerts for the same key for the rest of the worker
+ * process. Does NOT cache presence — callers must run their own live check
+ * every time and pass the result. Safe to call from multiple tests (Disable,
+ * Enable, …): only the first missing check for a given key posts to Slack.
+ */
+export async function notifyIntegrationMissingOnce(
+  key: string,
+  opts: IntegrationAlertOptions = {}
+): Promise<void> {
+  if (missingAlertSent.has(key)) return;
+  missingAlertSent.add(key);
+  await sendIntegrationAlert(key, opts);
+}
+
+async function sendIntegrationAlert(
+  provider: string,
+  opts: IntegrationAlertOptions = {}
+): Promise<boolean> {
   const webhookUrl = process.env.SLACK_WEBHOOK_URL?.trim();
   if (!webhookUrl?.startsWith("http")) return false;
 
-  const providerName = provider === "gcp" ? "GCP" : provider.toUpperCase();
+  const providerName =
+    opts.displayName ?? (provider === "gcp" ? "GCP" : provider.toUpperCase());
+  const statusLabel = opts.statusLabel ?? "Not Active";
   const env = process.env.CLUSTER || process.env.E2E_ENVIRONMENT || "unknown";
   const baseUrl = process.env.BASE_URL || "";
 
@@ -87,7 +127,7 @@ async function sendIntegrationAlert(provider: CloudProvider): Promise<boolean> {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `:warning: *${providerName} Integration Not Active — All ${providerName} Tests Skipped*`,
+              text: `:warning: *${providerName} Integration ${statusLabel} — All ${providerName} Tests Skipped*`,
             },
           },
           {
@@ -104,7 +144,7 @@ async function sendIntegrationAlert(provider: CloudProvider): Promise<boolean> {
       },
       { timeout: 10000, headers: { "Content-Type": "application/json" } }
     );
-    console.log(`[IntegrationCache] Slack alert sent for ${providerName} not active`);
+    console.log(`[IntegrationCache] Slack alert sent for ${providerName} ${statusLabel}`);
     return true;
   } catch (err) {
     console.warn(`[IntegrationCache] Failed to send Slack alert: ${err}`);

@@ -2,6 +2,7 @@ import { expect, Page, Locator } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { IntegrationLocators } from "./IntegrationLocators";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
+import { notifyIntegrationMissingOnce } from "../../utils/IntegrationStatusCache";
 
 async function navigateToAdminIntegrationsPage(page: Page, locators: IntegrationLocators): Promise<void> {
   await locators.adminBtn.waitFor({ state: "visible" });
@@ -211,6 +212,300 @@ export async function testConnection(
   }
 
   return succeeded;
+}
+
+/** Returns true if a config row named `configName` is visible in the table. */
+async function isRowVisible(page: Page, configName: string, timeout = 8000): Promise<boolean> {
+  return page
+    .locator("tbody tr")
+    .filter({ hasText: configName })
+    .first()
+    .waitFor({ state: "visible", timeout })
+    .then(() => true)
+    .catch(() => false);
+}
+
+/**
+ * Opens an integration's list page (via the caller-supplied `openList`), clears
+ * the status filter so BOTH enabled and disabled configs are listed, and returns
+ * whether a config named `configName` exists.
+ *
+ * Showing all statuses matters for idempotency: a config left disabled by a prior
+ * run (e.g. an enable step that failed) must still be detected so the delete step
+ * can clean it up before re-adding — otherwise the re-add no-ops on "already
+ * exists" and the config stays disabled.
+ *
+ * `openList` performs the navigation to the list — usually a single section-card
+ * click, but MCP needs a search step first, so it is injected rather than
+ * hard-coded here. `statusFilterId` is the ListIntegrations status-filter id —
+ * `${integrationName}-status-filter`.
+ */
+export async function isIntegrationPresent(
+  page: Page,
+  {
+    openList,
+    configName,
+    serviceName,
+    statusFilterId,
+  }: { openList: () => Promise<void>; configName: string; serviceName: string; statusFilterId: string },
+): Promise<boolean> {
+  // Opening the list fires the ListIntegrations query — validate it so the
+  // presence-check step also carries GraphQL network validation.
+  await waitForGraphQLAndValidate(
+    page,
+    async () => {
+      await openList();
+    },
+    {
+      testName: `Check ${serviceName} Integration Exists`,
+      operationNames: ["ListIntegrations"],
+      checkDataErrors: true,
+    },
+  );
+
+  await showAllStatuses(page, statusFilterId);
+  const hit = await isRowVisible(page, configName);
+  console.log(`${serviceName} integration "${configName}" present: ${hit}`);
+  return hit;
+}
+
+/**
+ * Live presence check for a config that the suite expects to exist (created by
+ * the Add step) — used to gate Disable/Enable. Returns whether the row exists;
+ * when it doesn't, fires a SINGLE consolidated `@qa` Slack alert per integration
+ * per run (deduped in-memory, so Disable + Enable don't each post a message).
+ *
+ * The caller is expected to `test.skip(!present, "<Service> integration is not
+ * Active — Slack notification sent")` so SlackReporter suppresses the per-test
+ * skip spam (its reason matches `/integration is not Active/i`), leaving exactly
+ * the one alert this posts.
+ *
+ * `integrationKey` is the dedup key (lowercase integration name, e.g.
+ * "confluence"); presence itself is never cached — it's re-checked every call —
+ * because the config is created/deleted within the run.
+ */
+export async function ensureIntegrationPresent(
+  page: Page,
+  {
+    openList,
+    configName,
+    serviceName,
+    statusFilterId,
+    integrationKey,
+  }: {
+    openList: () => Promise<void>;
+    configName: string;
+    serviceName: string;
+    statusFilterId: string;
+    integrationKey: string;
+  },
+): Promise<boolean> {
+  const present = await isIntegrationPresent(page, { openList, configName, serviceName, statusFilterId });
+  if (!present) {
+    await notifyIntegrationMissingOnce(integrationKey, {
+      displayName: serviceName,
+      statusLabel: "Not Available",
+    });
+  }
+  return present;
+}
+
+/**
+ * Deletes the config named `configName` via the row kebab → Delete → confirm
+ * flow, validating the DeleteIntegrationConfig mutation. Opens the list via
+ * `openList` and clears the status filter so a leftover config of any status —
+ * enabled or disabled — is located and deleted.
+ *
+ * `statusFilterId` is the ListIntegrations status-filter id — `${integrationName}-status-filter`.
+ */
+/**
+ * Opens a config row's kebab ("More actions") menu and clicks the `itemName`
+ * menu item. The menu is a portaled MUI Menu whose items mount while it animates
+ * open, so Playwright can see the item as attached-but-not-yet-"visible" — a
+ * plain click then waits out its timeout. Waiting for the item to be ATTACHED
+ * and firing the React onClick via `dispatchEvent` clicks it regardless of the
+ * open animation; the menu unmounting (item detached) confirms it registered.
+ *
+ * Items are located by their stable `id` (`delete` / `disable` / `enable` /
+ * `edit`), NOT by role+name: the DS DropdownMenu renders each item's label in a
+ * nested span, so the `menuitem`'s accessible name is empty and
+ * `getByRole("menuitem", { name })` never matches. Every row's menu stays
+ * mounted at once (so `#id` matches one item per row), so the selector is scoped
+ * to `:visible` — only the currently-open row's item is visible.
+ */
+async function clickRowMenuItem(page: Page, row: Locator, itemName: string): Promise<void> {
+  const menuItem = page.locator(`[role="menuitem"]#${itemName.toLowerCase()}:visible`);
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await row.getByRole("button", { name: "More actions" }).click();
+    const attached = await menuItem
+      .waitFor({ state: "attached", timeout: 4000 })
+      .then(() => true)
+      .catch(() => false);
+    if (attached) {
+      await menuItem.dispatchEvent("click").catch(() => {});
+      const registered = await menuItem
+        .waitFor({ state: "detached", timeout: 3000 })
+        .then(() => true)
+        .catch(() => false);
+      if (registered) return;
+    }
+    await page.keyboard.press("Escape").catch(() => {});
+  }
+  await row.getByRole("button", { name: "More actions" }).click();
+  await menuItem.waitFor({ state: "attached", timeout: 5000 });
+  await menuItem.dispatchEvent("click");
+}
+
+export async function deleteIntegration(
+  page: Page,
+  {
+    openList,
+    configName,
+    serviceName,
+    statusFilterId,
+  }: { openList: () => Promise<void>; configName: string; serviceName: string; statusFilterId: string },
+): Promise<void> {
+  await openList();
+  await showAllStatuses(page, statusFilterId);
+
+  const row = page.locator("tbody tr").filter({ hasText: configName }).first();
+  await row.waitFor({ state: "visible", timeout: 10000 });
+
+  await clickRowMenuItem(page, row, "Delete");
+
+  const successToast = page.getByText("Deleted the", { exact: false }).first();
+
+  await waitForGraphQLAndValidate(
+    page,
+    async () => {
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: "Delete", exact: true })
+        .click();
+      await successToast.waitFor({ state: "visible", timeout: 15000 });
+    },
+    {
+      testName: `Delete ${serviceName} Integration`,
+      operationNames: ["DeleteIntegrationConfig"],
+      checkDataErrors: true,
+    },
+  );
+
+  console.log(`Deleted ${serviceName} integration "${configName}"`);
+}
+
+/**
+ * Runs a status-change action ("Disable" or "Enable") on the config row named
+ * `configName` from its currently-open list page: row kebab → <action> menu
+ * item → confirm dialog, validating the UpdateIntegrationConfig mutation.
+ * Assumes the row is visible under the current status filter.
+ */
+async function changeRowStatus(
+  page: Page,
+  {
+    configName,
+    action,
+    serviceName,
+  }: { configName: string; action: "Disable" | "Enable"; serviceName: string },
+): Promise<void> {
+  const row = page.locator("tbody tr").filter({ hasText: configName }).first();
+  await row.waitFor({ state: "visible", timeout: 10000 });
+
+  await clickRowMenuItem(page, row, action);
+
+  // Success toast: "Disabled the <name> subscription" / "Enabled the ...".
+  const toast = page.getByText(`${action}d the`, { exact: false }).first();
+
+  await waitForGraphQLAndValidate(
+    page,
+    async () => {
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: action, exact: true })
+        .click();
+      await toast.waitFor({ state: "visible", timeout: 15000 });
+    },
+    {
+      testName: `${action} ${serviceName} Integration`,
+      operationNames: ["UpdateIntegrationConfig"],
+      checkDataErrors: true,
+    },
+  );
+
+  console.log(`${action}d ${serviceName} integration "${configName}"`);
+}
+
+/**
+ * Clears the ListIntegrations status filter (default "Enabled") so the table
+ * lists configs of EVERY status — enabled and disabled together. Replaces
+ * toggling the filter between "Enabled" and "Disabled": switching options in the
+ * popover was flaky (the open popover's backdrop swallowed the retry click), and
+ * every caller only needs to find a config regardless of its status.
+ *
+ * The trigger shows a clear-X while a value is selected; clicking it resets the
+ * filter to no status (`status: undefined` → all rows). Idempotent — a no-op
+ * once already cleared.
+ *
+ * `statusFilterId` is the filter's id — `${integrationName}-status-filter`.
+ */
+async function showAllStatuses(page: Page, statusFilterId: string): Promise<void> {
+  const trigger = page.locator(`#auto-complete-${statusFilterId}`);
+  await trigger.waitFor({ state: "visible", timeout: 10000 });
+  const clearIcon = trigger.locator("svg").last();
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const text = (await trigger.innerText().catch(() => "")).trim();
+    if (!/Enabled|Disabled/.test(text)) break;
+    // Clearing refetches ListIntegrations with all statuses; wait for that
+    // response so the table has finished re-rendering before callers interact
+    // with a row — otherwise a menu opened mid-refetch is remounted shut.
+    const refetch = page
+      .waitForResponse(
+        (r) => r.url().includes("/api/graphql") && !!r.request().postData()?.includes("ListIntegrations"),
+        { timeout: 8000 },
+      )
+      .catch(() => null);
+    await clearIcon.click({ force: true }).catch(() => {});
+    await refetch;
+    try {
+      await expect(trigger).not.toContainText(/Enabled|Disabled/, { timeout: 2000 });
+      return;
+    } catch {
+      // clear didn't register — retry
+    }
+  }
+}
+
+/**
+ * Disables the config named `configName` via its row three-dot menu, validating
+ * the UpdateIntegrationConfig mutation. Assumes the caller has already opened the
+ * list page and the row is present under the default "Enabled" filter.
+ */
+export async function disableIntegration(
+  page: Page,
+  { configName, serviceName }: { configName: string; serviceName: string },
+): Promise<void> {
+  await changeRowStatus(page, { configName, action: "Disable", serviceName });
+}
+
+/**
+ * Enables the config named `configName`: clears the status filter so the
+ * disabled config is listed, then enables it via its row three-dot menu —
+ * validating the UpdateIntegrationConfig mutation. Assumes the caller has already
+ * opened the list page.
+ *
+ * `statusFilterId` is the ListIntegrations status-filter id — `${integrationName}-status-filter`.
+ */
+export async function enableIntegration(
+  page: Page,
+  {
+    configName,
+    serviceName,
+    statusFilterId,
+  }: { configName: string; serviceName: string; statusFilterId: string },
+): Promise<void> {
+  await showAllStatuses(page, statusFilterId);
+  await changeRowStatus(page, { configName, action: "Enable", serviceName });
 }
 
 export async function saveAndHandleAlreadyExists(
