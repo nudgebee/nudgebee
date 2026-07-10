@@ -528,6 +528,7 @@ const KubernetesServiceMap = ({ accountId, appName, namespaceName, dateRange, sh
 
   // 4. Main useEffect
   useEffect(() => {
+    if (supportsServiceMap === false) return;
     if (!accountId) {
       return;
     }
@@ -544,6 +545,7 @@ const KubernetesServiceMap = ({ accountId, appName, namespaceName, dateRange, sh
   }, [accountId, startDateInMilli, endDateInMilli, selectedSourceType, selectedWorkloads, labelFilters, dataForServiceMap.length]);
 
   useEffect(() => {
+    if (supportsServiceMap === false) return;
     if (!accountId) {
       return;
     }

@@ -141,6 +141,7 @@ const KubernetesTracesCrossZoneListing: React.FC<KubernetesTracesCrossZoneListin
   };
 
   useEffect(() => {
+    if (supportsFeature === false) return;
     if (showNamespaceFilter && showWorkloadFilter) {
       apiTrace
         .traceDistinctWorloadAndNamespace(selectedK8sAccount as string, {
@@ -163,6 +164,7 @@ const KubernetesTracesCrossZoneListing: React.FC<KubernetesTracesCrossZoneListin
   }, [time, router.query?.KubernetesDetails]);
 
   useEffect(() => {
+    if (supportsFeature === false) return;
     listTraces();
   }, [currentPage, recordsPerPage, selectedNamespace, selectedWorkload, time, router.query?.KubernetesDetails]);
 

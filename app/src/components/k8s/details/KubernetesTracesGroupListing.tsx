@@ -89,6 +89,7 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
   });
 
   useEffect(() => {
+    if (supportsFeature === false) return;
     k8sApi.listFrameworkResources(selectedK8sAccount as string, ['postgres', 'mysql', 'clickhouse', 'redis', 'mongodb'], '').then((res) => {
       const data = res.map((item: any) => {
         return {
@@ -269,6 +270,7 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
   };
 
   useEffect(() => {
+    if (supportsFeature === false) return;
     if (showNamespaceFilter && showWorkloadFilter) {
       apiTrace
         .traceDistinctWorloadAndNamespace(selectedK8sAccount as string, {
@@ -291,6 +293,7 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
   }, [time, router.query?.KubernetesDetails]);
 
   useEffect(() => {
+    if (supportsFeature === false) return;
     listTraces();
   }, [
     currentPage,
