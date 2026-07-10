@@ -187,6 +187,49 @@ export function Modal({
   const close = handleClose ?? onClose;
   const resolvedSuccessIcon = icon ?? SUCCESS_ICONS[type] ?? SUCCESS_ICONS[1];
 
+  const [element, setElement] = React.useState<HTMLDivElement | null>(null);
+  const [contentHeight, setContentHeight] = React.useState<number | null>(null);
+
+  // Measures the moment the body node actually mounts. MUI's Dialog portals
+  // its content, and the portal container is created inside MUI's own
+  // layout effect one commit after this component's first render — a plain
+  // `useRef` + `useLayoutEffect` can miss that first mount entirely, since
+  // nothing forces *this* component to re-render once the portal appears. A
+  // callback ref instead fires exactly when this specific DOM node attaches,
+  // regardless of which commit/subtree caused it. Storing the node in state
+  // (rather than a ref) also lets `element` be a real effect dependency
+  // below, so the observer correctly re-binds if the node is ever
+  // unmounted/remounted while `open`/`maxHeight` stay the same.
+  const setMeasureRef = React.useCallback((node: HTMLDivElement | null) => {
+    setElement(node);
+    if (node) setContentHeight(node.scrollHeight);
+  }, []);
+
+  // Re-measure after every commit (guarded so it only sets state when the
+  // value actually changed, avoiding a render loop). This catches
+  // React-driven content changes — e.g. a table swapping its loading
+  // skeleton for real rows — synchronously, before paint. ResizeObserver
+  // alone isn't enough here: its first callback is async and can land
+  // between the skeleton render and the real-content render, reporting the
+  // now-stale skeleton size with nothing left to correct it afterward.
+  React.useLayoutEffect(() => {
+    if (maxHeight || !open || !element) return;
+    const measured = element.scrollHeight;
+    setContentHeight((prev) => (prev === measured ? prev : measured));
+  });
+
+  // Fallback for resizes not driven by a React re-render of this component
+  // (window resize, font/image load, etc).
+  React.useEffect(() => {
+    if (maxHeight || !open || !element) return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setContentHeight(entry.target.scrollHeight);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [maxHeight, open, element]);
+
   const handleDialogClose = (event: object, reason: CloseReason) => {
     if (!backdropClickClose && (reason === 'backdropClick' || reason === 'escapeKeyDown')) {
       return;
@@ -195,6 +238,37 @@ export function Modal({
   };
 
   const showStandardFooter = !actionButtons && confirmText !== undefined && (isCancelRequired || isConfirmRequired);
+
+  const bodyContent = onSuccess ? (
+    <Box display='flex' flexDirection='column' justifyContent='space-between' alignItems='center' my='140px' mx='60px'>
+      <Box component='img' sx={{ height: '84px', width: '84px' }} alt='check' src={resolvedSuccessIcon} mx='auto' mb='var(--ds-space-5)' />
+      <Box
+        sx={{
+          textAlign: 'center',
+          mt: '14px',
+          color: 'var(--ds-gray-600)',
+          fontSize: 'var(--ds-text-body-lg)',
+          fontWeight: 'var(--ds-font-weight-regular)',
+        }}
+      >
+        {message}
+      </Box>
+      <Box
+        sx={{
+          textAlign: 'center',
+          mt: 3,
+          mb: 2,
+          button: { minWidth: '140px' },
+        }}
+      >
+        <Button size='md' tone='secondary' onClick={() => close?.()}>
+          Close
+        </Button>
+      </Box>
+    </Box>
+  ) : (
+    children
+  );
 
   return (
     <Dialog
@@ -293,45 +367,46 @@ export function Modal({
       {/* Default body padding is 24px / 32px so most modal content sits with
           comfortable breathing room out of the box. Pass `contentStyles={{
           padding: 0 }}` for full-bleed lists, or `contentStyles={{ padding:
-          'var(--ds-space-5)' }}` to override with custom spacing. */}
-      <DialogContent
-        sx={{
-          padding: 'var(--ds-space-5) var(--ds-space-6)',
-          ...contentStyles,
-          ...(maxHeight && { maxHeight, height: '100%' }),
-        }}
-      >
-        {onSuccess ? (
-          <Box display='flex' flexDirection='column' justifyContent='space-between' alignItems='center' my='140px' mx='60px'>
-            <Box component='img' sx={{ height: '84px', width: '84px' }} alt='check' src={resolvedSuccessIcon} mx='auto' mb='var(--ds-space-5)' />
-            <Box
-              sx={{
-                textAlign: 'center',
-                mt: '14px',
-                color: 'var(--ds-gray-600)',
-                fontSize: 'var(--ds-text-body-lg)',
-                fontWeight: 'var(--ds-font-weight-regular)',
-              }}
-            >
-              {message}
-            </Box>
-            <Box
-              sx={{
-                textAlign: 'center',
-                mt: 3,
-                mb: 2,
-                button: { minWidth: '140px' },
-              }}
-            >
-              <Button size='md' tone='secondary' onClick={() => close?.()}>
-                Close
-              </Button>
-            </Box>
-          </Box>
-        ) : (
-          children
-        )}
-      </DialogContent>
+          'var(--ds-space-5)' }}` to override with custom spacing.
+          Content-driven resizes animate via the wrapping Box below: `setMeasureRef`
+          is bound to DialogContent itself, which is left unconstrained (no
+          explicit height) so it always freely reports its true natural size —
+          pinning the height on DialogContent directly would lock its box size
+          after the first render and ResizeObserver would never see it change
+          again. The wrapper instead carries the explicit height/transition,
+          interpolating between two real pixel values (plain CSS can't
+          transition to/from `auto`). It keeps `flex: 1 1 auto` +
+          `overflow-y: auto` (mirroring DialogContent's own MUI defaults), so
+          if Paper's max-height caps available room, this area still scrolls
+          internally instead of pushing header/footer off-screen. Skipped when
+          `maxHeight` is set — that path already has a fixed height with
+          internal scroll, unchanged from before. */}
+      {maxHeight ? (
+        <DialogContent
+          sx={{
+            padding: 'var(--ds-space-5) var(--ds-space-6)',
+            ...contentStyles,
+            maxHeight,
+            height: '100%',
+          }}
+        >
+          {bodyContent}
+        </DialogContent>
+      ) : (
+        <Box
+          sx={{
+            flex: '1 1 auto',
+            overflowY: 'auto',
+            height: contentHeight ?? 'auto',
+            transition: 'height 320ms cubic-bezier(0.22, 1, 0.36, 1)',
+            '@media (prefers-reduced-motion: reduce)': { transition: 'none' },
+          }}
+        >
+          <DialogContent ref={setMeasureRef} sx={{ padding: 'var(--ds-space-5) var(--ds-space-6)', ...contentStyles }}>
+            {bodyContent}
+          </DialogContent>
+        </Box>
+      )}
 
       {/* ── Optional padded panel below the main content (NDialog parity) ── */}
       {additionalComponent && (
