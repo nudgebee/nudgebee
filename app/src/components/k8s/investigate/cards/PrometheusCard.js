@@ -6,7 +6,11 @@ class PrometheusCard {
   constructor(data, _event) {
     this.id = 'PrometheusCard';
     this.icon = PrometheusIcon;
-    this.text = data?.additional_info?.title || (typeof data?.metadata?.query === 'string' ? data.metadata.query : null) || 'Prometheus Query Result';
+    // Fall back to the PromQL query as the title, but collapse whitespace and
+    // truncate so long/multi-line expressions don't overflow the card header.
+    const queryTitle = typeof data?.metadata?.query === 'string' ? data.metadata.query.replace(/\s+/g, ' ').trim() : '';
+    const compactQueryTitle = queryTitle.length > 100 ? `${queryTitle.slice(0, 100)}…` : queryTitle;
+    this.text = data?.additional_info?.title || compactQueryTitle || 'Prometheus Query Result';
     this.resolveButton = false;
     this.insightData = [];
     this.renderContent = false;
