@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
 import { Box } from '@mui/material';
@@ -22,6 +22,7 @@ const renderRecentEvents = (_opt: any, drilldownQuery: any): React.ReactElement 
 
 interface ThresholdSuggestionsManagerProps {
   accountId?: string;
+  provider?: string;
 }
 
 interface AccountOption {
@@ -32,11 +33,13 @@ interface AccountOption {
   cloud_provider?: string;
 }
 
-const SOURCE_OPTIONS = [
-  { label: 'AWS CloudWatch', value: 'AWS_CloudWatch_Alarm' },
-  { label: 'Azure Monitor', value: 'azure_monitor_webhook' },
-  { label: 'Prometheus', value: 'prometheus' },
-  { label: 'GCP Metric Alert', value: 'GCP_Metric_Alert' },
+// `provider` is the cloud platform a source belongs to; sources with no
+// provider (e.g. PagerDuty) are platform-agnostic and always shown.
+const SOURCE_OPTIONS: { label: string; value: string; provider?: string }[] = [
+  { label: 'AWS CloudWatch', value: 'AWS_CloudWatch_Alarm', provider: 'AWS' },
+  { label: 'Azure Monitor', value: 'azure_monitor_webhook', provider: 'Azure' },
+  { label: 'Prometheus', value: 'prometheus', provider: 'K8s' },
+  { label: 'GCP Metric Alert', value: 'GCP_Metric_Alert', provider: 'GCP' },
   { label: 'PagerDuty', value: 'pagerduty_webhook' },
 ];
 
@@ -96,7 +99,7 @@ const formatNoiseReduction = (item: ThresholdSuggestionItem): string => {
 
 const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
-const ThresholdSuggestionsManager: React.FC<ThresholdSuggestionsManagerProps> = ({ accountId }) => {
+const ThresholdSuggestionsManager: React.FC<ThresholdSuggestionsManagerProps> = ({ accountId, provider }) => {
   const router = useRouter();
   const tableId = 'thresholdSuggestionsManager';
   const isMultiAccountView = !accountId;
@@ -128,6 +131,33 @@ const ThresholdSuggestionsManager: React.FC<ThresholdSuggestionsManagerProps> = 
     const raw = router.query.accountId as string;
     setSelectedAccountFilter(raw ? raw.split(',').filter(Boolean) : []);
   }, [router.query.accountId]);
+
+  // Show only the sources that match the selected account(s)' platform. The
+  // single-account view scopes to `provider`; the multi-account view derives
+  // the platform set from the accounts chosen in the Account filter. With no
+  // account context, all sources remain available.
+  const sourceOptions = useMemo(() => {
+    const providers = accountId
+      ? [provider].filter(Boolean)
+      : accounts
+          .filter((acc) => selectedAccountFilter.includes((acc.id || acc.value) as string))
+          .map((acc) => acc.cloud_provider)
+          .filter(Boolean);
+    if (!providers.length) {
+      return SOURCE_OPTIONS;
+    }
+    const providerSet = new Set(providers.map((p) => (p as string).toUpperCase()));
+    return SOURCE_OPTIONS.filter((opt) => !opt.provider || providerSet.has(opt.provider.toUpperCase()));
+  }, [accountId, provider, accounts, selectedAccountFilter]);
+
+  // Drop a previously selected source once it's no longer offered for the
+  // current platform, so the list isn't silently filtered by a hidden source.
+  useEffect(() => {
+    if (selectedSource && !sourceOptions.some((o) => o.value === selectedSource)) {
+      setSelectedSource('');
+      setCurrentPage(0);
+    }
+  }, [sourceOptions, selectedSource]);
 
   const fetchSuggestions = useCallback(async () => {
     setLoading(true);
@@ -332,8 +362,8 @@ const ThresholdSuggestionsManager: React.FC<ThresholdSuggestionsManagerProps> = 
           <FilterDropdown
             id='threshold-suggestions-filter-source'
             label='Source'
-            options={SOURCE_OPTIONS}
-            value={SOURCE_OPTIONS.find((o) => o.value === selectedSource) ?? null}
+            options={sourceOptions}
+            value={sourceOptions.find((o) => o.value === selectedSource) ?? null}
             onSelect={(_e: any, item: any) => {
               setSelectedSource(item?.value || '');
               setCurrentPage(0);

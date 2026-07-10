@@ -634,7 +634,7 @@ const CloudAccounts = () => {
             <>
               {selectedSubTab === 0 && <CloudAccountEvents title accountId={accountId} stickyColumnIndex='8' heading={''} />}
               {selectedSubTab === 1 && <TriageRulesManager accountId={accountId} />}
-              {selectedSubTab === 2 && <ThresholdSuggestionsManager accountId={accountId} />}
+              {selectedSubTab === 2 && <ThresholdSuggestionsManager accountId={accountId} provider={selectedCluster?.cloud_provider} />}
             </>
           )}
           {selectedFilter === getFilterValue('monitoring') &&
