@@ -103,53 +103,87 @@ func MqConsume(exchangeName string, routingKey string, queue string, processor f
 		return ErrRbmqNoConn
 	}
 
-	consumer, err := rabbitmq.NewConsumer(
-		conn,
-		queue,
-		rabbitmq.WithConsumerOptionsRoutingKey(routingKey),
-		rabbitmq.WithConsumerOptionsExchangeName(exchangeName),
-		rabbitmq.WithConsumerOptionsQOSPrefetch(1),
-		rabbitmq.WithConsumerOptionsExchangeDeclare,
-		rabbitmq.WithConsumerOptionsExchangeDurable,
-		rabbitmq.WithConsumerOptionsConsumerName(config.Config.OtelServiceName+"/"+routingKey+"/"+config.Config.ServerName),
-	)
+	// newConsumer builds a consumer on the current shared connection. Used
+	// for both the initial creation and every reconnect below so the two can
+	// never drift; getConnection() is re-fetched each call so a reconnect
+	// picks up the live connection after a broker restart.
+	newConsumer := func() (*rabbitmq.Consumer, error) {
+		conn := getConnection()
+		if conn == nil {
+			return nil, ErrRbmqNoConn
+		}
+		return rabbitmq.NewConsumer(
+			conn,
+			queue,
+			rabbitmq.WithConsumerOptionsRoutingKey(routingKey),
+			rabbitmq.WithConsumerOptionsExchangeName(exchangeName),
+			rabbitmq.WithConsumerOptionsQOSPrefetch(1),
+			rabbitmq.WithConsumerOptionsExchangeDeclare,
+			rabbitmq.WithConsumerOptionsExchangeDurable,
+			rabbitmq.WithConsumerOptionsConsumerName(config.Config.OtelServiceName+"/"+routingKey+"/"+config.Config.ServerName),
+		)
+	}
+
+	consumer, err := newConsumer()
 	if err != nil {
 		slog.Error("rbmq: error creating consumer", "error", err)
 		return err
 	}
 
+	rbmqMux.Lock()
+	rbmqConsumers[queue] = consumer
+	rbmqMux.Unlock()
+
 	go func() {
-		for range maxAttempts {
+		// Infinite reconnect: a bounded (maxAttempts) reconnect loop gives up
+		// forever once the budget is exhausted — after a broker flap the
+		// consumer goroutine exits and the queue is left with no consumer, so
+		// published messages pile up (or, for a non-durable queue, are
+		// dropped) until the pod is manually restarted. That silent wedge is
+		// exactly what took down the event-investigation pipeline. Loop
+		// forever with backoff instead so the consumer recovers from any
+		// duration of broker unavailability. Each reconnect rebuilds a fresh
+		// consumer (rather than recursing) so this stays a single long-lived
+		// goroutine and never calls Run on a closed handle.
+		for {
 			err := consumer.Run(
 				func(d rabbitmq.Delivery) rabbitmq.Action {
-					err := processor(d.Body)
-					if err != nil {
-						log.Printf("error processing message: %s", err)
+					if perr := processor(d.Body); perr != nil {
+						log.Printf("rbmq: error processing message on %s: %s", queue, perr)
 						return rabbitmq.NackRequeue
 					}
 					return rabbitmq.Ack
 				})
-			if err != nil {
-				slog.Error("rbmq: consumer.run failed", "error", err)
-				time.Sleep(reconnectTimeDelay)
-				slog.Info("rbmq: reconnecting consumer")
-				consumer.Close()
-				rbmqMux.Lock()
+			if err == nil {
+				// consumer.Run returns nil only on an intentional Close();
+				// clean shutdown, don't re-arm.
+				return
+			}
+			slog.Error("rbmq: consumer.run failed; reconnecting", "queue", queue, "error", err)
+			consumer.Close()
+			rbmqMux.Lock()
+			if rbmqConsumers[queue] == consumer {
 				delete(rbmqConsumers, queue)
-				rbmqMux.Unlock()
-				err = MqConsume(exchangeName, routingKey, queue, processor)
-				if err != nil {
-					slog.Error("rbmq: error reconnecting consumer", "error", err)
+			}
+			rbmqMux.Unlock()
+
+			// Rebuild with backoff until NewConsumer succeeds.
+			for {
+				time.Sleep(reconnectTimeDelay)
+				c, nerr := newConsumer()
+				if nerr != nil {
+					slog.Error("rbmq: error recreating consumer; will retry", "queue", queue, "error", nerr)
 					continue
 				}
-				return
+				consumer = c
+				rbmqMux.Lock()
+				rbmqConsumers[queue] = consumer
+				rbmqMux.Unlock()
+				break
 			}
 		}
 	}()
 
-	rbmqMux.Lock()
-	rbmqConsumers[queue] = consumer
-	rbmqMux.Unlock()
 	return nil
 }
 
