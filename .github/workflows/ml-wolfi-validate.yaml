@@ -30,6 +30,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
   validate:
@@ -100,3 +101,20 @@ jobs:
         run: |
           docker run --rm --entrypoint sh consumer:test -c \
             "ML_INFERENCE_DATABASE_URL=postgresql://u:p@localhost/db DATABASE_URL=postgresql://u:p@localhost/db conda run --no-capture-output -n myenv python -c 'import server' 2>&1 | tail -20 || true"
+
+      # Publish the validated Wolfi image to a :wolfi-test tag (only reached if
+      # the import GATE above passed) so it can be deployed to nudgebee-oss-qa for
+      # a real runtime test — WITHOUT touching :edge/:latest or merging.
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push ${{ matrix.name }}:wolfi-test
+        run: |
+          ns=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          ref="ghcr.io/${ns}/${{ matrix.name }}:wolfi-test"
+          docker tag consumer:test "$ref"
+          docker push "$ref"
+          echo "pushed $ref"
