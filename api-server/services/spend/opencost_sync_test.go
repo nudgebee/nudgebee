@@ -27,6 +27,26 @@ func TestActiveAccountQueriesExcludeProxyAgents(t *testing.T) {
 	}
 }
 
+// TestNeedsServerSideStampQueryGuards locks in the eligibility guard used by the
+// on-connect trigger: it must keep the same K8s / non-proxy / agent-OpenCost-off
+// filters as the sync's account selection, and — crucially — the
+// `NOT (... ? 'opencostServerSide')` clause that makes the trigger fire only until
+// the marker is first stamped. Dropping any of these turns a per-heartbeat probe
+// into a per-heartbeat sync storm.
+func TestNeedsServerSideStampQueryGuards(t *testing.T) {
+	required := []string{
+		"ca.cloud_provider = 'K8s'",
+		"a.type != 'proxy'",
+		"'opencostConnection') IS DISTINCT FROM 'true'",
+		"NOT (COALESCE(a.connection_status, '{}'::jsonb) ? 'opencostServerSide')",
+	}
+	for _, frag := range required {
+		if !strings.Contains(needsServerSideStampQuery, frag) {
+			t.Errorf("needsServerSideStampQuery must contain %q", frag)
+		}
+	}
+}
+
 func TestIsEmptyAllocation(t *testing.T) {
 	empty := []string{"", "null", "[]", "{}", "  []  ", " null "}
 	for _, s := range empty {

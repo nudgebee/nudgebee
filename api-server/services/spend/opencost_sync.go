@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"nudgebee/services/config"
@@ -17,6 +18,7 @@ import (
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
 
@@ -86,6 +88,115 @@ func SyncOpenCostSpends(ctx *security.RequestContext, accountIds []string) error
 	}
 	logger.Info("opencost spend sync: done", "synced", synced, "skipped", skipped, "gated", gated, "failed", failed)
 	return nil
+}
+
+// serverSideOnConnectInFlight tracks per-account on-connect triggers currently
+// running, so overlapping connect events for the same cluster (e.g. a fast
+// reconnect flap) don't spawn duplicate syncs. Mirrors the inFlightUpdates
+// pattern in services/account/agent_service.go.
+var serverSideOnConnectInFlight sync.Map // key: account uuid.UUID, value: struct{}
+
+// serverSideOnConnectTimeout bounds the detached background context so a hung
+// relay/opencost call can't keep the in-flight guard set forever. A single
+// account runs a handful of HTTP calls (window + node/pod allocation + store),
+// each capped by the 120s client timeout in syncAccountSpends.
+const serverSideOnConnectTimeout = 5 * time.Minute
+
+// needsServerSideStampQuery reports whether a cloud account is a server-side
+// OpenCost candidate that has not yet been stamped. It mirrors the eligibility
+// of activeK8sAccountsByIdQuery (K8s, non-proxy row, agent OpenCost off) minus
+// the status/last_connected gate — the connect event is itself proof of a live
+// agent — and adds `NOT (connection_status ? 'opencostServerSide')` so the
+// trigger fires only until the marker key is first written. Once
+// SyncOpenCostSpends stamps it (true on enroll, false when kill-switched), the
+// key is present and later connects short-circuit here.
+//
+// COALESCE guards a NULL connection_status: `NULL ? 'x'` is NULL and `NOT NULL`
+// is NULL, which would drop the row and never trigger for a cluster whose
+// connection_status has not been written yet.
+const needsServerSideStampQuery = `
+	SELECT EXISTS (
+		SELECT 1
+		FROM cloud_accounts ca
+		INNER JOIN agent a ON ca.id = a.cloud_account_id
+		WHERE ca.id = $1
+		  AND ca.cloud_provider = 'K8s'
+		  AND a.type != 'proxy'
+		  AND (a.connection_status->>'opencostConnection') IS DISTINCT FROM 'true'
+		  AND NOT (COALESCE(a.connection_status, '{}'::jsonb) ? 'opencostServerSide')
+	)`
+
+// TriggerServerSideOnConnect kicks a one-off server-side OpenCost sync for a
+// single cluster the moment its agent connects, instead of waiting up to the
+// 6-hourly cron interval. This closes the gap that leaves a freshly-onboarded
+// or re-onboarded K8s account showing OpenCost "disconnected" (opencostConnection
+// off, opencostServerSide not yet stamped) until the next cron tick.
+//
+// Best-effort and idempotent. The in-flight guard drops overlapping connect
+// events for the same cluster; the eligibility probe and sync then run on a
+// detached, timeout-bounded goroutine so the caller (the /v1/audit ingest
+// handler) returns immediately and a client disconnect can't cancel the probe.
+// Once the marker is stamped (or the cluster runs its own OpenCost) the probe
+// returns false and the worker exits without syncing.
+func TriggerServerSideOnConnect(ctx *security.RequestContext, accountId, tenantId string) {
+	if accountId == "" || tenantId == "" {
+		return
+	}
+	// Parse up front: a valid uuid binds to the ca.id (uuid) column directly so
+	// the lookup uses the primary-key index, and an invalid id fails fast without
+	// touching the DB.
+	accountUUID, err := uuid.Parse(accountId)
+	if err != nil {
+		return
+	}
+	logger := ctx.GetLogger().With("account_id", accountId, "tenant_id", tenantId)
+
+	if _, loaded := serverSideOnConnectInFlight.LoadOrStore(accountUUID, struct{}{}); loaded {
+		return
+	}
+
+	// Detach from the ingest request context (cancelled once /v1/audit responds)
+	// and bound the run so a hung call can't leak the goroutine or hold the
+	// in-flight guard indefinitely.
+	detached, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx.GetContext()),
+		serverSideOnConnectTimeout,
+	)
+	bgCtx := security.NewRequestContext(
+		detached,
+		ctx.GetSecurityContext(),
+		ctx.GetLogger(),
+		ctx.GetTracer(),
+		ctx.GetMeter(),
+	)
+
+	go func() {
+		defer cancel()
+		defer serverSideOnConnectInFlight.Delete(accountUUID)
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("opencost on-connect trigger: worker panicked", "panic", r)
+			}
+		}()
+
+		dbms, err := database.GetDatabaseManager(database.Metastore)
+		if err != nil {
+			logger.Warn("opencost on-connect trigger: db manager", "error", err)
+			return
+		}
+		var needs bool
+		if err := dbms.Db.GetContext(bgCtx.GetContext(), &needs, needsServerSideStampQuery, accountUUID); err != nil {
+			logger.Warn("opencost on-connect trigger: eligibility probe failed", "error", err)
+			return
+		}
+		if !needs {
+			return
+		}
+		logger.Info("opencost on-connect trigger: syncing server-side spends for newly-connected cluster")
+		if err := SyncOpenCostSpends(bgCtx, []string{accountId}); err != nil {
+			logger.Error("opencost on-connect trigger: sync failed", "error", err)
+		}
+	}()
 }
 
 type k8sAccount struct {
