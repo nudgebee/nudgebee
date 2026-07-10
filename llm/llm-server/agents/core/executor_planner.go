@@ -131,7 +131,15 @@ func sanitizeToolOutput(s string) string {
 // the original input is returned unchanged. Recognized non-JSON shapes:
 //   - XML tags:          <id>abc</id><limit>1</limit>
 //   - key=value pairs:   id=abc,status=FAILED  or  id=abc status=FAILED
-//   - plain text + "command" schema property → {"command": "<input>"}
+//   - plain text + tool with EXACTLY ONE required string property → {"<field>": "<input>"}
+//     (e.g. shell_execute→{command}, think→{reasoning}, docs→{query})
+//
+// The plain-text fallback used to hardcode "command" as the wrapping field,
+// which was a legacy assumption from the pre-schema-render era. Now that
+// tools can declare their real required field name (reasoning, query, ...),
+// the wrap follows the schema's single required string field instead of
+// assuming "command". Tools with zero or multiple required string fields
+// don't get the wrap — plain text falls through to validation.
 func normalizeToolInputForTool(tool toolcore.NBTool, input string) string {
 	if input == "" || tool == nil {
 		return input
@@ -179,18 +187,43 @@ func normalizeToolInputForTool(tool toolcore.NBTool, input string) string {
 		}
 	}
 
-	// Fallback: if the schema has a "command" property and the input is plain
-	// text that didn't match any structured format, wrap it as {"command": ...}.
-	// The LLM sometimes emits plain-text input for ask_clarification instead of
-	// JSON. Without this, the tool receives an empty command field.
-	if _, hasCommand := schema.Properties["command"]; hasCommand {
-		wrapped := map[string]any{"command": input}
+	// Fallback: if the schema has EXACTLY ONE required string property AND
+	// the input is plain text that didn't match any structured format,
+	// wrap it under that field name. The LLM sometimes emits plain-text
+	// input for ask_clarification / think / shell_execute / docs / etc.
+	// Without this, the tool receives an empty required field.
+	if field := singleRequiredStringField(schema); field != "" {
+		wrapped := map[string]any{field: input}
 		if jsonBytes, err := common.MarshalJson(wrapped); err == nil {
 			return string(jsonBytes)
 		}
 	}
 
 	return input
+}
+
+// singleRequiredStringField returns the sole required string field name in
+// the schema, or "" if there are zero or more than one required string
+// fields. Used by the plain-text wrap fallback in normalizeToolInputForTool
+// so we can wrap under the tool's actual field (reasoning, command, query,
+// args, ...) instead of assuming "command".
+func singleRequiredStringField(schema toolcore.ToolSchema) string {
+	var found string
+	for _, name := range schema.Required {
+		prop, ok := schema.Properties[name]
+		if !ok {
+			continue
+		}
+		if prop.Type != "" && prop.Type != toolcore.ToolSchemaTypeString {
+			continue
+		}
+		if found != "" {
+			// Second required string — no unambiguous choice, decline to wrap.
+			return ""
+		}
+		found = name
+	}
+	return found
 }
 
 // normalizeToolInputByName locates a tool by name in the provided list and

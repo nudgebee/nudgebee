@@ -193,3 +193,35 @@ func TestAgentMCP_HttpCrawl(t *testing.T) {
 	assert.NotEmpty(t, reponse.Data)
 	println(reponse.Data)
 }
+
+// TestNBCustomMCPTool_FallbackSchemaHasNoRequiredOptionalPrefix is the
+// regression guard for the PR #33820 fallback strip. Prior to that PR
+// the "REQUIRED:" / "OPTIONAL:" prefixes were the only surface where the
+// LLM saw per-field required/optional status — Description() was the only
+// thing rendered to the prompt. After PR #33820 the schema renderer
+// (agents/core/utils.go:renderInputSchema) emits "(<type>, required|
+// optional)" inline, so the prefixes are pure duplication and were
+// removed. This test forces a conscious re-add rather than silent drift.
+func TestNBCustomMCPTool_FallbackSchemaHasNoRequiredOptionalPrefix(t *testing.T) {
+	// Zero-value ToolDto — its InputSchema.Type is "" so nbCustomMCPTool.InputSchema()
+	// returns the fallback shape at tool_custom_mcp.go:113-131.
+	tool := nbCustomMCPTool{tool: ToolDto{}}
+	schema := tool.InputSchema()
+
+	if assert.NotNil(t, schema.Properties["command"]) {
+		desc := schema.Properties["command"].Description
+		assert.NotContains(t, desc, "REQUIRED:",
+			"fallback 'command' description must not carry a REQUIRED: prefix — the renderer emits '(string, required)' inline")
+		assert.Contains(t, desc, "MCP operation name",
+			"fallback 'command' description must still name the intent (which MCP operation to invoke)")
+	}
+	if assert.NotNil(t, schema.Properties["args"]) {
+		desc := schema.Properties["args"].Description
+		assert.NotContains(t, desc, "OPTIONAL:",
+			"fallback 'args' description must not carry an OPTIONAL: prefix — the renderer emits '(object, optional)' inline")
+		assert.Contains(t, desc, "arguments for the specified 'command'",
+			"fallback 'args' description must still describe what the field carries")
+	}
+	assert.Equal(t, []string{"command"}, schema.Required,
+		"fallback schema must still declare 'command' as required — that's the anchor for the renderer's inline marker")
+}

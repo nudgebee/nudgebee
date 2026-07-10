@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/samber/lo"
 )
@@ -431,8 +432,145 @@ func reActPromptToolDescriptions(tools []toolcore.NBTool) string {
 		fmt.Fprintf(&sb, "Tool Name: %s\n", tool.Name())
 		fmt.Fprintf(&sb, "Type: %s\n", string(tool.GetType()))
 		fmt.Fprintf(&sb, "Description: %s", tool.Description())
+		if isToolSchemaAuthoritative(tool.Name()) {
+			if schemaBlock := renderInputSchema(tool.InputSchema()); schemaBlock != "" {
+				sb.WriteString("\n")
+				sb.WriteString(schemaBlock)
+			}
+		}
 	}
 	return sb.String()
+}
+
+// isToolSchemaAuthoritative reports whether the framework treats a tool's
+// InputSchema as authoritative — used by the renderer here to gate the
+// compact "Input: object with fields:" block, and (in a coordinated PR)
+// by the schema validator to gate pre-execution type/enum/required checks.
+// Driven by config.LlmServerToolSchemaValidationTools — see that field's
+// docstring for the migration-safety motivation.
+//
+// Special values:
+//
+//	""   → renderer OFF (default)
+//	"*"  → renderer ON for every tool
+//
+// Otherwise the value is a comma-separated list matched case-insensitively.
+func isToolSchemaAuthoritative(toolName string) bool {
+	list := strings.TrimSpace(config.Config.LlmServerToolSchemaValidationTools)
+	if list == "" {
+		return false
+	}
+	if list == "*" {
+		return true
+	}
+	name := strings.ToLower(strings.TrimSpace(toolName))
+	if name == "" {
+		return false
+	}
+	for _, entry := range strings.Split(list, ",") {
+		if strings.EqualFold(strings.TrimSpace(entry), name) {
+			return true
+		}
+	}
+	return false
+}
+
+// maxSchemaFieldDescriptionChars caps per-field description length so the
+// renderer never balloons on tools with long property descriptions (e.g.
+// kg_traverse's 10 properties x ~200 chars each would add ~2KB otherwise).
+// Cap chosen empirically — long enough to carry LLM signal, short enough
+// that a 10-field tool stays under 1KB. UTF-8 rune-safe truncation.
+const maxSchemaFieldDescriptionChars = 100
+
+// renderInputSchema formats a tool's InputSchema into a compact,
+// LLM-facing block appended to the tool's description in the
+// AVAILABLE TOOLS section of the base prompt. Returns "" when the
+// schema is empty (no properties), so tools without input still
+// render with just Name/Type/Description as before.
+//
+// Format (per property, one line):
+//
+//   - <name> (<type>, required|optional): <description[:100]>  [one of: v1, v2, ...]
+//
+// Properties render in two blocks: required fields first (alphabetical
+// among themselves), then optional fields (alphabetical among themselves).
+// Two motivations:
+//  1. Byte-stable output — Go map iteration is randomized, so any
+//     deterministic order works; matters for LLM prompt caching (providers
+//     cache on exact prefix).
+//  2. Required-first foregrounds what MUST be filled. A pure alphabetical
+//     sort would surface fields like `tool_resource_search`'s
+//     `label_selector` before its required `search_type`, weakening the
+//     LLM's "fill required first" signal. Grouping required-then-optional
+//     keeps the LLM focused on the mandatory shape.
+//
+// Required is looked up from schema.Required (a []string). Enum values are
+// appended inline when present — usually short, high-signal. Default is
+// intentionally NOT rendered — most tools don't set it, and it adds noise
+// for the few that do.
+func renderInputSchema(schema toolcore.ToolSchema) string {
+	if len(schema.Properties) == 0 {
+		return ""
+	}
+	requiredSet := make(map[string]bool, len(schema.Required))
+	for _, f := range schema.Required {
+		requiredSet[f] = true
+	}
+	required := make([]string, 0, len(schema.Required))
+	optional := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		if requiredSet[name] {
+			required = append(required, name)
+		} else {
+			optional = append(optional, name)
+		}
+	}
+	slices.Sort(required)
+	slices.Sort(optional)
+	names := append(required, optional...)
+	var sb strings.Builder
+	sb.WriteString("Input: object with fields:")
+	for _, name := range names {
+		prop := schema.Properties[name]
+		reqMarker := "optional"
+		if requiredSet[name] {
+			reqMarker = "required"
+		}
+		typ := string(prop.Type)
+		if typ == "" {
+			typ = "string"
+		}
+		// Collapse whitespace so multi-line property descriptions render on
+		// one line — matches the "one line per field" contract in the format
+		// docstring and keeps the token budget predictable.
+		desc := strings.Join(strings.Fields(prop.Description), " ")
+		desc = truncateSchemaFieldDescription(desc, maxSchemaFieldDescriptionChars)
+		fmt.Fprintf(&sb, "\n  - %s (%s, %s)", name, typ, reqMarker)
+		if desc != "" {
+			fmt.Fprintf(&sb, ": %s", desc)
+		}
+		if len(prop.Enum) > 0 {
+			enumStrs := make([]string, 0, len(prop.Enum))
+			for _, v := range prop.Enum {
+				enumStrs = append(enumStrs, fmt.Sprintf("%v", v))
+			}
+			fmt.Fprintf(&sb, " [one of: %s]", strings.Join(enumStrs, ", "))
+		}
+	}
+	return sb.String()
+}
+
+// truncateSchemaFieldDescription caps s at maxBytes, walking back to the
+// nearest UTF-8 rune boundary so the ellipsis never glues onto a
+// half-rune. Uses utf8.RuneStart from the stdlib (Gemini PR #33820 review).
+func truncateSchemaFieldDescription(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return s[:maxBytes] + "…"
 }
 
 // RenderToolDescriptions exposes reActPromptToolDescriptions for use

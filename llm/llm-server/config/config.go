@@ -204,6 +204,41 @@ type appConfig struct {
 	// skill-lists menu) in the human message instead of the cacheable system
 	// prefix. Off keeps the legacy in-prompt <skill-lists> + lazy load_skills flow.
 	LlmServerKBPrestepEnabled bool `mapstructure:"llm_server_kb_prestep_enabled"`
+	// LlmServerToolSchemaValidationTools is a comma-separated allowlist of tool
+	// names for which the framework treats the InputSchema as authoritative.
+	// A tool on this list has BOTH of the following applied by the framework:
+	//
+	//   1. Its InputSchema is rendered into the AVAILABLE TOOLS block for the
+	//      LLM as a compact "Input: object with fields:" line-list (via
+	//      agents/core/utils.go:renderInputSchema) — the LLM sees required
+	//      fields, types, and enum values at plan-time instead of having to
+	//      infer them from prose.
+	//   2. Its input is validated pre-execution against the schema (types,
+	//      required, enums, RequiredOneOf) — handled by the coordinated
+	//      schema-validation PR (piyushbhavsarr/nudgebee-enterprise#31271).
+	//
+	// The same allowlist gates BOTH intentionally. A tool whose schema is
+	// authoritative enough to render is also authoritative enough to enforce.
+	// Splitting the two would create tools where the LLM sees a schema the
+	// framework won't hold it to — confusing feedback loop.
+	//
+	// Empty (default) = both features OFF for every tool. Special value "*"
+	// = both ON for every registered tool.
+	//
+	// Per-tool gating is used here rather than a global on/off because most
+	// existing tools have InputSchema declarations that don't match how their
+	// Call() actually accepts input (schema says one required "command",
+	// Call() unpacks a bunch of top-level fields — legacy pattern documented
+	// in tool_postgres.go's Call() and elsewhere). Making those schemas
+	// visible + enforced would push the LLM toward a different tool_input
+	// shape than the agent prompt teaches, drifting the DB `parameters`
+	// column and downstream consumers. The right sequence is: reconcile each
+	// tool's schema with its Call() reality, then add the tool to this list,
+	// then watch `parameters` shape stability, then flip the next tool.
+	// Bootstrap default: "think", which is the tool that motivated the whole
+	// feature (88% error rate in PR #33748 investigation) and has a schema
+	// that already matches its Call() behaviour.
+	LlmServerToolSchemaValidationTools string `mapstructure:"llm_server_tool_schema_validation_tools"`
 	// LlmServerMaxToolOutputLen caps a successful tool response at the source,
 	// before it enters cache, DB, or scratchpad. 0 disables truncation.
 	LlmServerMaxToolOutputLen int `mapstructure:"llm_server_max_tool_output_len"`
@@ -659,6 +694,11 @@ func init() {
 	viper.SetDefault("llm_server_max_skill_content_length", 5000)
 	viper.SetDefault("llm_server_integration_kb_enabled", true)
 	viper.SetDefault("llm_server_kb_prestep_enabled", false)
+	// Bootstrap: only `think` gets schema-authoritative treatment (renderer +
+	// validator). Other tools stay text-description-only until their schema
+	// is reconciled with their Call() acceptance shape. See
+	// LlmServerToolSchemaValidationTools docstring.
+	viper.SetDefault("llm_server_tool_schema_validation_tools", "think")
 	viper.SetDefault("llm_server_max_tool_output_len", 65536)
 	viper.SetDefault("llm_server_max_tool_error_output_len", 16384)
 
