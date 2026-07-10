@@ -18,6 +18,7 @@ import { Accordion } from '@ui/Accordion';
 import { ds } from 'src/utils/colors';
 import CustomStepper from '@shared/navigation/CustomStepper';
 import apiAskNudgebee from '@api1/ask-nudgebee';
+import apiAccount from '@api1/account';
 import observability from '@api1/observability';
 import ReorderableList, { type DragHandleProps } from '@shared/ReorderableList';
 
@@ -80,9 +81,42 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
   const [currentStep, setCurrentStep] = useState(1);
   const [stepErrors, setStepErrors] = useState<boolean[]>([false, false, false]);
   const [functions, setFunctions] = useState([]);
+  const [metricsProvider, setMetricsProvider] = useState<string>('');
 
-  // Memoized CodeMirror configuration to prevent unnecessary re-renders
-  const codeMirrorExtensions = useMemo(() => [new PromQLExtension().asExtension()], []);
+  // Providers whose alert condition is expressed in PromQL / MetricsQL.
+  const PROMQL_METRICS_PROVIDERS = ['prometheus', 'victoria_metrics', 'victoria-metrics', 'chronosphere'];
+
+  // Which query language the "Triggering Condition" editor should present.
+  // - Editing an existing alert: derive from the alert's ingested `source`.
+  // - Creating a new alert: derive from the account's default metrics provider.
+  // Note: this only differentiates how the query is labelled/highlighted/validated.
+  // The create submit still routes through the Prometheus/nudgebee event-rule path
+  // (provider-native creation is intentionally out of scope for this change).
+  const queryDialect: 'promql' | 'datadog' | 'other' = useMemo(() => {
+    const src = alertManagerObject?.source;
+    if (src) {
+      if (src === 'datadog_webhook' || src === 'datadog') return 'datadog';
+      if (src === 'chronosphere' || src === 'prometheus' || src === 'nudgebee') return 'promql';
+      return 'other';
+    }
+    if (metricsProvider === 'datadog') return 'datadog';
+    if (metricsProvider === '' || PROMQL_METRICS_PROVIDERS.includes(metricsProvider)) return 'promql';
+    return 'other';
+  }, [alertManagerObject?.source, metricsProvider]);
+
+  const isPromQLDialect = queryDialect === 'promql';
+  const queryLabel = queryDialect === 'datadog' ? 'Datadog Monitor Query' : queryDialect === 'other' ? 'Query' : 'PromQL';
+  const queryInstruction =
+    queryDialect === 'datadog'
+      ? 'The Datadog monitor query is used to define the condition that triggers this alert.'
+      : queryDialect === 'other'
+      ? 'The provider query is used to define the condition that triggers this alert.'
+      : 'PromQL (Prometheus Query Language) is used to define the condition that will trigger this alert.';
+
+  // Memoized CodeMirror configuration to prevent unnecessary re-renders.
+  // PromQL syntax support is only applied for PromQL-family providers; other
+  // providers (e.g. Datadog monitor queries) use a plain editor.
+  const codeMirrorExtensions = useMemo(() => (isPromQLDialect ? [new PromQLExtension().asExtension()] : []), [isPromQLDialect]);
   const steps = ['Alert Configuration', 'Triggering Condition', 'Add Actions'];
 
   // Define custom button text for each step
@@ -110,6 +144,30 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
       }
     });
   }, []);
+
+  // Resolve the account's default metrics provider so a new alert presents the
+  // matching query language (PromQL for Prometheus/Victoria, Datadog monitor query
+  // for Datadog, etc.). For an existing alert the query dialect comes from its source.
+  useEffect(() => {
+    if (!accountId || accountId === 'undefined' || accountId === 'demo') return;
+    let cancelled = false;
+    apiAccount
+      .getDefaultProvider({ account_id: accountId, provider_type: 'metrics' })
+      .then((res: any) => {
+        if (cancelled) return;
+        // Fail closed to the PromQL default (prior behaviour) on an error response or a
+        // missing/blank provider, rather than acting on incomplete data. This is a silent
+        // fallback by design — provider detection failing shouldn't error-toast on open.
+        const provider = res?.data?.errors ? '' : res?.data?.data?.observability_get_default_provider?.provider;
+        setMetricsProvider(typeof provider === 'string' ? provider : '');
+      })
+      .catch(() => {
+        if (!cancelled) setMetricsProvider('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId]);
 
   const codeMirrorBasicSetup = useMemo(
     () => ({
@@ -440,7 +498,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
     let hasError = false;
     const newErrorDesc = { ...errorDesc };
 
-    if (source == 'chronosphere' || source == 'datadog_webhook') {
+    if (!isPromQLDialect || source == 'chronosphere' || source == 'datadog_webhook') {
       hasError = false;
     } else if (!time) {
       newErrorDesc.time = 'Time should greater than zero';
@@ -918,14 +976,12 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                   </Box>
                 </Typography>
               </Box>
-              {/* PromQL Input Section */}
+              {/* Query Input Section */}
               <Box>
                 <Typography sx={{ mb: '0px', fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)', color: ds.gray[700] }}>
-                  PromQL
+                  {queryLabel}
                 </Typography>
-                <Typography sx={{ ...styles.instructionText, color: ds.gray[700], mb: 'var(--ds-space-2)' }}>
-                  PromQL (Prometheus Query Language) is used to define the condition that will trigger this alert.
-                </Typography>
+                <Typography sx={{ ...styles.instructionText, color: ds.gray[700], mb: 'var(--ds-space-2)' }}>{queryInstruction}</Typography>
                 <CodeMirror
                   value={promQL}
                   height='120px'
@@ -954,33 +1010,35 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                 {errorDesc.promQL.length > 0 && (
                   <Typography sx={{ color: ds.red[500], fontSize: 'var(--ds-text-body-lg)', mt: ds.space[2] }}>{errorDesc.promQL}</Typography>
                 )}
-                {/* Validate Button & Success Indicator */}
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[4], mt: 'var(--ds-space-3)' }}>
-                  <DsButton
-                    tone='primary'
-                    size='md'
-                    disabled={loadingQueryExec || source == 'chronosphere' || source == 'datadog_webhook'}
-                    loading={loadingQueryExec}
-                    onClick={() => {
-                      setErrorDesc((prevErrorDesc) => ({
-                        ...prevErrorDesc,
-                        promQL: '',
-                      }));
-                      setIsPromQLWrong(true);
-                      handleTestClick();
-                    }}
-                  >
-                    Validate Query
-                  </DsButton>
-                  {(!isPromQLWrong || source == 'chronosphere' || source == 'datadog_webhook') && (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
-                      <CheckIcon sx={{ color: 'var(--ds-teal-500)', fontSize: 20 }} />
-                      <Typography sx={{ color: 'var(--ds-teal-500)', fontSize: 14, fontWeight: 'var(--ds-font-weight-medium)' }}>
-                        Query validated successfully
-                      </Typography>
-                    </Box>
-                  )}
-                </Box>
+                {/* Validate Button & Success Indicator (PromQL only) */}
+                {isPromQLDialect && (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[4], mt: 'var(--ds-space-3)' }}>
+                    <DsButton
+                      tone='primary'
+                      size='md'
+                      disabled={loadingQueryExec || source == 'chronosphere' || source == 'datadog_webhook'}
+                      loading={loadingQueryExec}
+                      onClick={() => {
+                        setErrorDesc((prevErrorDesc) => ({
+                          ...prevErrorDesc,
+                          promQL: '',
+                        }));
+                        setIsPromQLWrong(true);
+                        handleTestClick();
+                      }}
+                    >
+                      Validate Query
+                    </DsButton>
+                    {(!isPromQLWrong || source == 'chronosphere' || source == 'datadog_webhook') && (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+                        <CheckIcon sx={{ color: 'var(--ds-teal-500)', fontSize: 20 }} />
+                        <Typography sx={{ color: 'var(--ds-teal-500)', fontSize: 14, fontWeight: 'var(--ds-font-weight-medium)' }}>
+                          Query validated successfully
+                        </Typography>
+                      </Box>
+                    )}
+                  </Box>
+                )}
               </Box>
 
               <Box sx={{ display: 'flex', gap: 'var(--ds-space-3)', alignItems: 'flex-start', mt: 'var(--ds-space-4)' }}>
