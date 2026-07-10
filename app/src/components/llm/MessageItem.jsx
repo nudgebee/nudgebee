@@ -15,6 +15,7 @@ import ReferencesPopover from './common/ReferencesModal';
 import ResponseMetaRail from './common/ResponseMetaRail';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import { useTenantBranding, getNubiIconUrl } from '@hooks/useTenantBranding';
+import { Modal } from '@ui/Modal';
 
 const QUESTION_PREVIEW_LINES = 6;
 
@@ -113,6 +114,7 @@ const MessageItem = ({
   responseMeta,
 }) => {
   const [referencesAnchorEl, setReferencesAnchorEl] = React.useState(null);
+  const [previewedAttachment, setPreviewedAttachment] = React.useState(null);
 
   const parsedReferences = React.useMemo(() => {
     if (!message.references) {
@@ -279,279 +281,310 @@ const MessageItem = ({
   }
 
   return (
-    <Box
-      sx={{
-        display: 'flex',
-        gap: ds.space[3],
-        mb: isQuestion && ds.space.mul(1, 5),
-        mt: isQuestion && ds.space.mul(1, 15),
-        pb: isLastTaskOfLastGroup ? ds.space[4] : 0,
-      }}
-    >
-      {/* Timeline Column */}
-      <Box sx={{ width: ds.space.mul(1, 7), display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0, mt: ds.space[1] }}>
-        {timelineIcon}
-      </Box>
-
-      {/* Card Content Column */}
+    <>
       <Box
         sx={{
-          width: '100%',
-          mb: 'auto',
+          display: 'flex',
+          gap: ds.space[3],
+          mb: isQuestion && ds.space.mul(1, 5),
+          mt: isQuestion && ds.space.mul(1, 15),
+          pb: isLastTaskOfLastGroup ? ds.space[4] : 0,
         }}
       >
-        <ConversationCollapsableCard
-          id={`task-card-${index}`}
-          showFullTextHandler={onShowFullText}
-          showFullText={showFullText}
-          textLength={isTruncatable}
-          toolData={message}
-          text={
-            <Box sx={{ display: 'flex', alignItems: 'start', flexDirection: 'column', gap: ds.space[0] }}>
-              <Tooltip
-                title={
-                  !isQuestion && cardTitle ? (
-                    <MarkDowns
-                      data={cardTitle}
-                      sx={{
-                        padding: 0,
-                        maxHeight: 'unset',
-                        overflowY: 'visible',
-                        '& p': { margin: 0, lineHeight: 1.5 },
-                      }}
-                    />
-                  ) : (
-                    ''
-                  )
-                }
-                placement='top'
-              >
-                <Box sx={{ width: '100%' }}>
-                  <Box
-                    sx={{
-                      width: '100%',
-                      // Clip the question to ~6 lines worth of height when collapsed.
-                      // max-height (rather than -webkit-line-clamp) is used because the
-                      // question renders as markdown, which produces block-level elements
-                      // (lists, code blocks) that line-clamp does not measure correctly.
-                      ...(isQuestion && isTruncatable && !showFullText
-                        ? {
-                            maxHeight: `calc(${QUESTION_PREVIEW_LINES} * 1.5em)`,
-                            overflow: 'hidden',
-                            position: 'relative',
-                            // Soft fade-out at the bottom so the truncation reads as
-                            // "more content below" rather than a hard cut. Fades into
-                            // the question card's background colour.
-                            '&::after': {
-                              content: '""',
-                              position: 'absolute',
-                              left: 0,
-                              right: 0,
-                              bottom: 0,
-                              height: ds.space.mul(1, 10),
-                              background: `linear-gradient(to bottom, transparent, ${'var(--ds-gray-100)'})`,
-                              pointerEvents: 'none',
-                            },
-                          }
-                        : {}),
-                    }}
-                  >
-                    <Text
-                      sx={{
-                        fontWeight: isResponse ? '500' : '400',
-                        fontSize: isQuestion ? 'var(--ds-text-body)' : isResponse ? 'var(--ds-text-title)' : 'var(--ds-text-small)',
-                        color: 'var(--ds-gray-700)',
-                        fontFamily: isQuestion ? "'Poppins', sans-serif" : 'Roboto',
-                        wordBreak: 'break-all',
-                        lineHeight: isQuestion ? 1.5 : undefined,
-                      }}
-                      value={isResponse ? <Box /> : cardTitle}
-                      format={isQuestion ? 'markdown' : 'text'}
-                      requiredToolTip={false}
-                      tooltipClassName={'large-tooltip'}
-                      showAutoEllipsis={!isQuestion}
-                    />
-                  </Box>
-                </Box>
-              </Tooltip>
-              {isQuestion && Array.isArray(message.attachments) && message.attachments.length > 0 && (
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[2], mt: ds.space[2] }} data-testid='question-attachments'>
-                  {message.attachments.map((att, idx) => {
-                    const hasData = !!att?.data;
-                    const src = hasData ? `data:${att.mime_type || 'image/png'};base64,${att.data}` : null;
-                    // Chromium/Safari block top-level navigation to data: URIs, so
-                    // window.open(src) silently no-ops. Render the thumbnail as a
-                    // download anchor instead — clicking saves the original bytes,
-                    // which is allowed for data: URIs.
-                    const downloadName = att?.description || `attachment-${att?.id || idx}`;
-                    const commonSx = {
-                      width: ds.space.mul(1, 18),
-                      height: ds.space.mul(1, 18),
-                      borderRadius: ds.radius.md,
-                      overflow: 'hidden',
-                      border: `1px solid var(--ds-gray-300)`,
-                      backgroundColor: 'var(--ds-background-200)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      cursor: src ? 'pointer' : 'default',
-                      textDecoration: 'none',
-                    };
-                    return hasData ? (
-                      <Box
-                        key={att?.id || idx}
-                        component='a'
-                        href={src}
-                        download={downloadName}
-                        title={att?.description || 'Attached image'}
-                        sx={commonSx}
-                      >
-                        <Box
-                          component='img'
-                          src={src}
-                          alt={att?.description || 'Attached image'}
-                          sx={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                        />
-                      </Box>
-                    ) : (
-                      <Box key={att?.id || idx} title='This image is no longer available' sx={commonSx}>
-                        <Text
-                          value='Image expired'
-                          format='text'
-                          sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', textAlign: 'center', px: ds.space[1] }}
-                        />
-                      </Box>
-                    );
-                  })}
-                </Box>
-              )}
-              {!['question', 'response', 'followup-question', 'acknowledgment'].includes(messageType) && (
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], flexWrap: 'wrap' }}>
-                  <Tooltip
-                    title={
-                      message.response_status == 'fail'
-                        ? 'Error'
-                        : message.response_status == 'skipped'
-                        ? 'Skipped'
-                        : message.response_status === 'waiting'
-                        ? 'Waiting'
-                        : message.response_status === 'in_progress'
-                        ? 'In-Progress'
-                        : 'Success'
-                    }
-                    placement='top'
-                  >
-                    <Box component='span' sx={{ display: 'inline-flex', lineHeight: 0 }}>
-                      <SafeIcon
-                        src={
-                          message.response_status == 'fail'
-                            ? AskNudgebeeErrorIcon
-                            : message.response_status == 'skipped'
-                            ? AskNudgebeeSkipIcon
-                            : message.response_status === 'waiting'
-                            ? AskNudgebeeWaitingIcon
-                            : message.response_status === 'in_progress'
-                            ? AskNudgebeeInProgressIcon
-                            : AskNudgebeeSuccessIcon
-                        }
-                        alt='status icon'
+        {/* Timeline Column */}
+        <Box sx={{ width: ds.space.mul(1, 7), display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0, mt: ds.space[1] }}>
+          {timelineIcon}
+        </Box>
+
+        {/* Card Content Column */}
+        <Box
+          sx={{
+            width: '100%',
+            mb: 'auto',
+          }}
+        >
+          <ConversationCollapsableCard
+            id={`task-card-${index}`}
+            showFullTextHandler={onShowFullText}
+            showFullText={showFullText}
+            textLength={isTruncatable}
+            toolData={message}
+            text={
+              <Box sx={{ display: 'flex', alignItems: 'start', flexDirection: 'column', gap: ds.space[0] }}>
+                <Tooltip
+                  title={
+                    !isQuestion && cardTitle ? (
+                      <MarkDowns
+                        data={cardTitle}
+                        sx={{
+                          padding: 0,
+                          maxHeight: 'unset',
+                          overflowY: 'visible',
+                          '& p': { margin: 0, lineHeight: 1.5 },
+                        }}
                       />
-                    </Box>
-                  </Tooltip>
-                  <Text
-                    value={
-                      message.response_status === 'in_progress'
-                        ? 'In-Progress'
-                        : message?.response_summary
-                        ? message?.response_summary
-                        : message?.response?.text === 'error: unable to fetch data'
-                        ? 'Unable to fetch data'
-                        : capitalize(message.response_status)
-                    }
-                    sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', fontFamily: ds.font.sans, flex: 1, minWidth: 0 }}
-                  />
-                  {parsedReferences.length > 0 && (
+                    ) : (
+                      ''
+                    )
+                  }
+                  placement='top'
+                >
+                  <Box sx={{ width: '100%' }}>
                     <Box
-                      onMouseEnter={(e) => setReferencesAnchorEl(e.currentTarget)}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setReferencesAnchorEl(e.currentTarget);
-                      }}
                       sx={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: ds.space[1],
-                        cursor: 'pointer',
-                        padding: `${ds.space[0]} ${ds.space.mul(0, 3)}`,
-                        borderRadius: ds.radius.sm,
-                        fontSize: 'var(--ds-text-caption)',
-                        fontWeight: 'var(--ds-font-weight-medium)',
-                        color: 'var(--ds-blue-600)',
-                        transition: 'all 0.15s ease',
-                        whiteSpace: 'nowrap',
-                        '&:hover': {
-                          backgroundColor: 'var(--ds-blue-100)',
-                        },
+                        width: '100%',
+                        // Clip the question to ~6 lines worth of height when collapsed.
+                        // max-height (rather than -webkit-line-clamp) is used because the
+                        // question renders as markdown, which produces block-level elements
+                        // (lists, code blocks) that line-clamp does not measure correctly.
+                        ...(isQuestion && isTruncatable && !showFullText
+                          ? {
+                              maxHeight: `calc(${QUESTION_PREVIEW_LINES} * 1.5em)`,
+                              overflow: 'hidden',
+                              position: 'relative',
+                              // Soft fade-out at the bottom so the truncation reads as
+                              // "more content below" rather than a hard cut. Fades into
+                              // the question card's background colour.
+                              '&::after': {
+                                content: '""',
+                                position: 'absolute',
+                                left: 0,
+                                right: 0,
+                                bottom: 0,
+                                height: ds.space.mul(1, 10),
+                                background: `linear-gradient(to bottom, transparent, ${'var(--ds-gray-100)'})`,
+                                pointerEvents: 'none',
+                              },
+                            }
+                          : {}),
                       }}
                     >
-                      <svg width='11' height='11' viewBox='0 0 24 24' fill={'var(--ds-blue-600)'} opacity='0.7' aria-hidden='true' focusable='false'>
-                        <path d='M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 2l5 5h-5V4zM6 20V4h5v7h7v9H6z' />
-                      </svg>
-                      {`${getUniqueReferencesCount(parsedReferences)} source${getUniqueReferencesCount(parsedReferences) !== 1 ? 's' : ''}`}
-                      {parsedReferences.some((r) => r.type === 'file') && (
-                        <FileDownloadIcon sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-blue-600)' }} />
-                      )}
+                      <Text
+                        sx={{
+                          fontWeight: isResponse ? '500' : '400',
+                          fontSize: isQuestion ? 'var(--ds-text-body)' : isResponse ? 'var(--ds-text-title)' : 'var(--ds-text-small)',
+                          color: 'var(--ds-gray-700)',
+                          fontFamily: isQuestion ? "'Poppins', sans-serif" : 'Roboto',
+                          wordBreak: 'break-all',
+                          lineHeight: isQuestion ? 1.5 : undefined,
+                        }}
+                        value={isResponse ? <Box /> : cardTitle}
+                        format={isQuestion ? 'markdown' : 'text'}
+                        requiredToolTip={false}
+                        tooltipClassName={'large-tooltip'}
+                        showAutoEllipsis={!isQuestion}
+                      />
                     </Box>
-                  )}
-                  {parsedReferences.length > 0 && (
-                    <ReferencesPopover
-                      anchorEl={referencesAnchorEl}
-                      open={Boolean(referencesAnchorEl)}
-                      onClose={(e) => {
-                        if (e) {
-                          e.stopPropagation();
-                        }
-                        setReferencesAnchorEl(null);
-                      }}
-                      references={parsedReferences}
-                      accountId={accountId}
-                      conversationId={conversationId}
+                  </Box>
+                </Tooltip>
+                {isQuestion && Array.isArray(message.attachments) && message.attachments.length > 0 && (
+                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[2], mt: ds.space[2] }} data-testid='question-attachments'>
+                    {message.attachments.map((att, idx) => {
+                      const hasData = !!att?.data;
+                      const mimeType = att?.mime_type || 'image/png';
+                      const src = hasData ? `data:${mimeType};base64,${att.data}` : null;
+                      const commonSx = {
+                        width: ds.space.mul(1, 18),
+                        height: ds.space.mul(1, 18),
+                        borderRadius: ds.radius.md,
+                        overflow: 'hidden',
+                        border: `1px solid var(--ds-gray-300)`,
+                        backgroundColor: 'var(--ds-background-200)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: src ? 'pointer' : 'default',
+                        textDecoration: 'none',
+                      };
+                      return hasData ? (
+                        <Box
+                          key={att?.id || idx}
+                          component='button'
+                          type='button'
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const extension = (mimeType.split('/')[1] || 'png').split('+')[0];
+                            const downloadName = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${extension}`;
+                            setPreviewedAttachment({ src, name: downloadName });
+                          }}
+                          title={att?.description || 'Attached image'}
+                          sx={{ ...commonSx, p: 0 }}
+                        >
+                          <Box
+                            component='img'
+                            src={src}
+                            alt={att?.description || 'Attached image'}
+                            sx={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                          />
+                        </Box>
+                      ) : (
+                        <Box key={att?.id || idx} title='This image is no longer available' sx={commonSx}>
+                          <Text
+                            value='Image expired'
+                            format='text'
+                            sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', textAlign: 'center', px: ds.space[1] }}
+                          />
+                        </Box>
+                      );
+                    })}
+                  </Box>
+                )}
+                {!['question', 'response', 'followup-question', 'acknowledgment'].includes(messageType) && (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], flexWrap: 'wrap' }}>
+                    <Tooltip
+                      title={
+                        message.response_status == 'fail'
+                          ? 'Error'
+                          : message.response_status == 'skipped'
+                          ? 'Skipped'
+                          : message.response_status === 'waiting'
+                          ? 'Waiting'
+                          : message.response_status === 'in_progress'
+                          ? 'In-Progress'
+                          : 'Success'
+                      }
+                      placement='top'
+                    >
+                      <Box component='span' sx={{ display: 'inline-flex', lineHeight: 0 }}>
+                        <SafeIcon
+                          src={
+                            message.response_status == 'fail'
+                              ? AskNudgebeeErrorIcon
+                              : message.response_status == 'skipped'
+                              ? AskNudgebeeSkipIcon
+                              : message.response_status === 'waiting'
+                              ? AskNudgebeeWaitingIcon
+                              : message.response_status === 'in_progress'
+                              ? AskNudgebeeInProgressIcon
+                              : AskNudgebeeSuccessIcon
+                          }
+                          alt='status icon'
+                        />
+                      </Box>
+                    </Tooltip>
+                    <Text
+                      value={
+                        message.response_status === 'in_progress'
+                          ? 'In-Progress'
+                          : message?.response_summary
+                          ? message?.response_summary
+                          : message?.response?.text === 'error: unable to fetch data'
+                          ? 'Unable to fetch data'
+                          : capitalize(message.response_status)
+                      }
+                      sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', fontFamily: ds.font.sans, flex: 1, minWidth: 0 }}
                     />
-                  )}
-                </Box>
-              )}
-            </Box>
-          }
-          contentComponents={
-            ['response', 'question', 'acknowledgment', 'followup-question'].includes(messageType) ? (
-              <KubernetesLLMRequestResponse
-                toolCall={message}
-                messages={siblingTasks || []}
-                isLoadingInvestigation={isLoadingInvestigation}
-                generateQuestionText={generateQuestionText}
-                accountId={accountId}
-                handleShare={handleShare}
-                sessionId={sessionId}
-                conversationId={conversationId}
-                agentTokenData={agentTokenData}
-                messageTokenData={messageTokenData}
-                handleTokenUsageHover={handleTokenUsageHover}
-                isFetchingTokenData={isFetchingTokenData}
-                selectedModel={selectedModel}
-                conversationStatus={conversationStatus}
-                followupReadOnlyKey={followupReadOnlyKey}
-                onOpenToolDetails={onOpenToolDetails}
-                onNavigateToTask={onNavigateToTask}
-                groupIndex={groupIndex}
-              />
-            ) : null
-          }
-          conversationCreatedAt={message?.created_at}
-          conversationUpdatedAt={message?.updated_at}
-          headerActions={headerActionsNode}
-        />
+                    {parsedReferences.length > 0 && (
+                      <Box
+                        onMouseEnter={(e) => setReferencesAnchorEl(e.currentTarget)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setReferencesAnchorEl(e.currentTarget);
+                        }}
+                        sx={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: ds.space[1],
+                          cursor: 'pointer',
+                          padding: `${ds.space[0]} ${ds.space.mul(0, 3)}`,
+                          borderRadius: ds.radius.sm,
+                          fontSize: 'var(--ds-text-caption)',
+                          fontWeight: 'var(--ds-font-weight-medium)',
+                          color: 'var(--ds-blue-600)',
+                          transition: 'all 0.15s ease',
+                          whiteSpace: 'nowrap',
+                          '&:hover': {
+                            backgroundColor: 'var(--ds-blue-100)',
+                          },
+                        }}
+                      >
+                        <svg
+                          width='11'
+                          height='11'
+                          viewBox='0 0 24 24'
+                          fill={'var(--ds-blue-600)'}
+                          opacity='0.7'
+                          aria-hidden='true'
+                          focusable='false'
+                        >
+                          <path d='M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 2l5 5h-5V4zM6 20V4h5v7h7v9H6z' />
+                        </svg>
+                        {`${getUniqueReferencesCount(parsedReferences)} source${getUniqueReferencesCount(parsedReferences) !== 1 ? 's' : ''}`}
+                        {parsedReferences.some((r) => r.type === 'file') && (
+                          <FileDownloadIcon sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-blue-600)' }} />
+                        )}
+                      </Box>
+                    )}
+                    {parsedReferences.length > 0 && (
+                      <ReferencesPopover
+                        anchorEl={referencesAnchorEl}
+                        open={Boolean(referencesAnchorEl)}
+                        onClose={(e) => {
+                          if (e) {
+                            e.stopPropagation();
+                          }
+                          setReferencesAnchorEl(null);
+                        }}
+                        references={parsedReferences}
+                        accountId={accountId}
+                        conversationId={conversationId}
+                      />
+                    )}
+                  </Box>
+                )}
+              </Box>
+            }
+            contentComponents={
+              ['response', 'question', 'acknowledgment', 'followup-question'].includes(messageType) ? (
+                <KubernetesLLMRequestResponse
+                  toolCall={message}
+                  messages={siblingTasks || []}
+                  isLoadingInvestigation={isLoadingInvestigation}
+                  generateQuestionText={generateQuestionText}
+                  accountId={accountId}
+                  handleShare={handleShare}
+                  sessionId={sessionId}
+                  conversationId={conversationId}
+                  agentTokenData={agentTokenData}
+                  messageTokenData={messageTokenData}
+                  handleTokenUsageHover={handleTokenUsageHover}
+                  isFetchingTokenData={isFetchingTokenData}
+                  selectedModel={selectedModel}
+                  conversationStatus={conversationStatus}
+                  followupReadOnlyKey={followupReadOnlyKey}
+                  onOpenToolDetails={onOpenToolDetails}
+                  onNavigateToTask={onNavigateToTask}
+                  groupIndex={groupIndex}
+                />
+              ) : null
+            }
+            conversationCreatedAt={message?.created_at}
+            conversationUpdatedAt={message?.updated_at}
+            headerActions={headerActionsNode}
+          />
+        </Box>
       </Box>
-    </Box>
+      {previewedAttachment && (
+        <Modal
+          open
+          handleClose={() => setPreviewedAttachment(null)}
+          title='Attached image'
+          width='md'
+          actionButtons={
+            <Button tone='secondary' size='md' href={previewedAttachment.src} download={previewedAttachment.name}>
+              Download
+            </Button>
+          }
+        >
+          <Box
+            component='img'
+            src={previewedAttachment.src}
+            alt='Attached image'
+            sx={{ width: '100%', maxHeight: '70vh', objectFit: 'contain', display: 'block' }}
+          />
+        </Modal>
+      )}
+    </>
   );
 };
 
