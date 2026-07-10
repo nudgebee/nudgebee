@@ -9,6 +9,12 @@
  * leading SafeIcon in its row. Panel width defaults to the trigger width with
  * a 220px floor; `popoverWidth` overrides it.
  *
+ * Option badge: an option's `badge` (string) renders as a small leading Label
+ * (info tone) between the icon and the label — a secondary tag on the LEFT,
+ * visually distinct from the neutral, right-aligned `type` chip. Use it to show
+ * a second dimension per row (e.g. a KG node's type on the left while the right
+ * chip shows its namespace/region). Optional; rows without it are unchanged.
+ *
  * Option search: search matches an option's visible label plus an optional
  * `searchText` field. Set `searchText` when the label is intentionally short but
  * you still want the full text to be searchable (e.g. a row showing a node name
@@ -201,10 +207,18 @@ const OptionItem = React.memo(function OptionItem({ opt, selected, multiple, onT
     >
       {multiple && <OverlayCheckbox checked={selected} />}
       {opt?.icon && <SafeIcon src={opt.icon} alt={opt?.type ?? ''} style={{ width: 16, height: 16, flexShrink: 0, objectFit: 'contain' }} />}
+      {opt?.badge && (
+        <Box sx={{ flexShrink: 0, maxWidth: '35%' }}>
+          <Label text={opt.badge} tone='info' maxWidth='100%' displayTooltip tooltipCharLimit={18} />
+        </Box>
+      )}
       <OptionLabel label={getLabel(opt)} />
       {opt?.type && (
         <Box sx={{ ml: 'auto', flexShrink: 0, maxWidth: '40%' }}>
-          <Label text={opt.type} maxWidth='100%' displayTooltip tooltipCharLimit={15} />
+          {/* Label capitalizes by default; pass typeTextTransform='none' for
+              chips holding case-sensitive identifiers (k8s namespace, region,
+              vpc/resource id) so their casing is preserved verbatim. */}
+          <Label text={opt.type} textTransform={opt.typeTextTransform} maxWidth='100%' displayTooltip tooltipCharLimit={15} />
         </Box>
       )}
     </Box>
@@ -841,7 +855,27 @@ function FilterDropdownButton({
       }
     }
     const lower = q.toLowerCase();
-    return options.filter((opt) => haystack(opt).toLowerCase().includes(lower));
+    // Rank matches by relevance so an exact / prefix name match surfaces above
+    // rows that only match as a substring or via `searchText`
+    // (namespace/region). Without this the list keeps the source order, so e.g.
+    // searching "services-server" shows "nudgebee-services-server" before the
+    // exact "services-server". Stable within each tier (secondary sort on the
+    // original index) so order is otherwise preserved.
+    const ranked = [];
+    options.forEach((opt, i) => {
+      const label = getLabel(opt).toLowerCase();
+      const extra = typeof opt === 'object' && opt?.searchText ? String(opt.searchText).toLowerCase() : '';
+      const inLabel = label.includes(lower);
+      if (!inLabel && !extra.includes(lower)) return;
+      let rank;
+      if (label === lower) rank = 0;
+      else if (label.startsWith(lower)) rank = 1;
+      else if (inLabel) rank = 2;
+      else rank = 3;
+      ranked.push({ opt, rank, i });
+    });
+    ranked.sort((a, b) => a.rank - b.rank || a.i - b.i);
+    return ranked.map((r) => r.opt);
   }, [options, search]);
 
   // Check if an option is selected
