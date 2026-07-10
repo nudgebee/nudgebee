@@ -17,6 +17,7 @@ import DetailsPanel from './DetailsPanel';
 import ActionBar from './ActionBar';
 import CustomDrawer from '@shared/CustomDrawer';
 import Currency from '@shared/format/Currency';
+import Datetime from '@shared/format/Datetime';
 import recommendationApi from '@api1/recommendation';
 import { daysSinceLong, getResourceDisplayName } from './utils';
 import CommandExecutionHistory from '@components/cloudaccount/CommandExecutionHistory';
@@ -55,12 +56,6 @@ const formatDate = (dateStr: string | null) => {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
-const formatDateShort = (dateStr: string | null) => {
-  if (!dateStr) return '—';
-  const d = new Date(dateStr);
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-};
-
 const RESOLUTION_HEADERS = [
   { name: 'Type', width: '20%' },
   { name: 'Reference', width: '25%' },
@@ -70,7 +65,7 @@ const RESOLUTION_HEADERS = [
 ];
 
 /** Inline Resolution History — paginated table that fits the drawer */
-const InlineResolutionHistory = ({ recommendationId }: { recommendationId: string }) => {
+const InlineResolutionHistory = ({ recommendationId, refreshKey }: { recommendationId: string; refreshKey?: number }) => {
   const [resolutions, setResolutions] = useState<any[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -90,25 +85,7 @@ const InlineResolutionHistory = ({ recommendationId }: { recommendationId: strin
         setTotalCount(0);
       })
       .finally(() => setLoading(false));
-  }, [recommendationId, page, rowsPerPage]);
-
-  if (!loading && resolutions.length === 0) {
-    return (
-      <Box
-        sx={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          py: ds.space[3],
-          borderRadius: ds.radius.lg,
-          border: `1px solid ${ds.gray[200]}`,
-          backgroundColor: ds.background[100],
-        }}
-      >
-        <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600] }}>No resolution history found.</Typography>
-      </Box>
-    );
-  }
+  }, [recommendationId, page, rowsPerPage, refreshKey]);
 
   const tableData = resolutions.map((r: any) => {
     const isLink = r.type_reference_id && (r.type_reference_id.startsWith('http') || r.type_reference_id.startsWith('/'));
@@ -154,7 +131,7 @@ const InlineResolutionHistory = ({ recommendationId }: { recommendationId: strin
         ),
       },
       {
-        component: <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>{formatDateShort(r.updated_at)}</Typography>,
+        component: <Datetime value={r.updated_at} />,
       },
     ];
   });
@@ -169,6 +146,8 @@ const InlineResolutionHistory = ({ recommendationId }: { recommendationId: strin
       totalRows={totalCount}
       loading={loading}
       pageNumber={page + 1}
+      showEmptyStateText
+      emptyStateText='No resolution history found.'
     />
   );
 };
@@ -186,9 +165,22 @@ const RecommendationDetailPanel = ({
 }: RecommendationDetailPanelProps) => {
   const [activeTab, setActiveTab] = useState(initialTab);
 
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+  const [prevHistoryRefreshKey, setPrevHistoryRefreshKey] = useState(0);
+  const [showHistory, setShowHistory] = useState(false);
+
+  const refreshHistory = (tab: number = 0) => {
+    if (tab !== 2) return;
+    setShowHistory(true);
+    if (prevHistoryRefreshKey !== historyRefreshKey) {
+      setHistoryRefreshKey(prevHistoryRefreshKey);
+    }
+  };
+
   useEffect(() => {
     if (open) {
       setActiveTab(initialTab);
+      refreshHistory(initialTab);
     }
   }, [open, initialTab]);
 
@@ -296,7 +288,10 @@ const RecommendationDetailPanel = ({
         <Box sx={{ px: ds.space[5], pt: ds.space[2], borderBottom: `1px solid ${ds.gray[200]}` }}>
           <Tabs
             value={activeTab}
-            onChange={(newVal: number) => setActiveTab(newVal)}
+            onChange={(newVal: number) => {
+              setActiveTab(newVal);
+              refreshHistory(newVal);
+            }}
             behavior='filter'
             showSurface={false}
             variant='primary'
@@ -313,7 +308,12 @@ const RecommendationDetailPanel = ({
 
         {/* Tab content — all tabs are always mounted so data fetches start immediately */}
         <Box sx={{ flex: 1, overflow: 'auto', display: activeTab === 0 ? 'block' : 'none' }}>
-          <DetailsPanel fullRecommendation={rec} accounts={accounts} onViewEvidence={() => setActiveTab(1)} />
+          <DetailsPanel
+            fullRecommendation={rec}
+            accounts={accounts}
+            onViewEvidence={() => setActiveTab(1)}
+            onMitigationExecuted={() => setPrevHistoryRefreshKey((k) => k + 1)}
+          />
         </Box>
 
         <Box sx={{ flex: 1, overflow: 'auto', display: activeTab === 1 ? 'block' : 'none' }}>
@@ -396,24 +396,24 @@ const RecommendationDetailPanel = ({
             </Box>
 
             {/* Resolution History — inline lightweight table */}
-            {rec.id && (
+            {rec.id && showHistory && (
               <>
                 <Divider sx={{ my: ds.space[4] }} />
                 <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
                   Resolution History
                 </Typography>
-                <InlineResolutionHistory recommendationId={rec.id} />
+                <InlineResolutionHistory recommendationId={rec.id} refreshKey={historyRefreshKey} />
               </>
             )}
 
             {/* Command Execution History — CLI runs tied to this recommendation */}
-            {rec.id && rec.account_id && (
+            {rec.id && rec.account_id && showHistory && (
               <>
                 <Divider sx={{ my: ds.space[4] }} />
                 <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
                   Command Execution History
                 </Typography>
-                <CommandExecutionHistory accountId={rec.account_id} recommendationId={rec.id} />
+                <CommandExecutionHistory accountId={rec.account_id} recommendationId={rec.id} refreshKey={historyRefreshKey} />
               </>
             )}
           </Box>

@@ -163,10 +163,6 @@ const CloudOptimizeRecommendationsTable = (props: {
   const [loading, setLoading] = useState(false);
   const [loadingTotal, setLoadingTotal] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  // Bumped after a command executes so the per-row "Audit History" tab
-  // (CommandExecutionHistory) re-fetches in real time instead of staying stale
-  // until the row is collapsed and re-expanded.
-  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
   const [nubiQuery, setNubiQuery] = useState('');
   const [nubiAccountId, setNubiAccountId] = useState('');
@@ -854,7 +850,6 @@ const CloudOptimizeRecommendationsTable = (props: {
                         canExecuteCommand={canExecuteCommand}
                         accountId={row?.account_id ?? selectedAccountId}
                         recommendationId={row?.id}
-                        onExecuted={() => setHistoryRefreshKey((k) => k + 1)}
                       />
                     );
                   },
@@ -865,13 +860,7 @@ const CloudOptimizeRecommendationsTable = (props: {
                   text: 'Audit History',
                   componentFn: function (_opt: any, drilldownQuery: any) {
                     const row = drilldownQuery?.recommendation;
-                    return (
-                      <CommandExecutionHistory
-                        accountId={row?.account_id ?? props?.accountId ?? ''}
-                        recommendationId={row?.id ?? ''}
-                        refreshKey={historyRefreshKey}
-                      />
-                    );
+                    return <CommandExecutionHistory accountId={row?.account_id ?? props?.accountId ?? ''} recommendationId={row?.id ?? ''} />;
                   },
                 },
               ],
@@ -990,14 +979,12 @@ function OptimizeMitigation({
   canExecuteCommand = false,
   accountId,
   recommendationId,
-  onExecuted,
 }: {
   drilldownQuery: any;
   sideActions?: MitigationSideAction[];
   canExecuteCommand?: boolean;
   accountId?: string;
   recommendationId?: string;
-  onExecuted?: () => void;
 }) {
   const { alternateOptions, selectedAlternateType, setSelectedAlternateType, effectiveRecommendation } = useEffectiveRecommendation(
     drilldownQuery?.recommendation
@@ -1033,13 +1020,7 @@ function OptimizeMitigation({
           </Box>
         )}
         <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 'var(--ds-space-2)' }}>
-          <ApplyMitigationModal
-            markdowns={markdowns}
-            accountId={accountId}
-            recommendationId={recommendationId}
-            canExecute={canExecuteCommand}
-            onExecuted={onExecuted}
-          />
+          <ApplyMitigationModal markdowns={markdowns} accountId={accountId} recommendationId={recommendationId} canExecute={canExecuteCommand} />
         </Box>
         {markdowns ? (
           <MarkDowns

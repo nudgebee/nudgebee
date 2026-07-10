@@ -34,6 +34,9 @@ interface DetailsPanelProps {
   accounts?: Record<string, { name: string; cloud_provider: string; account_access?: string }>;
   /** Switches the parent panel to the Evidence tab (usage-trend chart/table). */
   onViewEvidence?: () => void;
+  /** Fired after a mitigation command run completes, so the History tab's
+   * CommandExecutionHistory (kept mounted alongside this tab) can refresh. */
+  onMitigationExecuted?: () => void;
 }
 
 const RESOLVED_STATUSES = new Set(['Closed', 'Dismissed', 'Archive']);
@@ -172,7 +175,7 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
   );
 };
 
-const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence }: DetailsPanelProps) => {
+const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, onMitigationExecuted }: DetailsPanelProps) => {
   const [details, setDetails] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
@@ -292,6 +295,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence }
               accountId={rec?.account_id}
               recommendationId={rec?.id}
               canExecute={canExecuteCommand}
+              onExecuted={onMitigationExecuted}
             />
           }
         >
