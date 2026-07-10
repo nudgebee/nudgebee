@@ -181,7 +181,7 @@ for attempt 0..5:
 In `executor_planner.go`, the decision point:
 
 ```
-if len(actions) > 1 && PlannerRewooParallelExecEnabled && isReAct3 {
+if len(actions) > 1 && PlannerParallelExecEnabled && isReAct3 {
     // Pre-flight write detection
     for each action:
         if tool implements ToolRequestInference:
@@ -214,7 +214,7 @@ if len(actions) > 1 && PlannerRewooParallelExecEnabled && isReAct3 {
    - Each action → ActionNode with internal dependencies
    - External dependencies (from previous iterations) filtered out
 
-2. Create semaphore: buffered channel with LLMServerAgentReWooMaxParallel permits
+2. Create semaphore: buffered channel with LLMServerAgentMaxParallel permits
 
 3. Submit ready nodes (zero pending deps) to ExecutePlannerWorkerPool:
    - Acquire semaphore permit
