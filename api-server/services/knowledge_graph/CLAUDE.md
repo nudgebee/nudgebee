@@ -61,7 +61,10 @@ Built in [core/unique_key_builder.go](core/unique_key_builder.go). Same key from
 
 **Node fields:**
 - `properties` (JSONB) — free-form per source
-- `query_attributes` (JSONB) — **per-NodeType extracted subset** for fast SQL filtering. Definitions in [core/types.go:763-971](core/types.go#L763)
+- `query_attributes` (JSONB) — extracted `properties` subset for fast SQL filtering. Driven by the **per-`specific_type` concrete schema** (`core.SpecificTypeSchema`, declared co-located in `sources/<cloud>/*.go`, its `Indexed` fields are hoisted), **unioned** with the per-NodeType `QueryablePropertiesMap` fallback ([core/types.go](core/types.go)) so un-schema'd nodes still work and no filter can regress. Engine: [core/schema_registry.go](core/schema_registry.go).
+- `node_type` — the **ontological** (cloud-agnostic) type, e.g. `ComputeInstance`. Part of the unique key.
+- `specific_type` — the **concrete cloud/native** type, e.g. `EC2Instance`/`GKECluster`/`KubernetesDeployment`. A parallel, queryable column; **not** in the unique key. A source declares it by setting `properties["specific_type"]` (cloud sources via the per-cloud `sources/<cloud>/specific_type.go` table; k8s per-module); `NewNode` lifts it into the column.
+- `ontology_attributes` (JSONB) — the **cross-cloud-normalized field schema** for the node's NodeType (every `ComputeInstance` exposes the same keys: `name/region/type/state/...` regardless of cloud). Populated by the ontology registry ([core/ontology_registry.go](core/ontology_registry.go) engine + `core/ontology_data_<cloud>.go` data + `core/ontology_vocab.go` allowlist), keyed by `specific_type`.
 - `labels`, `language`, `is_active` (tombstone), `source` (which collector emitted)
 
 **Edge dedup constraint:** `(source_node_id, destination_node_id, relationship_type, cloud_account_id, tenant_id)`. Conflicts resolved by source priority — see [flow_sources/edge_priority.go](flow_sources/edge_priority.go).
@@ -132,7 +135,7 @@ V2 declares the **ReAct** planner type (runs the ReAct3 engine). V1 and V2 are *
 
 - **Don't add `CREATE INDEX CONCURRENTLY` to KG migrations.** golang-migrate wraps each migration in a transaction by default — `CREATE INDEX CONCURRENTLY` cannot run inside one. Use plain `CREATE INDEX`, or add `-- migrate:no-transaction` at the top of the file. (See root [CLAUDE.md](../../../CLAUDE.md#database-migrations--rpc-actions).)
 - **Migration timestamps must use current epoch ms** — `python3 -c "import time; print(int(time.time() * 1000))"`. Never hardcode.
-- **`query_attributes` is per-NodeType extraction** — when adding a new NodeType, define which `properties` fields get hoisted into `query_attributes` in [core/types.go](core/types.go), or filtered queries against the new type will be slow/empty.
+- **`query_attributes` is driven by the per-`specific_type` schema** — when adding a new resource type, declare its `core.SpecificTypeSchema` co-located in `sources/<cloud>/<x>.go` (register via `init()`), marking filterable fields `Indexed: true` (they get hoisted) and identity fields `Required`. It's unioned with the per-NodeType `QueryablePropertiesMap` fallback in [core/types.go](core/types.go). A forcing-function test (`sources/<cloud>/*coverage_test.go`) fails if a new `specific_type` has no schema; a consistency test (`test/schema_consistency_test.go`) fails if the schema and the ontology mapping disagree on a property key. `PropertyDef.Name` must equal the exact `properties` key the extractor writes, or the field silently won't populate.
 - **Edge priority matters for conflicts.** If two sources emit the same edge with different properties, the priority order in [flow_sources/edge_priority.go](flow_sources/edge_priority.go) decides who wins. Adding a new flow source means deciding where it slots in.
 - **Flow sources cannot tombstone infra nodes.** `markInactiveNodes` respects `InfraAuthoritativeNodeTypes` — flow-source-only sync runs do not increment sync_version and do not delete infra.
 - **The 1-hour per-tenant lock in the consumer is real** — a stuck or slow build blocks subsequent ones for that tenant for an hour.
@@ -144,7 +147,7 @@ V2 declares the **ReAct** planner type (runs the ReAct3 engine). V1 and V2 are *
 
 | Task | Files in order |
 |---|---|
-| Add a new node type | [core/types.go](core/types.go) (enum + query_attributes) → relevant `sources/*_source.go` → migration if backfill needed |
+| Add a new node type | [core/types.go](core/types.go) (enum + `QueryablePropertiesMap` fallback) → relevant `sources/*_source.go` → declare `core.SpecificTypeSchema` co-located in the source file (drives `query_attributes`) + ontology spec in `core/ontology_data_<cloud>.go` → migration if backfill needed |
 | Add a new source | [sources/interface.go](sources/interface.go) → [sources/registry.go](sources/registry.go) → copy structure of [sources/k8s_source.go](sources/k8s_source.go) |
 | Add a new flow source | [flow_sources/interface.go](flow_sources/interface.go) → [flow_sources/base_flow_source.go](flow_sources/base_flow_source.go) → [flow_sources/edge_priority.go](flow_sources/edge_priority.go) (add to priority list) |
 | Add a cross-account rule | [core/default_relationships.json](core/default_relationships.json) → [core/cross_account_relationships.go](core/cross_account_relationships.go) for matcher behaviour |

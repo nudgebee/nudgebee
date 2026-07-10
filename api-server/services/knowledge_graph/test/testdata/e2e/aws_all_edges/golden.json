@@ -3,6 +3,7 @@
     {
       "unique_key": "aws:test-account-aws-1::RouteTable:main-vpc:rtb-1",
       "node_type": "RouteTable",
+      "specific_type": "RouteTable",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -68,11 +69,13 @@
         "name": "rtb-1",
         "route_table_id": "rtb-1",
         "vpc_id": "vpc-1"
-      }
+      },
+      "ontology_attributes": {}
     },
     {
       "unique_key": "aws:test-account-aws-1:global:ServiceIdentity::admin-role",
       "node_type": "ServiceIdentity",
+      "specific_type": "IAMRole",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -102,11 +105,18 @@
         "service_name": "AWSIAM",
         "subtype": "IAMRole",
         "trust_policy": "{}"
+      },
+      "ontology_attributes": {
+        "arn": "arn:aws:iam::123456789012:role/admin-role",
+        "location": "global",
+        "name": "admin-role",
+        "type": "IAMRole"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:global:ServiceIdentity::app-role",
       "node_type": "ServiceIdentity",
+      "specific_type": "IAMRole",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -137,11 +147,18 @@
         "service_name": "AWSIAM",
         "subtype": "IAMRole",
         "trust_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::123456789012:role/admin-role\"}}],\"Version\":\"2012-10-17\"}"
+      },
+      "ontology_attributes": {
+        "arn": "arn:aws:iam::123456789012:role/app-role",
+        "location": "global",
+        "name": "app-role",
+        "type": "IAMRole"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:BackupPolicy::my-plan",
       "node_type": "BackupPolicy",
+      "specific_type": "BackupPlan",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -171,11 +188,16 @@
       "labels": {},
       "query_attributes": {
         "name": "my-plan"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "my-plan"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:BackupVault::my-vault",
       "node_type": "BackupVault",
+      "specific_type": "BackupVault",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -203,11 +225,16 @@
       "labels": {},
       "query_attributes": {
         "name": "my-vault"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "my-vault"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:ComputeInstance:main-vpc:app-ec2",
       "node_type": "ComputeInstance",
+      "specific_type": "EC2Instance",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -241,13 +268,19 @@
       },
       "query_attributes": {
         "name": "app-ec2",
+        "subnet_id": "subnet-1",
         "subtype": "compute-instance",
         "vpc_id": "vpc-1"
+      },
+      "ontology_attributes": {
+        "name": "app-ec2",
+        "region": "us-east-1"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:ComputeInstancePool::my-nodegroup",
       "node_type": "ComputeInstancePool",
+      "specific_type": "EKSNodeGroup",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -276,11 +309,16 @@
         "name": "my-nodegroup",
         "region": "us-east-1",
         "status": ""
+      },
+      "ontology_attributes": {
+        "name": "my-nodegroup",
+        "region": "us-east-1"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:Database:main-vpc:mydb",
       "node_type": "Database",
+      "specific_type": "RDSInstance",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -290,6 +328,7 @@
         "arn": "",
         "aws_account_number": "",
         "cloud_provider": "AWS",
+        "db_instance_identifier": "mydb",
         "engine": "postgres",
         "external_resource_id": "rds-a",
         "is_active": true,
@@ -314,11 +353,17 @@
         "name": "mydb",
         "subtype": "db",
         "vpc_id": "vpc-1"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "mydb",
+        "type": "postgres"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:EncryptionKey::app-key",
       "node_type": "EncryptionKey",
+      "specific_type": "KMSKey",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -345,11 +390,16 @@
       "labels": {},
       "query_attributes": {
         "name": "app-key"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "app-key"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:LoadBalancer:main-vpc:app-alb",
       "node_type": "LoadBalancer",
+      "specific_type": "ALBLoadBalancer",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -384,15 +434,23 @@
         "elbv2.k8s.aws/cluster": "my-eks"
       },
       "query_attributes": {
+        "load_balancer_type": "application",
         "name": "app-alb",
         "scheme": "internet-facing",
         "type": "application_loadbalancer",
         "vpc_id": "vpc-1"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "app-alb",
+        "scheme": "internet-facing",
+        "type": "application"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:LogAggregator::/aws/rds/instance/mydb/postgresql",
       "node_type": "LogAggregator",
+      "specific_type": "CloudWatchLogGroup",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -419,11 +477,16 @@
       "labels": {},
       "query_attributes": {
         "name": "/aws/rds/instance/mydb/postgresql"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "/aws/rds/instance/mydb/postgresql"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:ManagedCluster:ECS:my-ecs",
       "node_type": "ManagedCluster",
+      "specific_type": "ECSCluster",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -453,11 +516,16 @@
         "region": "us-east-1",
         "status": "",
         "subtype": "cluster"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "my-ecs"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:ManagedCluster:EKS:my-eks",
       "node_type": "ManagedCluster",
+      "specific_type": "EKSCluster",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -487,11 +555,16 @@
         "region": "us-east-1",
         "status": "",
         "subtype": "cluster"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "my-eks"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:MessageQueue::dlq",
       "node_type": "MessageQueue",
+      "specific_type": "SQSQueue",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -521,11 +594,17 @@
       "query_attributes": {
         "name": "dlq",
         "queue_type": "sqs"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "dlq",
+        "type": "SQS"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:MessageQueue::main-queue",
       "node_type": "MessageQueue",
+      "specific_type": "SQSQueue",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -556,11 +635,17 @@
       "query_attributes": {
         "name": "main-queue",
         "queue_type": "sqs"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "main-queue",
+        "type": "SQS"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:NetworkGateway:main-vpc:app-igw",
       "node_type": "NetworkGateway",
+      "specific_type": "InternetGateway",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -590,11 +675,17 @@
       "query_attributes": {
         "name": "app-igw",
         "vpc_id": "vpc-1"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "app-igw",
+        "vpc": "vpc-1"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:NetworkGateway:main-vpc:app-nat",
       "node_type": "NetworkGateway",
+      "specific_type": "NATGateway",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -626,11 +717,17 @@
       "query_attributes": {
         "name": "app-nat",
         "vpc_id": "vpc-1"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "app-nat",
+        "vpc": "vpc-1"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:PrivateEndpoint:main-vpc:app-vpce",
       "node_type": "PrivateEndpoint",
+      "specific_type": "VPCEndpoint",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -663,11 +760,17 @@
       "labels": {},
       "query_attributes": {
         "name": "app-vpce"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "app-vpce",
+        "vpc": "vpc-1"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:PublicIP::app-eip",
       "node_type": "PublicIP",
+      "specific_type": "ElasticIP",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -697,11 +800,16 @@
       "labels": {},
       "query_attributes": {
         "name": "app-eip"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "app-eip"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:SecurityGroup:main-vpc:app-sg",
       "node_type": "SecurityGroup",
+      "specific_type": "EC2SecurityGroup",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -731,11 +839,17 @@
       "query_attributes": {
         "name": "app-sg",
         "vpc_id": "vpc-1"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "app-sg",
+        "vpc": "vpc-1"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:ServerlessFunction::app-func",
       "node_type": "ServerlessFunction",
+      "specific_type": "LambdaFunction",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -765,11 +879,17 @@
       "query_attributes": {
         "name": "app-func",
         "runtime": "python3.12"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "app-func",
+        "runtime": "python3.12"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:Storage::app-bucket",
       "node_type": "Storage",
+      "specific_type": "S3Bucket",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -805,11 +925,16 @@
       "query_attributes": {
         "name": "app-bucket",
         "subtype": "storage"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "app-bucket"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:Subnet:main-vpc:main-subnet",
       "node_type": "Subnet",
+      "specific_type": "EC2Subnet",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -841,11 +966,17 @@
         "name": "main-subnet",
         "subnet_id": "subnet-1",
         "vpc_id": "vpc-1"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "main-subnet",
+        "vpc": "vpc-1"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:Topic::app-topic",
       "node_type": "Topic",
+      "specific_type": "SNSTopic",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -873,11 +1004,17 @@
       "labels": {},
       "query_attributes": {
         "name": "app-topic"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "app-topic",
+        "type": "SNS"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:VPC::app-rtb",
       "node_type": "VPC",
+      "specific_type": "EC2Vpc",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -905,11 +1042,16 @@
       "labels": {},
       "query_attributes": {
         "name": "app-rtb"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "app-rtb"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:VPC::main-vpc",
       "node_type": "VPC",
+      "specific_type": "EC2Vpc",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -937,11 +1079,16 @@
       "labels": {},
       "query_attributes": {
         "name": "main-vpc"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "main-vpc"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:Workload:ECS:svc1",
       "node_type": "Workload",
+      "specific_type": "ECSService",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -967,6 +1114,9 @@
       },
       "labels": {},
       "query_attributes": {
+        "name": "svc1"
+      },
+      "ontology_attributes": {
         "name": "svc1"
       }
     }

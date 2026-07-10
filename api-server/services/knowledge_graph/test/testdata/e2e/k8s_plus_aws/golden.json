@@ -3,6 +3,7 @@
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:ComputeInstance::worker-ec2",
       "node_type": "ComputeInstance",
+      "specific_type": "EC2Instance",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -30,11 +31,16 @@
       "query_attributes": {
         "name": "worker-ec2",
         "subtype": "compute-instance"
+      },
+      "ontology_attributes": {
+        "name": "worker-ec2",
+        "region": "us-east-1"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::Node::k8s-worker-1",
       "node_type": "Node",
+      "specific_type": "KubernetesNode",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -60,7 +66,19 @@
       "labels": {},
       "query_attributes": {
         "cluster": "",
-        "name": "k8s-worker-1"
+        "cpu_capacity": 0,
+        "memory_capacity": "0",
+        "name": "k8s-worker-1",
+        "node_flavor": "",
+        "node_region": "us-east-1",
+        "node_type": "worker",
+        "node_zone": ""
+      },
+      "ontology_attributes": {
+        "capacity_cpu": 0,
+        "capacity_memory": "0",
+        "name": "k8s-worker-1",
+        "region": "us-east-1"
       }
     }
   ],

@@ -3,6 +3,7 @@
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:InfraStack::my-stack",
       "node_type": "InfraStack",
+      "specific_type": "CloudFormationStack",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -29,11 +30,16 @@
       "labels": {},
       "query_attributes": {
         "name": "my-stack"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "my-stack"
       }
     },
     {
       "unique_key": "aws:test-account-aws-1:us-east-1:Storage::app-bucket",
       "node_type": "Storage",
+      "specific_type": "S3Bucket",
       "cloud_account_id": "test-account-aws-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -68,6 +74,10 @@
       "query_attributes": {
         "name": "app-bucket",
         "subtype": "storage"
+      },
+      "ontology_attributes": {
+        "location": "us-east-1",
+        "name": "app-bucket"
       }
     }
   ],

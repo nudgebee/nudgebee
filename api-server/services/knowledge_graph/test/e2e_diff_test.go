@@ -35,15 +35,17 @@ var updateGolden = flag.Bool("update", false, "update E2E golden files instead o
 
 // normNode is the semantic (volatile-free) projection of a core.DbNode.
 type normNode struct {
-	UniqueKey       string                 `json:"unique_key"`
-	NodeType        string                 `json:"node_type"`
-	CloudAccountID  string                 `json:"cloud_account_id"`
-	TenantID        string                 `json:"tenant_id"`
-	Level           string                 `json:"level"`
-	Source          string                 `json:"source"`
-	Properties      map[string]interface{} `json:"properties"`
-	Labels          map[string]string      `json:"labels"`
-	QueryAttributes map[string]interface{} `json:"query_attributes"`
+	UniqueKey          string                 `json:"unique_key"`
+	NodeType           string                 `json:"node_type"`
+	SpecificType       string                 `json:"specific_type"`
+	CloudAccountID     string                 `json:"cloud_account_id"`
+	TenantID           string                 `json:"tenant_id"`
+	Level              string                 `json:"level"`
+	Source             string                 `json:"source"`
+	Properties         map[string]interface{} `json:"properties"`
+	Labels             map[string]string      `json:"labels"`
+	QueryAttributes    map[string]interface{} `json:"query_attributes"`
+	OntologyAttributes map[string]interface{} `json:"ontology_attributes"`
 }
 
 // normEdge is the semantic projection of a core.DbEdge, with endpoints
@@ -78,15 +80,17 @@ func normalizeGraph(nodes []*core.DbNode, edges []*core.DbEdge) normGraph {
 	nn := make([]normNode, 0, len(nodes))
 	for _, n := range nodes {
 		nn = append(nn, normNode{
-			UniqueKey:       n.UniqueKey,
-			NodeType:        string(n.NodeType),
-			CloudAccountID:  n.CloudAccountID,
-			TenantID:        n.TenantID,
-			Level:           n.Level,
-			Source:          n.Source,
-			Properties:      n.Properties,
-			Labels:          n.Labels,
-			QueryAttributes: n.QueryAttributes,
+			UniqueKey:          n.UniqueKey,
+			NodeType:           string(n.NodeType),
+			SpecificType:       n.SpecificType,
+			CloudAccountID:     n.CloudAccountID,
+			TenantID:           n.TenantID,
+			Level:              n.Level,
+			Source:             n.Source,
+			Properties:         n.Properties,
+			Labels:             n.Labels,
+			QueryAttributes:    n.QueryAttributes,
+			OntologyAttributes: n.OntologyAttributes,
 		})
 	}
 

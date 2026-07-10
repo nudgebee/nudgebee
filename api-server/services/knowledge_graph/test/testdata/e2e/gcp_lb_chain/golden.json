@@ -3,6 +3,7 @@
     {
       "unique_key": "gcp:test-account-gcp-1::BackendPool:my-backend",
       "node_type": "BackendPool",
+      "specific_type": "BackendPool",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -32,11 +33,13 @@
         "name": "my-backend",
         "port": 0,
         "protocol": ""
-      }
+      },
+      "ontology_attributes": {}
     },
     {
       "unique_key": "gcp:test-account-gcp-1:global:CloudResource:health-check:my-hc",
       "node_type": "CloudResource",
+      "specific_type": "CloudResource",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -59,11 +62,13 @@
       "labels": {},
       "query_attributes": {
         "name": "my-hc"
-      }
+      },
+      "ontology_attributes": {}
     },
     {
       "unique_key": "gcp:test-account-gcp-1:global:RouteTable:url-map:my-urlmap",
       "node_type": "RouteTable",
+      "specific_type": "RouteTable",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -83,11 +88,13 @@
       "labels": {},
       "query_attributes": {
         "name": "my-urlmap"
-      }
+      },
+      "ontology_attributes": {}
     },
     {
       "unique_key": "gcp:test-account-gcp-1:global:VPC:my-vpc:my-vpc",
       "node_type": "VPC",
+      "specific_type": "GCPVpc",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -113,6 +120,10 @@
       },
       "labels": {},
       "query_attributes": {
+        "name": "my-vpc"
+      },
+      "ontology_attributes": {
+        "location": "global",
         "name": "my-vpc"
       }
     }

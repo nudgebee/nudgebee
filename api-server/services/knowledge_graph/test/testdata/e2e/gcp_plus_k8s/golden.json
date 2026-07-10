@@ -3,6 +3,7 @@
     {
       "unique_key": "gcp:test-account-gcp-1:global:ServiceIdentity:GCPServiceAccount:sa@proj-1.iam.gserviceaccount.com",
       "node_type": "ServiceIdentity",
+      "specific_type": "GCPServiceAccount",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -29,11 +30,17 @@
         "name": "sa@proj-1.iam.gserviceaccount.com",
         "service_name": "GCPIAM",
         "subtype": "GCPServiceAccount"
+      },
+      "ontology_attributes": {
+        "location": "global",
+        "name": "sa@proj-1.iam.gserviceaccount.com",
+        "type": "GCPServiceAccount"
       }
     },
     {
       "unique_key": "k8s:test-account-k8s-1::K8sServiceAccount:default:my-ksa",
       "node_type": "K8sServiceAccount",
+      "specific_type": "K8sServiceAccount",
       "cloud_account_id": "test-account-k8s-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -48,7 +55,8 @@
       "query_attributes": {
         "name": "my-ksa",
         "namespace": "default"
-      }
+      },
+      "ontology_attributes": {}
     }
   ],
   "edges": [

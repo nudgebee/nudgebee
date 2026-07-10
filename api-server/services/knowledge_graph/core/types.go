@@ -287,37 +287,45 @@ type KnowledgeGraph struct {
 }
 
 type KgNode struct {
-	ID             string                 `json:"id"`
-	NodeType       NodeType               `json:"node_type"`
-	Category       NodeCategory           `json:"category"` // Infrastructure or NonInfrastructure
-	UniqueKey      string                 `json:"unique_key"`
-	CloudAccountID string                 `json:"cloud_account_id"`
-	TenantID       string                 `json:"tenant_id"`
-	Level          string                 `json:"level"`  // Tenant or Account
-	Source         string                 `json:"source"` // trace, aws, k8s
-	CreatedAt      time.Time              `json:"created_at"`
-	UpdatedAt      time.Time              `json:"updated_at"`
-	Properties     map[string]interface{} `json:"properties"`
-	Labels         map[string]string      `json:"labels"`
-	Language       string                 `json:"language,omitempty"` // Programming language used (e.g., Golang, Python)
-	LastUpdated    time.Time              `json:"LastUpdated"`
-	LogoID         string                 `json:"logo_id,omitempty"` // Icon identifier resolved by the backend for UI rendering
+	ID                 string                 `json:"id"`
+	NodeType           NodeType               `json:"node_type"`
+	SpecificType       string                 `json:"specific_type,omitempty"`       // concrete cloud/native type (e.g. EC2Instance)
+	Category           NodeCategory           `json:"category"`                      // Infrastructure or NonInfrastructure
+	OntologyAttributes map[string]interface{} `json:"ontology_attributes,omitempty"` // cross-cloud-normalized field schema for this NodeType
+	UniqueKey          string                 `json:"unique_key"`
+	CloudAccountID     string                 `json:"cloud_account_id"`
+	TenantID           string                 `json:"tenant_id"`
+	Level              string                 `json:"level"`  // Tenant or Account
+	Source             string                 `json:"source"` // trace, aws, k8s
+	CreatedAt          time.Time              `json:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
+	Properties         map[string]interface{} `json:"properties"`
+	Labels             map[string]string      `json:"labels"`
+	Language           string                 `json:"language,omitempty"` // Programming language used (e.g., Golang, Python)
+	LastUpdated        time.Time              `json:"LastUpdated"`
+	LogoID             string                 `json:"logo_id,omitempty"` // Icon identifier resolved by the backend for UI rendering
 }
 
 // Node represents a node in the knowledge graph
 type DbNode struct {
 	ID              string                 `json:"id"`
 	NodeType        NodeType               `json:"node_type"`
+	SpecificType    string                 `json:"specific_type"` // concrete cloud/native type (e.g. EC2Instance); NodeType is the ontology
 	UniqueKey       string                 `json:"unique_key"`
 	Properties      map[string]interface{} `json:"properties"`
 	Labels          map[string]string      `json:"labels"`
 	QueryAttributes map[string]interface{} `json:"query_attributes"`
-	CloudAccountID  string                 `json:"cloud_account_id,omitempty"`
-	TenantID        string                 `json:"tenant_id"`
-	Level           string                 `json:"level"`  // Tenant or Account
-	Source          string                 `json:"source"` // trace, aws, k8s
-	CreatedAt       time.Time              `json:"created_at"`
-	UpdatedAt       time.Time              `json:"updated_at"`
+	// OntologyAttributes holds the cross-cloud-normalized field schema for this
+	// node's NodeType (e.g. every ComputeInstance exposes the same keys:
+	// name/region/type/state/public_ip_address/private_ip_address/created_at),
+	// mapped from source-specific properties by the ontology registry.
+	OntologyAttributes map[string]interface{} `json:"ontology_attributes"`
+	CloudAccountID     string                 `json:"cloud_account_id,omitempty"`
+	TenantID           string                 `json:"tenant_id"`
+	Level              string                 `json:"level"`  // Tenant or Account
+	Source             string                 `json:"source"` // trace, aws, k8s
+	CreatedAt          time.Time              `json:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
 }
 
 type KgEdge struct {
@@ -378,17 +386,18 @@ var DefaultBehavioralEdgeTypes = map[RelationshipType]bool{
 
 // KgNodeSlim is a lightweight node for graph traversal API responses
 type KgNodeSlim struct {
-	ID        string   `json:"id"`
-	Kind      NodeType `json:"kind"` // maps to node_type
-	Name      string   `json:"name"` // extracted from properties["name"]
-	Source    string   `json:"source"`
-	AccountID string   `json:"account_id"` // maps to cloud_account_id
-	TenantID  string   `json:"tenant_id"`
-	UniqueKey string   `json:"unique_key"`
-	LogoID    string   `json:"logo_id,omitempty"`  // Icon identifier resolved by the backend for UI rendering
-	Role      string   `json:"role,omitempty"`     // Datastore facet: "database"/"cache"/"messagequeue" for in-cluster datastores
-	Engine    string   `json:"engine,omitempty"`   // Canonical engine for datastore nodes (e.g. "postgres", "redis")
-	Location  string   `json:"location,omitempty"` // Region/zone/AZ for cloud resources — disambiguates identically-named nodes (e.g. many "default" subnets) in the UI
+	ID           string   `json:"id"`
+	Kind         NodeType `json:"kind"`                    // maps to node_type (ontology)
+	SpecificType string   `json:"specific_type,omitempty"` // concrete cloud/native type (e.g. EC2Instance)
+	Name         string   `json:"name"`                    // extracted from properties["name"]
+	Source       string   `json:"source"`
+	AccountID    string   `json:"account_id"` // maps to cloud_account_id
+	TenantID     string   `json:"tenant_id"`
+	UniqueKey    string   `json:"unique_key"`
+	LogoID       string   `json:"logo_id,omitempty"`  // Icon identifier resolved by the backend for UI rendering
+	Role         string   `json:"role,omitempty"`     // Datastore facet: "database"/"cache"/"messagequeue" for in-cluster datastores
+	Engine       string   `json:"engine,omitempty"`   // Canonical engine for datastore nodes (e.g. "postgres", "redis")
+	Location     string   `json:"location,omitempty"` // Region/zone/AZ for cloud resources — disambiguates identically-named nodes (e.g. many "default" subnets) in the UI
 }
 
 // KgEdgeSlim is a lightweight edge for graph traversal API responses
@@ -615,12 +624,15 @@ type QueryResponse struct {
 
 // GraphFilters represents filters for querying the knowledge graph
 type GraphFilters struct {
-	AccountIDs    []string          `json:"account_ids,omitempty"`    // Filter by cloud account IDs (empty = all accounts)
-	NodeTypes     []NodeType        `json:"node_types,omitempty"`     // Filter by node types (empty = all types)
-	Labels        map[string]string `json:"labels,omitempty"`         // Filter by label key-value pairs (AND logic)
-	LabelKeys     []string          `json:"label_keys,omitempty"`     // Filter by label keys that must exist (regardless of value)
-	Attributes    map[string]string `json:"attributes,omitempty"`     // Filter by query_attributes key-value pairs (AND logic)
-	AttributeKeys []string          `json:"attribute_keys,omitempty"` // Filter by query_attributes keys that must exist (regardless of value)
+	AccountIDs            []string          `json:"account_ids,omitempty"`             // Filter by cloud account IDs (empty = all accounts)
+	NodeTypes             []NodeType        `json:"node_types,omitempty"`              // Filter by ontological node types (empty = all types)
+	SpecificTypes         []string          `json:"specific_types,omitempty"`          // Filter by concrete cloud/native types (e.g. EC2Instance)
+	Labels                map[string]string `json:"labels,omitempty"`                  // Filter by label key-value pairs (AND logic)
+	LabelKeys             []string          `json:"label_keys,omitempty"`              // Filter by label keys that must exist (regardless of value)
+	Attributes            map[string]string `json:"attributes,omitempty"`              // Filter by query_attributes key-value pairs (AND logic)
+	AttributeKeys         []string          `json:"attribute_keys,omitempty"`          // Filter by query_attributes keys that must exist (regardless of value)
+	OntologyAttributes    map[string]string `json:"ontology_attributes,omitempty"`     // Filter by normalized ontology_attributes key-value pairs (AND logic)
+	OntologyAttributeKeys []string          `json:"ontology_attribute_keys,omitempty"` // Filter by ontology_attributes keys that must exist (regardless of value)
 }
 
 // APMGraphResponse represents the combined response from the graph API
@@ -1056,12 +1068,27 @@ func GetQueryableProperties(nodeType NodeType) []string {
 	return []string{"name", "environment"}
 }
 
-// ExtractQueryAttributes extracts queryable properties from a properties map based on node type
-func ExtractQueryAttributes(nodeType NodeType, properties map[string]interface{}) map[string]interface{} {
-	queryableProps := GetQueryableProperties(nodeType)
-	queryAttributes := make(map[string]interface{})
+// ExtractQueryAttributes extracts queryable properties from a properties map.
+//
+// The per-NodeType QueryablePropertiesMap is the safety-net; the per-specific_type
+// concrete schema (schema_registry.go) drives additional Indexed fields
+// when one is registered for specificType. The two are UNIONed so no existing
+// filter can regress and un-schema'd / synthesized / defaulted nodes (which have
+// no registered schema — e.g. in core-only tests that don't import the source
+// packages) still get their query_attributes from the map.
+func ExtractQueryAttributes(nodeType NodeType, specificType string, properties map[string]interface{}) map[string]interface{} {
+	keySet := make(map[string]struct{})
+	for _, k := range GetQueryableProperties(nodeType) {
+		keySet[k] = struct{}{}
+	}
+	if schema, ok := LookupSpecificTypeSchema(specificType); ok {
+		for _, k := range schema.IndexedFields() {
+			keySet[k] = struct{}{}
+		}
+	}
 
-	for _, propKey := range queryableProps {
+	queryAttributes := make(map[string]interface{})
+	for propKey := range keySet {
 		if value, ok := properties[propKey]; ok {
 			queryAttributes[propKey] = value
 		}
@@ -1091,18 +1118,20 @@ type SearchNodesParams struct {
 	// ResourceID matches a node by the cloud_resourses row id it was built from
 	// (persisted on every node as the nb_resource_id property). An exact identity
 	// filter, unlike Name — robust to duplicate resource names.
-	ResourceID string            `json:"resource_id,omitempty"`
-	NodeTypes  []NodeType        `json:"node_types,omitempty"`
-	Source     string            `json:"source,omitempty"`
-	Labels     map[string]string `json:"labels,omitempty"`
-	AccountIDs []string          `json:"account_ids,omitempty"`
-	Limit      int               `json:"limit,omitempty"` // default 20, max 100
+	ResourceID    string            `json:"resource_id,omitempty"`
+	NodeTypes     []NodeType        `json:"node_types,omitempty"`
+	SpecificTypes []string          `json:"specific_types,omitempty"` // Filter by concrete cloud/native types (e.g. EC2Instance)
+	Source        string            `json:"source,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	AccountIDs    []string          `json:"account_ids,omitempty"`
+	Limit         int               `json:"limit,omitempty"` // default 20, max 100
 }
 
 // SearchNodeResult is a single result from kg_list_nodes.
 type SearchNodeResult struct {
 	ID             string                 `json:"id"`
 	NodeType       NodeType               `json:"node_type"`
+	SpecificType   string                 `json:"specific_type,omitempty"`
 	Name           string                 `json:"name"`
 	Namespace      string                 `json:"namespace,omitempty"`
 	Cluster        string                 `json:"cluster,omitempty"`
@@ -1136,8 +1165,9 @@ type TraverseParams struct {
 	Direction         TraverseDirection `json:"direction"`
 	MaxDepth          int               `json:"max_depth,omitempty"`          // 1-3, default 1
 	RelationshipTypes []string          `json:"relationship_types,omitempty"` // empty = all
-	NodeTypes         []NodeType        `json:"node_types,omitempty"`         // filter neighbor types
-	ExcludeNodeTypes  []NodeType        `json:"exclude_node_types,omitempty"` // exclude specific types
+	NodeTypes         []NodeType        `json:"node_types,omitempty"`         // filter neighbor ontological types
+	SpecificTypes     []string          `json:"specific_types,omitempty"`     // filter neighbor concrete types (e.g. EC2Instance)
+	ExcludeNodeTypes  []NodeType        `json:"exclude_node_types,omitempty"` // exclude specific ontological types
 	MaxNodes          int               `json:"max_nodes,omitempty"`          // default 500, max 500
 
 	// InducedSubgraph, when true, returns every edge whose endpoints both lie

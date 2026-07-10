@@ -3,6 +3,7 @@
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:AIService:my-vertex-endpoint:my-vertex-endpoint",
       "node_type": "AIService",
+      "specific_type": "VertexAI",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -30,11 +31,16 @@
       "query_attributes": {
         "name": "my-vertex-endpoint",
         "region": "us-central1"
+      },
+      "ontology_attributes": {
+        "location": "us-central1",
+        "name": "my-vertex-endpoint"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:my-project:gke-my-cluster-default-pool-abc12345",
       "node_type": "ComputeInstance",
+      "specific_type": "GCEInstance",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -81,11 +87,18 @@
         "subtype": "ComputeEngine",
         "vpc_id": "default",
         "zone": "projects/my-project/zones/us-central1-a"
+      },
+      "ontology_attributes": {
+        "name": "my-project/zones/us-central1-a/instances/gke-my-cluster-default-pool-abc12345",
+        "private_ip_address": "10.128.0.5",
+        "region": "us-central1",
+        "state": "active"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:my-project:web-server-1",
       "node_type": "ComputeInstance",
+      "specific_type": "GCEInstance",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -146,11 +159,20 @@
         "subtype": "ComputeEngine",
         "vpc_id": "default",
         "zone": "projects/my-project/zones/us-central1-a"
+      },
+      "ontology_attributes": {
+        "name": "my-project/zones/us-central1-a/instances/web-server-1",
+        "private_ip_address": "10.128.0.2",
+        "public_ip_address": "34.123.45.67",
+        "region": "us-central1",
+        "state": "active",
+        "type": "e2-medium"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:my-project:web-server-2",
       "node_type": "ComputeInstance",
+      "specific_type": "GCEInstance",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -178,11 +200,17 @@
       "query_attributes": {
         "name": "my-project/web-server-2",
         "subtype": "ComputeEngine"
+      },
+      "ontology_attributes": {
+        "name": "my-project/web-server-2",
+        "region": "us-central1",
+        "state": "active"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:Database:my-sql-cost:my-sql-cost",
       "node_type": "Database",
+      "specific_type": "CloudSQLInstance",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -210,11 +238,17 @@
       "query_attributes": {
         "name": "my-sql-cost",
         "subtype": "CloudSQL"
+      },
+      "ontology_attributes": {
+        "encrypted": true,
+        "location": "us-central1",
+        "name": "my-sql-cost"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:Database:my-sql-instance:my-sql-instance",
       "node_type": "Database",
+      "specific_type": "CloudSQLInstance",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -266,11 +300,19 @@
         "private_ip": "10.0.0.5",
         "subtype": "CloudSQL",
         "vpc_id": "default"
+      },
+      "ontology_attributes": {
+        "encrypted": true,
+        "endpoint": "my-project:us-central1:my-sql-instance",
+        "location": "us-central1",
+        "name": "my-sql-instance",
+        "type": "POSTGRES_15"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:LogAggregator:my-log-sink:my-log-sink",
       "node_type": "LogAggregator",
+      "specific_type": "CloudLogging",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -297,11 +339,16 @@
       "labels": {},
       "query_attributes": {
         "name": "my-log-sink"
+      },
+      "ontology_attributes": {
+        "location": "us-central1",
+        "name": "my-log-sink"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:ManagedCluster:my-cluster-cost:my-cluster-cost",
       "node_type": "ManagedCluster",
+      "specific_type": "GKECluster",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -331,11 +378,17 @@
         "region": "us-central1",
         "status": "active",
         "subtype": "GKE"
+      },
+      "ontology_attributes": {
+        "location": "us-central1",
+        "name": "my-cluster-cost",
+        "state": "active"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:ManagedCluster:my-cluster:my-cluster",
       "node_type": "ManagedCluster",
+      "specific_type": "GKECluster",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -383,11 +436,19 @@
         "subnet_id": "default-subnet",
         "subtype": "GKE",
         "vpc_id": "default"
+      },
+      "ontology_attributes": {
+        "endpoint": "35.192.0.1",
+        "location": "us-central1",
+        "name": "my-cluster",
+        "state": "active",
+        "version": "1.28.3-gke.1203000"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:MonitoringService:my-monitoring:my-monitoring",
       "node_type": "MonitoringService",
+      "specific_type": "CloudMonitoring",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -414,11 +475,17 @@
       "labels": {},
       "query_attributes": {
         "name": "my-monitoring"
+      },
+      "ontology_attributes": {
+        "location": "us-central1",
+        "name": "my-monitoring",
+        "type": "CloudMonitoring"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:Storage:my-bucket:my-bucket",
       "node_type": "Storage",
+      "specific_type": "GCSBucket",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -447,11 +514,18 @@
       "query_attributes": {
         "name": "my-bucket",
         "subtype": "CloudStorage"
+      },
+      "ontology_attributes": {
+        "encrypted": true,
+        "location": "us-central1",
+        "name": "my-bucket",
+        "type": "CloudStorage"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:Subnet:default-subnet:default-subnet",
       "node_type": "Subnet",
+      "specific_type": "GCPSubnet",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -478,11 +552,16 @@
       "labels": {},
       "query_attributes": {
         "name": "default-subnet"
+      },
+      "ontology_attributes": {
+        "location": "us-central1",
+        "name": "default-subnet"
       }
     },
     {
       "unique_key": "gcp:test-account-gcp-1:us-central1:VPC:default:default",
       "node_type": "VPC",
+      "specific_type": "GCPVpc",
       "cloud_account_id": "test-account-gcp-1",
       "tenant_id": "test-tenant-1",
       "level": "",
@@ -508,6 +587,10 @@
       },
       "labels": {},
       "query_attributes": {
+        "name": "default"
+      },
+      "ontology_attributes": {
+        "location": "us-central1",
         "name": "default"
       }
     }
