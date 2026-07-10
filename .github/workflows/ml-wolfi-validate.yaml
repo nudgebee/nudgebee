@@ -42,14 +42,8 @@ jobs:
           # `imports` = the native/ML libs each consumer actually uses. Importing
           # them directly exercises the wheels' eager dlopens without tripping the
           # app's own env-var/config guards (which would fail on any base).
-          - name: ml-k8s-server
-            context: ml-k8s-server
-            imports: "import numpy, pandas, sklearn, psycopg2, tensorflow; print('ML_IMPORTS_OK')"
-          - name: rag-server
-            context: llm/rag-server
-            # magic.from_buffer exercises libmagic (ctypes dlopen — the classic
-            # Wolfi gap that ldd can't see because it's loaded by name at runtime).
-            imports: "import numpy, psycopg2, torch, sentence_transformers, onnxruntime, fitz, unstructured; import magic; magic.from_buffer(b'%PDF-1.4 test'); print('ML_IMPORTS_OK')"
+          - { name: ml-k8s-server, context: ml-k8s-server,  smoke: .github/scripts/wolfi-smoke-ml-k8s-server.py }
+          - { name: rag-server,    context: llm/rag-server, smoke: .github/scripts/wolfi-smoke-rag-server.py }
     steps:
       - name: Reclaim disk space
         run: |
@@ -81,8 +75,10 @@ jobs:
       # optional GPU/MPI/GUI libs) so it's informational only.
       - name: Import native ML libs (real runtime dlopens — GATE)
         run: |
-          docker run --rm --entrypoint sh consumer:test -c \
-            "conda run --no-capture-output -n myenv python -c '${{ matrix.imports }}'"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/${{ matrix.smoke }}:/tmp/wolfi-smoke.py:ro" \
+            --entrypoint sh consumer:test -c \
+            "conda run --no-capture-output -n myenv python /tmp/wolfi-smoke.py"
 
       - name: ldd audit (informational — filters wheel-bundled + optional libs)
         continue-on-error: true
