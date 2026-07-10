@@ -17,6 +17,13 @@ func TestIsSearchNoMatch(t *testing.T) {
 		"./bin/rg 'x' .":                   true, // relative path to binary
 		"FOO=bar grep x file":              true, // leading env-var assignment
 		"go build ./... | grep error":      true, // last stage is grep
+		// Quoted patterns containing shell-metachar lookalikes must NOT shatter the
+		// stage — these are common agent ops (conflict-marker / arrow-fn searches)
+		// that legitimately exit 1 on no match.
+		`grep -rn "<<<<<<< HEAD" .`:       true, // conflict markers, no pipe
+		`grep -n "<<<<<<<" a.jsx b.tsx`:   true, // conflict markers, multiple files
+		`git show abc file | grep "=> {"`: true, // last stage grep, arrow fn in pattern
+		`grep foo bar > out.txt`:          true, // redirect target must not become the stage
 	}
 	for cmd, want := range cases {
 		if got := isSearchNoMatch(cmd); got != want {
