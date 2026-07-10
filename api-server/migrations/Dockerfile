@@ -4,7 +4,11 @@
 # otel, go-jose. trivy's image scan happened to miss them on the old ubuntu
 # base, but they were always present. Building from source with a current Go
 # toolchain and freshened module deps produces a clean, static binary.
-FROM golang:1.26.4-alpine AS migrate-build
+FROM golang:1.26.5-alpine AS migrate-build
+# Use the builder image's bundled Go toolchain, never an auto-downloaded one, so
+# the source-built migrate binary is compiled with the base's Go (1.26.5) and
+# picks up stdlib fixes like CVE-2026-42505 instead of a stale toolchain.
+ENV GOTOOLCHAIN=local
 RUN apk add --no-cache git
 WORKDIR /build
 ARG GOLANG_MIGRATE_VERSION=v4.19.1
