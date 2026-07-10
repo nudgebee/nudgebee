@@ -141,3 +141,13 @@ jobs:
             exit 1
           fi
           echo "GATE=${GATE}; fixable C/H/M total=${FIXABLE_TOTAL} (report-only)"
+
+      # Export the raw per-CVE JSON so reports can be generated from CI runs
+      # (parallel, reliable) instead of scanning large images locally.
+      - name: Upload scan JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-${{ matrix.image }}
+          path: result.json
+          retention-days: 14
