@@ -302,7 +302,11 @@ const Charts = ({
   const noDataPlugin = {
     id: 'noDataPlugin',
     afterDraw: function (chart) {
-      if (chart.data.datasets[0]?.data.length < 1) {
+      // Show the empty-state only when NO series has any points. Checking datasets[0]
+      // alone drew "No data" on top of other populated lines when the first series was
+      // empty (e.g. CPU Usage absent while Total/Request/Limit still render).
+      const hasAnyPoints = chart.data.datasets.some((d) => d?.data?.length > 0);
+      if (!hasAnyPoints) {
         let ctx = chart.ctx;
         let width = chart.width;
         let height = chart.height;
