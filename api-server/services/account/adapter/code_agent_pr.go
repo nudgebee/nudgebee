@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"nudgebee/services/common"
@@ -19,6 +20,12 @@ import (
 // (rightsizing, security-fix, alert-threshold) differs only in the prompt it
 // builds; the goroutine wrapping, panic recovery, LLM dispatch, PR extraction,
 // and resolution status / lifecycle bookkeeping are identical and live here.
+
+// codeAgentNoOpStatus is the execution_status the code agent emits when it
+// determined the requested change is already present, so no PR was raised. It
+// mirrors codeAnalysisNoOpStatus in llm/llm-server (agent_code2.go) — the two
+// services share this value as their contract, so it must stay in sync.
+const codeAgentNoOpStatus = "no_op"
 
 // codeAgentPRParams carries everything dispatchCodeAgentPR needs to run one
 // @agent_code_2 "fix + raise PR" conversation asynchronously and record its
@@ -157,8 +164,16 @@ func dispatchCodeAgentPR(ctx AccountAdapterContext, p codeAgentPRParams, buildPr
 
 		var agentResponse map[string]any
 		if err := common.UnmarshalJson([]byte(response.Response[0]), &agentResponse); err != nil {
-			ctx.GetLogger().Error("recommendation_resolution: failed to parse agent response", "error", err, "response", response.Response[0], "label", p.Label)
-			updateStatus(models.RecommendationResolutionStatusFailed, "Failed to parse code agent response", "")
+			// The orchestrator returns a JSON envelope for every terminal outcome —
+			// including a no-op (execution_status="no_op"). A non-JSON body is therefore
+			// an unexpected terminal message; surface it verbatim rather than a
+			// misleading "failed to parse" error so the resolution shows the real reason.
+			msg := truncateForStatus(strings.TrimSpace(response.Response[0]))
+			if msg == "" {
+				msg = "Code agent returned no actionable result"
+			}
+			ctx.GetLogger().Warn("recommendation_resolution: agent returned a non-JSON terminal message", "response", msg, "label", p.Label)
+			updateStatus(models.RecommendationResolutionStatusFailed, msg, "")
 			return
 		}
 
@@ -198,6 +213,17 @@ func dispatchCodeAgentPR(ctx AccountAdapterContext, p codeAgentPRParams, buildPr
 					fmt.Sprintf(`UPDATE %s SET data = COALESCE(data, '{}'::jsonb) || $1::jsonb WHERE id = $2`, tableName),
 					string(prMetaJSON), p.ResolutionID)
 			}
+
+		case executionStatus == codeAgentNoOpStatus:
+			// Authoritative structured signal (not prose matching): the agent
+			// determined the requested change is already present, so no PR was needed.
+			// A benign informational outcome, not a failure.
+			msg := firstNonEmptyStringField(agentResponse, "message", "pr_creation_reason", "execution_summary", "description")
+			if msg == "" {
+				msg = "No change needed — the requested change is already present."
+			}
+			ctx.GetLogger().Info("recommendation_resolution: code agent reported no change needed", "label", p.Label)
+			updateStatus(models.RecommendationResolutionStatusSuccess, truncateForStatus(msg), "")
 
 		case executionStatus == "success":
 			if reason := prCreationFailureReason(agentResponse); reason != "" {
@@ -256,4 +282,31 @@ func extractPRFromAgentResponse(agentResponse map[string]any) (string, any) {
 		prURL = url
 	}
 	return prURL, prNumber
+}
+
+// firstNonEmptyStringField returns the first non-empty string value among the
+// given keys of a code-agent response, trimmed.
+func firstNonEmptyStringField(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// truncateForStatus caps a status message to a reasonable length for the
+// resolution row's status_message, truncating on rune boundaries. It ranges over
+// the string (rune boundaries, no []rune allocation) and slices at the byte index
+// of the cap.
+func truncateForStatus(s string) string {
+	const maxRunes = 800
+	var count int
+	for i := range s {
+		if count == maxRunes {
+			return strings.TrimSpace(s[:i]) + " …(truncated)"
+		}
+		count++
+	}
+	return s
 }

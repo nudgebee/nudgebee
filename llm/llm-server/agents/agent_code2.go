@@ -1606,8 +1606,8 @@ func noOpTerminalAnswer(responseStr string) (string, bool) {
 		return "", false
 	}
 
-	// Compose an explanatory answer from whatever findings the agent produced, so the
-	// user sees the reasoning (what already satisfies the request and where), not a
+	// Compose an explanatory message from whatever findings the agent produced, so a
+	// human sees the reasoning (what already satisfies the request and where), not a
 	// silent skip. Never hardcode a specific case — use the agent's own fields.
 	detail := firstNonEmptyField(resp, "pr_creation_reason", "description", "root_cause_analysis", "execution_summary")
 	var b strings.Builder
@@ -1616,7 +1616,18 @@ func noOpTerminalAnswer(responseStr string) (string, bool) {
 		b.WriteString("\n\n")
 		b.WriteString(detail)
 	}
-	return b.String(), true
+	message := b.String()
+
+	// Return a structured envelope rather than bare prose so programmatic callers
+	// (e.g. the api-server code-agent PR flow) key off execution_status == "no_op"
+	// instead of parsing the sentence, while humans still get the readable `message`.
+	// Preserve the orchestrator's original fields (execution_status, pr_creation_*).
+	resp["message"] = message
+	envelope, err := json.Marshal(resp)
+	if err != nil {
+		return message, true // fall back to prose if the envelope can't be marshaled
+	}
+	return string(envelope), true
 }
 
 // firstNonEmptyField returns the first non-empty string value among the given keys.
