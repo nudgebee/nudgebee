@@ -50,6 +50,13 @@ export interface OverlaySurfaceProps {
   role?: OverlayRole;
   disableAutoFocusItem?: boolean;
   disablePortal?: boolean;
+  /**
+   * Keep the panel mounted (hidden) in the DOM before first open, so content
+   * that lazy-loads on mount — e.g. `next/image` item icons — has already
+   * fetched by the time the user opens it. Off by default since most panels
+   * hold cheap text-only content; opt in for icon-heavy triggers.
+   */
+  keepMounted?: boolean;
   children: React.ReactNode;
   /** Escape hatch for forwarding additional MUI Menu slot props. */
   slotProps?: MenuProps['slotProps'];
@@ -92,16 +99,19 @@ export function OverlaySurface({
   role = 'menu',
   disableAutoFocusItem,
   disablePortal = true,
+  keepMounted = false,
   children,
   slotProps,
 }: OverlaySurfaceProps) {
   const itemRole = role === 'listbox' ? 'option' : 'menuitem';
+
   return (
     <Menu
       anchorEl={anchorEl}
       open={open}
       onClose={onClose}
       disablePortal={disablePortal}
+      keepMounted={keepMounted}
       anchorOrigin={deriveAnchorOrigin(side, align)}
       transformOrigin={deriveTransformOrigin(side, align)}
       disableAutoFocusItem={disableAutoFocusItem}
