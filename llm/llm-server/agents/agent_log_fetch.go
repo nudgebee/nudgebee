@@ -721,7 +721,7 @@ Return ONLY a JSON object with the following fields:
 - container: Specific container name if mentioned (string)
 - tail: Number of lines to retrieve (int). Use 100 for routine "show me logs". Use 10000 for INVESTIGATION queries ("were there issues", "what is causing X", "why is Y broken") so rare errors in long streams aren't missed when combined with filter_pattern.
 - is_previous: true if requesting previously crashed logs (bool)
-- filter_pattern: Regex pattern for grep if looking for errors/warnings (string). REQUIRED for investigation queries — set to "` + kubectlErrorRegex + `" or similar so the wide tail is narrowed server-side to relevant lines only.
+- filter_pattern: Regex pattern for grep if looking for errors/warnings (string). REQUIRED for investigation queries — set to "` + kubectlErrorRegex + `" or similar so the wide tail is narrowed server-side to relevant lines only. Must be a plain POSIX extended regex (grep -E syntax): no Perl-only syntax like inline flags ("(?i)", "(?:...)"). The search is already case-insensitive (grep -i is always applied), so never add a case-insensitivity flag yourself.
 
 CRITICAL — Read the ORIGINAL USER QUESTION (when provided) to determine intent, not just the per-step query.
 A parent planner may paraphrase an investigative question into a routine-looking sub-step (e.g. user asks
