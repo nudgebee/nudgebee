@@ -1,20 +1,17 @@
-name: ML Wolfi Base Validation
+name: ML Base Consumer Build
 
-# Throwaway validation for the Wolfi ml-base migration (#585). Builds the Wolfi
-# base and each consumer (ml-k8s-server, rag-server) FROM it on a CI runner —
-# validating the FULL dependency tree + runtime shared-lib presence that the
-# normal consumer CI (Python lint only) does not cover, and that is impractical
-# to build locally.
+# Builds the conda ml-base and each consumer (ml-k8s-server, rag-server) FROM it
+# on a CI runner, then imports each app's full native/ML stack. This covers what
+# the normal consumer CI (Python lint only) does not: that the images actually
+# build on the base and that every native wheel loads at runtime — including
+# ctypes dlopens ldd can't see (e.g. libmagic, which the Wolfi migration had to
+# add). Runs on PRs touching the base or its consumers.
 #
 # Each job:
-#   1. builds the Wolfi ml-base,
+#   1. builds the ml-base,
 #   2. builds the consumer with --build-arg PYTHON_BASE=<local base>,
-#   3. imports the app's real entrypoint module (triggers eager dlopens), and
-#   4. runs `ldd` over every native .so in the conda env and FAILS on any
-#      "not found" (catches missing system libs Wolfi doesn't ship).
-#
-# Manually dispatched. Delete this workflow (or promote it to a permanent
-# consumer-build gate) once the migration is validated.
+#   3. imports the consumer's native ML deps (GATE — fails on a missing lib), and
+#   4. runs an informational ldd sweep (noisy: wheel-bundled + optional libs).
 
 on:
   workflow_dispatch:
@@ -26,11 +23,10 @@ on:
       - deploy/kubernetes/nudgebee-ml-base-image/**
       - ml-k8s-server/**
       - llm/rag-server/**
-      - .github/workflows/ml-wolfi-validate.yaml
+      - .github/workflows/ml-base-consumer-build.yaml
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   validate:
@@ -101,20 +97,3 @@ jobs:
         run: |
           docker run --rm --entrypoint sh consumer:test -c \
             "ML_INFERENCE_DATABASE_URL=postgresql://u:p@localhost/db DATABASE_URL=postgresql://u:p@localhost/db conda run --no-capture-output -n myenv python -c 'import server' 2>&1 | tail -20 || true"
-
-      # Publish the validated Wolfi image to a :wolfi-test tag (only reached if
-      # the import GATE above passed) so it can be deployed to nudgebee-oss-qa for
-      # a real runtime test — WITHOUT touching :edge/:latest or merging.
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push ${{ matrix.name }}:wolfi-test
-        run: |
-          ns=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
-          ref="ghcr.io/${ns}/${{ matrix.name }}:wolfi-test"
-          docker tag consumer:test "$ref"
-          docker push "$ref"
-          echo "pushed $ref"
