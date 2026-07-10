@@ -18,6 +18,15 @@ name: ML Wolfi Base Validation
 
 on:
   workflow_dispatch:
+  # Runs on PRs that touch the ml-base or its consumers, so the Wolfi migration
+  # is validated end-to-end on the PR itself (not just post-merge).
+  pull_request:
+    branches: [main]
+    paths:
+      - deploy/kubernetes/nudgebee-ml-base-image/**
+      - ml-k8s-server/**
+      - llm/rag-server/**
+      - .github/workflows/ml-wolfi-validate.yaml
 
 permissions:
   contents: read
