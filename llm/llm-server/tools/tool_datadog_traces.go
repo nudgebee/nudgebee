@@ -25,7 +25,7 @@ func (m DatadogTracesExecuteTool) Name() string { return ToolDatadogTracesExecut
 func (m DatadogTracesExecuteTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (m DatadogTracesExecuteTool) Description() string {
-	return `Executes a Datadog trace query and retrieves the corresponding trace data.`
+	return `Executes a Datadog trace query and retrieves the trace data. Input is a trace query (e.g. "service:web status:error"); optional start_time/end_time or range, default last 12h.`
 }
 
 func (m DatadogTracesExecuteTool) InputSchema() core.ToolSchema {

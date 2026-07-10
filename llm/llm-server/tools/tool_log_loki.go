@@ -78,11 +78,11 @@ func (t *LokiExecuteTool) GetOperators() []string {
 }
 
 func (m LokiExecuteTool) Description() string {
-	return `Executes a LogQL query against a Loki instance and retrieves the corresponding log data. 
+	return `Executes a LogQL query against a Loki instance and retrieves the corresponding log data.
 
 	Usage:
 
-	* Input: Provide a well-formatted LogQL query as input.
+	* Input: Provide a well-formatted LogQL query as input. Optionally pass 'limit' (max log lines), 'direction' ('forward' = oldest-first, best for investigations; 'backward' = newest-first, the default), and a time window via start_time/end_time (RFC3339 or Unix) or range (e.g. '1h', '2d').
 	* Output: The tool will return the log data retrieved from Loki based on your query.
 
 	Important Notes:
@@ -110,6 +110,10 @@ func (m LokiExecuteTool) InputSchema() core.ToolSchema {
 			"range": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Time range for the query (e.g., '2d', '1w', '1h'). If provided, start_time is calculated relative to end_time.",
+			},
+			"limit": {
+				Type:        core.ToolSchemaTypeInteger,
+				Description: "Optional maximum number of log lines to return.",
 			},
 			"direction": {
 				Type:        core.ToolSchemaTypeString,

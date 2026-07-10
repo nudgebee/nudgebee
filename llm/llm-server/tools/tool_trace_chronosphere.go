@@ -29,7 +29,7 @@ func (m TracesExecuteChronosphereTool) GetType() core.NBToolType {
 }
 
 func (m TracesExecuteChronosphereTool) Description() string {
-	return "Executes a Chronosphere query and returns the result."
+	return "Executes a Chronosphere query and returns the result. Input: a Chronosphere JSON query; optional start_time/end_time (RFC3339 or Unix) or range (e.g. '1h')."
 }
 
 func (m TracesExecuteChronosphereTool) InputSchema() core.ToolSchema {

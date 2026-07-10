@@ -53,15 +53,29 @@ func (m PostgresExecuteTool) Description() string {
 }
 
 func (m PostgresExecuteTool) InputSchema() core.ToolSchema {
+	// 'command'/'query' are aliases (Call() prefers 'command'); RequiredOneOf
+	// enforces at least one without rejecting valid 'query'-keyed inputs.
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
 			"command": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "JSON string with 'command' (or 'query') and 'instance' fields. 'instance' is the host to connect to.",
+				Description: "Postgres SQL query to execute. Either 'command' or 'query' must be provided.",
+			},
+			"query": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Alias for 'command' — accepted at the top level for backward compatibility.",
+			},
+			"database": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Target Postgres database to run the query against.",
+			},
+			"instance": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Postgres host/instance to connect to.",
 			},
 		},
-		Required: []string{"command"},
+		RequiredOneOf: [][]string{{"command", "query"}},
 	}
 }
 

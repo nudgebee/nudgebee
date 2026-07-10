@@ -157,12 +157,18 @@ func (m SearchExecuteTool) Description() string {
 }
 
 func (m SearchExecuteTool) InputSchema() core.ToolSchema {
+	// 'command' is the sole carrier of the query (no alias) so it's Required;
+	// 'provider' is read by Call() from input.Arguments, declared for the validator.
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
 			"command": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "search to perform",
+				Description: "Search query to perform.",
+			},
+			"provider": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Optional search provider override (e.g. 'google', 'duckduckgo', 'brave', 'serper').",
 			},
 		},
 		Required: []string{"command"},
@@ -500,12 +506,18 @@ func (m CrawlExecuteTool) Description() string {
 }
 
 func (m CrawlExecuteTool) InputSchema() core.ToolSchema {
+	// 'command' is the sole carrier of the URL (no alias) so it's Required;
+	// 'response_type' is read by Call() from input.Arguments, declared for the validator.
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
 			"command": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "url to crawl",
+				Description: "URL to crawl.",
+			},
+			"response_type": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Optional response format (e.g. 'markdown', 'html', 'text').",
 			},
 		},
 		Required: []string{"command"},

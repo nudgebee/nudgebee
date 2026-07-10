@@ -30,7 +30,7 @@ func (m TracesExecuteJaegerTool) GetType() core.NBToolType {
 }
 
 func (m TracesExecuteJaegerTool) Description() string {
-	return "Executes a Jaeger trace query and returns the result."
+	return "Executes a Jaeger trace query and returns the result. Input: a JSON query (optional inline `time_range`, e.g. '2h'); or start_time/end_time/range args."
 }
 
 func (m TracesExecuteJaegerTool) InputSchema() core.ToolSchema {

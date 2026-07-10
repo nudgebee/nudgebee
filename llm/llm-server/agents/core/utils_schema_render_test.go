@@ -343,6 +343,105 @@ func TestReActPromptToolDescriptions_AllowlistGate(t *testing.T) {
 		"allowlist gate must suppress the schema block for tools not in the list")
 }
 
+// TestRenderInputSchema_RequiredOneOf pins the RequiredOneOf rendering
+// contract used by SQL tools (command|query alias). The aliased fields
+// must be grouped together AFTER Required[] fields and BEFORE unrelated
+// optional fields, so the LLM sees the alias set as a unit. A trailing
+// "Provide at least one of" summary line pins the group-level
+// constraint at the end so the LLM sees it after the field list —
+// same wording as ValidateToolInput's error message so plan-time and
+// error-time phrasing match.
+// (load_skills used to be on this list; it was reshaped to a single
+// canonical `skill_name` Required[] field in PR #31271 to prevent
+// alias sprawl. Call() still accepts skill_names/skills as legacy
+// compat but the schema no longer teaches those to the LLM.)
+func TestRenderInputSchema_RequiredOneOf(t *testing.T) {
+	schema := toolcore.ToolSchema{
+		Properties: map[string]toolcore.ToolSchemaProperty{
+			"command":  {Type: toolcore.ToolSchemaTypeString, Description: "Postgres SQL to execute."},
+			"query":    {Type: toolcore.ToolSchemaTypeString, Description: "Alias for 'command'."},
+			"database": {Type: toolcore.ToolSchemaTypeString, Description: "Target database."},
+			"instance": {Type: toolcore.ToolSchemaTypeString, Description: "Target instance."},
+		},
+		RequiredOneOf: [][]string{{"command", "query"}},
+	}
+	got := renderInputSchema(schema)
+
+	// Every field renders, aliased fields keep the "optional" marker
+	// (Required[] is empty here — none is technically mandatory alone).
+	assert.Contains(t, got, "- command (string, optional): Postgres SQL to execute.")
+	assert.Contains(t, got, "- query (string, optional): Alias for 'command'.")
+	assert.Contains(t, got, "- database (string, optional): Target database.")
+
+	// Trailing group summary uses the exact validator wording.
+	assert.Contains(t, got, "\nProvide at least one of:\n  - command | query")
+
+	// The aliased pair must render together BEFORE unrelated optional
+	// fields — protects the "fill the alias group first" signal.
+	commandIdx := strings.Index(got, "- command ")
+	queryIdx := strings.Index(got, "- query ")
+	databaseIdx := strings.Index(got, "- database ")
+	instanceIdx := strings.Index(got, "- instance ")
+	assert.True(t, commandIdx > 0 && queryIdx > 0 && databaseIdx > 0 && instanceIdx > 0)
+	assert.True(t, commandIdx < databaseIdx, "command (one-of) must precede database (plain optional): got command@%d database@%d", commandIdx, databaseIdx)
+	assert.True(t, queryIdx < databaseIdx, "query (one-of) must precede database (plain optional): got query@%d database@%d", queryIdx, databaseIdx)
+	assert.True(t, queryIdx < instanceIdx, "query (one-of) must precede instance (plain optional): got query@%d instance@%d", queryIdx, instanceIdx)
+}
+
+// TestRenderInputSchema_RequiredOneOf_MultipleGroups covers the
+// multi-group case (rare in practice, but the schema allows it).
+// Verifies each group renders on its own line under the trailing
+// summary.
+func TestRenderInputSchema_RequiredOneOf_MultipleGroups(t *testing.T) {
+	schema := toolcore.ToolSchema{
+		Properties: map[string]toolcore.ToolSchemaProperty{
+			"skill_name":  {Type: toolcore.ToolSchemaTypeString},
+			"skill_names": {Type: toolcore.ToolSchemaTypeArray},
+			"skills":      {Type: toolcore.ToolSchemaTypeArray},
+			"budget":      {Type: toolcore.ToolSchemaTypeInteger},
+		},
+		RequiredOneOf: [][]string{
+			{"skill_name", "skill_names"},
+			{"skill_name", "skills"},
+		},
+	}
+	got := renderInputSchema(schema)
+	assert.Contains(t, got, "\nProvide at least one of:\n  - skill_name | skill_names\n  - skill_name | skills")
+	// Field-list block preserves alphabetical within the one-of group.
+	skillNameIdx := strings.Index(got, "- skill_name (")
+	skillNamesIdx := strings.Index(got, "- skill_names (")
+	skillsIdx := strings.Index(got, "- skills (")
+	budgetIdx := strings.Index(got, "- budget (")
+	assert.True(t, skillNameIdx < skillNamesIdx, "one-of group members alphabetical")
+	assert.True(t, skillNamesIdx < skillsIdx, "one-of group members alphabetical")
+	assert.True(t, skillsIdx < budgetIdx, "one-of members precede plain optional")
+}
+
+// TestRenderInputSchema_RequiredAndRequiredOneOf_Coexist covers the case
+// where Required[] and RequiredOneOf both exist. Required[] fields must
+// still lead the block (Required wins over one-of).
+func TestRenderInputSchema_RequiredAndRequiredOneOf_Coexist(t *testing.T) {
+	schema := toolcore.ToolSchema{
+		Properties: map[string]toolcore.ToolSchemaProperty{
+			"instance": {Type: toolcore.ToolSchemaTypeString},
+			"command":  {Type: toolcore.ToolSchemaTypeString},
+			"query":    {Type: toolcore.ToolSchemaTypeString},
+		},
+		Required:      []string{"instance"},
+		RequiredOneOf: [][]string{{"command", "query"}},
+	}
+	got := renderInputSchema(schema)
+	instanceIdx := strings.Index(got, "- instance (")
+	commandIdx := strings.Index(got, "- command (")
+	queryIdx := strings.Index(got, "- query (")
+	assert.True(t, instanceIdx < commandIdx, "Required[] instance must precede one-of command")
+	assert.True(t, instanceIdx < queryIdx, "Required[] instance must precede one-of query")
+	assert.Contains(t, got, "- instance (string, required)")
+	assert.Contains(t, got, "- command (string, optional)")
+	assert.Contains(t, got, "- query (string, optional)")
+	assert.Contains(t, got, "\nProvide at least one of:\n  - command | query")
+}
+
 // withRenderAllowlist swaps the global config allowlist for the duration
 // of a test and returns a restore function. Also handy for exercising
 // the empty-list default (renderer off).

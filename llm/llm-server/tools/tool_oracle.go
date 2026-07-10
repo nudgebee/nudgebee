@@ -54,12 +54,18 @@ func (m OracleExecuteTool) Description() string {
 }
 
 func (m OracleExecuteTool) InputSchema() core.ToolSchema {
+	// 'command'/'query' are aliases (Call() prefers 'command'); RequiredOneOf
+	// enforces at least one without rejecting a 'query'-keyed input.
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
 			"command": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Oracle SQL SELECT query to execute. Do NOT use USE statements — use the 'database' parameter instead.",
+				Description: "Oracle SQL SELECT query to execute. Either 'command' or 'query' must be provided. Do NOT use USE statements — use the 'database' parameter instead.",
+			},
+			"query": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Alias for 'command' — accepted at the top level for backward compatibility.",
 			},
 			"database": {
 				Type:        core.ToolSchemaTypeString,
@@ -70,7 +76,7 @@ func (m OracleExecuteTool) InputSchema() core.ToolSchema {
 				Description: "Target Oracle instance/environment name (e.g. 'prod', 'dev') when multiple configs exist.",
 			},
 		},
-		Required: []string{"command"},
+		RequiredOneOf: [][]string{{"command", "query"}},
 	}
 }
 

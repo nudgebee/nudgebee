@@ -36,7 +36,7 @@ func (m ClickhouseExecuteTool) Description() string {
 		**Usage:**
 
 		* **Prioritize this tool:** Whenever you require information about a ClickHouse database to make decisions or provide accurate responses, use this tool.
-		* **Input:** Provide a valid, read-only 'ClickHouse SQL query' (SELECT or SHOW) as input. Do not include any other information.
+		* **Input:** Provide a valid, read-only 'ClickHouse SQL query' (SELECT or SHOW) as a plain string, OR a JSON object {query, database?, instance?} to target a specific database or host.
 		* **Output:** The tool will return the output of the executed query, typically in CSV format, which is then converted to JSON.
 		* **Security:** This tool is strictly limited to read-only operations (SELECT, SHOW, DESCRIBE). It cannot modify any data or schema within the database.
 
@@ -49,15 +49,29 @@ func (m ClickhouseExecuteTool) Description() string {
 }
 
 func (m ClickhouseExecuteTool) InputSchema() core.ToolSchema {
+	// 'command'/'query' are aliases (Call() prefers 'command'); RequiredOneOf
+	// enforces at least one without rejecting a 'query'-keyed input.
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
 			"command": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "JSON string with 'command' (or 'query') and 'instance' fields. 'instance' is the host to connect to.",
+				Description: "ClickHouse SQL query to execute. Either 'command' or 'query' must be provided.",
+			},
+			"query": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Alias for 'command' — accepted at the top level for backward compatibility.",
+			},
+			"database": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Target ClickHouse database to run the query against.",
+			},
+			"instance": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "ClickHouse host/instance to connect to.",
 			},
 		},
-		Required: []string{"command"},
+		RequiredOneOf: [][]string{{"command", "query"}},
 	}
 }
 

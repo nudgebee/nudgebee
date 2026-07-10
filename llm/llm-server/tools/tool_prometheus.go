@@ -79,7 +79,7 @@ func (m PrometheusExecuteTool) GetType() core.NBToolType {
 func (m PrometheusExecuteTool) Description() string {
 	return `Executes a PromQL query against a Prometheus instance and retrieves the corresponding metric data.
 		Usage:
-		* Input: Provide a well-formatted PromQL query as input.
+		* Input: Provide a well-formatted PromQL query as input. To run multiple queries in one call, separate them with ';' (NOT ','). Optionally pass a time window via start_time/end_time (RFC3339 or Unix timestamp) or range (e.g. '1h', '2d').
 		* Output: The tool will return the time series data retrieved from Prometheus based on your query.
 
 		Purpose: This tool enables you to access and analyze Kubernetes monitoring data, such as CPU usage, memory consumption, network traffic, and other key metrics, allowing you to provide informed assistance and insights to users.
@@ -613,7 +613,7 @@ func (m MetricsListTool) GetType() core.NBToolType {
 func (m MetricsListTool) Description() string {
 	return `Returns List of Available metrics.
 		Usage:
-		* Input: (optional) Provide a keyword to filter metrics.
+		* Input: REQUIRED — a keyword to search metrics (e.g. 'cpu', 'memory').
 		* Output: The tool will return the list of metrics.
 
 		Purpose: Use this tool to search for available metrics.
@@ -1006,7 +1006,7 @@ func (m ListMetricsLabelsTool) Description() string {
 		* Input: (required) Metric Name.
 		* Output: The tool will return available labels for the given metric.
 
-		Purpose: Use this tool to search for available metrics.
+		Purpose: Use this tool to list the labels available for a given metric name.
 		`
 }
 

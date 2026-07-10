@@ -23,7 +23,7 @@ func (t NewRelicAPMServicesTool) Name() string { return ToolNewRelicAPMServices 
 func (t NewRelicAPMServicesTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (t NewRelicAPMServicesTool) Description() string {
-	return `Searches for APM application entities in New Relic with performance metrics including error rate, response time, throughput, and apdex score.`
+	return `Searches for APM application entities in New Relic with performance metrics including error rate, response time, throughput, and apdex score. Input: a filter string of space-separated key:value terms, e.g. 'name:api-server tags.environment:production' (name matches substring). A bare non-colon string is dropped, returning unfiltered results.`
 }
 
 func (t NewRelicAPMServicesTool) InputSchema() core.ToolSchema {

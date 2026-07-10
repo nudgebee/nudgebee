@@ -23,7 +23,8 @@ func (m SignozExecuteTool) Name() string { return ToolSignozLogExecute }
 func (m SignozExecuteTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (m SignozExecuteTool) Description() string {
-	return `Executes a Signoz log query and retrieves the corresponding log data.`
+	return `Executes a Signoz log query and retrieves the corresponding log data.
+		Input: a JSON object { "filters": [ {key, op, value}, ... ] }. Optionally pass a time window via start_time/end_time (RFC3339 or Unix) or range (e.g. '1h', '2d').`
 }
 
 func (m SignozExecuteTool) InputSchema() core.ToolSchema {

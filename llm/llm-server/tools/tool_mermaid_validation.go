@@ -26,7 +26,7 @@ func (m MermaidValidationTool) GetType() core.NBToolType {
 }
 
 func (m MermaidValidationTool) Description() string {
-	return "Validates Mermaid.js diagram syntax and provides feedback on common errors."
+	return "Validates Mermaid.js diagram syntax. Provide the diagram source in the 'code' field. Returns 'Valid Mermaid code.' or a list of line-specific errors."
 }
 
 func (m MermaidValidationTool) InputSchema() core.ToolSchema {

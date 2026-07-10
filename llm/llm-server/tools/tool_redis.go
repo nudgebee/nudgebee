@@ -51,11 +51,18 @@ Be cautious when running commands that may impact performance, such as FLUSHALL,
 }
 
 func (m RedisExecuteTool) InputSchema() core.ToolSchema {
+	// 'command' is the sole carrier (no alias) so it's Required; 'instance' is
+	// read by Call() from the embedded JSON, declared here for the validator.
 	return core.ToolSchema{
-		Type: core.ToolSchemaTypeObject, Properties: map[string]core.ToolSchemaProperty{
+		Type: core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{
 			"command": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "JSON string with 'command' and 'instance' fields. 'instance' is the host to connect to.",
+				Description: "Redis command to execute (e.g. 'GET key', 'INFO').",
+			},
+			"instance": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Redis host/instance to connect to.",
 			},
 		},
 		Required: []string{"command"},

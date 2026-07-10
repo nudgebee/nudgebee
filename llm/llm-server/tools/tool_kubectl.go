@@ -389,7 +389,7 @@ func (m KubectlExecuteTool) Description() string {
 		**Usage:**
 
 		* **Prioritize this tool:** Whenever you require information about the user's cluster to make decisions or provide accurate responses, use this tool.
-		* **Input:** Provide a valid, 'kubectl' command as input. Shell piping (|) is supported — you can pipe kubectl output through grep, head, tail, awk, etc.
+		* **Input:** Provide a valid, 'kubectl' command as input. Shell piping (|) is supported — you can pipe kubectl output through grep, head, tail, awk, etc. Reads of Secret-bearing kinds (secrets, sealedsecrets, externalsecrets) and secret-mounted exec/cp are blocked.
 		* **Output:** The tool will return the output of the executed command.
 
 		**Examples:**

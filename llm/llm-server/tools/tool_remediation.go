@@ -57,7 +57,7 @@ When to SKIP this tool (DO NOT call):
 * User is exploring/learning: "explain this config", "how does this work", "tell me about the cluster"
 
 Usage:
-* Input: Investigation context including findings, tool observations, and diagnostics
+* Input: pass the full investigation context (findings, tool observations, and diagnostics) as the plain-text command input — there is no separate named field
 * Output: Structured remediation plan with root cause analysis, proposed fixes, and commands
 
 Output Format:

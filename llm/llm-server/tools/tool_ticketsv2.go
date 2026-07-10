@@ -56,7 +56,7 @@ func (m TicketMasterV2) GetType() core.NBToolType {
 }
 
 func (m TicketMasterV2) Description() string {
-	return `Manages tickets across multiple platforms (Jira, GitHub, GitLab, ServiceNow, PagerDuty, ZenDuty). Supports listing integrations, creating tickets, adding/getting comments, and fetching full ticket details.`
+	return `Manage tickets across Jira/GitHub/GitLab/ServiceNow/PagerDuty/ZenDuty. Input is a JSON object with operation_type ∈ {get_create_meta, create_ticket, add_comment, get_comments, get_ticket, list_tickets} plus per-op fields: create_ticket needs title (+ optional description/severity/project_key/ticket_type/assignee/additional_fields); add_comment needs ticket_id and comment_text; get_comments/get_ticket need ticket_id; list_tickets takes filters (status, priority, assignee, limit, offset, created_after, created_before, sort_by, sort_order). Call get_create_meta before create_ticket to discover required fields and valid assignees.`
 }
 
 func (m TicketMasterV2) InputSchema() core.ToolSchema {

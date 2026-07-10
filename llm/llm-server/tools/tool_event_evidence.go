@@ -42,10 +42,10 @@ func (t GetEventEvidenceTool) GetType() core.NBToolType {
 }
 
 func (t GetEventEvidenceTool) Description() string {
-	return `Fetches evidence data for a specific event. Supports query modes:
+	return `Requires event_id (UUID). Fetches evidence data for a specific event. JSON keys: evidence_type (which evidence to return), query_mode, pattern (for query_mode=filter). Supports query modes:
 - raw (default): returns full evidence data
 - summary: aggregated stats — metrics: min/max/avg per series; traces: span count, errors, slow spans; logs: line count, top error patterns
-- filter: for logs, returns lines matching a pattern with context lines. For array types, applies offset/limit pagination.
+- filter: for logs, returns lines matching pattern with context lines. For array types, applies offset/limit pagination.
 Use offset/limit for pagination on large evidence sets.
 Evidence types: logs, pod_metrics, node_metrics, container_metrics, traces, deployment, pod_events, node_events, pod_data, alert_labels, noisy_neighbours, related_events, api_failures, metrics_data, job_information, job_events, user_actions, rdbms_query_response, alert_data, markdowns, all`
 }

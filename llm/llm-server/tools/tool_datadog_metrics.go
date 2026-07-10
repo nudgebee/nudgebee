@@ -29,7 +29,7 @@ func (m DatadogMetricsExecuteTool) Name() string { return ToolExecuteDatadogMetr
 func (m DatadogMetricsExecuteTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (m DatadogMetricsExecuteTool) Description() string {
-	return `Executes a Datadog metrics query and retrieves the corresponding metric data.`
+	return `Executes a Datadog metrics query and retrieves the metric data. Input is a Datadog v1 metrics query (e.g. "avg:system.cpu.user{service:web}"); optional start_time/end_time (RFC3339 or Unix), default last 2h.`
 }
 
 func (m DatadogMetricsExecuteTool) InputSchema() core.ToolSchema {

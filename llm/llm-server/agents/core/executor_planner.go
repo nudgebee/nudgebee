@@ -1996,6 +1996,58 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		}
 	}
 
+	// Allowlisted pre-exec schema validation: reject malformed input with a
+	// self-correct observation before Call(). Leaf tools only (NBToolTypeTool).
+	// Same allowlist that gates schema rendering (isToolSchemaAuthoritative) —
+	// a tool whose schema is visible to the LLM is also enforced.
+	if tool != nil && tool.GetType() == toolcore.NBToolTypeTool && isToolSchemaAuthoritative(action.Tool) {
+		// Missing-required-fields short-circuit: when a tool implements
+		// MissingFieldsResponder (e.g. think's narration guard), delegate the
+		// message for THIS specific failure mode so the LLM gets tool-specific
+		// coaching instead of a generic schema error. Non-missing errors
+		// (types, enums, RequiredOneOf) fall through to ValidateToolInput.
+		if responder, ok := tool.(toolcore.MissingFieldsResponder); ok {
+			if missing := toolcore.MissingRequiredFields(tool, action.ToolInput); len(missing) > 0 {
+				request := toolcore.ParseNBToolCallRequestFromInput(action.ToolInput)
+				// Empty-Data guard: fall through to the generic validator
+				// when the responder returned nil or an empty payload. Prevents
+				// a silent "" observation reaching the LLM if a future
+				// MissingFieldsResponder implementation forgets to populate
+				// Data (the current implementer, think, always populates it —
+				// this is defensive, not reactive).
+				if custom := responder.OnMissingRequiredFields(request, missing); custom != nil && custom.Data != "" {
+					e.ctx.GetLogger().Warn("plannerexecutor: tool input missing required fields (responder-emitted)",
+						"tool", action.Tool, "toolId", action.ToolID, "missing", missing)
+					common.MetricsToolOperationsTotal(toolName, "fail_validation", accountID)
+					// Deliberately NOT recording MetricsToolLatencySeconds here:
+					// no Call() ran, so a near-zero latency sample would skew
+					// the p50/p99 downward for tools like `think` and pollute
+					// per-tool latency dashboards. The fail_validation metric
+					// label on MetricsToolOperationsTotal is the split signal.
+					return NBAgentPlannerToolActionStep{
+						Action:      action,
+						Observation: custom.Data,
+						Status:      ToolStatusFailure,
+					}, nil, nil
+				}
+			}
+		}
+		if validationErr := toolcore.ValidateToolInput(tool, action.ToolInput); validationErr != nil {
+			e.ctx.GetLogger().Warn("plannerexecutor: tool input failed schema validation",
+				"tool", action.Tool, "toolId", action.ToolID, "error", *validationErr)
+			common.MetricsToolOperationsTotal(toolName, "fail_validation", accountID)
+			// Deliberately NOT recording MetricsToolLatencySeconds here — see
+			// the responder branch above for the rationale.
+			// ToolStatusFailure (not a new status): downstream consumers treat it
+			// as THE failure sentinel; the fail_validation metric carries the split.
+			return NBAgentPlannerToolActionStep{
+				Action:      action,
+				Observation: *validationErr,
+				Status:      ToolStatusFailure,
+			}, nil, nil
+		}
+	}
+
 	if e.toolCallbackHandler != nil {
 		e.toolCallbackHandler.BeforeToolCall(action)
 	}

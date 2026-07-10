@@ -121,7 +121,7 @@ func (m SecurityExecuteTool) GetType() core.NBToolType {
 }
 
 func (m SecurityExecuteTool) Description() string {
-	return "Executes a SQL query to retrieve security issues."
+	return "Executes a read-only SQL SELECT (in 'command') against the security findings view. Columns: workload_name, namespace, severity, status, image, vulnerability_id, package_id, category, recommendation. If the query references 'cis_scan', CIS-benchmark results are returned instead."
 }
 
 func (m SecurityExecuteTool) InputSchema() core.ToolSchema {

@@ -145,6 +145,9 @@ type ToolSchema struct {
 	Type       ToolSchemaType                `json:"type"`
 	Properties map[string]ToolSchemaProperty `json:"properties"`
 	Required   []string                      `json:"required,omitempty"`
+	// RequiredOneOf: each group needs ≥1 listed key present (non-null) — a
+	// shape-only anyOf subset for aliased fields (e.g. command/query).
+	RequiredOneOf [][]string `json:"required_one_of,omitempty"`
 }
 
 type ToolRequestType string

@@ -26,7 +26,7 @@ func (m DatadogAPMEntitiesExecuteTool) Name() string { return ToolDatadogAPMEnti
 func (m DatadogAPMEntitiesExecuteTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (m DatadogAPMEntitiesExecuteTool) Description() string {
-	return `Executes a Datadog APM entities query and retrieves APM entity data including services, operations, and resources.`
+	return `Returns the last 24h of Datadog APM entities (services, operations, resources) with default columns. Takes no meaningful query input.`
 }
 
 func (m DatadogAPMEntitiesExecuteTool) InputSchema() core.ToolSchema {

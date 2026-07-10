@@ -25,7 +25,7 @@ func (m DatadogServicesExecuteTool) Name() string { return ToolDatadogServices }
 func (m DatadogServicesExecuteTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (m DatadogServicesExecuteTool) Description() string {
-	return `Executes a Datadog services query and retrieves the corresponding service data.`
+	return `Executes a Datadog services query and retrieves the service data. Input is a filter query (e.g. "env:prod"); defaults to all services.`
 }
 
 func (m DatadogServicesExecuteTool) InputSchema() core.ToolSchema {

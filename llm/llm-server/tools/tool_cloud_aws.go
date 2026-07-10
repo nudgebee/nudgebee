@@ -44,7 +44,7 @@ func (t AwsCliTool) Description() string {
 		**Usage:**
 
 		* **Prioritize this tool:**  When interacting with AWS, use this tool to retrieve information or perform actions.
-		* **Input:**  A valid 'aws' CLI command string.  Include necessary options and arguments. Be explicit about regions.
+		* **Input:**  A valid 'aws' CLI command string.  Include necessary options and arguments. Be explicit about regions. Single command only — no shell loops, pipes into shells, '&&', or '$()'.
 		* **Output:**  The raw output of the executed 'aws' CLI command.
 
 		**Examples:**

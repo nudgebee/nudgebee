@@ -492,17 +492,21 @@ const maxSchemaFieldDescriptionChars = 100
 //
 //   - <name> (<type>, required|optional): <description[:100]>  [one of: v1, v2, ...]
 //
-// Properties render in two blocks: required fields first (alphabetical
-// among themselves), then optional fields (alphabetical among themselves).
-// Two motivations:
+// Properties render in THREE blocks: Required[] fields first, then any
+// fields named in RequiredOneOf groups, then the rest — each alphabetical
+// among itself. Three motivations:
 //  1. Byte-stable output — Go map iteration is randomized, so any
 //     deterministic order works; matters for LLM prompt caching (providers
 //     cache on exact prefix).
 //  2. Required-first foregrounds what MUST be filled. A pure alphabetical
 //     sort would surface fields like `tool_resource_search`'s
 //     `label_selector` before its required `search_type`, weakening the
-//     LLM's "fill required first" signal. Grouping required-then-optional
-//     keeps the LLM focused on the mandatory shape.
+//     LLM's "fill required first" signal.
+//  3. Adjacent placement of RequiredOneOf group members lets the LLM see
+//     the aliases together (command|query for SQL tools; skill_name|
+//     skill_names|skills for load_skills); a trailing "Provide at least
+//     one of" summary line pins the group-level constraint at the end so
+//     the LLM sees it after the field list.
 //
 // Required is looked up from schema.Required (a []string). Enum values are
 // appended inline when present — usually short, high-signal. Default is
@@ -516,18 +520,32 @@ func renderInputSchema(schema toolcore.ToolSchema) string {
 	for _, f := range schema.Required {
 		requiredSet[f] = true
 	}
+	oneOfSet := make(map[string]bool)
+	for _, group := range schema.RequiredOneOf {
+		for _, name := range group {
+			if !requiredSet[name] {
+				oneOfSet[name] = true
+			}
+		}
+	}
 	required := make([]string, 0, len(schema.Required))
+	oneOf := make([]string, 0, len(oneOfSet))
 	optional := make([]string, 0, len(schema.Properties))
 	for name := range schema.Properties {
-		if requiredSet[name] {
+		switch {
+		case requiredSet[name]:
 			required = append(required, name)
-		} else {
+		case oneOfSet[name]:
+			oneOf = append(oneOf, name)
+		default:
 			optional = append(optional, name)
 		}
 	}
 	slices.Sort(required)
+	slices.Sort(oneOf)
 	slices.Sort(optional)
-	names := append(required, optional...)
+	names := append(required, oneOf...)
+	names = append(names, optional...)
 	var sb strings.Builder
 	sb.WriteString("Input: object with fields:")
 	for _, name := range names {
@@ -555,6 +573,16 @@ func renderInputSchema(schema toolcore.ToolSchema) string {
 				enumStrs = append(enumStrs, fmt.Sprintf("%v", v))
 			}
 			fmt.Fprintf(&sb, " [one of: %s]", strings.Join(enumStrs, ", "))
+		}
+	}
+	// RequiredOneOf trailing block — each group needs ≥1 of the listed
+	// keys present. Matches the wording formatSchemaErrorMessage emits in
+	// the validator so the plan-time hint and the validator error use the
+	// same phrasing.
+	if len(schema.RequiredOneOf) > 0 {
+		sb.WriteString("\nProvide at least one of:")
+		for _, group := range schema.RequiredOneOf {
+			fmt.Fprintf(&sb, "\n  - %s", strings.Join(group, " | "))
 		}
 	}
 	return sb.String()

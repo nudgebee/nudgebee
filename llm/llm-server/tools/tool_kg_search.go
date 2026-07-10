@@ -40,7 +40,8 @@ func (t KGSearchNodesTool) Description() string {
 		`LoadBalancer, BackendPool, Storage, VPC, SecurityGroup, Subnet, NetworkInterface, RouteTable, CloudResource, InfraStack; ` +
 		`ContainerRegistry, ContainerImage, Artifact, DNSZone, DNSRecord, CDN, NetworkGateway, PrivateEndpoint, APIGateway, SecretVault, EncryptionKey, MonitoringService, LogAggregator, ServerlessFunction, ManagedCluster, BackupVault, BackupPolicy, PublicIP, SecurityService, EmailService, AIService, ServiceIdentity; ` +
 		`K8sService, Ingress, NetworkPolicy, ConfigMap, K8sSecret, PersistentVolumeClaim, PersistentVolume; ` +
-		`HelmChart, HelmRelease, Configuration, Repository.`
+		`HelmChart, HelmRelease, Configuration, Repository. ` +
+		`Input JSON: {"query":"redis% | exact", "node_types":["Workload"], "namespace":"...", "source":"k8s|aws|gcp|azure", "labels":"{\"app\":\"x\"}", "account_ids":[...], "limit":20} — at least one filter is required (` + "`query`" + ` alone works, or ` + "`node_types`" + `/` + "`namespace`" + ` without a query).`
 }
 
 func (t KGSearchNodesTool) InputSchema() core.ToolSchema {

@@ -35,7 +35,7 @@ func (m DatadogSoftwareCatalogTool) GetType() toolcore.NBToolType {
 }
 
 func (m DatadogSoftwareCatalogTool) Description() string {
-	return `Retrieves a list of entities from the Datadog Software Catalog. Input can be a query string to filter entities.`
+	return `Retrieves entities from the Datadog Software Catalog. Input is optional space-separated key:value tag filters (e.g. "env:prod team:payments"); non key:value tokens are ignored.`
 }
 
 func (m DatadogSoftwareCatalogTool) InputSchema() toolcore.ToolSchema {

@@ -37,7 +37,7 @@ func (t AzureCliTool) Description() string {
 		**Usage:**
 
 		* **Prioritize this tool:**  When interacting with Azure, use this tool to retrieve information or perform actions.
-		* **Input:**  A valid 'az' CLI command string.  Include necessary options and arguments.
+		* **Input:**  A valid 'az' CLI command string.  Include necessary options and arguments. 'login'/'logout' and 'account set|clear|import' are blocked.
 		* **Output:**  The raw output of the executed 'az' CLI command.
 
 		**Examples:**

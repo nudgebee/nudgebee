@@ -53,6 +53,11 @@ func (m LoadSkillsTool) GetType() core.NBToolType {
 }
 
 func (m LoadSkillsTool) InputSchema() core.ToolSchema {
+	// One canonical name in the schema: 'skill_name', mandatory. Call() still
+	// silently accepts 'skill_names' and 'skills' as legacy compat (see
+	// ParseSkillName), but the LLM-facing contract only teaches the one shape
+	// to prevent alias sprawl across every tool. Once DB shows zero
+	// skill_names/skills usage the fallback drops in a followup.
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
@@ -778,8 +783,14 @@ func (m LoadSkillsTool) ParseSkillName(input core.NBToolCallRequest) string {
 	if val, ok := input.Arguments["skill_name"]; ok {
 		skillName = extractName(val)
 	} else if val, ok := input.Arguments["skill_names"]; ok {
+		// Legacy alias: schema-side dropped 2026-07-10 (PR #31271). Kept in
+		// Call() as a silent compat shim so historical LLM shapes still work
+		// during the transition. Remove once DB shows zero calls landing on
+		// this branch — track via metrics or a periodic sweep of
+		// llm_conversation_tool_calls.parameters. Target: 2026-08-01.
 		skillName = extractName(val)
 	} else if val, ok := input.Arguments["skills"]; ok {
+		// Legacy alias — same rationale as 'skill_names' above.
 		skillName = extractName(val)
 	}
 
