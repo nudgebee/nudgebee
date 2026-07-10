@@ -36,7 +36,12 @@ ENV PATH="${CONDA_DIR}/bin:${CONDA_DIR}/envs/myenv/bin:$PATH"
 # posix-libc-utils provides `ldd` — Wolfi ships glibc but not the ldd wrapper,
 # which the miniforge installer greps for its GLIBC-version pre-check (arch-
 # independent, so no per-arch dynamic-linker shim needed).
-RUN apk add --no-cache bash libgomp libstdc++ bzip2 ca-certificates curl posix-libc-utils
+# libmagic: rag-server's `unstructured` uses python-magic for file-type
+# detection, which ctypes-dlopens libmagic.so by name at runtime (invisible to
+# ldd). Wolfi doesn't ship it by default; the package includes the magic.mgc
+# database too. (debian:trixie-slim didn't ship it either, so unstructured was
+# on a weaker fallback there — this is strictly better.)
+RUN apk add --no-cache bash libgomp libstdc++ bzip2 ca-certificates curl posix-libc-utils libmagic
 
 RUN if [ "$TARGETARCH" = "arm64" ]; then MF_ARCH=aarch64; else MF_ARCH=x86_64; fi && \
     curl -fsSL "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-${MF_ARCH}.sh" -o miniforge.sh && \
