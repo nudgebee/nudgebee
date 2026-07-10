@@ -2,7 +2,13 @@ FROM alpine:3.22
 
 # Refresh OS packages to the latest patch level (alpine:3.19 was EOL — no more
 # security updates; 3.22 is current). apk upgrade keeps subsequent rebuilds fresh.
-RUN apk upgrade --no-cache
+# OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's
+# cache key so BuildKit re-runs apk upgrade and pulls current Alpine security
+# patches — its registry cache (mode=max) otherwise serves a stale package layer
+# forever. Committed (not a build-arg) so each refresh is a reviewable, revertable
+# diff; bump when the Trivy scan flags a stale package (e.g. c-ares CVE-2026-33630).
+ARG OS_PKG_EPOCH=2026-W28
+RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" && apk upgrade --no-cache
 
 # Install system deps + AWS CLI
 RUN apk add --no-cache \

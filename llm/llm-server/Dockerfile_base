@@ -41,7 +41,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 # releases — the tag lags upstream, so without it the image (and llm-server, which
 # builds FROM it) inherits ~90 fixable OS CVEs. DEBIAN_FRONTEND=noninteractive is
 # already set above, so upgrade won't prompt.
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+# OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's
+# cache key so BuildKit re-runs the apt upgrade/install and pulls current ubuntu
+# security patches — its registry cache (mode=max) otherwise serves a stale
+# package layer forever. Committed (not a build-arg) so each refresh is a
+# reviewable, revertable diff; bump when the Trivy scan flags a stale package
+# (e.g. gzip CVE-2026-41991, tar CVE-2025-45582).
+ARG OS_PKG_EPOCH=2026-W28
+RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
+    && apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
     wget \

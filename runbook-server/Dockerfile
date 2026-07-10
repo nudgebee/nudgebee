@@ -43,7 +43,14 @@ FROM alpine:3.22
 # - traceroute: For path analysis
 # - nodejs: For local script execution (javascript language)
 # - icu-libs, lttng-ust: Required by PowerShell runtime
-RUN apk add --no-cache iputils ca-certificates traceroute nodejs \
+# OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's
+# cache key so BuildKit re-runs the apk install and pulls current Alpine security
+# patches instead of a stale cached layer. Committed (not a build-arg) so each
+# refresh is a reviewable, revertable diff; bump when the Trivy scan flags a stale
+# package (e.g. c-ares CVE-2026-33630).
+ARG OS_PKG_EPOCH=2026-W28
+RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
+    && apk add --no-cache iputils ca-certificates traceroute nodejs \
     icu-libs lttng-ust \
     && adduser -D -g '' appuser
 
