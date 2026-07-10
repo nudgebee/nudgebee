@@ -1134,12 +1134,12 @@ const CustomTable = ({
                 }
                 return (
                   <TableCell
-                    key={head?.name || head}
+                    key={head?.name ?? head}
                     align={alignment || 'left'}
                     sx={resizeEnabled ? { position: 'relative', overflow: 'hidden' } : undefined}
                     width={thWidth}
-                    data-export-enabled={!!(head.name || head) && head.exportEnabled}
-                    data-export-data={head.name || head}
+                    data-export-enabled={!!(head.name ?? head) && head.exportEnabled}
+                    data-export-data={head.name ?? head}
                   >
                     {(sort?.name && head.name == sort?.name && head?.sortEnabled) || head?.sortEnabled ? (
                       <Box

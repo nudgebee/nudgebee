@@ -28,15 +28,34 @@ export const allNodesTableHeaders = ['ID/Name', 'Created', 'Type', 'Pricing', 'P
 export const topWorkloadsTableHeaders = ['ID Name', 'Created', 'Type', 'Pricing', 'Price', 'CPU Cost', 'CPU', 'Memory', 'Status', ''];
 export const topNamespaceTableHeaders = ['Date', 'Workloads', 'CPU', 'GiB', 'CPU', 'GiB', 'Total cost', ''];
 export const podsTableHeaders = ['Date', 'Pods', 'CPU', 'GiB', 'CPU', 'GiB', 'Total cost', ''];
-export const clusterIssuesHeader = ['Pod Name', 'Status', 'Message', 'Namespace', 'Type', 'Age', 'Severity', ''];
-export const podExceptionHeader = ['Pod Name', 'Status', 'Controlled By', 'Message', 'Namespace', 'Restart Count', 'Age', 'Severity', ''];
+export const clusterIssuesHeader = [
+  { name: 'Pod Name', width: '20%' },
+  { name: 'Status', width: '9%' },
+  { name: 'Message', width: '24%' },
+  { name: 'Namespace', width: '12%' },
+  { name: 'Type', width: '8%' },
+  { name: 'Age', width: '9%' },
+  { name: 'Severity', width: '7%' },
+  { name: '', width: '11%' },
+];
+export const podExceptionHeader = [
+  { name: 'Pod Name', width: '18%' },
+  { name: 'Status', width: '8%' },
+  { name: 'Controlled By', width: '8%' },
+  { name: 'Message', width: '20%' },
+  { name: 'Namespace', width: '10%' },
+  { name: 'Restart Count', width: '8%' },
+  { name: 'Age', width: '9%' },
+  { name: 'Severity', width: '7%' },
+  { name: '', width: '12%' },
+];
 export const nodeExceptionHeader = [
-  'Node Name',
-  { name: 'Message', width: '30%' },
-  { name: 'Type', width: '5%' },
-  'Status',
-  { name: 'Age', width: '5%' },
-  'Severity',
+  { name: 'Node Name', width: '24%' },
+  { name: 'Message', width: '34%' },
+  { name: 'Type', width: '10%' },
+  { name: 'Status', width: '12%' },
+  { name: 'Age', width: '10%' },
+  { name: 'Severity', width: '10%' },
 ];
 
 export const podsSummaryTableHeaders = ['Date', 'Pods', 'Cost per Pod', 'CPU', 'GiB', 'CPU', 'GiB', 'Total cost'];

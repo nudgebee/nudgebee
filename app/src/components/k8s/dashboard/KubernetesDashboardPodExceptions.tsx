@@ -176,6 +176,8 @@ const KubernetesDashboardPodExceptions: React.FC<KubernetesTableProps> = ({ id, 
                     additionalContent={makeAccountClicklable(e?.account_id, e?.cluster)}
                     hideIcon={true}
                     cursorPointer
+                    showAutoEllipsis
+                    maxWidth='100%'
                     font={undefined}
                     region={undefined}
                     namespace={undefined}
@@ -196,10 +198,11 @@ const KubernetesDashboardPodExceptions: React.FC<KubernetesTableProps> = ({ id, 
                       additionalContent={undefined}
                       hideIcon={true}
                       cursorPointer={false}
+                      showAutoEllipsis
                       font={undefined}
                       region={undefined}
                       namespace={undefined}
-                      maxWidth='150px'
+                      maxWidth='100%'
                       namespaceFont={undefined}
                     />
                     {existingTicket && <TicketLink ticketURL={existingTicket.url} ticketID={existingTicket.ticket_id} />}
@@ -208,7 +211,7 @@ const KubernetesDashboardPodExceptions: React.FC<KubernetesTableProps> = ({ id, 
               });
               data.push({ text: e?.subject_namespace });
               data.push({ text: e?.restart_count || '-' });
-              data.push({ component: <Datetime baseDate={new Date()} value={e?.starts_at} /> });
+              data.push({ component: <Datetime baseDate={new Date()} value={e?.starts_at} sx={{ whiteSpace: 'nowrap' }} /> });
               data.push({ component: <SeverityIcon level={e?.priority} />, data: e?.priority });
               data.push({
                 component: (

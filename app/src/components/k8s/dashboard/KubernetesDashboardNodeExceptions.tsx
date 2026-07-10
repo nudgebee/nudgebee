@@ -118,11 +118,12 @@ const KubernetesDashboardNodeExceptions: React.FC<KubernetesTable2Props> = ({ id
                   additionalContent={makeAccountClicklable(e?.account_id, e?.cluster)}
                   hideIcon={true}
                   cursorPointer
+                  showAutoEllipsis
                   font={undefined}
                   region={undefined}
                   namespace={undefined}
                   namespaceFont={undefined}
-                  maxWidth={'350px'}
+                  maxWidth={'100%'}
                 />
               ),
               drilldownQuery: { workloadName: e?.workload_name, namespaceName: e?.namespace_name },
@@ -135,18 +136,18 @@ const KubernetesDashboardNodeExceptions: React.FC<KubernetesTable2Props> = ({ id
                   additionalContent={undefined}
                   hideIcon={true}
                   cursorPointer={false}
+                  showAutoEllipsis
                   font={undefined}
                   region={undefined}
                   namespace={undefined}
                   namespaceFont={undefined}
-                  maxWidth={'400px'}
-                  showTruncatedString
+                  maxWidth={'100%'}
                 />
               ),
             });
             data.push({ text: e?.finding_type });
             data.push({ component: <CustomLabels margin='auto' text={e?.status} /> });
-            data.push({ component: <Datetime baseDate={new Date()} value={e?.starts_at} /> });
+            data.push({ component: <Datetime baseDate={new Date()} value={e?.starts_at} sx={{ whiteSpace: 'nowrap' }} /> });
             data.push({ component: <SeverityIcon severityType={e?.priority} />, data: e?.priority });
             return data;
           });
