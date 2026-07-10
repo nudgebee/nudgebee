@@ -337,7 +337,7 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 	// (postRefinementToolIndex=0), any compression here is window-pressure.
 	windowPressureActive := total > activationChars
 	if scratchpadCtx != nil {
-		scratchpadCtx.Tracker.SetCompressionContext(windowPressureActive, 0)
+		scratchpadCtx.Tracker.SetCompressionContext(windowPressureActive)
 	}
 
 	// Compress from oldest if over budget.

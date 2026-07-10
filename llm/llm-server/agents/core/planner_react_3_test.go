@@ -1059,7 +1059,7 @@ func TestReAct3BuildScratchpad_CompressionGatedByWindow(t *testing.T) {
 		assert.Contains(t, scratchpad, "OBS-MARKER-00")
 		assert.Contains(t, scratchpad, strings.Repeat("x", 700))
 		// And nothing should have been marked compressed.
-		assert.Empty(t, collectCompressionEvents(steps, false, 0), "no compression should occur under budget")
+		assert.Empty(t, collectCompressionEvents(steps, false), "no compression should occur under budget")
 	})
 
 	t.Run("over budget compresses older observations", func(t *testing.T) {
@@ -1068,7 +1068,7 @@ func TestReAct3BuildScratchpad_CompressionGatedByWindow(t *testing.T) {
 		planner := &NBReActPlanner3{}
 		_ = planner.buildScratchpad(steps)
 
-		events := collectCompressionEvents(steps, true /*windowPressureActive*/, 0)
+		events := collectCompressionEvents(steps, true /*windowPressureActive*/)
 		assert.NotEmpty(t, events, "older observations should be compressed when over budget")
 		// Every event in this scenario is window-pressure (no refinement set).
 		for _, e := range events {
@@ -1077,24 +1077,55 @@ func TestReAct3BuildScratchpad_CompressionGatedByWindow(t *testing.T) {
 		}
 	})
 
-	t.Run("pre-refinement steps compress even under budget", func(t *testing.T) {
-		// Pre-refinement steps must always be compressed to keep a refined
-		// investigation focused — independent of window pressure. Post-refinement
-		// steps stay full while under budget.
+	t.Run("under budget: no compression (#33897)", func(t *testing.T) {
+		// Post-#33897: window pressure is the only compression trigger. The
+		// refinement-focus path (compress-all-pre-rejection-steps regardless
+		// of size) was removed after 7d of prod data showed it fired 103 times
+		// with 0 window-pressure events — over half of those on sub-1KB
+		// observations where the LLM summarization cost exceeded byte savings.
+		// The LLM leans on critique feedback text (not observation truncation)
+		// to redirect attention on small conversations.
 		config.Config.LlmServerAgentMaxScratchpadChars = 5_000_000 // under budget → compression inactive
 		steps := makeSteps()
-		planner := &NBReActPlanner3{postRefinementToolIndex: 6}
+		planner := &NBReActPlanner3{compressionTracker: NewCompressionTracker()}
 		_ = planner.buildScratchpad(steps)
 
-		events := collectCompressionEvents(steps, false /*no window pressure*/, 6)
-		assert.NotEmpty(t, events, "pre-refinement steps must compress regardless of window pressure")
-		// Every event in this scenario classifies as refinement-focus.
-		for _, e := range events {
-			assert.Equal(t, compressionCauseRefinementFocus, e.cause,
-				"compression under budget but with refinement index set should classify as refinement-focus")
+		for i := range steps {
+			assert.Empty(t, steps[i].CompressedObservation,
+				"step %d must stay full under budget — no compression trigger fires below window pressure (#33897)", i)
 		}
-		for i := 6; i < len(steps); i++ {
-			assert.Empty(t, steps[i].CompressedObservation, "post-refinement step %d should stay full under budget", i)
+		assert.False(t, planner.compressionTracker.windowPressureActive,
+			"under budget the tracker must not stamp window pressure")
+	})
+
+	t.Run("over budget: older steps compressed, last-10 window stays full (#33897)", func(t *testing.T) {
+		// Under real window pressure the recent-window rule kicks in: the last
+		// recentStepsFullContext (10) steps stay full, everything older gets
+		// compressed. Post-#33897 there's no special-case for a
+		// postRefinementToolIndex — the recent-window rule alone decides.
+		config.Config.LlmServerAgentMaxScratchpadChars = 200 // tiny budget forces compression
+		steps := makeSteps()
+		planner := &NBReActPlanner3{compressionTracker: NewCompressionTracker()}
+		_ = planner.buildScratchpad(steps)
+
+		// makeSteps produces 15 steps. Under pressure the last 10 (indices 5-14)
+		// stay full, and the older ones (0-4) get compressed.
+		totalSteps := len(steps)
+		if !assert.GreaterOrEqual(t, totalSteps, recentStepsFullContext,
+			"test requires >recentStepsFullContext steps for the recent-window to have an effect") {
+			return
+		}
+		for i := 0; i < totalSteps-recentStepsFullContext; i++ {
+			assert.NotEmpty(t, steps[i].CompressedObservation,
+				"older step %d must be compressed under window pressure", i)
+		}
+		assert.True(t, planner.compressionTracker.windowPressureActive)
+
+		events := collectCompressionEvents(steps, true)
+		assert.NotEmpty(t, events)
+		for _, e := range events {
+			assert.Equal(t, compressionCauseWindowPressure, e.cause,
+				"post-#33897 the only real cause is window pressure")
 		}
 	})
 
@@ -1176,9 +1207,8 @@ func TestReAct3BuildScratchpadParallelActions(t *testing.T) {
 
 func TestReAct3MarshalUnmarshal(t *testing.T) {
 	planner := &NBReActPlanner3{
-		Notebook:                "Some important findings here",
-		refinementAttempts:      1,
-		postRefinementToolIndex: 3,
+		Notebook:           "Some important findings here",
+		refinementAttempts: 1,
 	}
 
 	data, err := planner.Marshal()
@@ -1190,7 +1220,27 @@ func TestReAct3MarshalUnmarshal(t *testing.T) {
 
 	assert.Equal(t, "Some important findings here", planner2.Notebook)
 	assert.Equal(t, 1, planner2.refinementAttempts)
-	assert.Equal(t, 3, planner2.postRefinementToolIndex)
+}
+
+// TestReAct3UnmarshalDropsLegacyPostRefinementToolIndex is a rollback-safety
+// guard: state blobs persisted by pre-#33897 binaries contained a
+// PostRefinementToolIndex field. Post-#33897 Unmarshal must silently ignore
+// that key rather than error, so old state deserializes cleanly onto the new
+// binary. Uses a hand-authored JSON blob so the test doesn't depend on the
+// old struct still existing in Go source.
+func TestReAct3UnmarshalDropsLegacyPostRefinementToolIndex(t *testing.T) {
+	legacyState := []byte(`{
+		"notebook": "legacy notebook",
+		"refinementAttempts": 2,
+		"postRefinementToolIndex": 5,
+		"notebookUpdateCount": 3
+	}`)
+	planner := &NBReActPlanner3{}
+	err := planner.Unmarshal(legacyState)
+	assert.NoError(t, err, "legacy state with PostRefinementToolIndex must unmarshal cleanly")
+	assert.Equal(t, "legacy notebook", planner.Notebook)
+	assert.Equal(t, 2, planner.refinementAttempts)
+	assert.Equal(t, 3, planner.notebookUpdateCount)
 }
 
 // --- XML Robustness Tests ---

@@ -478,6 +478,10 @@ type appConfig struct {
 	// observations only kicks in as the scratchpad approaches the window. Gating on the real
 	// window — instead of a flat step count — stops compression from firing on small
 	// conversations. Default 0.75; values <=0 or >=1 fall back to the default.
+	//
+	// Same gate governs the refinement-focus compression path (#33897): when the critiquer
+	// rejects an answer, pre-refinement observations are prioritized (compressed FIRST
+	// under pressure) but no compression fires unless this activation threshold is crossed.
 	LlmServerScratchpadCompressionActivationFraction float64 `mapstructure:"llm_server_scratchpad_compression_activation_fraction"`
 	// LlmServerSubAgentEvidenceEnabled attaches a small, budget-bounded manifest of the
 	// concrete tool calls a sub-agent actually ran (tool + input + short output digest) to

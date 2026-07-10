@@ -45,10 +45,9 @@ type NBReActPlanner3 struct {
 		feedback string
 		answer   string
 	}
-	postRefinementToolIndex int
-	tools                   []toolcore.NBTool
-	enableCritique          bool
-	Notebook                string
+	tools          []toolcore.NBTool
+	enableCritique bool
+	Notebook       string
 
 	// hypothesisModeEnabled mirrors the prompt-build gate (top-level +
 	// notebook-enabled investigation orchestrator). Carried on the planner so
@@ -270,7 +269,6 @@ func (o *NBReActPlanner3) Marshal() ([]byte, error) {
 	state := map[string]any{
 		"notebook":                 o.Notebook,
 		"refinementAttempts":       o.refinementAttempts,
-		"postRefinementToolIndex":  o.postRefinementToolIndex,
 		"notebookUpdateCount":      o.notebookUpdateCount,
 		"notebookLastUpdateTurn":   o.notebookLastUpdateTurn,
 		"notebookFirstUpdateTurn":  o.notebookFirstUpdateTurn,
@@ -285,7 +283,6 @@ func (o *NBReActPlanner3) Unmarshal(data []byte) error {
 	var state struct {
 		Notebook                 string `json:"notebook"`
 		RefinementAttempts       int    `json:"refinementAttempts"`
-		PostRefinementToolIndex  int    `json:"postRefinementToolIndex"`
 		NotebookUpdateCount      int    `json:"notebookUpdateCount"`
 		NotebookLastUpdateTurn   *int   `json:"notebookLastUpdateTurn"`
 		NotebookFirstUpdateTurn  *int   `json:"notebookFirstUpdateTurn"`
@@ -298,7 +295,10 @@ func (o *NBReActPlanner3) Unmarshal(data []byte) error {
 	}
 	o.Notebook = state.Notebook
 	o.refinementAttempts = state.RefinementAttempts
-	o.postRefinementToolIndex = state.PostRefinementToolIndex
+	// Any legacy PostRefinementToolIndex in the state blob is ignored — the
+	// refinement-focus compression path was removed in #33897, so the field
+	// has no runtime consumer. Old state deserializes cleanly (unknown JSON
+	// keys are dropped by common.UnmarshalJson).
 	o.notebookUpdateCount = state.NotebookUpdateCount
 	o.notebookStaleWarningsLog = state.NotebookStaleWarningsLog
 	o.notebookAgentID = state.NotebookAgentID
@@ -319,12 +319,11 @@ func (o *NBReActPlanner3) Unmarshal(data []byte) error {
 
 // buildScratchpad constructs the XML-formatted history of tool calls and observations
 // for the LLM. It groups parallel actions (multiple actions from the same iteration)
-// together under a single thought, and applies semantic compression to older steps.
+// together under a single thought, and applies semantic compression to older steps
+// ONLY when the scratchpad approaches the model's context window. Below the activation
+// threshold every step keeps its full observation (subject to the per-observation hard
+// cap).
 //
-// postRefinementToolIndex controls compression granularity, NOT filtering:
-// steps before the index are always compressed (truncated), steps after get full context
-// up to the recent-steps window. This ensures the LLM always sees ALL tool observations
-// (even from before critique rejection) while keeping token usage manageable.
 // resolveMaxContextTokens returns the resolved model context window (tokens) for this
 // planner's request, or 0 when it can't be determined. Used to gate scratchpad
 // compression on real window pressure rather than a flat step count.
@@ -357,12 +356,10 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 	compressionActive := totalObsBytes > activationChars
 
 	// Stash the gating decision on the tracker so SaveCompressionVisibility
-	// can classify each event's cause (window-pressure vs refinement-focus)
-	// instead of defaulting to the misleading "context window" wording on the
-	// card. postRefinementToolIndex carries the always-on path; without this
-	// plumbing a 4-step / 7-KB conversation that hit the refinement-focused
-	// compression path was reported as "compressed to fit context window".
-	o.compressionTracker.SetCompressionContext(compressionActive, o.postRefinementToolIndex)
+	// classifies the event correctly. Refinement-focus compression was removed
+	// in #33897 — window pressure is now the only compression trigger, so the
+	// tracker no longer needs a postRefinementToolIndex.
+	o.compressionTracker.SetCompressionContext(compressionActive)
 
 	// Parallel prewarm: fire LLM summarizations for non-recent steps concurrently to
 	// avoid a sequential latency spike — but only when compression will actually run.
@@ -377,11 +374,12 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 	for i < len(intermediateSteps) {
 		step := intermediateSteps[i]
 		stepIndex++
-		// Steps before postRefinementToolIndex are ALWAYS compressed (pre-refinement —
-		// keep the refined investigation focused), independent of window pressure.
-		// Post-refinement steps keep full observations while compression is inactive
-		// (scratchpad well under the window), and otherwise use the recent-window heuristic.
-		isRecent := i >= o.postRefinementToolIndex && (!compressionActive || (totalSteps-stepIndex) < recentStepsFullContext)
+		// Compression gate (issue #33897): NOTHING is compressed until the scratchpad
+		// approaches the model's context window (compressionActive). Once it does, the
+		// last recentStepsFullContext (10) steps stay full — everything older gets
+		// compressed. Below the threshold, all steps stay full: the LLM leans on the
+		// critique feedback text to redirect attention, not observation truncation.
+		isRecent := !compressionActive || (totalSteps-stepIndex) < recentStepsFullContext
 
 		// Detect parallel group: consecutive steps with the same Log (thought).
 		// When react_3 emits multiple actions, they all share the same thought.
@@ -497,7 +495,7 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 		// no way to reach SetCompressionContext itself; without this stamp the
 		// visibility card lands as "cause not classified" — production-observed
 		// 2026-07-01 06:06 UTC on convo 650ba57d.
-		o.compressionTracker.SetCompressionContext(true, o.postRefinementToolIndex)
+		o.compressionTracker.SetCompressionContext(true)
 		scratchpad = o.compressScratchpad(scratchpad, hardCapChars, intermediateSteps)
 	}
 	return scratchpad
@@ -757,7 +755,7 @@ func (o *NBReActPlanner3) prewarmSummaries(intermediateSteps []NBAgentPlannerToo
 	for i < len(intermediateSteps) {
 		step := intermediateSteps[i]
 		stepIndex++
-		isRecent := i >= o.postRefinementToolIndex && (totalSteps-stepIndex) < recentStepsFullContext
+		isRecent := (totalSteps - stepIndex) < recentStepsFullContext
 
 		groupEnd := i + 1
 		for groupEnd < len(intermediateSteps) &&
@@ -1742,9 +1740,11 @@ func (o *NBReActPlanner3) Plan(
 				return nil, finish, nil
 			}
 
-			// Answer rejected — refine
+			// Answer rejected — refine. Prior to #33897 this also stamped a
+			// postRefinementToolIndex so subsequent scratchpad builds could force-
+			// compress pre-refinement observations; that path is removed —
+			// window pressure is now the only compression trigger.
 			o.refinementAttempts++
-			o.postRefinementToolIndex = len(intermediateSteps)
 			logger.Info("reactagent3: answer rejected by critique, refining", "feedback", feedback, "attempt", o.refinementAttempts)
 			o.refinementData = append(o.refinementData, struct {
 				feedback string
