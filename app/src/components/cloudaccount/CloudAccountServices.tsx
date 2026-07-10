@@ -501,6 +501,13 @@ const parseMaybeJSON = (val: unknown): unknown => {
 
 const isPlainObject = (val: unknown): val is Record<string, unknown> => val != null && typeof val === 'object' && !Array.isArray(val);
 
+// Meta fields stored as bare numbers whose unit is otherwise ambiguous in the UI.
+// AWS DescribeVolumes reports an EBS volume's `Size` in GiB (resource type "storage").
+// See issue #33869.
+const STORAGE_META_UNITS: Record<string, string> = { Size: 'GiB' };
+const getMetaFieldUnit = (resourceType: unknown, key: string, value: unknown): string =>
+  resourceType === 'storage' && typeof value === 'number' && STORAGE_META_UNITS[key] ? ` ${STORAGE_META_UNITS[key]}` : '';
+
 // Component to display detailed resource information
 const ResourceDetails = (props: { resourceData: IResourceDetail }) => {
   const [detailedResource, setDetailedResource] = useState<any>(null);
@@ -648,6 +655,7 @@ const ResourceDetails = (props: { resourceData: IResourceDetail }) => {
                 // Check if it's a date/timestamp field
                 const isDateField = key.toLowerCase().includes('time') || key.toLowerCase().includes('date');
                 const displayValue = isDateField && typeof value === 'string' ? new Date(value).toLocaleString() : String(value);
+                const unitSuffix = getMetaFieldUnit(detailedResource.type, key, value);
 
                 return (
                   <Box key={key} sx={{ minWidth: 0, overflow: 'hidden' }}>
@@ -659,7 +667,7 @@ const ResourceDetails = (props: { resourceData: IResourceDetail }) => {
                           <CopyButton text={displayValue} />
                         </Box>
                       ) : (
-                        <Text showAutoEllipsis value={displayValue} />
+                        <Text showAutoEllipsis value={`${displayValue}${unitSuffix}`} />
                       )}
                     </Box>
                   </Box>
