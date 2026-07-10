@@ -712,41 +712,52 @@ func EnrichWithPagerDutyIncident(sc *security.RequestContext, parsedPayload *cor
 		return
 	}
 
-	// PagerDuty race condition: webhook fires ~700ms after incident creation,
-	// but body.details may not be populated yet. Retry once after a short delay.
-	if incident.Body.Details == nil {
-		sc.GetLogger().Info("pagerdutywebhook: incident body.details is null, retrying after delay",
-			"incident_id", parsedPayload.EventId)
-		time.Sleep(2 * time.Second)
-		retryIncident, retryErr := GetPagerDutyIncident(password, parsedPayload.EventId)
-		if retryErr == nil && retryIncident.Body.Details != nil {
-			incident = retryIncident
-		}
-	}
+	// PagerDuty attaches the CEF (body.details, which carries the Alertmanager Labels
+	// block used for deterministic subject resolution) asynchronously — it is often
+	// still null when this webhook fires (~1s after incident creation) and can take
+	// several seconds to populate. Poll until it does: refetch the incident (the
+	// __pd_cef_payload format extractBodyDetails prefers), and if still null fall back
+	// to the incident's alerts endpoint, which carries the same firing text in
+	// body.details / body.cef_details.
+	//
+	// This runs on the async webhook processor (not the PagerDuty-facing HTTP handler,
+	// which has already stored the payload and returned), so the wait never delays
+	// webhook delivery or risks PD re-delivery. The backoff sleeps total ~6s across the
+	// attempts; the true worst case is longer when the PD API itself is slow, since each
+	// attempt makes up to two GETs that each carry a 10s client timeout. When the CEF
+	// never arrives in time, the LLM subject resolver remains the final fallback.
+	const maxBodyDetailsRetries = 3
+	for attempt := 1; incident.Body.Details == nil && attempt <= maxBodyDetailsRetries; attempt++ {
+		sc.GetLogger().Info("pagerdutywebhook: incident body.details is null, retrying",
+			"incident_id", parsedPayload.EventId, "attempt", attempt)
+		time.Sleep(time.Duration(attempt) * time.Second)
 
-	// Fallback: if still null after retry, try the alerts endpoint
-	// which contains the CEF payload with Alertmanager labels
-	if incident.Body.Details == nil {
-		sc.GetLogger().Warn("pagerdutywebhook: incident body.details still null after retry, trying alerts endpoint",
-			"incident_id", parsedPayload.EventId)
+		retryIncident, retryErr := GetPagerDutyIncident(password, parsedPayload.EventId)
+		if retryErr != nil {
+			sc.GetLogger().Warn("pagerdutywebhook: incident refetch failed", "attempt", attempt, "error", retryErr)
+		} else if retryIncident.Body.Details != nil {
+			incident = retryIncident
+			break
+		}
+
 		alerts, alertErr := GetPagerDutyIncidentAlerts(password, parsedPayload.EventId)
 		if alertErr != nil {
-			sc.GetLogger().Warn("pagerdutywebhook: alerts endpoint failed", "error", alertErr)
-		} else {
-			for _, alert := range alerts {
-				// PD alerts endpoint returns CEF data in both body.details and body.cef_details.
-				// Check details first, then fall back to cef_details.
-				if alert.Body.Details != nil {
-					incident.Body = alert.Body
-					break
+			sc.GetLogger().Warn("pagerdutywebhook: alerts endpoint failed", "attempt", attempt, "error", alertErr)
+			continue
+		}
+		for _, alert := range alerts {
+			// PD alerts endpoint returns CEF data in both body.details and body.cef_details.
+			// Check details first, then fall back to cef_details.
+			if alert.Body.Details != nil {
+				incident.Body = alert.Body
+				break
+			}
+			if alert.Body.CefDetails != nil {
+				incident.Body.Details = alert.Body.CefDetails
+				if incident.Body.Type == "" {
+					incident.Body.Type = alert.Body.Type
 				}
-				if alert.Body.CefDetails != nil {
-					incident.Body.Details = alert.Body.CefDetails
-					if incident.Body.Type == "" {
-						incident.Body.Type = alert.Body.Type
-					}
-					break
-				}
+				break
 			}
 		}
 	}
