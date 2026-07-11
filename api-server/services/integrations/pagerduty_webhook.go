@@ -3461,7 +3461,14 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 			if val == "" {
 				continue
 			}
-			if strings.Contains(val, "kube-state-metrics") {
+			// Skip the kube-state-metrics EXPORTER only (exact match). A substring
+			// match also drops a helm-prefixed real workload like
+			// "victoria-kube-state-metrics" — so a KubeDeploymentReplicasMismatch
+			// about the KSM deployment itself lost every deterministic candidate
+			// and fell to the LLM. The bare exporter name never names a real
+			// workload here, so exact-match keeps the guard while letting the
+			// actual subject through.
+			if val == "kube-state-metrics" {
 				continue
 			}
 			parsedPayload.EventSubjectName = val
@@ -3554,7 +3561,12 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 			if val == "" {
 				continue
 			}
-			if strings.Contains(val, "kube-state-metrics") {
+			// Exact match, not substring: filter the bare kube-state-metrics
+			// exporter without dropping a helm-prefixed real workload
+			// (e.g. pod=victoria-kube-state-metrics), which is the deterministic
+			// subject when the alert is about the KSM deployment itself. The
+			// scrape-target keys below are still guarded by isPrometheusScrapeJob.
+			if val == "kube-state-metrics" {
 				continue
 			}
 			// `job`/`nb_alert_job` — and the service keys — can carry the prometheus

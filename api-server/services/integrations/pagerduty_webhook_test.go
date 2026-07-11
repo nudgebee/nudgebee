@@ -356,6 +356,40 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 			expectedSubject: "",
 		},
 		{
+			// KubeDeploymentReplicasMismatch about the kube-state-metrics
+			// deployment itself. The bare `deployment=kube-state-metrics` exporter
+			// name is still skipped, but the helm-prefixed pod label names the real
+			// workload and resolves deterministically instead of falling to the LLM.
+			// Regression test for the substring guard dropping every candidate.
+			name:           "KSM deployment alert resolves via prefixed pod",
+			initialSubject: "",
+			labels: map[string]string{
+				"deployment": "kube-state-metrics",
+				"pod":        "victoria-kube-state-metrics",
+				"service":    "victoria-kube-state-metrics",
+				"container":  "kube-state-metrics",
+				"namespace":  "victoria",
+				"job":        "kube-state-metrics",
+			},
+			title:             "Deployment has not matched the expected number of replicas.",
+			expectedSubject:   "victoria-kube-state-metrics",
+			expectedNamespace: "victoria",
+		},
+		{
+			// Guard intact: when every candidate is the bare exporter name, exact
+			// match still filters them all and nothing resolves (LLM fallback).
+			name:           "bare kube-state-metrics labels are still filtered",
+			initialSubject: "",
+			labels: map[string]string{
+				"deployment": "kube-state-metrics",
+				"pod":        "kube-state-metrics",
+				"container":  "kube-state-metrics",
+				"job":        "kube-state-metrics",
+			},
+			title:           "KubeStateMetricsListErrors",
+			expectedSubject: "",
+		},
+		{
 			// container_id label carries /k8s/<ns>/<pod>/<workload>; the workload
 			// (4th segment) is the subject, not the ReplicaSet-hashed pod.
 			name:              "container_id k8s path resolves workload",
