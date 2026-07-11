@@ -1,0 +1,10 @@
+# Local env (secrets) — never commit; .env.example is the template.
+.env
+
+# Build output
+/llm-gateway
+*.out
+*.test
+
+# Test artifacts (make test)
+/testresults/

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: llm-gateway
+description: NB AI Gateway — everyone-facing LLM passthrough with auth, metering, routing, and rate limits
+type: application
+version: 0.1.0
+appVersion: "0.0.1"
