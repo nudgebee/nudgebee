@@ -16,7 +16,8 @@ ARG OS_PKG_EPOCH
 
 # Bitnami images run as non-root (uid 1001); switch to root to patch, then back.
 USER root
-RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
+RUN export DEBIAN_FRONTEND=noninteractive \
+    && echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     && apt-get update \
     && apt-get upgrade -y \
     && apt-get clean \
