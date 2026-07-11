@@ -6,8 +6,8 @@ import {
   loginAndNavigateToNewWorkflow,
   pasteAndApplyWorkflowJson,
   saveNewWorkflow,
-  setWorkflowActiveAndSave,
   runWorkflowWithGraphQLValidation,
+  deleteCreatedWorkflow,
   dryRunAction,
   closeActionPanel,
 } from "./workflowHelper";
@@ -55,6 +55,7 @@ test("Automation workflow Email", async ({ page }) => {
   await closeActionPanel(page, locators);
 
   await saveNewWorkflow(page, locators, workflowName);
-  await setWorkflowActiveAndSave(page, locators);
   await runWorkflowWithGraphQLValidation(page, locators, "Automation workflow Email");
+
+  await deleteCreatedWorkflow(page, locators, workflowName);
 });

@@ -22,7 +22,7 @@ const pinotColumnAutogenFunc = "listPinotColumns"
 // pinotColumnAutogenDeps lists every form field whose value influences the
 // column list. The frontend watches these and refetches suggestions when
 // any of them changes.
-var pinotColumnAutogenDeps = []string{"pinot_url", "pinot_table", "auth_type", "username", "password", "bearer_token"}
+var pinotColumnAutogenDeps = []string{"pinot_url", "pinot_table", "auth_type", "username", "password", "bearer_token", "pinot_tls_skip_verify"}
 
 func init() {
 	core.RegisterIntegrationWithSource("pinot", "user", Pinot{})
@@ -150,6 +150,12 @@ func (p Pinot) ConfigSchema() core.IntegrationSchema {
 				AutoGenerateFunc: "",
 				Priority:         10,
 			},
+			"pinot_tls_skip_verify": {
+				Type:        core.ToolSchemaTypeBoolean,
+				Description: "Skip TLS certificate verification (only for self-signed Pinot deployments — leaves credentials vulnerable to MITM)",
+				Default:     false,
+				Priority:    9,
+			},
 		},
 	}
 }
@@ -228,10 +234,15 @@ func (p Pinot) ValidateConfig(sc *security.SecurityContext, config []core.Integr
 		headers["Authorization"] = authHeader
 	}
 
+	var tlsOpt []common.HttpOption
+	if strings.EqualFold(strings.TrimSpace(configMap["pinot_tls_skip_verify"]), "true") {
+		tlsOpt = append(tlsOpt, common.HttpWithInsecureSkipVerify())
+	}
+
 	// Step 1: Connectivity — GET /health
 	healthResp, err := common.HttpGet(
 		fmt.Sprintf("%s/health", pinotURL),
-		common.HttpWithInsecureSkipVerify(),
+		tlsOpt...,
 	)
 	if err != nil {
 		return []error{fmt.Errorf("cannot reach Pinot at %s: %w", pinotURL, err)}
@@ -249,10 +260,10 @@ func (p Pinot) ValidateConfig(sc *security.SecurityContext, config []core.Integr
 	}
 
 	// Step 2: Schema fetch — GET /schemas/{table}
+	schemaOpts := append([]common.HttpOption{common.HttpWithHeaders(headers)}, tlsOpt...)
 	schemaResp, err := common.HttpGet(
 		fmt.Sprintf("%s/schemas/%s", pinotURL, table),
-		common.HttpWithHeaders(headers),
-		common.HttpWithInsecureSkipVerify(),
+		schemaOpts...,
 	)
 	if err != nil {
 		return []error{fmt.Errorf("failed to fetch schema for table %q: %w", table, err)}
@@ -314,7 +325,7 @@ func (p Pinot) ValidateConfig(sc *security.SecurityContext, config []core.Integr
 				effectiveGoFmt := pinotJavaToGoFormat(javaFmt)
 				if effectiveGoFmt == "" {
 					// Java→Go conversion failed; sample a row and try to auto-detect.
-					detected, sErr := probePinotTimestampFormat(pinotURL, table, tsCol, headers)
+					detected, sErr := probePinotTimestampFormat(pinotURL, table, tsCol, headers, tlsOpt)
 					if sErr != nil || detected == "" {
 						errs = append(errs, fmt.Errorf(
 							"timestamp column %q uses SIMPLE_DATE_FORMAT %q and auto-detection from a sample row failed: %v",
@@ -329,7 +340,7 @@ func (p Pinot) ValidateConfig(sc *security.SecurityContext, config []core.Integr
 		numericTypes := map[string]bool{"LONG": true, "INT": true, "DOUBLE": true, "FLOAT": true, "BIG_DECIMAL": true}
 		switch {
 		case tsInfo.DataType == "STRING" || tsInfo.DataType == "TEXT":
-			detected, sErr := probePinotTimestampFormat(pinotURL, table, tsCol, headers)
+			detected, sErr := probePinotTimestampFormat(pinotURL, table, tsCol, headers, tlsOpt)
 			if sErr != nil || detected == "" {
 				errs = append(errs, fmt.Errorf(
 					"timestamp column %q is %s type: could not auto-detect format from a sample row: %v",
@@ -416,10 +427,13 @@ func listPinotColumns(_ *security.RequestContext, formValues map[string]any) (co
 		headers["Authorization"] = authHeader
 	}
 
+	listOpts := []common.HttpOption{common.HttpWithHeaders(headers)}
+	if boolFromForm(formValues, "pinot_tls_skip_verify") {
+		listOpts = append(listOpts, common.HttpWithInsecureSkipVerify())
+	}
 	resp, err := common.HttpGet(
 		fmt.Sprintf("%s/schemas/%s", pinotURL, table),
-		common.HttpWithHeaders(headers),
-		common.HttpWithInsecureSkipVerify(),
+		listOpts...,
 	)
 	if err != nil {
 		return core.AutoGenResult{}, fmt.Errorf("fetch schema: %w", err)
@@ -502,7 +516,7 @@ func pinotDetectTimestampFormat(sample string) string {
 // probePinotTimestampFormat samples one row from {table}.{tsCol} via POST /sql
 // and runs pinotDetectTimestampFormat on the value. Used by ValidateConfig to
 // fail fast when we can't auto-detect a STRING/SIMPLE_DATE_FORMAT column's layout.
-func probePinotTimestampFormat(pinotURL, table, tsCol string, headers map[string]string) (string, error) {
+func probePinotTimestampFormat(pinotURL, table, tsCol string, headers map[string]string, tlsOpts []common.HttpOption) (string, error) {
 	tsColQ := pinotQuoteIdent(tsCol)
 	sqlBody := map[string]string{
 		"sql": fmt.Sprintf("SELECT %s FROM %s WHERE %s IS NOT NULL LIMIT 1", tsColQ, pinotQuoteIdent(table), tsColQ),
@@ -511,11 +525,8 @@ func probePinotTimestampFormat(pinotURL, table, tsCol string, headers map[string
 	for k, v := range headers {
 		h[k] = v
 	}
-	resp, err := common.HttpPost(pinotURL+"/sql",
-		common.HttpWithHeaders(h),
-		common.HttpWithJsonBody(sqlBody),
-		common.HttpWithInsecureSkipVerify(),
-	)
+	httpOpts := append([]common.HttpOption{common.HttpWithHeaders(h), common.HttpWithJsonBody(sqlBody)}, tlsOpts...)
+	resp, err := common.HttpPost(pinotURL+"/sql", httpOpts...)
 	if err != nil {
 		return "", fmt.Errorf("sample query failed: %w", err)
 	}

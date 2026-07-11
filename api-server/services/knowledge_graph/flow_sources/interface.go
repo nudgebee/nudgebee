@@ -74,6 +74,7 @@ func NewCentralizedExternalServiceEnricher(logger *slog.Logger) *CentralizedExte
 	// with the looser RESOLVES_TO.
 	strategies := []MatchingStrategy{
 		NewDirectEndpointMatchStrategy(),
+		NewTruncatedAWSDNSMatchStrategy(),
 		NewK8sServiceIPMatchStrategy(),
 		NewK8sInternalDNSStrategy(),
 		NewCloudResourceDNSStrategy(),

@@ -1,4 +1,4 @@
-import { formatRuleName, getRecommendationBrief, getResourceDisplayName, safeParseJSON } from '../utils';
+import { catalogTitle, formatRuleName, getRecommendationBrief, getResourceDisplayName, safeParseJSON } from '../utils';
 import type { InsightItem, MainCategory, SubCategory, Provider, Environment } from './insights';
 
 // ─── Category & SubCategory mapping ────────────────────────────────────────
@@ -253,6 +253,12 @@ export function transformApiToInsight(
   // Keep fractional days so formatAge can render sub-day durations as hours/minutes.
   const ageDays = Math.max(0, recencyHours / 24);
   const resourceName = getResourceDisplayName(apiRec);
+  // Row text has three representations: `title` (concise headline) + `brief` (terse
+  // action line) are the canonical card/list text; `summary` is the full prose, kept
+  // for the hover tooltip and ticket subject. Consolidating these is tracked separately.
+  const ruleName = apiRec.rule_name || '';
+  const title = catalogTitle(apiRec.category || '', ruleName) || formatRuleName(ruleName);
+  const brief = getRecommendationBrief(apiRec);
 
   return {
     id: apiRec.id,
@@ -267,6 +273,8 @@ export function transformApiToInsight(
     impactValue: savings > 0 ? `${currencySymbols?.[apiRec.account_id] || '$'}${savings.toLocaleString()}/mo` : '',
     impactLabel: savings > 0 ? 'savings potential' : '',
     dollarImpact: savings,
+    title,
+    brief,
     summary: getAgenticDescription(apiRec),
     nextStep: { label: getNextStepLabel(category, subCategory) },
     ageDays,

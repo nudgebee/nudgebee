@@ -90,7 +90,10 @@ type FetchConfigsResponse struct {
 // workflow execution should see for a given account: tenant-level rows merged
 // with account-level rows, where account-level overrides tenant-level on key
 // collision. The returned struct contains plain configs and decrypted secrets.
-func (a *WorkflowActivities) FetchWorkflowConfigsActivity(ctx context.Context, tenantID, accountID string) (*FetchConfigsResponse, error) {
+// When restrictToAccount is true, tenant-scoped rows are dropped so a
+// `{{ Configs.<tenant_key> }}` reference cannot resolve — used when the
+// triggering user lacks tenant read access.
+func (a *WorkflowActivities) FetchWorkflowConfigsActivity(ctx context.Context, tenantID, accountID string, restrictToAccount bool) (*FetchConfigsResponse, error) {
 	acc := accountID
 	configs, err := a.ConfigService.ListConfigsDecrypted(ctx, tenantID, &acc, nil)
 	if err != nil {
@@ -101,6 +104,9 @@ func (a *WorkflowActivities) FetchWorkflowConfigsActivity(ctx context.Context, t
 	secretMap := make(map[string]any)
 
 	for _, cfg := range configs {
+		if restrictToAccount && cfg.IsTenantScoped() {
+			continue
+		}
 		if cfg.Type == model.ConfigTypeSecret {
 			secretMap[cfg.Key] = cfg.Value
 		} else {

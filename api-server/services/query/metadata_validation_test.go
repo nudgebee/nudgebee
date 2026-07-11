@@ -12,7 +12,6 @@ import (
 var knownSecurityColumnMissing = map[string]bool{
 	"traces_heatmap_v2": true, // NamespaceColumnName "workload_namespace" missing from Columns
 	"k8s_workloads_cloud_account_monitoring_recommendations_v2": true, // security columns missing
-	"slo_report_observation_v2":                                 true, // AccountIdColumnName missing
 	"autooptimize_aggregate_approvals":                          true, // AccountIdColumnName missing
 }
 
@@ -127,8 +126,8 @@ func TestSecurityColumnsAreNotAggregated(t *testing.T) {
 // TestAggregateTablesHaveAggregatedColumns validates that every Aggregate table
 // has at least one IsAggregated column.
 func TestAggregateTablesHaveAggregatedColumns(t *testing.T) {
-	// llm_list_conversation_feedback is typed Aggregate but has no aggregated columns — known issue
-	knownMissing := map[string]bool{"llm_list_conversation_feedback": true}
+	// llm_conversation_feedback_v2 is typed Aggregate but has no aggregated columns — known issue
+	knownMissing := map[string]bool{"llm_conversation_feedback_v2": true}
 	for name, def := range table_metadata {
 		if def.Type != Aggregate {
 			continue

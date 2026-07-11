@@ -1,6 +1,6 @@
 import { formatMemory } from '@lib/formatter';
 import { Typography } from '@mui/material';
-import Tooltip from '@mui/material/Tooltip';
+import Tooltip from '@ui/Tooltip';
 
 export default function Memory({
   value,
@@ -15,16 +15,14 @@ export default function Memory({
 }) {
   if (value == undefined || value == null) {
     return (
-      <Tooltip>
-        <Typography sx={sx} display={'inline'}>
-          -
-        </Typography>
-      </Tooltip>
+      <Typography sx={sx} display={'inline'}>
+        -
+      </Typography>
     );
   }
   return (
-    <Tooltip title={value}>
-      <>
+    <Tooltip title={formatMemory(value, sourceUnit, targetUnit, true, 6)}>
+      <span>
         <Typography sx={sx} display={'inline'}>
           {formatMemory(value, sourceUnit, targetUnit, false)}
         </Typography>
@@ -37,7 +35,7 @@ export default function Memory({
             {targetUnit.toUpperCase()}
           </Typography>
         )}
-      </>
+      </span>
     </Tooltip>
   );
 }

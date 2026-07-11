@@ -1,6 +1,6 @@
 import { styled } from '@mui/material/styles';
 import Switch from '@mui/material/Switch';
-import { colors } from 'src/utils/colors';
+import { colors, ds } from 'src/utils/colors';
 
 export const inputCustomSx = {
   '&.MuiTextField-root': {
@@ -12,10 +12,10 @@ export const inputCustomSx = {
     overflow: 'visible !important',
   },
   '&.MuiTextField-root:hover .css-5wvipj-MuiFormLabel-root-MuiInputLabel-root': {
-    color: `${colors.text.primary} !important`,
+    color: `${ds.blue[500]} !important`,
   },
   '&.MuiAutocomplete-root:hover .css-5wvipj-MuiFormLabel-root-MuiInputLabel-root': {
-    color: `${colors.text.primary} !important`,
+    color: `${ds.blue[500]} !important`,
   },
 
   '& .MuiOutlinedInput-root': {
@@ -24,18 +24,18 @@ export const inputCustomSx = {
 
   '& .MuiOutlinedInput-root:hover': {
     label: {
-      color: `${colors.text.red} !important`,
+      color: `${ds.red[500]} !important`,
     },
     '& input': {
-      color: colors.text.secondary,
+      color: ds.brand[500],
     },
 
-    '& > fieldset': { border: '0.5px solid', borderColor: colors.text.primary },
+    '& > fieldset': { border: '0.5px solid', borderColor: ds.blue[500] },
   },
   '& .MuiOutlinedInput-root.Mui-focused': {
     '& > fieldset': {
       border: '0.5px solid',
-      borderColor: colors.text.primary,
+      borderColor: ds.blue[500],
     },
   },
 };
@@ -48,27 +48,27 @@ export const inputSx = {
     lineHeight: '1.2 !important',
     overFlow: 'initial !important',
   },
-  '& .MuiInputLabel-root': { color: colors.text.tertiary, fontWeight: 'var(--ds-font-weight-regular)', fontSize: 'var(--ds-text-body)' },
-  '& .MuiInputLabel-root.Mui-focused': { color: colors.text.primary },
+  '& .MuiInputLabel-root': { color: ds.gray[600], fontWeight: 'var(--ds-font-weight-regular)', fontSize: 'var(--ds-text-body)' },
+  '& .MuiInputLabel-root.Mui-focused': { color: ds.blue[500] },
   '& .MuiInputLabel-root.Mui-error': { color: colors.text.errorText },
   '& .MuiInputLabel-root.Mui-error.Mui-focused': { color: colors.text.errorText },
   '& .MuiOutlinedInput-root': {
-    backgroundColor: colors.background.white,
+    backgroundColor: ds.background[100],
     cursor: 'pointer !important',
     padding: 'var(--ds-space-1) var(--ds-space-3)',
     borderRadius: 'var(--ds-radius-sm)',
-    color: colors.text.secondary,
+    color: ds.brand[500],
     border: 'none !important',
 
     '& input': {
       cursor: 'pointer !important',
-      color: colors.text.secondary,
+      color: ds.brand[500],
       fontSize: 'var(--ds-text-body)',
       border: 'none !important',
       padding: '0px !important',
       fontWeight: 'var(--ds-font-weight-medium)',
       '& ::placeholder': {
-        color: colors.text.secondaryDark,
+        color: ds.gray[400],
         fontSize: 'var(--ds-text-small)',
         fontWeight: 'var(--ds-font-weight-regular)',
       },
@@ -80,19 +80,19 @@ export const inputSx = {
   '& .MuiOutlinedInput-root.Mui-error:hover': {
     '& > fieldset': {
       border: '1px solid',
-      borderColor: colors.border.errorOutline,
+      borderColor: ds.red[600],
     },
   },
   '& .MuiOutlinedInput-root.Mui-error.Mui-focused': {
     '& > fieldset': {
       border: '1px solid',
-      borderColor: colors.border.errorOutline,
+      borderColor: ds.red[600],
     },
   },
   '& .MuiOutlinedInput-root.Mui-focused': {
     '& > fieldset': {
       border: '2px solid',
-      borderColor: colors.text.primary,
+      borderColor: ds.blue[500],
     },
   },
 };
@@ -107,7 +107,7 @@ export const IOSSwitch = styled((props) => <Switch focusVisibleClassName='.Mui-f
     transitionDuration: '300ms',
     '&.Mui-checked': {
       transform: 'translateX(16px)',
-      color: colors.text.white,
+      color: ds.background[100],
       '& + .MuiSwitch-track': {
         backgroundColor: theme.palette.mode === 'dark' ? colors.border.switchTrack : colors.border.switchTrackLight,
         opacity: 1,
@@ -119,7 +119,7 @@ export const IOSSwitch = styled((props) => <Switch focusVisibleClassName='.Mui-f
     },
     '&.Mui-focusVisible .MuiSwitch-thumb': {
       color: colors.text.switchThumb,
-      border: `6px solid ${colors.border.white}`,
+      border: `6px solid ${ds.background[100]}`,
     },
     '&.Mui-disabled .MuiSwitch-thumb': {
       color: theme.palette.mode === 'light' ? theme.palette.grey[100] : theme.palette.grey[600],
@@ -153,9 +153,9 @@ export const TGSwitch = styled((props) => <Switch focusVisibleClassName='.Mui-fo
     transitionDuration: '300ms',
     '&.Mui-checked': {
       transform: 'translateX(28px)',
-      color: colors.text.white,
+      color: ds.background[100],
       '& + .MuiSwitch-track': {
-        backgroundColor: theme.palette.mode === 'dark' ? colors.background.switchTrackDark : colors.background.switchTrackLightest,
+        backgroundColor: theme.palette.mode === 'dark' ? ds.green[500] : ds.teal[500],
         opacity: 1,
         border: 0,
       },
@@ -165,7 +165,7 @@ export const TGSwitch = styled((props) => <Switch focusVisibleClassName='.Mui-fo
     },
     '&.Mui-focusVisible .MuiSwitch-thumb': {
       color: colors.text.switchThumb,
-      border: `6px solid ${colors.border.white}`,
+      border: `6px solid ${ds.background[100]}`,
     },
     '&.Mui-disabled .MuiSwitch-thumb': {
       color: theme.palette.mode === 'light' ? theme.palette.grey[100] : theme.palette.grey[600],
@@ -199,7 +199,7 @@ export const TGSwitch = styled((props) => <Switch focusVisibleClassName='.Mui-fo
     '&:before': {
       content: '"ON"',
       left: 8,
-      color: colors.text.white,
+      color: ds.background[100],
     },
     '&:after': {
       content: '"OFF"',

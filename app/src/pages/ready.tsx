@@ -5,6 +5,7 @@ import Head from 'next/head';
 import { StarsIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
+import { ds } from '@utils/colors';
 
 const FALLBACK_LOGO = '/branding/default/logo.svg';
 import 'swiper/css/bundle';
@@ -33,15 +34,15 @@ export default function Ready() {
       <Box display={'flex'} flexDirection={'column'} justifyContent='space-between' alignItems='flex-start'>
         <Box
           sx={{
-            height: '80px',
+            height: ds.space.mul(4, 5),
             width: '100%',
             display: 'flex',
             justifyContent: 'center',
             alignItems: 'center',
-            mb: '4px',
+            mb: ds.space[1],
             '& img': {
-              width: '64px',
-              height: '64px',
+              width: ds.space.mul(2, 8),
+              height: ds.space.mul(2, 8),
             },
           }}
         >
@@ -66,18 +67,18 @@ export default function Ready() {
             alignItems: 'center',
             flexDirection: 'column',
             width: '100%',
-            marginBottom: '12px',
+            marginBottom: ds.space[3],
           }}
         >
-          <Typography fontSize={'32px'} fontWeight={'600'} color={'#374151'} fontFamily={'Roboto'}>
+          <Typography fontSize={'var(--ds-text-display)'} fontWeight={'600'} color={ds.gray[700]} fontFamily={'Roboto'}>
             Welcome to {branding.title}!
           </Typography>
         </Box>
       </Box>
       <br />
       <div>
-        <Box bgcolor={'#EFF6FF'} p={'8px 14px'} borderRadius={'4px'} mb={2}>
-          <Typography display={'flex'} alignItems={'center'} gap={1} fontSize={'12px'} color={'#374151'}>
+        <Box bgcolor={ds.blue[100]} p={`${ds.space[2]} ${ds.space.mul(0, 7)}`} borderRadius={ds.radius.sm} mb={ds.space[4]}>
+          <Typography display={'flex'} alignItems={'center'} gap={ds.space[2]} fontSize={'var(--ds-text-small)'} color={ds.gray[700]}>
             <SafeIcon src={StarsIcon} alt='stars' />
             We have sent you an verification email. Please check your email&apos;s inbox or spam folder
           </Typography>

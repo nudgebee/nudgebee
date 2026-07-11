@@ -310,19 +310,13 @@ func (s *SignozSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogReque
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute signoz log labels: %w", err)
 	}
-	jsonResponseBody := resp.Body
-	defer func() {
-		err := jsonResponseBody.Close()
-		if err != nil {
-			ctx.GetLogger().Error("Error closing response body", "error", err)
-		}
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		ctx.GetLogger().Error("Failed to get signoz labels", "resp", resp)
 		return nil, fmt.Errorf("failed to get signoz labels, status code: %d", resp.StatusCode)
 	}
-	bodyBytes, err := io.ReadAll(jsonResponseBody)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -379,19 +373,13 @@ func (s *SignozSaasSource) QueryLabels(ctx *security.RequestContext, fetchLogLab
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute signoz log labels: %w", err)
 	}
-	jsonResponseBody := resp.Body
-	defer func() {
-		err := jsonResponseBody.Close()
-		if err != nil {
-			ctx.GetLogger().Error("Error closing response body", "error", err)
-		}
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		ctx.GetLogger().Error("Failed to get signoz labels", "resp", resp)
 		return nil, fmt.Errorf("failed to get signoz labels, status code: %d", resp.StatusCode)
 	}
-	bodyBytes, err := io.ReadAll(jsonResponseBody)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -461,19 +449,13 @@ func (s *SignozSaasSource) QueryLabelValues(ctx *security.RequestContext, fetchL
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute signoz log labels: %w", err)
 	}
-	jsonResponseBody := resp.Body
-	defer func() {
-		err := jsonResponseBody.Close()
-		if err != nil {
-			ctx.GetLogger().Error("Error closing response body", "error", err)
-		}
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		ctx.GetLogger().Error("Failed to get signoz labels", "resp", resp)
 		return nil, fmt.Errorf("failed to get signoz labels, status code: %d", resp.StatusCode)
 	}
-	bodyBytes, err := io.ReadAll(jsonResponseBody)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}

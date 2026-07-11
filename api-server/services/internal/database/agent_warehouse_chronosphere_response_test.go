@@ -94,7 +94,8 @@ func TestNewChronosphereRows(t *testing.T) {
 		"tenant_id", "trace_id", "span_id", "parent_span_id", "workload_name", "workload_namespace",
 		"timestamp", "status_code", "span_name", "resource", "duration_ns", "destination_workload_name",
 		"destination_workload_namespace", "destination_name", "headers", "http_status_code",
-		"request_payload", "http_response", "trace_source", "spanattributes", "account_id",
+		"request_payload", "http_response", "trace_source", "spanattributes", "span_attributes",
+		"account_id", "events_attributes",
 	}
 	assert.Equal(t, expectedCols, rows.cols)
 
@@ -103,18 +104,18 @@ func TestNewChronosphereRows(t *testing.T) {
 
 	// Check first row data (indices match traces_v2 format)
 	firstRow := rows.rows[0].([]any)
-	assert.Equal(t, "", firstRow[0])                    // tenant_id (empty)
-	assert.Equal(t, "trace-123", firstRow[1])           // trace_id
-	assert.Equal(t, "span-456", firstRow[2])            // span_id
-	assert.Equal(t, "parent-789", firstRow[3])          // parent_span_id
-	assert.Equal(t, "user-service", firstRow[4])        // workload_name (service_name)
-	assert.Equal(t, "production", firstRow[5])          // workload_namespace (service_namespace)
-	assert.Equal(t, "1691234567890123456", firstRow[6]) // timestamp (start_time)
-	assert.Equal(t, "STATUS_CODE_OK", firstRow[7])      // status_code
-	assert.Equal(t, "GET /api/users", firstRow[8])      // span_name (operation_name)
+	assert.Equal(t, "", firstRow[0])                     // tenant_id (empty)
+	assert.Equal(t, "trace-123", firstRow[1])            // trace_id
+	assert.Equal(t, "span-456", firstRow[2])             // span_id
+	assert.Equal(t, "parent-789", firstRow[3])           // parent_span_id
+	assert.Equal(t, "user-service", firstRow[4])         // workload_name (service_name)
+	assert.Equal(t, "production", firstRow[5])           // workload_namespace (service_namespace)
+	assert.Equal(t, "2023-08-05T11:22:47Z", firstRow[6]) // timestamp (start_time, nano converted to RFC3339)
+	assert.Equal(t, "STATUS_CODE_OK", firstRow[7])       // status_code
+	assert.Equal(t, "GET /api/users", firstRow[8])       // span_name (operation_name)
 	// firstRow[9] is resource - could be empty if no db.statement/http.url
 	// firstRow[10] is duration_ns - calculated from start/end times
-	assert.Equal(t, accountId, firstRow[20]) // account_id
+	assert.Equal(t, accountId, firstRow[21]) // account_id
 
 	// Verify trace source is set correctly
 	assert.Equal(t, "otel", firstRow[18]) // trace_source
@@ -244,7 +245,8 @@ func TestNewAgentWarehouseRowsProviderDetection(t *testing.T) {
 		"tenant_id", "trace_id", "span_id", "parent_span_id", "workload_name", "workload_namespace",
 		"timestamp", "status_code", "span_name", "resource", "duration_ns", "destination_workload_name",
 		"destination_workload_namespace", "destination_name", "headers", "http_status_code",
-		"request_payload", "http_response", "trace_source", "spanattributes", "account_id",
+		"request_payload", "http_response", "trace_source", "spanattributes", "span_attributes",
+		"account_id", "events_attributes",
 	}
 	assert.Equal(t, expectedCols, rows.cols)
 

@@ -31,7 +31,7 @@ export const getTableData = (t) => {
   const convertedJson2 = convertedJson.map((item) => {
     const isRowRed = Object.values(item).some((value) => typeof value === 'string' && redBanner.includes(value.toLowerCase()));
     const components = Object.entries(item).map(([_key, value]) => ({
-      component: <Text value={value} sx={{ color: isRowRed && '#EF4444' }} />,
+      component: <Text value={value} sx={{ color: isRowRed && 'var(--ds-red-500)' }} />,
     }));
     return components;
   });
@@ -109,7 +109,13 @@ export const getTableData2 = (t, breakAll = false) => {
         key === 'Timestamp' || key == 'timestamp' ? (
           <Datetime value={value} />
         ) : (
-          <Typography sx={{ color: isError ? 'red' : '#374151', wordBreak: breakAll ? 'break-all' : 'normal', fontSize: 'var(--ds-text-body)' }}>
+          <Typography
+            sx={{
+              color: isError ? 'red' : 'var(--ds-gray-700)',
+              wordBreak: breakAll ? 'break-all' : 'normal',
+              fontSize: 'var(--ds-text-body)',
+            }}
+          >
             {getTextRenderer(key, value)}
           </Typography>
         ),
@@ -170,7 +176,7 @@ export const getTableData4 = (t) => {
       const components = [
         {
           component: (
-            <Typography sx={{ color: isError ? 'red' : '#374151', wordBreak: 'normal', fontSize: 'var(--ds-text-body)' }}>
+            <Typography sx={{ color: isError ? 'red' : 'var(--ds-gray-700)', wordBreak: 'normal', fontSize: 'var(--ds-text-body)' }}>
               {snakeToTitleCase(key)}
             </Typography>
           ),
@@ -181,7 +187,12 @@ export const getTableData4 = (t) => {
               <Datetime value={value} />
             ) : (
               <Typography
-                sx={{ color: isError ? 'red' : '#374151', wordBreak: 'break-all', overflowWrap: 'anywhere', fontSize: 'var(--ds-text-body)' }}
+                sx={{
+                  color: isError ? 'red' : 'var(--ds-gray-700)',
+                  wordBreak: 'break-all',
+                  overflowWrap: 'anywhere',
+                  fontSize: 'var(--ds-text-body)',
+                }}
               >
                 {getTextRenderer(key, value)}
               </Typography>

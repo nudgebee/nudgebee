@@ -1,5 +1,6 @@
 import React from 'react';
-import CustomButton from '@shared/NewCustomButton';
+import { Button } from '@ui/Button';
+import { ds } from 'src/utils/colors';
 import { ErrorIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import Router from 'next/router';
@@ -8,7 +9,7 @@ import Router from 'next/router';
 
 export function InlineFallback({ onRetry }: Readonly<{ onRetry: () => void }>) {
   return (
-    <div style={{ width: '100%', minHeight: '280px', flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <div style={{ width: '100%', minHeight: ds.space.mul(0, 140), flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div
         style={{
           display: 'flex',
@@ -21,17 +22,19 @@ export function InlineFallback({ onRetry }: Readonly<{ onRetry: () => void }>) {
           background: 'var(--ds-background-200)',
           textAlign: 'center',
           width: '100%',
-          maxWidth: '480px',
+          maxWidth: ds.space.mul(0, 240),
         }}
       >
-        <SafeIcon src={ErrorIcon} alt='Error' style={{ width: '48px', height: 'auto', opacity: 0.6 }} />
+        <SafeIcon src={ErrorIcon} alt='Error' style={{ width: ds.space.mul(0, 24), height: 'auto', opacity: 0.6 }} />
         <p style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-600)', margin: 0 }}>
           Something went wrong
         </p>
         <p style={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', margin: 0 }}>
           This section failed to load. You can retry or continue using the rest of the app.
         </p>
-        <CustomButton id='retry-btn' variant='tertiary' size='Small' text='Retry' onClick={onRetry} />
+        <Button id='retry-btn' tone='secondary' size='sm' onClick={onRetry}>
+          Retry
+        </Button>
       </div>
     </div>
   );
@@ -62,8 +65,8 @@ function FullPageFallback({ onGoHome }: Readonly<{ onGoHome: () => void }>) {
           textAlign: 'center',
         }}
       >
-        <h1 style={{ fontSize: '170px', fontWeight: 'bold', margin: '0px', color: 'var(--ds-brand-600)' }}>500</h1>
-        <p style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)', margin: '0px', color: 'var(--ds-brand-600)' }}>
+        <h1 style={{ fontSize: ds.space.mul(0, 85), fontWeight: 'bold', margin: 0, color: 'var(--ds-brand-600)' }}>500</h1>
+        <p style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)', margin: 0, color: 'var(--ds-brand-600)' }}>
           Oops! Something went wrong on our end. Please try again later.
         </p>
       </div>
@@ -76,8 +79,10 @@ function FullPageFallback({ onGoHome }: Readonly<{ onGoHome: () => void }>) {
           gap: 'var(--ds-space-5)',
         }}
       >
-        <SafeIcon src={ErrorIcon} alt='Error Illustration' style={{ width: '200px', height: 'auto' }} />
-        <CustomButton variant='tertiary' size='Medium' text='Go to Homepage' onClick={onGoHome} />
+        <SafeIcon src={ErrorIcon} alt='Error Illustration' style={{ width: ds.space.mul(0, 100), height: 'auto' }} />
+        <Button tone='secondary' size='md' onClick={onGoHome}>
+          Go to Homepage
+        </Button>
       </div>
     </div>
   );

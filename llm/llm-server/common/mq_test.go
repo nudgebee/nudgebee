@@ -2,18 +2,35 @@ package common
 
 import (
 	"log/slog"
+	"net"
 	"nudgebee/llm/config"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func TestPublishConnectionClose(t *testing.T) {
+// requireRabbitMQ skips MQ tests when no broker is reachable. Without it the
+// tests not only fail but panic (publishing fails, leaving a nil publisher that
+// is then Close()d), aborting the whole package's test binary.
+func requireRabbitMQ(t *testing.T) {
+	t.Helper()
 	config.Config.RabbitMqHost = "127.0.0.1"
 	config.Config.RabbitMqPort = 5672
 	config.Config.RabbitMqUsername = "guest"
 	config.Config.RabbitMqPassword = "guest"
+
+	addr := net.JoinHostPort(config.Config.RabbitMqHost, strconv.Itoa(config.Config.RabbitMqPort))
+	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+	if err != nil {
+		t.Skipf("RabbitMQ not reachable at %s; skipping (%v)", addr, err)
+	}
+	_ = conn.Close()
+}
+
+func TestPublishConnectionClose(t *testing.T) {
+	requireRabbitMQ(t)
 
 	err := MqPublish("test", "test", "test")
 	assert.Nil(t, err)
@@ -25,10 +42,7 @@ func TestPublishConnectionClose(t *testing.T) {
 }
 
 func TestPublishClose(t *testing.T) {
-	config.Config.RabbitMqHost = "127.0.0.1"
-	config.Config.RabbitMqPort = 5672
-	config.Config.RabbitMqUsername = "guest"
-	config.Config.RabbitMqPassword = "guest"
+	requireRabbitMQ(t)
 
 	err := MqPublish("test", "test", "test")
 	assert.Nil(t, err)
@@ -44,10 +58,7 @@ func TestPublishClose(t *testing.T) {
 }
 
 func TestConsumerClose(t *testing.T) {
-	config.Config.RabbitMqHost = "127.0.0.1"
-	config.Config.RabbitMqPort = 5672
-	config.Config.RabbitMqUsername = "guest"
-	config.Config.RabbitMqPassword = "guest"
+	requireRabbitMQ(t)
 
 	err := MqConsume("test", "test", "test", func(data []byte) error {
 		slog.Info("consumed message", "data", string(data))

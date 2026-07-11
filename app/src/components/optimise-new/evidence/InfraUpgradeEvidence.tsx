@@ -21,8 +21,8 @@ const InfraUpgradeEvidence = ({ recommendation, ruleName: _ruleName, estimatedSa
   // ─── API Deprecation format (k8s_api_deleted) ───
   if (rec.replacement_api || rec.deleted_items || rec.deprecated_version) {
     return (
-      <Box sx={{ p: '14px' }}>
-        <SectionTitle title='API Deprecation' muiIcon={<WarningAmberIcon sx={{ fontSize: '16px' }} />} />
+      <Box sx={{ p: ds.space.mul(0, 7) }}>
+        <SectionTitle title='API Deprecation' muiIcon={<WarningAmberIcon sx={{ fontSize: ds.text.title }} />} />
 
         {/* Current → Replacement version arrow */}
         {(rec.version || rec.current_api_version) && (rec.replacement_api || rec.recommended_api_version) && (
@@ -39,7 +39,7 @@ const InfraUpgradeEvidence = ({ recommendation, ruleName: _ruleName, estimatedSa
             }}
           >
             <VersionBadge label='Current' version={rec.version || rec.current_api_version} variant='current' />
-            <ArrowForwardIcon sx={{ fontSize: '18px', color: ds.amber[700] }} />
+            <ArrowForwardIcon sx={{ fontSize: ds.text.title, color: ds.amber[700] }} />
             <VersionBadge label='Recommended' version={rec.replacement_api || rec.recommended_api_version} variant='recommended' />
           </Box>
         )}
@@ -64,12 +64,12 @@ const InfraUpgradeEvidence = ({ recommendation, ruleName: _ruleName, estimatedSa
         {/* Deleted items list */}
         {rec.deleted_items && Array.isArray(rec.deleted_items) && rec.deleted_items.length > 0 && (
           <>
-            <SectionTitle title={`Affected Resources (${rec.deleted_items.length})`} muiIcon={<AssignmentIcon sx={{ fontSize: '16px' }} />} />
+            <SectionTitle title={`Affected Resources (${rec.deleted_items.length})`} muiIcon={<AssignmentIcon sx={{ fontSize: ds.text.title }} />} />
             <Box
               sx={{
                 backgroundColor: ds.red[100],
                 borderRadius: ds.radius.lg,
-                p: '10px',
+                p: ds.space.mul(0, 5),
                 border: `1px solid ${ds.red[200]}`,
                 maxHeight: '200px',
                 overflow: 'auto',
@@ -115,8 +115,8 @@ const InfraUpgradeEvidence = ({ recommendation, ruleName: _ruleName, estimatedSa
 
   if (helmChartName || helmInstalledVersion || helmLatestVersion) {
     return (
-      <Box sx={{ p: '14px' }}>
-        <SectionTitle title='Helm Chart Upgrade' muiIcon={<UpgradeIcon sx={{ fontSize: '16px' }} />} />
+      <Box sx={{ p: ds.space.mul(0, 7) }}>
+        <SectionTitle title='Helm Chart Upgrade' muiIcon={<UpgradeIcon sx={{ fontSize: ds.text.title }} />} />
 
         <Box
           sx={{
@@ -131,13 +131,13 @@ const InfraUpgradeEvidence = ({ recommendation, ruleName: _ruleName, estimatedSa
           }}
         >
           <VersionBadge label='Installed' version={helmInstalledVersion || '—'} variant='current' />
-          <ArrowForwardIcon sx={{ fontSize: '18px', color: ds.blue[700] }} />
+          <ArrowForwardIcon sx={{ fontSize: ds.text.title, color: ds.blue[700] }} />
           <VersionBadge label='Latest' version={helmLatestVersion || '—'} variant='recommended' />
         </Box>
 
         {/* Status flags */}
         {(helmOutdated || helmDeprecated || helmOverridden) && (
-          <Box sx={{ display: 'flex', gap: '6px', mb: ds.space[3], flexWrap: 'wrap' }}>
+          <Box sx={{ display: 'flex', gap: ds.space.mul(0, 3), mb: ds.space[3], flexWrap: 'wrap' }}>
             {helmOutdated && (
               <Label size='sm' tone='warning'>
                 Outdated
@@ -180,8 +180,8 @@ const InfraUpgradeEvidence = ({ recommendation, ruleName: _ruleName, estimatedSa
 
   // ─── Generic version upgrade format ───
   return (
-    <Box sx={{ p: '14px' }}>
-      <SectionTitle title='Upgrade Details' muiIcon={<SyncIcon sx={{ fontSize: '16px' }} />} />
+    <Box sx={{ p: ds.space.mul(0, 7) }}>
+      <SectionTitle title='Upgrade Details' muiIcon={<SyncIcon sx={{ fontSize: ds.text.title }} />} />
 
       {(rec.current_version || rec.current_api_version) && (rec.recommended_version || rec.recommended_api_version) && (
         <Box
@@ -197,7 +197,7 @@ const InfraUpgradeEvidence = ({ recommendation, ruleName: _ruleName, estimatedSa
           }}
         >
           <VersionBadge label='Current' version={rec.current_version || rec.current_api_version} variant='current' />
-          <ArrowForwardIcon sx={{ fontSize: '18px', color: ds.blue[700] }} />
+          <ArrowForwardIcon sx={{ fontSize: ds.text.title, color: ds.blue[700] }} />
           <VersionBadge label='Recommended' version={rec.recommended_version || rec.recommended_api_version} variant='recommended' />
         </Box>
       )}
@@ -295,7 +295,7 @@ function renderRemainingFields(rec: any) {
         mt: ds.space[2],
         backgroundColor: ds.gray[100],
         borderRadius: ds.radius.lg,
-        p: '10px',
+        p: ds.space.mul(0, 5),
         border: `1px solid ${ds.gray[200]}`,
       }}
     >

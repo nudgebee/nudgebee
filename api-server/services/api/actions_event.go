@@ -299,19 +299,19 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 		}
 
 		c.JSON(200, resp)
-		if err := audit.PublishAuditEvent(ctx, audit.Audit{
+		if err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{{
 			TenantId:      ctx.GetSecurityContext().GetTenantId(),
 			UserId:        ctx.GetSecurityContext().GetUserId(),
-			EventTime:     time.Now(),
+			EventTime:     time.Now().UTC(),
 			EventCategory: audit.EventAlertEvent,
 			EventType:     audit.EventTypeEventUpdate,
 			EventState:    request,
 			EventActor:    audit.EventActorApiService,
-			EventTarget:   "event",
+			EventTarget:   request.EventId,
 			EventAction:   audit.EventActionUpdate,
 			EventStatus:   audit.EventStatusSuccess,
-		}); err != nil {
-			ctx.GetLogger().Error("failed to publish audit event", "error", err)
+		}}}); err != nil {
+			ctx.GetLogger().Error("failed to create audit event", "error", err)
 		}
 		return
 

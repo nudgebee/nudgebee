@@ -34,6 +34,7 @@ import {
   generateNubiBriefing,
   formatDollars,
   sortInsights,
+  secondaryLine,
   type InsightItem,
   type SortKey,
   type Provider,
@@ -98,11 +99,11 @@ const FilterFacet = ({ label, children }: { label: string; children: ReactNode }
 
 // ─── Conversational summaries ──────────────────────────────────────────────
 
-const costConvoSummary = (items: InsightItem[]) => {
+const costConvoSummary = (items: InsightItem[], symbol: string) => {
   const critCount = items.filter((i) => i.severity === 'critical').length;
   const topDollars = [...items].sort((a, b) => b.dollarImpact - a.dollarImpact)[0]?.dollarImpact || 0;
-  if (critCount > 0) return `${critCount} critical anomalies — largest opportunity is ${formatDollars(topDollars)}/mo.`;
-  if (topDollars > 0) return `Right-sizing and cleanup dominate. Savings plans alone could recover ${formatDollars(topDollars)}/mo.`;
+  if (critCount > 0) return `${critCount} critical anomalies — largest opportunity is ${formatDollars(topDollars, symbol)}/mo.`;
+  if (topDollars > 0) return `Right-sizing and cleanup dominate. Savings plans alone could recover ${formatDollars(topDollars, symbol)}/mo.`;
   return `${items.length} cost optimization opportunities identified.`;
 };
 
@@ -145,7 +146,19 @@ const SummaryView = () => {
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
 
   // ── Data (fetched via hook) ──
-  const { accounts, insights, loading, lastUpdated, costByCurrency, accountCosts, costLoading } = useSummaryData();
+  const {
+    accounts,
+    insights,
+    loading,
+    lastUpdated,
+    totalSavings,
+    savingsLoading,
+    costByCurrency,
+    accountCosts,
+    costLoading,
+    savingsCurrency,
+    savingsSymbol,
+  } = useSummaryData();
 
   // ── Action modal state ──
   const [resolveModalRec, setResolveModalRec] = useState<any>(null);
@@ -224,26 +237,12 @@ const SummaryView = () => {
     return filteredByCatProvider.filter((i) => i.accountId === accountFilter);
   }, [filteredByCatProvider, accountFilter]);
 
-  const savingsByCurrency = useMemo(() => {
-    const byCurr: Record<string, number> = {};
-    for (const item of filtered) {
-      if (item.dollarImpact <= 0) continue;
-      const symbol = accountCosts[item.accountId]?.currencySymbol || '$';
-      byCurr[symbol] = (byCurr[symbol] || 0) + item.dollarImpact;
-    }
-    return Object.entries(byCurr)
-      .filter(([, v]) => v > 0)
-      .map(([symbol, amount]) => ({ symbol, amount }));
-  }, [filtered, accountCosts]);
-
-  const totalSavingsUsd = useMemo(
-    () => savingsByCurrency.find((s) => s.symbol === '$')?.amount ?? savingsByCurrency[0]?.amount ?? 0,
-    [savingsByCurrency]
-  );
-  const headlineSymbol = savingsByCurrency[0]?.symbol ?? '$';
+  // Headline savings = total across ALL in-scope recommendations (the same aggregate
+  // the Recommendations tab uses), so the two tabs always agree. It is intentionally
+  // decoupled from the curated list below, which shows only the top urgent +
+  // highest-impact recs rather than the full set the total is summed over.
   const savingsTone: 'high-savings' | 'medium-savings' | 'low-savings' | 'neutral' =
-    totalSavingsUsd <= 0 ? 'neutral' : totalSavingsUsd > 10000 ? 'high-savings' : totalSavingsUsd > 1000 ? 'medium-savings' : 'low-savings';
-  const multiCurrencyExtra = savingsByCurrency.slice(1);
+    totalSavings <= 0 ? 'neutral' : totalSavings > 10000 ? 'high-savings' : totalSavings > 1000 ? 'medium-savings' : 'low-savings';
 
   const top3 = useMemo(() => getTop3(filtered), [filtered]);
   const accountSummaries = useMemo(() => getAccountSummaries(filteredByCatProvider), [filteredByCatProvider]);
@@ -255,7 +254,7 @@ const SummaryView = () => {
     [accounts]
   );
   const selectedAccountName = accountFilter ? accounts[accountFilter]?.account_name || accountFilter : '';
-  const nubiBriefing = useMemo(() => generateNubiBriefing(filtered), [filtered]);
+  const nubiBriefing = useMemo(() => generateNubiBriefing(filtered, totalSavings, savingsSymbol), [filtered, totalSavings, savingsSymbol]);
 
   const costItems = useMemo(() => filtered.filter((i) => i.category === 'cost'), [filtered]);
   const perfItems = useMemo(() => filtered.filter((i) => i.category === 'performance'), [filtered]);
@@ -307,25 +306,12 @@ const SummaryView = () => {
             zIndex: 2,
           }}
         >
-          {loading ? (
+          {loading || savingsLoading ? (
             <Skeleton shape='text' size='heading' width={140} />
           ) : (
             <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: ds.space[2] }}>
-              <CostCallout
-                value={totalSavingsUsd}
-                size='display'
-                tone={savingsTone}
-                period='/ mo'
-                currency={headlineSymbol === '₹' ? 'INR' : 'USD'}
-              />
-              <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-                <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[500] }}>Potential savings</Typography>
-                {multiCurrencyExtra.length > 0 && (
-                  <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>
-                    {multiCurrencyExtra.map(({ symbol, amount }) => `+ ${symbol}${amount.toLocaleString()}/mo`).join(' ')}
-                  </Typography>
-                )}
-              </Box>
+              <CostCallout value={totalSavings} size='display' tone={savingsTone} period='/ mo' currency={savingsCurrency} locale='en-US' />
+              <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[500] }}>Potential savings</Typography>
             </Box>
           )}
           <StatusIndicator
@@ -335,7 +321,7 @@ const SummaryView = () => {
           />
         </Card>
 
-        {/* Filter + list-control toolbar */}
+        {/* Filter toolbar */}
         <Box
           sx={{
             display: 'flex',
@@ -404,31 +390,6 @@ const SummaryView = () => {
                 Clear all
               </Chip>
             )}
-          </Box>
-
-          {/* List controls */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
-            <DropdownMenu
-              align='end'
-              size='sm'
-              trigger={
-                <Button tone='secondary' size='xs' icon={<SortOutlinedIcon />} iconPlacement='start' id='sort-toggle'>
-                  {sortLabel}
-                </Button>
-              }
-              items={sortMenuItems}
-            />
-            <ToggleGroup
-              selection='single'
-              size='sm'
-              value={viewMode}
-              onChange={(v) => setViewMode(v)}
-              ariaLabel='View mode'
-              options={[
-                { value: 'cards', icon: <ViewStreamOutlinedIcon sx={{ fontSize: 16 }} />, ariaLabel: 'Cards view', tooltip: 'Card view' },
-                { value: 'list', icon: <ViewListOutlinedIcon sx={{ fontSize: 16 }} />, ariaLabel: 'List view', tooltip: 'List view' },
-              ]}
-            />
           </Box>
         </Box>
 
@@ -521,6 +482,44 @@ const SummaryView = () => {
                 )}
               </Box>
 
+              {/* Sort + view live here, directly above the list they reorder.
+                  The briefing + Top-3 box above is sort-independent by design, so
+                  parking these in the top filter toolbar made Sort look inert (#32478). */}
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: ds.space[2],
+                  mb: ds.space[3],
+                }}
+              >
+                <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>All findings</Typography>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+                  <DropdownMenu
+                    align='end'
+                    size='sm'
+                    trigger={
+                      <Button tone='secondary' size='xs' icon={<SortOutlinedIcon />} iconPlacement='start' id='sort-toggle'>
+                        {sortLabel}
+                      </Button>
+                    }
+                    items={sortMenuItems}
+                  />
+                  <ToggleGroup
+                    selection='single'
+                    size='sm'
+                    value={viewMode}
+                    onChange={(v) => setViewMode(v)}
+                    ariaLabel='View mode'
+                    options={[
+                      { value: 'cards', icon: <ViewStreamOutlinedIcon sx={{ fontSize: 16 }} />, ariaLabel: 'Cards view', tooltip: 'Card view' },
+                      { value: 'list', icon: <ViewListOutlinedIcon sx={{ fontSize: 16 }} />, ariaLabel: 'List view', tooltip: 'List view' },
+                    ]}
+                  />
+                </Box>
+              </Box>
+
               {/* Category sections or list view */}
               {viewMode === 'cards' ? (
                 <>
@@ -529,10 +528,11 @@ const SummaryView = () => {
                       category='cost'
                       label='Cost'
                       oneLiner={costOneLiner}
-                      conversationalSummary={costConvoSummary(costItems)}
+                      conversationalSummary={costConvoSummary(costItems, savingsSymbol)}
                       subCategories={COST_SUBCATEGORIES}
                       items={costItems}
                       sortBy={sortBy}
+                      currencySymbol={savingsSymbol}
                       onClickResource={handleOpenResource}
                       onAskNubi={handleAskNubiFromCard}
                     />
@@ -546,6 +546,7 @@ const SummaryView = () => {
                       subCategories={PERF_SUBCATEGORIES}
                       items={perfItems}
                       sortBy={sortBy}
+                      currencySymbol={savingsSymbol}
                       onClickResource={handleOpenResource}
                       onAskNubi={handleAskNubiFromCard}
                     />
@@ -559,6 +560,7 @@ const SummaryView = () => {
                       subCategories={SEC_CONFIG_SUBCATEGORIES}
                       items={secItems}
                       sortBy={sortBy}
+                      currencySymbol={savingsSymbol}
                       onClickResource={handleOpenResource}
                       onAskNubi={handleAskNubiFromCard}
                     />
@@ -567,10 +569,14 @@ const SummaryView = () => {
               ) : (
                 <CustomTable2
                   id='summary-findings-table'
+                  // Fixed layout: respect the declared column widths and let long resource
+                  // ARNs ellipsize, instead of auto-layout stretching the row past its
+                  // container and clipping the header bar on the right.
+                  sx={{ '& > table': { tableLayout: 'fixed' } }}
                   headers={[
                     { name: 'Severity', width: '8%' },
                     { name: 'Finding', width: '30%' },
-                    { name: 'Resource', width: '18%' },
+                    { name: 'Resource', width: '24%' },
                     { name: 'Provider', width: '10%' },
                     { name: 'Impact', width: '14%' },
                     { name: 'Action', width: '14%' },
@@ -581,18 +587,33 @@ const SummaryView = () => {
                     },
                     {
                       component: (
-                        <Typography
-                          sx={{
-                            fontSize: ds.text.small,
-                            fontWeight: ds.weight.medium,
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            color: ds.gray[700],
-                          }}
-                        >
-                          {item.summary}
-                        </Typography>
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], minWidth: 0 }}>
+                          <Typography
+                            sx={{
+                              fontSize: ds.text.small,
+                              fontWeight: ds.weight.medium,
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              color: ds.gray[700],
+                            }}
+                          >
+                            {item.title || item.summary}
+                          </Typography>
+                          {secondaryLine(item) && (
+                            <Typography
+                              sx={{
+                                fontSize: ds.text.caption,
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                color: ds.gray[500],
+                              }}
+                            >
+                              {secondaryLine(item)}
+                            </Typography>
+                          )}
+                        </Box>
                       ),
                     },
                     {
@@ -620,12 +641,16 @@ const SummaryView = () => {
                       ),
                     },
                     {
-                      component: (
+                      component: item.impactValue ? (
                         <Box>
                           <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, color: ds.gray[700], lineHeight: 1.1 }}>
                             {item.impactValue}
                           </Typography>
                           <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], lineHeight: 1.1 }}>{item.impactLabel}</Typography>
+                        </Box>
+                      ) : (
+                        <Box component='span' sx={{ color: ds.gray[500] }}>
+                          —
                         </Box>
                       ),
                     },
@@ -679,6 +704,7 @@ const SummaryView = () => {
           costByCurrency={costByCurrency}
           accountCosts={accountCosts}
           costLoading={costLoading}
+          defaultCurrencySymbol={savingsSymbol}
           selectedAccountId={accountFilter}
           onSelectAccount={setAccountFilter}
         />
@@ -728,7 +754,11 @@ const SummaryView = () => {
         ticketData={{
           subject: ticketRec?.summary || '',
           description: `${ticketRec?.accountName || ''}\n\nSeverity: ${ticketRec?.severity || ''}\n${
-            ticketRec?.dollarImpact > 0 ? `Potential savings: $${ticketRec.dollarImpact}/mo` : ''
+            ticketRec?.dollarImpact > 0
+              ? `Potential savings: ${
+                  (ticketRec?._raw?.account_id ? accountCosts[ticketRec._raw.account_id]?.currencySymbol : undefined) || savingsSymbol
+                }${ticketRec.dollarImpact}/mo`
+              : ''
           }`,
           accountId: ticketRec?._raw?.account_id,
         }}

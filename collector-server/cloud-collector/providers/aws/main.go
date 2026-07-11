@@ -523,6 +523,16 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 	errChan := make(chan error, len(regions))
 	sem := semaphore.NewWeighted(5) // limit concurrent region fetches
 
+	// Track per-region outcomes so we can distinguish "this account genuinely has
+	// no resources" from "every region we tried was network-unreachable". The
+	// latter must NOT surface as an empty-but-successful result: StoreResources
+	// archives (is_active=false, status='Deleted') all of a service's resources
+	// when it gets zero items for an explicit region set, so a collector-wide
+	// egress failure would mass-archive live resources. See the all-unreachable
+	// guard after wg.Wait(), which mirrors the zero-regions safeguard in
+	// account.StoreResources.
+	var successCount, unreachableCount int
+
 	service, ok := GetAwsService(query.ServiceName)
 	if !ok {
 		return providers.ListResourcesResponse{
@@ -616,12 +626,20 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 					ctx.GetLogger().Debug("skipping region without service endpoint", "service", query.ServiceName, "region", regionName)
 					return
 				}
+				if isRegionUnreachable(err) {
+					ctx.GetLogger().Warn("skipping unreachable region endpoint", "error", err, "service", query.ServiceName, "region", regionName)
+					mu.Lock()
+					unreachableCount++
+					mu.Unlock()
+					return
+				}
 				ctx.GetLogger().Error("failed to fetch resources", "error", err, "service", query.ServiceName, "region", regionName)
 				errChan <- fmt.Errorf("failed to fetch %s resources in %s: %w", query.ServiceName, regionName, err)
 				return
 			}
 			mu.Lock()
 			resources = append(resources, serviceResources...)
+			successCount++
 			mu.Unlock()
 		}(regionName)
 	}
@@ -632,6 +650,15 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 	var allErrors error
 	for err := range errChan {
 		allErrors = multierr.Append(allErrors, err)
+	}
+
+	// Fail-open guard: if not one region succeeded and at least one was skipped as
+	// unreachable, the empty resource list is an artifact of a network/egress
+	// failure — not a true "account has no resources". Returning nil here would let
+	// StoreResources archive every existing row for this service. Surface an error
+	// so the caller skips archival, exactly as it does when zero regions are queried.
+	if successCount == 0 && unreachableCount > 0 {
+		allErrors = multierr.Append(allErrors, fmt.Errorf("all %d attempted region(s) unreachable for service %s; refusing to report an empty result", unreachableCount, query.ServiceName))
 	}
 
 	// Client-side ResourceIds filter — only needed when we fell back to full GetResources

@@ -107,20 +107,38 @@ func (r *EventRegistry) StartSync(ctx context.Context, interval time.Duration) {
 	}
 }
 
-func (r *EventRegistry) Match(eventType string, accountID string, payload any) []model.WorkflowEventTriggerRule {
+// Match returns the event triggers that fire for an event of the given type,
+// account, and lifecycle phase. phase is the event's lifecycle phase
+// (model.DefaultLifecyclePhase when the producer didn't stamp one); a rule only
+// matches when its declared phase (params.on, default event.created) equals it.
+func (r *EventRegistry) Match(eventType string, accountID string, payload any, phase string) []model.WorkflowEventTriggerRule {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	var matches []model.WorkflowEventTriggerRule
-	matches = r.evaluateRules(r.triggers[eventType], accountID, payload, matches)
-	matches = r.evaluateRules(r.wildcard, accountID, payload, matches)
+	matches = r.evaluateRules(r.triggers[eventType], accountID, payload, phase, matches)
+	matches = r.evaluateRules(r.wildcard, accountID, payload, phase, matches)
 	return matches
 }
 
-func (r *EventRegistry) evaluateRules(candidates []CompiledRule, accountID string, payload any, matches []model.WorkflowEventTriggerRule) []model.WorkflowEventTriggerRule {
+func (r *EventRegistry) evaluateRules(candidates []CompiledRule, accountID string, payload any, phase string, matches []model.WorkflowEventTriggerRule) []model.WorkflowEventTriggerRule {
 	for _, c := range candidates {
 		// Strict tenancy check
 		if c.Rule.AccountID != accountID {
+			continue
+		}
+
+		// Lifecycle-phase gate: a trigger only fires on the phase it declared
+		// (params.on, default event.created). Exact match — distinct phases
+		// (event.created vs event.triaged vs investigation.completed) never
+		// cross, so a single event publishing multiple phases can't double-fire
+		// the same workflow. An empty stored phase defaults to event.created
+		// (back-compat for rows not produced by the phase-aware DAO).
+		rulePhase := c.Rule.LifecyclePhase
+		if rulePhase == "" {
+			rulePhase = string(model.DefaultLifecyclePhase)
+		}
+		if rulePhase != phase {
 			continue
 		}
 

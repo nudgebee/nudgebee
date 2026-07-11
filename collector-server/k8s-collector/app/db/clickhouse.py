@@ -1,5 +1,6 @@
 from urllib.parse import urlparse, unquote
 import logging
+import threading
 from typing import List, Sequence, Dict, Any
 import json
 
@@ -12,43 +13,49 @@ from clickhouse_connect import common
 
 DB_POOL = None
 logger = logging.getLogger(__name__)
+DB_POOL_LOCK = threading.Lock()
 
 
 def create_db_connection_pool() -> Client:
     global DB_POOL
     if DB_POOL is None:
-        host: str | None = Configs.CLICKHOUSE_HOST
-        port = 8123
-        username = Configs.CLICKHOUSE_USER
-        password = Configs.CLICKHOUSE_PASSWORD
+        with DB_POOL_LOCK:
+            # Double-check locking so concurrent threads (discovery consumer +
+            # Flask request workers) don't each build a client and orphan all
+            # but one — every orphan keeps an open TCP connection to ClickHouse.
+            if DB_POOL is None:
+                host: str | None = Configs.CLICKHOUSE_HOST
+                port = 8123
+                username = Configs.CLICKHOUSE_USER
+                password = Configs.CLICKHOUSE_PASSWORD
 
-        # get port from host
-        if host is not None and "//" in host:
-            parsed_url = urlparse(host)
-            if parsed_url.port:
-                port = parsed_url.port
-            host = parsed_url.hostname
-            if parsed_url.username:
-                username = unquote(parsed_url.username)
-            if parsed_url.password:
-                password = unquote(parsed_url.password)
+                # get port from host
+                if host is not None and "//" in host:
+                    parsed_url = urlparse(host)
+                    if parsed_url.port:
+                        port = parsed_url.port
+                    host = parsed_url.hostname
+                    if parsed_url.username:
+                        username = unquote(parsed_url.username)
+                    if parsed_url.password:
+                        password = unquote(parsed_url.password)
 
-        if host is not None and ":" in host:
-            hostport = host.split(":")
-            host = hostport[0]
-            port = int(hostport[1])
+                if host is not None and ":" in host:
+                    hostport = host.split(":")
+                    host = hostport[0]
+                    port = int(hostport[1])
 
-        if host is None:
-            host = "localhost"
+                if host is None:
+                    host = "localhost"
 
-        common.set_setting("autogenerate_session_id", False)
-        DB_POOL = clickhouse_connect.get_client(
-            host=str(host),
-            port=port,
-            username=username,
-            password=password,
-            database=Configs.CLICKHOUSE_DATABASE,
-        )
+                common.set_setting("autogenerate_session_id", False)
+                DB_POOL = clickhouse_connect.get_client(
+                    host=str(host),
+                    port=port,
+                    username=username,
+                    password=password,
+                    database=Configs.CLICKHOUSE_DATABASE,
+                )
     return DB_POOL
 
 

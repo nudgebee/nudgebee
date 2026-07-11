@@ -12,7 +12,7 @@ import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion'
 import { Label } from '@ui/Label';
 import apiUser from '@api1/user';
 import Text from '@shared/format/Text';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 
 const RECOMMENDATION_COMPATIBLE_HEADER1 = [
   'Chart Name',
@@ -91,7 +91,7 @@ const KubernetesHelmCompatibleRecommendation = ({ accountId, showUpdatedEmptyDat
             component: ClusterNameWithRegion({
               name: chartNameAndVersion?.name || `${item.recommendation.chart}`,
               hideIcon: true,
-              namespaceFont: '12px',
+              namespaceFont: ds.text.small,
               region: chartNameAndVersion?.version ? (
                 <Stack>
                   <Typography sx={{ fontSize: 'var(--ds-text-small)' }}>Version -{chartNameAndVersion.version}</Typography>

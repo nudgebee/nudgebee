@@ -408,6 +408,9 @@ func (m LoadSkillsTool) listAvailableSkills(ctx core.NbToolContext, dbms *common
 			names = append(names, name)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		ctx.Ctx.GetLogger().Warn("tool: load_skills error iterating available-skills rows", "error", err)
+	}
 	return names
 }
 
@@ -732,6 +735,9 @@ func (s SearchSkillsTool) searchManualKBs(ctx core.NbToolContext, dbms *common.D
 			continue
 		}
 		out = append(out, manualSearchResult{id: id, name: name, description: description, snippet: snippet})
+	}
+	if err := rows.Err(); err != nil {
+		ctx.Ctx.GetLogger().Error("tool: search_skills error iterating rows", "error", err)
 	}
 	return out
 }

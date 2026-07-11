@@ -5,10 +5,10 @@ import apiCloudAccount from '@api1/cloud-account';
 import CloudAccountTable from '@components/cloudaccount/CloudAccountTable';
 import { Label } from '@ui/Label';
 import CloudAccountEvents from '@components/cloudaccount/CloudAccountEvents';
-import CopyableText from '@shared/CopyableText';
+import CopyButton from '@shared/buttons/CopyButton';
 import OptimizeSummary from '@components/cloudaccount/ec2/Summary';
 import Datetime from '@shared/format/Datetime';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { DataBlock, CustomText } from '@components/cloudaccount/common';
 import { usePagination } from '@hooks/usePagination';
 import PerformanceInsights from '../PerformanceInsights';
@@ -22,10 +22,11 @@ import ConfirmActionDialog from '@components/cloudaccount/ConfirmActionDialog';
 import ResourceActionHistory from '@components/cloudaccount/ResourceActionHistory';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import DownloadButton from '@shared/buttons/DownloadButton';
+import ServiceRefreshButton from '@components/cloudaccount/ServiceRefreshButton';
 import { ds } from '@utils/colors';
 
 const INSTANCE_HEADER = [
@@ -238,9 +239,10 @@ const AmazonRdsDetails = ({ drilldownQuery }: { drilldownQuery: any }) => {
           <DataBlock title={'Subnets'}>
             {drilldownQuery.meta.DBSubnetGroup.Subnets.map((sg: any) => (
               <Typography key={sg.SubnetIdentifier} fontSize={ds.text.body}>
-                <CopyableText copyableText={sg.SubnetIdentifier} iconColor={undefined} onCopy={undefined}>
+                <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                   {sg.SubnetIdentifier + ' -> ' + sg.SubnetAvailabilityZone.Name}
-                </CopyableText>
+                  <CopyButton text={sg.SubnetIdentifier} />
+                </Box>
               </Typography>
             ))}
           </DataBlock>
@@ -332,7 +334,7 @@ const GCPAlertPoliciesTable = ({ alertPolicies }: { alertPolicies: any[] }) => {
   const rows = alertPolicies.flatMap((policy: any) =>
     (policy.conditions || []).map((condition: any) => {
       const threshold = condition.conditionThreshold;
-      const row: ICustomTable2Row[] = [];
+      const row: ICustomTableRow[] = [];
       row.push({ component: <CustomText text1={policy.displayName} /> });
       row.push({ component: <CustomText text1={policy.severity || '-'} /> });
       row.push({ component: <CustomText text1={policy.enabled ? 'Yes' : 'No'} /> });
@@ -355,7 +357,7 @@ const GCPAlertPoliciesTable = ({ alertPolicies }: { alertPolicies: any[] }) => {
     <ListingLayout id={`${tableId}-card`}>
       <ListingLayout.Toolbar title='Alert Policies' actions={<DownloadButton id={`${tableId}-download`} onClick={() => ({ tableId })} />} />
       <ListingLayout.Body>
-        <CustomTable2 id={tableId} headers={headers} tableData={rows} rowsPerPage={rows.length} />
+        <CustomTable id={tableId} headers={headers} tableData={rows} rowsPerPage={rows.length} />
       </ListingLayout.Body>
     </ListingLayout>
   );
@@ -364,7 +366,7 @@ const GCPAlertPoliciesTable = ({ alertPolicies }: { alertPolicies: any[] }) => {
 const GCPDatabaseFlagsTable = ({ flags }: { flags: any[] }) => {
   const tableId = 'gcpRdsDatabaseFlagsTable';
   const rows = flags.map((flag: any) => {
-    const row: ICustomTable2Row[] = [];
+    const row: ICustomTableRow[] = [];
     row.push({ component: <CustomText text1={flag.name} /> });
     row.push({ component: <CustomText text1={flag.value} /> });
     return row;
@@ -373,7 +375,7 @@ const GCPDatabaseFlagsTable = ({ flags }: { flags: any[] }) => {
     <ListingLayout id={`${tableId}-card`}>
       <ListingLayout.Toolbar title='Database Flags' actions={<DownloadButton id={`${tableId}-download`} onClick={() => ({ tableId })} />} />
       <ListingLayout.Body>
-        <CustomTable2 id={tableId} headers={['Flag Name', 'Value']} tableData={rows} rowsPerPage={rows.length} />
+        <CustomTable id={tableId} headers={['Flag Name', 'Value']} tableData={rows} rowsPerPage={rows.length} />
       </ListingLayout.Body>
     </ListingLayout>
   );
@@ -455,9 +457,10 @@ const GCPRdsDetails = ({ drilldownQuery }: { drilldownQuery: any }) => {
           <DataBlock title={'IP Addresses'}>
             {meta.ipAddresses.map((ip: any) => (
               <Typography key={ip.ipAddress} fontSize={ds.text.body}>
-                <CopyableText copyableText={ip.ipAddress} iconColor={undefined} onCopy={undefined}>
+                <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                   {ip.ipAddress} ({ip.type})
-                </CopyableText>
+                  <CopyButton text={ip.ipAddress} />
+                </Box>
               </Typography>
             ))}
           </DataBlock>
@@ -614,7 +617,7 @@ const CloudLogsTab = ({ accountId, drilldownQuery, serviceName }: { accountId: s
 const DetailsTagsRdsTable = ({ tagData }: any) => {
   const tagsTableId = 'rdsDetailTagsTable';
   const convertedJson2 = tagData.map((item: any) => {
-    const data: ICustomTable2Row[] = [];
+    const data: ICustomTableRow[] = [];
     data.push({
       component: <CustomText text1={item.Key} />,
     });
@@ -627,7 +630,7 @@ const DetailsTagsRdsTable = ({ tagData }: any) => {
     <ListingLayout id={`${tagsTableId}-card`}>
       <ListingLayout.Toolbar title='Tags' actions={<DownloadButton id={`${tagsTableId}-download`} onClick={() => ({ tableId: tagsTableId })} />} />
       <ListingLayout.Body>
-        <CustomTable2 id={tagsTableId} headers={['Field', 'Value']} tableData={convertedJson2} rowsPerPage={convertedJson2.length} />
+        <CustomTable id={tagsTableId} headers={['Field', 'Value']} tableData={convertedJson2} rowsPerPage={convertedJson2.length} />
       </ListingLayout.Body>
     </ListingLayout>
   );
@@ -660,7 +663,7 @@ const formatStateReasonData = (stateReasonData: string): JSX.Element => {
 const AlarmRdsTable = ({ alarmDetails }: any) => {
   const alarmTableId = 'rdsAlarmDetailsTable';
   const convertedJson2 = alarmDetails.map((item: any) => {
-    const data: ICustomTable2Row[] = [];
+    const data: ICustomTableRow[] = [];
     data.push({
       component: <CustomText text1={item.alarmName || item.AlarmName} subtext1={item.comparisonOperator || item.ComparisonOperator} />,
     });
@@ -688,13 +691,13 @@ const AlarmRdsTable = ({ alarmDetails }: any) => {
         actions={<DownloadButton id={`${alarmTableId}-download`} onClick={() => ({ tableId: alarmTableId })} />}
       />
       <ListingLayout.Body>
-        <CustomTable2 id={alarmTableId} headers={RDS_HEADER} tableData={convertedJson2} rowsPerPage={convertedJson2.length} />
+        <CustomTable id={alarmTableId} headers={RDS_HEADER} tableData={convertedJson2} rowsPerPage={convertedJson2.length} />
       </ListingLayout.Body>
     </ListingLayout>
   );
 };
 
-export interface ICustomTable2Row {
+export interface ICustomTableRow {
   component?: JSX.Element;
   drilldownQuery?: {
     podName?: any;
@@ -815,7 +818,7 @@ const InstancesView = (props: {
       .then((res: any) => {
         setLoading(false);
         const rdsResourceData = res.data?.data?.cloud_resourses?.map((item: any) => {
-          const data: ICustomTable2Row[] = [];
+          const data: ICustomTableRow[] = [];
 
           data.push({
             component: <CustomText text1={item.name || item.resourse_id} subtext1={getAvailabilityZone(item)} subtext2={getInstanceClass(item)} />,
@@ -880,9 +883,20 @@ const InstancesView = (props: {
     <ListingLayout id='right-sizing'>
       <ListingLayout.Toolbar
         title={props.heading || undefined}
-        actions={<DownloadButton id={`${rdsOptimizeInstancesTable}-download`} onClick={() => ({ tableId: rdsOptimizeInstancesTable })} />}
+        actions={
+          <>
+            <ServiceRefreshButton
+              id={rdsOptimizeInstancesTable}
+              accountId={props.accountId}
+              serviceName={props.serviceName}
+              region={selectedRegion || undefined}
+              onDone={() => listRDSInstances()}
+            />
+            <DownloadButton id={`${rdsOptimizeInstancesTable}-download`} onClick={() => ({ tableId: rdsOptimizeInstancesTable })} />
+          </>
+        }
       >
-        <CustomSearch
+        <SearchInput
           id='rds-instances-search'
           label='Search By Instance Name'
           value={selectedInstanceName}

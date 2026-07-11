@@ -20,10 +20,6 @@
  *   - Don't use indeterminate for "loading" — it has a specific selection-tree
  *     meaning. Use a Skeleton.
  *
- * Migration:
- *   `import CustomCheckbox from '@shared/CustomCheckbox'`
- * → `import { Checkbox } from '@ui/Checkbox'`
- *   Adds indeterminate state.
  */
 import * as React from 'react';
 import { Box } from '@mui/material';

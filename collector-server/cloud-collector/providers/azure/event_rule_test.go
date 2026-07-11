@@ -20,11 +20,16 @@ func TestGetAzureEventRulesEmbedded(t *testing.T) {
 
 	// Verify we have the expected default rules
 	expectedRules := []string{
-		"azure_vm_state_change",
-		"azure_sql_database_operation",
+		"azure_vm_write_operation",
+		"azure_vm_action_operation",
+		"azure_vm_delete_operation",
+		"azure_sql_database_write_operation",
+		"azure_sql_database_action_operation",
+		"azure_sql_database_delete_operation",
 		"azure_storage_account_operation",
 		"azure_webapp_state_change",
 		"azure_aks_cluster_operation",
+		"azure_resource_write_generic",
 		"azure_resource_action_generic",
 		"azure_resource_delete",
 	}

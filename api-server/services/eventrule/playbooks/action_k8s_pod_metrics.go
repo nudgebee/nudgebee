@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"nudgebee/services/common"
+	"nudgebee/services/internal/database"
 	"nudgebee/services/relay"
 	"strings"
 	"time"
@@ -13,6 +14,11 @@ import (
 
 type podMetricAction struct {
 	autodetectResource string
+	// workloadResourceSpec resolves the authoritative container resource spec
+	// (which of memory-request / memory-limit / cpu-request are set) for the
+	// workload backing a pod, from the collected k8s_workloads.meta. Overridable
+	// in tests; nil means use the real DB-backed resourcePresenceFromWorkloadSpec.
+	workloadResourceSpec func(ctx PlaybookActionContext, podName, namespace string) (found, hasMemReq, hasMemLim, hasCpuReq bool)
 }
 
 type podMetricData struct {
@@ -456,7 +462,44 @@ func (a *podMetricAction) buildPodMetricResponse(ctx PlaybookActionContext, prom
 	// drive Execute manually without specifying it keep the legacy
 	// "emit all three" behaviour. The defaulted value above is only used
 	// by the prometheus query builder, which requires a concrete type.
-	a.generateInsights(requestsMap, limitsMap, params.PodName, insightResourceType, &insights)
+	// Decide the resource-allocation insights from the AUTHORITATIVE workload
+	// spec (k8s_workloads.meta) when available — it is collected from the K8s API
+	// and is correct even when the event names a pod/ReplicaSet that has since
+	// rolled away (the common webhook-alert case). Only when no workload spec is
+	// found do we fall back to the Prometheus series, and then only if the pod is
+	// actually observable in metrics: an empty kube_pod_container_resource_*
+	// result is otherwise ambiguous ("unset" vs "pod not found") and was
+	// previously misread as "unset", fabricating false High/Critical "missing
+	// resource" findings that poison downstream RCA.
+	specLookup := a.workloadResourceSpec
+	if specLookup == nil {
+		specLookup = a.resourcePresenceFromWorkloadSpec
+	}
+	if specFound, hasMemReq, hasMemLim, hasCpuReq := specLookup(ctx, params.PodName, params.Namespace); specFound {
+		// Reuse generateInsights by encoding the spec's presence as a synthetic
+		// single-container map (value is a sentinel — only key presence matters).
+		const specContainer = "workload-spec"
+		specReq := map[string]float64{}
+		if hasMemReq {
+			specReq["memory"] = 1
+		}
+		if hasCpuReq {
+			specReq["cpu"] = 1
+		}
+		specLim := map[string]float64{}
+		if hasMemLim {
+			specLim["memory"] = 1
+		}
+		a.generateInsights(
+			map[string]map[string]float64{specContainer: specReq},
+			map[string]map[string]float64{specContainer: specLim},
+			params.PodName, insightResourceType, &insights)
+	} else if len(metricEntries) > 0 || len(requestsMap) > 0 || len(limitsMap) > 0 {
+		a.generateInsights(requestsMap, limitsMap, params.PodName, insightResourceType, &insights)
+	} else {
+		ctx.GetLogger().Debug("pod_metrics_enricher: no workload spec and pod not observed in metrics; skipping resource-allocation insights to avoid false 'missing resource' findings",
+			"pod", params.PodName, "namespace", params.Namespace)
+	}
 
 	podMetric := podMetricData{
 		Name:         "pod_metric",
@@ -660,6 +703,66 @@ func (a *podMetricAction) getResourceValues(resourceMap map[string]map[string]fl
 	}
 
 	return result
+}
+
+// resourcePresenceFromWorkloadSpec reads the authoritative container resource
+// spec from the collected k8s_workloads.meta for the workload backing podName,
+// reporting which of {memory request, memory limit, cpu request} are set.
+//
+// This is the source of truth — collected from the K8s API — unlike the
+// presence/absence of kube_pod_container_resource_* Prometheus series, which is
+// empty whenever the pod isn't currently observable (rolled away, stale/
+// ReplicaSet-name identity from a webhook alert, scrape gap, KSM not scraped).
+// An empty metric result was previously misread as "resource unset", fabricating
+// false High/Critical "missing resource" findings for pods that actually have
+// them. The workload is matched by longest-prefix on its name, so it resolves
+// correctly even after a rollout changed the pod/ReplicaSet hash.
+//
+// found is false when no active workload row matches (or it has no containers in
+// meta); the caller then falls back to the Prometheus-observable heuristic.
+func (a *podMetricAction) resourcePresenceFromWorkloadSpec(ctx PlaybookActionContext, podName, namespace string) (found, hasMemReq, hasMemLim, hasCpuReq bool) {
+	if podName == "" || namespace == "" {
+		return false, false, false, false
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		ctx.GetLogger().Warn("pod_metrics_enricher: workload spec lookup unavailable; falling back to metric-presence heuristic", "error", err)
+		return false, false, false, false
+	}
+
+	// Resolve the workload by longest-prefix match on its name (pod/RS names are
+	// "<workload>-<hash>[-<suffix>]"), then OR the resource presence across its
+	// containers — mirroring the cross-container OR the Prometheus path uses.
+	const query = `
+		WITH w AS (
+			SELECT name, meta
+			FROM k8s_workloads
+			WHERE cloud_account_id = $1
+			  AND namespace = $2
+			  AND $3 LIKE name || '-%'
+			  AND is_active IS NOT FALSE
+			ORDER BY length(name) DESC
+			LIMIT 1
+		)
+		SELECT
+			count(c) AS containers,
+			coalesce(bool_or(coalesce((c->'resources'->'requests') ? 'memory', false)), false) AS has_mem_req,
+			coalesce(bool_or(coalesce((c->'resources'->'limits')   ? 'memory', false)), false) AS has_mem_lim,
+			coalesce(bool_or(coalesce((c->'resources'->'requests') ? 'cpu', false)),    false) AS has_cpu_req
+		FROM w CROSS JOIN LATERAL jsonb_array_elements(coalesce(w.meta->'config'->'containers', '[]'::jsonb)) c`
+
+	var containers int
+	if err := dbms.Db.QueryRowx(query, ctx.GetAccountId(), namespace, podName).Scan(&containers, &hasMemReq, &hasMemLim, &hasCpuReq); err != nil {
+		ctx.GetLogger().Warn("pod_metrics_enricher: workload spec lookup failed; falling back to metric-presence heuristic",
+			"error", err, "pod", podName, "namespace", namespace)
+		return false, false, false, false
+	}
+	if containers == 0 {
+		// No matching workload, or it carries no container spec — no authoritative
+		// answer; let the caller fall back rather than assert "unset".
+		return false, false, false, false
+	}
+	return true, hasMemReq, hasMemLim, hasCpuReq
 }
 
 // generateInsights emits resource-allocation insights scoped by resourceType

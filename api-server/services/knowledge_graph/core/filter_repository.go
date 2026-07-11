@@ -907,8 +907,8 @@ func (r *FilterRepository) TryClaimTenantProcessing(tenantID string, lockDuratio
 		return false, fmt.Errorf("failed to select tenant filters for update: %w", err)
 	}
 
+	defer func() { _ = rows.Close() }()
 	maxStartedAt, err := scanMaxProcessStartedAt(rows)
-	_ = rows.Close()
 	if err != nil {
 		return false, err
 	}

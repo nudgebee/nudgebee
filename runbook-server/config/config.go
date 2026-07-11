@@ -90,7 +90,8 @@ type appConfig struct {
 
 	MlServerUrl string `mapstructure:"ml_server_url"`
 
-	NotificationServerUrl string `mapstructure:"notification_service_url"`
+	NotificationServerUrl   string `mapstructure:"notification_service_url"`
+	NotificationServerToken string `mapstructure:"notification_server_token"`
 
 	RunbookServerRelayCommandExecutionTimeoutSeconds int `mapstructure:"runbook_server_relay_command_execution_timeout_seconds"`
 	RunbookServerRelayPodExecutionTimeoutSeconds     int `mapstructure:"runbook_server_relay_pod_execution_timeout_seconds"`
@@ -122,6 +123,7 @@ type appConfig struct {
 
 	OptimizationEnabled                           bool `mapstructure:"runbook_server_optimization_enabled"`
 	OptimizationRecommendationPollIntervalSeconds int  `mapstructure:"runbook_server_optimization_poll_interval_seconds"`
+	WebhookMaxBodySizeMB                          int  `mapstructure:"webhook_max_body_size_mb"`
 }
 
 func init() {
@@ -132,6 +134,7 @@ func init() {
 	viper.SetDefault("AUTO_PILOT_DATABASE_URL", "postgres://temporal:temporal@localhost:5432/temporal?sslmode=disable")
 	viper.SetDefault("runbook_server_optimization_enabled", true)
 	viper.SetDefault("runbook_server_optimization_poll_interval_seconds", 180)
+	viper.SetDefault("webhook_max_body_size_mb", 5)
 
 	viper.SetDefault("nudgebee_encryption_key", "")
 
@@ -195,6 +198,7 @@ func init() {
 	viper.SetDefault("SCRIPT_EXECUTOR_POWERSHELL_IMAGE", "mcr.microsoft.com/powershell:lts-alpine-3.17")
 
 	viper.SetDefault("notification_service_url", "http://notifications:8080")
+	viper.SetDefault("notification_server_token", "")
 
 	viper.SetDefault("runbook_server_llm_retry_attempts", 180)
 	viper.SetDefault("runbook_server_llm_initial_backoff_seconds", 5)

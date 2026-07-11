@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Box, Typography } from '@mui/material';
 import { DragIndicator } from '@mui/icons-material';
+import { ds } from 'src/utils/colors';
 
 /**
  * Props the consumer spreads onto whatever element should be the drag handle
@@ -118,13 +119,13 @@ export function ReorderableList<T>({
           'top:-9999px',
           'left:-9999px',
           'padding:6px 12px',
-          'background:#1f2937',
-          'color:#ffffff',
+          `background:${ds.gray[700]}`,
+          `color:${ds.background[100]}`,
           'border-radius:6px',
           'font-size:12px',
           'font-weight:500',
           'font-family:Roboto,system-ui,-apple-system,sans-serif',
-          'box-shadow:0 4px 12px rgba(0,0,0,0.15)',
+          `box-shadow:0 ${ds.space[1]} ${ds.space[3]} color-mix(in srgb, ${ds.gray[700]} 15%, transparent)`,
           'white-space:nowrap',
           'max-width:240px',
           'overflow:hidden',

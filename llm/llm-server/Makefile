@@ -1,5 +1,12 @@
+# Optional build-tag selector. Empty by default; set externally to pull in
+# files behind a specific //go:build tag for that command. Example:
+#   make validate BUILD_TAGS=foo
+BUILD_TAGS ?=
+TAG_FLAG := $(if $(BUILD_TAGS),-tags=$(BUILD_TAGS))
+LINT_TAG_FLAG := $(if $(BUILD_TAGS),--build-tags=$(BUILD_TAGS))
+
 run:
-	go run ./cmd
+	go run $(TAG_FLAG) ./cmd
 
 
 fmt:
@@ -8,7 +15,7 @@ fmt:
 test:
 	go mod download
 	mkdir testresults || true
-	go test -coverprofile=testresults/testcoverage.txt  -race ./...
+	go test -coverprofile=testresults/testcoverage.txt  -race $(TAG_FLAG) ./...
 	go tool cover -html=testresults/testcoverage.txt -o testresults/testcoverage.html
 
 # Run the full integration / e2e suite. Requires port-forwards and TEST_* env
@@ -31,7 +38,7 @@ benchmark:
 	go test -bench=. -count=5 -benchmem -run=^$  ./... | tee testresults/testperf.txt
 
 lint:
-	golangci-lint run
+	golangci-lint run $(LINT_TAG_FLAG)
 
 # Regenerate OpenAPI spec + docs.go from godoc-style annotations on handlers.
 # Requires: go install github.com/swaggo/swag/cmd/swag@latest
@@ -41,7 +48,7 @@ swag:
 validate: lint test
 
 build: validate
-	go build -o llm-server ./cmd/*.go
+	go build $(TAG_FLAG) -o llm-server ./cmd
 
 install: build
 	mkdir ~/go/bin || true

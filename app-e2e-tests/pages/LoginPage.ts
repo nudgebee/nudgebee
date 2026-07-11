@@ -135,6 +135,11 @@ export class LoginPage {
 
     const tenantSelect = this.page.locator("#switch-tenant-select");
     await tenantSelect.waitFor({ state: "visible", timeout: 10000 });
+    const enabledDeadline = Date.now() + 20000;
+    while (await tenantSelect.isDisabled().catch(() => false)) {
+      if (Date.now() > enabledDeadline) break;
+      await this.page.waitForTimeout(200);
+    }
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       await tenantSelect.click();

@@ -190,8 +190,21 @@ func kbList(c *gin.Context, context *security.RequestContext, payload map[string
 		return
 	}
 
+	// Empty account_id means the caller is on a surface with no account
+	// context (the global b-Cortex sidebar). Fall back to a tenant-wide
+	// read; the service layer row-filters by HasAccountAccess so each
+	// caller only sees KBs they're allowed to read.
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		resp, err := core.ListKnowledgebasesForTenant(context)
+		if err != nil {
+			slog.Error("kb: failed to list tenant-wide", "error", err,
+				"tenant_id", context.GetSecurityContext().GetTenantId())
+			c.JSON(500, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(200, buildApiResponse(resp, nil))
 		return
 	}
 

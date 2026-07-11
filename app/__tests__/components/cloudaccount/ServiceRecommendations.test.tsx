@@ -32,21 +32,26 @@ jest.mock('@hooks/useCurrencySymbol', () => ({
   useCurrencySymbol: (...args: any[]) => mockUseCurrencySymbol(...args),
 }));
 
-jest.mock('@shared/snackbarService', () => ({
-  snackbar: { success: jest.fn(), error: jest.fn() },
+jest.mock('@ui/Toast', () => ({
+  __esModule: true,
+  toast: { success: jest.fn(), error: jest.fn() },
 }));
 
 jest.mock('src/utils/common', () => ({
   snakeToTitleCase: (s: string) => (s || '').replace(/_/g, ' '),
+  toSeverityLevel: (s: string) => String(s || '').toLowerCase(),
+}));
+
+jest.mock('@utils/common', () => ({
+  snakeToTitleCase: (s: string) => (s || '').replace(/_/g, ' '),
+  toSeverityLevel: (s: string) => String(s || '').toLowerCase(),
 }));
 
 jest.mock('src/utils/actionStyles', () => ({
   action: { primary: {} },
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000' }, background: { white: '#fff' } },
-}));
+jest.mock('@utils/colors');
 
 jest.mock('@assets', () => ({
   AutoPilotGreyIcon: '/autopilot.svg',
@@ -63,9 +68,9 @@ jest.mock('@shared/format/Datetime', () => ({
   default: ({ value }: any) => <span data-testid='datetime'>{String(value || '—')}</span>,
 }));
 
-jest.mock('@shared/widgets/SeverityIcon', () => ({
+jest.mock('@ui/SeverityIcon', () => ({
   __esModule: true,
-  default: ({ severityType }: any) => <span data-testid={`severity-${severityType}`}>sev</span>,
+  SeverityIcon: ({ level }: any) => <span data-testid={`severity-${level}`}>sev</span>,
 }));
 
 jest.mock('@shared/format/Currency', () => ({
@@ -79,13 +84,37 @@ jest.mock('@shared/format/Currency', () => ({
   ),
 }));
 
-jest.mock('@shared/ds/ThreeDotsMenu', () => ({
+jest.mock('@shared/buttons/DownloadButton', () => ({
   __esModule: true,
-  default: ({ menuItems, data, onMenuClick }: any) => (
+  default: ({ onClick }: any) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
+  ),
+}));
+
+jest.mock('@shared/icons/SafeIcon', () => ({
+  __esModule: true,
+  default: ({ alt }: any) => <span data-testid={`icon-${alt}`}>icon</span>,
+}));
+
+jest.mock('@ui/Button', () => ({
+  __esModule: true,
+  Button: ({ children, onClick, disabled }: any) => (
+    <button data-testid={`btn-${typeof children === 'string' ? children : 'icon'}`} onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
+  ),
+}));
+
+jest.mock('@ui/DropdownMenu', () => ({
+  __esModule: true,
+  DropdownMenu: ({ items, trigger }: any) => (
     <div data-testid='three-dots'>
-      {(menuItems || []).map((mi: any) => (
-        <button key={mi.id} data-testid={`menu-${mi.label}`} onClick={() => onMenuClick(mi, data)} disabled={mi.disabled}>
-          {mi.label}
+      {trigger}
+      {(items || []).map((it: any) => (
+        <button key={it.id} data-testid={`menu-${it.label}`} onClick={() => it.onSelect?.()} disabled={it.disabled}>
+          {it.label}
         </button>
       ))}
     </div>
@@ -94,6 +123,13 @@ jest.mock('@shared/ds/ThreeDotsMenu', () => ({
 
 jest.mock('@components/cloudaccount/common', () => ({
   getTicketDescription: (data: any) => `desc:${data?.rule_name || '-'}`,
+  DataBlock: ({ title, data }: any) => <div data-testid={`datablock-${title}`}>{data}</div>,
+  CustomText: ({ text1, text2 }: any) => (
+    <span>
+      {text1}
+      {text2 ? ` ${text2}` : ''}
+    </span>
+  ),
 }));
 
 jest.mock('@components/tickets/TicketCreatePopupForm', () => ({
@@ -116,27 +152,45 @@ jest.mock('@components/tickets/TicketCreatePopupForm', () => ({
     ) : null,
 }));
 
-jest.mock('@shared/BoxLayout2', () => ({
-  __esModule: true,
-  default: ({ children, heading, filterOptions = [] }: any) => (
-    <div data-testid='box-layout'>
-      <h2 data-testid='box-heading'>{heading}</h2>
-      {filterOptions.map((f: any, i: number) => (
-        <select key={i} data-testid={`filter-${f.label}`} value={f.value || ''} onChange={f.onSelect}>
-          {(f.options || []).map((opt: any, idx: number) => {
-            const v = opt.value ?? '';
-            const l = opt.label ?? '';
-            return (
-              <option key={(v || '_') + '-' + idx} value={v}>
-                {l}
-              </option>
-            );
-          })}
-        </select>
-      ))}
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout: any = ({ children, id }: any) => (
+    <div data-testid='listing-layout' id={id}>
       {children}
     </div>
-  ),
+  );
+  ListingLayout.Toolbar = ({ children, actions, title }: any) => (
+    <div data-testid='toolbar'>
+      <h2 data-testid='box-heading'>{title || ''}</h2>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }: any) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, options = [], value, onSelect }: any) => {
+    const currentValue = typeof value === 'object' && value !== null ? value.value : value;
+    return (
+      <select
+        data-testid={`filter-${label}`}
+        value={currentValue || ''}
+        onChange={(e) => onSelect?.({ target: { value: e.target.value } }, { value: e.target.value, label: e.target.value })}
+      >
+        {(options || []).map((opt: any, idx: number) => {
+          const v = typeof opt === 'string' ? opt : opt.value;
+          const l = typeof opt === 'string' ? opt : opt.label;
+          return (
+            <option key={(v || '_') + '-' + idx} value={v}>
+              {l}
+            </option>
+          );
+        })}
+      </select>
+    );
+  },
 }));
 
 jest.mock('@components/cloudaccount/CloudAccountTable', () => ({
@@ -165,7 +219,7 @@ jest.mock('@components/cloudaccount/CloudAccountTable', () => ({
 import ServiceRecommendations from '@components/cloudaccount/ServiceRecommendations';
 
 const apiRecommendations = require('@api1/recommendation').default;
-const { snackbar } = require('@shared/snackbarService');
+const { toast: snackbar } = require('@ui/Toast');
 
 const sampleRecs = [
   {
@@ -243,7 +297,6 @@ describe('ServiceRecommendations (integration)', () => {
 
     await waitFor(() => expect(screen.getByTestId('severity-critical')).toBeInTheDocument());
     expect(screen.getByTestId('severity-high')).toBeInTheDocument();
-    // 'Right Sizing' and 'Security' appear in both row and dropdown options
     expect(screen.getAllByText('Right Sizing').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Security').length).toBeGreaterThan(0);
     expect(screen.getByText('i-1234')).toBeInTheDocument();
@@ -253,15 +306,12 @@ describe('ServiceRecommendations (integration)', () => {
     render(<ServiceRecommendations accountId='acc-1' serviceName='ec2' provider='AWS' />);
 
     await waitFor(() => expect(screen.getByText('Oversized Instance')).toBeInTheDocument());
-    // Fallback to snakeToTitleCase for rule with no details mapping
     expect(screen.getByText('open security group')).toBeInTheDocument();
   });
 
   it('extracts service+resource from account_object_id when fields missing', async () => {
     render(<ServiceRecommendations accountId='acc-1' serviceName='ec2' provider='AWS' />);
 
-    // r-2 has account_object_id 'arn:aws:rds:us-east-1:123:db:my-db' (7 parts)
-    // service = 'rds' (index 2), name = 'my-db' (index 6)
     await waitFor(() => expect(screen.getByText('my-db')).toBeInTheDocument());
     expect(screen.getByText('Svc: rds')).toBeInTheDocument();
   });
@@ -309,7 +359,6 @@ describe('ServiceRecommendations (integration)', () => {
     fireEvent.click(screen.getByTestId('ticket-success'));
 
     expect(screen.queryByTestId('ticket-modal')).not.toBeInTheDocument();
-    // success only closes modal; no explicit refetch in component
     expect(apiRecommendations.getK8sRecommendation).not.toHaveBeenCalled();
   });
 
@@ -383,5 +432,6 @@ describe('ServiceRecommendations (integration)', () => {
   it('passes accountId through to useCurrencySymbol hook', async () => {
     render(<ServiceRecommendations accountId='acc-42' serviceName='ec2' provider='AWS' />);
     expect(mockUseCurrencySymbol).toHaveBeenCalledWith('acc-42');
+    await waitFor(() => expect(apiRecommendations.getK8sRecommendation).toHaveBeenCalled());
   });
 });

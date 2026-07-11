@@ -16,14 +16,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Box, Typography } from '@mui/material';
 import DSCard from '@ui/Card';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { SeverityIcon as DsSeverityIcon } from '@ui/SeverityIcon';
 import Text from '@shared/format/Text';
 import Datetime from '@shared/format/Datetime';
 import apiCloudAccount from '@api1/cloud-account';
 import { toSeverityLevel } from '@utils/common';
 import { ds } from '@utils/colors';
-import type { ICustomTable2Row } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/Instances';
 
 const TABLE_ID = 'cloud-recent-events';
 const HEADERS = ['Subject', 'Event', 'Severity', 'Created at'];
@@ -55,7 +55,7 @@ export function CloudRecentEvents({
   secondaryRender = defaultSecondaryRender,
 }: CloudRecentEventsProps) {
   const [loading, setLoading] = useState(false);
-  const [eventData, setEventData] = useState<ICustomTable2Row[][]>([]);
+  const [eventData, setEventData] = useState<ICustomTableRow[][]>([]);
 
   // Keep latest callbacks in refs so the fetch effect only runs when the
   // actual data inputs (accountId / serviceName) change. Without this, callers
@@ -78,12 +78,12 @@ export function CloudRecentEvents({
     apiCloudAccount
       .listEvents({ accountId, subjectNamespace: serviceName }, 5, 0, { light: true })
       .then((res: any) => {
-        const rows: ICustomTable2Row[][] = (res?.data?.events || []).map((item: any) => {
-          const data: ICustomTable2Row[] = [];
+        const rows: ICustomTableRow[][] = (res?.data?.events || []).map((item: any) => {
+          const data: ICustomTableRow[] = [];
           // Subject (primary) + optional secondary line
           data.push({
             component: (
-              <Box sx={{ minWidth: '120px' }}>
+              <Box sx={{ minWidth: ds.space.mul(0, 60) }}>
                 <Text showAutoEllipsis value={transformRef.current(item)} />
                 {secondaryRef.current(item)}
               </Box>
@@ -113,7 +113,7 @@ export function CloudRecentEvents({
       header={<Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.medium, color: ds.gray[700] }}>Recent Events</Typography>}
       sx={{ px: ds.space[3], pb: ds.space[2], overflow: 'hidden' }}
     >
-      <CustomTable2
+      <CustomTable
         tableHeadingCenter={['Severity']}
         id={TABLE_ID}
         headers={HEADERS}

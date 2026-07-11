@@ -6,8 +6,6 @@
  *              delta tone (cost-axis): 'high-savings' | 'savings' | 'neutral' | 'waste' | 'high-waste'
  *              align = 'start' | 'center'
  *
- * Migration:   `import SummaryWidget from '@components/optimise/SummaryWidget'`
- *           →  `import { Stat } from '@ui/Stat'`
  *
  *   V1 prop          →  V2 prop
  *   title            →  label
@@ -33,7 +31,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import { formatNumber } from '@lib/formatter';
-import CustomTooltip from '@shared/CustomTooltip';
+import Tooltip from '@ui/Tooltip';
 
 export type StatSize = 'sm' | 'md' | 'hero';
 export type StatAlign = 'start' | 'center';
@@ -67,6 +65,10 @@ export interface StatProps {
   sub?: React.ReactNode;
   /** Optional left-aligned icon (size-scaled automatically) */
   icon?: React.ReactNode;
+  /** Where the icon sits: 'rail' (default — vertically-centered left rail) or 'inline' (beside the label). */
+  iconPlacement?: 'rail' | 'inline';
+  /** Where the delta sits: 'below' (default — under the value) or 'inline' (beside the value, baseline-aligned). */
+  deltaPlacement?: 'below' | 'inline';
   /** Optional info hint with tooltip */
   info?: StatInfoSlot;
   /** Optional right-aligned content in the header row */
@@ -112,7 +114,7 @@ function deriveDirection(d: StatDelta): 'up' | 'down' | 'flat' {
   return 'flat';
 }
 
-function DeltaPill({ delta, size }: { delta: StatDelta; size: StatSize }) {
+function DeltaPill({ delta, size, inline }: { delta: StatDelta; size: StatSize; inline?: boolean }) {
   const tone = delta.tone ?? 'neutral';
   const color = DELTA_TONE_COLOR[tone];
   const dir = deriveDirection(delta);
@@ -125,7 +127,7 @@ function DeltaPill({ delta, size }: { delta: StatDelta; size: StatSize }) {
   }
 
   return (
-    <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, mt: 0.5, color, fontSize }}>
+    <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, mt: inline ? 0 : 0.5, color, fontSize }}>
       {Arrow && <Arrow sx={{ fontSize: size === 'hero' ? 14 : 12 }} />}
       <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>
         {formattedValue}
@@ -145,6 +147,8 @@ export function Stat({
   delta,
   sub,
   icon,
+  iconPlacement = 'rail',
+  deltaPlacement = 'below',
   info,
   headerRight,
   format = 'plain',
@@ -154,7 +158,16 @@ export function Stat({
   sx,
 }: StatProps) {
   const tokens = SIZE_TOKENS[size];
-  const isHorizontal = !!icon;
+  // 'inline' icons render next to the label, so the card stays a vertical stack.
+  const isHorizontal = !!icon && iconPlacement === 'rail';
+  const valueTypoSx = {
+    fontSize: tokens.value,
+    fontWeight: tokens.valueWeight,
+    color: 'var(--ds-gray-700)',
+    lineHeight: tokens.lineHeight,
+    wordBreak: 'break-word',
+  } as const;
+  const showInlineDelta = deltaPlacement === 'inline' && !!delta;
 
   return (
     <Box
@@ -175,7 +188,7 @@ export function Stat({
         ...sx,
       }}
     >
-      {icon && (
+      {icon && iconPlacement === 'rail' && (
         <Box
           aria-hidden='true'
           sx={{
@@ -199,6 +212,11 @@ export function Stat({
           }}
         >
           <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
+            {icon && iconPlacement === 'inline' && (
+              <Box aria-hidden='true' sx={{ display: 'inline-flex', color: 'var(--ds-gray-500)', flexShrink: 0 }}>
+                {icon}
+              </Box>
+            )}
             <Typography
               component='span'
               sx={{
@@ -211,29 +229,29 @@ export function Stat({
               {label}
             </Typography>
             {info && (
-              <CustomTooltip title={info.tooltip} placement={info.position ?? 'top'}>
+              <Tooltip title={info.tooltip} placement={info.position ?? 'top'}>
                 <IconButton size='small' sx={{ p: 0, color: 'var(--ds-gray-500)' }} aria-label={`Info about ${label}`}>
                   <InfoOutlinedIcon sx={{ fontSize: 14 }} />
                 </IconButton>
-              </CustomTooltip>
+              </Tooltip>
             )}
           </Box>
           {headerRight && <Box sx={{ flexShrink: 0 }}>{headerRight}</Box>}
         </Box>
-        <Typography
-          component='div'
-          sx={{
-            fontSize: tokens.value,
-            fontWeight: tokens.valueWeight,
-            color: 'var(--ds-gray-700)',
-            lineHeight: tokens.lineHeight,
-            wordBreak: 'break-word',
-          }}
-        >
-          {formatValue(value, format)}
-        </Typography>
+        {showInlineDelta ? (
+          <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
+            <Typography component='div' sx={valueTypoSx}>
+              {formatValue(value, format)}
+            </Typography>
+            <DeltaPill delta={delta!} size={size} inline />
+          </Box>
+        ) : (
+          <Typography component='div' sx={valueTypoSx}>
+            {formatValue(value, format)}
+          </Typography>
+        )}
         {sub !== undefined && <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', mt: 0.25 }}>{sub}</Box>}
-        {delta && <DeltaPill delta={delta} size={size} />}
+        {!showInlineDelta && delta && <DeltaPill delta={delta} size={size} />}
       </Box>
     </Box>
   );

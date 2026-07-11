@@ -7,13 +7,14 @@ import apiGlobalContext from '@api1/global-context';
 import Loader from '@shared/Loader';
 import { toast as snackbar } from '@ui/Toast';
 import { Button } from '@ui/Button';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { Modal } from '@ui/Modal';
 import { UploadIcon, PlusIcon, EditIcon, DeleteIconRed as deleteIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { hasWriteAccess } from '@lib/auth';
 import { ds } from '@utils/colors';
 import WidgetCard from '@ui/WidgetCard';
+import ScopeChip from '@components/llm/ScopeChip';
 
 const formatExactDate = (dateString) => {
   if (!dateString) return '-';
@@ -44,7 +45,7 @@ const formatDate = (dateString) => {
 };
 
 // Global Context Card Component
-const GlobalContextCard = ({ context, onEdit, onDelete, hasAccess }) => {
+const GlobalContextCard = ({ context, onEdit, onDelete, hasAccess, showAccount }) => {
   const MENU_ITEMS = [
     {
       label: 'Edit',
@@ -88,6 +89,21 @@ const GlobalContextCard = ({ context, onEdit, onDelete, hasAccess }) => {
           >
             {context.name}
           </Typography>
+
+          {/* Account (tenant-wide read only — needed to disambiguate
+              cross-account rows when the sidebar Settings entry pulls every
+              account's GC) */}
+          {showAccount && (
+            <Typography
+              sx={{
+                fontSize: 'var(--ds-text-caption)',
+                color: 'var(--ds-gray-500)',
+                mb: ds.space.mul(0, 2),
+              }}
+            >
+              Account: <strong>{context.account_name || context.account_id || '—'}</strong>
+            </Typography>
+          )}
 
           {/* Secondary: Description */}
           {context.description ? (
@@ -146,6 +162,7 @@ GlobalContextCard.propTypes = {
   onEdit: PropTypes.func.isRequired,
   onDelete: PropTypes.func.isRequired,
   hasAccess: PropTypes.bool.isRequired,
+  showAccount: PropTypes.bool,
 };
 
 // Create/Edit Global Context Modal Component
@@ -443,6 +460,12 @@ GlobalContextFormModal.propTypes = {
 };
 
 const GlobalContextTab = ({ accountId }) => {
+  // Tenant-wide read-only mode: when Settings is opened from the global
+  // sidebar there's no current account. The backend routes empty
+  // account_id to ListGlobalContextsForTenant (KB pattern) and applies
+  // the standard HasAccountAccess ladder. We hide writes and surface
+  // the owning account on each card to disambiguate.
+  const isTenantWide = !accountId;
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [globalContexts, setGlobalContexts] = useState([]);
@@ -451,18 +474,12 @@ const GlobalContextTab = ({ accountId }) => {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [selectedContext, setSelectedContext] = useState(null);
 
-  const hasAccess = hasWriteAccess(accountId);
+  const hasAccess = !isTenantWide && hasWriteAccess(accountId);
 
   const fetchGlobalContexts = async () => {
-    if (!accountId) {
-      setError('Account ID is required');
-      setLoading(false);
-      return;
-    }
-
     try {
       setLoading(true);
-      const response = await apiGlobalContext.getGlobalContexts(accountId);
+      const response = await apiGlobalContext.getGlobalContexts(accountId || '');
       if (response.errors && response.errors.length > 0) {
         setError('Failed to fetch global contexts');
         snackbar.error('Failed to fetch global contexts');
@@ -612,16 +629,19 @@ const GlobalContextTab = ({ accountId }) => {
         }}
       >
         <Box>
-          <Typography
-            sx={{
-              fontSize: 'var(--ds-text-body-lg)',
-              color: 'var(--ds-gray-700)',
-              fontWeight: 'var(--ds-font-weight-semibold)',
-              fontFamily: 'var(--ds-font-display)',
-            }}
-          >
-            Global Context
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[1] }}>
+            <Typography
+              sx={{
+                fontSize: 'var(--ds-text-body-lg)',
+                color: 'var(--ds-gray-700)',
+                fontWeight: 'var(--ds-font-weight-semibold)',
+                fontFamily: 'var(--ds-font-display)',
+              }}
+            >
+              Global Context
+            </Typography>
+            <ScopeChip accountId={accountId} />
+          </Box>
           <Typography
             sx={{
               fontSize: 'var(--ds-text-small)',
@@ -645,6 +665,12 @@ const GlobalContextTab = ({ accountId }) => {
           </Button>
         )}
       </WidgetCard>
+
+      {isTenantWide && (
+        <Alert severity='info' sx={{ mb: ds.space[4] }}>
+          Viewing all global contexts across this tenant. Switch to an account-scoped page to create, edit, or delete.
+        </Alert>
+      )}
 
       {/* Empty State */}
       {globalContexts.length === 0 && (
@@ -693,7 +719,14 @@ const GlobalContextTab = ({ accountId }) => {
       {globalContexts.length > 0 && (
         <Box>
           {globalContexts.map((context) => (
-            <GlobalContextCard key={context.id} context={context} onEdit={handleEdit} onDelete={handleDelete} hasAccess={hasAccess} />
+            <GlobalContextCard
+              key={context.id}
+              context={context}
+              onEdit={handleEdit}
+              onDelete={handleDelete}
+              hasAccess={hasAccess}
+              showAccount={isTenantWide}
+            />
           ))}
         </Box>
       )}
@@ -750,7 +783,9 @@ const GlobalContextTab = ({ accountId }) => {
 };
 
 GlobalContextTab.propTypes = {
-  accountId: PropTypes.string.isRequired,
+  // Optional: empty / unset means tenant-wide read (Settings opened from
+  // the global sidebar).
+  accountId: PropTypes.string,
 };
 
 export default GlobalContextTab;

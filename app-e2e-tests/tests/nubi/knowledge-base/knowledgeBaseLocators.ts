@@ -4,6 +4,7 @@ import { NubiLocators } from "../nubiLocators";
 export class KnowledgeBaseLocators {
   readonly page: Page;
 
+  readonly bCortexBtn: Locator;
   readonly knowledgeBaseTab: Locator;
   readonly userSubTab: Locator;
   readonly addKBBtn: Locator;
@@ -31,7 +32,11 @@ export class KnowledgeBaseLocators {
   constructor(page: Page) {
     this.page = page;
 
-    this.knowledgeBaseTab = page.locator("#tabs-settings-knowledge-base").or(page.getByRole("tab", { name: /Knowledge Base/i }));
+    this.bCortexBtn = page
+      .getByTestId("nav-bcortex-btn")
+      .or(page.getByRole("button", { name: "b-Cortex", exact: true }));
+
+    this.knowledgeBaseTab = page.locator("#tab-knowledge-base").or(page.getByRole("tab", { name: /Knowledge Base/i }));
 
     this.userSubTab = page
       .locator('#tab-manual')
@@ -94,10 +99,38 @@ export class KnowledgeBaseLocators {
           .filter({ hasText: "deleted successfully" }));
   }
 
-  async navigateToKnowledgeBase(nubiLocators: NubiLocators): Promise<void> {
-    await nubiLocators.settingsBtn.click();
-    await this.knowledgeBaseTab.waitFor({ state: "visible", timeout: 15000 });
-    await this.knowledgeBaseTab.click();
+  async openBCortex(): Promise<void> {
+    await this.waitNubiPageSettled();
+
+    await this.bCortexBtn.first().waitFor({ state: "visible", timeout: 15000 });
+    await this.bCortexBtn.first().click();
+    await this.knowledgeBaseTab.first().waitFor({ state: "visible", timeout: 15000 });
+
+    if (await this.modalGenuinelyClosed()) {
+      await this.bCortexBtn.first().click();
+      await this.knowledgeBaseTab.first().waitFor({ state: "visible", timeout: 15000 });
+    }
+  }
+
+  private async waitNubiPageSettled(): Promise<void> {
+    await this.page.waitForLoadState("networkidle").catch(() => {});
+    await this.page
+      .getByText("What can we Optimize?", { exact: false })
+      .first()
+      .waitFor({ state: "visible", timeout: 15000 })
+      .catch(() => {});
+  }
+
+  private async modalGenuinelyClosed(): Promise<boolean> {
+    await this.page.waitForTimeout(1000);
+    if (await this.knowledgeBaseTab.first().isVisible().catch(() => false)) return false;
+    await this.page.waitForTimeout(200);
+    return !(await this.knowledgeBaseTab.first().isVisible().catch(() => false));
+  }
+
+  async navigateToKnowledgeBase(_nubiLocators?: NubiLocators): Promise<void> {
+    await this.openBCortex();
+    await this.knowledgeBaseTab.first().click();
     await this.page.waitForLoadState("networkidle");
   }
 

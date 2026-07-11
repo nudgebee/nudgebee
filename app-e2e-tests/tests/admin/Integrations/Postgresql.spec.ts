@@ -34,6 +34,8 @@ test("Add Postgresql Account Integration", async ({ page }) => {
     successToast: locators.postgresqlSuccessToast,
     testName: "Add Postgresql Account Integration",
     operationNames: ["AddIntegrations"],
-    ignoreErrorMessages: ["already has a 'postgresql' integration"],
+    ignoreErrorMessages: ["already has a 'postgresql' integration",
+      `integration config name '${process.env.POSTGRES_NAME}' already exists for this integration type`,
+    ],
   });
 });

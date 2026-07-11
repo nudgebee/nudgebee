@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Typography } from '@mui/material';
-import TenantAccountCommonSettings from './TenantAccountCommonSettings';
+import TenantAccountCommonSettings from '@shared/settings/TenantAccountCommonSettings';
 import { Input } from '@ui/Input';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
@@ -16,7 +16,7 @@ import {
   updateTenantName,
   upsertTenantAttributes,
 } from '@lib/UserService';
-import { snackbar } from '../snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
 import { fetchFeatureFlagsForTenant } from '@lib/auth';
 import { useSession } from 'next-auth/react';
@@ -353,7 +353,7 @@ const TenantSettings = ({ open, title, onClose }) => {
       width='md'
       sx={{
         '& .MuiPaper-root': {
-          maxWidth: '1010px',
+          maxWidth: ds.space.mul(0, 505),
           '& .MuiDialogContent-root': {
             padding: 'var(--ds-space-6) var(--ds-space-6) 0px var(--ds-space-6)',
           },
@@ -433,7 +433,7 @@ const TenantSettings = ({ open, title, onClose }) => {
           }
         >
           <Box display='flex' flexDirection='column' gap={ds.space[3]}>
-            <Typography sx={{ color: ds.gray[600], fontSize: ds.text.body, lineHeight: '20px' }}>
+            <Typography sx={{ color: ds.gray[600], fontSize: ds.text.body, lineHeight: ds.space.mul(0, 10) }}>
               You can type custom label keys not in the suggestions. For advanced extraction, use Jinja2 templates (e.g.{' '}
               {"{{ labels.app_id | split(sep='/') | last }}"}) or regex (e.g. app_id|/k8s/[^/]+/(.+)).
             </Typography>
@@ -510,11 +510,11 @@ const TenantSettings = ({ open, title, onClose }) => {
         display='flex'
         alignItems='center'
         justifyContent='flex-end'
-        gap='12px'
-        p='16px 24px'
+        gap={ds.space[3]}
+        p={`${ds.space[4]} ${ds.space[5]}`}
         sx={{
           borderTop: '0.5px solid var(--ds-gray-200)',
-          '& button': { minWidth: '140px' },
+          '& button': { minWidth: ds.space.mul(0, 70) },
           position: 'sticky',
           bottom: 0,
           backgroundColor: 'white',

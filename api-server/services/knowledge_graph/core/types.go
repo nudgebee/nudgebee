@@ -832,7 +832,7 @@ var QueryablePropertiesMap = map[NodeType][]string{
 		"port", "protocol", "endpoint", "health_status",
 	},
 	NodeTypeWorkload: {
-		"name", "environment", "namespace", "cluster", "workload_type",
+		"name", "environment", "namespace", "cluster", "kind",
 		"replica_count", "image", "version", "service_account_name",
 		"last_deployed_time",
 	},

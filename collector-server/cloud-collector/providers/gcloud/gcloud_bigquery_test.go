@@ -1,11 +1,97 @@
 package gcloud
 
 import (
+	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
+	"cloud.google.com/go/bigquery"
 	"github.com/stretchr/testify/assert"
 )
+
+// TestTableToResourceMetaIsCompactAndReadable guards two coupled fixes:
+//  1. OOM trim — a table's column Schema (and an external table's
+//     ExternalDataConfig schema) can be hundreds of KB and, accumulated across a
+//     large project (~26k tables in prod), exhausted the 3Gi limit. tableTo
+//     Resource must never carry that into Meta.
+//  2. Reader-key contract — Meta is now hand-built with camelCase keys so the
+//     recommendation helpers (getTableSizeGB, hasTimePartitioning, ...) actually
+//     match. The old structToMap path emitted PascalCase keys (the SDK struct has
+//     no json tags), so every table recommendation silently no-op'd.
+func TestTableToResourceMetaIsCompactAndReadable(t *testing.T) {
+	var schema bigquery.Schema
+	for i := 0; i < 5000; i++ {
+		schema = append(schema, &bigquery.FieldSchema{
+			Name:        fmt.Sprintf("column_%d_with_a_reasonably_long_name", i),
+			Type:        bigquery.StringFieldType,
+			Description: "padding description text to inflate per-field metadata size",
+		})
+	}
+
+	md := &bigquery.TableMetadata{
+		Name:             "big_table",
+		FullID:           "proj:ds.big_table",
+		Schema:           schema,
+		NumBytes:         20 * 1024 * 1024 * 1024, // 20 GB
+		LastModifiedTime: time.Now(),
+		ExpirationTime:   time.Now().Add(24 * time.Hour),
+		TimePartitioning: &bigquery.TimePartitioning{Type: bigquery.DayPartitioningType, Field: "ts"},
+		Clustering:       &bigquery.Clustering{Fields: []string{"ts", "user_id"}},
+		ExternalDataConfig: &bigquery.ExternalDataConfig{
+			SourceURIs: []string{"gs://bucket/*"},
+			Schema:     schema,
+		},
+	}
+
+	res := (&bigQueryService{}).tableToResource("ds", "big_table", md, "US", "proj")
+
+	// Column schema must never survive into Meta, under any key or casing.
+	for _, k := range []string{"Schema", "schema", "ExternalDataConfig", "externalDataConfig"} {
+		if v, ok := res.Meta[k]; ok {
+			assert.Nil(t, v, "%s must not be present in Meta", k)
+		}
+	}
+
+	// The recommendation helpers must read the Meta this function produces.
+	// (These all silently returned zero/false before the camelCase fix.)
+	sizeGB, ok := getTableSizeGB(res.Meta)
+	assert.True(t, ok, "getTableSizeGB must read numBytes")
+	assert.InDelta(t, 20.0, sizeGB, 0.01)
+	assert.True(t, hasTimePartitioning(res.Meta), "hasTimePartitioning must read timePartitioning")
+	assert.True(t, hasClustering(res.Meta), "hasClustering must read clustering")
+	assert.True(t, hasExpiration(res.Meta), "hasExpiration must read expirationTime")
+	_, lmOk := getLastModifiedTime(res.Meta)
+	assert.True(t, lmOk, "getLastModifiedTime must read lastModifiedTime")
+
+	// FullID must survive for the knowledge-graph table->dataset edge builder,
+	// which reads metaMap["FullID"] (api-server gcp_source.go).
+	assert.Equal(t, "proj:ds.big_table", res.Meta["FullID"], "FullID must be preserved for KG hierarchy edges")
+
+	// Serialized Meta must be small even though the input schema was huge.
+	b, err := json.Marshal(res.Meta)
+	assert.NoError(t, err)
+	assert.Less(t, len(b), 8*1024, "trimmed Meta should be small, got %d bytes", len(b))
+}
+
+// TestDatasetToResourceMetaReadable guards the dataset-level reader-key contract
+// (hasDefaultTableExpiration / hasCMEK) that the same PascalCase bug broke.
+func TestDatasetToResourceMetaReadable(t *testing.T) {
+	md := &bigquery.DatasetMetadata{
+		Name:                   "analytics",
+		Location:               "US",
+		DefaultTableExpiration: 48 * time.Hour,
+		DefaultEncryptionConfig: &bigquery.EncryptionConfig{
+			KMSKeyName: "projects/p/locations/us/keyRings/r/cryptoKeys/k",
+		},
+	}
+
+	res := (&bigQueryService{}).datasetToResource("analytics", md, "proj")
+
+	assert.True(t, hasDefaultTableExpiration(res.Meta), "hasDefaultTableExpiration must read defaultTableExpiration")
+	assert.True(t, hasCMEK(res.Meta), "hasCMEK must read defaultEncryptionConfiguration.kmsKeyName")
+	assert.Equal(t, "projects/proj/datasets/analytics", res.Meta["selfLink"])
+}
 
 func TestGetTableSizeGB(t *testing.T) {
 	tests := []struct {

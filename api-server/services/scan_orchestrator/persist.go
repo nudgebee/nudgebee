@@ -24,6 +24,13 @@ func Persist(ctx *security.RequestContext, account ScanAccount, scannerName stri
 		return fmt.Errorf("scan_orchestrator.Persist: unknown scanner %q", scannerName)
 	}
 
+	// Every archive/upsert below is scoped by tenant_id + cloud_account_id. Fail
+	// fast on empty identifiers rather than run queries with blank scoping keys —
+	// a bad upstream caller shouldn't reach the DB with an empty tenant/account.
+	if account.TenantID == "" || account.AccountID == "" {
+		return fmt.Errorf("scan_orchestrator.Persist: tenant_id and account_id are required (scanner=%s)", scannerName)
+	}
+
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return fmt.Errorf("scan_orchestrator.Persist: db: %w", err)
@@ -39,7 +46,8 @@ func Persist(ctx *security.RequestContext, account ScanAccount, scannerName stri
 	//   2. popeye writes per-linter rule_names ("deployments_misconfigurations",
 	//      "clusterroles_misconfigurations", ...). Exact-match archive can't
 	//      cover all of them up-front, so we archive by LIKE pattern instead.
-	if scannerName == "popeye_scan" {
+	switch scannerName {
+	case "popeye_scan":
 		_, err = dbms.Db.Exec(
 			`UPDATE recommendation SET status = 'Archive', updated_at = $1
 			 WHERE tenant_id = $2 AND cloud_account_id = $3 AND category = 'Configuration'
@@ -51,7 +59,26 @@ func Persist(ctx *security.RequestContext, account ScanAccount, scannerName stri
 				"account_id", account.AccountID, "error", err)
 			return fmt.Errorf("archive popeye misconfigurations: %w", err)
 		}
-	} else {
+	case "image_scanner":
+		// image_scanner runs once PER IMAGE — archiving the whole (Security,
+		// image_scan) rule (the generic branch below) would flip every OTHER
+		// image's open rows to Archive on each call, leaving only the last image
+		// scanned in a cycle visible in the UI. Scope the archive to THIS image,
+		// keyed on the image_name the parser embeds. account.TargetImage is the
+		// image being scanned; rides idx_recommendation_security_account_image_name.
+		// Empty TargetImage matches no rows (image_name is never "") — a safe no-op.
+		_, err = dbms.Db.Exec(
+			`UPDATE recommendation SET status = 'Archive', updated_at = $1
+			 WHERE tenant_id = $2 AND cloud_account_id = $3 AND category = 'Security'
+			   AND rule_name = $4 AND recommendation->>'image_name' = $5 AND status != 'Archive'`,
+			time.Now(), account.TenantID, account.AccountID, scanner.RuleName, account.TargetImage,
+		)
+		if err != nil {
+			ctx.GetLogger().Error("scan_orchestrator: image_scan archive failed",
+				"account_id", account.AccountID, "image", account.TargetImage, "error", err)
+			return fmt.Errorf("archive image_scan for %q: %w", account.TargetImage, err)
+		}
+	default:
 		type archiveKey struct{ category, ruleName string }
 		archiveKeys := map[archiveKey]struct{}{
 			{category: scanner.RuleName, ruleName: scanner.RuleName}: {},
@@ -112,9 +139,11 @@ func Persist(ctx *security.RequestContext, account ScanAccount, scannerName stri
 			"finops_band":            "",
 			"finops_score_breakdown": "{}",
 		}
-		// finops_score / finops_band / finops_score_breakdown are populated by the
-		// existing recommendation.UpdateRecommendationFinopsScores batch path —
-		// keeping it out of line here avoids an import cycle with services/recommendation.
+		// finops_score / finops_band / finops_score_breakdown are inserted as zero
+		// values and filled by the 6h score-recompute cron — computing them inline
+		// would create an import cycle with services/recommendation. They are NOT
+		// in the ON CONFLICT update below: overwriting on re-scan wiped real
+		// scores back to zero until the next cron pass.
 		rows = append(rows, row)
 	}
 
@@ -133,10 +162,7 @@ func Persist(ctx *security.RequestContext, account ScanAccount, scannerName stri
 		               updated_at = EXCLUDED.updated_at,
 		               estimated_savings = EXCLUDED.estimated_savings,
 		               severity = EXCLUDED.severity,
-		               recommendation_action = EXCLUDED.recommendation_action,
-		               finops_score = EXCLUDED.finops_score,
-		               finops_band = EXCLUDED.finops_band,
-		               finops_score_breakdown = EXCLUDED.finops_score_breakdown`,
+		               recommendation_action = EXCLUDED.recommendation_action`,
 		rows,
 	)
 	if err != nil {

@@ -392,8 +392,9 @@ func QueryLogs(ctx *security.RequestContext, logsRequest QueryLogsRequest) (Quer
 		return queryResponse, errors.New("tenant_id is required")
 	}
 
-	if logsRequest.Query.LogGroupName == "" && logsRequest.Query.ServiceName == "" && logsRequest.Query.ResourceId == "" {
-		return queryResponse, errors.New("log_group_name or (service_name and resource_id) is required")
+	if logsRequest.Query.LogGroupName == "" && logsRequest.Query.ServiceName == "" &&
+		logsRequest.Query.ResourceId == "" && logsRequest.Query.ResourceType == "" {
+		return queryResponse, errors.New("log_group_name, (service_name and resource_id), or resource_type is required")
 	}
 
 	headersMap := map[string]string{
@@ -470,6 +471,74 @@ func QueryLogs(ctx *security.RequestContext, logsRequest QueryLogsRequest) (Quer
 	}
 
 	return logResponse2.Data, nil
+}
+
+type queryDeploymentDiffResponse struct {
+	Data QueryDeploymentDiffResponse `json:"data"`
+}
+
+// QueryDeploymentDiff fetches a service's recent deployment revisions from the
+// cloud-collector so two consecutive revisions can be diffed (before/after).
+func QueryDeploymentDiff(ctx *security.RequestContext, req QueryDeploymentDiffRequest) (QueryDeploymentDiffResponse, error) {
+	queryResponse := QueryDeploymentDiffResponse{}
+
+	if req.AccountId == "" {
+		return queryResponse, errors.New("account_id is required")
+	}
+	if ctx.GetSecurityContext().GetTenantId() == "" {
+		return queryResponse, errors.New("tenant_id is required")
+	}
+	if req.Query.ServiceName == "" || req.Query.Region == "" {
+		return queryResponse, errors.New("service_name and region are required")
+	}
+
+	headersMap := map[string]string{
+		"Content-Type": "application/json",
+		"Accept":       "application/json",
+	}
+
+	if config.Config.CloudCollectorServerUrl == "" {
+		return queryResponse, errors.New("cloud: cloud collector server url not set")
+	}
+	if config.Config.CloudCollectorServerToken != "" {
+		headersMap["X-ACTION-TOKEN"] = config.Config.CloudCollectorServerToken
+	}
+	headersMap["x-tenant-id"] = ctx.GetSecurityContext().GetTenantId()
+	headersMap["x-user-id"] = ctx.GetSecurityContext().GetUserId()
+
+	resp, err := common.HttpPost(fmt.Sprintf("%s/v1/cloud/query_deployment_diff", config.Config.CloudCollectorServerUrl), common.HttpWithTimeout(30*time.Second), common.HttpWithHeaders(headersMap), common.HttpWithJsonBody(map[string]any{
+		"account_id": req.AccountId,
+		"query":      req.Query,
+	}))
+	if err != nil {
+		slog.Error("unable to access cloud server", "error", err)
+		return queryResponse, fmt.Errorf("unable to access cloud server %v", err)
+	}
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Error("cloud: failed to close response body", "error", err)
+		}
+	}()
+
+	jsonBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return queryResponse, err
+	}
+
+	if resp.StatusCode != 200 {
+		ctx.GetLogger().Error("failed to fetch deployment diff from cloud",
+			"status", resp.StatusCode,
+			"account_id", req.AccountId,
+			"data", string(jsonBody))
+		return queryResponse, fmt.Errorf("cloud collector returned status %d: %s", resp.StatusCode, string(jsonBody))
+	}
+
+	out := queryDeploymentDiffResponse{}
+	if err := json.Unmarshal(jsonBody, &out); err != nil {
+		return queryResponse, err
+	}
+	return out.Data, nil
 }
 
 type queryServiceMapResponse struct {
@@ -761,6 +830,72 @@ func TriggerCloudAccountSync(ctx *security.RequestContext, accountId string) (Tr
 	return TriggerCloudSyncResponse{
 		Success: true,
 		Message: "Sync triggered successfully. Data will be available shortly.",
+	}, nil
+}
+
+// SyncCloudService re-collects the resource inventory for a single cloud service
+// (e.g. AmazonEC2, AmazonRDS) for the given account. Unlike TriggerCloudAccountSync,
+// this calls the collector's store_resources endpoint synchronously, so the
+// resource list, state, tags and resource metrics are refreshed by the time it
+// returns. Cost/usage is intentionally not touched (it stays on its daily cron).
+func SyncCloudService(ctx *security.RequestContext, accountId, serviceName string, regions []string) (CloudServiceSyncResponse, error) {
+	if accountId == "" {
+		return CloudServiceSyncResponse{}, errors.New("account_id is required")
+	}
+	if serviceName == "" {
+		return CloudServiceSyncResponse{}, errors.New("service_name is required")
+	}
+	if ctx.GetSecurityContext().GetTenantId() == "" {
+		return CloudServiceSyncResponse{}, errors.New("tenant is required")
+	}
+
+	headers := map[string]string{
+		config.Config.CloudCollectorServerTokenHeader: config.Config.CloudCollectorServerToken,
+		"x-tenant-id": ctx.GetSecurityContext().GetTenantId(),
+	}
+	if ctx.GetSecurityContext().GetUserId() != "" {
+		headers["x-user-id"] = ctx.GetSecurityContext().GetUserId()
+	}
+
+	body := map[string]any{
+		"account_id":   accountId,
+		"service_name": serviceName,
+	}
+	if len(regions) > 0 {
+		body["regions"] = regions
+	}
+
+	// store_resources runs the collection inline on the collector, so allow a
+	// generous timeout for accounts with many regions/resources.
+	resp, err := common.HttpPost(config.Config.CloudCollectorServerUrl+"/v1/cloud/store_resources",
+		common.HttpWithTimeout(300*time.Second),
+		common.HttpWithJsonBody(body),
+		common.HttpWithHeaders(headers),
+	)
+	if err != nil {
+		return CloudServiceSyncResponse{}, fmt.Errorf("store_resources: %w", err)
+	}
+	if resp.Body != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
+
+	if resp.StatusCode != 200 {
+		respBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return CloudServiceSyncResponse{
+				Success: false,
+				Message: fmt.Sprintf("store_resources returned %d (failed to read body: %v)", resp.StatusCode, readErr),
+			}, nil
+		}
+		return CloudServiceSyncResponse{
+			Success: false,
+			Message: fmt.Sprintf("store_resources returned %d: %s", resp.StatusCode, string(respBody)),
+		}, nil
+	}
+
+	return CloudServiceSyncResponse{
+		Success: true,
+		Message: "Refresh completed.",
 	}, nil
 }
 

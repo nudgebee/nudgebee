@@ -1,8 +1,8 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Box, Typography } from '@mui/material';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import { ListingLayout } from '@ui/ListingLayout';
-import { Tabs as DsTabs, type TabItem } from '@ui/Tabs';
+import { ToggleGroup, type ToggleGroupOption } from '@ui/ToggleGroup';
 import Banner from '@ui/Banner';
 import Chip from '@ui/Chip';
 import Tooltip from '@ui/Tooltip';
@@ -12,12 +12,12 @@ import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { Button as DsButton } from '@ui/Button';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
-import CustomTable2 from '@shared/tables/CustomTable2';
-import Charts from '@shared/charts/LineCharts';
+import CustomTable from '@shared/tables/CustomTable';
+import Chart from '@ui/Chart';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
-import useTicketFilter from '@hooks/useTicketFilter';
+import useTicketFliter from '@hooks/useTicketFliter';
 import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
 import { md5 } from '@lib/encode';
 import {
@@ -29,7 +29,7 @@ import {
 } from '@api1/cloud-account/performance-insights';
 import { getLast7Days } from '@lib/datetime';
 import { getClusterData } from '@context/DataContext';
-import { ds } from '@utils/colors';
+import { ds, resolveColor } from '@utils/colors';
 import { CustomText } from '@components/cloudaccount/common';
 
 interface PerformanceInsightsProps {
@@ -96,21 +96,6 @@ const getEventTypeHue = (type: string): 'blue' | 'amber' | 'red' | 'violet' | 's
   return map[type] || 'slate';
 };
 
-// Categorical color used by the inline progress bar in WaitEventsTable.
-// Tier C: hex literals required because Chart.js renders to <canvas>, which
-// cannot resolve CSS var() at paint time. Hues are semantically aligned with
-// DS tokens (ds.blue/amber/red/purple/gray-500) so the chart reads coherent
-// with the rest of the surface. Keep in sync if DS palettes shift.
-const CHART_EVENT_TYPE_PALETTE: Record<string, string> = {
-  CPU: '#3B82F6', // ≈ ds.blue[500]
-  IO: '#F59E0B', // ≈ ds.amber[500]
-  Lock: '#EF4444', // ≈ ds.red[500]
-  Network: '#8B5CF6', // ≈ ds.purple[500]
-  Other: '#6B7280', // ≈ ds.gray[500]
-};
-
-const getEventTypeBarColor = (type: string): string => CHART_EVENT_TYPE_PALETTE[type] || CHART_EVENT_TYPE_PALETTE['Other'];
-
 const LoadMetricsChart = ({ data, loading }: { data: QueryDatabasePerformanceResponse; loading: boolean }) => {
   const loadMetrics = data.load_metrics || [];
 
@@ -126,7 +111,7 @@ const LoadMetricsChart = ({ data, loading }: { data: QueryDatabasePerformanceRes
 
         return (
           <WidgetCard key={metric.name}>
-            <Charts chartTitle={`${metric.name} (${metric.unit})`} dataset={chartData} labels={labels} data={[]} loading={loading} />
+            <Chart.Line chartTitle={`${metric.name} (${metric.unit})`} dataset={chartData} labels={labels} data={[]} loading={loading} />
           </WidgetCard>
         );
       })}
@@ -314,10 +299,25 @@ const TopQueriesTable = ({
     ];
   });
 
-  return <CustomTable2 id={TOP_QUERIES_TABLE_ID} headers={headers} tableData={tableData} rowsPerPage={10} />;
+  return <CustomTable id={TOP_QUERIES_TABLE_ID} headers={headers} tableData={tableData} rowsPerPage={10} />;
 };
 
 const WaitEventsTable = ({ events, provider }: { events: PerformanceWaitEvent[]; provider?: string }) => {
+  // Categorical color used by the inline progress bar below. Chart.js / canvas styles
+  // cannot resolve CSS var() at paint time. Resolve at render time (browser context) —
+  // not at module load, which runs during SSR before `document` exists.
+  const chartEventTypePalette: Record<string, string> = useMemo(
+    () => ({
+      CPU: resolveColor(ds.blue[500]),
+      IO: resolveColor(ds.amber[500]),
+      Lock: resolveColor(ds.red[500]),
+      Network: resolveColor(ds.purple[500]),
+      Other: resolveColor(ds.gray[500]),
+    }),
+    []
+  );
+  const getEventTypeBarColor = (type: string): string => chartEventTypePalette[type] || chartEventTypePalette['Other'];
+
   if (!events || events.length === 0) {
     return <Banner tone='info' surface='section' message='No wait events available' />;
   }
@@ -367,7 +367,7 @@ const WaitEventsTable = ({ events, provider }: { events: PerformanceWaitEvent[];
     },
   ]);
 
-  return <CustomTable2 id={WAIT_EVENTS_TABLE_ID} headers={headers} tableData={tableData} rowsPerPage={10} />;
+  return <CustomTable id={WAIT_EVENTS_TABLE_ID} headers={headers} tableData={tableData} rowsPerPage={10} />;
 };
 
 const ResourceMetricsChart = ({ data, loading }: { data: QueryDatabasePerformanceResponse; loading: boolean }) => {
@@ -385,7 +385,7 @@ const ResourceMetricsChart = ({ data, loading }: { data: QueryDatabasePerformanc
 
         return (
           <WidgetCard key={metric.name}>
-            <Charts chartTitle={`${metric.name} (${metric.unit})`} dataset={chartData} labels={labels} data={[]} loading={loading} />
+            <Chart.Line chartTitle={`${metric.name} (${metric.unit})`} dataset={chartData} labels={labels} data={[]} loading={loading} />
           </WidgetCard>
         );
       })}
@@ -425,7 +425,7 @@ const PerformanceInsights: React.FC<PerformanceInsightsProps> = ({ accountId, da
     getTicketReferenceId,
     handleTicketSuccess,
     handleTicketFailure,
-  } = useTicketFilter();
+  } = useTicketFliter();
 
   const handleAnalyzeQuery = useCallback(
     (query: PerformanceQuery) => {
@@ -508,16 +508,16 @@ ${query.query_text || query.query_id}`;
     return <Banner tone='warning' surface='page' message={message} />;
   }
 
-  // GCP doesn't expose the Database Load tab.
-  const tabs: TabItem[] = [
-    ...(!isGCP ? [{ id: TAB_KEYS.LOAD, label: 'Database Load' }] : []),
-    { id: TAB_KEYS.QUERIES, label: 'Top Queries' },
-    { id: TAB_KEYS.EVENTS, label: 'Wait Events' },
-    { id: TAB_KEYS.METRICS, label: 'Resource Metrics' },
+  // GCP doesn't expose the Database Load section.
+  const tabs: ToggleGroupOption<TabKey>[] = [
+    ...(!isGCP ? [{ value: TAB_KEYS.LOAD, label: 'Database Load' }] : []),
+    { value: TAB_KEYS.QUERIES, label: 'Top Queries' },
+    { value: TAB_KEYS.EVENTS, label: 'Wait Events' },
+    { value: TAB_KEYS.METRICS, label: 'Resource Metrics' },
   ];
 
   // If the previously-active tab isn't in the current set (e.g. provider flipped to GCP and 'load' vanished), fall back to the first tab.
-  const safeActiveTab: TabKey = tabs.find((t) => t.id === activeTab) ? activeTab : (tabs[0]?.id as TabKey);
+  const safeActiveTab: TabKey = tabs.find((t) => t.value === activeTab) ? activeTab : (tabs[0]?.value as TabKey);
 
   const dateTimePicker = (
     <CustomDateTimeRangePicker
@@ -624,7 +624,13 @@ ${query.query_text || query.query_id}`;
       />
 
       <Box sx={{ mb: ds.space[3] }}>
-        <DsTabs tabs={tabs} value={safeActiveTab} onChange={(next) => setActiveTab(next as TabKey)} ariaLabel='Performance insights sections' />
+        <ToggleGroup<TabKey>
+          selection='single'
+          options={tabs}
+          value={safeActiveTab}
+          onChange={setActiveTab}
+          ariaLabel='Performance insights sections'
+        />
       </Box>
 
       <ListingLayout id={CARD_ID}>

@@ -261,6 +261,28 @@ INSERT INTO cloud_accounts (
 "instance-id":<instanceId>     ❌ Invalid JSON (i-abc123 is not a valid JSON value)
 ```
 
+**ECS Task State Change — `lastStatus` filter (volume control):**
+
+The `ECS Task State Change` rule additionally filters `detail.lastStatus` to
+`["PENDING", "RUNNING", "STOPPED"]`. A single ECS task emits a state-change event
+for every transition in its lifecycle (`PROVISIONING → PENDING → ACTIVATING →
+RUNNING → DEACTIVATING → STOPPING → DEPROVISIONING → STOPPED`). Forwarding all of
+them was the dominant source of `rackspace-eventbridge-queue` volume. We forward
+only the three states that downstream rules actually consume:
+
+- `STOPPED` — failure detection (`ECS_Task_Stopped_Unexpectedly`, OOM, CannotPull, ELB-health).
+- `PENDING` — stuck-in-pending detection (`ECS_Task_Stuck_In_Pending_EventBridge`).
+- `RUNNING` — resource sync (`Resource_Sync_ECS_Task_State_Change` keeps `cloud_resourses` fresh).
+
+The transitional states (`PROVISIONING`/`ACTIVATING`/`DEACTIVATING`/`STOPPING`/
+`DEPROVISIONING`) carry no signal any rule reads, so they are dropped at the AWS
+edge — roughly halving per-task event volume. In the combined-pattern Lambda
+variants this is expressed with a top-level `$or` so the `lastStatus` filter scopes
+to the ECS-task branch only and does not affect EC2/RDS/CloudWatch/CloudTrail events
+(which have no `lastStatus` field); the native per-source `AWS::Events::Rule`
+variant adds the filter inline. **Existing customer stacks keep the unfiltered rule
+until the template is re-applied; this only tightens new onboarding.**
+
 ---
 
 **Updated Example with All Parameters:**

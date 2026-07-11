@@ -1,12 +1,14 @@
 package agents
 
 import (
+	"strings"
 	"testing"
 
 	"nudgebee/llm/agents/core"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/tmc/langchaingo/llms"
 )
 
 func TestParseDelegateInput_StructuredArguments(t *testing.T) {
@@ -158,6 +160,128 @@ func TestDynamicReActAgent_Interface(t *testing.T) {
 	prompt := agent.GetSystemPrompt(nil, core.NBAgentRequest{})
 	assert.Contains(t, prompt.Instructions[0], "Investigate connection pool exhaustion")
 	assert.Len(t, prompt.Constraints, 4)
+}
+
+// TestDynamicReActAgent_SystemPromptIncludesBudgetAndTools verifies the system prompt
+// includes both the exact iteration budget and the tool names so the sub-agent can
+// plan its investigation up front.
+func TestDynamicReActAgent_SystemPromptIncludesBudgetAndTools(t *testing.T) {
+	agent := &dynamicReActAgent{
+		name:   DelegateAgentToolName,
+		prompt: "Investigate MySQL pool exhaustion",
+		tools: []toolcore.NBTool{
+			&mockTool{name: "mysql_query"},
+			&mockTool{name: "prometheus"},
+			&mockTool{name: "LLM"}, // should be filtered from tool list
+		},
+		maxIterations: 7,
+		accountId:     "test-account",
+	}
+
+	prompt := agent.GetSystemPrompt(nil, core.NBAgentRequest{})
+
+	var budgetLine string
+	for _, c := range prompt.Constraints {
+		if strings.Contains(c, "budget of 7") {
+			budgetLine = c
+			break
+		}
+	}
+	assert.NotEmpty(t, budgetLine, "system prompt should contain an iteration-budget constraint")
+	assert.Contains(t, budgetLine, "mysql_query", "tool names should appear in budget line")
+	assert.Contains(t, budgetLine, "prometheus", "tool names should appear in budget line")
+	assert.NotContains(t, budgetLine, "LLM", "LLM reasoning tool should be excluded from public tool list")
+}
+
+// TestDynamicReActAgent_SystemPromptBudgetWithNoTools verifies the budget line
+// gracefully degrades when no external tools are provided (e.g., when the silent
+// LLM-only fallback hands the sub-agent just the LLM tool).
+func TestDynamicReActAgent_SystemPromptBudgetWithNoTools(t *testing.T) {
+	agent := &dynamicReActAgent{
+		name:          DelegateAgentToolName,
+		prompt:        "Reason through a question",
+		tools:         nil,
+		maxIterations: 3,
+		accountId:     "test-account",
+	}
+
+	prompt := agent.GetSystemPrompt(nil, core.NBAgentRequest{})
+
+	var budgetLine string
+	for _, c := range prompt.Constraints {
+		if strings.Contains(c, "budget of 3") {
+			budgetLine = c
+			break
+		}
+	}
+	assert.NotEmpty(t, budgetLine, "system prompt should contain an iteration-budget constraint")
+	assert.Contains(t, budgetLine, "no external tools")
+}
+
+func TestIsLLMReasoningTool(t *testing.T) {
+	assert.True(t, isLLMReasoningTool("LLM"))
+	assert.True(t, isLLMReasoningTool("llm"))
+	assert.True(t, isLLMReasoningTool("Llm"))
+	assert.False(t, isLLMReasoningTool("mysql_query"))
+	assert.False(t, isLLMReasoningTool(""))
+	assert.False(t, isLLMReasoningTool("LLM_query"))
+}
+
+func TestCollectToolsUsed_EmptySteps(t *testing.T) {
+	assert.Nil(t, collectToolsUsed(nil))
+	assert.Nil(t, collectToolsUsed([]core.ToolInvocation{}))
+}
+
+func TestCollectToolsUsed_BuildsHistogram(t *testing.T) {
+	steps := []core.ToolInvocation{
+		{Call: llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: "mysql_query"}}},
+		{Call: llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: "prometheus"}}},
+		{Call: llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: "mysql_query"}}},
+		{Call: llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: "LLM"}}}, // filtered
+		{Call: llms.ToolCall{FunctionCall: nil}},                             // filtered
+		{Call: llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: ""}}},    // filtered
+	}
+
+	usage := collectToolsUsed(steps)
+	assert.Equal(t, 2, usage["mysql_query"])
+	assert.Equal(t, 1, usage["prometheus"])
+	assert.NotContains(t, usage, "LLM")
+	assert.Len(t, usage, 2)
+}
+
+func TestCollectToolsUsed_OnlyLLMStepsReturnsNil(t *testing.T) {
+	steps := []core.ToolInvocation{
+		{Call: llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: "LLM"}}},
+		{Call: llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: "llm"}}},
+	}
+	assert.Nil(t, collectToolsUsed(steps))
+}
+
+func TestSumHistogram(t *testing.T) {
+	assert.Equal(t, 0, sumHistogram(nil))
+	assert.Equal(t, 0, sumHistogram(map[string]int{}))
+	assert.Equal(t, 1, sumHistogram(map[string]int{"mysql_query": 1}))
+	assert.Equal(t, 5, sumHistogram(map[string]int{"mysql_query": 2, "prometheus": 3}))
+}
+
+// TestIterationsUsed_ExcludesLLMReasoningSteps documents the semantic gap between
+// iterations_used (external tool calls) and total_steps (raw ReAct steps including
+// LLM reasoning). The cap is enforced on total_steps, so a sub-agent can be force-
+// terminated with iterations_used < iteration_budget — which is why we expose
+// budget_exhausted explicitly to the parent.
+func TestIterationsUsed_ExcludesLLMReasoningSteps(t *testing.T) {
+	steps := []core.ToolInvocation{
+		{Call: llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: "mysql_query"}}},
+		{Call: llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: "LLM"}}}, // reasoning
+		{Call: llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: "prometheus"}}},
+		{Call: llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: "LLM"}}}, // final summary
+	}
+
+	iterationsUsed := sumHistogram(collectToolsUsed(steps))
+	totalSteps := len(steps)
+
+	assert.Equal(t, 2, iterationsUsed, "iterations_used should count only external tool calls")
+	assert.Equal(t, 4, totalSteps, "total_steps should retain the full ReAct step history")
 }
 
 func TestDelegateAgentTool_Metadata(t *testing.T) {

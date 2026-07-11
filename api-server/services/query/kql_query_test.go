@@ -127,7 +127,7 @@ func TestGenerateKqlWhereClause(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "where name contains 'abc' and age == '30' and age != '40' and age in ('20','25')"
+	want := "where age == '30' and age in ('20','25') and age != '40' and name contains 'abc'"
 	if got != want {
 		t.Errorf("WhereClause: got %s, want %s", got, want)
 	}
@@ -154,6 +154,13 @@ func TestGenerateKqlWhereClause(t *testing.T) {
 
 func TestGenerateKqlOrderClause(t *testing.T) {
 	KqlGenerator := KqlGenerator{}
+	tableDef := TableDefinition{
+		Def: "MyTable",
+		Columns: map[string]ColumnDefinition{
+			"name": {Type: "string"},
+			"age":  {Type: "integer"},
+		},
+	}
 	req := QueryRequest{
 		OrderBy: []QueryOrderBy{
 			{Column: "name", Order: Asc},
@@ -161,7 +168,7 @@ func TestGenerateKqlOrderClause(t *testing.T) {
 		},
 	}
 
-	got := KqlGenerator.generateKqlOrderClause(req, TableDefinition{})
+	got := KqlGenerator.generateKqlOrderClause(req, tableDef)
 	want := "order by name asc, age desc"
 	if got != want {
 		t.Errorf("OrderClause: got %s, want %s", got, want)
@@ -196,7 +203,7 @@ func TestGenerateKqlQuery(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := "MyTable | where id == '10' | summarize count() by name | project id = toint(id), name = tostring(name) | order by id desc"
+	want := "MyTable | where id == '10' | summarize count() by name | order by id desc"
 
 	if got != want {
 		t.Errorf("FullQuery: got %s, want %s", got, want)

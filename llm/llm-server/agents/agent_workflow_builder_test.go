@@ -540,30 +540,26 @@ func TestWorkflowBuilderAgent_HandleEntry_DetectsFixMode(t *testing.T) {
 	assert.True(t, request.QueryConfig.WorkflowId != "")
 }
 
-// TestWorkflowBuilderAgent_ExtractWorkflowIdFromQuery tests UUID extraction from query text
+// TestWorkflowBuilderAgent_ExtractWorkflowIdFromQuery tests UUID extraction from query text.
+// Intent gating (edit vs create) now lives in classifyTurnIntent, so this helper simply returns
+// the first non-excluded UUID it finds, regardless of surrounding wording.
 
 func TestWorkflowBuilderAgent_ExtractWorkflowIdFromQuery(t *testing.T) {
-	// Fix request with UUID → should extract
+	// UUID present → extract it (wording is irrelevant now).
 	id := extractWorkflowIdFromQuery("Fix workflow 5d064c4c-bb53-4630-95ff-f6bb7b9133a6. Error: task failed", nil)
 	assert.Equal(t, "5d064c4c-bb53-4630-95ff-f6bb7b9133a6", id)
 
-	// Debug request with UUID → should extract
 	id = extractWorkflowIdFromQuery("Debug the failing workflow abc12345-1234-5678-9abc-def012345678", nil)
 	assert.Equal(t, "abc12345-1234-5678-9abc-def012345678", id)
 
-	// Error message with UUID → should extract
-	id = extractWorkflowIdFromQuery("Workflow 5d064c4c-bb53-4630-95ff-f6bb7b9133a6 has an error in the notification task", nil)
+	// A "create"-worded query that still embeds a UUID returns it — intent is decided elsewhere.
+	id = extractWorkflowIdFromQuery("Create a workflow named 5d064c4c-bb53-4630-95ff-f6bb7b9133a6", nil)
 	assert.Equal(t, "5d064c4c-bb53-4630-95ff-f6bb7b9133a6", id)
 
-	// Create request with UUID → should NOT extract (no fix keyword)
-	id = extractWorkflowIdFromQuery("Create a workflow named 5d064c4c-bb53-4630-95ff-f6bb7b9133a6", nil)
-	assert.Equal(t, "", id)
-
-	// Create request without UUID → should NOT extract
+	// No UUID → empty.
 	id = extractWorkflowIdFromQuery("Build a workflow that prints hello", nil)
 	assert.Equal(t, "", id)
 
-	// Fix request without UUID → should return empty
 	id = extractWorkflowIdFromQuery("Fix the pod health check workflow", nil)
 	assert.Equal(t, "", id)
 }
@@ -1187,6 +1183,46 @@ func TestWorkflowBuilderAgent_BuildClarificationContext(t *testing.T) {
 	assert.Equal(t, "", ctx)
 }
 
+// TestSanitizeAccountOptionLabel verifies internal identifiers are stripped from
+// clarifying-question option labels (#30885, #31141) while human-readable names and
+// the "(recommended)" marker survive.
+func TestSanitizeAccountOptionLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"provider annotation with assumption (#30885)", "k8s-dev (AWS - assuming this is a K8s cluster)", "k8s-dev"},
+		{"gcp provider annotation", "prod (GCP - assuming this is a K8s cluster)", "prod"},
+		{"provider+id annotation (#31141)", "k8s-dev (k8s, id=a2a30b02-0f67-42e5-a2ab-c658230fd798)", "k8s-dev"},
+		{"bare trailing uuid", "prod-aws - a2a30b02-0f67-42e5-a2ab-c658230fd798", "prod-aws"},
+		{"standalone id= fragment", "staging-aws id=33333333-3333-3333-3333-333333333333", "staging-aws"},
+		{"recommended marker preserved", "prod-aws (recommended)", "prod-aws (recommended)"},
+		{"plain name untouched", "staging-aws", "staging-aws"},
+		{"human-readable suffix kept", "gcp-dev - team-alpha", "gcp-dev - team-alpha"},
+		{"skip untouched", "Skip", "Skip"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, sanitizeAccountOptionLabel(tc.in))
+		})
+	}
+}
+
+// TestSanitizeQuestionOptions verifies emptied labels are dropped and labels that
+// collapse to the same value after stripping are deduped (order preserved).
+func TestSanitizeQuestionOptions(t *testing.T) {
+	in := []string{
+		"k8s-dev (k8s, id=a2a30b02-0f67-42e5-a2ab-c658230fd798)",
+		"k8s-dev (AWS - assuming this is a K8s cluster)", // collapses to duplicate "k8s-dev"
+		"prod-aws (recommended)",
+		"a2a30b02-0f67-42e5-a2ab-c658230fd798", // pure UUID → dropped
+		"Skip",
+	}
+	got := sanitizeQuestionOptions(in)
+	assert.Equal(t, []string{"k8s-dev", "prod-aws (recommended)", "Skip"}, got)
+}
+
 // TestWorkflowBuilderAgent_BuildClarificationResponse tests that a question produces a valid followup response.
 
 func TestWorkflowBuilderAgent_BuildClarificationResponse(t *testing.T) {
@@ -1547,12 +1583,12 @@ func TestWorkflowBuilder_BuildSystemPromptHasAccountIdUUIDRule(t *testing.T) {
 	assert.Contains(t, prompt, "cloud.azure.cli", "build prompt must enumerate cloud.azure.cli")
 }
 
-// TestWorkflowBuilder_FixSystemPromptHasAccountIdUUIDRule mirrors the build
-// check for the fix path — both create and fix go through the same save and
-// hit the same runbook-server validation.
+// TestWorkflowBuilder_EditSystemPromptHasAccountIdUUIDRule mirrors the build
+// check for the edit path — create and edit go through the same save and hit
+// the same runbook-server validation.
 
-func TestWorkflowBuilder_FixSystemPromptHasAccountIdUUIDRule(t *testing.T) {
-	prompt := getFixSystemPrompt("test error context", getWorkflowSchema())
+func TestWorkflowBuilder_EditSystemPromptHasAccountIdUUIDRule(t *testing.T) {
+	prompt := getEditSystemPrompt("test error context", "", getWorkflowSchema())
 	assert.Contains(t, prompt, "CLOUD ACCOUNT IDs")
 	assert.Contains(t, prompt, "account_id")
 	assert.Contains(t, prompt, "UUID")
@@ -1570,7 +1606,7 @@ func TestWorkflowBuilder_PromptsCoverAllFiveTriggerTypes(t *testing.T) {
 	surfaces := map[string]string{
 		"schema":           getWorkflowSchema(),
 		"build_prompt":     getBuildSystemPrompt("intent", "plan", getWorkflowSchema()),
-		"fix_prompt":       getFixSystemPrompt("err", getWorkflowSchema()),
+		"edit_prompt":      getEditSystemPrompt("err", "", getWorkflowSchema()),
 		"planning_context": getWorkflowPlanningContext(),
 	}
 
@@ -1623,24 +1659,32 @@ func TestWorkflowBuilder_ReadOnlyPromptDefinitionSection(t *testing.T) {
 	assert.NotContains(t, withoutDef, "CURRENT AUTOMATION DEFINITION:")
 }
 
-// TestWorkflowBuilder_ReadOnlyClassification verifies the classifier answer parser defaults to
-// ACTION on ambiguity (issue #30825): READ_ONLY only when present AND ACTION is absent.
-func TestWorkflowBuilder_ReadOnlyClassification(t *testing.T) {
+// TestWorkflowBuilder_ParseTurnIntent verifies the intent parser: EDIT/CREATE win over an incidental
+// "answer" mention, EDIT downgrades to CREATE when no workflow is loaded, and the no-match fallback is
+// hasWorkflow-aware (EDIT when one is open, else CREATE) — never silently ANSWER. Drives the fix for
+// the "No failed runs found" misrouting: an enhancement turn on an open workflow resolves to EDIT.
+func TestWorkflowBuilder_ParseTurnIntent(t *testing.T) {
 	cases := []struct {
-		answer string
-		want   bool
+		answer      string
+		hasWorkflow bool
+		want        turnIntent
 	}{
-		{"READ_ONLY", true},
-		{"read_only", true},
-		{"  READ_ONLY\n", true},
-		{"ACTION", false},
-		{"", false},
-		{"This is an ACTION, not a READ_ONLY turn", false}, // names both → ACTION wins
-		{"READ_ONLY (the user just wants an explanation)", true},
-		{"unsure", false},
+		{"EDIT", true, turnIntentEdit},
+		{"edit", true, turnIntentEdit},
+		{"  EDIT\n", true, turnIntentEdit},
+		{"EDIT", false, turnIntentCreate},   // nothing to edit → CREATE
+		{"CREATE", false, turnIntentCreate}, // brand-new build
+		{"CREATE", true, turnIntentCreate},  // explicit new build even with one open
+		{"ANSWER", true, turnIntentAnswer},
+		{"ANSWER", false, turnIntentAnswer},
+		{"This is an EDIT, not an ANSWER", true, turnIntentEdit}, // change wins over answer
+		{"", true, turnIntentEdit},                               // fallback with workflow open
+		{"", false, turnIntentCreate},                            // fallback without workflow
+		{"unsure", true, turnIntentEdit},                         // unparseable → EDIT (open)
+		{"unsure", false, turnIntentCreate},                      // unparseable → CREATE (none)
 	}
 	for _, c := range cases {
-		assert.Equal(t, c.want, isReadOnlyClassification(c.answer), "answer %q", c.answer)
+		assert.Equal(t, c.want, parseTurnIntent(c.answer, c.hasWorkflow), "answer %q hasWorkflow=%v", c.answer, c.hasWorkflow)
 	}
 }
 

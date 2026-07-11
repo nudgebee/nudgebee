@@ -11,6 +11,9 @@ import (
 )
 
 func TestHiggingfaceLLM_GenerateContent(t *testing.T) {
+	if config.Config.LlmProviderApiKey == "" || config.Config.LlmProviderApiEndpoint == "" {
+		t.Skip("requires a live HuggingFace endpoint and token (LLM_PROVIDER_API_KEY / LLM_PROVIDER_API_ENDPOINT)")
+	}
 
 	llm, err := New(WithToken(config.Config.LlmProviderApiKey), WithURL(config.Config.LlmProviderApiEndpoint), WithModel("nb-slm-promql"))
 	if err != nil {

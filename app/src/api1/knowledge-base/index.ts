@@ -4,6 +4,7 @@ interface KnowledgeBaseOutput {
   id: string;
   tenant_id: string;
   account_id: string;
+  account_name?: string;
   name: string;
   description?: string;
   data: string;
@@ -72,6 +73,7 @@ const apiKnowledgeBase = {
             id
             tenant_id
             account_id
+            account_name
             name
             description
             data
@@ -117,6 +119,8 @@ const apiKnowledgeBase = {
           kb_type: kb.kb_type,
           kb_source: kb.kb_source,
           integration_id: kb.integration_id,
+          account_id: kb.account_id,
+          account_name: kb.account_name,
           created_at: kb.created_at,
           updated_at: kb.updated_at,
           created_by: kb.created_by ? { display_name: kb.created_by } : null,

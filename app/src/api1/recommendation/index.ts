@@ -2009,6 +2009,7 @@ const apiRecommendations = {
         rows {
           id
           recommendation_id
+          account_id
           status
           status_message
           resolver_type
@@ -2044,9 +2045,18 @@ const apiRecommendations = {
     }
     const where: any = {};
     const whereAgg: any = {};
+    // accountId may be a single id (per-account views → _eq) or an array of ids
+    // (cross-account Resolutions tab → _in). Omitted/empty ⇒ all accounts (tenant-scoped).
     if (data.accountId) {
-      where.account_id = { _eq: data.accountId };
-      whereAgg.account_id = { _eq: data.accountId };
+      if (Array.isArray(data.accountId)) {
+        if (data.accountId.length > 0) {
+          where.account_id = { _in: data.accountId };
+          whereAgg.account_id = { _in: data.accountId };
+        }
+      } else {
+        where.account_id = { _eq: data.accountId };
+        whereAgg.account_id = { _eq: data.accountId };
+      }
     }
     if (data.status) {
       where.status = { _eq: data.status };

@@ -57,6 +57,14 @@ type Message struct {
 	MessageConfig   *string   `json:"message_config" db:"message_config"`
 	AckMessage      *string   `json:"ack_message" db:"ack_message"`
 
+	// Metadata is the per-message jsonb attachment slot — generic, namespace-
+	// keyed (e.g. `{"egressfilter": [...]}` for the outbound credential gate,
+	// `{"pii_tokenization": ...}` for the PII track once it ships). Always
+	// passed through verbatim as a raw JSON string so the frontend can
+	// dispatch on whichever top-level keys it understands; nil when the row
+	// has no metadata. See migration V761 + llm-server docs/llm-egress-filter.md.
+	Metadata *string `json:"metadata" db:"metadata"`
+
 	// AttachmentsRaw is the json_agg blob scanned from the messagesQuery
 	// subquery (never NULL — COALESCE'd to '[]'). It is unmarshalled into
 	// Attachments in fetchMessages and excluded from the API response.

@@ -8,7 +8,7 @@ import { Input } from '@ui/Input';
 import Head from 'next/head';
 import { googleAuth, oktaAuth, oneloginAuth, azureAuth, auth0Auth, NBIconSignIn } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import { EmailRegEx } from '@lib/validation';
 import { Divider } from '@mui/material';
 import { useRouter } from 'next/router';
@@ -37,22 +37,22 @@ const AuthMethodButton: React.FC<AuthMethodButtonProps> = ({ title, subtitle, on
       fullWidth
       onClick={onClick}
       sx={{
-        borderRadius: '8px',
-        border: `1px solid ${colors.border.nudgebeeSuggestion}`,
-        backgroundColor: colors.background.white,
-        color: colors.text.secondary,
-        fontSize: '14px',
-        fontWeight: 500,
+        borderRadius: ds.radius.lg,
+        border: `1px solid ${ds.gray[300]}`,
+        backgroundColor: ds.background[100],
+        color: ds.gray[700],
+        fontSize: 'var(--ds-text-body-lg)',
+        fontWeight: 'var(--ds-font-weight-medium)',
         textTransform: 'none',
         boxShadow: '0 6px 10px rgba(0, 0, 0, 0.06)',
         fontFamily: 'Roboto, sans-serif',
-        padding: '14px 16px',
+        padding: `${ds.space[3]} ${ds.space[4]}`,
         justifyContent: 'flex-start',
-        gap: 1.5,
+        gap: ds.space[3],
         transition: 'all 0.15s ease',
         '&:hover': {
           backgroundColor: 'white',
-          border: `1px solid ${colors.border.secondary}`,
+          border: `1px solid ${ds.gray[300]}`,
           transform: 'translateY(-1.5px)',
           boxShadow: '0 6px 8px rgba(0, 0, 0, 0.08)',
         },
@@ -61,10 +61,10 @@ const AuthMethodButton: React.FC<AuthMethodButtonProps> = ({ title, subtitle, on
       {icon && (
         <Box
           sx={{
-            width: '36px',
-            height: '36px',
-            borderRadius: '8px',
-            backgroundColor: colors.background.suggestionCardHover,
+            width: ds.space.mul(0, 18),
+            height: ds.space.mul(0, 18),
+            borderRadius: ds.radius.lg,
+            backgroundColor: ds.gray[100],
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -75,8 +75,8 @@ const AuthMethodButton: React.FC<AuthMethodButtonProps> = ({ title, subtitle, on
         </Box>
       )}
       <Box sx={{ textAlign: 'left' }}>
-        <Typography sx={{ fontSize: '14px', fontWeight: 500, color: colors.text.secondary }}>{title}</Typography>
-        {subtitle && <Typography sx={{ fontSize: '12px', color: colors.text.quaternary }}>{subtitle}</Typography>}
+        <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)', color: ds.gray[700] }}>{title}</Typography>
+        {subtitle && <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400] }}>{subtitle}</Typography>}
       </Box>
     </Button>
   );
@@ -92,19 +92,19 @@ const BackButton: React.FC<BackButtonProps> = ({ onClick, label = 'Back to Sign 
   return (
     <Button
       onClick={onClick}
-      startIcon={<ArrowBackIcon sx={{ fontSize: '18px' }} />}
+      startIcon={<ArrowBackIcon sx={{ fontSize: 'var(--ds-text-title)' }} />}
       sx={{
-        color: colors.text.secondary,
-        fontSize: '14px',
-        fontWeight: 400,
+        color: ds.gray[700],
+        fontSize: 'var(--ds-text-body-lg)',
+        fontWeight: 'var(--ds-font-weight-regular)',
         textTransform: 'none',
         fontFamily: 'Roboto, sans-serif',
-        padding: '8px 0',
+        padding: `${ds.space[2]} 0`,
         justifyContent: 'flex-start',
-        mb: 3,
+        mb: ds.space[5],
         '&:hover': {
           backgroundColor: 'transparent',
-          color: colors.text.secondary,
+          color: ds.gray[700],
         },
       }}
     >
@@ -318,7 +318,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
             justifyContent: 'center',
           }}
         >
-          <Typography variant='h4' sx={{ color: colors.text.signinDark, fontSize: '14px', fontWeight: 600 }}>
+          <Typography variant='h4' sx={{ color: ds.gray[700], fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-semibold)' }}>
             No authentication providers are enabled. Please contact the administrator.
           </Typography>
         </Box>
@@ -348,9 +348,9 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
 
       <Typography
         sx={{
-          fontSize: '22px',
-          fontWeight: 600,
-          color: colors.text.secondary,
+          fontSize: 'var(--ds-text-heading)',
+          fontWeight: 'var(--ds-font-weight-semibold)',
+          color: ds.gray[700],
           fontFamily: 'Poppins, sans-serif',
           letterSpacing: '-0.6px',
         }}
@@ -359,16 +359,16 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
       </Typography>
       <Typography
         sx={{
-          fontSize: '14px',
-          color: colors.text.tertiary,
+          fontSize: 'var(--ds-text-body-lg)',
+          color: ds.gray[600],
           fontFamily: 'Roboto, sans-serif',
-          mb: 3,
+          mb: ds.space[5],
         }}
       >
         We&apos;ll send you a secure link to sign in
       </Typography>
 
-      <Box sx={{ mb: 3 }}>
+      <Box sx={{ mb: ds.space[5] }}>
         <Input
           label='Email address'
           id='magicEmail'
@@ -397,22 +397,22 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
         disabled={magicLinkSending}
         onClick={(e) => emailProvider && handleMagicLink(magicLinkEmail, emailProvider, e)}
         sx={{
-          borderRadius: '8px',
-          backgroundColor: colors.background.brandButton,
-          color: colors.text.secondary,
-          fontSize: '14px',
-          fontWeight: 600,
+          borderRadius: ds.radius.lg,
+          backgroundColor: ds.yellow[500],
+          color: ds.gray[700],
+          fontSize: 'var(--ds-text-body-lg)',
+          fontWeight: 'var(--ds-font-weight-semibold)',
           textTransform: 'none',
           fontFamily: 'Roboto, sans-serif',
-          padding: '12px',
+          padding: ds.space[3],
           boxShadow: 'none',
           '&:hover': {
-            backgroundColor: colors.background.brandButtonHover,
+            backgroundColor: ds.yellow[600],
             boxShadow: 'none',
           },
           '&:disabled': {
-            backgroundColor: '#E5E7EB',
-            color: '#9CA3AF',
+            backgroundColor: 'var(--ds-brand-150)',
+            color: 'var(--ds-gray-400)',
           },
         }}
       >
@@ -436,9 +436,9 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
 
       <Typography
         sx={{
-          fontSize: '22px',
-          fontWeight: 600,
-          color: colors.text.secondary,
+          fontSize: 'var(--ds-text-heading)',
+          fontWeight: 'var(--ds-font-weight-semibold)',
+          color: ds.gray[700],
           fontFamily: 'Poppins, sans-serif',
           letterSpacing: '-0.6px',
         }}
@@ -447,16 +447,16 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
       </Typography>
       <Typography
         sx={{
-          fontSize: '14px',
-          color: colors.text.tertiary,
+          fontSize: 'var(--ds-text-body-lg)',
+          color: ds.gray[600],
           fontFamily: 'Roboto, sans-serif',
-          mb: 3,
+          mb: ds.space[5],
         }}
       >
         Enter your LDAP credentials to continue
       </Typography>
 
-      <Box sx={{ mb: 2 }}>
+      <Box sx={{ mb: ds.space[4] }}>
         <Input
           label='LDAP Username'
           id='ldapUsername'
@@ -472,7 +472,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
         />
       </Box>
 
-      <Box sx={{ mb: 3 }}>
+      <Box sx={{ mb: ds.space[5] }}>
         <Input
           label='LDAP Password'
           id='ldapPassword'
@@ -494,17 +494,17 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
         fullWidth
         onClick={(ev) => ldapProvider && handleLdapSubmit(ldapProvider, ev)}
         sx={{
-          borderRadius: '8px',
-          backgroundColor: colors.background.brandButton,
-          color: colors.text.secondary,
-          fontSize: '14px',
-          fontWeight: 600,
+          borderRadius: ds.radius.lg,
+          backgroundColor: ds.yellow[500],
+          color: ds.gray[700],
+          fontSize: 'var(--ds-text-body-lg)',
+          fontWeight: 'var(--ds-font-weight-semibold)',
           textTransform: 'none',
           fontFamily: 'Roboto, sans-serif',
-          padding: '12px',
+          padding: ds.space[3],
           boxShadow: 'none',
           '&:hover': {
-            backgroundColor: colors.background.brandButtonHover,
+            backgroundColor: ds.yellow[600],
             boxShadow: 'none',
           },
         }}
@@ -529,9 +529,9 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
 
       <Typography
         sx={{
-          fontSize: '22px',
-          fontWeight: 600,
-          color: colors.text.secondary,
+          fontSize: 'var(--ds-text-heading)',
+          fontWeight: 'var(--ds-font-weight-semibold)',
+          color: ds.gray[700],
           fontFamily: 'Poppins, sans-serif',
           letterSpacing: '-0.6px',
         }}
@@ -540,16 +540,16 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
       </Typography>
       <Typography
         sx={{
-          fontSize: '14px',
-          color: colors.text.tertiary,
+          fontSize: 'var(--ds-text-body-lg)',
+          color: ds.gray[600],
           fontFamily: 'Roboto, sans-serif',
-          mb: 3,
+          mb: ds.space[5],
         }}
       >
         Enter your admin credentials to continue
       </Typography>
 
-      <Box sx={{ mb: 2 }}>
+      <Box sx={{ mb: ds.space[4] }}>
         <Input
           label='Admin Email'
           id='credsEmail'
@@ -566,7 +566,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
         />
       </Box>
 
-      <Box sx={{ mb: 3 }}>
+      <Box sx={{ mb: ds.space[5] }}>
         <Input
           label='Admin Password'
           id='credsPassword'
@@ -588,17 +588,17 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
         fullWidth
         onClick={(ev) => credentialsProvider && handleCredentialsSubmit(credentialsProvider, ev)}
         sx={{
-          borderRadius: '8px',
-          backgroundColor: colors.background.brandButton,
-          color: colors.text.secondary,
-          fontSize: '14px',
-          fontWeight: 600,
+          borderRadius: ds.radius.lg,
+          backgroundColor: ds.yellow[500],
+          color: ds.gray[700],
+          fontSize: 'var(--ds-text-body-lg)',
+          fontWeight: 'var(--ds-font-weight-semibold)',
           textTransform: 'none',
           fontFamily: 'Roboto, sans-serif',
-          padding: '12px',
+          padding: ds.space[3],
           boxShadow: 'none',
           '&:hover': {
-            backgroundColor: colors.background.brandButtonHover,
+            backgroundColor: ds.yellow[600],
             boxShadow: 'none',
           },
         }}
@@ -620,12 +620,12 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
       }}
     >
       {/* Welcome Text */}
-      <Box sx={{ textAlign: 'center', mb: '40px' }}>
+      <Box sx={{ textAlign: 'center', mb: 'var(--ds-space-6)' }}>
         <Typography
           sx={{
-            fontSize: '28px',
-            fontWeight: 600,
-            color: colors.text.secondary,
+            fontSize: 'var(--ds-text-display)',
+            fontWeight: 'var(--ds-font-weight-semibold)',
+            color: ds.gray[700],
             fontFamily: 'Poppins, sans-serif',
             letterSpacing: -1,
           }}
@@ -641,7 +641,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
           sx={{
             display: 'flex',
             flexWrap: 'wrap',
-            gap: '12px',
+            gap: 'var(--ds-space-3)',
           }}
         >
           {otherIconProviders.map((provider: any) => (
@@ -654,24 +654,24 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                gap: 1,
-                color: colors.text.secondary,
-                fontSize: '14px',
-                fontWeight: 500,
-                border: '1px solid #E5E7EB',
-                borderRadius: '8px',
+                gap: ds.space[2],
+                color: ds.gray[700],
+                fontSize: 'var(--ds-text-body-lg)',
+                fontWeight: 'var(--ds-font-weight-medium)',
+                border: '1px solid var(--ds-brand-150)',
+                borderRadius: ds.radius.lg,
                 boxShadow: '0 6px 8px rgba(0, 0, 0, 0.06)',
-                padding: '12px',
-                backgroundColor: colors.background.white,
+                padding: ds.space[3],
+                backgroundColor: ds.background[100],
                 transition: 'all 0.15s ease',
                 fontFamily: 'Roboto, sans-serif',
                 textTransform: 'none',
                 flex: '1 1 calc(50% - 6px)',
-                minWidth: '120px',
+                minWidth: ds.space.mul(0, 60),
                 boxSizing: 'border-box',
                 '&:hover': {
                   backgroundColor: 'white',
-                  border: '1px solid #D1D5DB',
+                  border: '1px solid var(--ds-brand-200)',
                   transform: 'translateY(-1px)',
                   boxShadow: '0 6px 8px rgba(0, 0, 0, 0.1)',
                 },
@@ -692,9 +692,13 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
 
       {/* Divider between providers and Magic Link */}
       {(otherIconProviders.length > 0 || samlEnabled) && emailProvider && (
-        <Box sx={{ my: 3 }}>
+        <Box sx={{ my: ds.space[5] }}>
           <Divider
-            sx={{ color: colors.text.tertiarymedium, fontSize: '12px', '&::before, &::after': { borderColor: colors.border.nudgebeeSuggestion } }}
+            sx={{
+              color: ds.gray[300],
+              fontSize: 'var(--ds-text-small)',
+              '&::before, &::after': { borderColor: ds.gray[300] },
+            }}
           >
             OR
           </Divider>
@@ -703,20 +707,13 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
 
       {/* 2. Magic Link Button */}
       {emailProvider && (
-        <Box sx={{ mb: 2 }}>
+        <Box sx={{ mb: ds.space[4] }}>
           <AuthMethodButton
             title='Login via Magic Link'
             subtitle='Get a secure link sent to your email'
             onClick={() => setCurrentView('magic-link')}
             icon={
-              <svg
-                width='18'
-                height='18'
-                viewBox='0 0 24 24'
-                fill='none'
-                xmlns='http://www.w3.org/2000/svg'
-                style={{ color: colors.text.primaryLight }}
-              >
+              <svg width='18' height='18' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg' style={{ color: ds.blue[400] }}>
                 <path
                   d='M4 4H20C21.1 4 22 4.9 22 6V18C22 19.1 21.1 20 20 20H4C2.9 20 2 19.1 2 18V6C2 4.9 2.9 4 4 4Z'
                   stroke='currentColor'
@@ -733,9 +730,13 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
 
       {/* Divider between Magic Link and LDAP */}
       {emailProvider && ldapProvider && (
-        <Box sx={{ my: 3 }}>
+        <Box sx={{ my: ds.space[5] }}>
           <Divider
-            sx={{ color: colors.text.tertiarymedium, fontSize: '12px', '&::before, &::after': { borderColor: colors.border.nudgebeeSuggestion } }}
+            sx={{
+              color: ds.gray[300],
+              fontSize: 'var(--ds-text-small)',
+              '&::before, &::after': { borderColor: ds.gray[300] },
+            }}
           >
             OR
           </Divider>
@@ -744,20 +745,13 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
 
       {/* 3. LDAP Button */}
       {ldapProvider && (
-        <Box sx={{ mb: 2 }}>
+        <Box sx={{ mb: ds.space[4] }}>
           <AuthMethodButton
             title='Login via LDAP'
             subtitle='Use your organization credentials'
             onClick={() => setCurrentView('ldap')}
             icon={
-              <svg
-                width='18'
-                height='18'
-                viewBox='0 0 24 24'
-                fill='none'
-                xmlns='http://www.w3.org/2000/svg'
-                style={{ color: colors.text.primaryLight }}
-              >
+              <svg width='18' height='18' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg' style={{ color: ds.blue[400] }}>
                 <rect x='3' y='11' width='18' height='11' rx='2' stroke='currentColor' strokeWidth='2' />
                 <path d='M7 11V7C7 4.23858 9.23858 2 12 2C14.7614 2 17 4.23858 17 7V11' stroke='currentColor' strokeWidth='2' strokeLinecap='round' />
                 <circle cx='12' cy='16' r='1' fill='currentColor' />
@@ -769,9 +763,13 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
 
       {/* Divider before Teleport */}
       {ldapProvider && teleportProvider && (
-        <Box sx={{ my: 3 }}>
+        <Box sx={{ my: ds.space[5] }}>
           <Divider
-            sx={{ color: colors.text.tertiarymedium, fontSize: '12px', '&::before, &::after': { borderColor: colors.border.nudgebeeSuggestion } }}
+            sx={{
+              color: ds.gray[300],
+              fontSize: 'var(--ds-text-small)',
+              '&::before, &::after': { borderColor: ds.gray[300] },
+            }}
           >
             OR
           </Divider>
@@ -780,20 +778,13 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
 
       {/* 4. Teleport Button */}
       {teleportProvider && (
-        <Box sx={{ mb: 2 }}>
+        <Box sx={{ mb: ds.space[4] }}>
           <AuthMethodButton
             title='Login via Teleport'
             subtitle='Use Teleport SSO authentication'
             onClick={() => handleTeleportLink(teleportProvider)}
             icon={
-              <svg
-                width='18'
-                height='18'
-                viewBox='0 0 24 24'
-                fill='none'
-                xmlns='http://www.w3.org/2000/svg'
-                style={{ color: colors.text.primaryLight }}
-              >
+              <svg width='18' height='18' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg' style={{ color: ds.blue[400] }}>
                 <circle cx='12' cy='12' r='10' stroke='currentColor' strokeWidth='2' />
                 <path d='M12 6V12L16 14' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round' />
               </svg>
@@ -804,9 +795,13 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
 
       {/* Divider before Credentials */}
       {(ldapProvider || teleportProvider || emailProvider) && credentialsProvider && (
-        <Box sx={{ my: 3 }}>
+        <Box sx={{ my: ds.space[5] }}>
           <Divider
-            sx={{ color: colors.text.tertiarymedium, fontSize: '12px', '&::before, &::after': { borderColor: colors.border.nudgebeeSuggestion } }}
+            sx={{
+              color: ds.gray[300],
+              fontSize: 'var(--ds-text-small)',
+              '&::before, &::after': { borderColor: ds.gray[300] },
+            }}
           >
             OR
           </Divider>
@@ -815,20 +810,13 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
 
       {/* 5. Credentials (Admin) Button */}
       {credentialsProvider && (
-        <Box sx={{ mb: 2 }}>
+        <Box sx={{ mb: ds.space[4] }}>
           <AuthMethodButton
             title='Admin Login'
             subtitle='Sign in with admin credentials'
             onClick={() => setCurrentView('credentials')}
             icon={
-              <svg
-                width='18'
-                height='18'
-                viewBox='0 0 24 24'
-                fill='none'
-                xmlns='http://www.w3.org/2000/svg'
-                style={{ color: colors.text.primaryLight }}
-              >
+              <svg width='18' height='18' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg' style={{ color: ds.blue[400] }}>
                 <path
                   d='M20 21V19C20 17.9391 19.5786 16.9217 18.8284 16.1716C18.0783 15.4214 17.0609 15 16 15H8C6.93913 15 5.92172 15.4214 5.17157 16.1716C4.42143 16.9217 4 17.9391 4 19V21'
                   stroke='currentColor'

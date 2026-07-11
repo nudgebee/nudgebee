@@ -220,7 +220,8 @@ func TestExtractResourceValues_HandlesVectorResultWrapper(t *testing.T) {
 // queries returned populated requests/limits. The card couldn't render
 // and "X pods does not have a memory limit" insights were lost.
 func TestBuildPodMetricResponse_SeedsFromRequestsLimitsWhenMetricsEmpty(t *testing.T) {
-	a := &podMetricAction{}
+	// No workload spec available → exercise the Prometheus-fallback path.
+	a := &podMetricAction{workloadResourceSpec: stubNoWorkloadSpec}
 	ctx := &defaultPlaybookActionContext{
 		tenantId:  "t",
 		accountId: "a",
@@ -279,41 +280,87 @@ func TestBuildPodMetricResponse_SeedsFromRequestsLimitsWhenMetricsEmpty(t *testi
 	}
 }
 
-// When both the main metric query AND requests/limits return nothing,
-// emit empty data + the negative insights — matches Robusta behavior of
-// flagging unconstrained pods even with no observable metric.
-func TestBuildPodMetricResponse_AllEmptyFiresNegativeInsights(t *testing.T) {
-	a := &podMetricAction{}
+// stubNoWorkloadSpec simulates "no authoritative workload spec found" so a test
+// exercises the Prometheus-observable fallback path of buildPodMetricResponse.
+func stubNoWorkloadSpec(PlaybookActionContext, string, string) (found, hasMemReq, hasMemLim, hasCpuReq bool) {
+	return false, false, false, false
+}
+
+// When NO workload spec is found AND the pod is not observable in metrics
+// (usage + requests + limits all empty), we cannot tell "resource unset" from
+// "pod not found", so we emit NO resource-allocation insights. Previously this
+// fabricated false "missing memory request/limit" insights for pods that
+// actually have them — the dominant cause of bogus "resource starvation" RCAs
+// (the named pod had simply rolled away / was a ReplicaSet-name from a webhook
+// alert, so KSM returned nothing). The old "flag even with no observable metric"
+// justification does not transfer: the legacy agent read the pod *spec*
+// directly, whereas here we only have metric presence to go on.
+func TestBuildPodMetricResponse_NoSpecAndUnobserved_EmitsNoInsights(t *testing.T) {
+	a := &podMetricAction{workloadResourceSpec: stubNoWorkloadSpec}
 	ctx := &defaultPlaybookActionContext{
 		tenantId:  "t",
 		accountId: "a",
 		logger:    slog.Default(),
 		event:     PlaybookEvent{EventId: "e"},
 	}
-	// Pass empty insightResourceType — preserves the legacy "emit all
-	// three resource-allocation insights" behaviour for direct callers
-	// that haven't opted into per-resource scoping. Regression guard for
-	// PR #30661 gemini review: Execute defaults params.ResourceType to
-	// "CPU", so passing params.ResourceType here would have masked the
-	// legacy path; using "" exercises the exact code path manual API
-	// callers hit.
 	pm, insights := a.buildPodMetricResponse(ctx, map[string]any{}, podMetricEnricherParams{
 		PodName:   "pod-x",
 		Namespace: "ns-x",
 	}, "")
 	assert.Empty(t, pm.Data)
-	// Two negative insights: missing memory limit + missing memory request.
-	var sawMissingLimit, sawMissingRequest bool
 	for _, in := range insights {
-		if strings.Contains(in.Message, "does not have memory limit") {
-			sawMissingLimit = true
-		}
-		if strings.Contains(in.Message, "does not have memory request") {
-			sawMissingRequest = true
+		assert.NotContains(t, in.Message, "does not have",
+			"must not fabricate a missing-resource insight when the pod is unobservable and no spec is found")
+	}
+}
+
+// Regression for the false-positive bug: the workload spec is authoritative and
+// reports all resources set, so NO "missing resource" insight must fire even
+// though the Prometheus queries returned nothing (the named pod rolled away).
+func TestBuildPodMetricResponse_WorkloadSpecAllSet_NoFalseInsight(t *testing.T) {
+	a := &podMetricAction{workloadResourceSpec: func(PlaybookActionContext, string, string) (bool, bool, bool, bool) {
+		return true, true, true, true // found, memReq, memLim, cpuReq — all set
+	}}
+	ctx := &defaultPlaybookActionContext{
+		tenantId: "t", accountId: "a", logger: slog.Default(), event: PlaybookEvent{EventId: "e"},
+	}
+	_, insights := a.buildPodMetricResponse(ctx, map[string]any{}, podMetricEnricherParams{
+		PodName:   "llm-server-ffc97698d", // a rolled-away pod/RS identity
+		Namespace: "nudgebee",
+	}, "")
+	for _, in := range insights {
+		assert.NotContains(t, in.Message, "does not have",
+			"spec says all resources are set — no missing-resource insight may fire despite empty metrics")
+	}
+}
+
+// When the workload spec is found and genuinely omits requests/limits, the
+// insights DO fire (a real unconstrained workload), independent of metrics.
+func TestBuildPodMetricResponse_WorkloadSpecUnconstrained_FiresInsights(t *testing.T) {
+	a := &podMetricAction{workloadResourceSpec: func(PlaybookActionContext, string, string) (bool, bool, bool, bool) {
+		return true, false, false, false // found, but nothing set
+	}}
+	ctx := &defaultPlaybookActionContext{
+		tenantId: "t", accountId: "a", logger: slog.Default(), event: PlaybookEvent{EventId: "e"},
+	}
+	_, insights := a.buildPodMetricResponse(ctx, map[string]any{}, podMetricEnricherParams{
+		PodName:   "pod-x",
+		Namespace: "ns-x",
+	}, "") // "" → emit all three
+	var sawMemLimit, sawMemReq, sawCPUReq bool
+	for _, in := range insights {
+		switch {
+		case strings.Contains(in.Message, "does not have memory limit"):
+			sawMemLimit = true
+		case strings.Contains(in.Message, "does not have memory request"):
+			sawMemReq = true
+		case strings.Contains(in.Message, "does not have CPU request"):
+			sawCPUReq = true
 		}
 	}
-	assert.True(t, sawMissingLimit, "missing-limit insight must fire when limitsMap is empty")
-	assert.True(t, sawMissingRequest, "missing-request insight must fire when requestsMap is empty")
+	assert.True(t, sawMemLimit, "unconstrained workload spec must fire missing-memory-limit insight")
+	assert.True(t, sawMemReq, "unconstrained workload spec must fire missing-memory-request insight")
+	assert.True(t, sawCPUReq, "unconstrained workload spec must fire missing-cpu-request insight")
 }
 
 // TestGenerateInsights_ScopedByResourceType verifies that the cpu and memory

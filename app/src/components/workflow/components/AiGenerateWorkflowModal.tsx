@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Box, CircularProgress, LinearProgress, Typography } from '@mui/material';
-import { Modal } from '@shared/modal';
+import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
-import { FormField } from '@shared/NewReusabeFormComponents';
+import { FormField } from '@shared/forms/FormComponents';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import ClarificationQuestion from './ClarificationQuestion';
 
@@ -317,7 +317,7 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
             <Typography variant='body1' sx={{ fontWeight: 'var(--ds-font-weight-medium)', color: 'text.primary' }}>
               {STAGE_MESSAGES[stageMessageIndex]}
             </Typography>
-            <LinearProgress variant='indeterminate' sx={{ width: '60%', borderRadius: 1 }} />
+            <LinearProgress variant='indeterminate' sx={{ width: '60%', borderRadius: 'var(--ds-radius-sm)' }} />
             {progress && (
               <Typography variant='body2' sx={{ color: 'text.secondary' }}>
                 Elapsed: {formatElapsed(progress.elapsedSeconds)}
@@ -368,7 +368,7 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
             <Box
               sx={{
                 p: 2,
-                borderRadius: 1,
+                borderRadius: 'var(--ds-radius-sm)',
                 border: '1px solid',
                 borderColor: 'divider',
                 bgcolor: 'background.default',

@@ -168,7 +168,12 @@ def load_integration_installations(session, tenant_id, platform: str) -> List[Me
     result = []
     for integ in integrations:
         rows = session.query(IntegrationConfigValue).filter(IntegrationConfigValue.integration_id == integ.id).all()
-        result.append(build_installation(platform, integ, _decrypt_config(rows)))
+        try:
+            result.append(build_installation(platform, integ, _decrypt_config(rows)))
+        except Exception:
+            # One un-decryptable install (e.g. key rotation, corrupted blob) must not
+            # abort loading every platform for the tenant — skip it and keep going.
+            LOG.exception("messaging installation: failed to load %s integration %s; skipping", platform, integ.id)
     return result
 
 
@@ -188,7 +193,12 @@ async def load_integration_installations_async(session, tenant_id, platform: str
         cfg_result = await session.execute(
             select(IntegrationConfigValue).where(IntegrationConfigValue.integration_id == integ.id)
         )
-        result.append(build_installation(platform, integ, _decrypt_config(cfg_result.scalars().all())))
+        try:
+            result.append(build_installation(platform, integ, _decrypt_config(cfg_result.scalars().all())))
+        except Exception:
+            # One un-decryptable install (e.g. key rotation, corrupted blob) must not
+            # abort loading every platform for the tenant — skip it and keep going.
+            LOG.exception("messaging installation: failed to load %s integration %s; skipping", platform, integ.id)
     return result
 
 

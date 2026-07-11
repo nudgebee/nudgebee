@@ -3,7 +3,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import LinkIcon from '@mui/icons-material/Link';
 import { useState, useEffect } from 'react';
 import { usePagination } from '@hooks/usePagination';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { ds } from 'src/utils/colors';
 import { Label, type LabelTone } from '@ui/Label';
 import { Button } from '@ui/Button';
@@ -155,7 +155,7 @@ const InlineResolutionHistory = ({ recommendationId }: { recommendationId: strin
   });
 
   return (
-    <CustomTable2
+    <CustomTable
       id={`resolution-history-${recommendationId}`}
       headers={RESOLUTION_HEADERS}
       tableData={tableData}
@@ -228,7 +228,7 @@ const RecommendationDetailPanel = ({
           }}
         >
           <Box sx={{ flex: 1 }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: '6px', flexWrap: 'wrap' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space.mul(0, 3), flexWrap: 'wrap' }}>
               <Label size='md' tone={SEVERITY_TONE[severity] ?? 'neutral'}>
                 {severity}
               </Label>
@@ -254,6 +254,7 @@ const RecommendationDetailPanel = ({
               {resourceType}
               {namespace ? ` · ${namespace}` : ''}
               {accountName ? ` · ${accountName}` : ''}
+              {rec.created_at && daysSinceLong(rec.created_at) ? ` · detected ${daysSinceLong(rec.created_at)}` : ''}
             </Typography>
           </Box>
           <Button tone='ghost' composition='icon-only' size='sm' icon={<CloseIcon />} aria-label='Close' onClick={onClose} id='detail-panel-close' />
@@ -263,7 +264,7 @@ const RecommendationDetailPanel = ({
         {savings !== 0 && (
           <Box
             sx={{
-              px: '20px',
+              px: ds.space.mul(0, 10),
               py: ds.space[2],
               borderBottom: `1px solid ${ds.gray[200]}`,
               display: 'flex',
@@ -346,7 +347,7 @@ const RecommendationDetailPanel = ({
                     height: ds.space[2],
                     borderRadius: '50%',
                     backgroundColor: ds.green[600],
-                    mt: '5px',
+                    mt: ds.space[1],
                     flexShrink: 0,
                   }}
                 />
@@ -367,7 +368,7 @@ const RecommendationDetailPanel = ({
                       height: ds.space[2],
                       borderRadius: '50%',
                       backgroundColor: ds.blue[600],
-                      mt: '5px',
+                      mt: ds.space[1],
                       flexShrink: 0,
                     }}
                   />
@@ -389,7 +390,7 @@ const RecommendationDetailPanel = ({
                       height: ds.space[2],
                       borderRadius: '50%',
                       backgroundColor: ds.amber[500],
-                      mt: '5px',
+                      mt: ds.space[1],
                       flexShrink: 0,
                     }}
                   />

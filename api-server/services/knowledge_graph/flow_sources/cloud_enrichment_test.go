@@ -241,6 +241,86 @@ func TestFindCloudResourceByEndpoint_EmptyIndex(t *testing.T) {
 	}
 }
 
+func TestLooksLikeTruncatedAWSDNS(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"truncated_s3", "nb-ml-models-v2.s3.us-east", true},
+		{"truncated_s3_cloudtrail", "aws-cloudtrail-logs-740395098545-d2547ae0.s3.us-east", true},
+		{"truncated_rds", "mydb.abc123.us-east-1.rds", true},
+		{"complete_s3", "nb-ml-models-v2.s3.us-east-1.amazonaws.com", false},
+		{"complete_elb", "my-alb.us-east-1.elb.amazonaws.com", false},
+		{"no_aws_marker", "api.internal.svc", false},
+		{"plain_external", "api.stripe.com", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := looksLikeTruncatedAWSDNS(tc.in); got != tc.want {
+				t.Errorf("looksLikeTruncatedAWSDNS(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFindCloudResourceByTruncatedAWSDNS(t *testing.T) {
+	const (
+		bucketDNS = "nb-ml-models-v2.s3.us-east-1.amazonaws.com"
+		curDNS    = "nudgebee-cur-1757590186565.s3.us-east-1.amazonaws.com"
+		rdsDNS    = "mydb.abc123.us-east-1.rds.amazonaws.com"
+	)
+	bucket := makeNode("bucket1", core.NodeTypeStorage, map[string]interface{}{"dns_name": bucketDNS})
+	cur := makeNode("cur1", core.NodeTypeStorage, map[string]interface{}{"dns_name": curDNS})
+	db := makeNode("db1", core.NodeTypeDatabase, map[string]interface{}{"dns_name": rdsDNS})
+	idx := buildCloudEndpointIndex(nil, "", []*core.DbNode{bucket, cur, db}, silentLogger())
+
+	cases := []struct {
+		name     string
+		query    string
+		wantNode *core.DbNode
+	}{
+		{"truncated_bucket", "nb-ml-models-v2.s3.us-east", bucket},
+		{"truncated_cur", "nudgebee-cur-1757590186565.s3.us-east", cur},
+		{"truncated_rds", "mydb.abc123.us-east-1.rds", db},
+		{"complete_name_not_handled_here", bucketDNS, nil}, // exact path owns complete names
+		{"non_aws_external", "api.stripe.com", nil},
+		{"unknown_bucket", "does-not-exist.s3.us-east", nil},
+		// Prefix of a *different* bucket name must not match (boundary guard):
+		// "nb-ml-models" is a prefix of "nb-ml-models-v2..." but the continuation
+		// char is '-', and there's no AWS marker yet, so it's rejected upfront.
+		{"partial_bucket_no_marker", "nb-ml-models", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotNode, _ := findCloudResourceByTruncatedAWSDNS(idx, tc.query)
+			if gotNode != tc.wantNode {
+				wantID, gotID := "<nil>", "<nil>"
+				if tc.wantNode != nil {
+					wantID = tc.wantNode.ID
+				}
+				if gotNode != nil {
+					gotID = gotNode.ID
+				}
+				t.Errorf("findCloudResourceByTruncatedAWSDNS(%q) = %s, want %s", tc.query, gotID, wantID)
+			}
+		})
+	}
+}
+
+// Two buckets whose names share a truncated prefix must NOT be merged — the
+// matcher bails on ambiguity rather than guessing.
+func TestFindCloudResourceByTruncatedAWSDNS_AmbiguousBails(t *testing.T) {
+	a := makeNode("a", core.NodeTypeStorage, map[string]interface{}{"dns_name": "shared.s3.us-east-1.amazonaws.com"})
+	b := makeNode("b", core.NodeTypeStorage, map[string]interface{}{"dns_name": "shared.s3.us-east-2.amazonaws.com"})
+	idx := buildCloudEndpointIndex(nil, "", []*core.DbNode{a, b}, silentLogger())
+
+	if node, _ := findCloudResourceByTruncatedAWSDNS(idx, "shared.s3.us-east"); node != nil {
+		t.Errorf("expected nil on ambiguous prefix, got %v", node.ID)
+	}
+}
+
 func TestStrProp(t *testing.T) {
 	cases := []struct {
 		name string

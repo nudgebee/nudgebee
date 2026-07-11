@@ -20,7 +20,17 @@ func (rc *RequestContext) GetSecurityContext() *SecurityContext {
 	return rc.securityContext
 }
 
+// GetLogger never returns nil. The plain NewRequestContext constructor accepts
+// whatever logger it is handed (including nil), and some background/test
+// contexts pass one. Falling back to slog.Default() here keeps panic-recovery
+// paths — which log via ctx.GetLogger() from inside a recover() block — from
+// triggering a second, unrecovered nil-dereference panic that would crash the
+// process. The nil-receiver guard covers a nil *RequestContext for the same
+// reason.
 func (rc *RequestContext) GetLogger() *slog.Logger {
+	if rc == nil || rc.logger == nil {
+		return slog.Default()
+	}
 	return rc.logger
 }
 

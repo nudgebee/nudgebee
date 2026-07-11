@@ -38,6 +38,14 @@ func TestServiceDependencyV2_GetCacheScope_Account(t *testing.T) {
 		"V2 must declare CacheScopeAccount so the embedded agent_kg_usage.txt sits in the 12h-cached prefix")
 }
 
+func TestServiceDependencyV2_OptsOutOfDefaultTools(t *testing.T) {
+	agent := ServiceDependencyGraphAgentV2{accountId: "test-account"}
+	optOut, ok := interface{}(agent).(core.DefaultToolsOptOut)
+	assert.True(t, ok, "V2 must implement DefaultToolsOptOut")
+	assert.True(t, optOut.OptOutDefaultTools(),
+		"V2 is KG-only — it must opt out of shell_execute/load_skills injection")
+}
+
 func TestServiceDependencyV2_GetDescription_CoversK8sAndCloud(t *testing.T) {
 	agent := ServiceDependencyGraphAgentV2{accountId: "test-account"}
 	desc := agent.GetDescription()

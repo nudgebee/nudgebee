@@ -79,13 +79,15 @@ class AuthTokenMiddleware(BaseController):
         self.func = func
 
     def get_secret_from_db(self, key):
-        cursor = self.postgres_client.cursor()
-        # Use parameterized query to prevent SQL injection (key comes from user input)
-        cursor.execute(
-            "select cloud_account_id,tenant,id,access_secret_v2 from agent where type = 'k8s' " "and access_key = %s",
-            (key,),
-        )
-        resp = cursor.fetchone()
+        with self.postgres_connection() as conn:
+            with conn.cursor() as cursor:
+                # Use parameterized query to prevent SQL injection (key comes from user input)
+                cursor.execute(
+                    "select cloud_account_id,tenant,id,access_secret_v2 from agent where type = 'k8s' "
+                    "and access_key = %s",
+                    (key,),
+                )
+                resp = cursor.fetchone()
         if resp:
             return {
                 "id": resp[0],
@@ -97,12 +99,13 @@ class AuthTokenMiddleware(BaseController):
             raise UnauthorizedError("Invalid key")
 
     def get_agent_by_account_id(self, account_id):
-        with self.postgres_client.cursor() as cursor:
-            cursor.execute(
-                "select cloud_account_id,tenant,id from agent where type = 'k8s' and cloud_account_id = %s",
-                (account_id,),
-            )
-            resp = cursor.fetchone()
+        with self.postgres_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "select cloud_account_id,tenant,id from agent where type = 'k8s' and cloud_account_id = %s",
+                    (account_id,),
+                )
+                resp = cursor.fetchone()
         if resp:
             return {"id": resp[0], "tenant": resp[1], "agent_id": resp[2]}
         raise UnauthorizedError("Invalid account id")
@@ -144,8 +147,9 @@ class AuthTokenMiddleware(BaseController):
         try:
             # Decode the base64-encoded credentials
             decoded_credentials = base64.b64decode(api_secret).decode("utf-8")
-            # Split the decoded credentials into key and secret
-            key, api_secret = decoded_credentials.split(":")
+            # Split on the first colon only — the secret itself may contain colons
+            # (e.g. base64url tokens), and splitting on every colon raises ValueError.
+            key, api_secret = decoded_credentials.split(":", 1)
 
             if key is None or api_secret is None:
                 raise BadRequestError("Invalid cred format provided")
@@ -183,7 +187,7 @@ class ErrorCatcher(BaseController):
         try:
             func_return = self.func(*args, **kwargs)
         except HTTPException as exc:
-            logging.warning(exc)
+            print(exc)
             raise exc
         except Exception as e:
             logging.exception(e)

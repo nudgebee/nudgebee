@@ -61,7 +61,7 @@ const TagsCell = ({ tags }: { tags: any }) => {
               <Box
                 component='span'
                 sx={{
-                  maxWidth: '140px',
+                  maxWidth: ds.space.mul(0, 70),
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',

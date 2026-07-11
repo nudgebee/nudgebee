@@ -1,5 +1,5 @@
 /**
- * Toggle — DS V2 retokenisation of `components1/workflow/NewToggleButtons`.
+ * Toggle
  * Spec: design-system/primitives/action/toggle.html
  *
  * Same visual structure as the legacy component (button-row inside a track,
@@ -8,8 +8,6 @@
  * the icon-filter recolour hack has been kept for src-based SafeIcon icons
  * so callers don't have to change their option shape.
  *
- * Migration: `import ToggleButtons from '@components/workflow/NewToggleButtons'`
- *         →  `import { Toggle } from '@ui/Toggle'`
  *
  * API delta vs. legacy (drop-in, no rename required):6
  *   - All legacy props (`options`, `activeValue`, `width`, `size`, `noShadow`,

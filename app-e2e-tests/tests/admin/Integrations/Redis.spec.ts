@@ -41,6 +41,9 @@ test("Add Redis Account Integration", async ({ page }) => {
     successToast: locators.redisSuccessToast,
     testName: "Add Redis Account Integration",
     operationNames: ["AddIntegrations"],
-    ignoreErrorMessages: ["already has a 'redis' integration"],
+    ignoreErrorMessages: [
+      "already has a 'redis' integration",
+      `integration config name '${process.env.REDIS_INTEGRATION_CONFIG_NAME}' already exists for this integration type`,
+    ],
   });
 });

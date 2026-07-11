@@ -84,6 +84,13 @@ def select_data(
             return rows
     except Exception as e:
         logger.exception(f"Error selecting data from {table_name} table: {e}")
+        # A failed statement aborts the transaction; roll it back so this
+        # connection isn't returned to the pool in a poisoned state.
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         raise
     finally:
         if conn:
@@ -122,6 +129,14 @@ def run_query(
         return results
     except Exception as e:
         logger.exception(f"Error executing query: {query}, Error: {e}")
+        # Roll back the aborted transaction before the connection is returned to
+        # the pool, otherwise the next consumer of this connection fails every
+        # query with InFailedSqlTransaction. Mirrors insert_data's handling.
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         raise e
     finally:
         if conn:

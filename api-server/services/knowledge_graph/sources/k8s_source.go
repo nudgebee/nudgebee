@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"nudgebee/services/account"
 	annotationkeys "nudgebee/services/internal/annotations"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/knowledge_graph/core"
@@ -361,15 +362,29 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 	// Both are cluster-scoped CRDs. Cross-account edges (NodePool→ManagedCluster,
 	// NodeClaim→ComputeInstance) are wired by phase-3 rules — see
 	// karpenter_nodepool_to_eks_cluster + karpenter_nodeclaim_to_aws_ec2_instance.
-	karpenterNodePools, err := s.fetchKarpenterNodePoolsFromRelay(ctx, req)
-	if err != nil {
-		s.logger.Warn("failed to fetch Karpenter NodePools from relay, continuing without them", "error", err)
-		karpenterNodePools = []K8sCRDFromRelay{}
-	}
-	karpenterNodeClaims, err := s.fetchKarpenterNodeClaimsFromRelay(ctx, req)
-	if err != nil {
-		s.logger.Warn("failed to fetch Karpenter NodeClaims from relay, continuing without them", "error", err)
-		karpenterNodeClaims = []K8sCRDFromRelay{}
+	//
+	// Only probe the relay when the cluster's agent heartbeat reports Karpenter
+	// as its autoscaler. On the (common) clusters that don't run Karpenter —
+	// GKE/AKS, cluster-autoscaler, no autoscaler — these CRDs are never served,
+	// so an unconditional fetch fires four guaranteed-404 get_resource calls per
+	// build (nodepools/nodeclaims × v1/v1beta1) that the in-cluster agent logs as
+	// ERROR. The heartbeat already tells us whether Karpenter exists; don't ask
+	// the cluster a question the backend has already answered.
+	karpenterNodePools := []K8sCRDFromRelay{}
+	karpenterNodeClaims := []K8sCRDFromRelay{}
+	if s.clusterHasKarpenter(req) {
+		nodePools, err := s.fetchKarpenterNodePoolsFromRelay(ctx, req)
+		if err != nil {
+			s.logger.Warn("failed to fetch Karpenter NodePools from relay, continuing without them", "error", err)
+		} else {
+			karpenterNodePools = nodePools
+		}
+		nodeClaims, err := s.fetchKarpenterNodeClaimsFromRelay(ctx, req)
+		if err != nil {
+			s.logger.Warn("failed to fetch Karpenter NodeClaims from relay, continuing without them", "error", err)
+		} else {
+			karpenterNodeClaims = nodeClaims
+		}
 	}
 
 	// Resolve the cluster name from any K8s workload we already loaded —
@@ -2002,6 +2017,61 @@ const (
 	karpenterAPIVersionV1      = "v1"
 	karpenterAPIVersionV1Beta1 = "v1beta1"
 )
+
+// clusterHasKarpenter reports whether the Karpenter CRD fetch should run for
+// this cluster, using the autoscaler type the agent heartbeat reports
+// (telemetry.DetectAutoScaler → AgentDetails.Features.AutoscalerType). Probing
+// karpenter.sh on a non-Karpenter cluster yields guaranteed 404s the in-cluster
+// agent logs as ERROR, so we want to skip it — but only when we're sure.
+//
+// Skip ONLY on positive evidence of a different autoscaler (e.g. "gke",
+// "cluster-autoscaler"). Probe (fail-open) in every uncertain case:
+//   - agent details unreadable (no agent row, telemetry gap, DB error)
+//   - autoScalerType absent/empty — older agents omit it, and DetectAutoScaler
+//     reports "" when it can't find a Karpenter/CAS deployment (incl. RBAC gaps)
+//
+// Rationale: silently dropping a real cluster's NodePools/NodeClaims is worse
+// than leaving some 404 noise. The common noise source — GKE/AKS clusters —
+// reports a concrete non-Karpenter type, so it's still skipped.
+func (s *K8sSource) clusterHasKarpenter(req *core.SourceBuildRequest) bool {
+	// Fail-fast tenant guard: never look up agent details without a tenant
+	// scope, consistent with the rest of the build flow's tenant_id-scoped
+	// queries.
+	if req.TenantID == "" || req.CloudAccountID == "" {
+		return false
+	}
+	details, err := account.GetAgentConnectionDetails(req.CloudAccountID)
+	if err != nil {
+		s.logger.Debug("Karpenter gate: agent details unavailable, probing anyway",
+			"cloud_account_id", req.CloudAccountID, "error", err)
+		return true // fail-open
+	}
+	fetch, reason := shouldFetchKarpenterCRDs(details.Features.AutoscalerType, details.Features.AutoscalerEnabled)
+	if !fetch {
+		s.logger.Info("skipping Karpenter CRD fetch",
+			"cloud_account_id", req.CloudAccountID, "reason", reason)
+	}
+	return fetch
+}
+
+// shouldFetchKarpenterCRDs is the pure decision behind clusterHasKarpenter,
+// split out so the policy can be unit-tested without a DB/agent lookup. It
+// skips ONLY on positive evidence of a non-Karpenter autoscaler; an unknown
+// (nil/empty) type probes. reason is for logging only.
+func shouldFetchKarpenterCRDs(autoscalerType *string, autoscalerEnabled *bool) (fetch bool, reason string) {
+	if autoscalerType == nil || strings.TrimSpace(*autoscalerType) == "" {
+		return true, "autoscaler type unknown"
+	}
+	if !strings.EqualFold(*autoscalerType, "karpenter") {
+		return false, "autoscaler is not Karpenter (" + *autoscalerType + ")"
+	}
+	// AutoscalerEnabled is reported alongside the type; treat a nil flag as
+	// enabled (older agents may omit it) and only skip on an explicit false.
+	if autoscalerEnabled != nil && !*autoscalerEnabled {
+		return false, "Karpenter autoscaler reported disabled"
+	}
+	return true, "karpenter"
+}
 
 // fetchKarpenterNodePoolsFromRelay fetches Karpenter NodePool CRs via the
 // relay's generic get_resource action. NodePool is cluster-scoped (not

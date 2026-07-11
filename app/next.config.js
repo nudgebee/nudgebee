@@ -128,6 +128,11 @@ const nextConfig = {
                   params: {
                     overrides: {
                       removeViewBox: false,
+                      // Keep original (already-unique) ids instead of minifying to a/b/c.
+                      // Minified ids collide across inline SVG components rendered on the
+                      // same page (e.g. Azure service icons that reference gradients via
+                      // url(#id)), causing the browser to resolve the wrong gradient.
+                      cleanupIds: { minify: false },
                     },
                   },
                 },

@@ -36,6 +36,7 @@ PROHIBITED:
 **Fix mode — the user has asked for a code change.**
 
 - If a real defect exists, set `requires_fix=true` and populate `implementation_instructions` so CodeFixerAgent can apply the change.
+- ALREADY-PRESENT CHECK (do this before proposing any change): verify the intended change is not **already present in the repository in any equivalent form** — existing code, a configuration that already covers it, or a prior change already merged (search commits/history and the relevant files, don't assume). If an equivalent already exists, the correct outcome is a NO-OP: set `requires_fix=false` and `description` MUST explain what already satisfies the request and where you found it (file / symbol / prior change). Do NOT author a duplicate or near-duplicate of something that already exists.
 - If after investigation no code change is warranted, set `requires_fix=false` and explain in `description`. Do NOT invent a fix.
 {{end}}
 </mode>

@@ -1,5 +1,36 @@
 import { gqlStringify, queryGraphQL } from '@lib/HttpService';
 import { getUserSession } from '@lib/auth';
+import type {
+  AgentDefinition,
+  AiFeedbackCreateRequest,
+  AiFunctionData,
+  ConversationComparisonRequest,
+  ConversationHistoryForInvestigationRequest,
+  ConversationHistoryRequest,
+  ConversationSuggestionsRequest,
+  ConversationV3Agent,
+  ConversationV3Message,
+  ConversationV3Shell,
+  ConversationV3ToolCall,
+  CreateAgentExtensionRequest,
+  CreateRagDataRequest,
+  DeleteConversationRequest,
+  DeleteSavedConversationRequest,
+  FollowupRequest,
+  FeedbackForSessionRequest,
+  GenerateQueryRequest,
+  GetWorkspaceFileRequest,
+  InvestigateRequest,
+  ListAiFeedbackRequest,
+  ListAgentsRequest,
+  ListFunctionsRequest,
+  ListToolsRequest,
+  SaveConversationRequest,
+  StopInvestigateRequest,
+  ToolDefinition,
+  UpdateAgentExtensionRequest,
+  UpdateFunctionData,
+} from '../../types/ask-nudgebee';
 
 const EVENT_DETAILS_RETRIEVAL_TITLE = 'Event details retrieval by ID';
 
@@ -46,6 +77,7 @@ const GET_LLM_CONVERSATION_V3_QUERY = `
         parent_agent_id
         message_config
         ack_message
+        metadata
         attachments {
           id
           mime_type
@@ -90,10 +122,10 @@ const GET_LLM_CONVERSATION_V3_QUERY = `
 `;
 
 type ConversationV3RawPayload = {
-  conversation: any | null;
-  messages: any[];
-  agents: any[];
-  tool_calls: any[];
+  conversation: ConversationV3Shell | null;
+  messages: ConversationV3Message[];
+  agents: ConversationV3Agent[];
+  tool_calls: ConversationV3ToolCall[];
   cursor: string | null;
 };
 
@@ -113,17 +145,18 @@ async function _callConversationV3(opts: {
   return { rawResponse, payload };
 }
 
-const _sortByCreated = (a: any, b: any) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0);
+const _sortByCreated = (a: { created_at: string }, b: { created_at: string }) =>
+  a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0;
 
 // Build the legacy `llm_conversations[0]` shape from merged state Maps. Used by
 // both the single-shot wrapper (Maps populated from a single response) and the
 // stateful fetcher (Maps populated incrementally across poll deltas).
 function _assembleConversationLegacyEnvelope(
   rawResponse: any,
-  shell: any | null,
-  messages: Map<string, any>,
-  agents: Map<string, any>,
-  toolCalls: Map<string, any>
+  shell: ConversationV3Shell | null,
+  messages: Map<string, ConversationV3Message>,
+  agents: Map<string, ConversationV3Agent>,
+  toolCalls: Map<string, ConversationV3ToolCall>
 ) {
   if (!rawResponse?.data?.data) return rawResponse;
   if (!shell) {
@@ -131,14 +164,14 @@ function _assembleConversationLegacyEnvelope(
     return rawResponse;
   }
 
-  const agentsByMessage = new Map<string, any[]>();
+  const agentsByMessage = new Map<string, ConversationV3Agent[]>();
   agents.forEach((a) => {
     const list = agentsByMessage.get(a.message_id) ?? [];
     list.push(a);
     agentsByMessage.set(a.message_id, list);
   });
 
-  const toolsByAgent = new Map<string, any[]>();
+  const toolsByAgent = new Map<string, ConversationV3ToolCall[]>();
   toolCalls.forEach((t) => {
     const list = toolsByAgent.get(t.agent_id) ?? [];
     list.push(t);
@@ -194,10 +227,10 @@ export type ConversationFetcher = {
 export function createConversationFetcher(): ConversationFetcher {
   let bound: { accountId?: string; conversationId?: string; sessionId?: string } = {};
   let cursor: string | null = null;
-  let shell: any | null = null;
-  const messages = new Map<string, any>();
-  const agents = new Map<string, any>();
-  const toolCalls = new Map<string, any>();
+  let shell: ConversationV3Shell | null = null;
+  const messages = new Map<string, ConversationV3Message>();
+  const agents = new Map<string, ConversationV3Agent>();
+  const toolCalls = new Map<string, ConversationV3ToolCall>();
 
   const reset = () => {
     bound = {};
@@ -233,7 +266,7 @@ export function createConversationFetcher(): ConversationFetcher {
 }
 
 const api = {
-  async askNudgebeeAiGeneratePrometheusQuery(data: any) {
+  async askNudgebeeAiGeneratePrometheusQuery(data: GenerateQueryRequest) {
     if (data.account_id === 'demo') return null;
     const ASK_AI_GENERATE_PROMETHEUS_QUERY = `
         mutation AskNudgebeeAiGeneratePrometheusQuery {
@@ -260,7 +293,7 @@ const api = {
     );
     return response;
   },
-  async askAiGenerateLokiQuery(data: any) {
+  async askAiGenerateLokiQuery(data: GenerateQueryRequest) {
     if (data.account_id === 'demo') return null;
     const ASK_AI_GENERATE_LOKI_QUERY = `
         mutation AskAiGenerateLokiQuery {
@@ -283,7 +316,7 @@ const api = {
     const response = await queryGraphQL(ASK_AI_GENERATE_LOKI_QUERY.replace('__REQUEST__', gqlStringify(query)), 'AskAiGenerateLokiQuery', {});
     return response;
   },
-  async createAiFeedback(data: any) {
+  async createAiFeedback(data: AiFeedbackCreateRequest) {
     const CREATE_AI_FEEDBACK = `
         mutation CreateAiFeedback($data: AiFeedbackCreateRequest!) {
           ai_feedback_create(request: $data) {
@@ -299,11 +332,11 @@ const api = {
       });
       return response;
     } catch (error) {
-      console.log('failed to create ai feedback-', error);
-      return error;
+      console.error('failed to create ai feedback-', error);
+      return null;
     }
   },
-  async listAiFeedback(queryRequest: any) {
+  async listAiFeedback(queryRequest: ListAiFeedbackRequest = {}) {
     if (queryRequest?.cloud_account_id === 'demo') return null;
     const LIST_AI_FEEDBACK = `
         query ListAiFeedback {
@@ -342,17 +375,23 @@ const api = {
       if (queryRequest.cloud_account_id) {
         query.cloud_account_id = { _eq: queryRequest.cloud_account_id };
       }
+      if (queryRequest.start_time || queryRequest.end_time) {
+        const dateConditions = [];
+        if (queryRequest.start_time) dateConditions.push({ created_at: { _gte: new Date(queryRequest.start_time).toISOString() } });
+        if (queryRequest.end_time) dateConditions.push({ created_at: { _lte: new Date(queryRequest.end_time).toISOString() } });
+        query._and = dateConditions;
+      }
 
       const gqlQuery = LIST_AI_FEEDBACK.replace('__WHERE__', gqlStringify(query));
 
       const response = await queryGraphQL(gqlQuery, 'ListAiFeedback', {});
       return response;
     } catch (error) {
-      console.log('failed to create ai feedback-', error);
-      return error;
+      console.error('failed to list ai feedback-', error);
+      return null;
     }
   },
-  async aiGenerateInvestigate(data: any) {
+  async aiGenerateInvestigate(data: InvestigateRequest) {
     if (data.account_id === 'demo') {
       return {
         data: {
@@ -405,7 +444,7 @@ const api = {
     );
     return response;
   },
-  async aiFollowupResponse(data: any) {
+  async aiFollowupResponse(data: FollowupRequest) {
     if (data.account_id === 'demo') return null;
     const AI_FOLLOWUP_RESPONSE = `
         mutation AiFollowupResponse {
@@ -427,7 +466,7 @@ const api = {
     const response = await queryGraphQL(AI_FOLLOWUP_RESPONSE.replace('__REQUEST__', gqlStringify(query)), 'AiFollowupResponse', {});
     return response;
   },
-  async llmConversationHistory(data: any) {
+  async llmConversationHistory(data: ConversationHistoryRequest) {
     if (data.account_id === 'demo') return null;
     // total_count maps to COUNT(*) OVER() in the derived view; for unbounded
     // listings (e.g. the sidebar) it forces a full per-row sweep before LIMIT,
@@ -559,9 +598,9 @@ const api = {
   }) {
     if (accountId === 'demo') return null;
     const { rawResponse, payload } = await _callConversationV3({ accountId, conversationId, sessionId, since, signal });
-    const messages = new Map<string, any>();
-    const agents = new Map<string, any>();
-    const toolCalls = new Map<string, any>();
+    const messages = new Map<string, ConversationV3Message>();
+    const agents = new Map<string, ConversationV3Agent>();
+    const toolCalls = new Map<string, ConversationV3ToolCall>();
     if (payload) {
       payload.messages.forEach((m) => messages.set(m.id, m));
       payload.agents.forEach((a) => agents.set(a.id, a));
@@ -640,7 +679,7 @@ const api = {
 
     return response;
   },
-  async askNudgebeeAiGenerateESDsl(data: any) {
+  async askNudgebeeAiGenerateESDsl(data: GenerateQueryRequest) {
     if (data.account_id === 'demo') return null;
     const ASK_AI_GENERATE_ES_DSL = `
         mutation AskNudgebeeAiGenerateESDsl {
@@ -663,7 +702,7 @@ const api = {
     const response = await queryGraphQL(ASK_AI_GENERATE_ES_DSL.replace('__REQUEST__', gqlStringify(query)), 'AskNudgebeeAiGenerateESDsl', {});
     return response;
   },
-  async getFeedbackForSessionId(data: any) {
+  async getFeedbackForSessionId(data: FeedbackForSessionRequest) {
     if (data.account_id === 'demo') return null;
     const GET_FEEBACK_FOR_SESSION_ID = `
         query LLMFeedback {
@@ -688,7 +727,7 @@ const api = {
     const response = await queryGraphQL(GET_FEEBACK_FOR_SESSION_ID.replace('__WHERE__', gqlStringify(query)), 'LLMFeedback', {});
     return response;
   },
-  async saveConversation(data: any) {
+  async saveConversation(data: SaveConversationRequest) {
     const SAVE_CONVERSATION = `
     mutation SaveConversation($data: SaveLLMConversationRequest!) {
       ai_create_saved_conversation(request: $data) {
@@ -704,11 +743,11 @@ const api = {
       });
       return response;
     } catch (error) {
-      console.log('failed to save conversation-', error);
-      return error;
+      console.error('failed to save conversation-', error);
+      return null;
     }
   },
-  async listAgents(data: any) {
+  async listAgents(data: ListAgentsRequest) {
     if (data.accountId === 'demo') return null;
     const LIST_AGENTS = `
     query ListAgents {
@@ -723,11 +762,11 @@ const api = {
       const response = await queryGraphQL(LIST_AGENTS.replaceAll('__WHERE__', gqlStringify(query)), 'ListAgents', {});
       return response;
     } catch (error) {
-      console.log('failed to fetch agent list-', error);
-      return error;
+      console.error('failed to fetch agent list-', error);
+      return null;
     }
   },
-  async listTools(data: any) {
+  async listTools(data: ListToolsRequest) {
     if (data.accountId == 'demo') {
       return { data: { data: { ai_list_tools: { data: [] } } } };
     }
@@ -744,11 +783,11 @@ const api = {
       const response = await queryGraphQL(LIST_TOOLS.replaceAll('__WHERE__', gqlStringify(query)), 'ListTools', {});
       return response;
     } catch (error) {
-      console.log('failed to fetch tool list-', error);
-      return error;
+      console.error('failed to fetch tool list-', error);
+      return null;
     }
   },
-  async createAgent(data: any) {
+  async createAgent(data: AgentDefinition) {
     if (data?.account_id === 'demo') {
       return {
         data: {
@@ -763,17 +802,17 @@ const api = {
         data
         errors
       }
-    }    
+    }
     `;
     try {
       const response = await queryGraphQL(CREATE_AGENT.replaceAll('__WHERE__', gqlStringify(data)), 'AiCreateAgent', {});
       return response;
     } catch (error) {
-      console.log('failed to fetch create agent-', error);
-      return error;
+      console.error('failed to create agent-', error);
+      return null;
     }
   },
-  async createTool(data: any) {
+  async createTool(data: ToolDefinition) {
     if (data?.account_id === 'demo') {
       return {
         data: {
@@ -788,17 +827,17 @@ const api = {
         data
         errors
       }
-    }    
+    }
     `;
     try {
       const response = await queryGraphQL(CREATE_TOOL.replaceAll('__WHERE__', gqlStringify(data)), 'AiCreateTool', {});
       return response;
     } catch (error) {
-      console.log('failed to fetch create tool-', error);
-      return error;
+      console.error('failed to create tool-', error);
+      return null;
     }
   },
-  async deleteConversation(data: any) {
+  async deleteConversation(data: DeleteConversationRequest) {
     const DELETE_CONVERSATION = `
     mutation DeleteConversation($data: DeleteLlmConversationByIdRequest!) {
       ai_delete_llm_conversation_by_id(request: $data) {
@@ -814,11 +853,11 @@ const api = {
       });
       return response;
     } catch (error) {
-      console.log('failed to delete conversation-', error);
-      return error;
+      console.error('failed to delete conversation-', error);
+      return null;
     }
   },
-  async deleteSavedConversation(data: any) {
+  async deleteSavedConversation(data: DeleteSavedConversationRequest) {
     const DELETE_SAVED_CONVERSATION = `
     mutation DeleteSavedConversation($data: DeleteLLMConversationRequest!) {
       ai_delete_saved_conversation(request: $data) {
@@ -834,11 +873,11 @@ const api = {
       });
       return response;
     } catch (error) {
-      console.log('failed to delete saved conversation-', error);
-      return error;
+      console.error('failed to delete saved conversation-', error);
+      return null;
     }
   },
-  async updateAgent(data: any) {
+  async updateAgent(data: AgentDefinition) {
     if (data?.account_id === 'demo') {
       return {
         data: {
@@ -859,11 +898,11 @@ const api = {
       const response = await queryGraphQL(UPDATE_AGENT.replaceAll('__WHERE__', gqlStringify(data)), 'AiUpdateAgent', {});
       return response;
     } catch (error) {
-      console.log('failed to update agent-', error);
-      return error;
+      console.error('failed to update agent-', error);
+      return null;
     }
   },
-  async updateTool(data: any) {
+  async updateTool(data: ToolDefinition) {
     if (data?.account_id === 'demo') {
       return {
         data: {
@@ -878,17 +917,17 @@ const api = {
         data
         errors
       }
-    }    
+    }
     `;
     try {
       const response = await queryGraphQL(UPDATE_TOOL.replaceAll('__WHERE__', gqlStringify(data)), 'AiUpdateTool', {});
       return response;
     } catch (error) {
-      console.log('failed to update tool-', error);
-      return error;
+      console.error('failed to update tool-', error);
+      return null;
     }
   },
-  async getConversationSuggestions(data: any) {
+  async getConversationSuggestions(data: ConversationSuggestionsRequest) {
     if (data?.account_id === 'demo') return null;
     const GET_CONVERSATION_SUGGESTIONS = `
     mutation GetConversationSuggestions($data: AIGetConversationSuggestionRequest!) {
@@ -903,11 +942,11 @@ const api = {
       });
       return response;
     } catch (error) {
-      console.log('failed to get conversation suggestions-', error);
-      return error;
+      console.error('failed to get conversation suggestions-', error);
+      return null;
     }
   },
-  async createRagData(data: any) {
+  async createRagData(data: CreateRagDataRequest) {
     if (data?.account_id === 'demo') {
       return {
         data: {
@@ -928,14 +967,13 @@ const api = {
       const response = await queryGraphQL(CREATE_RAG_DATA, 'AiCreateRagData', {
         data: data,
       });
-      console.log(response);
       return response;
     } catch (error) {
-      console.log('failed to create rag data-', error);
-      return error;
+      console.error('failed to create rag data-', error);
+      return null;
     }
   },
-  async listFunctions(data: any) {
+  async listFunctions(data: ListFunctionsRequest) {
     if (data.accountId === 'demo') return { res: { llm_functions: [] }, errors: [] };
     const GET_FUNCTIONS = `
       query GetFunctions($where: LlmFunctionsWhereRequest) {
@@ -960,7 +998,12 @@ const api = {
     `;
 
     try {
-      const where: any = { account_id: { _eq: data.accountId } };
+      // Empty accountId == tenant-wide read (b-Cortex sidebar surface).
+      // Omit the account_id filter and let api-server's query service apply
+      // its standard row-level account ACL automatically (tenant/super
+      // admins see all in tenant; account-admins see only their assigned
+      // accounts; everyone else 403s).
+      const where: any = data.accountId ? { account_id: { _eq: data.accountId } } : {};
       const response = await queryGraphQL(GET_FUNCTIONS, 'GetFunctions', { where });
       const rows = response?.data?.data?.llm_functions?.rows || [];
 
@@ -969,11 +1012,11 @@ const api = {
         errors: response?.data?.errors,
       };
     } catch (error) {
-      console.log('failed to get functions-', error);
-      return error;
+      console.error('failed to get functions-', error);
+      return null;
     }
   },
-  async createAiFunction(data: any, accountId: string) {
+  async createAiFunction(data: AiFunctionData, accountId: string) {
     if (accountId === 'demo') {
       return {
         success: false,
@@ -983,7 +1026,7 @@ const api = {
     const CREATE_AI_FUNCTION = `
       mutation CreateAiFunction($account_id: String!) {
         ai_create_function(
-          account_id: $account_id, 
+          account_id: $account_id,
           function: __WHERE__
         ) {
           data{
@@ -1020,11 +1063,11 @@ const api = {
       }
       return { success: false, error: 'Unknown error occurred' };
     } catch (error) {
-      console.log('failed to create ai function-', error);
+      console.error('failed to create ai function-', error);
       return { success: false, error: 'Network error occurred' };
     }
   },
-  async aiStopInvestigate(data: any) {
+  async aiStopInvestigate(data: StopInvestigateRequest) {
     if (data.accountId === 'demo') return null;
     const AI_STOP_INVESTIGATE = `
         mutation AiStopInvestigation($accountId: String!, $conversationId: String!) {
@@ -1101,11 +1144,11 @@ const api = {
       const response = await queryGraphQL(DELETE_AGENT, 'AiDeleteAgent', { accountId: accountId, name: agentName });
       return response;
     } catch (error) {
-      console.log('failed to delete agent-', error);
-      return error;
+      console.error('failed to delete agent-', error);
+      return null;
     }
   },
-  async createAgentExtension(data: any) {
+  async createAgentExtension(data: CreateAgentExtensionRequest) {
     if (data?.account_id === 'demo') {
       return {
         data: {
@@ -1126,11 +1169,11 @@ const api = {
       const response = await queryGraphQL(CREATE_AGENT_EXTENSION.replace('__REQUEST__', gqlStringify(data)), 'AiCreateAgentExtension', {});
       return response;
     } catch (error) {
-      console.log('failed to create agent extension-', error);
-      return error;
+      console.error('failed to create agent extension-', error);
+      return null;
     }
   },
-  async updateAgentExtension(data: any) {
+  async updateAgentExtension(data: UpdateAgentExtensionRequest) {
     if (data?.account_id === 'demo') {
       return {
         data: {
@@ -1151,8 +1194,8 @@ const api = {
       const response = await queryGraphQL(UPDATE_AGENT_EXTENSION.replace('__REQUEST__', gqlStringify(data)), 'AiUpdateAgentExtension', {});
       return response;
     } catch (error) {
-      console.log('failed to create agent extension-', error);
-      return error;
+      console.error('failed to update agent extension-', error);
+      return null;
     }
   },
   async listAgentExtensions(accountId: string) {
@@ -1191,7 +1234,7 @@ const api = {
         errors: response.data?.errors || [],
       };
     } catch (error) {
-      console.log('failed to list agent extensions-', error);
+      console.error('failed to list agent extensions-', error);
       return { data: [], errors: [error] };
     }
   },
@@ -1218,11 +1261,11 @@ const api = {
         errors: response.data?.errors || [],
       };
     } catch (error) {
-      console.log('failed to list agent extensions-', error);
+      console.error('failed to delete llm function-', error);
       return { data: [], errors: [error] };
     }
   },
-  async updateFunction({ accountId, functionId, data }: { accountId?: string; functionId: string; data: any }) {
+  async updateFunction({ accountId, functionId, data }: { accountId?: string; functionId: string; data: UpdateFunctionData }) {
     if (accountId === 'demo') {
       return {
         success: false,
@@ -1232,7 +1275,7 @@ const api = {
     const UPDATE_AI_FUNCTION = `
       mutation AiEditFunction($account_id: String!, $function_id: String!) {
         ai_update_function(
-          account_id: $account_id, 
+          account_id: $account_id,
           function_id: $function_id,
           function: __WHERE__
         ) {
@@ -1240,7 +1283,6 @@ const api = {
         }
       }
     `;
-    console.log('updating function with data-', data, 'accountId-', accountId, 'functionId-', functionId);
     try {
       const response = await queryGraphQL(UPDATE_AI_FUNCTION.replaceAll('__WHERE__', gqlStringify(data)), 'AiEditFunction', {
         account_id: accountId,
@@ -1263,11 +1305,11 @@ const api = {
       }
       return { success: false, error: 'Unknown error occurred' };
     } catch (error) {
-      console.log('failed to update ai function-', error);
+      console.error('failed to update ai function-', error);
       return { success: false, error: 'Network error occurred' };
     }
   },
-  async llmConversationHistoryForInvestigation(data: any) {
+  async llmConversationHistoryForInvestigation(data: ConversationHistoryForInvestigationRequest) {
     if (data.account_id === 'demo') return null;
     const GET_LLM_CONVERSATION_HISTORY = `
           query LlMConversationHistory($where: LlmConversationListWhereRequest, $limit: Int, $offset: Int) {
@@ -1381,7 +1423,7 @@ const api = {
     const rows = response?.data?.data?.ai_list_conversations?.rows || [];
     return rows.length > 0 ? rows[0].total_count : 0;
   },
-  llmConversationComparsion: async function (data: any) {
+  llmConversationComparsion: async function (data: ConversationComparisonRequest) {
     const LLM_CONVERSATION_GROUPINGS = `
     query LLMConversationGroupings($where: LlmConversationGroupingsWhereRequest) {
       ai_aggregate_conversations(where: $where) {
@@ -1482,7 +1524,7 @@ const api = {
         errors: response.data?.data?.ai_list_memory?.errors || response.data?.errors || [],
       };
     } catch (error) {
-      console.log('failed to list memory-', error);
+      console.error('failed to list memory-', error);
       return { data: [], errors: [error] };
     }
   },
@@ -1527,7 +1569,7 @@ const api = {
         errors: response.data?.data?.ai_list_references?.errors || response.data?.errors || [],
       };
     } catch (error) {
-      console.log('failed to list references-', error);
+      console.error('failed to list references-', error);
       return { data: [], errors: [error] };
     }
   },
@@ -1559,7 +1601,7 @@ const api = {
         errors: response.data?.data?.ai_delete_memory?.errors || response.data?.errors || [],
       };
     } catch (error) {
-      console.log('failed to delete memory-', error);
+      console.error('failed to delete memory-', error);
       return { data: null, errors: [error] };
     }
   },
@@ -1584,7 +1626,7 @@ const api = {
         errors: response.data?.data?.ai_list_models?.errors || response.data?.errors || [],
       };
     } catch (error) {
-      console.log('failed to list models-', error);
+      console.error('failed to list models-', error);
       return { data: {}, errors: [error] };
     }
   },
@@ -1617,15 +1659,15 @@ const api = {
         errors: response.data?.data?.ai_get_model_config?.errors || response.data?.errors || [],
       };
     } catch (error) {
-      console.log('failed to get model config-', error);
+      console.error('failed to get model config-', error);
       return { data: {}, errors: [error] };
     }
   },
-  async getWorkspaceFile(data: any) {
+  async getWorkspaceFile(data: GetWorkspaceFileRequest) {
     if (data.account_id === 'demo') return null;
     const GET_WORKSPACE_FILE = `
     query GetWorkspaceFile($request: AiGetWorspaceFile!) {
-      ai_get_workspace_file(request: $request) 
+      ai_get_workspace_file(request: $request)
     }
     `;
     try {
@@ -1645,7 +1687,7 @@ const api = {
         errors: response.data?.errors || [],
       };
     } catch (error) {
-      console.log('failed to get workspace file-', error);
+      console.error('failed to get workspace file-', error);
       return { data: null, errors: [error] };
     }
   },
@@ -1670,7 +1712,7 @@ const api = {
         errors: response.data?.errors || [],
       };
     } catch (error) {
-      console.log('failed to fetch RCA format-', error);
+      console.error('failed to fetch RCA format-', error);
       return { data: null, errors: [error] };
     }
   },
@@ -1698,7 +1740,7 @@ const api = {
         errors: response.data?.data?.ai_upsert_rcaformat?.errors || response.data?.errors || [],
       };
     } catch (error) {
-      console.log('failed to update RCA format-', error);
+      console.error('failed to update RCA format-', error);
       return { data: null, errors: [error] };
     }
   },

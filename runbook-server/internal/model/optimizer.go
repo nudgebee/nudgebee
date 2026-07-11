@@ -105,6 +105,10 @@ type GitOpsConfig struct {
 	Enabled        bool    `json:"enabled"`
 	RepositoryName *string `json:"repository_name,omitempty"`
 	Provider       string  `json:"provider"` // Default "github"
+	// ResizePolicy overrides the in-place resizePolicy the code agent writes
+	// into the PR: "" (default cpu/mem NotRequired), "restart-memory", or
+	// "disabled". Only applied when the cluster is >= 1.35.
+	ResizePolicy string `json:"resize_policy,omitempty"`
 }
 
 // TicketConfig configuration for ticket creation.

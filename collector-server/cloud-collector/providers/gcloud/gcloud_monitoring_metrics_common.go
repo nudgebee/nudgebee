@@ -574,15 +574,15 @@ func getMetricTypePrefix(serviceName, resourceType string) string {
 	serviceName = normalizeServiceName(serviceName)
 
 	switch serviceName {
-	case "compute engine":
+	case "compute engine", "compute", "compute-engine":
 		return "compute.googleapis.com/instance"
-	case "cloud sql":
+	case "cloud sql", "sql", "cloud-sql":
 		return "cloudsql.googleapis.com/database"
-	case "cloud storage":
+	case "cloud storage", "storage", "cloud-storage":
 		return "storage.googleapis.com"
 	case "bigquery":
 		return "bigquery.googleapis.com"
-	case "kubernetes engine":
+	case "kubernetes engine", "gke":
 		return "container.googleapis.com"
 	case "cloud functions":
 		return "cloudfunctions.googleapis.com"
@@ -590,7 +590,7 @@ func getMetricTypePrefix(serviceName, resourceType string) string {
 		return "run.googleapis.com"
 	case "cloud pub/sub":
 		return "pubsub.googleapis.com"
-	case "cloud monitoring":
+	case "cloud monitoring", "monitoring":
 		return "monitoring.googleapis.com"
 	case "networking":
 		return "networkmanagement.googleapis.com"
@@ -617,15 +617,15 @@ func getResourceLabelKey(serviceName, resourceType string) string {
 	}
 
 	switch serviceName {
-	case "compute engine":
+	case "compute engine", "compute", "compute-engine":
 		return "instance_id"
-	case "cloud sql":
+	case "cloud sql", "sql", "cloud-sql":
 		return "database_id"
-	case "cloud storage":
+	case "cloud storage", "storage", "cloud-storage":
 		return "bucket_name"
 	case "bigquery":
 		return "dataset_id"
-	case "kubernetes engine":
+	case "kubernetes engine", "gke":
 		return "cluster_name"
 	case "cloud functions":
 		return "function_name"
@@ -633,7 +633,7 @@ func getResourceLabelKey(serviceName, resourceType string) string {
 		return "service_name"
 	case "cloud pub/sub":
 		return "topic_id"
-	case "cloud monitoring":
+	case "cloud monitoring", "monitoring":
 		return "metric_id"
 	case "networking":
 		return "network_id"

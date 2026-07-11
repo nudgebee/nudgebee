@@ -3,7 +3,7 @@ import Typography from '@mui/material/Typography';
 import { IconButton, Box, Grid, Avatar, Collapse, ListItem } from '@mui/material';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import Text from '@shared/format/Text';
-import CustomButton from '@shared/NewCustomButton';
+import { Button } from '@ui/Button';
 import SparklesIcon from '@assets/kubernetes/sparkle.svg';
 import { SearchOutlined } from '@mui/icons-material';
 import { WrenchIconOutline, BetaIcon } from '@assets';
@@ -98,17 +98,17 @@ function CollapsableCard({
       id={id}
       sx={{
         background: 'var(--ds-background-100)',
-        borderBottom: collapsedObj[idx] ? '2px solid var(--ds-blue-400)' : '0.5px solid var(--ds-gray-200)',
-        borderTop: collapsedObj[idx] ? '2px solid var(--ds-blue-400)' : 'none',
+        borderBottom: collapsedObj[idx] ? `${ds.space[0]} solid var(--ds-blue-400)` : '0.5px solid var(--ds-gray-200)',
+        borderTop: collapsedObj[idx] ? `${ds.space[0]} solid var(--ds-blue-400)` : 'none',
         transition: 'all ease 0.2s',
         marginBottom: '0.5px',
         opacity: 0,
-        transform: 'translateY(8px)',
+        transform: `translateY(${ds.space[2]})`,
         animation: `fadeInUp 0.5s ease forwards`,
         '@keyframes fadeInUp': {
           '0%': {
             opacity: 0,
-            transform: 'translateY(8px)',
+            transform: `translateY(${ds.space[2]})`,
           },
           '100%': {
             opacity: 1,
@@ -245,27 +245,29 @@ function CollapsableCard({
             {resolveButton && eventResolution ? (
               <Label text={eventResolution.status === 'InProgress' ? 'In Progress' : eventResolution.status} height={ds.space[5]} />
             ) : resolveButton && hasWriteAccess(accountId) ? (
-              <CustomButton
-                variant='tertiary'
-                sx={{ width: 'max-content', whiteSpace: 'nowrap' }}
-                size='xSmall'
-                startIcon={
-                  <Box component='span' sx={{ display: 'inline-flex', width: ds.space[3], height: ds.space[3], flexShrink: 0 }}>
-                    <SafeIcon src={WrenchIconOutline} alt='start-icon' priority={true} />
-                  </Box>
-                }
-                text={'Fix it'}
-                onClick={(e) => {
-                  if (e) {
-                    e.stopPropagation();
+              <Box component='span' sx={{ '& button': { width: 'max-content', whiteSpace: 'nowrap' } }}>
+                <Button
+                  tone='primary'
+                  size='xs'
+                  icon={
+                    <Box component='span' sx={{ display: 'inline-flex', width: ds.space[3], height: ds.space[3], flexShrink: 0 }}>
+                      <SafeIcon src={WrenchIconOutline} alt='start-icon' priority={true} />
+                    </Box>
                   }
-                  if (resolveButtonClick) {
-                    resolveButtonClick(id);
-                  } else if (ResolveComponent) {
-                    setOpenResolveComponent(true);
-                  }
-                }}
-              />
+                  onClick={(e) => {
+                    if (e) {
+                      e.stopPropagation();
+                    }
+                    if (resolveButtonClick) {
+                      resolveButtonClick(id);
+                    } else if (ResolveComponent) {
+                      setOpenResolveComponent(true);
+                    }
+                  }}
+                >
+                  Fix it
+                </Button>
+              </Box>
             ) : null}
             <IconButton
               onClick={(e) => {
@@ -292,7 +294,7 @@ function CollapsableCard({
           {isExpanded && eventResolution && (
             <CustomBorderCard
               borderLeftColor={eventResolution.status === 'Failed' ? 'var(--ds-red-500)' : 'var(--ds-blue-400)'}
-              borderLeftWidth='3px'
+              borderLeftWidth={ds.space[0]}
               padding={`${ds.space.mul(0, 5)} ${ds.space[4]}`}
               sx={{ mb: 'var(--ds-space-3)', bgcolor: 'var(--ds-background-200)' }}
             >
@@ -316,20 +318,22 @@ function CollapsableCard({
                   </Box>
                 </Box>
                 {eventResolution.status === 'Failed' && resolveButton && hasWriteAccess(accountId) && (
-                  <CustomButton
-                    variant='tertiary'
-                    sx={{ width: 'max-content', whiteSpace: 'nowrap', flexShrink: 0 }}
-                    size='xSmall'
-                    startIcon={<SafeIcon src={WrenchIconOutline} alt='retry-icon' priority={true} />}
-                    text={'Retry'}
-                    onClick={() => {
-                      if (resolveButtonClick) {
-                        resolveButtonClick(id);
-                      } else if (ResolveComponent) {
-                        setOpenResolveComponent(true);
-                      }
-                    }}
-                  />
+                  <Box component='span' sx={{ '& button': { width: 'max-content', whiteSpace: 'nowrap', flexShrink: 0 } }}>
+                    <Button
+                      tone='secondary'
+                      size='xs'
+                      icon={<SafeIcon src={WrenchIconOutline} alt='retry-icon' priority={true} />}
+                      onClick={() => {
+                        if (resolveButtonClick) {
+                          resolveButtonClick(id);
+                        } else if (ResolveComponent) {
+                          setOpenResolveComponent(true);
+                        }
+                      }}
+                    >
+                      Retry
+                    </Button>
+                  </Box>
                 )}
               </Box>
             </CustomBorderCard>

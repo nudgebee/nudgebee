@@ -148,7 +148,6 @@ func normalizeCloudProviderName(provider string) string {
 	return ""
 }
 
-// TODO do some kind of caching so that we dont have to always fetch account from db
 func getAgentJobStatus(ctx *security.RequestContext, dbms *common.DatabaseManager, accountId string) (map[string]any, error) {
 	query := `select connection_status from agent where cloud_account_id = $1 and status = 'CONNECTED' and connection_status is not null`
 	connectionStatuses := []string{}

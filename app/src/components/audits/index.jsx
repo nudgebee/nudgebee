@@ -19,6 +19,7 @@ import {
   formatUserRoleName,
   formatSLOAuditMessage,
   formatActionNameForAuditMessage,
+  formatAuditActor,
   snakeToTitleCase,
 } from 'src/utils/common';
 import apiUser from '@api1/user';
@@ -248,7 +249,10 @@ export const AuditsTable = () => {
     } else if (item.event_type == 'RECOMMENDATION_APPLY') {
       return <Text value={`Recommendation Resolution Applied`} showAutoEllipsis />;
     } else if (item.event_type == 'K8SRELAY_TASK_CREATE') {
-      return <Text value={`New K8s Task ${formatActionNameForAuditMessage(data?.body?.action_name)} Created`} showAutoEllipsis />;
+      // event_state shape varies by writer: relay RPC tasks carry body.action_name,
+      // while the workspace shim writes { command } with the tool name in event_target.
+      const taskName = formatActionNameForAuditMessage(data?.body?.action_name || item.event_target || data?.command || '');
+      return <Text value={taskName ? `New K8s Task ${taskName} Created` : 'New K8s Task Created'} showAutoEllipsis />;
     } else if (item.event_type == 'TICKET_CONFIGURATION_CREATE') {
       return <Text value={`New Ticket Configuration With Name ${data.name || data.account_name} Created`} showAutoEllipsis />;
     } else if (item.event_type == 'NOTIFICATION_SLACK_CONFIGURATION_CREATE') {
@@ -441,7 +445,9 @@ export const AuditsTable = () => {
           .then((res) => {
             setLoading(false);
             let data = res.data?.audits?.map((item) => {
-              let userName = usersMap[item.user_id] || item.user_id;
+              // Machine/service-initiated audits (e.g. agent-run K8s tasks) carry no
+              // user_id — fall back to the humanized actor so the column isn't blank.
+              let userName = usersMap[item.user_id] || item.user_id || formatAuditActor(item.event_actor);
               let accountName = item.account_id;
               let targetName = item.event_target;
               for (let account of accountFilter) {

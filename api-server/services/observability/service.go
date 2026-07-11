@@ -72,6 +72,16 @@ type MetricSource interface {
 	GetQuery(ctx *security.RequestContext, fetchMetricsRequest FetchMetricsRequest) (string, error)
 }
 
+// MetricSeriesSource is an OPTIONAL capability a MetricSource may implement to answer
+// "which metric families have series for workload W in namespace N" via a label-selector
+// series lookup. It is intentionally separate from MetricSource so providers that have
+// no series-match equivalent (datadog, cloudwatch, newrelic, …) are not forced to stub
+// it; the orchestrator type-asserts and returns a clear "not supported" error otherwise.
+// Implemented by Prometheus/VictoriaMetrics (and, in a follow-up, Elasticsearch).
+type MetricSeriesSource interface {
+	FetchMetricSeries(ctx *security.RequestContext, fetchMetricSeriesRequest FetchMetricSeriesRequest) (MetricSeriesResult, error)
+}
+
 func escapePromQLString(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
@@ -1187,6 +1197,28 @@ func FetchMetricsList(ctx *security.RequestContext, fetchMetricsListRequest Fetc
 		return output[i].Metric < output[j].Metric
 	})
 	return output, nil
+}
+
+// FetchMetricSeries resolves which metric families have series for (namespace, workload)
+// on the account's metrics provider. It requires the provider to implement the optional
+// MetricSeriesSource capability; providers without a series-match equivalent return a
+// clear "not supported" error rather than a silent empty result.
+func FetchMetricSeries(ctx *security.RequestContext, fetchMetricSeriesRequest FetchMetricSeriesRequest) (MetricSeriesResult, error) {
+	if fetchMetricSeriesRequest.AccountId == "" {
+		return MetricSeriesResult{}, fmt.Errorf("observability: account_id is required for series-match")
+	}
+	if fetchMetricSeriesRequest.Workload == "" {
+		return MetricSeriesResult{}, fmt.Errorf("observability: workload is required for series-match")
+	}
+	source, err := getMetricsSourceForAccount(ctx, fetchMetricSeriesRequest.AccountId, fetchMetricSeriesRequest.MetricProvider, fetchMetricSeriesRequest.MetricProviderSource)
+	if err != nil {
+		return MetricSeriesResult{}, err
+	}
+	seriesSource, ok := source.(MetricSeriesSource)
+	if !ok {
+		return MetricSeriesResult{}, fmt.Errorf("observability: series-match is not supported for metrics provider %q", fetchMetricSeriesRequest.MetricProvider)
+	}
+	return seriesSource.FetchMetricSeries(ctx, fetchMetricSeriesRequest)
 }
 
 func FetchMetricLabelValues(ctx *security.RequestContext, fetchMetricsLabelValueRequest FetchMetricsLabelValueRequest) ([]OutputMetricsLabelValues, error) {

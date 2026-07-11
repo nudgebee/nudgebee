@@ -54,9 +54,9 @@ describe('useMessageAdditionalData', () => {
     mockListMemory.mockResolvedValue({ data: [] });
     const groups = [makeGroup('msg-42', 'COMPLETED', 'response')];
 
-    renderHook(() => useMessageAdditionalData(groups, 'acc-1', 'conv-99'));
+    const { result } = renderHook(() => useMessageAdditionalData(groups, 'acc-1', 'conv-99'));
 
-    await waitFor(() => expect(mockListReferences).toHaveBeenCalled());
+    await waitFor(() => expect(result.current['msg-42']).toBeDefined());
     expect(mockListReferences).toHaveBeenCalledWith({
       accountId: 'acc-1',
       messageId: 'msg-42',
@@ -69,8 +69,8 @@ describe('useMessageAdditionalData', () => {
     mockListMemory.mockResolvedValue({ data: [] });
     const groups = [makeGroup('msg-1', 'COMPLETED', 'response')];
 
-    const { rerender } = renderHook(({ g }) => useMessageAdditionalData(g, 'acc-1', 'conv-1'), { initialProps: { g: groups } });
-    await waitFor(() => expect(mockListReferences).toHaveBeenCalledTimes(1));
+    const { result, rerender } = renderHook(({ g }) => useMessageAdditionalData(g, 'acc-1', 'conv-1'), { initialProps: { g: groups } });
+    await waitFor(() => expect(result.current['msg-1']).toBeDefined());
 
     // Re-render with same groups — should not re-fetch
     rerender({ g: [...groups] });
@@ -89,6 +89,8 @@ describe('useMessageAdditionalData', () => {
 
     rerender({ convId: 'conv-2' });
     expect(result.current).toEqual({});
+    // Wait for the re-fetch triggered by the new conversationId to complete
+    await waitFor(() => expect(result.current['msg-1']).toBeDefined());
   });
 
   it('also handles SUCCESS status as completed', async () => {
@@ -96,7 +98,8 @@ describe('useMessageAdditionalData', () => {
     mockListMemory.mockResolvedValue({ data: [] });
     const groups = [makeGroup('msg-success', 'SUCCESS', 'response')];
 
-    renderHook(() => useMessageAdditionalData(groups, 'acc-1', 'conv-1'));
-    await waitFor(() => expect(mockListReferences).toHaveBeenCalled());
+    const { result } = renderHook(() => useMessageAdditionalData(groups, 'acc-1', 'conv-1'));
+    await waitFor(() => expect(result.current['msg-success']).toBeDefined());
+    expect(mockListReferences).toHaveBeenCalled();
   });
 });

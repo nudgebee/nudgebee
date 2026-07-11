@@ -1,9 +1,9 @@
 import logging
-from typing import Dict, Any, List, Optional, Literal
+import secrets
+from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
 
 from notifications_server import engine, sync_engine, slack_app, teams_app
 from notifications_server.configs.settings import settings
@@ -17,16 +17,6 @@ from notifications_server.services.common import CommonService
 from notifications_server.services.message import MessageService
 from notifications_server.services.rules import NotificationRulesService
 from notifications_server.clients.google_chat_app_client import GoogleChatAppClient
-
-
-class PlatformInput(BaseModel):
-    platform: Literal["slack", "ms_teams", "google_chat", "discord"] = Field(..., description="Target platform")
-
-
-class HasuraActionPayload(BaseModel):
-    input: PlatformInput
-    session_variables: Dict[str, Any] = Field(default_factory=dict)
-
 
 LOG = logging.getLogger(__name__)
 
@@ -58,12 +48,23 @@ ERROR_TENANT_NOT_FOUND = "Tenant id not found"
 ACTION_TOKEN_HEADER = "X-ACTION-TOKEN"
 
 
+def _match_configured_token(token: Optional[str]) -> Optional[bool]:
+    """None if NOTIFICATION_SERVER_TOKEN is unset (verification disabled), True on
+    match, False on a missing/wrong token. Uses secrets.compare_digest for
+    constant-time matching (CWE-208)."""
+    expected = settings.notification_server_token
+    if not expected:
+        return None
+    if not token:
+        return False
+    return secrets.compare_digest(token.encode(), expected.encode())
+
+
 def verify_action_token(request: Request):
-    """Verify that the incoming request has a valid X-ACTION-TOKEN header.
-    Matches the auth pattern used by api-server's authHandlerMiddleware."""
-    token = request.headers.get(ACTION_TOKEN_HEADER)
-    expected = settings.action_api_server_token
-    if not expected or token != expected:
+    """Optional X-ACTION-TOKEN check for every RPC endpoint (not webhooks/OAuth
+    callbacks). Disabled when NOTIFICATION_SERVER_TOKEN is unset; when set, a
+    missing or wrong token is rejected with 401."""
+    if _match_configured_token(request.headers.get(ACTION_TOKEN_HEADER)) is False:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -74,7 +75,12 @@ router = APIRouter(
 )
 
 
-@router.post("/messages/send", status_code=201, response_model=List[PlatformResponse])
+@router.post(
+    "/messages/send",
+    status_code=201,
+    response_model=List[PlatformResponse],
+    dependencies=[Depends(verify_action_token)],
+)
 async def send_message(payload: SendMessageRequest) -> List[PlatformResponse]:
     controller = _get_message_service()
 
@@ -93,14 +99,14 @@ async def send_message(payload: SendMessageRequest) -> List[PlatformResponse]:
 
 
 @router.post("/channels/list", dependencies=[Depends(verify_action_token)])
-async def list_channels(request: Request, body: HasuraActionPayload):
+async def list_channels(request: Request, body: Dict[Any, Any]):
     try:
-        session_variables = body.session_variables
+        session_variables = body.get("session_variables", {})
         tenant = session_variables.get("tenant_id") or request.headers.get("tenant")
         if not tenant:
             return JSONResponse({"error": {"message": ERROR_TENANT_NOT_FOUND}})
 
-        platform = body.input.platform
+        platform = body.get("input", {}).get("platform")
 
         with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
             channels = controller.list_channels(platform, tenant)
@@ -111,14 +117,14 @@ async def list_channels(request: Request, body: HasuraActionPayload):
 
 
 @router.post("/users/list", dependencies=[Depends(verify_action_token)])
-async def list_users(request: Request, body: HasuraActionPayload):
+async def list_users(request: Request, body: Dict[Any, Any]):
     try:
-        session_variables = body.session_variables
+        session_variables = body.get("session_variables", {})
         tenant = session_variables.get("tenant_id") or request.headers.get("tenant")
         if not tenant:
             return JSONResponse({"error": {"message": ERROR_TENANT_NOT_FOUND}})
 
-        platform = body.input.platform
+        platform = body.get("input", {}).get("platform")
 
         with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
             users = controller.list_users(platform, tenant)
@@ -128,7 +134,7 @@ async def list_users(request: Request, body: HasuraActionPayload):
         return JSONResponse({"error": {"message": "Unable to list users"}})
 
 
-@router.post("/channels/join", status_code=201)
+@router.post("/channels/join", status_code=201, dependencies=[Depends(verify_action_token)])
 async def join_channel(request: Request, payload: Dict[Any, Any], background_tasks: BackgroundTasks):
     try:
         # Get tenant from header (set by authenticated callers like runbook-server)
@@ -185,7 +191,62 @@ async def join_channel(request: Request, payload: Dict[Any, Any], background_tas
         return JSONResponse({"error": {"message": "Unable to join channel"}}, status_code=500)
 
 
-@router.post("/channels/message", status_code=201)
+@router.post("/channels/create", status_code=201, dependencies=[Depends(verify_action_token)])
+async def create_channel(request: Request, payload: Dict[Any, Any]):
+    try:
+        # Get tenant from header (set by authenticated callers like runbook-server)
+        tenant_id = request.headers.get("tenant")
+        if not tenant_id:
+            return JSONResponse(
+                {"error": {"message": ERROR_MISSING_TENANT_HEADER}},
+                status_code=401,
+            )
+
+        platform = payload.get("platform")
+        name = payload.get("name")
+        is_private = bool(payload.get("is_private", False))
+        description = payload.get("description")
+        team_id = payload.get("team_id")
+
+        if not platform or not name:
+            return JSONResponse(
+                {"error": {"message": "Missing required fields: platform, name"}},
+                status_code=400,
+            )
+
+        if platform.lower() not in ["slack", "ms_teams", "google_chat"]:
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": (
+                            f"Platform {platform} is not supported for channel creation. "
+                            "Supported platforms: slack, ms_teams, google_chat"
+                        )
+                    }
+                },
+                status_code=400,
+            )
+
+        with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
+            result = controller.create_channel(
+                platform=platform.lower(),
+                tenant_id=tenant_id,
+                name=name,
+                is_private=is_private,
+                description=description,
+                team_id=team_id,
+            )
+
+            if "error" in result:
+                return JSONResponse(result, status_code=400)
+
+            return JSONResponse(content=result)
+    except Exception:
+        LOG.exception("Error in create_channel endpoint")
+        return JSONResponse({"error": {"message": "Unable to create channel"}}, status_code=500)
+
+
+@router.post("/channels/message", status_code=201, dependencies=[Depends(verify_action_token)])
 async def send_channel_message(request: Request, payload: Dict[Any, Any]):
     try:
         # Get tenant from header (set by authenticated callers like runbook-server)
@@ -231,7 +292,7 @@ async def send_channel_message(request: Request, payload: Dict[Any, Any]):
         return JSONResponse({"error": {"message": "Unable to send message"}}, status_code=500)
 
 
-@router.post("/users/send", status_code=201)
+@router.post("/users/send", status_code=201, dependencies=[Depends(verify_action_token)])
 async def send_direct_message(request: Request, payload: Dict[Any, Any]):
     try:
         tenant_id = request.headers.get("tenant")
@@ -325,6 +386,10 @@ async def notify_google_chat_binding(body: Dict[Any, Any]):
     if not GoogleChatAppClient.is_enabled():
         return JSONResponse({"success": False, "reason": "sa_not_configured"})
     tenant = body.get("tenant_id")
+    # A bind/unbind adds or removes the tenant's synthesized google_chat install, so
+    # drop the cached installations to pick up the change on the next send.
+    if tenant:
+        _get_message_service().cache.delete_cached_installations(tenant)
     if event == "bound":
         text = f"✅ This space is now connected to {settings.urls.branding_name}. Mention me to get started."
         result = GoogleChatAppClient.post_message(space=space_id, message=text, tenant=tenant)
@@ -335,6 +400,49 @@ async def notify_google_chat_binding(body: Dict[Any, Any]):
     return JSONResponse({"success": bool(leave_result.get("success"))})
 
 
+@router.post("/integrations/google-chat/join", dependencies=[Depends(verify_action_token)])
+async def join_google_chat_space(body: Dict[Any, Any]):
+    """Have the Chat app self-join a space (e.g. a ZenDuty-created incident space).
+
+    Requires the chat.app.memberships scope authorized by the Workspace admin; until
+    then Google returns 403, surfaced as reason='needs_authorization'."""
+    space_id = body.get("space_id")
+    if not space_id:
+        raise HTTPException(status_code=400, detail="space_id is required")
+    if not GoogleChatAppClient.is_enabled():
+        return JSONResponse({"success": False, "reason": "sa_not_configured"})
+    return JSONResponse(GoogleChatAppClient.join_space(space_id))
+
+
+@router.post("/integrations/google-chat/membership-status", dependencies=[Depends(verify_action_token)])
+async def google_chat_membership_status(body: Dict[Any, Any]):
+    """Probe whether the app can manage its membership in a space, for the guided
+    'grant join-permission' UI. status: already_member | can_join | needs_authorization | error."""
+    space_id = body.get("space_id")
+    if not space_id:
+        raise HTTPException(status_code=400, detail="space_id is required")
+    if not GoogleChatAppClient.is_enabled():
+        return JSONResponse({"status": "sa_not_configured"})
+    return JSONResponse(GoogleChatAppClient.membership_status(space_id))
+
+
+@router.post("/channels/google-chat/permission-status", dependencies=[Depends(verify_action_token)])
+async def google_chat_permission_status_endpoint(request: Request, body: Dict[Any, Any]):
+    """Tenant-scoped probe for the guided 'grant join-permission' UI: resolves a bound
+    space for the caller's tenant and reports whether the bot's self-join permission is
+    authorized. status: authorized | needs_authorization | no_spaces | sa_not_configured | unknown."""
+    try:
+        session_variables = body.get("session_variables", {})
+        tenant = session_variables.get("tenant_id") or request.headers.get("tenant")
+        if not tenant:
+            return JSONResponse({"status": "unknown", "error": ERROR_TENANT_NOT_FOUND})
+        with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
+            return JSONResponse(content=controller.google_chat_permission_status(tenant))
+    except Exception:
+        LOG.exception("Error in google_chat_permission_status endpoint")
+        return JSONResponse({"status": "unknown"})
+
+
 @router.post("/rules/save", status_code=201, dependencies=[Depends(verify_action_token)])
 async def save_or_update_rule(data: Dict[Any, Any]):
     service = NotificationRulesService(engine)
@@ -343,7 +451,7 @@ async def save_or_update_rule(data: Dict[Any, Any]):
     return JSONResponse(response, status_code=201)
 
 
-@router.post("/emails/send", status_code=201)
+@router.post("/emails/send", status_code=201, dependencies=[Depends(verify_action_token)])
 async def send_email(payload: Dict[Any, Any]):
     """
     Send an email to one or more recipients.
@@ -417,7 +525,7 @@ async def send_email(payload: Dict[Any, Any]):
         return JSONResponse({"success": False, "error": "Unexpected error"}, status_code=500)
 
 
-@router.post("/reactions/add", status_code=201)
+@router.post("/reactions/add", status_code=201, dependencies=[Depends(verify_action_token)])
 async def add_reaction(request: Request, payload: Dict[Any, Any]):
     """
     Add a reaction to a message on any supported platform (Slack, MS Teams, Google Chat).
@@ -483,7 +591,12 @@ async def add_reaction(request: Request, payload: Dict[Any, Any]):
         return JSONResponse({"success": False, "error": "Unexpected error"}, status_code=500)
 
 
-@router.post("/threads/messages", status_code=200, response_model=GetThreadMessagesResponse)
+@router.post(
+    "/threads/messages",
+    status_code=200,
+    response_model=GetThreadMessagesResponse,
+    dependencies=[Depends(verify_action_token)],
+)
 async def get_thread_messages(request: Request, payload: GetThreadMessagesRequest) -> GetThreadMessagesResponse:
     # Get tenant from header (set by authenticated callers like runbook-server)
     tenant_id = request.headers.get("tenant")

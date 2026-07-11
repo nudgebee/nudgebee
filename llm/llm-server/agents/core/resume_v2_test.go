@@ -185,3 +185,80 @@ func TestBubbleUpIfSiblingsDone_StatelessParentFinalizesMessage(t *testing.T) {
 		assert.Equal(t, ConversationStatusCompleted, fake.convStatus)
 	})
 }
+
+// TestBubbleUpIfSiblingsDone_TerminalChildShortCircuits covers the #31997 fix:
+// when a resumed sub-agent completes with IsTerminal (its answer IS the final
+// answer — e.g. automation_builder returning the built workflow JSON after
+// "Approve and Build"), the bubble-up must finalize from the child and NOT resume
+// the parent. Resuming the parent re-runs an ancestor planner which, for a nested
+// builder (k8s_debug → automation → automation_builder), re-delegates a fresh
+// build and re-prompts for approval in a loop.
+//
+// The fake deliberately sets a NON-EMPTY parentState: the pre-fix code would then
+// proceed to resume the parent (GetAgentNameFromAgentId / GetNBAgent / executeAgent),
+// none of which the fake implements — so it would panic via the embedded nil DAO.
+// A clean COMPLETED return therefore PROVES the parent-resume path was not taken.
+func TestBubbleUpIfSiblingsDone_TerminalChildShortCircuits(t *testing.T) {
+	original := GetConversationDao()
+	defer SetConversationDao(original)
+
+	ctx := security.NewRequestContextForSuperAdmin()
+	parentID := uuid.New()
+	childID := uuid.New()
+	msgID := uuid.New()
+	convID := uuid.New()
+
+	const builtJSON = `{"name":"k8s-pod-inventory","definition":{"triggers":[{"type":"manual"}]}}`
+	terminalChild := NBAgentResponse{
+		Response:   []string{builtJSON},
+		Status:     ConversationStatusCompleted,
+		IsTerminal: true,
+		AgentName:  "automation_builder",
+	}
+	childAgent := ConversationAgent{ID: childID, ParentAgentID: parentID, MessageID: msgID}
+	req := NBAgentRequest{
+		ConversationId: convID.String(),
+		MessageId:      msgID.String(),
+		AccountId:      uuid.New().String(),
+	}
+
+	t.Run("terminal child finalizes without resuming the (stateful) parent", func(t *testing.T) {
+		fake := &bubbleFakeDao{
+			parentState:  "non-empty-state-blob-would-trigger-parent-resume",
+			waitingCount: 0, // all siblings done
+			parentAgent:  ConversationAgent{ID: parentID, AgentName: "k8s_debug"},
+		}
+		SetConversationDao(fake)
+
+		// Would panic on the embedded nil DAO if the parent-resume path were taken.
+		resp, err := bubbleUpIfSiblingsDone(ctx, req, terminalChild, childAgent)
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{builtJSON}, resp.Response, "terminal child's response is the final answer")
+		assert.Equal(t, ConversationStatusCompleted, resp.Status)
+		assert.Equal(t, "automation_builder", resp.AgentName, "non-Response fields preserved from childResp")
+		assert.Equal(t, msgID.String(), fake.persistedMsgID)
+		assert.Equal(t, builtJSON, fake.persistedContent, "generation message persisted with the built workflow")
+		assert.Equal(t, ConversationStatusCompleted, fake.persistedMsgStatus)
+		assert.Equal(t, ConversationStatusCompleted, fake.convStatus)
+	})
+
+	t.Run("terminal child does NOT strand a still-waiting sibling", func(t *testing.T) {
+		// Placement guard: the IsTerminal short-circuit sits AFTER the waitingCount>0
+		// check, so a sibling still awaiting user input keeps the conversation WAITING
+		// and is never finalized out from under the user.
+		fake := &bubbleFakeDao{
+			parentState:  "non-empty-state-blob",
+			waitingCount: 1, // a sibling still needs the user
+			parentAgent:  ConversationAgent{ID: parentID, AgentName: "k8s_debug"},
+		}
+		SetConversationDao(fake)
+
+		resp, err := bubbleUpIfSiblingsDone(ctx, req, terminalChild, childAgent)
+		require.NoError(t, err)
+
+		assert.Equal(t, ConversationStatusWaiting, fake.convStatus, "conversation stays WAITING for the pending sibling")
+		assert.Equal(t, []string{builtJSON}, resp.Response)
+		assert.Empty(t, fake.persistedMsgID, "no final message persisted while a sibling is still waiting")
+	})
+}

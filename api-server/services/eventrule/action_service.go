@@ -155,6 +155,10 @@ func ListAction(context *security.RequestContext, request ListActionsRequest) ([
 		}
 		actionTemplate = append(actionTemplate, action)
 	}
+	if err := rows.Err(); err != nil {
+		context.GetLogger().Error("eventrule: error iterating action template rows", "error", err)
+		return nil, err
+	}
 
 	// Enrich proxy actions with datasource dropdown options (tenant-wide)
 	if tenantID := context.GetSecurityContext().GetTenantId(); tenantID != "" {
@@ -270,6 +274,9 @@ func enrichCloudCliAccountDropdown(context *security.RequestContext, tenantID st
 			"label": fmt.Sprintf("%s (%s)", name, provider),
 			"value": id,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		context.GetLogger().Warn("eventrule: error iterating cloud account dropdown rows", "error", err)
 	}
 
 	if len(options) == 0 {
@@ -509,6 +516,10 @@ func listIntegrationsForDropdown(tenantID string, types []string) ([]map[string]
 			"value": id,
 			"type":  intType,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("eventrule: error iterating integration dropdown rows", "error", err)
+		return nil, err
 	}
 	return items, nil
 }

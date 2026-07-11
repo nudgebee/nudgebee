@@ -10,6 +10,8 @@ import (
 )
 
 func TestTicketTask_Execute(t *testing.T) {
+	testutils.RequireEnv(t, "TEST_TENANT_ID", "TEST_ACCOUNT_ID", "TEST_USER_ID", "TEST_TICKET_INTEGRATION_ID")
+
 	task := &TicketsCreateTask{}
 	taskCtx := testutils.NewTestTaskContext(os.Getenv("TEST_TENANT_ID"), os.Getenv("TEST_ACCOUNT_ID"), os.Getenv("TEST_USER_ID"), slog.Default())
 
@@ -159,8 +161,10 @@ func TestTicketsAddCommentTask_Execute(t *testing.T) {
 				"comment":        "test",
 				"integration_id": 123, // should be string
 			},
-			expectErr:     true,
-			expectedError: "integration_id must be a string",
+			expectErr: true,
+			// integration_id is read via extractRequiredString, which treats a
+			// non-string (failed type assertion) the same as a missing value.
+			expectedError: "integration_id is required",
 		},
 		{
 			name: "Add Comment Success",

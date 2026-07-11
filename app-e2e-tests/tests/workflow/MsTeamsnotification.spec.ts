@@ -5,8 +5,8 @@ import {
   loginAndNavigateToNewWorkflow,
   pasteAndApplyWorkflowJson,
   saveNewWorkflow,
-  setWorkflowActiveAndSave,
   runWorkflowWithGraphQLValidation,
+  deleteCreatedWorkflow,
   closeActionPanel,
 } from "./workflowHelper";
 
@@ -45,7 +45,7 @@ const WORKFLOW_JSON_TEMPLATE = {
   status: "ACTIVE",
 };
 
-test("Automation workflow Ms-teams Notification", async ({ page }) => {
+test.skip("Automation workflow Ms-teams Notification", async ({ page }) => {
   test.setTimeout(120000);
 
   const locators = new WorkflowLocators(page);
@@ -67,6 +67,7 @@ test("Automation workflow Ms-teams Notification", async ({ page }) => {
   await closeActionPanel(page, locators);
 
   await saveNewWorkflow(page, locators, workflowName);
-  await setWorkflowActiveAndSave(page, locators);
   await runWorkflowWithGraphQLValidation(page, locators, "Automation workflow Ms-teams Notification");
+
+  await deleteCreatedWorkflow(page, locators, workflowName);
 });

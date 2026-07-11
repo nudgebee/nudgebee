@@ -37,9 +37,9 @@ const ValidationResultBanner = ({ result }) => {
       {details.map((detail) => (
         <Box key={detail.permission} sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[1], mt: ds.space[1] }}>
           {detail.hasAccess ? (
-            <CheckCircleOutlineIcon sx={{ fontSize: 16, color: 'success.main', mt: 'var(--ds-space-1)' }} />
+            <CheckCircleOutlineIcon sx={{ fontSize: ds.text.title, color: 'success.main', mt: 'var(--ds-space-1)' }} />
           ) : (
-            <WarningAmberIcon sx={{ fontSize: 16, color: 'warning.main', mt: 'var(--ds-space-1)' }} />
+            <WarningAmberIcon sx={{ fontSize: ds.text.title, color: 'warning.main', mt: 'var(--ds-space-1)' }} />
           )}
           <Box>
             <Typography variant='body2' sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>

@@ -9,7 +9,7 @@ import { ds } from 'src/utils/colors';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import apiKubernetes1 from '@api1/kubernetes1';
-import { getLast24Hrs, getSpecificTime } from '@lib/datetime';
+import { getLast24Hrs } from '@lib/datetime';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 
@@ -28,7 +28,7 @@ const TrendChip = ({ diff, hasBaseline = true, kind = 'up-is-bad' }) => {
   else tone = goingUp ? 'success' : 'critical';
   const Arrow = goingUp ? ArrowUpwardIcon : ArrowDownwardIcon;
   return (
-    <Chip size='xs' tone={tone} icon={<Arrow sx={{ fontSize: 12 }} />} aria-label={`${goingUp ? 'up' : 'down'} ${Math.abs(diff)} percent`}>
+    <Chip size='xs' tone={tone} icon={<Arrow sx={{ fontSize: ds.text.small }} />} aria-label={`${goingUp ? 'up' : 'down'} ${Math.abs(diff)} percent`}>
       {goingUp ? '+' : ''}
       {diff}%
     </Chip>
@@ -116,9 +116,19 @@ TimeSavedValue.propTypes = {
   minutes: PropTypes.number,
 };
 
-const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter }) => {
+const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, range }) => {
   const { baseTitle } = useTenantBranding();
   const router = useRouter();
+
+  // The comparison window for every card. The page passes a single frozen 24h
+  // `range` so the cards and the Events drill-down query the identical interval;
+  // fall back to computing it here if the component is rendered standalone.
+  const resolvedRange = useMemo(() => {
+    if (range) return range;
+    const endDate = new Date();
+    const startDate = getLast24Hrs(endDate);
+    return { startDate, endDate, previousStartDate: getLast24Hrs(startDate), previousEndDate: startDate };
+  }, [range]);
   // Scope the summary cards to the same account selection the Events list uses
   // (the shared `accountId` URL query param). Without this the cards rolled up
   // across ALL accounts while the list was account-scoped, inflating the counts.
@@ -160,10 +170,10 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter }) 
 
       apiKubernetes1
         .eventComparsion({
-          startDate: getLast24Hrs().toISOString(),
-          endDate: new Date().toISOString(),
-          previousStartDate: new Date(getSpecificTime(2880)).toISOString(),
-          previousEndDate: getLast24Hrs().toISOString(),
+          startDate: resolvedRange.startDate.toISOString(),
+          endDate: resolvedRange.endDate.toISOString(),
+          previousStartDate: resolvedRange.previousStartDate.toISOString(),
+          previousEndDate: resolvedRange.previousEndDate.toISOString(),
           accountId: accountIds,
         })
         .then((res) => {
@@ -210,8 +220,8 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter }) 
       }));
 
       const source = tab === 'auto' ? 'Investigation' : 'UserInvestigation';
-      const startDate = getLast24Hrs().toISOString();
-      const endDate = new Date().toISOString();
+      const startDate = resolvedRange.startDate.toISOString();
+      const endDate = resolvedRange.endDate.toISOString();
       const eventScoped = tab === 'auto';
 
       // Volume trend stays a RPC roll-up — counts only — while the
@@ -223,8 +233,8 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter }) 
           source,
           startDate,
           endDate,
-          previousStartDate: new Date(getSpecificTime(2880)).toISOString(),
-          previousEndDate: getLast24Hrs().toISOString(),
+          previousStartDate: resolvedRange.previousStartDate.toISOString(),
+          previousEndDate: resolvedRange.previousEndDate.toISOString(),
           extractEventIdsFromTitle: eventScoped,
         }),
         apiAskNudgebee.getConversationTimeAggregates({
@@ -297,7 +307,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter }) 
           });
         });
     }
-  }, [type, tab, accountIds]);
+  }, [type, tab, resolvedRange, accountIdParam]);
 
   const last24hPill = (
     <Typography
@@ -325,11 +335,41 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter }) 
   const clickableCardSx = clickable
     ? {
         cursor: 'pointer',
-        transition: 'border-color 120ms ease',
+        transition: 'border-color 120ms ease, background-color 120ms ease',
         '&:hover': { borderColor: ds.gray[300] },
-        '&:focus-visible': { outline: `2px solid ${ds.blue[400]}`, outlineOffset: '2px' },
+        '&:focus-visible': { outline: `${ds.space[0]} solid ${ds.blue[400]}`, outlineOffset: ds.space[0] },
       }
     : {};
+
+  // A card is "active" when its drill-down filter is the one currently in the
+  // URL — gives the clicked card a persistent highlight so users can see which
+  // metric the Events list is filtered by. Derived from router.query (not click
+  // state) so it survives reload and stays in sync when the user changes the
+  // same filter from inside the Events table. Total Events is the unfiltered
+  // reset state, so it carries no active highlight.
+  const nbStatusValues = String(router.query.nbStatus || '')
+    .split(',')
+    .filter(Boolean);
+  let activeWidget = null;
+  if (clickable) {
+    if (router.query.eventPriority === 'HIGH') activeWidget = 'widget-high-severity';
+    else if (router.query.issueType === 'new') activeWidget = 'widget-new-issues';
+    else if (nbStatusValues.length === 2 && nbStatusValues.includes('OPEN') && nbStatusValues.includes('ACTION_REQUIRED'))
+      activeWidget = 'widget-needs-attention';
+  }
+  const activeCardSx = {
+    borderColor: ds.blue[400],
+    backgroundColor: ds.blue[100],
+    // Re-assert the blue border on hover — clickableCardSx's hover sets a gray
+    // border, which would otherwise mask the active highlight while hovering.
+    '&:hover': { borderColor: ds.blue[400] },
+  };
+  const eventCardSx = (testId) => ({
+    ...widgetCardSx,
+    ...clickableCardSx,
+    ...(activeWidget === testId ? activeCardSx : {}),
+  });
+
   const cardInteractionProps = (query, testId) =>
     clickable
       ? {
@@ -342,6 +382,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter }) 
           },
           role: 'button',
           tabIndex: 0,
+          'aria-pressed': activeWidget === testId,
           'data-testid': testId,
         }
       : {};
@@ -433,13 +474,14 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter }) 
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'row', width: '100%', gap: ds.space[3], padding: `${ds.space[5]} 0` }}>
-      <WidgetCard sx={{ ...widgetCardSx, ...clickableCardSx }} {...cardInteractionProps({}, 'widget-total-events')}>
+      <WidgetCard sx={eventCardSx('widget-total-events')} {...cardInteractionProps({}, 'widget-total-events')}>
         <Stat
           size='md'
+          sx={clickable ? { cursor: 'inherit' } : undefined}
           label='Total Events'
           info={{
             tooltip:
-              'Total Events tracks the total volume of raw signals ingested from your monitored clusters in the last 24 hours. The percentage indicates the change in event volume compared to the previous 24-hour period.',
+              'Total Events tracks the volume of currently firing events from your monitored clusters in the last 24 hours. The percentage indicates the change in event volume compared to the previous 24-hour period.',
             position: 'right',
           }}
           value={
@@ -457,11 +499,12 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter }) 
       </WidgetCard>
 
       <WidgetCard
-        sx={{ ...widgetCardSx, ...clickableCardSx }}
+        sx={eventCardSx('widget-needs-attention')}
         {...cardInteractionProps({ nbStatus: 'OPEN,ACTION_REQUIRED' }, 'widget-needs-attention')}
       >
         <Stat
           size='md'
+          sx={clickable ? { cursor: 'inherit' } : undefined}
           label='Needs Attention'
           info={{
             tooltip:
@@ -482,13 +525,14 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter }) 
         />
       </WidgetCard>
 
-      <WidgetCard sx={{ ...widgetCardSx, ...clickableCardSx }} {...cardInteractionProps({ issueType: 'new' }, 'widget-new-issues')}>
+      <WidgetCard sx={eventCardSx('widget-new-issues')} {...cardInteractionProps({ issueType: 'new' }, 'widget-new-issues')}>
         <Stat
           size='md'
+          sx={clickable ? { cursor: 'inherit' } : undefined}
           label='New Issues'
           info={{
             tooltip:
-              'Distinct issues first seen in the last 7 days that occurred in the last 24 hours — net-new problems as opposed to recurring noise. The percentage compares against the previous 24-hour period.',
+              'Distinct issues first seen in the last 7 days that are currently firing in the last 24 hours — net-new problems as opposed to recurring noise. The percentage compares against the previous 24-hour period.',
             position: 'right',
           }}
           value={
@@ -505,13 +549,14 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter }) 
         />
       </WidgetCard>
 
-      <WidgetCard sx={{ ...widgetCardSx, ...clickableCardSx }} {...cardInteractionProps({ eventPriority: 'HIGH' }, 'widget-high-severity')}>
+      <WidgetCard sx={eventCardSx('widget-high-severity')} {...cardInteractionProps({ eventPriority: 'HIGH' }, 'widget-high-severity')}>
         <Stat
           size='md'
+          sx={clickable ? { cursor: 'inherit' } : undefined}
           label='High Severity'
           info={{
             tooltip:
-              'Number of High-priority events ingested in the last 24 hours, by the source system’s severity. The percentage compares against the previous 24-hour period.',
+              'Number of High-priority firing events in the last 24 hours, by the source system’s severity. The percentage compares against the previous 24-hour period.',
             position: 'right',
           }}
           value={
@@ -535,6 +580,14 @@ TroubleshootSummary.propTypes = {
   type: PropTypes.oneOf(['events', 'investigations']),
   tab: PropTypes.oneOf(['auto', 'manual']),
   onWidgetFilter: PropTypes.func,
+  // Frozen comparison window shared with the Events drill-down. Optional — the
+  // component computes a fresh last-24h window when omitted.
+  range: PropTypes.shape({
+    startDate: PropTypes.instanceOf(Date),
+    endDate: PropTypes.instanceOf(Date),
+    previousStartDate: PropTypes.instanceOf(Date),
+    previousEndDate: PropTypes.instanceOf(Date),
+  }),
 };
 
 export default TroubleshootSummary;

@@ -758,8 +758,15 @@ func (e *TraceToKnowledgeGraphExtractor) extractKubernetesInfrastructure(service
 var (
 	// StatefulSet pattern: name-0, name-1, etc.
 	podStatefulSetRegex = regexp.MustCompile(`^(.+)-\d+$`)
-	// Deployment/ReplicaSet pattern: name-hash-hash
-	podDeploymentRegex = regexp.MustCompile(`^(.+)-[a-z0-9]{5,10}-[a-z0-9]{5}$`)
+	// Deployment/ReplicaSet pattern: name-rshash-podhash. The ReplicaSet hash
+	// is a 5-10 char base-32 string that always contains at least one digit,
+	// so we require one here; this prevents pure-letter name tokens (e.g. the
+	// "daemonset" in "monitoring-daemonset-xyz12") from being mistaken for a
+	// ReplicaSet hash, which would otherwise over-strip the workload name.
+	podDeploymentRegex = regexp.MustCompile(`^(.+)-([a-z0-9]{5,10})-[a-z0-9]{5}$`)
+	// podHashHasDigit guards the deployment match: a real ReplicaSet hash
+	// contains at least one digit, unlike plain name tokens.
+	podHashHasDigit = regexp.MustCompile(`[0-9]`)
 	// Job pattern: name-hash (5-10 chars)
 	podJobRegex = regexp.MustCompile(`^(.+)-[a-z0-9]{5,10}$`)
 	// CronJob pattern: name-timestamp-hash
@@ -784,8 +791,10 @@ func extractWorkloadFromPodName(podName string) string {
 		return matches[1]
 	}
 
-	// Deployment/ReplicaSet pattern: name-hash-hash
-	if matches := podDeploymentRegex.FindStringSubmatch(podName); len(matches) > 1 {
+	// Deployment/ReplicaSet pattern: name-rshash-podhash. Require the
+	// ReplicaSet-hash segment to contain a digit so plain name tokens aren't
+	// stripped as if they were hashes (e.g. "monitoring-daemonset-xyz12").
+	if matches := podDeploymentRegex.FindStringSubmatch(podName); len(matches) > 2 && podHashHasDigit.MatchString(matches[2]) {
 		return matches[1]
 	}
 

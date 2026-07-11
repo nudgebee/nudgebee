@@ -1,9 +1,10 @@
 // TextEnricherDynamicCard.js
 import CubeIcon from '@assets/kubernetes/cube-icon.svg';
 import CloudAccountTable from '@components/cloudaccount/CloudAccountTable';
-import { Text } from '@shared';
+import Text from '@shared/format/Text';
 import Datetime from '@shared/format/Datetime';
 import { Box } from '@mui/material';
+import { ds } from '@utils/colors';
 
 class CloudWatchLogCard {
   constructor(_evidence, data, index) {
@@ -38,7 +39,7 @@ class CloudWatchLogCard {
             data: r,
           },
           {
-            component: <Text showAutoEllipsis value={r.Message} sx={{ minWidth: '120px' }} />,
+            component: <Text showAutoEllipsis value={r.Message} sx={{ minWidth: ds.space.mul(0, 60) }} />,
           },
         ];
       });

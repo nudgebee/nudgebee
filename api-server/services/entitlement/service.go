@@ -339,6 +339,9 @@ func (s *Service) GetOverageForBilling(ctx context.Context, tenantID string, bil
 		r.NewOverage = r.TotalOverage - r.LastReportedOverage
 		reports = append(reports, r)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return reports, nil
 }

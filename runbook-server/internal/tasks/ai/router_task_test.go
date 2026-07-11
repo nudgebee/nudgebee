@@ -57,26 +57,29 @@ func TestRouterTask_GetChildWorkflowDefinition(t *testing.T) {
 	assert.Equal(t, "db_issues", options[0]["name"])
 	assert.Equal(t, "network_issues", options[1]["name"])
 
-	// Check Dispatch Task
+	// Check Dispatch Task. The dispatcher uses the expression-based switch
+	// format (core.switch's preferred mode): an `expression` evaluated against
+	// `cases`, each case matching by `value` and embedding its `tasks`.
 	dispatchTask := wfDef.Tasks[1]
 	assert.Equal(t, "dispatch", dispatchTask.ID)
 	assert.Equal(t, "core.switch", dispatchTask.Type)
 	assert.Equal(t, []string{"decision"}, dispatchTask.DependsOn)
+	assert.Equal(t, "{{ router_selected_branch }}", dispatchTask.Params["expression"])
 
-	branches, ok := dispatchTask.Params["branches"].([]map[string]any)
+	cases, ok := dispatchTask.Params["cases"].([]map[string]any)
 	assert.True(t, ok)
-	assert.Len(t, branches, 2)
+	assert.Len(t, cases, 2)
 
 	// Branch 1
-	assert.Equal(t, "{{ router_selected_branch == 'db_issues' }}", branches[0]["condition"])
-	tasks1, ok := branches[0]["tasks"].([]model.Task)
+	assert.Equal(t, "db_issues", cases[0]["value"])
+	tasks1, ok := cases[0]["tasks"].([]model.Task)
 	assert.True(t, ok)
 	assert.Len(t, tasks1, 1)
 	assert.Equal(t, "check_db_status", tasks1[0].ID)
 
 	// Branch 2
-	assert.Equal(t, "{{ router_selected_branch == 'network_issues' }}", branches[1]["condition"])
-	tasks2, ok := branches[1]["tasks"].([]model.Task)
+	assert.Equal(t, "network_issues", cases[1]["value"])
+	tasks2, ok := cases[1]["tasks"].([]model.Task)
 	assert.True(t, ok)
 	assert.Len(t, tasks2, 1)
 	assert.Equal(t, "ping_server", tasks2[0].ID)

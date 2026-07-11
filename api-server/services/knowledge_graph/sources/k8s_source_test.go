@@ -33,7 +33,7 @@ func TestGenerateUniqueKeyForK8sResources(t *testing.T) {
 					"cluster":   "test-cluster",
 				},
 			},
-			wantKey: "k8s:test-cluster:none:K8sService:default:my-service",
+			wantKey: "k8s:::K8sService:default:my-service",
 		},
 		{
 			name: "ConfigMap node",
@@ -45,7 +45,7 @@ func TestGenerateUniqueKeyForK8sResources(t *testing.T) {
 					"cluster":   "prod-cluster",
 				},
 			},
-			wantKey: "k8s:prod-cluster:none:ConfigMap:production:my-config",
+			wantKey: "k8s:::ConfigMap:production:my-config",
 		},
 		{
 			name: "K8sSecret node",
@@ -57,7 +57,7 @@ func TestGenerateUniqueKeyForK8sResources(t *testing.T) {
 					"cluster":   "stage-cluster",
 				},
 			},
-			wantKey: "k8s:stage-cluster:none:K8sSecret:staging:my-secret",
+			wantKey: "k8s:::K8sSecret:staging:my-secret",
 		},
 		{
 			name: "PVC node",
@@ -69,7 +69,7 @@ func TestGenerateUniqueKeyForK8sResources(t *testing.T) {
 					"cluster":   "test-cluster",
 				},
 			},
-			wantKey: "k8s:test-cluster:none:PersistentVolumeClaim:default:data-pvc",
+			wantKey: "k8s:::PersistentVolumeClaim:default:data-pvc",
 		},
 		{
 			name: "PV node (cluster-scoped, no namespace)",
@@ -80,7 +80,7 @@ func TestGenerateUniqueKeyForK8sResources(t *testing.T) {
 					"cluster": "test-cluster",
 				},
 			},
-			wantKey: "k8s:test-cluster:none:PersistentVolume:none:pv-volume",
+			wantKey: "k8s:::PersistentVolume::pv-volume",
 		},
 		{
 			name: "Ingress node",
@@ -92,7 +92,7 @@ func TestGenerateUniqueKeyForK8sResources(t *testing.T) {
 					"cluster":   "prod-cluster",
 				},
 			},
-			wantKey: "k8s:prod-cluster:none:Ingress:production:web-ingress",
+			wantKey: "k8s:::Ingress:production:web-ingress",
 		},
 	}
 

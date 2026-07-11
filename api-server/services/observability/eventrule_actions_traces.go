@@ -188,6 +188,13 @@ const (
 	TraceStatusCode         = "status_code"
 	TraceStatusCodeLegacy   = "StatusCode"
 	TraceStatusMessage      = "status_message"
+	// TraceGRPCErrorMessage is set by gRPC client instrumentation (e.g. the
+	// OTel JS/Go gRPC interceptors) and carries the full error string returned
+	// over the wire — "13 INTERNAL: <message>". It is NOT an OTel semantic
+	// convention key; it lives on the *caller's* span. The callee's server span
+	// frequently sets only a status code with an empty status_message, so this
+	// attribute is often the sole place the human-readable reason survives.
+	TraceGRPCErrorMessage = "grpc.error_message"
 )
 
 type traceServiceInfo struct {
@@ -210,6 +217,12 @@ type errorSignature struct {
 	StatusName       string // decoded: "FAILED_PRECONDITION", "Service Unavailable", ""
 	ExceptionType    string // if span carries an exception event
 	ExceptionMessage string // trimmed to avoid cross-signature drift from long message bodies
+	// ErrorMessage is the failure text when the span carries no exception event:
+	// the span status description (status_message) or a gRPC client's
+	// grpc.error_message. Set only when ExceptionMessage is empty. It is
+	// representative-only and deliberately excluded from aggregationKey so spans
+	// that differ only by message detail still collapse into one bucket.
+	ErrorMessage string
 }
 
 // aggregatedError pairs a signature with the count of spans matching it and
@@ -310,6 +323,28 @@ func traceGetExceptionDetails(trace map[string]any, spanAttrs map[string]any) (e
 	return "", ""
 }
 
+// traceGetErrorMessage returns the human-readable failure text carried by a
+// single span when no exception event is present. It checks the carriers in
+// priority order:
+//  1. status_message — the OTel span status description (top-level field or,
+//     for some shapes, a span attribute).
+//  2. grpc.error_message — the gRPC client error string (see TraceGRPCErrorMessage).
+//
+// Exception messages are intentionally NOT handled here — traceGetExceptionDetails
+// owns the type/message pairing. Returns "" when the span carries no such text.
+func traceGetErrorMessage(trace map[string]any, spanAttrs map[string]any) string {
+	if msg := traceGetString(trace, TraceStatusMessage); msg != "" {
+		return msg
+	}
+	if msg := traceGetString(spanAttrs, TraceStatusMessage); msg != "" {
+		return msg
+	}
+	if msg := traceGetString(spanAttrs, TraceGRPCErrorMessage); msg != "" {
+		return msg
+	}
+	return ""
+}
+
 // traceHasError returns true when a span carries any recognisable error signal.
 // Wider than the previous `traceIsError` — covers HTTP 4xx (not just 5xx),
 // non-zero gRPC status, explicit Error status, and spans with exception events.
@@ -352,6 +387,15 @@ func extractErrorSignature(trace map[string]any) *errorSignature {
 	if excType, excMsg := traceGetExceptionDetails(trace, spanAttrs); excType != "" {
 		sig.ExceptionType = excType
 		sig.ExceptionMessage = truncate(excMsg, maxExceptionMessageLen)
+	}
+
+	// No exception event: the failure reason often still lives in the span
+	// status description or a gRPC client's grpc.error_message. Capture it so
+	// the insight names *why* it failed, not just the status code. Spans whose
+	// reason lives on a caller span (gRPC records it client-side) are recovered
+	// later in aggregateErrors via the parent chain.
+	if sig.ExceptionMessage == "" {
+		sig.ErrorMessage = truncate(traceGetErrorMessage(trace, spanAttrs), maxExceptionMessageLen)
 	}
 
 	// Identify protocol. Checks run in order of specificity; the first match
@@ -538,6 +582,43 @@ func (t *traceTree) errorSubtreeLeaves() []map[string]any {
 	return leaves
 }
 
+// recoverErrorMessage walks up the parent chain from span looking for the
+// nearest erroring ancestor that carries an explicit error message. gRPC (and
+// many HTTP) clients record the failure text on the *caller's* span
+// (grpc.error_message / status_message), while the callee's leaf span — the one
+// aggregateErrors keeps as the root cause — frequently has only a status code.
+// Walking up recovers that text and attributes it to the leaf's bucket.
+//
+// The walk stops at the first message found, the first NON-error ancestor (we
+// must stay inside the failing call chain to avoid attributing an unrelated
+// message), a missing parent, or the depth bound. The seen-set guards against
+// cyclic parent links in malformed input.
+func (t *traceTree) recoverErrorMessage(span map[string]any) string {
+	const maxHops = 32
+	seen := map[string]bool{}
+	cur := span
+	for hop := 0; hop < maxHops; hop++ {
+		parentID := traceGetString(cur, "parent_span_id")
+		if parentID == "" || seen[parentID] {
+			return ""
+		}
+		seen[parentID] = true
+		parent := t.spans[parentID]
+		if parent == nil {
+			return ""
+		}
+		attrs := traceGetSpanAttributes(parent)
+		if !traceHasError(parent, attrs) {
+			return ""
+		}
+		if msg := traceGetErrorMessage(parent, attrs); msg != "" {
+			return msg
+		}
+		cur = parent
+	}
+	return ""
+}
+
 // aggregateErrors buckets root-cause error spans by signature, sorted by count
 // desc, capped at maxErrorBuckets.
 //
@@ -559,11 +640,21 @@ func aggregateErrors(traces []map[string]any) []aggregatedError {
 			if sig == nil {
 				continue
 			}
+			// The leaf is the originating service, but gRPC/HTTP clients record
+			// the error text on the *caller* span. If the leaf carries no
+			// message of its own, recover it from the nearest erroring ancestor.
+			if sig.ErrorMessage == "" && sig.ExceptionMessage == "" {
+				sig.ErrorMessage = truncate(tree.recoverErrorMessage(span), maxExceptionMessageLen)
+			}
 			key := sig.aggregationKey()
 			b, ok := buckets[key]
 			if !ok {
 				b = &bucket{sig: *sig, traceID: traceGetString(span, "trace_id")}
 				buckets[key] = b
+			} else if b.sig.ErrorMessage == "" && b.sig.ExceptionMessage == "" && sig.ErrorMessage != "" {
+				// A later span in the same bucket recovered a message the first
+				// representative lacked — prefer the informative one.
+				b.sig.ErrorMessage = sig.ErrorMessage
 			}
 			b.count++
 			if b.traceID == "" {
@@ -606,6 +697,9 @@ func (s errorSignature) aggregationKey() string {
 // protocol to extractErrorSignature does not require changes here.
 //
 // Shape: "Nx [protocol] service → destination (operation): status=code (name); exception: type: msg  [example: traceid]"
+// When there is no exception event but an error message is available (span
+// status_message or a gRPC client's grpc.error_message, possibly recovered from
+// the caller span), it is rendered as "; error: msg" instead.
 func formatErrorInsight(a aggregatedError) playbooks.PlaybookActionResponseInsight {
 	s := a.Signature
 	var b strings.Builder
@@ -635,6 +729,8 @@ func formatErrorInsight(a aggregatedError) playbooks.PlaybookActionResponseInsig
 		if s.ExceptionMessage != "" {
 			fmt.Fprintf(&b, ": %s", s.ExceptionMessage)
 		}
+	} else if s.ErrorMessage != "" {
+		fmt.Fprintf(&b, "; error: %s", s.ErrorMessage)
 	}
 	if a.ExampleTraceID != "" {
 		// 8-char prefix is enough to disambiguate and search; full ID is noisy.
@@ -680,10 +776,15 @@ func joinHostPort(host, port string) string {
 }
 
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	// Slice by runes, not bytes: error messages and gRPC status text can carry
+	// non-ASCII (internationalised messages, punctuation, emoji). Byte slicing
+	// at an arbitrary boundary can split a multi-byte UTF-8 rune and produce
+	// invalid UTF-8, which then breaks JSON marshaling / rendering downstream.
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
-	return s[:max] + "…"
+	return string(runes[:max]) + "…"
 }
 
 // traceExtractServiceFlow returns services in *call-chain* order — the order

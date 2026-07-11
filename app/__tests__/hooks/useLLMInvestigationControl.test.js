@@ -67,7 +67,10 @@ const mockGetModelConfig = apiAskNudgebee.getModelConfig;
 describe('useLLMInvestigationControl', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockListModels.mockResolvedValue({ data: { models: [], default: null } });
+    // Never-resolving by default so no background SET_MODELS dispatch fires
+    // outside act in tests that don't exercise model loading.
+    // Tests that need model data set their own mockResolvedValue before rendering.
+    mockListModels.mockReturnValue(new Promise(() => {}));
     mockGetModelConfig.mockResolvedValue({ data: null });
   });
 

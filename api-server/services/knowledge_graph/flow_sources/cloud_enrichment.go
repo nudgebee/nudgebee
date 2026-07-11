@@ -1666,6 +1666,107 @@ func findCloudResourceByEndpoint(idx map[string]endpointHit, endpoint string) (*
 	return nil, ""
 }
 
+// awsDNSServiceMarkers identify a hostname as an AWS service endpoint. They gate
+// the truncated-DNS prefix matcher so it never prefix-matches an arbitrary short
+// external hostname (e.g. "api" or "redis"). Each marker carries a leading dot
+// (so it matches a DNS label boundary) but no trailing dot, so it matches both
+// a mid-name token ("...s3.us-east...") and one left dangling at the truncation
+// point ("...us-east-1.rds").
+var awsDNSServiceMarkers = []string{
+	".s3", ".rds", ".cache", ".elb", ".execute-api",
+	".lambda-url", ".dynamodb", ".sqs", ".sns", ".cloudfront", ".elasticbeanstalk",
+}
+
+// awsDNSPublicSuffixes are the trailing forms a *complete* AWS endpoint ends in.
+var awsDNSPublicSuffixes = []string{"amazonaws.com", "amazonaws.com.cn", "cloudfront.net", "on.aws"}
+
+// looksLikeTruncatedAWSDNS reports whether name is an AWS service hostname that
+// is missing its trailing region/domain suffix. The eBPF DNS-capture path
+// occasionally reports AWS hostnames chopped at a region boundary — e.g.
+// "<bucket>.s3.us-east" instead of "<bucket>.s3.us-east-1.amazonaws.com" — so
+// the exact endpoint lookup misses a resource that is plainly the same endpoint.
+// A name qualifies only if it carries an AWS service marker but does NOT already
+// terminate in a complete AWS public suffix (a complete name would have been
+// resolved by the exact lookup).
+func looksLikeTruncatedAWSDNS(name string) bool {
+	if name == "" {
+		return false
+	}
+	hasMarker := false
+	for _, m := range awsDNSServiceMarkers {
+		if strings.Contains(name, m) {
+			hasMarker = true
+			break
+		}
+	}
+	if !hasMarker {
+		return false
+	}
+	for _, suf := range awsDNSPublicSuffixes {
+		if strings.HasSuffix(name, suf) {
+			return false
+		}
+	}
+	return true
+}
+
+// findCloudResourceByTruncatedAWSDNS resolves a truncated AWS endpoint name to a
+// cloud-resource node by treating the name as a prefix of an indexed dns_name.
+// It is deliberately conservative to avoid false merges:
+//   - the name must look like a truncated AWS endpoint (looksLikeTruncatedAWSDNS);
+//   - the indexed endpoint must extend the name at a DNS boundary ('-' or '.')
+//     so "<bucket>.s3.us-east" extends to "<bucket>.s3.us-east-1..." but never to
+//     a hypothetical "<bucket>.s3.us-eastfoo...";
+//   - the indexed endpoint must terminate in a complete AWS public suffix;
+//   - the match must be unambiguous — if the prefix extends to two *different*
+//     nodes we return no match rather than guess.
+//
+// Bucket names (and RDS/cache endpoint tokens) are unique per resource, so for
+// the truncated-S3 case this resolves to exactly one node.
+func findCloudResourceByTruncatedAWSDNS(idx map[string]endpointHit, name string) (*core.DbNode, string) {
+	if len(idx) == 0 {
+		return nil, ""
+	}
+	key := strings.ToLower(strings.TrimSpace(name))
+	if !looksLikeTruncatedAWSDNS(key) {
+		return nil, ""
+	}
+
+	var matched *core.DbNode
+	var matchedField string
+	for endpoint, hit := range idx {
+		if len(endpoint) <= len(key) || !strings.HasPrefix(endpoint, key) {
+			continue
+		}
+		// Require a DNS-boundary continuation char immediately after the prefix.
+		switch endpoint[len(key)] {
+		case '-', '.':
+		default:
+			continue
+		}
+		complete := false
+		for _, suf := range awsDNSPublicSuffixes {
+			if strings.HasSuffix(endpoint, suf) {
+				complete = true
+				break
+			}
+		}
+		if !complete {
+			continue
+		}
+		if matched != nil && matched.ID != hit.node.ID {
+			// Prefix extends to two different resources — ambiguous, bail.
+			return nil, ""
+		}
+		matched = hit.node
+		matchedField = hit.matchedField
+	}
+	if matched == nil {
+		return nil, ""
+	}
+	return matched, matchedField
+}
+
 // makeRoutesThroughEdge builds a ROUTES_THROUGH edge from an external service
 // node to a matched cloud-resource node, stamping match provenance on the
 // edge properties. resolvedDNS is set only when the match was reached via

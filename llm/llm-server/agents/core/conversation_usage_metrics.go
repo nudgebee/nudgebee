@@ -2,6 +2,8 @@ package core
 
 import (
 	"database/sql"
+	"fmt"
+
 	"nudgebee/llm/security"
 )
 
@@ -88,28 +90,31 @@ type AgentMetrics struct {
 }
 
 func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request ConversationUsageMetricsRequest) (ConversationUsageMetricsResponse, error) {
+	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		return ConversationUsageMetricsResponse{}, fmt.Errorf("HandleConversationUsageMetricsApi: forbidden account_id")
+	}
 
 	// Get aggregated token usage (for backward compatibility)
-	agents, err := GetConversationDao().GetConversationTokenUsage(request.ConversationId)
+	agents, err := GetConversationDao().GetConversationTokenUsage(request.ConversationId, request.AccountId)
 	if err != nil {
 		return ConversationUsageMetricsResponse{}, err
 	}
 
 	// Get detailed token usage records for new metrics
-	detailedRecords, err := GetConversationDao().GetConversationTokenUsageDetailed(request.ConversationId)
+	detailedRecords, err := GetConversationDao().GetConversationTokenUsageDetailed(request.ConversationId, request.AccountId)
 	if err != nil {
 		return ConversationUsageMetricsResponse{}, err
 	}
 
 	// Get tool calls statistics
-	toolStats, err := GetConversationDao().GetConversationToolCallsStats(request.ConversationId)
+	toolStats, err := GetConversationDao().GetConversationToolCallsStats(request.ConversationId, request.AccountId)
 	if err != nil {
 		// Log error but don't fail - tool stats are optional
 		toolStats = ToolCallsStats{}
 	}
 
 	// Get time breakdown
-	timeBreakdown, err := GetConversationDao().GetConversationTimeBreakdown(request.ConversationId)
+	timeBreakdown, err := GetConversationDao().GetConversationTimeBreakdown(request.ConversationId, request.AccountId)
 	if err != nil {
 		// Log error but don't fail - time breakdown is optional
 		timeBreakdown = TimeBreakdown{}
@@ -273,9 +278,27 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 
 // calculateModelUsageStats aggregates statistics by model
 func calculateModelUsageStats(records []TokenUsageDetailedRecord) []ModelUsageStat {
-	modelMap := make(map[string]*ModelUsageStat)
-	modelNames := []string{}
+	if len(records) == 0 {
+		return []ModelUsageStat{}
+	}
 
+	modelNames := []string{}
+	seenModel := map[string]bool{}
+	for _, record := range records {
+		if !seenModel[record.LLMModel] {
+			seenModel[record.LLMModel] = true
+			modelNames = append(modelNames, record.LLMModel)
+		}
+	}
+
+	// Fetch costs in batch. Tolerate a nil DAO (unit tests) — without pricing,
+	// CostUsd stays zero and only the per-model token aggregates are populated.
+	var costs map[string]modelPricing
+	if dao := GetConversationDao(); dao != nil {
+		costs, _ = dao.GetConversationCosts(modelNames)
+	}
+
+	modelMap := make(map[string]*ModelUsageStat)
 	for _, record := range records {
 		key := record.LLMProvider + "|" + record.LLMModel
 
@@ -284,7 +307,6 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord) []ModelUsageSt
 				ModelProvider: record.LLMProvider,
 				ModelName:     record.LLMModel,
 			}
-			modelNames = append(modelNames, record.LLMModel)
 		}
 
 		stat := modelMap[key]
@@ -301,13 +323,26 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord) []ModelUsageSt
 		case "failure":
 			stat.FailedRequests++
 		}
-	}
 
-	// Fetch costs in batch. Tolerate a nil DAO (unit tests) — without pricing,
-	// CostUsd stays zero and only the per-model token aggregates are populated.
-	var costs map[string]modelPricing
-	if dao := GetConversationDao(); dao != nil {
-		costs, _ = dao.GetConversationCosts(modelNames)
+		// Cost is tiered per call (see CalculateTotalCost) on that call's own
+		// prompt size, so it must be computed per record and summed here —
+		// aggregating tokens across the whole conversation first and pricing
+		// the total once would push the combined volume over the long-ctx
+		// threshold even when no single call did, wildly inflating cost.
+		if pricing, ok := costs[record.LLMProvider+":"+record.LLMModel]; ok {
+			nonCachedTokens := record.InputTokens - record.CachedInputTokens
+			if nonCachedTokens < 0 {
+				nonCachedTokens = 0
+			}
+			stat.CostUsd += CalculateTotalCost(
+				&pricing,
+				nonCachedTokens,
+				record.CachedInputTokens,
+				record.CacheCreationTokens,
+				record.OutputTokens,
+				record.ThinkingTokens,
+			)
+		}
 	}
 
 	// Calculate derived metrics for each model
@@ -323,21 +358,6 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord) []ModelUsageSt
 		if stat.Requests > 0 {
 			rate := (float64(stat.SuccessfulRequests) / float64(stat.Requests)) * 100
 			stat.SuccessRatePercentage = &rate
-		}
-
-		// Calculate cost using the redesigned formula. CalculateTotalCost
-		// applies the long-ctx tier internally based on total prompt size.
-		if pricing, ok := costs[stat.ModelProvider+":"+stat.ModelName]; ok {
-			nonCachedTokens := stat.InputTokens - stat.CachedInputTokens
-
-			stat.CostUsd = CalculateTotalCost(
-				&pricing,
-				nonCachedTokens,
-				stat.CachedInputTokens,
-				stat.CacheCreationTokens,
-				stat.OutputTokens,
-				stat.ThinkingTokens,
-			)
 		}
 
 		result = append(result, *stat)

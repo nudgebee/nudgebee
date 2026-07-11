@@ -1,0 +1,99 @@
+# .oss-exclude — paths and patches removed when producing the OSS snapshot
+#
+# This file is the source of truth for "what's EE-only and must not be
+# published to the public OSS repo." It is consumed by the OSS-squash
+# pipeline (scripts/build-oss-snapshot.sh, run manually today; CI later)
+# and by scripts/check-oss-boundary.sh which lint-checks that no OSS file
+# imports a path listed below.
+#
+# Format:
+#   - Blank lines and lines starting with # are ignored.
+#   - Each path is relative to the repo root.
+#   - Trailing / marks a directory (recursive).
+#   - Paths must match what is on disk; relative globs are NOT expanded.
+#
+# When you add a new EE-only path, also add it here (and re-run the
+# boundary check). When the boundary check fails, the fix is usually
+# either: (a) move the imported symbol to OSS via an indirection
+# (registry/post-init hook), or (b) add the importing file here too.
+
+# ─── Backend (Go) ────────────────────────────────────────────────────
+api-server/services/ee/
+
+# llm-server EE extension bundle (egress filter, etc.) + the build-tag-
+# guarded bridge that blank-imports it. The bridge file lives next to
+# cmd/main.go because Go requires the registration init() to be in the
+# same package; the .go file is excluded from the OSS snapshot and the
+# imported tree comes out with it.
+llm/llm-server/ee/
+llm/llm-server/cmd/imports_enterprise.go
+
+# ─── Frontend (TS / React) ───────────────────────────────────────────
+app/src/ee/
+
+# SAML-handling Next.js pages — entire flow is EE (Okta/Azure AD/Auth0
+# enterprise SSO). Can't live under app/src/ee/ because the pages-router
+# requires filesystem paths under app/src/pages/, so they're listed
+# here for OSS removal instead.
+app/src/pages/api/auth/saml/
+
+# Cloud-marketplace purchase callback pages — SaaS-only (AWS/Azure
+# marketplace subscriptions). Backend marketplace code already lives
+# under api-server/services/ee/marketplace/ (excluded above); these
+# frontend callbacks were left behind by #30571's partial fix and
+# would 500 in OSS anyway (their POST handlers call EE backend routes).
+# Same pages-router filesystem constraint as the SAML pages above.
+app/src/pages/api/marketplace/
+
+# Self-signup form — creates a new tenant per sign-up. SaaS-only flow:
+# EE pre-provisions tenant via license, OSS is singleton-tenant by
+# design. Same pages-router constraint as the SAML pages above forces
+# these to live in app/src/pages/ rather than app/src/ee/.
+app/src/pages/signup.tsx
+app/src/pages/signup_v2.tsx
+app/src/pages/signup_verify.tsx
+app/src/pages/api/auth/signup.ts
+app/src/pages/api/auth/signup_verify.ts
+
+# ─── Helm chart EE overlay ───────────────────────────────────────────
+# values-enterprise.yaml is the internal-registry overlay for high-frequency
+# private deploys (registry.nudgebee.com instead of public GHCR). Excluded
+# because the registry hostnames are internal-infra-only.
+deploy/kubernetes/nudgebee/values-enterprise.yaml
+
+# ─── EE design docs ──────────────────────────────────────────────────
+# Strategy notes, tier-feature catalogs, and design discussions that
+# would leak the EE/SaaS roadmap or feature lineup if published.
+# Public docs/ stays for OSS-safe content (interface descriptions,
+# how feature_flag works, etc.).
+docs/ee/
+
+# ─── Companion patches (executable contract) ─────────────────────────
+# Path stripping alone is not sufficient. Every consumer of
+# .oss-exclude (the in-repo `scripts/build-oss-snapshot.sh` AND the
+# external `OSS_DROP.md` runbook in the public OSS repo) MUST run the
+# canonical patch script on the post-strip tree.
+#
+# Canonical impl: `scripts/oss-patches.sh` (single source of truth).
+#   - GNU/BSD sed-portable.
+#   - Asserts each patch matched (silent no-op = exit 1).
+#   - Both the in-repo snapshot script and the OSS_DROP.md runbook
+#     source this script, so the patch logic can't drift.
+#
+# The strip+patch sequence:
+#   1. Remove every path listed above this section.
+#   2. `source scripts/oss-patches.sh && apply_oss_patches`
+#      (or `scripts/oss-patches.sh apply`).
+#   3. (Recommended) run `scripts/check-oss-boundary.sh`,
+#      `go build ./...`, `tsc --noEmit` on the post-strip tree.
+#
+# Why patches at all: cmd/main.go and _app.tsx each carry a single
+# blank-import line that pulls in the EE init() side effects (route
+# handlers, license impl, slot registrations). Those lines are the
+# *only* allowed OSS→EE references — the boundary check whitelists
+# them. The OSS snapshot can't ship them because the imported
+# packages don't exist after the strip.
+#
+# When a new patch is required (e.g. a tsconfig.paths entry to delete,
+# a values.yaml block to clean), add it to scripts/oss-patches.sh.
+# Both consumers automatically pick up the change with no edit.

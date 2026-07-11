@@ -2,10 +2,11 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import ListingLayout from '@ui/ListingLayout';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
+import FilterDropdown from '@ui/FilterDropdown';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { Button } from '@ui/Button';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { Label } from '@ui/Label';
 import Text from '@shared/format/Text';
 import CreateTool from './CreateTool';
@@ -15,12 +16,27 @@ import { useTenantBranding } from '@hooks/useTenantBranding';
 import { PlusIcon, EditIcon, ErrorIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { snakeToTitleCase } from 'src/utils/common';
-import { Box } from '@mui/material';
+import { Box, Stack } from '@mui/material';
 import Tooltip from '@ui/Tooltip';
 import { ds } from 'src/utils/colors';
 import { TOOL_CONFIGURATION_WARNING } from '@data/constants';
+import { HybridScopeChips } from '@components/llm/ScopeChip';
 
-const ListTools = ({ accountId }) => {
+// "Created By" is a binary distinction on tool.type — the backend only ever
+// emits 'system' or 'custom', so the options are fixed (not derived from data).
+const CREATED_BY_OPTIONS = [
+  { label: 'System Generated', value: 'system' },
+  { label: 'User Created', value: 'custom' },
+];
+
+const ListTools = ({ accountId, stickyTable = false }) => {
+  // Tenant-wide read-only mode: when the Settings modal is opened from the
+  // global sidebar (no current account in scope), the backend's
+  // toolListTool routes empty account_id to ListToolsForTenant — system
+  // tool catalog + custom tools across every account the caller can
+  // read. The UI replaces NB-Tool-Type with an Account column, drops the
+  // per-account is_configured warning, and hides Create / Edit.
+  const isTenantWide = !accountId;
   const { baseTitle } = useTenantBranding();
   const [data, setData] = React.useState([]);
   const [originalData, setOriginalData] = React.useState([]);
@@ -30,26 +46,49 @@ const ListTools = ({ accountId }) => {
   const [editMode, setEditMode] = React.useState(false);
   const [selectedTool, setSelectedTool] = React.useState(null);
   const [searchToolByName, setSearchToolByName] = React.useState('');
+  const [createdByFilter, setCreatedByFilter] = React.useState(null);
+  const [statusFilter, setStatusFilter] = React.useState(null);
 
   React.useEffect(() => {
     listTools();
   }, [accountId]);
 
+  // Status options are derived from the loaded tools (not hard-coded) so the
+  // filter always mirrors the exact set of statuses the Status column shows —
+  // enabled/disabled/draft/error today, plus any future statuses for free.
+  const statusOptions = React.useMemo(() => {
+    const distinct = [...new Set(allTools.map((tool) => tool?.status).filter(Boolean))];
+    return distinct.map((status) => ({ label: snakeToTitleCase(status), value: status })).sort((a, b) => a.label.localeCompare(b.label));
+  }, [allTools]);
+
+  // Drop a selected status that no longer exists after a refetch, otherwise the
+  // table would silently show zero rows with no obvious way to recover.
   React.useEffect(() => {
-    if (searchToolByName === '') {
-      setData(originalData);
-    } else {
-      const filteredData = originalData.filter((item) => {
-        const originalToolName = item[0].rawData?.name || '';
+    if (statusFilter && statusOptions.length > 0 && !statusOptions.some((opt) => opt.value === statusFilter)) {
+      setStatusFilter(null);
+    }
+  }, [statusOptions, statusFilter]);
+
+  React.useEffect(() => {
+    const filteredData = originalData.filter((item) => {
+      const raw = item[0]?.rawData || {};
+
+      // Name: match both original (snake_case) and formatted (Title Case) forms.
+      let nameMatches = true;
+      if (searchToolByName !== '') {
+        const originalToolName = raw.name || '';
         const formattedToolName = snakeToTitleCase(originalToolName);
         const searchLower = searchToolByName.toLowerCase();
+        nameMatches = originalToolName.toLowerCase().includes(searchLower) || formattedToolName.toLowerCase().includes(searchLower);
+      }
 
-        // Search in both original name (snake_case) and formatted name (Title Case)
-        return originalToolName.toLowerCase().includes(searchLower) || formattedToolName.toLowerCase().includes(searchLower);
-      });
-      setData(filteredData);
-    }
-  }, [searchToolByName, originalData]);
+      const createdByMatches = !createdByFilter || raw.type === createdByFilter;
+      const statusMatches = !statusFilter || raw.status === statusFilter;
+
+      return nameMatches && createdByMatches && statusMatches;
+    });
+    setData(filteredData);
+  }, [searchToolByName, createdByFilter, statusFilter, originalData]);
 
   const handleSearchEnter = () => {
     listTools();
@@ -77,7 +116,9 @@ const ListTools = ({ accountId }) => {
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
                     <Box sx={{ fontWeight: ds.weight.medium, display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
                       {snakeToTitleCase(tool.name)}
-                      {tool.needs_config && !tool.is_configured && (
+                      {/* is_configured is per-account; the warning makes no
+                          sense in the tenant-wide read. */}
+                      {!isTenantWide && tool.needs_config && !tool.is_configured && (
                         <Tooltip title={TOOL_CONFIGURATION_WARNING}>
                           <SafeIcon src={ErrorIcon} alt='warning' height={18} width={18} />
                         </Tooltip>
@@ -104,7 +145,7 @@ const ListTools = ({ accountId }) => {
                     </Box>
                   </Box>
                 ),
-                rawData: { name: tool.name },
+                rawData: { name: tool.name, type: tool.type, status: tool.status },
               },
               {
                 component: <Text value={tool.description || '-'} showAutoEllipsis requiredToolTip lineClamp={2} />,
@@ -112,22 +153,33 @@ const ListTools = ({ accountId }) => {
               {
                 component: <Label text={tool.status} />,
               },
-              {
-                text: <Label text={snakeToTitleCase(tool.nb_tool_type)} />,
-              },
-              {
-                component:
-                  tool.type === 'custom' && tool.nb_tool_type == 'tool' && hasWriteAccess(accountId) ? (
-                    <Button
-                      tone='secondary'
-                      size='xs'
-                      composition='icon-only'
-                      icon={<SafeIcon src={EditIcon} alt='edit' height={20} width={20} />}
-                      aria-label='Edit tool'
-                      onClick={() => handleEditTool(tool)}
-                    />
-                  ) : null,
-              },
+              // Tenant-wide swaps NB Tool Type + Actions for an Account
+              // column. Edit is per-account, so it's hidden alongside
+              // Create. System tools never have an account; show '—'.
+              ...(isTenantWide
+                ? [
+                    {
+                      component: <Text value={tool.account_name || (tool.type === 'system' ? '—' : tool.account_id || '—')} />,
+                    },
+                  ]
+                : [
+                    {
+                      text: <Label text={snakeToTitleCase(tool.nb_tool_type)} />,
+                    },
+                    {
+                      component:
+                        tool.type === 'custom' && tool.nb_tool_type == 'tool' && hasWriteAccess(accountId) ? (
+                          <Button
+                            tone='secondary'
+                            size='xs'
+                            composition='icon-only'
+                            icon={<SafeIcon src={EditIcon} alt='edit' height={20} width={20} />}
+                            aria-label='Edit tool'
+                            onClick={() => handleEditTool(tool)}
+                          />
+                        ) : null,
+                    },
+                  ]),
             ];
           });
           setData(tools);
@@ -171,6 +223,13 @@ const ListTools = ({ accountId }) => {
       </Modal>
       <ListingLayout id='all-tools'>
         <ListingLayout.Toolbar
+          title={
+            <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
+              Tools
+              {/* Hybrid: system catalog + custom tools per account. */}
+              <HybridScopeChips accountId={accountId} />
+            </Box>
+          }
           actions={
             <>
               <DownloadButton onClick={() => ({ tableId: 'tools' })} size='sm' />
@@ -184,7 +243,7 @@ const ListTools = ({ accountId }) => {
               >
                 Integration
               </Button>
-              {hasWriteAccess(accountId) && (
+              {!isTenantWide && hasWriteAccess(accountId) && (
                 <Button
                   tone='primary'
                   size='sm'
@@ -213,28 +272,55 @@ const ListTools = ({ accountId }) => {
             </>
           }
         >
-          <CustomSearch
-            id='tool-search'
-            label='Search Tool'
-            value={searchToolByName}
-            onChange={(value) => setSearchToolByName(value)}
-            onEnterPress={handleSearchEnter}
-          />
+          <Stack direction='row' alignItems='center' spacing={1}>
+            <FilterDropdown
+              id='tool-created-by-filter'
+              label='Created By'
+              options={CREATED_BY_OPTIONS}
+              value={createdByFilter}
+              onSelect={(_e, item) => setCreatedByFilter(item?.value ?? null)}
+            />
+            <FilterDropdown
+              id='tool-status-filter'
+              label='Status'
+              options={statusOptions}
+              value={statusFilter}
+              onSelect={(_e, item) => setStatusFilter(item?.value ?? null)}
+            />
+            <SearchInput
+              id='tool-search'
+              label='Search Tool'
+              value={searchToolByName}
+              onChange={(value) => setSearchToolByName(value)}
+              onEnterPress={handleSearchEnter}
+            />
+          </Stack>
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
           <CustomTable
-            headers={[
-              { name: 'Name', width: '20%' },
-              { name: 'Description', width: '40%' },
-              { name: 'Status', width: '15%' },
-              { name: 'NB Tool Type', width: '15%' },
-              { name: 'Actions', width: '10%' },
-            ]}
+            headers={
+              isTenantWide
+                ? [
+                    { name: 'Name', width: '25%' },
+                    { name: 'Description', width: '45%' },
+                    { name: 'Status', width: '15%' },
+                    { name: 'Account', width: '15%' },
+                  ]
+                : [
+                    { name: 'Name', width: '20%' },
+                    { name: 'Description', width: '40%' },
+                    { name: 'Status', width: '15%' },
+                    { name: 'NB Tool Type', width: '15%' },
+                    { name: 'Actions', width: '10%' },
+                  ]
+            }
             tableData={data}
             rowsPerPage={data.length}
             totalRows={data.length}
             loading={loading}
             id='tools'
+            stickyHeader={stickyTable}
+            sx={stickyTable ? { maxHeight: 'calc(90vh - 300px)', overflowY: 'auto' } : undefined}
           />
         </ListingLayout.Body>
       </ListingLayout>
@@ -244,6 +330,7 @@ const ListTools = ({ accountId }) => {
 
 ListTools.propTypes = {
   accountId: PropTypes.string,
+  stickyTable: PropTypes.bool,
 };
 
 export default ListTools;

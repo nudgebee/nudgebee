@@ -123,7 +123,10 @@ func TestAzureDetermineNodeType(t *testing.T) {
 		{"DB: ServiceBus NS", "namespaces", "microsoft.servicebus/namespaces", core.NodeTypeMessageQueue},
 		{"DB: ACR", "registries", "microsoft.containerregistry/registries", core.NodeTypeContainerRegistry},
 		{"DB: CDN", "profiles", "microsoft.cdn/profiles", core.NodeTypeCDN},
-		{"DB: Disks", "disks", "microsoft.compute/disks", core.NodeTypeComputeInstance}, // fallback to service prefix
+		// Disks (and other microsoft.compute storage artifacts) fall through to the
+		// service-prefix fallback here, but are dropped before classification by
+		// DefaultAzureServiceTypeFilter — see TestAzureDefaultFilterDropsComputeArtifacts.
+		{"DB: Disks", "disks", "microsoft.compute/disks", core.NodeTypeComputeInstance},
 
 		// Service prefix fallback
 		{"Unknown Compute type", "SomeNewType", "microsoft.compute/somethingnew", core.NodeTypeComputeInstance},
@@ -306,6 +309,53 @@ func TestAzureShouldIncludeResource(t *testing.T) {
 			t.Error("Expected case-insensitive match to be included")
 		}
 	})
+}
+
+// TestAzureDefaultFilterDropsComputeArtifacts verifies the production default
+// filter drops microsoft.compute storage artifacts (disks/snapshots/images/
+// galleries) — which would otherwise be misclassified as ComputeInstance and
+// churn the graph via ephemeral AKS/Databricks per-pod volumes — while keeping
+// real compute resources.
+func TestAzureDefaultFilterDropsComputeArtifacts(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	source, _ := NewAzureSource(AzureSourceConfig{ServiceTypeFilter: DefaultAzureServiceTypeFilter}, logger)
+
+	dropped := []struct {
+		serviceName string
+		resType     string
+	}{
+		{"microsoft.compute/disks", "disks"},
+		{"microsoft.compute/snapshots", "snapshots"},
+		{"microsoft.compute/images", "images"},
+		{"microsoft.compute/galleries", "galleries"},
+		{"microsoft.compute/locations", "locations"},
+	}
+	for _, d := range dropped {
+		t.Run("drops "+d.serviceName, func(t *testing.T) {
+			r := &CloudResourceRow{ServiceName: d.serviceName, Type: d.resType}
+			if source.shouldIncludeResource(r) {
+				t.Errorf("expected %q to be dropped by the default filter", d.serviceName)
+			}
+		})
+	}
+
+	kept := []struct {
+		serviceName string
+		resType     string
+	}{
+		{"microsoft.compute/virtualmachines", "virtualmachines"},
+		{"microsoft.compute/virtualmachinescalesets", "virtualmachinescalesets"},
+		{"microsoft.containerservice/managedclusters", "managedclusters"},
+		{"microsoft.storage/storageaccounts", "storageaccounts"},
+	}
+	for _, k := range kept {
+		t.Run("keeps "+k.serviceName, func(t *testing.T) {
+			r := &CloudResourceRow{ServiceName: k.serviceName, Type: k.resType}
+			if !source.shouldIncludeResource(r) {
+				t.Errorf("expected %q to be kept by the default filter", k.serviceName)
+			}
+		})
+	}
 }
 
 // ============================================================================

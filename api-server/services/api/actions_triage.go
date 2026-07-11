@@ -599,7 +599,7 @@ func handleEventClassify(h *ActionRequest, c *gin.Context, ctx *security.Request
 	c.JSON(http.StatusOK, response)
 
 	// Publish audit event
-	if err := audit.PublishAuditEvent(ctx, audit.Audit{
+	if err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{{
 		TenantId:      tenantID,
 		UserId:        userID,
 		AccountId:     *ev.CloudAccountId,
@@ -612,8 +612,8 @@ func handleEventClassify(h *ActionRequest, c *gin.Context, ctx *security.Request
 		EventAction:   audit.EventActionCreate,
 		EventStatus:   audit.EventStatusSuccess,
 		EventAttr:     map[string]any{"event_id": eventID, "classification": classification},
-	}); err != nil {
-		ctx.GetLogger().Error("failed to publish audit event", "error", err)
+	}}}); err != nil {
+		ctx.GetLogger().Error("failed to create audit event", "error", err)
 	}
 }
 
@@ -844,7 +844,7 @@ func handleEventCreateTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 	c.JSON(http.StatusOK, response)
 
 	// Publish audit event
-	if err := audit.PublishAuditEvent(ctx, audit.Audit{
+	if err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{{
 		TenantId:      tenantID,
 		UserId:        userID,
 		AccountId:     cloudAccountID,
@@ -857,8 +857,8 @@ func handleEventCreateTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 		EventAction:   audit.EventActionCreate,
 		EventStatus:   audit.EventStatusSuccess,
 		EventAttr:     map[string]any{"rule_id": rule.ID, "rule_type": req.RuleType},
-	}); err != nil {
-		ctx.GetLogger().Error("failed to publish audit event", "error", err)
+	}}}); err != nil {
+		ctx.GetLogger().Error("failed to create audit event", "error", err)
 	}
 }
 
@@ -1024,7 +1024,7 @@ func handleEventDeleteTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 	})
 
 	// Publish audit event
-	if err := audit.PublishAuditEvent(ctx, audit.Audit{
+	if err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{{
 		TenantId:      tenantID,
 		UserId:        userID,
 		AccountId:     cloudAccountID,
@@ -1037,8 +1037,8 @@ func handleEventDeleteTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 		EventAction:   audit.EventActionDelete,
 		EventStatus:   audit.EventStatusSuccess,
 		EventAttr:     map[string]any{"rule_id": ruleID},
-	}); err != nil {
-		ctx.GetLogger().Error("failed to publish audit event", "error", err)
+	}}}); err != nil {
+		ctx.GetLogger().Error("failed to create audit event", "error", err)
 	}
 }
 
@@ -1164,7 +1164,7 @@ func handleEventUpdateTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 	c.JSON(http.StatusOK, response)
 
 	// Publish audit event
-	if err := audit.PublishAuditEvent(ctx, audit.Audit{
+	if err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{{
 		TenantId:      tenantID,
 		UserId:        userID,
 		AccountId:     cloudAccountID,
@@ -1177,8 +1177,8 @@ func handleEventUpdateTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 		EventAction:   audit.EventActionUpdate,
 		EventStatus:   audit.EventStatusSuccess,
 		EventAttr:     map[string]any{"rule_id": rule.ID, "rule_type": req.RuleType},
-	}); err != nil {
-		ctx.GetLogger().Error("failed to publish audit event", "error", err)
+	}}}); err != nil {
+		ctx.GetLogger().Error("failed to create audit event", "error", err)
 	}
 }
 
@@ -1244,7 +1244,7 @@ func handleEventUpdateNBStatus(h *ActionRequest, c *gin.Context, ctx *security.R
 	c.JSON(http.StatusOK, response)
 
 	// Publish audit event
-	if err := audit.PublishAuditEvent(ctx, audit.Audit{
+	if err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{{
 		TenantId:      tenantID,
 		UserId:        userID,
 		AccountId:     *ev.CloudAccountId,
@@ -1257,8 +1257,8 @@ func handleEventUpdateNBStatus(h *ActionRequest, c *gin.Context, ctx *security.R
 		EventAction:   audit.EventActionUpdate,
 		EventStatus:   audit.EventStatusSuccess,
 		EventAttr:     map[string]any{"event_id": eventID, "nb_status": nbStatus},
-	}); err != nil {
-		ctx.GetLogger().Error("failed to publish audit event", "error", err)
+	}}}); err != nil {
+		ctx.GetLogger().Error("failed to create audit event", "error", err)
 	}
 }
 
@@ -1306,22 +1306,27 @@ func handleEventToggleSystemRuleOverride(h *ActionRequest, c *gin.Context, ctx *
 
 	c.JSON(http.StatusOK, response)
 
-	// Publish audit event
-	if err := audit.PublishAuditEvent(ctx, audit.Audit{
+	// Publish audit event. Enable/disable is recorded as its own event type so it
+	// reads as "Disabled"/"Enabled" in the audits UI rather than a generic update.
+	auditEventType := audit.EventTypeTriageRuleEnable
+	if disabled {
+		auditEventType = audit.EventTypeTriageRuleDisable
+	}
+	if err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{{
 		TenantId:      tenantID,
 		UserId:        userID,
 		AccountId:     cloudAccountID,
 		EventTime:     time.Now(),
 		EventCategory: audit.EventCategoryTriage,
-		EventType:     audit.EventTypeTriageRuleUpdate,
+		EventType:     auditEventType,
 		EventState:    req,
 		EventActor:    audit.EventActorApiService,
 		EventTarget:   "system_rule_override",
 		EventAction:   audit.EventActionUpdate,
 		EventStatus:   audit.EventStatusSuccess,
 		EventAttr:     map[string]any{"system_rule_id": systemRuleID, "disabled": disabled},
-	}); err != nil {
-		ctx.GetLogger().Error("failed to publish audit event", "error", err)
+	}}}); err != nil {
+		ctx.GetLogger().Error("failed to create audit event", "error", err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/memory"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	toolcore "nudgebee/llm/tools/core"
 	"regexp"
 	"slices"
@@ -56,6 +57,15 @@ func guessAgentStatusFromResponse(plannerResponse NBAgentPlannerExecutorResponse
 	}
 
 	if strings.Contains(response, toolcore.ErrUnableToFetchData.Error()) || strings.Contains(response, errLlmUnableToGenerate.Error()) {
+		return AgentExecutionStatusFail
+	}
+
+	// egressfilter blocks are persisted with the user-safe message as the
+	// agent's response text (no "error: agent unable to process request"
+	// prefix, deliberately — see ErrLlmUnableToGenerate). Without this
+	// check, a blocked turn would classify as Success and a parent planner
+	// would happily build on a non-answer.
+	if strings.Contains(response, egressfilter.BlockedMessageMarker) {
 		return AgentExecutionStatusFail
 	}
 

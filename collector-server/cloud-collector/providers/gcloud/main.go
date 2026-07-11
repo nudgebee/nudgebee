@@ -53,6 +53,17 @@ func (a *gcloudProvider) QueryLogs(ctx providers.CloudProviderContext, account p
 	return queryGcloudLogs(ctx, account, query)
 }
 
+// QueryDeploymentDiff implements providers.DeploymentDiffProvider for GCP (Cloud Run
+// revisions). Only GCP versions desired-state snapshots, so it's an optional interface.
+func (a *gcloudProvider) QueryDeploymentDiff(ctx providers.CloudProviderContext, account providers.Account, query providers.QueryDeploymentDiffRequest) (providers.QueryDeploymentDiffResponse, error) {
+	return queryGcloudDeploymentDiff(ctx, account, query)
+}
+
+// QueryTraces implements providers.TraceProvider (Cloud Trace).
+func (a *gcloudProvider) QueryTraces(ctx providers.CloudProviderContext, account providers.Account, query providers.QueryTracesRequest) (providers.QueryTracesResponse, error) {
+	return queryGcloudTraces(ctx, account, query)
+}
+
 func (a *gcloudProvider) QueryMetrices(ctx providers.CloudProviderContext, account providers.Account, filter providers.QueryMetricsRequest) (providers.QueryMetricsResponse, error) {
 	service, ok := GetGcloudService(filter.ServiceName)
 	if !ok {
@@ -82,6 +93,15 @@ func (a *gcloudProvider) ListMetrics(ctx providers.CloudProviderContext, account
 		providers.SetCachedMetrics(cacheKey, resp)
 	}
 	return resp, err
+}
+
+// globalGcloudServices are services whose GetResources enumerates every resource
+// project-wide and ignores the region argument, returning the identical full set
+// for each region. ListResources invokes them once rather than once per region.
+// NOTE: Vertex AI is intentionally excluded — its endpoints and models are regional.
+var globalGcloudServices = map[string]bool{
+	ServiceNameBigQuery: true,
+	ServiceNameStorage:  true,
 }
 
 func (a *gcloudProvider) ListResources(ctx providers.CloudProviderContext, account providers.Account, query providers.ListResourceRequest) (providers.ListResourcesResponse, error) {
@@ -119,6 +139,16 @@ func (a *gcloudProvider) ListResources(ctx providers.CloudProviderContext, accou
 			}, err
 		}
 		regions = gcloudRegions
+	}
+
+	// Global services (BigQuery datasets/tables, Cloud Storage buckets) enumerate
+	// every resource project-wide and ignore the region argument — GetResources
+	// returns the identical full set for each region. Collapse them to a single
+	// pass so we don't re-run an expensive full enumeration once per region (a
+	// large BigQuery project took 27-62 min per scan, repeated per region). The
+	// dedup loop below only discards duplicate *results*, not the redundant work.
+	if globalGcloudServices[serviceName] && len(regions) > 1 {
+		regions = regions[:1]
 	}
 
 	// Fetch alert policies once upfront to avoid N API calls (one per service)

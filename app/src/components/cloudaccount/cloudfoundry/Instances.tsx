@@ -11,11 +11,11 @@ import CloudAccountEvents from '@components/cloudaccount/CloudAccountEvents';
 import { MENU_ITEMS, DataBlock, CustomText } from '@components/cloudaccount/common';
 import { usePagination } from '@hooks/usePagination';
 import TagsCell from '@components/cloudaccount/TagsCell';
-import type { ICustomTable2Row } from '../ec2/Instances';
+import type { ICustomTableRow } from '../ec2/Instances';
 import { buildStateApiParams, getStateDropdownOptions } from '@components/cloudaccount/stateFilter';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import DownloadButton from '@shared/buttons/DownloadButton';
@@ -154,7 +154,7 @@ const AppStatusCell = ({ state }: { state: string }) => {
   const label = getStatusLabel(state);
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
-      <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: dotColor, flexShrink: 0 }} />
+      <Box sx={{ width: ds.space[2], height: ds.space[2], borderRadius: '50%', backgroundColor: dotColor, flexShrink: 0 }} />
       <Typography sx={{ fontSize: ds.text.body, color: ds.gray[700], fontWeight: ds.weight.regular }}>{label}</Typography>
     </Box>
   );
@@ -224,7 +224,7 @@ const InstanceCountCell = ({ item }: { item: any }) => {
     }
     return (
       <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
-        <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: color, flexShrink: 0 }} />
+        <Box sx={{ width: ds.space.mul(0, 3), height: ds.space.mul(0, 3), borderRadius: '50%', backgroundColor: color, flexShrink: 0 }} />
         <Typography sx={{ fontSize: ds.text.body, color: ds.gray[700], fontWeight: ds.weight.medium }}>
           {counts.running} / {counts.total}
         </Typography>
@@ -603,7 +603,7 @@ const CFInstancesView = (props: {
             meta: typeof rawItem.meta === 'string' ? JSON.parse(rawItem.meta || '{}') : rawItem.meta || {},
             tags: typeof rawItem.tags === 'string' ? JSON.parse(rawItem.tags || '{}') : rawItem.tags || {},
           };
-          const data: ICustomTable2Row[] = [];
+          const data: ICustomTableRow[] = [];
 
           // App state from meta or status
           const state = item?.meta?.state || getStateFromStatus(item?.status);
@@ -711,7 +711,7 @@ const CFInstancesView = (props: {
         title={props.heading || undefined}
         actions={<DownloadButton id={`${cfInstancesTable}-download`} onClick={() => ({ tableId: cfInstancesTable })} />}
       >
-        <CustomSearch
+        <SearchInput
           id='cf-instances-search'
           label='Search By App Name'
           value={selectedInstanceIdName}

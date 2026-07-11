@@ -5,6 +5,7 @@ import { Button } from '@ui/Button';
 import TicketFormSection from './TicketFormSection';
 import apiTickets from '@api1/tickets';
 import { toast as snackbar } from '@ui/Toast';
+import { ds } from '@utils/colors';
 
 const AddModalForm = ({
   ticketUrl = {},
@@ -33,6 +34,7 @@ const AddModalForm = ({
     const { selectedConfig, selectedProject, selectedIssueType, ticketDetails, formData, selectedIssueTypeTicketMetadata } = ticketState;
 
     setError(false);
+    setIsLoading(true);
     let cloneObj = JSON.parse(JSON.stringify(formData));
     delete cloneObj.assignee;
     for (const [_key, value] of Object.entries(selectedIssueTypeTicketMetadata?.[0]?.fields ?? [])) {
@@ -139,7 +141,7 @@ const AddModalForm = ({
               minWidth: '140px',
             },
           }}
-          gap='12px'
+          gap={ds.space[3]}
         >
           <Button tone='secondary' size='md' onClick={handleCancel} disabled={isLoading}>
             Cancel

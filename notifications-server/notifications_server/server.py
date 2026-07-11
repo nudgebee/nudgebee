@@ -78,7 +78,10 @@ app.include_router(llm_callbacks.router)
 
 
 @app.get("/health")
-def health_probe():
+async def health_probe():
+    # Intentionally async so the liveness probe is answered directly on the event loop,
+    # with no dependency on the sync threadpool. Blocking webhook handlers are offloaded
+    # to worker threads, so /health stays responsive even when Google/Slack/Teams APIs stall.
     return {"status": "ok"}
 
 

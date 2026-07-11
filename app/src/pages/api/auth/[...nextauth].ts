@@ -31,6 +31,7 @@ import {
   getUserSuperAdminRole,
   getTenantIdByName,
 } from '@lib/UserService';
+import { pickDefaultTenant } from '@lib/defaultTenant';
 import { findTenantByDomain } from '@lib/tenantLookup';
 import { getLicenseDetails, SERVICES_SERVER_UNREACHABLE_MSG, type LicenseTier } from '@lib/license';
 import { enrichAuthToken, enrichSession, onReturningOAuthSignIn, onUnknownOAuthSignIn, resolveLicensedTenantUser } from '@lib/authHooks';
@@ -135,14 +136,12 @@ export async function adapterUser(user: any): Promise<NudgebeeUser> {
   let namespacedAccountIds: string[] = [];
   let namespacedReadOnlyAccountIds: string[] = [];
   const k8sNamespaces: any = {};
-  // Select tenant based on user preferences or defaults
-  if (user.tenants?.length > 0) {
-    const defaultTenant = user.tenants.find((t: any) => t.is_default);
-    if (defaultTenant) {
-      tenant = defaultTenant;
-    } else {
-      tenant = user.tenants[0];
-    }
+  // Select the tenant the session opens in. Prefer the `is_default` tenant,
+  // but only when the user actually has a role there — otherwise land them in a
+  // tenant where they have access instead of logging in roleless (issue #32594).
+  const selectedTenant = pickDefaultTenant(user);
+  if (selectedTenant) {
+    tenant = selectedTenant;
   }
   //filter roles based on tenant
   user.user_roles = user.user_roles ?? [];

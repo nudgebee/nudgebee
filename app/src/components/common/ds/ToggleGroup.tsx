@@ -1,5 +1,5 @@
 /**
- * ToggleGroup — DS V2 of legacy CustomButtonsGroup.
+ * ToggleGroup
  * Spec: app/design-system/primitives/forms/toggle-group.html
  *
  * Mutually-exclusive or multi-toggle button group. Distinct from
@@ -7,7 +7,7 @@
  * value or filter set. The visual is similar but the semantics differ.
  *
  * Variants per spec:
- *   selection   = 'single' | 'multi'
+ *   selection   = 'single' | 'multiple'
  *   size        = 'sm' | 'md'
  *   composition = 'text' | 'icon-only' | 'icon+text'  (auto from option shape)
  *
@@ -16,10 +16,6 @@
  *   - Don't mix icon-only and icon+text in one group. Pick one composition per group.
  *   - Don't use ToggleGroup as the only filter on a list when "no selection" is
  *     meaningful. Single-mode requires a chosen value.
- *
- * Migration:
- *   `import CustomButtonsGroup from '@shared/CustomButtonsGroup'`
- * → `import { ToggleGroup } from '@ui/ToggleGroup'`
  *   Visual identity is shared with `Tabs (segmented)`; intent disambiguates.
  */
 import * as React from 'react';
@@ -28,7 +24,7 @@ import Tooltip from './Tooltip';
 import { ds } from '@utils/colors';
 
 export type ToggleGroupSize = 'sm' | 'md';
-export type ToggleGroupSelection = 'single' | 'multi';
+export type ToggleGroupSelection = 'single' | 'multiple';
 
 export interface ToggleGroupOption<V extends string = string> {
   value: V;
@@ -57,7 +53,7 @@ interface ToggleGroupSingleProps<V extends string = string> extends ToggleGroupB
 }
 
 interface ToggleGroupMultiProps<V extends string = string> extends ToggleGroupBaseProps<V> {
-  selection: 'multi';
+  selection: 'multiple';
   value: V[];
   onChange: (next: V[]) => void;
 }

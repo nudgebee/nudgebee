@@ -4,6 +4,12 @@
 
 replicaCount: 1
 
+# Ed25519 signing of requests forwarded to native k8s agents, so agents can
+# authorize UI-triggered workload mutations. Additive + backward-compatible
+# (old/unkeyed agents ignore it), so on by default; set false to disable.
+signing:
+  signK8sEnabled: true
+
 global:
   image:
     registry: 'ghcr.io/nudgebee'

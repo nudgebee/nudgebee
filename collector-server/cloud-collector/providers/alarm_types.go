@@ -20,6 +20,14 @@ type AlarmConfiguration struct {
 	MetricName string `yaml:"metric_name,omitempty" json:"metric_name,omitempty"` // CPUUtilization, FreeableMemory, etc.
 	Statistic  string `yaml:"statistic,omitempty" json:"statistic,omitempty"`     // Average, Sum, Maximum, Minimum
 
+	// GCP-specific: for GCP, MetricName above is only a short, human-friendly label
+	// (e.g. "DiskUtilization"). These carry the authoritative values needed to build a
+	// valid Cloud Monitoring alert policy filter: the fully-qualified metric type
+	// (e.g. "agent.googleapis.com/disk/percent_used") and the monitored resource type
+	// (e.g. "gce_instance"). Unused by AWS/Azure.
+	MetricTypeFilter string `yaml:"metric_type_filter,omitempty" json:"metric_type_filter,omitempty"`
+	ResourceType     string `yaml:"resource_type,omitempty" json:"resource_type,omitempty"`
+
 	// Metric math fields (for multi-metric alarms with expressions)
 	Metrics []MetricQuery `yaml:"metrics,omitempty" json:"metrics,omitempty"` // Metric queries for metric math
 
@@ -87,6 +95,12 @@ type AlarmCreationConfig struct {
 	Namespace  string           `json:"namespace,omitempty"`
 	Statistic  string           `json:"statistic,omitempty"`
 	Dimensions []AlarmDimension `json:"dimensions,omitempty"`
+
+	// GCP-specific simple-metric fields. For GCP, MetricName is only a short display
+	// label; these carry the fully-qualified metric type and monitored resource type
+	// required to build a valid alert policy filter. Empty for AWS/Azure.
+	MetricTypeFilter string `json:"metric_type_filter,omitempty"`
+	ResourceType     string `json:"resource_type,omitempty"`
 
 	// Metric math fields (for multi-metric alarms with expressions)
 	Metrics []MetricQueryConfig `json:"metrics,omitempty"`

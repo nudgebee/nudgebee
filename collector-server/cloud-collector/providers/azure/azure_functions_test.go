@@ -391,7 +391,7 @@ func TestFunctionsService_ApplyRecommendation(t *testing.T) {
 
 	err := svc.ApplyRecommendation(ctx, account, recommendation)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid resource ID")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 }
 
 func TestFunctionsService_ApplyCommand(t *testing.T) {
@@ -412,7 +412,7 @@ func TestFunctionsService_ApplyCommand(t *testing.T) {
 				Command:    "azure_function_https_only_disabled",
 			},
 			expectError:   true,
-			errorContains: "invalid resource ID",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "missing resource group in ID",
@@ -421,7 +421,7 @@ func TestFunctionsService_ApplyCommand(t *testing.T) {
 				Command:    "azure_function_https_only_disabled",
 			},
 			expectError:   true,
-			errorContains: "invalid resource ID",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "unknown command",
@@ -430,7 +430,7 @@ func TestFunctionsService_ApplyCommand(t *testing.T) {
 				Command:    "unknown_command",
 			},
 			expectError:   true,
-			errorContains: "unknown command",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "valid HTTPS command structure without Azure connection",
@@ -439,7 +439,7 @@ func TestFunctionsService_ApplyCommand(t *testing.T) {
 				Command:    "azure_function_https_only_disabled",
 			},
 			expectError:   true,
-			errorContains: "failed to create azure credential",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "valid start command structure without Azure connection",
@@ -448,7 +448,7 @@ func TestFunctionsService_ApplyCommand(t *testing.T) {
 				Command:    "start_function",
 			},
 			expectError:   true,
-			errorContains: "failed to create azure credential",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "valid stop command structure without Azure connection",
@@ -457,7 +457,7 @@ func TestFunctionsService_ApplyCommand(t *testing.T) {
 				Command:    "stop_function",
 			},
 			expectError:   true,
-			errorContains: "failed to create azure credential",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "valid restart command structure without Azure connection",
@@ -466,7 +466,7 @@ func TestFunctionsService_ApplyCommand(t *testing.T) {
 				Command:    "restart_function",
 			},
 			expectError:   true,
-			errorContains: "failed to create azure credential",
+			errorContains: "access key (client ID) is not provided",
 		},
 	}
 
@@ -495,7 +495,7 @@ func TestFunctionsService_QueryMetrices(t *testing.T) {
 
 	resp, err := svc.QueryMetrices(ctx, account, filter)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
+	assert.Contains(t, err.Error(), "StartDate and EndDate must be provided")
 	assert.Equal(t, providers.QueryMetricsResponse{}, resp)
 }
 

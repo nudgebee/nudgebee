@@ -3,6 +3,7 @@ import dayjs from 'dayjs';
 import { Box, Typography } from '@mui/material';
 import Loader from '@shared/Loader';
 import Tooltip from '@ui/Tooltip';
+import { ds } from '@utils/colors';
 import { withErrorBoundary } from '@shared/ErrorBoundary';
 
 const dayLabels = Array.from({ length: 7 }, (_, index) => {
@@ -48,6 +49,7 @@ const CustomHeatMap = ({
         ...hours,
         {
           dayHour: `${dayLabel} ${formattedHourLabel}`,
+          hourLabel,
           count,
           dataValue,
         },
@@ -70,22 +72,22 @@ const CustomHeatMap = ({
             <Loader />
           ) : (
             Object.keys(gridCells).map((day) => (
-              <div key={day} className='cells col' style={{ gap: 'var(--ds-space-1)', marginBottom: 'var(--ds-space-1)' }}>
+              <div key={day} className='cells col' style={{ gap: 'var(--ds-space-3)', marginBottom: 'var(--ds-space-1)' }}>
                 <span className='label first-col'>{day}</span>
-                {gridCells[day].hours.map(({ dayHour, count, dataValue }) => (
+                {gridCells[day].hours.map(({ dayHour, hourLabel, count, dataValue }) => (
                   <Tooltip
-                    key={dayHour}
+                    key={`${day}-${hourLabel}`}
                     title={
                       showTooltip ? (
                         <Box>
-                          <Typography fontSize='20px' fontWeight={600}>
+                          <Typography fontSize={ds.text.heading} fontWeight={600}>
                             {dataValue || '-'}
                           </Typography>
-                          <span fontSize='14px'>{dayHour}</span>
+                          <span fontSize={ds.text.bodyLg}>{dayHour}</span>
                         </Box>
                       ) : undefined
                     }
-                    color='#374151'
+                    color={ds.gray[700]}
                   >
                     <div
                       className='cell'
@@ -94,11 +96,11 @@ const CustomHeatMap = ({
                         alignItems: 'center',
                         justifyContent: 'center',
                         backgroundColor: generateBackgroundColor(count),
-                        margin: 'var(--ds-space-1)',
                         borderRadius: 'var(--ds-radius-sm)',
-                        width: '24px',
-                        height: '24px',
                         padding: 'var(--ds-space-1)',
+                        flex: 1,
+                        minWidth: 0,
+                        aspectRatio: '1 / 1',
                       }}
                     >
                       <Typography sx={{ fontSize: 'var(--ds-text-small)' }}>{count.toFixed(0)}</Typography>

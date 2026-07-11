@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,8 +11,10 @@ import (
 	"net/http"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -65,6 +68,48 @@ func init() {
 	core.RegisterNBToolFactory(ToolWorkflowConfigSave, func(accountId string) (core.NBTool, error) {
 		return WorkflowConfigSaveTool{}, nil
 	})
+	core.RegisterNBToolFactory(ToolWorkflowDryRun, func(accountId string) (core.NBTool, error) {
+		return WorkflowDryRunTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolWorkflowListVersions, func(accountId string) (core.NBTool, error) {
+		return WorkflowListVersionsTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolWorkflowGetVersion, func(accountId string) (core.NBTool, error) {
+		return WorkflowGetVersionTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolWorkflowPublish, func(accountId string) (core.NBTool, error) {
+		return WorkflowPublishTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolWorkflowMakeVersionLive, func(accountId string) (core.NBTool, error) {
+		return WorkflowMakeVersionLiveTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolWorkflowRestoreVersion, func(accountId string) (core.NBTool, error) {
+		return WorkflowRestoreVersionTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolWorkflowUpdateVersionMeta, func(accountId string) (core.NBTool, error) {
+		return WorkflowUpdateVersionMetaTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolWorkflowDeleteVersion, func(accountId string) (core.NBTool, error) {
+		return WorkflowDeleteVersionTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolWorkflowPause, func(accountId string) (core.NBTool, error) {
+		return WorkflowPauseTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolWorkflowResume, func(accountId string) (core.NBTool, error) {
+		return WorkflowResumeTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolWorkflowDelete, func(accountId string) (core.NBTool, error) {
+		return WorkflowDeleteTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolWorkflowExecutionCancel, func(accountId string) (core.NBTool, error) {
+		return WorkflowExecutionCancelTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolWorkflowTaskExecute, func(accountId string) (core.NBTool, error) {
+		return WorkflowTaskExecuteTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolWorkflowConfigDelete, func(accountId string) (core.NBTool, error) {
+		return WorkflowConfigDeleteTool{}, nil
+	})
 }
 
 const (
@@ -84,7 +129,30 @@ const (
 	ToolWorkflowConfigList         = "workflow_config_list"
 	ToolWorkflowConfigGet          = "workflow_config_get"
 	ToolWorkflowConfigSave         = "workflow_config_save"
+	ToolWorkflowDryRun             = "workflow_dry_run"
+	// Phase 2 — versioning & publish
+	ToolWorkflowListVersions      = "workflow_list_versions"
+	ToolWorkflowGetVersion        = "workflow_get_version"
+	ToolWorkflowPublish           = "workflow_publish"
+	ToolWorkflowMakeVersionLive   = "workflow_make_version_live"
+	ToolWorkflowRestoreVersion    = "workflow_restore_version"
+	ToolWorkflowUpdateVersionMeta = "workflow_update_version_metadata"
+	ToolWorkflowDeleteVersion     = "workflow_delete_version"
+	// Phase 3 — lifecycle
+	ToolWorkflowPause  = "workflow_pause"
+	ToolWorkflowResume = "workflow_resume"
+	ToolWorkflowDelete = "workflow_delete"
+	// Phase 4 — execution control & advanced
+	ToolWorkflowExecutionCancel = "workflow_execution_cancel"
+	ToolWorkflowTaskExecute     = "workflow_task_execute"
+	ToolWorkflowConfigDelete    = "workflow_config_delete"
 )
+
+// dryRunTimeout bounds the synchronous dry-run call. The shared HTTP client has no
+// timeout, and the runbook dry-run handler can block up to its own 30m ceiling, which
+// would hang the agent turn. Most automations dry-run in seconds; a workflow that
+// exceeds this is reported as "still running" rather than blocking indefinitely.
+const dryRunTimeout = 3 * time.Minute
 
 func getRunbookServerURL(path string) string {
 	url := strings.TrimSpace(config.Config.WorkflowServerEndpoint)
@@ -101,6 +169,13 @@ func getRunbookServerURL(path string) string {
 }
 
 func DoRunbookRequest(method, path string, body any, accountId, tenantId, userId string) ([]byte, error) {
+	return DoRunbookRequestWithContext(context.Background(), method, path, body, accountId, tenantId, userId)
+}
+
+// DoRunbookRequestWithContext is DoRunbookRequest with a caller-supplied context, so
+// callers can bound a request that the shared (timeout-less) HTTP client would
+// otherwise let block indefinitely — notably the synchronous dry-run endpoint.
+func DoRunbookRequestWithContext(reqCtx context.Context, method, path string, body any, accountId, tenantId, userId string) ([]byte, error) {
 	url := getRunbookServerURL(path)
 
 	var reqBody io.Reader
@@ -112,7 +187,7 @@ func DoRunbookRequest(method, path string, body any, accountId, tenantId, userId
 		reqBody = bytes.NewBuffer(jsonBytes)
 	}
 
-	req, err := http.NewRequest(method, url, reqBody)
+	req, err := http.NewRequestWithContext(reqCtx, method, url, reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -380,7 +455,14 @@ func compactWorkflowResponse(resp []byte) string {
 
 type WorkflowTriggerTool struct{}
 
-func (t WorkflowTriggerTool) Name() string             { return ToolWorkflowTrigger }
+func (t WorkflowTriggerTool) Name() string { return ToolWorkflowTrigger }
+
+// InferToolRequestType classifies triggering a live run as create so the executor
+// gates it behind user confirmation + RBAC (it has real effects).
+func (t WorkflowTriggerTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeCreate, nil
+}
+
 func (t WorkflowTriggerTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowTriggerTool) Description() string      { return "Triggers an automation execution." }
 func (t WorkflowTriggerTool) InputSchema() core.ToolSchema {
@@ -995,7 +1077,14 @@ func EnsureDefinitionObject(definition interface{}) (interface{}, error) {
 
 type WorkflowUpdateTool struct{}
 
-func (t WorkflowUpdateTool) Name() string             { return ToolWorkflowUpdate }
+func (t WorkflowUpdateTool) Name() string { return ToolWorkflowUpdate }
+
+// InferToolRequestType classifies updating a definition as update so the executor
+// gates it behind ask-before-edit confirmation + RBAC.
+func (t WorkflowUpdateTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeUpdate, nil
+}
+
 func (t WorkflowUpdateTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowUpdateTool) Description() string {
 	return "Updates an existing automation. Pass the inner definition (with tasks, triggers, version) under 'definition'; the tool wraps it into the {name, definition} shape the server expects. Pass 'name' if you want to rename — otherwise the existing name is reused."
@@ -1208,7 +1297,14 @@ func (t WorkflowExecutionGetTool) Call(ctx core.NbToolContext, input core.NBTool
 
 type WorkflowExecutionRetriggerTool struct{}
 
-func (t WorkflowExecutionRetriggerTool) Name() string             { return ToolWorkflowExecutionRetrigger }
+func (t WorkflowExecutionRetriggerTool) Name() string { return ToolWorkflowExecutionRetrigger }
+
+// InferToolRequestType classifies re-running an execution as create (new run, real
+// effects) so the executor gates it behind confirmation + RBAC.
+func (t WorkflowExecutionRetriggerTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeCreate, nil
+}
+
 func (t WorkflowExecutionRetriggerTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowExecutionRetriggerTool) Description() string {
 	return "Re-triggers an automation execution. Useful for retrying a failed execution."
@@ -1347,7 +1443,14 @@ func (t WorkflowConfigGetTool) Call(ctx core.NbToolContext, input core.NBToolCal
 
 type WorkflowConfigSaveTool struct{}
 
-func (t WorkflowConfigSaveTool) Name() string             { return ToolWorkflowConfigSave }
+func (t WorkflowConfigSaveTool) Name() string { return ToolWorkflowConfigSave }
+
+// InferToolRequestType classifies saving a config/secret as update so the executor
+// gates it behind ask-before-edit confirmation + RBAC.
+func (t WorkflowConfigSaveTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeUpdate, nil
+}
+
 func (t WorkflowConfigSaveTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowConfigSaveTool) Description() string {
 	return "Creates or updates an automation config. Secret values are encrypted at rest."
@@ -1384,6 +1487,619 @@ func (t WorkflowConfigSaveTool) Call(ctx core.NbToolContext, input core.NBToolCa
 	}
 
 	resp, err := DoRunbookRequest("POST", "configs", body, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// --- Workflow Dry-Run Tool ---
+
+// WorkflowDryRunTool executes an automation against the runbook engine WITHOUT
+// persisting external side effects, so the agent can prove a workflow works and
+// ground failure diagnosis in real task-level errors. It is classified `create`
+// so the executor gates it behind explicit user approval — dry-run is not assumed
+// to be free of side effects.
+type WorkflowDryRunTool struct{}
+
+func (t WorkflowDryRunTool) Name() string             { return ToolWorkflowDryRun }
+func (t WorkflowDryRunTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (t WorkflowDryRunTool) Description() string {
+	return "Dry-runs an automation: executes its tasks against the engine without persisting external side effects, returning per-task status and errors. Use it to verify an automation works and to diagnose why a run failed. Provide either an automation `id` or a raw `definition`."
+}
+
+// InferToolRequestType classifies dry-run as create so it is gated behind user
+// approval — the engine's dry-run path is not guaranteed free of side effects.
+func (t WorkflowDryRunTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeCreate, nil
+}
+
+func (t WorkflowDryRunTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type: core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{
+			"id":         {Type: core.ToolSchemaTypeString, Description: "The ID of an existing automation to dry-run (its current definition is fetched). Provide this OR `definition`."},
+			"definition": {Type: core.ToolSchemaTypeObject, Description: "A raw automation definition (version/triggers/tasks) to dry-run. Provide this OR `id`."},
+			"inputs":     {Type: core.ToolSchemaTypeObject, Description: "Optional input parameters for the dry-run."},
+			"name":       {Type: core.ToolSchemaTypeString, Description: "Optional automation name, used in any notifications the dry-run produces."},
+		},
+	}
+}
+
+func (t WorkflowDryRunTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	tenantId := ctx.Ctx.GetSecurityContext().GetTenantId()
+	userId := ctx.Ctx.GetSecurityContext().GetUserId()
+
+	definition := input.Arguments["definition"]
+	if definition == nil {
+		id, ok := input.Arguments["id"].(string)
+		if !ok || id == "" {
+			return core.NBToolResponse{}, errors.New("provide either `id` or `definition` to dry-run")
+		}
+		wfResp, err := DoRunbookRequest("GET", fmt.Sprintf("workflows/%s", id), nil, ctx.AccountId, tenantId, userId)
+		if err != nil {
+			return core.NBToolResponse{}, fmt.Errorf("failed to fetch automation %s for dry-run: %w", id, err)
+		}
+		var wf map[string]interface{}
+		if err := json.Unmarshal(wfResp, &wf); err != nil {
+			return core.NBToolResponse{}, fmt.Errorf("failed to parse automation %s: %w", id, err)
+		}
+		definition = wf["definition"]
+		if definition == nil {
+			return core.NBToolResponse{}, fmt.Errorf("automation %s has no definition to dry-run", id)
+		}
+	}
+
+	body := map[string]any{"definition": definition}
+	if inputs := input.Arguments["inputs"]; inputs != nil {
+		body["inputs"] = inputs
+	}
+	if name, ok := input.Arguments["name"].(string); ok && name != "" {
+		body["name"] = name
+	}
+
+	reqCtx, cancel := context.WithTimeout(context.Background(), dryRunTimeout)
+	defer cancel()
+
+	resp, err := DoRunbookRequestWithContext(reqCtx, "POST", "workflows/dry-run", body, ctx.AccountId, tenantId, userId)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(reqCtx.Err(), context.DeadlineExceeded) {
+			return core.NBToolResponse{
+				Data: fmt.Sprintf("Dry-run is still running after %s — this automation is long-running. Trigger it as a real run and inspect the execution instead.", dryRunTimeout),
+				Type: core.NBToolResponseTypeText,
+			}, nil
+		}
+		return core.NBToolResponse{}, err
+	}
+	return core.NBToolResponse{Data: SummarizeDryRunResponse(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// SummarizeDryRunResponse trims a DryRunWorkflowResponse to the fields the agent
+// needs to diagnose: overall status, top-level error, and per-task id/type/status/
+// error/rendered_params. Falls back to the raw body if the shape is unexpected.
+func SummarizeDryRunResponse(resp []byte) string {
+	var dr map[string]interface{}
+	if err := json.Unmarshal(resp, &dr); err != nil {
+		return string(resp)
+	}
+	out := map[string]interface{}{"status": dr["status"]}
+	if e, ok := dr["error"]; ok && e != nil && e != "" {
+		out["error"] = e
+	}
+	if tasks, ok := dr["tasks"].([]interface{}); ok {
+		compact := make([]map[string]interface{}, 0, len(tasks))
+		for _, ti := range tasks {
+			task, ok := ti.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			entry := map[string]interface{}{
+				"id":     task["id"],
+				"type":   task["type"],
+				"status": task["status"],
+			}
+			if e, ok := task["error"]; ok && e != nil && e != "" {
+				entry["error"] = e
+				entry["rendered_params"] = task["rendered_params"]
+			}
+			compact = append(compact, entry)
+		}
+		out["tasks"] = compact
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return string(resp)
+	}
+	return string(b)
+}
+
+// --- Workflow Versioning & Publishing Tools (Phase 2) ---
+//
+// Version/draft/live model: a workflow has a current draft (its definition) and a
+// list of published versions; one version is "live" (what triggers run). publish
+// snapshots the draft into a new version; make_version_live selects which version
+// runs; restore copies an old version back into the draft. Mutating ops declare
+// their request type so the executor gates them behind confirmation + RBAC.
+
+// versionPathSegment extracts a version number argument as a path segment. JSON
+// numbers arrive as float64; we also accept a string.
+func versionPathSegment(args map[string]any) (string, bool) {
+	switch v := args["version_number"].(type) {
+	case string:
+		if v != "" {
+			return v, true
+		}
+	case float64:
+		return fmt.Sprintf("%d", int64(v)), true
+	case int:
+		return fmt.Sprintf("%d", v), true
+	}
+	return "", false
+}
+
+func requireWorkflowID(args map[string]any) (string, error) {
+	id, ok := args["id"].(string)
+	if !ok || id == "" {
+		return "", errors.New("id is required")
+	}
+	return id, nil
+}
+
+// WorkflowListVersionsTool — list published versions of an automation (read).
+type WorkflowListVersionsTool struct{}
+
+func (t WorkflowListVersionsTool) Name() string             { return ToolWorkflowListVersions }
+func (t WorkflowListVersionsTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (t WorkflowListVersionsTool) Description() string {
+	return "Lists the published versions of an automation (version number, name, which is live). Arg: id (string, required)."
+}
+func (t WorkflowListVersionsTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type:       core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{"id": {Type: core.ToolSchemaTypeString, Description: "The automation ID"}},
+		Required:   []string{"id"},
+	}
+}
+func (t WorkflowListVersionsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	id, err := requireWorkflowID(input.Arguments)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	resp, err := DoRunbookRequest("GET", fmt.Sprintf("workflows/%s/versions", id), nil, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// WorkflowGetVersionTool — get a specific published version's definition (read).
+type WorkflowGetVersionTool struct{}
+
+func (t WorkflowGetVersionTool) Name() string             { return ToolWorkflowGetVersion }
+func (t WorkflowGetVersionTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (t WorkflowGetVersionTool) Description() string {
+	return "Gets a specific published version of an automation. Args: id (string, required), version_number (int, required)."
+}
+func (t WorkflowGetVersionTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type: core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{
+			"id":             {Type: core.ToolSchemaTypeString, Description: "The automation ID"},
+			"version_number": {Type: core.ToolSchemaTypeNumber, Description: "The version number"},
+		},
+		Required: []string{"id", "version_number"},
+	}
+}
+func (t WorkflowGetVersionTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	id, err := requireWorkflowID(input.Arguments)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	ver, ok := versionPathSegment(input.Arguments)
+	if !ok {
+		return core.NBToolResponse{}, errors.New("version_number is required")
+	}
+	resp, err := DoRunbookRequest("GET", fmt.Sprintf("workflows/%s/versions/%s", id, ver), nil, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// WorkflowPublishTool — snapshot the current draft as a new published version (update).
+type WorkflowPublishTool struct{}
+
+func (t WorkflowPublishTool) Name() string             { return ToolWorkflowPublish }
+func (t WorkflowPublishTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (t WorkflowPublishTool) Description() string {
+	return "Publishes the current draft of an automation as a new version. Args: id (string, required), name (optional), description (optional), set_live (bool, default true). Requires user approval."
+}
+func (t WorkflowPublishTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeUpdate, nil
+}
+func (t WorkflowPublishTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type: core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{
+			"id":          {Type: core.ToolSchemaTypeString, Description: "The automation ID"},
+			"name":        {Type: core.ToolSchemaTypeString, Description: "Optional version name"},
+			"description": {Type: core.ToolSchemaTypeString, Description: "Optional version description"},
+			"set_live":    {Type: core.ToolSchemaTypeBoolean, Description: "Whether to make this version live (default true)"},
+		},
+		Required: []string{"id"},
+	}
+}
+func (t WorkflowPublishTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	id, err := requireWorkflowID(input.Arguments)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	body := map[string]any{}
+	if v, ok := input.Arguments["name"].(string); ok && v != "" {
+		body["name"] = v
+	}
+	if v, ok := input.Arguments["description"].(string); ok && v != "" {
+		body["description"] = v
+	}
+	if v, ok := input.Arguments["set_live"].(bool); ok {
+		body["set_live"] = v
+	}
+	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/publish", id), body, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// WorkflowMakeVersionLiveTool — select which published version runs (update).
+type WorkflowMakeVersionLiveTool struct{}
+
+func (t WorkflowMakeVersionLiveTool) Name() string             { return ToolWorkflowMakeVersionLive }
+func (t WorkflowMakeVersionLiveTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (t WorkflowMakeVersionLiveTool) Description() string {
+	return "Makes an existing published version the live version that triggers run. Args: id (string, required), version_number (int, required). Requires user approval."
+}
+func (t WorkflowMakeVersionLiveTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeUpdate, nil
+}
+func (t WorkflowMakeVersionLiveTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type: core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{
+			"id":             {Type: core.ToolSchemaTypeString, Description: "The automation ID"},
+			"version_number": {Type: core.ToolSchemaTypeNumber, Description: "The version number to make live"},
+		},
+		Required: []string{"id", "version_number"},
+	}
+}
+func (t WorkflowMakeVersionLiveTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	id, err := requireWorkflowID(input.Arguments)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	ver, ok := versionPathSegment(input.Arguments)
+	if !ok {
+		return core.NBToolResponse{}, errors.New("version_number is required")
+	}
+	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/versions/%s/make-live", id, ver), nil, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// WorkflowRestoreVersionTool — copy an old version back into the draft (update).
+type WorkflowRestoreVersionTool struct{}
+
+func (t WorkflowRestoreVersionTool) Name() string             { return ToolWorkflowRestoreVersion }
+func (t WorkflowRestoreVersionTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (t WorkflowRestoreVersionTool) Description() string {
+	return "Restores an old published version into the current draft (does not change the live version). Args: id (string, required), version_number (int, required). Requires user approval."
+}
+func (t WorkflowRestoreVersionTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeUpdate, nil
+}
+func (t WorkflowRestoreVersionTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type: core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{
+			"id":             {Type: core.ToolSchemaTypeString, Description: "The automation ID"},
+			"version_number": {Type: core.ToolSchemaTypeNumber, Description: "The version number to restore into the draft"},
+		},
+		Required: []string{"id", "version_number"},
+	}
+}
+func (t WorkflowRestoreVersionTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	id, err := requireWorkflowID(input.Arguments)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	ver, ok := versionPathSegment(input.Arguments)
+	if !ok {
+		return core.NBToolResponse{}, errors.New("version_number is required")
+	}
+	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/versions/%s/restore", id, ver), nil, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// WorkflowUpdateVersionMetaTool — edit a version's name/description only (update).
+type WorkflowUpdateVersionMetaTool struct{}
+
+func (t WorkflowUpdateVersionMetaTool) Name() string             { return ToolWorkflowUpdateVersionMeta }
+func (t WorkflowUpdateVersionMetaTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (t WorkflowUpdateVersionMetaTool) Description() string {
+	return "Updates a published version's name/description (does not change its definition). Args: id (string, required), version_number (int, required), name (optional), description (optional). Requires user approval."
+}
+func (t WorkflowUpdateVersionMetaTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeUpdate, nil
+}
+func (t WorkflowUpdateVersionMetaTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type: core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{
+			"id":             {Type: core.ToolSchemaTypeString, Description: "The automation ID"},
+			"version_number": {Type: core.ToolSchemaTypeNumber, Description: "The version number"},
+			"name":           {Type: core.ToolSchemaTypeString, Description: "New version name"},
+			"description":    {Type: core.ToolSchemaTypeString, Description: "New version description"},
+		},
+		Required: []string{"id", "version_number"},
+	}
+}
+func (t WorkflowUpdateVersionMetaTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	id, err := requireWorkflowID(input.Arguments)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	ver, ok := versionPathSegment(input.Arguments)
+	if !ok {
+		return core.NBToolResponse{}, errors.New("version_number is required")
+	}
+	body := map[string]any{}
+	if v, ok := input.Arguments["name"].(string); ok && v != "" {
+		body["name"] = v
+	}
+	if v, ok := input.Arguments["description"].(string); ok && v != "" {
+		body["description"] = v
+	}
+	resp, err := DoRunbookRequest("PATCH", fmt.Sprintf("workflows/%s/versions/%s", id, ver), body, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// WorkflowDeleteVersionTool — delete a published version (delete; cannot delete live).
+type WorkflowDeleteVersionTool struct{}
+
+func (t WorkflowDeleteVersionTool) Name() string             { return ToolWorkflowDeleteVersion }
+func (t WorkflowDeleteVersionTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (t WorkflowDeleteVersionTool) Description() string {
+	return "Deletes a published version of an automation (cannot delete the live version). Args: id (string, required), version_number (int, required). Requires user approval."
+}
+func (t WorkflowDeleteVersionTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeDelete, nil
+}
+func (t WorkflowDeleteVersionTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type: core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{
+			"id":             {Type: core.ToolSchemaTypeString, Description: "The automation ID"},
+			"version_number": {Type: core.ToolSchemaTypeNumber, Description: "The version number to delete"},
+		},
+		Required: []string{"id", "version_number"},
+	}
+}
+func (t WorkflowDeleteVersionTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	id, err := requireWorkflowID(input.Arguments)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	ver, ok := versionPathSegment(input.Arguments)
+	if !ok {
+		return core.NBToolResponse{}, errors.New("version_number is required")
+	}
+	resp, err := DoRunbookRequest("DELETE", fmt.Sprintf("workflows/%s/versions/%s", id, ver), nil, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// --- Workflow Lifecycle Tools (Phase 3) ---
+
+// WorkflowPauseTool — pause schedule/event triggers (update).
+type WorkflowPauseTool struct{}
+
+func (t WorkflowPauseTool) Name() string             { return ToolWorkflowPause }
+func (t WorkflowPauseTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (t WorkflowPauseTool) Description() string {
+	return "Pauses an automation so its schedule/event triggers stop firing (manual/webhook still work). Arg: id (string, required). Requires user approval."
+}
+func (t WorkflowPauseTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeUpdate, nil
+}
+func (t WorkflowPauseTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type:       core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{"id": {Type: core.ToolSchemaTypeString, Description: "The automation ID"}},
+		Required:   []string{"id"},
+	}
+}
+func (t WorkflowPauseTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	id, err := requireWorkflowID(input.Arguments)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/pause", id), nil, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// WorkflowResumeTool — resume a paused automation (update).
+type WorkflowResumeTool struct{}
+
+func (t WorkflowResumeTool) Name() string             { return ToolWorkflowResume }
+func (t WorkflowResumeTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (t WorkflowResumeTool) Description() string {
+	return "Resumes a paused automation so its schedule/event triggers fire again (sets it ACTIVE). Arg: id (string, required). Requires user approval."
+}
+func (t WorkflowResumeTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeUpdate, nil
+}
+func (t WorkflowResumeTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type:       core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{"id": {Type: core.ToolSchemaTypeString, Description: "The automation ID"}},
+		Required:   []string{"id"},
+	}
+}
+func (t WorkflowResumeTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	id, err := requireWorkflowID(input.Arguments)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/resume", id), nil, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// WorkflowDeleteTool — delete an automation and its versions (delete).
+type WorkflowDeleteTool struct{}
+
+func (t WorkflowDeleteTool) Name() string             { return ToolWorkflowDelete }
+func (t WorkflowDeleteTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (t WorkflowDeleteTool) Description() string {
+	return "Permanently deletes an automation and all its version history. Arg: id (string, required). Destructive — requires explicit user confirmation."
+}
+func (t WorkflowDeleteTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeDelete, nil
+}
+func (t WorkflowDeleteTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type:       core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{"id": {Type: core.ToolSchemaTypeString, Description: "The automation ID"}},
+		Required:   []string{"id"},
+	}
+}
+func (t WorkflowDeleteTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	id, err := requireWorkflowID(input.Arguments)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	resp, err := DoRunbookRequest("DELETE", fmt.Sprintf("workflows/%s", id), nil, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// --- Workflow Execution Control & Advanced Tools (Phase 4) ---
+
+// WorkflowExecutionCancelTool — cancel a running execution (delete; stops a live run).
+type WorkflowExecutionCancelTool struct{}
+
+func (t WorkflowExecutionCancelTool) Name() string             { return ToolWorkflowExecutionCancel }
+func (t WorkflowExecutionCancelTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (t WorkflowExecutionCancelTool) Description() string {
+	return "Cancels a running automation execution. Args: id (string, required), execution_id (string, required). Requires user approval (stops a live run)."
+}
+func (t WorkflowExecutionCancelTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeDelete, nil
+}
+func (t WorkflowExecutionCancelTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type: core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{
+			"id":           {Type: core.ToolSchemaTypeString, Description: "The automation ID"},
+			"execution_id": {Type: core.ToolSchemaTypeString, Description: "The execution ID to cancel"},
+		},
+		Required: []string{"id", "execution_id"},
+	}
+}
+func (t WorkflowExecutionCancelTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	id, err := requireWorkflowID(input.Arguments)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	execId, ok := input.Arguments["execution_id"].(string)
+	if !ok || execId == "" {
+		return core.NBToolResponse{}, errors.New("execution_id is required")
+	}
+	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/executions/%s/cancel", id, execId), nil, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// WorkflowTaskExecuteTool — run a single task type in isolation for testing (create).
+type WorkflowTaskExecuteTool struct{}
+
+func (t WorkflowTaskExecuteTool) Name() string             { return ToolWorkflowTaskExecute }
+func (t WorkflowTaskExecuteTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (t WorkflowTaskExecuteTool) Description() string {
+	return "Executes a single task type in isolation (outside a workflow) for testing. Args: task_type (string, required), params (object). Executes real task logic — requires user approval."
+}
+func (t WorkflowTaskExecuteTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeCreate, nil
+}
+func (t WorkflowTaskExecuteTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type: core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{
+			"task_type": {Type: core.ToolSchemaTypeString, Description: "The task type to execute (e.g. core.print)"},
+			"params":    {Type: core.ToolSchemaTypeObject, Description: "Task-specific parameters"},
+		},
+		Required: []string{"task_type"},
+	}
+}
+func (t WorkflowTaskExecuteTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	taskType, ok := input.Arguments["task_type"].(string)
+	if !ok || taskType == "" {
+		return core.NBToolResponse{}, errors.New("task_type is required")
+	}
+	params := input.Arguments["params"]
+	if params == nil {
+		params = map[string]any{}
+	}
+	resp, err := DoRunbookRequest("POST", fmt.Sprintf("tasks/%s/execute", taskType), params, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// WorkflowConfigDeleteTool — delete a config/secret (delete).
+type WorkflowConfigDeleteTool struct{}
+
+func (t WorkflowConfigDeleteTool) Name() string             { return ToolWorkflowConfigDelete }
+func (t WorkflowConfigDeleteTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (t WorkflowConfigDeleteTool) Description() string {
+	return "Deletes an automation config/secret by key. Arg: key (string, required). Requires user approval."
+}
+func (t WorkflowConfigDeleteTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeDelete, nil
+}
+func (t WorkflowConfigDeleteTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{
+		Type:       core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{"key": {Type: core.ToolSchemaTypeString, Description: "The config key to delete"}},
+		Required:   []string{"key"},
+	}
+}
+func (t WorkflowConfigDeleteTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	key, ok := input.Arguments["key"].(string)
+	if !ok || key == "" {
+		return core.NBToolResponse{}, errors.New("key is required")
+	}
+	resp, err := DoRunbookRequest("DELETE", fmt.Sprintf("configs/%s", key), nil, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
 	if err != nil {
 		return core.NBToolResponse{}, err
 	}

@@ -78,8 +78,11 @@ func (s *cloudSQLService) instanceToResource(instance *sqladmin.DatabaseInstance
 		}
 	}
 
-	// Determine status
-	status := gcpSQLStatusToNbStatus(instance.State)
+	// Determine status. GCP reports a stopped instance as state=RUNNABLE with
+	// activationPolicy=NEVER, so derive the effective state first (matches the
+	// gcloud CLI and Cloud Console).
+	effectiveState := effectiveSQLState(instance)
+	status := gcpSQLStatusToNbStatus(effectiveState)
 
 	// Extract creation timestamp
 	createdAt := time.Now()
@@ -92,6 +95,10 @@ func (s *cloudSQLService) instanceToResource(instance *sqladmin.DatabaseInstance
 	// Convert instance to map for Meta field
 	meta := structToMap(instance)
 	meta["selfLink"] = selfLink
+	// Override the raw state so consumers (UI, recommendations) see a stopped
+	// instance as STOPPED rather than RUNNABLE. The raw activationPolicy is
+	// still preserved under meta.settings for callers that need it.
+	meta["state"] = effectiveState
 
 	resourceType := "sqladmin.googleapis.com/Instance"
 
@@ -107,6 +114,17 @@ func (s *cloudSQLService) instanceToResource(instance *sqladmin.DatabaseInstance
 		Meta:        meta,
 		CreatedAt:   createdAt,
 	}
+}
+
+// effectiveSQLState resolves the display state for a Cloud SQL instance. GCP
+// keeps state=RUNNABLE for a stopped instance and only flips
+// settings.activationPolicy to NEVER, so we surface STOPPED to stay consistent
+// with the gcloud CLI and Cloud Console.
+func effectiveSQLState(instance *sqladmin.DatabaseInstance) string {
+	if instance.State == "RUNNABLE" && instance.Settings != nil && instance.Settings.ActivationPolicy == "NEVER" {
+		return "STOPPED"
+	}
+	return instance.State
 }
 
 func gcpSQLStatusToNbStatus(state string) providers.ResourceStatus {

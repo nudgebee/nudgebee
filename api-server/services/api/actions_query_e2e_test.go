@@ -105,7 +105,7 @@ func TestE2E_LLMConversationList_BasicQuery(t *testing.T) {
 	// Exact Postman payload from user
 	payload := parsePostmanJSON(t, fmt.Sprintf(`{
 		"action": {
-			"name": "llm_list_conversations"
+			"name": "ai_list_conversations"
 		},
 		"input": {
 			"where": {
@@ -114,13 +114,13 @@ func TestE2E_LLMConversationList_BasicQuery(t *testing.T) {
 				}
 			}
 		},
-		"request_query": "query GetLLMConversation ($limit:Int)  {\n llm_list_conversations(where: {}, limit: $limit, offset: $offset) {\n      rows { title source user_display_name for_status is_saved  total_count}\n    }\n}"
+		"request_query": "query GetLLMConversation ($limit:Int)  {\n ai_list_conversations(where: {}, limit: $limit, offset: $offset) {\n      rows { title source user_display_name for_status is_saved  total_count}\n    }\n}"
 	}`, testenv.FakeAccountID))
 
 	req, sql := simulateQueryPipeline(t, payload)
 
 	// Verify QueryRequest structure
-	assert.Equal(t, "llm_list_conversations", req.Table)
+	assert.Equal(t, "ai_list_conversations", req.Table)
 	assert.NotEmpty(t, req.Columns)
 
 	// Verify columns were parsed from GQL

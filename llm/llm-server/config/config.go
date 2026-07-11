@@ -115,6 +115,37 @@ type appConfig struct {
 	LlmCacheTTLMinutes int  `mapstructure:"llm_cache_ttl_minutes"`
 	LlmEnableCaching   bool `mapstructure:"llm_enable_caching"`
 
+	// Outbound egressfilter master switch. When false, the LLM factory does NOT
+	// install the egressfilter decorator at all — GetLLMModel returns the raw
+	// provider unchanged, no payload serialization, no metric emission. Per-
+	// detector flags below only take effect when this is true.
+	//
+	// This umbrella flag exists so the entire egressfilter subsystem can be
+	// disabled with a single env, independent of which detectors are wired in.
+	// Default false (off).
+	LlmServerEgressFilterEnabled bool `mapstructure:"llm_server_egressfilter_enabled"`
+
+	// Per-detector knobs. These only apply when LlmServerEgressFilterEnabled is true.
+	//
+	// Secrets detector — scans every outbound LLM payload for high-confidence
+	// credential patterns. Mode controls action on a hit:
+	//   "audit"   — detect + emit metrics/logs, do NOT block (safe rollout)
+	//   "enforce" — block the call and return a EgressFilterError to the caller
+	// Any other value is treated as "audit".
+	LlmServerEgressFilterSecretsEnabled bool   `mapstructure:"llm_server_egressfilter_secrets_enabled"`
+	LlmServerEgressFilterSecretsMode    string `mapstructure:"llm_server_egressfilter_secrets_mode"`
+
+	// LlmServerEgressFilterAllowlist is a comma-separated list of values that
+	// will be excluded from detection even when they match a rule. Typical
+	// use is canonical docs samples (AWS's AKIAIOSFODNN7EXAMPLE, a GCP
+	// "AIzaSyExampleKey…" snippet, etc.) that legitimately appear in prompts.
+	// Without entries here, enforce mode would block any prompt quoting
+	// vendor docs.
+	//
+	// Loaded once at startup; runtime changes require a process restart.
+	// Whitespace around each value is trimmed; empty entries are skipped.
+	LlmServerEgressFilterAllowlist string `mapstructure:"llm_server_egressfilter_allowlist"`
+
 	// LlmServerMaxIndividualCallTimeoutMinutes caps the duration of a single LLM request.
 	// Prevents the system from hanging indefinitely if a provider (like Google AI) stalls.
 	LlmServerMaxIndividualCallTimeoutMinutes int `mapstructure:"llm_server_max_individual_call_timeout_minutes"`
@@ -136,7 +167,11 @@ type appConfig struct {
 	LLMServerAgentObservabilityMaxIterations  int `mapstructure:"llm_server_agent_observability_max_iterations"`
 	LLMServerAgentObservabilityTimeoutSeconds int `mapstructure:"llm_server_agent_observability_timeout_seconds"`
 	// LlmServerAgentPromqlCacheTTLMinutes defines the lifespan of PromQL query results in the cache.
-	LlmServerAgentPromqlCacheTTLMinutes         int `mapstructure:"llm_server_agent_promql_metrics_cache_ttl_minutes"`
+	LlmServerAgentPromqlCacheTTLMinutes int `mapstructure:"llm_server_agent_promql_metrics_cache_ttl_minutes"`
+	// LlmServerAgentSeriesMatchCacheTTLMinutes defines the lifespan of metrics_series_match
+	// (workload family discovery) results in the cache. Defaults to 30m — series for a workload
+	// change far slower than metric values, so a long TTL is cheap and cuts repeat lookups.
+	LlmServerAgentSeriesMatchCacheTTLMinutes    int `mapstructure:"llm_server_agent_series_match_cache_ttl_minutes"`
 	LlmServerAgentPromqlMaxToolRespChars        int `mapstructure:"llm_server_agent_promql_max_tool_response_chars"`
 	LlmServerAgentPrometheusMaxInlineDataPoints int `mapstructure:"llm_server_agent_prometheus_max_inline_data_points"`
 	LLMServerAgentMaxLogLines                   int `mapstructure:"llm_server_agent_max_loglines"`
@@ -247,8 +282,9 @@ type appConfig struct {
 	LlmServerWorkspaceLocalUrl             string `mapstructure:"llm_server_workspace_local_url"`
 	LlmServerWorkspaceFileMaxDownloadBytes int    `mapstructure:"llm_server_workspace_file_max_download_bytes"`
 
-	NotificationServerUrl string `mapstructure:"notification_service_url"`
-	TicketServerUrl       string `mapstructure:"ticket_server_url"`
+	NotificationServerUrl   string `mapstructure:"notification_service_url"`
+	NotificationServerToken string `mapstructure:"notification_server_token"`
+	TicketServerUrl         string `mapstructure:"ticket_server_url"`
 
 	LlmServerSecurityMode string `mapstructure:"llm_server_security_mode"`
 
@@ -421,29 +457,73 @@ type appConfig struct {
 	LlmTraceEnabled bool `mapstructure:"llm_trace_enabled"`
 
 	// Memory Module — layered memory architecture (Phase 1+)
-	MemoryModuleEnabled     bool   `mapstructure:"memory_module_enabled"`
-	MemoryLayerSoulEnabled  bool   `mapstructure:"memory_layer_soul_enabled"`
-	MemoryLayerPrefsEnabled bool   `mapstructure:"memory_layer_preferences_enabled"`
-	MemoryComposeEnabled    bool   `mapstructure:"memory_compose_enabled"`
-	MemoryTenantAllowlist   string `mapstructure:"memory_tenant_allowlist"`
-	MemorySoulMaxTokens     int    `mapstructure:"memory_soul_max_tokens"`
-	MemoryPrefsMaxTokens    int    `mapstructure:"memory_prefs_max_tokens"`
-	MemoryCacheTTLSeconds   int    `mapstructure:"memory_cache_ttl_seconds"`
-	MemoryProjectionWorkers int    `mapstructure:"memory_projection_workers"`
+	MemoryModuleEnabled     bool   `mapstructure:"llm_memory_module_enabled"`
+	MemoryLayerSoulEnabled  bool   `mapstructure:"llm_memory_layer_soul_enabled"`
+	MemoryLayerPrefsEnabled bool   `mapstructure:"llm_memory_layer_preferences_enabled"`
+	MemoryComposeEnabled    bool   `mapstructure:"llm_memory_compose_enabled"`
+	MemoryTenantAllowlist   string `mapstructure:"llm_memory_tenant_allowlist"`
+	MemorySoulMaxTokens     int    `mapstructure:"llm_memory_soul_max_tokens"`
+	MemoryPrefsMaxTokens    int    `mapstructure:"llm_memory_prefs_max_tokens"`
+	MemoryCacheTTLSeconds   int    `mapstructure:"llm_memory_cache_ttl_seconds"`
+	MemoryProjectionWorkers int    `mapstructure:"llm_memory_projection_workers"`
 
 	// Phase 2 layer toggles
-	MemoryLayerPatternsEnabled   bool `mapstructure:"memory_layer_patterns_enabled"`
-	MemoryLayerDecisionsEnabled  bool `mapstructure:"memory_layer_decisions_enabled"`
-	MemoryLayerCollectiveEnabled bool `mapstructure:"memory_layer_collective_enabled"`
-	MemoryPatternsMaxTokens      int  `mapstructure:"memory_patterns_max_tokens"`
-	MemoryDecisionsMaxTokens     int  `mapstructure:"memory_decisions_max_tokens"`
-	MemoryCollectiveMaxTokens    int  `mapstructure:"memory_collective_max_tokens"`
+	MemoryLayerPatternsEnabled   bool `mapstructure:"llm_memory_layer_patterns_enabled"`
+	MemoryLayerDecisionsEnabled  bool `mapstructure:"llm_memory_layer_decisions_enabled"`
+	MemoryLayerCollectiveEnabled bool `mapstructure:"llm_memory_layer_collective_enabled"`
+	MemoryPatternsMaxTokens      int  `mapstructure:"llm_memory_patterns_max_tokens"`
+	// MemoryPatternsPerKindLimit caps how many rows of a single pattern_kind
+	// reach Compose. Without it one chatty kind (e.g. lots of
+	// frequent_service rows) can crowd out frequent_namespace /
+	// preferred_diagnostic_flow / etc. Within each kind the rows are
+	// ordered by last_seen_at DESC (most recent first); pinned rows still
+	// bypass this cap because pinning is an explicit "always show me this"
+	// signal. Set to 0 to disable.
+	MemoryPatternsPerKindLimit int `mapstructure:"llm_memory_patterns_per_kind_limit"`
+	MemoryDecisionsMaxTokens   int `mapstructure:"llm_memory_decisions_max_tokens"`
+	MemoryCollectiveMaxTokens  int `mapstructure:"llm_memory_collective_max_tokens"`
 
-	// Phase 2 migration mode: shadow | dual | cutover | retired
-	// Gated per-tenant at runtime via MemoryTenantAllowlist.
-	MemoryMigrationMode string `mapstructure:"memory_migration_mode"`
-	// Sample fraction for Shadow-mode parallel writes (0.0-1.0).
-	MemoryShadowSampleFraction float64 `mapstructure:"memory_shadow_sample_fraction"`
+	// Phase 4 layer toggles
+	MemoryLayerSessionEnabled bool `mapstructure:"llm_memory_layer_session_enabled"`
+	MemorySessionMaxTokens    int  `mapstructure:"llm_memory_session_max_tokens"`
+	MemorySessionIdleMinutes  int  `mapstructure:"llm_memory_session_idle_minutes"`
+
+	// Phase 8 — scheduled maintenance jobs (per-layer distill / consolidate /
+	// summarise). Each schedule is a standard 5-field cron string. The master
+	// switch must be on for any of the per-job schedules to register.
+	MemoryMaintenanceEnabled                 bool   `mapstructure:"llm_memory_maintenance_enabled"`
+	MemoryMaintenanceSessionExpireSchedule   string `mapstructure:"llm_memory_maintenance_session_expire_schedule"`
+	MemoryMaintenanceSessionDistillSchedule  string `mapstructure:"llm_memory_maintenance_session_distill_schedule"`
+	MemoryMaintenanceSessionDistillBatchSize int    `mapstructure:"llm_memory_maintenance_session_distill_batch_size"`
+	MemoryMaintenancePreferencesSchedule     string `mapstructure:"llm_memory_maintenance_preferences_schedule"`
+	MemoryMaintenancePatternsSchedule        string `mapstructure:"llm_memory_maintenance_patterns_schedule"`
+	MemoryMaintenanceEventsRotateSchedule    string `mapstructure:"llm_memory_maintenance_events_rotate_schedule"`
+	MemoryMaintenanceCollectiveSchedule      string `mapstructure:"llm_memory_maintenance_collective_schedule"`
+	MemoryMaintenanceSoulSchedule            string `mapstructure:"llm_memory_maintenance_soul_schedule"`
+	MemoryMaintenanceDecisionsSchedule       string `mapstructure:"llm_memory_maintenance_decisions_schedule"`
+	// MemoryMaintenancePatternsExtractSchedule drives the cross-conversation
+	// pattern-extract job. Daily cadence
+	// keeps the LLM bill bounded while still catching new recurrences within
+	// a day of the second observation.
+	MemoryMaintenancePatternsExtractSchedule string `mapstructure:"llm_memory_maintenance_patterns_extract_schedule"`
+	MemoryMaintenancePreferencesDecayDays    int    `mapstructure:"llm_memory_maintenance_preferences_decay_days"`
+	MemoryMaintenancePatternsRetireDays      int    `mapstructure:"llm_memory_maintenance_patterns_retire_days"`
+	// MemoryMaintenancePatternsFadingDays / StaleDays drive the
+	// active → fading → stale lifecycle that RunPatternsConsolidate writes
+	// onto llm_memory_patterns.decay_state. The UI's filter chips read this
+	// column; without the consolidator update they stay 'active' forever.
+	// Defaults: 14 / 60.
+	MemoryMaintenancePatternsFadingDays  int `mapstructure:"llm_memory_maintenance_patterns_fading_days"`
+	MemoryMaintenancePatternsStaleDays   int `mapstructure:"llm_memory_maintenance_patterns_stale_days"`
+	MemoryMaintenanceEventsRetentionDays int `mapstructure:"llm_memory_maintenance_events_retention_days"`
+
+	// OSS-forward: kept for the pre-memory2 migration shim in
+	// llm/llm-server/memory/migration.go (Phase 1 legacy → Shadow → Dual →
+	// Cutover → Retired). EE prod removed these when the full memory2 module
+	// landed; OSS retains them until the memory2 consumer path is picked.
+	// Bind to LLM_MEMORY_MIGRATION_MODE / LLM_MEMORY_SHADOW_SAMPLE_FRACTION.
+	MemoryMigrationMode        string  `mapstructure:"llm_memory_migration_mode"`
+	MemoryShadowSampleFraction float64 `mapstructure:"llm_memory_shadow_sample_fraction"`
 
 	// Productivity dashboard tunables. The "Time Saved" widget compares each
 	// completed investigation's AI runtime against a flat per-task manual
@@ -484,6 +564,7 @@ func init() {
 	// viper requires default values or bind.. else Unmarshal skips fields with no default values
 	viper.SetDefault("action_api_server_token", "")
 	viper.SetDefault("llm_server_token", "")
+	viper.SetDefault("notification_server_token", "")
 	viper.SetDefault("base_url", "http://nudgebee")
 
 	viper.SetDefault("relay_server_endpoint", "http://127.0.0.1:52832")
@@ -508,6 +589,7 @@ func init() {
 	viper.SetDefault("llm_server_agent_observability_max_iterations", 7)
 	viper.SetDefault("llm_server_agent_observability_timeout_seconds", 180)
 	viper.SetDefault("llm_server_agent_promql_metrics_cache_ttl_minutes", 5)
+	viper.SetDefault("llm_server_agent_series_match_cache_ttl_minutes", 30)
 	viper.SetDefault("llm_server_agent_promql_max_tool_response_chars", 4000)
 	viper.SetDefault("llm_server_agent_prometheus_max_inline_data_points", 5) // reduced from 10; above this threshold raw values are replaced with a stats summary to avoid context bloat
 	viper.SetDefault("llm_server_planner_rewoo_investigation_max_steps", 6)
@@ -549,6 +631,22 @@ func init() {
 	viper.SetDefault("llm_provider_thinking_budget", -1) // -1: model default, 0: disable, >0: token budget
 	viper.SetDefault("llm_cache_ttl_minutes", 10)
 	viper.SetDefault("llm_enable_caching", true)
+
+	// Outbound egressfilter — entire subsystem disabled by default. The master
+	// switch (llm_server_egressfilter_enabled) gates whether the LLM factory
+	// installs the wrapper at all; per-detector flags (e.g.
+	// llm_server_egressfilter_secrets_enabled) only apply when master is on.
+	// Default mode for any enabled detector is "audit" so a rollout never
+	// causes outage. Flip to "enforce" only after metrics confirm a clean
+	// false-positive baseline.
+	viper.SetDefault("llm_server_egressfilter_enabled", false)
+	viper.SetDefault("llm_server_egressfilter_secrets_enabled", false)
+	viper.SetDefault("llm_server_egressfilter_secrets_mode", "audit")
+	// Required even though "" is the natural zero — viper.Unmarshal skips
+	// fields with no default set, so without this line the env var
+	// LLM_SERVER_EGRESSFILTER_ALLOWLIST is silently ignored in any
+	// deployment that doesn't read a `.env` file (i.e. prod k8s).
+	viper.SetDefault("llm_server_egressfilter_allowlist", "")
 	viper.SetDefault("llm_server_max_individual_call_timeout_minutes", 5)
 	viper.SetDefault("llm_server_global_retry_budget_minutes", 10)
 
@@ -687,9 +785,9 @@ func init() {
 	viper.SetDefault("llm_server_react3_enabled", true)
 	viper.SetDefault("llm_server_rewoo_to_react3_enabled", true)
 	viper.SetDefault("llm_server_think_tool_enabled", true)
-	viper.SetDefault("llm_server_kg_tools_enabled", false)
+	viper.SetDefault("llm_server_kg_tools_enabled", true)
 	viper.SetDefault("llm_server_kg_get_node_enabled", false)
-	viper.SetDefault("llm_server_service_dependency_graph_v2_enabled", false)
+	viper.SetDefault("llm_server_service_dependency_graph_v2_enabled", true)
 	viper.SetDefault("llm_server_evaluation_enabled", false)
 	viper.SetDefault("llm_server_auto_identify_account_enabled", false)
 	viper.SetDefault("llm_server_image_support_enabled", false)
@@ -746,26 +844,56 @@ func init() {
 
 	viper.SetDefault("llm_trace_enabled", false)
 
-	// Memory Module defaults — all off
-	viper.SetDefault("memory_module_enabled", false)
-	viper.SetDefault("memory_layer_soul_enabled", false)
-	viper.SetDefault("memory_layer_preferences_enabled", false)
-	viper.SetDefault("memory_compose_enabled", false)
-	viper.SetDefault("memory_tenant_allowlist", "")
-	viper.SetDefault("memory_soul_max_tokens", 100)
-	viper.SetDefault("memory_prefs_max_tokens", 400)
-	viper.SetDefault("memory_cache_ttl_seconds", 300)
-	viper.SetDefault("memory_projection_workers", 4)
+	// Memory Module defaults. LLM_MEMORY_MODULE_ENABLED is the single master
+	// switch — when false the entire subsystem (writes, reads, event log) is
+	// off, so an unchanged deployment sees zero memory behaviour. The
+	// LLM_MEMORY_COMPOSE_ENABLED flag stays as a sub-master under the master
+	// (only checked when MODULE is on) and defaults to true so flipping the
+	// master alone is enough to turn the whole feature on; set it to false
+	// to run shadow mode (write but don't inject). The per-layer flags
+	// default to true and act as emergency kill-switches: once the master
+	// is flipped on, every layer is active unless explicitly opted out.
+	// Avoids the prior trap where turning the module on yielded no
+	// observable effect because each per-layer write/read gate still
+	// required its own opt-in.
+	viper.SetDefault("llm_memory_module_enabled", false)
+	viper.SetDefault("llm_memory_compose_enabled", true)
+	viper.SetDefault("llm_memory_layer_soul_enabled", true)
+	viper.SetDefault("llm_memory_layer_preferences_enabled", true)
+	viper.SetDefault("llm_memory_tenant_allowlist", "")
+	viper.SetDefault("llm_memory_soul_max_tokens", 100)
+	viper.SetDefault("llm_memory_prefs_max_tokens", 400)
+	viper.SetDefault("llm_memory_cache_ttl_seconds", 300)
+	viper.SetDefault("llm_memory_projection_workers", 4)
 
-	viper.SetDefault("memory_layer_patterns_enabled", false)
-	viper.SetDefault("memory_layer_decisions_enabled", false)
-	viper.SetDefault("memory_layer_collective_enabled", false)
-	viper.SetDefault("memory_patterns_max_tokens", 300)
-	viper.SetDefault("memory_decisions_max_tokens", 200)
-	viper.SetDefault("memory_collective_max_tokens", 300)
+	viper.SetDefault("llm_memory_layer_patterns_enabled", true)
+	viper.SetDefault("llm_memory_layer_decisions_enabled", true)
+	viper.SetDefault("llm_memory_layer_collective_enabled", true)
+	viper.SetDefault("llm_memory_patterns_max_tokens", 300)
+	viper.SetDefault("llm_memory_patterns_per_kind_limit", 2)
+	viper.SetDefault("llm_memory_decisions_max_tokens", 200)
+	viper.SetDefault("llm_memory_collective_max_tokens", 300)
 
-	viper.SetDefault("memory_migration_mode", "off") // off | shadow | dual | cutover | retired
-	viper.SetDefault("memory_shadow_sample_fraction", 1.0)
+	viper.SetDefault("llm_memory_layer_session_enabled", true)
+	viper.SetDefault("llm_memory_session_max_tokens", 400)
+	viper.SetDefault("llm_memory_session_idle_minutes", 30)
+
+	viper.SetDefault("llm_memory_maintenance_enabled", false)
+	viper.SetDefault("llm_memory_maintenance_session_expire_schedule", "*/30 * * * *")
+	viper.SetDefault("llm_memory_maintenance_session_distill_schedule", "*/30 * * * *")
+	viper.SetDefault("llm_memory_maintenance_session_distill_batch_size", 50)
+	viper.SetDefault("llm_memory_maintenance_preferences_schedule", "0 3 * * *")
+	viper.SetDefault("llm_memory_maintenance_patterns_schedule", "0 4 * * *")
+	viper.SetDefault("llm_memory_maintenance_events_rotate_schedule", "0 2 * * *")
+	viper.SetDefault("llm_memory_maintenance_collective_schedule", "0 5 * * *")
+	viper.SetDefault("llm_memory_maintenance_soul_schedule", "0 6 * * 0")
+	viper.SetDefault("llm_memory_maintenance_decisions_schedule", "0 7 * * 0")
+	viper.SetDefault("llm_memory_maintenance_patterns_extract_schedule", "0 5 * * *")
+	viper.SetDefault("llm_memory_maintenance_preferences_decay_days", 60)
+	viper.SetDefault("llm_memory_maintenance_patterns_retire_days", 30)
+	viper.SetDefault("llm_memory_maintenance_patterns_fading_days", 14)
+	viper.SetDefault("llm_memory_maintenance_patterns_stale_days", 60)
+	viper.SetDefault("llm_memory_maintenance_events_retention_days", 90)
 
 	viper.SetDefault("llm_productivity_manual_baseline_minutes", 25)
 	viper.SetDefault("llm_productivity_engineer_hourly_rate_usd", 5.0)

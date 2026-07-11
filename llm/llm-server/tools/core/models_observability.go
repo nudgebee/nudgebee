@@ -59,6 +59,22 @@ type ObservabilityMetricsSeriesLabelsResponse struct {
 	Labels []ObservabilityMetricsSeriesLabel `json:"labels"`
 }
 
+// ObservabilityMetricSeriesMatch is one (namespace-label, workload-label) grouping the
+// metrics_list_series action found for a workload, with the metric families under it.
+// MatchType is "exact" or "prefix" (pod names carry a replica-hash suffix). Mirrors the
+// api-server observability.MetricSeriesMatch wire shape.
+type ObservabilityMetricSeriesMatch struct {
+	NamespaceLabel string   `json:"namespace_label"`
+	WorkloadLabel  string   `json:"workload_label"`
+	MatchType      string   `json:"match_type"`
+	Families       []string `json:"families"`
+}
+
+type ObservabilityMetricSeriesMatchResponse struct {
+	Matches   []ObservabilityMetricSeriesMatch `json:"matches"`
+	Truncated bool                             `json:"truncated"`
+}
+
 type ObservabilityMetricsLabelValue struct {
 	Value      string         `json:"value"`
 	Attributes map[string]any `json:"attributes"`

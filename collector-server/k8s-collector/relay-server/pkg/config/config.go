@@ -63,6 +63,13 @@ type Config struct {
 		// Key identifier for key rotation tracking.
 		// Env: SIGNING_KEY_ID
 		KeyID string `mapstructure:"key_id"`
+		// SignK8sEnabled controls Ed25519 signing of requests forwarded to
+		// native (non-proxy) k8s agents — how agents authorize UI-triggered
+		// mutations. Signing is additive and safe (old/unkeyed agents ignore the
+		// relay_* fields; the agent falls back to lightActions on an
+		// absent/unverifiable signature), so this defaults TRUE and acts as a
+		// kill-switch. Env: SIGNING_SIGN_K8S_ENABLED
+		SignK8sEnabled bool `mapstructure:"sign_k8s_enabled"`
 	} `mapstructure:"signing"`
 
 	Cache struct {
@@ -154,6 +161,8 @@ func Load() (*Config, error) {
 
 	_ = v.BindEnv("signing.private_key", "SIGNING_PRIVATE_KEY")
 	_ = v.BindEnv("signing.key_id", "SIGNING_KEY_ID")
+	_ = v.BindEnv("signing.sign_k8s_enabled", "SIGNING_SIGN_K8S_ENABLED")
+	v.SetDefault("signing.sign_k8s_enabled", true)
 
 	_ = v.BindEnv("cache.provider", "CACHE_PROVIDER")
 	_ = v.BindEnv("cache.redis.host", "REDIS_SERVER_HOST")

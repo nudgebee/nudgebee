@@ -6,8 +6,6 @@
  *              tone = 'neutral' | 'success'
  *              composition = 'icon+heading' | 'icon+heading+description' | '+action' (auto from props)
  *
- * Migration:   `import EmptyData from '@shared/EmptyData'`
- *           →  `import { EmptyState } from '@ui/EmptyState'`
  *
  *   V1 prop      →  V2 prop
  *   img          →  illustration (preset key) OR `icon` (custom React node)

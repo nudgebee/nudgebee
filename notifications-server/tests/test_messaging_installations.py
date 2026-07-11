@@ -60,3 +60,32 @@ def test_build_installation_teams():
     assert inst.token == "graph-tok"
     assert inst.refresh_token == "r1"
     assert inst.channels == {"team_id": "T1", "channels": [{"id": "C9"}]}
+
+
+def test_cache_roundtrip_preserves_origin_and_integration_id():
+    """A refreshed token is re-encrypted into integrations only when _origin and
+    _integration_id survive the Redis cache round-trip (to_dict -> from_dict);
+    otherwise persist falls back to the legacy plaintext path."""
+    from notifications_server.models.models import MessagingPlatform
+
+    integ = Integration(id="33333333-3333-3333-3333-333333333333", name="home-acct", tenant_id="t1")
+    inst = mi.build_installation("ms_teams", integ, {"access_token": "graph-tok"})
+
+    restored = MessagingPlatform.from_dict(inst.to_dict())
+
+    assert restored._origin == mi.ORIGIN_INTEGRATION
+    assert str(restored._integration_id) == "33333333-3333-3333-3333-333333333333"
+
+
+def test_cache_roundtrip_legacy_origin():
+    from notifications_server.models.models import MessagingPlatform
+
+    inst = MessagingPlatform()
+    inst.platform = "slack"
+    inst.tenant_id = "t1"
+    inst._origin = mi.ORIGIN_LEGACY
+
+    restored = MessagingPlatform.from_dict(inst.to_dict())
+
+    assert restored._origin == mi.ORIGIN_LEGACY
+    assert restored._integration_id is None

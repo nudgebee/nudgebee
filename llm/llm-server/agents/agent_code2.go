@@ -73,6 +73,17 @@ const irrelevantAnalysisMarker = "may not be directly addressing your specific i
 // Entries expire after 24 hours to prevent unbounded memory growth.
 const codeAgentFailuresCacheNS = "code_agent_conv_failures"
 
+// codeAnalysisNoOpStatus is the execution_status the code-analysis service emits
+// for a terminal "no change required" outcome — the requested fix is already
+// present, so no diff and no PR were produced. It is a SUCCESS, not a failure.
+const codeAnalysisNoOpStatus = "no_op"
+
+// noopGuardPrefix tags a cached no-op terminal answer in codeAgentFailuresCacheNS,
+// distinguishing it from a failure-guard entry. A re-dispatch within the same
+// message replays this answer as a success instead of re-running the analysis,
+// which is what previously drove a re-dispatch loop and a duplicate PR.
+const noopGuardPrefix = "NOOP:"
+
 func init() {
 	common.CacheCreateNamespace(codeAgentFailuresCacheNS, common.CacheNamespaceWithExpiration(24*time.Hour))
 
@@ -765,7 +776,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 					ctx.GetMeter(),
 				)
 				cleanupCmd := fmt.Sprintf("rm -rf /tmp/code-analysis-%s-*", agentRequest.SessionId)
-				if _, cleanupErr := wm.ExecuteCommand(cleanupCtx, agentRequest.AccountId, "", cleanupCmd, nil); cleanupErr != nil {
+				if _, cleanupErr := wm.ExecuteCommand(cleanupCtx, agentRequest.AccountId, agentRequest.SessionId, cleanupCmd, nil); cleanupErr != nil {
 					logger.Warn("code: workspace cleanup failed", "error", cleanupErr)
 				}
 			}()
@@ -1038,12 +1049,26 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 	// Message-scoped retry guard: if a previous call in this message already failed
 	// or returned an irrelevant analysis, skip immediately to avoid wasting tokens/time.
 	// Scoped to message (not conversation) so new user messages can retry with better input.
-	guardKey := query.ConversationId + ":" + query.MessageId
-	if prevReason, ok := common.CacheGet(codeAgentFailuresCacheNS, guardKey); ok {
-		reason := string(prevReason)
-		ctx.GetLogger().Info("code: skipping — previous analysis in this message was not useful",
-			"conversation_id", query.ConversationId, "message_id", query.MessageId, "reason", reason)
-		return core.NBAgentResponse{}, fmt.Errorf("code analysis already attempted in this message: %s", reason)
+	// Only consult the message-scoped guard when both identifiers are present.
+	// An empty conversation/message id would collapse the key to ":", colliding
+	// across sessions and risking replay of one session's cached answer into
+	// another — skip the guard entirely in that case.
+	guardKey, hasGuardKey := codeAgentGuardKey(query.ConversationId, query.MessageId)
+	if hasGuardKey {
+		if prevReason, ok := common.CacheGet(codeAgentFailuresCacheNS, guardKey); ok {
+			reason := string(prevReason)
+			// A no-op guard means an earlier call in this message already determined the
+			// change is already present. Replay that terminal answer as a SUCCESS so the
+			// planner stops re-dispatching instead of re-running the whole analysis.
+			if answer, isNoOp := strings.CutPrefix(reason, noopGuardPrefix); isNoOp {
+				ctx.GetLogger().Info("code: skipping re-dispatch — change already present (no-op) earlier in this message",
+					"conversation_id", query.ConversationId, "message_id", query.MessageId)
+				return core.NBAgentResponse{Response: []string{answer}}, nil
+			}
+			ctx.GetLogger().Info("code: skipping — previous analysis in this message was not useful",
+				"conversation_id", query.ConversationId, "message_id", query.MessageId, "reason", reason)
+			return core.NBAgentResponse{}, fmt.Errorf("code analysis already attempted in this message: %s", reason)
+		}
 	}
 
 	codeAgentRequest := CodeAgent2Request{}
@@ -1401,10 +1426,10 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 			return core.NBAgentResponse{}, err
 		}
 		responseStr := string(jsonResponse)
-		handleAnalysisResult(ctx, query.ConversationId, query.MessageId, responseStr)
+		finalResponse := handleAnalysisResult(ctx, query.ConversationId, query.MessageId, responseStr)
 		go trackPRInResolution(ctx, query, responseStr, codeAgentRequest.GitRepo, provider)
 		return core.NBAgentResponse{
-			Response: []string{responseStr},
+			Response: []string{finalResponse},
 		}, nil
 	} else if config.Config.LlmServerCodeAgentMode == "local" {
 		// execute command for local testing
@@ -1475,26 +1500,55 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 		return core.NBAgentResponse{}, err
 	}
 	responseStr := string(jsonResponse)
-	handleAnalysisResult(ctx, query.ConversationId, query.MessageId, responseStr)
+	finalResponse := handleAnalysisResult(ctx, query.ConversationId, query.MessageId, responseStr)
 	go trackPRInResolution(ctx, query, responseStr, codeAgentRequest.GitRepo, provider)
 	return core.NBAgentResponse{
-		Response: []string{responseStr},
+		Response: []string{finalResponse},
 	}, nil
 }
 
-// handleAnalysisResult stores irrelevant results in the cache so retries within
-// the same message are skipped, or clears previous failures on success.
-func handleAnalysisResult(ctx *security.RequestContext, conversationId, messageId, responseStr string) {
-	guardKey := conversationId + ":" + messageId
+// handleAnalysisResult inspects the analysis result, maintains the message-scoped
+// guard, and returns the response string to surface to the planner. For a terminal
+// no-op (the change is already present) it returns an explanatory answer and caches
+// it so the same message isn't re-dispatched; for an irrelevant analysis it stores a
+// failure guard; otherwise it clears any prior guard so the message can recover.
+func handleAnalysisResult(ctx *security.RequestContext, conversationId, messageId, responseStr string) string {
+	// The guard is keyed on conversation+message; without both we can't form a
+	// collision-free key, so we still surface the right response but skip caching.
+	guardKey, hasGuardKey := codeAgentGuardKey(conversationId, messageId)
 	if isIrrelevantAnalysis(responseStr) {
 		ctx.GetLogger().Info("code: analysis was not relevant to user query, storing for retry guard",
 			"conversation_id", conversationId, "message_id", messageId)
-		_ = common.CacheSet(codeAgentFailuresCacheNS, guardKey,
-			[]byte("analysis was not relevant to the user's issue"))
-	} else {
-		// Genuine success — clear any previous failure so the same message can recover
+		if hasGuardKey {
+			_ = common.CacheSet(codeAgentFailuresCacheNS, guardKey,
+				[]byte("analysis was not relevant to the user's issue"))
+		}
+		return responseStr
+	}
+	if answer, isNoOp := noOpTerminalAnswer(responseStr); isNoOp {
+		ctx.GetLogger().Info("code: analysis was a no-op (change already present), surfacing terminal answer",
+			"conversation_id", conversationId, "message_id", messageId)
+		// Cache the terminal answer so a same-message re-dispatch replays it as success.
+		if hasGuardKey {
+			_ = common.CacheSet(codeAgentFailuresCacheNS, guardKey, []byte(noopGuardPrefix+answer))
+		}
+		return answer
+	}
+	// Genuine success — clear any previous failure so the same message can recover
+	if hasGuardKey {
 		_ = common.CacheDelete(codeAgentFailuresCacheNS, guardKey)
 	}
+	return responseStr
+}
+
+// codeAgentGuardKey builds the message-scoped guard cache key and reports whether
+// it is usable. Both identifiers must be non-empty — otherwise the key would
+// collapse to ":" and collide across unrelated sessions.
+func codeAgentGuardKey(conversationId, messageId string) (string, bool) {
+	if conversationId == "" || messageId == "" {
+		return "", false
+	}
+	return conversationId + ":" + messageId, true
 }
 
 // isIrrelevantAnalysis checks if the code-analysis response indicates the analysis
@@ -1503,6 +1557,46 @@ func handleAnalysisResult(ctx *security.RequestContext, conversationId, messageI
 // NOTE: The marker phrase must match the relevance check output in llm/code-analysis.
 func isIrrelevantAnalysis(response string) bool {
 	return strings.Contains(response, irrelevantAnalysisMarker)
+}
+
+// noOpTerminalAnswer reports whether the code-analysis result is a terminal no-op
+// — the requested change is already present, so no diff and no PR were produced —
+// and, if so, returns an explanatory answer composed from the agent's findings.
+//
+// A no-op is a SUCCESS, not a failure: surfacing it as a clear terminal answer (with
+// the reasoning the agent actually found) stops the planner from re-dispatching the
+// tool in search of a PR that should never be created. The authoritative signal is
+// execution_status == "no_op" emitted by the code-analysis orchestrator.
+func noOpTerminalAnswer(responseStr string) (string, bool) {
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(responseStr), &resp); err != nil {
+		return "", false
+	}
+	if execStatus, _ := resp["execution_status"].(string); execStatus != codeAnalysisNoOpStatus {
+		return "", false
+	}
+
+	// Compose an explanatory answer from whatever findings the agent produced, so the
+	// user sees the reasoning (what already satisfies the request and where), not a
+	// silent skip. Never hardcode a specific case — use the agent's own fields.
+	detail := firstNonEmptyField(resp, "pr_creation_reason", "description", "root_cause_analysis", "execution_summary")
+	var b strings.Builder
+	b.WriteString("No pull request was created — the requested change is already present in the repository, so no modifications were needed.")
+	if detail != "" {
+		b.WriteString("\n\n")
+		b.WriteString(detail)
+	}
+	return b.String(), true
+}
+
+// firstNonEmptyField returns the first non-empty string value among the given keys.
+func firstNonEmptyField(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // trackPRInResolution inserts an event_resolution row when agent_code_2 creates a PR.

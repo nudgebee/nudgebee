@@ -70,6 +70,7 @@ const integrationConnectionKey = {
   splunk_observability_platform: 'realm',
   chronosphere: 'chronosphere_url',
   signoz: 'signoz_url',
+  openobserve: 'openobserve_url',
   observe: 'domain',
   azure_app_insights: 'azure_app_insights_app_id',
   dynatrace: 'base_url',

@@ -211,58 +211,68 @@ func queryProxyDatasources(accountID string) ([]relay.ProxyDatasourceConfig, err
 		}
 
 		// Query config values for this integration
-		configRows, err := dbms.Db.Queryx(`
-			SELECT name::text, value::text, is_encrypted
-			FROM integration_config_values
-			WHERE integration_id = $1
-		`, integrationID)
-		if err != nil {
-			slog.Error("integrations: failed to query config values", "integration_id", integrationID, "error", err)
-			continue
-		}
-
 		configMap := map[string]any{}
 		credentials := map[string]string{}
 		var proxyType, credentialSource, credentialRef string
 
-		for configRows.Next() {
-			var name, value string
-			var isEncrypted bool
-			if err := configRows.Scan(&name, &value, &isEncrypted); err != nil {
-				slog.Error("integrations: failed to scan config value", "error", err)
-				continue
+		if err := func() error {
+			configRows, err := dbms.Db.Queryx(`
+				SELECT name::text, value::text, is_encrypted
+				FROM integration_config_values
+				WHERE integration_id = $1
+			`, integrationID)
+			if err != nil {
+				return err
 			}
+			defer func() {
+				if cerr := configRows.Close(); cerr != nil {
+					slog.Error("integrations: failed to close config value rows", "error", cerr)
+				}
+			}()
 
-			// Decrypt encrypted values
-			if isEncrypted && value != "" {
-				decrypted, err := common.Decrypt(value)
-				if err != nil {
-					slog.Error("integrations: failed to decrypt config value",
-						"integration_id", integrationID, "name", name, "error", err)
+			for configRows.Next() {
+				var name, value string
+				var isEncrypted bool
+				if err := configRows.Scan(&name, &value, &isEncrypted); err != nil {
+					slog.Error("integrations: failed to scan config value", "error", err)
 					continue
 				}
-				value = decrypted
-			}
 
-			// Classify fields
-			switch name {
-			case "proxy_type":
-				proxyType = value
-			case "credential_source":
-				credentialSource = value
-			case "secret_ref":
-				credentialRef = value
-			case "username", "password", "bearer_token", "custom_header_name", "custom_header_value",
-				"private_key", "passphrase", "sasl_username", "sasl_password":
-				credentials[name] = value
-			case "account_id", "integration_config_name", "connection_mode", "k8s_secret":
-				// Skip meta fields — not part of datasource config
-			default:
-				configMap[name] = coerceConfigValue(name, value)
+				// Decrypt encrypted values
+				if isEncrypted && value != "" {
+					decrypted, err := common.Decrypt(value)
+					if err != nil {
+						slog.Error("integrations: failed to decrypt config value",
+							"integration_id", integrationID, "name", name, "error", err)
+						continue
+					}
+					value = decrypted
+				}
+
+				// Classify fields
+				switch name {
+				case "proxy_type":
+					proxyType = value
+				case "credential_source":
+					credentialSource = value
+				case "secret_ref":
+					credentialRef = value
+				case "username", "password", "bearer_token", "custom_header_name", "custom_header_value",
+					"private_key", "passphrase", "sasl_username", "sasl_password":
+					credentials[name] = value
+				case "account_id", "integration_config_name", "connection_mode", "k8s_secret":
+					// Skip meta fields — not part of datasource config
+				default:
+					configMap[name] = coerceConfigValue(name, value)
+				}
 			}
-		}
-		if cerr := configRows.Close(); cerr != nil {
-			slog.Error("integrations: failed to close config value rows", "error", cerr)
+			if err := configRows.Err(); err != nil {
+				return err
+			}
+			return nil
+		}(); err != nil {
+			slog.Error("integrations: failed to query config values", "integration_id", integrationID, "error", err)
+			continue
 		}
 
 		if credentialSource == "" {

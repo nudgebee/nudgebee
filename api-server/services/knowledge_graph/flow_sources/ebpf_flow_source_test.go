@@ -90,7 +90,7 @@ func TestEbpfFlowSource_InferNodeType(t *testing.T) {
 		{"DynaKube", core.NodeTypeCRD},               // Dynatrace operator CRD
 		{"VMAlert", core.NodeTypeCRD},                // VictoriaMetrics CRD
 		{"OpenTelemetryCollector", core.NodeTypeCRD}, // OTel operator CRD
-		{"external", core.NodeTypeWorkload},          // eBPF pod-like entries, hash stripped by getWorkloadName
+		{"external", core.NodeTypeExternalService},   // outbound destinations leaving the cluster
 		{"Unknown", core.NodeTypeService},            // Default
 	}
 

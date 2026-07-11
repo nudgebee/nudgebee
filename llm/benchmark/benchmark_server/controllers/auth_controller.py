@@ -42,6 +42,8 @@ logger = logging.getLogger(__name__)
 NOTIFICATION_SERVICE_URL = os.environ.get(
     "NOTIFICATION_SERVICE_URL", "http://notifications:80"
 )
+# Optional X-ACTION-TOKEN for notifications-server calls; must match its NOTIFICATION_SERVER_TOKEN.
+NOTIFICATION_SERVER_TOKEN = os.environ.get("NOTIFICATION_SERVER_TOKEN", "")
 # 10 minutes mirrors the UI app's NextAuth EmailProvider maxAge.
 MAGIC_LINK_TTL_SECONDS = int(os.environ.get("MAGIC_LINK_TTL_SECONDS", "600"))
 
@@ -213,6 +215,11 @@ def _send_magic_link_email(email: str, magic_link_url: str) -> bool:
     email is identical across the two surfaces.
     """
     try:
+        headers = (
+            {"X-ACTION-TOKEN": NOTIFICATION_SERVER_TOKEN}
+            if NOTIFICATION_SERVER_TOKEN
+            else {}
+        )
         resp = requests.post(
             f"{NOTIFICATION_SERVICE_URL}/api/emails/send",
             json={
@@ -221,6 +228,7 @@ def _send_magic_link_email(email: str, magic_link_url: str) -> bool:
                 "template": "magic_link",
                 "template_params": {"magic_link_url": magic_link_url},
             },
+            headers=headers,
             timeout=10,
         )
         if resp.status_code != 200:

@@ -77,8 +77,8 @@ var eventSummary string
 //go:embed event_general_summary.txt
 var eventGeneralSummary string
 
-//go:embed event_investigation_summary.txt
-var eventInvestigationSummary string
+//go:embed event_investigation.txt
+var eventInvestigation string
 
 //go:embed memory_extractor.txt
 var memoryExtractor string
@@ -173,6 +173,9 @@ var scratchpadContextSummarizer string
 //go:embed agent_kg_usage.txt
 var agentKgUsage string
 
+//go:embed cost_optimization_analysis.txt
+var costOptimizationAnalysis string
+
 const PromptPlannerRewoo2Base = "planner_rewoo_2_base"
 const PromptPlannerRewooSolver = "planner_rewoo_solver"
 const PromptPlannerRewoo2Classifier = "planner_rewoo_2_classifier"
@@ -198,7 +201,7 @@ const PromptEvaluatorQueryResponse = "evaluator_query_response"
 const PromptEvaluatorToolCalls = "evaluator_tool_calls"
 const PromptEventSummary = "event_summary"
 const PromptEventGeneralSummary = "event_general_summary"
-const PromptEventInvestigationSummary = "event_investigation_summary"
+const PromptEventInvestigation = "event_investigation"
 const PromptMemoryExtractor = "memory_extractor"
 const PromptAgentK8sDebug = "agent_k8s_debug"
 const PromptAgentK8sDebugReact = "agent_k8s_debug_react"
@@ -234,6 +237,7 @@ const PromptScratchpadSummarizer = "scratchpad_summarizer"
 
 // PromptAgentKgUsage is the KG-tool usage guidance for the KG-only V2 service_dependency_graph agent.
 const PromptAgentKgUsage = "agent_kg_usage"
+const PromptCostOptimization = "cost_optimization_analysis"
 
 func GetPrompt(module string, args ...any) string {
 	data := ""
@@ -285,8 +289,8 @@ func GetPrompt(module string, args ...any) string {
 		data = eventSummary
 	case PromptEventGeneralSummary:
 		data = eventGeneralSummary
-	case PromptEventInvestigationSummary:
-		data = eventInvestigationSummary
+	case PromptEventInvestigation:
+		data = eventInvestigation
 	case PromptMemoryExtractor:
 		data = memoryExtractor
 	case PromptAgentK8sDebug:
@@ -335,6 +339,8 @@ func GetPrompt(module string, args ...any) string {
 		data = agentFinops
 	case PromptAgentKgUsage:
 		data = agentKgUsage
+	case PromptCostOptimization:
+		data = costOptimizationAnalysis
 	}
 	if len(args) > 0 {
 		data = fmt.Sprintf(data, args...)

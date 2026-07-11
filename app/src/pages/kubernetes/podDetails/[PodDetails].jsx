@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import PodDetailsPage from '@components/k8s/pods/PodsDetails';
 import { Box } from '@mui/material';
 import { useData } from '@context/DataContext';
+import { ds } from '@utils/colors';
 
 const PodDetails = () => {
   const router = useRouter();
@@ -29,16 +30,21 @@ const PodDetails = () => {
   }, [router.query.PodDetails]);
 
   const sx = {
-    padding: '20px 24px 20px 24px',
-    borderRadius: '12px 12px 12px 12px',
+    padding: `${ds.space[4]} ${ds.space[5]} ${ds.space[4]} ${ds.space[5]}`,
+    borderRadius: ds.radius.xl,
     boxShadow: '0px 4px 4px 0px #00000026',
     alignSelf: 'stretch',
     backgroundColor: 'white',
   };
   return (
     <Box position={'relative'}>
-      <PodTitleBox pod={podData} marginBottom={'6px'} />
-      <Box display='flex' flexDirection='column' alignItems='flex-start' sx={{ marginTop: '16px', marginBottom: '12px', scrollMarginTop: '80px' }}>
+      <PodTitleBox pod={podData} marginBottom={ds.space.mul(0, 3)} />
+      <Box
+        display='flex'
+        flexDirection='column'
+        alignItems='flex-start'
+        sx={{ marginTop: ds.space[4], marginBottom: ds.space[3], scrollMarginTop: ds.space.mul(4, 5) }}
+      >
         <Box sx={sx}>
           <PodDetailsPage pod={podData?.cloud_resourses} />
         </Box>

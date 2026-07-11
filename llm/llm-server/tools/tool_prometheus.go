@@ -115,6 +115,11 @@ func (m PrometheusExecuteTool) InputSchema() core.ToolSchema {
 	}
 }
 
+// promQLParser is a shared, stateless PromQL parser. ParseExpr builds a fresh
+// internal parser per call from the (immutable) Options, so a single package-level
+// instance is safe to reuse concurrently and avoids per-call allocations.
+var promQLParser = parser.NewParser(parser.Options{})
+
 // validatePromQLSyntax parses the query locally using the Prometheus parser.
 // Returns a structured, LLM-actionable error string on failure, or empty string if valid.
 // Common error types and suggested fixes are included so the LLM can self-correct
@@ -124,7 +129,7 @@ func validatePromQLSyntax(query string) string {
 	if q == "" {
 		return ""
 	}
-	if _, err := parser.ParseExpr(q); err != nil {
+	if _, err := promQLParser.ParseExpr(q); err != nil {
 		msg := err.Error()
 		// Classify the error and add a fix hint for the LLM
 		hint := ""
@@ -365,7 +370,7 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 	if allEmpty {
 		slog.Info("prometheus: all queries returned empty data", "query", input.Command, "parentAgentId", nbRequestContext.ParentAgentId)
 		return core.NBToolResponse{
-			Data:       fmt.Sprintf("No data found for query: %s. The metric may not exist, labels may be incorrect, or there is no data in the selected time range. Try verifying the metric name and labels using metrics_list or search_metrics tools.", input.Command),
+			Data:       fmt.Sprintf("No data found for query: %s. The metric may not exist, labels may be incorrect, or there is no data in the selected time range. If this is for a named workload, call metrics_series_match (workload + namespace) to get the families that actually have series for it, then rebuild the query. Otherwise use metrics_list/search_metrics for keyword discovery.", input.Command),
 			Status:     core.NBToolResponseStatusSuccess,
 			References: []core.NBToolResponseReference{core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"monitoring", "query"}, "Query Prometheus", map[string]string{"tab": "4", "subtab": "2"}, input.Command)},
 		}, nil

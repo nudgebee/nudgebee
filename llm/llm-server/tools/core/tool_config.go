@@ -949,8 +949,18 @@ func ListAllToolConfigs(context *security.RequestContext, accountId string) ([]T
 		}
 	}
 
-	// 2. Query integrations (postgres, mysql, redis, etc.)
-	// Only account-specific configs (no tenant-wide configs)
+	// 2. Query integrations (postgres, mysql, redis, etc.).
+	// Returns both account-scoped and tenant-scoped integrations:
+	//   - account-scoped integrations carry an integrations_cloud_accounts row and
+	//     are visible only to the account they are mapped to (the EXISTS branch).
+	//   - tenant-scoped categories (messaging: slack/teams/google_chat, ticketing:
+	//     jira/servicenow/pagerduty, etc.) bind to the tenant directly and are
+	//     created with NO integrations_cloud_accounts row (see
+	//     integrations/core CreateIntegrationConfig). They must be visible to every
+	//     account in the tenant (the NOT EXISTS branch). An INNER JOIN on
+	//     integrations_cloud_accounts silently dropped these, which made the
+	//     workflow builder report configured Slack/ticketing integrations as
+	//     "not configured" (#32019).
 	configRows, err := dbms.Query(`
 		SELECT
 			i.id::text,
@@ -961,11 +971,20 @@ func ListAllToolConfigs(context *security.RequestContext, accountId string) ([]T
 			icv.value as config_value,
 			icv.is_encrypted as config_encrypted
 		FROM integrations i
-		INNER JOIN integrations_cloud_accounts ia ON i.id = ia.integration_id
 		LEFT JOIN integration_config_values icv ON i.id = icv.integration_id
-		WHERE ia.cloud_account_id = $1
+		WHERE i.tenant_id = $1
 		AND i.status = 'enabled'
-	`, accountId)
+		AND (
+			EXISTS (
+				SELECT 1 FROM integrations_cloud_accounts ia
+				WHERE ia.integration_id = i.id AND ia.cloud_account_id = $2
+			)
+			OR NOT EXISTS (
+				SELECT 1 FROM integrations_cloud_accounts ia
+				WHERE ia.integration_id = i.id
+			)
+		)
+	`, tenantId, accountId)
 	if err != nil {
 		slog.Error("tools: failed to get all tool configs", "error", err, "account_id", accountId)
 		return configs, err

@@ -6,7 +6,7 @@ import userApi, { PREFERENCE_LAST_ACCOUNT_ID } from '@api1/user';
 import apiAccount from '@api1/account';
 import { useData } from '@context/DataContext';
 import { transformClusters } from '@shared/layout/UpdateDataContext';
-import CustomDropdown from '../CustomDropdown';
+import CustomDropdown from '@shared/CustomDropdown';
 
 /**
  * Custom Hook: Handles fetching and Context synchronization.

@@ -248,8 +248,8 @@ func TestMetadata_NodeTypeBreakdown(t *testing.T) {
 		t.Errorf("NodeTypeBreakdown[Service] = %v, want %v", metadata.NodeTypeBreakdown[NodeTypeService], 5)
 	}
 
-	if len(metadata.Sources) != 2 {
-		t.Errorf("Sources length = %v, want %v", len(metadata.Sources), 2)
+	if len(metadata.Sources) != 1 {
+		t.Errorf("Sources length = %v, want %v", len(metadata.Sources), 1)
 	}
 }
 

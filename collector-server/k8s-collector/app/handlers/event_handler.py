@@ -1187,7 +1187,10 @@ def parse_memory_recommendation(memory_cost_per_hour, rec, settings):
     original_memory = rec["allocated"]["request"]
     original_hourly_cost = (original_memory / (1024 * 1024 * 1024)) * memory_cost_per_hour
     new_memory = round_memory(rec["recommended"]["request"])
-    if abs(new_memory - original_memory) / original_memory * 100 < settings.get(
+    # Guard against a 0 allocated request (no memory request set). Callers gate on
+    # a truthy allocated.request today, but keep the helper safe so the percent-change
+    # threshold can't raise ZeroDivisionError and discard the whole KRR account report.
+    if original_memory and abs(new_memory - original_memory) / original_memory * 100 < settings.get(
         RIGHT_SIZING_CHANGE_THRESHOLD_PERCENTAGE_PROPERTY_NAME, RIGHT_SIZING_CHANGE_THRESHOLD_PERCENTAGE
     ):
         new_memory = original_memory
@@ -1202,7 +1205,9 @@ def parse_cpu_recommendation(cpu_cost_per_hour, rec, settings):
     original_cpu = rec["allocated"]["request"]
     original_hourly_cost = original_cpu * cpu_cost_per_hour
     new_cpu = rec["recommended"]["request"]
-    if abs(new_cpu - original_cpu) / original_cpu * 100 < settings.get(
+    # Guard against a 0 allocated request (no CPU request set) so the percent-change
+    # threshold can't raise ZeroDivisionError and discard the whole KRR account report.
+    if original_cpu and abs(new_cpu - original_cpu) / original_cpu * 100 < settings.get(
         RIGHT_SIZING_CHANGE_THRESHOLD_PERCENTAGE_PROPERTY_NAME, RIGHT_SIZING_CHANGE_THRESHOLD_PERCENTAGE
     ):
         new_cpu = original_cpu

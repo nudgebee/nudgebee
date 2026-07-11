@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"nudgebee/collector/cloud/providers"
 	"regexp"
 	"strconv"
@@ -409,6 +408,29 @@ func (a *amazonEcs) GetRecommendations(ctx providers.CloudProviderContext, accou
 
 	startDate := time.Now().Add(-time.Hour * 24 * 7) // Metrics period: last 7 days
 	endDate := time.Now()
+
+	// Cache Fargate pricing per region to avoid repeated Pricing API calls across
+	// the many ECS services processed in this pass. A cached {0,0} entry records a
+	// prior lookup failure so we don't retry it for every service in that region.
+	fargatePriceCache := map[string][2]float64{}
+	getFargatePricingCached := func(region string) (float64, float64, error) {
+		if v, ok := fargatePriceCache[region]; ok {
+			if v[0] <= 0 || v[1] <= 0 {
+				return 0, 0, fmt.Errorf("fargate pricing unavailable for region %s", region)
+			}
+			return v[0], v[1], nil
+		}
+		vcpu, gb, err := getFargatePricing(cfg, region)
+		if err != nil {
+			fargatePriceCache[region] = [2]float64{0, 0}
+			// Log once per region (not per service) to avoid log spam.
+			ctx.GetLogger().Warn("fargate pricing unavailable; savings will be 0 for services in this region", "error", err, "region", region)
+			return 0, 0, err
+		}
+		fargatePriceCache[region] = [2]float64{vcpu, gb}
+		return vcpu, gb, nil
+	}
+
 	// Helper to find cluster details from existingResources
 	findClusterDetails := func(clusterArn string) map[string]any {
 		for _, r := range existingResources {
@@ -599,10 +621,11 @@ func (a *amazonEcs) GetRecommendations(ctx providers.CloudProviderContext, accou
 			// Recommend if less than 50% for services with more than 1 desired task.
 			// For desiredCount=1, 0% might be acceptable for some rolling update strategies, but 50%/100% is safer.
 			if desiredCount > 1 && minHealthyPercent < 50 {
-				recommendations = append(recommendations, providers.Recommendation{ // TODO: This should be Availability
+				// Categorized as Configuration (no dedicated Availability category exists).
+				recommendations = append(recommendations, providers.Recommendation{
 					CategoryName:        providers.RecommendationCategoryConfiguration,
 					RuleName:            "aws_ecs_service_min_healthy_percent_low",
-					Severity:            providers.RecommendationSeverityMedium, // TODO: This should be Medium
+					Severity:            providers.RecommendationSeverityMedium,
 					Savings:             0,
 					Data:                map[string]any{"service_name": resource.Name, "service_arn": resource.Arn, "current_min_healthy_percent": minHealthyPercent, "desired_count": desiredCount, "reason": "Minimum healthy percent is below 50% which might impact availability during deployments."},
 					Action:              providers.RecommendationActionModify,
@@ -612,10 +635,11 @@ func (a *amazonEcs) GetRecommendations(ctx providers.CloudProviderContext, accou
 					ResourceRegion:      resource.Region,
 				})
 			} else if desiredCount == 1 && minHealthyPercent < 100 { // For single task services, 0% means downtime during update.
-				recommendations = append(recommendations, providers.Recommendation{ // TODO: This should be Availability
+				// Categorized as Configuration (no dedicated Availability category exists).
+				recommendations = append(recommendations, providers.Recommendation{
 					CategoryName:        providers.RecommendationCategoryConfiguration,
 					RuleName:            "aws_ecs_service_min_healthy_percent_too_low_for_single_task",
-					Severity:            providers.RecommendationSeverityMedium, // TODO: This should be Medium
+					Severity:            providers.RecommendationSeverityMedium,
 					Savings:             0,
 					Data:                map[string]any{"service_name": resource.Name, "service_arn": resource.Arn, "current_min_healthy_percent": minHealthyPercent, "desired_count": desiredCount, "reason": "For a single-task service, minimum healthy percent less than 100% can cause downtime during updates. Consider 100% or blue/green deployments."},
 					Action:              providers.RecommendationActionModify,
@@ -928,21 +952,25 @@ func (a *amazonEcs) GetRecommendations(ctx providers.CloudProviderContext, accou
 					// Check for Underutilization
 					// Consider underutilized if BOTH CPU and Memory are below thresholds
 					if maxCPUUtil < underutilizedCPUThreshold && maxMemoryUtil < underutilizedMemoryThreshold {
-						// Recommend reducing CPU and Memory (e.g., by 50%)
-						recommendedCPU := math.Max(0.0625, taskDefinitionCPU*0.5)       // Smallest Fargate CPU is 0.25, but allow smaller steps? No, stick to Fargate increments.
-						recommendedMemory := math.Max(0.0625, taskDefinitionMemory*0.5) // Smallest Fargate Memory is 0.5GB for 0.25vCPU
+						// Target 50% of current size, then snap to a valid Fargate CPU/memory combination.
+						recommendedCPU, recommendedMemory := nearestValidFargate(taskDefinitionCPU*0.5, taskDefinitionMemory*0.5)
 
-						// TODO: Need to find valid Fargate CPU/Memory combinations and estimate cost savings.
-						// This requires Fargate pricing data lookup, similar to EC2/RDS, but for Fargate.
-						// Placeholder savings calculation: Assume 50% reduction in cost.
-						estimatedCurrentCostPerHourPerTask := 0.0                                                     // Placeholder
-						estimatedSavingsPerMonth := estimatedCurrentCostPerHourPerTask * 24 * 30 * desiredCount * 0.5 // Placeholder
+						// Estimate monthly savings from Fargate pricing. If pricing is
+						// unavailable, emit the recommendation with zero savings rather than dropping it.
+						estimatedSavingsPerMonth := 0.0
+						if vcpuHourly, gbHourly, perr := getFargatePricingCached(resource.Region); perr == nil {
+							currentCost := fargateTaskMonthlyCost(taskDefinitionCPU, taskDefinitionMemory, vcpuHourly, gbHourly, desiredCount)
+							recommendedCost := fargateTaskMonthlyCost(recommendedCPU, recommendedMemory, vcpuHourly, gbHourly, desiredCount)
+							estimatedSavingsPerMonth = currentCost - recommendedCost
+						} else {
+							ctx.GetLogger().Debug("fargate pricing unavailable for savings estimate", "error", perr, "region", resource.Region, "serviceArn", resource.Arn)
+						}
 
 						recommendations = append(recommendations, providers.Recommendation{
 							CategoryName: providers.RecommendationCategoryRightSizing,
 							RuleName:     "aws_ecs_fargate_service_underutilized",
 							Severity:     providers.RecommendationSeverityMedium,
-							Savings:      estimatedSavingsPerMonth, // Placeholder
+							Savings:      estimatedSavingsPerMonth,
 							Data: map[string]any{
 								"service_name":          resource.Name,
 								"service_arn":           resource.Arn,
@@ -950,8 +978,8 @@ func (a *amazonEcs) GetRecommendations(ctx providers.CloudProviderContext, accou
 								"current_memory_gb":     taskDefinitionMemory,
 								"max_cpu_util":          maxCPUUtil,
 								"max_memory_util":       maxMemoryUtil,
-								"recommended_cpu_vcpu":  recommendedCPU,    // Placeholder values
-								"recommended_memory_gb": recommendedMemory, // Placeholder values
+								"recommended_cpu_vcpu":  recommendedCPU,
+								"recommended_memory_gb": recommendedMemory,
 								"reason":                fmt.Sprintf("Service appears underutilized (Max CPU: %.2f%%, Max Memory: %.2f%%). Consider reducing task CPU/Memory.", maxCPUUtil, maxMemoryUtil),
 							},
 							Action:              providers.RecommendationActionModify, // Modify Task Definition
@@ -965,11 +993,19 @@ func (a *amazonEcs) GetRecommendations(ctx providers.CloudProviderContext, accou
 					// Check for Overutilization
 					// Consider overutilized if EITHER CPU or Memory is above thresholds
 					if maxCPUUtil > overutilizedCPUThreshold || maxMemoryUtil > overutilizedMemoryThreshold {
-						// Recommend increasing CPU or Memory
-						// TODO: Need to find valid Fargate CPU/Memory combinations and estimate cost increase.
-						// Placeholder savings calculation: Assume 50% increase in cost (negative savings).
-						estimatedCurrentCostPerHourPerTask := 0.0                                                          // Placeholder
-						estimatedCostIncreasePerMonth := estimatedCurrentCostPerHourPerTask * 24 * 30 * desiredCount * 0.5 // Placeholder
+						// Target 50% more than current size, then snap to a valid Fargate CPU/memory combination.
+						recommendedCPU, recommendedMemory := nearestValidFargate(taskDefinitionCPU*1.5, taskDefinitionMemory*1.5)
+
+						// Estimate the monthly cost increase from Fargate pricing. Savings is
+						// negative (a cost increase). If pricing is unavailable, emit with zero.
+						estimatedCostIncreasePerMonth := 0.0
+						if vcpuHourly, gbHourly, perr := getFargatePricingCached(resource.Region); perr == nil {
+							currentCost := fargateTaskMonthlyCost(taskDefinitionCPU, taskDefinitionMemory, vcpuHourly, gbHourly, desiredCount)
+							recommendedCost := fargateTaskMonthlyCost(recommendedCPU, recommendedMemory, vcpuHourly, gbHourly, desiredCount)
+							estimatedCostIncreasePerMonth = recommendedCost - currentCost
+						} else {
+							ctx.GetLogger().Debug("fargate pricing unavailable for cost-increase estimate", "error", perr, "region", resource.Region, "serviceArn", resource.Arn)
+						}
 
 						recommendations = append(recommendations, providers.Recommendation{
 							CategoryName: providers.RecommendationCategoryRightSizing,
@@ -977,13 +1013,15 @@ func (a *amazonEcs) GetRecommendations(ctx providers.CloudProviderContext, accou
 							Severity:     providers.RecommendationSeverityHigh,
 							Savings:      -estimatedCostIncreasePerMonth, // Negative savings indicates cost increase
 							Data: map[string]any{
-								"service_name":      resource.Name,
-								"service_arn":       resource.Arn,
-								"current_cpu_vcpu":  taskDefinitionCPU,
-								"current_memory_gb": taskDefinitionMemory,
-								"max_cpu_util":      maxCPUUtil,
-								"max_memory_util":   maxMemoryUtil,
-								"reason":            fmt.Sprintf("Service appears overutilized (Max CPU: %.2f%%, Max Memory: %.2f%%). Consider increasing task CPU/Memory.", maxCPUUtil, maxMemoryUtil),
+								"service_name":          resource.Name,
+								"service_arn":           resource.Arn,
+								"current_cpu_vcpu":      taskDefinitionCPU,
+								"current_memory_gb":     taskDefinitionMemory,
+								"max_cpu_util":          maxCPUUtil,
+								"max_memory_util":       maxMemoryUtil,
+								"recommended_cpu_vcpu":  recommendedCPU,
+								"recommended_memory_gb": recommendedMemory,
+								"reason":                fmt.Sprintf("Service appears overutilized (Max CPU: %.2f%%, Max Memory: %.2f%%). Consider increasing task CPU/Memory.", maxCPUUtil, maxMemoryUtil),
 							},
 							Action:              providers.RecommendationActionModify, // Modify Task Definition
 							ResourceServiceName: resource.ServiceName,

@@ -330,6 +330,9 @@ type PullRequestServiceRequest struct {
 
 type ProviderConfig struct {
 	Name string `json:"name"`
+	// ResizePolicy overrides the in-place resizePolicy injected into a
+	// rightsizing PR: "" (default), "restart-memory", or "disabled".
+	ResizePolicy string `json:"resize_policy,omitempty"`
 }
 
 type GitPushRequest struct {

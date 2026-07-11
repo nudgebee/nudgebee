@@ -31,11 +31,17 @@ const (
 	EventAgentToken                EventCategory = "AGENT_TOKEN"
 	EventCategoryIntegration       EventCategory = "INTEGRATIONS"
 	EventCategoryTriage            EventCategory = "TRIAGE"
+	EventCategoryOwnership         EventCategory = "OWNERSHIP"
 )
 
 type EventType string
 
 const (
+	EventTypeOwnershipAssign     EventType = "OWNERSHIP_ASSIGN"
+	EventTypeOwnershipDelete     EventType = "OWNERSHIP_DELETE"
+	EventTypeOwnershipRuleUpsert EventType = "OWNERSHIP_RULE_UPSERT"
+	EventTypeOwnershipRuleDelete EventType = "OWNERSHIP_RULE_DELETE"
+
 	EventTypeUserCreate EventType = "USER_CREATE"
 	EventTypeUserUpdate EventType = "USER_UPDATE"
 	EventTypeUserDelete EventType = "USER_DELETE"
@@ -172,6 +178,8 @@ const (
 	EventTypeTriageRuleCreate   EventType = "TRIAGE_RULE_CREATE"
 	EventTypeTriageRuleUpdate   EventType = "TRIAGE_RULE_UPDATE"
 	EventTypeTriageRuleDelete   EventType = "TRIAGE_RULE_DELETE"
+	EventTypeTriageRuleEnable   EventType = "TRIAGE_RULE_ENABLE"
+	EventTypeTriageRuleDisable  EventType = "TRIAGE_RULE_DISABLE"
 	EventTypeTriageStatusUpdate EventType = "TRIAGE_STATUS_UPDATE"
 	EventTypeTriageBackfill     EventType = "TRIAGE_BACKFILL"
 

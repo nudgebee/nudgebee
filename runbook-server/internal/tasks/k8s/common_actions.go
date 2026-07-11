@@ -41,6 +41,7 @@ func HandleGitOpsOrTicket(
 		providerType := "github"
 		providerConfigName := ""
 		integrationID := ""
+		resizePolicy := ""
 		if gitopsConfigMap != nil {
 			if p, ok := gitopsConfigMap["provider"].(string); ok && p != "" {
 				providerType = p
@@ -53,6 +54,9 @@ func HandleGitOpsOrTicket(
 			}
 			if p, ok := gitopsConfigMap["integration_id"].(string); ok && p != "" {
 				integrationID = p
+			}
+			if p, ok := gitopsConfigMap["resize_policy"].(string); ok && p != "" {
+				resizePolicy = p
 			}
 		}
 
@@ -103,7 +107,8 @@ func HandleGitOpsOrTicket(
 				Data:             prData,
 				Provider:         providerType,
 				ProviderConfig: service.ProviderConfig{
-					Name: providerConfigName,
+					Name:         providerConfigName,
+					ResizePolicy: resizePolicy,
 				},
 				ResolverType: resolverType,
 				ResolverID:   resolverID,
@@ -125,7 +130,8 @@ func HandleGitOpsOrTicket(
 				Data:         prData,
 				Provider:     providerType,
 				ProviderConfig: service.ProviderConfig{
-					Name: providerConfigName,
+					Name:         providerConfigName,
+					ResizePolicy: resizePolicy,
 				},
 				ReferenceLink: getWorkflowBaseLink(taskCtx),
 				ResolverID:    resolverID,

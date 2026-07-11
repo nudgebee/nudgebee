@@ -29,7 +29,7 @@ const SeverityInfographics = ({ severityData, customStyle }) => {
         border: '0.5px solid var(--ds-blue-300)',
         padding: 'var(--ds-space-2) var(--ds-space-4)',
         borderRadius: 'var(--ds-radius-sm)',
-        boxShadow: '0px 2px 7px 0px var(--ds-blue-200)',
+        boxShadow: '0px var(--ds-space-0) 7px 0px var(--ds-blue-200)',
         ...customStyle,
       }}
     >

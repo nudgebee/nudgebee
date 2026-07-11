@@ -82,6 +82,32 @@ var severityScores = map[string]int{
 	"Info":     10,
 }
 
+// NFS v1 weighting constants. The score ranks recommendations on a single
+// 0-100 "act on this first" scale, so these constants encode the
+// cross-category exchange rate explicitly:
+//
+//   - Cost recs rank by measured dollars, not severity — severity is
+//     unreliable there (live data holds Critical rows worth $0 and Medium
+//     rows worth $578/mo).
+//   - Performance findings (OOM kills, crashloops, node pressure) are active
+//     damage and keep most of their severity weight.
+//   - Config findings are latent risk with volume-inflated severities
+//     (thousands of "High" findings per tenant), so they are dampened:
+//     Critical config (70) ≈ a $600/mo cost rec, High config (53) ≈ $100/mo.
+const (
+	// savingsScoreCeiling is the $/mo at which the log savings curve saturates.
+	savingsScoreCeiling = 5000.0
+
+	securitySeverityWeight    = 1.00
+	performanceSeverityWeight = 0.90
+	configSeverityWeight      = 0.70
+
+	costSavingsWeight  = 0.80
+	costSeverityWeight = 0.20
+
+	autoFixEffortBoost = 5
+)
+
 // GetNFSCategory returns the NFS category for a given recommendation
 // category and rule name. Rule-level overrides take precedence.
 func GetNFSCategory(category string, ruleName string) string {
@@ -104,31 +130,37 @@ func getSeverityScore(severity *string) int {
 	return 50
 }
 
-func getRecencyScore(createdAt *time.Time) int {
-	if createdAt == nil {
-		return 40
-	}
-	daysSince := time.Since(*createdAt).Hours() / 24
-	switch {
-	case daysSince < 1:
-		return 100
-	case daysSince < 7:
-		return 70
-	case daysSince < 30:
-		return 40
-	case daysSince < 90:
-		return 20
-	default:
-		return 10
-	}
-}
-
+// getSavingsScore maps monthly savings onto 0-100 with a log curve:
+// $2→12, $15→32, $150→58, $665→76, ≥$5K→100. The previous linear /500
+// mapping zeroed out the typical rec (live p50 savings is ~$2/mo) while
+// capping a $500 and a $50K rec at the same 100.
 func getSavingsScore(savings float32) int {
 	if savings <= 0 {
 		return 0
 	}
-	score := float64(savings) / 500.0 * 100
+	score := 100 * math.Log1p(float64(savings)) / math.Log1p(savingsScoreCeiling)
 	return int(math.Min(score, 100))
+}
+
+// getRecencyBoost gives genuinely new findings a small additive bump so they
+// surface for triage without letting discovery volume own the ranking. In v0
+// recency was 16-34% of the final score, which kept the top-N permanently
+// equal to "whatever today's scan emitted".
+func getRecencyBoost(createdAt *time.Time) int {
+	if createdAt == nil {
+		return 0
+	}
+	daysSince := time.Since(*createdAt).Hours() / 24
+	switch {
+	case daysSince < 1:
+		return 8
+	case daysSince < 7:
+		return 5
+	case daysSince < 30:
+		return 2
+	default:
+		return 0
+	}
 }
 
 // FinOpsScoreResult holds the computed score and metadata.
@@ -138,37 +170,47 @@ type FinOpsScoreResult struct {
 	Breakdown map[string]any
 }
 
-// ComputeFinOpsScore calculates the NFS v0 score for a recommendation.
+// ComputeFinOpsScore calculates the NFS v1 score for a recommendation.
 func ComputeFinOpsScore(category string, ruleName string, severity *string, estimatedSavings float32, createdAt *time.Time) FinOpsScoreResult {
-	nfsCategory := GetNFSCategory(category, ruleName)
-	sevScore := getSeverityScore(severity)
-	recencyScore := getRecencyScore(createdAt)
-	savingsScore := getSavingsScore(estimatedSavings)
-
-	// Universal context (40%): severity 60% + recency 40%
-	universalScore := int(float64(sevScore)*0.60 + float64(recencyScore)*0.40)
-
-	// Category-specific (60%)
-	var categoryScore int
-	switch nfsCategory {
-	case NFSCategoryCost:
-		categoryScore = int(float64(savingsScore)*0.70 + float64(sevScore)*0.30)
-	case NFSCategorySecurity:
-		categoryScore = int(float64(sevScore)*0.80 + float64(recencyScore)*0.20)
-	case NFSCategoryConfig:
-		categoryScore = int(float64(sevScore)*0.70 + float64(recencyScore)*0.30)
-	case NFSCategoryPerformance:
-		categoryScore = int(float64(sevScore)*0.60 + float64(recencyScore)*0.40)
-	default:
-		categoryScore = sevScore
+	// Sanitize non-finite savings (storable in float columns) up front: NaN
+	// poisons the score arithmetic and, worse, fails json.Marshal of the
+	// breakdown — which aborts the caller's whole upsert batch.
+	if math.IsNaN(float64(estimatedSavings)) || math.IsInf(float64(estimatedSavings), 0) {
+		estimatedSavings = 0
 	}
 
-	finalScore := int(float64(universalScore)*0.40 + float64(categoryScore)*0.60)
+	nfsCategory := GetNFSCategory(category, ruleName)
+	sevScore := getSeverityScore(severity)
+	savingsScore := getSavingsScore(estimatedSavings)
+	recencyBoost := getRecencyBoost(createdAt)
 
-	// Effort boost for auto-fixable rules
+	// Cost recs with no positive savings are "increase resources" reliability
+	// recommendations (e.g. an under-provisioned pod_right_sizing) — dollars
+	// carry no signal there, so score them like performance findings.
+	scoredAs := nfsCategory
+	if nfsCategory == NFSCategoryCost && estimatedSavings <= 0 {
+		scoredAs = NFSCategoryPerformance
+	}
+
+	var base float64
+	switch scoredAs {
+	case NFSCategoryCost:
+		base = float64(savingsScore)*costSavingsWeight + float64(sevScore)*costSeverityWeight
+	case NFSCategorySecurity:
+		base = float64(sevScore) * securitySeverityWeight
+	case NFSCategoryPerformance:
+		base = float64(sevScore) * performanceSeverityWeight
+	default: // config
+		base = float64(sevScore) * configSeverityWeight
+	}
+
+	// Round, don't truncate: 100*0.70 is 69.999… in binary floating point.
+	baseScore := int(math.Round(base))
+	finalScore := baseScore + recencyBoost
+
 	effortBoost := 0
 	if autoFixableRules[ruleName] {
-		effortBoost = 5
+		effortBoost = autoFixEffortBoost
 		finalScore += effortBoost
 	}
 
@@ -192,21 +234,21 @@ func ComputeFinOpsScore(category string, ruleName string, severity *string, esti
 	}
 
 	breakdown := map[string]any{
-		"nfs_category":    nfsCategory,
-		"universal_score": universalScore,
-		"category_score":  categoryScore,
+		"nfs_category": nfsCategory,
+		"scored_as":    scoredAs,
+		"base_score":   baseScore,
 		"factors": map[string]any{
 			"severity":          sevStr,
 			"severity_score":    sevScore,
 			"recency_days":      int(recencyDays),
-			"recency_score":     recencyScore,
+			"recency_boost":     recencyBoost,
 			"estimated_savings": estimatedSavings,
 			"savings_score":     savingsScore,
 		},
 		"adjustments": map[string]any{
 			"effort_boost": effortBoost,
 		},
-		"version": "v0",
+		"version": "v1",
 	}
 
 	return FinOpsScoreResult{
@@ -263,7 +305,9 @@ func UpdateFinOpsScoreForRecommendation(ctx *security.RequestContext, dbms *data
 }
 
 // RecomputeAllFinOpsScores recomputes scores for all open recommendations.
-// Called by the finops-score-recompute cron every 6 hours.
+// Called by the finops-score-recompute cron every 6 hours. This is the only
+// path that writes scores for existing rows — scanner upserts intentionally
+// skip finops_* on conflict because they don't know the row's true created_at.
 func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -395,8 +439,11 @@ func ComputeAndSetFinOpsScoreFields(data map[string]any) {
 	if t, ok := data["created_at"].(time.Time); ok {
 		createdAt = &t
 	} else {
-		// New recommendations won't have created_at in the data map
-		// (DB defaults to now()), so use current time for accurate recency scoring.
+		// Scanner payloads carry no created_at; now() is correct for the INSERT
+		// case (the DB defaults created_at to now()). Re-upserts of existing rows
+		// no longer overwrite finops_* on conflict, so this fresh-recency score
+		// never lands on old rows — the 6h recompute cron refreshes those from
+		// the true created_at.
 		now := time.Now()
 		createdAt = &now
 	}

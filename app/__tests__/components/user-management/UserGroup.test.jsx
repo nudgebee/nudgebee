@@ -16,17 +16,15 @@ jest.mock('@api1/user', () => ({
   },
 }));
 
-jest.mock('@shared/snackbarService', () => ({
-  snackbar: { success: jest.fn(), error: jest.fn() },
+jest.mock('@ui/Toast', () => ({
+  toast: { success: jest.fn(), error: jest.fn() },
 }));
 
 jest.mock('@assets', () => ({
   writeIcon: { default: { src: '/write-icon.svg' } },
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000' }, background: { white: '#fff' } },
-}));
+jest.mock('@utils/colors');
 
 jest.mock('src/utils/actionStyles', () => ({
   action: { primary: {} },
@@ -34,9 +32,7 @@ jest.mock('src/utils/actionStyles', () => ({
 
 jest.mock('src/utils/common', () => ({
   safeJSONParse: (val) => {
-    if (typeof val !== 'string') {
-      return val;
-    }
+    if (typeof val !== 'string') return val;
     try {
       return JSON.parse(val);
     } catch {
@@ -46,8 +42,9 @@ jest.mock('src/utils/common', () => ({
   snakeToTitleCase: (s) => s,
 }));
 
-jest.mock('@shared', () => ({
-  Text: ({ value }) => <span>{value}</span>,
+jest.mock('@shared/format/Text', () => ({
+  __esModule: true,
+  default: ({ value }) => <span>{value}</span>,
 }));
 
 jest.mock('@shared/format/Datetime', () => ({
@@ -55,16 +52,20 @@ jest.mock('@shared/format/Datetime', () => ({
   default: ({ value }) => <span data-testid='datetime'>{value || '—'}</span>,
 }));
 
-jest.mock('@shared/NewCustomButton', () => ({
+jest.mock('@shared/icons/SafeIcon', () => ({
   __esModule: true,
-  default: ({ id, text, onClick }) => (
-    <button data-testid={`btn-${id || text}`} onClick={onClick}>
-      {text}
+  default: ({ alt }) => <span data-testid={`icon-${alt}`}>icon</span>,
+}));
+
+jest.mock('@ui/Button', () => ({
+  Button: ({ children, onClick, id, disabled, loading }) => (
+    <button data-testid={id || `btn-${children}`} onClick={onClick} disabled={disabled || loading}>
+      {children}
     </button>
   ),
 }));
 
-jest.mock('./../../../src/components/user-management/modal/GroupModal', () => ({
+jest.mock('@components/user-management/modal/GroupModal', () => ({
   __esModule: true,
   default: ({ open, handleClose, groupData, handleSnackBarData }) =>
     open ? (
@@ -87,35 +88,42 @@ jest.mock('./../../../src/components/user-management/modal/GroupModal', () => ({
     ) : null,
 }));
 
-jest.mock('./../../../src/components/user-management/UserGroupUsers', () => ({
+jest.mock('@components/user-management/UserGroupUsers', () => ({
   __esModule: true,
   default: ({ groupId }) => <div data-testid='user-group-users'>{groupId || ''}</div>,
 }));
 
-jest.mock('@shared/BoxLayout2', () => ({
-  __esModule: true,
-  default: ({ children, searchOption, extraOptions = [] }) => (
-    <div data-testid='box-layout'>
-      <div data-testid='extras'>{extraOptions}</div>
-      {searchOption?.enabled && (
-        <input
-          data-testid='search-input'
-          value={searchOption.value || ''}
-          onChange={searchOption.onChange}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && searchOption.onEnter) {
-              searchOption.onEnter();
-            }
-          }}
-        />
-      )}
-      {searchOption?.enabled === false && <div data-testid='search-disabled'>disabled</div>}
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout = ({ children, id }) => (
+    <div data-testid='listing-layout' id={id}>
       {children}
     </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout, default: ListingLayout };
+});
+
+jest.mock('@ui/SearchInput', () => ({
+  __esModule: true,
+  default: ({ label, value, onChange, onEnterPress }) => (
+    <input
+      data-testid={`search-${label}`}
+      value={value || ''}
+      onChange={(e) => onChange?.(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && onEnterPress) onEnterPress();
+      }}
+    />
   ),
 }));
 
-jest.mock('@shared/tables/CustomTable2', () => ({
+jest.mock('@shared/tables/CustomTable', () => ({
   __esModule: true,
   default: ({ tableData, totalRows, loading, pageNumber, onPageChange, expandable, headers }) => (
     <div data-testid='custom-table'>
@@ -144,7 +152,7 @@ jest.mock('@shared/tables/CustomTable2', () => ({
 import UserGroup from '@components/user-management/UserGroup';
 
 const apiUserManagement = require('@api1/user').default;
-const { snackbar } = require('@shared/snackbarService');
+const { toast: snackbar } = require('@ui/Toast');
 
 const sampleAccounts = [
   { id: 'acc-1', account_name: 'AWS Prod' },
@@ -179,7 +187,8 @@ const sampleGroups = [
 const mockGroupsResponse = (rows = sampleGroups, count = rows.length) => ({
   data: {
     usergroups_list: { rows },
-    admin_get_user_groups_grouping_v2: { rows: [{ count }] },
+    // Source reads `usergroups_aggregate.rows[0].count` — old key was `admin_get_user_groups_grouping_v2`.
+    usergroups_aggregate: { rows: [{ count }] },
   },
 });
 
@@ -234,49 +243,47 @@ describe('UserGroup (integration)', () => {
   it('renders permission lists with account name resolved from accounts map', async () => {
     render(<UserGroup />);
 
-    // Wait for both fetches + permission re-render to complete
     await waitFor(() => expect(screen.getAllByText('Namespace Permission').length).toBeGreaterThan(0));
     expect(screen.getAllByText('Account Permission').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Tenant Permission').length).toBeGreaterThan(0);
-    // account name resolved
     expect(screen.getAllByText('Account: AWS Prod').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Namespace: prod').length).toBeGreaterThan(0);
   });
 
   it('shows search input when no groupNames prop', async () => {
     render(<UserGroup />);
-    await waitFor(() => expect(screen.getByTestId('search-input')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('search-Enter Name')).toBeInTheDocument());
   });
 
-  it('disables search when groupNames prop provided', async () => {
+  it('hides search input when groupNames prop provided (drilldown mode)', async () => {
     render(<UserGroup groupNames={['Admins']} />);
-    await waitFor(() => expect(screen.getByTestId('search-disabled')).toBeInTheDocument());
-    expect(screen.queryByTestId('search-input')).not.toBeInTheDocument();
+    await waitFor(() => expect(apiUserManagement.listUserGroups).toHaveBeenCalled());
+    expect(screen.queryByTestId('search-Enter Name')).not.toBeInTheDocument();
   });
 
   it('shows Add User Group button with write access and no groupNames', async () => {
     render(<UserGroup />);
-    await waitFor(() => expect(screen.getByTestId('btn-new-user-group')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('new-user-group')).toBeInTheDocument());
   });
 
   it('hides Add User Group button when groupNames provided (drilldown mode)', async () => {
     render(<UserGroup groupNames={['Admins']} />);
     await waitFor(() => expect(apiUserManagement.listUserGroups).toHaveBeenCalled());
-    expect(screen.queryByTestId('btn-new-user-group')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('new-user-group')).not.toBeInTheDocument();
   });
 
   it('hides Add User Group button without write access', async () => {
     mockHasWriteAccess.mockReturnValue(false);
     render(<UserGroup />);
     await waitFor(() => expect(apiUserManagement.listUserGroups).toHaveBeenCalled());
-    expect(screen.queryByTestId('btn-new-user-group')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('new-user-group')).not.toBeInTheDocument();
   });
 
   it('opens Add group modal on Add button click', async () => {
     render(<UserGroup />);
-    await waitFor(() => expect(screen.getByTestId('btn-new-user-group')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('new-user-group')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId('btn-new-user-group'));
+    fireEvent.click(screen.getByTestId('new-user-group'));
 
     expect(screen.getByTestId('group-modal')).toBeInTheDocument();
     expect(screen.getByTestId('group-modal-mode')).toHaveTextContent('add');
@@ -284,8 +291,8 @@ describe('UserGroup (integration)', () => {
 
   it('closes modal without refetch when no update', async () => {
     render(<UserGroup />);
-    await waitFor(() => expect(screen.getByTestId('btn-new-user-group')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('btn-new-user-group'));
+    await waitFor(() => expect(screen.getByTestId('new-user-group')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('new-user-group'));
     apiUserManagement.listUserGroups.mockClear();
 
     fireEvent.click(screen.getByTestId('group-modal-close'));
@@ -296,8 +303,8 @@ describe('UserGroup (integration)', () => {
 
   it('refetches user groups after modal Save', async () => {
     render(<UserGroup />);
-    await waitFor(() => expect(screen.getByTestId('btn-new-user-group')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('btn-new-user-group'));
+    await waitFor(() => expect(screen.getByTestId('new-user-group')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('new-user-group'));
     apiUserManagement.listUserGroups.mockClear();
 
     fireEvent.click(screen.getByTestId('group-modal-save'));
@@ -307,8 +314,8 @@ describe('UserGroup (integration)', () => {
 
   it('snackbar success on modal snack-success event', async () => {
     render(<UserGroup />);
-    await waitFor(() => expect(screen.getByTestId('btn-new-user-group')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('btn-new-user-group'));
+    await waitFor(() => expect(screen.getByTestId('new-user-group')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('new-user-group'));
 
     fireEvent.click(screen.getByTestId('group-modal-snackbar-success'));
 
@@ -317,8 +324,8 @@ describe('UserGroup (integration)', () => {
 
   it('snackbar error on modal snack-error event', async () => {
     render(<UserGroup />);
-    await waitFor(() => expect(screen.getByTestId('btn-new-user-group')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('btn-new-user-group'));
+    await waitFor(() => expect(screen.getByTestId('new-user-group')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('new-user-group'));
 
     fireEvent.click(screen.getByTestId('group-modal-snackbar-error'));
 
@@ -330,7 +337,7 @@ describe('UserGroup (integration)', () => {
     await waitFor(() => expect(apiUserManagement.listUserGroups).toHaveBeenCalled());
     apiUserManagement.listUserGroups.mockClear();
 
-    const input = screen.getByTestId('search-input');
+    const input = screen.getByTestId('search-Enter Name');
     fireEvent.change(input, { target: { value: 'admin' } });
     fireEvent.keyDown(input, { key: 'Enter' });
 

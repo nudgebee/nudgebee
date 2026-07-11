@@ -167,6 +167,12 @@ func (m Elasticsearch) ConfigSchema() core.IntegrationSchema {
 				ShowWhen:    map[string]any{core.DefaultTraceProvider: true},
 				Priority:    19,
 			},
+			"es_tls_skip_verify": {
+				Type:        core.ToolSchemaTypeBoolean,
+				Description: "Skip TLS certificate verification (only for self-signed Elasticsearch/OpenSearch deployments — leaves credentials vulnerable to MITM)",
+				Default:     false,
+				Priority:    15,
+			},
 		},
 	}
 }
@@ -253,15 +259,17 @@ func (m Elasticsearch) ValidateConfig(sc *security.SecurityContext, config []cor
 		authHeader = "Bearer " + configMap["bearer_token"]
 	}
 
-	resp, err := common.HttpGet(
-		fmt.Sprintf("%s/_cluster/health", esURL),
+	httpOpts := []common.HttpOption{
 		common.HttpWithHeaders(map[string]string{
 			"Authorization": authHeader,
 			"Accept":        "application/json",
 		}),
-		common.HttpWithInsecureSkipVerify(),
-		common.HttpWithTimeout(15*time.Second),
-	)
+		common.HttpWithTimeout(15 * time.Second),
+	}
+	if strings.EqualFold(strings.TrimSpace(configMap["es_tls_skip_verify"]), "true") {
+		httpOpts = append(httpOpts, common.HttpWithInsecureSkipVerify())
+	}
+	resp, err := common.HttpGet(fmt.Sprintf("%s/_cluster/health", esURL), httpOpts...)
 	if err != nil {
 		return []error{fmt.Errorf("failed to connect to Elasticsearch at %s: %w", esURL, err)}
 	}

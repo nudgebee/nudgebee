@@ -62,6 +62,8 @@ Your entire thought and action process for a single step MUST be enclosed within
 {{.code_analysis_rules}}
 
 {{.security_rules}}
+
+{{.memory_consumption_rules}}
 {{if .shell_tool_enabled}}
 - **Workspace & Prioritization:**
     - **Artifacts & Files:** Some tools may save large outputs to files instead of returning them directly. Check the `<artifacts>` tag within an `<observation>` for file paths. You MUST use these files in subsequent `shell_execute` commands if you need to analyze the full data.

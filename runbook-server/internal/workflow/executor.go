@@ -609,7 +609,7 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	}
 
 	var configsResponse FetchConfigsResponse
-	if err := workflow.ExecuteActivity(ctxWithAO, FetchWorkflowConfigsActivity, wf.TenantID, wf.AccountID).Get(ctxWithAO, &configsResponse); err != nil {
+	if err := workflow.ExecuteActivity(ctxWithAO, FetchWorkflowConfigsActivity, wf.TenantID, wf.AccountID, wf.RestrictToAccountConfigs).Get(ctxWithAO, &configsResponse); err != nil {
 		logger.Error("Failed to fetch workflow configs", "workflowId", wf.ID, "error", err)
 		return "", fmt.Errorf("failed to fetch workflow configs: %w", err)
 	}

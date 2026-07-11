@@ -16,13 +16,12 @@ test.describe("Knowledge Base", () => {
 
     await loginPage.doFullLogin();
     await nubi.openPanel();
-    await nubi.settingsBtn.click();
+    await kb.openBCortex();
 
     await waitForGraphQLAndValidate(
       page,
       async () => {
-        await kb.knowledgeBaseTab.waitFor({ state: "visible", timeout: 10000 });
-        await kb.knowledgeBaseTab.click();
+        await kb.knowledgeBaseTab.first().click();
         await page.waitForLoadState("networkidle");
       },
       {
@@ -130,17 +129,16 @@ test.describe("Knowledge Base", () => {
 
     await loginPage.doFullLogin();
     await nubi.openPanel();
-    await nubi.settingsBtn.click();
+    await kb.openBCortex();
     await waitForGraphQLAndValidate(
       page,
       async () => {
-        await kb.knowledgeBaseTab.waitFor({ state: "visible", timeout: 10000 });
-        await kb.knowledgeBaseTab.click();
+        await kb.knowledgeBaseTab.first().click();
         await page.waitForLoadState("networkidle");
       },
       {
         testName: "User tab shows created KB card after ListKnowledgeBases query",
-        operationNames: [],
+        operationNames: ["ListKnowledgeBases"],
         timeoutMs: 20000,
       }
     );

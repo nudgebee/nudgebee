@@ -73,6 +73,10 @@ func (t KGSearchNodesTool) InputSchema() core.ToolSchema {
 				Description: `Filter by cloud account IDs (e.g. AWS account numbers). Example: ["123456789012"].`,
 				Items:       map[string]any{"type": "string"},
 			},
+			"limit": {
+				Type:        core.ToolSchemaTypeInteger,
+				Description: `OPTIONAL. Max rows to return (default 20, max 100). When the header says "Found N (showing M)" with N>M the result was capped — raise limit, add filters, or summarize by category; do NOT present the page as complete.`,
+			},
 		},
 		Required: []string{"query"},
 	}
@@ -85,6 +89,7 @@ type kgSearchInput struct {
 	Source     string   `json:"source"`
 	Labels     string   `json:"labels"`
 	AccountIDs []string `json:"account_ids"`
+	Limit      int      `json:"limit"`
 }
 
 func (t KGSearchNodesTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
@@ -147,6 +152,9 @@ func (t KGSearchNodesTool) Call(nbCtx core.NbToolContext, input core.NBToolCallR
 		apiParams["account_ids"] = resolved
 
 	}
+	if parsed.Limit > 0 {
+		apiParams["limit"] = parsed.Limit
+	}
 
 	data, err := doKGActionRequest(*nbCtx.Ctx, "kg_search_nodes", nbCtx.AccountId, apiParams)
 	if err != nil {
@@ -202,6 +210,9 @@ func parseKGSearchInput(input core.NBToolCallRequest) (kgSearchInput, error) {
 				out.AccountIDs = append(out.AccountIDs, s)
 			}
 		}
+	}
+	if l, ok := input.Arguments["limit"]; ok && out.Limit == 0 {
+		out.Limit = intFromAny(l)
 	}
 
 	return out, nil

@@ -377,6 +377,7 @@ func (s *ObserveSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest 
 		ctx.GetLogger().Error("observe: failed to execute observe log query", "error", err)
 		return nil, fmt.Errorf("failed to execute observe log query: %w", err)
 	}
+	defer func() { _ = res.Body.Close() }()
 
 	results := make([]ObserveLog, 0)
 	scanner := bufio.NewScanner(res.Body)

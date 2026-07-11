@@ -14,10 +14,11 @@ import { buildStateApiParams, getStateDropdownOptions } from '@components/clouda
 import { usePagination } from '@hooks/usePagination';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import DownloadButton from '@shared/buttons/DownloadButton';
+import ServiceRefreshButton from '@components/cloudaccount/ServiceRefreshButton';
 import { CustomText } from '@components/cloudaccount/common';
 import { ds } from '@utils/colors';
 
@@ -30,7 +31,7 @@ const INSTANCE_HEADER = [
   { name: '', width: '6%' },
 ];
 
-export interface ICustomTable2Row {
+export interface ICustomTableRow {
   component?: JSX.Element;
   drilldownQuery?: {
     podName?: any;
@@ -115,7 +116,7 @@ const InstancesView = (props: {
         setLoading(false);
         const cloudResourceCount = res.data?.data?.cloud_resourses_aggregate?.aggregate?.count || 0;
         const cloudResourceData = res.data?.data?.cloud_resourses?.map((item: any) => {
-          const data: ICustomTable2Row[] = [];
+          const data: ICustomTableRow[] = [];
           const writeAccess = hasWriteAccess(props?.accountId);
 
           data.push({
@@ -187,9 +188,20 @@ const InstancesView = (props: {
     <ListingLayout id='right-sizing'>
       <ListingLayout.Toolbar
         title={props.heading || undefined}
-        actions={<DownloadButton id={`${s3OptimizeInstancesTable}-download`} onClick={() => ({ tableId: s3OptimizeInstancesTable })} />}
+        actions={
+          <>
+            <ServiceRefreshButton
+              id={s3OptimizeInstancesTable}
+              accountId={props.accountId}
+              serviceName={props.serviceName}
+              region={selectedRegion || undefined}
+              onDone={() => listS3Instances()}
+            />
+            <DownloadButton id={`${s3OptimizeInstancesTable}-download`} onClick={() => ({ tableId: s3OptimizeInstancesTable })} />
+          </>
+        }
       >
-        <CustomSearch
+        <SearchInput
           id='s3-instances-search'
           label='Search By Bucket Name'
           value={selectedInstanceName}

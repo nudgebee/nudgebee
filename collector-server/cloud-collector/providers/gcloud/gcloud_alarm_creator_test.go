@@ -142,7 +142,9 @@ func TestBuildGCPAlarmConfig(t *testing.T) {
 	template := providers.AlarmTemplate{
 		Name: "cpu-high",
 		Configuration: providers.AlarmConfiguration{
-			MetricName:         "compute.googleapis.com/instance/cpu/utilization",
+			MetricName:         "CPUUtilization",
+			MetricTypeFilter:   "compute.googleapis.com/instance/cpu/utilization",
+			ResourceType:       "gce_instance",
 			Namespace:          "compute.googleapis.com",
 			Statistic:          "Average",
 			Period:             300,
@@ -161,8 +163,16 @@ func TestBuildGCPAlarmConfig(t *testing.T) {
 	if config.AlarmName != "cpu-high-1234567890" {
 		t.Errorf("AlarmName = %q, want %q", config.AlarmName, "cpu-high-1234567890")
 	}
-	if config.MetricName != "compute.googleapis.com/instance/cpu/utilization" {
-		t.Errorf("MetricName = %q, want %q", config.MetricName, "compute.googleapis.com/instance/cpu/utilization")
+	if config.MetricName != "CPUUtilization" {
+		t.Errorf("MetricName = %q, want %q", config.MetricName, "CPUUtilization")
+	}
+	// The authoritative GCP filter values must be carried from the template into the
+	// runtime config; dropping them is what broke "Create Alarm" (issue #32382).
+	if config.MetricTypeFilter != "compute.googleapis.com/instance/cpu/utilization" {
+		t.Errorf("MetricTypeFilter = %q, want %q", config.MetricTypeFilter, "compute.googleapis.com/instance/cpu/utilization")
+	}
+	if config.ResourceType != "gce_instance" {
+		t.Errorf("ResourceType = %q, want %q", config.ResourceType, "gce_instance")
 	}
 	if config.Threshold != 80.0 {
 		t.Errorf("Threshold = %v, want %v", config.Threshold, 80.0)
@@ -306,6 +316,61 @@ func TestBuildSimpleCondition(t *testing.T) {
 
 	if threshold.ThresholdValue != config.Threshold {
 		t.Errorf("ThresholdValue = %v, want %v", threshold.ThresholdValue, config.Threshold)
+	}
+}
+
+// Regression for issue #32382: real GCP templates carry a short, human-friendly
+// MetricName (e.g. "DiskUtilization") that is NOT a valid Cloud Monitoring metric
+// type. buildSimpleCondition must use the template's MetricTypeFilter/ResourceType
+// to build the filter instead of failing with "unknown resource type for metric".
+func TestBuildSimpleCondition_ShortMetricNameWithTemplateFields(t *testing.T) {
+	config := providers.AlarmCreationConfig{
+		AlarmName:         "gcp_compute_disk_utilization_alarm_missing-1234567890",
+		MetricName:        "DiskUtilization", // short label, as emitted by the YAML templates
+		MetricTypeFilter:  "agent.googleapis.com/disk/percent_used",
+		ResourceType:      "gce_instance",
+		Period:            300,
+		EvaluationPeriods: 2,
+		Threshold:         0.85,
+		Statistic:         "ALIGN_MEAN",
+		Dimensions: []providers.AlarmDimension{
+			{Name: "instance_id", Value: "1234567890"},
+		},
+	}
+
+	condition, err := buildSimpleCondition(config)
+	if err != nil {
+		t.Fatalf("buildSimpleCondition() unexpected error = %v", err)
+	}
+
+	threshold := condition.GetConditionThreshold()
+	if threshold == nil {
+		t.Fatal("Expected ConditionThreshold, got nil")
+		return
+	}
+
+	wantFilter := `resource.type="gce_instance" AND metric.type="agent.googleapis.com/disk/percent_used" AND resource.labels.instance_id="1234567890"`
+	if threshold.GetFilter() != wantFilter {
+		t.Errorf("Filter =\n  %q\nwant\n  %q", threshold.GetFilter(), wantFilter)
+	}
+}
+
+// End-to-end regression for issue #32382 using the actual embedded YAML template:
+// load the real "DiskUtilization" template, build the alarm config the way the
+// collector does, then build the condition. This is the path that failed in QA.
+func TestBuildSimpleCondition_FromEmbeddedTemplate(t *testing.T) {
+	template, err := GetGCPTemplateByName("gcp_compute_disk_utilization_alarm_missing")
+	if err != nil {
+		t.Fatalf("GetGCPTemplateByName() error = %v", err)
+	}
+
+	resource := providers.Resource{Id: "1234567890", Name: "test-instance"}
+	config := buildGCPAlarmConfig(resource, *template, 0.85, []providers.AlarmDimension{
+		{Name: "instance_id", Value: "1234567890"},
+	})
+
+	if _, err := buildSimpleCondition(config); err != nil {
+		t.Fatalf("buildSimpleCondition() from embedded template error = %v", err)
 	}
 }
 

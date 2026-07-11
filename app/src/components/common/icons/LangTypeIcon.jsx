@@ -81,6 +81,52 @@ import {
   GCPCloudLoadBalancingIcon,
   GCPArtifactRegistryIcon,
   GCPIAMIcon,
+  AzureVMIcon,
+  AzureSqlIcon,
+  AzureVMScaleSetsIcon,
+  AzureDisksIcon,
+  AzureDiskSnapshotIcon,
+  AzureImageIcon,
+  AzureComputeGalleriesIcon,
+  AzureVirtualNetworksIcon,
+  AzureSubnetIcon,
+  AzureNSGIcon,
+  AzureNetworkInterfacesIcon,
+  AzurePublicIPIcon,
+  AzurePrivateEndpointsIcon,
+  AzureDNSZonesIcon,
+  AzureLoadBalancersIcon,
+  AzureApplicationGatewaysIcon,
+  AzureStorageAccountsIcon,
+  AzureFilesharesIcon,
+  AzureAppServicesIcon,
+  AzureAppServicePlansIcon,
+  AzureStaticAppsIcon,
+  AzureKeyVaultsIcon,
+  AzureManagedIdentitiesIcon,
+  AzureServiceBusIcon,
+  AzureEventHubsIcon,
+  AzureEventGridTopicsIcon,
+  AzureLogicAppsIcon,
+  AzureContainerRegistriesIcon,
+  AzureKubernetesServicesIcon,
+  AzureDatabricksIcon,
+  AzureCognitiveServicesIcon,
+  AzureDatabasePostgreSQLIcon,
+  AzureDatabaseMySQLIcon,
+  AzureCosmosDBIcon,
+  AzureCacheRedisIcon,
+  AzureRecoveryServicesVaultsIcon,
+  AzureDataFactoriesIcon,
+  AzureMachineLearningIcon,
+  AzureAutomationAccountsIcon,
+  AzureSynapseAnalyticsIcon,
+  AzureCognitiveSearchIcon,
+  AzureMonitorIcon,
+  AzureArcIcon,
+  AzureCommunicationServicesIcon,
+  AzureMarketplaceIcon,
+  AzureResourceIcon,
 } from '@assets';
 import SafeIcon from './SafeIcon';
 import { memo } from 'react';
@@ -337,6 +383,101 @@ const LangTypeIcon = memo(({ appLang, size = 25 }) => {
       case 'persistent disk':
       case 'persistentdisk':
         return <SafeIcon src={GCPHyperdiskIcon} height={size} width={size} alt='Persistent Disk' />;
+
+      // Azure Services (logo_id values computed by the backend from service_name; see
+      // azureServiceLogoMap in knowledge_graph/core/helpers.go)
+      case 'azure-vm':
+        return <SafeIcon src={AzureVMIcon} height={size} width={size} alt='Azure VM' />;
+      case 'azure-vmss':
+        return <SafeIcon src={AzureVMScaleSetsIcon} height={size} width={size} alt='Azure VM Scale Set' />;
+      case 'azure-disk':
+        return <SafeIcon src={AzureDisksIcon} height={size} width={size} alt='Azure Disk' />;
+      case 'azure-snapshot':
+        return <SafeIcon src={AzureDiskSnapshotIcon} height={size} width={size} alt='Azure Disk Snapshot' />;
+      case 'azure-image':
+        return <SafeIcon src={AzureImageIcon} height={size} width={size} alt='Azure Image' />;
+      case 'azure-compute-gallery':
+        return <SafeIcon src={AzureComputeGalleriesIcon} height={size} width={size} alt='Azure Compute Gallery' />;
+      case 'azure-vnet':
+        return <SafeIcon src={AzureVirtualNetworksIcon} height={size} width={size} alt='Azure Virtual Network' />;
+      case 'azure-subnet':
+        return <SafeIcon src={AzureSubnetIcon} height={size} width={size} alt='Azure Subnet' />;
+      case 'azure-nsg':
+        return <SafeIcon src={AzureNSGIcon} height={size} width={size} alt='Azure Network Security Group' />;
+      case 'azure-nic':
+        return <SafeIcon src={AzureNetworkInterfacesIcon} height={size} width={size} alt='Azure Network Interface' />;
+      case 'azure-public-ip':
+        return <SafeIcon src={AzurePublicIPIcon} height={size} width={size} alt='Azure Public IP' />;
+      case 'azure-private-endpoint':
+        return <SafeIcon src={AzurePrivateEndpointsIcon} height={size} width={size} alt='Azure Private Endpoint' />;
+      case 'azure-dns':
+        return <SafeIcon src={AzureDNSZonesIcon} height={size} width={size} alt='Azure DNS Zone' />;
+      case 'azure-lb':
+        return <SafeIcon src={AzureLoadBalancersIcon} height={size} width={size} alt='Azure Load Balancer' />;
+      case 'azure-appgw':
+        return <SafeIcon src={AzureApplicationGatewaysIcon} height={size} width={size} alt='Azure Application Gateway' />;
+      case 'azure-storage':
+        return <SafeIcon src={AzureStorageAccountsIcon} height={size} width={size} alt='Azure Storage Account' />;
+      case 'azure-files':
+        return <SafeIcon src={AzureFilesharesIcon} height={size} width={size} alt='Azure Files' />;
+      case 'azure-app-service':
+        return <SafeIcon src={AzureAppServicesIcon} height={size} width={size} alt='Azure App Service' />;
+      case 'azure-app-service-plan':
+        return <SafeIcon src={AzureAppServicePlansIcon} height={size} width={size} alt='Azure App Service Plan' />;
+      case 'azure-static-app':
+        return <SafeIcon src={AzureStaticAppsIcon} height={size} width={size} alt='Azure Static Web App' />;
+      case 'azure-key-vault':
+        return <SafeIcon src={AzureKeyVaultsIcon} height={size} width={size} alt='Azure Key Vault' />;
+      case 'azure-managed-identity':
+        return <SafeIcon src={AzureManagedIdentitiesIcon} height={size} width={size} alt='Azure Managed Identity' />;
+      case 'azure-recovery-vault':
+        return <SafeIcon src={AzureRecoveryServicesVaultsIcon} height={size} width={size} alt='Azure Recovery Services Vault' />;
+      case 'azure-service-bus':
+        return <SafeIcon src={AzureServiceBusIcon} height={size} width={size} alt='Azure Service Bus' />;
+      case 'azure-event-hub':
+        return <SafeIcon src={AzureEventHubsIcon} height={size} width={size} alt='Azure Event Hubs' />;
+      case 'azure-event-grid':
+        return <SafeIcon src={AzureEventGridTopicsIcon} height={size} width={size} alt='Azure Event Grid' />;
+      case 'azure-logic-app':
+        return <SafeIcon src={AzureLogicAppsIcon} height={size} width={size} alt='Azure Logic App' />;
+      case 'azure-acr':
+        return <SafeIcon src={AzureContainerRegistriesIcon} height={size} width={size} alt='Azure Container Registry' />;
+      case 'azure-aks':
+        return <SafeIcon src={AzureKubernetesServicesIcon} height={size} width={size} alt='Azure Kubernetes Service' />;
+      case 'azure-databricks':
+        return <SafeIcon src={AzureDatabricksIcon} height={size} width={size} alt='Azure Databricks' />;
+      case 'azure-cognitive-services':
+        return <SafeIcon src={AzureCognitiveServicesIcon} height={size} width={size} alt='Azure Cognitive Services' />;
+      case 'azure-postgresql':
+        return <SafeIcon src={AzureDatabasePostgreSQLIcon} height={size} width={size} alt='Azure Database for PostgreSQL' />;
+      case 'azure-mysql':
+        return <SafeIcon src={AzureDatabaseMySQLIcon} height={size} width={size} alt='Azure Database for MySQL' />;
+      case 'azure-cosmos-db':
+        return <SafeIcon src={AzureCosmosDBIcon} height={size} width={size} alt='Azure Cosmos DB' />;
+      case 'azure-sql':
+        return <SafeIcon src={AzureSqlIcon} height={size} width={size} alt='Azure SQL' />;
+      case 'azure-cache-redis':
+        return <SafeIcon src={AzureCacheRedisIcon} height={size} width={size} alt='Azure Cache for Redis' />;
+      case 'azure-data-factory':
+        return <SafeIcon src={AzureDataFactoriesIcon} height={size} width={size} alt='Azure Data Factory' />;
+      case 'azure-machine-learning':
+        return <SafeIcon src={AzureMachineLearningIcon} height={size} width={size} alt='Azure Machine Learning' />;
+      case 'azure-automation':
+        return <SafeIcon src={AzureAutomationAccountsIcon} height={size} width={size} alt='Azure Automation' />;
+      case 'azure-synapse':
+        return <SafeIcon src={AzureSynapseAnalyticsIcon} height={size} width={size} alt='Azure Synapse Analytics' />;
+      case 'azure-search':
+        return <SafeIcon src={AzureCognitiveSearchIcon} height={size} width={size} alt='Azure AI Search' />;
+      case 'azure-monitor':
+        return <SafeIcon src={AzureMonitorIcon} height={size} width={size} alt='Azure Monitor' />;
+      case 'azure-arc':
+        return <SafeIcon src={AzureArcIcon} height={size} width={size} alt='Azure Arc' />;
+      case 'azure-communication':
+        return <SafeIcon src={AzureCommunicationServicesIcon} height={size} width={size} alt='Azure Communication Services' />;
+      case 'azure-marketplace':
+        return <SafeIcon src={AzureMarketplaceIcon} height={size} width={size} alt='Azure Marketplace' />;
+      case 'azure-resource':
+        return <SafeIcon src={AzureResourceIcon} height={size} width={size} alt='Azure Resource' />;
 
       // External Services
       case 'externalservice':

@@ -19,10 +19,10 @@ import DsTooltip from '@ui/Tooltip';
 import { Stat } from '@ui/Stat';
 import { Trend } from '@ui/Trend';
 import Currency from '@shared/format/Currency';
-import DoughnutChartK8s from '@shared/charts/DoughnutChartK8s';
+import DoughnutChart from '@shared/charts/DoughnutChart';
 import { formatNumber } from '@lib/formatter';
 import { getBudgetExpectedMonthlyExpense, getExpectedYearlyExpense } from '@lib/budget';
-import { ds } from '@utils/colors';
+import { ds, resolveColor, withAlpha } from '@utils/colors';
 
 interface CloudCostSummaryProps {
   clusterSummary?: any;
@@ -191,7 +191,20 @@ export function CloudCostSummary({ clusterSummary = {}, currencySymbol = '$' }: 
             )}
             <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>estimated 12 mos</Typography>
           </Box>
-          {savingsPercentage > 0 && <DoughnutChartK8s size={'61px'} value={savingsPercentage} isDecimal={true} />}
+          {savingsPercentage > 0 && (
+            <DoughnutChart
+              values={[savingsPercentage, 100 - savingsPercentage]}
+              displayValue={String(Math.round(savingsPercentage))}
+              size={60}
+              cutout='75%'
+              borderWidth={0}
+              borderRadius={0}
+              colors={(() => {
+                const c = resolveColor(String(ds.green[400]));
+                return [c, withAlpha(c, 0.44)];
+              })()}
+            />
+          )}
         </Box>
       </DSCard>
     </Stack>

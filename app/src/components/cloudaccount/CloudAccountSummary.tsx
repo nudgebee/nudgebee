@@ -5,15 +5,14 @@ import { useRouter } from 'next/router';
 // TODO(ds-migration): SummarySkeletonLoader is a page-level loader — replace with composed ds/Skeleton blocks.
 import SummarySkeletonLoader from '@shared/SummarySkeletonLoader';
 import { formatNumber } from '@lib/formatter';
-// TODO(ds-migration): DoughnutChartK8s is canvas/Chart.js code — no DS equivalent yet.
-import DoughnutChartK8s from '@shared/charts/DoughnutChartK8s';
+import DoughnutChart from '@shared/charts/DoughnutChart';
 import Currency from '@shared/format/Currency';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import apiCloudAccount from '@api1/cloud-account';
 import { useCurrencySymbol } from '@hooks/useCurrencySymbol';
 import apiResources from '@api1/resources';
 import apiHome from '@api1/home';
-import type { ICustomTable2Row } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/Instances';
 import Text from '@shared/format/Text';
 import SeverityIcon from '@ui/SeverityIcon';
 import Datetime from '@shared/format/Datetime';
@@ -28,11 +27,15 @@ import { StarsIcon } from '@assets';
 // TODO(ds-migration): SafeIcon is a pass-through img/svg renderer.
 import SafeIcon from '@shared/icons/SafeIcon';
 import { getInsightRoute } from '@components/k8s/common/insightRoutes';
-import { ds } from '@utils/colors';
+import { ds, resolveColor, withAlpha } from '@utils/colors';
 import { Stat } from '@ui/Stat';
 import Trend from '@ui/Trend';
 import { Button } from '@ui/Button';
 import Tooltip from '@ui/Tooltip';
+import { hasWriteAccess } from '@lib/auth';
+import apiOwnership from '@api1/ownership';
+import OwnerBadge from '@components/ownership/OwnerBadge';
+import AssignOwnerModal from '@components/ownership/AssignOwnerModal';
 
 const _INSTANCE_TABLE_ID = 'INSTANCE_TABLE_ID';
 const _INSTANCE_HEADERS = ['Service Name', 'Account Name', 'Savings', 'Actions'];
@@ -371,8 +374,8 @@ const ClusterSummary = ({ accountId = '', cloudProvider = '' }: any) => {
                                 display: 'flex',
                                 alignItems: 'center',
                                 justifyContent: 'center',
-                                height: '18px',
-                                width: '24px',
+                                height: ds.space.mul(0, 9),
+                                width: ds.space[5],
                                 backgroundColor: ds.background[200],
                                 borderRadius: ds.radius.sm,
                                 flexShrink: 0,
@@ -465,8 +468,8 @@ const ClusterSummary = ({ accountId = '', cloudProvider = '' }: any) => {
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    height: '24px',
-                    width: '24px',
+                    height: ds.space[5],
+                    width: ds.space[5],
                     backgroundColor: ds.background[200],
                     borderRadius: ds.radius.sm,
                     flexShrink: 0,
@@ -598,7 +601,7 @@ const ClusterSummary = ({ accountId = '', cloudProvider = '' }: any) => {
               display: 'flex',
               justifyContent: 'center',
               alignItems: 'center',
-              minHeight: '200px',
+              minHeight: ds.space.mul(0, 100),
               color: ds.gray[500],
               fontSize: ds.text.bodyLg,
             }}
@@ -655,7 +658,7 @@ const UtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }: a
       .then((res: any) => {
         setLoading(false);
         const ec2ResourceData = res.data?.events?.map((item: any) => {
-          const data: ICustomTable2Row[] = [];
+          const data: ICustomTableRow[] = [];
           data.push({
             component: (
               <Box sx={{ minWidth: _showEllipsis && '200px' }}>
@@ -666,7 +669,7 @@ const UtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }: a
           });
           data.push({
             component: (
-              <Box sx={{ minWidth: '150px', maxWidth: '220px' }}>
+              <Box sx={{ minWidth: ds.space.mul(0, 75), maxWidth: ds.space.mul(0, 110) }}>
                 <Text showAutoEllipsis={true} value={item.aggregation_key} />
               </Box>
             ),
@@ -739,7 +742,7 @@ const UtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }: a
         elevation='flat'
         sx={{ px: ds.space[3], pb: ds.space[2], overflow: 'hidden' }}
       >
-        <CustomTable2
+        <CustomTable
           tableHeadingCenter={['Severity']}
           id={EVENT_TABLE_ID}
           headers={EVENT_HEADERS}
@@ -901,9 +904,8 @@ const CostSummary = ({ clusterSummary = {}, currencySymbol = '$' }: any) => {
             )}
             <Typography sx={{ color: ds.gray[400], fontSize: ds.text.caption, whiteSpace: 'nowrap' }}>estimated 12 mos</Typography>
           </Box>
-          <DoughnutChartK8s
-            size={'60px'}
-            value={(() => {
+          {(() => {
+            const savPct = (() => {
               if (!clusterSummary?.recommendation_aggregate?.aggregate?.sum?.estimated_savings) {
                 return 0;
               }
@@ -924,12 +926,64 @@ const CostSummary = ({ clusterSummary = {}, currencySymbol = '$' }: any) => {
               );
 
               return Math.min(savingsPercentage, 100);
-            })()}
-            isDecimal={true}
-          />
+            })();
+            return (
+              <DoughnutChart
+                values={[savPct, 100 - savPct]}
+                displayValue={String(savPct)}
+                size={60}
+                cutout='75%'
+                borderWidth={0}
+                borderRadius={0}
+                colors={(() => {
+                  const c = resolveColor(String(ds.green[400]));
+                  return [c, withAlpha(c, 0.44)];
+                })()}
+              />
+            );
+          })()}
         </Box>
       </DSCard>
     </Stack>
+  );
+};
+
+// Owner of the cloud account itself (resource_type='cloud_account', key=accountId).
+// Shows the effective owner; tenant admins can assign/replace it. A namespace or
+// workload under this account with no direct owner inherits this owner.
+const AccountOwner = ({ accountId, accountName }: { accountId: string; accountName?: string }) => {
+  const [owner, setOwner] = useState<any>(null);
+  const [assignOpen, setAssignOpen] = useState(false);
+  const canEdit = hasWriteAccess(accountId);
+
+  const refetch = () => {
+    if (!accountId) return;
+    apiOwnership
+      .getOwner({ resourceType: 'cloud_account', resourceKey: accountId })
+      .then((res: any) => setOwner(res))
+      .catch(() => setOwner(null));
+  };
+  useEffect(() => {
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId]);
+
+  return (
+    <DSCard size='md' elevation='flat' sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', minWidth: 0, gap: ds.space[3] }}>
+      <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.medium, color: ds.gray[700] }}>Owner</Typography>
+      <OwnerBadge owner={owner} onClick={canEdit ? () => setAssignOpen(true) : undefined} />
+      {assignOpen ? (
+        <AssignOwnerModal
+          open={assignOpen}
+          onClose={() => setAssignOpen(false)}
+          onChange={refetch}
+          resourceType='cloud_account'
+          resourceKey={accountId}
+          cloudAccountId={accountId}
+          resourceLabel={accountName || accountId}
+        />
+      ) : null}
+    </DSCard>
   );
 };
 
@@ -946,21 +1000,34 @@ const CloudAccountSummary = ({ accountId = '', clusterSummary = {}, loading = fa
       {loading || currencySymbol === undefined ? (
         <SummarySkeletonLoader />
       ) : (
-        <Box
-          sx={{
-            display: 'grid',
-            gridTemplateColumns: isCF ? '1.5fr 2fr' : '1.5fr 2fr 0.7fr',
-            alignItems: 'start',
-            columnGap: ds.space[4],
-            rowGap: ds.space[5],
-            mb: ds.space[6],
-            mt: ds.space[7],
-          }}
-        >
-          <ClusterSummary accountId={accountId} cloudProvider={cloudProvider} />
-          <UtilizationAndHealth accountId={accountId} clusterSummary={clusterSummary} />
-          {!isCF && <CostSummary clusterSummary={clusterSummary} currencySymbol={currencySymbol} />}
-        </Box>
+        <>
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: isCF ? '1.5fr 2fr' : '1.5fr 2fr 0.7fr',
+              alignItems: 'start',
+              columnGap: ds.space[4],
+              rowGap: ds.space[5],
+              mb: ds.space[6],
+              mt: ds.space[5],
+            }}
+          >
+            <ClusterSummary accountId={accountId} cloudProvider={cloudProvider} />
+            <UtilizationAndHealth accountId={accountId} clusterSummary={clusterSummary} />
+            {!isCF && (
+              <Stack gap={ds.space[2]}>
+                <CostSummary clusterSummary={clusterSummary} currencySymbol={currencySymbol} />
+                {accountId ? <AccountOwner accountId={accountId} accountName={(clusterSummary as any)?.account_name} /> : null}
+              </Stack>
+            )}
+          </Box>
+          {/* CloudFoundry accounts have no cost column, so surface the owner card on its own row instead. */}
+          {isCF && accountId ? (
+            <Box sx={{ mb: ds.space[6] }}>
+              <AccountOwner accountId={accountId} accountName={(clusterSummary as any)?.account_name} />
+            </Box>
+          ) : null}
+        </>
       )}
       {!isCF && (
         <>

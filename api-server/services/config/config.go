@@ -137,8 +137,9 @@ type appConfig struct {
 	WorkflowServerEndpoint string `mapstructure:"workflow_server_endpoint"`
 	WorkflowServerToken    string `mapstructure:"workflow_server_token"`
 
-	NotificationServiceUrl string `mapstructure:"notification_service_url"`
-	TicketServiceUrl       string `mapstructure:"ticket_service_url"`
+	NotificationServiceUrl   string `mapstructure:"notification_service_url"`
+	NotificationServiceToken string `mapstructure:"notification_server_token"`
+	TicketServiceUrl         string `mapstructure:"ticket_service_url"`
 
 	NBRetentionDaysCronEvents              int `mapstructure:"nb_retention_days_hasura_cron_events"`
 	NBRetentionDaysCloudAccountUsageReport int `mapstructure:"nb_retention_days_cloud_account_usage_report"`
@@ -212,6 +213,17 @@ type appConfig struct {
 	RabbitMqWebhookProcessExchange    string `mapstructure:"rabbit_mq_webhook_process_exchange"`
 	RabbitMqWebhookProcessQueue       string `mapstructure:"rabbit_mq_webhook_process_queue"`
 	RabbitMqWebhookProcessConcurrency int    `mapstructure:"rabbit_mq_webhook_process_concurrency"`
+
+	// LLM investigation-completed callback consumer. llm-server publishes a
+	// completion envelope here when an event investigation reaches a terminal
+	// state; this consumer runs the downstream event processors that were
+	// deferred at creation time. Exchange + routing key MUST match
+	// llm-server's publisher; the queue name MUST differ from runbook-server's
+	// so both services receive their own copy off the (direct) exchange.
+	RabbitMqEventInvestigateCompletedExchange    string `mapstructure:"rabbit_mq_event_investigate_completed_exchange"`
+	RabbitMqEventInvestigateCompletedQueue       string `mapstructure:"rabbit_mq_event_investigate_completed_queue"`
+	RabbitMqEventInvestigateCompletedRoutingKey  string `mapstructure:"rabbit_mq_event_investigate_completed_routing_key"`
+	RabbitMqEventInvestigateCompletedConcurrency int    `mapstructure:"rabbit_mq_event_investigate_completed_concurrency"`
 }
 
 // postInitHooks are callbacks fired after Config has been unmarshalled.
@@ -322,6 +334,7 @@ func init() {
 	viper.SetDefault("workflow_server_token", "")
 
 	viper.SetDefault("notification_service_url", "http://notifications:8080")
+	viper.SetDefault("notification_server_token", "")
 	viper.SetDefault("ticket_service_url", "http://ticket-server:8080")
 
 	viper.SetDefault("otel_service_name", SERVICE_NAME)
@@ -388,6 +401,14 @@ func init() {
 	viper.SetDefault("rabbit_mq_webhook_process_exchange", "webhook_process_exchange")
 	viper.SetDefault("rabbit_mq_webhook_process_queue", "webhook_process")
 	viper.SetDefault("rabbit_mq_webhook_process_concurrency", 5)
+
+	// LLM investigation-completed callback consumer. Exchange + routing key
+	// MUST match llm-server's publisher defaults; queue MUST differ from
+	// runbook-server's ("runbook_server_event_investigate_completed").
+	viper.SetDefault("rabbit_mq_event_investigate_completed_exchange", "llm_server_event_investigate_completed")
+	viper.SetDefault("rabbit_mq_event_investigate_completed_routing_key", "llm_server_event_investigate_completed")
+	viper.SetDefault("rabbit_mq_event_investigate_completed_queue", "services_event_investigate_completed")
+	viper.SetDefault("rabbit_mq_event_investigate_completed_concurrency", 5)
 
 	err := viper.ReadInConfig()
 	if err != nil {

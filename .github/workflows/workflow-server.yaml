@@ -41,3 +41,21 @@ jobs:
           version: v2.11.3
           working-directory: ./runbook-server
           args: --timeout 20m
+
+      # -race needs cgo + a C compiler. The self-hosted runner image is minimal
+      # and may ship without gcc, so install it before the race-enabled run.
+      - name: Install C toolchain (for -race)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc libc6-dev
+
+      # Unit suite. Tests that need a live backend (LLM / cloud server / cluster
+      # credentials / Postgres / Temporal) skip themselves cleanly via the
+      # testutils.RequireEnv guard and per-test TEST_* checks, so this runs
+      # hermetically on a bare runner. The Postgres+Temporal integration tier
+      # (docker-compose.test.yml, `make integration-test`) stays a separate,
+      # opt-in concern.
+      - name: Run unit tests
+        working-directory: ./runbook-server
+        # setup-go leaves CGO_ENABLED unset; -race requires cgo, so enable it.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./...

@@ -30,8 +30,10 @@ jest.mock('src/utils/actionStyles', () => ({
   action: { primary: {} },
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000' }, background: { white: '#fff' } },
+jest.mock('@utils/colors');
+
+jest.mock('@utils/common', () => ({
+  toSeverityLevel: (s: string) => String(s || '').toLowerCase(),
 }));
 
 jest.mock('@shared/format/Text', () => ({
@@ -44,14 +46,14 @@ jest.mock('@shared/format/Datetime', () => ({
   default: ({ value }: any) => <span data-testid='datetime'>{String(value || '—')}</span>,
 }));
 
-jest.mock('@shared/widgets/SeverityIcon', () => ({
+jest.mock('@ui/SeverityIcon', () => ({
   __esModule: true,
-  default: ({ severityType }: any) => <span data-testid={`severity-${severityType}`}>sev</span>,
+  SeverityIcon: ({ level }: any) => <span data-testid={`severity-${level}`}>sev</span>,
 }));
 
-jest.mock('@shared/CustomTicketLink', () => ({
+jest.mock('@shared/links/TicketLink', () => ({
   __esModule: true,
-  default: ({ ticketID }: any) => <a data-testid='ticket-link'>{ticketID}</a>,
+  default: ({ ticketID }: any) => <span data-testid='ticket-link'>{ticketID}</span>,
 }));
 
 jest.mock('@components/k8s/common/ClusterNameWithRegion', () => ({
@@ -62,6 +64,25 @@ jest.mock('@components/k8s/common/ClusterNameWithRegion', () => ({
       {region}
     </span>
   ),
+}));
+
+jest.mock('@shared/buttons/DownloadButton', () => ({
+  __esModule: true,
+  default: ({ onClick }: any) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
+  ),
+}));
+
+jest.mock('@shared/icons/SafeIcon', () => ({
+  __esModule: true,
+  default: ({ alt }: any) => <span data-testid={`icon-${alt}`}>icon</span>,
+}));
+
+jest.mock('@shared/widgets/CustomDateTimeRangePicker', () => ({
+  __esModule: true,
+  default: () => <div data-testid='date-range-enabled'>dr</div>,
 }));
 
 jest.mock('@components/helpbee', () => ({
@@ -76,37 +97,60 @@ jest.mock('@components/helpbee', () => ({
     ) : null,
 }));
 
-jest.mock('@shared/ds/ThreeDotsMenu', () => ({
+jest.mock('@ui/Button', () => ({
   __esModule: true,
-  default: ({ menuItems, data, onMenuClick }: any) => (
+  Button: ({ children, onClick, disabled }: any) => (
+    <button data-testid={`btn-${typeof children === 'string' ? children : 'icon'}`} onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
+  ),
+}));
+
+jest.mock('@ui/DropdownMenu', () => ({
+  __esModule: true,
+  DropdownMenu: ({ items, trigger }: any) => (
     <div data-testid='three-dots'>
-      {(menuItems || []).map((mi: any) => (
-        <button key={mi.id} data-testid={`menu-${mi.label}`} onClick={() => onMenuClick(mi, data)}>
-          {mi.label}
+      {trigger}
+      {(items || []).map((it: any) => (
+        <button key={it.id} data-testid={`menu-${it.label}`} onClick={() => it.onSelect?.()} disabled={it.disabled}>
+          {it.label}
         </button>
       ))}
     </div>
   ),
 }));
 
-jest.mock('@shared/BoxLayout2', () => ({
-  __esModule: true,
-  default: ({ children, filterOptions = [], dateTimeRange, heading }: any) => (
-    <div data-testid='box-layout'>
-      <h2 data-testid='box-heading'>{heading}</h2>
-      {filterOptions.map((f: any, i: number) => (
-        <select key={i} data-testid={`filter-${f.label}`} onChange={f.onSelect}>
-          <option value=''>--</option>
-          {(f.options || []).map((opt: any) => (
-            <option key={opt.value || opt.label} value={opt.value || opt.label}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-      ))}
-      {dateTimeRange?.enabled && <div data-testid='date-range-enabled'>dr</div>}
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout: any = ({ children, id }: any) => (
+    <div data-testid='listing-layout' id={id}>
       {children}
     </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }: any) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }: any) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, options = [], value, onSelect }: any) => (
+    <select data-testid={`filter-${label}`} value={value || ''} onChange={onSelect}>
+      <option value=''>--</option>
+      {(options || []).map((opt: any, idx: number) => {
+        const v = typeof opt === 'string' ? opt : opt.value;
+        const l = typeof opt === 'string' ? opt : opt.label;
+        return (
+          <option key={(v || '_') + '-' + idx} value={v}>
+            {l}
+          </option>
+        );
+      })}
+    </select>
   ),
 }));
 
@@ -169,11 +213,8 @@ describe('CloudAccountTools (integration)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockUseCloudFilter.mockReturnValue({
-      serviceNamesFilter: [{ label: 'EC2', value: 'ec2' }],
-      severityFilterType: [
-        { label: 'High', value: 'high' },
-        { label: 'Medium', value: 'medium' },
-      ],
+      serviceNamesFilter: ['ec2'],
+      severityFilterType: ['High', 'Medium'],
     });
     apiCloudAccount.listEvents.mockResolvedValue(mockResponse());
   });
@@ -206,16 +247,11 @@ describe('CloudAccountTools (integration)', () => {
     expect(screen.getByTestId('severity-medium')).toBeInTheDocument();
   });
 
-  it('renders heading "Events"', async () => {
-    render(<CloudAccountTools accountId='acc-1' serviceName='ec2' />);
-    await waitFor(() => expect(screen.getByTestId('box-heading')).toHaveTextContent('Events'));
-  });
-
   it('populates service + severity dropdowns from useCloudFilter', async () => {
     render(<CloudAccountTools accountId='acc-1' serviceName='ec2' />);
 
     await waitFor(() => expect(screen.getByTestId('filter-Service Name')).toBeInTheDocument());
-    expect(screen.getByRole('option', { name: 'EC2' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'ec2' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'High' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'Medium' })).toBeInTheDocument();
   });
@@ -225,10 +261,10 @@ describe('CloudAccountTools (integration)', () => {
     await waitFor(() => expect(apiCloudAccount.listEvents).toHaveBeenCalled());
     apiCloudAccount.listEvents.mockClear();
 
-    fireEvent.change(screen.getByTestId('filter-Severity'), { target: { value: 'high' } });
+    fireEvent.change(screen.getByTestId('filter-Severity'), { target: { value: 'High' } });
 
     await waitFor(() => expect(apiCloudAccount.listEvents).toHaveBeenCalled());
-    expect(apiCloudAccount.listEvents.mock.calls[0][2]).toBe(0); // offset reset to 0
+    expect(apiCloudAccount.listEvents.mock.calls[0][2]).toBe(0);
   });
 
   it('refetches and resets page when service name filter changes', async () => {
@@ -316,6 +352,9 @@ describe('CloudAccountTools (integration)', () => {
   it('passes accountId through to useCloudFilter hook', async () => {
     render(<CloudAccountTools accountId='acc-42' serviceName='ec2' />);
     expect(mockUseCloudFilter).toHaveBeenCalledWith('acc-42');
+    // Wait for mount-effect fetch to settle so post-test setState leaks
+    // don't trigger an act() warning.
+    await waitFor(() => expect(apiCloudAccount.listEvents).toHaveBeenCalled());
   });
 
   it('handles empty events list gracefully', async () => {

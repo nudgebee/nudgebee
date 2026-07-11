@@ -28,7 +28,7 @@
   width: 100%;
   aspect-ratio: 1/1;
   position: relative;
-  border: 0.25px solid #dadada;
+  border: 0.25px solid var(--ds-gray-300);
 }
 
 .label {
@@ -70,7 +70,7 @@
   position: absolute;
   display: none;
   background: white;
-  border: 1px solid #ccc;
+  border: 1px solid var(--ds-gray-300);
   padding: 10px;
   z-index: 1;
   top: 50%;

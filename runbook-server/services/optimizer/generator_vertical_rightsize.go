@@ -79,6 +79,13 @@ func (g *VerticalRightsizeGenerator) GenerateTasks(ctx context.Context, ao model
 			"gitops_config":  ao.Attributes.GitOpsConfig,
 		}
 
+		// Carry the rule's in-place preference (zero-downtime apply) to the task.
+		// Absent → the task default (in_place=true, auto-detect with rollout
+		// fallback) applies.
+		if v, ok := ao.Rule["in_place"]; ok {
+			params["in_place"] = v
+		}
+
 		task := g.CreateBaseTask(ao, rec.Recommendation)
 		task.Name = fmt.Sprintf("Vertical Rightsize %s %s/%s", kind, namespace, name)
 

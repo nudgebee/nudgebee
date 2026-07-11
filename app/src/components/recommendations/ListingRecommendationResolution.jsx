@@ -410,7 +410,14 @@ const ListingRecommendationResolution = ({ accountId }) => {
 
                   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length > 0) {
                     return (
-                      <Box sx={{ padding: ds.space[4], backgroundColor: ds.background[100], borderRadius: ds.radius.sm }}>
+                      <Box
+                        sx={{
+                          padding: ds.space[4],
+                          backgroundColor: ds.background[100],
+                          borderRadius: ds.radius.sm,
+                          border: `1px solid ${ds.gray[300]}`,
+                        }}
+                      >
                         <KeyValueList data={parsed} />
                       </Box>
                     );
@@ -418,19 +425,28 @@ const ListingRecommendationResolution = ({ accountId }) => {
 
                   const fallbackText = parsed ? (typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2)) : 'No Details Available';
                   return (
-                    <Typography
+                    <Box
                       sx={{
                         padding: ds.space[4],
                         backgroundColor: ds.background[100],
                         borderRadius: ds.radius.sm,
-                        fontSize: ds.text.body,
-                        color: ds.gray[700],
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
+                        border: `1px solid ${ds.gray[300]}`,
                       }}
                     >
-                      {fallbackText}
-                    </Typography>
+                      <Typography
+                        sx={{
+                          padding: ds.space[4],
+                          backgroundColor: ds.background[100],
+                          borderRadius: ds.radius.sm,
+                          fontSize: ds.text.body,
+                          color: ds.gray[700],
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                        }}
+                      >
+                        {fallbackText}
+                      </Typography>
+                    </Box>
                   );
                 },
               },
@@ -439,19 +455,30 @@ const ListingRecommendationResolution = ({ accountId }) => {
                 componentFn: (_option, drilldownQuery) => {
                   const messageData = drilldownQuery?.message || 'No Message Available';
                   return (
-                    <Typography
-                      sx={{
-                        padding: ds.space[4],
-                        backgroundColor: ds.background[100],
-                        borderRadius: ds.radius.sm,
-                        fontSize: ds.text.body,
-                        color: ds.gray[700],
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                      }}
-                    >
-                      {messageData}
-                    </Typography>
+                    <>
+                      <Box
+                        sx={{
+                          padding: ds.space[2],
+                          backgroundColor: ds.background[100],
+                          borderRadius: ds.radius.sm,
+                          border: `1px solid ${ds.gray[300]}`,
+                        }}
+                      >
+                        <Typography
+                          sx={{
+                            padding: ds.space[4],
+                            backgroundColor: ds.background[100],
+                            borderRadius: ds.radius.sm,
+                            fontSize: ds.text.body,
+                            color: ds.gray[700],
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {messageData}
+                        </Typography>
+                      </Box>
+                    </>
                   );
                 },
               },

@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"nudgebee/services/common"
@@ -70,29 +71,29 @@ func (m NewRelicWebhook) MergeEventWebhooks(sc *security.RequestContext, previou
 // fields used as a fallback when the NerdGraph aiIssues fetch is unavailable
 // or fails.
 type NewRelicWebhookPayload struct {
-	ID                  string                 `json:"id"`
-	IssueId             string                 `json:"issueId"`
-	IssueUrl            string                 `json:"issueUrl"`
-	IssuePageUrl        string                 `json:"issuePageUrl"`
-	Title               string                 `json:"title"`
-	IssueTitle          string                 `json:"issueTitle"`
-	Priority            string                 `json:"priority"`
-	State               string                 `json:"state"`
-	Trigger             string                 `json:"trigger"`
-	TriggerEvent        string                 `json:"triggerEvent"`
-	IsAcknowledged      bool                   `json:"isAcknowledged"`
-	IssueCreatedAt      int64                  `json:"createdAt"` // epoch ms
-	UpdatedAt           int64                  `json:"updatedAt"`
-	ActivatedAt         int64                  `json:"activatedAt"`
-	ClosedAt            int64                  `json:"closedAt"`
-	Sources             []string               `json:"sources"`
-	AlertPolicyNames    []string               `json:"alertPolicyNames"`
-	AlertConditionNames []string               `json:"alertConditionNames"`
-	ImpactedEntities    []string               `json:"impactedEntities"`
-	IncidentIds         []string               `json:"incidentIds"`
-	TotalIncidents      int64                  `json:"totalIncidents"`
-	WorkflowName        string                 `json:"workflowName"`
-	Accumulations       map[string]interface{} `json:"accumulations"`
+	ID                  string                   `json:"id"`
+	IssueId             string                   `json:"issueId"`
+	IssueUrl            string                   `json:"issueUrl"`
+	IssuePageUrl        string                   `json:"issuePageUrl"`
+	Title               string                   `json:"title"`
+	IssueTitle          string                   `json:"issueTitle"`
+	Priority            string                   `json:"priority"`
+	State               string                   `json:"state"`
+	Trigger             string                   `json:"trigger"`
+	TriggerEvent        string                   `json:"triggerEvent"`
+	IsAcknowledged      bool                     `json:"isAcknowledged"`
+	IssueCreatedAt      int64                    `json:"createdAt"` // epoch ms
+	UpdatedAt           int64                    `json:"updatedAt"`
+	ActivatedAt         int64                    `json:"activatedAt"`
+	ClosedAt            int64                    `json:"closedAt"`
+	Sources             []string                 `json:"sources"`
+	AlertPolicyNames    []string                 `json:"alertPolicyNames"`
+	AlertConditionNames []string                 `json:"alertConditionNames"`
+	ImpactedEntities    NewRelicImpactedEntities `json:"impactedEntities"`
+	IncidentIds         []string                 `json:"incidentIds"`
+	TotalIncidents      int64                    `json:"totalIncidents"`
+	WorkflowName        string                   `json:"workflowName"`
+	Accumulations       map[string]interface{}   `json:"accumulations"`
 }
 
 // NewRelicLegacyIncidentPayload is the older "Alerts → Notification channels →
@@ -165,8 +166,20 @@ func buildIssueFromPayload(p *NewRelicWebhookPayload, issueId string) *NewRelicN
 		Sources:       p.Sources,
 		ConditionName: p.AlertConditionNames,
 		PolicyName:    p.AlertPolicyNames,
-		EntityNames:   p.ImpactedEntities,
+		EntityNames:   impactedEntityNames(p.ImpactedEntities),
 	}
+}
+
+// impactedEntityNames extracts the entity names from the webhook payload's
+// impactedEntities objects, skipping entries without a name.
+func impactedEntityNames(entities []NewRelicImpactedEntity) []string {
+	names := make([]string, 0, len(entities))
+	for _, e := range entities {
+		if e.Name != "" {
+			names = append(names, e.Name)
+		}
+	}
+	return names
 }
 
 // NewRelicImpactedEntity represents an entity affected by the alert
@@ -177,6 +190,41 @@ type NewRelicImpactedEntity struct {
 	EntityType string            `json:"entityType"`
 	Domain     string            `json:"domain"`
 	Tags       map[string]string `json:"tags"`
+}
+
+// NewRelicImpactedEntities is the webhook payload's impactedEntities field.
+// NewRelic emits this in two shapes depending on the payload variant:
+//   - a plain list of entity names: ["svc-a", "svc-b"]
+//   - a list of entity objects:     [{"guid": "...", "name": "...", ...}]
+//
+// A bare string is normalized into an entity with only its Name populated.
+type NewRelicImpactedEntities []NewRelicImpactedEntity
+
+func (e *NewRelicImpactedEntities) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		*e = nil
+		return nil
+	}
+
+	// Try the object-list shape first.
+	var objects []NewRelicImpactedEntity
+	if err := json.Unmarshal(data, &objects); err == nil {
+		*e = objects
+		return nil
+	}
+
+	// Fall back to the string-list shape.
+	var names []string
+	if err := json.Unmarshal(data, &names); err != nil {
+		return err
+	}
+	entities := make([]NewRelicImpactedEntity, 0, len(names))
+	for _, n := range names {
+		entities = append(entities, NewRelicImpactedEntity{Name: n})
+	}
+	*e = entities
+	return nil
 }
 
 // escapeNRQLString escapes special characters for safe use in NRQL query strings
@@ -306,8 +354,19 @@ func (m NewRelicWebhook) ProcessEventWebook(sc *security.RequestContext, setting
 	}
 
 	// Step 2: Try to fetch NewRelic API config. If absent, we degrade to
-	// webhook-only data instead of dropping the event.
-	apiKey, nrAccountId, region, configErr := GetNewRelicConfigs(sc, accountId)
+	// webhook-only data instead of dropping the event. A nil request context
+	// (no security/DB available) is treated the same as missing config.
+	var (
+		apiKey      string
+		nrAccountId string
+		region      = NewRelicRegionUS
+		configErr   error
+	)
+	if sc != nil {
+		apiKey, nrAccountId, region, configErr = GetNewRelicConfigs(sc, accountId)
+	} else {
+		configErr = fmt.Errorf("newrelic_webhook: no request context available")
+	}
 
 	// Step 3: Fetch complete issue details from NewRelic NerdGraph API.
 	// On any failure (no config, transient API error, issue not found in
@@ -320,7 +379,9 @@ func (m NewRelicWebhook) ProcessEventWebook(sc *security.RequestContext, setting
 	}
 	var issue *NewRelicNrAiIssue
 	if configErr != nil {
-		sc.GetLogger().Warn("newrelic_webhook: NewRelic API integration not configured, using webhook payload only", "error", configErr, "account_id", accountId)
+		if sc != nil {
+			sc.GetLogger().Warn("newrelic_webhook: NewRelic API integration not configured, using webhook payload only", "error", configErr, "account_id", accountId)
+		}
 	} else {
 		fetched, err := getNewRelicIssueDetails(apiKey, nrAccountId, region, issueId, issueCreatedAt)
 		if err != nil {
@@ -363,14 +424,16 @@ func (m NewRelicWebhook) ProcessEventWebook(sc *security.RequestContext, setting
 		// Deduplicate impactedEntities from webhook payload
 		seen := make(map[string]struct{})
 		for _, e := range payload.ImpactedEntities {
-			if e != "" {
-				if _, exists := seen[e]; !exists {
-					seen[e] = struct{}{}
-					entityNames = append(entityNames, e)
+			if e.Name != "" {
+				if _, exists := seen[e.Name]; !exists {
+					seen[e.Name] = struct{}{}
+					entityNames = append(entityNames, e.Name)
 				}
 			}
 		}
-		sc.GetLogger().Info("newrelic_webhook: using impactedEntities from payload as fallback for entity names", "entities", entityNames)
+		if sc != nil {
+			sc.GetLogger().Info("newrelic_webhook: using impactedEntities from payload as fallback for entity names", "entities", entityNames)
+		}
 	}
 	if len(entityNames) > 0 {
 		labels["entity_names"] = strings.Join(entityNames, ",")
@@ -507,6 +570,23 @@ func (m NewRelicWebhook) ProcessEventWebook(sc *security.RequestContext, setting
 		subjectName = entityNames[0]
 	}
 
+	// Seed subject kind / cloud resource id from the webhook's impacted entity
+	// when present. NewRelic carries the entity's type (e.g. APPLICATION) and
+	// GUID directly in the payload, which is our best signal before any
+	// k8s_workloads lookup.
+	if len(payload.ImpactedEntities) > 0 {
+		entity := payload.ImpactedEntities[0]
+		if subjectName == "" {
+			subjectName = entity.Name
+		}
+		if entity.Type != "" {
+			subjectKind = strings.ToLower(entity.Type)
+		}
+		if entity.Guid != "" {
+			cloudResourceId = entity.Guid
+		}
+	}
+
 	// Look up cloud_resource_id (UUID) from k8s_workloads by subject name.
 	// NewRelic entity GUIDs are base64 strings, not UUIDs, so they cannot
 	// be used directly. Mirror the PagerDuty workload-matching strategy.
@@ -590,6 +670,12 @@ func (m NewRelicWebhook) ProcessEventWebook(sc *security.RequestContext, setting
 // Errors are logged as warnings and do not stop processing.
 func fetchNewRelicObservabilityEvidences(sc *security.RequestContext, apiKey, nrAccountId, region string, entityNames, entityGuids []string, fromTs, toTs int64) []event.EventEvidence {
 	var evidences []event.EventEvidence
+
+	// Without an API key (or request context) we cannot query NerdGraph for
+	// observability evidence — skip rather than issue doomed/unsafe calls.
+	if apiKey == "" || sc == nil {
+		return evidences
+	}
 
 	if len(entityNames) > 0 {
 		sanitizedEntityName := escapeNRQLString(entityNames[0])
@@ -764,7 +850,7 @@ type workloadMatch struct {
 // labels in `labels` (mutates the map). Returns Found=false if no row matches.
 func matchK8sWorkload(sc *security.RequestContext, accountId, subjectName string, labels map[string]string) workloadMatch {
 	result := workloadMatch{}
-	if subjectName == "" {
+	if subjectName == "" || sc == nil {
 		return result
 	}
 	dbms, err := database.GetDatabaseManager(database.Metastore)

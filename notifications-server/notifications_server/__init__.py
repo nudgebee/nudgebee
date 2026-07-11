@@ -64,9 +64,11 @@ def make_slack_app():
             "users:read",  # Get basic user info
             "users:read.email",  # Get email addresses (optional, useful for mapping users)
             # --- Managing channel/group membership ---
-            "groups:write",  # Join/manage private channels
+            "groups:write",  # Join/manage private channels; create private channels
             # --- Join public channels in a workspace ---
             "channels:join",
+            # --- Create public channels in a workspace ---
+            "channels:manage",
         ],
         user_scopes=["team.billing:read"],
         state_store=oauth_state_store,

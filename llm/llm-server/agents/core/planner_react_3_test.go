@@ -26,6 +26,7 @@ func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool)
 		"delegate_agent_enabled", "notebook_enabled", "hypothesis_mode_enabled",
 		"conversation_context_enabled", "context_management_rules", "time_handling_rules",
 		"data_protection_rules", "code_analysis_rules", "security_rules",
+		"memory_consumption_rules",
 	}
 	tmpl := prompts.NewPromptTemplate(base, vars)
 	out, err := tmpl.Format(map[string]any{
@@ -42,6 +43,7 @@ func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool)
 		"data_protection_rules":        "",
 		"code_analysis_rules":          "",
 		"security_rules":               "",
+		"memory_consumption_rules":     "",
 	})
 	assert.NoError(t, err, "react_3 base prompt must render without template errors")
 	return out
@@ -128,16 +130,20 @@ func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabl
 func TestReAct3CritiquerHypothesisGateFence(t *testing.T) {
 	const gateHeader = "Hypothesis Completion Gate"
 	const toolFailureCarveOut = "Tool failures are \"unchecked\", not refutation"
+	const staleMarkerCarveOut = "Stale-marker carve-out"
 
 	t.Run("hypothesis mode on: completion gate present", func(t *testing.T) {
 		out := renderReactCritiquer(t, "investigation", true)
 		assert.Contains(t, out, gateHeader)
 		assert.Contains(t, out, toolFailureCarveOut)
+		assert.Contains(t, out, staleMarkerCarveOut,
+			"(a) must carry the stale-marker carve-out so an evidence-backed answer is accepted even if an [OPEN] hypothesis was never flipped")
 	})
 
 	t.Run("investigation without hypothesis mode: no completion gate", func(t *testing.T) {
 		out := renderReactCritiquer(t, "investigation", false)
 		assert.NotContains(t, out, gateHeader)
+		assert.NotContains(t, out, staleMarkerCarveOut)
 	})
 
 	t.Run("plain query: no completion gate", func(t *testing.T) {
@@ -163,6 +169,115 @@ func (notebookOptOutAgent) GetSystemPrompt(_ *security.RequestContext, _ NBAgent
 	return NBAgentPrompt{}
 }
 func (notebookOptOutAgent) GetNotebookEnabled() bool { return false }
+
+// react3HandlerAgent embeds the minimal NBAgent mock and additionally
+// implements NBAgentExecutorLlmResponseHandler, so we can exercise the OUTER
+// parseOutput delegation path. The inner parseOutputInternal is covered directly
+// by the tests above; this covers the handler hand-off that wraps it. fn lets
+// each test script the post-processing.
+type react3HandlerAgent struct {
+	notebookOptOutAgent
+	fn func([]NBAgentPlannerToolAction, *NBAgentPlannerFinishAction, error) ([]NBAgentPlannerToolAction, *NBAgentPlannerFinishAction, error)
+}
+
+func (h react3HandlerAgent) UpdateExecutorLlmResponse(
+	actions []NBAgentPlannerToolAction,
+	finish *NBAgentPlannerFinishAction,
+	err error,
+) ([]NBAgentPlannerToolAction, *NBAgentPlannerFinishAction, error) {
+	return h.fn(actions, finish, err)
+}
+
+// TestReAct3ParseOutput_HandlerRewritesActions proves parseOutput routes the
+// internal parse result through a registered NBAgentExecutorLlmResponseHandler
+// and surfaces the handler's post-processed actions, not the raw ones.
+func TestReAct3ParseOutput_HandlerRewritesActions(t *testing.T) {
+	output := `<thought_action>
+		<thought>Check the pods.</thought>
+		<action>
+			<tool_name>kubectl</tool_name>
+			<tool_input>kubectl get pods</tool_input>
+		</action>
+	</thought_action>`
+	response := &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: output}}}
+
+	planner := &NBReActPlanner3{nbAgent: react3HandlerAgent{
+		fn: func(actions []NBAgentPlannerToolAction, finish *NBAgentPlannerFinishAction, err error) ([]NBAgentPlannerToolAction, *NBAgentPlannerFinishAction, error) {
+			for i := range actions {
+				actions[i].Tool = "patched_" + actions[i].Tool
+			}
+			return actions, finish, err
+		},
+	}}
+
+	actions, finish, err := planner.parseOutput(response, []NBAgentPlannerToolActionStep{})
+	assert.NoError(t, err)
+	assert.Nil(t, finish)
+	assert.Len(t, actions, 1)
+	assert.Equal(t, "patched_kubectl", actions[0].Tool)
+}
+
+// TestReAct3ParseOutput_HandlerEmptyResultIsParseFailure proves the guard at the
+// tail of parseOutput for the finish path: the internal parse yields a finish
+// (so actions start nil), the handler then discards everything (nil actions, nil
+// finish, nil error), and the planner reports ErrParseFailure instead of
+// silently returning an empty, terminal-looking result.
+//
+// NOTE: this only reaches ErrParseFailure because actions were already nil — see
+// TestReAct3ParseOutput_HandlerNilAfterActionsKeepsOriginals for the asymmetric
+// action path.
+func TestReAct3ParseOutput_HandlerEmptyResultIsParseFailure(t *testing.T) {
+	output := `<final_answer>
+		<thought>Done.</thought>
+		<content>All systems healthy.</content>
+	</final_answer>`
+	response := &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: output}}}
+
+	planner := &NBReActPlanner3{nbAgent: react3HandlerAgent{
+		fn: func([]NBAgentPlannerToolAction, *NBAgentPlannerFinishAction, error) ([]NBAgentPlannerToolAction, *NBAgentPlannerFinishAction, error) {
+			return nil, nil, nil
+		},
+	}}
+
+	actions, finish, err := planner.parseOutput(response, []NBAgentPlannerToolActionStep{})
+	assert.Nil(t, actions)
+	assert.Nil(t, finish)
+	assert.ErrorIs(t, err, ErrParseFailure)
+}
+
+// TestReAct3ParseOutput_HandlerNilAfterActionsKeepsOriginals documents a current
+// asymmetry in parseOutput: when the internal parse produced actions (non-nil)
+// and the handler then returns all-nil, the planner does NOT map this to
+// ErrParseFailure. The `if actionCopy != nil` guard in planner_react_3.go means
+// a nil handler result leaves the original actions in place, so the empty-result
+// guard fires only on the finish path (test above), not the action path.
+//
+// This locks in the present behavior (original actions are returned, no error).
+// Flagged for triage: if a nil handler result should be a hard failure
+// regardless of the original parse, the planner needs the fix and this
+// expectation should flip to ErrParseFailure.
+func TestReAct3ParseOutput_HandlerNilAfterActionsKeepsOriginals(t *testing.T) {
+	output := `<thought_action>
+		<thought>Check the pods.</thought>
+		<action>
+			<tool_name>kubectl</tool_name>
+			<tool_input>kubectl get pods</tool_input>
+		</action>
+	</thought_action>`
+	response := &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: output}}}
+
+	planner := &NBReActPlanner3{nbAgent: react3HandlerAgent{
+		fn: func([]NBAgentPlannerToolAction, *NBAgentPlannerFinishAction, error) ([]NBAgentPlannerToolAction, *NBAgentPlannerFinishAction, error) {
+			return nil, nil, nil
+		},
+	}}
+
+	actions, finish, err := planner.parseOutput(response, []NBAgentPlannerToolActionStep{})
+	assert.NoError(t, err)
+	assert.Nil(t, finish)
+	assert.Len(t, actions, 1)
+	assert.Equal(t, "kubectl", actions[0].Tool)
+}
 
 func TestReAct3ParseSingleAction(t *testing.T) {
 	output := `<thought_action>

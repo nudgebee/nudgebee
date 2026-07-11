@@ -199,10 +199,9 @@ func persistKubeProxyVersion(ctx *security.RequestContext, account ScanAccount, 
 		})
 	}
 
-	// ON CONFLICT update mirrors the recommendation table's full updatable set
-	// the same way Persist + recommendation.upsertRecommendationData do — keeping
-	// estimated_savings/finops_* in sync here matters for the (rare) case where
-	// the same row's severity changes between scans.
+	// ON CONFLICT update mirrors Persist: severity/savings refresh on re-scan,
+	// but finops_* are deliberately left alone — this path inserts zero scores,
+	// so overwriting on conflict wiped real scores until the next cron pass.
 	if _, err := dbms.Db.NamedExec(
 		`INSERT INTO recommendation
 		   (status, tenant_id, cloud_account_id, recommendation, severity, category, rule_name,
@@ -218,10 +217,7 @@ func persistKubeProxyVersion(ctx *security.RequestContext, account ScanAccount, 
 		               updated_at = EXCLUDED.updated_at,
 		               severity = EXCLUDED.severity,
 		               recommendation_action = EXCLUDED.recommendation_action,
-		               estimated_savings = EXCLUDED.estimated_savings,
-		               finops_score = EXCLUDED.finops_score,
-		               finops_band = EXCLUDED.finops_band,
-		               finops_score_breakdown = EXCLUDED.finops_score_breakdown`,
+		               estimated_savings = EXCLUDED.estimated_savings`,
 		rows,
 	); err != nil {
 		return fmt.Errorf("k8s_version_upgrade: upsert: %w", err)

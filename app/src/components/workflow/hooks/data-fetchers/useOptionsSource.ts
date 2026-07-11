@@ -6,7 +6,7 @@ import apiWorkflow from '@api1/workflow';
 import apiTickets from '@api1/tickets';
 import observability from '@api1/observability';
 import apiAskNudgebee from '@api1/ask-nudgebee';
-import { snackbar } from '@shared/snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 
 type OptionItem = { label: string; value: string; description?: string };
 type FetcherFn = (formValues: Record<string, any>) => Promise<OptionItem[]>;
@@ -129,6 +129,49 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
       label: useKeyAsLabel ? p.key : p.name || p.key,
       value: p.key,
     }));
+  },
+
+  // Assignable users for a ticketing integration (tickets.update / tickets.assign).
+  // Reuses the same create-meta the create task reads: the assignee field arrives
+  // with either a static allowedValues list (GitHub/GitLab collaborators) or an
+  // autoCompleteUrl (Jira), and we map each exactly as tickets.create does so the
+  // value persisted is identical across tasks. For the autoComplete case we seed
+  // the first page with an empty query (what create shows on open). Search-as-you-
+  // type isn't wired into this generic path, so Jira shows that first page only.
+  ticket_assignees: async (formValues) => {
+    const integrationId = formValues.integration_id;
+    if (!integrationId) return [];
+    // GitHub/GitLab assignees are repo-scoped, so create-meta needs the repo.
+    const projectKey = formValues.project_key || '';
+    const meta: any = await apiTickets.getTicketMeta(integrationId, projectKey);
+    const templates = meta?.data?.tickets_get_create_meta?.data || [];
+    // Assignee is consistent across issue types within a project — use the first
+    // template that exposes a user/assignee field (mirrors PlatformFieldItem's
+    // isUserFieldKey: key === 'assignee' || type === 'user').
+    let assigneeField: any = null;
+    for (const tpl of templates) {
+      const match = Object.entries(tpl?.fields || {}).find(([key, f]: [string, any]) => key === 'assignee' || f?.type === 'user');
+      if (match) {
+        assigneeField = { key: (match[1] as any)?.key || match[0], ...(match[1] as any) };
+        break;
+      }
+    }
+    if (!assigneeField) return [];
+    if (Array.isArray(assigneeField.allowedValues) && assigneeField.allowedValues.length > 0) {
+      return assigneeField.allowedValues.map((v: any) => ({
+        label: v.name || v.value || String(v.id),
+        value: v.value || v.id || v.key,
+      }));
+    }
+    if (assigneeField.autoCompleteUrl) {
+      const res: any = await apiTickets.getTicketFieldValues(integrationId, assigneeField.key, assigneeField.autoCompleteUrl, '');
+      const fieldValues = res?.data?.tickets_get_field_values?.data || [];
+      return fieldValues.map((m: any) => ({
+        label: m.name || m.value || String(m.id),
+        value: m.id || m.value,
+      }));
+    }
+    return [];
   },
 
   // Kubernetes workload names scoped by account + namespace (optionally kind).

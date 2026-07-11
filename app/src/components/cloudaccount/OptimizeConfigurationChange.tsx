@@ -6,7 +6,7 @@ import { getLast7Days } from '@lib/datetime';
 import CloudAccountTable from './CloudAccountTable';
 import { usePagination } from '@hooks/usePagination';
 import apiRecommendations from '@api1/recommendation';
-import type { ICustomTable2Row } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/Instances';
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import { Box, Grid, Typography, CircularProgress } from '@mui/material';
 import SummaryWidget from '@components/optimise/SummaryWidget';
@@ -250,7 +250,7 @@ const OptimizeConfigurationChange = (props: {
             item.recommendation?.current_resource_summary ||
             item.recommendation?.recommended_resource_summary;
 
-          const data: ICustomTable2Row[] = [];
+          const data: ICustomTableRow[] = [];
 
           let recommenedationDetails = apiRecommendations.getRecommendationDetails(item.category, item.rule_name);
           if (!recommenedationDetails) {

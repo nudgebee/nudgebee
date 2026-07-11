@@ -114,7 +114,7 @@ git push --force-with-lease -u origin $(git branch --show-current)
 | `relay` | `collector-server/k8s-collector/relay-server/` |
 | `collector` | `collector-server/cloud-collector/`, `collector-server/k8s-collector/app/` |
 | `deps` | Dependency updates |
-| `#xxx` | Issue number — use for `api-server/`, `deploy/`, or cross-service changes |
+| `NB-xxx` | Ticket number — use for `api-server/`, `deploy/`, or cross-service changes |
 
 - Hotfixes almost always use the `fix` type. Use `perf` or `revert` only if applicable.
 - Example: `fix(collector): handle nil pointer in cloud sync`

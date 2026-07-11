@@ -219,9 +219,7 @@ func (s *filesService) ApplyCommand(ctx providers.CloudProviderContext, account 
 		if fileShare.FileShareProperties == nil {
 			fileShare.FileShareProperties = &armstorage.FileShareProperties{}
 		}
-		// TODO: Make quota configurable via command parameters
-		// Set a default quota of 100 GB if not specified
-		// In a real implementation, this would come from command parameters
+		// Quota comes from the command parameters when provided; default to 100 GB otherwise.
 		defaultQuota := int32(100)
 		if quota, ok := command.Args["quota"].(int32); ok {
 			defaultQuota = quota

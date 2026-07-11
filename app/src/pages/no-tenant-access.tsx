@@ -1,8 +1,9 @@
 import { error404Image } from '@assets';
-import CustomButton from '@shared/NewCustomButton';
+import { Button } from '@ui/Button';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { signOut } from 'next-auth/react';
 import { useRouter } from 'next/router';
+import { ds } from '@utils/colors';
 
 export default function NoTenantAccess() {
   const router = useRouter();
@@ -24,9 +25,9 @@ export default function NoTenantAccess() {
         alignItems: 'center',
         height: 'auto',
         textAlign: 'center',
-        marginTop: '80px',
-        gap: '40px',
-        padding: '0 20px',
+        marginTop: 'var(--ds-space-7)',
+        gap: 'var(--ds-space-6)',
+        padding: '0 var(--ds-space-4)',
       }}
     >
       <div
@@ -36,7 +37,7 @@ export default function NoTenantAccess() {
           flexDirection: 'column',
           justifyContent: 'center',
           alignItems: 'center',
-          padding: '10px auto',
+          padding: 'var(--ds-space-2) auto',
           textAlign: 'center',
           margin: '0px',
         }}
@@ -46,38 +47,38 @@ export default function NoTenantAccess() {
             fontSize: '120px',
             fontWeight: 'bold',
             margin: '0px',
-            color: '#1B2D4A',
+            color: 'var(--ds-brand-600)',
           }}
         >
           403
         </h1>
         <p
           style={{
-            fontSize: '24px',
-            fontWeight: 600,
-            margin: '10px 0',
-            color: '#1B2D4A',
+            fontSize: 'var(--ds-text-heading)',
+            fontWeight: 'var(--ds-font-weight-semibold)',
+            margin: 'var(--ds-space-2) 0',
+            color: 'var(--ds-brand-600)',
           }}
         >
           Access Denied
         </p>
         <p
           style={{
-            fontSize: '16px',
-            fontWeight: 400,
-            margin: '10px 0',
-            color: '#5A6C7D',
-            maxWidth: '600px',
+            fontSize: 'var(--ds-text-title)',
+            fontWeight: 'var(--ds-font-weight-regular)',
+            margin: 'var(--ds-space-2) 0',
+            color: 'var(--ds-gray-600)',
+            maxWidth: ds.space.mul(2, 75),
           }}
         >
           {errorMessage || 'You do not have an account or tenant access in this system.'}
         </p>
         <p
           style={{
-            fontSize: '15px',
-            fontWeight: 400,
-            margin: '5px 0',
-            color: '#5A6C7D',
+            fontSize: 'var(--ds-text-body-lg)',
+            fontWeight: 'var(--ds-font-weight-regular)',
+            margin: 'var(--ds-space-1) 0',
+            color: 'var(--ds-gray-600)',
           }}
         >
           Please contact your administrator to request access.
@@ -89,7 +90,7 @@ export default function NoTenantAccess() {
           flexDirection: 'column',
           justifyContent: 'center',
           alignItems: 'center',
-          gap: '20px',
+          gap: 'var(--ds-space-4)',
         }}
       >
         <SafeIcon
@@ -100,16 +101,19 @@ export default function NoTenantAccess() {
             height: 'auto',
           }}
         />
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <CustomButton variant='tertiary' size='Medium' text={'Sign Out'} onClick={handleSignOut} />
-          <CustomButton
-            variant='secondary'
-            size='Medium'
-            text={'Try Again'}
+        <div style={{ display: 'flex', gap: 'var(--ds-space-2)' }}>
+          <Button tone='secondary' size='md' onClick={handleSignOut}>
+            Sign Out
+          </Button>
+          <Button
+            tone='primary'
+            size='md'
             onClick={() => {
               router.push('/signin');
             }}
-          />
+          >
+            Try Again
+          </Button>
         </div>
       </div>
     </div>

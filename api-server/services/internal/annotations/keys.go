@@ -52,6 +52,15 @@ var (
 	CIHelmMemoryRequestJSONPath = CIPrefix + "/helm.values.memoryRequestJsonPath"
 	CIHelmMemoryLimitJSONPath   = CIPrefix + "/helm.values.memoryLimitJsonPath"
 
+	// CIInPlaceResize toggles resizePolicy injection in the right-sizing PR
+	// (the code agent is instructed to add a resizePolicy block so the
+	// workload becomes in-place resizable, KEP-1287, after merge).
+	// Values: "false"/"off"/"disabled"/"no" disable injection;
+	// "restart-memory" sets memory's restartPolicy to RestartContainer
+	// (cpu stays NotRequired). Unset/any-other → cpu=NotRequired,
+	// memory=NotRequired.
+	CIInPlaceResize = CIPrefix + "/inPlaceResize"
+
 	WorkloadGitRepo   = WorkloadsPrefix + "/git.repo"
 	WorkloadGitHash   = WorkloadsPrefix + "/git.hash"
 	WorkloadGitBranch = WorkloadsPrefix + "/git.branch"

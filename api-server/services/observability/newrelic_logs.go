@@ -440,28 +440,28 @@ func buildNRQLOperatorClause(field string, op query.BinaryWhereClauseType, val a
 		return fmt.Sprintf("%s != '%v'", escapedField, escapeNRQLValue(val)), nil
 	case query.Gt:
 		numVal, isNum := toNumeric(val)
-		if isNum {
-			return fmt.Sprintf("%s > %v", escapedField, numVal), nil
+		if !isNum {
+			return "", fmt.Errorf("GT operator requires numeric value for field '%s', got %T", field, val)
 		}
-		return fmt.Sprintf("%s > '%v'", escapedField, escapeNRQLValue(val)), nil
+		return fmt.Sprintf("%s > %v", escapedField, numVal), nil
 	case query.Lt:
 		numVal, isNum := toNumeric(val)
-		if isNum {
-			return fmt.Sprintf("%s < %v", escapedField, numVal), nil
+		if !isNum {
+			return "", fmt.Errorf("LT operator requires numeric value for field '%s', got %T", field, val)
 		}
-		return fmt.Sprintf("%s < '%v'", escapedField, escapeNRQLValue(val)), nil
+		return fmt.Sprintf("%s < %v", escapedField, numVal), nil
 	case query.Gte:
 		numVal, isNum := toNumeric(val)
-		if isNum {
-			return fmt.Sprintf("%s >= %v", escapedField, numVal), nil
+		if !isNum {
+			return "", fmt.Errorf("GTE operator requires numeric value for field '%s', got %T", field, val)
 		}
-		return fmt.Sprintf("%s >= '%v'", escapedField, escapeNRQLValue(val)), nil
+		return fmt.Sprintf("%s >= %v", escapedField, numVal), nil
 	case query.Lte:
 		numVal, isNum := toNumeric(val)
-		if isNum {
-			return fmt.Sprintf("%s <= %v", escapedField, numVal), nil
+		if !isNum {
+			return "", fmt.Errorf("LTE operator requires numeric value for field '%s', got %T", field, val)
 		}
-		return fmt.Sprintf("%s <= '%v'", escapedField, escapeNRQLValue(val)), nil
+		return fmt.Sprintf("%s <= %v", escapedField, numVal), nil
 	case query.Like, query.ILike:
 		return fmt.Sprintf("%s LIKE '%v'", escapedField, escapeNRQLValue(val)), nil
 	case query.NLike:

@@ -10,6 +10,7 @@ import (
 	"nudgebee/services/security"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type ElasticSource struct{}
@@ -350,12 +351,22 @@ func ParseSourceMap(src map[string]any) (OutputLog, bool) {
 		}
 	}
 
+	// Message: Fluent-Bit/ECS docs carry it at top-level "log"; OTel-native docs
+	// (data stream logs-generic.otel-default) carry it at body.text — or a bare
+	// string "body". Fall back to the OTel shape so those hits are not dropped.
 	msg, ok := src["log"].(string)
 	if !ok || strings.TrimSpace(msg) == "" {
+		msg = otelBodyText(src)
+	}
+	if strings.TrimSpace(msg) == "" {
 		return OutputLog{}, false
 	}
 
+	// Stream: Fluent-Bit "stream"; OTel attributes.log.iostream.
 	stream, _ := src["stream"].(string)
+	if stream == "" {
+		stream = otelIOStream(src)
+	}
 	severity := "INFO"
 	switch strings.ToLower(stream) {
 	case "stderr":
@@ -364,22 +375,114 @@ func ParseSourceMap(src map[string]any) (OutputLog, bool) {
 		severity = "INFO"
 	}
 	log := OutputLog{
-		Timestamp: ts,
+		Timestamp: normalizeESTimestamp(ts),
 		Message:   msg,
 		Severity:  severity,
 		Labels:    make(map[string]any),
 	}
 
-	for k, v := range src {
-		if k == "@timestamp" || k == "stream" || k == "log" {
-			continue
+	// Labels: OTel docs nest the useful identifiers under resource.attributes
+	// (k8s.namespace.name, k8s.pod.name, …) and attributes; flatten those so
+	// callers get flat label keys instead of nested maps. resource.attributes and
+	// attributes are checked independently — a doc may carry attributes without
+	// resource.attributes (non-k8s OTel, or resource detection disabled). Only
+	// fall back to the legacy top-level copy (Fluent-Bit/ECS) when neither exists.
+	ra, hasResourceAttrs := nestedMap(src, "resource", "attributes")
+	a, hasAttrs := src["attributes"].(map[string]any)
+	switch {
+	case hasResourceAttrs || hasAttrs:
+		for k, v := range ra {
+			if v != nil {
+				log.Labels[k] = v
+			}
 		}
-		if v != nil {
-			log.Labels[k] = v
+		for k, v := range a {
+			if v != nil {
+				log.Labels[k] = v
+			}
+		}
+	default:
+		for k, v := range src {
+			if k == "@timestamp" || k == "stream" || k == "log" {
+				continue
+			}
+			if v != nil {
+				log.Labels[k] = v
+			}
 		}
 	}
 
 	return log, true
+}
+
+// otelBodyText extracts the log message from an OTel-native ES doc, where the
+// body is either a bare string or an object with a "text" field.
+func otelBodyText(src map[string]any) string {
+	switch b := src["body"].(type) {
+	case string:
+		return b
+	case map[string]any:
+		if t, ok := b["text"].(string); ok {
+			return t
+		}
+	}
+	return ""
+}
+
+// otelIOStream returns attributes.log.iostream ("stdout"/"stderr") from an OTel doc.
+func otelIOStream(src map[string]any) string {
+	if a, ok := src["attributes"].(map[string]any); ok {
+		if s, ok := a["log.iostream"].(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// nestedMap returns src[k1][k2] when both levels are maps.
+func nestedMap(src map[string]any, k1, k2 string) (map[string]any, bool) {
+	if m1, ok := src[k1].(map[string]any); ok {
+		if m2, ok := m1[k2].(map[string]any); ok {
+			return m2, true
+		}
+	}
+	return nil, false
+}
+
+// normalizeESTimestamp renders an ES @timestamp as an RFC3339 timestamp with
+// nanosecond precision (e.g. "2026-06-18T05:35:23.471912906Z"). OTel-native docs
+// store @timestamp as epoch milliseconds, optionally with a fractional
+// sub-millisecond part ("1781559826466.265767"); this converts it to RFC3339Nano,
+// preserving the fraction down to nanoseconds. Non-numeric values (already
+// ISO-8601, e.g. Fluent-Bit/ECS) pass through unchanged.
+func normalizeESTimestamp(ts string) string {
+	ts = strings.TrimSpace(ts)
+	intPart := ts
+	fracPart := ""
+	if dot := strings.IndexByte(ts, '.'); dot >= 0 {
+		intPart, fracPart = ts[:dot], ts[dot+1:]
+	}
+	ms, err := strconv.ParseInt(intPart, 10, 64)
+	if err != nil {
+		return ts // already an ISO-8601 string (or some other non-epoch value)
+	}
+	// fracPart is the fractional millisecond. Six digits resolve to nanoseconds
+	// (1e-6 ms = 1 ns); pad/truncate to six, then it is the ns within the ms.
+	var fracNs int64
+	if fracPart != "" {
+		const fracDigits = 6
+		if len(fracPart) > fracDigits {
+			fracPart = fracPart[:fracDigits]
+		}
+		if f, perr := strconv.ParseInt(fracPart, 10, 64); perr == nil {
+			for i := len(fracPart); i < fracDigits; i++ {
+				f *= 10
+			}
+			fracNs = f
+		}
+	}
+	totalNs := ms*int64(time.Millisecond) + fracNs
+	return time.Unix(0, totalNs).UTC().Format(time.RFC3339Nano)
 }
 
 // QueryLogs implements [LogSource].

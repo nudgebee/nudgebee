@@ -3,7 +3,9 @@ import React from 'react';
 import PropTypes from 'prop-types';
 
 const SquareIndicator = ({ color }) => {
-  return <Box sx={{ backgroundColor: color, height: '8px', width: '8px', borderRadius: '2px' }} />;
+  return (
+    <Box sx={{ backgroundColor: color, height: 'var(--ds-space-2)', width: 'var(--ds-space-2)', borderRadius: 'calc(var(--ds-radius-sm) / 2)' }} />
+  );
 };
 
 export default SquareIndicator;

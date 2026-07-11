@@ -153,11 +153,10 @@ func probeOne(ctx context.Context, t probeTarget) ProbeResult {
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	// One-token ping: cheapest call that exercises auth + reachability without
-	// burning meaningful budget. Response body intentionally ignored.
+	// Cheap ping to verify auth + reachability; >1 token so thinking models still return a content block.
 	if _, err := llm.GenerateContent(pingCtx, []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, "ping"),
-	}, llms.WithMaxTokens(1)); err != nil {
+	}, llms.WithMaxTokens(16)); err != nil {
 		return ProbeResult{
 			Provider: t.provider, Model: t.model, Source: t.source,
 			OK: false, Error: err.Error(),

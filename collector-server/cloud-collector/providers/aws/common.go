@@ -33,6 +33,24 @@ func isRegionEndpointMissing(err error) bool {
 	return false
 }
 
+// isRegionUnreachable reports whether err is a connection-establishment failure
+// to a regional endpoint — a dial-phase timeout, connection refused, or
+// no-route-to-host. DescribeRegions returns every region the account opted into,
+// including ones the collector's network egress can't actually reach (e.g. a
+// far opt-in region like me-south-1 that resolves via DNS but whose TCP endpoint
+// is unroutable from the cluster). The SDK retries before surfacing the error,
+// so a dial failure here is persistent, not a blip. Such a region should be
+// skipped — it can't be fixed from the account config and must not poison the
+// whole resources feature with a sync error. A mid-request timeout against a
+// reachable-but-slow region is NOT a dial-phase failure and still surfaces.
+func isRegionUnreachable(err error) bool {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return opErr.Op == "dial"
+	}
+	return false
+}
+
 // GetAwsConfigFromAccount creates an AWS config for the given account, handling
 // static credentials, cross-account role assumption, and profile-based auth.
 func GetAwsConfigFromAccount(ctx context.Context, account providers.Account) (aws.Config, error) {

@@ -3,7 +3,6 @@ import { Box, Typography, Menu, MenuItem, ListItemText, ListItemIcon } from '@mu
 import { Button } from '@ui/Button';
 import { ContentCopy, Check, KeyboardArrowDown, Code } from '@mui/icons-material';
 import { Input } from '@ui/Input';
-import { colors } from 'src/utils/colors';
 import { CONDITIONAL_PRESETS, FIELD_HELPER_TEXT, FIELD_PLACEHOLDERS } from './advancedConfigPresets';
 import { useCopyToClipboard } from '@components/workflow/hooks/useCopyToClipboard';
 
@@ -76,7 +75,7 @@ const TemplateExpressionField: React.FC<TemplateExpressionFieldProps> = ({
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
         <Typography
           variant='body2'
-          sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary }}
+          sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' }}
         >
           {label}
         </Typography>
@@ -92,8 +91,8 @@ const TemplateExpressionField: React.FC<TemplateExpressionFieldProps> = ({
             onClick={(e) => setPresetAnchor(e.currentTarget)}
             icon={
               <Box sx={{ display: 'inline-flex', alignItems: 'center' }}>
-                <Code sx={{ fontSize: 16 }} />
-                <KeyboardArrowDown sx={{ fontSize: 14 }} />
+                <Code sx={{ fontSize: 'var(--ds-text-title)' }} />
+                <KeyboardArrowDown sx={{ fontSize: 'var(--ds-text-body-lg)' }} />
               </Box>
             }
           />
@@ -103,7 +102,7 @@ const TemplateExpressionField: React.FC<TemplateExpressionFieldProps> = ({
                 <ListItemText
                   primary={preset.label}
                   secondary={
-                    <Typography component='span' sx={{ fontFamily: 'monospace', fontSize: 'var(--ds-text-caption)', color: colors.text.secondary }}>
+                    <Typography component='span' sx={{ fontFamily: 'monospace', fontSize: 'var(--ds-text-caption)', color: 'var(--ds-brand-500)' }}>
                       {preset.value as string}
                     </Typography>
                   }
@@ -124,7 +123,7 @@ const TemplateExpressionField: React.FC<TemplateExpressionFieldProps> = ({
                 aria-label='Insert task reference'
                 disabled={disabled}
                 onClick={(e) => setTaskAnchor(e.currentTarget)}
-                icon={<Typography sx={{ fontSize: 12, fontWeight: 'var(--ds-font-weight-semibold)' }}>{'{{ }}'}</Typography>}
+                icon={<Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)' }}>{'{{ }}'}</Typography>}
               />
               <Menu anchorEl={taskAnchor} open={Boolean(taskAnchor)} onClose={() => setTaskAnchor(null)}>
                 <MenuItem disabled sx={{ opacity: 0.7 }}>
@@ -133,7 +132,7 @@ const TemplateExpressionField: React.FC<TemplateExpressionFieldProps> = ({
                 {previousTasks.map((task) => (
                   <MenuItem key={task.id} onClick={() => handleTaskSelect(task)}>
                     <ListItemIcon>
-                      <Code sx={{ fontSize: 14 }} />
+                      <Code sx={{ fontSize: 'var(--ds-text-body-lg)' }} />
                     </ListItemIcon>
                     <ListItemText
                       primary={task.name || task.id}
@@ -182,7 +181,13 @@ const TemplateExpressionField: React.FC<TemplateExpressionFieldProps> = ({
             aria-label='Copy'
             disabled={!localValue.trim()}
             onClick={handleCopy}
-            icon={copied ? <Check sx={{ fontSize: 16, color: 'success.main' }} /> : <ContentCopy sx={{ fontSize: 16 }} />}
+            icon={
+              copied ? (
+                <Check sx={{ fontSize: 'var(--ds-text-title)', color: 'success.main' }} />
+              ) : (
+                <ContentCopy sx={{ fontSize: 'var(--ds-text-title)' }} />
+              )
+            }
           />
         </Box>
       </Box>

@@ -22,6 +22,9 @@ export class WorkflowLocators extends CommonLocators {
   readonly triggerAutomationBtn: Locator;
   readonly statusDropdown: Locator;
   readonly activeStatusOption: Locator;
+  readonly backBtn: Locator;
+  readonly nameSearchInput: Locator;
+  readonly deleteConfirmBtn: Locator;
 
   readonly action_tickets_create: Locator;
   readonly action_tickets_get: Locator;
@@ -77,24 +80,27 @@ export class WorkflowLocators extends CommonLocators {
     this.codeMirrorEditor = page.locator(".cm-content");
     this.applyJsonBtn = page.getByRole("button", { name: "Apply" });
     this.saveBtn = page.locator("#workflow-save-btn");
-    this.runBtn = page.locator("#workflow-run-btn");
+    this.runBtn = page.locator("#run-current-btn");
     this.triggerAutomationBtn = page.getByRole("button", { name: "Trigger Automation" });
+    this.backBtn = page.locator("#workflow-back-btn");
+    this.nameSearchInput = page.getByPlaceholder("Search by Automation Name");
+    this.deleteConfirmBtn = page.locator("#workflow-delete-confirm-btn");
     this.statusDropdown = page
       .locator(".MuiAutocomplete-root")
       .filter({ hasNot: page.locator("#auto-complete-global-cluster") })
       .last();
     this.activeStatusOption = page.getByRole("option", { name: "ACTIVE", exact: true });
 
-    this.action_tickets_create = page.getByRole("button", { name: /tickets create/i }).first();
-    this.action_tickets_get = page.getByRole("button", { name: /tickets get/i }).first();
-    this.action_tickets_resolve = page.getByRole("button", { name: /tickets resolve/i }).first();
-    this.action_tickets_add_comment = page.getByRole("button", { name: /tickets add comment/i }).first();
-    this.action_tickets_get_comments = page.getByRole("button", { name: /tickets get comments/i }).first();
-    this.action_tickets_transition = page.getByRole("button", { name: /tickets transition/i }).first();
-    this.action_tickets_update = page.getByRole("button", { name: /tickets update/i }).first();
-    this.action_tickets_assign = page.getByRole("button", { name: /tickets assign/i }).first();
-    this.action_notifications_im = page.getByRole("button", { name: /notifications im/i }).first();
-    this.action_notifications_email = page.getByRole("button", { name: /notifications email/i }).first();
+    this.action_tickets_create = page.getByTestId("rf__node-tickets_create");
+    this.action_tickets_get = page.getByTestId("rf__node-tickets_get");
+    this.action_tickets_resolve = page.getByTestId("rf__node-tickets_resolve");
+    this.action_tickets_add_comment = page.getByTestId("rf__node-tickets_add_comment");
+    this.action_tickets_get_comments = page.getByTestId("rf__node-tickets_get_comments");
+    this.action_tickets_transition = page.getByTestId("rf__node-tickets_transition");
+    this.action_tickets_update = page.getByTestId("rf__node-tickets_update");
+    this.action_tickets_assign = page.getByTestId("rf__node-tickets_assign");
+    this.action_notifications_im = page.getByTestId("rf__node-notifications_im");
+    this.action_notifications_email = page.getByTestId("rf__node-notifications_email");
     this.action_llm_nubi = page.getByRole("button", { name: /llm nubi/i }).first();
     this.action_llm_mcp_call = page.getByRole("button", { name: /llm mcp call/i }).first();
     this.action_llm_investigate = page.getByRole("button", { name: /llm investigate/i }).first();

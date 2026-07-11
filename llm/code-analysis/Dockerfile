@@ -1,7 +1,15 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26.5-alpine AS builder
 
 WORKDIR /app
+
+# Use the builder image's bundled Go toolchain, never an auto-downloaded one.
+# GOTOOLCHAIN=local future-proofs a base bump (a hardcoded version would silently
+# download+reuse the old toolchain) and gives the build a distinct cache key so a
+# stale registry-cached go-build layer can't be reused (see the cloud-collector/
+# llm-server toolchain-cache fix). The copied /usr/local/go in the final stage
+# therefore also matches the builder.
+ENV GOTOOLCHAIN=local
 
 # Install git and other dependencies needed for build and runtime
 RUN apk add --no-cache git make ca-certificates openssh-client
@@ -33,7 +41,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
 
 # Final stage
-FROM alpine:3.19    
+FROM alpine:3.22
 
 WORKDIR /app
 
@@ -41,7 +49,15 @@ WORKDIR /app
 # git, curl, openssh-client, bind-tools (dig), iputils (ping), net-tools (netstat), nmap-ncat (nc)
 # jq, grep, findutils, coreutils, sed, awk, tar, unzip, procps
 # ripgrep (rg), the_silver_searcher (ag)
-RUN apk add --no-cache \
+# OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's
+# cache key so BuildKit re-runs the apk install and pulls current Alpine security
+# patches instead of a stale cached layer. Committed (not a build-arg) so each
+# refresh is a reviewable, revertable diff; bump when the Trivy scan flags a stale
+# package (e.g. c-ares CVE-2026-33630).
+ARG OS_PKG_EPOCH=2026-W28
+RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
+    && apk upgrade --no-cache \
+    && apk add --no-cache \
     git \
     curl \
     openssh-client \
@@ -96,8 +112,10 @@ RUN apk add --no-cache --virtual .build-deps \
     make \
     linux-headers && \
     python3 -m venv /opt/azure-cli-venv && \
-    /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli && \
+    /opt/azure-cli-venv/bin/pip install --no-cache-dir --upgrade pip && \
+    /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli "cryptography>=48.0.1" && \
     ln -s /opt/azure-cli-venv/bin/az /usr/local/bin/az && \
+    pip install --no-cache-dir --break-system-packages --upgrade "cryptography>=48.0.1" && \
     apk del .build-deps
 
 # Pre-install Azure CLI extensions to a fixed directory.
@@ -113,8 +131,8 @@ RUN mkdir -p /opt/azure-cli-extensions && \
 # Install build & development tools for code verification
 # These enable the agent to run build/lint/test commands on cloned repositories.
 # Go is copied from the builder stage instead of `apk add go` because Alpine
-# 3.19 ships Go 1.21, which fails on target repos whose go.mod requires a
-# newer toolchain (e.g. nudgebee/api-server/services requires >= 1.26.1).
+# ships an older Go than the builder, which fails on target repos whose go.mod
+# requires a newer toolchain (e.g. nudgebee/api-server/services requires >= 1.26.1).
 RUN apk add --no-cache \
     make \
     nodejs \
@@ -125,6 +143,7 @@ RUN apk add --no-cache \
 # (e.g. poetry pulls in urllib3 2.x which breaks apk-installed aws-cli)
 RUN npm install -g yarn pnpm && \
     python3 -m venv /opt/python-tools && \
+    /opt/python-tools/bin/pip install --no-cache-dir --upgrade pip && \
     /opt/python-tools/bin/pip install --no-cache-dir poetry black flake8 mypy && \
     ln -s /opt/python-tools/bin/poetry /usr/local/bin/poetry && \
     ln -s /opt/python-tools/bin/black /usr/local/bin/black && \

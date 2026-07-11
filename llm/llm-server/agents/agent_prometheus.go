@@ -99,6 +99,18 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 		"Thought: I have now successfully fetched the final data. I will summarize this for the user.",
 		"Final Answer: The memory usage for the `web-server-123` pod is 50MB.",
 	}
+
+	// Workload-scoped metric discovery: the templates above are ONE possible instrumentation,
+	// so when a templated query returns empty for a NAMED workload the agent must discover
+	// what it actually emits (via metrics_series_match) instead of reporting N/A.
+	instructions = append(instructions,
+		"**Metric names and labels are environment-specific — discover, don't assume:**",
+		" - The metric templates above are ONE possible instrumentation. The metric name that carries a signal (requests/latency/errors) and the label that identifies a workload both differ across environments (agent-based, SDK-based, service-mesh, custom exporters). Do NOT treat any specific metric name or label as guaranteed.",
+		" - If a query returns empty for a KNOWN workload, do NOT conclude 'no data'. Call `metrics_series_match` with the workload (and namespace) — it returns the metric families that actually have series for it, grouped by the labels that identify the workload. Pick a family from a group and filter it by THAT group's `namespace_label`/`workload_label` (a `prefix` match means use `=~\"<workload>.*\"`). Do not mix labels across groups.",
+		" - Use `metrics_list` (keyword) and `metrics_labels_list` only when you do NOT have a concrete workload name (e.g. discovering custom exporters like redis/kafka/jvm). For a named workload, `metrics_series_match` is the deterministic path.",
+		" - Discovery is a catalog/series lookup: run it once, then build the query from the result. Don't re-run the same scan or retry many fixed variants — your ReAct iteration budget is bounded.",
+	)
+
 	toolUsage := map[string][]string{
 		PromqlAgentName: {
 			"Generates a PromQL query from a natural language question.",
@@ -120,6 +132,11 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 			"Input: (required) exact metric name.",
 			"Output: List of label names for that metric.",
 			"If this tool fails, proceed with the metric name and {__CLUSTER__} labels.",
+		}, tools.ToolMetricsSeriesMatch: {
+			"DETERMINISTIC discovery for a NAMED workload: returns the metric families that actually have series for it, grouped by the labels that identify the workload.",
+			"Use this (not metrics_list) when a templated query returns empty for a workload you can name.",
+			"Input: workload (required), namespace (recommended).",
+			"Output: groups of {namespace_label, workload_label, match_type, families[]}. Build the query from a family + that group's labels; match_type 'prefix' => =~\"<workload>.*\". Don't mix labels across groups.",
 		},
 		ResourceSearchAgentName: {
 			"Use this tool for fuzzy resource matching and generating search strategies when resources are not found.",
@@ -281,6 +298,9 @@ func (p PrometheusAgent) GetSupportedTools(ctx *security.RequestContext) []toolc
 		tools.SearchMetricsTool{},
 		tools.MetricsListTool{Provider: "prometheus"},
 		tools.ListMetricsLabelsTool{Provider: "prometheus"},
+		// Deterministic workload-scoped metric discovery; lets the agent resolve a
+		// workload's real metric families on an empty templated query instead of N/A.
+		tools.MetricsSeriesMatchTool{Provider: "prometheus"},
 	}
 	if prom, ok := toolcore.GetNBTool(p.accountId, PromqlAgentName); ok {
 		tools = append(tools, prom)

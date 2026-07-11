@@ -504,6 +504,134 @@ actions:
       - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
+  - name: ai_get_conversation_tree
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/completions/conversation-tree'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 120
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: ai_get_conversation_agent
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/completions/conversation-agent'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 120
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: ai_list_conversation_costs
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/completions/usage-conversations'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: ai_list_agent_costs
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/completions/usage-agents'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: ai_aggregate_tool_usage
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/completions/usage-tools'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: ai_list_tool_calls
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/completions/tool-calls'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: ai_get_usage_filters
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/completions/usage-filters'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: ai_aggregate_usage_metrics
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/completions/usage-metrics'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
   - name: ai_get_gc
     definition:
       kind: "synchronous"
@@ -719,6 +847,141 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin_readonly
       - role: account_admin
+  # Memory module RPC surface (9 verb-named actions, all dispatched to
+  # /v1/memory_v2). The handler reads `layer` and `scope` from the request
+  # payload to route internally, replacing the 39 per-(layer,scope,verb)
+  # actions that originally shipped with Phases 2–8. Tenant-scope writes
+  # are still gated server-side by requireTenantAdmin — the actions.yaml
+  # permissions list every role that can call any combination, not just
+  # the most privileged.
+  - name: ai_memory_get
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Single-record read — layer one of (soul, consent), scope one of (user, tenant).
+  - name: ai_memory_list
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Collection read — layer one of (prefs, patterns, decisions, collective, session, events). Pass `q` with layer=collective for full-text search.
+  - name: ai_memory_upsert
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: tenant_admin
+      - role: account_admin
+    comment: Insert-or-update — layer one of (soul, prefs, consent, decisions[scope=tenant]). Tenant-scope writes gated server-side on tenant_admin.
+  - name: ai_memory_delete
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: tenant_admin
+      - role: account_admin
+    comment: Remove a row when `id` is set; wipe the (layer, scope) when `id` is omitted. Includes the GDPR full-wipe path (layer=all, scope=user).
+  - name: ai_memory_create_decision
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Click-wired user decisions (AutoPilot Approve/Decline, RCA thumbs). Insert with uniqueness — separate from update_decision.
+  - name: ai_memory_update_decision
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Append-supersede (correct subject/rationale) or promote-to-global (set promote_to_global=true). Tenant-scope edits gated server-side on tenant_admin.
+  - name: ai_memory_update_pattern
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Edit a single pattern row — set `description` to overwrite, or `pinned` to toggle the pin flag.
+  - name: ai_memory_execute_maintenance
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Manually trigger a memory distillation job (ops debugging).
+  - name: ai_memory_generate_export
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: GDPR portability — exports a user's memory bundle as a fresh JSON artifact.
   - name: ai_list_models
     definition:
       kind: "synchronous"
@@ -1532,6 +1795,19 @@ actions:
       - role: tenant_admin
       - role: account_admin
     comment: Trigger a full data sync for a cloud account (usage, events, resources, recommendations)
+  - name: cloud_sync_service
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/cloud'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 300
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: Re-collect the resource inventory for a single cloud service (EC2, RDS, S3, etc.) for an account
   - name: cloud_apply_command
     definition:
       kind: synchronous
@@ -2549,6 +2825,12 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
+      - role: k8s_namespace_admin
+      - role: k8s_namespace_admin_readonly
+      - role: tenant_admin_readonly
+      - role: tenant_usage
+      - role: account_admin_readonly
+      - role: account_admin
       - role: tenant_admin
   - name: logs_get_query
     definition:
@@ -2804,6 +3086,18 @@ actions:
     permissions:
       - role: tenant_admin
     comment: Update a notification channel account mapping
+  - name: notifications_google_chat_permission_status
+    definition:
+      kind: "synchronous"
+      handler: '{{NOTIFICATION_SERVICE_URL}}/api/channels/google-chat/permission-status'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: Probe whether the Google Chat bot's self-join permission is authorized
   - name: notifications_list_channels
     definition:
       kind: "synchronous"
@@ -2811,7 +3105,7 @@ actions:
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
     permissions:
       - role: k8s_namespace_admin
       - role: k8s_namespace_admin_readonly
@@ -2827,7 +3121,7 @@ actions:
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
     permissions:
       - role: k8s_namespace_admin
       - role: k8s_namespace_admin_readonly
@@ -2843,7 +3137,7 @@ actions:
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
     permissions:
       - role: tenant_admin
       - role: account_admin
@@ -2866,7 +3160,7 @@ actions:
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
     permissions:
       - role: tenant_admin
   - name: observability_list_provider_capabilities
@@ -3206,6 +3500,13 @@ actions:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'
       forward_client_headers: true
+      # Identity-scoped, cross-tenant action: lists the tenants the
+      # authenticated user belongs to (handler filters by username). Must stay
+      # reachable even when the user holds no role in the active tenant —
+      # otherwise the Switch-Tenant modal can't show them a tenant to switch to
+      # (chicken-and-egg lockout). The gateway skips its tenant-role gate for
+      # tenant_agnostic actions. See forwardAction in src/lib/rpcGateway.ts.
+      tenant_agnostic: true
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
@@ -3835,6 +4136,165 @@ actions:
     permissions:
       - role: tenant_admin
     comment: Update user display name and status
+  - name: ownership_get
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/ownership'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: k8s_namespace_admin_readonly
+      - role: tenant_admin_readonly
+      - role: tenant_usage
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin
+    comment: Resolve the effective owner of a resource (direct, rule, or inherited)
+  - name: ownership_resolve
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/ownership'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: k8s_namespace_admin_readonly
+      - role: tenant_admin_readonly
+      - role: tenant_usage
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin
+    comment: Batch-resolve effective owners for a list of resources
+  - name: ownership_list
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/ownership'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+    comment: List stored manual owner assignments (optionally filtered)
+  - name: ownership_assign
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/ownership'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Manually assign (replace) the owner of a resource
+  - name: ownership_delete
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/ownership'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Remove a resource's manual owner
+  - name: ownership_cleanup
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/ownership'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Purge orphaned owner rows whose resource no longer exists
+  - name: ownership_list_rules
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/ownership'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+    comment: List ownership rules
+  - name: ownership_upsert_rule
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/ownership'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Create or update an ownership rule
+  - name: ownership_delete_rule
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/ownership'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Delete an ownership rule
+  - name: users_list_integration_accounts
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+    comment: List external integration accounts (Slack/GitHub/PagerDuty/ZenDuty) mapped to a user
+  - name: users_list_unmapped_accounts
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+    comment: List unmapped external integration accounts for manual mapping
+  - name: users_create_account_mapping
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Manually map an external integration account to an internal user
+  - name: users_delete_account_mapping
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Remove the internal-user mapping from an external integration account
   - name: users_update_status
     definition:
       kind: synchronous
@@ -4029,6 +4489,9 @@ actions:
       kind: "synchronous"
       handler: '{{WORKFLOW_SERVER_URL}}/rpc'
       forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
     permissions:
       - role: tenant_admin_readonly
       - role: tenant_admin
@@ -4862,6 +5325,25 @@ actions:
       - role: account_admin_readonly
       - role: k8s_namespace_admin
       - role: k8s_namespace_admin_readonly
+  # Cross-tenant read: lists ALL tenants in the system (unlike tenants_list,
+  # which the query engine scopes to the caller's own tenant). Used by the
+  # super-admin Switch-Tenant modal to reach tenants the user isn't a member
+  # of. Restricted to super admins: a full super_admin bypasses the gateway
+  # role gate, but super_admin_readonly does NOT (the bypass only keys off
+  # `super_admin`), so both tokens are listed here to pass the gate. The
+  # upstream handler re-checks IsSuperAdmin()/IsSuperAdminReadonly() as the
+  # authoritative gate.
+  - name: tenant_list_all
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/tenant'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: super_admin
+      - role: super_admin_readonly
   - name: features_list
     definition:
       kind: "synchronous"

@@ -58,8 +58,11 @@ func TestRoute53GetRecommendations(t *testing.T) {
 				{
 					Id:          "zone-1",
 					ServiceName: ServiceNameRoute53,
-					Meta:        map[string]any{},
-					Type:        getAwsServiceResourceType(ServiceNameRoute53, "hostedzone"),
+					// Zone is enriched (non-empty meta) but has no QueryLoggingConfigs key,
+					// which is the real "query logging disabled" signal. GetRecommendations
+					// skips resources with empty meta, so a representative key is required.
+					Meta: map[string]any{"RecordSetCount": 5},
+					Type: getAwsServiceResourceType(ServiceNameRoute53, "hostedzone"),
 				},
 			},
 			expectedCount: 1,

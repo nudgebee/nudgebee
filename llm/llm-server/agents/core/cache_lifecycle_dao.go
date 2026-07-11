@@ -70,6 +70,18 @@ func (chat *ConversationDao) InsertCacheLifecycle(ctx context.Context, record *C
 	return nil
 }
 
+// setCacheLifecycleInvalidatedSQL marks a cache invalidated at now(), but only
+// while it is still alive (invalidated_at IS NULL). The IS NULL guard makes the
+// statement idempotent — a re-delete of an already-invalidated cache is a no-op,
+// so the original (earlier) death time is preserved. Scoped to one cache_name
+// (the provider resource id), never a whole slot.
+const setCacheLifecycleInvalidatedSQL = `
+		UPDATE llm_cache_lifecycle
+		   SET invalidated_at = now()
+		 WHERE cache_name = $1
+		   AND invalidated_at IS NULL
+	`
+
 // SetCacheLifecycleInvalidated marks a cache as invalidated at now(). No-op if
 // the row is already invalidated (LEAST + COALESCE pattern preserves the
 // earliest end time, which matches reality — once a cache is gone, it's gone).
@@ -78,13 +90,7 @@ func (chat *ConversationDao) SetCacheLifecycleInvalidated(ctx context.Context, c
 		return fmt.Errorf("cache_name is required")
 	}
 
-	query := `
-		UPDATE llm_cache_lifecycle
-		   SET invalidated_at = LEAST(COALESCE(invalidated_at, now()), now())
-		 WHERE cache_name = $1
-		   AND invalidated_at IS NULL
-	`
-	_, err := chat.dbManager.Db.ExecContext(ctx, query, cacheName)
+	_, err := chat.dbManager.Db.ExecContext(ctx, setCacheLifecycleInvalidatedSQL, cacheName)
 	if err != nil {
 		return fmt.Errorf("SetCacheLifecycleInvalidated: %w", err)
 	}

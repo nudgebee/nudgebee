@@ -130,7 +130,7 @@ func (s *ExecutorTestSuite) registerFanInActivities() {
 		return map[string]any{}, nil
 	}, activity.RegisterOptions{Name: "FetchWorkflowStateActivity"})
 
-	s.env.RegisterActivityWithOptions(func(ctx context.Context, tenantID, accountID string) (FetchConfigsResponse, error) {
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, tenantID, accountID string, restrictToAccount bool) (FetchConfigsResponse, error) {
 		return FetchConfigsResponse{}, nil
 	}, activity.RegisterOptions{Name: "FetchWorkflowConfigsActivity"})
 }
@@ -299,7 +299,7 @@ func (s *ExecutorTestSuite) registerSystemActivities() {
 	s.env.RegisterActivityWithOptions(func(ctx context.Context, workflowID string) (map[string]any, error) {
 		return map[string]any{}, nil
 	}, activity.RegisterOptions{Name: "FetchWorkflowStateActivity"})
-	s.env.RegisterActivityWithOptions(func(ctx context.Context, tenantID, accountID string) (FetchConfigsResponse, error) {
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, tenantID, accountID string, restrictToAccount bool) (FetchConfigsResponse, error) {
 		return FetchConfigsResponse{}, nil
 	}, activity.RegisterOptions{Name: "FetchWorkflowConfigsActivity"})
 	s.env.RegisterActivityWithOptions(func(ctx context.Context, workflowID string, stateUpdates map[string]model.StateUpdateDTO, executionID string, taskID string) error {
@@ -454,7 +454,7 @@ func (s *ExecutorTestSuite) TestExecuteWorkflow_NilInputs() {
 		return map[string]any{}, nil
 	}, activity.RegisterOptions{Name: "FetchWorkflowStateActivity"})
 
-	s.env.RegisterActivityWithOptions(func(ctx context.Context, tenantID, accountID string) (FetchConfigsResponse, error) {
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, tenantID, accountID string, restrictToAccount bool) (FetchConfigsResponse, error) {
 		return FetchConfigsResponse{}, nil
 	}, activity.RegisterOptions{Name: "FetchWorkflowConfigsActivity"})
 

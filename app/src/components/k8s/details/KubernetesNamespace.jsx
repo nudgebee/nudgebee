@@ -19,6 +19,7 @@ import PropTypes from 'prop-types';
 import Text from '@shared/format/Text';
 import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
+import OwnershipPanel from '@components/ownership/OwnershipPanel';
 
 const NAMESPACE_HEADERS = [
   'Namespace',
@@ -36,6 +37,21 @@ const NAMESPACE_UPPER_HEADERS = [
   { text: 'Avg used per resource', colSpan: 2, backgroundColor: 'var(--ds-background-200)' },
   { text: '' },
 ];
+
+// Ownership tab for a namespace drilldown. componentFn is called as
+// (accountId, query, row); the namespace table doesn't pass accountId, so read it
+// from the drilldownQuery.
+function namespaceOwnershipFn(accountId, query) {
+  const acct = query?.accountId || accountId;
+  return (
+    <OwnershipPanel
+      resourceType='namespace'
+      resourceKey={acct && query?.namespaceName ? `${acct}/${query.namespaceName}` : ''}
+      cloudAccountId={acct}
+      resourceLabel={query?.namespaceName}
+    />
+  );
+}
 
 const KubernetesNamespaceTable = ({ accountId }) => {
   const router = useRouter();
@@ -232,12 +248,13 @@ const KubernetesNamespaceTable = ({ accountId }) => {
           disableDateFilterForPodsTable={true}
           expandable={{
             tabs: [
-              { text: 'Pods', value: 0, key: 'pods' },
-              { text: 'Utilization Trends', value: 1, key: 'utilization3' },
-              { text: 'Cost Trends', value: 2, key: 'cost' },
-              { text: 'Recent Events', value: 3, key: 'events' },
-              { text: 'Network', value: 4, key: 'network' },
-              { text: 'Service Map', value: 5, key: 'serviceMap' },
+              { text: 'Ownership', value: 0, key: 'ownership', componentFn: namespaceOwnershipFn },
+              { text: 'Pods', value: 1, key: 'pods' },
+              { text: 'Utilization Trends', value: 2, key: 'utilization3' },
+              { text: 'Cost Trends', value: 3, key: 'cost' },
+              { text: 'Recent Events', value: 4, key: 'events' },
+              { text: 'Network', value: 5, key: 'network' },
+              { text: 'Service Map', value: 6, key: 'serviceMap' },
             ],
           }}
           rowsPerPage={recordsPerPage}

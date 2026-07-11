@@ -148,6 +148,7 @@ func (s *AzureAppInsightsTraceSource) CountTraces(sc *security.RequestContext, t
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, fmt.Errorf("failed to make request to azure traces api: %w", err)
 	}
+	defer func() { _ = body.Body.Close() }()
 
 	if body.StatusCode != http.StatusOK {
 		return common.OpenTelemetryTraceCount{}, fmt.Errorf("azure trace query failed: status=%d body=%s", body.StatusCode, body.Body)
@@ -233,6 +234,7 @@ func (s *AzureAppInsightsTraceSource) GetLabelValues(sc *security.RequestContext
 	if err != nil {
 		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("failed to make request to azure traces api: %w", err)
 	}
+	defer func() { _ = body.Body.Close() }()
 
 	if body.StatusCode != http.StatusOK {
 		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("azure trace query failed: status=%d body=%s", body.StatusCode, body.Body)
@@ -365,6 +367,7 @@ func (s *AzureAppInsightsTraceSource) QueryTraces(sc *security.RequestContext, t
 	if err != nil {
 		return nil, fmt.Errorf("failed to make request to azure traces api: %w", err)
 	}
+	defer func() { _ = body.Body.Close() }()
 
 	if body.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("azure trace query failed: status=%d body=%s", body.StatusCode, body.Body)
@@ -548,10 +551,10 @@ func (s *AzureAppInsightsSource) ExecuteQuery(ctx *security.RequestContext, azur
 
 	logAnalyticsURL := "https://api.loganalytics.io/v1/workspaces/" + azureConf.LogsWorkbookID + "/query"
 	res, err := common.HttpPost(logAnalyticsURL, common.HttpWithHeaders(headers), common.HttpWithJsonBody(logApiRequest))
-
 	if err != nil {
 		return AzureResponse{}, fmt.Errorf("failed to make request to azure log api: %w", err)
 	}
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(res.Body)
 		return AzureResponse{}, fmt.Errorf("azure log query failed: status=%d body=%s", res.StatusCode, string(bodyBytes))

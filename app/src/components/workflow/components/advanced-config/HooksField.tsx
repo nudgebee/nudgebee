@@ -3,7 +3,6 @@ import { Box, Typography, Chip } from '@mui/material';
 import { Button } from '@ui/Button';
 import { Add, ExpandMore, ExpandLess } from '@mui/icons-material';
 import { Input } from '@ui/Input';
-import { colors } from 'src/utils/colors';
 import { HOOKS_PRESETS, FIELD_HELPER_TEXT } from './advancedConfigPresets';
 import { useJsonViewMode } from '@components/workflow/hooks/useJsonViewMode';
 import FieldHeader from './FieldHeader';
@@ -59,8 +58,8 @@ const HookActionEditor: React.FC<{
     <Box
       sx={{
         p: 1.5,
-        border: `1px solid ${colors.lowestLight}`,
-        borderRadius: 1,
+        border: `1px solid var(--ds-green-200)`,
+        borderRadius: 'var(--ds-radius-sm)',
         bgcolor: 'white',
         display: 'flex',
         flexDirection: 'column',
@@ -131,7 +130,7 @@ const HookSection: React.FC<{
     <Box
       sx={{
         border: `1px solid color-mix(in srgb, ${color} 20%, transparent)`,
-        borderRadius: 1,
+        borderRadius: 'var(--ds-radius-sm)',
         overflow: 'hidden',
       }}
     >
@@ -149,7 +148,7 @@ const HookSection: React.FC<{
       >
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: color }} />
-          <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary }}>
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' }}>
             {label}
           </Typography>
           {actions.length > 0 && (
@@ -160,7 +159,7 @@ const HookSection: React.FC<{
           <Button
             tone='ghost'
             size='xs'
-            icon={<Add sx={{ fontSize: 14 }} />}
+            icon={<Add sx={{ fontSize: 'var(--ds-text-body-lg)' }} />}
             disabled={disabled}
             onClick={(e) => {
               e.stopPropagation();
@@ -169,13 +168,13 @@ const HookSection: React.FC<{
           >
             Add
           </Button>
-          {expanded ? <ExpandLess sx={{ fontSize: 16 }} /> : <ExpandMore sx={{ fontSize: 16 }} />}
+          {expanded ? <ExpandLess sx={{ fontSize: 'var(--ds-text-title)' }} /> : <ExpandMore sx={{ fontSize: 'var(--ds-text-title)' }} />}
         </Box>
       </Box>
       {expanded && (
         <Box sx={{ p: 1.5, display: 'flex', flexDirection: 'column', gap: 1 }}>
           {actions.length === 0 ? (
-            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondary, fontStyle: 'italic', textAlign: 'center', py: 1 }}>
+            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-brand-500)', fontStyle: 'italic', textAlign: 'center', py: 1 }}>
               No actions configured
             </Typography>
           ) : (

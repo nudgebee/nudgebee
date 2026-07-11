@@ -4,7 +4,7 @@ import SummarySkeletonLoader from '@shared/SummarySkeletonLoader';
 import { formatMemory } from '@lib/formatter';
 import apiCloudAccount from '@api1/cloud-account';
 import { getLast7Days } from '@lib/datetime';
-import Charts from '@shared/charts/LineCharts';
+import Chart from '@ui/Chart';
 import { formatMetricName } from '@utils/common';
 import { ListingLayout } from '@ui/ListingLayout';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
@@ -75,7 +75,7 @@ const AppHealthBreakdown = ({ apps }: { apps: any[] }) => {
       <Box sx={{ display: 'flex', gap: ds.space[4], flexWrap: 'wrap' }}>
         {segments.map((seg) => (
           <Box key={seg.label} sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
-            <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: seg.color }} />
+            <Box sx={{ width: ds.space[2], height: ds.space[2], borderRadius: '50%', backgroundColor: seg.color }} />
             <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>{seg.label}</Typography>
             <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>{seg.count}</Typography>
           </Box>
@@ -119,7 +119,15 @@ const TopConsumers = ({ apps }: { apps: any[] }) => {
             borderBottom: idx < appsWithMem.length - 1 ? `1px solid ${ds.gray[100]}` : 'none',
           }}
         >
-          <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: app.isActive ? ds.green[500] : ds.gray[300], flexShrink: 0 }} />
+          <Box
+            sx={{
+              width: ds.space.mul(0, 3),
+              height: ds.space.mul(0, 3),
+              borderRadius: '50%',
+              backgroundColor: app.isActive ? ds.green[500] : ds.gray[300],
+              flexShrink: 0,
+            }}
+          />
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: ds.space[1] }}>
               <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[700] }} noWrap>
@@ -316,7 +324,7 @@ export const OptimizeSummary = ({ accountId = '', serviceName = '', resourceId =
         const values = renderMetricsData[g].map((item: any) => (isCpu ? item.avg_value : formatMemory(item.avg_value, 'bytes', 'gb', false)));
         return (
           <DSCard size='md' elevation='flat' key={g} sx={{ mb: ds.space[4], padding: ds.space[5] }}>
-            <Charts
+            <Chart.Line
               chartTitle={formatMetricName(g)}
               dataset={[{ label: 'Utilization', data: values }]}
               labels={label}
@@ -327,7 +335,7 @@ export const OptimizeSummary = ({ accountId = '', serviceName = '', resourceId =
         );
       });
     }
-    return <Charts dataset={[]} labels={[]} data={[]} loading={loadingTrend} />;
+    return <Chart.Line dataset={[]} labels={[]} data={[]} loading={loadingTrend} />;
   };
 
   return (

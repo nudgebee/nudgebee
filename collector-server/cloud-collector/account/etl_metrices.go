@@ -132,13 +132,23 @@ func ConsumeCloudAccountMetricsJobs(ctx *security.RequestContext, concurrency in
 
 	ctx.GetLogger().Info("metrics: starting cloud account metrics consumer", "concurrency", concurrency, "queue", config.Config.RabbitMqCloudAccountMetricsQueue, "exchange", config.Config.RabbitMqCloudAccountMetricsExchange)
 
+	// Declare and bind the DLQ so failed/malformed messages routed via sendToDLQWithConfig
+	// are retained for inspection instead of being silently discarded by the broker.
+	if err := common.MqDeclareDLQ(config.Config.RabbitMqCloudAccountMetricsDLQExchange, config.Config.RabbitMqCloudAccountMetricsDLQQueue); err != nil {
+		ctx.GetLogger().Error("metrics: failed to declare DLQ", "error", err)
+	}
+
 	processor := func(data []byte) error {
 		var job CloudAccountMetricsJob
 		err := common.UnmarshalJson(data, &job)
 		if err != nil {
-			// Permanent error - malformed message. ACK to prevent poison message loop.
-			// TODO: Send to DLQ for inspection
-			ctx.GetLogger().Error("metrics: failed to unmarshal job - dropping message", "error", err, "data", string(data))
+			// Permanent error - malformed message. Route to DLQ for inspection, then
+			// ACK to prevent a poison-message loop.
+			ctx.GetLogger().Error("metrics: failed to unmarshal job - sending to DLQ", "error", err, "data", string(data))
+			sendToDLQWithConfig(ctx, data, "unmarshal_error", err,
+				config.Config.RabbitMqCloudAccountMetricsDLQExchange,
+				config.Config.RabbitMqCloudAccountMetricsDLQQueue,
+			)
 			return nil // Return nil to ACK and drop the message
 		}
 

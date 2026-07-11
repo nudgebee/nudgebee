@@ -83,12 +83,27 @@ func (s *loadBalancersService) GetRecommendations(ctx providers.CloudProviderCon
 	for _, resource := range existingResources {
 		if properties, ok := resource.Meta["properties"].(map[string]interface{}); ok {
 			if backendPools, ok := properties["backendAddressPools"].([]interface{}); ok && len(backendPools) == 0 {
+				// A Standard load balancer with no backend pool is billed its base
+				// hourly LB-rules charge; deleting it recovers that monthly cost.
+				// Basic load balancers are free (no price meter), so savings stay 0.
+				sku := azureSkuName(resource.Meta)
+				savings := 0.0
+				// Basic load balancers are free (no base price meter); only look up
+				// pricing for non-Basic SKUs to avoid a guaranteed failure + log noise.
+				if !strings.EqualFold(sku, "Basic") {
+					if cost, err := GetPricingCache().GetLoadBalancerPrice(ctx, sku, resource.Region); err == nil {
+						savings = cost
+					} else {
+						ctx.GetLogger().Warn("failed to get load balancer price for savings estimate", "error", err, "region", resource.Region, "sku", sku)
+					}
+				}
+
 				recommendations = append(recommendations, providers.Recommendation{
 					CategoryName:        providers.RecommendationCategoryRightSizing,
 					RuleName:            "azure_unused_load_balancer",
 					Severity:            providers.RecommendationSeverityLow,
-					Savings:             0, // TODO: Calculate savings
-					Data:                map[string]any{},
+					Savings:             savings,
+					Data:                map[string]any{"sku": sku, "reason": "Load balancer has no backend pool. Deleting it recovers its base monthly cost."},
 					Action:              providers.RecommendationActionDelete,
 					ResourceServiceName: resource.ServiceName,
 					ResourceId:          resource.Id,

@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -63,17 +64,33 @@ func (m KqlGenerator) generateKqlSelectClause(request QueryRequest, tableDef Tab
 func (m KqlGenerator) generateKqlWhereClause(where QueryWhereClause, tableDef TableDefinition) (string, error) {
 	var parts []string
 
-	// Example: handle binary expressions
-	for col, binary := range where.Binary {
-		colDef, ok := tableDef.Columns[col]
+	// Iterate in a stable column/operator order so generated KQL is
+	// deterministic (Go map iteration order is randomized).
+	binaryCols := make([]string, 0, len(where.Binary))
+	for col := range where.Binary {
+		binaryCols = append(binaryCols, col)
+	}
+	slices.Sort(binaryCols)
+
+	// handle binary expressions
+	for _, origCol := range binaryCols {
+		binary := where.Binary[origCol]
+		colDef, ok := tableDef.Columns[origCol]
 		if !ok {
 			continue
 		}
 		colType := colDef.Type
+		col := origCol
 		if colDef.Def != "" {
 			col = colDef.Def
 		}
-		for op, val := range binary {
+		ops := make([]BinaryWhereClauseType, 0, len(binary))
+		for op := range binary {
+			ops = append(ops, op)
+		}
+		slices.Sort(ops)
+		for _, op := range ops {
+			val := binary[op]
 			switch op {
 			case Between:
 				vals := val.(map[string]any)

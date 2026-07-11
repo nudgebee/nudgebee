@@ -354,6 +354,16 @@ type QueryLogsRequest struct {
 	Limit         *int64     `json:"limit"`
 	LogMetricName string     `json:"log_metric_name"` // GCP: log-based metric ID whose filter to resolve and apply
 	FilterPattern string     `json:"filter_pattern"`  // AWS: CloudWatch metric filter pattern for FilterLogEvents API
+
+	// GCP generic-scope context. When the per-service / log-metric resolution above
+	// scopes nothing (SLO alerts, unmapped resource types), these let the collector
+	// resolve the query scope from the monitored resource via GCP's own APIs
+	// (services.get / metrics.get) instead of per-service code. Provider-agnostic;
+	// AWS/Azure ignore them.
+	ResourceType   string            `json:"resource_type"`   // gcp_event_resource_type
+	ResourceLabels map[string]string `json:"resource_labels"` // resource.labels (prefix stripped)
+	MetricType     string            `json:"metric_type"`     // gcp_metric_type (SLO expr / log-based metric)
+	AlertType      string            `json:"alert_type"`      // gcp_alert_type: metric | log
 }
 
 // LogLabel represents a single field in a log event.
@@ -385,6 +395,72 @@ type QueryLogsResponse struct {
 	Results    []LogMessage       `json:"results"`
 	Status     string             `json:"status"` // e.g., Complete, Failed, Cancelled, Running, Scheduled
 	Statistics LogQueryStatistics `json:"statistics"`
+}
+
+// QueryDeploymentDiffRequest defines the input for fetching a resource's recent
+// deployment revisions so the two most recent can be diffed (the "what changed"
+// signal for a deploy-driven incident). Provider-agnostic; only providers that
+// version desired-state snapshots (GCP Cloud Run revisions) implement it.
+type QueryDeploymentDiffRequest struct {
+	Region      string `json:"region"`
+	ServiceName string `json:"service_name"`
+	// Limit caps the number of most-recent revisions returned (default 2 — enough
+	// for a before/after diff). Older revisions are dropped.
+	Limit *int32 `json:"limit"`
+}
+
+// DeploymentRevisionItem is one immutable desired-state snapshot (e.g. a Cloud Run
+// revision). SpecYAML is a normalized, status-stripped YAML of the deploy-relevant
+// spec so the api-server can diff two revisions without re-modeling provider types.
+type DeploymentRevisionItem struct {
+	Name       string `json:"name"`
+	CreateTime int64  `json:"create_time"` // unix millis
+	Creator    string `json:"creator"`     // principal that created the revision, when available
+	SpecYAML   string `json:"spec_yaml"`
+}
+
+// QueryDeploymentDiffResponse returns the most-recent revisions (newest first).
+type QueryDeploymentDiffResponse struct {
+	Revisions []DeploymentRevisionItem `json:"revisions"`
+	Status    string                   `json:"status"` // e.g., Complete, Failed
+}
+
+// QueryTracesRequest defines the input for querying distributed traces. Selection is
+// generic: scope by time window (+ optional service / provider-native filter), no
+// incident-type assumptions baked in.
+type QueryTracesRequest struct {
+	ServiceName string     `json:"service_name"` // optional resource scope hint
+	Filter      string     `json:"filter"`       // optional provider-native filter (generic passthrough)
+	StartTime   *time.Time `json:"start_time"`
+	EndTime     *time.Time `json:"end_time"`
+	Limit       *int64     `json:"limit"` // max traces to return
+}
+
+// TraceSpanItem is a single span, flattened across the returned traces (so the whole
+// span tree is captured, not a hand-picked subset).
+type TraceSpanItem struct {
+	TraceId      string            `json:"trace_id"`
+	SpanId       string            `json:"span_id"`
+	ParentSpanId string            `json:"parent_span_id"`
+	Name         string            `json:"name"`
+	Kind         string            `json:"kind"`
+	StartTime    int64             `json:"start_time"` // unix ms
+	DurationMs   float64           `json:"duration_ms"`
+	Labels       map[string]string `json:"labels"`
+}
+
+// QueryTracesResponse defines the output from querying traces.
+type QueryTracesResponse struct {
+	Spans      []TraceSpanItem `json:"spans"`
+	TraceCount int             `json:"trace_count"`
+	Status     string          `json:"status"`
+}
+
+// TraceProvider is an optional capability: providers that can fetch distributed traces
+// implement it. Kept separate from CloudProvider so non-supporting providers (AWS,
+// Azure, …) need no stub.
+type TraceProvider interface {
+	QueryTraces(ctx CloudProviderContext, account Account, query QueryTracesRequest) (QueryTracesResponse, error)
 }
 
 type ListResourceRequest struct {
@@ -552,6 +628,15 @@ type CloudProvider interface {
 	ListEventRules(ctx CloudProviderContext, account Account) (ListEventRules, error)
 	// QueryDatabasePerformance fetches database performance insights (AWS RDS, GCP Cloud SQL, Azure SQL Database)
 	QueryDatabasePerformance(ctx CloudProviderContext, account Account, request DatabasePerformanceRequest) (DatabasePerformanceResponse, error)
+}
+
+// DeploymentDiffProvider is an optional capability implemented only by providers
+// that version desired-state snapshots (GCP Cloud Run revisions). It is kept off
+// CloudProvider so providers without revision history (AWS, Azure) don't need a stub.
+type DeploymentDiffProvider interface {
+	// QueryDeploymentDiff returns the most-recent revisions for a service (newest
+	// first), each as a normalized spec snapshot, so callers can diff the top two.
+	QueryDeploymentDiff(ctx CloudProviderContext, account Account, query QueryDeploymentDiffRequest) (QueryDeploymentDiffResponse, error)
 }
 
 // UsageReportPeriod identifies a single billing period (month) for which a

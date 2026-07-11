@@ -50,6 +50,13 @@ func TestFetchCreateMetaCached(t *testing.T) {
 	cfg := models.TicketConfigurations{ID: "cfg-cache-1", Tool: tool}
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 
+	// fetchCreateMetaCached writes to a package-level cache keyed by cfg.ID, which
+	// survives across repeated runs in the same process (e.g. `go test -count=N`).
+	// Clear this key up front (and on cleanup) so the first fetch is a guaranteed
+	// miss and the test stays hermetic regardless of run order or count.
+	invalidateCreateMetaCache(cfg.ID)
+	t.Cleanup(func() { invalidateCreateMetaCache(cfg.ID) })
+
 	// First call: miss -> registry invoked, result cached.
 	if _, err := fetchCreateMetaCached(ctx, cfg, "PROJ"); err != nil {
 		t.Fatalf("first fetch errored: %v", err)

@@ -7,7 +7,6 @@ import AutoOptimizeInfoCard from '@components/autopilot/card/AutoOptimizeInfoCar
 import { formatMemory } from '@lib/formatter';
 import { DoubleArrowRight } from '@assets';
 import buttonConfiguration from '@lib/buttonConfiguration';
-import { colors } from 'src/utils/colors';
 import SafeIcon from '@shared/icons/SafeIcon';
 
 interface ToggleOption {
@@ -27,8 +26,17 @@ interface LabeledToggleGroupProps {
 function LabeledToggleGroup({ title, options, selected, onChange, disabled }: LabeledToggleGroupProps) {
   const value = String(selected ?? options[0]?.id ?? '');
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-      <Typography sx={{ color: colors.text.secondary, fontSize: '10px', fontWeight: 400, minWidth: '43px' }}>{title}</Typography>
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+      <Typography
+        sx={{
+          color: 'var(--ds-brand-500)',
+          fontSize: 'var(--ds-text-caption)',
+          fontWeight: 'var(--ds-font-weight-regular)',
+          minWidth: 'calc(var(--ds-space-0) * 22)',
+        }}
+      >
+        {title}
+      </Typography>
       <ToggleGroup
         selection='single'
         size='sm'
@@ -82,36 +90,48 @@ const VerticalAutopPilotForm = ({
   const InfoCard = ({ data, type }: InfoCardProps) => {
     return (
       <Box>
-        <Box sx={{ display: 'flex', width: '219px', justifyContent: 'space-between' }}>
+        <Box sx={{ display: 'flex', width: 'calc(var(--ds-space-0) * 110)', justifyContent: 'space-between' }}>
           {Object.keys(data).map((key, index) => (
-            <Box key={index} sx={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <Typography sx={{ color: colors.text.tertiary, fontSize: '12px', fontWeight: 400 }}>{capitalizeFirstLetter(key)}</Typography>
-              <Typography sx={{ color: colors.text.secondaryDark, fontSize: '14px', fontWeight: 500, mb: '15px' }}>
+            <Box key={index} sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+              <Typography sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}>
+                {capitalizeFirstLetter(key)}
+              </Typography>
+              <Typography
+                sx={{
+                  color: 'var(--ds-gray-400)',
+                  fontSize: 'var(--ds-text-body-lg)',
+                  fontWeight: 'var(--ds-font-weight-medium)',
+                  mb: 'var(--ds-space-4)',
+                }}
+              >
                 {data[key]}{' '}
-                <span style={{ color: colors.text.lastSync, fontSize: '12px', fontWeight: 400 }}> {type === 'memory' ? 'MB' : 'CPU'} </span>
+                <span style={{ color: 'var(--ds-brand-300)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}>
+                  {' '}
+                  {type === 'memory' ? 'MB' : 'CPU'}{' '}
+                </span>
               </Typography>
             </Box>
           ))}
         </Box>
         <Box sx={{ display: 'flex', flexDirection: 'column' }}>
           {type !== 'memory' && additionalInfoCPUAndMem?.cpuInfo?.p99 ? (
-            <Typography sx={{ color: colors.text.tertiary, fontSize: '12px', fontWeight: 500 }}>
-              <ul style={{ margin: '0px', paddingLeft: '20px' }}>
+            <Typography sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }}>
+              <ul style={{ margin: '0px', paddingLeft: 'calc(var(--ds-space-1) * 5)' }}>
                 <li>99% of the time, the CPU usage was below {parseFloat(additionalInfoCPUAndMem?.cpuInfo?.p99).toFixed(4)}</li>
               </ul>
             </Typography>
           ) : (
             additionalInfoCPUAndMem?.memInfo?.req && (
-              <Typography sx={{ color: colors.text.tertiary, fontSize: '12px', fontWeight: 500 }}>
-                <ul style={{ margin: '0px', paddingLeft: '20px' }}>
+              <Typography sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }}>
+                <ul style={{ margin: '0px', paddingLeft: 'calc(var(--ds-space-1) * 5)' }}>
                   <li>99% of the time, the Memory usage was below {formatMemory(additionalInfoCPUAndMem?.memInfo?.req)}</li>
                 </ul>
               </Typography>
             )
           )}
           {type !== 'memory' ? (
-            <Typography sx={{ color: colors.text.tertiary, fontSize: '12px', fontWeight: 500 }}>
-              <ul style={{ margin: '0px', paddingLeft: '20px' }}>
+            <Typography sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }}>
+              <ul style={{ margin: '0px', paddingLeft: 'calc(var(--ds-space-1) * 5)' }}>
                 <li>
                   {activeButton?.cpuLimit === 1
                     ? `CPU Limit will be set to previous value (${data?.limit})`
@@ -129,17 +149,19 @@ const VerticalAutopPilotForm = ({
 
   return (
     <>
-      <Box sx={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
         {data?.cpu && (
-          <Box sx={{ gap: '16px', display: 'flex', flexDirection: 'column' }}>
-            <Box sx={{ marginLeft: '2px', borderLeft: `2px solid ${colors.nudgebeeMain}`, padding: '0px 10px' }}>
-              <Typography sx={{ fontSize: '14px', color: colors.text.secondary, fontWeight: 600 }}>CPU</Typography>
+          <Box sx={{ gap: 'var(--ds-space-4)', display: 'flex', flexDirection: 'column' }}>
+            <Box sx={{ marginLeft: 'var(--ds-space-0)', borderLeft: '2px solid var(--ds-yellow-500)', padding: '0px calc(var(--ds-space-0) * 5)' }}>
+              <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-brand-500)', fontWeight: 'var(--ds-font-weight-semibold)' }}>
+                CPU
+              </Typography>
             </Box>
 
             {currentData?.cpu ? (
-              <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '10px' }}>
+              <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 'calc(var(--ds-space-0) * 5)' }}>
                 <Box>
-                  <AutoOptimizeInfoCard title='Current' border={`1px solid ${colors.border.vertical}`}>
+                  <AutoOptimizeInfoCard title='Current' border={'1px solid var(--ds-gray-200)'}>
                     <InfoCard data={currentData.cpu} />
                   </AutoOptimizeInfoCard>
                 </Box>
@@ -147,7 +169,7 @@ const VerticalAutopPilotForm = ({
                   sx={{
                     width: '30px',
                     '& img': {
-                      my: '8px',
+                      my: 'var(--ds-space-2)',
                     },
                   }}
                 >
@@ -156,16 +178,22 @@ const VerticalAutopPilotForm = ({
                   <SafeIcon src={DoubleArrowRight} alt='arrow right' style={{ opacity: 0.5 }} />
                 </Box>
                 <AutoOptimizeInfoCard
-                  shadow={' 0px 2px 7px 0px #22C55E0F, 0px 4px 6px -1px #22C55E1F'}
+                  shadow={
+                    '0px var(--ds-space-0) 7px 0px color-mix(in srgb, var(--ds-green-500) 6%, transparent), 0px var(--ds-space-1) calc(var(--ds-space-0) * 3) -1px color-mix(in srgb, var(--ds-green-500) 12%, transparent)'
+                  }
                   title='Recommended'
                   button={<></>}
-                  border={`0.5px solid ${colors.border.cpuRecommendation}`}
+                  border={'0.5px solid var(--ds-green-500)'}
                   height='auto'
                 >
                   <Box display='flex' flexDirection='column' justifyContent='space-between' alignItems='left'>
                     <Grid container spacing={2}>
                       <Grid item xs={6}>
-                        <Typography sx={{ color: colors.text.tertiary, fontSize: '12px', fontWeight: 400 }}>{'Request'}</Typography>
+                        <Typography
+                          sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}
+                        >
+                          {'Request'}
+                        </Typography>
                         <Input
                           suffix='CPU'
                           size='sm'
@@ -176,7 +204,11 @@ const VerticalAutopPilotForm = ({
                         />
                       </Grid>
                       <Grid item xs={6}>
-                        <Typography sx={{ color: colors.text.tertiary, fontSize: '12px', fontWeight: 400 }}>{'Limit'}</Typography>
+                        <Typography
+                          sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}
+                        >
+                          {'Limit'}
+                        </Typography>
                         <Input
                           suffix='CPU'
                           size='sm'
@@ -188,7 +220,7 @@ const VerticalAutopPilotForm = ({
                       </Grid>
                     </Grid>
                   </Box>
-                  <Box sx={{ display: 'flex', gap: '6px', flexDirection: 'column' }}>
+                  <Box sx={{ display: 'flex', gap: 'calc(var(--ds-space-0) * 3)', flexDirection: 'column' }}>
                     {buttonConfigs?.buttonsAlgo && (
                       <LabeledToggleGroup
                         title='Based on'
@@ -225,15 +257,17 @@ const VerticalAutopPilotForm = ({
                 </AutoOptimizeInfoCard>
               </Box>
             ) : (
-              <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '10px' }}>
+              <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 'calc(var(--ds-space-0) * 5)' }}>
                 <AutoOptimizeInfoCard
-                  shadow={' 0px 2px 7px 0px #22C55E0F, 0px 4px 6px -1px #22C55E1F'}
+                  shadow={
+                    '0px var(--ds-space-0) 7px 0px color-mix(in srgb, var(--ds-green-500) 6%, transparent), 0px var(--ds-space-1) calc(var(--ds-space-0) * 3) -1px color-mix(in srgb, var(--ds-green-500) 12%, transparent)'
+                  }
                   title='Recommended'
                   button={<></>}
-                  border={`0.5px solid ${colors.border.cpuRecommendation}`}
+                  border={'0.5px solid var(--ds-green-500)'}
                   height='120px'
                 >
-                  <Box sx={{ display: 'flex', gap: '6px', flexDirection: 'column' }}>
+                  <Box sx={{ display: 'flex', gap: 'calc(var(--ds-space-0) * 3)', flexDirection: 'column' }}>
                     {buttonConfigs?.buttonsAlgo && (
                       <LabeledToggleGroup
                         title='Based on'
@@ -274,14 +308,16 @@ const VerticalAutopPilotForm = ({
         )}
 
         {data?.memory && (
-          <Box sx={{ gap: '16px', display: 'flex', flexDirection: 'column' }}>
-            <Box sx={{ marginLeft: '2px', borderLeft: `2px solid ${colors.nudgebeeMain}`, padding: '0px 10px' }}>
-              <Typography sx={{ fontSize: '14px', color: colors.text.secondary, fontWeight: 600 }}>Memory</Typography>
+          <Box sx={{ gap: 'var(--ds-space-4)', display: 'flex', flexDirection: 'column' }}>
+            <Box sx={{ marginLeft: 'var(--ds-space-0)', borderLeft: '2px solid var(--ds-yellow-500)', padding: '0px calc(var(--ds-space-0) * 5)' }}>
+              <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-brand-500)', fontWeight: 'var(--ds-font-weight-semibold)' }}>
+                Memory
+              </Typography>
             </Box>
             {currentData?.memory ? (
-              <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '10px' }}>
+              <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 'calc(var(--ds-space-0) * 5)' }}>
                 <Box>
-                  <AutoOptimizeInfoCard title='Current' border={`1px solid ${colors.border.vertical}`}>
+                  <AutoOptimizeInfoCard title='Current' border={'1px solid var(--ds-gray-200)'}>
                     <InfoCard data={currentData.memory} type='memory' />
                   </AutoOptimizeInfoCard>
                 </Box>
@@ -289,7 +325,7 @@ const VerticalAutopPilotForm = ({
                   sx={{
                     width: '30px',
                     '& img': {
-                      my: '8px',
+                      my: 'var(--ds-space-2)',
                     },
                   }}
                 >
@@ -298,16 +334,22 @@ const VerticalAutopPilotForm = ({
                   <SafeIcon src={DoubleArrowRight} alt='arrow right' style={{ opacity: 0.5 }} />
                 </Box>
                 <AutoOptimizeInfoCard
-                  shadow={' 0px 2px 7px 0px #22C55E0F, 0px 4px 6px -1px #22C55E1F'}
+                  shadow={
+                    '0px var(--ds-space-0) 7px 0px color-mix(in srgb, var(--ds-green-500) 6%, transparent), 0px var(--ds-space-1) calc(var(--ds-space-0) * 3) -1px color-mix(in srgb, var(--ds-green-500) 12%, transparent)'
+                  }
                   title='Recommended'
                   button={<></>}
-                  border={`0.5px solid ${colors.border.cpuRecommendation}`}
+                  border={'0.5px solid var(--ds-green-500)'}
                   height='auto'
                 >
                   <Box display='flex' flexDirection='column' justifyContent='space-between' alignItems='left'>
                     <Grid container spacing={2}>
                       <Grid item xs={6}>
-                        <Typography sx={{ color: colors.text.tertiary, fontSize: '12px', fontWeight: 400 }}>{'Request'}</Typography>
+                        <Typography
+                          sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}
+                        >
+                          {'Request'}
+                        </Typography>
                         <Input
                           suffix='MB'
                           size='sm'
@@ -318,7 +360,11 @@ const VerticalAutopPilotForm = ({
                         />
                       </Grid>
                       <Grid item xs={6}>
-                        <Typography sx={{ color: colors.text.tertiary, fontSize: '12px', fontWeight: 400 }}>{'Limit'}</Typography>
+                        <Typography
+                          sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}
+                        >
+                          {'Limit'}
+                        </Typography>
                         <Input
                           suffix='MB'
                           size='sm'
@@ -330,7 +376,7 @@ const VerticalAutopPilotForm = ({
                       </Grid>
                     </Grid>
                   </Box>
-                  <Box sx={{ display: 'flex', gap: '6px', flexDirection: 'column' }}>
+                  <Box sx={{ display: 'flex', gap: 'calc(var(--ds-space-0) * 3)', flexDirection: 'column' }}>
                     <LabeledToggleGroup
                       title='Based on'
                       options={buttonConfigs?.buttonMemoryAlgo || []}
@@ -365,15 +411,17 @@ const VerticalAutopPilotForm = ({
                 </AutoOptimizeInfoCard>
               </Box>
             ) : (
-              <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '10px' }}>
+              <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 'calc(var(--ds-space-0) * 5)' }}>
                 <AutoOptimizeInfoCard
-                  shadow={' 0px 2px 7px 0px #22C55E0F, 0px 4px 6px -1px #22C55E1F'}
+                  shadow={
+                    '0px var(--ds-space-0) 7px 0px color-mix(in srgb, var(--ds-green-500) 6%, transparent), 0px var(--ds-space-1) calc(var(--ds-space-0) * 3) -1px color-mix(in srgb, var(--ds-green-500) 12%, transparent)'
+                  }
                   title='Recommended'
                   button={<></>}
-                  border={`0.5px solid ${colors.border.cpuRecommendation}`}
+                  border={'0.5px solid var(--ds-green-500)'}
                   height='120px'
                 >
-                  <Box sx={{ display: 'flex', gap: '6px', flexDirection: 'column' }}>
+                  <Box sx={{ display: 'flex', gap: 'calc(var(--ds-space-0) * 3)', flexDirection: 'column' }}>
                     <LabeledToggleGroup
                       title='Based on'
                       options={buttonConfigs?.buttonMemoryAlgo || []}

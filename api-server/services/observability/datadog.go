@@ -369,6 +369,7 @@ func (s *DatadogSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest 
 	if err != nil {
 		return nil, fmt.Errorf("failed to make request to datadog logs api: %w", err)
 	}
+	defer func() { _ = body.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(body.Body)
 	if err != nil {
@@ -715,6 +716,10 @@ func buildBinaryClause(binary query.BinaryWhereClause) (string, error) {
 			}
 		}
 	}
+	// Map iteration order is non-deterministic in Go; sort the rendered parts so
+	// the resulting query string is stable across calls (important for caching,
+	// logging, and test assertions).
+	sort.Strings(parts)
 	return strings.Join(parts, " AND "), nil
 }
 
@@ -725,13 +730,62 @@ func (s *DatadogTraceSource) GetQuery(sc *security.RequestContext, tracesRequest
 func (s *DatadogTraceSource) GetTimeFilter(tracesRequest TracesV3Request) (int64, int64, error) {
 	startTime := time.Now().Add(-1 * time.Hour).UnixMilli()
 	endTime := time.Now().UnixMilli()
+
+	// Explicit request times take precedence over anything in the Where clause.
 	if tracesRequest.StartTime != 0 {
 		startTime = tracesRequest.StartTime
 	}
 	if tracesRequest.EndTime != 0 {
 		endTime = tracesRequest.EndTime
 	}
+
+	// Fall back to a "timestamp" filter in the Where clause when explicit
+	// times were not provided.
+	if tracesRequest.StartTime == 0 || tracesRequest.EndTime == 0 {
+		if binaryStart, binaryEnd := extractDatadogTimestampRange(tracesRequest.QueryRequest.Where.Binary); binaryStart != 0 || binaryEnd != 0 {
+			if tracesRequest.StartTime == 0 && binaryStart != 0 {
+				startTime = binaryStart
+			}
+			if tracesRequest.EndTime == 0 && binaryEnd != 0 {
+				endTime = binaryEnd
+			}
+		}
+	}
+
 	return startTime, endTime, nil
+}
+
+// extractDatadogTimestampRange pulls a start/end (in epoch millis) out of a
+// "timestamp" binary Where clause. It supports both Gte/Lte operators and a
+// Between operator carrying nested Gte/Lte bounds.
+func extractDatadogTimestampRange(binary query.BinaryWhereClause) (startTime, endTime int64) {
+	timestampOps, ok := binary["timestamp"]
+	if !ok {
+		return 0, 0
+	}
+
+	if gte, ok := timestampOps[query.Gte]; ok {
+		if t, err := parseTimestamp(gte); err == nil {
+			startTime = t
+		}
+	}
+	if lte, ok := timestampOps[query.Lte]; ok {
+		if t, err := parseTimestamp(lte); err == nil {
+			endTime = t
+		}
+	}
+
+	if between, ok := timestampOps[query.Between]; ok {
+		bStart, bEnd := parseTimestampBetween(between)
+		if bStart != 0 {
+			startTime = bStart
+		}
+		if bEnd != 0 {
+			endTime = bEnd
+		}
+	}
+
+	return startTime, endTime
 }
 
 func (s *DatadogTraceSource) QueryTraces(sc *security.RequestContext, tracesRequest TracesV3Request) ([]common.OpenTelemetryTrace, error) {

@@ -1,6 +1,8 @@
 package slo
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -21,30 +23,9 @@ func Execute() error {
 	if err != nil {
 		return err
 	}
-	rows, err := dbms.Db.Queryx(`SELECT distinct s.cloud_account_id FROM public.slo_config s inner join agent a on s.cloud_account_id = a.cloud_account_id  where s.enabled = true and a.status = 'CONNECTED'`)
-	if err != nil {
+	var sloConfigs []string
+	if err = dbms.Db.Select(&sloConfigs, `SELECT distinct s.cloud_account_id FROM public.slo_config s inner join agent a on s.cloud_account_id = a.cloud_account_id  where s.enabled = true and a.status = 'CONNECTED'`); err != nil {
 		return err
-	}
-	defer func() {
-		err := rows.Close()
-		if err != nil {
-			slog.Error("slo: error closing rows", "error", err)
-		}
-	}()
-
-	sloConfigs := make([]string, 0)
-	for rows.Next() {
-		accountIds := map[string]any{}
-		err = rows.MapScan(accountIds)
-		if err != nil {
-			slog.Error("slo: error fetching slo config", "error", err)
-			return err
-		}
-		id := fmt.Sprintf("%s", accountIds["cloud_account_id"])
-		sloConfigs = append(sloConfigs, id)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("slo: error iterating account rows: %w", err)
 	}
 	for _, accountId := range sloConfigs {
 		err := ExecuteSLO(accountId)
@@ -63,33 +44,12 @@ func ExecuteSLO(accountId string) error {
 		return err
 	}
 
-	rows, err := dbms.Db.Queryx(`SELECT id, "name", description, "window", goal, schedule, created_by, updated_by, "method",
+	sloConfigs := make([]DBSLOConfig, 0)
+	if err = dbms.Db.Select(&sloConfigs, `SELECT id, "name", description, "window", goal, schedule, created_by, updated_by, "method",
 			histogram_query, filter_good_query, filter_bad_query, threshold, created_at, updated_at,
 			cloud_account_id, tenant_id, enabled, workload_name, workload_namespace
-		FROM public.slo_config WHERE cloud_account_id=$1 AND enabled = true`, accountId)
-
-	if err != nil {
+		FROM public.slo_config WHERE cloud_account_id=$1 AND enabled = true`, accountId); err != nil {
 		return err
-	}
-	defer func() {
-		err := rows.Close()
-		if err != nil {
-			slog.Error("slo: error closing rows", "error", err)
-		}
-	}()
-
-	sloConfigs := make([]DBSLOConfig, 0)
-	for rows.Next() {
-		config := DBSLOConfig{}
-		err = rows.StructScan(&config)
-		if err != nil {
-			slog.Error("slo: error fetching slo config", "error", err, "accountId", accountId)
-			return err
-		}
-		sloConfigs = append(sloConfigs, config)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("slo: error iterating config rows: %w", err)
 	}
 	for _, config := range sloConfigs {
 		err := executeSLOConfig(config, accountId, dbms)
@@ -175,7 +135,6 @@ func executeSlo(config DBSLOConfig, accountId string) ([]SLOReport, error) {
 		Expression:      config.Expression,
 		FilterGood:      config.FilterGood,
 		FilterBad:       config.FilterBad,
-		FilterValid:     config.FilterValid,
 		Method:          config.Method,
 		ThresholdBucket: config.ThresholdBucket / 1000,
 	}
@@ -293,30 +252,9 @@ func GetSLOConfig(context *security.RequestContext, sloListRequest SLOListReques
 	}
 	query = dbms.Db.Rebind(query)
 
-	rows, err := dbms.Db.Queryx(query, args...)
-
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		err := rows.Close()
-		if err != nil {
-			slog.Error("slo: error closing rows", "error", err)
-		}
-	}()
-
 	sloConfigs := make([]DBSLOConfig, 0)
-	for rows.Next() {
-		config := DBSLOConfig{}
-		err = rows.StructScan(&config)
-		if err != nil {
-			slog.Error("slo: error fetching slo config", "error", err, "accountId", sloListRequest.AccountId)
-			return nil, err
-		}
-		sloConfigs = append(sloConfigs, config)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("slo: error iterating config rows: %w", err)
+	if err = dbms.Db.Select(&sloConfigs, query, args...); err != nil {
+		return nil, err
 	}
 
 	sloResponseMap := make(map[string]SLOResponse)
@@ -426,105 +364,50 @@ func getPreviousSLOReport(configId string, workload string, namespace string) (D
 		return DBSLOReport{}, err
 	}
 
-	rows, err := dbms.Db.Queryx(`SELECT id, config_id, gap, error_budget_target, error_budget_measurement, error_budget_burn_rate,
+	report := DBSLOReport{}
+	if err := dbms.Db.QueryRowx(`SELECT id, config_id, gap, error_budget_target, error_budget_measurement, error_budget_burn_rate,
 			error_budget_burn_rate_threshold, error_budget_minutes, error_budget_remaining_minutes,
 			error_minutes, error_budget_consumed_ratio, status, bad_events_count, good_events_count,
 			events_count, sli_measurement, tenant_id, cloud_account_id, workload_name,
 			workload_namespace, timestamp, created_at, updated_at
 		FROM slo_report
 		WHERE config_id=$1 AND workload_name=$2 AND workload_namespace=$3 AND status='FIRING'
-		ORDER BY timestamp DESC LIMIT 1`, configId, workload, namespace)
-
-	if err != nil {
+		ORDER BY timestamp DESC LIMIT 1`, configId, workload, namespace).StructScan(&report); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		slog.Error("slo: error in fetching previous slo report", "error", err)
 		return DBSLOReport{}, err
-	}
-	defer func() {
-		err := rows.Close()
-		if err != nil {
-			slog.Error("Failed to close rows", "error", err)
-		}
-	}()
-
-	report := DBSLOReport{}
-	for rows.Next() {
-		err = rows.StructScan(&report)
-		if err != nil {
-			slog.Error("slo: error getting previous slo report", "error", err)
-			return DBSLOReport{}, err
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return DBSLOReport{}, fmt.Errorf("slo: error iterating previous report rows: %w", err)
 	}
 
 	// find out if there was any non firing status after firing status if yes then return none else return report
 	if report.Id != "" {
-		rows, err := dbms.Db.Queryx(`SELECT count(*) FROM slo_report where config_id=$1 and workload_name=$2 and workload_namespace=$3 and status!='FIRING' and timestamp > $4`, configId, workload, namespace, timestampToPostgresFormat(float64(report.Timestamp.Unix())))
-		if err != nil {
+		count := 0
+		if err := dbms.Db.QueryRowx(`SELECT count(*) FROM slo_report where config_id=$1 and workload_name=$2 and workload_namespace=$3 and status!='FIRING' and timestamp > $4`, configId, workload, namespace, timestampToPostgresFormat(float64(report.Timestamp.Unix()))).Scan(&count); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			slog.Error("slo: error in fetching previous slo report", "error", err)
 			return DBSLOReport{}, err
 		}
-		defer func() {
-			err := rows.Close()
-			if err != nil {
-				slog.Error("Failed to close rows", "error", err)
-			}
-		}()
-		count := 0
-		if rows.Next() {
-			err = rows.Scan(&count)
-			if err != nil {
-				slog.Error("slo: error getting previous slo report", "error", err)
-				return DBSLOReport{}, err
-			}
-		}
-		if err := rows.Err(); err != nil {
-			return DBSLOReport{}, fmt.Errorf("slo: error iterating count rows: %w", err)
-		}
 		if count > 0 {
 			return DBSLOReport{}, nil
-		} else {
-			return report, nil
 		}
+		return report, nil
 	}
 	return DBSLOReport{}, nil
 }
 
 func GenerateSLOEvent(dbms *database.DatabaseManager, sloConfig DBSLOConfig, accountName string) error {
 	slo := DBSLOReport{}
-	rows, err := dbms.Db.Queryx(`SELECT id, config_id, gap, error_budget_target, error_budget_measurement, error_budget_burn_rate,
+	if err := dbms.Db.QueryRowx(`SELECT id, config_id, gap, error_budget_target, error_budget_measurement, error_budget_burn_rate,
 			error_budget_burn_rate_threshold, error_budget_minutes, error_budget_remaining_minutes,
 			error_minutes, error_budget_consumed_ratio, status, bad_events_count, good_events_count,
 			events_count, sli_measurement, tenant_id, cloud_account_id, workload_name,
 			workload_namespace, timestamp, created_at, updated_at
 		FROM slo_report
 		WHERE config_id=$1 AND workload_name=$2 AND workload_namespace=$3 AND status='FIRING'
-		ORDER BY timestamp DESC LIMIT 1`, sloConfig.Id, sloConfig.WorkloadName, sloConfig.Namespace)
-
-	if err != nil {
+		ORDER BY timestamp DESC LIMIT 1`, sloConfig.Id, sloConfig.WorkloadName, sloConfig.Namespace).StructScan(&slo); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			slog.Info("No SLO report found for config", "sloConfigId", sloConfig.Id, "accountName", accountName)
+			return nil
+		}
 		slog.Error("slo: error in fetching previous slo report", "error", err)
 		return err
-	}
-	defer func() {
-		err := rows.Close()
-		if err != nil {
-			slog.Error("Failed to close rows", "error", err)
-		}
-	}()
-	for rows.Next() {
-		err = rows.StructScan(&slo)
-		if err != nil {
-			slog.Error("slo: error getting previous slo report", "error", err)
-			return err
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("slo: error iterating slo event rows: %w", err)
-	}
-	if slo.Id == "" {
-		slog.Info("No SLO report found for config", "sloConfigId", sloConfig.Id, "accountName", accountName)
-		return nil
 	}
 	evidences, err := collectEvidences(slo, sloConfig)
 	if err != nil {

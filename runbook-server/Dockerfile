@@ -1,7 +1,12 @@
 # syntax=docker/dockerfile:1.7
 # --- Build Stage ---
 # Use the official Go image to build the application
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26.5-alpine AS builder
+
+# Use the builder image's bundled Go toolchain, never an auto-downloaded one.
+# Pins the compile to the base's Go and gives the build layer a distinct cache
+# key so a stale toolchain can't slip back in via edge.yaml's registry cache.
+ENV GOTOOLCHAIN=local
 
 # Set the working directory
 WORKDIR /app
@@ -26,8 +31,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM mcr.microsoft.com/powershell:7.4-alpine-3.17 AS powershell
 
 # --- Final Stage ---
-# Use a minimal, non-root image for the final container
-FROM golang:1.26-alpine
+# Minimal runtime. Previously this stage was `golang:1.26-alpine`, which shipped
+# the entire Go SDK (compiler, stdlib sources) in the runtime image — a large,
+# needless attack surface. A plain alpine base carries only what the service
+# actually needs at runtime.
+FROM alpine:3.22
 
 # Install runtime dependencies:
 # - iputils: Provides standard 'ping'
@@ -35,8 +43,17 @@ FROM golang:1.26-alpine
 # - traceroute: For path analysis
 # - nodejs: For local script execution (javascript language)
 # - icu-libs, lttng-ust: Required by PowerShell runtime
-RUN apk add --no-cache iputils ca-certificates traceroute nodejs \
-    icu-libs lttng-ust
+# OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's
+# cache key so BuildKit re-runs the apk install and pulls current Alpine security
+# patches instead of a stale cached layer. Committed (not a build-arg) so each
+# refresh is a reviewable, revertable diff; bump when the Trivy scan flags a stale
+# package (e.g. c-ares CVE-2026-33630).
+ARG OS_PKG_EPOCH=2026-W28
+RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
+    && apk upgrade --no-cache \
+    && apk add --no-cache iputils ca-certificates traceroute nodejs \
+    icu-libs lttng-ust \
+    && adduser -D -g '' appuser
 
 # Copy PowerShell from the official image
 COPY --from=powershell /opt/microsoft/powershell /opt/microsoft/powershell
@@ -44,6 +61,9 @@ RUN ln -s /opt/microsoft/powershell/7/pwsh /usr/bin/pwsh
 
 # Copy the compiled binary from the builder stage
 COPY --from=builder /server /
+
+# Run as non-root
+USER appuser
 
 # Expose the port the API server runs on
 EXPOSE 8000

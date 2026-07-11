@@ -154,7 +154,7 @@ const SimpleDiffViewer = ({ gitDiff, fileName = 'code', defaultExpanded = true, 
 
   if (!parsedDiff) {
     return (
-      <Box sx={{ padding: 2, border: '1px solid var(--ds-gray-300)', borderRadius: 1 }}>
+      <Box sx={{ padding: 'var(--ds-space-4)', border: '1px solid var(--ds-gray-300)', borderRadius: 'var(--ds-radius-sm)' }}>
         <Typography color='error'>No diff data provided</Typography>
       </Box>
     );
@@ -165,12 +165,12 @@ const SimpleDiffViewer = ({ gitDiff, fileName = 'code', defaultExpanded = true, 
       case 'add':
         return {
           backgroundColor: 'var(--ds-green-200)',
-          borderLeft: '3px solid var(--ds-green-500)',
+          borderLeft: '2px solid var(--ds-green-500)',
         };
       case 'delete':
         return {
           backgroundColor: 'var(--ds-red-200)',
-          borderLeft: '3px solid var(--ds-red-500)',
+          borderLeft: '2px solid var(--ds-red-500)',
         };
       case 'hunk':
         return {
@@ -188,9 +188,9 @@ const SimpleDiffViewer = ({ gitDiff, fileName = 'code', defaultExpanded = true, 
   return (
     <Box
       sx={{
-        marginY: 2,
+        marginY: 'var(--ds-space-4)',
         border: '1px solid var(--ds-gray-300)',
-        borderRadius: 1,
+        borderRadius: 'var(--ds-radius-sm)',
         overflow: 'hidden',
       }}
     >
@@ -201,7 +201,7 @@ const SimpleDiffViewer = ({ gitDiff, fileName = 'code', defaultExpanded = true, 
             alignItems: 'center',
             padding: 'var(--ds-space-2) var(--ds-space-4)',
             backgroundColor: 'var(--ds-background-300)',
-            borderBottom: expanded ? '1px solid #e0e0e0' : 'none',
+            borderBottom: expanded ? '1px solid var(--ds-gray-300)' : 'none',
             cursor: 'pointer',
           }}
           onClick={() => setExpanded(!expanded)}
@@ -212,17 +212,17 @@ const SimpleDiffViewer = ({ gitDiff, fileName = 'code', defaultExpanded = true, 
             sx={{
               minWidth: 'auto',
               padding: 'var(--ds-space-1)',
-              marginRight: 1,
+              marginRight: 'var(--ds-space-2)',
             }}
             onClick={(e) => {
               e.stopPropagation();
               setExpanded(!expanded);
             }}
           >
-            {expanded ? <ExpandMore sx={{ fontSize: 16 }} /> : <ChevronRight sx={{ fontSize: 16 }} />}
+            {expanded ? <ExpandMore sx={{ fontSize: 'var(--ds-text-title)' }} /> : <ChevronRight sx={{ fontSize: 'var(--ds-text-title)' }} />}
           </Button>
 
-          <Code sx={{ fontSize: 14, marginRight: 'var(--ds-space-2)' }} />
+          <Code sx={{ fontSize: 'var(--ds-text-body-lg)', marginRight: 'var(--ds-space-2)' }} />
 
           <Typography
             sx={{
@@ -238,7 +238,7 @@ const SimpleDiffViewer = ({ gitDiff, fileName = 'code', defaultExpanded = true, 
           <Typography
             sx={{
               fontSize: 'var(--ds-text-small)',
-              marginLeft: 2,
+              marginLeft: 'var(--ds-space-4)',
               color: 'var(--ds-green-500)',
               fontFamily: 'monospace',
             }}
@@ -249,7 +249,7 @@ const SimpleDiffViewer = ({ gitDiff, fileName = 'code', defaultExpanded = true, 
           <Typography
             sx={{
               fontSize: 'var(--ds-text-small)',
-              marginLeft: 1,
+              marginLeft: 'var(--ds-space-2)',
               color: 'var(--ds-red-500)',
               fontFamily: 'monospace',
             }}
@@ -280,8 +280,8 @@ const SimpleDiffViewer = ({ gitDiff, fileName = 'code', defaultExpanded = true, 
                 <Box
                   component='span'
                   sx={{
-                    minWidth: '40px',
-                    paddingX: 1,
+                    minWidth: 'calc(var(--ds-space-0) * 20)',
+                    paddingX: 'var(--ds-space-2)',
                     color: 'var(--ds-gray-600)',
                     textAlign: 'right',
                     userSelect: 'none',

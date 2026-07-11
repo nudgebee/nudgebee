@@ -473,6 +473,33 @@ describe('tryBypassGraphQL', () => {
     expect(result.body.errors?.[0].message).toMatch(/role assigned in the current tenant/);
   });
 
+  it('lets a roleless session reach a tenant_agnostic action (users_list_tenants) so it can switch tenants', async () => {
+    // Regression: a user stranded in a tenant where they hold no role (roles ===
+    // [], not super_admin) must still be able to list the tenants they belong to
+    // — otherwise the Switch-Tenant modal can never offer them a tenant to
+    // switch to (chicken-and-egg lockout). users_list_tenants is flagged
+    // `tenant_agnostic: true` in actions.yaml, so the gateway skips BOTH the
+    // no-tenant-role and role gates and forwards upstream.
+    const fetchMock = mockFetchOnce([{ name: 'Acme' }, { name: 'Globex' }]);
+    const noRoleJwt = { ...adminJwt, roles: [], isSuperAdmin: false } as JWT;
+
+    const result = await tryBypassGraphQL({
+      query: 'query L { users_list_tenants(object: { username: "u@example.com" }) { name } }',
+      variables: undefined,
+      jwt: noRoleJwt,
+      traceparent: 'tp',
+      requestId: 'rid',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1); // gate did NOT short-circuit
+    expect(result.handled).toBe(true);
+    if (!result.handled) {
+      return;
+    }
+    expect(result.body.errors).toBeUndefined();
+    expect(result.body.data).toEqual({ users_list_tenants: [{ name: 'Acme' }, { name: 'Globex' }] });
+  });
+
   it('lets super_admin sessions bypass per-action role gates', async () => {
     const fetchMock = mockFetchOnce({ items: [] });
     const superJwt = { ...adminJwt, roles: ['some_role_not_allowed'], isSuperAdmin: true } as JWT;

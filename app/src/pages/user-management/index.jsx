@@ -2,11 +2,12 @@ import React, { useEffect } from 'react';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import AllUsers from '@components/user-management/AllUsers';
 import UserGroup from '@components/user-management/UserGroup';
-import AnchorComponent from '@shared/navigation/AnchorComponent';
+import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import { AuditsTable } from '@components/audits';
 import { Box } from '@mui/material';
 import Notifications from '@components/notifications';
 import Integrations from '@components/accounts/integration';
+import OwnershipRules from '@components/user-management/OwnershipRules';
 import { AuditIcon, NotificationIcon1, User1, UserGroupIcon, IntegrationsIcon } from '@assets';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/router';
@@ -21,6 +22,7 @@ const baseFilters = [
   { name: 'Audits', fragment: 'audits', icon: AuditIcon, Body: AuditsTable },
   { name: 'Notifications', fragment: 'notifications', icon: NotificationIcon1, Body: Notifications },
   { name: 'Integrations', fragment: 'integrations', icon: IntegrationsIcon, Body: Integrations },
+  { name: 'Ownership', fragment: 'ownership', icon: UserGroupIcon, Body: OwnershipRules },
 ];
 
 export default function UserManagement() {

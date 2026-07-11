@@ -45,6 +45,7 @@ func TestPodDeleteTask_Execute_Validation(t *testing.T) {
 		params        map[string]any
 		expectErr     bool
 		expectedError string
+		needsCluster  bool // requires a live relay/cluster to reach kubectl
 	}{
 		{
 			name:          "Missing Namespace",
@@ -63,6 +64,7 @@ func TestPodDeleteTask_Execute_Validation(t *testing.T) {
 			params:        map[string]any{"namespace": "default", "name": "nonexistent-pod"},
 			expectErr:     true,
 			expectedError: "pods \"nonexistent-pod\" not found", // Expect error from kubectl
+			needsCluster:  true,
 		},
 		{
 			name:          "StatefulSet Kind",
@@ -75,11 +77,15 @@ func TestPodDeleteTask_Execute_Validation(t *testing.T) {
 			params:        map[string]any{"namespace": "default", "name": "nonexistent-pod-force", "force": true},
 			expectErr:     true,
 			expectedError: "pods \"nonexistent-pod-force\" not found", // Expect error from kubectl as pod won't exist
+			needsCluster:  true,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.needsCluster {
+				testutils.RequireEnv(t, "TEST_TENANT_ID", "TEST_K8S_ACCOUNT_ID", "TEST_USER_ID")
+			}
 			_, err := task.Execute(taskCtx, tc.params)
 			if tc.expectErr {
 				assert.Error(t, err)

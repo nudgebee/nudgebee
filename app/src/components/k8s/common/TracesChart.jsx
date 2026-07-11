@@ -24,6 +24,9 @@ function convertSpansToTree(spans = []) {
       }
       const start = new Date(span.timestamp);
       const parsedSpanAttributes = (() => {
+        if (span.span_attributes && typeof span.span_attributes === 'object') {
+          return span.span_attributes;
+        }
         try {
           return JSON.parse(span.span_attributes);
         } catch (e) {

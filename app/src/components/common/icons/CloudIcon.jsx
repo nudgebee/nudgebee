@@ -35,6 +35,7 @@ import {
   LokiIcon,
   SignozIcon,
   ObserveIcon,
+  OpenObserveIcon,
   AzureAppInsightIcon,
   OpentelemetryIcon,
   ChronosphereIcon,
@@ -134,6 +135,8 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = SignozIcon;
   } else if (cloud_provider.toUpperCase() === 'OBSERVE') {
     Icon = ObserveIcon;
+  } else if (cloud_provider.toUpperCase() === 'OPENOBSERVE') {
+    Icon = OpenObserveIcon;
   } else if (cloud_provider.toUpperCase() === 'AZURE_APP_INSIGHTS') {
     Icon = AzureAppInsightIcon;
   } else if (cloud_provider.toUpperCase() === 'PROMETHEUS') {

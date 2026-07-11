@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +12,8 @@ import (
 	"nudgebee/code-analysis-agent/common"
 	"nudgebee/code-analysis-agent/config"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/bedrock"
 	"github.com/tmc/langchaingo/llms/googleai"
@@ -56,15 +57,23 @@ func NewClient(cfg *config.Config) (*Client, error) {
 
 	switch Provider(cfg.LLM.Provider) {
 	case ProviderBedrock:
-		// Set the AWS region via environment variable if specified
+		// Pass the region via an explicitly-configured client rather than
+		// os.Setenv("AWS_REGION", ...). NewClient is built per request, so
+		// mutating process-global env would be a data race across concurrent
+		// requests (and would also leak the region into child commands).
+		bedrockOpts := []bedrock.Option{bedrock.WithModel(cfg.LLM.Model)}
 		if cfg.LLM.Region != "" {
-			if err := os.Setenv("AWS_REGION", cfg.LLM.Region); err != nil {
-				return nil, fmt.Errorf("failed to set AWS_REGION: %w", err)
+			// Bound the AWS config load so a stuck IMDS/STS lookup fails fast
+			// instead of blocking client construction indefinitely.
+			awsCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			awsCfg, cerr := awsconfig.LoadDefaultConfig(awsCtx, awsconfig.WithRegion(cfg.LLM.Region))
+			if cerr != nil {
+				return nil, fmt.Errorf("failed to load AWS config for region %q: %w", cfg.LLM.Region, cerr)
 			}
+			bedrockOpts = append(bedrockOpts, bedrock.WithClient(bedrockruntime.NewFromConfig(awsCfg)))
 		}
-		llm, err = bedrock.New(
-			bedrock.WithModel(cfg.LLM.Model),
-		)
+		llm, err = bedrock.New(bedrockOpts...)
 	case ProviderOpenAI:
 		opts := []openai.Option{
 			openai.WithModel(cfg.LLM.Model),

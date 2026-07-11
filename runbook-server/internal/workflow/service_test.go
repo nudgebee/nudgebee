@@ -938,7 +938,7 @@ func TestWebhookTriggers(t *testing.T) {
 				// Assert normalization
 				assert.Equal(t, "my-hook", savedWf.Definition.Triggers[0].Params["integration_name"])
 				assert.NotNil(t, savedWf.Definition.Triggers[0].Internal)
-				assert.Equal(t, "wf-"+savedWf.ID+"-my-hook", savedWf.Definition.Triggers[0].Internal.Name)
+				assert.Equal(t, "my-hook", savedWf.Definition.Triggers[0].Internal.Name)
 			})
 
 		// CreateWorkflow injects the generated webhook secret via the internal
@@ -1086,7 +1086,7 @@ func TestWorkflowValidationAndLogic(t *testing.T) {
 				Triggers: []model.Trigger{{
 					Type:     model.WorkflowTriggerWebhook,
 					Params:   map[string]any{"integration_name": "hook", "secret": "system-secret"},
-					Internal: &model.TriggerInternal{Name: "wf-mismatch-hook"},
+					Internal: &model.TriggerInternal{Name: "wf-wf-mismatch-hook"},
 				}},
 			},
 		}
@@ -1117,7 +1117,7 @@ func TestWorkflowValidationAndLogic(t *testing.T) {
 				Triggers: []model.Trigger{{
 					Type:     model.WorkflowTriggerWebhook,
 					Params:   map[string]any{"integration_name": "hook", "secret": "system-secret"},
-					Internal: &model.TriggerInternal{Name: "wf-restore-hook"},
+					Internal: &model.TriggerInternal{Name: "wf-wf-restore-hook"},
 				}},
 			},
 		}

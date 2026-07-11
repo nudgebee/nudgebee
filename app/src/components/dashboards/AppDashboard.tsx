@@ -1,13 +1,13 @@
 import PropTypes from 'prop-types';
-import { LineChart } from '@shared';
+import Chart from '@ui/Chart';
 import { Grid, Typography } from '@mui/material';
 import ListingLayout from '@ui/ListingLayout';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import { useEffect, useState } from 'react';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { convertNumberToTimestamp } from 'src/utils/common';
 import { getLast24Hrs } from '@lib/datetime';
-import Title from '@shared/Title';
+import Heading from '@components/common/Heading';
 import EmptyData from '@shared/EmptyData';
 import { DataNotAvailable } from '@assets';
 import Loader from '@shared/Loader';
@@ -270,14 +270,14 @@ function DashboardPanel({
 
   return (
     <div>
-      <Title title={config.title} />
+      <Heading value={config.title} borderWidth='sm' borderColor='var(--ds-yellow-500)' />
       {data === null ? (
         <div className='shimmer' style={{ height: 300, width: '98%' }} />
       ) : (
         <div>
           {data.type === 'table' && <CustomTable headers={data.headers} tableData={data.data} />}
           {data.type === 'time_series' && (
-            <LineChart data={data.data} labels={data.labels} chartLabel={data.chartLabel} legendOptions={{ renderer: 'html' }} />
+            <Chart.Line data={data.data} labels={data.labels} chartLabel={data.chartLabel} legendOptions={{ renderer: 'html' }} />
           )}
           {data.type === 'json' && <div>{JSON.stringify(data)}</div>}
         </div>
@@ -590,7 +590,7 @@ function AppDashboard({
       return (
         <ListingLayout id='appDashboard'>
           <ListingLayout.Toolbar
-            title={dashboardData.title}
+            title={<Heading value={dashboardData.title} borderWidth='md' borderColor='var(--ds-blue-500)' />}
             actions={
               <CustomDateTimeRangePicker
                 onChange={(ranges: any) => {

@@ -135,8 +135,9 @@ func (l TracesClickhouseAgent) GetSystemPrompt(ctx *security.RequestContext, que
 	schema := []string{
 		"**traces_view:** This view contains information about traces.",
 		"timestamp = Request Time (DateTime type). For time-based filtering with ClickHouse, use direct comparison with date functions. For relative time ranges, use: timestamp >= (NOW() - toIntervalHour(2)). For fixed timestamps, use: timestamp BETWEEN '2023-01-01 00:00:00' AND '2023-01-01 01:00:00'. IMPORTANT: When performing arithmetic operations (+ or -) with intervals on string timestamps, you MUST wrap the string in parseDateTimeBestEffort() first. Example: parseDateTimeBestEffort('2023-01-01T00:00:00Z') - toIntervalMinute(5). Never use interval arithmetic directly on string timestamps.",
-		"workload_name = Source Workload Name, Use like for better coverage",
-		"workload_namespace = Source Workload Namespace",
+		"service_name = Name of the service that emitted the span. For app/OTel-instrumented services (e.g. 'llm-server', 'services-server') this is the most reliable identity; prefer it or destination_workload_name for those.",
+		"workload_name = Source/owning workload name. For eBPF-captured spans this is the calling (source) workload; for OTel-instrumented spans it resolves to the emitting service. Use ilike for better coverage.",
+		"workload_namespace = Namespace of the source/owning workload.",
 		"trace_id = Unique identifier for the trace",
 		"span_id = Unique identifier for the span",
 		"parent_span_id = Identifier of the parent span",
@@ -144,11 +145,11 @@ func (l TracesClickhouseAgent) GetSystemPrompt(ctx *security.RequestContext, que
 		"span_kind = Kind of span (e.g., SERVER, CLIENT)",
 		"duration_ns = time taken to process request in nanoseconds",
 		"resource = Full URL path with hostname of Request",
-		"endpoint = API endpoint of request or db query or function call, Must use ilike to match endpoints",
+		"endpoint = API endpoint/route, request path, DB statement, or RPC method of the span; resolves across eBPF and OTel-instrumented spans (http.route/target/path, url.path, db.statement, rpc.method) and falls back to span_name. This is the column to use when the user asks which API/route/endpoint/query is involved. Must use ilike to match endpoints",
 		"destination_workload_namespace = Destination Workload Namespace",
 		"destination_name = Destination Name",
 		"destination_workload_name = Destination Workload Name, Use like for better coverage",
-		"http_status_code = numeric http status code of API request, EXAMPLE 200, 404. Never use quotes while comparing numeric values",
+		"http_status_code = numeric http status code of API request, EXAMPLE 200, 404, 504 (0 when the span has no HTTP status, e.g. DB spans). Covers both legacy and current OTel semantic-convention status attributes. Same value as status_code. Never use quotes while comparing numeric values",
 	}
 
 	return core.NBAgentPrompt{

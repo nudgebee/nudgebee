@@ -20,7 +20,7 @@ import { useData } from '@context/DataContext';
 import ActionButtons from './AutoOptimizeActionButtons';
 import NotificationForm from './AutoOptimizeNotificationForm';
 import apiAutoPilot from '@api1/autoPilot';
-import { colors } from 'src/utils/colors';
+import { colors, ds } from 'src/utils/colors';
 import RunbookTargetResource from '@components/runbooks/RunbookTargetResource';
 import { snackbar } from '@shared/snackbarService';
 import { infoIcon } from '@assets';
@@ -171,6 +171,11 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   const [minMemory, setMinMemory] = useState(autoOptimizeData?.rule?.memory?.trigger?.change_pct ?? 10);
   const [maxMemory, setMaxMemory] = useState(autoOptimizeData?.rule?.memory?.trigger?.max_change_pct ?? 100);
   const [raisePullRequest, setRaisePullRequest] = useState(autoOptimizeData?.attributes?.git_ops_config?.enabled || false);
+  // Zero-downtime in-place apply (KEP-1287). in_place governs direct (deploy)
+  // apply; resizePolicyMode is written into the PR (GitOps). Both take effect
+  // only on Kubernetes 1.35+; older clusters fall back to a rolling restart.
+  const [inPlace, setInPlace] = useState<boolean>(autoOptimizeData?.rule?.in_place ?? true);
+  const [resizePolicyMode, setResizePolicyMode] = useState<string>(autoOptimizeData?.attributes?.git_ops_config?.resize_policy ?? 'in-place');
   const { selectedCluster } = useData();
   const requestAnnotations = CI_REQUEST_ANNOTATIONS;
   const [reviewComment, setReviewComment] = useState('');
@@ -838,6 +843,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
             max_change_pct: maxMemory,
           },
         },
+        in_place: inPlace,
       },
       schedule: {
         frequency: cronExpression == '' ? '0 * * * *' : cronExpression,
@@ -874,6 +880,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
       gitops: {
         enabled: githubRepoName != '',
         repository_name: githubRepoName,
+        resize_policy: resizePolicyMode,
       },
       ticket_config: createTicketData,
     };
@@ -1301,7 +1308,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
               <Box>
                 <TimeHeader title='Daily' subtitle=' Actions can be scheduled for one or more hours each day' />
                 <ToggleGroup
-                  selection='multi'
+                  selection='multiple'
                   size='sm'
                   ariaLabel='Daily hours'
                   value={[]}
@@ -1318,7 +1325,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
               <Box>
                 <TimeHeader title='Weekly' subtitle='Which day of the week' />
                 <ToggleGroup
-                  selection='multi'
+                  selection='multiple'
                   size='sm'
                   ariaLabel='Weekly days'
                   value={[]}
@@ -1435,6 +1442,24 @@ const VerticalAutoOptimizeSingleConfiguration = ({
                   placeholder='Select repo'
                 />
               </Box>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], minWidth: ds.space.mul(0, 115) }}>
+                <Select
+                  id='resize-policy'
+                  label='In-place resize policy'
+                  value={resizePolicyMode}
+                  options={[
+                    { value: 'in-place', label: 'In-place — resize without restart (CPU & memory)' },
+                    { value: 'restart-memory', label: 'Restart container on memory change' },
+                    { value: 'disabled', label: "Don't configure (apply on next rollout)" },
+                  ]}
+                  onChange={(next) => setResizePolicyMode(next ?? 'in-place')}
+                  disabled={reviewAutoOptimize}
+                  minWidth={ds.space.mul(0, 115)}
+                />
+                <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', fontWeight: 400 }}>
+                  Adds a resizePolicy to the PR so future pods resize without a restart on Kubernetes 1.35+.
+                </Typography>
+              </Box>
             </Box>
           ) : null}
           <Box
@@ -1469,6 +1494,31 @@ const VerticalAutoOptimizeSingleConfiguration = ({
             }}
           >
             <Box sx={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <Switch
+                checked={inPlace}
+                onChange={(event) => setInPlace(event.target.checked)}
+                name='inPlaceResize'
+                size='md'
+                disabled={reviewAutoOptimize}
+                aria-label='In-place resize'
+              />
+              <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-title)', fontWeight: 600 }}>
+                {'In-place resize (zero-downtime)'}
+              </Typography>
+            </Box>
+            <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', fontWeight: 400 }}>
+              When applying directly, resize pods without a restart on Kubernetes 1.35+. Older clusters automatically fall back to a rolling restart.
+            </Typography>
+          </Box>
+          <Box
+            sx={{
+              borderRadius: `${ds.radius.sm} ${ds.radius.sm} 0 0`,
+              borderTop: `1px solid ${ds.blue[200]}`,
+              background: ds.blue[100],
+              padding: `${ds.space[2]} ${ds.space[4]}`,
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[3] }}>
               <Switch
                 checked={createTicket}
                 onChange={(event) => {

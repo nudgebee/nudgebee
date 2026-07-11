@@ -29,10 +29,10 @@ import { javascript } from '@codemirror/lang-javascript';
 import { shell } from '@codemirror/legacy-modes/mode/shell';
 import { StreamLanguage } from '@codemirror/language';
 import { Button } from '@ui/Button';
-import { FormField } from '@shared/NewReusabeFormComponents';
-import FilterDropdownButton from '@shared/FilterDropdownButton';
+import { FormField } from '@shared/forms/FormComponents';
+import FilterDropdown from '@ui/FilterDropdown';
 import ReorderableList from '@shared/ReorderableList';
-import { colors } from '@utils/colors';
+import { ds } from '@utils/colors';
 
 // Extend dayjs with UTC and timezone support
 dayjs.extend(utc);
@@ -153,7 +153,7 @@ export const JsonEditor: React.FC<JsonEditorProps> = ({ value, onChange, error }
         }}
         style={{
           maxWidth: '500px',
-          border: error ? '1px solid #ef4444' : '1px solid #d1d5db',
+          border: error ? `1px solid ${ds.red[500]}` : `1px solid ${ds.gray[300]}`,
           borderRadius: 'var(--ds-radius-md)',
           fontSize: 'var(--ds-text-body)',
         }}
@@ -353,13 +353,19 @@ export const ArrayEditor: React.FC<ArrayEditorProps> = ({ value, onChange, error
             justifyContent: 'space-between',
             p: 1,
             backgroundColor: 'var(--ds-background-200)',
-            borderBottom: isExpanded ? '1px solid #e5e7eb' : 'none',
+            borderBottom: isExpanded ? `1px solid ${ds.gray[200]}` : 'none',
           }}
         >
           <Box {...dragHandleProps} aria-label='Drag to reorder' sx={{ display: 'flex', alignItems: 'center', mr: 0.5 }}>
             <DragIndicator sx={{ color: 'var(--ds-gray-400)', fontSize: 18 }} />
           </Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1, cursor: 'pointer' }} onClick={() => toggleExpand(index)}>
+          <Box
+            role='button'
+            tabIndex={0}
+            sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1, cursor: 'pointer' }}
+            onClick={() => toggleExpand(index)}
+            onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ' ? toggleExpand(index) : undefined)}
+          >
             <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-brand-500)' }}>
               Item {index + 1}
             </Typography>
@@ -393,7 +399,7 @@ export const ArrayEditor: React.FC<ArrayEditorProps> = ({ value, onChange, error
                   sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-brand-500)', mb: 0.5 }}
                 >
                   {fieldSchema.title || fieldName}
-                  {fieldSchema.required && <span style={{ color: colors.border.error }}> *</span>}
+                  {fieldSchema.required && <span style={{ color: ds.red[500] }}> *</span>}
                 </Typography>
                 {fieldSchema.description && (
                   <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', mb: 0.5 }}>{fieldSchema.description}</Typography>
@@ -467,7 +473,7 @@ export const ArrayEditor: React.FC<ArrayEditorProps> = ({ value, onChange, error
     <Box>
       <Box
         sx={{
-          border: error ? '1px solid #ef4444' : '1px solid #d1d5db',
+          border: error ? `1px solid ${ds.red[500]}` : `1px solid ${ds.gray[300]}`,
           borderRadius: 'var(--ds-radius-md)',
           p: 1,
           backgroundColor: 'var(--ds-background-200)',
@@ -563,10 +569,10 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({ value, onChange, err
         style={{
           maxWidth: '500px',
 
-          border: error ? '1px solid #ef4444' : '1px solid #d1d5db',
+          border: error ? `1px solid ${ds.red[500]}` : `1px solid ${ds.gray[300]}`,
           borderRadius: 'var(--ds-radius-md)',
           fontSize: 'var(--ds-text-body)',
-          backgroundColor: disabled ? '#f5f5f5' : 'white',
+          backgroundColor: disabled ? ds.gray[100] : 'white',
           opacity: disabled ? 0.6 : 1,
         }}
       />
@@ -856,7 +862,7 @@ export const KeyValueEditor: React.FC<KeyValueEditorProps> = ({
     <Box>
       <Box
         sx={{
-          border: error ? '1px solid #ef4444' : '1px solid #d1d5db',
+          border: error ? `1px solid ${ds.red[500]}` : `1px solid ${ds.gray[300]}`,
           borderRadius: 'var(--ds-radius-md)',
           p: 1,
           backgroundColor: 'var(--ds-background-200)',
@@ -957,7 +963,7 @@ export const MultiSelectChips: React.FC<MultiSelectChipsProps> = ({
     <Box>
       <Box
         sx={{
-          border: error ? '1px solid #ef4444' : '1px solid #d1d5db',
+          border: error ? `1px solid ${ds.red[500]}` : `1px solid ${ds.gray[300]}`,
           borderRadius: 'var(--ds-radius-md)',
           p: 1,
           backgroundColor: 'var(--ds-background-200)',
@@ -1061,10 +1067,10 @@ export const CodeEditorWithLanguage: React.FC<CodeEditorWithLanguageProps> = ({
         }}
         style={{
           maxWidth: '500px',
-          border: error ? '1px solid #ef4444' : '1px solid #d1d5db',
+          border: error ? `1px solid ${ds.red[500]}` : `1px solid ${ds.gray[300]}`,
           borderRadius: 'var(--ds-radius-md)',
           fontSize: 'var(--ds-text-body)',
-          backgroundColor: disabled ? '#f5f5f5' : 'white',
+          backgroundColor: disabled ? ds.gray[100] : 'white',
           opacity: disabled ? 0.6 : 1,
         }}
       />
@@ -1159,7 +1165,7 @@ export const NestedSchemaEditor: React.FC<NestedSchemaEditorProps> = ({
           : `Select ${fieldSchema.sub_type} config`
         : 'Select ticket config';
       return (
-        <FilterDropdownButton
+        <FilterDropdown
           id={fieldName}
           options={opts}
           value={fieldValue ?? ''}
@@ -1183,7 +1189,7 @@ export const NestedSchemaEditor: React.FC<NestedSchemaEditorProps> = ({
       if (selectedIntegrationId && projects.length > 0) {
         const repoOptions = projects.map((p) => ({ label: p.name || p.key || '', value: p.key || p.name || '' })).filter((o) => !!o.value);
         return (
-          <FilterDropdownButton
+          <FilterDropdown
             id={fieldName}
             options={repoOptions}
             value={fieldValue ?? ''}
@@ -1210,7 +1216,7 @@ export const NestedSchemaEditor: React.FC<NestedSchemaEditorProps> = ({
     if (fieldSchema.type === 'account' && cloudAccounts && cloudAccounts.length > 0) {
       return (
         <FormField
-          fieldType='dropdown'
+          fieldType='select'
           options={cloudAccounts}
           groupByCloudProvider
           value={fieldValue ?? ''}
@@ -1367,7 +1373,7 @@ export const NestedSchemaEditor: React.FC<NestedSchemaEditorProps> = ({
                 sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-brand-500)', mb: 0.5 }}
               >
                 {fieldSchema.title || fieldName}
-                {required && <span style={{ color: colors.border.error }}> *</span>}
+                {required && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               {fieldSchema.description && (
                 <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', mb: 0.5 }}>{fieldSchema.description}</Typography>
@@ -1480,7 +1486,7 @@ export const KeyValueHybridField: React.FC<KeyValueHybridFieldProps> = ({
               },
             }}
           >
-            <ViewList sx={{ fontSize: 14, mr: 0.5 }} />
+            <ViewList sx={{ fontSize: ds.text.bodyLg, mr: 0.5 }} />
             Key / Value
           </ToggleButton>
           <ToggleButton
@@ -1499,7 +1505,7 @@ export const KeyValueHybridField: React.FC<KeyValueHybridFieldProps> = ({
               },
             }}
           >
-            <Code sx={{ fontSize: 14, mr: 0.5 }} />
+            <Code sx={{ fontSize: ds.text.bodyLg, mr: 0.5 }} />
             {'{{ }} Expression'}
           </ToggleButton>
         </ToggleButtonGroup>

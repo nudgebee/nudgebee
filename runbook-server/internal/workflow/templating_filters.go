@@ -80,7 +80,7 @@ func sanitize(val any) any {
 	// Reflection fallback for other types
 	v := reflect.ValueOf(val)
 	// Dereference pointers/interfaces loop
-	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
 		if v.IsNil() {
 			return nil
 		}
@@ -520,7 +520,7 @@ func registerListLogicFilters() {
 		flatten = func(v any) {
 			r := reflect.ValueOf(v)
 			// Unwrap if needed (sanitize already does, but just in case of weird nesting)
-			for r.Kind() == reflect.Ptr || r.Kind() == reflect.Interface {
+			for r.Kind() == reflect.Pointer || r.Kind() == reflect.Interface {
 				if r.IsNil() {
 					return
 				}
@@ -602,7 +602,7 @@ func registerListLogicFilters() {
 		v := reflect.ValueOf(val)
 
 		// Dereference if needed
-		for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+		for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
 			if v.IsNil() {
 				return exec.AsValue(nil)
 			}

@@ -497,9 +497,15 @@ func (s *NewRelicMetricSource) calculateStepInterval(requestedInterval int, star
 		return minStepInterval
 	}
 
-	// Calculate minimum step interval needed to stay under 366 buckets
-	// Add 1 to ensure we round up and stay safely under the limit
-	minRequiredInterval := int((timeRangeSeconds / int64(maxBuckets)) + 1)
+	// The 366-bucket limit is a New Relic TIMESERIES constraint. Other integration
+	// types (prometheus, datadog, etc.) have no such limit, so the user/default
+	// interval is honored as-is for them.
+	minRequiredInterval := 0
+	if strings.EqualFold(integrationType, "newrelic") {
+		// Calculate minimum step interval needed to stay under 366 buckets.
+		// Add 1 to ensure we round up and stay safely under the limit.
+		minRequiredInterval = int((timeRangeSeconds / int64(maxBuckets)) + 1)
+	}
 
 	// If user provided a step interval, use it if it's large enough
 	if requestedInterval > 0 {

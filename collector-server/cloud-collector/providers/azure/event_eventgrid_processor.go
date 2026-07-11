@@ -724,17 +724,17 @@ func getOperationStatus(operationName string) string {
 	operationStatusMap := map[string]string{
 		// VM Operations
 		"Microsoft.Compute/virtualMachines/write":             "Active",
-		"Microsoft.Compute/virtualMachines/start/action":      "Active",
-		"Microsoft.Compute/virtualMachines/powerOff/action":   "Inactive",
-		"Microsoft.Compute/virtualMachines/deallocate/action": "Inactive",
-		"Microsoft.Compute/virtualMachines/restart/action":    "Active",
+		"Microsoft.Compute/virtualMachines/start/action":      "Running",
+		"Microsoft.Compute/virtualMachines/powerOff/action":   "Stopped",
+		"Microsoft.Compute/virtualMachines/deallocate/action": "Deallocated",
+		"Microsoft.Compute/virtualMachines/restart/action":    "Restarting",
 		"Microsoft.Compute/virtualMachines/delete":            "Deleted",
 
 		// SQL Operations
 		"Microsoft.Sql/servers/databases/write":         "Active",
 		"Microsoft.Sql/servers/databases/delete":        "Deleted",
-		"Microsoft.Sql/servers/databases/pause/action":  "Inactive",
-		"Microsoft.Sql/servers/databases/resume/action": "Active",
+		"Microsoft.Sql/servers/databases/pause/action":  "Paused",
+		"Microsoft.Sql/servers/databases/resume/action": "Running",
 
 		// Storage Operations
 		"Microsoft.Storage/storageAccounts/write":  "Active",
@@ -742,14 +742,14 @@ func getOperationStatus(operationName string) string {
 
 		// Web App Operations
 		"Microsoft.Web/sites/write":        "Active",
-		"Microsoft.Web/sites/start/action": "Active",
-		"Microsoft.Web/sites/stop/action":  "Inactive",
+		"Microsoft.Web/sites/start/action": "Running",
+		"Microsoft.Web/sites/stop/action":  "Stopped",
 		"Microsoft.Web/sites/delete":       "Deleted",
 
 		// AKS Operations
 		"Microsoft.ContainerService/managedClusters/write":        "Active",
-		"Microsoft.ContainerService/managedClusters/start/action": "Active",
-		"Microsoft.ContainerService/managedClusters/stop/action":  "Inactive",
+		"Microsoft.ContainerService/managedClusters/start/action": "Running",
+		"Microsoft.ContainerService/managedClusters/stop/action":  "Stopped",
 		"Microsoft.ContainerService/managedClusters/delete":       "Deleted",
 	}
 
@@ -765,10 +765,10 @@ func getOperationStatus(operationName string) string {
 		return "Deleted"
 	}
 	if hasSuffix(operationName, "/start/action") {
-		return "Active"
+		return "Running"
 	}
 	if hasSuffix(operationName, "/stop/action") {
-		return "Inactive"
+		return "Stopped"
 	}
 
 	// Read-only operations (listKeys, regenerateKey, etc.) - don't change resource state
@@ -779,7 +779,6 @@ func getOperationStatus(operationName string) string {
 		return "Active"
 	}
 
-	// Default for unknown operations: assume Active (resource exists and is operational)
-	// This prevents showing "Unknown" status for valid but unrecognized operations
-	return "Active"
+	// Unknown operations: status cannot be determined from the operation name.
+	return "Unknown"
 }

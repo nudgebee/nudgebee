@@ -146,14 +146,14 @@ func checkoutCodeRepoGitLab(ctx AccountAdapterContext, request ApplyRecommendati
 	cmd := exec.Command("git", "clone", "--depth", "1", "-b", gitDetails.BaseBranch, gitURL, dir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		ctx.GetLogger().Error("Error cloning repo", "error", err, "output", string(output))
+		ctx.GetLogger().Error("Error cloning repo", "error", err, "output", redactGitCredentials(string(output)))
 		return "", err
 	}
 
 	if gitDetails.Sha1 != "" {
 		cmdFetch := exec.Command("git", "-C", dir, "fetch", "--depth=1", "origin", gitDetails.Sha1)
 		if output, err := cmdFetch.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("fetch specific commit failed: %s, %v", output, err)
+			return "", fmt.Errorf("fetch specific commit failed: %s, %v", redactGitCredentials(string(output)), err)
 		}
 		cmdCheckout := exec.Command("git", "-C", dir, "checkout", gitDetails.Sha1)
 		if output, err := cmdCheckout.CombinedOutput(); err != nil {
@@ -178,7 +178,7 @@ func commitCodeGitLab(ctx AccountAdapterContext, dir string, request ApplyRecomm
 		cmd1.Dir = dir
 		output1, err1 := cmd1.Output()
 		if err1 != nil {
-			ctx.GetLogger().Error("Error fetching remote branch", "error", err1, "output", string(output1), "branch", branchName)
+			ctx.GetLogger().Error("Error fetching remote branch", "error", err1, "output", redactGitCredentials(string(output1)), "branch", branchName)
 			return "", err1
 		}
 		cmd2 := exec.Command("git", "checkout", "-b", branchName, "origin/"+branchName)
@@ -273,15 +273,15 @@ func commitCodeForEventGitLab(ctx AccountAdapterContext, dir string, request App
 		cmd1.Dir = dir
 		output1, err1 := cmd1.Output()
 		if err1 != nil {
-			ctx.GetLogger().Error("Error fetching remote branch", "error", err, "output", string(output1), "branch", branchName)
-			return "", err
+			ctx.GetLogger().Error("Error fetching remote branch", "error", err1, "output", redactGitCredentials(string(output1)), "branch", branchName)
+			return "", err1
 		}
 		cmd2 := exec.Command("git", "checkout", "-b", branchName, "origin/"+branchName)
 		cmd2.Dir = dir
 		output2, err2 := cmd2.Output()
 		if err2 != nil {
-			ctx.GetLogger().Error("Error checking out remote branch", "error", err, "output", string(output2), "branch", branchName)
-			return "", err
+			ctx.GetLogger().Error("Error checking out remote branch", "error", err2, "output", string(output2), "branch", branchName)
+			return "", err2
 		}
 	} else {
 		cmd := exec.Command("git", "checkout", "-b", branchName)
@@ -367,7 +367,7 @@ func raiseMrForCodeRepo(ctx AccountAdapterContext, dir string, branchName string
 	cmd.Dir = dir
 	output, err := cmd.Output()
 	if err != nil {
-		ctx.GetLogger().Error("Error pushing branch", "error", err, "output", string(output))
+		ctx.GetLogger().Error("Error pushing branch", "error", err, "output", redactGitCredentials(string(output)))
 		return "", err
 	}
 
@@ -915,15 +915,9 @@ func (g *gitlabAdapter) GetRecommendationResolutionStatus(ctx AccountAdapterCont
 		return GetRecommendationResolutionStatusResponse{}, err
 	}
 
-	jsonResponseBody := resp.Body
-	defer func() {
-		err := jsonResponseBody.Close()
-		if err != nil {
-			ctx.GetLogger().Error("Error closing response body", "error", err)
-		}
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
-	jsonBodyBytes, err := io.ReadAll(jsonResponseBody)
+	jsonBodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return GetRecommendationResolutionStatusResponse{}, err
 	}
@@ -1096,6 +1090,15 @@ func ApplyRightsizingRecommendationUsingCodeAgentGitLab(ctx AccountAdapterContex
 			}
 		}
 
+		// Only inject resizePolicy when the cluster is >= 1.35 (where in-place
+		// resize / the field take effect). The UI / rule can pass an explicit
+		// resize_policy override via provider_config.
+		resizePolicySection := ""
+		if clusterSupportsInPlaceResize(ctx, request.Recommendation.CloudAccountId) {
+			override, _ := request.ProviderConfig["resize_policy"].(string)
+			resizePolicySection = resizePolicyPromptSection(resolveResizePolicyMode(override, gitDetail.Annotations))
+		}
+
 		queryText := fmt.Sprintf(`Please apply the following Kubernetes resource rightsizing recommendations.
 
 **Repository**: %s (GitLab)
@@ -1112,7 +1115,7 @@ func ApplyRightsizingRecommendationUsingCodeAgentGitLab(ctx AccountAdapterContex
 2. Identify the correct YAML path in the values file for each container (check template variable references like {{.Values.resources}})
 3. Update only the specified CPU/memory values at the correct paths
 4. Preserve existing formatting and structure
-5. **CRITICAL - CPU Limits**: If the recommendation specifies CPU limit as null, empty, or omitted, you MUST remove the CPU limit line entirely or leave it unset. DO NOT set CPU limit to match the request value. Only set CPU limit if explicitly provided with a non-null value in the recommendation.
+5. **CRITICAL - CPU Limits**: If the recommendation specifies CPU limit as null, empty, or omitted, you MUST remove the CPU limit line entirely or leave it unset. DO NOT set CPU limit to match the request value. Only set CPU limit if explicitly provided with a non-null value in the recommendation.%s
 
 **MR Description Requirements**:
 When creating the MR, ensure the description includes:
@@ -1133,6 +1136,7 @@ Make minimal, precise changes only.`,
 			gitDetail.FilePath,
 			resourceNamespace,
 			string(recommendationJSON),
+			resizePolicySection,
 		)
 
 		// Wrap the prompt in a JSON envelope so agent_code_2 receives explicit

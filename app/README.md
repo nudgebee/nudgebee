@@ -59,7 +59,7 @@ The App is a frontend application built with **Next.js** (v16) and **React** (v1
 ### Development Conventions
 
 - **GraphQL API Layer**: All backend communication is GraphQL-shaped, parsed and dispatched in-app by `@lib/rpcGateway` to upstream service handlers. Modules follow the `queryGraphQL` pattern in `HttpService` with TypeScript interfaces for requests.
-- **Path Aliases**: Use `@api1`, `@components1`, `@common`, `@lib`, `@hooks`, `@context`, `@data`, `@assets`, and `@utils` as defined in `tsconfig.json`.
+- **Path Aliases**: Use `@api1`, `@components`, `@ui` (DS primitives), `@shared` (shared UI), `@lib`, `@hooks`, `@context`, `@data`, `@assets`, and `@utils` as defined in `tsconfig.json`.
 - **Authentication & Authorization**: Protected routes use the `withAuth` HOC. Permission utilities (`hasReadAccess`, `isTenantAdmin`, etc.) are in `@lib/auth`.
 - **Code Quality:** Linting via `next lint` and `oxlint`. Formatting with Prettier (`npm run prettier:check`).
 - **Testing:** Unit tests with Jest and React Testing Library.
@@ -241,9 +241,9 @@ A few legacy paths (`/api/slack/install`, `/api/marketplace/*`) are kept as **de
 ```
 src/
 ├── pages/              # Next.js pages and API routes
-├── component-new/ds/   # Design System v2 primitives — see app/design-system/
-├── components1/        # Feature components organized by domain
-│   └── common/         # Shared UI components
+├── components/        # Feature components organized by domain
+│   ├── common/         # Shared UI components (@shared/*)
+│   │   └── ds/         # Design System v2 primitives (@ui/*)
 ├── api1/               # GraphQL service modules (one folder per backend feature)
 ├── context/            # React Context providers
 ├── hooks/              # Custom React hooks

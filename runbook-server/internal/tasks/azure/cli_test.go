@@ -10,6 +10,7 @@ import (
 )
 
 func TestAzureCliTask_Execute(t *testing.T) {
+	testutils.RequireEnv(t, "TEST_TENANT_ID", "TEST_AZURE_ACCOUNT_ID", "TEST_USER_ID")
 	task := &AzureCliTask{}
 	taskCtx := testutils.NewTestTaskContext(os.Getenv("TEST_TENANT_ID"), os.Getenv("TEST_AZURE_ACCOUNT_ID"), os.Getenv("TEST_USER_ID"), slog.Default())
 

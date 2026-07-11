@@ -1,5 +1,5 @@
 /**
- * ThreeDotsMenu (v2) — kebab/overflow trigger backed entirely by DS V2 primitives.
+ * ThreeDotsMenu — kebab/overflow trigger backed entirely by DS V2 primitives.
  *
  * Per the DropdownMenu spec, ThreeDotsMenu is not a separate primitive — it's
  * just `<DropdownMenu trigger={<Button composition='icon-only' icon={<MoreVert/>} />} />`.

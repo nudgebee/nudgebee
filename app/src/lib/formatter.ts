@@ -8,27 +8,27 @@ export function formatNumber(number: string | number, defaultVal = '-', minimumF
     : defaultVal;
 }
 
-export function formatMemory(value: number, sourceUnit = 'bytes', targetUnit = 'gb', suffix = true): string {
+export function formatMemory(value: number, sourceUnit = 'bytes', targetUnit = 'gb', suffix = true, maximumFractionDigits = 2): string {
   let result: string;
   switch (`${sourceUnit}-${targetUnit}`) {
     case 'mb-gb':
-      result = formatNumber(value / 1024);
+      result = formatNumber(value / 1024, '-', 0, maximumFractionDigits);
       break;
     case 'bytes-mb':
-      result = formatNumber(value / (1024 * 1024));
+      result = formatNumber(value / (1024 * 1024), '-', 0, maximumFractionDigits);
       break;
     case 'kb-gb':
-      result = formatNumber(value / (1024 * 1024));
+      result = formatNumber(value / (1024 * 1024), '-', 0, maximumFractionDigits);
       break;
     case 'gb-gb':
-      result = formatNumber(value);
+      result = formatNumber(value, '-', 0, maximumFractionDigits);
       break;
     default:
-      result = formatNumber(value / (1024 * 1024 * 1024));
+      result = formatNumber(value / (1024 * 1024 * 1024), '-', 0, maximumFractionDigits);
       break;
   }
   if (suffix && value) {
-    result += ' GB';
+    result += ' ' + targetUnit.toUpperCase();
   }
   return result;
 }

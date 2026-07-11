@@ -1,6 +1,22 @@
 import { Page, Locator } from "@playwright/test";
 import { ClusterDetailsLocators } from "../ClusterDetailsLocators";
 
+export const OptimizeSections = {
+    summary:                  'summary',
+    rightSizing:              'right-sizing',
+    autoScaler:               'auto-scaler',
+    unusedVolume:             'unused-volume',
+    bestPractices:            'best-practices',
+    abandonedApps:            'abandoned-resources',
+    pvcRightsizing:           'pv-rightsizing',
+    replicaRightsizing:       'replica-rightsizing',
+    spotRecommendation:       'spot-recommendation',
+    recommendationResolution: 'recommendation-resolution',
+} as const;
+
+export type OptimizeSection = typeof OptimizeSections[keyof typeof OptimizeSections];
+
+
 export class OptimizeTabLocator extends ClusterDetailsLocators {
     //Optimize dropdown id's
     readonly OptimizedropdownSummary: Locator;
@@ -13,7 +29,7 @@ export class OptimizeTabLocator extends ClusterDetailsLocators {
     readonly OptimizedropdownReplicaRightsizing: Locator;
     readonly OptimizedropdownSpotRecommendation: Locator;
     readonly OptimizedropdownRecommendationResolution: Locator;
-
+    override readonly namespacedropdown: Locator;
 
     // Monitoring id's
     readonly MonitoringDropdownQueryLogs: Locator;
@@ -33,6 +49,7 @@ export class OptimizeTabLocator extends ClusterDetailsLocators {
 
     constructor(page: Page) {
         super(page);
+        this.namespacedropdown = page.locator("#auto-complete-rs-filter-namespace");
         //Optimize dropdown Id's
         this.OptimizedropdownSummary = page.locator('#dropdown-summary')
         this.OptimizedropdownRightSizeButton = page.locator('#dropdown-right-sizing');
@@ -52,15 +69,57 @@ export class OptimizeTabLocator extends ClusterDetailsLocators {
         this.RightSizingTab = page.getByRole('tab', { name: 'Right Sizing' });
         this.OptimizeTabDropdown = page.locator('div').filter({ hasText: 'SummaryRight SizingAuto' }).nth(1)
         this.OptimizeTabSummary = page.locator("#summary");
-        // DS v2 download trigger renders as an icon-only button with aria-label='Download'.
-        // The legacy '#buttonmenu-button' id from BoxLayout2's ButtonMenu no longer exists.
         this.DownlaodBtn = page.getByRole('button', { name: 'Download' });
-        this.DownloadCSVBtn = page.getByRole('menuitem', { name: 'Download CSV' })
-        this.DownloadExcelBtn = page.getByRole('menuitem', { name: 'Download Excel (XLSX)' })
+        this.DownloadCSVBtn = page.getByText('Download CSV', { exact: true })
+        this.DownloadExcelBtn = page.getByText('Download Excel (XLSX)', { exact: true })
         this.DownloadCSVSuccessMaggage = page.getByText('Export downloaded successfully');
         this.DownloadExcelSuccessMaggage = page.getByText('Export downloaded successfully');
         this.AutoScalerTab = page.locator("#auto-scaler");
-        this.Summary = page.getByRole('radiogroup').getByText('Summary')
-        this.Logs = page.getByRole('radiogroup').getByText('Logs')
+        this.Summary = page.locator('button').filter({ hasText: /^Summary$/ })
+        this.Logs = page.locator('button').filter({ hasText: /^Logs$/ })
+    }
+
+    async navigateToClusterDetails(): Promise<void> {
+        await this.page.getByAltText("Loading...").waitFor({ state: "hidden", timeout: 30000 }).catch(() => {});
+        await this.page.waitForTimeout(1500);
+        await this.openClusterFromConfig();
+        await this.page.waitForURL('**/kubernetes/details/**', { timeout: 30000 }).catch(() => {});
+        await this.page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+        await this.page.getByAltText("Loading...").waitFor({ state: "hidden", timeout: 30000 }).catch(() => {});
+        await this.page.waitForTimeout(3000);
+    }
+
+    async gotoOptimizeSection(section: OptimizeSection, maxRetries = 3): Promise<void> {
+        const sectionDropdownId: Record<OptimizeSection, string> = {
+            'summary':                    '#dropdown-summary',
+            'right-sizing':               '#dropdown-right-sizing',
+            'auto-scaler':                '#dropdown-auto-scaler',
+            'unused-volume':              '#dropdown-unused-volume',
+            'best-practices':             '#dropdown-best-practices',
+            'abandoned-resources':        '#dropdown-abandoned-resources',
+            'pv-rightsizing':             '#dropdown-pv-rightsizing',
+            'replica-rightsizing':        '#dropdown-replica-rightsizing',
+            'spot-recommendation':        '#dropdown-spot-recommendation',
+            'recommendation-resolution':  '#dropdown-recommendation-resolution-status',
+        };
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            await this.OptimizeTab.waitFor({ state: 'visible', timeout: 15000 });
+            await this.OptimizeTab.hover();
+
+            const dropdownItem = this.page.locator(sectionDropdownId[section]);
+            await dropdownItem.waitFor({ state: 'visible', timeout: 10000 });
+            await dropdownItem.click();
+
+            await this.page.waitForURL(`**#optimize/${section}`, { timeout: 15000 }).catch(() => {});
+            await this.page.getByAltText("Loading...").waitFor({ state: "hidden", timeout: 30000 }).catch(() => {});
+
+            const currentUrl = this.page.url();
+            if (currentUrl.includes(`#optimize/${section}`)) return;
+
+            console.warn(`[OptimizeTabLocator] gotoOptimizeSection attempt ${attempt}/${maxRetries} failed — URL: ${currentUrl}`);
+            await this.page.waitForTimeout(1500);
+        }
+        throw new Error(`[OptimizeTabLocator] Failed to navigate to #optimize/${section} after ${maxRetries} attempts. Current URL: ${this.page.url()}`);
     }
 }

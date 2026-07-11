@@ -42,8 +42,16 @@ type DeleteAgentExtensionRequest struct {
 }
 
 func agentListAgent(c *gin.Context, context *security.RequestContext, payload map[string]any) {
+	allowOnlyEnabled := false
+
+	// Empty account_id means the caller is on a surface with no current
+	// account (the global b-Cortex sidebar). Fall back to a tenant-wide
+	// read; the service layer row-filters by HasAccountAccess so each
+	// caller only sees custom agents from accounts they can read. System
+	// agents (compiled-in catalog) are returned for everyone.
 	if payload["account_id"] == nil || payload["account_id"] == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
+		resp := core.ListAgentsForTenant(context, allowOnlyEnabled)
+		c.JSON(200, buildApiResponse(resp, nil))
 		return
 	}
 	accountIdPayload, ok := payload["account_id"].(string)
@@ -61,7 +69,6 @@ func agentListAgent(c *gin.Context, context *security.RequestContext, payload ma
 		}))
 		return
 	}
-	allowOnlyEnabled := false
 	resp := core.ListAgents(context, accountIdPayload, allowOnlyEnabled)
 	c.JSON(200, buildApiResponse(resp, nil))
 }

@@ -5,7 +5,6 @@ import (
 	"nudgebee/services/internal/testenv"
 	"nudgebee/services/security"
 	"os"
-	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,36 +28,30 @@ func TestClickHouse_Category(t *testing.T) {
 
 func TestClickHouse_ConfigSchema(t *testing.T) {
 	ch := ClickHouse{}
-	expectedSchema := core.IntegrationSchema{
-		Type:     core.ToolSchemaTypeObject,
-		Required: []string{"k8s_secret", "host"}, // Updated
-		Properties: map[string]core.IntegrationSchemaProperty{
-			"k8s_secret": {
-				Type:        core.ToolSchemaTypeString,
-				Description: "ClickHouse Secret in k8s, Required Keys: CLICKHOUSE_DATABASE, CLICKHOUSE_HOST, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD", // Updated
-			},
-			"host": {
-				Type:        core.ToolSchemaTypeString,
-				Description: "ClickHouse Host", // Updated
-			},
-			"account_id": {
-				Type:             core.ToolSchemaTypeArray,
-				Description:      "Select Account",
-				Default:          "",
-				AutoGenerateFunc: "listAccounts",
-			},
-			"integration_config_name": {
-				Type:             core.ToolSchemaTypeString,
-				Description:      "Name of ClickHouse Integration", // Updated
-				Default:          "",
-				AutoGenerateFunc: "",
-			},
-		},
-	}
+	schema := ch.ConfigSchema()
 
-	if schema := ch.ConfigSchema(); !reflect.DeepEqual(schema, expectedSchema) {
-		t.Errorf("ClickHouse.ConfigSchema() = %v, want %v", schema, expectedSchema)
-	}
+	// Object schema, testable connection
+	assert.Equal(t, core.ToolSchemaTypeObject, schema.Type)
+	assert.True(t, schema.Testable)
+
+	// Core properties exist with expected types
+	assert.Contains(t, schema.Properties, "connection_mode")
+	assert.Contains(t, schema.Properties, "k8s_secret")
+	assert.Contains(t, schema.Properties, "host")
+	assert.Contains(t, schema.Properties, core.AccountId)
+	assert.Contains(t, schema.Properties, core.IntegrationConfigName)
+
+	assert.Equal(t, core.ToolSchemaTypeString, schema.Properties["k8s_secret"].Type)
+	assert.Equal(t, core.ToolSchemaTypeString, schema.Properties["host"].Type)
+	assert.Equal(t, core.ToolSchemaTypeArray, schema.Properties[core.AccountId].Type)
+	assert.Equal(t, "listAccounts", schema.Properties[core.AccountId].AutoGenerateFunc)
+
+	// connection_mode drives k8s vs vm_agent flows
+	assert.Equal(t, "k8s", schema.Properties["connection_mode"].Default)
+	assert.Equal(t, []any{"k8s", "vm_agent"}, schema.Properties["connection_mode"].Enum)
+
+	// Password is marked encrypted
+	assert.True(t, schema.Properties["password"].IsEncrypted, "password should be encrypted")
 }
 
 func TestClickHouse_ValidateConfig(t *testing.T) {

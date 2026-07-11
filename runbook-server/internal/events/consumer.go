@@ -74,8 +74,17 @@ func (c *Consumer) ProcessMessage(data []byte) error {
 		return nil // Ack and drop, or maybe dlq? For now drop.
 	}
 
+	// Lifecycle phase the event was published at (api-server stamps it via
+	// lifecycle.Emit). Absent ⇒ default to event.created so producers that don't
+	// yet stamp a phase, and legacy event-trigger workflows (no params.on), keep
+	// matching exactly as before.
+	phase := string(model.DefaultLifecyclePhase)
+	if p, ok := event["lifecycle_phase"].(string); ok && p != "" {
+		phase = p
+	}
+
 	// 1. Match Workflows
-	matches := c.registry.Match(eventType, accountID, event)
+	matches := c.registry.Match(eventType, accountID, event, phase)
 	if len(matches) == 0 {
 		return nil
 	}

@@ -105,6 +105,56 @@ func TestDirectEndpointMatchStrategy(t *testing.T) {
 	}
 }
 
+// TestTruncatedAWSDNSMatchStrategy covers Strategy 0.5: it recovers AWS endpoint
+// hostnames the eBPF capture chopped (e.g. "<bucket>.s3.us-east"), resolving
+// them to the indexed Storage node via an unambiguous dns_name prefix and
+// emitting RoutesThrough — while leaving clean misses and ambiguous prefixes to
+// fall through.
+func TestTruncatedAWSDNSMatchStrategy(t *testing.T) {
+	const bucketDNS = "nb-ml-models-v2.s3.us-east-1.amazonaws.com"
+	bucket := makeNode("s3-1", core.NodeTypeStorage, map[string]interface{}{"dns_name": bucketDNS})
+	lbNode := makeNode("lb-1", core.NodeTypeLoadBalancer, map[string]interface{}{"dns_name": testLBDNS})
+	idx := buildCloudEndpointIndex(nil, "", []*core.DbNode{bucket, lbNode}, silentLogger())
+
+	strategy := NewTruncatedAWSDNSMatchStrategy()
+
+	cases := []struct {
+		name        string
+		ctx         *MatchingContext
+		hostname    string
+		wantMatched bool
+		wantNode    *core.DbNode
+	}{
+		{"nil_ctx", nil, "nb-ml-models-v2.s3.us-east", false, nil},
+		{"empty_index", &MatchingContext{}, "nb-ml-models-v2.s3.us-east", false, nil},
+		{"truncated_s3_hit", &MatchingContext{EndpointIndex: idx}, "nb-ml-models-v2.s3.us-east", true, bucket},
+		{"complete_name_not_handled_here", &MatchingContext{EndpointIndex: idx}, bucketDNS, false, nil},
+		{"non_aws_miss", &MatchingContext{EndpointIndex: idx}, "api.stripe.com", false, nil},
+		{"unknown_bucket", &MatchingContext{EndpointIndex: idx}, "does-not-exist.s3.us-east", false, nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := strategy.Match(tc.hostname, tc.ctx)
+			if got.Matched != tc.wantMatched {
+				t.Fatalf("Matched = %v, want %v", got.Matched, tc.wantMatched)
+			}
+			if !tc.wantMatched {
+				return
+			}
+			if got.Node != tc.wantNode {
+				t.Errorf("Node = %v, want %v", got.Node, tc.wantNode)
+			}
+			if got.RelationshipHint != core.RelationshipRoutesThrough {
+				t.Errorf("RelationshipHint = %q, want RoutesThrough", got.RelationshipHint)
+			}
+			if !strings.Contains(got.MatchedBy, "truncated_aws_dns:") {
+				t.Errorf("MatchedBy = %q, want substring %q", got.MatchedBy, "truncated_aws_dns:")
+			}
+		})
+	}
+}
+
 // TestDirectEndpointMatchStrategy_Name asserts the registered strategy name —
 // downstream log/metric correlation will pivot on this string.
 func TestDirectEndpointMatchStrategyName(t *testing.T) {

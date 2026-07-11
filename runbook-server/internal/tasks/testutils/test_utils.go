@@ -6,6 +6,9 @@ import (
 	"nudgebee/runbook/internal/model"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/security"
+	"os"
+	"strings"
+	"testing"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,6 +16,25 @@ import (
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/log"
 )
+
+// RequireEnv skips the test unless every provided environment variable is set
+// (non-empty). It is the shared guard for task tests that exercise task.Execute
+// against a live backend (LLM / cloud server / cluster) or seeded TEST_*
+// identifiers: on a bare CI runner those vars are absent, so the test skips
+// cleanly instead of asserting NoError on a failed Execute and then panicking on
+// the nil result's type assertion.
+func RequireEnv(t testing.TB, keys ...string) {
+	t.Helper()
+	var missing []string
+	for _, k := range keys {
+		if os.Getenv(k) == "" {
+			missing = append(missing, k)
+		}
+	}
+	if len(missing) > 0 {
+		t.Skipf("skipping: requires environment variable(s) %s", strings.Join(missing, ", "))
+	}
+}
 
 // MockTaskContext is a mock implementation of TaskContext for testing purposes.
 type MockTaskContext struct {

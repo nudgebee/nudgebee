@@ -1,20 +1,23 @@
 Nudgebee
-Copyright 2026 Nudgebee
+Copyright 2026 Nudgebee CloudXP Pvt Ltd
 
 This product includes software developed at Nudgebee
 (https://nudgebee.com).
 
-Licensed under the Apache License, Version 2.0 (the "License");
+Licensed under the Business Source License 1.1 (the "License");
 you may not use this software except in compliance with the License.
 A copy of the License is included in the LICENSE file at the root of
-this repository, and may also be obtained at:
+this repository. See LICENSING.md for a plain-language summary.
 
-    http://www.apache.org/licenses/LICENSE-2.0
+Each released version of the Licensed Work converts to the Apache
+License, Version 2.0 (kept at licenses/Apache-2.0.txt) four years
+after that version is published — the Change Date runs automatically
+from each version's publication date.
 
 The names "Nudgebee" and the Nudgebee logo are trademarks of Nudgebee.
 Use of these marks is governed by the TRADEMARKS.md file in this
-repository. The Apache 2.0 license does not grant permission to use
-the Nudgebee name, logo, or trademarks.
+repository. Neither the BSL 1.1 nor the Apache 2.0 change-license
+grants permission to use the Nudgebee name, logo, or trademarks.
 
 Portions of this software incorporate third-party open-source
 components. Their respective licenses and notices are retained in

@@ -87,6 +87,30 @@ func TestParseKGTraverseInput(t *testing.T) {
 		assert.Equal(t, 150, in.ResultLimit)
 	})
 
+	t.Run("limit is accepted as an alias for result_limit", func(t *testing.T) {
+		in, err := parseKGTraverseInput(core.NBToolCallRequest{
+			Command: `{"query":"x","direction":"downstream","limit":100}`,
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, 100, in.ResultLimit, "kg_traverse must honor `limit` like kg_search_nodes (F8)")
+	})
+
+	t.Run("result_limit wins when both result_limit and limit are present", func(t *testing.T) {
+		in, err := parseKGTraverseInput(core.NBToolCallRequest{
+			Command: `{"query":"x","direction":"downstream","result_limit":200,"limit":100}`,
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, 200, in.ResultLimit)
+	})
+
+	t.Run("limit alias via flat arguments", func(t *testing.T) {
+		in, err := parseKGTraverseInput(core.NBToolCallRequest{
+			Arguments: map[string]any{"query": "x", "direction": "downstream", "limit": 75},
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, 75, in.ResultLimit)
+	})
+
 	t.Run("invalid JSON returns error", func(t *testing.T) {
 		_, err := parseKGTraverseInput(core.NBToolCallRequest{Command: `{"query":`})
 		assert.Error(t, err)

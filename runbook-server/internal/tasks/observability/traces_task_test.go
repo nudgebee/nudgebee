@@ -238,21 +238,26 @@ func TestTracesQuery(t *testing.T) {
 // --- Unit tests (no API needed) ---
 
 func TestTracesMissingAllQueryInputs(t *testing.T) {
+	// Empty inputs are valid by design: Execute compiles a bounded, ordered
+	// default query and forwards it to services-server (no local "required"
+	// validation), so this exercises the live trace backend.
+	testutils.RequireEnv(t, "TEST_TENANT_ID", "TEST_OBSERVABILITY_ACCOUNT_ID", "TEST_USER_ID")
 	task := &TracesTask{}
-	taskCtx := testutils.NewTestTaskContext("tenant", "account", "user", slog.Default())
+	taskCtx := testutils.NewTestTaskContext(os.Getenv("TEST_TENANT_ID"), os.Getenv("TEST_OBSERVABILITY_ACCOUNT_ID"), os.Getenv("TEST_USER_ID"), slog.Default())
 
 	_, err := task.Execute(taskCtx, map[string]any{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "required")
+	assert.NoError(t, err)
 }
 
 func TestTracesEmptyQueryNoFilters(t *testing.T) {
+	// An empty query string is valid by design (defaults are applied before
+	// the backend call), so this exercises the live trace backend.
+	testutils.RequireEnv(t, "TEST_TENANT_ID", "TEST_OBSERVABILITY_ACCOUNT_ID", "TEST_USER_ID")
 	task := &TracesTask{}
-	taskCtx := testutils.NewTestTaskContext("tenant", "account", "user", slog.Default())
+	taskCtx := testutils.NewTestTaskContext(os.Getenv("TEST_TENANT_ID"), os.Getenv("TEST_OBSERVABILITY_ACCOUNT_ID"), os.Getenv("TEST_USER_ID"), slog.Default())
 
 	_, err := task.Execute(taskCtx, map[string]any{"query": ""})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "required")
+	assert.NoError(t, err)
 }
 
 func TestTracesInvalidStartTime(t *testing.T) {
@@ -340,16 +345,16 @@ func TestTracesDurationParsesCorrectly(t *testing.T) {
 
 func TestTracesBuildSimpleFilters(t *testing.T) {
 	qr := buildQueryRequestFromSimpleFilters(map[string]any{
-		"service_name":    "my-service",
+		"workload_name":   "my-service",
 		"status":          "error",
 		"span_name":       "HTTP GET",
 		"min_duration_ms": 500,
 	})
 
-	assert.Equal(t, "my-service", qr.Where.Binary["ServiceName"][service.Eq])
-	assert.Equal(t, "STATUS_CODE_ERROR", qr.Where.Binary["StatusCode"][service.Eq])
-	assert.Equal(t, "HTTP GET", qr.Where.Binary["SpanName"][service.Like])
-	assert.Equal(t, int64(500_000_000), qr.Where.Binary["Duration"][service.Gte])
+	assert.Equal(t, "my-service", qr.Where.Binary["workload_name"][service.Eq])
+	assert.Equal(t, "STATUS_CODE_ERROR", qr.Where.Binary["status_code"][service.Eq])
+	assert.Equal(t, "HTTP GET", qr.Where.Binary["span_name"][service.Like])
+	assert.Equal(t, int64(500_000_000), qr.Where.Binary["duration_ns"][service.Gte])
 }
 
 func TestTracesSortByMapping(t *testing.T) {
@@ -360,8 +365,8 @@ func TestTracesSortByMapping(t *testing.T) {
 	}{
 		{"timestamp_desc", "timestamp", "desc"},
 		{"timestamp_asc", "timestamp", "asc"},
-		{"duration_desc", "duration", "desc"},
-		{"duration_asc", "duration", "asc"},
+		{"duration_desc", "duration_ns", "desc"},
+		{"duration_asc", "duration_ns", "asc"},
 	}
 
 	for _, tc := range cases {
@@ -418,7 +423,7 @@ func TestTracesInputSchema(t *testing.T) {
 
 	// Query mode and filters
 	assert.Contains(t, schema.Properties, "query_mode")
-	assert.Contains(t, schema.Properties, "service_name")
+	assert.Contains(t, schema.Properties, "workload_name")
 	assert.Contains(t, schema.Properties, "status")
 	assert.Contains(t, schema.Properties, "min_duration_ms")
 	assert.Contains(t, schema.Properties, "span_name")
@@ -441,8 +446,8 @@ func TestTracesInputSchema(t *testing.T) {
 	assert.Contains(t, schema.Properties, "trace_provider_source")
 
 	// Simple mode fields have VisibleWhen
-	assert.NotNil(t, schema.Properties["service_name"].VisibleWhen)
-	assert.Equal(t, "query_mode", schema.Properties["service_name"].VisibleWhen.Field)
+	assert.NotNil(t, schema.Properties["workload_name"].VisibleWhen)
+	assert.Equal(t, "query_mode", schema.Properties["workload_name"].VisibleWhen.Field)
 
 	// Defaults
 	assert.Equal(t, "simple", schema.Properties["query_mode"].Default)

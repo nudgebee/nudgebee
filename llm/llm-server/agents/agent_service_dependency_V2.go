@@ -21,17 +21,13 @@ func init() {
 		return
 	}
 
-	toolDescription := `Explores service dependencies, infrastructure topology, connectivity, and call chains across Kubernetes and cloud (AWS/GCP/Azure) resources via the Knowledge Graph. ` +
-		`Handles: what does X call/depend on, what calls X, what namespace/cluster hosts X, ` +
-		`infrastructure discovery (find workloads/databases/services/cloud resources), load balancer routing, ` +
-		`VPC/subnet topology. Use for ALL dependency, topology, and connectivity questions. ` +
-		`` +
-		`CRITICAL — How to call this tool and use its replies: ` +
-		`(A) Preserve scope. When the user's question names an account (e.g. "in aws-prod", "Account k8s-dev"), a namespace (e.g. "in the nudgebee namespace"), a cluster, or a cloud source, include those exact identifiers verbatim in the natural-language ` + "`command`" + `. Stripping them forces this tool to guess or ask a clarifying question, wasting a turn. Correct: "What does webapp in the nudgebee namespace call in account k8s-dev?". Wrong: "What does webapp in the nudgebee namespace call?" (drops the account — tool then asks "which account?" because webapp exists in multiple). ` +
-		`(B) State intent, not mechanics. Send the user's goal in plain language (e.g. "what does llm-server in the nudgebee namespace call?", "what depends on the payment-service workload?"). Do NOT pre-decompose into this tool's internals — no node IDs, node types (Workload, K8sService, etc.), graph traversal, or "find the IDs then trace". It resolves names, IDs, and traversal strategy itself; spelling them out wastes reasoning and can mislead it. Wrong: "find the node IDs for the llm-server Workload and K8sService to trace its downstream calls". ` +
-		`(C) If the reply asks a clarifying question (e.g. "Which account?", "Which namespace?", "Multiple matches — which one?"), STOP IMMEDIATELY and return that exact question to the user as your final answer. Do NOT call this tool again to "investigate all options", and do NOT pick a default — wait for the user's next turn. ` +
-		`(D) Trust the reply. If it gave a complete answer about dependencies/topology/connectivity, do NOT call kubectl, fetch_logs, resource_search, or aws to "verify" — those cover different concerns (runtime state, logs, cloud CLI) and add no KG topology data. ` +
-		`(E) Cite the reply's evidence and do not invent connections. Do NOT add hubs or relationships the tool did not return; if the data shows no inbound CALLS for a service, state that rather than inventing a "hub" role.`
+	toolDescription := `Explores service dependencies, topology, connectivity, and call chains across Kubernetes and cloud (AWS/GCP/Azure) via the Knowledge Graph — what calls/depends on X, what X calls, what namespace/cluster hosts X, resource discovery (workloads/databases/services/cloud resources), load-balancer routing, VPC/subnet topology. Use for ALL dependency, topology, and connectivity questions. ` +
+		`How to call it: ` +
+		`(A) Preserve scope — copy any account, namespace, cluster, or cloud source the user named verbatim into the plain-language ` + "`command`" + ` (e.g. "what does webapp in the nudgebee namespace call in account k8s-dev?"); omitting them forces a clarifying question. ` +
+		`(B) State intent, not mechanics — send the goal in plain language; never pre-decompose into node IDs, node types, or graph traversal (the tool resolves those itself). ` +
+		`(C) If the reply is a clarifying question, STOP and return it to the user verbatim — do not re-call the tool to investigate options or pick a default. ` +
+		`(D) Trust the reply — do not re-verify its topology with kubectl, aws, fetch_logs, or resource_search (they carry no KG topology). ` +
+		`(E) Cite the reply's evidence; never add connections or hubs it did not return (if a service has no inbound CALLS, say so).`
 
 	toolInput := "A plain-language question describing what you want to know about dependencies/topology/connectivity (e.g. \"what does llm-server in the nudgebee namespace call?\"). State intent only — do NOT mention node IDs, node types, or graph traversal."
 	toolOutput := "The tool will return the output of the question"
@@ -85,8 +81,6 @@ func (l ServiceDependencyGraphAgentV2) GetSystemPrompt(ctx *security.RequestCont
 	instructions := []string{
 		"**Resource Discovery:** If the user provides a partial or ambiguous resource name, use the `resource_search` tool to find the correct resource name.",
 		"**Dependency & Topology:** Use `kg_traverse` for dependency chains, CALLS relationships, hosting topology, connectivity (K8s and cloud). Use `kg_search_nodes` for discovery (finding what exists by name/type/namespace/source).",
-		"**Start narrow, broaden iteratively:** First call kg_traverse with max_depth=1 and the tightest sensible relationship_types filter for the question. Increase max_depth (cap 3) or drop filters ONLY if the immediate neighborhood is clearly insufficient. A `direction:both, max_depth:3` walk on a busy workload returns 5–10× more data than a typed depth=1 query, almost all of it irrelevant.",
-		"**Truncation:** If kg_traverse returns truncated:true, refine the query (add namespace/node_types, reduce max_depth) before reporting results.",
 		prompts_repo.GetPrompt(prompts_repo.PromptAgentKgUsage),
 	}
 	if config.Config.KGGetNodeEnabled {
@@ -97,8 +91,6 @@ func (l ServiceDependencyGraphAgentV2) GetSystemPrompt(ctx *security.RequestCont
 
 	constraints := []string{
 		"Always specify namespace when available.",
-		"Prefer specific relationship_types when the question implies an edge type (CALLS, RUNS_ON, EXPOSES, ROUTES_TO_*, PULLS_FROM, etc.). The filter runs inside the database query, so it cuts both server cost and response size. Omit only after a narrow query proves too restrictive.",
-		"CALLS edges may terminate at any cloud-resource node type (Database, Storage, Cache, MessageQueue, LoadBalancer, APIGateway, CDN, ServerlessFunction) — not just Service/Workload/ExternalService. Treat these as data-dependencies. When the edge carries an `original_hostname` property, cite that hostname as the breadcrumb explaining how the workload reaches the resource.",
 	}
 
 	toolUsage := map[string][]string{
@@ -186,4 +178,16 @@ func (l ServiceDependencyGraphAgentV2) GetPlannerType() core.AgentPlannerType {
 // per account per cache window, not per ReAct iteration.
 func (l ServiceDependencyGraphAgentV2) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
+}
+
+// Compile-time assertion that V2 opts out of default-tool injection.
+var _ core.DefaultToolsOptOut = ServiceDependencyGraphAgentV2{}
+
+// OptOutDefaultTools declines the planner's automatic default-tool injection
+// (shell_execute, load_skills). This agent is deliberately KG-only — its tool set
+// is curated in GetSupportedTools (kg_search_nodes, kg_traverse, kg_get_node,
+// resource_search). shell_execute is out of scope here and was observed driving
+// spurious no-op shell calls; load_skills has no KB role for topology questions.
+func (l ServiceDependencyGraphAgentV2) OptOutDefaultTools() bool {
+	return true
 }

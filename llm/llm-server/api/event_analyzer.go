@@ -1225,7 +1225,7 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 	}
 
 	// do rootcause analysis
-	eventAnalsysisPrompt := prompts_repo.GetPrompt(prompts_repo.PromptEventInvestigationSummary, request.EventId, eventDefinition, event.Title, event.Description, event.Labels, common.FormatPresentationTime(event.UpdatedAt), event.Source, response.Summary)
+	eventAnalsysisPrompt := prompts_repo.GetPrompt(prompts_repo.PromptEventInvestigation, request.EventId, eventDefinition, event.Title, event.Description, event.Labels, common.FormatPresentationTime(event.UpdatedAt), event.Source, response.Summary)
 
 	// Add account context (cloud provider) to help the LLM tailor its output
 	if cloudProvider := agents.GetCloudProviderForAccount(request.AccountId); cloudProvider != "" {
@@ -1427,7 +1427,19 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		if hasSummary {
 			ctx.GetLogger().Info("analyzer: recovered summary from conversation history", "session_id", parentConversationId)
 		} else {
-			summaryResp, err := core.HandleConversationSessionRequest(ctx, eventSummaryAgent, request.UserId, request.AccountId, parentConversationId, "Get the details of Event with id - "+eventData.Id, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithEnableCritique(false), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels}))
+			// Beyond fetching the event's details, ask the events agent to explain
+			// Nudgebee's auto-triage decision. Step 1 is the only stage of the
+			// automatic pipeline that runs the events agent, so it is where the
+			// triage tools (get_triage_explanation) get exercised — recording *why*
+			// an event was suppressed/duplicated/scored into the summary (and thus
+			// event_log_analysis and the synthesized detailed response), not just in
+			// interactive chat. Degrades to a plain summary when no triage data is
+			// recorded yet.
+			summaryQuery := "Get the details of Event with id - " + eventData.Id +
+				". Also explain how Nudgebee auto-triaged this event: its triage status (nb_status), " +
+				"computed priority and the score_factors that produced it, and the deduplication chain and " +
+				"correlated events behind the decision. Use get_triage_explanation for the dedup chain and correlations."
+			summaryResp, err := core.HandleConversationSessionRequest(ctx, eventSummaryAgent, request.UserId, request.AccountId, parentConversationId, summaryQuery, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithEnableCritique(false), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels}))
 			if err != nil {
 				if errors.Is(err, core.ErrConversationInProgress) {
 					ctx.GetLogger().Info("analyzer: summary already in progress via conversation", "session_id", parentConversationId)

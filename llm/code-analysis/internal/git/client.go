@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -166,18 +167,50 @@ func (gc *GitClient) CloneRepository(ctx context.Context, repoURL string, creds 
 }
 
 func (gc *GitClient) transformRepoURLWithToken(repoURL, token string) string {
-	// Transform repo URL to include authentication token
-	// GitHub: https://x-access-token:<token>@github.com/org/repo.git
-	// GitLab: https://oauth2:<token>@gitlab.com/group/project.git
-	if strings.HasPrefix(repoURL, "https://") {
-		// Determine format based on URL - GitLab uses oauth2 format
-		if strings.Contains(repoURL, "gitlab") {
-			return strings.Replace(repoURL, "https://", fmt.Sprintf("https://oauth2:%s@", token), 1)
-		}
-		// GitHub and others use x-access-token format
-		return strings.Replace(repoURL, "https://", fmt.Sprintf("https://x-access-token:%s@", token), 1)
+	return InjectTokenIntoURL(repoURL, token)
+}
+
+// InjectTokenIntoURL embeds an auth token into an HTTPS git URL using the
+// provider-appropriate username — x-access-token for GitHub (works for both PATs
+// and GitHub App installation tokens), oauth2 for GitLab. Any userinfo already
+// present is replaced, so the token is never double-embedded. Non-HTTPS URLs and
+// empty tokens are returned unchanged.
+//
+// The token is set via url.UserPassword so url.String() percent-encodes any
+// special characters (e.g. '@' or ':') per RFC 3986, which git requires.
+//
+// Provider is inferred from the host substring "gitlab", matching the rest of this
+// package; self-hosted GitLab on a non-"gitlab" host falls back to the GitHub
+// username form (a pre-existing repo-wide convention).
+func InjectTokenIntoURL(repoURL, token string) string {
+	if token == "" || !strings.HasPrefix(repoURL, "https://") {
+		return repoURL
 	}
-	return repoURL
+	u, err := url.Parse(repoURL)
+	if err != nil {
+		return repoURL
+	}
+	tokenUser := "x-access-token"
+	if strings.Contains(repoURL, "gitlab") {
+		tokenUser = "oauth2"
+	}
+	u.User = url.UserPassword(tokenUser, token)
+	return u.String()
+}
+
+// StripURLUserinfo removes any embedded "user:pass@" from an HTTPS URL, returning
+// the URL unchanged if it is not HTTPS or cannot be parsed. Used to keep tokens out
+// of logs when echoing an authenticated push target.
+func StripURLUserinfo(repoURL string) string {
+	if !strings.HasPrefix(repoURL, "https://") {
+		return repoURL
+	}
+	u, err := url.Parse(repoURL)
+	if err != nil {
+		return repoURL
+	}
+	u.User = nil
+	return u.String()
 }
 
 func (gc *GitClient) BlameFile(repoDir, filePath string, lineNumber int) (*BlameResult, error) {
@@ -660,11 +693,11 @@ func (gc *GitClient) CloneOrReuseRepository(ctx context.Context, repoURL string,
 
 	gc.logger.Log(common.EventStepComplete, "Worktree created", map[string]any{"worktree_dir": worktreeDir})
 
-	// Configure credentials in worktree for push operations
-	if creds != nil && creds.Token != "" {
-		setURL := exec.CommandContext(ctx, "git", "-C", worktreeDir, "remote", "set-url", "origin", authURL)
-		_ = setURL.Run()
-	}
+	// Intentionally do NOT set the worktree's origin URL here. Worktrees created from
+	// one bare clone share the base repo's .git/config, so a `git remote set-url` would
+	// race across concurrent analyses of the same repo. The push path instead pushes
+	// directly to a token-embedded URL (stateless, no config mutation); the bare clone's
+	// origin already carries auth for fetch.
 
 	// Get HEAD info from the worktree
 	hashCmd := exec.CommandContext(ctx, "git", "-C", worktreeDir, "rev-parse", "HEAD")
@@ -732,12 +765,7 @@ func (gc *GitClient) configureGitCredentials(repoDir, repoURL string, creds *cre
 	// For HTTPS with token, configure the remote URL with embedded credentials
 	// GitHub: https://x-access-token:<token>@github.com/owner/repo.git
 	// GitLab: https://oauth2:<token>@gitlab.com/group/project.git
-	var authenticatedURL string
-	if strings.Contains(repoURL, "gitlab") {
-		authenticatedURL = strings.Replace(repoURL, "https://", fmt.Sprintf("https://oauth2:%s@", creds.Token), 1)
-	} else {
-		authenticatedURL = strings.Replace(repoURL, "https://", fmt.Sprintf("https://x-access-token:%s@", creds.Token), 1)
-	}
+	authenticatedURL := InjectTokenIntoURL(repoURL, creds.Token)
 
 	// Update the remote URL using git command
 	cmd := exec.Command("git", "remote", "set-url", "origin", authenticatedURL)

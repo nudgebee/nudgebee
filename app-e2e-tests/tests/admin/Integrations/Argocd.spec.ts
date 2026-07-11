@@ -4,7 +4,6 @@ import { navigateToCicdTab, testConnection, saveAndHandleAlreadyExists } from ".
 const requiredEnv = [
   "ARGOCD_INTEGRATION_CONFIG_NAME",
   "ARGOCD_SECRET",
-  "ARGOCD_SERVER",
 ];
 const missingEnv = requiredEnv.filter((key) => !process.env[key]);
 
@@ -20,11 +19,13 @@ test("Add Argocd Account Integration", async ({ page }) => {
   await locators.addArgocdAccountBtn.click();
 
   await locators.argocdConfigNameInput.fill(process.env.ARGOCD_INTEGRATION_CONFIG_NAME!);
-  await locators.argocdServerInput.fill(process.env.ARGOCD_SERVER!);
-  await locators.argocdK8sSecretInput.fill(process.env.ARGOCD_SECRET!);
   await locators.argocdAccountIdDropdown.click();
   await locators.argocdAccountIdOption(process.env.CLUSTER!).first().click();
   await locators.argocdAccountIdDropdown.press("Escape");
+  await locators.argocdK8sSecretInput.fill(process.env.ARGOCD_SECRET!);
+
+  await locators.argocdInsecureDropdown.click();
+  await locators.argocdInsecureOption("True").click();
 
   const connected = await testConnection(page, {
     testConnectionBtn: locators.argocdTestConnectionBtn,

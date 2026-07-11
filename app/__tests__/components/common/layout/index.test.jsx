@@ -41,15 +41,15 @@ jest.mock('next/script', () => {
   };
 });
 
-// Mock next/link
+// Mock next/link — must use forwardRef because MUI Button passes a ref when
+// used as component={Link}, and plain function components cannot receive refs.
 jest.mock('next/link', () => {
-  return function Link({ children, href, passHref: _passHref, ...rest }) {
-    return (
-      <a href={href} {...rest}>
-        {children}
-      </a>
-    );
-  };
+  const React = require('react');
+  const Link = React.forwardRef(function Link({ children, href, passHref: _passHref, ...rest }, ref) {
+    return React.createElement('a', { href, ref, ...rest }, children);
+  });
+  Link.displayName = 'Link';
+  return Link;
 });
 
 // Mock auth lib
@@ -111,7 +111,7 @@ jest.mock(
   '@shared/icons/SafeIcon',
   () =>
     function MockSafeIcon({ alt, src }) {
-      return <img alt={alt || 'icon'} src={typeof src === 'string' ? src : '/mock-icon.png'} />;
+      return React.createElement('img', { alt: alt || 'icon', src: typeof src === 'string' ? src : '/mock-icon.png' });
     }
 );
 
@@ -124,16 +124,18 @@ jest.mock(
     }
 );
 
-// Mock ChatwootWidget
-jest.mock(
-  '@components/ChatwootWidget',
-  () =>
-    function MockChatwootWidget() {
-      return <div data-testid='chatwoot-widget' />;
-    }
-);
+// Mock @lib/slots — component renders ChatwootWidget via renderSlot('LayoutFloatingOverlay')
+const mockRenderSlot = jest.fn((slotName) => {
+  if (slotName === 'LayoutFloatingOverlay') {
+    return React.createElement('div', { 'data-testid': 'chatwoot-widget' });
+  }
+  return null;
+});
+jest.mock('@lib/slots', () => ({
+  renderSlot: (...args) => mockRenderSlot(...args),
+}));
 
-// Mock child modals
+// Mock child modals — correct paths matching actual component imports
 jest.mock(
   '@shared/settings/TenantSettings',
   () =>
@@ -165,8 +167,9 @@ jest.mock(
     }
 );
 
-jest.mock('@shared/layout/SwitchTenant', () => ({
-  SwitchTenant: function MockSwitchTenant({ open, onClose }) {
+// LayoutHeaderActionSlot is used for Switch Tenant (component no longer uses SwitchTenant directly)
+jest.mock('@shared/layout/LayoutHeaderActionSlot', () => ({
+  LayoutHeaderActionSlot: function MockLayoutHeaderActionSlot({ open, onClose }) {
     return open ? (
       <div data-testid='switch-tenant'>
         <button onClick={onClose} data-testid='close-switch-tenant'>
@@ -175,6 +178,30 @@ jest.mock('@shared/layout/SwitchTenant', () => ({
       </div>
     ) : null;
   },
+}));
+
+// Mock ErrorBoundary to just render children
+jest.mock('@shared/ErrorBoundary', () => ({
+  __esModule: true,
+  default: function MockErrorBoundary({ children }) {
+    return <>{children}</>;
+  },
+  withErrorBoundary: (Component) => Component,
+}));
+
+// Mock @ui/Tooltip — forward `title` as aria-label on the child so role queries
+// like getByRole('button', { name: 'Account Settings' }) still work in tests.
+jest.mock('@ui/Tooltip', () => ({
+  __esModule: true,
+  default: function MockTooltip({ children, title }) {
+    if (!React.isValidElement(children)) return <>{children}</>;
+    return React.cloneElement(children, title ? { 'aria-label': title } : {});
+  },
+}));
+
+// Mock @ui/Toast — component uses `toast as snackbar` from this module
+jest.mock('@ui/Toast', () => ({
+  toast: { success: jest.fn(), error: jest.fn(), warning: jest.fn() },
 }));
 
 // Mock snackbar
@@ -212,33 +239,6 @@ jest.mock('src/utils/common', () => ({
 }));
 
 // Mock colors
-jest.mock('src/utils/colors', () => {
-  const actual = jest.requireActual('src/utils/colors');
-  return {
-    ...actual,
-    colors: {
-      ...actual.colors,
-      text: { ...actual.colors.text, tertiary: '#666', secondary: '#333', secondaryDark: '#555', white: '#fff' },
-      background: {
-        ...actual.colors.background,
-        pages: '#fff',
-        home: '#f5f5f5',
-        transparent: 'transparent',
-        activeButtonColor: '#eee',
-        askNudgebeePage: '#f9f9f9',
-        sideBar: '#1B2D4A',
-        white: '#fff',
-        secondaryDark: '#444',
-      },
-      border: { ...actual.colors.border, secondaryLightest: '#eee', secondary: '#ddd' },
-      secondary: { default: '#0000ff' },
-      primary: { main: '#0000ff' },
-      switchIconColor: '#aaa',
-      white: '#fff',
-    },
-  };
-});
-
 const { isRenderedInIframe } = require('src/utils/common');
 const { hasReadAccess, isTenantAdmin } = require('@lib/auth');
 const { useTenantBranding } = require('@hooks/useTenantBranding');
@@ -359,26 +359,14 @@ describe('PageLayout (index.jsx)', () => {
     expect(screen.getByTestId('child-content')).toBeInTheDocument();
   });
 
-  it('shows ChatwootWidget when not onPrem and not in iframe', async () => {
+  it('shows ChatwootWidget (LayoutFloatingOverlay slot) when not in iframe', async () => {
     await act(async () => {
       render(<PageLayoutWrapped {...defaultProps} />);
     });
     expect(screen.getByTestId('chatwoot-widget')).toBeInTheDocument();
   });
 
-  it('does not show ChatwootWidget when onPrem', async () => {
-    mockGetUserSession.mockReturnValue({
-      user: { name: 'Test User', email: 'test@example.com' },
-      hasMultipleTenantAccess: false,
-      onPrem: true,
-    });
-    await act(async () => {
-      render(<PageLayoutWrapped {...defaultProps} />);
-    });
-    expect(screen.queryByTestId('chatwoot-widget')).not.toBeInTheDocument();
-  });
-
-  it('does not show ChatwootWidget when in iframe', async () => {
+  it('does not show ChatwootWidget (LayoutFloatingOverlay slot) when in iframe', async () => {
     isRenderedInIframe.mockReturnValue(true);
     await act(async () => {
       render(<PageLayoutWrapped {...defaultProps} />);
@@ -828,6 +816,11 @@ describe('getDynamicPath (via SideDrawerButton clicks)', () => {
     // Set hash so isTroubleshootTab2 = true (pathname=/troubleshoot AND hash=kg)
     window.location.hash = '#kg';
 
+    // jsdom fires a console.error for window.location.assign ("not implemented").
+    // Silence it for this test since the behavior under test is confirmed by checking
+    // that router.push was NOT called (the assign path is taken instead).
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
     mockUseRouter.mockReturnValue({
       push: mockPush,
       pathname: '/troubleshoot',
@@ -846,7 +839,7 @@ describe('getDynamicPath (via SideDrawerButton clicks)', () => {
     const homeBtn = document.getElementById('home-sidenavbutton');
     fireEvent.click(homeBtn);
     // isTroubleshootTab2=true → uses window.location.assign (not router.push)
-    // jsdom doesn't allow mocking window.location.assign, so verify router.push was NOT called
     expect(mockPush).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
   });
 });

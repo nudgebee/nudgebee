@@ -266,14 +266,17 @@ func TestDeduplicateNodesWithIDMapping(t *testing.T) {
 		t.Errorf("DeduplicateNodesWithIDMapping() length = %v, want %v", len(deduplicated), 2)
 	}
 
-	// ID mapping should map all original IDs
-	if len(idMapping) != 3 {
-		t.Errorf("ID mapping length = %v, want %v", len(idMapping), 3)
+	// ID mapping only records duplicate-node IDs that were remapped onto a
+	// surviving node. Surviving nodes keep their own ID and are intentionally
+	// absent from the map (the consumer leaves unmapped IDs unchanged) — see
+	// DeduplicateNodesWithIDMapping in helpers.go.
+	if len(idMapping) != 1 {
+		t.Errorf("ID mapping length = %v, want %v", len(idMapping), 1)
 	}
 
-	// aws-1 should map to itself (it's the surviving node)
-	if idMapping["aws-1"] != "aws-1" {
-		t.Errorf("idMapping[aws-1] = %v, want aws-1", idMapping["aws-1"])
+	// aws-1 is a surviving node, so it has no entry (left unchanged by callers).
+	if _, ok := idMapping["aws-1"]; ok {
+		t.Errorf("idMapping[aws-1] = %v, want no entry (surviving node)", idMapping["aws-1"])
 	}
 
 	// ebpf-2 should map to aws-1 (aws-1 was first with same UniqueKey)
@@ -281,9 +284,9 @@ func TestDeduplicateNodesWithIDMapping(t *testing.T) {
 		t.Errorf("idMapping[ebpf-2] = %v, want aws-1 (should map to surviving node)", idMapping["ebpf-2"])
 	}
 
-	// aws-3 should map to itself
-	if idMapping["aws-3"] != "aws-3" {
-		t.Errorf("idMapping[aws-3] = %v, want aws-3", idMapping["aws-3"])
+	// aws-3 is a surviving node, so it has no entry.
+	if _, ok := idMapping["aws-3"]; ok {
+		t.Errorf("idMapping[aws-3] = %v, want no entry (surviving node)", idMapping["aws-3"])
 	}
 
 	// Verify the surviving service node has merged properties

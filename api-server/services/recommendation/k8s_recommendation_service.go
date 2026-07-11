@@ -70,7 +70,10 @@ func upsertRecommendationData(ctx *security.RequestContext, dbms *database.Datab
 	if len(data) == 0 {
 		return nil
 	}
-	// Compute finops score for each recommendation before upserting
+	// Compute finops score for the INSERT case only. On conflict finops_* are
+	// deliberately not overwritten: this path scores recency from now(), which
+	// inflated re-upserted old rows until the next cron pass. The 6h recompute
+	// cron owns score refresh for existing rows.
 	for _, d := range data {
 		ComputeAndSetFinOpsScoreFields(d)
 	}
@@ -78,7 +81,7 @@ func upsertRecommendationData(ctx *security.RequestContext, dbms *database.Datab
 		(status, tenant_id, cloud_account_id, recommendation, severity, category, rule_name, estimated_savings, recommendation_action, resource_id, account_object_id, updated_at, finops_score, finops_band, finops_score_breakdown)
 		values (:status, :tenant_id, :cloud_account_id, :recommendation, :severity, :category, :rule_name, :estimated_savings, :recommendation_action, :resource_id, :account_object_id, :updated_at, :finops_score, :finops_band, :finops_score_breakdown)
 		ON CONFLICT (rule_name, cloud_account_id, resource_id, category, account_object_id)
-		DO UPDATE SET recommendation = (EXCLUDED.recommendation), status = (EXCLUDED.status), updated_at = (EXCLUDED.updated_at), estimated_savings = (EXCLUDED.estimated_savings), finops_score = (EXCLUDED.finops_score), finops_band = (EXCLUDED.finops_band), finops_score_breakdown = (EXCLUDED.finops_score_breakdown) `, data)
+		DO UPDATE SET recommendation = (EXCLUDED.recommendation), status = (EXCLUDED.status), updated_at = (EXCLUDED.updated_at), estimated_savings = (EXCLUDED.estimated_savings) `, data)
 	if err != nil {
 		ctx.GetLogger().Error("error upserting recommendation data", "error", err)
 		return err
@@ -391,173 +394,6 @@ func processHpaRecommendations(ctx *security.RequestContext, accountId string, d
 	return nil
 }
 
-func processImageScanner(ctx *security.RequestContext, accountId string, dbms *database.DatabaseManager) error {
-	rows, err := dbms.Db.Queryx(`
-	SELECT name, value, cloud_account_id 
-	FROM public.cloud_account_attrs 
-	where cloud_account_id::varchar = $1 and name in ('enable_image_scan')`, accountId)
-
-	if err != nil {
-		ctx.GetLogger().Error("error getting image scanner recommendations", "error", err)
-		return err
-	}
-
-	defer func() {
-		err := rows.Close()
-		if err != nil {
-			ctx.GetLogger().Error("error closing rows", "error", err)
-		}
-	}()
-
-	enableImageScan := true
-	for rows.Next() {
-		var name string
-		var value string
-		var cloudAccountId string
-		err = rows.Scan(&name, &value, &cloudAccountId)
-		if err != nil {
-			ctx.GetLogger().Error("error scanning image scanner recommendations", "error", err)
-			return err
-		}
-		if value == "false" {
-			enableImageScan = true
-			break
-		}
-	}
-
-	if !enableImageScan {
-		ctx.GetLogger().Info("Image scanner is not enabled for account", "account_id", accountId)
-		return nil
-	}
-
-	// Close the first result set before reassigning `rows`: the deferred close
-	// above captures `rows` by reference, so without this the first result set
-	// would leak when the enable-scan loop breaks early.
-	_ = rows.Close()
-
-	// Anti-join against already-scanned images. The previous form materialised
-	// every image_scan recommendation row for the account (~427k for the largest
-	// tenant) into an `excluded_images` CTE and then `NOT IN`-ed against it,
-	// forcing a full seq scan of the 7GB recommendation table per run (~85s).
-	//
-	// Instead: collapse the running container images to a small distinct set in a
-	// MATERIALIZED CTE first (the MATERIALIZED is load-bearing — it gives the
-	// planner a concrete small row count instead of jsonb_array_elements' default
-	// 100-rows-per-pod estimate, which is what previously pushed it toward
-	// hash/merge anti-joins that scan all of recommendation). Then a per-image
-	// NOT EXISTS rides idx_recommendation_security_account_image_name
-	// (cloud_account_id, tenant_id, recommendation->>'image_name') as a 3-column
-	// nested-loop index probe, and LIMIT 5 short-circuits after the first few
-	// unscanned images. tenant_id is carried from the pod row (cloud_account_id
-	// maps to a single tenant, so it drops no valid match). ~85s -> ~0.1s.
-	rows, err = dbms.Db.Queryx(`
-		WITH running_images AS MATERIALIZED (
-			SELECT DISTINCT ON (container->>'image')
-				container->>'image' as image,
-				cr.cloud_account_id,
-				cr.tenant_id,
-				cr.name,
-				cr.meta->>'namespace' as namespace,
-				cr.workload_type as kind
-			FROM k8s_pods cr
-			CROSS JOIN LATERAL jsonb_array_elements(cr.meta->'config'->'containers') as container
-			WHERE cr.is_active IS NOT FALSE
-				AND cr.cloud_account_id = $1
-				AND cr.status = 'Running'
-				AND cr.meta->>'namespace' NOT IN ('kube-system', 'nudgebee-agent')
-				AND cr.workload_type != 'Job'
-		),
-		scanned_tasks AS (
-			SELECT at2.payload->'action_params'->>'image_name' AS image_name
-			FROM agent_task at2
-			WHERE at2.cloud_account_id = $1
-			  AND at2.payload->>'action_name' = 'image_scanner'
-		)
-		SELECT ri.image, ri.cloud_account_id, ri.tenant_id, ri.name, ri.namespace, ri.kind
-		FROM running_images ri
-		WHERE NOT EXISTS (
-				SELECT 1 FROM recommendation r
-				WHERE r.cloud_account_id = $1
-				  AND r.tenant_id = ri.tenant_id
-				  AND r.category = 'Security' AND r.rule_name = 'image_scan'
-				  AND r.account_object_id IS NOT NULL
-				  AND r.recommendation->>'image_name' = ri.image
-			)
-			AND ri.image NOT IN (SELECT image_name FROM scanned_tasks WHERE image_name IS NOT NULL)
-		LIMIT 5
-	`, accountId)
-
-	if err != nil {
-		ctx.GetLogger().Error("error getting image scanner recommendations", "error", err)
-		return err
-	}
-	defer func() {
-		err := rows.Close()
-		if err != nil {
-			slog.Error("Failed to close rows", "error", err)
-		}
-	}()
-
-	pendingImages := make([]map[string]any, 0)
-	for rows.Next() {
-		d := make(map[string]any)
-		err = rows.MapScan(d)
-		if err != nil {
-			ctx.GetLogger().Error("error scanning image scanner recommendations", "error", err)
-			return err
-		}
-		pendingImages = append(pendingImages, d)
-	}
-
-	tasks := make([]map[string]any, 0)
-	for _, image := range pendingImages {
-		payload := map[string]any{
-			"sinks":         nil,
-			"no_sinks":      false,
-			"sync_response": false,
-			"origin":        "callback",
-			"timestamp":     time.Now(),
-			"action_name":   "image_scanner",
-			"action_params": map[string]any{
-				"name":       image["name"],
-				"namespace":  image["namespace"],
-				"image_name": image["image"],
-			},
-		}
-		payloadStr, err := common.MarshalJson(payload)
-		if err != nil {
-			ctx.GetLogger().Error("error marshalling image scanner recommendations", "error", err)
-			return err
-		}
-		task := map[string]any{
-			"cloud_account_id": accountId,
-			"tenant":           image["tenant_id"],
-			"action":           "image_scanner",
-			"payload":          string(payloadStr),
-			"status":           "TODO",
-			"source":           "recommendation",
-		}
-		tasks = append(tasks, task)
-	}
-
-	ctx.GetLogger().Info("Inserting image scanner tasks", "tasks", len(tasks))
-
-	if (len(tasks)) == 0 {
-		return nil
-	}
-
-	_, err = dbms.Db.NamedExec(`INSERT INTO agent_task (cloud_account_id, tenant, action, payload, status, source)
-		VALUES (:cloud_account_id, :tenant, :action, :payload, :status, :source)
-		ON CONFLICT (cloud_account_id, (payload->'action_params'->>'image_name')) WHERE action = 'image_scanner'
-		DO NOTHING`, tasks)
-	if err != nil {
-		ctx.GetLogger().Error("error inserting image scanner tasks", "error", err)
-		return err
-	}
-
-	return nil
-}
-
 // imageScanMaxConcurrent bounds how many per-image Trivy Jobs we run in
 // parallel for one account. Image-scan Jobs are CPU-light but heavy on
 // registry-pull bandwidth; 2 is a conservative default that mirrors the
@@ -585,6 +421,15 @@ func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, 
 	// the per-image NOT EXISTS rides idx_recommendation_security_account_image_name
 	// as a nested-loop 3-column index probe instead of seq scanning the whole
 	// recommendation table. Here tenant_id is an explicit parameter on every clause.
+	// The fs-scan path needs the node each image is pulled on (it pins the scan
+	// Job there to reuse the node-local image — see buildImageScanSpec), so we
+	// carry cr.meta->>'node' alongside the image.
+	//
+	// No agent_task exclusion here. The legacy `scanned_tasks` anti-join skipped
+	// any image that already had an image_scanner agent_task row — but the legacy
+	// agent no longer registers that action, so those rows are all permanent
+	// FAILEDs ("action not registered"), which silently starved this path of every
+	// image. Dispatch is server-orchestrated now; agent_task is irrelevant.
 	rows, err := dbms.Db.Queryx(`
 		WITH running_images AS MATERIALIZED (
 			SELECT DISTINCT ON (container->>'image')
@@ -593,6 +438,7 @@ func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, 
 				cr.tenant_id,
 				cr.name,
 				cr.meta->>'namespace' as namespace,
+				cr.meta->>'node' as node,
 				cr.workload_type as kind
 			FROM k8s_pods cr
 			CROSS JOIN LATERAL jsonb_array_elements(cr.meta->'config'->'containers') as container
@@ -602,15 +448,8 @@ func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, 
 				AND cr.status = 'Running'
 				AND cr.meta->>'namespace' NOT IN ('kube-system', 'nudgebee-agent')
 				AND cr.workload_type != 'Job'
-		),
-		scanned_tasks AS (
-			SELECT at2.payload->'action_params'->>'image_name' AS image_name
-			FROM agent_task at2
-			WHERE at2.cloud_account_id = $1
-			  AND at2.tenant = $2
-			  AND at2.payload->>'action_name' = 'image_scanner'
 		)
-		SELECT ri.image, ri.cloud_account_id, ri.tenant_id, ri.name, ri.namespace, ri.kind
+		SELECT ri.image, ri.cloud_account_id, ri.tenant_id, ri.name, ri.namespace, ri.node, ri.kind
 		FROM running_images ri
 		WHERE NOT EXISTS (
 				SELECT 1 FROM recommendation r
@@ -618,9 +457,9 @@ func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, 
 				  AND r.tenant_id = $2
 				  AND r.category = 'Security' AND r.rule_name = 'image_scan'
 				  AND r.account_object_id IS NOT NULL
+				  AND r.status != 'Archive'
 				  AND r.recommendation->>'image_name' = ri.image
 			)
-			AND ri.image NOT IN (SELECT image_name FROM scanned_tasks WHERE image_name IS NOT NULL)
 		LIMIT 5
 	`, accountId, tenantId)
 	if err != nil {
@@ -628,28 +467,45 @@ func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, 
 	}
 	defer func() { _ = rows.Close() }()
 
-	images := []string{}
+	// namespace + podName identify a pod running the image: the node to pin to and
+	// the source of the registry pull secret (when the agent's auto-copy is on).
+	type pendingImage struct{ image, node, namespace, podName string }
+	pending := []pendingImage{}
 	for rows.Next() {
 		row := make(map[string]any)
 		if err := rows.MapScan(row); err != nil {
 			return fmt.Errorf("image_scanner: scan row: %w", err)
 		}
-		if img, ok := row["image"].(string); ok && img != "" {
-			images = append(images, img)
+		img, _ := row["image"].(string)
+		if img == "" {
+			continue
 		}
+		node, _ := row["node"].(string)
+		if node == "" {
+			// The fs-scan pins the Job to this node to reuse the node-local image.
+			// Without it the Job schedules anywhere and IfNotPresent falls back to a
+			// registry pull (fails for private registries). Skip; a later cycle picks
+			// it up once discovery has populated the node.
+			ctx.GetLogger().Warn("image_scanner: skipping image with no node", "image", img, "account_id", accountId)
+			continue
+		}
+		namespace, _ := row["namespace"].(string)
+		podName, _ := row["name"].(string)
+		pending = append(pending, pendingImage{image: img, node: node, namespace: namespace, podName: podName})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("image_scanner: iterate pending images: %w", err)
 	}
 	ctx.GetLogger().Info("image_scanner: pending images for server-orchestrated scan",
-		"account_id", accountId, "count", len(images))
-	if len(images) == 0 {
+		"account_id", accountId, "count", len(pending))
+	if len(pending) == 0 {
 		return nil
 	}
 
-	scanAccount := scan_orchestrator.ScanAccount{AccountID: accountId, TenantID: tenantId}
-
 	sem := make(chan struct{}, imageScanMaxConcurrent)
 	var wg sync.WaitGroup
-	for _, image := range images {
-		image := image
+	for _, p := range pending {
+		p := p
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
@@ -657,13 +513,23 @@ func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, 
 			defer func() { <-sem }()
 			defer func() {
 				if r := recover(); r != nil {
-					ctx.GetLogger().Error("image_scanner: panic in per-image scan", "image", image, "panic", r)
+					ctx.GetLogger().Error("image_scanner: panic in per-image scan", "image", p.image, "panic", r)
 				}
 			}()
-			if err := scan_orchestrator.RunOne(ctx, scanAccount, "image_scanner", map[string]any{
-				"image": image,
-			}); err != nil {
-				ctx.GetLogger().Error("image_scanner: per-image scan failed", "image", image, "error", err)
+			// TargetImage/TargetNode drive buildImageScanSpec; per-image so each
+			// goroutine gets its own value (ScanAccount is a value type).
+			// TargetNamespace/TargetPodName let the agent source the image's pull
+			// secret (opt-in, agent-gated) so private images can be pulled.
+			scanAccount := scan_orchestrator.ScanAccount{
+				AccountID:       accountId,
+				TenantID:        tenantId,
+				TargetImage:     p.image,
+				TargetNode:      p.node,
+				TargetNamespace: p.namespace,
+				TargetPodName:   p.podName,
+			}
+			if err := scan_orchestrator.RunOne(ctx, scanAccount, "image_scanner", nil); err != nil {
+				ctx.GetLogger().Error("image_scanner: per-image scan failed", "image", p.image, "node", p.node, "error", err)
 			}
 		}()
 	}
@@ -1079,9 +945,39 @@ func GenerateSecurityRecommendation(ctx *security.RequestContext, request Genera
 
 		ctx.GetLogger().Info("Processing Security recommendations for account", "account_id", accountId)
 
-		err = processImageScanner(ctx, accountId, dbms)
-		if err != nil {
-			ctx.GetLogger().Error("error processing image scanner recommendations", "error", err)
+		if accountId == "" {
+			continue
+		}
+		// Prefer the tenant on the request context; fall back to a DB lookup
+		// (system crons run with an empty tenant in the context).
+		tenantId := ctx.GetSecurityContext().GetTenantId()
+		if tenantId == "" {
+			if err := dbms.Db.Get(&tenantId, `SELECT tenant::varchar FROM cloud_accounts WHERE id::varchar = $1`, accountId); err != nil {
+				ctx.GetLogger().Error("image_scanner: cannot resolve tenant for account", "account_id", accountId, "error", err)
+				continue
+			}
+		}
+		if tenantId == "" {
+			ctx.GetLogger().Error("image_scanner: empty tenant for account", "account_id", accountId)
+			continue
+		}
+		// Tenant-scoped context so downstream tenant-aware operations are isolated
+		// (mirrors GenerateRecommendation). Server-orchestrated (was the dead
+		// processImageScanner agent_task path). Note GenerateRecommendation also
+		// runs this; the pending-images query is idempotent (skips images with an
+		// Open recommendation), so the overlap is harmless.
+		accountCtx := ctx
+		if ctx.GetSecurityContext().GetTenantId() == "" {
+			accountCtx = security.NewRequestContext(
+				ctx.GetContext(),
+				security.NewSecurityContextForTenantAdmin(tenantId),
+				ctx.GetLogger(),
+				ctx.GetTracer(),
+				ctx.GetMeter(),
+			)
+		}
+		if err := runImageScannerServerOrchestrated(accountCtx, accountId, tenantId, dbms); err != nil {
+			ctx.GetLogger().Error("error processing image scanner recommendations (server-orchestrated)", "account_id", accountId, "error", err)
 		}
 	}
 	return GenerateRecommendationResponse{}, err

@@ -1,13 +1,12 @@
-import { test } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { WorkflowLocators } from "./workflowlocators";
 import {
   generateWorkflowName,
   loginAndNavigateToNewWorkflow,
   pasteAndApplyWorkflowJson,
   saveNewWorkflow,
-  setWorkflowActiveAndSave,
   runWorkflowWithGraphQLValidation,
-  configureNotificationsImSlack,
+  deleteCreatedWorkflow,
   dryRunAction,
   closeActionPanel,
 } from "./workflowHelper";
@@ -25,7 +24,7 @@ const WORKFLOW_JSON_TEMPLATE = {
         id: "notifications_im",
         type: "notifications.im",
         params: {
-          channel: SLACK_CHANNEL,
+          channel: "",
           message: "PW Automation Slack notification testing",
           provider: "slack",
           team_id: "",
@@ -54,11 +53,20 @@ test("Automation workflow Slack Notification", async ({ page }) => {
   await loginAndNavigateToNewWorkflow(page, locators);
   await pasteAndApplyWorkflowJson(page, locators, workflowJson);
   await locators.action_notifications_im.click();
-  await configureNotificationsImSlack(page, SLACK_CHANNEL);
+
+  const dialog = page.locator("div.MuiDialog-container");
+  await dialog.waitFor({ state: "visible", timeout: 15000 });
+  await expect(dialog.getByRole("button", { name: "Slack", exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: /Select channel/ }).click();
+  await page.getByPlaceholder("Select channel").fill(SLACK_CHANNEL);
+  await page.locator('[role="option"]').filter({ hasText: SLACK_CHANNEL }).first().click();
+  console.log(`Selected Slack channel: ${SLACK_CHANNEL}`);
+
   await dryRunAction(page, locators);
   await closeActionPanel(page, locators);
 
   await saveNewWorkflow(page, locators, workflowName);
-  await setWorkflowActiveAndSave(page, locators);
   await runWorkflowWithGraphQLValidation(page, locators, "Automation workflow Slack Notification");
+
+  await deleteCreatedWorkflow(page, locators, workflowName);
 });

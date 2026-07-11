@@ -221,24 +221,35 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
   const role = opts.sessionVariables.role || '';
   const allowedRoles = opts.sessionVariables.allowed_roles || [];
   const isSuperAdmin = allowedRoles.includes('super_admin');
-  // No roles at all → the user has no assignment in the active tenant. Report
-  // that as its own error rather than a `forbidden` that would falsely name
-  // `tenant_admin_readonly` (buildSessionVariables' fallback role label, not a
-  // real role the user holds).
-  if (!isSuperAdmin && allowedRoles.length === 0) {
-    return { ok: false, error: { kind: 'no_tenant_role', method: opts.method } };
-  }
-  const hasAllowedRole = allowedRoles.some((r) => route.allowedRoles.has(r));
-  if (!isSuperAdmin && !hasAllowedRole) {
-    return {
-      ok: false,
-      error: {
-        kind: 'forbidden',
-        method: opts.method,
-        role,
-        allowedRoles: [...route.allowedRoles],
-      },
-    };
+  // Tenant-agnostic actions (actions.yaml `tenant_agnostic: true`) authorize on
+  // the authenticated user's identity alone, not on a role within the active
+  // tenant, so both gates below are skipped for them. This is what keeps
+  // `users_list_tenants` reachable for a user stranded in a tenant where they
+  // hold no role: that action is exactly the call the Switch-Tenant modal makes
+  // to find a tenant the user CAN switch to — gating it behind a tenant role is
+  // a chicken-and-egg lockout. The upstream handler still scopes results to the
+  // caller's own username, so skipping the role gate doesn't widen tenant-scoped
+  // data access. super_admin bypasses both gates too.
+  if (!isSuperAdmin && !route.tenantAgnostic) {
+    // No roles at all → the user has no assignment in the active tenant. Report
+    // that as its own error rather than a `forbidden` that would falsely name
+    // `tenant_admin_readonly` (buildSessionVariables' fallback role label, not a
+    // real role the user holds).
+    if (allowedRoles.length === 0) {
+      return { ok: false, error: { kind: 'no_tenant_role', method: opts.method } };
+    }
+    const hasAllowedRole = allowedRoles.some((r) => route.allowedRoles.has(r));
+    if (!hasAllowedRole) {
+      return {
+        ok: false,
+        error: {
+          kind: 'forbidden',
+          method: opts.method,
+          role,
+          allowedRoles: [...route.allowedRoles],
+        },
+      };
+    }
   }
 
   const upstreamUrl = resolveHandler(route.handler);

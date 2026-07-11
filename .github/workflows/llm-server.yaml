@@ -56,3 +56,32 @@ jobs:
           working-directory: llm/llm-server
           only-new-issues: true
           args: --timeout 20m
+
+      # -race needs cgo + a C compiler. The self-hosted runner image is minimal
+      # and may ship without gcc, so install it before the race-enabled run.
+      - name: Install C toolchain (for -race)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc libc6-dev
+
+      # Unit suite. Tests that need a live Postgres metastore / Clickhouse
+      # warehouse / external credentials skip themselves cleanly via the
+      # internal/testenv helpers (testenv.RequireMetastore / RequireWarehouse /
+      # RequireEnv), so this runs hermetically on a bare runner. Making those
+      # skips real test coverage (throwaway containers) is tracked in #31114.
+      - name: Run unit tests
+        working-directory: ./api-server/services
+        # setup-go leaves CGO_ENABLED unset; -race requires cgo, so enable it.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./...
+
+      # Compile-only gate for the integration-tagged tests
+      # (//go:build relay_integration | recommendation_integration). They need
+      # live infra CI does not have, so we do NOT run them -- but `go vet`
+      # type-checks every file, including the tagged ones, without executing any
+      # binary, so build breakage in them still surfaces on the PR.
+      - name: Build integration-tagged tests (compile-only)
+        # Run even if the unit-test step failed, so compile breakage is always
+        # reported instead of being masked by an unrelated test failure.
+        if: ${{ !cancelled() }}
+        working-directory: ./api-server/services
+        run: go vet -tags "relay_integration recommendation_integration" ./...

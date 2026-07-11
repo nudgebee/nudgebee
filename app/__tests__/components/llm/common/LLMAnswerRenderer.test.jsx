@@ -4,6 +4,7 @@ import LLMAnswerRenderer from '@components/llm/common/LLMAnswerRenderer';
 
 // Mock heavy internal components so we can assert on what the renderer CHOSE
 // to display without pulling MUI / markdown parsers into the test.
+// Source migrated to @shared/viewers/MarkDowns.
 jest.mock('@shared/viewers/MarkDowns', () => {
   return function MockMarkDowns({ data }) {
     // Render the incoming markdown string into a predictable DOM node so
@@ -12,7 +13,7 @@ jest.mock('@shared/viewers/MarkDowns', () => {
   };
 });
 
-jest.mock('@shared/tables/CustomTable2', () => {
+jest.mock('@shared/tables/CustomTable', () => {
   return function MockCustomTable({ headers, tableData }) {
     return (
       <div data-testid='table-output'>

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"log/slog"
 	eventtypes "nudgebee/services/event/types"
 	"nudgebee/services/internal/testenv"
 	"nudgebee/services/security"
@@ -322,4 +323,128 @@ func TestApplyAccountMapping(t *testing.T) {
 			assert.Equal(t, tc.expected, got)
 		})
 	}
+}
+
+func TestParseIntegrationLabelMapping(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      string
+		expected *WebhookLabelMapping
+	}{
+		{
+			name:     "missing setting returns nil",
+			raw:      "",
+			expected: nil,
+		},
+		{
+			name:     "invalid JSON returns nil",
+			raw:      `{"subject_name_labels":`,
+			expected: nil,
+		},
+		{
+			name:     "all-empty arrays return nil",
+			raw:      `{"subject_name_labels":[],"namespace_labels":[],"severity_labels":[]}`,
+			expected: nil,
+		},
+		{
+			name: "flipkart zenduty + prometheus rules parsed",
+			raw:  `{"subject_name_labels":["nb_zenduty_service_name","fk.service"],"namespace_labels":["namespace"],"severity_labels":["severity"]}`,
+			expected: &WebhookLabelMapping{
+				SubjectNameLabels: []string{"nb_zenduty_service_name", "fk.service"},
+				NamespaceLabels:   []string{"namespace"},
+				SeverityLabels:    []string{"severity"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := []IntegrationConfigValue{}
+			if tc.raw != "" {
+				settings = append(settings, IntegrationConfigValue{Name: "webhook_label_mapping", Value: tc.raw})
+			}
+			got := parseIntegrationLabelMapping(settings, nil)
+			assert.Equal(t, tc.expected, got)
+		})
+	}
+}
+
+func TestApplyLabelMapping(t *testing.T) {
+	logger := slog.Default()
+
+	newEvent := func(subject, namespace string, sev eventtypes.EventPriority, labels map[string]string) EventIncomingWebhook {
+		return EventIncomingWebhook{
+			EventSubjectName:      subject,
+			EventSubjectNamespace: namespace,
+			Investigation:         EventIncomingWebhookInvestigation{Severity: sev, Labels: labels},
+		}
+	}
+
+	t.Run("override wins over parser guess when rule matches", func(t *testing.T) {
+		// Flipkart ZenDuty: incident.service.name surfaces as nb_zenduty_service_name.
+		mapping := &WebhookLabelMapping{SubjectNameLabels: []string{"nb_zenduty_service_name"}}
+		event := newEvent("parser-guessed-wrong", "", "", map[string]string{"nb_zenduty_service_name": "checkout-service"})
+		applyLabelMapping(&event, mapping, newLabelExtractorCache(logger, mapping), true)
+		assert.Equal(t, "checkout-service", event.EventSubjectName)
+	})
+
+	t.Run("override leaves parser value when rule misses", func(t *testing.T) {
+		mapping := &WebhookLabelMapping{SubjectNameLabels: []string{"nb_zenduty_service_name"}}
+		event := newEvent("parser-svc", "", "", map[string]string{"unrelated": "x"})
+		applyLabelMapping(&event, mapping, newLabelExtractorCache(logger, mapping), true)
+		assert.Equal(t, "parser-svc", event.EventSubjectName)
+	})
+
+	t.Run("fill-empty leaves existing non-empty value", func(t *testing.T) {
+		mapping := &WebhookLabelMapping{SubjectNameLabels: []string{"fk.service"}}
+		event := newEvent("parser-svc", "", "", map[string]string{"fk.service": "fk-svc"})
+		applyLabelMapping(&event, mapping, newLabelExtractorCache(logger, mapping), false)
+		assert.Equal(t, "parser-svc", event.EventSubjectName)
+	})
+
+	t.Run("fill-empty fills when empty", func(t *testing.T) {
+		// Flipkart Prometheus: labels.fk.service flattened to a label key.
+		mapping := &WebhookLabelMapping{SubjectNameLabels: []string{"fk.service"}}
+		event := newEvent("", "", "", map[string]string{"fk.service": "fk-svc"})
+		applyLabelMapping(&event, mapping, newLabelExtractorCache(logger, mapping), false)
+		assert.Equal(t, "fk-svc", event.EventSubjectName)
+	})
+
+	t.Run("first non-empty spec wins", func(t *testing.T) {
+		mapping := &WebhookLabelMapping{SubjectNameLabels: []string{"missing", "fk.service"}}
+		event := newEvent("", "", "", map[string]string{"fk.service": "fk-svc"})
+		applyLabelMapping(&event, mapping, newLabelExtractorCache(logger, mapping), true)
+		assert.Equal(t, "fk-svc", event.EventSubjectName)
+	})
+
+	t.Run("regex capture spec extracts group", func(t *testing.T) {
+		mapping := &WebhookLabelMapping{SubjectNameLabels: []string{`app_id|/k8s/[^/]+/(.+)`}}
+		event := newEvent("", "", "", map[string]string{"app_id": "/k8s/prod/checkout-deploy"})
+		applyLabelMapping(&event, mapping, newLabelExtractorCache(logger, mapping), true)
+		assert.Equal(t, "checkout-deploy", event.EventSubjectName)
+	})
+
+	t.Run("namespace and severity override + normalize", func(t *testing.T) {
+		mapping := &WebhookLabelMapping{
+			NamespaceLabels: []string{"k8s_ns"},
+			SeverityLabels:  []string{"prio"},
+		}
+		event := newEvent("svc", "old-ns", eventtypes.EventPriorityLow, map[string]string{"k8s_ns": "team-ns", "prio": "critical"})
+		applyLabelMapping(&event, mapping, newLabelExtractorCache(logger, mapping), true)
+		assert.Equal(t, "team-ns", event.EventSubjectNamespace)
+		assert.Equal(t, eventtypes.EventPriorityHigh, event.Investigation.Severity)
+	})
+
+	t.Run("nil mapping is a no-op", func(t *testing.T) {
+		event := newEvent("svc", "ns", "", map[string]string{"k": "v"})
+		applyLabelMapping(&event, nil, newLabelExtractorCache(logger), true)
+		assert.Equal(t, "svc", event.EventSubjectName)
+	})
+
+	t.Run("nil labels is a no-op (no panic)", func(t *testing.T) {
+		mapping := &WebhookLabelMapping{SubjectNameLabels: []string{"fk.service"}}
+		event := newEvent("svc", "", "", nil)
+		applyLabelMapping(&event, mapping, newLabelExtractorCache(logger, mapping), true)
+		assert.Equal(t, "svc", event.EventSubjectName)
+	})
 }

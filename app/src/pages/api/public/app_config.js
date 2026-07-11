@@ -24,7 +24,10 @@ export default function handler(req, res) {
     // Invalid JSON — ignore, use defaults
   }
 
+  const isWhiteLabel = !!process.env.TENANT_BRANDING_FILE && process.env.TENANT_BRANDING_FILE !== 'branding/default/theme.json';
+
   res.status(200).json({
+    isWhiteLabel,
     logoUrl: brandingFile?.logoUrl || '/branding/default/logo.svg',
     faviconUrl: brandingFile?.faviconUrl || '/favicon.ico',
     title: brandingFile?.title || 'Nudgebee',
@@ -47,5 +50,9 @@ export default function handler(req, res) {
     signingPublicKey: process.env.SIGNING_PUBLIC_KEY || '',
     theme,
     colorTokens,
+    // Optional tenant font remap: [{ family, src, weight?, style? }]. Re-points
+    // hardcoded font-family names (e.g. Poppins/Roboto) at a brand font via
+    // @font-face injected client-side. Null ⇒ no remap (default Roboto/Poppins).
+    fontRemap: Array.isArray(brandingFile?.fontRemap) ? brandingFile.fontRemap : null,
   });
 }

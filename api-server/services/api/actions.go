@@ -203,6 +203,19 @@ func handleApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logger
 		handleUserAction(&actionPayload, c, tracer, meter, logger)
 	})
 
+	groupV2.POST("/ownership", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal(c.Request.Context(), "ownership")
+		var actionPayload ActionRequest
+		err := c.ShouldBindJSON(&actionPayload)
+		if err != nil {
+			common.MetricsApiRequestsFailedTotal(c.Request.Context(), "ownership", "invalid_json")
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		handleOwnershipAction(&actionPayload, c, tracer, meter, logger)
+	})
+
 	groupV2.POST("/nb", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal(c.Request.Context(), "nb")
 		var actionPayload ActionRequest

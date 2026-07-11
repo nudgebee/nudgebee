@@ -52,7 +52,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   if (userAccount.user.status != 'active' || userAccount.status != 'active') {
-    console.log('user account is suspended', userAccount);
+    console.warn('user account is suspended', userAccount.id);
     res.status(401).json({ message: 'user is not active' });
     return;
   }

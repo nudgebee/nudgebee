@@ -52,7 +52,7 @@ const DeletableEdge: React.FC<DeletableEdgeProps> = ({
             style={{
               position: 'absolute',
               transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
-              fontSize: 12,
+              fontSize: 'var(--ds-text-small)',
               pointerEvents: 'all',
               zIndex: 1000,
               display: 'flex',

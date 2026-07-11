@@ -4,7 +4,7 @@ import { Line, getElementAtEvent } from 'react-chartjs-2';
 import PropTypes from 'prop-types';
 import { v4 as uuidv4 } from 'uuid';
 import { withErrorBoundary } from '@shared/ErrorBoundary';
-import { resolveColor } from 'src/utils/colors';
+import { ds, resolveColor } from 'src/utils/colors';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Colors);
 
@@ -22,7 +22,7 @@ const SearchIcon = () => (
 );
 
 const askNubiButtonStyle = {
-  background: 'linear-gradient(135deg, var(--ds-blue-500), #2563EB)',
+  background: `linear-gradient(135deg, ${ds.blue[500]}, ${ds.blue[500]})`,
   color: 'white',
   border: 'none',
   borderRadius: 'var(--ds-radius-md)',
@@ -32,7 +32,7 @@ const askNubiButtonStyle = {
   fontWeight: 'var(--ds-font-weight-medium)',
   fontFamily: 'Roboto, sans-serif',
   whiteSpace: 'nowrap',
-  boxShadow: '0 2px 8px rgba(59, 130, 246, 0.4)',
+  boxShadow: `0 ${ds.space[0]} ${ds.space[2]} color-mix(in srgb, ${ds.blue[500]} 40%, transparent)`,
   display: 'flex',
   alignItems: 'center',
   gap: 'var(--ds-space-1)',
@@ -138,7 +138,7 @@ const Charts = ({
         type: 'category',
         grid: {
           display: false,
-          color: 'rgba(0,0,0,0.1)',
+          color: resolveColor(ds.gray.alpha[300]),
           drawBorder: false,
           lineWidth: 0.2,
         },
@@ -150,7 +150,7 @@ const Charts = ({
       y: {
         grid: {
           display: true,
-          color: 'rgba(0,0,0,0.1)',
+          color: resolveColor(ds.gray.alpha[300]),
           drawBorder: false,
           lineWidth: 0.2,
         },
@@ -324,10 +324,10 @@ const Charts = ({
       listContainer = document.createElement('ul');
       listContainer.style.display = 'grid';
       listContainer.style.gridTemplateColumns = '1fr 1fr';
-      listContainer.style.gap = '12px 16px';
+      listContainer.style.gap = `${ds.space[3]} ${ds.space[4]}`;
       listContainer.style.margin = 0;
       listContainer.style.padding = 0;
-      listContainer.style.maxHeight = '300px';
+      listContainer.style.maxHeight = ds.space.mul(0, 150);
       listContainer.style.overflowY = 'auto';
 
       legendContainer.appendChild(listContainer);
@@ -355,9 +355,9 @@ const Charts = ({
         li.style.cursor = 'pointer';
         li.style.display = 'flex';
         li.style.flexDirection = 'row';
-        li.style.marginLeft = '10px';
-        li.style.marginRight = '10px';
-        li.style.marginBottom = '4px';
+        li.style.marginLeft = ds.space.mul(0, 5);
+        li.style.marginRight = ds.space.mul(0, 5);
+        li.style.marginBottom = ds.space[1];
 
         li.onclick = () => {
           const { type } = chart.config;
@@ -377,10 +377,10 @@ const Charts = ({
         boxSpan.style.borderWidth = item.lineWidth + 'px';
         boxSpan.style.display = 'inline-block';
         boxSpan.style.flexShrink = 0;
-        boxSpan.style.height = '20px';
-        boxSpan.style.marginLeft = '10px';
-        boxSpan.style.marginRight = '10px';
-        boxSpan.style.width = '20px';
+        boxSpan.style.height = ds.space.mul(0, 10);
+        boxSpan.style.marginLeft = ds.space.mul(0, 5);
+        boxSpan.style.marginRight = ds.space.mul(0, 5);
+        boxSpan.style.width = ds.space.mul(0, 10);
 
         const textContainer = document.createElement('p');
         textContainer.style.color = item.fontColor;
@@ -507,8 +507,8 @@ const Charts = ({
 
       Object.assign(tooltipEl.style, {
         position: 'absolute',
-        background: 'rgba(51, 51, 51, 0.95)',
-        color: 'white',
+        background: `color-mix(in srgb, ${ds.gray[700]} 95%, transparent)`,
+        color: ds.background[100],
         padding: 'var(--ds-space-2) var(--ds-space-3)',
         borderRadius: 'var(--ds-radius-md)',
         pointerEvents: 'auto',
@@ -521,7 +521,7 @@ const Charts = ({
         overflowY: 'auto',
         overflowX: 'auto',
         boxSizing: 'border-box',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+        boxShadow: `0 ${ds.space[0]} ${ds.space[2]} color-mix(in srgb, ${ds.gray[700]} 20%, transparent)`,
         opacity: '0',
         display: 'none',
         willChange: 'opacity', // Hint to browser for GPU acceleration
@@ -608,7 +608,7 @@ const Charts = ({
           const unit = unitMatch ? ` ${unitMatch[1]}` : '';
 
           const value = typeof rawValue === 'number' ? rawValue.toFixed(2) + unit : rawValue;
-          const color = dataPoint.dataset.backgroundColor || dataPoint.dataset.borderColor || '#ccc';
+          const color = dataPoint.dataset.backgroundColor || dataPoint.dataset.borderColor || ds.gray[300];
 
           const metrics = chartDataMetrices[datasetLabel] || {};
           const metricsTextArray = [];
@@ -629,16 +629,18 @@ const Charts = ({
 
           const metricsText = metricsTextArray.filter(Boolean).join(', ') || '';
 
-          return `<div style="margin-bottom: 4px; max-width: ${TOOLTIP_MAX_WIDTH}px; z-index: 1000;">
-              <div style="display: flex; align-items: center; margin-bottom: 4px;">
+          return `<div style="margin-bottom: ${ds.space[1]}; max-width: ${TOOLTIP_MAX_WIDTH}px; z-index: 1000;">
+              <div style="display: flex; align-items: center; margin-bottom: ${ds.space[1]};">
                 <span
-                  style="width: 10px; height: 10px; background: ${escapeHtml(
-                    color
-                  )}; display: inline-block; margin-right: 6px; border-radius: 2px;"></span>
+                  style="width: ${ds.space.mul(0, 5)}; height: ${ds.space.mul(0, 5)}; background: ${escapeHtml(
+            color
+          )}; display: inline-block; margin-right: ${ds.space.mul(0, 3)}; border-radius: 2px;"></span>
                 <strong>${escapeHtml(tooltip.title?.[0] || '')}</strong>
               </div>
-              <div style="margin: 4px 0;"><strong>Value:</strong> ${escapeHtml(value)}</div>
-              <div style="margin: 6px 0; word-break: break-all; overflow-wrap: break-word;"><strong>Label:</strong> ${escapeHtml(datasetLabel)}</div>
+              <div style="margin: ${ds.space[1]} 0;"><strong>Value:</strong> ${escapeHtml(value)}</div>
+              <div style="margin: ${ds.space.mul(0, 3)} 0; word-break: break-all; overflow-wrap: break-word;"><strong>Label:</strong> ${escapeHtml(
+            datasetLabel
+          )}</div>
               ${metricsText ? `<div><strong>Metrics:</strong><br>${metricsText}</div>` : ''}
             </div>`;
         })
@@ -716,13 +718,13 @@ const Charts = ({
       // Outer ring
       ctx.beginPath();
       ctx.arc(pin.x, pin.y, 8, 0, Math.PI * 2);
-      ctx.strokeStyle = '#3B82F6';
+      ctx.strokeStyle = resolveColor(ds.blue[500]);
       ctx.lineWidth = 2;
       ctx.stroke();
       // Inner dot
       ctx.beginPath();
       ctx.arc(pin.x, pin.y, 3, 0, Math.PI * 2);
-      ctx.fillStyle = '#3B82F6';
+      ctx.fillStyle = resolveColor(ds.blue[500]);
       ctx.fill();
       ctx.restore();
     },
@@ -973,7 +975,7 @@ const Charts = ({
                 overflow: 'auto',
                 marginTop: 'var(--ds-space-4)',
                 fontSize: 'var(--ds-text-small)',
-                maxHeight: '300px',
+                maxHeight: ds.space.mul(0, 150),
               }}
             />
           )}
@@ -987,7 +989,7 @@ Charts.propTypes = {
   data: PropTypes.array,
   labels: PropTypes.array,
   timestamps: PropTypes.array,
-  colors: PropTypes.array,
+  colors: PropTypes.oneOfType([PropTypes.string, PropTypes.array]),
   chartLabel: PropTypes.oneOfType([PropTypes.string, PropTypes.array]),
   dataset: PropTypes.array,
   id: PropTypes.string,

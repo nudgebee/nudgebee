@@ -1,20 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import DownloadButton from '@shared/buttons/DownloadButton';
-import KubernetesTable2, { KubernetesReplicaTrend } from '@components/k8s/common/KubernetesTable2';
+import KubernetesTable, { KubernetesReplicaTrend } from '@components/k8s/common/KubernetesTable';
 import k8sApi from '@api1/kubernetes';
 import Datetime from '@shared/format/Datetime';
 import Currency from '@shared/format/Currency';
 import Memory from '@shared/format/Memory';
 import { getLast30Days, getSpecificTime, getYesterday } from '@lib/datetime';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import AutoPilotSettingIcon from '@assets/application/auto-pilot-new.svg';
 import { Modal } from '@ui/Modal';
 import { Button as DsButton } from '@ui/Button';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import ReloadIcon from '@assets/application/restart-new.svg';
 import ScaleIcon from '@assets/application/scale-new.svg';
 import KubernetesScaleUpdateForm from '@components/recommendations/KubernetesScaleUpdateForm';
@@ -34,12 +34,12 @@ import { action } from 'src/utils/actionStyles';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import SLOInspectionIcon from '@assets/kubernetes/slo-inspection.svg';
 import apiKubernetes1 from '@api1/kubernetes1';
-import CustomSelectDropdown from '@shared/CustomSelectDropdown';
-import CopyableText from '@shared/CopyableText';
-import CustomLabels from '@shared/widgets/CustomLabels';
+import { Select } from '@ui/Select';
+import CopyButton from '@shared/buttons/CopyButton';
+import { Label } from '@ui/Label';
 import ContainerDetails from '@components/k8s/pods/ContainerDetails';
-import Title from '@shared/Title';
-import AccordionSmall from '@shared/AccordionSmall';
+import Heading from '@components/common/Heading';
+import { Accordion } from '@ui/Accordion';
 import VolumeDetails from '@components/k8s/pods/VolumeDetails';
 import KubernetesTracesListing from './KubernetesTracesListing';
 import { SummaryBlock } from '@components/k8s/KubernetesClusterSummary';
@@ -59,13 +59,15 @@ import yaml from 'js-yaml';
 import Dashboard from '@components/dashboards/AppDashboard';
 import KubernetesPodYaml from '@components/k8s/details/KubernetesPodYaml';
 import KubernetesRightSizing from '@components/recommendations/KubernetesRightSizing';
-import { snackbar } from '@shared/snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 import apiIntegrations from '@api1/integrations';
 import KubernetesLogsPattern from './KubernetesLogsPattern';
 import KubernetesPodsTable from './KubernetesPods';
+import BulkAssignOwnerModal from '@components/ownership/BulkAssignOwnerModal';
+import OwnershipPanel from '@components/ownership/OwnershipPanel';
 import LazyLoadComponent from '@shared/LazyLoadComponent';
 import SLOConfigDialog from '@components/k8s/common/SLOConfigDialog';
-import CustomTooltip from '@shared/CustomTooltip';
+import CustomTooltip from '@ui/Tooltip';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 
 export const WORKLOAD_HEADERS = [
@@ -126,6 +128,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
     order: '',
   });
   const [disableOptions, setDisableOptions] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   // Git modal state
   const [isGitModalOpen, setIsGitModalOpen] = useState(false);
@@ -555,7 +558,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
   };
 
   const getNoOfPodsCount = (item) => {
-    return <Typography sx={{ color: '#374151' }}>{item.ready_pods + '/' + item.total_pods}</Typography>;
+    return <Typography sx={{ color: ds.gray[700] }}>{item.ready_pods + '/' + item.total_pods}</Typography>;
   };
 
   const listWorkloads = () => {
@@ -597,8 +600,10 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
             {
               component: (
                 <>
-                  <Box display='flex'>
-                    <CopyableText copyableText={item.name} />
+                  <Box display='flex' alignItems='center'>
+                    <Box sx={{ flexShrink: 0 }}>
+                      <CopyButton text={item.name} size='sm' />
+                    </Box>
                     <Text showAutoEllipsis value={item.name} />
                   </Box>
                   <Text showAutoEllipsis value={`ns: ${item.namespace + ' | ' + item.kind}`} secondaryText />
@@ -921,8 +926,8 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
               value={matchedItem.cost}
               precison={1}
               sxPrefix={{
-                fontSize: '12px',
-                color: '#9F9F9F',
+                fontSize: 'var(--ds-text-small)',
+                color: ds.gray[500],
                 fontWeight: 400,
               }}
             />
@@ -933,18 +938,18 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
             <Typography
               sx={{
                 '& .suffix': {
-                  color: '#B9B9B9',
-                  fontSize: '12px',
+                  color: ds.gray[400],
+                  fontSize: 'var(--ds-text-small)',
                 },
                 '& span': {
-                  color: '#B9B9B9',
-                  fontSize: '12px',
+                  color: ds.gray[400],
+                  fontSize: 'var(--ds-text-small)',
                 },
               }}
             >
               <NumberComponent value={matchedItem.avg_cpu_used} suffix={'vCPU'} />
 
-              <span style={{ paddingLeft: '5px' }}>
+              <span style={{ paddingLeft: ds.space[1] }}>
                 {matchedItem.avg_cpu_request && matchedItem.avg_cpu_used
                   ? `(${((matchedItem.avg_cpu_used / matchedItem.avg_cpu_request) * 100).toFixed(1)}%)`
                   : ''}
@@ -956,8 +961,8 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
                   value={matchedItem.avg_cpu_request || null}
                   suffix={'vCPU'}
                   sx={{
-                    color: '#B9B9B9',
-                    fontSize: '12px',
+                    color: ds.gray[400],
+                    fontSize: 'var(--ds-text-small)',
                   }}
                 />
               </span>
@@ -970,17 +975,17 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
             <Typography
               sx={{
                 '& .sufix': {
-                  color: '#B9B9B9',
-                  fontSize: '12px',
+                  color: ds.gray[400],
+                  fontSize: 'var(--ds-text-small)',
                 },
                 '& span': {
-                  color: '#B9B9B9',
-                  fontSize: '12px',
+                  color: ds.gray[400],
+                  fontSize: 'var(--ds-text-small)',
                 },
               }}
             >
               <Memory value={matchedItem.avg_memory_used || null} />
-              <span style={{ paddingLeft: '5px' }}>
+              <span style={{ paddingLeft: ds.space[1] }}>
                 {matchedItem.avg_memory_request && matchedItem.avg_memory_used
                   ? `(${((matchedItem.avg_memory_used / matchedItem.avg_memory_request) * 100).toFixed(1)}%)`
                   : ''}
@@ -991,8 +996,8 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
                 <Memory
                   value={matchedItem.avg_memory_request || null}
                   sx={{
-                    color: '#B9B9B9',
-                    fontSize: '12px',
+                    color: ds.gray[400],
+                    fontSize: 'var(--ds-text-small)',
                   }}
                 />
               </span>
@@ -1014,7 +1019,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
         if (matchedItem) {
           const status = matchedItem.status === 'FIRING' ? 'FIRING' : 'OK';
           updatedData[index][7] = {
-            component: <CustomLabels textTransform={'none'} text={status} />,
+            component: <Label textTransform={'none'} text={status} />,
           };
         }
       });
@@ -1409,7 +1414,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
   const additionalComponent = () => {
     return (
       <>
-        <Typography fontSize='14px' mb='12px'>
+        <Typography fontSize='var(--ds-text-body-lg)' mb={ds.space[3]}>
           To confirm the deletion of this workload, type the name of workload in the box.
         </Typography>
         <Input
@@ -1439,7 +1444,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
           }}
           editable={true}
           style={{
-            border: '1px solid silver',
+            border: `1px solid ${ds.gray[300]}`,
           }}
         />
       </Box>
@@ -1478,7 +1483,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
         title={'Restart the ' + selectedWorkload.kind + ' ' + selectedWorkload.name}
         width='sm'
         actionButtons={
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', p: '12px 24px' }}>
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[3], p: `${ds.space[3]} ${ds.space[5]}` }}>
             <DsButton id='cancel-restart-btn' tone='secondary' size='md' onClick={handleCloseRestartPopUp}>
               Cancel
             </DsButton>
@@ -1488,13 +1493,13 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
           </Box>
         }
       >
-        <Box sx={{ padding: '24px' }}>
+        <Box sx={{ padding: ds.space[5] }}>
           <Typography
             sx={{
               fontFamily: 'var(--ds-font-display)',
               fontSize: 'var(--ds-text-body)',
               fontWeight: 'var(--ds-font-weight-regular)',
-              color: colors.text.secondary,
+              color: ds.brand[500],
               lineHeight: 1.5,
             }}
           >
@@ -1508,7 +1513,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
         title={'Delete the ' + selectedWorkload.kind + ' ' + selectedWorkload.name}
         width='md'
         actionButtons={
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', p: '12px 24px' }}>
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[3], p: `${ds.space[3]} ${ds.space[5]}` }}>
             <DsButton id='cancel-delete-workload-btn' tone='secondary' size='md' onClick={handleCloseDeletePopUp}>
               Cancel
             </DsButton>
@@ -1518,7 +1523,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
           </Box>
         }
       >
-        <Box sx={{ padding: '24px' }}>{additionalComponent()}</Box>
+        <Box sx={{ padding: ds.space[5] }}>{additionalComponent()}</Box>
       </Modal>
       <Modal
         open={editWorkload}
@@ -1526,7 +1531,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
         title={'Edit the ' + selectedWorkload.kind + ' ' + selectedWorkload.name + ' - ' + fileName}
         width='lg'
         actionButtons={
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', p: '12px 24px' }}>
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[3], p: `${ds.space[3]} ${ds.space[5]}` }}>
             <DsButton id='cancel-edit-workload-btn' tone='secondary' size='md' onClick={handleCloseEditPopUp}>
               Cancel
             </DsButton>
@@ -1536,7 +1541,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
           </Box>
         }
       >
-        <Box sx={{ padding: '24px' }}>{additionalEditComponent()}</Box>
+        <Box sx={{ padding: ds.space[5] }}>{additionalEditComponent()}</Box>
       </Modal>
       <SLOConfigDialog
         open={openSLOConfig}
@@ -1557,6 +1562,11 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
         <ListingLayout.Toolbar
           actions={
             <>
+              {hasWriteAccess(accountId) ? (
+                <DsButton id='bulk-assign-owner' tone='secondary' size='md' onClick={() => setBulkOpen(true)}>
+                  Bulk assign owner
+                </DsButton>
+              ) : null}
               <CustomDateTimeRangePicker
                 passedSelectedDateTime={{
                   startTime: selectedDateRange.startDate,
@@ -1582,7 +1592,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
             onSelect={onWorkloadTypeFilterChange}
             disabled={disableOptions}
           />
-          <CustomSearch
+          <SearchInput
             label='Application Name'
             value={inputName}
             onChange={onNameFilterChange}
@@ -1654,7 +1664,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
             loader={isGitDetailsLoading}
             actionButtons={
               isGitEditMode ? (
-                <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', p: '12px 24px' }}>
+                <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[3], p: `${ds.space[3]} ${ds.space[5]}` }}>
                   <DsButton id='git-cancel-btn' tone='secondary' size='md' onClick={() => setIsGitModalOpen(false)} disabled={isGitDetailsLoading}>
                     Cancel
                   </DsButton>
@@ -1669,7 +1679,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
                   </DsButton>
                 </Box>
               ) : (
-                <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', p: '12px 24px' }}>
+                <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[3], p: `${ds.space[3]} ${ds.space[5]}` }}>
                   <DsButton id='git-close-btn' tone='secondary' size='md' onClick={() => setIsGitModalOpen(false)}>
                     Close
                   </DsButton>
@@ -1723,17 +1733,17 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
                   {/* Git Integration Selection (GitHub/GitLab if configured) */}
                   {allGitIntegrations.length > 0 && (
                     <Box sx={{ mb: 2 }}>
-                      <CustomSelectDropdown
-                        value={allGitIntegrations.find((i) => i.key === selectedGitIntegration)?.label || ''}
-                        onChange={(e) => {
-                          const selected = allGitIntegrations.find((i) => i.label === e.target.value);
+                      <Select
+                        value={allGitIntegrations.find((i) => i.key === selectedGitIntegration)?.label || null}
+                        onChange={(newValue) => {
+                          const selected = allGitIntegrations.find((i) => i.label === newValue);
                           if (selected) {
                             handleGitIntegrationSelect(selected.key);
                           }
                         }}
                         options={allGitIntegrations.map((i) => i.label)}
                         placeholder='Select a Git integration'
-                        isLoading={isGitReposLoading}
+                        loading={isGitReposLoading}
                         label='Git Integration'
                       />
                     </Box>
@@ -1742,10 +1752,10 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
                   {/* Repo Selection from Integration */}
                   {selectedGitIntegration && reposFromIntegration.length > 0 && (
                     <Box sx={{ mb: 2 }}>
-                      <CustomSelectDropdown
-                        value={reposFromIntegration.find((r) => gitDetails.codeRepo === `${r.integrationUrl}/${r.key}`)?.name || ''}
-                        onChange={(e) => {
-                          const selectedRepo = reposFromIntegration.find((r) => r.name === e.target.value);
+                      <Select
+                        value={reposFromIntegration.find((r) => gitDetails?.codeRepo === `${r.integrationUrl}/${r.key}`)?.name || null}
+                        onChange={(newValue) => {
+                          const selectedRepo = reposFromIntegration.find((r) => r.name === newValue);
                           if (selectedRepo) {
                             handleRepoSelect(selectedRepo.key);
                           }
@@ -1832,10 +1842,10 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
                       {/* CI Repo Integration Selection */}
                       {allGitIntegrations.length > 0 && (
                         <Box sx={{ mb: 2 }}>
-                          <CustomSelectDropdown
-                            value={allGitIntegrations.find((i) => i.key === selectedCiGitIntegration)?.label || ''}
-                            onChange={(e) => {
-                              const selected = allGitIntegrations.find((i) => i.label === e.target.value);
+                          <Select
+                            value={allGitIntegrations.find((i) => i.key === selectedCiGitIntegration)?.label || null}
+                            onChange={(newValue) => {
+                              const selected = allGitIntegrations.find((i) => i.label === newValue);
                               if (selected) {
                                 handleCiGitIntegrationSelect(selected.key);
                               }
@@ -1850,10 +1860,10 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
                       {/* CI Repo Selection from Integration */}
                       {selectedCiGitIntegration && ciReposFromIntegration.length > 0 && (
                         <Box sx={{ mb: 2 }}>
-                          <CustomSelectDropdown
-                            value={ciReposFromIntegration.find((r) => gitDetails.ciRepo === `${r.integrationUrl}/${r.key}`)?.name || ''}
-                            onChange={(e) => {
-                              const selectedRepo = ciReposFromIntegration.find((r) => r.name === e.target.value);
+                          <Select
+                            value={ciReposFromIntegration.find((r) => gitDetails?.ciRepo === `${r.integrationUrl}/${r.key}`)?.name || null}
+                            onChange={(newValue) => {
+                              const selectedRepo = ciReposFromIntegration.find((r) => r.name === newValue);
                               if (selectedRepo) {
                                 handleCiRepoSelect(selectedRepo.key);
                               }
@@ -1939,7 +1949,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
                       Source
                     </Typography>
                     <Box>
-                      <CustomLabels
+                      <Label
                         text={
                           String(gitDetails.source) === 'ci_annotation'
                             ? 'CI Annotation'
@@ -1960,11 +1970,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
                       </Typography>
                       <Box display='flex' alignItems='center' gap={1}>
                         <Typography>{gitDetails.codeRepo}</Typography>
-                        <IconButton
-                          size='small'
-                          aria-label='Open source code repository in new tab'
-                          onClick={() => window.open(gitDetails.codeRepo, '_blank')}
-                        >
+                        <IconButton size='small' onClick={() => window.open(gitDetails.codeRepo, '_blank')}>
                           <OpenInNewIcon fontSize='small' />
                         </IconButton>
                       </Box>
@@ -1978,11 +1984,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
                         </Typography>
                         <Box display='flex' alignItems='center' gap={1}>
                           <Typography>{gitDetails.ciRepo}</Typography>
-                          <IconButton
-                            size='small'
-                            aria-label='Open CI/deployment repository in new tab'
-                            onClick={() => window.open(gitDetails.ciRepo, '_blank')}
-                          >
+                          <IconButton size='small' onClick={() => window.open(gitDetails.ciRepo, '_blank')}>
                             <OpenInNewIcon fontSize='small' />
                           </IconButton>
                         </Box>
@@ -2003,11 +2005,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
                         </Typography>
                         <Box display='flex' alignItems='center' gap={1}>
                           <Typography>{gitDetails.hash.substring(0, 8)}</Typography>
-                          <IconButton
-                            size='small'
-                            aria-label='Open commit in repository in new tab'
-                            onClick={() => window.open(`${gitDetails.codeRepo}/commit/${gitDetails.hash}`, '_blank')}
-                          >
+                          <IconButton size='small' onClick={() => window.open(`${gitDetails.codeRepo}/commit/${gitDetails.hash}`, '_blank')}>
                             <OpenInNewIcon fontSize='small' />
                           </IconButton>
                         </Box>
@@ -2032,12 +2030,12 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
             sx={{
               display: 'grid',
               gridTemplateColumns: '2.2fr 0.8fr 1fr 0.7fr',
-              gap: '15px',
-              m: '15px 0px',
+              gap: ds.space[4],
+              m: `${ds.space[4]} 0px`,
               flexWrap: 'wrap',
               '@media (max-width: 1350px)': {
                 gridTemplateColumns: '1.6fr 0.8fr 1.2fr 0.7fr',
-                gap: '10px',
+                gap: ds.space.mul(0, 5),
               },
             }}
           >
@@ -2045,29 +2043,29 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
               <SummaryBlock
                 hideTitle
                 sx={{
-                  borderRadius: '4px',
+                  borderRadius: ds.radius.sm,
                   minHeight: '50px',
-                  backgroundColor: '#ffffff !important',
-                  border: '0.5px solid #60A5FA !important',
-                  boxShadow: '0px 4px 6px -1px #E5E5E599',
+                  backgroundColor: `${ds.background[100]} !important`,
+                  border: `0.5px solid ${ds.blue[400]} !important`,
+                  boxShadow: `0px ${ds.space[1]} ${ds.space.mul(0, 3)} -1px ${ds.gray.alpha[300]}`,
                   '@media (max-width: 1350px)': {
-                    padding: '16px 10px',
+                    padding: `${ds.space[4]} ${ds.space.mul(0, 5)}`,
                   },
                 }}
               >
                 <Box
                   display={'grid'}
                   gridTemplateColumns={'0.8fr 5px 1fr 1fr'}
-                  gap='20px'
+                  gap={ds.space.mul(1, 5)}
                   sx={{
                     '@media (max-width: 1350px)': {
-                      gap: '10px',
+                      gap: ds.space.mul(0, 5),
                     },
                   }}
                 >
                   <Box>
-                    <Typography sx={{ fontSize: '12px', fontWeight: 400, color: '#9F9F9F' }}>Total Apps</Typography>
-                    <Typography variant='h4' sx={{ fontSize: '20px', fontWeight: 500, color: '#374151' }}>
+                    <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 400, color: ds.gray[500] }}>Total Apps</Typography>
+                    <Typography variant='h4' sx={{ fontSize: 'var(--ds-text-heading)', fontWeight: 500, color: ds.gray[700] }}>
                       {applicationSummary?.count || '-'}
                     </Typography>
                   </Box>
@@ -2075,40 +2073,40 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
 
                   <Box>
                     <Box display={'flex'} alignItems={'center'} justifyContent={'space-between'}>
-                      <Typography sx={{ fontSize: '11px', fontWeight: 400, color: '#9F9F9F' }}>Deployment</Typography>
-                      <Typography variant='h4' sx={{ fontSize: '11px', fontWeight: 500, color: '#374151' }}>
+                      <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 400, color: ds.gray[500] }}>Deployment</Typography>
+                      <Typography variant='h4' sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 500, color: ds.gray[700] }}>
                         {applicationSummary?.deployment_count || '-'}
                       </Typography>
                     </Box>
                     <Box display={'flex'} alignItems={'center'} justifyContent={'space-between'}>
-                      <Typography sx={{ fontSize: '11px', fontWeight: 400, color: '#9F9F9F' }}>Daemonset</Typography>
-                      <Typography variant='h4' sx={{ fontSize: '11px', fontWeight: 500, color: '#374151' }}>
+                      <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 400, color: ds.gray[500] }}>Daemonset</Typography>
+                      <Typography variant='h4' sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 500, color: ds.gray[700] }}>
                         {applicationSummary?.daemonset_count || '-'}
                       </Typography>
                     </Box>
                     <Box display={'flex'} alignItems={'center'} justifyContent={'space-between'}>
-                      <Typography sx={{ fontSize: '11px', fontWeight: 400, color: '#9F9F9F' }}>Job</Typography>
-                      <Typography variant='h4' sx={{ fontSize: '11px', fontWeight: 500, color: '#374151' }}>
+                      <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 400, color: ds.gray[500] }}>Job</Typography>
+                      <Typography variant='h4' sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 500, color: ds.gray[700] }}>
                         {applicationSummary?.job_count || '-'}
                       </Typography>
                     </Box>
                   </Box>
                   <Box>
                     <Box display={'flex'} alignItems={'center'} justifyContent={'space-between'}>
-                      <Typography sx={{ fontSize: '11px', fontWeight: 400, color: '#9F9F9F' }}>Statefulset</Typography>
-                      <Typography variant='h4' sx={{ fontSize: '11px', fontWeight: 500, color: '#374151' }}>
+                      <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 400, color: ds.gray[500] }}>Statefulset</Typography>
+                      <Typography variant='h4' sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 500, color: ds.gray[700] }}>
                         {applicationSummary?.statefulset_count || '-'}
                       </Typography>
                     </Box>
                     <Box display={'flex'} alignItems={'center'} justifyContent={'space-between'}>
-                      <Typography sx={{ fontSize: '11px', fontWeight: 400, color: '#9F9F9F' }}>Rollout</Typography>
-                      <Typography variant='h4' sx={{ fontSize: '11px', fontWeight: 500, color: '#374151' }}>
+                      <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 400, color: ds.gray[500] }}>Rollout</Typography>
+                      <Typography variant='h4' sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 500, color: ds.gray[700] }}>
                         {applicationSummary?.rollout_count || '-'}
                       </Typography>
                     </Box>
                     <Box display={'flex'} alignItems={'center'} justifyContent={'space-between'}>
-                      <Typography sx={{ fontSize: '11px', fontWeight: 400, color: '#9F9F9F' }}>CronJob</Typography>
-                      <Typography variant='h4' sx={{ fontSize: '11px', fontWeight: 500, color: '#374151' }}>
+                      <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 400, color: ds.gray[500] }}>CronJob</Typography>
+                      <Typography variant='h4' sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 500, color: ds.gray[700] }}>
                         {applicationSummary?.cronjob_count || '-'}
                       </Typography>
                     </Box>
@@ -2120,27 +2118,27 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
               <SummaryBlock
                 hideTitle
                 sx={{
-                  borderRadius: '4px',
+                  borderRadius: ds.radius.sm,
                   minHeight: '50px',
-                  backgroundColor: '#ffffff !important',
-                  border: '0.5px solid #FCA5A5 !important',
-                  boxShadow: '0px 4px 6px -1px #E5E5E599',
+                  backgroundColor: `${ds.background[100]} !important`,
+                  border: `0.5px solid ${ds.red[300]} !important`,
+                  boxShadow: `0px ${ds.space[1]} ${ds.space.mul(0, 3)} -1px ${ds.gray.alpha[300]}`,
                   '@media (max-width: 1350px)': {
-                    padding: '16px 10px',
+                    padding: `${ds.space[4]} ${ds.space.mul(0, 5)}`,
                   },
                 }}
               >
-                <Box display={'flex'} gap='12px' justifyContent={'space-between'}>
+                <Box display={'flex'} gap={ds.space[3]} justifyContent={'space-between'}>
                   <Box>
-                    <Typography sx={{ fontSize: '12px', fontWeight: 400, color: '#9F9F9F' }}>Errors</Typography>
-                    <Typography variant='h4' sx={{ fontSize: '20px', fontWeight: 500, color: '#374151' }}>
+                    <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 400, color: ds.gray[500] }}>Errors</Typography>
+                    <Typography variant='h4' sx={{ fontSize: 'var(--ds-text-heading)', fontWeight: 500, color: ds.gray[700] }}>
                       {applicationSummary?.error_count ?? 0}
                     </Typography>
                   </Box>
                   <Divider orientation='vertical' />
                   <Box>
-                    <Typography sx={{ fontSize: '12px', fontWeight: 400, color: '#9F9F9F' }}>Events</Typography>
-                    <Typography variant='h4' sx={{ fontSize: '20px', fontWeight: 500, color: '#374151' }}>
+                    <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 400, color: ds.gray[500] }}>Events</Typography>
+                    <Typography variant='h4' sx={{ fontSize: 'var(--ds-text-heading)', fontWeight: 500, color: ds.gray[700] }}>
                       {applicationSummary?.event_count ?? 0}
                     </Typography>
                   </Box>
@@ -2151,49 +2149,52 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
               <SummaryBlock
                 hideTitle
                 sx={{
-                  borderRadius: '4px',
+                  borderRadius: ds.radius.sm,
                   minHeight: '50px',
-                  backgroundColor: '#ffffff !important',
-                  border: '0.5px solid #4ADE80 !important',
-                  boxShadow: '0px 4px 6px -1px #E5E5E599',
+                  backgroundColor: `${ds.background[100]} !important`,
+                  border: `0.5px solid ${ds.green[400]} !important`,
+                  boxShadow: `0px ${ds.space[1]} ${ds.space.mul(0, 3)} -1px ${ds.gray.alpha[300]}`,
                   '@media (max-width: 1350px)': {
-                    padding: '16px 10px',
+                    padding: `${ds.space[4]} ${ds.space.mul(0, 5)}`,
                   },
                 }}
               >
-                <Box display={'flex'} gap='12px' justifyContent={'space-between'}>
+                <Box display={'flex'} gap={ds.space[3]} justifyContent={'space-between'}>
                   <Box>
-                    <Box display='flex' alignItems='center' gap='4px'>
-                      <Typography sx={{ fontSize: '12px', fontWeight: 400, color: '#9F9F9F' }}>Optimization</Typography>
+                    <Box display='flex' alignItems='center' gap={ds.space[1]}>
+                      <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 400, color: ds.gray[500] }}>Optimization</Typography>
                       <CustomTooltip
                         title={
-                          <Box sx={{ fontSize: '12px' }}>
-                            <Typography sx={{ fontSize: '12px', fontWeight: 500, mb: 0.5 }}>How is this calculated?</Typography>
-                            <Typography sx={{ fontSize: '12px', fontWeight: 400 }}>
+                          <Box sx={{ fontSize: 'var(--ds-text-small)' }}>
+                            <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 500, mb: 0.5 }}>How is this calculated?</Typography>
+                            <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 400 }}>
                               Total count of Right Sizing, Replica Right Sizing, and Abandoned Resource recommendations.
                             </Typography>
                           </Box>
                         }
                         placement='top'
-                        tooltipStyle={{ maxWidth: '260px', padding: '12px' }}
+                        tooltipStyle={{ maxWidth: '260px', padding: ds.space[3] }}
                       >
-                        <InfoOutlinedIcon data-testid='optimization-info-icon' sx={{ fontSize: '14px', color: '#9F9F9F', cursor: 'pointer' }} />
+                        <InfoOutlinedIcon
+                          data-testid='optimization-info-icon'
+                          sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.gray[500], cursor: 'pointer' }}
+                        />
                       </CustomTooltip>
                     </Box>
-                    <Typography variant='h4' sx={{ fontSize: '20px', fontWeight: 500, color: '#374151' }}>
+                    <Typography variant='h4' sx={{ fontSize: 'var(--ds-text-heading)', fontWeight: 500, color: ds.gray[700] }}>
                       {applicationSummary.recommendation_count}
                     </Typography>
                   </Box>
                   <Box>
-                    <Typography sx={{ fontSize: '12px', fontWeight: 400, color: '#9F9F9F' }}>Savings Potential</Typography>
-                    <Typography variant='h4' sx={{ fontSize: '20px', fontWeight: 500, color: '#374151' }}>
+                    <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 400, color: ds.gray[500] }}>Savings Potential</Typography>
+                    <Typography variant='h4' sx={{ fontSize: 'var(--ds-text-heading)', fontWeight: 500, color: ds.gray[700] }}>
                       <Currency
                         value={applicationSummary.estimatedSaving}
                         suffix='/yr'
                         sx={{
                           fontWeight: 500,
-                          fontSize: '20px',
-                          color: '#374151',
+                          fontSize: 'var(--ds-text-heading)',
+                          color: ds.gray[700],
                         }}
                         isSavingPotential={true}
                         recommendationLabel='Some of workload recommendations'
@@ -2207,32 +2208,32 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
               <SummaryBlock
                 hideTitle
                 sx={{
-                  borderRadius: '4px',
+                  borderRadius: ds.radius.sm,
                   minHeight: '50px',
-                  backgroundColor: '#ffffff !important',
-                  border: '0.5px solid #4ADE80 !important',
-                  boxShadow: '0px 4px 6px -1px #E5E5E599',
+                  backgroundColor: `${ds.background[100]} !important`,
+                  border: `0.5px solid ${ds.green[400]} !important`,
+                  boxShadow: `0px ${ds.space[1]} ${ds.space.mul(0, 3)} -1px ${ds.gray.alpha[300]}`,
                   display: 'grid',
                   '@media (max-width: 1350px)': {
-                    padding: '16px 10px',
+                    padding: `${ds.space[4]} ${ds.space.mul(0, 5)}`,
                   },
                 }}
               >
-                <Box display={'grid'} gridTemplateColumns={'2fr'} gap='12px' alignItems={'center'}>
+                <Box display={'grid'} gridTemplateColumns={'2fr'} gap={ds.space[3]} alignItems={'center'}>
                   <Box display={'flex'} alignItems={'center'} justifyContent={'space-between'}>
-                    <Typography sx={{ fontSize: '12px', fontWeight: 400, color: '#9F9F9F' }}>MTD Cost</Typography>
-                    <Typography variant='h4' sx={{ fontSize: '11px', fontWeight: 500, color: '#374151' }}>
+                    <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 400, color: ds.gray[500] }}>MTD Cost</Typography>
+                    <Typography variant='h4' sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 500, color: ds.gray[700] }}>
                       <Currency
                         value={applicationSummary.mtd_cost}
                         sx={{
                           fontWeight: 500,
-                          fontSize: '14px',
-                          color: '#374151',
+                          fontSize: 'var(--ds-text-body-lg)',
+                          color: ds.gray[700],
                         }}
                         sxPrefix={{
-                          fontSize: '12px',
+                          fontSize: 'var(--ds-text-small)',
                           fontWeight: 400,
-                          color: '#9F9F9F',
+                          color: ds.gray[500],
                         }}
                       />
                     </Typography>
@@ -2241,11 +2242,11 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
               </SummaryBlock>
             </Box>
           </Box>
-          <KubernetesTable2
+          <KubernetesTable
             id={kubernetesWorkloadTable}
             headers={WORKLOAD_HEADERS}
             data={data}
-            tabPadding={'6px 0px 0px'}
+            tabPadding={`${ds.space.mul(0, 3)} 0px 0px`}
             expandable={{
               tabs: [
                 {
@@ -2254,6 +2255,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
                   key: 'WorkloadDetails',
                   componentFn: workloadDetailsFn,
                 },
+                { text: 'Ownership', value: 10, key: 'ownership', componentFn: workloadOwnershipFn },
                 { text: 'Pods', value: 1, key: 'pods', componentFn: podsWithChartFn },
                 { text: 'Utilization Trends', value: 2, key: 'utilization3' },
                 { text: 'Cost Trends', value: 3, key: 'cost' },
@@ -2369,6 +2371,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
           />
         </ListingLayout.Body>
       </ListingLayout>
+      {bulkOpen ? <BulkAssignOwnerModal open={bulkOpen} onClose={() => setBulkOpen(false)} defaultAccountId={accountId} /> : null}
     </>
   );
 };
@@ -2383,6 +2386,18 @@ function workloadDetailsFn(accountId, drilldownQuery) {
         fallback={<div>Loading latency data...</div>}
       />
     </>
+  );
+}
+
+function workloadOwnershipFn(accountId, drilldownQuery) {
+  return (
+    <OwnershipPanel
+      resourceType='workload'
+      resourceKey={drilldownQuery?.data?.cloud_resource_id}
+      cloudAccountId={drilldownQuery?.data?.cloud_account_id || drilldownQuery?.accountId || accountId}
+      namespace={drilldownQuery?.data?.namespace || drilldownQuery?.namespaceName}
+      resourceLabel={drilldownQuery?.workloadName || drilldownQuery?.data?.name}
+    />
   );
 }
 
@@ -2430,22 +2445,7 @@ function WorkloadDetails({ accountId, drilldownQuery }) {
 
     for (let [k, v] of Object.entries(label)) {
       let name = k + '=' + v;
-      labelArray.push(
-        <Box>
-          <CustomLabels
-            displayTooltip
-            textTransform={'none'}
-            height='auto'
-            margin='0px'
-            wordBreak={'break-word'}
-            maxWidth='500px'
-            key={k}
-            text={name}
-            variant={'grey'}
-            width='max-content'
-          />
-        </Box>
-      );
+      labelArray.push(<Label key={k} displayTooltip tooltipCharLimit={35} textTransform={'none'} text={name} variant={'grey'} />);
     }
     return labelArray;
   };
@@ -2453,12 +2453,11 @@ function WorkloadDetails({ accountId, drilldownQuery }) {
   const MapContainerHeader = ({ containers, _children }) => {
     const containersArray = [];
     if (containers && containers.length > 0) {
-      containers?.forEach((item) => {
+      containers?.forEach((item, index) => {
+        const label = item.name || item.image?.split('/')?.pop()?.split(':')?.[0] || `Container ${index + 1}`;
         containersArray.push(
-          <Box key={item.name} sx={{ marginBottom: '10px' }}>
-            <AccordionSmall header={item.name}>
-              <ContainerDetails containerItem={item} />
-            </AccordionSmall>
+          <Box key={label} sx={{ marginBottom: ds.space.mul(0, 5) }}>
+            <Accordion density='sm' items={[{ id: label, label: label, body: <ContainerDetails containerItem={item} /> }]} />
           </Box>
         );
       });
@@ -2470,10 +2469,8 @@ function WorkloadDetails({ accountId, drilldownQuery }) {
     const volumesArray = [];
     volumes?.forEach((item) => {
       volumesArray.push(
-        <Box key={item.name} sx={{ marginBottom: '10px' }}>
-          <AccordionSmall header={item.name}>
-            <VolumeDetails volumeItem={item} />
-          </AccordionSmall>
+        <Box key={item.name} sx={{ marginBottom: ds.space.mul(0, 5) }}>
+          <Accordion density='sm' items={[{ id: item.name, label: item.name, body: <VolumeDetails volumeItem={item} /> }]} />
         </Box>
       );
     });
@@ -2497,72 +2494,54 @@ function WorkloadDetails({ accountId, drilldownQuery }) {
           />
         ) : (
           <>
-            <Grid container sx={{ marginBottom: '8px' }}>
-              <Grid item md={3}>
-                <Typography width={'150px'} sx={{ fontFamily: 'Roboto', fontSize: '14px', fontWeight: '500', lineHeight: '20px', color: '#374151' }}>
-                  Labels:
-                </Typography>
-              </Grid>
-              <Grid
-                item
-                md={9}
+            <Box marginBottom={ds.space.mul(1, 7)}>
+              <Heading value={'Labels'} borderWidth='md' borderColor='var(--ds-blue-500)' />
+              <Box
                 sx={{
+                  padding: `${ds.space[2]} ${ds.space.mul(1, 5)} 0 ${ds.space.mul(1, 5)}`,
                   display: 'flex',
                   flexDirection: 'row',
                   flexWrap: 'wrap',
-                  gap: '12px',
-                  fontFamily: 'Roboto',
-                  fontSize: '14px',
-                  fontWeight: '500',
-                  lineHeight: '20px',
-                  color: '#2563EB',
-                  maxWidth: '360px',
+                  gap: ds.space[2],
                 }}
               >
                 {mapLabels(drilldownQuery?.data?.meta?.config?.labels ?? drilldownQuery?.data?.meta?.job_data?.labels ?? {})}
-              </Grid>
-            </Grid>
-            <Grid container sx={{ marginBottom: '8px' }}>
-              <Grid item md={3}>
-                <Typography width={'150px'} sx={{ fontFamily: 'Roboto', fontSize: '14px', fontWeight: '500', lineHeight: '20px', color: '#374151' }}>
-                  Annotations:
-                </Typography>
-              </Grid>
-              <Grid
-                item
-                md={9}
+              </Box>
+            </Box>
+            <Divider sx={{ mb: ds.space.mul(1, 7) }} />
+            <Box marginBottom={ds.space.mul(1, 7)}>
+              <Heading value={'Annotations'} borderWidth='md' borderColor='var(--ds-blue-500)' />
+              <Box
                 sx={{
+                  padding: `${ds.space[2]} ${ds.space.mul(1, 5)} 0 ${ds.space.mul(1, 5)}`,
                   display: 'flex',
                   flexDirection: 'row',
                   flexWrap: 'wrap',
-                  fontFamily: 'Roboto',
-                  gap: '12px',
-                  fontSize: '14px',
-                  fontWeight: '500',
-                  lineHeight: '20px',
-                  color: '#2563EB',
-                  maxWidth: '360px',
+                  gap: ds.space[2],
                 }}
               >
                 {mapLabels(drilldownQuery?.data?.meta?.config?.annotations ?? drilldownQuery?.data?.meta?.job_data?.annotations ?? {})}
-              </Grid>
-            </Grid>
-
-            <Box marginBottom={'28px'}>
-              <Title title={'Containers'} fontSize={'16px'} height={'2px'} />
-              <Box sx={{ padding: '20px 20px 0 20px' }}>
+              </Box>
+            </Box>
+            <Divider sx={{ mb: ds.space.mul(1, 7) }} />
+            <Box marginBottom={ds.space.mul(1, 7)}>
+              <Heading value={'Containers'} borderWidth='md' borderColor='var(--ds-blue-500)' />
+              <Box sx={{ padding: `${ds.space.mul(1, 5)} ${ds.space.mul(1, 5)} 0 ${ds.space.mul(1, 5)}` }}>
                 <MapContainerHeader
                   containers={drilldownQuery?.data?.meta?.config?.containers ?? drilldownQuery?.data?.meta?.job_data?.containers ?? []}
                 />
               </Box>
             </Box>
-            {drilldownQuery?.data?.meta?.config?.volumes.length > 0 && (
-              <Box marginBottom={'28px'}>
-                <Title title={'Volumes'} fontSize={'16px'} height={'2px'} />
-                <Box sx={{ padding: '20px 20px 0 20px' }}>
-                  <MapVolumeHeader volumes={drilldownQuery?.data?.meta?.config?.volumes} />
+            {drilldownQuery?.data?.meta?.config?.volumes?.length > 0 && (
+              <>
+                <Divider sx={{ mb: ds.space.mul(1, 7) }} />
+                <Box marginBottom={ds.space.mul(1, 7)}>
+                  <Heading value={'Volumes'} borderWidth='md' borderColor='var(--ds-blue-500)' />
+                  <Box sx={{ padding: `${ds.space.mul(1, 5)} ${ds.space.mul(1, 5)} 0 ${ds.space.mul(1, 5)}` }}>
+                    <MapVolumeHeader volumes={drilldownQuery?.data?.meta?.config?.volumes} />
+                  </Box>
                 </Box>
-              </Box>
+              </>
             )}
           </>
         )}

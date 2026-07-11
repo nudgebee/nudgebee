@@ -278,7 +278,17 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 	if len(whereClause.Binary) > 0 {
 		binaryParts := make([]string, 0, len(whereClause.Binary))
 
-		for column, binaryClause := range whereClause.Binary {
+		// Iterate in a stable column order so generated SQL is deterministic
+		// (Go map iteration order is randomized). AND-term order is
+		// semantically irrelevant but must be reproducible for caching/tests.
+		binaryColumns := make([]string, 0, len(whereClause.Binary))
+		for column := range whereClause.Binary {
+			binaryColumns = append(binaryColumns, column)
+		}
+		slices.Sort(binaryColumns)
+
+		for _, column := range binaryColumns {
+			binaryClause := whereClause.Binary[column]
 			columnDef := ColumnDefinition{}
 			if columnDef1, ok := tableDef.Columns[column]; ok {
 				if columnDef1.IsAggregated && !isHaving {
@@ -291,7 +301,15 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 
 			columnBinaryParts := make([]string, 0, len(binaryClause))
 
-			for binaryType, value := range binaryClause {
+			// Sort operator keys for deterministic output (see note above).
+			binaryTypes := make([]BinaryWhereClauseType, 0, len(binaryClause))
+			for binaryType := range binaryClause {
+				binaryTypes = append(binaryTypes, binaryType)
+			}
+			slices.Sort(binaryTypes)
+
+			for _, binaryType := range binaryTypes {
+				value := binaryClause[binaryType]
 				var binaryCondition strings.Builder
 
 				switch binaryType {
@@ -695,7 +713,15 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 					}
 				case Between:
 					betweenParts := make([]string, 0)
-					for k, v := range value.(map[string]any) {
+					betweenMap := value.(map[string]any)
+					// Sort bound keys for deterministic output (Go map order is randomized).
+					betweenKeys := make([]string, 0, len(betweenMap))
+					for k := range betweenMap {
+						betweenKeys = append(betweenKeys, k)
+					}
+					slices.Sort(betweenKeys)
+					for _, k := range betweenKeys {
+						v := betweenMap[k]
 						var betweenPart strings.Builder
 						switch columnDef.Type {
 						case "string":

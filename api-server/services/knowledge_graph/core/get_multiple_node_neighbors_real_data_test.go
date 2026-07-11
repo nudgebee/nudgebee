@@ -6,27 +6,71 @@ import (
 	"testing"
 
 	"nudgebee/services/internal/testenv"
+
+	"github.com/google/uuid"
 )
 
-// Real data test constants.
-// Graph structure discovered:
+// These tests exercise GetMultipleNodeNeighbors against a realistic multi-hop
+// service topology. The graph is *seeded by the test* under a fresh tenant /
+// account rather than read from whatever happens to be in the developer's
+// metastore, so the assertions are reproducible on any database.
 //
-//	rpc -> auto-pilot-server -> rabbitmq -> (many services)
-//	rpc -> services-server, ticket-server, notifications, etc.
-//	auto-pilot-server -> kube-dns, namespace, helm charts, etc.
-const (
-	// Node IDs for testing (from real data)
-	nodeIDRPC             = "de8199fc-ca4a-5593-82b6-df2692a8fd34" // Workload: rpc
-	nodeIDAutoPilotServer = "64d74d3e-a241-5cb3-a969-2000ddf8e60b" // Workload: auto-pilot-server
-	nodeIDRabbitmq        = "83eda4ae-005d-5aa1-8614-a0bb36283c51" // Workload: rabbitmq
-	nodeIDServicesServer  = "81ed9dd1-0e69-55c1-83b8-eca295cfb398" // Workload: services-server
-	nodeIDKubeDns         = "3f11af19-fcce-5388-ad04-dd2041688975" // Workload: kube-dns
-	nodeIDTicketServer    = "b7560848-7813-533a-89ce-4387038a4bd7" // Workload: ticket-server
-	nodeIDNamespace       = "1f6c4061-c8b9-5162-a2bf-f814a4c10174" // Namespace: nudgebee
-)
+// The topology mirrors the real nudgebee dependency graph the original version
+// of this file hardcoded live node UUIDs for (rpc -> auto-pilot-server ->
+// rabbitmq -> ...). All edges are CALLS unless noted:
+//
+//	rpc ──▶ auto-pilot-server ──▶ rabbitmq ──▶ postgres
+//	rpc ──▶ services-server
+//	rpc ──▶ ticket-server
+//	auto-pilot-server ──▶ kube-dns
+//	auto-pilot-server ──▶ nudgebee   (Namespace, BELONGS_TO)
+//
+// Depths from rpc: auto-pilot-server/services-server/ticket-server = 1,
+// rabbitmq/kube-dns/nudgebee = 2, postgres = 3.
 
-// TestRealData_GetMultipleNodeNeighbors_Level1 tests level 1 with real data
-// Starting from auto-pilot-server, should return direct neighbors only
+// seedServiceTopology inserts the topology above under the given tenant/account
+// and returns the created nodes keyed by workload name so tests can reference
+// their generated IDs (e.g. nodes["rpc"].ID) instead of hardcoded UUIDs.
+func seedServiceTopology(t *testing.T, service *Service, tenantID, accountID string) map[string]*DbNode {
+	t.Helper()
+
+	nodes := map[string]*DbNode{
+		"rpc":               createTestNode(t, "rpc", NodeTypeWorkload, tenantID, accountID),
+		"auto-pilot-server": createTestNode(t, "auto-pilot-server", NodeTypeWorkload, tenantID, accountID),
+		"rabbitmq":          createTestNode(t, "rabbitmq", NodeTypeWorkload, tenantID, accountID),
+		"services-server":   createTestNode(t, "services-server", NodeTypeWorkload, tenantID, accountID),
+		"ticket-server":     createTestNode(t, "ticket-server", NodeTypeWorkload, tenantID, accountID),
+		"kube-dns":          createTestNode(t, "kube-dns", NodeTypeWorkload, tenantID, accountID),
+		"postgres":          createTestNode(t, "postgres", NodeTypeDatabase, tenantID, accountID),
+		"nudgebee":          createTestNode(t, "nudgebee", NodeTypeNamespace, tenantID, accountID),
+	}
+
+	nodeList := make([]*DbNode, 0, len(nodes))
+	for _, n := range nodes {
+		nodeList = append(nodeList, n)
+	}
+	if err := service.SaveNodes(nodeList, 0); err != nil {
+		t.Fatalf("Failed to save topology nodes: %v", err)
+	}
+
+	edges := []*DbEdge{
+		createTestEdge(t, nodes["rpc"].ID, nodes["auto-pilot-server"].ID, RelationshipCalls, tenantID, accountID),
+		createTestEdge(t, nodes["rpc"].ID, nodes["services-server"].ID, RelationshipCalls, tenantID, accountID),
+		createTestEdge(t, nodes["rpc"].ID, nodes["ticket-server"].ID, RelationshipCalls, tenantID, accountID),
+		createTestEdge(t, nodes["auto-pilot-server"].ID, nodes["rabbitmq"].ID, RelationshipCalls, tenantID, accountID),
+		createTestEdge(t, nodes["auto-pilot-server"].ID, nodes["kube-dns"].ID, RelationshipCalls, tenantID, accountID),
+		createTestEdge(t, nodes["auto-pilot-server"].ID, nodes["nudgebee"].ID, RelationshipBelongsTo, tenantID, accountID),
+		createTestEdge(t, nodes["rabbitmq"].ID, nodes["postgres"].ID, RelationshipCalls, tenantID, accountID),
+	}
+	if err := service.SaveEdges(edges, nodeList, 1); err != nil {
+		t.Fatalf("Failed to save topology edges: %v", err)
+	}
+
+	return nodes
+}
+
+// TestRealData_GetMultipleNodeNeighbors_Level1 tests level 1 against the seeded topology.
+// Starting from auto-pilot-server, should return direct neighbors only.
 func TestRealData_GetMultipleNodeNeighbors_Level1(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -37,8 +81,13 @@ func TestRealData_GetMultipleNodeNeighbors_Level1(t *testing.T) {
 	ctx := newTestRequestContext()
 	service := NewService(ctx, slog.Default(), dbManager)
 
+	tenantID := uuid.New().String()
+	accountID := uuid.New().String()
+	nodes := seedServiceTopology(t, service, tenantID, accountID)
+	defer cleanupTestData(t, dbManager, tenantID)
+
 	t.Run("Level 1 from auto-pilot-server returns direct neighbors", func(t *testing.T) {
-		result, err := service.GetMultipleNodeNeighbors(ctx, []string{nodeIDAutoPilotServer}, 1, nil, true)
+		result, err := service.GetMultipleNodeNeighbors(ctx, []string{nodes["auto-pilot-server"].ID}, 1, nil, true)
 		if err != nil {
 			t.Fatalf("GetMultipleNodeNeighbors() error = %v", err)
 		}
@@ -53,7 +102,7 @@ func TestRealData_GetMultipleNodeNeighbors_Level1(t *testing.T) {
 		// Verify auto-pilot-server is in results
 		found := false
 		for _, node := range result.Nodes {
-			if node.ID == nodeIDAutoPilotServer {
+			if node.ID == nodes["auto-pilot-server"].ID {
 				found = true
 				fmt.Printf("Found starting node: %s (type: %s)\n", node.Properties["name"], node.NodeType)
 				break
@@ -75,8 +124,8 @@ func TestRealData_GetMultipleNodeNeighbors_Level1(t *testing.T) {
 	})
 }
 
-// TestRealData_GetMultipleNodeNeighbors_Level2 tests level 2 with real data
-// Starting from rpc, level 2 should reach rabbitmq through auto-pilot-server
+// TestRealData_GetMultipleNodeNeighbors_Level2 tests level 2 against the seeded topology.
+// Starting from rpc, level 2 should reach rabbitmq through auto-pilot-server.
 func TestRealData_GetMultipleNodeNeighbors_Level2(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -87,8 +136,13 @@ func TestRealData_GetMultipleNodeNeighbors_Level2(t *testing.T) {
 	ctx := newTestRequestContext()
 	service := NewService(ctx, slog.Default(), dbManager)
 
+	tenantID := uuid.New().String()
+	accountID := uuid.New().String()
+	nodes := seedServiceTopology(t, service, tenantID, accountID)
+	defer cleanupTestData(t, dbManager, tenantID)
+
 	t.Run("Level 2 from rpc reaches rabbitmq through auto-pilot-server", func(t *testing.T) {
-		result, err := service.GetMultipleNodeNeighbors(ctx, []string{nodeIDRPC}, 2, nil, true)
+		result, err := service.GetMultipleNodeNeighbors(ctx, []string{nodes["rpc"].ID}, 2, nil, true)
 		if err != nil {
 			t.Fatalf("GetMultipleNodeNeighbors() error = %v", err)
 		}
@@ -99,20 +153,20 @@ func TestRealData_GetMultipleNodeNeighbors_Level2(t *testing.T) {
 		// Path: rpc -> auto-pilot-server -> rabbitmq
 		rabbitmqFound := false
 		autoPilotFound := false
-		actionFound := false
+		rpcFound := false
 
 		for _, node := range result.Nodes {
 			switch node.ID {
-			case nodeIDRPC:
-				actionFound = true
-			case nodeIDAutoPilotServer:
+			case nodes["rpc"].ID:
+				rpcFound = true
+			case nodes["auto-pilot-server"].ID:
 				autoPilotFound = true
-			case nodeIDRabbitmq:
+			case nodes["rabbitmq"].ID:
 				rabbitmqFound = true
 			}
 		}
 
-		if !actionFound {
+		if !rpcFound {
 			t.Errorf("Starting node rpc not found in results")
 		}
 		if !autoPilotFound {
@@ -123,12 +177,12 @@ func TestRealData_GetMultipleNodeNeighbors_Level2(t *testing.T) {
 		}
 
 		fmt.Printf("Level 2 traversal verified: rpc=%v, auto-pilot-server=%v, rabbitmq=%v\n",
-			actionFound, autoPilotFound, rabbitmqFound)
+			rpcFound, autoPilotFound, rabbitmqFound)
 	})
 }
 
-// TestRealData_GetMultipleNodeNeighbors_Level3 tests level 3 with real data
-// Starting from rpc, level 3 should reach rabbitmq's neighbors
+// TestRealData_GetMultipleNodeNeighbors_Level3 tests level 3 against the seeded topology.
+// Starting from rpc, level 3 should reach rabbitmq's neighbor (postgres).
 func TestRealData_GetMultipleNodeNeighbors_Level3(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -139,15 +193,20 @@ func TestRealData_GetMultipleNodeNeighbors_Level3(t *testing.T) {
 	ctx := newTestRequestContext()
 	service := NewService(ctx, slog.Default(), dbManager)
 
+	tenantID := uuid.New().String()
+	accountID := uuid.New().String()
+	nodes := seedServiceTopology(t, service, tenantID, accountID)
+	defer cleanupTestData(t, dbManager, tenantID)
+
 	t.Run("Level 3 from rpc returns more nodes than level 2", func(t *testing.T) {
 		// Get level 2 results
-		resultLevel2, err := service.GetMultipleNodeNeighbors(ctx, []string{nodeIDRPC}, 2, nil, true)
+		resultLevel2, err := service.GetMultipleNodeNeighbors(ctx, []string{nodes["rpc"].ID}, 2, nil, true)
 		if err != nil {
 			t.Fatalf("GetMultipleNodeNeighbors(level=2) error = %v", err)
 		}
 
 		// Get level 3 results
-		resultLevel3, err := service.GetMultipleNodeNeighbors(ctx, []string{nodeIDRPC}, 3, nil, true)
+		resultLevel3, err := service.GetMultipleNodeNeighbors(ctx, []string{nodes["rpc"].ID}, 3, nil, true)
 		if err != nil {
 			t.Fatalf("GetMultipleNodeNeighbors(level=3) error = %v", err)
 		}
@@ -155,9 +214,10 @@ func TestRealData_GetMultipleNodeNeighbors_Level3(t *testing.T) {
 		fmt.Printf("Level 2: %d nodes, %d edges\n", len(resultLevel2.Nodes), len(resultLevel2.Edges))
 		fmt.Printf("Level 3: %d nodes, %d edges\n", len(resultLevel3.Nodes), len(resultLevel3.Edges))
 
-		// Level 3 should have >= nodes than level 2
-		if len(resultLevel3.Nodes) < len(resultLevel2.Nodes) {
-			t.Errorf("Level 3 should have >= nodes than level 2. Level 2: %d, Level 3: %d",
+		// Level 3 reaches postgres (rpc -> auto-pilot-server -> rabbitmq -> postgres),
+		// which is not reachable at level 2, so it must have strictly more nodes.
+		if len(resultLevel3.Nodes) <= len(resultLevel2.Nodes) {
+			t.Errorf("Level 3 should have more nodes than level 2 (postgres at depth 3). Level 2: %d, Level 3: %d",
 				len(resultLevel2.Nodes), len(resultLevel3.Nodes))
 		}
 
@@ -165,6 +225,14 @@ func TestRealData_GetMultipleNodeNeighbors_Level3(t *testing.T) {
 		if len(resultLevel3.Edges) < len(resultLevel2.Edges) {
 			t.Errorf("Level 3 should have >= edges than level 2. Level 2: %d, Level 3: %d",
 				len(resultLevel2.Edges), len(resultLevel3.Edges))
+		}
+
+		// Verify postgres specifically appears only at level 3.
+		if containsID(extractNodeIDs(resultLevel2.Nodes), nodes["postgres"].ID) {
+			t.Errorf("postgres should NOT be reachable from rpc at level 2")
+		}
+		if !containsID(extractNodeIDs(resultLevel3.Nodes), nodes["postgres"].ID) {
+			t.Errorf("postgres should be reachable from rpc at level 3")
 		}
 	})
 }
@@ -180,21 +248,26 @@ func TestRealData_GetMultipleNodeNeighbors_MultipleStartingNodes(t *testing.T) {
 	ctx := newTestRequestContext()
 	service := NewService(ctx, slog.Default(), dbManager)
 
+	tenantID := uuid.New().String()
+	accountID := uuid.New().String()
+	nodes := seedServiceTopology(t, service, tenantID, accountID)
+	defer cleanupTestData(t, dbManager, tenantID)
+
 	t.Run("Multiple starting nodes combines neighbors", func(t *testing.T) {
 		// Get neighbors from rpc alone
-		resultRpc, err := service.GetMultipleNodeNeighbors(ctx, []string{nodeIDRPC}, 1, nil, true)
+		resultRpc, err := service.GetMultipleNodeNeighbors(ctx, []string{nodes["rpc"].ID}, 1, nil, true)
 		if err != nil {
 			t.Fatalf("GetMultipleNodeNeighbors(rpc) error = %v", err)
 		}
 
 		// Get neighbors from rabbitmq alone
-		resultRabbitmq, err := service.GetMultipleNodeNeighbors(ctx, []string{nodeIDRabbitmq}, 1, nil, true)
+		resultRabbitmq, err := service.GetMultipleNodeNeighbors(ctx, []string{nodes["rabbitmq"].ID}, 1, nil, true)
 		if err != nil {
 			t.Fatalf("GetMultipleNodeNeighbors(rabbitmq) error = %v", err)
 		}
 
 		// Get neighbors from both rpc and rabbitmq
-		resultBoth, err := service.GetMultipleNodeNeighbors(ctx, []string{nodeIDRPC, nodeIDRabbitmq}, 1, nil, true)
+		resultBoth, err := service.GetMultipleNodeNeighbors(ctx, []string{nodes["rpc"].ID, nodes["rabbitmq"].ID}, 1, nil, true)
 		if err != nil {
 			t.Fatalf("GetMultipleNodeNeighbors(rpc+rabbitmq) error = %v", err)
 		}
@@ -204,18 +277,18 @@ func TestRealData_GetMultipleNodeNeighbors_MultipleStartingNodes(t *testing.T) {
 		fmt.Printf("Both: %d nodes, %d edges\n", len(resultBoth.Nodes), len(resultBoth.Edges))
 
 		// Both starting nodes should be in results
-		actionFound := false
+		rpcFound := false
 		rabbitmqFound := false
 		for _, node := range resultBoth.Nodes {
-			if node.ID == nodeIDRPC {
-				actionFound = true
+			if node.ID == nodes["rpc"].ID {
+				rpcFound = true
 			}
-			if node.ID == nodeIDRabbitmq {
+			if node.ID == nodes["rabbitmq"].ID {
 				rabbitmqFound = true
 			}
 		}
 
-		if !actionFound {
+		if !rpcFound {
 			t.Errorf("rpc not found in combined results")
 		}
 		if !rabbitmqFound {
@@ -245,18 +318,23 @@ func TestRealData_GetMultipleNodeNeighbors_CompareLevels(t *testing.T) {
 	ctx := newTestRequestContext()
 	service := NewService(ctx, slog.Default(), dbManager)
 
+	tenantID := uuid.New().String()
+	accountID := uuid.New().String()
+	nodes := seedServiceTopology(t, service, tenantID, accountID)
+	defer cleanupTestData(t, dbManager, tenantID)
+
 	t.Run("Compare levels 1, 2, 3 from auto-pilot-server", func(t *testing.T) {
-		result1, err := service.GetMultipleNodeNeighbors(ctx, []string{nodeIDAutoPilotServer}, 1, nil, true)
+		result1, err := service.GetMultipleNodeNeighbors(ctx, []string{nodes["auto-pilot-server"].ID}, 1, nil, true)
 		if err != nil {
 			t.Fatalf("Level 1 error: %v", err)
 		}
 
-		result2, err := service.GetMultipleNodeNeighbors(ctx, []string{nodeIDAutoPilotServer}, 2, nil, true)
+		result2, err := service.GetMultipleNodeNeighbors(ctx, []string{nodes["auto-pilot-server"].ID}, 2, nil, true)
 		if err != nil {
 			t.Fatalf("Level 2 error: %v", err)
 		}
 
-		result3, err := service.GetMultipleNodeNeighbors(ctx, []string{nodeIDAutoPilotServer}, 3, nil, true)
+		result3, err := service.GetMultipleNodeNeighbors(ctx, []string{nodes["auto-pilot-server"].ID}, 3, nil, true)
 		if err != nil {
 			t.Fatalf("Level 3 error: %v", err)
 		}
@@ -301,8 +379,13 @@ func TestRealData_GetMultipleNodeNeighbors_VerifyEdgeConnectivity(t *testing.T) 
 	ctx := newTestRequestContext()
 	service := NewService(ctx, slog.Default(), dbManager)
 
+	tenantID := uuid.New().String()
+	accountID := uuid.New().String()
+	nodes := seedServiceTopology(t, service, tenantID, accountID)
+	defer cleanupTestData(t, dbManager, tenantID)
+
 	t.Run("All edges connect nodes in the result set", func(t *testing.T) {
-		result, err := service.GetMultipleNodeNeighbors(ctx, []string{nodeIDAutoPilotServer}, 2, nil, true)
+		result, err := service.GetMultipleNodeNeighbors(ctx, []string{nodes["auto-pilot-server"].ID}, 2, nil, true)
 		if err != nil {
 			t.Fatalf("GetMultipleNodeNeighbors() error = %v", err)
 		}
@@ -334,7 +417,7 @@ func TestRealData_GetMultipleNodeNeighbors_VerifyEdgeConnectivity(t *testing.T) 
 	})
 }
 
-// Helper functions for real data tests
+// Helper functions for these tests
 
 func logSampleNodes(nodes []KgNode, limit int) {
 	count := 0

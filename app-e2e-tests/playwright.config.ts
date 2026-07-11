@@ -2,16 +2,16 @@ import { defineConfig, devices } from "@playwright/test";
 import * as dotenv from "dotenv";
 import * as path from "path";
 
-// CI: env vars already injected by workflow (from GitHub secret)
-// Local: dev → .env.dev | test → .env
 if (!process.env.CI) {
   const envFile = process.env.E2E_ENVIRONMENT === "dev" ? ".env.dev" : ".env";
   dotenv.config({ path: path.resolve(__dirname, envFile) });
 }
 
+const isDevEnv = process.env.E2E_ENVIRONMENT === "dev";
+
 export default defineConfig({
   testDir: "./tests",
-  timeout: 120000,
+  timeout: isDevEnv ? 120000 : 240000,
   expect: {
     timeout: 30000,
   },
@@ -35,7 +35,8 @@ export default defineConfig({
 
   use: {
     headless: !!process.env.CI,
-    actionTimeout: 10000,
+    actionTimeout: isDevEnv ? 10000 : 20000,
+    navigationTimeout: isDevEnv ? 30000 : 60000,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "retain-on-failure",

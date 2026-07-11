@@ -24,6 +24,7 @@ In the realm of politics, the press became the foundational tool for public opin
 In conclusion, the printing press was not merely an invention; it was an epochal engine of change. By mechanizing literacy, it decentralized power, enabled scientific and religious revolutions, formalized national languages, and laid the groundwork for modern journalism and participatory democracy. Its legacy is the very structure of the information age we inhabit today.`
 
 func TestLLM_Summary(t *testing.T) {
+	testutils.RequireEnv(t, "TEST_TENANT_ID", "TEST_ACCOUNT_ID", "TEST_USER_ID")
 	task := &LLMSummaryTask{}
 	taskCtx := testutils.NewTestTaskContext(os.Getenv("TEST_TENANT_ID"), os.Getenv("TEST_ACCOUNT_ID"), os.Getenv("TEST_USER_ID"), slog.Default())
 

@@ -1,11 +1,6 @@
 /**
  * Modal — DS V2 unified popup primitive.
  *
- * Combines the responsibilities of the legacy `Modal`
- * (`app/src/components/common/modal/index.jsx`) and the legacy `NDialog`
- * (`app/src/components/common/modal/NDialog.tsx`) into a single component
- * that lives in the DS tree. Legacy components remain untouched; call sites
- * migrate to this primitive deliberately.
  *
  * One component covers:
  *  - Plain modal shell: header (title/subtitle/right slot) + body + optional
@@ -21,7 +16,7 @@
  *
  * Visual chrome (colors, type, radii, spacing) is sourced from the `--ds-*`
  * design tokens in `app/src/styles/theme-tokens.css`. Footer buttons render
- * through the DS V2 `Button` (`@components1/ds/Button`).
+ * through the DS V2 `Button` (`@ui/Button`).
  *
  * Spec: app/design-system/primitives/overlays/modal.html
  */
@@ -356,7 +351,11 @@ export function Modal({
           sx={
             actionButtonsFullBleed
               ? { display: 'block', padding: 0, borderTop: '0.5px solid var(--ds-gray-200)' }
-              : { p: 'var(--ds-space-3) var(--ds-space-5)', borderTop: '0.5px solid var(--ds-gray-200)' }
+              : {
+                  p: 'var(--ds-space-3) var(--ds-space-5)',
+                  borderTop: '0.5px solid var(--ds-gray-200)',
+                  '& button': { minWidth: 'calc(var(--ds-space-1) * 35)' },
+                }
           }
         >
           {actionButtons}
@@ -367,9 +366,9 @@ export function Modal({
       {showStandardFooter && (
         <DialogActions
           sx={{
-            px: 'var(--ds-space-5)',
-            my: 'var(--ds-space-4)',
-            button: { minWidth: '140px' },
+            p: 'var(--ds-space-3) var(--ds-space-5)',
+            borderTop: '0.5px solid var(--ds-gray-200)',
+            '& button': { minWidth: 'calc(var(--ds-space-1) * 35)' },
           }}
         >
           {isCancelRequired && (

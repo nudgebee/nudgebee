@@ -465,7 +465,7 @@ func TestToOpal_EdgeCases(t *testing.T) {
 					"message": {query.Eq: `error with "quotes"`},
 				},
 			},
-			expectedFilter: `filter message = "error with "quotes""`,
+			expectedFilter: `filter message = "error with \"quotes\""`,
 			expectError:    false,
 		},
 		{

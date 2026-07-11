@@ -15,34 +15,36 @@ import (
 )
 
 const (
-	PinotUrl          = "pinot_url"
-	PinotAuthType     = "auth_type"
-	PinotUsername     = "username"
-	PinotPassword     = "password"
-	PinotBearerToken  = "bearer_token"
-	PinotTable        = "pinot_table"
-	PinotTimestampCol = "pinot_timestamp_col"
-	PinotMessageCol   = "pinot_message_col"
-	PinotSeverityCol  = "pinot_severity_col"
-	PinotNamespaceCol = "pinot_namespace_col"
-	PinotPodCol       = "pinot_pod_col"
-	PinotContainerCol = "pinot_container_col"
+	PinotUrl           = "pinot_url"
+	PinotAuthType      = "auth_type"
+	PinotUsername      = "username"
+	PinotPassword      = "password"
+	PinotBearerToken   = "bearer_token"
+	PinotTable         = "pinot_table"
+	PinotTimestampCol  = "pinot_timestamp_col"
+	PinotMessageCol    = "pinot_message_col"
+	PinotSeverityCol   = "pinot_severity_col"
+	PinotNamespaceCol  = "pinot_namespace_col"
+	PinotPodCol        = "pinot_pod_col"
+	PinotContainerCol  = "pinot_container_col"
+	PinotTLSSkipVerify = "pinot_tls_skip_verify"
 )
 
 // PinotConfig holds the resolved configuration for a direct Pinot integration.
 type PinotConfig struct {
-	Url          string
-	AuthType     string // "none", "basic", "bearer_token"
-	Username     string
-	Password     string
-	BearerToken  string
-	Table        string
-	TimestampCol string
-	MessageCol   string
-	SeverityCol  string
-	NamespaceCol string // log-group grouping column (default: namespace)
-	PodCol       string // log-group grouping column (default: pod)
-	ContainerCol string // log-group grouping column (default: container)
+	Url           string
+	AuthType      string // "none", "basic", "bearer_token"
+	Username      string
+	Password      string
+	BearerToken   string
+	Table         string
+	TimestampCol  string
+	MessageCol    string
+	SeverityCol   string
+	NamespaceCol  string // log-group grouping column (default: namespace)
+	PodCol        string // log-group grouping column (default: pod)
+	ContainerCol  string // log-group grouping column (default: container)
+	TLSSkipVerify bool   // user-configured opt-in for self-signed certs
 }
 
 // GetPinotConfig reads and decrypts the Pinot integration configuration.
@@ -105,6 +107,8 @@ func GetPinotConfig(ctx *security.RequestContext, accountId string) (*PinotConfi
 			cfg.PodCol = value
 		case PinotContainerCol:
 			cfg.ContainerCol = value
+		case PinotTLSSkipVerify:
+			cfg.TLSSkipVerify = strings.EqualFold(strings.TrimSpace(value), "true")
 		}
 	}
 
@@ -127,11 +131,13 @@ func GetPinotConfig(ctx *security.RequestContext, accountId string) (*PinotConfi
 	return cfg, nil
 }
 
-// pinotHTTPClient skips TLS verification for user-managed Pinot installations
-// that may use self-signed certificates.
-var pinotHTTPClient = func() *http.Client {
+// pinotVerifyClient is the default HTTP client for Pinot — TLS verified.
+var pinotVerifyClient = &http.Client{Timeout: 30 * time.Second}
+
+// pinotSkipVerifyClient is used only when the user has explicitly set pinot_tls_skip_verify=true.
+var pinotSkipVerifyClient = func() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // User-configured Pinot with self-signed certs
+	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // explicit user opt-in, default false
 	return &http.Client{
 		Transport: transport,
 		Timeout:   30 * time.Second,
@@ -157,7 +163,11 @@ func pinotRequest(method, rawURL, bodyJSON string, cfg *PinotConfig) (*http.Resp
 		req.Header.Set("Authorization", "Bearer "+cfg.BearerToken)
 	}
 
-	return pinotHTTPClient.Do(req)
+	client := pinotVerifyClient
+	if cfg.TLSSkipVerify {
+		client = pinotSkipVerifyClient
+	}
+	return client.Do(req)
 }
 
 // fetchPinotSchemaDirect fetches the Pinot table schema via direct HTTP and caches it.
@@ -172,6 +182,7 @@ func fetchPinotSchemaDirect(accountId string, cfg *PinotConfig) (*pinotSchemaRes
 	if err != nil {
 		return nil, fmt.Errorf("fetchPinotSchemaDirect: %w", err)
 	}
+	defer func() { _ = resp.Body.Close() }()
 	bodyBytes, err := readPinotResponse(resp, "schema fetch")
 	if err != nil {
 		return nil, err
@@ -335,7 +346,7 @@ func (p *PinotSaasSource) QueryLogs(ctx *security.RequestContext, req FetchLogRe
 	if marshalErr != nil {
 		return nil, fmt.Errorf("pinot.QueryLogs: failed to marshal SQL: %w", marshalErr)
 	}
-	resp, err := pinotRequest("POST", fmt.Sprintf("%s/sql", cfg.Url), string(sqlBody), cfg)
+	resp, err := pinotRequest("POST", fmt.Sprintf("%s/sql", cfg.Url), string(sqlBody), cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("pinot.QueryLogs: request failed: %w", err)
 	}
@@ -352,7 +363,7 @@ func (p *PinotSaasSource) QueryLabels(ctx *security.RequestContext, req FetchLog
 		return nil, fmt.Errorf("pinot.QueryLabels: %w", err)
 	}
 
-	resp, err := pinotRequest("GET", fmt.Sprintf("%s/schemas/%s", cfg.Url, cfg.Table), "", cfg)
+	resp, err := pinotRequest("GET", fmt.Sprintf("%s/schemas/%s", cfg.Url, cfg.Table), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("pinot.QueryLabels: request failed: %w", err)
 	}
@@ -387,7 +398,7 @@ func (p *PinotSaasSource) QueryLabelValues(ctx *security.RequestContext, req Fet
 	if marshalErr != nil {
 		return nil, fmt.Errorf("pinot.QueryLabelValues: failed to marshal SQL: %w", marshalErr)
 	}
-	resp, err := pinotRequest("POST", fmt.Sprintf("%s/sql", cfg.Url), string(sqlBody), cfg)
+	resp, err := pinotRequest("POST", fmt.Sprintf("%s/sql", cfg.Url), string(sqlBody), cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("pinot.QueryLabelValues: request failed: %w", err)
 	}
@@ -469,7 +480,7 @@ func samplePinotTimestampValueDirect(cfg *PinotConfig, tsCol string) (string, er
 	if err != nil {
 		return "", fmt.Errorf("marshal sample sql: %w", err)
 	}
-	resp, err := pinotRequest("POST", fmt.Sprintf("%s/sql", cfg.Url), string(body), cfg)
+	resp, err := pinotRequest("POST", fmt.Sprintf("%s/sql", cfg.Url), string(body), cfg) //nolint:bodyclose
 	if err != nil {
 		return "", fmt.Errorf("sample request failed: %w", err)
 	}

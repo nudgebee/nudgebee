@@ -29,7 +29,7 @@ describe('useClusterInsights', () => {
 
   it('fetches insights on mount when accountId is provided', async () => {
     mockGetInsights.mockResolvedValue({
-      data: { data: { insight_v2: { rows: mockInsights } } },
+      data: { data: { insights_list: { rows: mockInsights } } },
     });
     const { result } = renderHook(() => useClusterInsights('acc-1'));
     await waitFor(() => {
@@ -40,7 +40,7 @@ describe('useClusterInsights', () => {
 
   it('separates troubleshooting and optimization insights', async () => {
     mockGetInsights.mockResolvedValue({
-      data: { data: { insight_v2: { rows: mockInsights } } },
+      data: { data: { insights_list: { rows: mockInsights } } },
     });
     const { result } = renderHook(() => useClusterInsights('acc-1'));
     await waitFor(() => expect(result.current.troubleShootData).toHaveLength(2));
@@ -50,7 +50,7 @@ describe('useClusterInsights', () => {
 
   it('returns empty arrays when API returns no rows', async () => {
     mockGetInsights.mockResolvedValue({
-      data: { data: { insight_v2: { rows: [] } } },
+      data: { data: { insights_list: { rows: [] } } },
     });
     const { result } = renderHook(() => useClusterInsights('acc-1'));
     await waitFor(() => expect(mockGetInsights).toHaveBeenCalled());
@@ -60,7 +60,7 @@ describe('useClusterInsights', () => {
 
   it('re-fetches when accountId changes', async () => {
     mockGetInsights.mockResolvedValue({
-      data: { data: { insight_v2: { rows: mockInsights } } },
+      data: { data: { insights_list: { rows: mockInsights } } },
     });
     const { rerender } = renderHook(({ id }) => useClusterInsights(id), {
       initialProps: { id: 'acc-1' },

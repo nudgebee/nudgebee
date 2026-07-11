@@ -154,7 +154,15 @@ const K8sClusterInsights = ({ accountId }) => {
         />
         {hasMore && (
           <Typography
+            role='button'
+            tabIndex={0}
             onClick={() => setExpanded((prev) => !prev)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setExpanded((prev) => !prev);
+              }
+            }}
             sx={{
               fontSize: 'var(--ds-text-small)',
               color: 'var(--ds-blue-500)',

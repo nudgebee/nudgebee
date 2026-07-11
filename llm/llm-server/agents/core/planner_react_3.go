@@ -1907,6 +1907,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 				"data_protection_rules",
 				"code_analysis_rules",
 				"security_rules",
+				"memory_consumption_rules",
 			},
 		),
 	}
@@ -2023,6 +2024,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"data_protection_rules":        prompts_repo.GetPrompt(prompts_repo.PromptSharedDataProtectionRules),
 		"code_analysis_rules":          prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
 		"security_rules":               prompts_repo.GetPrompt(prompts_repo.PromptSharedSecurityRules),
+		"memory_consumption_rules":     "",
 		// Human message template vars (dynamic — change per conversation/iteration)
 		"today":                    time.Now().Format("January 02, 2006"),
 		"history":                  previousMessageStr,

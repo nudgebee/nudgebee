@@ -3,8 +3,8 @@ import { Box, Typography } from '@mui/material';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
 import { Input } from '@ui/Input';
-import CustomTable2 from '@shared/tables/CustomTable2';
-import { snackbar } from '../snackbarService';
+import CustomTable from '@shared/tables/CustomTable';
+import { toast as snackbar } from '@ui/Toast';
 import { ds } from 'src/utils/colors';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import InfoIcon from '@mui/icons-material/Info';
@@ -132,9 +132,9 @@ const ApiTokens = ({ open, title, onClose }) => {
         width='md'
         sx={{
           '& .MuiPaper-root': {
-            maxWidth: '800px',
+            maxWidth: ds.space.mul(0, 400),
             '& .MuiDialogContent-root': {
-              padding: '32px 40px 0px 40px',
+              padding: `${ds.space[6]} ${ds.space.mul(0, 20)} 0px ${ds.space.mul(0, 20)}`,
             },
           },
         }}
@@ -188,7 +188,7 @@ const ApiTokens = ({ open, title, onClose }) => {
           {showCreateForm && (
             <Box
               sx={{
-                p: '20px',
+                p: ds.space.mul(0, 10),
                 border: `1px solid ${ds.gray[200]}`,
                 borderRadius: ds.radius.lg,
                 bgcolor: ds.background[100],
@@ -239,14 +239,14 @@ const ApiTokens = ({ open, title, onClose }) => {
               <Box
                 sx={{
                   textAlign: 'center',
-                  py: '40px',
+                  py: ds.space.mul(0, 20),
                   color: ds.gray[500],
                 }}
               >
                 <Typography>No API tokens found. Create your first token to get started.</Typography>
               </Box>
             ) : (
-              <CustomTable2
+              <CustomTable
                 headers={['Name', 'Created', 'Last Used', 'Actions']}
                 tableData={tokens.map((token) => [
                   { text: token.name, component: <Typography variant='body2'>{token.name}</Typography> },
@@ -285,7 +285,7 @@ const ApiTokens = ({ open, title, onClose }) => {
               size='sm'
               tone='secondary'
               onClick={() => setShowInstructions(true)}
-              icon={<InfoIcon sx={{ fontSize: '16px' }} />}
+              icon={<InfoIcon sx={{ fontSize: ds.text.title }} />}
               iconPlacement='start'
             >
               How to use
@@ -320,7 +320,7 @@ const ApiTokens = ({ open, title, onClose }) => {
             API tokens allow you to authenticate with Nudgebee APIs programmatically. Follow this two-step process:
           </Typography>
 
-          <Typography sx={{ fontSize: '15px', fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
+          <Typography sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
             Step 1: Generate Temporary Token
           </Typography>
           <Typography sx={{ mb: ds.space[2] }}>First, exchange your API token for a temporary JWT token:</Typography>
@@ -340,7 +340,7 @@ const ApiTokens = ({ open, title, onClose }) => {
             {`curl ${getAppBaseUrl()}/api/auth/token --data '{"email":"your@email.com", "secret":"YOUR_API_TOKEN"}' -i -H 'content-type: application/json'`}
           </Box>
 
-          <Typography sx={{ fontSize: '15px', fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
+          <Typography sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
             Step 2: Use Temporary Token for API Calls
           </Typography>
           <Typography sx={{ mb: ds.space[2] }}>Use the JWT token from Step 1 to make GraphQL API calls:</Typography>
@@ -360,7 +360,7 @@ const ApiTokens = ({ open, title, onClose }) => {
             {`curl ${getAppBaseUrl()}/api/graphql -i -H 'content-type: application/json' -H "Authorization: Bearer $AUTH_TOKEN" --data $QUERY_DATA`}
           </Box>
 
-          <Box component='ul' sx={{ pl: '20px', mb: ds.space[3] }}>
+          <Box component='ul' sx={{ pl: ds.space.mul(0, 10), mb: ds.space[3] }}>
             <li style={{ marginBottom: ds.space[2] }}>
               <strong>Important:</strong> Your API token is used as the &quot;secret&quot; in Step 1, not directly in API calls
             </li>

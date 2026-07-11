@@ -8,8 +8,10 @@ import (
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/internal/testenv"
 	"os"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -853,4 +855,189 @@ func TestTraceExtractServiceFlow_DeterministicTieBreak(t *testing.T) {
 		got := []string{flow[0].Name, flow[1].Name}
 		assert.Equal(t, want, got, "tie-break on trace_id must keep representative stable across runs (iteration %d)", i)
 	}
+}
+
+// --- Error-message capture + caller-chain recovery (gRPC reason drop) ---
+//
+// These lock in the fix for the OtelDemo class of failure: the failing service
+// returns a gRPC error whose human-readable reason is recorded on the CALLER's
+// client span as grpc.error_message, while the callee's server span (the leaf
+// aggregateErrors keeps as the root cause) has only status=13 and an empty
+// status_message. Without recovery the insight reads "status=13 (INTERNAL)"
+// with no reason — exactly what blinded the event summary.
+
+// withMsg returns the span with grpc.error_message and/or status_message set.
+func withMsg(span map[string]any, grpcErrMsg, statusMsg string) map[string]any {
+	if grpcErrMsg != "" {
+		span["span_attributes"].(map[string]any)[TraceGRPCErrorMessage] = grpcErrMsg
+	}
+	if statusMsg != "" {
+		span[TraceStatusMessage] = statusMsg
+	}
+	return span
+}
+
+func TestTraceGetErrorMessage(t *testing.T) {
+	t.Run("status_message top-level wins", func(t *testing.T) {
+		msg := traceGetErrorMessage(
+			map[string]any{"status_message": "boom"},
+			map[string]any{"grpc.error_message": "13 INTERNAL: other"},
+		)
+		assert.Equal(t, "boom", msg)
+	})
+	t.Run("falls back to grpc.error_message", func(t *testing.T) {
+		msg := traceGetErrorMessage(
+			map[string]any{},
+			map[string]any{"grpc.error_message": "13 INTERNAL: Error: Product Catalog Fail Feature Flag Enabled"},
+		)
+		assert.Equal(t, "13 INTERNAL: Error: Product Catalog Fail Feature Flag Enabled", msg)
+	})
+	t.Run("status_message in span_attributes", func(t *testing.T) {
+		msg := traceGetErrorMessage(
+			map[string]any{},
+			map[string]any{"status_message": "deadline exceeded"},
+		)
+		assert.Equal(t, "deadline exceeded", msg)
+	})
+	t.Run("none present", func(t *testing.T) {
+		assert.Empty(t, traceGetErrorMessage(map[string]any{}, map[string]any{}))
+	})
+}
+
+func TestExtractErrorSignature_ErrorMessage(t *testing.T) {
+	t.Run("captures grpc.error_message when no exception", func(t *testing.T) {
+		s := extractErrorSignature(withMsg(
+			mkErrSpan("t1", "1", "", "frontend", "GetProduct", "13"),
+			"13 INTERNAL: Error: Product Catalog Fail Feature Flag Enabled", "",
+		))
+		require.NotNil(t, s)
+		assert.Equal(t, "13 INTERNAL: Error: Product Catalog Fail Feature Flag Enabled", s.ErrorMessage)
+		assert.Empty(t, s.ExceptionMessage)
+	})
+	t.Run("captures status_message when no exception", func(t *testing.T) {
+		s := extractErrorSignature(withMsg(
+			mkErrSpan("t1", "1", "", "product-catalog", "GetProduct", "13"),
+			"", "rpc error: code = Internal",
+		))
+		require.NotNil(t, s)
+		assert.Equal(t, "rpc error: code = Internal", s.ErrorMessage)
+	})
+	t.Run("exception takes precedence over error message", func(t *testing.T) {
+		span := withMsg(mkErrSpan("t1", "1", "", "cart", "AddItem", "13"),
+			"13 INTERNAL: wire msg", "")
+		span["events_attributes"] = []any{
+			map[string]any{"exception.type": "RedisError", "exception.message": "connection refused"},
+		}
+		s := extractErrorSignature(span)
+		require.NotNil(t, s)
+		assert.Equal(t, "RedisError", s.ExceptionType)
+		assert.Equal(t, "connection refused", s.ExceptionMessage)
+		assert.Empty(t, s.ErrorMessage, "error message must not be set when an exception event is present")
+	})
+	t.Run("long message is truncated", func(t *testing.T) {
+		long := strings.Repeat("x", maxExceptionMessageLen+50)
+		s := extractErrorSignature(withMsg(
+			mkErrSpan("t1", "1", "", "frontend", "GetProduct", "13"), "", long,
+		))
+		require.NotNil(t, s)
+		assert.LessOrEqual(t, len([]rune(s.ErrorMessage)), maxExceptionMessageLen+1) // +1 for the ellipsis rune
+		assert.Contains(t, s.ErrorMessage, "…")
+	})
+}
+
+func TestFormatErrorInsight_ErrorMessage(t *testing.T) {
+	t.Run("error message rendered when no exception", func(t *testing.T) {
+		got := formatErrorInsight(aggregatedError{
+			Count: 5, ExampleTraceID: "b16ad4d3",
+			Signature: errorSignature{
+				Service: "product-catalog", Destination: "oteldemo.ProductCatalogService",
+				Operation: "GetProduct", Protocol: "grpc", Status: "13", StatusName: "INTERNAL",
+				ErrorMessage: "13 INTERNAL: Error: Product Catalog Fail Feature Flag Enabled",
+			},
+		})
+		assert.Contains(t, got.Message, "status=13 (INTERNAL)")
+		assert.Contains(t, got.Message, "; error: 13 INTERNAL: Error: Product Catalog Fail Feature Flag Enabled")
+	})
+	t.Run("exception preferred when both present", func(t *testing.T) {
+		got := formatErrorInsight(aggregatedError{
+			Count: 1,
+			Signature: errorSignature{
+				Service: "cart", Protocol: "grpc", Status: "13", StatusName: "INTERNAL",
+				ExceptionType: "RedisError", ExceptionMessage: "refused",
+				ErrorMessage: "should not appear",
+			},
+		})
+		assert.Contains(t, got.Message, "exception: RedisError: refused")
+		assert.NotContains(t, got.Message, "should not appear")
+	})
+}
+
+// TestAggregateErrors_RecoverMessageFromCaller is the headline scenario:
+// frontend (client, carries grpc.error_message) → product-catalog (server LEAF,
+// no message). The leaf is the root-cause bucket; its reason must be recovered
+// from the caller span.
+func TestAggregateErrors_RecoverMessageFromCaller(t *testing.T) {
+	traces := []map[string]any{
+		withMsg(mkErrSpan("t1", "1", "", "frontend", "GetProduct", "13"),
+			"13 INTERNAL: Error: Product Catalog Fail Feature Flag Enabled", ""),
+		mkErrSpan("t1", "2", "1", "product-catalog", "GetProduct", "13"), // LEAF, no message
+	}
+	got := aggregateErrors(traces)
+	require.Len(t, got, 1)
+	assert.Equal(t, "product-catalog", got[0].Signature.Service, "leaf is the root-cause service")
+	assert.Equal(t, "13 INTERNAL: Error: Product Catalog Fail Feature Flag Enabled",
+		got[0].Signature.ErrorMessage, "reason recovered from the caller's client span")
+}
+
+// Multi-hop: the message-bearing caller is two levels up, with an intermediate
+// error span that has no message. The walk must traverse the intermediate.
+func TestAggregateErrors_RecoverMessageMultiHop(t *testing.T) {
+	traces := []map[string]any{
+		withMsg(mkErrSpan("t1", "1", "", "frontend", "GetProduct", "13"),
+			"13 INTERNAL: Error: Product Catalog Fail Feature Flag Enabled", ""),
+		mkErrSpan("t1", "2", "1", "cart", "GetProduct", "13"),            // error, no message
+		mkErrSpan("t1", "3", "2", "product-catalog", "GetProduct", "13"), // LEAF, no message
+	}
+	got := aggregateErrors(traces)
+	require.Len(t, got, 1)
+	assert.Equal(t, "product-catalog", got[0].Signature.Service)
+	assert.Contains(t, got[0].Signature.ErrorMessage, "Fail Feature Flag Enabled")
+}
+
+// The walk must stop at a non-error ancestor — a message on a healthy parent is
+// unrelated to the failure and must not be attributed to the leaf.
+func TestAggregateErrors_RecoverStopsAtNonErrorAncestor(t *testing.T) {
+	caller := mkOKSpan("t1", "1", "", "frontend", "Checkout", "2026-05-18T00:00:00Z")
+	caller[TraceStatusMessage] = "unrelated healthy message"
+	traces := []map[string]any{
+		caller,
+		mkErrSpan("t1", "2", "1", "product-catalog", "GetProduct", "13"), // LEAF, no message
+	}
+	got := aggregateErrors(traces)
+	require.Len(t, got, 1)
+	assert.Equal(t, "product-catalog", got[0].Signature.Service)
+	assert.Empty(t, got[0].Signature.ErrorMessage, "must not pull a message from a non-error ancestor")
+}
+
+// A leaf carrying its own message must keep it — recovery is a fallback only.
+func TestAggregateErrors_LeafOwnMessageWins(t *testing.T) {
+	traces := []map[string]any{
+		withMsg(mkErrSpan("t1", "1", "", "frontend", "GetProduct", "13"), "caller wire msg", ""),
+		withMsg(mkErrSpan("t1", "2", "1", "product-catalog", "GetProduct", "13"), "", "leaf own status message"),
+	}
+	got := aggregateErrors(traces)
+	require.Len(t, got, 1)
+	assert.Equal(t, "leaf own status message", got[0].Signature.ErrorMessage)
+}
+
+// TestTruncate_RuneSafe locks in rune-based slicing: a multi-byte UTF-8 string
+// truncated at a rune boundary must stay valid UTF-8 (no split runes). Byte
+// slicing would cut a 3-byte rune and yield invalid UTF-8.
+func TestTruncate_RuneSafe(t *testing.T) {
+	s := strings.Repeat("世", 200) // 3 bytes per rune
+	got := truncate(s, maxExceptionMessageLen)
+	assert.True(t, utf8.ValidString(got), "truncated output must remain valid UTF-8")
+	assert.Equal(t, maxExceptionMessageLen+1, len([]rune(got)), "kept max runes plus the ellipsis")
+	// Short multi-byte strings are returned unchanged.
+	assert.Equal(t, "héllo", truncate("héllo", maxExceptionMessageLen))
 }

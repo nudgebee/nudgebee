@@ -1,0 +1,101 @@
+name: nudgebee-llm-server base image
+
+# Builds and publishes the OSS llm-server base image —
+# ghcr.io/<owner>/nudgebee-llm-server-base (Ubuntu noble + Playwright browsers +
+# playwright-go CLI + gh) that llm-server builds FROM (RUNTIME_BASE).
+#
+# Why this workflow exists: same gap as the python / cloud-collector / ml bases.
+# The enterprise pipeline publishes this base to ECR only, so the public GHCR tag
+# was pushed once and never refreshed, and the Dockerfile never ran apt-get
+# upgrade — so its Ubuntu OS packages drifted ~90 fixable CVEs behind. This gives
+# the GHCR base a real, repeatable build.
+#
+# Freshness: Dockerfile_base now runs apt-get upgrade, so every rebuild picks up
+# the latest Ubuntu security releases. The weekly schedule rebuilds even with no
+# change so the base can't silently go stale again.
+#
+# amd64 only: llm-server (the sole consumer) is built amd64-only in edge.yaml /
+# release.yaml.
+#
+# Build context is llm/llm-server (Dockerfile_base compiles playwright-go from
+# that module's go.mod). Tags: :ubuntu-noble (version-rolling, consumers pin),
+# :latest, and immutable :<YYYYMMDD>-<sha7>. PRs build to validate, no push.
+#
+# Note: this is a heavy build (Playwright installs Chromium). First push: flip
+# ghcr.io/<owner>/nudgebee-llm-server-base to public in Settings -> Packages.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Monday 07:30 UTC.
+    - cron: "30 7 * * 1"
+  push:
+    branches: ["main"]
+    paths:
+      - llm/llm-server/Dockerfile_base
+      - .github/workflows/llm-server-base-image.yaml
+  pull_request:
+    branches: ["main"]
+    paths:
+      - llm/llm-server/Dockerfile_base
+      - .github/workflows/llm-server-base-image.yaml
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: nudgebee-llm-server-base
+  CONTEXT: llm/llm-server
+  DOCKERFILE: llm/llm-server/Dockerfile_base
+  STABLE_TAG: ubuntu-noble
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - id: v
+        run: |
+          set -euo pipefail
+          ns="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then push=false; else push=true; fi
+          {
+            echo "namespace=$ns"
+            echo "snap=$(date -u +%Y%m%d)-${GITHUB_SHA:0:7}"
+            echo "push=$push"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        if: steps.v.outputs.push == 'true'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (amd64, push=${{ steps.v.outputs.push }})
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CONTEXT }}
+          file: ${{ env.DOCKERFILE }}
+          push: ${{ steps.v.outputs.push == 'true' }}
+          platforms: linux/amd64
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.v.outputs.namespace }}/${{ env.IMAGE }}:${{ env.STABLE_TAG }}
+            ${{ env.REGISTRY }}/${{ steps.v.outputs.namespace }}/${{ env.IMAGE }}:latest
+            ${{ env.REGISTRY }}/${{ steps.v.outputs.namespace }}/${{ env.IMAGE }}:${{ steps.v.outputs.snap }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=${{ env.IMAGE }}
+          cache-from: ${{ steps.v.outputs.push == 'true' && format('type=registry,ref={0}/{1}/{2}:buildcache', env.REGISTRY, steps.v.outputs.namespace, env.IMAGE) || '' }}
+          cache-to: ${{ steps.v.outputs.push == 'true' && format('type=registry,ref={0}/{1}/{2}:buildcache,mode=max', env.REGISTRY, steps.v.outputs.namespace, env.IMAGE) || '' }}

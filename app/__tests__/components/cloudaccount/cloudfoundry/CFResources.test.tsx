@@ -28,17 +28,30 @@ jest.mock('@hooks/usePagination', () => ({
   }),
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000' }, background: { white: '#fff' } },
-}));
+jest.mock('@utils/colors');
 
 jest.mock('@shared/format/Datetime', () => ({
   __esModule: true,
   default: ({ value }: any) => <span data-testid='datetime'>{String(value || '—')}</span>,
 }));
 
+jest.mock('@shared/buttons/DownloadButton', () => ({
+  __esModule: true,
+  default: ({ onClick }: any) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
+  ),
+}));
+
 jest.mock('@components/cloudaccount/common', () => ({
   DataBlock: ({ title, data }: any) => <div data-testid={`datablock-${title}`}>{data}</div>,
+  CustomText: ({ text1, text2 }: any) => (
+    <span>
+      {text1}
+      {text2 ? ` ${text2}` : ''}
+    </span>
+  ),
 }));
 
 jest.mock('@components/cloudaccount/TagsCell', () => ({
@@ -55,44 +68,59 @@ jest.mock('@components/cloudaccount/CloudAccountEvents', () => ({
   ),
 }));
 
-jest.mock('@shared/BoxLayout2', () => ({
-  __esModule: true,
-  default: ({ children, filterOptions = [] }: any) => (
-    <div data-testid='box-layout'>
-      {filterOptions.map((f: any, i: number) => {
-        if (f.type === 'input') {
-          return (
-            <input
-              key={i}
-              data-testid={`search-${f.label}`}
-              value={f.value || ''}
-              onChange={f.onSelect}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && f.onEnter) f.onEnter();
-              }}
-            />
-          );
-        }
-        if (f.type === 'dropdown') {
-          return (
-            <select key={i} data-testid={`filter-${f.label}`} value={f.value || ''} disabled={f.enabled === false} onChange={f.onSelect}>
-              <option value=''>--</option>
-              {(f.options || []).map((opt: any, idx: number) => {
-                const v = typeof opt === 'string' ? opt : opt.value;
-                const l = typeof opt === 'string' ? opt : opt.label;
-                return (
-                  <option key={(v || '_') + '-' + idx} value={v}>
-                    {l}
-                  </option>
-                );
-              })}
-            </select>
-          );
-        }
-        return null;
-      })}
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout: any = ({ children, id }: any) => (
+    <div data-testid='listing-layout' id={id}>
       {children}
     </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }: any) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }: any) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, options = [], value, onSelect, disabled }: any) => {
+    const currentValue = typeof value === 'object' && value !== null ? value.value : value;
+    return (
+      <select
+        data-testid={`filter-${label}`}
+        value={currentValue || ''}
+        disabled={disabled}
+        onChange={(e) => onSelect?.(e, { value: e.target.value, label: e.target.value })}
+      >
+        <option value=''>--</option>
+        {(options || []).map((opt: any, idx: number) => {
+          const v = typeof opt === 'string' ? opt : opt.value;
+          const l = typeof opt === 'string' ? opt : opt.label;
+          return (
+            <option key={(v || '_') + '-' + idx} value={v}>
+              {l}
+            </option>
+          );
+        })}
+      </select>
+    );
+  },
+}));
+
+jest.mock('@ui/SearchInput', () => ({
+  __esModule: true,
+  default: ({ label, value, onChange, onEnterPress }: any) => (
+    <input
+      data-testid={`search-${label}`}
+      value={value || ''}
+      onChange={(e) => onChange?.(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && onEnterPress) onEnterPress();
+      }}
+    />
   ),
 }));
 
@@ -112,7 +140,6 @@ jest.mock('@components/cloudaccount/CloudAccountTable', () => ({
               {cell.component}
             </span>
           ))}
-          {/* Render the first expandable tab content for row 0 to exercise the componentFn */}
           {i === 0 && expandable?.tabs?.[0] && (
             <div data-testid={`row-${i}-detail-tab`}>{expandable.tabs[0].componentFn({}, row[0]?.drilldownQuery)}</div>
           )}
@@ -207,7 +234,6 @@ describe('CFResources (integration)', () => {
       { label: 'prod', value: 'prod' },
       { label: 'dev', value: 'dev' },
     ]);
-    // Default: app enrichment fetch + resource list fetch
     apiCloudAccount.getCloudResource.mockImplementation((params: any) => {
       if (params.serviceName === 'apps') {
         return Promise.resolve(mockResourceResponse(sampleApps));
@@ -263,7 +289,6 @@ describe('CFResources (integration)', () => {
     render(<CFResources accountId='acc-1' serviceName='organizations' />);
 
     await waitFor(() => expect(screen.getAllByText('team-platform').length).toBeGreaterThan(0));
-    // org has 2 apps (web-api + worker), 3 total instances (2 + 1), 256*2 + 128*1 = 640 MB
     await waitFor(() => expect(screen.getAllByText('2').length).toBeGreaterThan(0));
     expect(screen.getByText('3')).toBeInTheDocument();
     expect(screen.getByText('640 MB')).toBeInTheDocument();
@@ -286,7 +311,6 @@ describe('CFResources (integration)', () => {
 
     await waitFor(() => expect(screen.getAllByText('https://api.example.com/v1').length).toBeGreaterThan(0));
     expect(screen.getAllByText('https').length).toBeGreaterThan(0);
-    // destination_apps: ['app-guid-1'] → resolves via appNames map → 'web-api'
     await waitFor(() => expect(screen.getByText('web-api')).toBeInTheDocument());
   });
 
@@ -355,12 +379,17 @@ describe('CFResources (integration)', () => {
   });
 
   it('shows loading state during fetch', async () => {
+    // CFResources calls getCloudResource(organizations) twice on mount:
+    // once immediately and again after appEnrichment is populated (useEffect
+    // dependency). Use one shared promise so resolving once settles both
+    // calls and clears loading deterministically.
     let resolveFn: any;
+    const sharedOrgPromise = new Promise<any>((r) => {
+      resolveFn = r;
+    });
     apiCloudAccount.getCloudResource.mockImplementation((params: any) => {
       if (params.serviceName === 'apps') return Promise.resolve(mockResourceResponse(sampleApps));
-      return new Promise((r) => {
-        resolveFn = r;
-      });
+      return sharedOrgPromise;
     });
 
     render(<CFResources accountId='acc-1' serviceName='organizations' />);

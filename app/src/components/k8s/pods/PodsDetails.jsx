@@ -1,10 +1,10 @@
 import { Box, Typography } from '@mui/material';
 import SafeIcon from '@shared/icons/SafeIcon';
 import podIcon from '../../../assets/kubernetesPod-icon.svg';
-import CustomTabs from '@shared/CustomTabs';
-import React, { useState, useEffect } from 'react';
+import Tabs from '@shared/navigation/Tabs';
+import React, { useState, useEffect, useMemo } from 'react';
 import PodDetailsBox from './PodDetailsBox';
-import { KubernetesCostCharts, KubernetesSecurityDrilldown, KubernetesUtilizationCharts3 } from '@components/k8s/common/KubernetesTable2';
+import { KubernetesCostCharts, KubernetesSecurityDrilldown, KubernetesUtilizationCharts3 } from '@components/k8s/common/KubernetesTable';
 import KubernetesEventsTable from '@components/events/KubernetesEvents';
 import { getLast30Days, getLast7Days } from '@lib/datetime';
 import KubernetesPodYaml from '@components/k8s/details/KubernetesPodYaml';
@@ -16,6 +16,7 @@ import PropTypes from 'prop-types';
 import KubernetesServiceMap from '@components/k8s/details/KubernetesServiceMap';
 import AppDashboard from '@components/dashboards/AppDashboard';
 import apiKubernetes1 from '@api1/kubernetes1';
+import k8sApi from '@api1/kubernetes';
 
 const optionsToDisplay = {
   tabOptions: [
@@ -36,6 +37,7 @@ const PodDetailsPage = ({ pod }) => {
   const router = useRouter();
   const [option, setOption] = useState(0);
   const [stateQuery, setStateQuery] = useState({});
+  const [podMetrics, setPodMetrics] = useState(null);
   const podData = (pod ?? [])[0];
 
   // Sync tab from hash — runs on mount and on back/forward navigation
@@ -46,10 +48,13 @@ const PodDetailsPage = ({ pod }) => {
     else setOption(0);
   }, [router.asPath]);
 
-  const selectedDateRange = {
-    startDate: getLast30Days().getTime(),
-    endDate: new Date().getTime(),
-  };
+  const selectedDateRange = useMemo(
+    () => ({
+      startDate: getLast30Days().getTime(),
+      endDate: new Date().getTime(),
+    }),
+    []
+  );
 
   useEffect(() => {
     if (podData && Object.keys(podData).length > 0) {
@@ -98,6 +103,29 @@ const PodDetailsPage = ({ pod }) => {
       });
     }
   }, [podData]);
+
+  useEffect(() => {
+    if (!podData?.name || !podData?.meta?.namespace || !podData?.account) return;
+    const podFqdn = `${podData.meta.namespace}.${podData.name}`;
+    k8sApi
+      .getK8sMetrices({
+        accountId: podData.account,
+        podFqdn: [podFqdn],
+        startDate: new Date(selectedDateRange.startDate),
+        endDate: new Date(selectedDateRange.endDate),
+        limit: 1,
+        dateUnit: 'day',
+      })
+      .then((res) => {
+        const rows = res?.data?.k8s_pod_groupings;
+        if (rows?.length > 0) {
+          setPodMetrics(rows[0]);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to fetch pod metrics:', err);
+      });
+  }, [podData?.name, podData?.meta?.namespace, podData?.account, selectedDateRange]);
 
   if (!podData) {
     return null;
@@ -152,9 +180,9 @@ const PodDetailsPage = ({ pod }) => {
       </Box>
 
       <Box sx={{ margin: 'var(--ds-space-5) 0px var(--ds-space-5) 0px' }}>
-        <CustomTabs value={option} onChange={setOption} options={optionsToDisplay} showBorderBottom={true} p='0' borderRadius='0px' />
+        <Tabs value={option} onChange={setOption} options={optionsToDisplay} showBorderBottom={true} p='0' borderRadius='0px' />
 
-        {option === 0 && <PodDetailsBox wordBreak={'break-all'} pod={podData} accountId={podData?.account} />}
+        {option === 0 && <PodDetailsBox wordBreak={'break-all'} pod={podData} accountId={podData?.account} podMetrics={podMetrics} />}
         {option === 1 && (
           <Box sx={{ padding: 'var(--ds-space-6) var(--ds-space-2)' }}>
             {stateQuery?.pod_name && <KubernetesUtilizationCharts3 row={''} accountId={podData?.account} query={stateQuery} />}

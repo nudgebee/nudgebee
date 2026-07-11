@@ -129,10 +129,16 @@ func ExecuteCliCommand(toolContext core.NbToolContext, command string, env []str
 		cmds[i+1].Stdin = stdoutPipe
 	}
 
-	var finalStdout, combinedStderr bytes.Buffer
+	var finalStdout bytes.Buffer
 	cmds[len(cmds)-1].Stdout = &finalStdout
+	// Each command gets its own stderr buffer. Sharing a single buffer across
+	// stages is a data race: os/exec spawns an independent copy goroutine per
+	// command, and they would write the same buffer concurrently. We aggregate
+	// the per-stage buffers after Wait() (which guarantees each copy goroutine
+	// has finished) into the combined stderr string.
+	stderrBufs := make([]bytes.Buffer, len(cmds))
 	for i := range cmds {
-		cmds[i].Stderr = &combinedStderr
+		cmds[i].Stderr = &stderrBufs[i]
 	}
 
 	for _, cmd := range cmds {
@@ -150,9 +156,15 @@ func ExecuteCliCommand(toolContext core.NbToolContext, command string, env []str
 		}
 	}
 
+	var combinedStderrBuilder strings.Builder
+	for i := range stderrBufs {
+		combinedStderrBuilder.WriteString(stderrBufs[i].String())
+	}
+	combinedStderr := combinedStderrBuilder.String()
+
 	if finalErr != nil {
-		toolContext.Ctx.GetLogger().Error("tools: cli command execution failed", "error", finalErr, "stderr", combinedStderr.String(), "command", command)
-		return finalStdout.String(), fmt.Errorf("tools: cli command failed: %v\nStderr: %s", finalErr, combinedStderr.String())
+		toolContext.Ctx.GetLogger().Error("tools: cli command execution failed", "error", finalErr, "stderr", combinedStderr, "command", command)
+		return finalStdout.String(), fmt.Errorf("tools: cli command failed: %v\nStderr: %s", finalErr, combinedStderr)
 	}
 
 	return finalStdout.String(), nil

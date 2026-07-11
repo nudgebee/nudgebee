@@ -15,15 +15,12 @@ jest.mock('@api1/recommendation', () => ({
     getK8sRecommendationSummary: jest.fn(),
     createRecommendationJob: jest.fn(),
   },
-  RECOMMENDATION_STATUS: [
-    { label: 'Open', value: 'Open' },
-    { label: 'In Progress', value: 'InProgress' },
-    { label: 'Closed', value: 'Closed' },
-  ],
-  RECOMMENDATION_SERVERITY: [
-    { label: 'Critical', value: 'critical' },
-    { label: 'High', value: 'high' },
-  ],
+  // Source treats these as plain strings and wraps each into { label, value }.
+  // (See KubernetesBestPractices.jsx where it maps RECOMMENDATION_STATUS / SERVERITY
+  //  through `(s) => ({ label: s, value: s })`.) Passing objects would double-wrap
+  //  and React would try to render the inner object as a child — crash.
+  RECOMMENDATION_STATUS: ['Open', 'InProgress', 'Closed'],
+  RECOMMENDATION_SERVERITY: ['critical', 'high'],
 }));
 
 jest.mock('@api1/user', () => ({
@@ -47,12 +44,7 @@ jest.mock('@lib/collections', () => ({
   unique: (arr) => Array.from(new Set(arr)),
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: {
-    text: { primary: '#000', secondary: '#666', secondaryDark: '#333', white: '#fff', lastSync: '#999' },
-    background: { white: '#fff', red: '#f00' },
-  },
-}));
+jest.mock('@utils/colors');
 
 jest.mock('src/utils/actionStyles', () => ({
   action: { primary: {}, nubi: {} },
@@ -67,13 +59,9 @@ jest.mock('src/utils/nubiPromptBuilder', () => ({
   buildNubiOptimizePrompt: ({ ruleName }) => `nubi-prompt-${ruleName}`,
 }));
 
-jest.mock('@shared', () => ({
-  Text: ({ value }) => <span>{value}</span>,
-}));
-
-jest.mock('@shared/widgets/SeverityIcon', () => ({
+jest.mock('@shared/format/Text', () => ({
   __esModule: true,
-  default: ({ severityType }) => <span data-testid={`severity-${severityType || 'none'}`}>sev</span>,
+  default: ({ value }) => <span>{value}</span>,
 }));
 
 jest.mock('@shared/format/Datetime', () => ({
@@ -81,41 +69,60 @@ jest.mock('@shared/format/Datetime', () => ({
   default: ({ value }) => <span data-testid='datetime'>{String(value || '—')}</span>,
 }));
 
+// Severity column — DS SeverityIcon with `level` prop. Test asserts `severity-{level}`.
+jest.mock('@ui/SeverityIcon', () => ({
+  __esModule: true,
+  SeverityIcon: ({ level }) => <span data-testid={`severity-${level}`}>sev</span>,
+}));
+
 jest.mock('@shared/icons/SafeIcon', () => ({
   __esModule: true,
   default: ({ alt }) => <span data-testid={`icon-${alt}`}>icon</span>,
 }));
 
-jest.mock('@shared/CustomTooltip', () => ({
+jest.mock('@ui/Tooltip', () => ({
   __esModule: true,
   default: ({ children, title }) => <span title={typeof title === 'string' ? title : 'tooltip'}>{children}</span>,
 }));
 
-jest.mock('@shared/CustomTicketLink', () => ({
+jest.mock('@shared/links/TicketLink', () => ({
   __esModule: true,
-  default: ({ ticketID }) => <a data-testid='ticket-link'>{ticketID}</a>,
+  default: ({ ticketID }) => <span data-testid='ticket-link'>{ticketID}</span>,
 }));
 
-jest.mock('@shared/ds/ThreeDotsMenu', () => ({
+// Per-row DropdownMenu. Item id format from source: `bp-action-ticket-{rowId}`.
+jest.mock('@ui/DropdownMenu', () => ({
   __esModule: true,
-  default: ({ menuItems, data, onMenuClick }) => (
+  DropdownMenu: ({ items, trigger }) => (
     <div data-testid='three-dots'>
-      {(menuItems || []).map((mi) => (
-        <button key={mi.id} data-testid={`menu-${mi.label}-${data.id}`} onClick={() => onMenuClick(mi, data)} disabled={mi.disabled}>
-          {mi.label}
-        </button>
-      ))}
+      {trigger}
+      {(items || []).map((it) => {
+        const m = String(it.id || '').match(/^bp-action-ticket-(.+)$/);
+        const rowId = m ? m[1] : it.id;
+        return (
+          <button key={it.id} data-testid={`menu-${it.label}-${rowId}`} onClick={() => it.onSelect?.()} disabled={it.disabled}>
+            {it.label}
+          </button>
+        );
+      })}
     </div>
   ),
 }));
 
-jest.mock('@shared/NewCustomButton', () => ({
+// DS Button — uses `id` verbatim as testid when present (so source's id='bp-ask-nubi-r-1'
+// becomes `btn-bp-ask-nubi-r-1`, and id='triggerRecommendation' becomes `btn-triggerRecommendation`).
+jest.mock('@ui/Button', () => ({
   __esModule: true,
-  default: ({ id, text, onClick, disabled }) => (
-    <button data-testid={`btn-${id || 'custom'}`} onClick={onClick} disabled={disabled}>
-      {text || 'btn'}
+  Button: ({ children, onClick, disabled, id, ['aria-label']: ariaLabel }) => (
+    <button data-testid={`btn-${id || (typeof children === 'string' ? children : ariaLabel || 'icon')}`} onClick={onClick} disabled={disabled}>
+      {children}
     </button>
   ),
+}));
+
+jest.mock('@ui/Toast', () => ({
+  __esModule: true,
+  toast: { success: jest.fn(), error: jest.fn(), info: jest.fn() },
 }));
 
 jest.mock('@shared/layout/NubiChatSidebar', () => ({
@@ -130,9 +137,14 @@ jest.mock('@shared/layout/NubiChatSidebar', () => ({
     ) : null,
 }));
 
-jest.mock('@components/optimise/SummaryWidget', () => ({
+jest.mock('@ui/Stat', () => ({
   __esModule: true,
-  default: ({ title, value }) => <div data-testid={`summary-${title}`}>{value}</div>,
+  Stat: ({ label, value }) => <div data-testid={`summary-${label}`}>{value}</div>,
+}));
+
+jest.mock('@ui/WidgetCard', () => ({
+  __esModule: true,
+  default: ({ children }) => <div data-testid='widget-card'>{children}</div>,
 }));
 
 jest.mock('@components/tickets/TicketCreatePopupForm', () => ({
@@ -165,43 +177,79 @@ jest.mock('@components/k8s/common/ClusterNameWithRegion', () => ({
   ),
 }));
 
-jest.mock('@shared/snackbarService', () => ({
-  snackbar: { success: jest.fn(), error: jest.fn(), info: jest.fn() },
+// ScanRefreshButton is a separate component now. Simulate its public behaviour:
+// disabled when no write access; clicking fires createRecommendationJob + alert.
+jest.mock('@components/recommendations/ScanRefreshButton', () => ({
+  __esModule: true,
+  ScanRefreshButton: ({ accountId, jobName }) => {
+    const { hasWriteAccess } = require('@lib/auth');
+    const api = require('@api1/recommendation').default;
+    const disabled = !hasWriteAccess(accountId);
+    return (
+      <button
+        data-testid='btn-triggerRecommendation'
+        disabled={disabled}
+        onClick={() => {
+          api.createRecommendationJob(accountId, jobName);
+          window.alert('Scan Triggered');
+        }}
+      >
+        Sync
+      </button>
+    );
+  },
 }));
 
-jest.mock('@shared/BoxLayout2', () => ({
-  __esModule: true,
-  default: ({ children, heading, filterOptions = [], extraOptions = [] }) => (
-    <div data-testid='box-layout'>
-      <h2 data-testid='box-heading'>{heading}</h2>
-      <div data-testid='extras'>{extraOptions}</div>
-      {filterOptions.map((f, i) => (
-        <select key={i} data-testid={`filter-${f.label}`} value={f.value || ''} onChange={(e) => f.onSelect(e)}>
-          <option value=''>--</option>
-          {(f.options || []).map((opt, idx) => {
-            const v = typeof opt === 'string' ? opt : opt.value;
-            const l = typeof opt === 'string' ? opt : opt.label;
-            return (
-              <option key={(v || '_') + '-' + idx} value={v}>
-                {l}
-              </option>
-            );
-          })}
-        </select>
-      ))}
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout = ({ children, id }) => (
+    <div data-testid='listing-layout' id={id}>
       {children}
     </div>
-  ),
+  );
+  ListingLayout.Toolbar = ({ children, actions, title }) => (
+    <div data-testid='toolbar'>
+      <h2 data-testid='box-heading'>{title || ''}</h2>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, options = [], value, onSelect }) => {
+    const currentValue = typeof value === 'object' && value !== null ? value.value : value;
+    return (
+      <select
+        data-testid={`filter-${label}`}
+        value={currentValue || ''}
+        onChange={(e) => onSelect?.({ target: { value: e.target.value } }, { value: e.target.value, label: e.target.value })}
+      >
+        <option value=''>--</option>
+        {(options || []).map((opt, idx) => {
+          const v = typeof opt === 'string' ? opt : opt.value;
+          const l = typeof opt === 'string' ? opt : opt.label;
+          return (
+            <option key={(v || '_') + '-' + idx} value={v}>
+              {l}
+            </option>
+          );
+        })}
+      </select>
+    );
+  },
 }));
 
-jest.mock('@components/k8s/common/KubernetesTable2', () => ({
+jest.mock('@shared/tables/CustomTable', () => ({
   __esModule: true,
-  default: ({ id, data, totalRows, loading, pageNumber }) => (
+  default: ({ id, tableData, totalRows, loading, pageNumber }) => (
     <div data-testid='k8s-table' id={id}>
       {loading && <div data-testid='loading'>loading</div>}
       <div data-testid='total'>{totalRows}</div>
       <div data-testid='page'>{pageNumber}</div>
-      {(data || []).map((row, i) => (
+      {(tableData || []).map((row, i) => (
         <div key={i} data-testid={`row-${i}`}>
           {row.map((cell, j) => (
             <span key={j} data-testid={`cell-${i}-${j}`}>
@@ -217,7 +265,7 @@ jest.mock('@components/k8s/common/KubernetesTable2', () => ({
 import KubernetesBestPractices from '@components/recommendations/KubernetesBestPractices';
 
 const recommendationApi = require('@api1/recommendation').default;
-const { snackbar } = require('@shared/snackbarService');
+const { toast: snackbar } = require('@ui/Toast');
 
 const sampleRecommendations = [
   {
@@ -255,10 +303,8 @@ describe('KubernetesBestPractices (integration)', () => {
         },
       },
     });
-    recommendationApi.listRecommendationNamesapces.mockResolvedValue([
-      { label: 'prod', value: 'prod' },
-      { label: 'kube-system', value: 'kube-system' },
-    ]);
+    // Source treats namespaces as strings (see `namespaceOptions = namespaceFilter.map((n) => ({ label: n, value: n }))`).
+    recommendationApi.listRecommendationNamesapces.mockResolvedValue(['prod', 'kube-system']);
     recommendationApi.getK8sRecommendation.mockResolvedValue(mockRecResponse());
     recommendationApi.getK8sRecommendationSummary.mockResolvedValue({
       data: { recommendation_aggregate: { aggregate: { count: 42 } } },
@@ -296,7 +342,7 @@ describe('KubernetesBestPractices (integration)', () => {
     });
   });
 
-  it('renders total recommendations summary widget', async () => {
+  it('renders total recommendations Stat', async () => {
     render(<KubernetesBestPractices kubernetes={{ id: 'acc-1' }} />);
 
     await waitFor(() => expect(screen.getByTestId('summary-Total Recommendations')).toBeInTheDocument());
@@ -327,20 +373,24 @@ describe('KubernetesBestPractices (integration)', () => {
     expect(screen.getByTestId('ticket-link')).toHaveTextContent('T-1');
   });
 
-  it('Create Ticket menu disabled when ticket already exists', async () => {
+  it('Create-ticket menu has different label when ticket exists and is disabled', async () => {
     render(<KubernetesBestPractices kubernetes={{ id: 'acc-1' }} />);
 
-    await waitFor(() => expect(screen.getByTestId('menu-Create Ticket-r-2')).toBeInTheDocument());
-    expect(screen.getByTestId('menu-Create Ticket-r-2')).toBeDisabled();
-    expect(screen.getByTestId('menu-Create Ticket-r-1')).not.toBeDisabled();
+    // r-1 (no ticket) → label 'Create ticket'
+    await waitFor(() => expect(screen.getByTestId('menu-Create ticket-r-1')).toBeInTheDocument());
+    expect(screen.getByTestId('menu-Create ticket-r-1')).not.toBeDisabled();
+
+    // r-2 (has ticket T-1) → label 'Ticket: T-1', disabled
+    expect(screen.getByTestId('menu-Ticket: T-1-r-2')).toBeInTheDocument();
+    expect(screen.getByTestId('menu-Ticket: T-1-r-2')).toBeDisabled();
   });
 
-  it('opens ticket modal with description on Create Ticket menu click', async () => {
+  it('opens ticket modal with description on Create ticket menu click', async () => {
     render(<KubernetesBestPractices kubernetes={{ id: 'acc-1' }} />);
 
-    await waitFor(() => expect(screen.getByTestId('menu-Create Ticket-r-1')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('menu-Create ticket-r-1')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId('menu-Create Ticket-r-1'));
+    fireEvent.click(screen.getByTestId('menu-Create ticket-r-1'));
 
     expect(screen.getByTestId('ticket-modal')).toBeInTheDocument();
     expect(screen.getByTestId('ticket-desc').textContent).toMatch(/\*\*Name\*\*: Misconfiguration/);
@@ -349,8 +399,8 @@ describe('KubernetesBestPractices (integration)', () => {
 
   it('refetches list after ticket success', async () => {
     render(<KubernetesBestPractices kubernetes={{ id: 'acc-1' }} />);
-    await waitFor(() => expect(screen.getByTestId('menu-Create Ticket-r-1')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('menu-Create Ticket-r-1'));
+    await waitFor(() => expect(screen.getByTestId('menu-Create ticket-r-1')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('menu-Create ticket-r-1'));
     recommendationApi.getK8sRecommendation.mockClear();
 
     fireEvent.click(screen.getByTestId('ticket-success'));
@@ -360,8 +410,8 @@ describe('KubernetesBestPractices (integration)', () => {
 
   it('shows snackbar error on ticket failure', async () => {
     render(<KubernetesBestPractices kubernetes={{ id: 'acc-1' }} />);
-    await waitFor(() => expect(screen.getByTestId('menu-Create Ticket-r-1')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('menu-Create Ticket-r-1'));
+    await waitFor(() => expect(screen.getByTestId('menu-Create ticket-r-1')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('menu-Create ticket-r-1'));
 
     fireEvent.click(screen.getByTestId('ticket-failure'));
 
@@ -371,9 +421,9 @@ describe('KubernetesBestPractices (integration)', () => {
   it('opens Nubi sidebar with prompt + account + conv id when Nubi icon clicked', async () => {
     render(<KubernetesBestPractices kubernetes={{ id: 'acc-1' }} />);
 
-    await waitFor(() => expect(screen.getByTestId('bp-ask-nubi-r-1')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('btn-bp-ask-nubi-r-1')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId('bp-ask-nubi-r-1'));
+    fireEvent.click(screen.getByTestId('btn-bp-ask-nubi-r-1'));
 
     expect(screen.getByTestId('nubi-sidebar')).toBeInTheDocument();
     expect(screen.getByTestId('nubi-account')).toHaveTextContent('acc-1');

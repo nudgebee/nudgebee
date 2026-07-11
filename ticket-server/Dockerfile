@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.26-alpine as build-stage
+FROM golang:1.26.5-alpine as build-stage
 
+# Use the builder image's bundled Go toolchain, never an auto-downloaded one.
+# Pins the compile to the base's Go and gives the build layer a distinct cache
+# key so a stale toolchain can't slip back in via edge.yaml's registry cache.
+ENV GOTOOLCHAIN=local
 
 # Set destination for COPY
 WORKDIR /app
@@ -24,9 +28,14 @@ EXPOSE 8000
 CMD ["/app/ticket-server"]
 
 
-FROM alpine:3.19 AS release-stage
+FROM alpine:3.22 AS release-stage
+RUN apk add --no-cache ca-certificates \
+    && adduser -D -g '' appuser
 WORKDIR /app
 COPY --from=build-stage /app/ticket-server /app/ticket-server
+# Binary stays root-owned, world-readable/executable — appuser can run but not
+# overwrite it (container immutability; avoids a chown layer-copy of the binary).
 RUN chmod +x /app/ticket-server
+USER appuser
 EXPOSE 8000
 CMD ["/app/ticket-server"]

@@ -4,29 +4,39 @@ import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiKnowledgeBase from '@api1/knowledge-base';
 import ListingLayout from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { Button } from '@ui/Button';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { Label } from '@ui/Label';
 import { Modal } from '@ui/Modal';
 import CreateAgentNew from './CreateAgentNew';
 import CreateAgentExtension from './CreateAgentExtension';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import Text from '@shared/format/Text';
 import { ds } from 'src/utils/colors';
 import { toast as snackbar } from '@ui/Toast';
 import { hasWriteAccess } from '@lib/auth';
 import { useTenantBranding } from '@hooks/useTenantBranding';
-import { Avatar, Box, Typography, List, ListItem, ListItemText } from '@mui/material';
+import { Avatar, Box, Typography } from '@mui/material';
 import { Checkbox } from '@ui/Checkbox';
 import { PlusIcon, EditIcon, DeleteIconRed as deleteIcon, DataBaseDark, PlusIconSecondary } from '@assets';
 import { getIcon } from '@components/llm/common/AgentIcon';
 import Loader from '@shared/Loader';
 import SafeIcon from '@shared/icons/SafeIcon';
+import { HybridScopeChips } from '@components/llm/ScopeChip';
 
-const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }) => {
+const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, stickyTable = false }) => {
   const { baseTitle } = useTenantBranding();
+  // Tenant-wide read-only mode: when the Settings modal is opened from the
+  // global sidebar (no current account in scope), the backend's
+  // agentListAgent routes empty account_id to ListAgentsForTenant — the
+  // system catalog + every custom agent the caller can read across the
+  // tenant. The UI hides per-account affordances (Create / Edit / Delete /
+  // KB-mapping / tool config / agent extensions) because writes all require
+  // account context, and renders an Account column so cross-account custom
+  // agents are distinguishable.
+  const isTenantWide = !accountId;
   const [data, setData] = React.useState([]);
   const [originalData, setOriginalData] = React.useState([]);
   const [createAgentModal, setCreateAgentModal] = React.useState(false);
@@ -37,6 +47,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
   const [customizeMode, setCustomizeMode] = React.useState(false);
   const [extensionMode, setExtensionMode] = React.useState(false);
   const [deleteModal, setDeleteModal] = React.useState(false);
+  const [isDeleting, setIsDeleting] = React.useState(false);
   const [agentToDelete, setAgentToDelete] = React.useState(null);
   const [agentTypeFilter, setAgentTypeFilter] = React.useState('all');
 
@@ -46,20 +57,13 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
   // State for Agent Extensions
   const [extensionsMap, setExtensionsMap] = React.useState({}); // { agentId: extension[] }
 
-  const [isKbDataPopupOpen, setIsKbDataPopupOpen] = React.useState(false);
-  const [currentAgentKbData, setCurrentAgentKbData] = React.useState([]);
-  const [isLoadingKbData, setIsLoadingKbData] = React.useState(false);
-
   const [isKbSelectionModalOpen, setIsKbSelectionModalOpen] = React.useState(false);
   const [availableKbs, setAvailableKbs] = React.useState([]);
   const [selectedKbIds, setSelectedKbIds] = React.useState([]);
   const [isLoadingKbs, setIsLoadingKbs] = React.useState(false);
-  const [isMappingKb, setIsMappingKb] = React.useState(false);
+  const [isSavingKb, setIsSavingKb] = React.useState(false);
   const [kbSearchTerm, setKbSearchTerm] = React.useState('');
   const [alreadyMappedKbIds, setAlreadyMappedKbIds] = React.useState([]);
-
-  const [kbToRemove, setKbToRemove] = React.useState(null);
-  const [isRemoveKbModalOpen, setIsRemoveKbModalOpen] = React.useState(false);
 
   const [triggerSubmit, setTriggerSubmit] = React.useState(false);
 
@@ -80,45 +84,6 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
     } catch (error) {
       console.error('Failed to fetch KB counts:', error);
     }
-  };
-
-  const fetchAgentKbData = async (agent) => {
-    if (!agent) {
-      return;
-    }
-    setIsLoadingKbData(true);
-    try {
-      const response = await apiKnowledgeBase.getAgentKnowledgeBases(accountId, agent.name);
-      if (response?.errors?.length > 0) {
-        snackbar.error('Failed to fetch knowledge bases for agent');
-        setCurrentAgentKbData([]);
-      } else {
-        setCurrentAgentKbData(response.data || []);
-        // Update the count for this agent
-        setKbCountsMap((prev) => ({
-          ...prev,
-          [agent.name]: response.data?.length || 0,
-        }));
-      }
-    } catch (error) {
-      console.error('Error fetching agent KBs:', error);
-      snackbar.error('Failed to fetch knowledge bases for agent');
-      setCurrentAgentKbData([]);
-    } finally {
-      setIsLoadingKbData(false);
-    }
-  };
-
-  const handleOpenKbDataPopup = (agent) => {
-    setSelectedAgent(agent);
-    setIsKbDataPopupOpen(true);
-    fetchAgentKbData(agent);
-  };
-
-  const handleCloseKbDataPopup = () => {
-    setIsKbDataPopupOpen(false);
-    setSelectedAgent(null);
-    setCurrentAgentKbData([]);
   };
 
   const fetchAvailableKbs = async () => {
@@ -146,9 +111,13 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
       if (!response?.errors?.length) {
         const mappedIds = (response.data || []).map((kb) => kb.id);
         setAlreadyMappedKbIds(mappedIds);
+        setSelectedKbIds(mappedIds);
+      } else {
+        snackbar.error('Failed to fetch mapped knowledge bases for agent');
       }
     } catch (error) {
       console.error('Error fetching already mapped KBs:', error);
+      snackbar.error('Failed to fetch mapped knowledge bases for agent');
     }
   };
 
@@ -180,41 +149,76 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
     });
   };
 
-  const handleMapKbToAgent = async () => {
-    if (selectedKbIds.length === 0 || !selectedAgent) {
-      snackbar.error('Please select at least one knowledge base');
+  const handleSaveKbChanges = async () => {
+    if (!selectedAgent) {
       return;
     }
 
-    setIsMappingKb(true);
-    try {
-      let successCount = 0;
-      let errorCount = 0;
+    const toMap = selectedKbIds.filter((id) => !alreadyMappedKbIds.includes(id));
+    const toUnmap = alreadyMappedKbIds.filter((id) => !selectedKbIds.includes(id));
 
-      for (const kbId of selectedKbIds) {
-        const response = await apiKnowledgeBase.mapKnowledgeBaseToAgent(accountId, kbId, selectedAgent.name);
-        if (response?.errors?.length > 0) {
-          errorCount++;
-        } else {
-          successCount++;
+    if (toMap.length === 0 && toUnmap.length === 0) {
+      return;
+    }
+
+    setIsSavingKb(true);
+    try {
+      let mapSuccess = 0;
+      let mapError = 0;
+      let unmapSuccess = 0;
+      let unmapError = 0;
+
+      for (const kbId of toMap) {
+        try {
+          const response = await apiKnowledgeBase.mapKnowledgeBaseToAgent(accountId, kbId, selectedAgent.name);
+          if (response?.errors?.length > 0) {
+            mapError++;
+          } else {
+            mapSuccess++;
+          }
+        } catch (error) {
+          console.error('Error mapping KB:', kbId, error);
+          mapError++;
         }
       }
 
-      if (successCount > 0) {
-        snackbar.success(`${successCount} knowledge base(s) mapped to agent successfully`);
+      for (const kbId of toUnmap) {
+        try {
+          const response = await apiKnowledgeBase.unmapKnowledgeBaseFromAgent(accountId, kbId, selectedAgent.name);
+          if (response?.errors?.length > 0) {
+            unmapError++;
+          } else {
+            unmapSuccess++;
+          }
+        } catch (error) {
+          console.error('Error unmapping KB:', kbId, error);
+          unmapError++;
+        }
       }
-      if (errorCount > 0) {
-        snackbar.error(`Failed to map ${errorCount} knowledge base(s)`);
+
+      const successParts = [];
+      if (mapSuccess > 0) {
+        successParts.push(`${mapSuccess} added`);
+      }
+      if (unmapSuccess > 0) {
+        successParts.push(`${unmapSuccess} removed`);
+      }
+      if (successParts.length > 0) {
+        snackbar.success(`Knowledge bases updated: ${successParts.join(', ')}`);
+      }
+
+      const errorTotal = mapError + unmapError;
+      if (errorTotal > 0) {
+        snackbar.error(`Failed to update ${errorTotal} knowledge base(s)`);
       }
 
       handleCloseKbSelectionModal();
-      // Refresh the KB count for this agent
-      fetchAgentKbData(selectedAgent);
+      fetchKBCounts();
     } catch (error) {
-      console.error('Error mapping KBs to agent:', error);
-      snackbar.error('Failed to map knowledge bases to agent');
+      console.error('Error saving KB changes:', error);
+      snackbar.error('Failed to save knowledge base changes');
     } finally {
-      setIsMappingKb(false);
+      setIsSavingKb(false);
     }
   };
 
@@ -224,33 +228,6 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
     }
     const searchLower = kbSearchTerm.toLowerCase();
     return availableKbs.filter((kb) => kb.name?.toLowerCase().includes(searchLower) || kb.description?.toLowerCase().includes(searchLower));
-  };
-
-  const openRemoveKbConfirmation = (kb) => {
-    setKbToRemove(kb);
-    setIsRemoveKbModalOpen(true);
-  };
-
-  const handleUnmapKbFromAgent = async () => {
-    if (!selectedAgent || !kbToRemove) {
-      return;
-    }
-
-    try {
-      const response = await apiKnowledgeBase.unmapKnowledgeBaseFromAgent(accountId, kbToRemove.id, selectedAgent.name);
-      if (response?.errors?.length > 0) {
-        snackbar.error(response.errors[0]?.message || 'Failed to remove knowledge base from agent');
-      } else {
-        snackbar.success('Knowledge base removed from agent successfully');
-        fetchAgentKbData(selectedAgent);
-      }
-    } catch (error) {
-      console.error('Error unmapping KB from agent:', error);
-      snackbar.error('Failed to remove knowledge base from agent');
-    } finally {
-      setIsRemoveKbModalOpen(false);
-      setKbToRemove(null);
-    }
   };
 
   const fetchAgentExtensions = async () => {
@@ -275,16 +252,23 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
     }
   };
   React.useEffect(() => {
+    // KB counts and agent extensions are per-account; skip both in
+    // tenant-wide mode (the API requires accountId and there's no
+    // sensible aggregate across accounts).
+    if (isTenantWide) return;
     fetchKBCounts();
     fetchAgentExtensions();
-  }, [accountId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, isTenantWide]);
 
   React.useEffect(() => {
     // Refresh KB counts when allAgents changes (in case new agents are added)
+    if (isTenantWide) return;
     if (allAgents && allAgents.length > 0) {
       fetchKBCounts();
     }
-  }, [allAgents]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allAgents, isTenantWide]);
 
   React.useEffect(() => {
     listAgents();
@@ -352,6 +336,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
       return;
     }
 
+    setIsDeleting(true);
     try {
       const response = await apiAskNudgebee.deleteAgent(accountId, agentToDelete.name);
       if (!(response?.data?.data?.ai_delete_agent?.data?.status === 'ok')) {
@@ -370,6 +355,8 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
     } catch (error) {
       console.error('Error deleting agent:', error);
       snackbar.error('Failed to delete agent');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -396,10 +383,10 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
     const hasExtensions = extensionsMap[agent.name]?.length > 0;
     const menuItems = [];
 
-    // Add KB
+    // Manage KBs
     menuItems.push({
       id: 'add-kb',
-      label: 'Add KB',
+      label: 'Manage KBs',
       icon: DataBaseDark,
     });
 
@@ -547,26 +534,45 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
           {
             component: <Text value={agent.tools?.join(', ') || '-'} showAutoEllipsis requiredToolTip lineClamp={2} />,
           },
-          {
-            // KB Count Indicator Column
-            component: (
-              <Box
-                sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: ds.space[1] }}
-                onClick={() => {
-                  handleOpenKbDataPopup(agent);
-                }}
-              >
-                <Text value={`${kbCount}`} sx={{ fontWeight: 'medium' }} />
-              </Box>
-            ),
-          },
-          {
-            component: hasWriteAccess(accountId) ? (
-              <ThreeDotsMenu menuItems={getMenuItems(agent)} onMenuClick={handleMenuAction} data={agent} sx={{ padding: ds.space[1] }} />
-            ) : (
-              <></>
-            ),
-          },
+          // Tools column is already present above; in tenant-wide mode we
+          // skip the KB-count and Actions columns and replace them with an
+          // Account column so the user can tell custom rows apart.
+          ...(isTenantWide
+            ? [
+                {
+                  component: <Text value={agent.account_name || (agent.type === 'system' ? '—' : agent.account_id || '—')} />,
+                },
+              ]
+            : [
+                {
+                  // KB Count Indicator Column
+                  component: (
+                    <Box
+                      role='button'
+                      tabIndex={0}
+                      sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: ds.space[1] }}
+                      onClick={() => {
+                        handleOpenKbSelectionModal(agent);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleOpenKbSelectionModal(agent);
+                        }
+                      }}
+                    >
+                      <Text value={`${kbCount}`} sx={{ fontWeight: 'medium' }} />
+                    </Box>
+                  ),
+                },
+                {
+                  component: hasWriteAccess(accountId) ? (
+                    <ThreeDotsMenu menuItems={getMenuItems(agent)} onMenuClick={handleMenuAction} data={agent} sx={{ padding: ds.space[1] }} />
+                  ) : (
+                    <></>
+                  ),
+                },
+              ]),
         ];
       });
       setOriginalData(agents);
@@ -578,6 +584,9 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
     }
   };
 
+  const kbToAddCount = selectedKbIds.filter((id) => !alreadyMappedKbIds.includes(id)).length;
+  const kbToRemoveCount = alreadyMappedKbIds.filter((id) => !selectedKbIds.includes(id)).length;
+
   return (
     <>
       {/* KB Selection Modal */}
@@ -585,15 +594,24 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
         width={'lg'}
         open={isKbSelectionModalOpen}
         handleClose={handleCloseKbSelectionModal}
-        title={`Add Knowledge Base to ${selectedAgent?.aliases?.[0] || selectedAgent?.name || 'Agent'}`}
+        title={`Manage Knowledge Bases for ${selectedAgent?.aliases?.[0] || selectedAgent?.name || 'Agent'}`}
         actionButtons={
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[3] }}>
-            <Button tone='secondary' size='md' onClick={handleCloseKbSelectionModal}>
-              Cancel
-            </Button>
-            <Button tone='primary' size='md' onClick={handleMapKbToAgent} disabled={selectedKbIds.length === 0 || isMappingKb}>
-              {isMappingKb ? 'Adding...' : `Add Selected (${selectedKbIds.length})`}
-            </Button>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[3], width: '100%' }}>
+            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>
+              {kbToAddCount === 0 && kbToRemoveCount === 0
+                ? 'No changes'
+                : [kbToAddCount > 0 ? `${kbToAddCount} to add` : null, kbToRemoveCount > 0 ? `${kbToRemoveCount} to remove` : null]
+                    .filter(Boolean)
+                    .join(', ')}
+            </Typography>
+            <Box sx={{ display: 'flex', gap: ds.space[3] }}>
+              <Button tone='secondary' size='md' onClick={handleCloseKbSelectionModal}>
+                Cancel
+              </Button>
+              <Button tone='primary' size='md' onClick={handleSaveKbChanges} disabled={isSavingKb || (kbToAddCount === 0 && kbToRemoveCount === 0)}>
+                {isSavingKb ? 'Saving...' : 'Save Changes'}
+              </Button>
+            </Box>
           </Box>
         }
       >
@@ -616,7 +634,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
             <Box sx={{ pt: 2 }}>
               <ListingLayout id='kb-selection-list'>
                 <ListingLayout.Toolbar>
-                  <CustomSearch
+                  <SearchInput
                     id='kb-selection-search'
                     label='Search Knowledge Base'
                     value={kbSearchTerm}
@@ -641,9 +659,8 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
                             <Box onClick={(e) => e.stopPropagation()} sx={{ display: 'inline-flex' }}>
                               <Checkbox
                                 size='sm'
-                                checked={isSelected || isAlreadyMapped}
-                                disabled={isAlreadyMapped}
-                                onChange={() => !isAlreadyMapped && handleToggleKbSelection(kb.id)}
+                                checked={isSelected}
+                                onChange={() => handleToggleKbSelection(kb.id)}
                                 aria-label={`Select ${kb.name || 'knowledge base'}`}
                               />
                             </Box>
@@ -653,7 +670,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
                           component: (
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
                               <Text value={kb.name} sx={{ fontWeight: ds.weight.medium }} />
-                              {isAlreadyMapped && <Label text='Added' tone='success' />}
+                              {isAlreadyMapped && <Label text='Mapped' tone='success' />}
                             </Box>
                           ),
                         },
@@ -687,10 +704,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
                       if (!kb) {
                         return;
                       }
-                      const isAlreadyMapped = alreadyMappedKbIds.includes(kb.id);
-                      if (!isAlreadyMapped) {
-                        handleToggleKbSelection(kb.id);
-                      }
+                      handleToggleKbSelection(kb.id);
                     }}
                   />
                 </ListingLayout.Body>
@@ -836,77 +850,18 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
       </Modal>
 
       <Modal
-        width={'lg'}
-        open={isKbDataPopupOpen}
-        handleClose={handleCloseKbDataPopup}
-        title={selectedAgent ? `Knowledge Bases for ${selectedAgent.aliases?.[0] || selectedAgent.name}` : 'Knowledge Bases'}
-      >
-        <Box sx={{ p: 2, minHeight: '300px' }}>
-          {isLoadingKbData ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '300px' }}>
-              <Loader style={{ height: '100%', width: '100%' }} />
-            </Box>
-          ) : currentAgentKbData?.length === 0 ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '300px' }}>
-              <Typography variant='subtitle1' sx={{ textAlign: 'center' }}>
-                No knowledge bases mapped to this agent.
-              </Typography>
-            </Box>
-          ) : (
-            <List>
-              {currentAgentKbData.map((kb) => (
-                <ListItem
-                  key={kb.id}
-                  divider
-                  secondaryAction={
-                    hasWriteAccess(accountId) && (
-                      <Button
-                        tone='secondary'
-                        size='sm'
-                        composition='icon-only'
-                        icon={<SafeIcon src={deleteIcon} alt='delete' width={20} height={20} />}
-                        aria-label='Remove knowledge base'
-                        onClick={() => openRemoveKbConfirmation(kb)}
-                      />
-                    )
-                  }
-                >
-                  <ListItemText
-                    primary={kb.name || 'N/A'}
-                    secondary={
-                      <>
-                        {kb.description && (
-                          <Typography component='span' variant='body2' color='text.primary' sx={{ display: 'block' }}>
-                            {kb.description}
-                          </Typography>
-                        )}
-                        <Typography component='span' variant='caption' color='text.secondary' sx={{ display: 'block' }}>
-                          Status: {kb.status || 'N/A'}
-                          {kb.created_at && ` • Added: ${new Date(kb.created_at).toLocaleDateString()}`}
-                        </Typography>
-                      </>
-                    }
-                  />
-                </ListItem>
-              ))}
-            </List>
-          )}
-        </Box>
-      </Modal>
-
-      <Modal
         handleClose={() => {
+          if (isDeleting) return;
           setDeleteModal(false);
           setAgentToDelete(null);
         }}
-        buttonText={agentToDelete?.overridden ? 'Revert' : 'Delete'}
         title={
           agentToDelete?.overridden
             ? `Revert Agent: ${agentToDelete?.aliases?.[0] || agentToDelete?.name}`
             : `Delete Agent: ${agentToDelete?.aliases?.[0] || agentToDelete?.name}`
         }
         open={deleteModal}
-        handleSubmit={confirmDeleteAgent}
+        loader={isDeleting}
       >
         <Typography variant='body1' sx={{ mt: 2, mb: 1 }}>
           {agentToDelete?.overridden ? (
@@ -935,44 +890,31 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
               setDeleteModal(false);
               setAgentToDelete(null);
             }}
+            disabled={isDeleting}
           >
             Cancel
           </Button>
-          <Button tone='primary' size='sm' onClick={confirmDeleteAgent}>
+          <Button tone='primary' size='sm' onClick={confirmDeleteAgent} loading={isDeleting}>
             {agentToDelete?.overridden ? 'Revert' : 'Delete'}
-          </Button>
-        </Box>
-      </Modal>
-
-      {/* KB Removal Confirmation Modal */}
-      <Modal title='Remove Knowledge Base' open={isRemoveKbModalOpen} handleSubmit={handleUnmapKbFromAgent}>
-        <Typography variant='body1' sx={{ mt: 2, mb: 1 }}>
-          Are you sure you want to remove the knowledge base &quot;<strong>{kbToRemove?.name || 'N/A'}</strong>&quot; from agent &quot;
-          <strong>{selectedAgent?.aliases?.[0] || selectedAgent?.name}</strong>&quot;?
-        </Typography>
-        <Box sx={{ p: 1, mb: ds.space[2], display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: ds.space[4] }}>
-          <Button
-            tone='secondary'
-            size='sm'
-            onClick={() => {
-              setIsRemoveKbModalOpen(false);
-              setKbToRemove(null);
-            }}
-          >
-            Cancel
-          </Button>
-          <Button tone='primary' size='sm' onClick={handleUnmapKbFromAgent}>
-            Remove
           </Button>
         </Box>
       </Modal>
 
       <ListingLayout id='all-agents'>
         <ListingLayout.Toolbar
+          title={
+            <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
+              Agents
+              {/* Hybrid: system catalog (tenant-wide) + custom agents
+                  per account. Two chips when in account mode so users
+                  see they're working against both layers. */}
+              <HybridScopeChips accountId={accountId} />
+            </Box>
+          }
           actions={
             <>
               <DownloadButton onClick={() => ({ tableId: 'agents' })} size='sm' />
-              {hasWriteAccess(accountId) && (
+              {!isTenantWide && hasWriteAccess(accountId) && (
                 <Button tone='primary' size='sm' id='create-agent' onClick={() => setCreateAgentModal(true)}>
                   <Box
                     sx={{
@@ -992,7 +934,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
             </>
           }
         >
-          <CustomSearch
+          <SearchInput
             id='agent-search'
             label='Search Agent'
             value={searchAgentByName}
@@ -1013,19 +955,31 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
           <CustomTable
-            headers={[
-              { name: 'Name', width: '15%' },
-              { name: 'Description', width: '35%' },
-              { name: 'Status', width: '10%' },
-              { name: 'Tools', width: '10%' },
-              { name: 'KB', width: '5%', info: 'Knowledge Base count - Click to view or manage knowledge bases mapped to this agent' },
-              { name: 'Action', width: '5%' },
-            ]}
+            headers={
+              isTenantWide
+                ? [
+                    { name: 'Name', width: '20%' },
+                    { name: 'Description', width: '40%' },
+                    { name: 'Status', width: '10%' },
+                    { name: 'Tools', width: '15%' },
+                    { name: 'Account', width: '15%' },
+                  ]
+                : [
+                    { name: 'Name', width: '15%' },
+                    { name: 'Description', width: '35%' },
+                    { name: 'Status', width: '10%' },
+                    { name: 'Tools', width: '10%' },
+                    { name: 'KB', width: '5%', info: 'Knowledge Base count - Click to view or manage knowledge bases mapped to this agent' },
+                    { name: 'Action', width: '5%' },
+                  ]
+            }
             tableData={data}
             rowsPerPage={data.length}
             totalRows={data.length}
             loading={loadingAgents}
             id='agents'
+            stickyHeader={stickyTable}
+            sx={stickyTable ? { maxHeight: 'calc(90vh - 300px)', overflowY: 'auto' } : undefined}
           />
         </ListingLayout.Body>
       </ListingLayout>
@@ -1035,6 +989,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
 
 ListAgents.propTypes = {
   accountId: PropTypes.string,
+  stickyTable: PropTypes.bool,
 };
 
 export default ListAgents;

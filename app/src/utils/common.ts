@@ -208,6 +208,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'SIGNOZ':
       label = 'Signoz';
       break;
+    case 'OPENOBSERVE':
+      label = 'OpenObserve';
+      break;
     case 'OBSERVE':
       label = 'Observe';
       break;
@@ -648,18 +651,28 @@ export const convertToReadableFormat = (input: string) => {
     .join(' ');
 };
 
+// formatAuditActor humanizes an audit EventActor enum (e.g. "K8S_AGENT" -> "K8s Agent")
+// for display in the User column when an audit has no human user_id — i.e. machine /
+// service-initiated events such as agent-run K8s tasks.
+export const formatAuditActor = (actor: string) => {
+  if (!actor) return '';
+  const acronyms: Record<string, string> = { k8s: 'K8s', api: 'API', ml: 'ML', ui: 'UI' };
+  return actor
+    .split('_')
+    .map((word) => acronyms[word.toLowerCase()] || word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+};
+
 export const formatActionNameForAuditMessage = (actionName: string) => {
-  let formattedName = actionName;
-  if (actionName) {
-    formattedName = actionName
-      .replace(/_?enricher_?/gi, '')
-      .replace(/_/g, ' ')
-      .trim();
-    formattedName = formattedName
-      .split(' ')
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-      .join(' ');
-  }
+  if (!actionName) return '';
+  let formattedName = actionName
+    .replace(/_?enricher_?/gi, '')
+    .replace(/_/g, ' ')
+    .trim();
+  formattedName = formattedName
+    .split(' ')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
   return formattedName;
 };
 

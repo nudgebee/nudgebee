@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -190,4 +192,54 @@ func (s *Signer) Sign(msg []byte) ([]byte, error) {
 	}
 
 	return json.Marshal(raw)
+}
+
+// SignK8sBody signs the raw bytes of the payload's `body` field and attaches the
+// additive relay_* envelope (relay_signature, relay_signed_at, relay_nonce,
+// relay_key_id). It is the native-k8s-agent counterpart to Sign.
+//
+// Unlike Sign — which extracts named top-level fields (action/datasource_id/
+// params) for proxy datasource actions — the k8s request envelope nests
+// everything under `body`, so we sign the ENTIRE `body` substring. This binds
+// account_id + action_name + action_params + timestamp together, and the agent
+// verifies the identical bytes it executes (no field-substitution gap, no
+// canonicalisation needed; transport is byte-transparent).
+//
+// It deliberately writes NEW top-level fields and never touches `signature`/
+// `partial_auth_*` (the agent's HMAC/RSA fields), so old agents ignore it and
+// reads never regress. Call this AFTER all `body` mutations so the signed bytes
+// equal the forwarded bytes. sjson inserts the new keys without reformatting the
+// untouched `body`, preserving the signed byte string (asserted in tests).
+func (s *Signer) SignK8sBody(payload []byte) ([]byte, error) {
+	body := gjson.GetBytes(payload, "body")
+	if !body.Exists() {
+		return nil, fmt.Errorf("sign k8s: payload has no body field")
+	}
+	// Prefer a zero-copy slice of the original payload (gjson populates Index
+	// with the byte offset of the raw value). Index is 0 when gjson can't locate
+	// it; fall back to body.Raw bytes in that case. Either way the SAME bytes are
+	// signed — the agent re-extracts and verifies the same `body` substring.
+	bodyBytes := []byte(body.Raw)
+	if body.Index > 0 && body.Index+len(body.Raw) <= len(payload) {
+		bodyBytes = payload[body.Index : body.Index+len(body.Raw)]
+	}
+	sig := ed25519.Sign(s.privateKey, bodyBytes)
+
+	out := payload
+	var err error
+	if out, err = sjson.SetBytes(out, "relay_signature", base64.StdEncoding.EncodeToString(sig)); err != nil {
+		return nil, fmt.Errorf("sign k8s: set relay_signature: %w", err)
+	}
+	if out, err = sjson.SetBytes(out, "relay_signed_at", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return nil, fmt.Errorf("sign k8s: set relay_signed_at: %w", err)
+	}
+	if out, err = sjson.SetBytes(out, "relay_nonce", uuid.NewString()); err != nil {
+		return nil, fmt.Errorf("sign k8s: set relay_nonce: %w", err)
+	}
+	if s.keyID != "" {
+		if out, err = sjson.SetBytes(out, "relay_key_id", s.keyID); err != nil {
+			return nil, fmt.Errorf("sign k8s: set relay_key_id: %w", err)
+		}
+	}
+	return out, nil
 }

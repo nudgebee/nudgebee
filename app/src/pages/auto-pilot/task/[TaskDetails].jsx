@@ -29,10 +29,12 @@ import DateTime from '@shared/format/Datetime';
 import { titleCase } from '@lib/formatter';
 import PropTypes from 'prop-types';
 import WidgetCard from '@ui/WidgetCard';
+import Banner from '@ui/Banner';
 import { Stat } from '@ui/Stat';
 import k8sApi from '@api1/kubernetes';
 import apiUser from '@api1/user';
 import Text from '@shared/format/Text';
+import Memory from '@shared/format/Memory';
 import { Link } from '@ui/Link';
 import CustomTabs from '@shared/CustomTabs';
 import { hasWriteAccess } from '@lib/auth';
@@ -229,9 +231,24 @@ const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
     setSelectedStatus(e?.target?.value);
   };
 
+  // Backend stores CPU as raw cores (e.g. 0.5, 0.09); display as millicores to match the "500m" style used in task messages.
+  const formatCpuValue = (value) => {
+    if (value === null || value === undefined || value === '-' || (typeof value === 'string' && value.trim() === '')) return '-';
+    const num = Number(value);
+    if (isNaN(num)) return value; // already unit-formatted (e.g. "500m"), leave as-is
+    return `${Math.round(num * 1000)}m`;
+  };
+
   const getCPUMemoryConfigs = (data) => {
     return data.map((item) => {
-      return [{ text: titleCase(item.property_name) || '-' }, { text: item.current_value || '-' }, { text: item.new_value || '-' }];
+      const isCpu = typeof item.property_name === 'string' && item.property_name.toLowerCase().includes('cpu');
+      const currentValue = item.current_value ?? '-';
+      const newValue = item.new_value ?? '-';
+      return [
+        { text: titleCase(item.property_name) || '-' },
+        { text: isCpu ? formatCpuValue(currentValue) : currentValue },
+        { text: isCpu ? formatCpuValue(newValue) : newValue },
+      ];
     });
   };
 
@@ -250,10 +267,19 @@ const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
         if (rec.allocated) {
           Object.keys(rec.allocated).forEach((key) => {
             if (rec.allocated[key] !== null || (rec.recommended && rec.recommended[key] !== null)) {
+              const resourceTitle = titleCase(`${resource} ${key}`);
+              const allocatedValue = rec.allocated[key] ?? '-';
+              const recommendedValue = rec.recommended ? rec.recommended[key] ?? '-' : '-';
+              const isMemory = resource === 'memory';
+              const isCpu = resource === 'cpu';
               configs.push([
-                { text: titleCase(`${resource} ${key}`) },
-                { text: rec.allocated[key] ?? '-' },
-                { text: rec.recommended ? rec.recommended[key] ?? '-' : '-' },
+                { text: resourceTitle },
+                isMemory && !isNaN(Number(allocatedValue))
+                  ? { component: <Memory value={Number(allocatedValue)} sourceUnit='bytes' targetUnit='mb' /> }
+                  : { text: isCpu ? formatCpuValue(allocatedValue) : allocatedValue },
+                isMemory && !isNaN(Number(recommendedValue))
+                  ? { component: <Memory value={Number(recommendedValue)} sourceUnit='bytes' targetUnit='mb' /> }
+                  : { text: isCpu ? formatCpuValue(recommendedValue) : recommendedValue },
               ]);
             }
           });
@@ -264,6 +290,8 @@ const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
 
     return [];
   };
+
+  const hasCpuRow = (configs) => configs.some((row) => typeof row?.[0]?.text === 'string' && row[0].text.toLowerCase().includes('cpu'));
 
   return (
     <ListingLayout id='auto-pilot' sx={{ mt: 3 }}>
@@ -278,9 +306,19 @@ const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
             tabs: [
               {
                 componentFn: function (opt, drilldownQuery, _row) {
+                  const configs = parseRecommendationMeta(drilldownQuery?.meta);
                   return (
                     <Box>
-                      <CustomTable2 headers={DRILL_DOWN_LISTING_HEADER} tableData={parseRecommendationMeta(drilldownQuery?.meta)} />
+                      {hasCpuRow(configs) && (
+                        <Box sx={{ px: ds.space[2], mb: ds.space[2] }}>
+                          <Banner
+                            tone='info'
+                            surface='section'
+                            message='CPU values below are the original recommendation. The value actually applied (after safety-buffer adjustments) is shown in the task message above.'
+                          />
+                        </Box>
+                      )}
+                      <CustomTable2 headers={DRILL_DOWN_LISTING_HEADER} tableData={configs} />
                       {drilldownQuery?.command && (
                         <Box sx={{ mt: ds.space[3], px: ds.space[2] }}>
                           <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium, mb: ds.space[1] }}>

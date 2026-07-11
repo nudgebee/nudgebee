@@ -84,12 +84,22 @@ func (s *publicIpService) GetRecommendations(ctx providers.CloudProviderContext,
 	var recommendations []providers.Recommendation
 	for _, resource := range existingResources {
 		if resource.Status == providers.ResourceStatusInactive {
+			// An unassociated public IP is billed at its full hourly rate, so deleting
+			// it recovers the entire monthly cost.
+			sku := azureSkuName(resource.Meta)
+			savings := 0.0
+			if cost, err := GetPricingCache().GetPublicIPPrice(ctx, sku, resource.Region); err == nil {
+				savings = cost
+			} else {
+				ctx.GetLogger().Warn("failed to get public ip price for savings estimate", "error", err, "region", resource.Region, "sku", sku)
+			}
+
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName:        providers.RecommendationCategoryRightSizing,
 				RuleName:            "azure_unassociated_public_ip",
 				Severity:            providers.RecommendationSeverityLow,
-				Savings:             0, // TODO: Calculate savings
-				Data:                map[string]any{},
+				Savings:             savings,
+				Data:                map[string]any{"sku": sku, "reason": "Public IP is not associated with any resource. Deleting it recovers its full monthly cost."},
 				Action:              providers.RecommendationActionDelete,
 				ResourceServiceName: resource.ServiceName,
 				ResourceId:          resource.Id,

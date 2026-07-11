@@ -682,9 +682,23 @@ func (t *NBLogTool) buildObservFilterString(clause core.QueryWhereClause) (strin
 
 	var binaryConditions []string
 
-	for field, conditions := range clause.Binary {
+	binaryFields := make([]string, 0, len(clause.Binary))
+	for field := range clause.Binary {
+		binaryFields = append(binaryFields, field)
+	}
+	sort.Strings(binaryFields)
 
-		for op, value := range conditions {
+	for _, field := range binaryFields {
+		conditions := clause.Binary[field]
+
+		ops := make([]core.BinaryWhereClauseType, 0, len(conditions))
+		for op := range conditions {
+			ops = append(ops, op)
+		}
+		sort.Slice(ops, func(i, j int) bool { return ops[i] < ops[j] })
+
+		for _, op := range ops {
+			value := conditions[op]
 
 			var part string
 

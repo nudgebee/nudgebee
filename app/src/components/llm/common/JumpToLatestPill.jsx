@@ -123,7 +123,7 @@ const JumpToLatestPill = ({ scrollContainerRef }) => {
           borderRadius: '50%',
           border: `1px solid ${'var(--ds-gray-300)'}`,
           backgroundColor: 'var(--ds-background-100)',
-          boxShadow: '0px 2px 6px rgba(0, 0, 0, 0.08)',
+          boxShadow: `0px 2px 6px ${ds.gray.alpha[200]}`,
           cursor: 'pointer',
           color: 'var(--ds-gray-700)',
           transition: 'background-color 0.15s ease, border-color 0.15s ease',

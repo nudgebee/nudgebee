@@ -86,6 +86,7 @@ const NotificationForm = ({
       <Box
         sx={{
           borderRadius: `${ds.radius.sm} ${ds.radius.sm} 0 0`,
+          borderTop: `1px solid ${ds.blue[100]}`,
           background: ds.blue[100],
           padding: `${ds.space[2]} ${ds.space[4]}`,
         }}

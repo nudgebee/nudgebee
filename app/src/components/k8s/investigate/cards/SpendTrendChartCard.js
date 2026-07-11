@@ -1,6 +1,7 @@
-import BarChart from '@shared/charts/BarChart';
+import Chart from '@ui/Chart';
 import { titleCase } from '@lib/formatter';
 import LogsIcon from '@assets/investigation/logs-blue.svg';
+import { ds, resolveColor } from '@utils/colors';
 
 class SpendTrendChartCard {
   constructor(data, index) {
@@ -38,7 +39,7 @@ class SpendTrendChartCard {
   };
 
   renderChart = () => {
-    return <BarChart labels={this.labels} data={this.amounts} chartLabel='Daily Spend' colors='#6366F1' />;
+    return <Chart.Bar labels={this.labels} data={this.amounts} chartLabel='Daily Spend' colors={resolveColor(ds.blue[500])} />;
   };
 }
 

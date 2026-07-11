@@ -410,11 +410,23 @@ func handleWorkspaceExecute(c *gin.Context, tracer trace.Tracer, meter metric.Me
 	toolCtx := core.NewNbToolContext(ctx, nbTool, req.AccountId, "system", "", "", "", req.Command, nil, "", queryConfig, "")
 
 	go func() {
+		// Resolve identity once, defensively: this runs in a background goroutine
+		// with no panic recovery, so a nil security context must not deref-panic
+		// and crash the server.
+		var tenantId, userId string
+		if sc := ctx.GetSecurityContext(); sc != nil {
+			tenantId = sc.GetTenantId()
+			userId = sc.GetUserId()
+		}
 		auditReq := &audit.AuditRequest{
 			Audits: []audit.Audit{
 				{
-					AccountId:     req.AccountId,
-					TenantId:      ctx.GetSecurityContext().GetTenantId(),
+					AccountId: req.AccountId,
+					TenantId:  tenantId,
+					// Attribute to the human user when the request carries one; agent /
+					// internal (super-admin) calls leave this empty, which is fine —
+					// EventActor still records that the K8s agent performed the task.
+					UserId:        userId,
 					EventTime:     time.Now(),
 					EventCategory: audit.EventCategoryK8sRelay,
 					EventType:     audit.EventTypeK8sRelayTask,

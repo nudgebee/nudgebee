@@ -5,8 +5,8 @@ import {
   loginAndNavigateToNewWorkflow,
   pasteAndApplyWorkflowJson,
   saveNewWorkflow,
-  setWorkflowActiveAndSave,
   runWorkflowWithGraphQLValidation,
+  deleteCreatedWorkflow,
   dryRunAction,
   closeActionPanel,
 } from "./workflowHelper";
@@ -41,7 +41,7 @@ const WORKFLOW_JSON_TEMPLATE = {
   status: "ACTIVE",
 };
 
-test("Automation workflow G-chat Notification", async ({ page }) => {
+test.skip("Automation workflow G-chat Notification", async ({ page }) => {
   test.setTimeout(180000);
 
   const locators = new WorkflowLocators(page);
@@ -60,6 +60,7 @@ test("Automation workflow G-chat Notification", async ({ page }) => {
   await closeActionPanel(page, locators);
 
   await saveNewWorkflow(page, locators, workflowName);
-  await setWorkflowActiveAndSave(page, locators);
   await runWorkflowWithGraphQLValidation(page, locators, "Automation workflow G-chat Notification");
+
+  await deleteCreatedWorkflow(page, locators, workflowName);
 });

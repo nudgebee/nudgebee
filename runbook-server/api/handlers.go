@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"nudgebee/runbook/config"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -403,7 +404,7 @@ func (s *Server) triggerWorkflow(c *gin.Context) {
 	var inputs map[string]any
 
 	// Limit request body size
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024*1024) // 1MB limit
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, int64(config.Config.WebhookMaxBodySizeMB*1024*1024))
 
 	if err := c.ShouldBindJSON(&inputs); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -444,7 +445,7 @@ func (s *Server) retriggerWorkflowExecution(c *gin.Context) {
 	var inputs map[string]any
 
 	// Limit request body size
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024*1024) // 1MB limit
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, int64(config.Config.WebhookMaxBodySizeMB*1024*1024))
 
 	if err := c.ShouldBindJSON(&inputs); err != nil && err != io.EOF {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -483,7 +484,7 @@ func (s *Server) updateWorkflowExecution(c *gin.Context) {
 	}
 
 	// Limit request body size
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024*1024) // 1MB limit
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, int64(config.Config.WebhookMaxBodySizeMB*1024*1024))
 
 	var inputs map[string]any
 	if err := c.ShouldBindJSON(&inputs); err != nil {
@@ -562,7 +563,7 @@ func (s *Server) handleGenericWebhook(c *gin.Context) {
 	}
 
 	// Limit request body size
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024*1024) // 1MB limit
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, int64(config.Config.WebhookMaxBodySizeMB*1024*1024))
 
 	webhookPayload, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -641,7 +642,7 @@ func (s *Server) handleWebhookFanOut(c *gin.Context) {
 	}
 
 	// Limit request body size — same cap as /webhook/:workflowId
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024*1024) // 1MB
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, int64(config.Config.WebhookMaxBodySizeMB*1024*1024))
 	payload, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		s.logger.Error("failed to read webhook fan-out body", "integration_name", integrationName, "error", err)

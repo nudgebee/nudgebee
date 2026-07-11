@@ -25,6 +25,7 @@ import { RightArrowIcon } from '@assets';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import Text from '@shared/format/Text';
 import KubernetesLogs from './KubernetesLogs';
+import CloudTraceLogs from '@components/k8s/common/CloudTraceLogs';
 import apiUser from '@api1/user';
 import { applyFiltersOnRouter } from '@lib/router';
 import ConversationPopup from '@components/llm/ConversationPopup';
@@ -1224,13 +1225,27 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                   value: 0,
                   text: 'Service & Operation',
                   componentFn: function (_opt: any, drilldownQuery: any) {
-                    return <KubernetesTraceServiceOperation accountId={selectedK8sAccount} query={drilldownQuery} />;
+                    // Cloud Trace spans aren't in the K8s trace store, so re-fetching by
+                    // trace_id returns unrelated data. Pass the trace's own spans (already
+                    // in this listing's evidence) so the gantt renders from them. K8s spans
+                    // keep the backend fetch (no traceData) — no regression.
+                    const isCloudTrace = drilldownQuery?.trace_source === 'gcp';
+                    const cloudTraceSpans = isCloudTrace ? traceData.filter((s: any) => s.trace_id === drilldownQuery.trace_id) : undefined;
+                    return <KubernetesTraceServiceOperation accountId={selectedK8sAccount} query={drilldownQuery} traceData={cloudTraceSpans} />;
                   },
                 },
                 {
                   componentFn: function (_opt: any, drilldownQuery: any) {
-                    if (drilldownQuery?.span_attributes) {
-                      const { headers, convertedJson2 } = getTableData4([drilldownQuery?.span_attributes || {}]);
+                    let attrsObj: any = drilldownQuery?.span_attributes;
+                    if (typeof attrsObj === 'string') {
+                      try {
+                        attrsObj = JSON.parse(attrsObj);
+                      } catch {
+                        attrsObj = {};
+                      }
+                    }
+                    if (attrsObj && Object.keys(attrsObj).length > 0) {
+                      const { headers, convertedJson2 } = getTableData4([attrsObj]);
                       return (
                         <WidgetCard>
                           <CustomTable
@@ -1258,6 +1273,20 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                   value: 2,
                   key: 'trace-logs',
                   componentFn: function (_opt: any, drilldownQuery: any) {
+                    // GCP cloud traces: fetch Cloud Logging entries correlated to this
+                    // trace id (K8s log query below would 404 against a cloud account).
+                    if (drilldownQuery?.trace_source === 'gcp') {
+                      return (
+                        <CloudTraceLogs
+                          accountId={selectedK8sAccount}
+                          project={drilldownQuery.project}
+                          region={drilldownQuery.region}
+                          serviceName={drilldownQuery.service_name}
+                          traceId={drilldownQuery.trace_id}
+                          timestamp={drilldownQuery.timestamp}
+                        />
+                      );
+                    }
                     if (drilldownQuery.span_name == 'query') {
                       return (
                         <WidgetCard>

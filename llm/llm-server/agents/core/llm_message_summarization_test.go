@@ -19,6 +19,9 @@ func TestSummarizeContent_LargeInput(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode.")
 	}
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live LLM provider configuration; set TEST_ACCOUNT to run")
+	}
 
 	// 1. Setup: Configure a low token limit
 	config.Config.SetString("llm_max_tokens_per_message", "100")

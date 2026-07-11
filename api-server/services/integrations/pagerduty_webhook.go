@@ -17,6 +17,7 @@ import (
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -3780,17 +3781,31 @@ func extractServiceFromSigNozURL(rawURL string) string {
 		return ""
 	}
 
-	// Navigate: builder -> queryData[] -> filters -> items[] -> key.key == "service.name"
-	builder, ok := query["builder"].(map[string]any)
-	if !ok {
-		return ""
+	// SigNoz compositeQuery comes in two shapes:
+	//   - URL format:      builder -> queryData[]   (array of query objects)
+	//   - internal format: builderQueries{}         (map of name -> query object)
+	// Both carry the same filters.items[] structure, so collect the query
+	// objects from whichever shape is present and scan them uniformly.
+	var queries []any
+	if builder, ok := query["builder"].(map[string]any); ok {
+		if queryData, ok := builder["queryData"].([]any); ok {
+			queries = append(queries, queryData...)
+		}
 	}
-	queryData, ok := builder["queryData"].([]any)
-	if !ok {
-		return ""
+	if builderQueries, ok := query["builderQueries"].(map[string]any); ok {
+		// Sort keys for deterministic iteration (Go map order is randomized),
+		// so service extraction is stable when multiple queries are present.
+		keys := make([]string, 0, len(builderQueries))
+		for k := range builderQueries {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			queries = append(queries, builderQueries[k])
+		}
 	}
 
-	for _, bq := range queryData {
+	for _, bq := range queries {
 		bqMap, ok := bq.(map[string]any)
 		if !ok {
 			continue

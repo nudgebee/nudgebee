@@ -9,92 +9,135 @@ jest.mock('@api1/observability', () => ({
   },
 }));
 
+// Source consumes `useCloudMetricsQueryPanel` (a hook) instead of the old QueryPanel component.
+// We mock the hook so tests can simulate user picking valid / missing-X params via buttons that
+// invoke the captured `onChange` callback.
 jest.mock('@components/cloudaccount/cloud-metrics/CloudMetricsQueryPanel', () => ({
   __esModule: true,
-  default: ({ provider, accountId, onChange }: any) => (
-    <div data-testid='query-panel'>
-      <div data-testid='qp-provider'>{provider}</div>
-      <div data-testid='qp-account'>{accountId}</div>
+  useCloudMetricsQueryPanel: ({ provider, accountId, onChange }: any) => ({
+    primaryFilters: (
+      <>
+        <div data-testid='qp-provider'>{provider}</div>
+        <div data-testid='qp-account'>{accountId}</div>
+        <button
+          data-testid='qp-emit-valid'
+          onClick={() =>
+            onChange({
+              region: 'us-east-1',
+              resourceIds: ['i-12345'],
+              resourceType: 'AWS::EC2::Instance',
+              metricNames: ['CPUUtilization'],
+              statistics: ['Average'],
+              serviceName: 'ec2',
+            })
+          }
+        >
+          Emit Valid
+        </button>
+        <button data-testid='qp-emit-no-region' onClick={() => onChange({ region: '', resourceIds: [], metricNames: [], statistics: [] })}>
+          Emit No Region
+        </button>
+        <button
+          data-testid='qp-emit-no-resources'
+          onClick={() => onChange({ region: 'us-east-1', resourceIds: [], metricNames: ['CPUUtilization'], statistics: ['Average'] })}
+        >
+          Emit No Resources
+        </button>
+        <button
+          data-testid='qp-emit-no-metrics'
+          onClick={() => onChange({ region: 'us-east-1', resourceIds: ['i-1'], metricNames: [], statistics: ['Average'] })}
+        >
+          Emit No Metrics
+        </button>
+      </>
+    ),
+    secondaryFilters: null,
+  }),
+}));
+
+jest.mock('@utils/colors');
+
+jest.mock('@utils/common', () => ({
+  formatMetricName: (name: string) => name,
+}));
+
+jest.mock('@shared/widgets/CustomDateTimeRangePicker', () => ({
+  __esModule: true,
+  default: ({ onChange }: any) => (
+    <>
       <button
-        data-testid='qp-emit-valid'
-        onClick={() =>
-          onChange({
-            region: 'us-east-1',
-            resourceIds: ['i-12345'],
-            resourceType: 'AWS::EC2::Instance',
-            metricNames: ['CPUUtilization'],
-            statistics: ['Average'],
-            serviceName: 'ec2',
-          })
-        }
+        data-testid='date-range-shortcut'
+        onClick={() => onChange({ selection: { startTime: 1000, endTime: 2000, shortcutClickTime: 60_000 } })}
       >
-        Emit Valid
+        1m
       </button>
-      <button data-testid='qp-emit-no-region' onClick={() => onChange({ region: '', resourceIds: [], metricNames: [], statistics: [] })}>
-        Emit No Region
+      <button data-testid='date-range-absolute' onClick={() => onChange({ selection: { startTime: 1000, endTime: 2000, shortcutClickTime: 0 } })}>
+        Absolute
       </button>
-      <button
-        data-testid='qp-emit-no-resources'
-        onClick={() => onChange({ region: 'us-east-1', resourceIds: [], metricNames: ['CPUUtilization'], statistics: ['Average'] })}
-      >
-        Emit No Resources
-      </button>
-      <button
-        data-testid='qp-emit-no-metrics'
-        onClick={() => onChange({ region: 'us-east-1', resourceIds: ['i-1'], metricNames: [], statistics: ['Average'] })}
-      >
-        Emit No Metrics
-      </button>
-    </div>
+    </>
   ),
 }));
 
-let chartsRendered: any[] = [];
-jest.mock('@shared/charts/LineCharts', () => ({
+jest.mock('@ui/Button', () => ({
   __esModule: true,
-  default: ({ chartTitle, dataset, labels }: any) => {
-    chartsRendered.push({ chartTitle, dataset, labels });
-    return (
-      <div data-testid={`chart-${chartTitle}`}>
-        <div data-testid={`chart-labels-${chartTitle}`}>{labels.join('|')}</div>
-        <div data-testid={`chart-datasets-${chartTitle}`}>{dataset.map((d: any) => `${d.label}:${d.data.join(',')}`).join(';')}</div>
-      </div>
-    );
-  },
-}));
-
-jest.mock('@shared/NewCustomButton', () => ({
-  __esModule: true,
-  default: ({ text, onClick, disabled }: any) => (
-    <button data-testid={`btn-${text}`} onClick={onClick} disabled={disabled}>
-      {text}
+  Button: ({ children, onClick, disabled, loading }: any) => (
+    <button data-testid={`btn-${typeof children === 'string' ? children : 'icon'}`} onClick={onClick} disabled={disabled || loading}>
+      {children}
     </button>
   ),
 }));
 
-jest.mock('@shared/BoxLayout2', () => ({
+jest.mock('@ui/Banner', () => ({
   __esModule: true,
-  default: ({ children, extraOptions = [], dateTimeRange, heading }: any) => (
-    <div data-testid='box-layout'>
-      <h2>{heading}</h2>
-      <div data-testid='extras'>{extraOptions}</div>
-      {dateTimeRange?.enabled && (
-        <>
-          <button
-            data-testid='date-range-shortcut'
-            onClick={() => dateTimeRange.onChange({ startTime: 1000, endTime: 2000, shortcutClickTime: 60_000 })}
-          >
-            1m
-          </button>
-          <button data-testid='date-range-absolute' onClick={() => dateTimeRange.onChange({ startTime: 1000, endTime: 2000, shortcutClickTime: 0 })}>
-            Absolute
-          </button>
-        </>
-      )}
-      {children}
+  Banner: ({ message }: any) => <div data-testid='banner'>{message}</div>,
+}));
+
+jest.mock('@ui/EmptyState', () => ({
+  __esModule: true,
+  EmptyState: ({ title, description }: any) => (
+    <div data-testid='empty-state'>
+      <div>{title}</div>
+      <div>{description}</div>
     </div>
   ),
 }));
+
+jest.mock('@ui/Skeleton', () => ({
+  __esModule: true,
+  Skeleton: ({ ariaLabel }: any) => <div data-testid='skeleton' aria-label={ariaLabel} />,
+}));
+
+jest.mock('@ui/WidgetCard', () => ({
+  __esModule: true,
+  default: ({ children }: any) => <div data-testid='widget-card'>{children}</div>,
+}));
+
+jest.mock('@ui/Chart', () => {
+  const Chart: any = () => null;
+  Chart.Line = ({ chartTitle, dataset, labels }: any) => (
+    <div data-testid={`chart-${chartTitle}`}>
+      <div data-testid={`chart-labels-${chartTitle}`}>{(labels || []).join('|')}</div>
+      <div data-testid={`chart-datasets-${chartTitle}`}>{(dataset || []).map((d: any) => `${d.label}:${d.data.join(',')}`).join(';')}</div>
+    </div>
+  );
+  return { __esModule: true, default: Chart };
+});
+
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout: any = ({ children, id }: any) => (
+    <div data-testid='listing-layout' id={id}>
+      {children}
+    </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }: any) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }: any) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
 
 import CloudMetricsViewer from '@components/cloudaccount/cloud-metrics/CloudMetricsViewer';
 
@@ -133,7 +176,6 @@ const sampleMetricsResponse = {
 describe('CloudMetricsViewer (integration)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    chartsRendered = [];
     observability.metricsQuery.mockResolvedValue(sampleMetricsResponse);
   });
 
@@ -143,7 +185,7 @@ describe('CloudMetricsViewer (integration)', () => {
     expect(screen.getByTestId('qp-account')).toHaveTextContent('acc-1');
   });
 
-  it('shows initial info Alert before params emitted', async () => {
+  it('shows initial empty state before params emitted', async () => {
     render(<CloudMetricsViewer accountId='acc-1' provider='AWS' />);
     expect(screen.getByText(/Select a service, region, and resource/)).toBeInTheDocument();
   });
@@ -217,12 +259,10 @@ describe('CloudMetricsViewer (integration)', () => {
     await waitFor(() => expect(screen.getByTestId('chart-CPUUtilization (%)')).toBeInTheDocument());
     expect(screen.getByTestId('chart-NetworkIn')).toBeInTheDocument();
 
-    // CPUUtilization should have 2 datasets (i-12345, i-67890)
     const cpuDatasets = screen.getByTestId('chart-datasets-CPUUtilization (%)').textContent;
     expect(cpuDatasets).toContain('i-12345:10,20,30');
     expect(cpuDatasets).toContain('i-67890:50,60,70');
 
-    // NetworkIn should have 1 dataset
     const netDatasets = screen.getByTestId('chart-datasets-NetworkIn').textContent;
     expect(netDatasets).toContain('i-12345:1024,2048');
   });
@@ -234,7 +274,6 @@ describe('CloudMetricsViewer (integration)', () => {
     fireEvent.click(screen.getByTestId('btn-Run Query'));
 
     await waitFor(() => expect(screen.getByTestId('chart-CPUUtilization (%)')).toBeInTheDocument());
-    // NetworkIn is Bytes — title should NOT have unit suffix
     expect(screen.queryByTestId('chart-NetworkIn (Bytes)')).not.toBeInTheDocument();
     expect(screen.getByTestId('chart-NetworkIn')).toBeInTheDocument();
   });
@@ -273,14 +312,10 @@ describe('CloudMetricsViewer (integration)', () => {
 
     const datasets = screen.getByTestId('chart-datasets-CPUUtilization (%)').textContent;
     expect(datasets).toContain('i-A:10,20,30');
-    // i-B missing timestamp 1000 → fills with 0
     expect(datasets).toContain('i-B:0,50,60');
   });
 
-  it('parses result-level error from results array (calls setError in parseMetricResults)', async () => {
-    // Note: component has a known race — fetchData clears error via `setError(null)` post-fetch
-    // when chartData is empty AND closure `error` is still null. We verify the API was called
-    // and no charts rendered (result with error has no payload → empty chartMap).
+  it('parses result-level error from results array (no charts rendered)', async () => {
     observability.metricsQuery.mockResolvedValue({
       data: { data: { metrics_list: { results: [{ error: 'Permission denied for namespace' }] } } },
     });
@@ -290,12 +325,10 @@ describe('CloudMetricsViewer (integration)', () => {
     fireEvent.click(screen.getByTestId('btn-Run Query'));
 
     await waitFor(() => expect(observability.metricsQuery).toHaveBeenCalled());
-    // No charts rendered because result.error skips payload
     await waitFor(() => expect(screen.queryByTestId(/^chart-/)).not.toBeInTheDocument());
   });
 
   it('reaches catch block on structured rejection (clears charts)', async () => {
-    // Note: error rendering racy — verify API hit + charts cleared
     observability.metricsQuery.mockRejectedValue({
       response: { data: { errors: [{ message: 'Quota exceeded' }] } },
     });
@@ -309,8 +342,6 @@ describe('CloudMetricsViewer (integration)', () => {
   });
 
   it('calls API on Run Query with valid params (rejection-path coverage)', async () => {
-    // Note: error rendering after rejection is racy due to `error` in fetchData useCallback deps
-    // causing auto-fetch useEffect to refire — verifying API call rather than visible error.
     observability.metricsQuery.mockRejectedValue(new Error('Network down'));
 
     render(<CloudMetricsViewer accountId='acc-1' provider='AWS' />);
@@ -318,7 +349,6 @@ describe('CloudMetricsViewer (integration)', () => {
     fireEvent.click(screen.getByTestId('btn-Run Query'));
 
     await waitFor(() => expect(observability.metricsQuery).toHaveBeenCalled());
-    // Charts cleared on rejection
     await waitFor(() => expect(screen.queryByTestId(/^chart-/)).not.toBeInTheDocument());
   });
 

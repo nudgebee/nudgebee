@@ -1,4 +1,4 @@
-import CustomButton from '@shared/NewCustomButton';
+import { Button } from '@ui/Button';
 import { error404Image, ErrorIcon } from '@assets';
 import Image from 'next/image';
 import { useRouter } from 'next/router';
@@ -28,8 +28,8 @@ function Error({ statusCode }) {
         alignItems: 'center',
         height: 'auto',
         textAlign: 'center',
-        marginTop: '80px',
-        gap: '40px',
+        marginTop: 'var(--ds-space-7)',
+        gap: 'var(--ds-space-6)',
       }}
     >
       <div
@@ -39,7 +39,7 @@ function Error({ statusCode }) {
           flexDirection: 'column',
           justifyContent: 'center',
           alignItems: 'center',
-          padding: '10px 0',
+          padding: 'var(--ds-space-2) 0',
           textAlign: 'center',
           margin: '0px',
         }}
@@ -49,17 +49,17 @@ function Error({ statusCode }) {
             fontSize: '170px',
             fontWeight: 'bold',
             margin: '0px',
-            color: '#1B2D4A',
+            color: 'var(--ds-brand-600)',
           }}
         >
           {title}
         </h1>
         <p
           style={{
-            fontSize: '15px',
-            fontWeight: 500,
+            fontSize: 'var(--ds-text-body-lg)',
+            fontWeight: 'var(--ds-font-weight-medium)',
             margin: '0px',
-            color: '#1B2D4A',
+            color: 'var(--ds-brand-600)',
           }}
         >
           {message}
@@ -71,7 +71,7 @@ function Error({ statusCode }) {
           flexDirection: 'column',
           justifyContent: 'center',
           alignItems: 'center',
-          gap: '24px',
+          gap: 'var(--ds-space-5)',
         }}
       >
         <Image
@@ -82,14 +82,15 @@ function Error({ statusCode }) {
             height: 'auto',
           }}
         />
-        <CustomButton
-          variant='tertiary'
-          size='Medium'
-          text={'Go to Homepage'}
+        <Button
+          tone='secondary'
+          size='md'
           onClick={() => {
             router.push(`/home`);
           }}
-        />
+        >
+          Go to Homepage
+        </Button>
       </div>
     </div>
   );

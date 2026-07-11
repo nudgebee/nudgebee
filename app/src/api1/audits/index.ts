@@ -10,6 +10,7 @@ query ListAuditEvents($limit: Int, $offset: Int) {
   audits_v2(where: __WHERE__, limit: $limit, offset: $offset, order_by: [{column: "event_time", order: desc}]) {
     rows {
       user_id
+      event_actor
       account_id
       event_time
       event_category

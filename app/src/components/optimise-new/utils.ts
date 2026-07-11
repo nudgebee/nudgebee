@@ -1,4 +1,5 @@
 import { ds } from 'src/utils/colors';
+import { recommendationDetails } from '@api1/recommendation/data';
 
 // ─── Shared types ───
 
@@ -215,6 +216,22 @@ export const categoryColors: Record<string, { bg: string; color: string; border:
 
 const normalizeMem = (val: number): number => (val > 100000 ? val / (1024 * 1024) : val);
 
+// Catalog title lookup (mirrors recommendationApi.getRecommendationDetails) so a
+// catalog-backed config row can show the action ("Enable Dead Letter Queue …")
+// instead of the generic "Configuration issue detected".
+export const catalogTitle = (category: string, ruleName: string): string => {
+  if (!ruleName) return '';
+  const direct = (recommendationDetails as any)[category]?.[ruleName];
+  if (direct?.title) return direct.title;
+  for (const cat of Object.keys(recommendationDetails)) {
+    const entry = (recommendationDetails as any)[cat]?.[ruleName];
+    if (entry?.title) return entry.title;
+  }
+  return '';
+};
+
+// Verb + magnitude grammar so a row reads as an action, not a raw delta:
+// "Reduce CPU 96%" / "Increase Mem 12%" / "Set CPU request".
 const getResourceChangePart = (entry: any, label: string, isMem: boolean): string | null => {
   if (!entry?.recommended?.request) return null;
   if (!entry?.allocated?.request) {

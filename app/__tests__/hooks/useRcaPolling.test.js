@@ -8,12 +8,7 @@ jest.mock('@api1/kubernetes', () => ({
   },
 }));
 
-jest.mock('@shared/snackbarService', () => ({
-  snackbar: { success: jest.fn(), error: jest.fn() },
-}));
-
 import apiKubernetes from '@api1/kubernetes';
-import { snackbar } from '@shared/snackbarService';
 
 const mockGenerateRCA = apiKubernetes.generateRCA;
 
@@ -55,46 +50,48 @@ describe('useRcaPolling', () => {
     expect(result.current.isPolling).toBe(false);
   });
 
-  it('shows success snackbar and stops polling when status is COMPLETED', async () => {
+  it('invokes onStatusChange with COMPLETED and stops polling', async () => {
+    const onStatusChange = jest.fn();
     mockGenerateRCA.mockResolvedValue({ status: 'completed' });
-    const { result } = renderHook(() => useRcaPolling('event-1', 'acc-1'));
+    const { result } = renderHook(() => useRcaPolling('event-1', 'acc-1', onStatusChange));
 
     await act(async () => {
       result.current.startPolling();
-      jest.advanceTimersByTime(5000);
-      await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(5000);
     });
 
-    expect(snackbar.success).toHaveBeenCalledWith('RCA generation completed successfully. Please refresh the page to see the results.');
+    expect(onStatusChange).toHaveBeenCalledWith({ status: 'completed' }, 'COMPLETED');
     expect(result.current.isPolling).toBe(false);
   });
 
-  it('shows error snackbar and stops polling when status is FAILED', async () => {
+  it('invokes onStatusChange with FAILED and stops polling', async () => {
+    const onStatusChange = jest.fn();
     mockGenerateRCA.mockResolvedValue({ status: 'failed' });
-    const { result } = renderHook(() => useRcaPolling('event-1', 'acc-1'));
+    const { result } = renderHook(() => useRcaPolling('event-1', 'acc-1', onStatusChange));
 
     await act(async () => {
       result.current.startPolling();
-      jest.advanceTimersByTime(5000);
-      await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(5000);
     });
 
-    expect(snackbar.error).toHaveBeenCalledWith('RCA generation failed. Please try again later.');
+    expect(onStatusChange).toHaveBeenCalledWith({ status: 'failed' }, 'FAILED');
     expect(result.current.isPolling).toBe(false);
   });
 
-  it('shows error snackbar and stops polling on API exception', async () => {
+  it('keeps polling on API exception (retries with backoff)', async () => {
     mockGenerateRCA.mockRejectedValue(new Error('Network error'));
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const { result } = renderHook(() => useRcaPolling('event-1', 'acc-1'));
 
     await act(async () => {
       result.current.startPolling();
-      jest.advanceTimersByTime(5000);
-      await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(5000);
     });
 
-    expect(snackbar.error).toHaveBeenCalledWith('Failed to check RCA status. Please refresh the page.');
-    expect(result.current.isPolling).toBe(false);
+    expect(errorSpy).toHaveBeenCalledWith('Error polling RCA status:', expect.any(Error));
+    expect(result.current.isPolling).toBe(true);
+    expect(mockGenerateRCA).toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 
   it('polls on interval every 5 seconds', async () => {
@@ -116,15 +113,15 @@ describe('useRcaPolling', () => {
     expect(mockGenerateRCA.mock.calls.length).toBeGreaterThan(callCountAfterFirst);
   });
 
-  it('cleans up polling interval on unmount', () => {
-    const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+  it('cleans up polling timeout on unmount', () => {
+    const clearTimeoutSpy = jest.spyOn(global, 'clearTimeout');
     mockGenerateRCA.mockReturnValue(new Promise(() => {}));
     const { result, unmount } = renderHook(() => useRcaPolling('event-1', 'acc-1'));
     act(() => result.current.startPolling());
     unmount();
-    // After unmount the interval should be cleared; advancing timers should not cause issues
+    // After unmount the timeout should be cleared; advancing timers should not cause issues
     act(() => jest.advanceTimersByTime(10000));
-    expect(clearIntervalSpy).toHaveBeenCalled();
-    clearIntervalSpy.mockRestore();
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+    clearTimeoutSpy.mockRestore();
   });
 });

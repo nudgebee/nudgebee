@@ -8,6 +8,60 @@ export function generateWorkflowName(baseName: string): string {
   return `${baseName} ${suffix}`;
 }
 
+/**
+ * Cleans up the automation the current test created by driving the UI: go back
+ * to the listing, search for it by name, open ITS 3-dot menu (targeted by the
+ * created workflow's id from the editor URL so no other row is touched), then
+ * Delete → confirm. Call after the workflow has been created and run.
+ */
+export async function deleteCreatedWorkflow(
+  page: Page,
+  locators: WorkflowLocators,
+  workflowName: string
+): Promise<void> {
+  // The editor URL is `/workflow/<id>?accountId=...`; capture the id so we click
+  // exactly this workflow's menu and never any other automation's.
+  let workflowId: string | undefined;
+  try {
+    workflowId = new URL(page.url()).pathname.match(/\/workflow\/([0-9a-fA-F-]{36})/)?.[1];
+  } catch {
+    workflowId = undefined;
+  }
+
+  // Back to the automation listing. Leaving the editor with a saved-but-not-
+  // published draft pops an "Unpublished changes" guard — confirm "Leave page".
+  await locators.backBtn.click();
+  const leavePageBtn = page.getByRole("button", { name: "Leave page" });
+  await leavePageBtn
+    .waitFor({ state: "visible", timeout: 3000 })
+    .then(() => leavePageBtn.click())
+    .catch(() => {});
+  await page.waitForURL(/\/auto-pilot/, { timeout: 15000 });
+
+  // Surface the just-created row via the name search.
+  await locators.nameSearchInput.waitFor({ state: "visible", timeout: 15000 });
+  await locators.nameSearchInput.fill(workflowName);
+  await locators.nameSearchInput.press("Enter");
+  await page.waitForTimeout(1000);
+
+  // Open this row's 3-dot menu. The trigger id carries the workflow id; fall
+  // back to the only menu on the filtered listing if the id wasn't captured.
+  const menuTrigger = workflowId
+    ? page.locator(`#workflow-menu-${workflowId}`)
+    : page.locator('[id^="workflow-menu-"]').first();
+  await menuTrigger.waitFor({ state: "visible", timeout: 15000 });
+  await menuTrigger.click();
+
+  await page.getByRole("menuitem", { name: "Delete" }).click();
+
+  await locators.deleteConfirmBtn.waitFor({ state: "visible", timeout: 15000 });
+  await locators.deleteConfirmBtn.click();
+
+  await expect(page.getByText(`Automation "${workflowName}" deleted successfully`)).toBeVisible({ timeout: 15000 });
+  console.log(`Deleted created workflow "${workflowName}"`);
+}
+
+
 export async function loginAndNavigateToNewWorkflow(
   page: Page,
   locators: WorkflowLocators
@@ -130,11 +184,81 @@ export async function selectIntegration(
   console.log(`Selected integration: ${integrationName}`);
 }
 
+export async function selectTicketIntegration(
+  locators: WorkflowLocators,
+  integrationName: string,
+  buttonName: RegExp = /Ticket integration|Incident management integration|Select integration id/i
+): Promise<void> {
+  const integrationBtn = locators.dialog.getByRole("button", { name: buttonName }).first();
+  await integrationBtn.waitFor({ state: "visible", timeout: 15000 });
+  await integrationBtn.click();
+
+  // Primary: exact text match. Fallback: a role=option row containing the name
+  // (handles extra icons/whitespace/adornments inside the option row).
+  const exactOption = locators.dialog.getByText(integrationName, { exact: true });
+  if (await exactOption.first().isVisible().catch(() => false)) {
+    await exactOption.first().click();
+  } else {
+    await locators.dialog.locator('[role="option"]').filter({ hasText: integrationName }).first().click();
+  }
+  console.log(`Selected integration: ${integrationName}`);
+}
+
+export async function selectProjectKey(
+  page: Page,
+  locators: WorkflowLocators,
+  projectKey: string
+): Promise<void> {
+  // Fallback: the project_key field can default to Expression mode (a template
+  // text field) instead of the Select dropdown. If the dropdown trigger isn't
+  // present, flip the field to Select mode via its toggle first.
+  if (!(await locators.projectKeyDropdown.isVisible().catch(() => false))) {
+    const selectTab = locators.dialog
+      .locator(".MuiToggleButtonGroup-grouped")
+      .filter({ hasText: "Select" })
+      .last();
+    if (await selectTab.isVisible().catch(() => false)) {
+      await selectTab.scrollIntoViewIfNeeded();
+      await selectTab.click();
+      await page.waitForTimeout(500);
+    }
+  }
+
+  await locators.projectKeyDropdown.waitFor({ state: "visible", timeout: 15000 });
+  await locators.projectKeyDropdown.click();
+  await page.waitForTimeout(700);
+  await page.keyboard.type(projectKey);
+  await page.waitForTimeout(300);
+
+  // Primary: option containing the full key. Fallback: match the repo segment
+  // after the last "/" (some providers label options by repo name only).
+  const fullOption = page.locator('[role="option"]').filter({ hasText: projectKey }).first();
+  if (await fullOption.isVisible().catch(() => false)) {
+    await fullOption.click();
+  } else {
+    const repoSegment = projectKey.split("/").pop() ?? projectKey;
+    await page.locator('[role="option"]').filter({ hasText: repoSegment }).first().click();
+  }
+  console.log(`Selected Project Key: ${projectKey}`);
+}
+
 export async function closeActionPanel(
   page: Page,
   locators: WorkflowLocators
 ): Promise<void> {
+  const saveActionBtn = page.locator("#action-sidebar-save-btn");
+  if (await saveActionBtn.isVisible().catch(() => false)) {
+    await saveActionBtn.click();
+    await saveActionBtn.waitFor({ state: "hidden", timeout: 5000 }).catch(() => {});
+  }
+
   await locators.actionPanelCloseBtn.click();
+
+  const saveChangesBtn = page.getByRole("button", { name: "Save changes" });
+  if (await saveChangesBtn.isVisible().catch(() => false)) {
+    await saveChangesBtn.click();
+  }
+
   await page.waitForTimeout(500);
 }
 
@@ -153,6 +277,14 @@ export async function runSimpleWorkflow(
 }
 
 export async function dryRunAction(page: Page, locators: WorkflowLocators): Promise<void> {
+  const saveActionBtn = page.locator("#action-sidebar-save-btn");
+  if (await saveActionBtn.isVisible().catch(() => false)) {
+    await saveActionBtn.click();
+    await saveActionBtn.waitFor({ state: "hidden", timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(300);
+    console.log("Saved action config before dry run");
+  }
+
   await locators.dryRunBtn.waitFor({ state: "visible", timeout: 10000 });
 
   const existingChipTexts = await page
@@ -176,6 +308,14 @@ export async function dryRunAction(page: Page, locators: WorkflowLocators): Prom
       { timeout: 30000 }
     )
     .catch(() => {});
+
+  const resultChips = (await page.locator("div.MuiDialog-container .MuiChip-label").allTextContents()).map((t) => t.trim());
+  console.log(`Dry Run result chips: ${resultChips.join(", ")}`);
+  const dialogText = (await locators.dialog.innerText().catch(() => "")) || "";
+  if (resultChips.some((t) => /fail/i.test(t)) || /validation failed|missing required parameter/i.test(dialogText)) {
+    const errorBlock = dialogText.split("\n").filter((l) => /error|fail|missing|required/i.test(l)).join(" | ");
+    throw new Error(`Dry Run failed: ${errorBlock || resultChips.join(", ")}`);
+  }
 }
 
 export async function runTaskAction(page: Page, locators: WorkflowLocators): Promise<void> {
@@ -265,22 +405,8 @@ export async function configureNotificationsImSlack(
   const dialog = page.locator("div.MuiDialog-container");
   await dialog.waitFor({ state: "visible", timeout: 15000 });
 
-  const providerAutocomplete = dialog.locator(".MuiAutocomplete-root").first();
-  await providerAutocomplete.locator("input").click();
-  await page.locator('[role="option"]').filter({ hasText: /^Slack$/ }).click();
-  await page.waitForTimeout(500);
-
-  await dialog.getByRole("button").filter({ hasText: "Select" }).first().click();
-  await page.waitForTimeout(500);
-
-  const channelInput = dialog.locator(".MuiAutocomplete-root").last().locator("input");
-  await channelInput.fill(slackChannel);
-  await page.waitForTimeout(500);
-  const channelOption = page.locator('[role="option"]').filter({ hasText: slackChannel });
-  const optionVisible = await channelOption.first().isVisible().catch(() => false);
-  if (optionVisible) {
-    await channelOption.first().click();
-  }
+  await expect(dialog.getByRole("button", { name: "Slack", exact: true })).toBeVisible();
+  await expect(dialog.getByRole("textbox", { name: "Select channel" })).toHaveValue(slackChannel);
 
   console.log(`Configured notifications.im with Slack channel: ${slackChannel}`);
 }

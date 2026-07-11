@@ -1,4 +1,4 @@
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 export const allClustersTableheaders = [
   'Cluster name',
   'Node ',
@@ -73,35 +73,35 @@ export const allClustersTableUpperHeaders = [
   { text: '' },
   { text: '' },
   { text: '' },
-  { text: 'Utilization', colSpan: 4, backgroundColor: colors.background.infoGraphic },
+  { text: 'Utilization', colSpan: 4, backgroundColor: ds.blue[100] },
   { text: '' },
 ];
 export const topClustersTableUpperHeaders = [
   { text: '' },
-  { text: 'MTD', colSpan: 3, backgroundColor: colors.background.infoGraphic },
+  { text: 'MTD', colSpan: 3, backgroundColor: ds.blue[100] },
   { text: '' },
-  { text: 'Last 7 days', colSpan: 4, backgroundColor: colors.background.null },
+  { text: 'Last 7 days', colSpan: 4, backgroundColor: ds.background[300] },
 ];
 
 export const topWorkloadsTableUpperHeaders = [
   { text: '' },
   { text: '' },
-  { text: 'Avg requested', colSpan: 3, backgroundColor: colors.background.infoGraphic },
+  { text: 'Avg requested', colSpan: 3, backgroundColor: ds.blue[100] },
   { text: '', colSpan: 5 },
 ];
 
 export const workloadSortingTableUpperHeaders = [
   { text: '' },
   { text: '' },
-  { text: 'Avg requested per resource', colSpan: 3, backgroundColor: colors.background.infoGraphic },
-  { text: 'Last 7 days', colSpan: 5, backgroundColor: colors.background.null },
+  { text: 'Avg requested per resource', colSpan: 3, backgroundColor: ds.blue[100] },
+  { text: 'Last 7 days', colSpan: 5, backgroundColor: ds.background[300] },
 ];
 
 export const topNamespaceTableUpperHeaders = [
   { text: '' },
   { text: '' },
-  { text: 'Avg requested per resource', colSpan: 2, backgroundColor: colors.background.infoGraphic },
-  { text: 'Total cost per resource', colSpan: 2, backgroundColor: colors.background.null },
+  { text: 'Avg requested per resource', colSpan: 2, backgroundColor: ds.blue[100] },
+  { text: 'Total cost per resource', colSpan: 2, backgroundColor: ds.background[300] },
   { text: '' },
 ];
 

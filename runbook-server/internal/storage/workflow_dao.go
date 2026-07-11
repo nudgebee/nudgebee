@@ -354,7 +354,9 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 
 		workflows = append(workflows, wf)
 	}
-
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("failed to iterate workflows: %w", err)
+	}
 	return workflows, totalCount, nil
 }
 
@@ -585,7 +587,8 @@ func (s *WorkflowDao) FindEventTriggers(ctx context.Context) ([]model.WorkflowEv
 			id, tenant_id, account_id,
 			COALESCE(event_type_item, '') as event_type,
 			COALESCE(trigger->'params'->>'filter', '') as filter,
-			'event' as trigger_type
+			'event' as trigger_type,
+			COALESCE(trigger->'params'->>'on', 'event.created') as lifecycle_phase
 		FROM workflows,
 			 jsonb_array_elements(
 				CASE
@@ -613,7 +616,8 @@ func (s *WorkflowDao) FindEventTriggers(ctx context.Context) ([]model.WorkflowEv
 			id, tenant_id, account_id,
 			'optimization.recommendation' as event_type,
 			COALESCE((trigger->'params')::text, '') as filter,
-			'optimization' as trigger_type
+			'optimization' as trigger_type,
+			'event.created' as lifecycle_phase
 		FROM workflows,
 			 jsonb_array_elements(
 				CASE
@@ -637,7 +641,7 @@ func (s *WorkflowDao) FindEventTriggers(ctx context.Context) ([]model.WorkflowEv
 	var rules []model.WorkflowEventTriggerRule
 	for rows.Next() {
 		var rule model.WorkflowEventTriggerRule
-		if err := rows.Scan(&rule.WorkflowID, &rule.TenantID, &rule.AccountID, &rule.EventType, &rule.Filter, &rule.TriggerType); err != nil {
+		if err := rows.Scan(&rule.WorkflowID, &rule.TenantID, &rule.AccountID, &rule.EventType, &rule.Filter, &rule.TriggerType, &rule.LifecyclePhase); err != nil {
 			return nil, fmt.Errorf("failed to scan event trigger rule: %w", err)
 		}
 		// For optimization triggers, build Jinja filter from structured params.
@@ -759,6 +763,9 @@ func (s *WorkflowDao) GetState(ctx context.Context, workflowID string) ([]model.
 		}
 
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate workflow state: %w", err)
 	}
 	return items, nil
 }

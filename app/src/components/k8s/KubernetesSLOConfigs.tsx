@@ -4,19 +4,19 @@ import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker
 import FilterDropdown from '@ui/FilterDropdown';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { Button } from '@ui/Button';
-import Charts from '@shared/charts/LineCharts';
-import CustomTable from '@shared/tables/CustomTable2';
+import Chart from '@ui/Chart';
+import CustomTable from '@shared/tables/CustomTable';
 import { getYesterday, getLast30Days } from '@lib/datetime';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { convertDateStringForSLOReportChart, formatSeconds, snakeToTitleCase } from 'src/utils/common';
 import KubernetesTracesListing from './details/KubernetesTracesListing';
 import ThreeDotLoader from '@shared/ThreeDotLoader';
-import CustomLabels from '@shared/widgets/CustomLabels';
-import { Text } from '@shared';
+import { Label } from '@ui/Label';
+import Text from '@shared/format/Text';
 import { Typography } from '@mui/material';
 import KubernetesEventsTable from '@components/events/KubernetesEvents';
 import SLOConfigDialog from '@components/k8s/common/SLOConfigDialog';
-import { snackbar } from '@shared/snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 import { hasWriteAccess } from '@lib/auth';
 
 interface KubernetesSLOConfigsProps {
@@ -28,12 +28,23 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
   const [loading, setLoading] = useState(false);
   const [workloadFqdn, setWorkloadFqdn] = useState<string[]>([]);
   const [sharedVariableForFindingIds, setSharedVariableForFindingIds] = useState([]);
-  const [namespaceFilter, setNamespaceFilter] = useState<string[]>([]);
-  const [workloadFilter, setWorkloadFilter] = useState<string[]>([]);
+  const [allSLOData, setAllSLOData] = useState<any[]>([]);
   const [selectedNamespace, setSelectedNamespace] = useState<string>('');
   const [selectedWorkload, setSelectedWorkload] = useState<string>('');
   const [openSLODialog, setOpenSLODialog] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // Cross-filter: namespace options narrow when a workload is selected
+  const namespaceFilter = useMemo(() => {
+    const base = selectedWorkload ? (allSLOData || []).filter((d) => d.workload_name === selectedWorkload) : allSLOData || [];
+    return Array.from(new Set(base.map((d: any) => d.workload_namespace as string).filter(Boolean)));
+  }, [allSLOData, selectedWorkload]);
+
+  // Cross-filter: workload options narrow when a namespace is selected
+  const workloadFilter = useMemo(() => {
+    const base = selectedNamespace ? (allSLOData || []).filter((d) => d.workload_namespace === selectedNamespace) : allSLOData || [];
+    return Array.from(new Set(base.map((d: any) => d.workload_name as string).filter(Boolean)));
+  }, [allSLOData, selectedNamespace]);
 
   const header = [
     { name: 'Workload Name', width: '20%' },
@@ -44,6 +55,15 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
     { name: 'Availability', width: '12%' },
     { name: 'Observation (30D)', width: '30%' },
   ];
+
+  // Fetch all SLO configs unfiltered — drives the cross-filtered dropdown options
+  useEffect(() => {
+    if (!accountId) return;
+    apiKubernetes1
+      .listSLOConfigs({ cloud_account_id: accountId })
+      .then((res) => setAllSLOData(res?.data?.data?.slo_config || []))
+      .catch((err) => console.error('Failed to fetch SLO configs:', err));
+  }, [accountId, refreshKey]);
 
   useEffect(() => {
     if (!accountId) {
@@ -66,16 +86,6 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
       .listSLOConfigs(params)
       .then((res) => {
         const filteredData = res?.data?.data?.slo_config || [];
-
-        if (filteredData && filteredData.length > 0) {
-          const uniqueNamespaces = Array.from(new Set<string>(filteredData.map((item: any) => item.workload_namespace)));
-          const uniqueWorkloads = Array.from(new Set<string>(filteredData.map((item: any) => item.workload_name)));
-          setNamespaceFilter(uniqueNamespaces);
-          setWorkloadFilter(uniqueWorkloads);
-        } else {
-          setNamespaceFilter([]);
-          setWorkloadFilter([]);
-        }
 
         const workloadFqdn: string[] = [];
         if (filteredData.length > 0) {
@@ -171,7 +181,6 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
   const onNamespaceFilterChange = (e: any) => {
     const value = e?.target?.value;
     setSelectedNamespace(value || '');
-    setSelectedWorkload('');
   };
 
   const onWorkloadFilterChange = (e: any) => {
@@ -230,7 +239,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
                 element[3] = {
                   component: (
                     <>
-                      <CustomLabels text={filterFiringStatusConfig.length > 0 ? `FIRING` : 'OK'} />
+                      <Label text={filterFiringStatusConfig.length > 0 ? `FIRING` : 'OK'} />
                       {firingStatusConfig ? <Text secondaryText value={`[${firingStatusConfig}]`} /> : null}
                     </>
                   ),
@@ -508,14 +517,14 @@ export const SLOReport = ({
       />
       <ListingLayout.Body>
         <div className='chart-container'>
-          <Charts
+          <Chart.Line
             chartTitle='Availiabity Report'
             dataset={availabilityData.data}
             labels={availabilityData.label}
             data={[]}
             loading={loadingAvailability}
           />
-          <Charts chartTitle='Latency Report' dataset={latencyData.data} labels={latencyData.label} data={[]} loading={loadingLatency} />
+          <Chart.Line chartTitle='Latency Report' dataset={latencyData.data} labels={latencyData.label} data={[]} loading={loadingLatency} />
         </div>
       </ListingLayout.Body>
     </ListingLayout>

@@ -200,7 +200,10 @@ func TestEventAgentFailures(t *testing.T) {
 	eventSummaryAgent, _ := core.GetNBAgent(ctx, agents.EventsAgentName, account, core.AgentStatusEnabled)
 	summaryResponse, err := core.HandleConversationSessionRequest(
 		ctx, eventSummaryAgent, "", account, sessionID,
-		"Get the details of Event with id - "+eventData.Id,
+		"Get the details of Event with id - "+eventData.Id+
+			". Also explain how Nudgebee auto-triaged this event: its triage status (nb_status), "+
+			"computed priority and the score_factors that produced it, and the deduplication chain and "+
+			"correlated events behind the decision. Use get_triage_explanation for the dedup chain and correlations.",
 		core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation),
 		core.ConversationSessionRequestWithEnableCritique(false),
 		core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{

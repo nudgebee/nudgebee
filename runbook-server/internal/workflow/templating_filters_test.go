@@ -40,7 +40,6 @@ func TestCustomFilters(t *testing.T) {
 		{"dirname", `{{ "/path/to/file.txt" | dirname }}`, nil, "/path/to", false},
 		{"splitext_root", `{{ "/path/to/file.txt" | splitext | first }}`, nil, "/path/to/file", false},
 		{"splitext_ext", `{{ "/path/to/file.txt" | splitext | last }}`, nil, ".txt", false},
-		{"realpath", `{{ "file.txt" | realpath | basename }}`, nil, "file.txt", false},
 		{"win_basename", `{{ "C:\\path\\to\\file.txt" | win_basename }}`, nil, "file.txt", false},
 		{"win_dirname", `{{ "C:\\path\\to\\file.txt" | win_dirname }}`, nil, "C:\\path\\to", false},
 		{"win_splitdrive_drive", `{{ "C:\\path\\to\\file.txt" | win_splitdrive | first }}`, nil, "C:", false},

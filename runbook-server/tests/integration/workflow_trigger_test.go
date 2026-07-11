@@ -214,7 +214,7 @@ func (s *IntegrationTestSuite) TestEventTriggerWorkflow() {
 	// It's set to 1-second sync, so wait a bit more than that.
 	s.Eventually(func() bool {
 		_ = s.eventRegistry.Refresh(context.Background()) // Force refresh
-		matches := s.eventRegistry.Match("my.custom.event", testAccountID, map[string]any{"source": "integration-test", "account_id": testAccountID})
+		matches := s.eventRegistry.Match("my.custom.event", testAccountID, map[string]any{"source": "integration-test", "account_id": testAccountID}, string(model.DefaultLifecyclePhase))
 		return len(matches) > 0
 	}, 5*time.Second, 500*time.Millisecond, "Event registry did not pick up the new workflow")
 	s.T().Log("Event registry refreshed and contains the new workflow.")
@@ -449,7 +449,7 @@ func (s *IntegrationTestSuite) fireEventAndAwaitNewRun(workflowID string, payloa
 func (s *IntegrationTestSuite) waitForRegistryMatch(eventType string, payload map[string]any, expectMatch bool) {
 	s.Require().Eventually(func() bool {
 		_ = s.eventRegistry.Refresh(context.Background())
-		matches := s.eventRegistry.Match(eventType, testAccountID, payload)
+		matches := s.eventRegistry.Match(eventType, testAccountID, payload, string(model.DefaultLifecyclePhase))
 		if expectMatch {
 			return len(matches) > 0
 		}
@@ -540,7 +540,7 @@ func (s *IntegrationTestSuite) TestEventTriggerWorkflow_WildcardFilterOnly() {
 		matches := s.eventRegistry.Match("anything.goes", testAccountID, map[string]any{
 			"source":     "integration-test-wildcard",
 			"account_id": testAccountID,
-		})
+		}, string(model.DefaultLifecyclePhase))
 		return len(matches) > 0
 	}, 5*time.Second, 500*time.Millisecond, "Wildcard rule should match arbitrary event_type with passing filter")
 

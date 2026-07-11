@@ -13,6 +13,9 @@ import (
 )
 
 func TestStoreRecommendationsAwsRDS(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreRecommendations(ctx, os.Getenv("TEST_ACCOUNT"), providers.ListRecommendationsRequest{
 		ServiceName: "AmazonRDS",
@@ -22,6 +25,9 @@ func TestStoreRecommendationsAwsRDS(t *testing.T) {
 }
 
 func TestStoreRecommendationsAwsEc2(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreRecommendations(ctx, os.Getenv("TEST_ACCOUNT"), providers.ListRecommendationsRequest{
 		ServiceName: "AmazonEc2",
@@ -31,6 +37,9 @@ func TestStoreRecommendationsAwsEc2(t *testing.T) {
 }
 
 func TestStoreRecommendationsAwsLambda(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreRecommendations(ctx, os.Getenv("TEST_ACCOUNT"), providers.ListRecommendationsRequest{
 		ServiceName: "AWSLambda",
@@ -40,6 +49,9 @@ func TestStoreRecommendationsAwsLambda(t *testing.T) {
 }
 
 func TestStoreRecommendationsAWsECS(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreRecommendations(ctx, os.Getenv("TEST_ACCOUNT"), providers.ListRecommendationsRequest{
 		ServiceName: "AmazonECS",
@@ -49,6 +61,9 @@ func TestStoreRecommendationsAWsECS(t *testing.T) {
 }
 
 func TestStoreRecommendationsForAwsAllServices(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreRecommendationsAll(ctx, os.Getenv("TEST_ACCOUNT"))
 	assert.Nil(t, err)
@@ -56,6 +71,9 @@ func TestStoreRecommendationsForAwsAllServices(t *testing.T) {
 }
 
 func TestStoreRecommendationAwsIam(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreRecommendations(ctx, os.Getenv("TEST_ACCOUNT"), providers.ListRecommendationsRequest{
 		ServiceName: "AWSIAM",
@@ -65,6 +83,9 @@ func TestStoreRecommendationAwsIam(t *testing.T) {
 }
 
 func TestStoreRecommendationsAwsS3(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreRecommendations(ctx, os.Getenv("TEST_ACCOUNT"), providers.ListRecommendationsRequest{
 		ServiceName: "AmazonS3",
@@ -74,6 +95,9 @@ func TestStoreRecommendationsAwsS3(t *testing.T) {
 }
 
 func TestStoreRecommendationsAwsSecurityHub(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreRecommendations(ctx, os.Getenv("TEST_ACCOUNT"), providers.ListRecommendationsRequest{
 		ServiceName: "SecurityHub",
@@ -83,6 +107,9 @@ func TestStoreRecommendationsAwsSecurityHub(t *testing.T) {
 }
 
 func TestStoreRecommendationsAwsCloudTrail(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreRecommendations(ctx, os.Getenv("TEST_ACCOUNT"), providers.ListRecommendationsRequest{
 		ServiceName: "CloudTrail",
@@ -92,6 +119,9 @@ func TestStoreRecommendationsAwsCloudTrail(t *testing.T) {
 }
 
 func TestStoreRecommendationsAzureAll(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreRecommendationsAll(ctx, "c3a2d91d-17b7-4df4-93a0-7a777a399e29")
 	assert.Nil(t, err)
@@ -99,6 +129,9 @@ func TestStoreRecommendationsAzureAll(t *testing.T) {
 }
 
 func TestStoreRecommendationsGCloudAll(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreRecommendationsAll(ctx, os.Getenv("TEST_ACCOUNT"))
 	assert.Nil(t, err)
@@ -106,6 +139,9 @@ func TestStoreRecommendationsGCloudAll(t *testing.T) {
 }
 
 func TestStoreRecommendationGCloudStorage(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreRecommendations(ctx, os.Getenv("TEST_ACCOUNT"), providers.ListRecommendationsRequest{
 		ServiceName: "storage",

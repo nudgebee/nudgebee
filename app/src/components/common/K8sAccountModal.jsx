@@ -80,7 +80,7 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const updateAllClusters = useUpdateAllClusterOption();
-  const { relayUrl, k8sCollectorUrl } = useBrandingConfig();
+  const { relayUrl, k8sCollectorUrl, signingPublicKey } = useBrandingConfig();
 
   const resetState = () => {
     setK8sNameValue('');
@@ -199,6 +199,9 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
     if (externalPrometheusUrl) {
       cmd += ` -p "${externalPrometheusUrl}"`;
     }
+    if (signingPublicKey) {
+      cmd += ` -S "${signingPublicKey}"`;
+    }
 
     return cmd;
   }, [
@@ -211,6 +214,7 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
     disableOtelCollector,
     disablePrometheusStack,
     externalPrometheusUrl,
+    signingPublicKey,
   ]);
 
   const helmCommand = useMemo(() => {
@@ -250,6 +254,10 @@ helm repo update`;
       upgradeCommand += ` \\\n  --set globalConfig.prometheus_url="${externalPrometheusUrl}"`;
       upgradeCommand += ` \\\n  --set opencost.opencost.prometheus.external.url="${externalPrometheusUrl}"`;
     }
+    if (signingPublicKey) {
+      // --set-string: the key may contain '=' (base64 padding) or spaces (ssh form).
+      upgradeCommand += ` \\\n  --set-string runner.nudgebee.relay_signing_public_key="${signingPublicKey}"`;
+    }
 
     return `${staticCommands}\n\n${upgradeCommand}`;
   }, [
@@ -263,6 +271,7 @@ helm repo update`;
     disablePodMonitor,
     disableOtelCollector,
     externalPrometheusUrl,
+    signingPublicKey,
   ]);
 
   const copyShellToClipboard = () => {

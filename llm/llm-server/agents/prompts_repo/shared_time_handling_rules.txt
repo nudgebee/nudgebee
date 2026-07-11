@@ -4,3 +4,9 @@
     *   `[[Time:-15m]]` -> 15 minutes ago
     *   `[[Time:-24h]]` -> 24 hours ago
     *   Example: `--start-time [[Time:-1h]] --end-time [[Time:Now]]`
+
+*   **Timezone for display:** Tool inputs and observations are ALWAYS in UTC — that does not change. When you write the FINAL ANSWER to the user, if `<user_preferences>` contains `timezone: <tz>` (e.g. `timezone: Asia/Calcutta`), render every timestamp you surface in the user's timezone, with the IANA name in parentheses so it's unambiguous.
+    *   WRONG (final answer): `Pod restarted at 2026-06-11T18:30:00Z.`
+    *   RIGHT (final answer, when `timezone: Asia/Calcutta`): `Pod restarted at 2026-06-12 00:00 IST (Asia/Calcutta).`
+    *   If no `timezone` preference is set, default to UTC in the final answer and label it as such (`… 18:30 UTC`).
+    *   This rule applies only to timestamps you SHOW the user. Never rewrite timestamps inside tool inputs, scratchpad observations, or notebook entries — those stay UTC so the next turn keeps working with consistent data.

@@ -20,7 +20,7 @@ const WorkflowBuilderNoteBook = dynamic(() => import('@components/workflow/Workf
       }}
     >
       <CircularProgress size={32} />
-      <Typography sx={{ color: '#6b7280', fontSize: '14px' }}>Loading automation builder...</Typography>
+      <Typography sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-body-lg)' }}>Loading automation builder...</Typography>
     </Box>
   ),
 });

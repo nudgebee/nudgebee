@@ -1,0 +1,155 @@
+
+TRIGGER TYPES AND THEIR REQUIRED PARAMETERS:
+- "manual" → No params allowed. User runs the automation from the UI on demand. User-supplied inputs are read in tasks via {{ Inputs.<key> }}.
+- "schedule" → Requires: cron (5-field UTC string, e.g. "0 9 * * MON-FRI"). Optional: overlap_policy ("Skip"|"BufferOne"|"BufferAll"|"AllowAll"|"CancelOther"|"TerminateOther"; default "Skip"), catchup_window (Go time.ParseDuration syntax; valid units ns|us|ms|s|m|h ONLY; day/week units like "7d" are NOT supported — use hours: "168h" = 7 days; compound durations like "1h30m" ARE valid; default "60s"). IMPORTANT: Always set overlap_policy: "Skip" for monitoring automations to prevent overlapping runs.
+- "webhook" → Requires: integration_name (string — must reference a workflow_webhook integration configured on the account). Optional: secret (string), filter (Jinja2 expression on payload, must render to literal "true" or "1"). Filter context: {{ webhook_payload }} at root. Tasks read the request body via {{ Inputs.webhook_payload }}.
+- "event" → Requires AT LEAST ONE of: event_type (string or [string,...]) OR filter (Jinja2). Filter context: {{ event.<field> }} at root — known fields: event_type, source, cluster, subject_namespace, subject_name, priority (HIGH|MEDIUM|LOW|INFO|DEBUG), status, labels. Tasks read the event via {{ Inputs.event.<field> }}.
+- "optimization" → Fires on new K8s/cost optimization recommendations. All params optional (empty = match every recommendation). Optional: categories ([string,...] from: PodRightSizing, RightSizing, K8sInstanceRecommendation, K8sSpotRecommendation, Configuration, Security, K8sMissingAttribute), rule_names ([string,...] from: vertical_rightsize, horizontal_rightsize, pvc_rightsize, continuous_rightsize, replica_right_sizing, "Spot instance recommendation", "Abandoned resource"), clusters ([string,...]), filter (Jinja2). Tasks read the recommendation via {{ Inputs.event.<field> }} — known fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id.
+
+COMMON TASK TYPES — WHEN TO USE EACH:
+
+OBSERVABILITY (ALWAYS use these for log/metric queries — NEVER scripting.run_script):
+- observability.logs → Query logs from the account's configured log provider (auto-detected at runtime).
+  ALWAYS use this for log queries. Query syntax depends on the configured provider.
+  Params: account_id (optional), query (string). Output: logs
+- observability.log_groups → Group and aggregate log entries. Params: start_time, end_time, namespace, etc. Output: { groups[] }
+- observability.metrics → Query metrics from the account's configured metrics provider (auto-detected at runtime).
+  ALWAYS use this for metric queries. Params: metric query params. Output: metrics
+
+AI & INVESTIGATION:
+- llm.investigate → Invoke Nudgebee's AI agent for investigation, diagnostics, or code analysis.
+  Has built-in coding agent — can analyze code, identify root causes, suggest fixes, and raise PRs.
+  Use this for ANY AI-powered analysis. Do NOT invent custom AI task types.
+  Params: message (string). Output: { data, conversation_id }
+
+NOTIFICATIONS (REQUIRES: a matching notification integration configured on the account):
+- notifications.im → Send messages to configured IM provider. Params: provider ("slack"|"teams"), channel (string), message (string). Optional: message_thread_id, template, team_id. Output: { channel, message_id, team, provider }
+- notifications.read_thread → Read thread replies/reactions. Params: provider ("slack"), channel_id, thread_ts. Output (directly on output, NOT output.data): { success, messages[], has_responses, has_reactions, reply_count, error, channel_id, thread_ts }. Each message has: ts, text, user, reactions[], is_parent.
+
+KUBERNETES (REQUIRES: K8s cloud account configured):
+- k8s.cli → Run kubectl commands (without "kubectl" prefix). Params: command (string, e.g. "get pods -n ns -o json"). Optional: account_id. Output: { data }
+
+CLOUD CLI (REQUIRES: cloud account of matching provider type):
+- cloud.aws.cli → Run AWS CLI commands. Params: account_id, command (full AWS CLI string). Output: { data }
+- cloud.azure.cli → Run Azure CLI commands. Params: account_id, command. Output: { data }
+- cloud.gcp.cli → Run GCP CLI commands. Params: account_id, command. Output: { data }
+
+SOURCE CONTROL (REQUIRES: matching SCM integration configured):
+- scm.github.cli → Execute GitHub CLI (gh) commands with auto-authenticated token.
+  Params: integration_id (use {{ Configs.github_integration_id }}), command (gh CLI string). GITHUB_TOKEN is auto-set. Output: raw stdout
+
+DATABASES (REQUIRES: matching database integration configured):
+- dbms.query → Run SQL queries. Params: integration_id (use {{ Configs.<name>_integration_id }}), dbms_type, command (SQL). Output: query result
+
+TICKETING (REQUIRES: a ticketing integration configured):
+- tickets.create → Create tickets. Params: ticket details. Output: created ticket
+- tickets.add_comment → Add comment to ticket. Params: ticket ID, comment. Output: confirmation
+
+CI/CD (REQUIRES: matching CI/CD integration configured):
+- cicd.argocd → ArgoCD operations. Output: result
+
+DATA PROCESSING:
+- data.transform → expression (JSONata or JS string), input (template string), inputType ("json"|"yaml"), Optional: outputType, scriptType ("jsonata"|"javascript"). Output: { data }
+  WARNING: Only use for trivial single-field extraction (e.g., expression: "fieldName"). For ANY non-trivial transformation, use scripting.run_script with Python instead. JSONata has many syntax limitations that cause runtime failures.
+- data.filter → data (any), expression (string). Output: { filtered_data }
+
+SCRIPTING (last resort — NOT for log/metric queries or operations that have dedicated task types):
+- scripting.run_script → Run custom scripts in a container. Use ONLY when no dedicated task type exists.
+  Params: script (string), language ("bash"|"python"|"javascript"). Optional: args[], env{}, parser_type ("json"), image, resources{cpu_request,memory_limit,...}. Output: { data }
+  Note: Container has Python, Node.js, Bash but NOT gh CLI. For GitHub operations use scm.github.cli or urllib.request in Python.
+  Note: With parser_type "json", stdout MUST be valid JSON. Always wrap Python scripts in try/except and print JSON on error.
+  PATTERN for passing data into Python: Use triple-quoted template injection:
+    script: |
+      import json
+      DATA = '''{{ Tasks['prev'].output.data | to_json }}'''
+      try:
+          items = json.loads(DATA)
+          result = items[:3]  # slice, filter, transform freely
+          print(json.dumps(result))
+      except Exception as e:
+          print(json.dumps({"error": str(e)}))
+
+HTTP & NETWORKING:
+- integrations.http → Make HTTP API calls. Params: url, method. Optional: headers{}, body, timeout, insecure_skip_verify. Output: { status_code, headers, body }
+- network.ssl → Check SSL certificate. Params: host (e.g. "example.com:443"). Output: { data } with cert info, expiry dates
+
+FLOW CONTROL:
+- core.foreach → Iterate over list. Params: items, tasks[], item (var name), concurrency (int). Output: { results[] }
+- core.switch → Branch based on value. Params: value, branches{}. Output: matched branch result. Tasks in UNSELECTED branches (and tasks that depend only on them) are stamped SKIPPED at run time — see SWITCH FAN-IN below before joining branch outputs.
+- core.group → Group sub-tasks. Params: tasks[]. Output: { workflowId, runId }
+- core.wait → Pause execution. Params: duration (e.g. "5m"). Output: { waited }
+- core.approval → Request human approval. Params: message, timeout. Output: approval response
+- core.call-workflow → Call another automation. Params: workflow_name, inputs{}. Output: { workflow_id, run_id, output }
+- core.print → Print a message. Params: message. Output: { data }
+
+MATRIX (parallel iteration over list):
+  Instead of core.foreach, tasks can have a "matrix" field for parallel execution over items:
+    - id: comment-on-issues
+      type: scm.github.cli
+      matrix:
+        issue: "{{ Tasks['fetch'].output.data.issue_numbers }}"
+      failure_policy:
+        action: "continue"
+      params:
+        command: "gh issue comment {{ Matrix.issue | int }} --repo org/repo -b 'message'"
+  Key rules:
+  - matrix value MUST be an array
+  - Access via {{ Matrix.<var_name> }}
+  - Tasks run in PARALLEL (one per item)
+  - Use failure_policy: continue so one failure doesn't block others
+
+TEMPLATE VARIABLES (available in "if", "params", "set_state", "output" fields as Jinja2):
+- {{ Inputs.input_id }} — automation input values
+- {{ Tasks['task-id'].output.data }} — output from a previous task (use bracket notation for hyphenated IDs)
+- {{ Tasks['task-id'].status }} — status of a task: COMPLETED, FAILED, SKIPPED, STARTED, TIMED_OUT, CANCELED
+- {{ Vars.var_name }} — automation variables set via set_vars
+- {{ State['key'] }} — persistent state across automation runs (set via set_state, survives between executions)
+- {{ Configs.config_key }} — platform configuration values (e.g., Configs.slack_channel, Configs.aws_account_id)
+- {{ Secrets.SECRET_NAME }} — environment secrets (SECRET_ prefix)
+- {{ Self.output.field }} — current task's own output (useful in set_state)
+- {{ now() }} — current UTC timestamp
+- {{ Matrix.key }} — matrix task variables
+
+USEFUL TEMPLATE FILTERS:
+- | time_add('-1h') or | time_add('2d') — add/subtract duration from time
+- | date_format('2006-01-02') — format time using Go layout
+- | to_json / | from_json — JSON conversion
+- | to_yaml / | from_yaml — YAML conversion
+- | length — get list/string length
+- | default('fallback') — default if null/empty
+- | int — convert to integer (e.g., {{ Matrix.issue | int }})
+- | string — convert to string (e.g., {{ id | string }})
+- | first / | last — first/last element of array
+- | join(',') — join array with delimiter
+- | regex_search(pattern) / | regex_replace(pattern, repl) — regex operations
+- | b64encode / | b64decode — base64 encoding
+- | human_readable — format bytes (e.g., "1.2 GB")
+- ~ operator — string concatenation in templates: 'prefix_' ~ value ~ '_suffix'
+
+STATE PERSISTENCE (set_state):
+- Simple: "set_state": { "key": "{{ Self.output.value }}" }
+- With TTL: "set_state": { "key": { "value": "{{ Self.output.value }}", "ttl": "24h" } }
+- Access: {{ State['key'] }} — returns null if not set or expired
+- State persists ACROSS automation runs (useful for thread IDs, counters, last-run timestamps)
+
+FAILURE HANDLING:
+- failure_policy.action: "continue" (skip and proceed) or "fail" (stop automation, default)
+- failure_policy.retry: { initial_interval, backoff_coefficient, maximum_interval, maximum_attempts }
+- Use failure_policy: { action: "continue" } on: matrix tasks, notification tasks, debug/print tasks, and any non-critical task that shouldn't block the automation
+
+CRITICAL TEMPLATE GOTCHAS:
+- SAFE OUTPUT ACCESS: When a task is SKIPPED, its output.data is null. Accessing nested properties will fail with "Can't use Getitem on None".
+  BAD:  {{ Tasks['x'].output.data.field == true }}
+  GOOD: {{ ((Tasks['x'].output.data | default({})).field | default(false)) == true }}
+- SWITCH FAN-IN (SKIPPED propagation): Unselected core.switch branches are stamped SKIPPED, and so is any task that depends ONLY on skipped tasks. A fan-in/join task still RUNS as long as at least one of its depends_on tasks was selected — but it is itself SKIPPED if EVERY dep is skipped, OR if it depends on any plain (non-switch) skipped task. So: (1) read unselected-branch outputs with default() — {{ Tasks['branch-a'].output.data | default('') }}; (2) for a task that must run after the switch regardless of which branch fired, depend on the switch task (or on every branch), not on a single branch that may be skipped; (3) do NOT add an optional/skippable non-switch task to a join's depends_on unless you intend the join to skip when that task skips.
+- OPERATOR PRECEDENCE: The | default() filter has lower precedence than comparison operators. Without explicit parentheses, the expression may be parsed incorrectly.
+  BAD:  {{ value | default(false) == true }}
+  GOOD: {{ (value | default(false)) == true }}
+- STRING CONTAINS: The "in" operator does NOT work in "if" conditions. Use a data.transform task with $contains() instead.
+  BAD (will fail):  "if": "{{ ':green_circle:' in Tasks['llm'].output.data }}"
+  GOOD: Use data.transform with expression: { "is_go": $contains($, ":green_circle:") }, then check Tasks['check'].output.data.is_go == true
+- AVOID data.transform FOR COMPLEX LOGIC: JSONata does NOT support Python-style slicing ($[0:3]), has quirky object construction syntax, and many other pitfalls. For ANY non-trivial transformation (slicing, filtering, mapping, object building), use scripting.run_script with language "python" and parser_type "json" instead. Only use data.transform for trivial single-field extraction.
+- WHOLE-VALUE TEMPLATES FOR NON-STRING PARAMS: You may set the ENTIRE value of an object/array/number/boolean param to a single {{ ... }} template (e.g. MCP task args/headers, integrations.http body/headers, a map- or list-typed param). It passes save-time validation and resolves to the correct shape at run time. Only WHOLE-value templates work — you cannot template just part of a map (build the derived map in an upstream scripting.run_script task and reference its scalar output instead).
+- CRON IS UTC: IST 9 AM = "30 3 * * 1-5" UTC.
+- DATE-NAMESPACED STATE KEYS: For automations needing fresh state per day/week, include date in key:
+  "if": "{{ State['check_' ~ (now() | date_format('2006-01-02')) ~ '_ts'] == null }}"

@@ -28,7 +28,11 @@ func TestSSH_ConfigSchema_HostPattern(t *testing.T) {
 	schema := SSH{}.ConfigSchema()
 	hostProp, ok := schema.Properties["host"]
 	assert.True(t, ok, "host property must exist on schema")
-	assert.Equal(t, sshHostPattern, hostProp.Pattern, "host property must expose hostname pattern for client-side validation")
+	assert.Equal(t, sshHostPattern, hostProp.Pattern, "host property must still gate the saved-default host format for direct-API callers")
+	// In k8s mode the target comes from the secret's SSH_HOST (mirroring
+	// RabbitMQ); the host field is hidden from the form but retained in the
+	// schema so resolveSSHTarget / existing configs keep working.
+	assert.True(t, hostProp.Hidden, "host must be hidden from the form in k8s mode")
 }
 
 func TestSSH_UserRegex(t *testing.T) {
@@ -342,4 +346,115 @@ func TestSSH_ValidateConfig_VMAgentStillRequiresCredential(t *testing.T) {
 	errs := ssh.ValidateConfig(sc, configs, "test-account")
 	assert.NotEmpty(t, errs, "missing both password and private_key must still fail")
 	assert.Contains(t, errs[0].Error(), "password or private_key")
+}
+
+// TestInterpretSSHProbeOutput pins the verdict logic of the live probe. The
+// relay reports the workspace pod's exit status (always success once the pod
+// ran), so the probe signals its real outcome via stdout markers — the bug in
+// issue #29990 was that "Test Connection" reported success without ever
+// observing one. The default case MUST fail closed.
+func TestInterpretSSHProbeOutput(t *testing.T) {
+	cases := []struct {
+		name      string
+		output    string
+		expectErr bool
+		errSubstr string
+	}{
+		{
+			name:      "ok marker with uname output passes",
+			output:    "Linux ip-10-0-0-5 5.15.0 #1 SMP x86_64 GNU/Linux\n" + sshProbeMarkerOK,
+			expectErr: false,
+		},
+		{
+			name:      "creds-only marker passes (ephemeral, no host)",
+			output:    sshProbeMarkerCredsOnly,
+			expectErr: false,
+		},
+		{
+			name:      "no-key marker fails (junk / non-existent secret)",
+			output:    sshProbeMarkerNoKey,
+			expectErr: true,
+			errSubstr: "missing or has no SSH_KEY",
+		},
+		{
+			name:      "ssh-fail marker fails (unreachable / bad host)",
+			output:    "ssh: connect to host junkhost port 22: No route to host\n" + sshProbeMarkerSSHFail,
+			expectErr: true,
+			errSubstr: "could not connect to the host",
+		},
+		{
+			name:      "ssh-fail surfaces the underlying ssh reason as detail",
+			output:    "ssh: connect to host 1.2.3.4 port 22: Connection timed out\n" + sshProbeMarkerSSHFail,
+			expectErr: true,
+			errSubstr: "Connection timed out",
+		},
+		{
+			name:      "ssh-fail surfaces auth failure reason as detail",
+			output:    "Permission denied (publickey).\n" + sshProbeMarkerSSHFail,
+			expectErr: true,
+			errSubstr: "Permission denied (publickey)",
+		},
+		{
+			name:      "no marker fails closed",
+			output:    "some unexpected output with no marker",
+			expectErr: true,
+			errSubstr: "could not verify connectivity",
+		},
+		{
+			name:      "empty output fails closed",
+			output:    "",
+			expectErr: true,
+			errSubstr: "could not verify connectivity",
+		},
+		{
+			name:      "ok wins over a stray fail substring",
+			output:    sshProbeMarkerSSHFail + "\n" + sshProbeMarkerOK,
+			expectErr: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := interpretSSHProbeOutput(c.output, "ssh-secret")
+			if c.expectErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), c.errSubstr)
+				assert.Contains(t, err.Error(), "ssh-secret", "error should name the secret for the user")
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestBuildSSHProbeCommand verifies the probe script wires the resolved
+// user/host correctly for both a saved literal host and the blank-host case
+// (where the secret's $SSH_HOST is the runtime source of truth), and that
+// every outcome marker is present so interpretSSHProbeOutput can always reach
+// a verdict.
+func TestBuildSSHProbeCommand(t *testing.T) {
+	t.Run("literal host and user", func(t *testing.T) {
+		cmd := buildSSHProbeCommand("ec2-user", "10.0.0.5")
+		assert.Contains(t, cmd, `NB_SSH_PROBE_HOST="10.0.0.5"`)
+		assert.Contains(t, cmd, `ec2-user@"$NB_SSH_PROBE_HOST"`)
+	})
+
+	t.Run("blank saved host falls back to secret SSH_HOST at runtime", func(t *testing.T) {
+		// resolveSSHTarget returns the env-var refs when nothing is saved.
+		user, host, err := resolveSSHTarget(nil, sshParams{})
+		assert.NoError(t, err)
+		cmd := buildSSHProbeCommand(user, host)
+		assert.Contains(t, cmd, `NB_SSH_PROBE_HOST="$SSH_HOST"`)
+		assert.Contains(t, cmd, `$SSH_USER@"$NB_SSH_PROBE_HOST"`)
+		// The blank-host branch must be able to short-circuit to creds-only.
+		assert.Contains(t, cmd, `if [ -z "$NB_SSH_PROBE_HOST" ]`)
+	})
+
+	t.Run("guards missing key and emits every marker", func(t *testing.T) {
+		cmd := buildSSHProbeCommand("$SSH_USER", "$SSH_HOST")
+		assert.Contains(t, cmd, `if [ -z "$SSH_KEY" ]`, "must guard against a secret with no SSH_KEY")
+		for _, marker := range []string{sshProbeMarkerOK, sshProbeMarkerSSHFail, sshProbeMarkerNoKey, sshProbeMarkerCredsOnly} {
+			assert.Contains(t, cmd, marker, "probe must be able to emit %q", marker)
+		}
+		assert.Contains(t, cmd, "uname -a")
+	})
 }

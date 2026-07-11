@@ -160,6 +160,18 @@ func InitMetrics() {
 		"nb_services_subject_resolution",
 		"Total number of webhook subject resolution attempts via LLM",
 	)
+
+	metricsKGEndpointCollision = mustCreateInt64Counter(
+		meter,
+		"nb_services_kg_endpoint_collision",
+		"Knowledge graph cloud-resource endpoint collisions during in-memory index build (first-write-wins)",
+	)
+
+	metricsKGRoute53Unmatched = mustCreateInt64Counter(
+		meter,
+		"nb_services_kg_route53_unmatched",
+		"Knowledge graph external services where Route53 resolved an AWS endpoint but no matching cloud-resource node existed in the graph",
+	)
 }
 
 // MetricsSubjectResolution records a subject resolution attempt.
@@ -178,17 +190,6 @@ func MetricsSubjectResolution(ctx context.Context, source, stage, result, tenant
 		attribute.String("result", result),
 		attribute.String(MetricKeyTenantID, tenantId),
 	))
-	metricsKGEndpointCollision = mustCreateInt64Counter(
-		meter,
-		"nb_services_kg_endpoint_collision",
-		"Knowledge graph cloud-resource endpoint collisions during in-memory index build (first-write-wins)",
-	)
-
-	metricsKGRoute53Unmatched = mustCreateInt64Counter(
-		meter,
-		"nb_services_kg_route53_unmatched",
-		"Knowledge graph external services where Route53 resolved an AWS endpoint but no matching cloud-resource node existed in the graph",
-	)
 }
 
 // DBStats holds connection pool statistics for a single database.

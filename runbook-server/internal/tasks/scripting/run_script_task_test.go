@@ -25,6 +25,7 @@ func TestRunScriptTask_Execute(t *testing.T) {
 		expected      any
 		expectErr     bool
 		expectedError string
+		needsAWS      bool // executes against a live AWS SSM target (needs DB + AWS creds)
 	}{
 		{
 			name: "Simple Script Success",
@@ -106,6 +107,7 @@ func TestRunScriptTask_Execute(t *testing.T) {
 			},
 			expectErr:     true,
 			expectedError: "UnsupportedPlatformType",
+			needsAWS:      true,
 		},
 		{
 			name: "AWS SSM with powershell language on Windows instance",
@@ -118,6 +120,7 @@ func TestRunScriptTask_Execute(t *testing.T) {
 				"account_id":    "test-account-id",
 			},
 			expected: "test\r\n",
+			needsAWS: true,
 		},
 		{
 			name: "AWS SSM with python language on Windows instance",
@@ -131,6 +134,7 @@ func TestRunScriptTask_Execute(t *testing.T) {
 			},
 			expectErr:     true,
 			expectedError: "UnsupportedPlatformType",
+			needsAWS:      true,
 		},
 		{
 			name: "AWS SSM with javascript language on Windows instance",
@@ -144,11 +148,15 @@ func TestRunScriptTask_Execute(t *testing.T) {
 			},
 			expectErr:     true,
 			expectedError: "UnsupportedPlatformType",
+			needsAWS:      true,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.needsAWS {
+				testutils.RequireEnv(t, "TEST_TENANT_ID", "TEST_ACCOUNT_ID", "TEST_USER_ID")
+			}
 			// Clean up any potential temporary files from previous runs
 			if err := os.Remove("/tmp/retry_attempt_count"); err != nil && !os.IsNotExist(err) {
 				t.Fatalf("failed to remove retry count file: %v", err)

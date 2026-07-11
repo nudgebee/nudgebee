@@ -105,6 +105,17 @@ func newReproductionDao() *reproductionDao {
 	return &reproductionDao{boundAgents: map[string]string{}}
 }
 
+// InsertTokenUsage is a no-op override. reproductionDao embeds IConversationDao
+// without initializing it, so any promoted method falls through to a nil
+// interface. recordTokenUsageFailure/trackTokenUsage fire InsertTokenUsage from
+// a background goroutine (via the metrics worker pool), which can land while a
+// test has this fake installed as the conversation DAO — the promoted nil call
+// then SIGSEGVs and crashes the whole test binary (flaky, timing-dependent).
+// Overriding it keeps the async metrics path harmless in tests.
+func (d *reproductionDao) InsertTokenUsage(record *TokenUsageRecord) error {
+	return nil
+}
+
 // First call returns Nil (no sibling yet); subsequent calls return the
 // remembered id (simulating "the first sibling already inserted").
 func (d *reproductionDao) FindActiveSiblingToolConfigFollowup(accountId, conversationId, userMessageId, toolName string) (uuid.UUID, error) {

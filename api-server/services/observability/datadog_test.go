@@ -133,7 +133,8 @@ func TestBuildBinaryClause(t *testing.T) {
 				"service": {Eq: "api"},
 				"env":     {Eq: "prod"},
 			},
-			expectedResult: `service:"api" AND env:"prod"`,
+			// Parts are sorted for deterministic output regardless of map order.
+			expectedResult: `env:"prod" AND service:"api"`,
 		},
 		{
 			name: "Field with multiple operators",
@@ -143,7 +144,8 @@ func TestBuildBinaryClause(t *testing.T) {
 					Lt:  300,
 				},
 			},
-			expectedResult: `status_code:>=200 AND status_code:<300`,
+			// Parts are sorted for deterministic output: "<" (0x3C) sorts before ">" (0x3E).
+			expectedResult: `status_code:<300 AND status_code:>=200`,
 		},
 	}
 
@@ -414,6 +416,7 @@ func TestDatadogSource_GetLabelMapping(t *testing.T) {
 		"container": "container_name",
 		"pod":       "pod_name",
 		"node":      "kube_node",
+		"app":       "service",
 	}
 
 	assert.Equal(t, expectedMapping, mapping)
@@ -631,9 +634,9 @@ func TestDatadogTraceSource_GetTimeFilter(t *testing.T) {
 					Where: query.QueryWhereClause{
 						Binary: query.BinaryWhereClause{
 							"timestamp": {
-								Between: map[query.BinaryWhereClauseType]string{
-									Gte: "2023-01-01T00:00:00Z",
-									Lte: "2023-01-01T02:00:00Z",
+								Between: map[string]any{
+									"_gte": "2023-01-01T00:00:00Z",
+									"_lte": "2023-01-01T02:00:00Z",
 								},
 							},
 						},

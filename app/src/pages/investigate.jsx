@@ -32,12 +32,13 @@ import { Label } from '@ui/Label';
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import apiRecommendations from '@api1/recommendation';
 import apiTriage from '@api1/triage';
-import { hasWriteAccess, hasFeatureAccess } from '@lib/auth';
+import { hasReadAccess, hasWriteAccess, hasFeatureAccess } from '@lib/auth';
 import InvestigateResolution from '@components/k8s/investigate/InvestigateResolution';
 import CustomBorderCard from '@ui/CustomBorderCard';
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import WorkflowIcon from '@assets/WorkflowIcon';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import PropTypes from 'prop-types';
 import { Divider } from '@ui/Divider';
 import { Link } from '@ui/Link';
@@ -64,7 +65,7 @@ import { Skeleton } from '@ui/Skeleton';
 import ConversationLoader from '@shared/ConversationLoader';
 import CustomAction from '@components/k8s/investigate/cards/CustomAction';
 import RCACard from '@components/k8s/investigate/cards/RCACard';
-import { snackbar } from '@shared/snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 import AnomalyCard from '@components/k8s/investigate/cards/AnomalyCard';
 import PrometheusCard from '@components/k8s/investigate/cards/PrometheusCard';
 import SLOConfigReport from '@components/k8s/investigate/cards/SLOConfigReport';
@@ -96,7 +97,7 @@ import { useCardGeneration } from '@hooks/useCardGeneration';
 import { IoBookOutline } from 'react-icons/io5';
 import KnowledgeBase from '@components/k8s/investigate/KnowledgeBase';
 import { LuChartLine } from 'react-icons/lu';
-import { LineChart } from '@shared';
+import Chart from '@ui/Chart';
 import { getDateString } from '@lib/datetime';
 import TimelineCard from '@components/k8s/investigate/cards/TimelineCard';
 import UpdateEvent from '@components/events/UpdateEvent';
@@ -190,7 +191,7 @@ function TabPanel(props) {
 
   return (
     <div role='tabpanel' hidden={value !== index} id={`simple-tabpanel-${index}`} aria-labelledby={`simple-tab-${index}`} {...other}>
-      {value === index && <Box sx={{ p: 3 }}>{children}</Box>}
+      {value === index && <Box sx={{ p: ds.space[5] }}>{children}</Box>}
     </div>
   );
 }
@@ -214,7 +215,7 @@ const AIOrRcaCard = React.memo(({ option }) => {
   return (
     <Box
       sx={{
-        mb: 2,
+        mb: ds.space[4],
       }}
     >
       <ContentComponent />
@@ -247,6 +248,19 @@ function sortAvailableCards(cards, criticalCards, highCards, infoCards) {
   prioritized.sort((a, b) => b.priority - a.priority);
   return prioritized.map(({ C }) => C);
 }
+
+// Poll the event resolutions every 5s while a workflow resolution is live so the
+// "Workflow Resolution Status" button updates without a manual page refresh.
+const EVENT_RESOLUTIONS_POLL_INTERVAL_MS = 5000;
+// After an automation is triggered the InProgress event_resolution row is created
+// server-side asynchronously, so keep polling for a grace window even before any
+// InProgress row shows up — otherwise a slow insert would never surface live.
+const EVENT_RESOLUTIONS_POLL_GRACE_MS = 60000;
+
+// A WorkflowExecution resolution is "live" while InProgress; used to decide
+// whether to keep polling the event resolutions for a status change.
+const hasInProgressWorkflowResolution = (resolutions) =>
+  Array.isArray(resolutions) && resolutions.some((r) => r?.type === 'WorkflowExecution' && r?.status === 'InProgress');
 
 const Investigate = () => {
   const router = useRouter();
@@ -674,7 +688,7 @@ const Investigate = () => {
       justifySelf: 'start',
       whiteSpace: 'normal',
       overflowWrap: 'anywhere',
-      padding: '4px 10px',
+      padding: 'var(--ds-space-1) var(--ds-space-2)',
       boxSizing: 'border-box',
     }),
     []
@@ -878,6 +892,94 @@ const Investigate = () => {
       cancelled = true;
     };
   }, [id, k8sAutoInvestigate, router.query.accountId, allCluster?.length]);
+
+  // ── Live workflow-resolution status ──
+  // The "Workflow Resolution Status" button reads from `eventResolutions`, which
+  // is otherwise fetched only on mount. When an automation is run for this event
+  // a WorkflowExecution resolution is created InProgress server-side and flips to
+  // a terminal status when the run finishes — neither transition was visible
+  // without a manual refresh. Poll the resolutions every 5s while a run is live
+  // (or just after a trigger) so the button reflects the real status.
+  const resolutionsPollActiveRef = useRef(false);
+  const resolutionsPollTimeoutRef = useRef(null);
+  const resolutionsPollDeadlineRef = useRef(0);
+  // Guards against overlapping fetches: a rapid tab hide/show while a request is
+  // in flight can otherwise let the visibilitychange resume spawn a second loop.
+  const resolutionsFetchingRef = useRef(false);
+
+  const refetchEventResolutions = useCallback(async () => {
+    if (!id) return null;
+    try {
+      const resolutions = await apiRecommendations.listEventResolutions(id);
+      if (isMountedRef.current) setEventResolutions(resolutions);
+      return resolutions;
+    } catch (err) {
+      console.error('Failed to refresh event resolutions:', err);
+      return null;
+    }
+  }, [id]);
+
+  // Recursive setTimeout (not setInterval) so requests never overlap; the next
+  // tick is scheduled only after the current fetch settles and only while a run
+  // is still live or within the post-trigger grace window.
+  const pollResolutions = useCallback(async () => {
+    resolutionsPollTimeoutRef.current = null; // this scheduled tick has fired
+    if (!resolutionsPollActiveRef.current || !isMountedRef.current) return;
+    if (document.hidden) return; // paused; visibilitychange resumes us
+    if (resolutionsFetchingRef.current) return; // a fetch is already in flight
+    resolutionsFetchingRef.current = true;
+    try {
+      const resolutions = await refetchEventResolutions();
+      if (!resolutionsPollActiveRef.current || !isMountedRef.current || document.hidden) return;
+      const withinGrace = Date.now() < resolutionsPollDeadlineRef.current;
+      if (hasInProgressWorkflowResolution(resolutions) || withinGrace) {
+        resolutionsPollTimeoutRef.current = setTimeout(pollResolutions, EVENT_RESOLUTIONS_POLL_INTERVAL_MS);
+      } else {
+        resolutionsPollActiveRef.current = false;
+      }
+    } finally {
+      resolutionsFetchingRef.current = false;
+    }
+  }, [refetchEventResolutions]);
+
+  // Idempotent: starts the loop with an immediate tick if it isn't already running.
+  const startResolutionsPoll = useCallback(() => {
+    if (resolutionsPollActiveRef.current) return;
+    resolutionsPollActiveRef.current = true;
+    pollResolutions();
+  }, [pollResolutions]);
+
+  // Called by RunAutomationMenu after a successful trigger. Open a grace window
+  // (the InProgress row may not exist yet) and start polling so the new run's
+  // status surfaces live.
+  const handleAutomationTriggered = useCallback(() => {
+    resolutionsPollDeadlineRef.current = Date.now() + EVENT_RESOLUTIONS_POLL_GRACE_MS;
+    startResolutionsPoll();
+  }, [startResolutionsPoll]);
+
+  // Loading the page on an event whose workflow is already InProgress (e.g.
+  // triggered earlier or from the listing page) should poll too.
+  useEffect(() => {
+    if (hasInProgressWorkflowResolution(eventResolutions)) startResolutionsPoll();
+  }, [eventResolutions, startResolutionsPoll]);
+
+  // Pause polling when the tab is hidden; resume on return if a run is still live.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (!document.hidden && resolutionsPollActiveRef.current && !resolutionsPollTimeoutRef.current) {
+        pollResolutions();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      resolutionsPollActiveRef.current = false;
+      if (resolutionsPollTimeoutRef.current) {
+        clearTimeout(resolutionsPollTimeoutRef.current);
+        resolutionsPollTimeoutRef.current = null;
+      }
+    };
+  }, [pollResolutions]);
 
   // Show/hide investigation cards based on demo message
   useEffect(() => {
@@ -1124,6 +1226,16 @@ const Investigate = () => {
           }
           if (actionType == 'cloud_logs' || actionType == 'cloud_gcp_audit_log') {
             const card = new CloudLog(d, i);
+            if (await card.canRenderContent()) pushCard(card);
+          }
+          if (actionType == 'cloud_traces') {
+            const card = new TracesCard(d, row, i);
+            if (await card.canRenderContent()) pushCard(card);
+          }
+          if (actionType == 'cloud_deployment_diff') {
+            // Cloud Run before/after deploy diff — reuses the K8s LastDeploymentCard
+            // (renders on evidence.type === 'diff' with data:{old,new} + start_at).
+            const card = new LastDeploymentCard(d, row, i);
             if (await card.canRenderContent()) pushCard(card);
           }
           if (actionType == 'ssh') {
@@ -1527,13 +1639,13 @@ const Investigate = () => {
         <Label
           textTransform='none'
           height='auto'
-          margin='0px'
+          margin='0'
           wordBreak={'break-all'}
           displayTooltip
           key={item}
           text={name}
           variant={'grey'}
-          maxWidth='260px'
+          maxWidth={ds.space.mul(1, 65)}
           tooltipCharLimit={40}
         />
       );
@@ -1559,24 +1671,24 @@ const Investigate = () => {
     return (
       <>
         {row?.id && matchedOptions.some((option) => option?.id === 'AskAiCard') && (
-          <Box sx={{ display: 'flex', gap: '32px', justifyContent: 'space-between' }}>
+          <Box sx={{ display: 'flex', gap: 'var(--ds-space-6)', justifyContent: 'space-between' }}>
             {askAiCardObject?.isCompleted() && (
               <Box
                 sx={{
                   display: 'flex',
                   alignItems: 'flex-start',
-                  gap: '6px',
+                  gap: 'var(--ds-space-1)',
                   flexDirection: 'column',
-                  mb: '24px',
-                  mt: '12px',
+                  mb: 'var(--ds-space-5)',
+                  mt: 'var(--ds-space-3)',
                 }}
               >
-                <Typography sx={{ fontSize: '14px', color: ds.gray[700] }}>Was this helpful?</Typography>
+                <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.gray[700] }}>Was this helpful?</Typography>
                 <FeedbackVote onFeedbackSubmit={(feedbackObject) => aiCreateFeedback(feedbackObject)} sentFeedback={sentFeedback} />
               </Box>
             )}
             {!askAiCardObject?.errorMessage && (
-              <Box mt='auto' mb='24px' mr='32px'>
+              <Box mt='auto' mb={ds.space[5]} mr={ds.space[6]}>
                 <Button
                   tone='secondary'
                   size='xs'
@@ -1645,13 +1757,16 @@ const Investigate = () => {
       .filter((f) => f.url);
     if (referenceLinks.length) {
       return (
-        <Box sx={{ mt: 2 }}>
-          <Typography sx={{ fontSize: '14px', fontWeight: 500, mb: 1 }}>References</Typography>
-          <Divider sx={{ mb: 1.5 }} />
-          <Box component='ul' sx={{ listStyleType: 'disc', pl: '20px', m: 0, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <Box sx={{ mt: ds.space[4] }}>
+          <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)', mb: ds.space[2] }}>References</Typography>
+          <Divider sx={{ mb: ds.space[3] }} />
+          <Box
+            component='ul'
+            sx={{ listStyleType: 'disc', pl: 'var(--ds-space-4)', m: 0, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}
+          >
             {referenceLinks.map((d) => (
               <li key={d.url}>
-                <Link href={d.url} openInNew style={{ fontSize: '14px', color: ds.blue[600] }}>
+                <Link href={d.url} openInNew style={{ fontSize: 'var(--ds-text-body-lg)', color: ds.blue[600] }}>
                   {d.title}
                 </Link>
               </li>
@@ -1694,9 +1809,9 @@ const Investigate = () => {
         loader={loading}
         sx={{
           '& .MuiPaper-root': {
-            maxWidth: '780px',
+            maxWidth: ds.space.mul(1, 195),
             '& .MuiDialogContent-root': {
-              padding: '15px 40px 0px 40px',
+              padding: 'var(--ds-space-4) var(--ds-space-6) 0 var(--ds-space-6)',
             },
           },
         }}
@@ -1769,21 +1884,21 @@ const Investigate = () => {
         </Modal>
       )}
       <Modal width='md' open={showTrendChart} handleClose={() => setShowTrendChart(false)} title={'Event Trend Chart'} loader={loading}>
-        <Box sx={{ mb: 3 }}>
-          <LineChart data={trendChartData.data} labels={trendChartData.labels} loading={isTrendChartLoading} integerYlabel={true} />
+        <Box sx={{ mb: ds.space[5] }}>
+          <Chart.Line data={trendChartData.data} labels={trendChartData.labels} loading={isTrendChartLoading} integerYlabel={true} />
         </Box>
       </Modal>
       <Box
         sx={{
           display: 'grid',
           gridTemplateColumns: {
-            xs: '280px 1fr',
+            xs: `${ds.space.mul(1, 70)} 1fr`,
             '@media (min-width: 1350px)': {
-              gridTemplateColumns: '320px 1fr',
+              gridTemplateColumns: `${ds.space.mul(1, 80)} 1fr`,
             },
           },
-          gap: '8px',
-          pt: '20px',
+          gap: 'var(--ds-space-2)',
+          pt: 'var(--ds-space-4)',
           alignItems: 'flex-start',
           position: 'relative',
           top: 0,
@@ -1791,18 +1906,18 @@ const Investigate = () => {
       >
         {/* SIDEBAR */}
         {loading ? (
-          <Skeleton shape='rect' height='calc(100vh - 120px)' width='95%' />
+          <Skeleton shape='rect' height={`calc(100vh - ${ds.space.mul(1, 30)})`} width='95%' />
         ) : (
           <>
-            <Box sx={{ position: 'sticky !important', top: '75px !important' }}>
+            <Box sx={{ position: 'sticky !important', top: `${ds.space.mul(0, 37)} !important` }}>
               <Box
                 sx={{
                   border: `0.5px solid ${ds.gray[300]}`,
-                  borderRadius: '8px',
-                  padding: '0px 16px 16px 16px',
-                  maxHeight: 'calc(100vh - 110px)',
+                  borderRadius: 'var(--ds-radius-lg)',
+                  padding: '0 var(--ds-space-4) var(--ds-space-4) var(--ds-space-4)',
+                  maxHeight: `calc(100vh - ${ds.space.mul(0, 55)})`,
                   overflowX: 'auto',
-                  '::-webkit-scrollbar': { width: '4px' },
+                  '::-webkit-scrollbar': { width: ds.space[1] },
                 }}
               >
                 <Box
@@ -1813,10 +1928,10 @@ const Investigate = () => {
                     background: ds.background[100],
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '8px',
+                    gap: 'var(--ds-space-2)',
                     borderBottom: `1px solid ${ds.gray[200]}`,
-                    paddingTop: '16px',
-                    paddingBottom: '12px',
+                    paddingTop: 'var(--ds-space-4)',
+                    paddingBottom: 'var(--ds-space-3)',
                   }}
                 >
                   <SafeIcon alt='kube-icon' src={TroubleShootIcon} />
@@ -1824,14 +1939,21 @@ const Investigate = () => {
                     value={row?.title || ''}
                     showAutoEllipsis
                     placement='right'
-                    sx={{ fontWeight: 600, fontSize: '16px', fontFamily: 'Roboto' }}
+                    sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: 'var(--ds-text-title)', fontFamily: 'Roboto' }}
                   />
                 </Box>
 
-                <Box sx={{ mt: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: '100px 1fr' }}>
+                <Box sx={{ mt: 'var(--ds-space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}>
                     <Text value={'Where'} secondaryText />
-                    <Box onClick={handlePodClick} sx={{ cursor: 'pointer' }} data-testid='pod-name-link'>
+                    <Box
+                      role='button'
+                      tabIndex={0}
+                      onClick={handlePodClick}
+                      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handlePodClick(e)}
+                      sx={{ cursor: 'pointer' }}
+                      data-testid='pod-name-link'
+                    >
                       <Text
                         value={row?.subject_name ? row?.subject_name : '-'}
                         secondaryText
@@ -1846,26 +1968,30 @@ const Investigate = () => {
                       />
                     </Box>
                   </Box>
-                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: '100px 1fr' }}>
+                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}>
                     <Text value={'When'} secondaryText />
                     <Text
                       value={
                         row?.starts_at ? (
-                          <Datetime value={row?.starts_at} sx={{ fontSize: '12px' }} sxSuffix={{ color: ds.gray[700], fontSize: '12px' }} />
+                          <Datetime
+                            value={row?.starts_at}
+                            sx={{ fontSize: 'var(--ds-text-small)' }}
+                            sxSuffix={{ color: ds.gray[700], fontSize: 'var(--ds-text-small)' }}
+                          />
                         ) : (
                           ''
                         )
                       }
                     />
                   </Box>
-                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: '100px 1fr' }}>
+                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}>
                     <Text value={'Severity'} secondaryText />
                     <Box>
-                      <Label text={row?.priority || '-'} margin='0' width={'43px'} />
+                      <Label text={row?.priority || '-'} margin='0' width={ds.space.mul(0, 21)} />
                     </Box>
                   </Box>
 
-                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: '100px 1fr' }}>
+                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}>
                     <Text value={'Triage Status'} secondaryText />
                     <Box>
                       <NBStatusBadge
@@ -1881,9 +2007,11 @@ const Investigate = () => {
                   </Box>
 
                   {row?.labels?.nb_duplicate_of && (
-                    <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: '100px 1fr' }}>
+                    <Box
+                      sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}
+                    >
                       <Text value={'Duplicate of'} secondaryText />
-                      <Box sx={{ minHeight: '18px', fontSize: '13px' }}>
+                      <Box sx={{ minHeight: ds.space.mul(0, 9), fontSize: 'var(--ds-text-body)' }}>
                         <Link
                           style={{ textDecoration: 'none', display: 'inline-flex', margin: '0' }}
                           href={`/investigate?id=${row.labels.nb_duplicate_of}&accountId=${row?.cloud_account_id}`}
@@ -1896,11 +2024,13 @@ const Investigate = () => {
                   )}
 
                   {recurrenceInfo?.isRecurrence && (
-                    <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: '100px 1fr' }}>
+                    <Box
+                      sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}
+                    >
                       <Text value={'Recurrence'} secondaryText />
-                      <Box sx={{ minHeight: '18px', fontSize: '13px' }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <Typography sx={{ fontSize: '12px', color: ds.amber[500] }}>⚠️ Previously resolved</Typography>
+                      <Box sx={{ minHeight: ds.space.mul(0, 9), fontSize: 'var(--ds-text-body)' }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+                          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.amber[500] }}>⚠️ Previously resolved</Typography>
                           <Link
                             style={{ textDecoration: 'none', display: 'inline-flex', margin: '0' }}
                             href={`/investigate?id=${recurrenceInfo.previousEventId}&accountId=${row?.cloud_account_id}`}
@@ -1914,9 +2044,11 @@ const Investigate = () => {
                   )}
 
                   {row?.labels?.nb_triage_rule_id && (
-                    <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: '100px 1fr' }}>
+                    <Box
+                      sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}
+                    >
                       <Text value={'Triage Rule'} secondaryText />
-                      <Box sx={{ minHeight: '18px', fontSize: '13px' }}>
+                      <Box sx={{ minHeight: ds.space.mul(0, 9), fontSize: 'var(--ds-text-body)' }}>
                         <Link
                           style={{ textDecoration: 'none', display: 'inline-flex', margin: '0' }}
                           href={`${detailsPathPrefix}/${row?.cloud_account_id}#events/triage-rules`}
@@ -1929,9 +2061,9 @@ const Investigate = () => {
                   )}
 
                   {/* Rule */}
-                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: '100px 1fr' }}>
+                  <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}>
                     <Text value={'Rule'} secondaryText />
-                    <Box sx={{ minHeight: '18px', fontSize: '13px' }}>
+                    <Box sx={{ minHeight: ds.space.mul(0, 9), fontSize: 'var(--ds-text-body)' }}>
                       {row.aggregation_key && alertRules?.includes(row.aggregation_key) ? (
                         <Link
                           style={{ textDecoration: 'none', display: 'inline-flex', margin: '0' }}
@@ -1975,21 +2107,29 @@ const Investigate = () => {
                           display: 'flex',
                           alignItems: 'center',
                           background: ds.background[100],
-                          gap: '6px',
-                          mb: '16px',
-                          mt: '24px',
+                          gap: 'var(--ds-space-1)',
+                          mb: 'var(--ds-space-4)',
+                          mt: 'var(--ds-space-5)',
                           '&::after': { content: '""', height: '0.5px', width: '100%', backgroundColor: ds.gray[200] },
                         }}
                       >
                         <SafeIcon src={ErrorFillIcon} alt='issue.svg' style={{ width: '16px', height: '16px' }} />
-                        <Typography sx={{ color: ds.gray[700], fontSize: '14px', fontWeight: 500, lineHeight: 'normal', minWidth: '102px' }}>
+                        <Typography
+                          sx={{
+                            color: ds.gray[700],
+                            fontSize: 'var(--ds-text-body-lg)',
+                            fontWeight: 'var(--ds-font-weight-medium)',
+                            lineHeight: 'normal',
+                            minWidth: ds.space.mul(0, 51),
+                          }}
+                        >
                           Crash Details
                         </Typography>
                       </Box>
                     )}
 
                     {podDetails?.data?.containers?.length > 0 && (
-                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
                         {podDetails?.data?.containers?.map((pd, index) => (
                           <React.Fragment key={pd?.name || index}>
                             <Box
@@ -1997,8 +2137,8 @@ const Investigate = () => {
                                 display: 'grid',
                                 flexDirection: 'column',
                                 alignItems: 'flex-start',
-                                gridTemplateColumns: '100px 1fr',
-                                gap: '6px',
+                                gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr`,
+                                gap: 'var(--ds-space-1)',
                               }}
                             >
                               {pd?.name && (
@@ -2006,7 +2146,11 @@ const Investigate = () => {
                                   {pd?.status?.reason && (
                                     <>
                                       <Text value={'Reason'} secondaryText />
-                                      <Label variant={'red'} customLabelStyle={{ padding: '2px 6px' }} text={pd.status.reason} />
+                                      <Label
+                                        variant={'red'}
+                                        customLabelStyle={{ padding: 'var(--ds-space-1) var(--ds-space-1)' }}
+                                        text={pd.status.reason}
+                                      />
                                     </>
                                   )}
                                   <>
@@ -2015,13 +2159,13 @@ const Investigate = () => {
                                       value={pd.name}
                                       copyableTooltip
                                       showAutoEllipsis
-                                      sx={{ fontSize: '12px', color: ds.gray[700], lineHeight: '1.4' }}
+                                      sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[700], lineHeight: '1.4' }}
                                     />
                                   </>
                                   {pd?.status?.exitCode !== undefined && pd?.status?.exitCode !== null && (
                                     <>
                                       <Text value={'Exit code'} secondaryText />
-                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                                         <Text value={pd.status.exitCode} secondaryText sx={{ color: ds.gray[700] }} />
                                         <Tooltip title={exitCodeMapping[pd.status.exitCode] || 'Unknown'} arrow>
                                           <SafeIcon
@@ -2055,14 +2199,22 @@ const Investigate = () => {
                           display: 'flex',
                           alignItems: 'center',
                           background: ds.background[100],
-                          gap: '6px',
-                          mb: '16px',
-                          mt: '24px',
+                          gap: 'var(--ds-space-1)',
+                          mb: 'var(--ds-space-4)',
+                          mt: 'var(--ds-space-5)',
                           '&::after': { content: '""', height: '0.5px', width: '100%', backgroundColor: ds.gray[200] },
                         }}
                       >
                         <SafeIcon src={LastStateIcon} alt='issue.svg' style={{ width: '16px', height: '16px' }} />
-                        <Typography sx={{ color: ds.gray[700], fontSize: '14px', fontWeight: 500, lineHeight: 'normal', minWidth: '70px' }}>
+                        <Typography
+                          sx={{
+                            color: ds.gray[700],
+                            fontSize: 'var(--ds-text-body-lg)',
+                            fontWeight: 'var(--ds-font-weight-medium)',
+                            lineHeight: 'normal',
+                            minWidth: ds.space.mul(0, 35),
+                          }}
+                        >
                           Last State
                         </Typography>
                       </Box>
@@ -2070,7 +2222,7 @@ const Investigate = () => {
 
                     {podDetails?.data?.containers?.map((pd, index) => (
                       <Box item xs={12} key={pd?.name || index}>
-                        <Box className='container-box' sx={{ mb: 1, fontSize: '0.85rem' }}>
+                        <Box className='container-box' sx={{ mb: ds.space[2], fontSize: 'var(--ds-text-body)' }}>
                           <Box>
                             {pd?.name && pd?.lastStatus && Object.values(pd.lastStatus).some((v) => v !== null && v !== undefined) && (
                               <Box
@@ -2078,8 +2230,8 @@ const Investigate = () => {
                                   display: 'grid',
                                   flexDirection: 'column',
                                   alignItems: 'flex-start',
-                                  gridTemplateColumns: '100px 1fr',
-                                  gap: '6px',
+                                  gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr`,
+                                  gap: 'var(--ds-space-1)',
                                 }}
                               >
                                 {pd.lastStatus.state && (
@@ -2091,7 +2243,7 @@ const Investigate = () => {
                                 {pd.lastStatus.exitCode !== undefined && (
                                   <>
                                     <Text value={'Exit Code'} secondaryText />
-                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                                       <Text value={pd.lastStatus.exitCode} secondaryText sx={{ color: ds.gray[700] }} />
                                       <Tooltip title={exitCodeMapping[pd.lastStatus.exitCode] || 'Unknown'} arrow>
                                         <SafeIcon
@@ -2123,21 +2275,37 @@ const Investigate = () => {
                         sx={{
                           display: 'flex',
                           alignItems: 'center',
-                          background: 'white',
-                          gap: '6px',
-                          mb: '16px',
-                          mt: '24px',
+                          background: ds.background[100],
+                          gap: 'var(--ds-space-1)',
+                          mb: 'var(--ds-space-4)',
+                          mt: 'var(--ds-space-5)',
                           '&::after': { content: '""', height: '0.5px', width: '100%', backgroundColor: ds.gray[200] },
                         }}
                       >
                         <SafeIcon src={GraphOutlineIcon} alt='issue.svg' style={{ width: '16px', height: '16px' }} />
-                        <Typography sx={{ color: ds.gray[700], fontSize: '14px', fontWeight: 500, lineHeight: 'normal', minWidth: '60px' }}>
+                        <Typography
+                          sx={{
+                            color: ds.gray[700],
+                            fontSize: 'var(--ds-text-body-lg)',
+                            fontWeight: 'var(--ds-font-weight-medium)',
+                            lineHeight: 'normal',
+                            minWidth: ds.space.mul(1, 15),
+                          }}
+                        >
                           Impact
                         </Typography>
                       </Box>
                     )}
 
-                    <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: '100px 1fr', gap: '6px' }}>
+                    <Box
+                      sx={{
+                        display: 'grid',
+                        flexDirection: 'column',
+                        alignItems: 'flex-start',
+                        gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr`,
+                        gap: 'var(--ds-space-1)',
+                      }}
+                    >
                       {podDetails?.data?.restarts != null && podDetails?.data?.restarts > 0 && (
                         <>
                           <Text value={'Restarts'} secondaryText />
@@ -2168,21 +2336,37 @@ const Investigate = () => {
                     sx={{
                       display: 'flex',
                       alignItems: 'center',
-                      background: 'white',
-                      gap: '6px',
-                      mb: '16px',
-                      mt: '24px',
+                      background: ds.background[100],
+                      gap: 'var(--ds-space-1)',
+                      mb: 'var(--ds-space-4)',
+                      mt: 'var(--ds-space-5)',
                       '&::after': { content: '""', height: '0.5px', width: '100%', backgroundColor: ds.gray[200] },
                     }}
                   >
                     <SafeIcon src={FileOutlineIcon} alt='issue.svg' style={{ width: '16px', height: '16px' }} />
-                    <Typography sx={{ color: ds.gray[700], fontSize: '14px', fontWeight: 500, lineHeight: 'normal', minWidth: '55px' }}>
+                    <Typography
+                      sx={{
+                        color: ds.gray[700],
+                        fontSize: 'var(--ds-text-body-lg)',
+                        fontWeight: 'var(--ds-font-weight-medium)',
+                        lineHeight: 'normal',
+                        minWidth: ds.space.mul(0, 27),
+                      }}
+                    >
                       Context
                     </Typography>
                   </Box>
                 )}
 
-                <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: '100px 1fr', gap: '6px' }}>
+                <Box
+                  sx={{
+                    display: 'grid',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr`,
+                    gap: 'var(--ds-space-1)',
+                  }}
+                >
                   {isK8s && podDetails?.data?.qosClass && (
                     <>
                       <Text value={'Cluster'} secondaryText />
@@ -2202,7 +2386,7 @@ const Investigate = () => {
                         value={row?.subject_node || '-'}
                         copyableTooltip
                         showAutoEllipsis
-                        sx={{ fontSize: '12px', color: ds.gray[700], lineHeight: '1.4' }}
+                        sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[700], lineHeight: '1.4' }}
                       />
                     </>
                   )}
@@ -2214,27 +2398,43 @@ const Investigate = () => {
                     sx={{
                       display: 'flex',
                       alignItems: 'center',
-                      background: 'white',
-                      gap: '6px',
-                      mb: '16px',
-                      mt: '24px',
+                      background: ds.background[100],
+                      gap: 'var(--ds-space-1)',
+                      mb: 'var(--ds-space-4)',
+                      mt: 'var(--ds-space-5)',
                       '&::after': { content: '""', height: '0.5px', width: '100%', backgroundColor: ds.gray[200] },
                     }}
                   >
                     <SafeIcon src={BarsBlueOutlineIcon} alt='issue.svg' style={{ width: '16px', height: '16px' }} />
-                    <Typography sx={{ color: ds.gray[700], fontSize: '14px', fontWeight: 500, lineHeight: 'normal', minWidth: '50px' }}>
+                    <Typography
+                      sx={{
+                        color: ds.gray[700],
+                        fontSize: 'var(--ds-text-body-lg)',
+                        fontWeight: 'var(--ds-font-weight-medium)',
+                        lineHeight: 'normal',
+                        minWidth: ds.space.mul(0, 25),
+                      }}
+                    >
                       Others
                     </Typography>
                   </Box>
                 )}
-                <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: '100px 1fr', gap: '6px' }}>
+                <Box
+                  sx={{
+                    display: 'grid',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr`,
+                    gap: 'var(--ds-space-1)',
+                  }}
+                >
                   {isK8s && podDetails?.data?.containers?.[0]?.imageName && (
                     <>
                       <Text value={'Image Name'} secondaryText />
                       <Text
                         value={podDetails?.data?.containers[0].imageName || '-'}
                         showAutoEllipsis
-                        sx={{ fontSize: '12px', wordBreak: 'break-word', whiteSpace: 'normal', width: '100%', lineHeight: '1.4' }}
+                        sx={{ fontSize: 'var(--ds-text-small)', wordBreak: 'break-word', whiteSpace: 'normal', width: '100%', lineHeight: '1.4' }}
                       />
                     </>
                   )}
@@ -2251,7 +2451,7 @@ const Investigate = () => {
                         value={row?.subject_name || '-'}
                         copyableTooltip
                         showAutoEllipsis
-                        sx={{ fontSize: '12px', color: ds.gray[700], lineHeight: '1.4' }}
+                        sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[700], lineHeight: '1.4' }}
                       />
                     </>
                   )}
@@ -2270,7 +2470,7 @@ const Investigate = () => {
                             value={getInvestigateDescription(row?.description).containerId || '-'}
                             copyableTooltip
                             showAutoEllipsis
-                            sx={{ fontSize: '12px', color: ds.gray[700] }}
+                            sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[700] }}
                           />
                         </>
                       )}
@@ -2288,7 +2488,11 @@ const Investigate = () => {
                       {isCloud && (
                         <>
                           <Text value={'Description'} secondaryText />
-                          <Text value={getInvestigateDescription(row?.description).logSample} showAutoEllipsis sx={{ fontSize: '12px' }} />
+                          <Text
+                            value={getInvestigateDescription(row?.description).logSample}
+                            showAutoEllipsis
+                            sx={{ fontSize: 'var(--ds-text-small)' }}
+                          />
                         </>
                       )}
                     </>
@@ -2302,10 +2506,10 @@ const Investigate = () => {
                       sx={{
                         display: 'flex',
                         alignItems: 'center',
-                        background: 'white',
-                        gap: '6px',
-                        mb: '16px',
-                        mt: '24px',
+                        background: ds.background[100],
+                        gap: 'var(--ds-space-1)',
+                        mb: 'var(--ds-space-4)',
+                        mt: 'var(--ds-space-5)',
                         '&::after': { content: '""', height: '0.5px', width: '100%', backgroundColor: ds.gray[200] },
                         '& img': {
                           filter:
@@ -2314,13 +2518,21 @@ const Investigate = () => {
                       }}
                     >
                       <SafeIcon src={CubeIcon} alt='issue.svg' style={{ width: '16px', height: '16px' }} />
-                      <Typography sx={{ color: ds.gray[700], fontSize: '14px', fontWeight: 500, lineHeight: 'normal', minWidth: '85px' }}>
+                      <Typography
+                        sx={{
+                          color: ds.gray[700],
+                          fontSize: 'var(--ds-text-body-lg)',
+                          fontWeight: 'var(--ds-font-weight-medium)',
+                          lineHeight: 'normal',
+                          minWidth: ds.space.mul(0, 43),
+                        }}
+                      >
                         Alert labels
                       </Typography>
                     </Box>
-                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>{visibleLabels}</Box>
+                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--ds-space-1)' }}>{visibleLabels}</Box>
                     {labels.length > 5 && (
-                      <Box mt={1}>
+                      <Box mt={ds.space[2]}>
                         <Button tone='link' size='xs' onClick={toggleShow} data-testid='toggle-labels-btn'>
                           Show {showAll ? 'Less' : `More (${labels.length - 5})`}
                         </Button>
@@ -2330,7 +2542,7 @@ const Investigate = () => {
                 )}
                 <InvestigateDropdown
                   query={queryParam}
-                  inputMaxWidth='300px'
+                  inputMaxWidth={ds.space.mul(1, 75)}
                   subjectName={row?.subject_name}
                   subjectNamespace={row?.subject_namespace}
                   resetStateWhenItemSelected={resetState}
@@ -2342,7 +2554,7 @@ const Investigate = () => {
 
         {/* MAIN CONTENT */}
         {loading ? (
-          <Skeleton shape='rect' height='calc(100vh - 120px)' width='100%' />
+          <Skeleton shape='rect' height={`calc(100vh - ${ds.space.mul(1, 30)})`} width='100%' />
         ) : (
           <>
             <Box
@@ -2355,15 +2567,15 @@ const Investigate = () => {
             >
               <Box
                 sx={{
-                  height: 'calc(100vh - 90px)',
-                  p: '0px 8px 12px 8px',
+                  height: `calc(100vh - ${ds.space.mul(0, 45)})`,
+                  p: '0 var(--ds-space-2) var(--ds-space-3) var(--ds-space-2)',
                   display: 'flex',
                   flexDirection: 'column',
                   position: 'relative',
                   overflow: 'auto',
-                  '::-webkit-scrollbar': { width: '6px' },
-                  '::-webkit-scrollbar-track': { background: ds.gray[100], borderRadius: '10px' },
-                  '::-webkit-scrollbar-thumb': { background: ds.gray[400], borderRadius: '10px' },
+                  '::-webkit-scrollbar': { width: ds.space.mul(0, 3) },
+                  '::-webkit-scrollbar-track': { background: ds.gray[100], borderRadius: 'var(--ds-radius-lg)' },
+                  '::-webkit-scrollbar-thumb': { background: ds.gray[400], borderRadius: 'var(--ds-radius-lg)' },
                   '::-webkit-scrollbar-thumb:hover': { background: ds.gray[400] },
                 }}
               >
@@ -2373,39 +2585,45 @@ const Investigate = () => {
                     <Box
                       sx={{
                         position: 'sticky',
-                        top: '0px',
-                        minHeight: '40px',
+                        top: 0,
+                        minHeight: ds.space.mul(1, 10),
                         zIndex: 8,
                         backgroundColor: ds.background[100],
-                        pt: '10px',
-                        pb: '8px',
+                        pt: 'var(--ds-space-2)',
+                        pb: 'var(--ds-space-2)',
                       }}
                     >
-                      <Box sx={{ display: 'flex', gap: '10px', width: '100%' }}>
-                        <Box mt='6px'>
+                      <Box
+                        sx={{
+                          display: 'flex',
+                          gap: 'var(--ds-space-2)',
+                          width: '100%',
+                          alignItems: 'center',
+                          borderBottom: 1,
+                          borderColor: 'divider',
+                        }}
+                      >
+                        <Box mt={ds.space[0]}>
                           {isGeneratingCards ? (
-                            <CircularProgress size={20} sx={{ color: ds.yellow[500], width: '24px', height: '24px' }} />
+                            <CircularProgress size={20} sx={{ color: ds.yellow[500], width: ds.space[5], height: ds.space[5] }} />
                           ) : (
                             <SafeIcon src={getNubiIconUrl()} alt={assistantName} width={24} height={24} />
                           )}
                         </Box>
                         <Box
                           sx={{
-                            borderBottom: 1,
-                            borderColor: 'divider',
-                            mb: 1,
                             textTransform: 'capitalize',
-                            width: '100%',
-                            '.MuiTabs-root': { minHeight: '42px !important' },
+                            flex: 1,
+                            '.MuiTabs-root': { minHeight: `${ds.space.mul(0, 21)} !important` },
                             '.MuiTab-root': {
                               color: ds.gray[700],
                               textTransform: 'none',
-                              fontSize: '12px',
-                              padding: '10px !important',
-                              minHeight: '0px ',
-                              borderRadius: '4px',
+                              fontSize: 'var(--ds-text-small)',
+                              padding: 'var(--ds-space-2) !important',
+                              minHeight: 0,
+                              borderRadius: 'var(--ds-radius-sm)',
                             },
-                            '.MuiTabs-indicator': { bgcolor: ds.blue[500], borderRadius: '4px' },
+                            '.MuiTabs-indicator': { bgcolor: ds.blue[500], borderRadius: 'var(--ds-radius-sm)' },
                             '.MuiTab-root.Mui-selected': { color: ds.gray[700], bgcolor: ds.blue[100] },
                           }}
                         >
@@ -2415,9 +2633,12 @@ const Investigate = () => {
                             )}
                             <Tab
                               label={
-                                <Box component='span' sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                <Box component='span' sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
                                   Tasks
-                                  <Box component='span' sx={{ fontWeight: 400, color: ds.gray[600], fontSize: '12px' }}>
+                                  <Box
+                                    component='span'
+                                    sx={{ fontWeight: 'var(--ds-font-weight-regular)', color: ds.gray[600], fontSize: 'var(--ds-text-small)' }}
+                                  >
                                     ({matchedOptions.filter((option) => option?.id !== 'AskAiCard' && option?.id !== 'RCACard').length})
                                   </Box>
                                 </Box>
@@ -2430,14 +2651,12 @@ const Investigate = () => {
                             )}
                           </Tabs>
                         </Box>
-                      </Box>
-                      <Box sx={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', mt: '-50px' }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', pb: 'var(--ds-space-2)' }}>
                           {/* Continue With Analysis */}
                           {row?.id &&
                             matchedOptions.some((option) => option?.id === 'AskAiCard') &&
                             !matchedOptions.find((option) => option?.id === 'AskAiCard')?.errorMessage && (
-                              <Box sx={{ pr: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <Box sx={{ pr: 'var(--ds-space-2)', display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                                 <Button
                                   tone='secondary'
                                   size='sm'
@@ -2483,14 +2702,16 @@ const Investigate = () => {
                               <RunAutomationMenu
                                 accountId={automationAccountId}
                                 eventId={row.id}
+                                canView={hasReadAccess(automationAccountId)}
                                 canRun={hasWriteAccess(automationAccountId)}
                                 onCreateAutomation={() => setShowTemplatesModal(true)}
+                                onTriggered={handleAutomationTriggered}
                               />
                             );
                           })()}
                           {/* Generate RCA */}
                           {hasWriteAccess(router.query.accountId) && hasRcaFeatureAccess && generateRcaVisible ? (
-                            <Box sx={{ mr: '8px' }}>
+                            <Box sx={{ mr: 'var(--ds-space-2)' }}>
                               <Button
                                 tone='secondary'
                                 size='xs'
@@ -2504,7 +2725,7 @@ const Investigate = () => {
                           ) : null}
                           {/* Resolve Event */}
                           {hasWriteAccess(router.query.accountId) && RESOLVABLE_ALERT_KEYS.includes(row?.aggregation_key) ? (
-                            <Box sx={{ pr: '8px' }}>
+                            <Box sx={{ pr: 'var(--ds-space-2)' }}>
                               <Button
                                 tone='secondary'
                                 size='xs'
@@ -2516,9 +2737,44 @@ const Investigate = () => {
                               </Button>
                             </Box>
                           ) : null}
+                          {/* Workflow Resolution Status (shown when a workflow has been linked to this event) */}
+                          {(() => {
+                            const res = eventResolutions.find((r) => r.type === 'WorkflowExecution');
+                            if (!res) return null;
+                            const statusColor = res.status === 'Success' ? ds.green[600] : res.status === 'InProgress' ? ds.amber[500] : ds.red[500];
+                            const statusLabel =
+                              res.status === 'Success'
+                                ? 'Resolved via Workflow'
+                                : res.status === 'InProgress'
+                                ? 'Workflow Running...'
+                                : 'Workflow Failed';
+                            return (
+                              <Box sx={{ pr: 'var(--ds-space-2)' }}>
+                                <Button
+                                  tone='secondary'
+                                  size='xs'
+                                  composition='icon+text'
+                                  icon={<WorkflowIcon iconColor={statusColor} iconStyle={{ cursor: 'pointer', width: '14px', height: '14px' }} />}
+                                  data-testid='workflow-resolution-btn'
+                                  onClick={() => {
+                                    const parts = (res.type_reference_id || '').split(':');
+                                    if (parts.length === 2) {
+                                      router.push(`/workflow/${parts[0]}?tab=executions&executionId=${parts[1]}&accountId=${router.query.accountId}`);
+                                    }
+                                  }}
+                                >
+                                  <Typography
+                                    sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: statusColor }}
+                                  >
+                                    {statusLabel}
+                                  </Typography>
+                                </Button>
+                              </Box>
+                            );
+                          })()}
                           {/* Linked Ticket (shown inline when ticket exists) */}
                           {hasWriteAccess(router.query.accountId) && ticketData?.ticket_id ? (
-                            <Box sx={{ pr: '8px' }}>
+                            <Box sx={{ pr: 'var(--ds-space-2)' }}>
                               <Button
                                 tone='secondary'
                                 size='xs'
@@ -2527,7 +2783,11 @@ const Investigate = () => {
                                 data-testid='linked-ticket-btn'
                                 onClick={() => window.open(ticketData?.url, '_blank', 'noopener,noreferrer')}
                               >
-                                <Typography sx={{ fontSize: '12px', fontWeight: 500, color: ds.blue[600] }}>{ticketData?.ticket_id}</Typography>
+                                <Typography
+                                  sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: ds.blue[600] }}
+                                >
+                                  {ticketData?.ticket_id}
+                                </Typography>
                               </Button>
                             </Box>
                           ) : null}
@@ -2610,9 +2870,13 @@ const Investigate = () => {
                           display: 'flex',
                           flexDirection: 'column',
                           position: 'relative',
-                          gap: '12px',
-                          '& .custom-panel > .MuiBox-root:first-of-type': { padding: '8px 0px 24px 32px !important' },
-                          '& .ai-custom-panel > .MuiBox-root:first-of-type': { padding: '8px 0px 24px 32px !important' },
+                          gap: 'var(--ds-space-3)',
+                          '& .custom-panel > .MuiBox-root:first-of-type': {
+                            padding: 'var(--ds-space-2) 0 var(--ds-space-5) var(--ds-space-6) !important',
+                          },
+                          '& .ai-custom-panel > .MuiBox-root:first-of-type': {
+                            padding: 'var(--ds-space-2) 0 var(--ds-space-5) var(--ds-space-6) !important',
+                          },
                         }}
                       >
                         <TabPanel value={tabValue} index={0} className='ai-custom-panel'>
@@ -2621,11 +2885,26 @@ const Investigate = () => {
                           ) : (
                             insightData.length > 0 && (
                               <Box>
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: '6px', mb: '4px' }}>
-                                  <Avatar sx={{ width: '20px', borderRadius: '0px', height: '20px', flexShrink: 0, bgcolor: 'transparent' }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', mb: 'var(--ds-space-1)' }}>
+                                  <Avatar
+                                    sx={{
+                                      width: ds.space.mul(1, 5),
+                                      borderRadius: 0,
+                                      height: ds.space.mul(1, 5),
+                                      flexShrink: 0,
+                                      bgcolor: 'transparent',
+                                    }}
+                                  >
                                     <SafeIcon src={SparklesIconBG} alt='start-icon' width={20} height={20} priority={true} />
                                   </Avatar>
-                                  <Typography sx={{ color: ds.gray[700], fontSize: '16px', fontWeight: 600, lineHeight: 'normal' }}>
+                                  <Typography
+                                    sx={{
+                                      color: ds.gray[700],
+                                      fontSize: 'var(--ds-text-title)',
+                                      fontWeight: 'var(--ds-font-weight-semibold)',
+                                      lineHeight: 'normal',
+                                    }}
+                                  >
                                     Insights
                                   </Typography>
                                 </Box>
@@ -2660,12 +2939,15 @@ const Investigate = () => {
                           {matchedOptions.filter(shouldShowResolveButton).length > 0 && (
                             <>
                               <Divider />
-                              <Text value={'Take action to fix it'} sx={{ fontSize: '16px', fontWeight: 500, mb: '12px' }} />
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                              <Text
+                                value={'Take action to fix it'}
+                                sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-medium)', mb: 'var(--ds-space-3)' }}
+                              />
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-3)', flexWrap: 'wrap' }}>
                                 {matchedOptions.filter(shouldShowResolveButton).map((resolvableOption) => (
                                   <Button
                                     key={`fix-${resolvableOption.id}`}
-                                    tone='secondary'
+                                    tone='primary'
                                     size='sm'
                                     trailingAccent={<ArrowForwardRoundedIcon />}
                                     onClick={(e) => {
@@ -2718,7 +3000,7 @@ const Investigate = () => {
                                 </div>
                               ))}
                             {currentInvestigation?.text && (
-                              <CustomBorderCard borderColor={ds.gray[200]} sx={{ textAlign: 'center', mt: '0px' }} showLeftBorder={false}>
+                              <CustomBorderCard borderColor={ds.gray[200]} sx={{ textAlign: 'center', mt: 0 }} showLeftBorder={false}>
                                 <ConversationLoader />
                               </CustomBorderCard>
                             )}
@@ -2744,10 +3026,10 @@ const Investigate = () => {
                           alignItems: 'center',
                           justifyContent: 'center',
                           textAlign: 'center',
-                          backgroundColor: 'white',
-                          gap: '12px',
+                          backgroundColor: ds.background[100],
+                          gap: 'var(--ds-space-3)',
                           width: '100%',
-                          height: '180px',
+                          height: ds.space.mul(1, 45),
                         }}
                       >
                         <Button
@@ -2764,7 +3046,15 @@ const Investigate = () => {
                         >
                           {`Ask ${assistantName} for Investigation`}
                         </Button>
-                        <Typography sx={{ fontSize: '14px', color: ds.gray[500], lineHeight: '18px', fontWeight: 400, width: '35%' }}>
+                        <Typography
+                          sx={{
+                            fontSize: 'var(--ds-text-body-lg)',
+                            color: ds.gray[500],
+                            lineHeight: ds.space.mul(0, 9),
+                            fontWeight: 'var(--ds-font-weight-regular)',
+                            width: '35%',
+                          }}
+                        >
                           Get a troubleshooting checklist to find the issue&apos;s root cause and key contributing factors.
                         </Typography>
                       </Box>

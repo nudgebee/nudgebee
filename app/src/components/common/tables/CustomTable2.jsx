@@ -1006,6 +1006,12 @@ const CustomTable = ({
             borderSpacing: { borderSpacing },
             'tbody tr': {
               cursor: showExpandable || onRowClick ? 'pointer' : 'auto',
+              ...(onRowClick && !isExpandableRows
+                ? {
+                    transition: 'background-color 160ms ease',
+                    '&:hover td': { backgroundColor: ds.background[200] },
+                  }
+                : {}),
             },
           }}
           aria-label='table'

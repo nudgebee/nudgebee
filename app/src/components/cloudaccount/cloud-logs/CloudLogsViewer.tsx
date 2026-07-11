@@ -7,7 +7,7 @@ import { Banner } from '@ui/Banner';
 import { EmptyState } from '@ui/EmptyState';
 import { Chip as DsChip } from '@ui/Chip';
 import { Button as DsButton } from '@ui/Button';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import Datetime from '@shared/format/Datetime';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
@@ -82,7 +82,7 @@ const CopyableValue = ({ value }: { value: string }) => {
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
-          maxWidth: 320,
+          maxWidth: ds.space.mul(0, 160),
         }}
         title={value}
       >
@@ -323,7 +323,7 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
             <Box
               sx={{
                 width: 3,
-                height: 24,
+                height: ds.space[5],
                 borderRadius: ds.radius.sm,
                 bgcolor: getSeverityColor(severity),
                 flexShrink: 0,
@@ -346,7 +346,7 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
                   whiteSpace: 'nowrap',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
-                  maxWidth: 300,
+                  maxWidth: ds.space.mul(0, 150),
                 }}
                 title={isUsefulValue(value) ? String(value) : ''}
               >
@@ -371,7 +371,7 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-all',
               m: 0,
-              maxHeight: 200,
+              maxHeight: ds.space.mul(0, 100),
               overflow: 'auto',
             }}
           >
@@ -444,7 +444,7 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
         {!error && !loading && !hasRows ? (
           <EmptyState size='inline' illustration='no-results' title='No log entries' description={emptyDescription} />
         ) : (
-          <CustomTable2
+          <CustomTable
             id={TABLE_ID}
             headers={tableHeaders}
             tableData={logTableData}

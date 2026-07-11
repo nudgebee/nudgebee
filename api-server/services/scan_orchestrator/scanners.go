@@ -30,6 +30,10 @@ type ScanAccount struct {
 	TenantID          string
 	ServiceAccount    string // resolved by orchestrator from chart config
 	K8sVersionCurrent string // optional; populated for k8s_version_upgrade
+	TargetImage       string // optional; populated for image_scanner (the image to scan)
+	TargetNode        string // optional; populated for image_scanner (node the image is pulled on)
+	TargetNamespace   string // optional; populated for image_scanner (namespace of a pod running the image)
+	TargetPodName     string // optional; populated for image_scanner (a pod running the image — source of pull secrets)
 }
 
 // Recommendation is the orchestrator's output row. Mirrors the columns the
@@ -130,28 +134,10 @@ var ScannerCatalog = map[string]Scanner{
 		CronExpression: "0 12 * * 1",
 	},
 	"image_scanner": {
-		Name: "image_scanner",
-		BuildSpec: func(_ ScanAccount, params map[string]any) JobSpec {
-			// Phase 2a uses the simple `trivy image --format json --quiet <IMAGE>`
-			// path — i.e. trivy scans an image registry, not the Pod's filesystem.
-			// Robusta's image_scanner.py also offers a fs-scan path via an init
-			// container that copies the trivy binary into a shared emptyDir; that
-			// requires init-container support our JobSpec doesn't model yet, so
-			// it's deferred. The simple path covers what most customers want.
-			image, _ := params["image"].(string)
-			if image == "" {
-				image = "{{IMAGE}}" // surfaces the missing-param failure clearly in logs
-			}
-			return JobSpec{
-				NamePrefix:         "trivy-image-scan",
-				Image:              TrivyImage(),
-				Args:               []string{"image", "--format", "json", "--quiet", image},
-				ServiceAccount:     "{{SCANNER_SA}}",
-				TimeoutHintSeconds: 300,
-			}
-		},
-		Parse:    ParseImageScan,
-		RuleName: ImageScanRuleName,
+		Name:      "image_scanner",
+		BuildSpec: buildImageScanSpec,
+		Parse:     ParseImageScan,
+		RuleName:  ImageScanRuleName,
 		// image_scanner is on-demand (per-image); not cron-scheduled.
 	},
 	"helm_chart_upgrade": {
@@ -173,6 +159,86 @@ var ScannerCatalog = map[string]Scanner{
 		CronExpression: "0 12 * * *",
 	},
 }
+
+// imageScanVolumePath is the shared emptyDir mount where the init container
+// stages the trivy binary so the main container (the target image) can run it.
+const imageScanVolumePath = "/var/trivy-operator"
+
+// buildImageScanSpec produces the filesystem-scan JobSpec used by the legacy
+// agent's image scanner. Instead of `trivy image <ref>` (which pulls the image
+// from the registry as a client and so needs registry credentials for private
+// registries), it scans the image's already-pulled rootfs on the node:
+//
+//   - the Job is pinned to account.TargetNode — the node where a pod using the
+//     image is running, so the image layers are already present;
+//   - the main container IS the target image (imagePullPolicy=IfNotPresent), so
+//     the kubelet reuses the node-local copy and never hits the registry;
+//   - an init container copies the trivy binary into a shared emptyDir, and the
+//     main container overrides its entrypoint to run `trivy fs /` against its own
+//     root filesystem. The target image's real entrypoint never executes.
+//
+// This needs zero registry credentials and works for any private registry, which
+// is why it replaces the registry-pull path that failed on registry.*.nudgebee.*.
+func buildImageScanSpec(account ScanAccount, _ map[string]any) JobSpec {
+	image := account.TargetImage
+	if image == "" {
+		image = "{{IMAGE}}" // surfaces the missing-param failure clearly in logs
+	}
+	spec := JobSpec{
+		NamePrefix: "trivy-image-scan",
+		// Main container = the target image itself; reused from the node cache.
+		Image:           image,
+		ImagePullPolicy: "IfNotPresent",
+		NodeName:        account.TargetNode,
+		// Run the staged trivy binary directly — NOT via `sh -c`. The main container
+		// is the (possibly distroless/scratch) target image, which may have no shell
+		// or coreutils. trivy is a static Go binary so it runs anywhere, and the
+		// emptyDir mounted at /tmp gives it a writable cache dir without `mkdir`.
+		Command: []string{imageScanVolumePath + "/trivy"},
+		Args: []string{
+			"fs", "--cache-dir", "/tmp/trivy-cache",
+			"--format", "json", "--quiet", "--skip-java-db-update", "/",
+		},
+		// Root so trivy can read every file in the scanned rootfs. Pointer literal
+		// so the explicit 0 survives JSON omitempty.
+		RunAsUser:      int64Ptr(0),
+		ServiceAccount: "{{SCANNER_SA}}",
+		InitContainers: []map[string]any{
+			{
+				"name":            "trivy-get-binary",
+				"image":           TrivyImage(),
+				"imagePullPolicy": "IfNotPresent",
+				"command":         []string{"cp", "-v", "/usr/local/bin/trivy", imageScanVolumePath + "/trivy"},
+				"volumeMounts": []map[string]any{
+					{"name": "scan-volume", "mountPath": imageScanVolumePath},
+				},
+			},
+		},
+		Volumes: []map[string]any{
+			{"name": "scan-volume", "emptyDir": map[string]any{}},
+			// Writable /tmp for trivy's cache — works even when the target image's
+			// rootfs is read-only or lacks /tmp.
+			{"name": "tmp-volume", "emptyDir": map[string]any{}},
+		},
+		VolumeMounts: []map[string]any{
+			{"name": "scan-volume", "mountPath": imageScanVolumePath},
+			{"name": "tmp-volume", "mountPath": "/tmp"},
+		},
+		TimeoutHintSeconds: 300,
+	}
+	// Point the agent at a pod running this image so it can source the registry
+	// pull credentials (opt-in, agent-gated). Without a pod ref the agent can't
+	// resolve secrets; without auto-copy enabled the agent ignores it.
+	if account.TargetNamespace != "" && account.TargetPodName != "" {
+		spec.ImagePullSecretsFrom = &PodRef{
+			Namespace: account.TargetNamespace,
+			Name:      account.TargetPodName,
+		}
+	}
+	return spec
+}
+
+func int64Ptr(v int64) *int64 { return &v }
 
 // kubeBenchVolumes returns the 11 hostPath volumes kube-bench reads to assess
 // CIS compliance. Read-only; the agent enforces namespace/TTL clamps so the

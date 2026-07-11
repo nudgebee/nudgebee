@@ -6,8 +6,8 @@ import KubernetesApplicationGroupingSummary from '@components/k8s/landing/k8sGro
 import apiAppGrouping from '@api1/application-groupings';
 import KubernetesWorkloadsTable from '@components/k8s/details/KubernetesWorkloads';
 import KubernetesEvents from '@components/events/KubernetesEvents';
-import CustomTabs from '@shared/CustomTabsForDrilldown';
-import { snackbar } from '@shared/snackbarService';
+import Tabs from '@shared/navigation/TabsForDrilldown';
+import { toast as snackbar } from '@ui/Toast';
 import Loader from '@shared/Loader';
 
 const tabOptions = [
@@ -81,8 +81,8 @@ const KubernetesAppGroupingDashboard = () => {
           snackbar[data.severity](data.message);
         }}
       />
-      <Box sx={{ mt: '24px' }}>
-        <CustomTabs
+      <Box sx={{ mt: 'var(--ds-space-5)' }}>
+        <Tabs
           options={tabOptions}
           value={tab}
           onChange={handleChangeTab}

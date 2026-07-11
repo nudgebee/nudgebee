@@ -76,9 +76,9 @@ export const FeatureCarousel: React.FC<FeatureCarouselProps> = ({ slides }) => {
         height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        marginTop: { md: '40px', lg: '50px', xl: '60px' },
+        marginTop: { md: ds.space.mul(0, 20), lg: ds.space.mul(0, 25), xl: ds.space.mul(0, 30) },
         alignItems: 'center',
-        padding: { md: '20px', lg: '30px', xl: '40px' },
+        padding: { md: ds.space.mul(0, 10), lg: ds.space.mul(0, 15), xl: ds.space.mul(0, 20) },
         position: 'relative',
       }}
       onMouseEnter={() => setIsPaused(true)}
@@ -129,9 +129,9 @@ export const FeatureCarousel: React.FC<FeatureCarouselProps> = ({ slides }) => {
             <Box
               sx={{
                 width: '100%',
-                borderRadius: { md: '12px', lg: '14px', xl: '16px' },
+                borderRadius: { md: ds.space[3], lg: ds.space.mul(0, 7), xl: ds.space[4] },
                 overflow: 'hidden',
-                boxShadow: '0 8px 20px rgba(0, 0, 0, 0.14)',
+                boxShadow: `0 ${ds.space[2]} ${ds.space.mul(0, 10)} ${ds.gray.alpha[300]}`,
               }}
             >
               <SafeIcon
@@ -158,11 +158,11 @@ export const FeatureCarousel: React.FC<FeatureCarouselProps> = ({ slides }) => {
               width: activeIndex === index ? { md: '20px', lg: '22px', xl: '24px' } : { md: '6px', lg: '7px', xl: '8px' },
               height: { md: '6px', lg: '7px', xl: '8px' },
               borderRadius: 'var(--ds-radius-sm)',
-              backgroundColor: activeIndex === index ? '#1a365d' : 'rgba(26, 54, 93, 0.3)',
+              backgroundColor: activeIndex === index ? ds.brand[600] : `color-mix(in srgb, ${ds.brand[600]} 30%, transparent)`,
               cursor: 'pointer',
               transition: 'all 0.3s ease',
               '&:hover': {
-                backgroundColor: activeIndex === index ? '#1a365d' : 'rgba(26, 54, 93, 0.5)',
+                backgroundColor: activeIndex === index ? ds.brand[600] : `color-mix(in srgb, ${ds.brand[600]} 50%, transparent)`,
               },
             }}
           />
@@ -173,13 +173,13 @@ export const FeatureCarousel: React.FC<FeatureCarouselProps> = ({ slides }) => {
       <Box
         sx={{
           position: 'absolute',
-          bottom: { md: '80px', lg: '120px', xl: '160px' },
-          left: { md: '20px', lg: '30px', xl: '40px' },
-          right: { md: '20px', lg: '30px', xl: '40px' },
+          bottom: { md: ds.space.mul(0, 40), lg: ds.space.mul(0, 60), xl: ds.space.mul(0, 80) },
+          left: { md: ds.space.mul(0, 10), lg: ds.space.mul(0, 15), xl: ds.space.mul(0, 20) },
+          right: { md: ds.space.mul(0, 10), lg: ds.space.mul(0, 15), xl: ds.space.mul(0, 20) },
           display: 'flex',
           justifyContent: 'space-around',
-          borderTop: '1px solid rgba(26, 54, 93, 0.2)',
-          paddingTop: { md: '12px', lg: '14px', xl: '16px' },
+          borderTop: `1px solid color-mix(in srgb, ${ds.brand[600]} 20%, transparent)`,
+          paddingTop: { md: ds.space[3], lg: ds.space.mul(0, 7), xl: ds.space[4] },
         }}
       >
         {[
@@ -204,7 +204,7 @@ export const FeatureCarousel: React.FC<FeatureCarouselProps> = ({ slides }) => {
               sx={{
                 fontSize: { md: ds.text.bodyLg, lg: ds.text.title, xl: ds.space.mul(0, 9) },
                 lineHeight: { md: '20px', lg: '22px', xl: '24px' },
-                color: 'rgba(26, 54, 93, 0.7)',
+                color: `color-mix(in srgb, ${ds.brand[600]} 70%, transparent)`,
                 fontFamily: 'Roboto, sans-serif',
               }}
             >
@@ -240,7 +240,7 @@ export const AuthTemplateV2: React.FC<AuthTemplateV2Props> = ({ children }) => {
           item
           md={7}
           sx={{
-            background: signinLeftImageUrl ? '#FFFFFF' : 'linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 50%, #E0F2FE 100%)',
+            background: signinLeftImageUrl ? ds.background[100] : 'linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 50%, #E0F2FE 100%)',
             height: '100vh',
             position: 'relative',
             overflow: 'hidden',
@@ -274,7 +274,7 @@ export const AuthTemplateV2: React.FC<AuthTemplateV2Props> = ({ children }) => {
           flexDirection: 'column',
           justifyContent: { xs: 'flex-start', md: 'center' },
           alignItems: 'center',
-          padding: { xs: '24px', md: '60px 80px' },
+          padding: { xs: ds.space[5], md: `${ds.space.mul(0, 30)} ${ds.space.mul(0, 40)}` },
           backgroundColor: 'var(--ds-background-100)',
           height: '100vh',
           overflowY: 'auto',

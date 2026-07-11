@@ -364,7 +364,8 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 			var resultData map[string]any
 			if err := json.Unmarshal([]byte(specialistResult), &resultData); err == nil {
 				resultData["pr_creation_status"] = "skipped"
-				resultData["pr_creation_reason"] = "requires_fix=false - specialist determined no fix needed"
+				resultData["execution_status"] = ExecutionStatusNoOp
+				resultData["pr_creation_reason"] = "No code change required — the specialist determined the requested change is already present / no fix is needed."
 				resultData["mode"] = mode
 				if modifiedJSON, err := json.Marshal(resultData); err == nil {
 					return string(modifiedJSON), nil
@@ -459,7 +460,7 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 
 	// 6. Handle PR creation if requested and changes were approved
 	if request.RaisePR {
-		shouldCreate, reason := a.shouldCreatePR(mergedData)
+		shouldCreate, noChanges, reason := a.shouldCreatePR(mergedData)
 		if shouldCreate {
 			a.reportProgress("Creating pull request...")
 			prInfo, err := a.createPullRequest(ctx, sessionCtx, mergedData)
@@ -479,9 +480,16 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 			}
 		} else {
 			// PR creation was skipped - add reason to response
-			a.logger.Log(common.EventStepComplete, "PR creation skipped", map[string]any{"reason": reason})
+			a.logger.Log(common.EventStepComplete, "PR creation skipped", map[string]any{"reason": reason, "no_changes": noChanges})
 			mergedData["pr_creation_status"] = "skipped"
 			mergedData["pr_creation_reason"] = reason
+			// An empty-diff skip is a terminal no-op (change already present), not a
+			// failure. Stamp execution_status so the response carries an unambiguous
+			// "already resolved" signal that the caller (llm-server) can act on
+			// instead of re-dispatching. Review-rejection skips keep their status.
+			if noChanges {
+				mergedData["execution_status"] = ExecutionStatusNoOp
+			}
 		}
 	}
 
@@ -654,6 +662,12 @@ func (a *OrchestratorAgent) buildFinalResponse(mergedData map[string]any) map[st
 // buildFailureSummary produces a concise human-readable string explaining what went wrong
 // when the pipeline didn't produce a clean PR. Returns empty string when everything succeeded.
 func (a *OrchestratorAgent) buildFailureSummary(response map[string]any) string {
+	// A no-op is a successful terminal outcome (the requested change is already
+	// present), not a failure — never produce a failure summary for it.
+	if execStatus, _ := response["execution_status"].(string); execStatus == ExecutionStatusNoOp {
+		return ""
+	}
+
 	var reasons []string
 
 	// Check PR creation outcome
@@ -1259,7 +1273,20 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 					continue
 				}
 			}
-			a.logger.Log(common.EventStepComplete, "No changes to review — file may already be in correct state", map[string]any{"attempt": attempt})
+			// Genuine no-op: the fixer ran to completion and produced no diff, and
+			// execution did not fail — the requested change is already present.
+			// Mark it as a terminal no-op so the orchestrator surfaces an explicit
+			// "already resolved" outcome instead of an ambiguous empty result.
+			a.logger.Log(common.EventStepComplete, "No changes to review — change already present (no-op)", map[string]any{"attempt": attempt})
+			// Guard against a nil result map (a fixer that returned no data): writing
+			// to a nil map panics.
+			if lastFixerResult == nil {
+				lastFixerResult = map[string]any{}
+			}
+			lastFixerResult["execution_status"] = ExecutionStatusNoOp
+			if summary, _ := lastFixerResult["execution_summary"].(string); summary == "" {
+				lastFixerResult["execution_summary"] = "No code changes were produced; the requested change appears to already be present in the repository."
+			}
 			break
 		}
 
@@ -1354,15 +1381,23 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 	return lastFixerResult, nil
 }
 
-// shouldCreatePR determines if a PR should be created based on review results and changes
-// Returns (shouldCreate bool, reason string)
-func (a *OrchestratorAgent) shouldCreatePR(mergedData map[string]any) (bool, string) {
+// ExecutionStatusNoOp marks a terminal, successful "no change required" outcome:
+// the requested fix is already present in the repository, so the agent
+// intentionally produced no diff and created no PR. It is distinct from a
+// failure — the pipeline ran to completion and the result is correct. PR
+// followup mode already emits this value; the standard fix flow now does too.
+const ExecutionStatusNoOp = "no_op"
+
+// shouldCreatePR determines if a PR should be created based on review results and changes.
+// Returns (shouldCreate, noChanges, reason): noChanges is true only for the empty-diff
+// case (the change is already present — a terminal no-op), false for review rejection.
+func (a *OrchestratorAgent) shouldCreatePR(mergedData map[string]any) (bool, bool, string) {
 	// Check if there are actual changes
 	gitDiff, hasChanges := mergedData["git_diff"].(string)
 	if !hasChanges || gitDiff == "" {
-		reason := "No git diff available - no changes were made to tracked files. This may indicate the file was already in the desired state or the error location was incorrect."
+		reason := "No code changes were produced — the requested change appears to already be present in the repository, so there is nothing to apply."
 		a.logger.Log(common.EventStepComplete, "No changes to create PR for", nil)
-		return false, reason
+		return false, true, reason
 	}
 
 	// Check review results if available
@@ -1375,11 +1410,11 @@ func (a *OrchestratorAgent) shouldCreatePR(mergedData map[string]any) (bool, str
 			a.logger.Log(common.EventStepFailure, "PR creation blocked - changes not approved by reviewer", map[string]any{
 				"feedback": reviewData["feedback"],
 			})
-			return false, reason
+			return false, false, reason
 		}
 	}
 
-	return true, ""
+	return true, false, ""
 }
 
 // createPullRequest creates a PR with the changes and NudgeBee branding
@@ -1531,17 +1566,46 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 		"commits":     logResult.Result,
 	})
 
-	// Push new branch to origin
+	// Determine the push target. The CLI tool only injects a token for `gh` commands,
+	// never for plain `git push`, and the clone-time origin URL is not guaranteed to
+	// carry a token — without auth, `git push` prompts for a username and dies with
+	// "could not read Username for 'https://github.com': No such device or address".
+	//
+	// Push DIRECTLY to a token-embedded URL rather than mutating origin: worktrees from
+	// one bare clone share the base repo's .git/config, so `git remote set-url` would
+	// race across concurrent analyses. Pushing to an explicit URL is stateless and
+	// thread-safe. Prefer the request's repo URL; fall back to the configured origin
+	// (a read-only lookup, no config mutation).
+	pushTarget := "origin"
+	if sessionCtx.Credentials != nil && sessionCtx.Credentials.Token != "" {
+		repoURL := ""
+		if sessionCtx.RepoContext != nil {
+			repoURL = sessionCtx.RepoContext.URL
+		}
+		if repoURL == "" {
+			originResult := cliTool.Execute(ctx, map[string]any{
+				"command":           "git remote get-url origin",
+				"working_directory": actualRepoDir,
+			})
+			if originResult.Status == "success" {
+				repoURL = git.StripURLUserinfo(strings.TrimSpace(a.extractCLIOutput(originResult)))
+			}
+		}
+		if repoURL != "" {
+			pushTarget = git.InjectTokenIntoURL(repoURL, sessionCtx.Credentials.Token)
+		}
+	}
+
+	// Push new branch to origin. Log the token-free target so credentials never hit logs.
+	cleanPushTarget := git.StripURLUserinfo(pushTarget)
 	a.logger.Log(common.EventStepStart, "Pushing branch to origin", map[string]any{
 		"branch_name":   branchName,
-		"command":       fmt.Sprintf("git push -u origin %s", branchName),
+		"command":       fmt.Sprintf("git push %s %s", cleanPushTarget, branchName),
 		"workspace_dir": a.workspaceDir,
 	})
 
-	// Reuse the repository helper variables from above
-
 	pushResult := cliTool.Execute(ctx, map[string]any{
-		"command":           fmt.Sprintf("git push -u origin %s", branchName),
+		"command":           fmt.Sprintf("git push %s %s", pushTarget, branchName),
 		"working_directory": actualRepoDir,
 	})
 

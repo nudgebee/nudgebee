@@ -1,11 +1,7 @@
 package config
 
 import (
-	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -174,8 +170,12 @@ func LoadConfig() (*Config, error) {
 	// Reset config name to original for subsequent reads if any
 	viper.SetConfigName("config")
 
-	// Load environment variables from mounted secrets
-	loadSecretsFromMountPath("/etc/secrets/nudgebee")
+	// NOTE: we deliberately do NOT mount or load the whole nudgebee secret here.
+	// The pod runs untrusted customer build/agent commands; bulk-exporting every
+	// secret key into the process env would leak app-infra secrets (DB URLs,
+	// RabbitMQ, encryption key, OAuth/internal tokens) to those child processes.
+	// llm-server injects only the minimal LLM_* keys via SecretKeyRef and, when
+	// available, forwards a tenant-resolved llm_config per request.
 
 	// Enable automatic environment variable binding
 	viper.AutomaticEnv()
@@ -209,45 +209,44 @@ func LoadConfig() (*Config, error) {
 	return &config, nil
 }
 
-// loadSecretsFromMountPath loads environment variables from mounted secret files
-// Each file in the directory becomes an environment variable with the filename as the key
-// and file content as the value
-func loadSecretsFromMountPath(mountPath string) {
-	// Check if the mount path exists
-	if _, err := os.Stat(mountPath); os.IsNotExist(err) {
-		return // Mount path doesn't exist, skip loading secrets
+// LLMOverride carries per-request LLM provider fields that override the startup
+// defaults. Only non-empty fields take effect.
+type LLMOverride struct {
+	Provider    string
+	Model       string
+	ApiKey      string
+	ApiEndpoint string
+	ApiVersion  string
+	ApiType     string
+	Region      string
+}
+
+// CloneWithLLMOverride returns a copy of the config with the given LLM fields
+// overlaid (non-empty values only). The receiver is not mutated. A shallow
+// struct copy is a sufficient deep copy here because every LLMConfig field is a
+// scalar — no maps/slices are aliased that this method writes to.
+func (c *Config) CloneWithLLMOverride(o LLMOverride) *Config {
+	clone := *c
+	if o.Provider != "" {
+		clone.LLM.Provider = o.Provider
 	}
-
-	err := filepath.WalkDir(mountPath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		// Skip directories and hidden files
-		if d.IsDir() || strings.HasPrefix(d.Name(), ".") {
-			return nil
-		}
-
-		// Read file content
-		content, err := os.ReadFile(path)
-		if err != nil {
-			fmt.Printf("Warning: failed to read secret file %s: %v\n", path, err)
-			return nil // Continue with other files
-		}
-
-		// Use filename as environment variable name
-		envKey := d.Name()
-		envValue := strings.TrimSpace(string(content))
-
-		// Set environment variable
-		if err := os.Setenv(envKey, envValue); err != nil {
-			fmt.Printf("Warning: failed to set environment variable %s: %v\n", envKey, err)
-			return nil
-		}
-		return nil
-	})
-
-	if err != nil {
-		fmt.Printf("Warning: failed to load secrets from mount path %s: %v\n", mountPath, err)
+	if o.Model != "" {
+		clone.LLM.Model = o.Model
 	}
+	if o.ApiKey != "" {
+		clone.LLM.ApiKey = o.ApiKey
+	}
+	if o.ApiEndpoint != "" {
+		clone.LLM.ApiEndpoint = o.ApiEndpoint
+	}
+	if o.ApiVersion != "" {
+		clone.LLM.ApiVersion = o.ApiVersion
+	}
+	if o.ApiType != "" {
+		clone.LLM.ApiType = o.ApiType
+	}
+	if o.Region != "" {
+		clone.LLM.Region = o.Region
+	}
+	return &clone
 }

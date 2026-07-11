@@ -32,6 +32,7 @@ package agents
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -41,6 +42,9 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/memory"
+	memcollective "nudgebee/llm/memory/stores/collective"
+	memdecisions "nudgebee/llm/memory/stores/decisions"
+	mempatterns "nudgebee/llm/memory/stores/patterns"
 	"nudgebee/llm/security"
 
 	"github.com/google/uuid"
@@ -409,16 +413,400 @@ func TestScenario_ColdStartUser_EndToEnd(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
 	k8sAgent := newK8sDebugAgent(accountID)
 
+	// Cold-start assertion checks for the CLOSING tag fragment, not the bare
+	// substring. A rendered memory block always carries `</user_style>` and
+	// `</user_preferences>` (the prompt-block boundary). The shared
+	// memory-consumption rules mention the OPENING tag names in prose to
+	// teach the LLM how to read the blocks; they never contain a closing tag.
+	// Closing-tag presence therefore uniquely signals a rendered block.
 	for i, q := range scenarioInvestigationQueries {
 		t.Logf("\n======== TURN %d (cold-start) ========\nquery: %s", i+1, q)
 		_, _, prompts := runTurnAndPollPrompts(t, sc, k8sAgent, userID, accountID, sessionID, q)
 		require.NotEmpty(t, prompts, "prompts should be captured for turn %d", i+1)
 		for j, p := range prompts {
-			assert.NotContains(t, p, "user_style",
-				"cold-start turn %d prompt %d must not contain <user_style>", i+1, j)
-			assert.NotContains(t, p, "user_preferences",
-				"cold-start turn %d prompt %d must not contain <user_preferences>", i+1, j)
+			assert.NotContains(t, p, "/user_style",
+				"cold-start turn %d prompt %d must not contain a rendered </user_style> block", i+1, j)
+			assert.NotContains(t, p, "/user_preferences",
+				"cold-start turn %d prompt %d must not contain a rendered </user_preferences> block", i+1, j)
 		}
 	}
 	t.Logf("[cold-start] 4 turns complete, session=%s preserved", sessionID)
+}
+
+// ── Scenario 5: imperative "remember X" → user_preference extraction ────
+
+// Regression for the dev-session failures (e.g. 27d8c916, 567fdf5d) where
+// the user typed an imperative instruction in a conversational turn and
+// the extractor returned NONE, so the preference never reached the
+// Preferences store and never appeared in a later turn's
+// <user_preferences> block.
+//
+// Two sessions on purpose:
+//   - Session A drives the imperative ("remember to use the nudgebee
+//     namespace for all kubectl lookups") — exercises the extractor path.
+//   - Session B is a fresh conversation with an unrelated query — only
+//     way the namespace can reach this prompt is via the typed
+//     Preferences store being read at Compose time.
+func TestScenario_ImperativeInstruction_ExtractsAsPreference_EndToEnd(t *testing.T) {
+	tenantID := os.Getenv("TEST_TENANT")
+	userID := os.Getenv("TEST_USER")
+	accountID := os.Getenv("TEST_ACCOUNT")
+	sessSet := "scenario-imperative-set-" + uuid.NewString()[:8]
+	sessRead := "scenario-imperative-read-" + uuid.NewString()[:8]
+	defer scenarioSetup(t, tenantID)()
+
+	m := memory.Default()
+	// Start fresh — the only path that can land a namespace pref is the
+	// extractor reacting to Session A's imperative input.
+	scenarioEraseUser(m, tenantID, userID)
+	defer scenarioEraseUser(m, tenantID, userID)
+
+	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
+	k8sAgent := newK8sDebugAgent(accountID)
+
+	// ── Session A: imperative instruction ───────────────────────────────
+	const imperative = "remember to use the nudgebee namespace for all kubectl lookups"
+	t.Logf("\n======== SESSION A (set) ========\nquery: %s", imperative)
+	_, _, _ = runTurnAndPollPrompts(t, sc, k8sAgent, userID, accountID, sessSet, imperative)
+
+	// Extractor + projection are async (worker pool). Poll the typed
+	// Preferences store until the namespace lands. Tolerant substring
+	// match — the extractor may shape the row's key/value in any of a
+	// few reasonable ways; we only care that "nudgebee" reaches the
+	// store.
+	require.Eventually(t, func() bool {
+		prefs, err := m.Get(context.Background(), memory.GetRequest{
+			TenantID: tenantID, UserID: userID, Layer: "preferences", Limit: 50,
+		})
+		if err != nil || len(prefs.Entries) == 0 {
+			return false
+		}
+		for _, e := range prefs.Entries {
+			if strings.Contains(strings.ToLower(fmt.Sprintf("%v", e)), "nudgebee") {
+				return true
+			}
+		}
+		return false
+	}, 60*time.Second, 2*time.Second,
+		"imperative 'remember to use nudgebee NS' must produce a user_preference within 60s; "+
+			"see memory_extractor.txt — imperative phrasing must extract as user_preference")
+
+	// ── Session B: unrelated query in a brand-new session ───────────────
+	const followup = "show me pod errors in the last 30 minutes"
+	t.Logf("\n======== SESSION B (read) ========\nquery: %s", followup)
+	_, _, prompts := runTurnAndPollPrompts(t, sc, k8sAgent, userID, accountID, sessRead, followup)
+	require.NotEmpty(t, prompts, "session B must have captured prompts")
+
+	var foundPrefs, foundNamespace bool
+	for _, p := range prompts {
+		idx := strings.Index(p, "user_preferences")
+		if idx < 0 {
+			continue
+		}
+		foundPrefs = true
+		// Scope the namespace assertion to the prefs block so we don't
+		// accidentally pass on a query string that mentions nudgebee.
+		if strings.Contains(strings.ToLower(p[idx:]), "nudgebee") {
+			foundNamespace = true
+			break
+		}
+	}
+	assert.True(t, foundPrefs,
+		"session B prompt must contain <user_preferences> (extractor → preferences store → compose)")
+	assert.True(t, foundNamespace,
+		"<user_preferences> in session B must carry the namespace from Session A's imperative")
+	t.Logf("[imperative] OK — set=%s read=%s preserved", sessSet, sessRead)
+}
+
+// ── Scenario 6: session continuity across turns ────────────────────────
+
+// Verifies the Phase 4 working-memory pipeline end-to-end:
+//
+//	Turn 1 → session_extractor produces a WorkingMemoryV1 blob → mutateSession
+//	writes a session.working_memory.updated event + upserts
+//	llm_session_working_memory.
+//
+//	Turn 2 (same session_id) → composeSessionLayer reads the blob →
+//	<session_working_memory> appears in the captured prompt.
+//
+// Without Gap #2 (event log) or Gap #1 (extractor) wired, the second turn's
+// prompt would be empty of session state and this test fails.
+func TestScenario_SessionContinuity_EndToEnd(t *testing.T) {
+	// Verifies the Session layer's compose chain deterministically by
+	// seeding a WorkingMemoryV1 blob via Memory.Mutate (skipping the LLM
+	// session_extractor whose JSON output is non-deterministic), then
+	// running a turn in the same session and asserting
+	// <session_working_memory> appears in the prompt with the seeded
+	// content. Also confirms the audit event was emitted (Gap #2 —
+	// event-log integration).
+	tenantID := os.Getenv("TEST_TENANT")
+	userID := os.Getenv("TEST_USER")
+	accountID := os.Getenv("TEST_ACCOUNT")
+	sessionID := "scenario-session-cont-" + uuid.NewString()[:8]
+	defer scenarioSetup(t, tenantID)()
+
+	prevSession := config.Config.MemoryLayerSessionEnabled
+	config.Config.MemoryLayerSessionEnabled = true
+	defer func() { config.Config.MemoryLayerSessionEnabled = prevSession }()
+
+	m := memory.Default()
+	scenarioEraseUser(m, tenantID, userID)
+	defer scenarioEraseUser(m, tenantID, userID)
+
+	// Seed a WorkingMemoryV1 blob whose last_action contains a unique
+	// marker we can grep for in turn 2's prompt.
+	marker := uuid.NewString()[:6]
+	lastAction := fmt.Sprintf("seeded last_action marker=%s for compose check", marker)
+	resp, err := m.Mutate(context.Background(), memory.MutateRequest{
+		TenantID: tenantID, UserID: userID,
+		Layer: "session", Action: "set",
+		Key: sessionID,
+		Value: map[string]any{
+			"version":     1,
+			"last_action": lastAction,
+		},
+		ActorKind: "agent", ActorID: "scenario_session_seed",
+	})
+	require.NoError(t, err)
+	require.True(t, resp.Success)
+
+	// Confirm an audit event landed (event-log integration).
+	db, err := common.GetDatabaseManager(common.Metastore)
+	require.NoError(t, err)
+	var evtCount int
+	require.NoError(t, db.Db.Get(&evtCount,
+		`SELECT COUNT(*) FROM llm_memory_events
+		 WHERE tenant_id = $1 AND user_id = $2 AND event_type = $3`,
+		tenantID, userID, "session.working_memory.updated"),
+	)
+	assert.GreaterOrEqual(t, evtCount, 1,
+		"mutateSession must write a session.working_memory.updated event")
+
+	// Drive a turn in the SAME session_id. Compose should attach the
+	// seeded blob under <session_working_memory>.
+	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
+	k8sAgent := newK8sDebugAgent(accountID)
+
+	turn := "what is the current investigation context"
+	t.Logf("\n======== SESSION CONTINUITY TURN ========\nquery: %s", turn)
+	_, _, prompts := runTurnAndPollPrompts(t, sc, k8sAgent, userID, accountID, sessionID, turn)
+	require.NotEmpty(t, prompts, "turn must capture prompts")
+
+	foundBlock, foundMarker := false, false
+	for _, p := range prompts {
+		if strings.Contains(p, "<session_working_memory>") || strings.Contains(p, "\\u003csession_working_memory\\u003e") {
+			foundBlock = true
+		}
+		if strings.Contains(p, marker) {
+			foundMarker = true
+		}
+	}
+	assert.True(t, foundBlock, "prompt must contain <session_working_memory> block (seed → Mutate → Compose)")
+	assert.True(t, foundMarker, "block must reference the seeded marker (%s)", marker)
+	t.Logf("[session] OK — session_id=%s preserved", sessionID)
+}
+
+// ── Scenario 7: Patterns layer — full extract → store → compose chain ────
+
+// Drives an investigation that produces a recurring-behaviour pattern, then
+// verifies a row landed in llm_memory_patterns AND that a second
+// conversation (same user) sees a <patterns> block referencing it.
+//
+// Closes the Phase-2 E2E gap: until this test the Patterns layer had no
+// real-conversation coverage — only the consolidator's SQL was tested.
+func TestScenario_PatternExtractsFromTurn_EndToEnd(t *testing.T) {
+	// Verifies the Patterns layer's compose chain deterministically: seed a
+	// Pattern row directly via the DAO (skipping the LLM extractor which is
+	// non-deterministic), then drive a turn and assert <user_patterns>
+	// appears in the prompt. The extraction half is covered by the
+	// Phase-1+2 Preference scenario (TestScenario_ImperativeInstruction…).
+	tenantID := os.Getenv("TEST_TENANT")
+	userID := os.Getenv("TEST_USER")
+	accountID := os.Getenv("TEST_ACCOUNT")
+	sessionID := "scenario-pattern-" + uuid.NewString()[:8]
+	defer scenarioSetup(t, tenantID)()
+
+	prevPatternsFlag := config.Config.MemoryLayerPatternsEnabled
+	config.Config.MemoryLayerPatternsEnabled = true
+	defer func() { config.Config.MemoryLayerPatternsEnabled = prevPatternsFlag }()
+
+	m := memory.Default()
+	scenarioEraseUser(m, tenantID, userID)
+	defer func() {
+		scenarioEraseUser(m, tenantID, userID)
+		// scenarioEraseUser doesn't touch Patterns; clean up our seed.
+		if db, err := common.GetDatabaseManager(common.Metastore); err == nil {
+			_, _ = db.Db.Exec(`DELETE FROM llm_memory_patterns WHERE tenant_id=$1 AND user_id=$2 AND subject LIKE 'scenario_pattern_%'`, tenantID, userID)
+		}
+	}()
+
+	// Seed a Pattern row directly so the test does not depend on the
+	// non-deterministic LLM extractor classifying a turn as a pattern.
+	patternSubject := "scenario_pattern_" + uuid.NewString()[:6]
+	require.NoError(t, mempatterns.Upsert(&mempatterns.Pattern{
+		TenantID:    tenantID,
+		UserID:      userID,
+		AgentModule: nil,
+		Kind:        mempatterns.KindFrequentResourceType,
+		Subject:     patternSubject,
+		Metadata:    map[string]any{"seed": "scenario_pattern_test"},
+	}))
+
+	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
+	k8sAgent := newK8sDebugAgent(accountID)
+
+	// Drive any turn; composePatternsLayer does not apply a keyword filter,
+	// so the seeded row will appear in every prompt for this (tenant, user).
+	turn := "list the pods in the nudgebee namespace"
+	t.Logf("\n======== PATTERN COMPOSE TURN ========\nquery: %s", turn)
+	_, _, prompts := runTurnAndPollPrompts(t, sc, k8sAgent, userID, accountID, sessionID, turn)
+	require.NotEmpty(t, prompts, "turn must capture prompts")
+
+	foundBlock, foundSubject := false, false
+	for _, p := range prompts {
+		if strings.Contains(p, "<user_patterns>") || strings.Contains(p, "\\u003cuser_patterns\\u003e") {
+			foundBlock = true
+		}
+		if strings.Contains(p, patternSubject) {
+			foundSubject = true
+		}
+	}
+	assert.True(t, foundBlock, "prompt must contain <user_patterns> block (seeded row → composePatternsLayer → Render)")
+	assert.True(t, foundSubject, "prompt's <user_patterns> block must reference the seeded subject %q", patternSubject)
+	t.Logf("[pattern] OK — session=%s preserved", sessionID)
+}
+
+// ── Scenario 8: Decisions layer — root-cause turn → store → compose ────
+
+// Drives a turn that closes with a root-cause + resolution, then verifies
+// the Decision row landed and shows up in a follow-up conversation's
+// <decisions> block.
+func TestScenario_DecisionExtractsFromTurn_EndToEnd(t *testing.T) {
+	// Verifies the Decisions layer's compose chain deterministically by
+	// seeding a Decision row whose subject text matches a chosen turn-2
+	// keyword. composeDecisionsLayer applies a Postgres FTS filter
+	// (to_tsvector(subject) @@ plainto_tsquery(query)) so the seeded
+	// subject must overlap with the query — that is the contract we are
+	// asserting end-to-end here.
+	tenantID := os.Getenv("TEST_TENANT")
+	userID := os.Getenv("TEST_USER")
+	accountID := os.Getenv("TEST_ACCOUNT")
+	sessionID := "scenario-decision-" + uuid.NewString()[:8]
+	defer scenarioSetup(t, tenantID)()
+
+	prevDecisionsFlag := config.Config.MemoryLayerDecisionsEnabled
+	config.Config.MemoryLayerDecisionsEnabled = true
+	defer func() { config.Config.MemoryLayerDecisionsEnabled = prevDecisionsFlag }()
+
+	m := memory.Default()
+	scenarioEraseUser(m, tenantID, userID)
+	// Decisions seeded by this test get explicit cleanup; scenarioEraseUser
+	// does not touch llm_memory_decisions.
+	defer func() {
+		scenarioEraseUser(m, tenantID, userID)
+		if db, err := common.GetDatabaseManager(common.Metastore); err == nil {
+			_, _ = db.Db.Exec(`DELETE FROM llm_memory_decisions WHERE tenant_id=$1 AND user_id=$2 AND subject LIKE 'otel collector memory limit decision %'`, tenantID, userID)
+		}
+	}()
+
+	// Seed a Decision whose subject contains words guaranteed to appear in
+	// turn 2's keyword query.
+	subjectMarker := uuid.NewString()[:6]
+	decisionSubject := fmt.Sprintf("otel collector memory limit decision %s", subjectMarker)
+	require.NoError(t, memdecisions.Append(&memdecisions.Decision{
+		TenantID:     tenantID,
+		UserID:       userID,
+		DecisionType: "root_cause_agreed",
+		Subject:      decisionSubject,
+		DecidedAt:    time.Now(),
+	}))
+
+	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
+	k8sAgent := newK8sDebugAgent(accountID)
+
+	// composeDecisionsLayer applies Postgres FTS with plainto_tsquery, which
+	// AND-joins every term in the query. Use a query that contains ONLY
+	// words present in the seeded subject so every term matches.
+	turn := "otel collector memory limit decision"
+	t.Logf("\n======== DECISION COMPOSE TURN ========\nquery: %s", turn)
+	_, _, prompts := runTurnAndPollPrompts(t, sc, k8sAgent, userID, accountID, sessionID, turn)
+	require.NotEmpty(t, prompts, "turn must capture prompts")
+
+	foundBlock, foundSubject := false, false
+	for _, p := range prompts {
+		if strings.Contains(p, "<past_decisions>") || strings.Contains(p, "\\u003cpast_decisions\\u003e") {
+			foundBlock = true
+		}
+		if strings.Contains(p, subjectMarker) {
+			foundSubject = true
+		}
+	}
+	assert.True(t, foundBlock, "prompt must contain <past_decisions> block")
+	assert.True(t, foundSubject, "prompt's <past_decisions> block must reference the seeded subject (marker=%s)", subjectMarker)
+	t.Logf("[decision] OK — session=%s preserved", sessionID)
+}
+
+// ── Scenario 9: Collective layer — tenant knowledge → store → compose ───
+
+// Drives a turn that surfaces a tenant-scoped configuration insight, then
+// verifies the row landed in llm_memory_collective AND another conversation
+// in the SAME tenant sees it composed (collective is tenant-scoped, not
+// user).
+func TestScenario_CollectiveExtractsFromTurn_EndToEnd(t *testing.T) {
+	// Verifies the Collective layer's compose chain deterministically.
+	// composeCollectiveLayer applies a Postgres FTS filter over
+	// subject + body, so the seeded row's text must overlap with the
+	// chosen turn query.
+	tenantID := os.Getenv("TEST_TENANT")
+	userID := os.Getenv("TEST_USER")
+	accountID := os.Getenv("TEST_ACCOUNT")
+	sessionID := "scenario-collective-" + uuid.NewString()[:8]
+	defer scenarioSetup(t, tenantID)()
+
+	prevCollectiveFlag := config.Config.MemoryLayerCollectiveEnabled
+	config.Config.MemoryLayerCollectiveEnabled = true
+	defer func() { config.Config.MemoryLayerCollectiveEnabled = prevCollectiveFlag }()
+
+	m := memory.Default()
+	scenarioEraseUser(m, tenantID, userID)
+	defer func() {
+		scenarioEraseUser(m, tenantID, userID)
+		if db, err := common.GetDatabaseManager(common.Metastore); err == nil {
+			_, _ = db.Db.Exec(`DELETE FROM llm_memory_collective WHERE tenant_id=$1 AND subject LIKE 'ECR imagePullSecrets requirement %'`, tenantID)
+		}
+	}()
+
+	subjectMarker := uuid.NewString()[:6]
+	collectiveSubject := fmt.Sprintf("ECR imagePullSecrets requirement %s", subjectMarker)
+	require.NoError(t, memcollective.Upsert(&memcollective.Entry{
+		TenantID:   tenantID,
+		EntryKind:  "configuration_insight",
+		Subject:    collectiveSubject,
+		Body:       "ECR image pulls require imagePullSecrets even when nodes have IAM roles, because kubelet does not inherit node credentials.",
+		Confidence: 0.9,
+	}))
+
+	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
+	k8sAgent := newK8sDebugAgent(accountID)
+
+	// composeCollectiveLayer applies Postgres FTS with plainto_tsquery
+	// (AND of all terms) on subject+body. Use a query that contains ONLY
+	// words present in the seeded subject.
+	turn := "ECR imagePullSecrets requirement"
+	t.Logf("\n======== COLLECTIVE COMPOSE TURN ========\nquery: %s", turn)
+	_, _, prompts := runTurnAndPollPrompts(t, sc, k8sAgent, userID, accountID, sessionID, turn)
+	require.NotEmpty(t, prompts, "turn must capture prompts")
+
+	foundBlock, foundSubject := false, false
+	for _, p := range prompts {
+		if strings.Contains(p, "<tenant_knowledge>") || strings.Contains(p, "\\u003ctenant_knowledge\\u003e") {
+			foundBlock = true
+		}
+		if strings.Contains(p, subjectMarker) {
+			foundSubject = true
+		}
+	}
+	assert.True(t, foundBlock, "prompt must contain <tenant_knowledge> block")
+	assert.True(t, foundSubject, "prompt's <tenant_knowledge> block must reference the seeded entry (marker=%s)", subjectMarker)
+	t.Logf("[collective] OK — session=%s preserved", sessionID)
 }

@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,7 @@ func init() {
 	playbooks.RegisterAction("cloud_list_metrics", &cloudMetricsAction{})
 	playbooks.RegisterAction("cloud_logs", &cloudLogAction{})
 	playbooks.RegisterAction("cloud_gcp_audit_log", &cloudGCPAuditLogAction{})
+	playbooks.RegisterAction("cloud_deployment_diff", &cloudDeploymentDiffAction{})
 	playbooks.RegisterAction("cloud_service_map", &cloudServiceMapAction{})
 	playbooks.RegisterAction("cloud_performance_insights", &cloudPerformanceInsightsAction{})
 	playbooks.RegisterAction("cloud_azure_activity_log", &cloudAzureActivityLogAction{})
@@ -1218,6 +1220,11 @@ type cloudLogsActionParams struct {
 	Limit         *int64     `json:"limit"`
 	LogMetricName string     `json:"log_metric_name" mapstructure:"log_metric_name"`
 	FilterPattern string     `json:"filter_pattern" mapstructure:"filter_pattern"`
+	// GCP generic-scope context forwarded to the collector's scope resolver.
+	ResourceType   string            `json:"resource_type" mapstructure:"resource_type"`
+	ResourceLabels map[string]string `json:"resource_labels" mapstructure:"resource_labels"`
+	MetricType     string            `json:"metric_type" mapstructure:"metric_type"`
+	AlertType      string            `json:"alert_type" mapstructure:"alert_type"`
 }
 
 func (a *cloudLogAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
@@ -1257,8 +1264,13 @@ func (a *cloudLogAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) boo
 	// GCP — Cloud Logging is global, so gcp_region is NOT required to query logs.
 	// Many GCP resources (HTTP load balancers, App Engine, log-based alerts) carry no
 	// region; gating on region dropped their evidence entirely.
+	// Fire for ANY GCP event carrying a monitored-resource type. The collector resolves
+	// the query scope from the resource (resource.labels / log-based metric / SLO
+	// service.get) and returns nil when nothing resolves, so this is safe and covers the
+	// resource types the old per-service gating left evidence-starved (gae_app, l7_lb, gke).
 	if labels["gcp_account"] != "" || labels["gcp_project_id"] != "" {
-		// User-defined log-based metric alerts: the metric's own filter scopes the logs.
+		// User-defined log-based metric alerts: the metric's own filter scopes the logs,
+		// even when the alert carries no monitored-resource type.
 		if strings.HasPrefix(labels["gcp_metric_type"], "logging.googleapis.com/user/") {
 			return true
 		}
@@ -1266,9 +1278,8 @@ func (a *cloudLogAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) boo
 		if labels["gcp_alert_type"] == "log" {
 			return true
 		}
-		// Metric alerts with a real (non-incident) resource identifier and a known
-		// service we can scope the log query by.
-		if gcpHasRealResourceInstance(labels) && labels["gcp_service_name"] != "" {
+		resourceType := labels["gcp_event_resource_type"]
+		if resourceType != "" && resourceType != "unknown" {
 			return true
 		}
 	}
@@ -1285,19 +1296,43 @@ func gcpHasRealResourceInstance(labels map[string]string) bool {
 	return inst != "" && inst != labels["gcp_incident_id"]
 }
 
+// gcpResourceLabels reconstructs the monitored resource's labels (the incident
+// processor stores each alert.Resource.Labels[k] as event label "resource_<k>") so
+// the collector's scope resolver can build a resource-scoped Cloud Logging filter.
+func gcpResourceLabels(labels map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range labels {
+		if v == "" {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(k, "resource_"); ok {
+			out[rest] = v
+		}
+	}
+	return out
+}
+
 func (a *cloudLogAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
 	labels := ctx.GetEvent().Labels
 
-	// Handle GCP (metric alerts with a resource, native log alerts, or user-defined
-	// log-based metric alerts). Cloud Logging is global, so gcp_region is not required.
+	// Handle GCP. Cloud Logging is global, so gcp_region is not required. Fire for ANY
+	// GCP event with a monitored-resource type: the collector resolves the query scope
+	// from the resource (resource.labels / log-based metric / SLO service.get) and
+	// returns nil when nothing resolves, so broad firing is safe. This replaces the old
+	// per-service gating that left most resource types (gae_app, l7_lb, gke) evidence-starved.
+	// User-defined log-based metric alerts and native log alerts are also handled here even
+	// when they carry no monitored-resource type: their metric filter / log scope still
+	// yields useful evidence (kept in sync with CanAutoExecute).
+	resourceType := labels["gcp_event_resource_type"]
 	gcpLogMetric := strings.HasPrefix(labels["gcp_metric_type"], "logging.googleapis.com/user/")
+	gcpLogAlert := labels["gcp_alert_type"] == "log"
 	if (labels["gcp_account"] != "" || labels["gcp_project_id"] != "") &&
-		(gcpLogMetric || labels["gcp_alert_type"] == "log" || (gcpHasRealResourceInstance(labels) && labels["gcp_service_name"] != "")) {
+		((resourceType != "" && resourceType != "unknown") || gcpLogMetric || gcpLogAlert) {
 
 		// gcp_event_instance falls back to the incident ID when the alert payload has
 		// no resource-scoped identifier. Scoping a per-service log filter by the
 		// incident ID matches nothing, so drop it and let the query scope by the
-		// service and/or the log-based metric's own filter instead.
+		// service and/or the resolver's resource scope instead.
 		resourceID := labels["gcp_event_instance"]
 		if resourceID == labels["gcp_incident_id"] {
 			resourceID = ""
@@ -1307,6 +1342,12 @@ func (a *cloudLogAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playb
 			"resource_id":  resourceID,
 			"region":       labels["gcp_region"],
 			"service_name": labels["gcp_service_name"],
+			// Generic-scope context: lets the collector resolve scope when the
+			// per-service / log-metric path scopes nothing.
+			"resource_type":   resourceType,
+			"resource_labels": gcpResourceLabels(labels),
+			"metric_type":     labels["gcp_metric_type"],
+			"alert_type":      labels["gcp_alert_type"],
 		}
 
 		if resourceID != "" {
@@ -1438,8 +1479,8 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 		return nil, errors.New("account_id is required")
 	}
 
-	if params.LogGroupName == "" && params.ServiceName == "" && params.ResourceId == "" {
-		return nil, errors.New("log_group_name or (service_name and resource_id) is required")
+	if params.LogGroupName == "" && params.ServiceName == "" && params.ResourceId == "" && params.ResourceType == "" {
+		return nil, errors.New("log_group_name, (service_name and resource_id), or resource_type is required")
 	}
 
 	if params.StartTime == nil && ctx.GetEvent().StartedAt != nil {
@@ -1470,16 +1511,20 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 	resourceResp, err := QueryLogs(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), QueryLogsRequest{
 		AccountId: params.AccountId,
 		Query: LogQuery{
-			Region:        params.Region,
-			LogGroupName:  params.LogGroupName,
-			ServiceName:   params.ServiceName,
-			ResourceId:    params.ResourceId,
-			QueryString:   query,
-			StartTime:     params.StartTime,
-			EndTime:       params.EndTime,
-			Limit:         params.Limit,
-			LogMetricName: params.LogMetricName,
-			FilterPattern: params.FilterPattern,
+			Region:         params.Region,
+			LogGroupName:   params.LogGroupName,
+			ServiceName:    params.ServiceName,
+			ResourceId:     params.ResourceId,
+			QueryString:    query,
+			StartTime:      params.StartTime,
+			EndTime:        params.EndTime,
+			Limit:          params.Limit,
+			LogMetricName:  params.LogMetricName,
+			FilterPattern:  params.FilterPattern,
+			ResourceType:   params.ResourceType,
+			ResourceLabels: params.ResourceLabels,
+			MetricType:     params.MetricType,
+			AlertType:      params.AlertType,
 		},
 	})
 
@@ -1581,7 +1626,16 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 		}
 	}
 
-	response := playbooks.NewPlaybookActionResponseJson(map[string]any{"data": logoutput}, map[string]any{}, insights, metadata)
+	// Propagate the caller-provided card title (e.g. "Logs For - <svc>", or
+	// "Recent Changes & Deployments" for the audit-log variant) into additional_info
+	// so the evidence card is labeled correctly. Without this the title set in
+	// rawParams is dropped and every variant falls back to a generic "Cloud Logs".
+	additionalInfo := map[string]any{}
+	if title, ok := rawParams["title"].(string); ok && title != "" {
+		additionalInfo["title"] = title
+	}
+
+	response := playbooks.NewPlaybookActionResponseJson(map[string]any{"data": logoutput}, additionalInfo, insights, metadata)
 	response.Labels = labels
 	return response, err
 }
@@ -1641,6 +1695,191 @@ func (a *cloudGCPAuditLogAction) AutoExecute(ctx playbooks.PlaybookActionContext
 	return a.Execute(ctx, rawParams)
 }
 
+// cloudDeploymentDiffResponse renders as the same before/after "Last Deployment
+// Change" card the K8s path uses (LastDeploymentCard). GetFormatName() == "diff"
+// makes the evidence's top-level `type` == "diff" (the card's render gate), and the
+// marshaled struct supplies the `data:{old,new}` and `start_at` it reads.
+type cloudDeploymentDiffResponse struct {
+	Data           map[string]string                         `json:"data"`     // {old, new} revision spec YAML
+	StartAt        *time.Time                                `json:"start_at"` // newest revision create time -> "Deployed X ago"
+	AdditionalInfo map[string]any                            `json:"additional_info"`
+	Insight        []playbooks.PlaybookActionResponseInsight `json:"insight"`
+	Metadata       map[string]any                            `json:"metadata"`
+}
+
+func (r cloudDeploymentDiffResponse) GetFormatName() string { return "diff" }
+func (r cloudDeploymentDiffResponse) GetData() any          { return r.Data }
+func (r cloudDeploymentDiffResponse) GetAdditionalInfo() map[string]any {
+	return r.AdditionalInfo
+}
+func (r cloudDeploymentDiffResponse) GetInsights() []playbooks.PlaybookActionResponseInsight {
+	return r.Insight
+}
+
+// cloudDeploymentDiffAction surfaces the most recent Cloud Run deployment as a
+// before/after spec diff (the "what changed" signal for a deploy-driven incident),
+// mirroring the K8s LastDeploymentCard. It diffs a service's two most-recent
+// revisions (immutable spec snapshots). Generic across every Cloud Run service.
+type cloudDeploymentDiffAction struct{}
+
+func (a *cloudDeploymentDiffAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
+	labels := ctx.GetEvent().Labels
+	// Cloud Run is the deploy-driven availability case. A real per-service identifier
+	// is required (the multi-service deploy-notification alert has none — its audit
+	// list card is the right evidence there, not a single-service diff).
+	if labels["gcp_event_resource_type"] != "cloud_run_revision" {
+		return false
+	}
+	return gcpCloudRunServiceName(labels) != "" && gcpCloudRunRegion(labels) != ""
+}
+
+func (a *cloudDeploymentDiffAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
+	labels := ctx.GetEvent().Labels
+	serviceName := gcpCloudRunServiceName(labels)
+	region := gcpCloudRunRegion(labels)
+	if serviceName == "" || region == "" {
+		return nil, nil
+	}
+
+	accountId, err := getCloudAccountIdByNumber(labels["gcp_account"], ctx.GetTenantId())
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			ctx.GetLogger().Warn("cloud_deployment_diff: could not find cloud account",
+				"account_number", labels["gcp_account"], "error", err)
+		}
+		return nil, nil
+	}
+
+	return a.Execute(ctx, map[string]any{
+		"account_id":   accountId,
+		"service_name": serviceName,
+		"region":       region,
+	})
+}
+
+func (a *cloudDeploymentDiffAction) Execute(ctx playbooks.PlaybookActionContext, rawParams map[string]any) (playbooks.PlaybookActionResponse, error) {
+	accountId, _ := rawParams["account_id"].(string)
+	serviceName, _ := rawParams["service_name"].(string)
+	region, _ := rawParams["region"].(string)
+	if accountId == "" || serviceName == "" || region == "" {
+		return nil, errors.New("account_id, service_name and region are required")
+	}
+
+	limit := int32(2)
+	resp, err := QueryDeploymentDiff(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), QueryDeploymentDiffRequest{
+		AccountId: accountId,
+		Query: DeploymentDiffQuery{
+			Region:      region,
+			ServiceName: serviceName,
+			Limit:       &limit,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Need at least two revisions for a before/after; a single revision is a brand-new
+	// service with no "change" to show.
+	if len(resp.Revisions) < 2 {
+		return nil, nil
+	}
+
+	newest := resp.Revisions[0]
+	prev := resp.Revisions[1]
+
+	deployedAt := time.UnixMilli(newest.CreateTime).UTC()
+
+	insights := []playbooks.PlaybookActionResponseInsight{}
+	if started := ctx.GetEvent().StartedAt; started != nil && newest.CreateTime > 0 {
+		delta := started.Sub(deployedAt)
+		if delta >= 0 {
+			sev := "info"
+			// A deploy shortly before the incident is the prime suspect.
+			if delta < time.Hour {
+				sev = "warning"
+			}
+			insights = append(insights, playbooks.PlaybookActionResponseInsight{
+				Message:  fmt.Sprintf("Revision %s deployed %s before the incident.", newest.Name, formatDeployDelta(delta)),
+				Severity: sev,
+			})
+		}
+	}
+
+	return cloudDeploymentDiffResponse{
+		Data: map[string]string{
+			"old": prev.SpecYAML,
+			"new": newest.SpecYAML,
+		},
+		StartAt: &deployedAt,
+		AdditionalInfo: map[string]any{
+			"title":       "Last Deployment Change",
+			"action_name": "cloud_deployment_diff",
+		},
+		Insight: insights,
+		Metadata: map[string]any{
+			"service_name":      serviceName,
+			"region":            region,
+			"new_revision":      newest.Name,
+			"previous_revision": prev.Name,
+			"deployed_by":       newest.Creator,
+		},
+	}, nil
+}
+
+// gcpCloudRunServiceName returns the specific Cloud Run service name (e.g.
+// "frontoffice"), NOT the GCP product label gcp_service_name (== "Cloud Run").
+// resource_service_name is the canonical monitored-resource label; gcp_event_instance
+// is the fallback the log enricher uses, guarded against the incident-id fallback.
+func gcpCloudRunServiceName(labels map[string]string) string {
+	if v := labels["resource_service_name"]; v != "" {
+		return v
+	}
+	if v := labels["gcp_event_instance"]; v != "" && v != labels["gcp_incident_id"] {
+		return v
+	}
+	return ""
+}
+
+func gcpCloudRunRegion(labels map[string]string) string {
+	if v := labels["gcp_region"]; v != "" {
+		return v
+	}
+	return labels["resource_location"]
+}
+
+// formatDeployDelta renders a coarse human duration for the deploy-before-incident gap.
+func formatDeployDelta(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+	return fmt.Sprintf("%dd %dh", int(d.Hours())/24, int(d.Hours())%24)
+}
+
+// summarizeLogBody reduces a log body to a human-readable one-liner for the insight
+// highlight. Structured JSON payloads (common for Cloud Run / app logs) are collapsed
+// to their inner message field so the highlight reads "ERROR: <message>" instead of
+// dumping the whole JSON record. Non-JSON bodies are returned unchanged.
+func summarizeLogBody(body string) string {
+	trimmed := strings.TrimSpace(body)
+	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+		var parsed map[string]any
+		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
+			for _, k := range []string{"message", "msg", "body", "error", "event", "log"} {
+				if v, ok := parsed[k].(string); ok && strings.TrimSpace(v) != "" {
+					return v
+				}
+			}
+		}
+	}
+	return body
+}
+
 func actionLogExtractErrorPatterns(logs []map[string]any, maxErrors int) []playbooks.PlaybookActionResponseInsight {
 	var insights []playbooks.PlaybookActionResponseInsight
 	seenMessages := make(map[string]bool) // Track distinct log messages
@@ -1678,7 +1917,7 @@ func actionLogExtractErrorPatterns(logs []map[string]any, maxErrors int) []playb
 				}
 
 				insights = append(insights, playbooks.PlaybookActionResponseInsight{
-					Message:  fmt.Sprintf("%s:%s", severityText, body),
+					Message:  fmt.Sprintf("%s: %s", severityText, summarizeLogBody(body)),
 					Severity: "High",
 				})
 				seenMessages[body] = true

@@ -547,6 +547,84 @@ var nodeTypeLogoMap = map[NodeType]string{
 	NodeTypeCRD:                "crd",
 }
 
+// azureServiceLogoMap maps an Azure resource-provider type (the lowercased `service_name`
+// property, e.g. "microsoft.compute/virtualmachines") to a canonical logo id consumed by
+// LangTypeIcon.jsx. Azure provider strings match none of the AWS/GCP/language heuristics in
+// ComputeLogoID, so without this table every Azure node falls through to the raw service_name
+// (which the frontend can't render) and shows no logo. Unmapped Azure resources fall back to
+// the generic "azure-resource" id so no Azure node is ever left blank.
+var azureServiceLogoMap = map[string]string{
+	// Compute
+	"microsoft.compute/virtualmachines":         "azure-vm",
+	"microsoft.compute/virtualmachinescalesets": "azure-vmss",
+	"microsoft.compute/disks":                   "azure-disk",
+	"microsoft.compute/snapshots":               "azure-snapshot",
+	"microsoft.compute/images":                  "azure-image",
+	"microsoft.compute/galleries":               "azure-compute-gallery",
+	"virtual machines":                          "azure-vm", // reservation-order entries carry a friendly name
+	// Networking
+	"microsoft.network/virtualnetworks":         "azure-vnet",
+	"microsoft.network/virtualnetworks/subnets": "azure-subnet",
+	"microsoft.network/networksecuritygroups":   "azure-nsg",
+	"microsoft.network/networkinterfaces":       "azure-nic",
+	"microsoft.network/publicipaddresses":       "azure-public-ip",
+	"microsoft.network/privateendpoints":        "azure-private-endpoint",
+	"microsoft.network/privatednszones":         "azure-dns",
+	"microsoft.network/dnszones":                "azure-dns",
+	"microsoft.network/loadbalancers":           "azure-lb",
+	"microsoft.network/applicationgateways":     "azure-appgw",
+	// Storage
+	"microsoft.storage/storageaccounts":              "azure-storage",
+	"microsoft.storage/storageaccounts/fileservices": "azure-files",
+	"storage": "azure-storage", // reservation-order entries carry a friendly name
+	// Web / App Service
+	"microsoft.web/sites":       "azure-app-service",
+	"microsoft.web/serverfarms": "azure-app-service-plan",
+	"microsoft.web/staticsites": "azure-static-app",
+	// Identity / Security
+	"microsoft.keyvault/vaults":                        "azure-key-vault",
+	"microsoft.managedidentity/userassignedidentities": "azure-managed-identity",
+	"microsoft.recoveryservices/vaults":                "azure-recovery-vault",
+	// Integration / Messaging
+	"microsoft.servicebus/namespaces": "azure-service-bus",
+	"microsoft.eventhub/namespaces":   "azure-event-hub",
+	"microsoft.eventgrid/topics":      "azure-event-grid",
+	"microsoft.logic/workflows":       "azure-logic-app",
+	// Containers
+	"microsoft.containerregistry/registries":     "azure-acr",
+	"microsoft.containerservice/managedclusters": "azure-aks",
+	// Databases / Cache
+	"microsoft.dbforpostgresql/flexibleservers": "azure-postgresql",
+	"microsoft.dbformysql/flexibleservers":      "azure-mysql",
+	"microsoft.documentdb/databaseaccounts":     "azure-cosmos-db",
+	"microsoft.sql/servers":                     "azure-sql",
+	"microsoft.cache/redis":                     "azure-cache-redis",
+	// Analytics / AI / Automation
+	"microsoft.databricks/workspaces":              "azure-databricks",
+	"microsoft.cognitiveservices/accounts":         "azure-cognitive-services",
+	"microsoft.datafactory/factories":              "azure-data-factory",
+	"microsoft.machinelearningservices/workspaces": "azure-machine-learning",
+	"microsoft.automation/automationaccounts":      "azure-automation",
+	"microsoft.synapse/workspaces":                 "azure-synapse",
+	"microsoft.search/searchservices":              "azure-search",
+	"microsoft.monitor/accounts":                   "azure-monitor",
+	// Hybrid / Misc
+	"microsoft.hybridcompute/machines":              "azure-arc",
+	"microsoft.communication/communicationservices": "azure-communication",
+	"microsoft.saas/resources":                      "azure-marketplace",
+}
+
+// azureLogoID resolves an Azure node's logo id from its service_name property, falling back to
+// the generic "azure-resource" id for any Azure resource type not in azureServiceLogoMap. It
+// always returns a non-empty id so Azure nodes never render without a logo.
+func azureLogoID(properties map[string]interface{}) string {
+	serviceName := strings.ToLower(getNodeProp(properties, "service_name"))
+	if id, ok := azureServiceLogoMap[serviceName]; ok {
+		return id
+	}
+	return "azure-resource"
+}
+
 // getNodeProp safely retrieves a string property value from a node's properties map.
 // Returns "" if the map is nil, the key is absent, or the value is nil.
 func getNodeProp(properties map[string]interface{}, key string) string {
@@ -611,6 +689,14 @@ func ComputeLogoID(nodeType NodeType, source string, properties map[string]inter
 	}
 	if strings.Contains(engine, "sqlserver") || strings.Contains(engine, "sql_server") {
 		return "sqlserver"
+	}
+
+	// 1.5 Azure resource-provider types ("microsoft.compute/virtualmachines", ...) match none of
+	// the AWS/GCP/language heuristics below, so resolve them explicitly. azureLogoID always
+	// returns a non-empty id (generic "azure-resource" fallback), so Azure nodes never fall
+	// through to the raw service_name string the frontend can't render.
+	if strings.EqualFold(source, "azure") {
+		return azureLogoID(properties)
 	}
 
 	// 2. Node-type overrides — checked before service_name because RouteTable and SecurityGroup

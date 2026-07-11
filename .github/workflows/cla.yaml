@@ -1,0 +1,56 @@
+name: CLA Assistant
+
+# Verifies that every external contributor has signed the Nudgebee
+# Contributor License Agreement (CLA.md) before their pull request can be
+# merged. Signatures are recorded in the `cla-signatures` branch of this
+# repository, so CLA.md is the single source of truth — no external gist.
+#
+# One-time setup required (see LICENSING.md → CLA):
+#   - Create a Personal Access Token (classic, `repo` scope, or a fine-grained
+#     token with Contents + Pull requests read/write on this repo) and store it
+#     as the `CLA_SIGNATURES_TOKEN` repository secret. The default GITHUB_TOKEN
+#     cannot push to the signatures branch, so this PAT is required.
+#
+# To invalidate all existing signatures and force everyone to re-sign (e.g.
+# after a material CLA change), bump the version segment in `path-to-signatures`
+# (version1 -> version2). This is how we retire the prior (incorrectly-worded)
+# signatures and require a fresh sign against this CLA.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  cla-assistant:
+    runs-on: ubuntu-latest
+    steps:
+      - name: CLA Assistant
+        if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
+        uses: contributor-assistant/github-action@v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT with rights to commit to the signatures branch of this repo.
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_SIGNATURES_TOKEN }}
+        with:
+          # Signature ledger. Bump version1 -> version2 to invalidate all
+          # prior signatures and require everyone to re-sign.
+          path-to-signatures: signatures/version1/cla.json
+          # CLA.md in this repo is the document contributors agree to.
+          path-to-document: https://github.com/nudgebee/nudgebee/blob/main/CLA.md
+          # Branch the signature ledger is committed to.
+          branch: cla-signatures
+          # The phrase a contributor comments to sign.
+          custom-pr-sign-comment: I have read the CLA Document and I hereby sign the CLA
+          custom-allsigned-prcomment: All contributors have signed the CLA. Thank you!
+          # Skip bots (they cannot sign). Can be overridden/extended via CLA_ALLOWLIST repository secret.
+          allowlist: ${{ secrets.CLA_ALLOWLIST || 'dependabot[bot],renovate[bot],*[bot]' }}
+          # Lock the PR conversation once merged so the signature record is stable.
+          lock-pullrequest-aftermerge: true

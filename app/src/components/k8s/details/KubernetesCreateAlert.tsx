@@ -14,7 +14,7 @@ import { toast as snackbar } from '@ui/Toast';
 import LinearLoader from '@components/k8s/common/LinearLoader';
 import DynamicForm from '@shared/forms/DynamicForm';
 import apiKubernetes1 from '@api1/kubernetes1';
-import CustomAccordion from '@shared/CustomAccordion';
+import { Accordion } from '@ui/Accordion';
 import { ds } from 'src/utils/colors';
 import CustomStepper from '@shared/navigation/CustomStepper';
 import apiAskNudgebee from '@api1/ask-nudgebee';
@@ -99,7 +99,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
     const fetchFunctions = async () => {
       try {
         const response = await apiAskNudgebee.listFunctions({ accountId });
-        setFunctions((response as any).res?.llm_functions || []);
+        setFunctions((response as any)?.res?.llm_functions || []);
       } catch (error) {
         console.error('Error fetching functions:', error);
       }
@@ -721,18 +721,6 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
     });
   };
 
-  const handleAccordionChange = (actionId: string) => (event: React.SyntheticEvent, isExpanded: boolean) => {
-    setExpandedAccordions((prev) => {
-      const newSet = new Set(prev);
-      if (isExpanded) {
-        newSet.add(actionId);
-      } else {
-        newSet.delete(actionId);
-      }
-      return newSet;
-    });
-  };
-
   const handleNext = () => {
     if (!validateCurrentStepAndShowErrors()) {
       snackbar.error('Please fill all required fields.');
@@ -964,7 +952,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                   }}
                 />
                 {errorDesc.promQL.length > 0 && (
-                  <Typography sx={{ color: 'red', fontSize: 'var(--ds-text-body-lg)', mt: ds.space[2] }}>{errorDesc.promQL}</Typography>
+                  <Typography sx={{ color: ds.red[500], fontSize: 'var(--ds-text-body-lg)', mt: ds.space[2] }}>{errorDesc.promQL}</Typography>
                 )}
                 {/* Validate Button & Success Indicator */}
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[4], mt: 'var(--ds-space-3)' }}>
@@ -1147,34 +1135,51 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                             <DragIndicator sx={{ fontSize: 20 }} />
                           </Box>
                           <Box flexGrow={1} sx={{ minWidth: 0 }}>
-                            <CustomAccordion
-                              title={formData[actionInstance.id]?.title || actionDetails.display_name || ''}
-                              description={actionDetails.description || ''}
-                              icon={actionDetails.icon || null}
-                              expanded={expandedAccordions.has(actionInstance.id)}
-                              onChange={handleAccordionChange(actionInstance.id)}
-                            >
-                              <Box
-                                sx={{
-                                  p: 'var(--ds-space-3) 0px',
-                                  display: 'flex',
-                                  flexDirection: 'column',
-                                  gap: 'var(--ds-space-4)',
-                                  maxWidth: '100%',
-                                  overflowX: 'hidden',
-                                }}
-                              >
-                                <DynamicForm
-                                  actionKey={actionInstance.id}
-                                  actionDetails={actionDetails}
-                                  onChange={handleFormChange}
-                                  errors={formErrors[actionInstance.id]}
-                                  initialValues={formData[actionInstance.id]}
-                                  accountId={accountId}
-                                  onClearError={(paramName) => clearFormError(actionInstance.id, paramName)}
-                                />
-                              </Box>
-                            </CustomAccordion>
+                            <Accordion
+                              items={[
+                                {
+                                  id: actionInstance.id,
+                                  label: formData[actionInstance.id]?.title || actionDetails.display_name || '',
+                                  description: actionDetails.description || undefined,
+                                  icon: actionDetails.icon || null,
+                                  body: (
+                                    <Box
+                                      sx={{
+                                        p: 'var(--ds-space-3) 0px',
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: 'var(--ds-space-4)',
+                                        maxWidth: '100%',
+                                        overflowX: 'hidden',
+                                      }}
+                                    >
+                                      <DynamicForm
+                                        actionKey={actionInstance.id}
+                                        actionDetails={actionDetails}
+                                        onChange={handleFormChange}
+                                        errors={formErrors[actionInstance.id]}
+                                        initialValues={formData[actionInstance.id]}
+                                        accountId={accountId}
+                                        onClearError={(paramName) => clearFormError(actionInstance.id, paramName)}
+                                      />
+                                    </Box>
+                                  ),
+                                },
+                              ]}
+                              expandedIds={expandedAccordions.has(actionInstance.id) ? [actionInstance.id] : []}
+                              onExpandedChange={(next) => {
+                                const isExpanded = next.includes(actionInstance.id);
+                                setExpandedAccordions((prev) => {
+                                  const nextSet = new Set(prev);
+                                  if (isExpanded) {
+                                    nextSet.add(actionInstance.id);
+                                  } else {
+                                    nextSet.delete(actionInstance.id);
+                                  }
+                                  return nextSet;
+                                });
+                              }}
+                            />
                           </Box>
                           <DsButton
                             tone='danger'

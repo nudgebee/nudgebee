@@ -53,8 +53,8 @@ const CertificateExpiryEvidence = ({ recommendation, estimatedSavings }: Certifi
   const countdownValue = daysUntilExpiry != null ? Math.max(0, Math.min(daysUntilExpiry, countdownMax)) : null;
 
   return (
-    <Box sx={{ p: '14px' }}>
-      <SectionTitle title='Certificate Expiry' muiIcon={<LockIcon sx={{ fontSize: '16px' }} />} />
+    <Box sx={{ p: ds.space.mul(0, 7) }}>
+      <SectionTitle title='Certificate Expiry' muiIcon={<LockIcon sx={{ fontSize: ds.text.title }} />} />
 
       {/* Urgency banner */}
       <Box
@@ -62,14 +62,14 @@ const CertificateExpiryEvidence = ({ recommendation, estimatedSavings }: Certifi
           display: 'flex',
           alignItems: 'center',
           gap: ds.space[3],
-          p: '14px',
+          p: ds.space.mul(0, 7),
           backgroundColor: urgencyBg,
           borderRadius: ds.radius.lg,
           border: `1px solid ${urgencyBorder}`,
           mb: ds.space[3],
         }}
       >
-        <UrgencyIcon sx={{ fontSize: '28px', color: urgencyColor }} />
+        <UrgencyIcon sx={{ fontSize: ds.text.display, color: urgencyColor }} />
         <Box sx={{ flex: 1 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[1] }}>
             <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: urgencyColor }}>{urgencyLabel}</Typography>
@@ -84,7 +84,7 @@ const CertificateExpiryEvidence = ({ recommendation, estimatedSavings }: Certifi
         </Box>
         {daysUntilExpiry != null && !isExpired && (
           <Box sx={{ textAlign: 'center', minWidth: '60px' }}>
-            <Typography sx={{ fontSize: '24px', fontWeight: ds.weight.semibold, color: urgencyColor }}>{daysUntilExpiry}</Typography>
+            <Typography sx={{ fontSize: ds.text.display, fontWeight: ds.weight.semibold, color: urgencyColor }}>{daysUntilExpiry}</Typography>
             <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>days left</Typography>
           </Box>
         )}

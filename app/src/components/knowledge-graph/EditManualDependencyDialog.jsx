@@ -21,7 +21,7 @@ import { Button } from '@ui/Button';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 import { toast as snackbar } from '@ui/Toast';
-import CustomTooltip from '@shared/CustomTooltip';
+import Tooltip from '@ui/Tooltip';
 import apiKnowledgeGraph from '@api1/knowledge-graph';
 import KgNodePicker from './KgNodePicker';
 import { ds } from 'src/utils/colors';
@@ -32,10 +32,12 @@ import { ds } from 'src/utils/colors';
 // them in one form was confusing operators ("do I fill ARN for a K8s pod?").
 const KIND_K8S = 'k8s';
 const KIND_CLOUD = 'cloud';
-// Third kind — Create-only convenience: operator picks an existing KG node
-// via three cascading dropdowns instead of typing identifiers. On submit
-// the picked UUID is pinned via kg_resolve_manual_dependency so the row
-// resolves on the first try. Edit mode never exposes this kind.
+// Third kind — operator picks an existing KG node via three cascading
+// dropdowns instead of typing identifiers. On submit the picked UUID is
+// pinned via kg_resolve_manual_dependency so the row resolves on the first
+// try. Available in both create and edit — in edit it re-pins the row to a
+// freshly chosen node, which is the clean way to fix a row whose stored
+// node_type doesn't round-trip into the typed K8s/Cloud form.
 const KIND_KG_PICK = 'kg-pick';
 
 // NodeType allowlist surfaced in the form, partitioned by kind. The backend
@@ -74,6 +76,11 @@ const K8S_NODE_TYPE_SET = new Set(K8S_NODE_TYPE_OPTIONS.map((o) => o.value));
 const deriveKind = (nodeType) => (nodeType && K8S_NODE_TYPE_SET.has(nodeType) ? KIND_K8S : KIND_CLOUD);
 
 const defaultNodeTypeForKind = (kind) => (kind === KIND_K8S ? K8S_NODE_TYPE_OPTIONS[0].value : CLOUD_NODE_TYPE_OPTIONS[0].value);
+
+// Endpoint identity fields compared to decide whether a side was edited.
+// When a side is untouched on edit we preserve its existing pin instead of
+// letting the backend resolver re-run and clobber it.
+const PIN_COMPARE_FIELDS = ['node_type', 'name', 'namespace', 'cluster', 'arn', 'account_id', 'region'];
 
 const RELATIONSHIP_OPTIONS = [
   { value: 'CALLS', label: 'CALLS' },
@@ -227,10 +234,16 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
       return;
     }
     if (row) {
-      // Edit mode never exposes KIND_KG_PICK — fall back to derived kind
-      // (K8S or CLOUD) so the operator sees the identifier-editing form.
+      // A side already pinned to a specific KG node (resolved_*_node_id set —
+      // e.g. created via "Pick from KG") re-opens on the Pick from KG tab
+      // showing that pinned node, so editing never silently flips it to the
+      // Cloud tab (issue #31789). The pre-set picked_node_id keeps the pin on
+      // save unless the operator re-picks. An unpinned/unresolved side falls
+      // back to the typed K8s/Cloud form derived from the stored node_type.
+      const sourceResolved = row.resolved_source_node_id ?? '';
+      const destResolved = row.resolved_dest_node_id ?? '';
       setForm({
-        source_kind: deriveKind(row.source_node_type),
+        source_kind: sourceResolved ? KIND_KG_PICK : deriveKind(row.source_node_type),
         source_node_type: row.source_node_type ?? 'K8sService',
         source_name: row.source_name ?? '',
         source_namespace: row.source_namespace ?? '',
@@ -240,8 +253,8 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
         source_region: row.source_region ?? '',
         source_picker_account_id: '',
         source_picker_node_type: '',
-        source_picked_node_id: '',
-        dest_kind: deriveKind(row.dest_node_type),
+        source_picked_node_id: sourceResolved,
+        dest_kind: destResolved ? KIND_KG_PICK : deriveKind(row.dest_node_type),
         dest_node_type: row.dest_node_type ?? 'K8sService',
         dest_name: row.dest_name ?? '',
         dest_namespace: row.dest_namespace ?? '',
@@ -251,7 +264,7 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
         dest_region: row.dest_region ?? '',
         dest_picker_account_id: '',
         dest_picker_node_type: '',
-        dest_picked_node_id: '',
+        dest_picked_node_id: destResolved,
         relationship_type: row.relationship_type ?? 'CALLS',
         notes: row.notes ?? '',
       });
@@ -259,6 +272,57 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
       setForm(BLANK);
     }
   }, [open, row]);
+
+  // For a side that opens pinned, resolve the pinned node's cloud account so
+  // the Account / Node type / Node dropdowns can DISPLAY the pin — their option
+  // lists still load lazily, only when the operator opens a dropdown. The row
+  // carries just the node UUID, so we fetch the node to learn its account +
+  // type. Best-effort: if the node or its account can't be resolved, the
+  // loading banner stays and the operator can re-pick from scratch.
+  useEffect(() => {
+    if (!open || !row || cloudAccounts.length === 0) {
+      return undefined;
+    }
+    let cancelled = false;
+    const hydrateSide = (prefix, resolvedId) => {
+      if (!resolvedId) {
+        return;
+      }
+      apiKnowledgeGraph
+        .getNode(resolvedId)
+        .then((res) => {
+          if (cancelled) {
+            return;
+          }
+          const node = res?.data?.data?.kg_get_node?.data;
+          const accountId = node?.cloud_account_id ?? '';
+          // Only drive the account dropdown if it's an account we list, else
+          // the Select would show a value with no matching option.
+          if (!accountId || !cloudAccounts.some((a) => a.id === accountId)) {
+            return;
+          }
+          setForm((prev) => {
+            // Bail if the operator already touched this side meanwhile.
+            if (prev[`${prefix}_kind`] !== KIND_KG_PICK || prev[`${prefix}_picked_node_id`] !== resolvedId || prev[`${prefix}_picker_account_id`]) {
+              return prev;
+            }
+            return {
+              ...prev,
+              [`${prefix}_picker_account_id`]: accountId,
+              [`${prefix}_picker_node_type`]: node.node_type || prev[`${prefix}_node_type`] || '',
+            };
+          });
+        })
+        .catch((err) => {
+          console.error('Failed to resolve pinned node for picker display:', err);
+        });
+    };
+    hydrateSide('source', row.resolved_source_node_id ?? '');
+    hydrateSide('dest', row.resolved_dest_node_id ?? '');
+    return () => {
+      cancelled = true;
+    };
+  }, [open, row, cloudAccounts]);
 
   const updateField = (field) => (next) => setForm((prev) => ({ ...prev, [field]: next }));
 
@@ -384,27 +448,45 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
         return;
       }
 
-      // Two-step pin for KG-pick: Create returned a row id; call
-      // kg_resolve_manual_dependency to pin the picked UUID(s) over the
-      // resolver's best-guess. SetResolvedNodes handles partial pin
-      // (picked one side, identifiers on the other) per Round-1 fix.
-      if (!isEdit) {
-        const createdId =
-          res?.data?.data?.kg_create_manual_dependency?.data?.row?.id ?? res?.data?.data?.kg_create_manual_dependency?.data?.id ?? null;
-        const sourcePin = form.source_kind === KIND_KG_PICK ? form.source_picked_node_id : '';
-        const destPin = form.dest_kind === KIND_KG_PICK ? form.dest_picked_node_id : '';
-        if (createdId && (sourcePin || destPin)) {
-          const pinRes = await apiKnowledgeGraph.resolveManualDependency({
-            id: createdId,
-            sourceNodeId: sourcePin || undefined,
-            destinationNodeId: destPin || undefined,
-          });
-          const pinErrors = pinRes?.data?.errors;
-          if (pinErrors?.length) {
-            snackbar.error('Created, but pinning to picked node failed: ' + (pinErrors[0]?.message ?? 'Unknown error'));
-            // Fall through to onSaved — the row exists, operator can fix
-            // via the Resolve panel.
-          }
+      // Pin step (kg_resolve_manual_dependency) — applies to create and edit.
+      // For create the row id comes back in the response; for edit we have it.
+      const targetId = isEdit
+        ? row.id
+        : res?.data?.data?.kg_create_manual_dependency?.data?.row?.id ?? res?.data?.data?.kg_create_manual_dependency?.data?.id ?? null;
+
+      // Per-side pin priority:
+      //   1. Pick-from-KG → the freshly picked UUID.
+      //   2. Edit + side untouched + already pinned → re-pin the existing
+      //      resolved node. updateManualDependency re-runs the resolver on
+      //      every save, which would otherwise clobber a pin on a side the
+      //      operator didn't edit (e.g. they only changed notes/relationship).
+      //   3. Otherwise → no pin; let the resolver run.
+      const sideUnchanged = (prefix) => isEdit && PIN_COMPARE_FIELDS.every((f) => (form[`${prefix}_${f}`] ?? '') === (row?.[`${prefix}_${f}`] ?? ''));
+      const pinFor = (prefix) => {
+        if (form[`${prefix}_kind`] === KIND_KG_PICK) {
+          return form[`${prefix}_picked_node_id`] || '';
+        }
+        if (sideUnchanged(prefix)) {
+          return row?.[`resolved_${prefix}_node_id`] || '';
+        }
+        return '';
+      };
+      const sourcePin = pinFor('source');
+      const destPin = pinFor('dest');
+      if (targetId && (sourcePin || destPin)) {
+        const pinRes = await apiKnowledgeGraph.resolveManualDependency({
+          id: targetId,
+          sourceNodeId: sourcePin || undefined,
+          destinationNodeId: destPin || undefined,
+        });
+        const pinErrors = pinRes?.data?.errors;
+        if (pinErrors?.length) {
+          snackbar.error(
+            (isEdit ? 'Updated, but pinning to picked node failed: ' : 'Created, but pinning to picked node failed: ') +
+              (pinErrors[0]?.message ?? 'Unknown error')
+          );
+          // Fall through to onSaved — the row exists, operator can fix
+          // via the Resolve panel.
         }
       }
 
@@ -420,15 +502,15 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
 
   return (
     <Modal width='md' title={isEdit ? 'Edit Manual Dependency' : 'New Manual Dependency'} open={open} handleClose={onClose} onClose={onClose}>
-      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, p: 2 }}>
-        <Typography sx={{ fontSize: '12px', color: ds?.text?.secondaryDark ?? '#6b7280', lineHeight: 1.5 }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4], p: ds.space[4] }}>
+        <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], lineHeight: 1.5 }}>
           Declare one service-to-service dependency. Pick the <strong>kind</strong> on each side — <strong>Kubernetes</strong> or{' '}
           <strong>Cloud</strong> to type identifiers, or <strong>Pick from KG</strong> to browse existing nodes via account / type / node dropdowns
           and pin the row directly. <strong>Cloud</strong> covers AWS, Azure, and GCP; Resource ID accepts an ARN, an Azure resource ID, or a GCP
           self-link. Cross-stack pairs (k8s → cloud) work as long as the cloud resource is in the Knowledge Graph.
         </Typography>
 
-        <Box sx={{ display: 'flex', gap: 3, alignItems: 'flex-start' }}>
+        <Box sx={{ display: 'flex', gap: ds.space[5], alignItems: 'flex-start' }}>
           <EndpointColumn
             label='Source'
             fields={form}
@@ -439,7 +521,6 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
             prefix='source'
             accountOptions={accountOptions}
             cloudAccounts={cloudAccounts}
-            isEdit={isEdit}
           />
           <Divider orientation='vertical' flexItem sx={{ alignSelf: 'stretch' }} />
           <EndpointColumn
@@ -452,11 +533,10 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
             prefix='dest'
             accountOptions={accountOptions}
             cloudAccounts={cloudAccounts}
-            isEdit={isEdit}
           />
         </Box>
 
-        <Box sx={{ display: 'flex', gap: 2 }}>
+        <Box sx={{ display: 'flex', gap: ds.space[4] }}>
           <Box sx={{ flex: '0 0 220px' }}>
             <FieldLabel text='Relationship' tooltip={TOOLTIPS.relationship} />
             <Select
@@ -472,7 +552,7 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
           </Box>
         </Box>
 
-        <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, pt: 0.5 }}>
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[2], pt: ds.space[1] }}>
           <Button tone='secondary' size='md' onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
@@ -498,31 +578,33 @@ EditManualDependencyDialog.propTypes = {
 //   - Kubernetes — type k8s identifiers (namespace, cluster).
 //   - Cloud — type cloud identifiers (resource ID, account, region). AWS / Azure / GCP.
 //   - Pick from KG — cascading dropdowns (account → type → node) for direct picking.
-//     Create-only; edit mode hides this button. On submit the picked UUID is
-//     pinned via kg_resolve_manual_dependency so the row resolves first try.
-const EndpointColumn = ({ label, fields, updateField, updateKind, updatePickerField, onPickNode, prefix, accountOptions, cloudAccounts, isEdit }) => {
+//     Available in create and edit. On submit the picked UUID is pinned via
+//     kg_resolve_manual_dependency so the row resolves first try.
+const EndpointColumn = ({ label, fields, updateField, updateKind, updatePickerField, onPickNode, prefix, accountOptions, cloudAccounts }) => {
   const get = (suffix) => fields[`${prefix}_${suffix}`] ?? '';
   const set = (suffix) => updateField(`${prefix}_${suffix}`);
   const kind = fields[`${prefix}_kind`] ?? KIND_K8S;
   const nodeTypeOptions = kind === KIND_K8S ? K8S_NODE_TYPE_OPTIONS : CLOUD_NODE_TYPE_OPTIONS;
+  // Display label for a pinned node (picked_node_id set) — seeds the Node
+  // dropdown and the brief "loading" banner so the picker reflects the pin
+  // instead of looking empty before its option lists are opened.
+  const selectedNodeLabel = kind === KIND_KG_PICK && get('picked_node_id') ? get('name') || get('picked_node_id') : '';
   return (
-    <Box sx={{ flex: '1 1 0', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1.25 }}>
-      <Typography sx={{ fontSize: '13px', fontWeight: 600, color: ds?.text?.secondary ?? '#374151' }}>{label}</Typography>
+    <Box sx={{ flex: '1 1 0', minWidth: 0, display: 'flex', flexDirection: 'column', gap: ds.space.mul(1, 2.5) }}>
+      <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.brand[500] }}>{label}</Typography>
 
       <Box>
         <FieldLabel text='Kind' tooltip={TOOLTIPS.kind} />
-        <Box sx={{ display: 'inline-flex', gap: 0.5, flexWrap: 'wrap' }}>
+        <Box sx={{ display: 'inline-flex', gap: ds.space[1], flexWrap: 'wrap' }}>
           <Button tone={kind === KIND_K8S ? 'primary' : 'secondary'} size='xs' onClick={() => updateKind(prefix)(KIND_K8S)}>
             Kubernetes
           </Button>
           <Button tone={kind === KIND_CLOUD ? 'primary' : 'secondary'} size='xs' onClick={() => updateKind(prefix)(KIND_CLOUD)}>
             Cloud
           </Button>
-          {!isEdit && (
-            <Button tone={kind === KIND_KG_PICK ? 'primary' : 'secondary'} size='xs' onClick={() => updateKind(prefix)(KIND_KG_PICK)}>
-              Pick from KG
-            </Button>
-          )}
+          <Button tone={kind === KIND_KG_PICK ? 'primary' : 'secondary'} size='xs' onClick={() => updateKind(prefix)(KIND_KG_PICK)}>
+            Pick from KG
+          </Button>
         </Box>
       </Box>
 
@@ -531,6 +613,7 @@ const EndpointColumn = ({ label, fields, updateField, updateKind, updatePickerFi
           pickedAccountId={get('picker_account_id')}
           pickedNodeType={get('picker_node_type')}
           pickedNodeId={get('picked_node_id')}
+          selectedLabel={selectedNodeLabel}
           cloudAccounts={cloudAccounts}
           onAccountChange={(next) => {
             updatePickerField(`${prefix}_picker_account_id`)(next);
@@ -576,7 +659,7 @@ const EndpointColumn = ({ label, fields, updateField, updateKind, updatePickerFi
                   onChange={set('arn')}
                 />
               </Box>
-              <Box sx={{ display: 'flex', gap: 1 }}>
+              <Box sx={{ display: 'flex', gap: ds.space[2] }}>
                 <Box sx={{ flex: '1 1 0', minWidth: 0 }}>
                   <FieldLabel text='Cloud account' tooltip={TOOLTIPS.cloudAccount} />
                   <Select
@@ -609,7 +692,6 @@ EndpointColumn.propTypes = {
   prefix: PropTypes.oneOf(['source', 'dest']).isRequired,
   accountOptions: PropTypes.array.isRequired,
   cloudAccounts: PropTypes.array.isRequired,
-  isEdit: PropTypes.bool.isRequired,
 };
 
 // Tiny helper for consistent field-label styling across the form. When
@@ -617,12 +699,12 @@ EndpointColumn.propTypes = {
 // hover surfaces the description — keeps the form chrome compact while
 // still self-documenting every field.
 const FieldLabel = ({ text, tooltip }) => (
-  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5 }}>
-    <Typography sx={{ fontSize: '12px', fontWeight: 500, color: ds?.text?.secondaryDark ?? '#6b7280' }}>{text}</Typography>
+  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], mb: ds.space[1] }}>
+    <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[500] }}>{text}</Typography>
     {tooltip && (
-      <CustomTooltip title={tooltip} placement='top'>
-        <InfoOutlinedIcon sx={{ fontSize: '14px', color: ds?.text?.secondaryDark ?? '#9ca3af', cursor: 'help' }} />
-      </CustomTooltip>
+      <Tooltip title={tooltip} placement='top'>
+        <InfoOutlinedIcon sx={{ fontSize: ds.text.bodyLg, color: ds.gray[500], cursor: 'help' }} />
+      </Tooltip>
     )}
   </Box>
 );

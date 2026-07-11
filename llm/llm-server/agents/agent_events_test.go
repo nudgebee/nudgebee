@@ -30,20 +30,20 @@ func TestCountEventsInResponse(t *testing.T) {
 func TestShouldSummarizeNow_ThresholdBoundary(t *testing.T) {
 	agent := AgentEvents{}
 
-	// ≤5 events should trigger auto-summarize
-	fiveEvents := `[{"event_id":"1"},{"event_id":"2"},{"event_id":"3"},{"event_id":"4"},{"event_id":"5"}]`
-	assert.True(t, agent.ShouldSummarizeNow("events_execute", fiveEvents))
+	// Small result sets (1-3 events) with full evidence auto-summarize.
+	threeEvents := `[{"event_id":"1"},{"event_id":"2"},{"event_id":"3"}]`
+	assert.True(t, agent.ShouldSummarizeNow("events_execute", threeEvents))
 
-	// >5 events should NOT auto-summarize (let ReAct loop handle)
-	sixEvents := `[{"event_id":"1"},{"event_id":"2"},{"event_id":"3"},{"event_id":"4"},{"event_id":"5"},{"event_id":"6"}]`
-	assert.False(t, agent.ShouldSummarizeNow("events_execute", sixEvents))
+	// >3 events should NOT auto-summarize (let ReAct loop handle)
+	fourEvents := `[{"event_id":"1"},{"event_id":"2"},{"event_id":"3"},{"event_id":"4"}]`
+	assert.False(t, agent.ShouldSummarizeNow("events_execute", fourEvents))
 
 	// anomaly_execute should also work
-	assert.True(t, agent.ShouldSummarizeNow("anomaly_execute", fiveEvents))
-	assert.False(t, agent.ShouldSummarizeNow("anomaly_execute", sixEvents))
+	assert.True(t, agent.ShouldSummarizeNow("anomaly_execute", threeEvents))
+	assert.False(t, agent.ShouldSummarizeNow("anomaly_execute", fourEvents))
 
 	// Non-event tools should never trigger summarize
-	assert.False(t, agent.ShouldSummarizeNow("some_other_tool", fiveEvents))
+	assert.False(t, agent.ShouldSummarizeNow("some_other_tool", threeEvents))
 
 	// Aggregated results (COUNT/GROUP BY) have no event_id — should NOT summarize
 	aggregatedResult := `[{"aggregation_key":"pod_oom_killer","event_count":77},{"aggregation_key":"crash_loop","event_count":60}]`

@@ -81,9 +81,12 @@ func (t KGTraverseTool) InputSchema() core.ToolSchema {
 				Enum:        []any{"downstream", "upstream", "both"},
 			},
 			"node_types": {
-				Type:        core.ToolSchemaTypeArray,
-				Description: `Filter the starting node type, e.g. ["Workload"], ["Namespace"], ["LoadBalancer"].`,
-				Items:       map[string]any{"type": "string"},
+				Type: core.ToolSchemaTypeArray,
+				Description: `Restrict node types. With query/name seeding it filters the STARTING node ` +
+					`(e.g. ["Workload"], ["LoadBalancer"]). With node_ids seeding it filters the RETURNED ` +
+					`neighbors — e.g. node_ids:[...] + node_types:["Database","Cache","MessageQueue"] keeps only ` +
+					`data-tier neighbors. Safe to combine with node_ids.`,
+				Items: map[string]any{"type": "string"},
 			},
 			"namespace": {
 				Type:        core.ToolSchemaTypeString,
@@ -107,7 +110,7 @@ func (t KGTraverseTool) InputSchema() core.ToolSchema {
 			},
 			"result_limit": {
 				Type:        core.ToolSchemaTypeInteger,
-				Description: "OPTIONAL. Cap on returned nodes. Default 50, max 200. truncated:true in the response means you hit the cap — refine before acting.",
+				Description: "OPTIONAL. Cap on returned nodes. Default 50, max 200 (alias: `limit`). truncated:true in the response means you hit the cap — raise this or refine before acting.",
 			},
 		},
 		Required: []string{"direction"},
@@ -187,17 +190,28 @@ func (t KGTraverseTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequ
 	// Seeding: node_ids (Mode 1) wins over query (Mode 2) when both present —
 	// IDs are unambiguous, names need a search round-trip.
 	if len(seedIDs) > 0 {
+		// Mode 1: explicit seed IDs. Here node_types is a NEIGHBOR include-filter
+		// (applied post-traversal), NOT a seed search — sending it as
+		// search_node_types would be rejected by the backend as mutually exclusive
+		// with node_ids. namespace/cluster have no neighbor-filter equivalent, so
+		// they don't apply when seeding by ID (they'd also trip the "not both" error).
 		apiParams["node_ids"] = seedIDs
-	} else if strings.Contains(parsed.Query, "%") {
-		apiParams["name_pattern"] = parsed.Query
+		if len(parsed.NodeTypes) > 0 {
+			apiParams["node_types"] = parsed.NodeTypes
+		}
 	} else {
-		apiParams["name"] = parsed.Query
-	}
-	if len(parsed.NodeTypes) > 0 {
-		apiParams["search_node_types"] = parsed.NodeTypes
-	}
-	if parsed.Namespace != "" {
-		apiParams["namespace"] = parsed.Namespace
+		// Mode 2: inline search. node_types/namespace scope the seed resolution.
+		if strings.Contains(parsed.Query, "%") {
+			apiParams["name_pattern"] = parsed.Query
+		} else {
+			apiParams["name"] = parsed.Query
+		}
+		if len(parsed.NodeTypes) > 0 {
+			apiParams["search_node_types"] = parsed.NodeTypes
+		}
+		if parsed.Namespace != "" {
+			apiParams["namespace"] = parsed.Namespace
+		}
 	}
 	if len(parsed.RelationshipTypes) > 0 {
 		apiParams["relationship_types"] = parsed.RelationshipTypes
@@ -251,6 +265,13 @@ func parseKGTraverseInput(input core.NBToolCallRequest) (kgTraverseInput, error)
 				out.ExcludeNodeTypes = &empty
 			}
 		}
+		// Accept `limit` as an alias for `result_limit` — models often reuse the
+		// kg_search_nodes parameter name. result_limit wins when both are present.
+		if out.ResultLimit == 0 {
+			if v, ok := raw["limit"]; ok {
+				out.ResultLimit = intFromAny(v)
+			}
+		}
 	} else {
 		out.Query = input.Command
 	}
@@ -279,6 +300,9 @@ func parseKGTraverseInput(input core.NBToolCallRequest) (kgTraverseInput, error)
 		out.MaxDepth = intFromAny(md)
 	}
 	if rl, ok := input.Arguments["result_limit"]; ok && out.ResultLimit == 0 {
+		out.ResultLimit = intFromAny(rl)
+	}
+	if rl, ok := input.Arguments["limit"]; ok && out.ResultLimit == 0 {
 		out.ResultLimit = intFromAny(rl)
 	}
 	if nts, ok := input.Arguments["node_types"].([]any); ok && len(out.NodeTypes) == 0 {

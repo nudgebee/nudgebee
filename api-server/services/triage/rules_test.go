@@ -17,6 +17,9 @@ func TestMatchesRule(t *testing.T) {
 	// Create test event
 	fingerprint := "test-fingerprint-abc123"
 	title := "API Failures - POST /webhook/{uuid} (409)"
+	// Alertname rules match against aggregation_key (see MatchesRule / the SQL
+	// query builder), not the event title.
+	aggregationKey := "API Failures - POST /webhook/{uuid} (409)"
 	namespace := "nudgebee"
 	source := "prometheus"
 	serviceName := "workflow-server"
@@ -25,6 +28,7 @@ func TestMatchesRule(t *testing.T) {
 		Id:               "test-event-id",
 		Fingerprint:      &fingerprint,
 		Title:            title,
+		AggregationKey:   &aggregationKey,
 		SubjectNamespace: &namespace,
 		Source:           &source,
 		SubjectOwner:     &serviceName,

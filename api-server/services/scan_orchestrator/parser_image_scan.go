@@ -78,7 +78,14 @@ func parseImageScanImpl(stdout string, account ScanAccount) ([]Recommendation, e
 		return nil, fmt.Errorf("image_scan: parse json: %w", err)
 	}
 	out := make([]Recommendation, 0)
+	// The fs-scan path runs `trivy fs /`, so report.ArtifactName is "/" rather than
+	// the image ref. The orchestrator carries the real image on account.TargetImage;
+	// prefer it. (Falls back to ArtifactName for the legacy `trivy image` shape and
+	// for fixtures that embed the image in ArtifactName.)
 	image := report.ArtifactName
+	if account.TargetImage != "" {
+		image = account.TargetImage
+	}
 	for _, result := range report.Results {
 		for _, v := range result.Vulnerabilities {
 			if v == nil {

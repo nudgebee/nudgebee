@@ -55,6 +55,8 @@ func TestServiceScope_AllServices(t *testing.T) {
 		"microsoft.devops/projects":                 ServiceScopeGlobal,
 		"microsoft.devops/pipelines":                ServiceScopeGlobal,
 		"microsoft.security/pricings":               ServiceScopeGlobal,
+		"microsoft.insights/activitylogalerts":      ServiceScopeGlobal,
+		"advisor":                                   ServiceScopeSubscription,
 	}
 
 	if azureServiceMap == nil {

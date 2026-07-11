@@ -98,6 +98,14 @@ func computeRedirectURL(rule InsightRule, accountID string, cloudProvider string
 func computeK8sRedirectURL(rule InsightRule, id string) string {
 	base := "/kubernetes/details/" + id
 
+	// TraceAggregation insights (API latency / error-rate) always land on the
+	// traces tab, even though their nominal Source is "Event". The per-application
+	// workload filter (workloadName/namespaceName) is appended client-side from
+	// the insight's Applications when an application chip is clicked.
+	if rule.Type == InsightTypeTraceAggregation {
+		return base + "#monitoring/traces"
+	}
+
 	switch rule.Source {
 	case InsightSourcePrometheus:
 		return computeK8sPrometheusRedirectURL(rule, base)

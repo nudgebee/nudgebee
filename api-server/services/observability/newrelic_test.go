@@ -29,7 +29,10 @@ func TestBuildNRQLWhereClause_SimpleEquality(t *testing.T) {
 	result, err := buildNRQLWhereClause(where)
 
 	assert.NoError(t, err)
-	assert.Equal(t, "`service.name` = 'api-service'", result)
+	// service.name Eq is translated to a pod_name LIKE match for log queries:
+	// real Fluent Bit log records carry the deployment name as a pod_name prefix
+	// rather than a service.name field.
+	assert.Equal(t, "pod_name LIKE 'api-service%'", result)
 }
 
 func TestBuildNRQLWhereClause_NotEqual(t *testing.T) {
@@ -177,7 +180,8 @@ func TestBuildNRQLWhereClause_AndConditions(t *testing.T) {
 	result, err := buildNRQLWhereClause(where)
 
 	assert.NoError(t, err)
-	assert.Equal(t, "(`service.name` = 'api' AND level = 'error')", result)
+	// service.name Eq is translated to a pod_name LIKE match (see SimpleEquality).
+	assert.Equal(t, "(pod_name LIKE 'api%' AND level = 'error')", result)
 }
 
 func TestBuildNRQLWhereClause_OrConditions(t *testing.T) {
@@ -223,7 +227,8 @@ func TestBuildNRQLWhereClause_NestedConditions(t *testing.T) {
 	result, err := buildNRQLWhereClause(where)
 
 	assert.NoError(t, err)
-	assert.Contains(t, result, "`service.name` = 'api'")
+	// service.name Eq is translated to a pod_name LIKE match (see SimpleEquality).
+	assert.Contains(t, result, "pod_name LIKE 'api%'")
 	assert.Contains(t, result, "level = 'error' OR level = 'fatal'")
 }
 
@@ -393,8 +398,8 @@ func TestEscapeNRQLValue(t *testing.T) {
 		expected string
 	}{
 		{"simple", "simple"},
-		{"it's a test", "it''s a test"},
-		{"user's 'quoted' value", "user''s ''quoted'' value"},
+		{"it's a test", "it\\'s a test"},
+		{"user's 'quoted' value", "user\\'s \\'quoted\\' value"},
 		{123, "123"},
 		{45.67, "45.67"},
 	}
@@ -417,9 +422,11 @@ func TestNewRelicLogSource_GetLabelMapping(t *testing.T) {
 
 	assert.Equal(t, "message", mapping["body"])
 	assert.Equal(t, "message", mapping["message"])
-	assert.Equal(t, "k8s.namespace.name", mapping["namespace"])
-	assert.Equal(t, "k8s.container.name", mapping["container"])
-	assert.Equal(t, "k8s.pod.name", mapping["pod"])
+	// Log queries map to the Fluent Bit log-record field names (namespace_name,
+	// container_name, pod_name), not the OTEL k8s.* resource attribute names.
+	assert.Equal(t, "namespace_name", mapping["namespace"])
+	assert.Equal(t, "container_name", mapping["container"])
+	assert.Equal(t, "pod_name", mapping["pod"])
 	assert.Equal(t, "k8s.node.name", mapping["node"])
 	assert.Equal(t, "hostname", mapping["host"])
 	assert.Equal(t, "service.name", mapping["service"])
@@ -530,7 +537,9 @@ func TestBuildNRQLLogQuery(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Contains(t, result, "SELECT * FROM Log")
-	assert.Contains(t, result, "WHERE level = 'error'")
+	// User-provided WHERE clauses are wrapped in parens and AND-ed with the
+	// base log filter (excludes eBPF metadata records and empty messages).
+	assert.Contains(t, result, "WHERE (level = 'error') AND "+nrqlBaseLogFilter)
 	assert.Contains(t, result, "LIMIT 500")
 	assert.Contains(t, result, "SINCE")
 	assert.Contains(t, result, "UNTIL")
@@ -556,7 +565,9 @@ func TestBuildNRQLLogQuery_WithQueryRequest(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Contains(t, result, "SELECT * FROM Log")
-	assert.Contains(t, result, "WHERE `service.name` = 'api'")
+	// service.name Eq is translated to a pod_name LIKE match for log queries
+	// (Fluent Bit log records carry the deployment name as a pod_name prefix).
+	assert.Contains(t, result, "WHERE (pod_name LIKE 'api%') AND "+nrqlBaseLogFilter)
 	assert.Contains(t, result, "LIMIT 100")
 }
 
@@ -4001,18 +4012,18 @@ func TestCalculateStepInterval_EdgeCases(t *testing.T) {
 			requestedInterval: 0,
 			startTime:         1704067200,
 			endTime:           1706659200, // 30 days
-			integrationType:   "NEWRELIC", // Uppercase (parameter unused)
-			expectedInterval:  7082,       // Always enforces 366 bucket limit
-			description:       "Integration type parameter unused, always enforces limit",
+			integrationType:   "NEWRELIC", // Uppercase: matched case-insensitively
+			expectedInterval:  7082,       // New Relic enforces the 366 bucket limit
+			description:       "New Relic integration type is matched case-insensitively and enforces the limit",
 		},
 		{
 			name:              "Mixed case integration type - still enforces limit",
 			requestedInterval: 0,
 			startTime:         1704067200,
 			endTime:           1706659200, // 30 days
-			integrationType:   "NewRelic", // Mixed case (parameter unused)
-			expectedInterval:  7082,       // Always enforces 366 bucket limit
-			description:       "Integration type parameter unused, always enforces limit",
+			integrationType:   "NewRelic", // Mixed case: matched case-insensitively
+			expectedInterval:  7082,       // New Relic enforces the 366 bucket limit
+			description:       "New Relic integration type is matched case-insensitively and enforces the limit",
 		},
 		{
 			name:              "User interval exactly equals minimum required",
@@ -4241,7 +4252,8 @@ func TestBuildNRQLLogQuery_WhereClauseOnly(t *testing.T) {
 	result, err := source.buildNRQLLogQuery(req)
 
 	assert.NoError(t, err)
-	assert.Contains(t, result, "SELECT * FROM Log WHERE namespace_name = 'test' SINCE 1000 UNTIL 2000 LIMIT 50")
+	// User WHERE clause is wrapped in parens and AND-ed with the base log filter.
+	assert.Contains(t, result, "SELECT * FROM Log WHERE (namespace_name = 'test') AND "+nrqlBaseLogFilter+" SINCE 1000 UNTIL 2000 LIMIT 50")
 }
 
 func TestBuildNRQLLogQuery_StructuredWhereClause(t *testing.T) {
@@ -4265,7 +4277,8 @@ func TestBuildNRQLLogQuery_StructuredWhereClause(t *testing.T) {
 	result, err := source.buildNRQLLogQuery(req)
 
 	assert.NoError(t, err)
-	assert.Contains(t, result, "SELECT * FROM Log WHERE namespace_name = 'production' SINCE 1000 UNTIL 2000 LIMIT 100")
+	// Structured WHERE clause is wrapped in parens and AND-ed with the base log filter.
+	assert.Contains(t, result, "SELECT * FROM Log WHERE (namespace_name = 'production') AND "+nrqlBaseLogFilter+" SINCE 1000 UNTIL 2000 LIMIT 100")
 }
 
 // ============================================================================

@@ -535,13 +535,22 @@ func TestService_GetDefaultRelationships(t *testing.T) {
 	ctx := newTestRequestContext()
 	service := NewService(ctx, nil, nil)
 
-	// Test with no relationships loaded
+	// With no cache set, GetDefaultRelationships() falls back to the embedded
+	// default relationships (see service.go GetDefaultRelationships).
 	relationships := service.GetDefaultRelationships()
 	if relationships == nil {
-		t.Error("GetDefaultRelationships() returned nil, want empty slice")
+		t.Error("GetDefaultRelationships() returned nil, want embedded defaults")
 	}
-	if len(relationships) != 0 {
-		t.Errorf("GetDefaultRelationships() count = %v, want 0", len(relationships))
+
+	embedded, err := loadDefaultRelationships()
+	if err != nil {
+		t.Fatalf("loadDefaultRelationships() error = %v", err)
+	}
+	if len(embedded) == 0 {
+		t.Fatal("expected embedded default relationships to be non-empty")
+	}
+	if len(relationships) != len(embedded) {
+		t.Errorf("GetDefaultRelationships() count = %v, want %v (embedded defaults)", len(relationships), len(embedded))
 	}
 }
 
@@ -610,7 +619,7 @@ func TestService_getApplicableSourcesForAccount(t *testing.T) {
 			name:             "Azure account with no filter",
 			cloudProvider:    "Azure",
 			requestedSources: []string{},
-			wantAccount:      []string{},
+			wantAccount:      []string{"azure"},
 			wantIntegration:  []string{},
 		},
 		{

@@ -10,6 +10,7 @@ import (
 )
 
 func TestAwsCliTask_Execute(t *testing.T) {
+	testutils.RequireEnv(t, "TEST_TENANT_ID", "TEST_AWS_ACCOUNT_ID", "TEST_USER_ID")
 	task := &AWSCliTask{}
 	taskCtx := testutils.NewTestTaskContext(os.Getenv("TEST_TENANT_ID"), os.Getenv("TEST_AWS_ACCOUNT_ID"), os.Getenv("TEST_USER_ID"), slog.Default())
 

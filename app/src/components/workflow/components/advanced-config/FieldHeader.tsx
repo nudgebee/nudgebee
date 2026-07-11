@@ -2,7 +2,6 @@ import React from 'react';
 import { Box, Typography, Tooltip, Chip } from '@mui/material';
 import { Code, ViewModule, ContentCopy, Check } from '@mui/icons-material';
 import { Button } from '@ui/Button';
-import { colors } from 'src/utils/colors';
 import type { Preset } from './advancedConfigPresets';
 
 interface FieldHeaderProps {
@@ -33,7 +32,7 @@ const FieldHeader: React.FC<FieldHeaderProps> = ({
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         <Typography
           variant='body2'
-          sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary }}
+          sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' }}
         >
           {label}
         </Typography>
@@ -46,7 +45,7 @@ const FieldHeader: React.FC<FieldHeaderProps> = ({
           size='xs'
           tooltip='Structured view - Edit as form fields'
           aria-label='Structured view'
-          icon={<ViewModule sx={{ fontSize: 16 }} />}
+          icon={<ViewModule sx={{ fontSize: 'var(--ds-text-title)' }} />}
           onClick={() => onViewModeChange('structured')}
         />
         <Button
@@ -55,7 +54,7 @@ const FieldHeader: React.FC<FieldHeaderProps> = ({
           size='xs'
           tooltip='JSON view - Edit raw JSON'
           aria-label='JSON view'
-          icon={<Code sx={{ fontSize: 16 }} />}
+          icon={<Code sx={{ fontSize: 'var(--ds-text-title)' }} />}
           onClick={() => onViewModeChange('json')}
         />
         <Button
@@ -64,7 +63,13 @@ const FieldHeader: React.FC<FieldHeaderProps> = ({
           size='xs'
           tooltip={copied ? 'Copied!' : 'Copy JSON'}
           aria-label='Copy JSON'
-          icon={copied ? <Check sx={{ fontSize: 16, color: 'success.main' }} /> : <ContentCopy sx={{ fontSize: 16 }} />}
+          icon={
+            copied ? (
+              <Check sx={{ fontSize: 'var(--ds-text-title)', color: 'success.main' }} />
+            ) : (
+              <ContentCopy sx={{ fontSize: 'var(--ds-text-title)' }} />
+            )
+          }
           onClick={onCopy}
         />
       </Box>

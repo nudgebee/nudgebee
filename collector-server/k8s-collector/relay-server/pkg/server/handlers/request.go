@@ -149,11 +149,22 @@ func NewRequestHandler(
 		}
 
 		// Use modified raw body as payload (zero-copy!)
+		// NOTE: all `body` mutations (body.timestamp, __CLUSTER__/prometheus
+		// rewrites) are already applied above, so signing here binds the exact
+		// bytes that get published.
 		payload := modifiedBody
 
-		// Sign payload for proxy agents
-		if agentType == "proxy" {
+		// Sign payload for proxy agents (legacy field-extraction scheme); for
+		// native k8s agents, sign the raw `body` bytes under additive relay_*
+		// fields so the agent can authorize mutations. Signing is additive (old
+		// agents ignore relay_*; the agent falls back to lightActions when a
+		// signature is absent/unverifiable), so it's on by default — SignK8sEnabled
+		// is a kill-switch, not an opt-in.
+		switch {
+		case agentType == "proxy":
 			payload = signPayload(payload, signer, logger)
+		case agentType == "k8s" && cfg.Signing.SignK8sEnabled:
+			payload = signK8sPayload(payload, signer, logger)
 		}
 
 		rk := mq.RelayQueueName(accountID, agentType)

@@ -127,6 +127,8 @@ func buildGCPAlarmConfig(resource providers.Resource, template providers.AlarmTe
 	return providers.AlarmCreationConfig{
 		AlarmName:          fmt.Sprintf("%s-%s", template.Name, resource.Id),
 		MetricName:         template.Configuration.MetricName,
+		MetricTypeFilter:   template.Configuration.MetricTypeFilter,
+		ResourceType:       template.Configuration.ResourceType,
 		Namespace:          template.Configuration.Namespace,
 		Statistic:          template.Configuration.Statistic,
 		Period:             template.Configuration.Period,
@@ -177,16 +179,39 @@ func ValidateGCPAlarmConfig(config providers.AlarmCreationConfig) error {
 	return nil
 }
 
+// resolveGCPMetricFilter returns the monitored resource type and the fully-qualified
+// Cloud Monitoring metric type used to build an alert policy filter for a simple-metric
+// alarm. It prefers the authoritative values carried from the alarm template
+// (ResourceType / MetricTypeFilter); for GCP, config.MetricName is only a short display
+// label (e.g. "DiskUtilization") and is NOT a valid metric.type. The name-based lookup
+// is kept as a fallback for older recommendations generated before these fields existed.
+func resolveGCPMetricFilter(config providers.AlarmCreationConfig) (resourceType, metricType string, err error) {
+	metricType = config.MetricTypeFilter
+	if metricType == "" {
+		metricType = config.MetricName
+	}
+
+	resourceType = config.ResourceType
+	if resourceType == "" {
+		resourceType, err = getResourceTypeFromMetric(metricType)
+		if err != nil {
+			return "", "", err
+		}
+	}
+
+	return resourceType, metricType, nil
+}
+
 // buildSimpleCondition builds a condition for a simple metric alarm
 func buildSimpleCondition(config providers.AlarmCreationConfig) (*monitoringpb.AlertPolicy_Condition, error) {
-	// Determine resource type from metric name
-	resourceType, err := getResourceTypeFromMetric(config.MetricName)
+	// Determine the monitored resource type and fully-qualified metric type
+	resourceType, metricType, err := resolveGCPMetricFilter(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to determine resource type: %w", err)
 	}
 
 	// Build filter for metric - MUST include resource.type for GCP
-	filter := fmt.Sprintf(`resource.type="%s" AND metric.type="%s"`, resourceType, config.MetricName)
+	filter := fmt.Sprintf(`resource.type="%s" AND metric.type="%s"`, resourceType, metricType)
 	if len(config.Dimensions) > 0 {
 		for _, dim := range config.Dimensions {
 			filter += fmt.Sprintf(` AND resource.labels.%s="%s"`, dim.Name, dim.Value)
@@ -255,11 +280,11 @@ func buildMQLCondition(config providers.AlarmCreationConfig) (*monitoringpb.Aler
 
 		// If still no query built and we have a metric name in config, use that
 		if metricQuery == "" && config.MetricName != "" {
-			resourceType, err := getResourceTypeFromMetric(config.MetricName)
+			resourceType, metricType, err := resolveGCPMetricFilter(config)
 			if err != nil {
 				return nil, fmt.Errorf("failed to determine resource type for metric %s: %w", config.MetricName, err)
 			}
-			metricQuery = fmt.Sprintf("fetch %s | metric '%s'", resourceType, config.MetricName)
+			metricQuery = fmt.Sprintf("fetch %s | metric '%s'", resourceType, metricType)
 		}
 
 		if metricQuery == "" {

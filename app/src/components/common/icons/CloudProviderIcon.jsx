@@ -15,6 +15,7 @@ import {
 
 import { Box } from '@mui/material';
 import PropTypes from 'prop-types';
+import { ds } from '@utils/colors';
 
 const resolveIcon = (icon) => {
   if (typeof icon === 'function' || (typeof icon === 'object' && icon?.$$typeof)) return { src: icon, isComponent: true };
@@ -23,7 +24,7 @@ const resolveIcon = (icon) => {
   return null;
 };
 
-const CloudProviderIcon = ({ cloud_provider, height = '28px', width = '28px', sx = {} }) => {
+const CloudProviderIcon = ({ cloud_provider, height = ds.space.mul(0, 14), width = ds.space.mul(0, 14), sx = {} }) => {
   let resolved = null;
 
   const provider = cloud_provider?.toUpperCase();

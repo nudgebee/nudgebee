@@ -179,6 +179,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'otel_clickhouse'} />;
           case 'signoz':
             return <ListIntegrations integrationName={'signoz'} />;
+          case 'openobserve':
+            return <ListIntegrations integrationName={'openobserve'} />;
           case 'azure_monitor_webhook':
             return <ListIntegrations integrationName={'azure_monitor_webhook'} />;
           case 'ssh':

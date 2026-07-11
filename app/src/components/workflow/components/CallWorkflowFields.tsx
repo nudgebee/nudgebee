@@ -30,6 +30,17 @@ interface ListedWorkflow {
   };
 }
 
+interface WorkflowVersionOption {
+  version_number: number;
+  name?: string | null;
+  is_live?: boolean;
+}
+
+// Sentinel value for the "follow Live" choice in the version dropdown. Picking it
+// clears `workflow_version` from the task config so the backend resolver falls back
+// to GetLiveWorkflowVersion (the floating, always-latest-published pointer).
+const LIVE_VERSION_VALUE = '__live__';
+
 interface CallWorkflowFieldsProps {
   accountId?: string;
   taskData: any;
@@ -117,6 +128,8 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string>('');
   const [advancedInputs, setAdvancedInputs] = useState(false);
+  const [versions, setVersions] = useState<WorkflowVersionOption[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
 
   const workflowName: string = taskData?.workflow_name ?? '';
   const rawInputs: any = taskData?.inputs;
@@ -184,10 +197,63 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
 
   const targetInputs: WorkflowInput[] = selectedWorkflow?.definition?.inputs ?? [];
 
+  // The pinned version from the task config (absent → follow Live).
+  const pinnedVersion: number | undefined =
+    typeof taskData?.workflow_version === 'number' && taskData.workflow_version > 0 ? taskData.workflow_version : undefined;
+
+  // Load the callee's version history once a concrete workflow is selected, so the
+  // user can pin the call to a specific version instead of the floating Live one
+  // (#282). Templated names have no single workflow to resolve, so skip the fetch.
+  const selectedWorkflowId = selectedWorkflow?.id;
+  useEffect(() => {
+    if (accountId === null || accountId === undefined || !selectedWorkflowId) {
+      setVersions([]);
+      // Clear any in-flight loading state — otherwise deselecting the workflow
+      // mid-fetch leaves the dropdown spinner stuck on forever.
+      setVersionsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setVersionsLoading(true);
+    (async () => {
+      try {
+        const result: any = await apiWorkflow.listWorkflowVersions(accountId, selectedWorkflowId);
+        if (cancelled) return;
+        const list: WorkflowVersionOption[] = result?.data?.workflow_list_versions?.versions ?? [];
+        setVersions(list);
+      } catch {
+        if (!cancelled) setVersions([]);
+      } finally {
+        if (!cancelled) setVersionsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId, selectedWorkflowId]);
+
   const setWorkflowName = useCallback(
     (next: string) => {
-      const merged = { ...(taskDataRef.current || {}), workflow_name: next };
+      // Changing the target workflow invalidates any pinned version (version
+      // numbers are per-workflow), so drop it back to Live.
+      const { workflow_version: _drop, ...rest } = taskDataRef.current || {};
+      const merged = { ...rest, workflow_name: next };
       onTaskDataChange(merged);
+    },
+    [onTaskDataChange]
+  );
+
+  const setWorkflowVersion = useCallback(
+    (value: string) => {
+      const base = taskDataRef.current || {};
+      const n = Number(value);
+      if (value === LIVE_VERSION_VALUE || !Number.isFinite(n) || n <= 0) {
+        // Follow Live or invalid version: omit the field entirely so the backend defaults to Live.
+        const { workflow_version: _drop, ...rest } = base;
+        onTaskDataChange({ ...rest });
+      } else {
+        onTaskDataChange({ ...base, workflow_version: n });
+      }
     },
     [onTaskDataChange]
   );
@@ -222,6 +288,30 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
   );
 
   const nameError = validationErrors['workflow_name'];
+
+  // Version dropdown options: "Live" first (the floating, always-latest-published
+  // pointer), then each historical version newest-first. The live version is
+  // annotated so the user can see which number Live currently resolves to.
+  const versionOptions = useMemo(() => {
+    const opts: Array<{ label: string; value: string }> = [{ label: 'Live (always latest published)', value: LIVE_VERSION_VALUE }];
+    [...versions]
+      .sort((a, b) => b.version_number - a.version_number)
+      .forEach((v) => {
+        const namePart = v.name ? ` — ${v.name}` : '';
+        const livePart = v.is_live ? ' (current Live)' : '';
+        opts.push({ label: `v${v.version_number}${namePart}${livePart}`, value: String(v.version_number) });
+      });
+    return opts;
+  }, [versions]);
+
+  // Only meaningful for a concrete, resolvable workflow. A templated name resolves
+  // at run time, so there is no version list to pin against.
+  const showVersionSelector = !!selectedWorkflow && !isTemplated;
+  const versionValue = pinnedVersion !== undefined ? String(pinnedVersion) : LIVE_VERSION_VALUE;
+  // A pinned version that no longer exists in the callee's history (e.g. pruned by
+  // retention) — warn so the run doesn't fail opaquely at execute time.
+  const pinnedMissing =
+    pinnedVersion !== undefined && !versionsLoading && versions.length > 0 && !versions.some((v) => v.version_number === pinnedVersion);
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -273,6 +363,40 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
           ) : null}
         </Box>
       </Box>
+
+      {/* Version selector — pin the call to a specific version or follow Live (#282). */}
+      {showVersionSelector ? (
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2, flexWrap: 'wrap' }}>
+          <Typography sx={LABEL_COL_SX}>Version</Typography>
+          <Box sx={FIELD_COL_SX}>
+            <FilterDropdownButton
+              id='call-workflow-version-picker'
+              disabled={viewOnlyMode}
+              isOptionsLoading={versionsLoading}
+              options={versionOptions}
+              value={versionValue}
+              onSelect={(_e: any, next: any) => {
+                const raw = next !== null && next !== undefined && typeof next === 'object' ? next.value : next;
+                setWorkflowVersion(raw !== null && raw !== undefined ? String(raw) : LIVE_VERSION_VALUE);
+              }}
+              placeholder='Live (always latest published)'
+              searchPlaceholder='Search versions...'
+              sx={{ width: '100%' }}
+            />
+            {pinnedMissing ? (
+              <Alert severity='warning' sx={{ mt: 1, py: 0 }}>
+                {`Pinned version v${pinnedVersion} no longer exists in this workflow's history. The run will fail unless you pick another version or switch back to Live.`}
+              </Alert>
+            ) : (
+              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondary, mt: 0.5 }}>
+                {pinnedVersion !== undefined
+                  ? `Pinned to v${pinnedVersion} — callee edits won't affect this call until you re-pin.`
+                  : 'Follows the callee’s latest published version on every run.'}
+              </Typography>
+            )}
+          </Box>
+        </Box>
+      ) : null}
 
       {/* Inputs */}
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>

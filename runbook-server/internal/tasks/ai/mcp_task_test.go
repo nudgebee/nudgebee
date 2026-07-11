@@ -269,6 +269,10 @@ func TestMCPTask_Execute_UnsupportedContentType(t *testing.T) {
 }
 
 func TestMCPTask_Execute_ExternalServer(t *testing.T) {
+	// Hits a live external MCP server at http://localhost:3000/messages, which is
+	// absent on a bare runner. Gate on MCP_E2E_TEST so it only runs when an
+	// operator has stood the server up.
+	testutils.RequireEnv(t, "MCP_E2E_TEST")
 
 	task := &MCPTask{}
 	ctx := testutils.NewTestTaskContext("test-tenant", "test-account", "test-user", slog.Default())
@@ -527,9 +531,9 @@ func TestMCPTask_DecryptIntegrationConfig_BadHex(t *testing.T) {
 }
 
 func TestMCPTask_OAuth2_E2E(t *testing.T) {
-	// if os.Getenv("MCP_E2E_TEST") == "" {
-	// 	t.Skip("Skipping MCP OAuth2 E2E test. Set MCP_E2E_TEST=1 to enable. Requires Keycloak + MCP server running (see tests/mcp-oauth-server/README.md).")
-	// }
+	// Requires Keycloak + MCP server running (see tests/mcp-oauth-server/README.md).
+	// Set MCP_E2E_TEST=1 to enable.
+	testutils.RequireEnv(t, "MCP_E2E_TEST")
 
 	mcpURL := os.Getenv("MCP_SERVER_URL")
 	if mcpURL == "" {

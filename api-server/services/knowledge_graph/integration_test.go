@@ -1012,12 +1012,12 @@ func TestPhase1_K8sResourceSource(t *testing.T) {
 
 	// Expected node counts (based on testdata/k8s_workloads.json and k8s_nodes.json)
 	expectedNodeCounts := map[core.NodeType]int{
-		core.NodeTypeCluster:   1, // my-eks-cluster
-		core.NodeTypeNamespace: 2, // production, kube-system
-		core.NodeTypeWorkload:  8, // api-deployment, postgres-statefulset, monitoring-agent, frontend-deployment, app-config, app-secrets, api-ingress, postgres-data
-		core.NodeTypePod:       3, // api-pod-1, api-pod-2, postgres-0
-		core.NodeTypeService:   1, // api-service
-		core.NodeTypeNode:      2, // k8s-node-1, k8s-node-2
+		core.NodeTypeCluster:    1, // my-eks-cluster
+		core.NodeTypeNamespace:  2, // production, kube-system
+		core.NodeTypeWorkload:   8, // api-deployment, postgres-statefulset, monitoring-agent, frontend-deployment, app-config, app-secrets, api-ingress, postgres-data
+		core.NodeTypePod:        3, // api-pod-1, api-pod-2, postgres-0
+		core.NodeTypeK8sService: 1, // api-service (k8s services are typed K8sService)
+		core.NodeTypeNode:       2, // k8s-node-1, k8s-node-2
 	}
 
 	for expectedType, expectedCount := range expectedNodeCounts {
@@ -1119,10 +1119,12 @@ func TestPhase1_K8sResourceSource(t *testing.T) {
 			t.Logf("✓ Node CPU capacity: %.1f", cpuCap)
 		}
 
-		if memCap, ok := node1.Properties["memory_capacity"].(float64); !ok || memCap != 16384.0 {
-			t.Error("Node memory_capacity property incorrect")
+		// memory_capacity is stored as a human-readable string by the K8s source
+		// (formatBytesToHumanReadable); 16384 bytes formats to "16.00Ki".
+		if memCap, ok := node1.Properties["memory_capacity"].(string); !ok || memCap != "16.00Ki" {
+			t.Errorf("Node memory_capacity property incorrect: got %v", node1.Properties["memory_capacity"])
 		} else {
-			t.Logf("✓ Node memory capacity: %.0f MB", memCap)
+			t.Logf("✓ Node memory capacity: %s", memCap)
 		}
 	}
 

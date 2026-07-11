@@ -33,8 +33,14 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
   const accountId = rec.account_id || '';
   const isK8sRightSizing = category === 'RightSizing' && ruleName === 'pod_right_sizing';
   const isReplicaRightSizing = category === 'RightSizing' && ruleName === 'replica_right_sizing';
-  const isPVRightSizing = category === 'RightSizing' && (ruleName === 'pv_rightsize' || ruleName === 'unused_pvc');
+  const isPVResize = category === 'RightSizing' && ruleName === 'pv_rightsize';
+  const isUnusedPVC = category === 'RightSizing' && ruleName === 'unused_pvc';
   const isAbandonedResource = category === 'RightSizing' && ruleName === 'abandoned_resource';
+  const showDetailNav = isPVResize || isUnusedPVC || isAbandonedResource;
+  // unused_pvc is a delete/reclaim, not a resize — label each action for what it does.
+  let detailNavLabel = 'Scale Down Workload';
+  if (isPVResize) detailNavLabel = 'Resize Volume';
+  else if (isUnusedPVC) detailNavLabel = 'Reclaim Volume';
   const recData = safeParseJSON(rec.recommendation);
   const hasAlarmConfig = recData?.alarm_config != null;
   const canWrite = hasWriteAccess(accountId);
@@ -52,7 +58,7 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
           backgroundColor: ds.gray[100],
           flexShrink: 0,
           px: ds.space[4],
-          py: '10px',
+          py: ds.space.mul(0, 5),
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
@@ -130,14 +136,14 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
             />
           )}
 
-          {(isPVRightSizing || isAbandonedResource) && canWrite && (
+          {showDetailNav && canWrite && (
             <Button
               tone='ghost'
               composition='icon-only'
               size='sm'
               icon={<RocketLaunchOutlinedIcon />}
-              tooltip={isPVRightSizing ? 'Resize Volume' : 'Scale Down Workload'}
-              aria-label={isPVRightSizing ? 'Resize Volume' : 'Scale Down Workload'}
+              tooltip={detailNavLabel}
+              aria-label={detailNavLabel}
               onClick={handleNavigateToDetail}
               id='action-bar-detail-nav'
             />

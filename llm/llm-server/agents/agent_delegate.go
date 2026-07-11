@@ -157,8 +157,29 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 	// (see planner_callback_handler.go and factory_agent.go). Writing the previous
 	// "delegate_agent_id" key meant child_agent_id was never populated for delegate
 	// calls, breaking call-tree reconstruction.
+	//
+	// Per-call execution metadata is appended so the parent agent (and downstream
+	// debugging/analytics) can see how the sub-agent spent its budget — without it,
+	// a vague summary is indistinguishable from a real investigation that just found
+	// nothing.
+	//
+	// iterations_used counts external tool calls only (LLM reasoning steps filtered),
+	// to match the "tool call budget" framing the sub-agent's system prompt presents.
+	// total_steps retains the raw ReAct step count for debugging. budget_exhausted is
+	// surfaced explicitly because iterations_used can be < iteration_budget even when
+	// the sub-agent was force-terminated by the step cap (LLM steps count against the
+	// cap but not against iterations_used).
+	toolsUsed := collectToolsUsed(resp.AgentStepResponse)
+	totalSteps := len(resp.AgentStepResponse)
 	additionalDetails := map[string]any{
-		"agent_id": resp.AgentId,
+		"agent_id":         resp.AgentId,
+		"iteration_budget": maxIter,
+		"iterations_used":  sumHistogram(toolsUsed),
+		"total_steps":      totalSteps,
+		"budget_exhausted": totalSteps >= maxIter,
+	}
+	if len(toolsUsed) > 0 {
+		additionalDetails["tools_used"] = toolsUsed
 	}
 
 	if resp.Status == core.ConversationStatusFailed {
@@ -316,6 +337,54 @@ func filterOutTool(tools []toolcore.NBTool, name string) []toolcore.NBTool {
 	return result
 }
 
+// isLLMReasoningTool reports whether the given tool name refers to the internal
+// reasoning LLM tool. The ReAct loop emits a dedicated LLM step for thought and
+// final-summary generation, which is orthogonal to external tool calls. Treat this
+// predicate as the single source of truth when filtering LLM steps out of user-
+// facing lists (the system-prompt "available tools" line) or metrics (the budget/
+// usage count shown to the parent agent).
+func isLLMReasoningTool(name string) bool {
+	return strings.EqualFold(name, core.ToolLlm)
+}
+
+// collectToolsUsed builds a histogram of tool names the sub-agent actually invoked,
+// extracted from the ReAct step history. This is surfaced in the tool response's
+// AdditionalDetails so the parent agent can see how the sub-agent spent its budget —
+// critical for diagnosing poor-quality summaries from well-executed investigations.
+// The LLM reasoning tool is filtered out because every step uses it and it adds no
+// signal. Returns nil when the step history is empty or contains only LLM steps.
+func collectToolsUsed(steps []core.ToolInvocation) map[string]int {
+	if len(steps) == 0 {
+		return nil
+	}
+	usage := map[string]int{}
+	for _, step := range steps {
+		if step.Call.FunctionCall == nil {
+			continue
+		}
+		name := step.Call.FunctionCall.Name
+		if name == "" || isLLMReasoningTool(name) {
+			continue
+		}
+		usage[name]++
+	}
+	if len(usage) == 0 {
+		return nil
+	}
+	return usage
+}
+
+// sumHistogram returns the total count across all buckets in a tool-usage histogram.
+// Used to convert the tools_used map into a flat "external tool calls" count that
+// aligns with the sub-agent's stated max_iterations budget.
+func sumHistogram(h map[string]int) int {
+	total := 0
+	for _, v := range h {
+		total += v
+	}
+	return total
+}
+
 // dynamicReActAgent implements core.NBAgent with runtime-provided prompt, tools, and
 // iteration budget. It is created on-the-fly by delegateAgentTool and uses the standard
 // ReAct planner for execution.
@@ -344,16 +413,45 @@ func (a *dynamicReActAgent) GetSupportedTools(_ *security.RequestContext) []tool
 }
 
 func (a *dynamicReActAgent) GetSystemPrompt(_ *security.RequestContext, _ core.NBAgentRequest) core.NBAgentPrompt {
+	// Build a list of concrete tool names (excluding the reasoning LLM tool) so the
+	// sub-agent knows exactly what it can call. Exposing this in the system prompt
+	// lets the sub-agent plan its investigation up front instead of discovering its
+	// own capabilities mid-loop — a common source of wasted iterations.
+	toolNames := make([]string, 0, len(a.tools))
+	for _, tool := range a.tools {
+		name := tool.Name()
+		if isLLMReasoningTool(name) {
+			continue
+		}
+		toolNames = append(toolNames, name)
+	}
+
+	// Budget awareness: give the sub-agent its exact iteration count so it can
+	// prioritize. Without this the sub-agent flies blind, often burning its budget
+	// on low-value checks before reaching the actual root-cause investigation.
+	var budgetConstraint string
+	if len(toolNames) > 0 {
+		budgetConstraint = fmt.Sprintf(
+			"You have a budget of %d tool calls total. Available tools: %s. Plan your investigation up front and prioritize the highest-impact checks first — do not waste iterations on exploratory calls when the task is already narrowly scoped.",
+			a.maxIterations, strings.Join(toolNames, ", "),
+		)
+	} else {
+		budgetConstraint = fmt.Sprintf(
+			"You have a budget of %d reasoning steps total. Plan your analysis carefully since no external tools are provided.",
+			a.maxIterations,
+		)
+	}
+
 	return core.NBAgentPrompt{
 		Role: "a specialist investigator dynamically composed by a parent agent",
 		Instructions: []string{
 			a.prompt,
 		},
 		Constraints: []string{
-			"Focus exclusively on the task described in your instructions.",
+			"Focus exclusively on the task described in your instructions. Do not expand scope.",
 			"Use only the tools provided to you. Do not attempt to call tools not in your tool list.",
-			"Be thorough but stay within your iteration budget. Prioritize the most impactful investigations first.",
-			"Report your findings with specific evidence: timestamps, metric values, log lines, or query results.",
+			budgetConstraint,
+			"Report your findings with specific evidence: timestamps, metric values, log lines, or query results. Never make claims without supporting data.",
 		},
 	}
 }

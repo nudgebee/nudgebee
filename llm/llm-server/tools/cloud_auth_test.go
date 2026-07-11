@@ -151,14 +151,20 @@ func TestBuildGcpAuth_AuthMarkerCreatedAfterSuccess(t *testing.T) {
 	auth, err := BuildGcpAuth(creds)
 	require.NoError(t, err)
 
-	// Marker file is checked (not the key file)
-	assert.Contains(t, auth.CommandPrefix, ".auth_ok", "must check .auth_ok marker, not key file")
-	// Marker is created after auth succeeds (touch follows activate-service-account)
+	// A sentinel marker (not the key file) gates re-auth: the key is written
+	// before gcloud runs, so checking the key file would skip auth on retry
+	// after a failed activation. The marker is only created post-success.
+	assert.Contains(t, auth.CommandPrefix, ".auth_complete", "must gate on the .auth_complete marker, not the key file")
+	assert.Contains(t, auth.CommandPrefix, `[ ! -f "`, "auth must be guarded so it is skipped once the marker exists")
+	// Marker is created after auth succeeds (touch follows activate-service-account).
 	authIdx := strings.Index(auth.CommandPrefix, "activate-service-account")
 	touchIdx := strings.Index(auth.CommandPrefix, "touch")
-	assert.Greater(t, touchIdx, authIdx, ".auth_ok touch must come after gcloud auth activate-service-account")
-	// On failure, marker is cleaned up
-	assert.Contains(t, auth.CommandPrefix, "rm -f", "marker and key must be removed on auth failure")
+	assert.Greater(t, touchIdx, authIdx, ".auth_complete touch must come after gcloud auth activate-service-account")
+	// On activation failure the command exits before the touch, so no marker is
+	// left behind (the failure path never reaches the touch).
+	failIdx := strings.Index(auth.CommandPrefix, "exit 1")
+	assert.Greater(t, failIdx, authIdx, "auth failure must exit after attempting activation")
+	assert.Less(t, failIdx, touchIdx, "auth failure must exit before the marker touch")
 }
 
 func TestBuildGcpAuth_PerAccountCloudSdkConfig(t *testing.T) {

@@ -477,6 +477,29 @@ func (d *DatabaseManager) BeginTx() (*sqlx.Tx, error) {
 	return d.Db.Beginx()
 }
 
+// LogRollback rolls tx back after a failed operation and logs any rollback
+// error instead of silently discarding it. A failed rollback (e.g. the
+// connection dropped mid-transaction) is a signal worth surfacing — the
+// pooled connection is poisoned and database/sql will discard it (see #28594).
+// sql.ErrTxDone (the tx was already committed or rolled back, e.g. by a
+// deferred rollback) is treated as benign and not logged. A nil tx is a no-op.
+// The original operation error remains the caller's to return.
+//
+// Pass the request-scoped logger when one is available for trace/tenant
+// context; otherwise the package default is used.
+func LogRollback(tx *sqlx.Tx, logger ...*slog.Logger) {
+	if tx == nil {
+		return
+	}
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		l := slog.Default()
+		if len(logger) > 0 && logger[0] != nil {
+			l = logger[0]
+		}
+		l.Error("db: transaction rollback failed", "error", err)
+	}
+}
+
 func (d *DatabaseManager) DoInTransaction(callback func(*sqlx.Tx) (any, error)) (any, error) {
 	tx, err := d.Db.Beginx()
 	if err != nil {

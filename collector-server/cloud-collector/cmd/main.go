@@ -15,6 +15,7 @@ import (
 
 	"nudgebee/collector/cloud/account"
 	"nudgebee/collector/cloud/api"
+	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/config"
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/security"
@@ -55,7 +56,7 @@ var logger = slog.New(
 func authHandlerMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 
-		if c.Request.URL.Path == "/health" || strings.HasPrefix(c.Request.URL.Path, "/debug") {
+		if c.Request.URL.Path == "/health" || c.Request.URL.Path == "/livez" || strings.HasPrefix(c.Request.URL.Path, "/debug") {
 			c.Set(CTX_IS_PUBLIC, true)
 			c.Next()
 			return
@@ -115,7 +116,7 @@ func main() {
 	r := gin.New()
 	pprof.Register(r)
 	r.Use(gin.Recovery())
-	r.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/health")))
+	r.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/health", "/livez")))
 	r.Use(otelgin.Middleware(config.SERVICE_NAME))
 	r.Use(traceResponseHeaderMiddleware())
 	r.Use(authHandlerMiddleware())
@@ -261,6 +262,11 @@ func main() {
 			slog.Error("Failed to start cloud account post-report consumer", "error", err)
 		}
 	}()
+
+	// Start the MQ heartbeat that backs the /livez liveness probe. If a consumer or
+	// the RabbitMQ connection wedges (e.g. after a broker restart), the heartbeat
+	// round-trip stops, /livez fails, and Kubernetes restarts the pod.
+	common.StartMqHeartbeat()
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)

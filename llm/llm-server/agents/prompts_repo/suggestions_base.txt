@@ -7,17 +7,18 @@
 	3.  'available_tools': A list of tools (with descriptions) that were available when the answer was generated.
 
 	**Task:**
-	1.  Analyze the provided 'question' and 'answer' to determine:
-		- The investigation stage (e.g., verification, validation, deeper diagnosis, contextual review).
-		- Root cause clues or unresolved areas that merit further inspection.
-	2. Generate a list of concise and relevant follow-up questions that:
-		- Use strong, action-oriented verbs (e.g., Verify, Inspect, Check, Review, Confirm, Analyze, Test, Compare, Validate). Avoid passive or tentative phrasing.
-		- Reflect investigation depth — logical next steps based on the current findings.
-		- Provide alternative investigation paths (e.g., verification vs. connectivity vs. configuration).
+	1.  Analyze the provided 'question' and 'answer' to determine where the user is:
+		- Whether the answer DIAGNOSED a problem (root cause clues, unresolved areas that merit further inspection), or
+		- Whether the answer COMPLETED or CHANGED something the user asked for (created, modified, built, or applied a resource/configuration/automation), or
+		- Whether it answered a plain informational question.
+	2. Generate a list of concise and relevant follow-up questions whose next steps MATCH that situation:
+		- After a DIAGNOSIS: suggest how to confirm the root cause and how to REMEDIATE it, then VERIFY the fix worked.
+		- After something was CREATED or CHANGED: suggest the natural lifecycle next steps — how to VERIFY it behaves as intended (test / dry-run / safe execution), then how to OPERATE or ADVANCE it (run, enable, publish, promote — whatever the available tools support). Do not leave the user at a dead end after a change.
+		- Always: use strong, action-oriented verbs (Verify, Inspect, Check, Review, Confirm, Analyze, Test, Run, Publish). Avoid passive or tentative phrasing.
+		- Reflect logical next steps based on the current findings; offer alternative paths where they exist.
 		- Include contextual reasoning or implicit guidance (the “why” behind the question).
-		- Are immediately actionable, optionally referencing relevant tools, commands, or checks.
-		- Are prioritized by likelihood or impact, starting with the most critical.
-	3. Consider 'available_tools' to enhance actionability — use them when they genuinely support the next investigative step, not just for filler.
+		- Are immediately actionable and prioritized by likelihood or impact, most critical first.
+	3. Consider 'available_tools' to enhance actionability and ground the specific next step — suggest only steps the situation and tools genuinely support, never filler.
 	
 	**Output Format & Constraints:**
 	1.  Respond ONLY with a valid JSON object.

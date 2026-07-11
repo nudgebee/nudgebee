@@ -10,7 +10,7 @@ import { TicketsIcon } from '@assets';
 import { getBrandingAsset } from '@hooks/useTenantBranding';
 import { action } from 'src/utils/actionStyles';
 import { getLast7Days } from '@lib/datetime';
-import type { ICustomTable2Row } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/Instances';
 import Text from '@shared/format/Text';
 import CustomButton from '@shared/NewCustomButton';
 
@@ -99,7 +99,7 @@ const CloudAccountLogs = (props: { accountId: string | undefined; serviceName: s
         setLoading(false);
         let _ticketReferenceMap = new Map();
         const ec2ResourceData = res.data?.events?.map((item: any) => {
-          let data: ICustomTable2Row[] = [];
+          let data: ICustomTableRow[] = [];
           let MENU_ITEMS = [
             {
               icon: TicketsIcon,

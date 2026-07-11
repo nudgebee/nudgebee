@@ -1,17 +1,17 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import KubernetesTable2 from '@components/k8s/common/KubernetesTable2';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import KubernetesTable from '@components/k8s/common/KubernetesTable';
 import PropTypes from 'prop-types';
 import apiKubernetes1 from '@api1/kubernetes1';
-import { LineChart } from '@shared';
+import Chart from '@ui/Chart';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { Grid, Alert, AlertTitle, Typography } from '@mui/material';
-import { colors, ds } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import apiUser from '@api1/user';
 import apiKubernetes from '@api1/kubernetes';
 import { useRouter } from 'next/router';
-import InvestigateButton from '@shared/InvestigateButton';
+import { FiArrowRight } from 'react-icons/fi';
 import { getLastThreeMonths } from '@lib/datetime';
 import Datetime from '@shared/format/Datetime';
 import { prettifyName } from 'src/utils/common';
@@ -147,7 +147,7 @@ export const DrilldownChartComponent: React.FC<{ value: any; chartId?: string }>
   const chartMinWidth = labels.length > SCROLL_THRESHOLD ? Math.min(labels.length * MIN_PX_PER_POINT, MAX_CHART_WIDTH) : undefined;
 
   // Single ref: measures available width on mount, then doubles as the scroll container.
-  // Using one div avoids remounting <LineChart> when containerWidth is set (which would
+  // Using one div avoids remounting <Chart.Line> when containerWidth is set (which would
   // reinitialize Chart.js into a broken blank state).
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState<number | null>(null);
@@ -238,7 +238,7 @@ export const DrilldownChartComponent: React.FC<{ value: any; chartId?: string }>
     <Grid key={value?.anomaly_type} container spacing={2}>
       <Grid item xs={12}>
         {/* Outer div measures width on first render, then becomes the scroll container.
-            Keeping a single <LineChart> here (no ternary) prevents Chart.js from remounting
+            Keeping a single <Chart.Line> here (no ternary) prevents Chart.js from remounting
             into a blank state when containerWidth is set. */}
         <div
           ref={scrollContainerRef}
@@ -248,23 +248,23 @@ export const DrilldownChartComponent: React.FC<{ value: any; chartId?: string }>
           }}
         >
           <div style={{ width: containerWidth && chartMinWidth ? `${chartMinWidth}px` : '100%' }}>
-            <LineChart
+            <Chart.Line
               id={chartId}
-              colors={[colors.text.lineChart, 'gray']}
+              colors={[ds.purple[500], 'gray']}
               labels={labels}
               dataset={[
                 {
-                  borderColor: colors.text.lineChart,
+                  borderColor: ds.purple[500],
                   data: dataset,
                   label: label,
                 },
                 {
-                  borderColor: colors.text.cpuLimit,
+                  borderColor: ds.red[500],
                   data: anomaly,
                   label: 'Anomaly',
                   pointStyle: 'star',
                   pointRadius: anomaly.map((val: number) => (val !== 0 ? 3.5 : 0)),
-                  pointBackgroundColor: anomaly.map((val: number) => (val !== 0 ? colors.text.cpuLimit : 'transparent')),
+                  pointBackgroundColor: anomaly.map((val: number) => (val !== 0 ? ds.red[500] : 'transparent')),
                   showLine: false,
                 },
               ]}
@@ -277,22 +277,22 @@ export const DrilldownChartComponent: React.FC<{ value: any; chartId?: string }>
       </Grid>
       {labelsHistorical.length > 0 && (
         <Grid item xs={12}>
-          <LineChart
-            colors={[colors.text.lineChart, 'gray']}
+          <Chart.Line
+            colors={[ds.purple[500], 'gray']}
             labels={labelsHistorical}
             dataset={[
               {
-                borderColor: colors.text.lineChart,
+                borderColor: ds.purple[500],
                 data: datasetHistorical,
                 label: label,
               },
               {
-                borderColor: colors.text.cpuLimit,
+                borderColor: ds.red[500],
                 data: anomalyHistorical,
                 label: 'Anomaly',
                 pointStyle: 'star',
                 pointRadius: anomalyHistorical.map((val: number) => (val !== 0 ? 10.5 : 0)),
-                pointBackgroundColor: anomalyHistorical.map((val: number) => (val !== 0 ? colors.text.cpuLimit : 'transparent')),
+                pointBackgroundColor: anomalyHistorical.map((val: number) => (val !== 0 ? ds.red[500] : 'transparent')),
                 showLine: false,
               },
             ]}
@@ -302,12 +302,21 @@ export const DrilldownChartComponent: React.FC<{ value: any; chartId?: string }>
       )}
       {insights && insights.length > 0 && (
         <Grid item xs={12}>
-          <Typography variant='h6' sx={{ mb: ds.space[2], mt: ds.space[4] }}>
+          <Typography
+            variant='h6'
+            sx={{
+              mb: ds.space[2],
+              mt: ds.space[4],
+              fontSize: 'var(--ds-text-title)',
+              fontWeight: 'var(--ds-font-weight-semibold)',
+              color: 'var(--ds-gray-700)',
+            }}
+          >
             Detected Anomalies ({insights.length})
           </Typography>
           {insights.map((insight: AnomalyInsight) => (
             <Alert key={insight.timestamp} severity={getSeverityColor(insight.severity)} sx={{ mb: ds.space[2] }}>
-              <AlertTitle>
+              <AlertTitle sx={{ display: 'flex', alignItems: 'baseline', gap: ds.space[2], flexWrap: 'wrap', fontSize: 'var(--ds-text-body)' }}>
                 <Datetime value={insight.timestamp} />
                 <strong>{insight.severity.toUpperCase()}</strong>
               </AlertTitle>
@@ -421,9 +430,15 @@ export const KubernetesAnomalyTable = ({ accountId, filterData }: { accountId: s
 
             if (event) {
               (itemData as any)[4].component = (
-                <div>
-                  <InvestigateButton displayText url={`/investigate?id=${event.id}&accountId=${accountId}`} />
-                </div>
+                <DsButton
+                  tone='secondary'
+                  size='xs'
+                  trailingAccent={<FiArrowRight />}
+                  href={`/investigate?id=${event.id}&accountId=${accountId}`}
+                  data-testid='investigate-btn'
+                >
+                  Investigate
+                </DsButton>
               );
             }
           }
@@ -436,7 +451,7 @@ export const KubernetesAnomalyTable = ({ accountId, filterData }: { accountId: s
     <ListingLayout id={'anomaly-table-container'}>
       <ListingLayout.Toolbar actions={<DownloadButton onClick={() => ({ tableId: 'anomaly-table-data' })} />} />
       <ListingLayout.Body>
-        <KubernetesTable2
+        <KubernetesTable
           id={'anomaly-table-data'}
           data={data}
           headers={[
@@ -540,11 +555,23 @@ const KubernetesAnomaly = ({ accountId }: { accountId: string }) => {
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [recordsPerPage, setRecordsPerPage] = useState(apiUser.getUserPreferencesTablePageSize() ?? 10);
   const [anomalyTypes, setAnomalyTypes] = useState<string[]>([]);
-  const [namespaceFilter, setNamespaceFilter] = useState<string[]>([]);
-  const [workloadFilter, setWorkloadFilter] = useState<string[]>([]);
+  const [allWorkloads, setAllWorkloads] = useState<{ name: string; namespace: string }[]>([]);
+  const [isWorkloadsLoading, setIsWorkloadsLoading] = useState(false);
   const [selectedNamespace, setSelectedNamespace] = useState('');
   const [selectedAnomalyType, setSelectedAnomalyType] = useState('');
   const [selectedWorkload, setSelectedWorkload] = useState<string>('');
+
+  // Cross-filter: namespace options narrow when a workload is selected
+  const namespaceFilter = useMemo(() => {
+    const base = selectedWorkload ? (allWorkloads || []).filter((w) => w.name === selectedWorkload) : allWorkloads || [];
+    return Array.from(new Set(base.map((w) => w.namespace).filter(Boolean)));
+  }, [allWorkloads, selectedWorkload]);
+
+  // Cross-filter: workload options narrow when a namespace is selected
+  const workloadFilter = useMemo(() => {
+    const base = selectedNamespace ? (allWorkloads || []).filter((w) => w.namespace === selectedNamespace) : allWorkloads || [];
+    return Array.from(new Set(base.map((w) => w.name).filter(Boolean)));
+  }, [allWorkloads, selectedNamespace]);
 
   const router = useRouter();
   const { triggerAnomaly, isLoading: isRefreshLoading } = useTriggerAnomaly(accountId);
@@ -633,24 +660,14 @@ const KubernetesAnomaly = ({ accountId }: { accountId: string }) => {
   }, [accountId, currentPage, recordsPerPage, selectedNamespace, selectedWorkload, selectedAnomalyType]);
 
   useEffect(() => {
-    const workloadQuery: any = {
-      namespace: selectedNamespace,
-      accountId: accountId,
-    };
-    apiKubernetes.getAllK8sWorkload(workloadQuery).then((res) => {
-      const data = res?.data as any[];
-      const workloadNames = data.map((e: any) => e.name) as string[];
-      setWorkloadFilter([...new Set(workloadNames)]);
-    });
-  }, [selectedNamespace]);
-
-  useEffect(() => {
     getDistinctAnomalyTypes();
-    apiKubernetes.getK8sNamespaceNames(accountId).then((res) => {
-      const namespaces = res.data.namespaces as string[];
-      setNamespaceFilter(namespaces);
-    });
-  }, []);
+    setIsWorkloadsLoading(true);
+    apiKubernetes
+      .getAllK8sWorkload({ accountId })
+      .then((res) => setAllWorkloads(res?.data ?? []))
+      .catch((err) => console.error('Failed to fetch workloads:', err))
+      .finally(() => setIsWorkloadsLoading(false));
+  }, [accountId]);
 
   return (
     <ListingLayout id={'anomaly-table-container'}>
@@ -692,9 +709,9 @@ const KubernetesAnomaly = ({ accountId }: { accountId: string }) => {
           label='Namespace'
           options={namespaceFilter.map((o) => ({ value: o, label: o }))}
           value={selectedNamespace}
+          isOptionsLoading={isWorkloadsLoading}
           onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
             setSelectedNamespace(e.target.value);
-            setSelectedWorkload('');
             setCurrentPage(1);
           }}
         />
@@ -702,6 +719,7 @@ const KubernetesAnomaly = ({ accountId }: { accountId: string }) => {
           label='Workloads'
           options={workloadFilter.map((o) => ({ value: o, label: o }))}
           value={selectedWorkload}
+          isOptionsLoading={isWorkloadsLoading}
           onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
             setSelectedWorkload(e.target.value);
             setCurrentPage(1);
@@ -718,7 +736,7 @@ const KubernetesAnomaly = ({ accountId }: { accountId: string }) => {
         />
       </ListingLayout.Toolbar>
       <ListingLayout.Body>
-        <KubernetesTable2
+        <KubernetesTable
           id={'anomaly-table'}
           data={data}
           headers={[

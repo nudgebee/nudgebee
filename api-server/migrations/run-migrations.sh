@@ -213,14 +213,25 @@ fi
 # with a timestamp that has no corresponding ./migrations/app/<ts>_*.up.sql.
 # Catch it here so the operator gets an actionable message instead of a cryptic
 # "read down for version <V> ... file does not exist".
-current_version=$(psql "$APP_DATABASE_URL" -v ON_ERROR_STOP=1 -tAq -c "
-  SELECT CASE
-    WHEN EXISTS (SELECT 1 FROM information_schema.tables
-                 WHERE table_schema='nudgebee' AND table_name='schema_migrations')
-    THEN COALESCE((SELECT version::text FROM nudgebee.schema_migrations LIMIT 1), '')
-    ELSE ''
-  END;
+#
+# Probe the tracker's existence with to_regclass() BEFORE querying it. A single
+# CASE that references nudgebee.schema_migrations inside a THEN arm fails to PLAN
+# when that table is absent — Postgres resolves every CASE branch at parse time,
+# so an EXISTS(...) runtime guard does NOT protect it. That table is absent on a
+# fresh install (it's created by the first `migrate up` below), which made the
+# Job abort here before any migration ran. to_regclass() takes a text argument
+# and returns NULL for a missing relation, so it never enters the parse tree.
+# Same stepwise pattern as the bootstrap detector above.
+tracker_present=$(psql "$APP_DATABASE_URL" -v ON_ERROR_STOP=1 -tAq -c "
+  SELECT to_regclass('nudgebee.schema_migrations') IS NOT NULL;
 " | tr -d '[:space:]')
+if [ "$tracker_present" = "t" ]; then
+    current_version=$(psql "$APP_DATABASE_URL" -v ON_ERROR_STOP=1 -tAq -c "
+      SELECT COALESCE((SELECT version::text FROM nudgebee.schema_migrations LIMIT 1), '');
+    " | tr -d '[:space:]')
+else
+    current_version=""
+fi
 if [ -n "$current_version" ] && [ -z "$(find ./migrations/app -maxdepth 1 -name "${current_version}_*.up.sql" -print -quit 2>/dev/null)" ]; then
     cat <<MSG >&2
 

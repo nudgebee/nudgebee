@@ -35,11 +35,12 @@ func TestPrintTask_Execute(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "Invalid Message Type",
+			name: "Non-string Message Type",
 			params: map[string]any{
 				"message": 123,
 			},
-			expectError: true,
+			expectError: false,
+			expectData:  "123",
 		},
 	}
 

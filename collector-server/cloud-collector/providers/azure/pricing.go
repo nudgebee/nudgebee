@@ -761,3 +761,127 @@ func mapSQLSkuToArmSkuName(skuName string) string {
 	}
 	return skuName
 }
+
+// azureSkuName extracts the SKU name (e.g. "Standard", "Basic") from a resource's
+// metadata map produced by structToMap, returning "" when absent.
+func azureSkuName(meta map[string]any) string {
+	if sku, ok := meta["sku"].(map[string]any); ok {
+		if name, ok := sku["name"].(string); ok {
+			return name
+		}
+	}
+	return ""
+}
+
+// selectHourlyConsumptionPrice returns the lowest per-hour Consumption price among
+// the items, optionally requiring the meter name to contain meterContains. The
+// boolean reports whether any matching price was found.
+func selectHourlyConsumptionPrice(items []RetailPriceItem, meterContains string) (float64, bool) {
+	best := 0.0
+	found := false
+	for _, item := range items {
+		if item.Type != "" && !strings.EqualFold(item.Type, "Consumption") {
+			continue
+		}
+		if !strings.EqualFold(item.UnitOfMeasure, "1 Hour") {
+			continue
+		}
+		if meterContains != "" && !strings.Contains(strings.ToLower(item.MeterName), strings.ToLower(meterContains)) {
+			continue
+		}
+		price := item.RetailPrice
+		if price == 0 {
+			price = item.UnitPrice
+		}
+		if price <= 0 {
+			continue
+		}
+		if !found || price < best {
+			best = price
+			found = true
+		}
+	}
+	return best, found
+}
+
+// GetPublicIPPrice returns the estimated monthly cost (USD) of a static public IP
+// of the given SKU in the region.
+func (pc *PricingCache) GetPublicIPPrice(ctx providers.CloudProviderContext, sku, region string) (float64, error) {
+	if !pc.IsEnabled() {
+		return 0, fmt.Errorf("dynamic pricing is disabled")
+	}
+	if sku == "" {
+		sku = "Standard"
+	}
+	normalizedRegion := normalizeAzureRegion(region)
+	cacheKey := fmt.Sprintf("publicip:%s:%s", sku, normalizedRegion)
+	if price, found := pc.getCachedPrice(cacheKey); found {
+		return price, nil
+	}
+
+	filter := fmt.Sprintf("serviceName eq 'Virtual Network' and productName eq 'IP Addresses' and armRegionName eq '%s' and skuName eq '%s' and priceType eq 'Consumption'",
+		normalizedRegion, sku)
+	items, err := pc.fetchPrices(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch public ip pricing: %w", err)
+	}
+	hourly, found := selectHourlyConsumptionPrice(items, "Static")
+	if !found {
+		return 0, fmt.Errorf("no public ip pricing found for sku %s in region %s", sku, normalizedRegion)
+	}
+
+	monthly := hourly * 730
+	pc.setCachedPrice(cacheKey, PriceEntry{
+		ServiceName:   "Virtual Network",
+		SKUName:       sku,
+		Region:        normalizedRegion,
+		UnitPrice:     monthly,
+		CurrencyCode:  "USD",
+		UnitOfMeasure: "1 Hour",
+		FetchedAt:     time.Now(),
+	})
+	return monthly, nil
+}
+
+// GetLoadBalancerPrice returns the estimated monthly base cost (USD) of a load
+// balancer of the given SKU (its included LB-rules hourly charge). Basic load
+// balancers are free and have no such meter, so this returns an error for them.
+func (pc *PricingCache) GetLoadBalancerPrice(ctx providers.CloudProviderContext, sku, region string) (float64, error) {
+	if !pc.IsEnabled() {
+		return 0, fmt.Errorf("dynamic pricing is disabled")
+	}
+	if sku == "" {
+		sku = "Standard"
+	}
+	normalizedRegion := normalizeAzureRegion(region)
+	cacheKey := fmt.Sprintf("loadbalancer:%s:%s", sku, normalizedRegion)
+	if price, found := pc.getCachedPrice(cacheKey); found {
+		return price, nil
+	}
+
+	// The base LB-rules meter is published under the global region, so do not
+	// filter by armRegionName here.
+	meter := fmt.Sprintf("%s Included LB Rules and Outbound Rules", sku)
+	filter := fmt.Sprintf("serviceName eq 'Load Balancer' and skuName eq '%s' and meterName eq '%s' and priceType eq 'Consumption'",
+		sku, meter)
+	items, err := pc.fetchPrices(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch load balancer pricing: %w", err)
+	}
+	hourly, found := selectHourlyConsumptionPrice(items, "")
+	if !found {
+		return 0, fmt.Errorf("no load balancer pricing found for sku %s", sku)
+	}
+
+	monthly := hourly * 730
+	pc.setCachedPrice(cacheKey, PriceEntry{
+		ServiceName:   "Load Balancer",
+		SKUName:       sku,
+		Region:        normalizedRegion,
+		UnitPrice:     monthly,
+		CurrencyCode:  "USD",
+		UnitOfMeasure: "1 Hour",
+		FetchedAt:     time.Now(),
+	})
+	return monthly, nil
+}

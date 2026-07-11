@@ -42,6 +42,47 @@ func (s *DirectEndpointMatchStrategy) Match(name string, ctx *MatchingContext) E
 }
 
 // =============================================================================
+// Strategy 0.5: Truncated AWS DNS Match (recovers chopped eBPF hostnames)
+// =============================================================================
+
+// TruncatedAWSDNSMatchStrategy recovers AWS endpoint hostnames that the eBPF
+// DNS-capture path reported with the trailing region/domain suffix chopped —
+// e.g. "<bucket>.s3.us-east" instead of "<bucket>.s3.us-east-1.amazonaws.com".
+// The exact DirectEndpointMatch above can't match those, and S3 buckets aren't
+// in Route53, so without this they stay orphan ExternalService leaves.
+//
+// It reuses the same endpoint index as DirectEndpointMatch and resolves the
+// truncated name to the unique cloud resource whose dns_name it is an
+// unambiguous prefix of (see findCloudResourceByTruncatedAWSDNS for the safety
+// guards). Sits immediately after DirectEndpointMatch so a clean exact hit
+// always wins; only chopped names fall through to here. Emits ROUTES_THROUGH —
+// the same strong "public face of an owned cloud resource" claim, since the
+// match is to a real indexed endpoint.
+type TruncatedAWSDNSMatchStrategy struct{}
+
+// NewTruncatedAWSDNSMatchStrategy constructs the strategy. Like
+// DirectEndpointMatch, the endpoint index lives on MatchingContext and is
+// populated by prepareMatchingContext.
+func NewTruncatedAWSDNSMatchStrategy() *TruncatedAWSDNSMatchStrategy {
+	return &TruncatedAWSDNSMatchStrategy{}
+}
+
+func (s *TruncatedAWSDNSMatchStrategy) Name() string {
+	return "truncated_aws_dns_match"
+}
+
+func (s *TruncatedAWSDNSMatchStrategy) Match(name string, ctx *MatchingContext) EnrichmentMatchResult {
+	if ctx == nil || len(ctx.EndpointIndex) == 0 {
+		return NoMatch()
+	}
+	node, field := findCloudResourceByTruncatedAWSDNS(ctx.EndpointIndex, name)
+	if node == nil {
+		return NoMatch()
+	}
+	return MatchWithHint(node, "truncated_aws_dns:"+field, core.RelationshipRoutesThrough)
+}
+
+// =============================================================================
 // Strategy 1: K8s Internal DNS Matching
 // =============================================================================
 

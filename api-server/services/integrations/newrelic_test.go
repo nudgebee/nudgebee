@@ -306,12 +306,12 @@ func TestMapNewRelicPriority(t *testing.T) {
 		priority string
 		expected string
 	}{
-		{"CRITICAL", "high"},
-		{"HIGH", "high"},
-		{"MEDIUM", "medium"},
-		{"LOW", "low"},
-		{"INFO", "info"},
-		{"unknown", "low"},
+		{"CRITICAL", "HIGH"},
+		{"HIGH", "HIGH"},
+		{"MEDIUM", "MEDIUM"},
+		{"LOW", "LOW"},
+		{"INFO", "INFO"},
+		{"unknown", "LOW"},
 	}
 
 	for _, tt := range tests {

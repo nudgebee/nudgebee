@@ -3,7 +3,6 @@ import { Box, Typography, FormControl, InputLabel, Select, MenuItem, Chip, Switc
 import { Button } from '@ui/Button';
 import { Add, Close } from '@mui/icons-material';
 import { Input } from '@ui/Input';
-import { colors } from 'src/utils/colors';
 import { FAILURE_POLICY_PRESETS, FIELD_HELPER_TEXT } from './advancedConfigPresets';
 import { useJsonViewMode } from '@components/workflow/hooks/useJsonViewMode';
 import FieldHeader from './FieldHeader';
@@ -145,13 +144,13 @@ const FailurePolicyField: React.FC<FailurePolicyFieldProps> = ({ value, onChange
             <Box
               sx={{
                 p: 2,
-                border: `1px solid ${colors.lowestLight}`,
-                borderRadius: 1,
-                bgcolor: colors.background.tertiaryLightest,
+                border: `1px solid var(--ds-green-200)`,
+                borderRadius: 'var(--ds-radius-sm)',
+                bgcolor: 'var(--ds-gray-100)',
               }}
             >
               <Typography
-                sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', mb: 1.5, color: colors.text.secondary }}
+                sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', mb: 1.5, color: 'var(--ds-brand-500)' }}
               >
                 Retry Configuration
               </Typography>
@@ -194,8 +193,8 @@ const FailurePolicyField: React.FC<FailurePolicyFieldProps> = ({ value, onChange
                         sx={{
                           fontSize: 'var(--ds-text-caption)',
                           height: 18,
-                          bgcolor: retry.initial_interval === preset ? 'primary.light' : colors.lowestLight,
-                          color: retry.initial_interval === preset ? 'primary.contrastText' : colors.text.secondary,
+                          bgcolor: retry.initial_interval === preset ? 'primary.light' : 'var(--ds-green-200)',
+                          color: retry.initial_interval === preset ? 'primary.contrastText' : 'var(--ds-brand-500)',
                         }}
                       />
                     ))}
@@ -221,8 +220,8 @@ const FailurePolicyField: React.FC<FailurePolicyFieldProps> = ({ value, onChange
                         sx={{
                           fontSize: 'var(--ds-text-caption)',
                           height: 18,
-                          bgcolor: retry.maximum_interval === preset ? 'primary.light' : colors.lowestLight,
-                          color: retry.maximum_interval === preset ? 'primary.contrastText' : colors.text.secondary,
+                          bgcolor: retry.maximum_interval === preset ? 'primary.light' : 'var(--ds-green-200)',
+                          color: retry.maximum_interval === preset ? 'primary.contrastText' : 'var(--ds-brand-500)',
                         }}
                       />
                     ))}
@@ -233,7 +232,7 @@ const FailurePolicyField: React.FC<FailurePolicyFieldProps> = ({ value, onChange
               {/* Non-retryable Error Types */}
               <Box sx={{ mt: 2 }}>
                 <Typography
-                  sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-semibold)', mb: 1, color: colors.text.secondary }}
+                  sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-semibold)', mb: 1, color: 'var(--ds-brand-500)' }}
                 >
                   Non-retryable Error Types
                 </Typography>
@@ -253,7 +252,7 @@ const FailurePolicyField: React.FC<FailurePolicyFieldProps> = ({ value, onChange
                     tone='ghost'
                     size='sm'
                     aria-label='Add error type'
-                    icon={<Add sx={{ fontSize: 16 }} />}
+                    icon={<Add sx={{ fontSize: 'var(--ds-text-title)' }} />}
                     disabled={disabled || !errorTypesInput.trim()}
                     onClick={handleAddErrorType}
                   />
@@ -265,13 +264,13 @@ const FailurePolicyField: React.FC<FailurePolicyFieldProps> = ({ value, onChange
                       label={errorType}
                       size='small'
                       onDelete={() => handleRemoveErrorType(errorType)}
-                      deleteIcon={<Close sx={{ fontSize: 12 }} />}
+                      deleteIcon={<Close sx={{ fontSize: 'var(--ds-text-small)' }} />}
                       disabled={disabled}
                       sx={{ fontSize: 'var(--ds-text-caption)', height: 22 }}
                     />
                   ))}
                   {(retry.non_retryable_error_types || []).length === 0 && (
-                    <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondary, fontStyle: 'italic' }}>
+                    <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-brand-500)', fontStyle: 'italic' }}>
                       All error types will be retried
                     </Typography>
                   )}

@@ -9,31 +9,22 @@ jest.mock('@lib/auth', () => ({
 
 jest.mock('@api1/notification', () => ({
   __esModule: true,
-  default: {
-    getNotificationRules: jest.fn(),
-  },
+  default: { getNotificationRules: jest.fn() },
 }));
 
 jest.mock('@api1/home', () => ({
   __esModule: true,
-  default: {
-    getCloudAccounts: jest.fn(),
-  },
+  default: { getCloudAccounts: jest.fn() },
 }));
 
 jest.mock('@api1/kubernetes', () => ({
   __esModule: true,
-  default: {
-    getAllK8sNamespaces: jest.fn(),
-    getAllK8sWorkload: jest.fn(),
-  },
+  default: { getAllK8sNamespaces: jest.fn(), getAllK8sWorkload: jest.fn() },
 }));
 
 jest.mock('@api1/user', () => ({
   __esModule: true,
-  default: {
-    getUserPreferencesTablePageSize: jest.fn(() => 10),
-  },
+  default: { getUserPreferencesTablePageSize: jest.fn(() => 10) },
 }));
 
 jest.mock('@assets', () => ({
@@ -41,12 +32,7 @@ jest.mock('@assets', () => ({
   writeIconLight: '/edit.svg',
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: {
-    background: { white: '#fff' },
-    text: { primary: '#000', secondary: '#666', tertiary: '#999' },
-  },
-}));
+jest.mock('@utils/colors');
 
 jest.mock('src/utils/actionStyles', () => ({
   action: { primary: {}, delete: {} },
@@ -64,22 +50,9 @@ jest.mock('src/utils/common', () => ({
   snakeToTitleCase: (s: string) => s,
 }));
 
-jest.mock('@shared', () => ({
-  Text: ({ value }: any) => <span>{value}</span>,
-}));
-
-jest.mock('@components/CustomIconButton', () => ({
+jest.mock('@shared/format/Text', () => ({
   __esModule: true,
-  default: ({ children, onClick, id }: any) => (
-    <button data-testid={id || 'icon-btn'} onClick={onClick}>
-      {children}
-    </button>
-  ),
-}));
-
-jest.mock('@shared/icons/SafeIcon', () => ({
-  __esModule: true,
-  default: ({ alt }: any) => <span data-testid={`icon-${alt}`}>icon</span>,
+  default: ({ value }: any) => <span>{value}</span>,
 }));
 
 jest.mock('@shared/format/Datetime', () => ({
@@ -87,50 +60,94 @@ jest.mock('@shared/format/Datetime', () => ({
   default: ({ value }: any) => <span data-testid='datetime'>{value || '-'}</span>,
 }));
 
+jest.mock('@shared/icons/SafeIcon', () => ({
+  __esModule: true,
+  default: ({ alt }: any) => <span data-testid={`icon-${alt}`}>icon</span>,
+}));
+
 jest.mock('@shared/icons/IconTextBadge', () => ({
   PlatformChannelBadge: ({ platform, channelName }: any) => <span data-testid={`badge-${platform}`}>{channelName}</span>,
 }));
 
-jest.mock('@shared/StatusBadge', () => ({
-  __esModule: true,
-  default: ({ label, variant }: any) => <span data-testid={`status-${variant}`}>{label}</span>,
-}));
+jest.mock('@ui/Label', () => {
+  const TONE_TO_COLOR: Record<string, string> = { success: 'green', critical: 'red', warning: 'yellow', neutral: 'grey' };
+  return {
+    Label: ({ text, children, tone, variant }: any) => {
+      const color = variant || TONE_TO_COLOR[tone] || 'plain';
+      return <span data-testid={`label-${color}`}>{children || text}</span>;
+    },
+  };
+});
 
-jest.mock('@shared/BoxLayout2', () => ({
-  __esModule: true,
-  default: ({ children, modalButton, filterOptions = [] }: any) => (
-    <div data-testid='box-layout'>
-      {modalButton?.enabled && (
-        <button data-testid={`modal-btn-${modalButton.id}`} onClick={modalButton.onClick}>
-          {modalButton.text}
-        </button>
-      )}
-      {filterOptions.map((f: any, i: number) =>
-        f.enabled ? (
-          <select key={i} data-testid={`filter-${f.label}`} value={f.value || ''} onChange={f.onSelect}>
-            <option value=''>--</option>
-            {(f.options || []).map((opt: any, idx: number) => {
-              const v = typeof opt === 'string' ? opt : opt.value;
-              const l = typeof opt === 'string' ? opt : opt.label;
-              return (
-                <option key={v + '-' + idx} value={v}>
-                  {l}
-                </option>
-              );
-            })}
-          </select>
-        ) : (
-          <select key={i} data-testid={`filter-disabled-${f.label}`} disabled>
-            <option>{f.label} (disabled)</option>
-          </select>
-        )
-      )}
+// DS Button with icon prop (no children for icon-only buttons). Render icon inside
+// button body so SafeIcon's testid is still queryable and .closest('button') works.
+jest.mock('@ui/Button', () => ({
+  Button: ({ children, onClick, id, disabled, icon, ['aria-label']: ariaLabel }: any) => (
+    <button data-testid={id || `btn-${typeof children === 'string' ? children : ariaLabel || 'icon'}`} onClick={onClick} disabled={disabled}>
+      {icon}
       {children}
-    </div>
+    </button>
   ),
 }));
 
-jest.mock('@shared/tables/CustomTable2', () => ({
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout = ({ children, id }: any) => (
+    <div data-testid='listing-layout' id={id}>
+      {children}
+    </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }: any) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }: any) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout, default: ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, options = [], value, onSelect, disabled }: any) => {
+    if (disabled) {
+      return (
+        <select data-testid={`filter-disabled-${label}`} disabled>
+          <option>{label} (disabled)</option>
+        </select>
+      );
+    }
+    const currentValue = typeof value === 'object' && value !== null ? value.value : value;
+    return (
+      <select
+        data-testid={`filter-${label}`}
+        value={currentValue || ''}
+        onChange={(e) => onSelect?.({ target: { value: e.target.value } }, { value: e.target.value, label: e.target.value })}
+      >
+        <option value=''>--</option>
+        {(options || []).map((opt: any, idx: number) => {
+          const v = typeof opt === 'string' ? opt : opt.value;
+          const l = typeof opt === 'string' ? opt : opt.label;
+          return (
+            <option key={(v || '_') + '-' + idx} value={v}>
+              {l}
+            </option>
+          );
+        })}
+      </select>
+    );
+  },
+}));
+
+jest.mock('@shared/buttons/DownloadButton', () => ({
+  __esModule: true,
+  default: ({ onClick }: any) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
+  ),
+}));
+
+jest.mock('@shared/tables/CustomTable', () => ({
   __esModule: true,
   default: ({ id, tableData, totalRows, loading, pageNumber, onPageChange }: any) => (
     <div data-testid='custom-table' id={id}>
@@ -225,8 +242,10 @@ const sampleRules = [
 
 const mockRulesResponse = (rows = sampleRules, count?: number) => ({
   data: {
-    admin_get_notification_rules_v2: { rows },
-    admin_get_notification_rules_grouping_v2: { rows: [{ count: count ?? rows.length }] },
+    // Source reads `notifications_list_rules.rows` + `notifications_aggregate_rules.rows[0].count`
+    // (older keys `admin_get_notification_rules_v2` / `_grouping_v2` were renamed).
+    notifications_list_rules: { rows },
+    notifications_aggregate_rules: { rows: [{ count: count ?? rows.length }] },
   },
 });
 
@@ -238,6 +257,14 @@ describe('Notifications (integration)', () => {
     apiKubernetes.getAllK8sNamespaces.mockResolvedValue({ data: sampleNamespaces });
     apiKubernetes.getAllK8sWorkload.mockResolvedValue({ data: sampleWorkloads });
     apiNotifications.getNotificationRules.mockResolvedValue(mockRulesResponse());
+  });
+
+  afterEach(async () => {
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+    }
   });
 
   it('fetches clusters + namespaces on mount, then notification rules', async () => {
@@ -261,8 +288,9 @@ describe('Notifications (integration)', () => {
     expect(screen.getByText('Email Suppressed')).toBeInTheDocument();
     expect(screen.getAllByText('AWS Prod').length).toBeGreaterThan(0);
     expect(screen.getAllByText('GCP Dev').length).toBeGreaterThan(0);
-    expect(screen.getByTestId('status-success')).toHaveTextContent('Active');
-    expect(screen.getByTestId('status-grey')).toHaveTextContent('Suppressed');
+    // Active = tone='success' → label-green; Suppressed = tone='neutral' → label-grey
+    expect(screen.getByTestId('label-green')).toHaveTextContent('Active');
+    expect(screen.getByTestId('label-grey')).toHaveTextContent('Suppressed');
   });
 
   it('renders platform-specific channel badges', async () => {
@@ -276,14 +304,14 @@ describe('Notifications (integration)', () => {
     mockHasWriteAccess.mockReturnValue(false);
     render(<Notifications />);
     await waitFor(() => expect(apiNotifications.getNotificationRules).toHaveBeenCalled());
-    expect(screen.queryByTestId('modal-btn-notification-rule')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('notification-rule')).not.toBeInTheDocument();
   });
 
   it('opens NotificationRuleModal on Create Rule click', async () => {
     render(<Notifications />);
-    await waitFor(() => expect(screen.getByTestId('modal-btn-notification-rule')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('notification-rule')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId('modal-btn-notification-rule'));
+    fireEvent.click(screen.getByTestId('notification-rule'));
 
     expect(screen.getByTestId('notification-rule-modal')).toBeInTheDocument();
     expect(screen.getByTestId('modal-rule-id')).toHaveTextContent('—');

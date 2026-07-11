@@ -85,6 +85,7 @@ func TestValidateWorkflow(t *testing.T) {
 		wf := model.Workflow{
 			Name: "test-workflow",
 			Definition: model.WorkflowDefinition{
+				Version: "v1",
 				Triggers: []model.Trigger{
 					{Type: model.WorkflowTriggerManual},
 				},
@@ -172,6 +173,7 @@ func TestValidateWorkflow(t *testing.T) {
 		wf := model.Workflow{
 			Name: "test-workflow",
 			Definition: model.WorkflowDefinition{
+				Version: "v1",
 				Triggers: []model.Trigger{
 					{Type: model.WorkflowTriggerSchedule, Params: map[string]any{"cron": "0 0 * * *"}},
 				},
@@ -222,8 +224,9 @@ func TestValidateWorkflow(t *testing.T) {
 		wf := model.Workflow{
 			Name: "test-workflow",
 			Definition: model.WorkflowDefinition{
+				Version: "v1",
 				Triggers: []model.Trigger{
-					{Type: model.WorkflowTriggerWebhook, Params: map[string]any{"path": "/test", "method": "POST"}},
+					{Type: model.WorkflowTriggerWebhook, Params: map[string]any{"integration_name": "my-hook"}},
 				},
 				Tasks: []model.Task{
 					{ID: "task1", Type: "http_request"},
@@ -234,12 +237,13 @@ func TestValidateWorkflow(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
-	t.Run("Invalid webhook trigger params - empty path", func(t *testing.T) {
+	t.Run("Invalid webhook trigger params - empty integration_name", func(t *testing.T) {
 		wf := model.Workflow{
 			Name: "test-workflow",
 			Definition: model.WorkflowDefinition{
+				Version: "v1",
 				Triggers: []model.Trigger{
-					{Type: model.WorkflowTriggerWebhook, Params: map[string]any{"path": "", "method": "POST"}},
+					{Type: model.WorkflowTriggerWebhook, Params: map[string]any{"integration_name": ""}},
 				},
 				Tasks: []model.Task{
 					{ID: "task1", Type: "http_request"},
@@ -248,15 +252,16 @@ func TestValidateWorkflow(t *testing.T) {
 		}
 		err := model.ValidateWorkflow(wf)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "webhook_path_invalid")
+		assert.Contains(t, err.Error(), "integration_name_invalid")
 	})
 
-	t.Run("Invalid webhook trigger params - empty method", func(t *testing.T) {
+	t.Run("Invalid webhook trigger params - missing integration_name", func(t *testing.T) {
 		wf := model.Workflow{
 			Name: "test-workflow",
 			Definition: model.WorkflowDefinition{
+				Version: "v1",
 				Triggers: []model.Trigger{
-					{Type: model.WorkflowTriggerWebhook, Params: map[string]any{"path": "/test", "method": ""}},
+					{Type: model.WorkflowTriggerWebhook, Params: map[string]any{"secret": "s"}},
 				},
 				Tasks: []model.Task{
 					{ID: "task1", Type: "http_request"},
@@ -265,7 +270,7 @@ func TestValidateWorkflow(t *testing.T) {
 		}
 		err := model.ValidateWorkflow(wf)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "webhook_method_invalid")
+		assert.Contains(t, err.Error(), "integration_name_missing")
 	})
 
 	eventWorkflow := func(params map[string]any) model.Workflow {
@@ -531,6 +536,7 @@ func TestValidateWorkflow_DependencyEdgeCases(t *testing.T) {
 		wf := model.Workflow{
 			Name: "wf-dup-depends",
 			Definition: model.WorkflowDefinition{
+				Version:  "v1",
 				Triggers: []model.Trigger{{Type: model.WorkflowTriggerManual}},
 				Tasks: []model.Task{
 					{ID: "task1", Type: "http_request", DependsOn: []string{"task2", "task2"}},
@@ -694,6 +700,7 @@ func TestValidateWorkflow_DependencyEdgeCases(t *testing.T) {
 		wf := model.Workflow{
 			Name: "wf-empty-depends",
 			Definition: model.WorkflowDefinition{
+				Version:  "v1",
 				Triggers: []model.Trigger{{Type: model.WorkflowTriggerManual}},
 				Tasks: []model.Task{
 					{ID: "task1", Type: "http_request", DependsOn: []string{}},

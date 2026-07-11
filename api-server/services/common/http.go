@@ -17,9 +17,10 @@ import (
 )
 
 var defaultHttpClient *http.Client
+var defaultTransport *http.Transport
 
 func init() {
-	transport := &http.Transport{
+	defaultTransport = &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -32,7 +33,7 @@ func init() {
 		ForceAttemptHTTP2:     true,
 	}
 	defaultHttpClient = &http.Client{
-		Transport: otelhttp.NewTransport(transport),
+		Transport: otelhttp.NewTransport(defaultTransport),
 	}
 }
 
@@ -200,11 +201,32 @@ func httpExecuteRequest(method string, url string, options ...HttpOption) (resp 
 	}
 	if httpConfig.Timeout > 0 {
 		client.Timeout = httpConfig.Timeout
+	} else if client.Timeout == 0 {
+		hasExplicitTimeout := false
+		for _, opt := range options {
+			if _, ok := opt.(httpTimeout); ok {
+				hasExplicitTimeout = true
+				break
+			}
+		}
+		if !hasExplicitTimeout {
+			client.Timeout = 30 * time.Second
+		}
 	}
 	if httpConfig.InsecureSkipVerify {
-		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // User-configured for self-signed certs
+		t := defaultTransport.Clone()
+		if client.Transport != nil {
+			if tr, ok := client.Transport.(*http.Transport); ok {
+				t = tr.Clone()
+			}
 		}
+		if t.TLSClientConfig == nil {
+			t.TLSClientConfig = &tls.Config{}
+		} else {
+			t.TLSClientConfig = t.TLSClientConfig.Clone()
+		}
+		t.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec // explicit user opt-in via HttpWithInsecureSkipVerify
+		client.Transport = otelhttp.NewTransport(t)
 	}
 
 	return client.Do(request)

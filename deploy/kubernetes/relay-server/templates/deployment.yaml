@@ -56,6 +56,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.serviceAccountName
+            # Sign requests forwarded to native k8s agents so they can authorize
+            # UI-triggered workload mutations. Additive + safe, so on by default
+            # (values.yaml); acts as a kill-switch. Don't use `default` here —
+            # sprig treats bool false as empty and would force it back to true.
+            - name: SIGNING_SIGN_K8S_ENABLED
+              value: {{ .Values.signing.signK8sEnabled | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

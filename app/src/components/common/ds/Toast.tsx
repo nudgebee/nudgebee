@@ -1,5 +1,6 @@
 /**
  * Toast — DS V2 of legacy snackbar / SnackbarComponent.
+ * Spec: design-system/primitives/feedback/toast.html
  *
  * Re-exports both the global service singleton (`toast` / `snackbar`) and the
  * mountable React component. New code should import from this path:
@@ -13,7 +14,7 @@
  * new visual automatically.
  *
  * Severity-based default durations (when caller omits `duration`):
- *   success: 3000ms · info: 4000ms · warning: 6000ms · error: persistent (no auto-dismiss)
+ *   success: 3000ms · info: 4000ms · warning: 5000ms · error: 6000ms
  */
 import { snackbar } from '@shared/snackbarService';
 import { SnackbarComponent } from '@shared/SnackbarComponent';

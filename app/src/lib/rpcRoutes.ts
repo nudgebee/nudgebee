@@ -18,6 +18,13 @@ export type RpcRoute = {
   // set get blocked at the gateway. Empty set means no role can invoke
   // (admin-secret only under RPC → super_admin only here).
   allowedRoles: Set<string>;
+  // actions.yaml `tenant_agnostic: true`. The action authorizes on the
+  // authenticated user's identity alone, not on a role within the active
+  // tenant, so the gateway skips BOTH the no-tenant-role and the role gate
+  // for it. Reserved for identity-scoped, cross-tenant actions (e.g.
+  // `users_list_tenants`) that a roleless user must still reach to recover —
+  // see the gate in forwardAction (rpcGateway.ts).
+  tenantAgnostic: boolean;
   // Per-action upstream headers from actions.yaml `headers:` block.
   // Each entry maps a header name to an env-var name; the gateway looks up
   // process.env[valueFromEnv] at request time. Used to pick the right
@@ -33,6 +40,7 @@ type ActionsYaml = {
     definition?: {
       handler?: string;
       forward_client_headers?: boolean;
+      tenant_agnostic?: boolean;
       headers?: Array<{ name?: string; value_from_env?: string }>;
     };
     permissions?: Array<{ role?: string }>;
@@ -88,6 +96,7 @@ export function loadRpcRoutes(): Record<string, RpcRoute> {
       handler: action.definition.handler,
       forwardClientHeaders: !!action.definition.forward_client_headers,
       allowedRoles,
+      tenantAgnostic: !!action.definition.tenant_agnostic,
       headers,
     };
   }

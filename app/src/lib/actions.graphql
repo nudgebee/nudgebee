@@ -1505,6 +1505,10 @@ type Query {
 }
 
 type Query {
+  notifications_google_chat_permission_status: gchat_permission_status_resp
+}
+
+type Query {
   notification_get_user_list(
     platform: String!
   ): notification_user_list_resp
@@ -5728,6 +5732,10 @@ type tenant_list_all_output {
   name: String!
 }
 
+type Query {
+  tenant_list_all: [tenant_list_all_output!]!
+}
+
 type aws_account_onboard_output {
   url: String!
 }
@@ -6332,6 +6340,11 @@ type NBVersionResponse {
 
 type notification_channel_list_resp {
   data: jsonb
+  error: jsonb
+}
+
+type gchat_permission_status_resp {
+  status: String
   error: jsonb
 }
 
@@ -7452,6 +7465,11 @@ type AiConversationMessage {
   parent_agent_id: String
   message_config: String
   ack_message: String
+  # Per-message jsonb attachment slot, raw JSON text. Namespace-keyed by
+  # subsystem (e.g. `egressfilter`, future `pii_tokenization`). Null when no
+  # subsystem wrote anything for the message. Frontend JSON.parses and
+  # dispatches on whichever top-level keys it understands.
+  metadata: String
   attachments: [AiMessageAttachment!]
 }
 

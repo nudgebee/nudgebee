@@ -403,6 +403,31 @@ func bubbleUpIfSiblingsDone(ctx *security.RequestContext, req NBAgentRequest, ch
 		return childResp, nil
 	}
 
+	// All siblings done. If the completed child's answer IS the final answer
+	// (IsTerminal — e.g. automation_builder returning the built workflow JSON after
+	// "Approve and Build"), finalize from it and do NOT resume the parent. Resuming
+	// would re-run the ancestor planner, which for a nested builder
+	// (k8s_debug → automation → automation_builder) re-delegates a FRESH build,
+	// regenerating the plan and re-prompting for approval in a loop (#31997).
+	//
+	// This mirrors the non-resume executor, which already finalizes on a nested
+	// sub-agent's IsTerminal everywhere — ReAct loop (executor_planner.go ~922),
+	// ReWOO parallel exec (~1345), and waiting-tool resume (~3301). The V2 bubble-up
+	// was the one path that forgot the terminal short-circuit; this restores parity.
+	// Placed AFTER the waitingCount>0 guard above so a still-waiting parallel sibling
+	// is never stranded — we only short-circuit once no sibling needs user input.
+	if childResp.IsTerminal {
+		logger.Info("resume_v2: child returned terminal response; finalizing without ancestor re-run",
+			"child_agent_id", childAgent.ID.String(),
+			"agent_name", childAgent.AgentName,
+			"parent_agent_id", parentAgentID)
+		persistFinalMessage(ctx, req.MessageId, childResp)
+		if err := dao.UpdateConversationStatus(req.ConversationId, ConversationStatusCompleted); err != nil {
+			logger.Warn("resume_v2: failed to mark conversation complete after terminal child", "error", err)
+		}
+		return childResp, nil
+	}
+
 	// All siblings done. Resume parent.
 	_, parentState := dao.GetConversationAgentParentAgentIdAndPreviousState(parentAgentID)
 	if parentState == "" {

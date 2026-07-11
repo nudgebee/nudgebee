@@ -214,6 +214,113 @@ func TestWorkflowBuilderAgent_PlanApproveFlowUsingWorkflowAgent(t *testing.T) {
 	t.Log("Final workflow:", finalResponse)
 }
 
+// isPlanApprovalTurn reports whether a WAITING turn is the builder's plan-approval
+// prompt (its options include "Approve and Build").
+func isPlanApprovalTurn(resp core.NBAgentResponse) bool {
+	for _, o := range resp.FollowupRequest.FollowupOptions {
+		if strings.EqualFold(o, PlanApprovalOptionApprove) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestWorkflowBuilder_NestedNoRepromptAfterApprove_E2E is the #31997 regression
+// guard. The bug only manifests when the builder runs NESTED under another agent
+// (the ask-nudgebee/Slack chat path routes "create automation … get pods" to
+// k8s_debug → automation → automation_builder). The builder finishes the build with
+// IsTerminal, but the V2 resume bubble-up used to re-run the ancestor planner, which
+// re-delegated a FRESH build → the plan-approval prompt reappeared in a loop and the
+// automation never built.
+//
+// Unlike the other e2e cases (which drive the builder/automation directly — the
+// top-level, IMMUNE path), this one drives k8s_debug as the top agent to recreate the
+// real nesting, then resumes turn-by-turn. The hard invariant: once the user clicks
+// "Approve and Build", the plan-approval prompt must NOT reappear — the conversation
+// must build and terminate. Pre-fix this fails (second plan-approval prompt); post-fix
+// it builds on the first approval.
+func TestWorkflowBuilder_NestedNoRepromptAfterApprove_E2E(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping test: TEST_ACCOUNT not set")
+	}
+
+	accountId := os.Getenv("TEST_ACCOUNT")
+	userId := os.Getenv("TEST_USER")
+	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), userId, []string{accountId})
+	sessionId := "ut-wb-nested-noreprompt-1"
+
+	// Top-level agent is k8s_debug (NOT the builder) so the builder runs nested,
+	// exactly as it does on the chat path that produced #31997.
+	agent, ok := core.GetNBAgent(sc, "k8s_debug", accountId, core.AgentStatusEnabled)
+	if !ok {
+		t.Fatal("k8s_debug agent not registered")
+	}
+
+	err := core.DeleteConversationBySession(sessionId, accountId, userId)
+	assert.Nil(t, err)
+
+	// Front-load trigger/cluster/notification specifics to minimize clarifying rounds
+	// and keep the run deterministic; the bug is about the approve→build transition,
+	// not about clarification.
+	resp, err := core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
+		"Create an automation that fetches the pods from the k8s-dev cluster and then sends a notification with the result. Use a manual trigger and an email placeholder for the notification.",
+		core.ConversationSessionRequestWithEnableQueryRefinement(false))
+	assert.Nil(t, err)
+	assert.NotNil(t, resp)
+
+	const maxTurns = 16
+	approveCount := 0
+	sawPlanApproval := false
+
+	for turn := 0; turn < maxTurns; turn++ {
+		if resp.Status != core.ConversationStatusWaiting {
+			break // terminal — agent produced its answer
+		}
+
+		answer := "Skip"
+		if isPlanApprovalTurn(resp) {
+			// #31997 invariant: the plan-approval prompt must appear at most ONCE.
+			// Reappearing after we already approved means the build never stuck and
+			// an ancestor re-delegated a fresh build.
+			if approveCount >= 1 {
+				t.Fatalf("#31997 reproduced: plan-approval prompt reappeared after %d prior approval(s) "+
+					"(turn %d) — the nested builder's terminal result was discarded and an ancestor "+
+					"re-delegated a fresh build instead of building", approveCount, turn)
+			}
+			sawPlanApproval = true
+			approveCount++
+			answer = PlanApprovalOptionApprove
+		} else if opts := resp.FollowupRequest.FollowupOptions; len(opts) > 0 {
+			answer = opts[0] // take the recommended/first option for clarifications
+		}
+		t.Logf("turn %d: status=%s answering=%q question=%q", turn, resp.Status, answer, displayText(resp))
+
+		messageId, perr := uuid.Parse(resp.MessageId)
+		assert.Nil(t, perr)
+		agentId, perr := uuid.Parse(resp.AgentId)
+		assert.Nil(t, perr)
+
+		resp, err = core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId, answer,
+			core.ConversationSessionRequestWithMessageId(uuid.NullUUID{UUID: messageId, Valid: true}),
+			core.ConversationSessionRequestWithAgentId(uuid.NullUUID{UUID: agentId, Valid: true}))
+		assert.Nil(t, err)
+		assert.NotNil(t, resp)
+	}
+
+	// The conversation must have settled (not stuck WAITING on a re-prompt loop).
+	assert.NotEqual(t, core.ConversationStatusWaiting, resp.Status,
+		"conversation still WAITING after %d turns — likely stuck re-prompting (#31997)", maxTurns)
+
+	if sawPlanApproval {
+		assert.Equal(t, 1, approveCount, "plan-approval should be answered exactly once")
+	}
+
+	// And it must have actually produced a workflow.
+	finalResponse := strings.Join(resp.Response, "\n")
+	t.Log("Final response:", finalResponse)
+	assertWorkflowResponse(t, finalResponse)
+}
+
 // TestWorkflowBuilderAgent_PlanFeedbackFlow tests the plan → request changes → feedback → approve flow
 
 func TestWorkflowBuilderAgent_PlanFeedbackFlow(t *testing.T) {
@@ -1282,7 +1389,7 @@ func TestBuildEnvironmentContext(t *testing.T) {
 		[]string{os.Getenv("TEST_ACCOUNT")},
 	)
 
-	ctx := agent.buildEnvironmentContext(sc)
+	ctx := agent.buildEnvironmentContext(sc, true)
 
 	t.Log("Environment context:\n", ctx)
 
@@ -1324,7 +1431,7 @@ func TestBuildEnvironmentContext_IncludesObservabilityProviders(t *testing.T) {
 		[]string{os.Getenv("TEST_ACCOUNT")},
 	)
 
-	ctx := agent.buildEnvironmentContext(sc)
+	ctx := agent.buildEnvironmentContext(sc, true)
 
 	// If the services server is running, we should get provider info.
 	// If not, the context will still contain integrations/cloud accounts.
@@ -1720,7 +1827,7 @@ func TestWorkflowBuilder_EnvContext_RealCloudAccountsExposeUUID(t *testing.T) {
 	agent := newWorkflowBuilderAgent(os.Getenv("TEST_ACCOUNT"))
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), []string{os.Getenv("TEST_ACCOUNT")})
 
-	envContext := agent.buildEnvironmentContext(sc)
+	envContext := agent.buildEnvironmentContext(sc, true)
 
 	// Empty is acceptable only if the test account has zero configured
 	// cloud accounts and zero integrations — log so we can investigate.

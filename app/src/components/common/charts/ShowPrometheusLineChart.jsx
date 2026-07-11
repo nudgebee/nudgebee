@@ -2,9 +2,10 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Box } from '@mui/material';
 import ListingLayout from '@ui/ListingLayout';
 import { convertNumberToTimestamp } from 'src/utils/common';
-import LineChart from '@shared/charts/LineCharts';
+import Chart from '@ui/Chart';
 import apiKubernetes1 from '@api1/kubernetes1';
 import { v4 as uuidv4 } from 'uuid';
+import { ds } from '@utils/colors';
 import { Skeleton } from '@ui/Skeleton';
 import { toast as snackbar } from '@ui/Toast';
 import { withErrorBoundary } from '@shared/ErrorBoundary';
@@ -210,11 +211,11 @@ const ShowPrometheusLineChart = ({
       />
       <ListingLayout.Body>
         {loading ? (
-          <Skeleton shape='rect' width='98%' height='400px' />
+          <Skeleton shape='rect' width='98%' height={ds.space.mul(0, 200)} />
         ) : (
           chartData.map((cd, index) => (
             <Box sx={{ mb: 4 }} key={`chart-${index}`}>
-              <LineChart
+              <Chart.Line
                 id={`k8sPromChart-${index}`}
                 dataset={cd.data.data}
                 labels={cd.data.labels}

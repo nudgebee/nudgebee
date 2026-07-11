@@ -15,6 +15,9 @@ import (
 )
 
 func TestGetXrayRecommendations(t *testing.T) {
+	if os.Getenv("AWS_ACCESS_KEY_ID") == "" {
+		t.Skip("Skipping integration test that requires AWS credentials")
+	}
 	cloud.LoadEnvFromFile(t)
 
 	xraySvc, exists := GetAwsService("XRay")

@@ -839,6 +839,93 @@ func ListMetricsSeriesLabels(ctx security.RequestContext, accountId, provider, s
 	return core.ObservabilityMetricsSeriesLabelsResponse{Labels: response}, nil
 }
 
+// ListMetricsSeriesMatch asks the metrics_list_series action which metric families actually
+// have series for (namespace, workload), grouped by the (namespace-label, workload-label)
+// that found them. It makes workload metric discovery deterministic — the agent picks the
+// relevant family from real names instead of guessing default templates and reporting N/A.
+// startTime/endTime are unix seconds; pass 0 to let the backend apply its default lookback.
+func ListMetricsSeriesMatch(ctx security.RequestContext, accountId, provider, namespace, workload string, startTime, endTime int64) (core.ObservabilityMetricSeriesMatchResponse, error) {
+	if accountId == "" {
+		return core.ObservabilityMetricSeriesMatchResponse{}, errors.New("account id is empty")
+	}
+	request := map[string]any{
+		"account_id":      accountId,
+		"metric_provider": provider,
+		"namespace":       namespace,
+		"workload":        workload,
+	}
+	if startTime > 0 {
+		request["start_time"] = startTime
+	}
+	if endTime > 0 {
+		request["end_time"] = endTime
+	}
+	queryPayload := map[string]any{
+		"action": map[string]any{
+			"name": "metrics_list_series",
+		},
+		"input": map[string]any{
+			"request": request,
+		},
+	}
+
+	tenant := ctx.GetSecurityContext().GetTenantId()
+	if tenant == "" {
+		tenant1, err := security.GetTenantIdFromAccountId(accountId)
+		if err != nil {
+			return core.ObservabilityMetricSeriesMatchResponse{}, err
+		}
+		tenant = tenant1
+	}
+
+	if tenant == "" {
+		return core.ObservabilityMetricSeriesMatchResponse{}, errors.New("tenant id is empty")
+	}
+
+	resp, err := common.HttpPost(fmt.Sprintf("%s/rpc/metrics", config.Config.ServiceEndpoint), common.HttpWithHeaders(map[string]string{
+		"Content-Type":   contentTypeJson,
+		"Accept":         contentTypeJson,
+		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
+		"x-tenant-id":    tenant,
+		"x-user-id":      ctx.GetSecurityContext().GetUserId(),
+	}), common.HttpWithJsonBody(queryPayload))
+
+	if err != nil {
+		return core.ObservabilityMetricSeriesMatchResponse{}, fmt.Errorf("services: metrics_list_series, unable to process request: %v", err)
+	}
+	defer func() {
+		if resp.Body != nil {
+			if err := resp.Body.Close(); err != nil {
+				slog.Info("services_server: failed to close response body", "error", err)
+			}
+		}
+	}()
+
+	jsonBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return core.ObservabilityMetricSeriesMatchResponse{}, err
+	}
+
+	if resp.StatusCode != 200 {
+		return core.ObservabilityMetricSeriesMatchResponse{}, fmt.Errorf("services: metrics_list_series failed with status %d: %s", resp.StatusCode, string(jsonBody))
+	}
+
+	var response core.ObservabilityMetricSeriesMatchResponse
+	if err := common.UnmarshalJson(jsonBody, &response); err != nil {
+		// Tolerate a gateway-style {"data": {...}} envelope.
+		var wrapped struct {
+			Data core.ObservabilityMetricSeriesMatchResponse `json:"data"`
+		}
+		if err2 := common.UnmarshalJson(jsonBody, &wrapped); err2 == nil {
+			response = wrapped.Data
+		} else {
+			return core.ObservabilityMetricSeriesMatchResponse{}, err
+		}
+	}
+
+	return response, nil
+}
+
 // ListMetricsSeriesLabelValues fetches values for a given label. For ES/Opensearch, pass
 // request with metric_name set to the index pattern (e.g. {"metric_name": "metrics-*"}).
 func ListMetricsSeriesLabelValues(ctx security.RequestContext, accountId, provider, label string, request ...map[string]any) (core.ObservabilityMetricsLabelValuesResponse, error) {

@@ -99,13 +99,23 @@ func ConsumeCloudAccountEventsJobs(ctx *security.RequestContext, concurrency int
 
 	ctx.GetLogger().Info("events: starting cloud account events consumer", "concurrency", concurrency, "queue", config.Config.RabbitMqCloudAccountEventsQueue, "exchange", config.Config.RabbitMqCloudAccountEventsExchange)
 
+	// Declare and bind the DLQ so malformed messages routed via sendToDLQWithConfig
+	// are retained for inspection instead of being silently discarded by the broker.
+	if err := common.MqDeclareDLQ(config.Config.RabbitMqCloudAccountEventsDLQExchange, config.Config.RabbitMqCloudAccountEventsDLQQueue); err != nil {
+		ctx.GetLogger().Error("events: failed to declare DLQ", "error", err)
+	}
+
 	processor := func(data []byte) error {
 		var job CloudAccountEventsJob
 		err := common.UnmarshalJson(data, &job)
 		if err != nil {
-			// Permanent error - malformed message. ACK to prevent poison message loop.
-			// TODO: Send to DLQ for inspection
-			ctx.GetLogger().Error("events: failed to unmarshal job - dropping message", "error", err, "data", string(data))
+			// Permanent error - malformed message. Route to DLQ for inspection, then
+			// ACK to prevent a poison-message loop.
+			ctx.GetLogger().Error("events: failed to unmarshal job - sending to DLQ", "error", err, "data", string(data))
+			sendToDLQWithConfig(ctx, data, "unmarshal_error", err,
+				config.Config.RabbitMqCloudAccountEventsDLQExchange,
+				config.Config.RabbitMqCloudAccountEventsDLQQueue,
+			)
 			return nil // Return nil to ACK and drop the message
 		}
 
@@ -148,11 +158,24 @@ func isPermanentProviderError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Type-based detection first: cloud SDK auth failures (expired/revoked
+	// credentials, missing permissions) are wrapped errors whose textual form
+	// varies by provider — e.g. the Azure SDK renders 401 as "RESPONSE 401:",
+	// which the string regex below does not match. These never succeed on retry
+	// until an operator rotates the credential, so discard rather than loop.
+	if isAuthFailure(err) {
+		return true
+	}
 	matches := httpStatusCodePattern.FindStringSubmatch(err.Error())
 	if len(matches) < 2 {
 		return false
 	}
-	// HTTP 4xx status codes are permanent client errors
+	// 429 (Too Many Requests) and 408 (Request Timeout) are 4xx but transient —
+	// retrying after backoff can succeed, so don't classify them as permanent.
+	if matches[1] == "429" || matches[1] == "408" {
+		return false
+	}
+	// Remaining HTTP 4xx status codes are permanent client errors
 	return matches[1][0] == '4'
 }
 

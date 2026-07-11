@@ -34,6 +34,23 @@ const sshUserPattern = `^[A-Za-z_][A-Za-z0-9._-]{0,31}$`
 var sshHostRegex = regexp.MustCompile(sshHostPattern)
 var sshUserRegex = regexp.MustCompile(sshUserPattern)
 
+// Markers the live connection probe (TestConnection) echoes on the workspace
+// pod's stdout to signal the outcome of each branch. They are the only
+// reliable success signal: relay.CommandExecutor returns the *pod's* exit
+// status, not the inner ssh status, so a failed ssh otherwise looks identical
+// to a successful one (see TestConnection / buildSSHProbeCommand).
+const (
+	sshProbeMarkerOK        = "__NB_SSH_PROBE_OK__"         // ssh ran uname -a on the remote host
+	sshProbeMarkerSSHFail   = "__NB_SSH_PROBE_SSH_FAIL__"   // host resolvable but ssh failed (unreachable / bad key / auth)
+	sshProbeMarkerNoKey     = "__NB_SSH_PROBE_NO_KEY__"     // secret absent or mounted without SSH_KEY
+	sshProbeMarkerCredsOnly = "__NB_SSH_PROBE_CREDS_ONLY__" // SSH_KEY present but no host to test (ephemeral)
+)
+
+// SSH provides a live connectivity probe; assert it at compile time so a
+// signature drift fails the build rather than silently making the type
+// assertion in TestIntegrationConnection* skip the probe at runtime.
+var _ core.TestableIntegration = SSH{}
+
 func init() {
 	core.RegisterIntegration(SSH{})
 	playbooks.RegisterAction(IntegrationSSH, &SSH{})
@@ -94,19 +111,25 @@ func (m SSH) ConfigSchema() core.IntegrationSchema {
 				Priority:     80,
 				IsTestable:   true,
 			},
-			// Resolution order at execute time (kept in code, not the UI string,
-			// because the form renders Description as helper text and a
-			// multi-line ladder looks like a wall of words):
+			// host is a saved-default override in the execute-time resolution
+			// ladder:
 			//   (1) per-command host_name in the tool/playbook args
 			//   (2) this field if set
 			//   (3) SSH_HOST entry in the referenced Kubernetes secret
-			// If none are present the command fails. Leave blank for
-			// ephemeral targets (a lab VM whose IP rotates per session).
+			// In k8s mode the target lives in the secret (SSH_HOST) — mirroring
+			// RabbitMQ, which surfaces only its secret — so the field is Hidden
+			// from the form to keep the k8s flow secret-only and avoid the junk
+			// host entry QA hit. It is intentionally retained in the schema (not
+			// removed): resolveSSHTarget still honours a saved value, so existing
+			// configs and direct-API callers that set a default host keep
+			// working, and the Pattern still gates that value's format. The
+			// ConnectTimeout-bound live probe in TestConnection validates the
+			// effective host (secret or per-call) regardless of this field.
 			"host": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Default server host (e.g. db.example.com or 10.0.0.5). Optional — if blank, callers must supply host_name per command, or SSH_HOST from the k8s secret is used.",
 				Pattern:     sshHostPattern,
-				ShowWhen:    map[string]any{"connection_mode": "k8s"},
+				Hidden:      true,
 				Priority:    75,
 				IsTestable:  true,
 			},
@@ -188,25 +211,28 @@ func (m SSH) ValidateConfig(sc *security.SecurityContext, config []core.Integrat
 		return []error{fmt.Errorf("k8s_secret is required for k8s connection mode")}
 	}
 
+	// Host is optional (blank = credential-only / ephemeral target, with the
+	// actual host supplied per-call by the caller, e.g. an LLM tool extracting
+	// it from a user query). Validate the format only when a value is present.
 	host := strings.TrimSpace(configMap["host"])
-	if host == "" {
-		// Empty host is permitted: the integration is being saved as a
-		// credential-only default, with the actual host supplied per-call
-		// by the caller (e.g. an LLM tool extracting it from a user query).
-		// Skip the format check and the live uname -a probe.
-		return []error{}
-	}
-	if !sshHostRegex.MatchString(host) {
+	if host != "" && !sshHostRegex.MatchString(host) {
 		return []error{fmt.Errorf("invalid host %q: must be a hostname (e.g. db.example.com) or IPv4 address (e.g. 10.0.0.5)", host)}
 	}
 
-	// K8s mode: validate by running a test command
-	_, err := m.executeInternal(accountId, config, sshParams{
-		Command: "uname -a",
-	})
-	if err != nil {
-		return []error{err}
-	}
+	// ValidateConfig is intentionally structural only — it does NOT open an SSH
+	// session. Live connectivity (does the secret exist and carry an SSH_KEY,
+	// are the credentials valid, is the host reachable) is verified by
+	// TestConnection, which the "Test Connection" button and the
+	// per-integration test endpoint invoke after this passes.
+	//
+	// A save-time `uname -a` probe used to live here, but it was worse than
+	// useless: relay.CommandExecutor reports the workspace *pod's* exit status,
+	// not the inner ssh exit status, so a failed ssh (unreachable host, missing
+	// or junk k8s secret, bad key) still came back nil — the probe reported
+	// success for invalid configs. That false-positive is the bug this split
+	// fixes. Keeping connectivity out of save-time validation also lets a
+	// credential-only / ephemeral integration (blank host) be saved, while the
+	// UI still gates its Save button on a genuine TestConnection pass.
 	return []error{}
 }
 
@@ -231,6 +257,129 @@ func (m SSH) validateVMAgentConfig(configMap map[string]string) []error {
 		}
 	}
 	return errs
+}
+
+// TestConnection runs a live connectivity probe for k8s connection mode,
+// satisfying core.TestableIntegration. The "Test Connection" button and the
+// per-integration test endpoint both call it after ValidateConfig passes.
+//
+// It exists because ValidateConfig is structural only and because the relay
+// layer can't be trusted to surface an ssh failure on its own:
+// relay.CommandExecutor returns the workspace *pod's* exit status, not the
+// inner ssh status, so a failed ssh (unreachable host, junk/absent k8s secret,
+// bad key) returns nil all the same. We therefore run a small script in the
+// pod that echoes an unambiguous marker for each outcome and read the verdict
+// off stdout. This is what makes "Test Connection" tell the truth instead of
+// always reporting success.
+//
+// vm_agent mode never reaches here — IsProxyIntegration routes it through the
+// relay proxy test path before TestConnection is consulted — but we guard for
+// it defensively.
+func (m SSH) TestConnection(sc *security.SecurityContext, config []core.IntegrationConfigValue, accountId string) error {
+	configMap := make(map[string]string)
+	for _, c := range config {
+		configMap[c.Name] = c.Value
+	}
+
+	if configMap["connection_mode"] == "vm_agent" {
+		return nil
+	}
+
+	secretName := strings.TrimSpace(configMap["k8s_secret"])
+	if secretName == "" {
+		// ValidateConfig already rejects this; keep the message consistent for
+		// any caller that reaches TestConnection without it.
+		return fmt.Errorf("k8s_secret is required for k8s connection mode")
+	}
+
+	// resolveSSHTarget regex-vets any saved host/user literals and otherwise
+	// returns the "$SSH_HOST" / "$SSH_USER" env-var references that the pod
+	// shell expands from the mounted secret at runtime.
+	user, host, err := resolveSSHTarget(config, sshParams{})
+	if err != nil {
+		return err
+	}
+
+	resp, err := relay.CommandExecutor(accountId, buildSSHProbeCommand(user, host), secretName, map[string]string{})
+	if err != nil {
+		// Transport / pod-creation failure (e.g. the named secret does not
+		// exist so the pod can't start) — fail closed.
+		return fmt.Errorf("SSH connection test failed: %w", err)
+	}
+
+	return interpretSSHProbeOutput(fmt.Sprintf("%v", resp["response"]), secretName)
+}
+
+// buildSSHProbeCommand assembles the workspace-pod shell script the live probe
+// runs. It must distinguish four outcomes (the relay reports the pod's status,
+// not ssh's), so each branch echoes a distinct marker:
+//
+//   - secret absent / mounted without SSH_KEY -> sshProbeMarkerNoKey
+//   - SSH_KEY present but no host anywhere     -> sshProbeMarkerCredsOnly (ephemeral; treated as pass)
+//   - host resolvable and `ssh ... uname -a` ran -> sshProbeMarkerOK
+//   - host resolvable but ssh failed           -> sshProbeMarkerSSHFail
+//
+// user/host come from resolveSSHTarget: each is either a regex-validated
+// literal (safe inside the double-quoted assignment and the ssh target) or the
+// env-var reference "$SSH_USER" / "$SSH_HOST", which the pod shell expands from
+// the mounted k8s secret — so when the saved host is blank, the secret's
+// SSH_HOST decides whether there is anything to connect to. The key-writing
+// mirrors executeInternal's proven template.
+func buildSSHProbeCommand(user, host string) string {
+	return fmt.Sprintf(`if [ -z "$SSH_KEY" ]; then echo %s; exit 0; fi
+mkdir -p ~/.ssh && echo "$SSH_KEY" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
+NB_SSH_PROBE_HOST="%s"
+if [ -z "$NB_SSH_PROBE_HOST" ]; then echo %s; exit 0; fi
+if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 %s@"$NB_SSH_PROBE_HOST" 'uname -a'; then echo %s; else echo %s; fi`,
+		sshProbeMarkerNoKey, host, sshProbeMarkerCredsOnly, user, sshProbeMarkerOK, sshProbeMarkerSSHFail)
+}
+
+// interpretSSHProbeOutput maps the probe's captured stdout to a verdict. It is
+// pure so the marker handling is unit-testable without a relay/cluster. The OK
+// marker is checked first; absence of any marker fails closed (we never claim
+// success we couldn't observe — the opposite of the original bug).
+func interpretSSHProbeOutput(output, secretName string) error {
+	switch {
+	case strings.Contains(output, sshProbeMarkerOK):
+		return nil
+	case strings.Contains(output, sshProbeMarkerCredsOnly):
+		// Secret is valid (SSH_KEY present) but neither the integration nor the
+		// secret carries a host. Connectivity can't be exercised here; the host
+		// is supplied per-call. Pass so credential-only / ephemeral integrations
+		// stay savable.
+		return nil
+	case strings.Contains(output, sshProbeMarkerNoKey):
+		return fmt.Errorf("SSH connection test failed: kubernetes secret %q is missing or has no SSH_KEY — verify the secret exists and contains SSH_KEY, SSH_HOST and SSH_USER", secretName)
+	case strings.Contains(output, sshProbeMarkerSSHFail):
+		return fmt.Errorf("SSH connection test failed: could not connect to the host — verify it is reachable from the cluster and that SSH_USER/SSH_KEY (and the host) are correct in secret %q%s", secretName, sshProbeDetail(output))
+	default:
+		return fmt.Errorf("SSH connection test failed: could not verify connectivity — check that secret %q exists and the cluster agent is reachable%s", secretName, sshProbeDetail(output))
+	}
+}
+
+// sshProbeDetail surfaces the underlying ssh reason (e.g. "Connection timed
+// out", "Permission denied (publickey)", "Could not resolve hostname") as a
+// trailing " (detail: …)" clause, so a failed Test Connection is actionable
+// instead of opaque. It strips our control markers, collapses the output to a
+// single line and caps the length so a chatty remote can't bloat the message.
+// The probe runs only `uname -a`, so the captured text is ssh's own
+// connection/auth diagnostics — host/port/reason, never the key (which is
+// written to a file, not echoed). Mirrors RabbitMq.ValidateConfig including the
+// raw response in its error. Empty when there's nothing useful to add.
+func sshProbeDetail(output string) string {
+	cleaned := output
+	for _, m := range []string{sshProbeMarkerOK, sshProbeMarkerSSHFail, sshProbeMarkerNoKey, sshProbeMarkerCredsOnly} {
+		cleaned = strings.ReplaceAll(cleaned, m, "")
+	}
+	cleaned = strings.Join(strings.Fields(cleaned), " ")
+	if cleaned == "" {
+		return ""
+	}
+	const maxDetailLen = 300
+	if len(cleaned) > maxDetailLen {
+		cleaned = cleaned[:maxDetailLen] + "…"
+	}
+	return fmt.Sprintf(" (detail: %s)", cleaned)
 }
 
 func (m SSH) Execute(ctx playbooks.PlaybookActionContext, rawParams map[string]any) (playbooks.PlaybookActionResponse, error) {

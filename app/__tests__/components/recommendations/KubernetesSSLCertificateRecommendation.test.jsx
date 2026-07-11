@@ -23,22 +23,20 @@ jest.mock('@api1/user', () => ({
   },
 }));
 
-jest.mock('@shared/snackbarService', () => ({
-  snackbar: { success: jest.fn(), error: jest.fn() },
+jest.mock('@ui/Toast', () => ({
+  __esModule: true,
+  toast: { success: jest.fn(), error: jest.fn() },
 }));
-
-jest.mock('@assets/sidebar-icon/tickets-icon.svg', () => '/tickets.svg', { virtual: true });
 
 jest.mock('src/utils/actionStyles', () => ({
   action: { primary: {} },
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000' }, background: { white: '#fff' } },
-}));
+jest.mock('@utils/colors');
 
-jest.mock('@shared', () => ({
-  Text: ({ value }) => <span>{value}</span>,
+jest.mock('@shared/format/Text', () => ({
+  __esModule: true,
+  default: ({ value }) => <span>{value}</span>,
 }));
 
 jest.mock('@shared/format/Datetime', () => ({
@@ -46,16 +44,16 @@ jest.mock('@shared/format/Datetime', () => ({
   default: ({ value }) => <span data-testid='datetime'>{String(value || '—')}</span>,
 }));
 
-jest.mock('@shared/CustomLink', () => ({
+jest.mock('@ui/Link', () => ({
   __esModule: true,
-  default: ({ href, children }) => (
+  Link: ({ href, children }) => (
     <a data-testid='custom-link' href={href}>
       {children}
     </a>
   ),
 }));
 
-jest.mock('@shared/ds/ThreeDotsMenu', () => ({
+jest.mock('@ui/ThreeDotsMenu', () => ({
   __esModule: true,
   default: ({ menuItems, data, onMenuClick }) => (
     <div data-testid='three-dots'>
@@ -68,13 +66,28 @@ jest.mock('@shared/ds/ThreeDotsMenu', () => ({
   ),
 }));
 
-jest.mock('@shared/NewCustomButton', () => ({
+jest.mock('@ui/Button', () => ({
   __esModule: true,
-  default: ({ id, text, onClick }) => (
-    <button data-testid={`btn-${id || text}`} onClick={onClick}>
-      {text}
+  Button: ({ children, onClick, disabled, id, ['aria-label']: ariaLabel }) => (
+    <button data-testid={`btn-${id || (typeof children === 'string' ? children : ariaLabel || 'icon')}`} onClick={onClick} disabled={disabled}>
+      {children}
     </button>
   ),
+}));
+
+jest.mock('@ui/Divider', () => ({
+  __esModule: true,
+  default: () => <hr data-testid='divider' />,
+}));
+
+jest.mock('@ui/Stat', () => ({
+  __esModule: true,
+  Stat: ({ label, value }) => <div data-testid={`summary-${label}`}>{value}</div>,
+}));
+
+jest.mock('@ui/WidgetCard', () => ({
+  __esModule: true,
+  default: ({ children }) => <div data-testid='widget-card'>{children}</div>,
 }));
 
 jest.mock('@components/k8s/common/ClusterNameWithRegion', () => ({
@@ -109,44 +122,64 @@ jest.mock('@components/tickets/TicketCreatePopupForm', () => ({
     ) : null,
 }));
 
-jest.mock('@components/optimise/SummaryWidget', () => ({
+jest.mock('@shared/buttons/DownloadButton', () => ({
   __esModule: true,
-  default: ({ title, value }) => <div data-testid={`summary-${title}`}>{value}</div>,
-}));
-
-jest.mock('@shared/BoxLayout2', () => ({
-  __esModule: true,
-  default: ({ children, heading, filterOptions = [], extraOptions = [] }) => (
-    <div data-testid='box-layout'>
-      <h2 data-testid='box-heading'>{heading}</h2>
-      <div data-testid='extras'>{extraOptions}</div>
-      {filterOptions.map((f, i) => (
-        <select key={i} data-testid={`filter-${f.label}`} value={f.value || ''} onChange={(e) => f.onSelect(e)}>
-          <option value=''>--</option>
-          {(f.options || []).map((opt, idx) => {
-            const v = typeof opt === 'string' ? opt : opt.value;
-            const l = typeof opt === 'string' ? opt : opt.label;
-            return (
-              <option key={(v || '_') + '-' + idx} value={v}>
-                {l}
-              </option>
-            );
-          })}
-        </select>
-      ))}
-      {children}
-    </div>
+  default: ({ onClick }) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
   ),
 }));
 
-jest.mock('@components/k8s/common/KubernetesTable2', () => ({
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout = ({ children, id }) => (
+    <div data-testid='listing-layout' id={id}>
+      {children}
+    </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
   __esModule: true,
-  default: ({ id, data, totalRows, loading, pageNumber, onPageChange }) => (
+  default: ({ label, options = [], value, onSelect }) => {
+    const currentValue = typeof value === 'object' && value !== null ? value.value : value;
+    return (
+      <select
+        data-testid={`filter-${label}`}
+        value={currentValue || ''}
+        onChange={(e) => onSelect?.({ target: { value: e.target.value } }, { value: e.target.value, label: e.target.value })}
+      >
+        <option value=''>--</option>
+        {(options || []).map((opt, idx) => {
+          const v = typeof opt === 'string' ? opt : opt.value;
+          const l = typeof opt === 'string' ? opt : opt.label;
+          return (
+            <option key={(v || '_') + '-' + idx} value={v}>
+              {l}
+            </option>
+          );
+        })}
+      </select>
+    );
+  },
+}));
+
+jest.mock('@shared/tables/CustomTable', () => ({
+  __esModule: true,
+  default: ({ id, tableData, totalRows, loading, pageNumber, onPageChange }) => (
     <div data-testid='k8s-table' id={id}>
       {loading && <div data-testid='loading'>loading</div>}
       <div data-testid='total'>{totalRows}</div>
       <div data-testid='page'>{pageNumber}</div>
-      {(data || []).map((row, i) => (
+      {(tableData || []).map((row, i) => (
         <div key={i} data-testid={`row-${i}`}>
           {row.map((cell, j) => (
             <span key={j} data-testid={`cell-${i}-${j}`}>
@@ -168,7 +201,7 @@ jest.mock('@components/k8s/common/KubernetesTable2', () => ({
 import KubernetesSSLCertificateRecommendation from '@components/recommendations/KubernetesSSLCertificateRecommendation';
 
 const recommendationApi = require('@api1/recommendation').default;
-const { snackbar } = require('@shared/snackbarService');
+const { toast: snackbar } = require('@ui/Toast');
 
 const sampleRecs = [
   {
@@ -189,7 +222,7 @@ const sampleRecs = [
       namespace: 'staging',
       name: 'api-cert',
       days_until_expiry: -5,
-      expiry_date: '2026-05-10T10:00:00Z', // already expired
+      expiry_date: '2026-05-10T10:00:00Z',
     },
     ticket: { url: 'https://t/1', ticket_id: 'T-1' },
   },
@@ -246,7 +279,7 @@ describe('KubernetesSSLCertificateRecommendation (integration)', () => {
     });
   });
 
-  it('renders summary widget with cert count', async () => {
+  it('renders Stat summary with cert count', async () => {
     render(<KubernetesSSLCertificateRecommendation kubernetes={{ id: 'acc-1' }} />);
 
     await waitFor(() => expect(screen.getByTestId('summary-Total Certificates')).toBeInTheDocument());
@@ -256,12 +289,11 @@ describe('KubernetesSSLCertificateRecommendation (integration)', () => {
   it('renders rows sorted by days_until_expiry ascending', async () => {
     render(<KubernetesSSLCertificateRecommendation kubernetes={{ id: 'acc-1' }} />);
 
-    // r-2 (-5) before r-3 (10) before r-1 (30)
     await waitFor(() => expect(screen.getByTestId('row-0')).toBeInTheDocument());
     const row0 = screen.getByTestId('row-0').textContent;
     const row1 = screen.getByTestId('row-1').textContent;
     const row2 = screen.getByTestId('row-2').textContent;
-    expect(row0).toMatch(/api-cert/); // expired first
+    expect(row0).toMatch(/api-cert/);
     expect(row1).toMatch(/mid-cert/);
     expect(row2).toMatch(/web-cert/);
   });
@@ -394,14 +426,6 @@ describe('KubernetesSSLCertificateRecommendation (integration)', () => {
 
     await waitFor(() => expect(recommendationApi.getK8sRecommendation).toHaveBeenCalled());
     expect(screen.queryByTestId('row-0')).not.toBeInTheDocument();
-  });
-
-  it('uses heading prop when provided, defaults to Cluster Upgrade when undefined', async () => {
-    const { rerender } = render(<KubernetesSSLCertificateRecommendation kubernetes={{ id: 'acc-1' }} heading='SSL Certs' />);
-    await waitFor(() => expect(screen.getByTestId('box-heading')).toHaveTextContent('SSL Certs'));
-
-    rerender(<KubernetesSSLCertificateRecommendation kubernetes={{ id: 'acc-1' }} />);
-    await waitFor(() => expect(screen.getByTestId('box-heading')).toHaveTextContent('Cluster Upgrade'));
   });
 
   it('renders RecommendationJobDetails with certificate_scanner job name', async () => {

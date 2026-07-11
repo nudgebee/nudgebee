@@ -245,11 +245,33 @@ type NBAgentNotebookProvider interface {
 
 type MemoryFact struct {
 	Content    string `json:"content"`
+	Subject    string `json:"subject,omitempty"`
 	IsPattern  bool   `json:"is_pattern"`
 	IsWorkflow bool   `json:"is_workflow"`
 	IsUpdate   bool   `json:"is_update"`
 	Type       string `json:"type,omitempty"`
 	OldContent string `json:"old_content,omitempty"`
+	// Description is the human-readable sentence the consolidator surfaces
+	// for inferred patterns ("you frequently investigate payments-api in
+	// prod"). The extractor prompt emits this for is_pattern records so the
+	// UI doesn't have to fall back to a templated render.
+	Description string `json:"description,omitempty"`
+	// Rationale captures the "why" for decision-type facts so the UI's
+	// "you decided X because Y" subtitle is populated on auto-extracted
+	// rows.
+	Rationale string `json:"rationale,omitempty"`
+	// PatternKind is the snake_case category the extractor assigns to a
+	// pattern record (e.g. frequent_namespace, preferred_diagnostic_flow).
+	// Required when IsPattern is true — without it the projection step
+	// falls back to a single default kind and every pattern row collapses
+	// to the same value, defeating the per-kind diversity cap downstream.
+	PatternKind string `json:"pattern_kind,omitempty"`
+	// DecisionType is the snake_case category for decision-type records
+	// detected from conversation text (e.g. runbook_chosen, tool_selected,
+	// recommendation_accepted). Click-wired writes (Approve/Decline,
+	// thumbs up/down) flow through the dedicated decisions_record RPC
+	// instead and don't ride this field.
+	DecisionType string `json:"decision_type,omitempty"`
 }
 
 type MemoryType string

@@ -181,6 +181,47 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 
 		c.JSON(200, resp)
 		return
+	case "metrics_list_series":
+		var request observability.FetchMetricSeriesRequest
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("missing or invalid request input"))
+			return
+		}
+		err := common.UnmarshalMapToStruct(requestInput, &request)
+		if err != nil {
+			slog.Error("metrics_list_series: failed to decode request", "error", err)
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		err = common.ValidateStruct(request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		if request.AccountId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+			return
+		}
+		if request.Workload == "" {
+			c.JSON(400, common.ErrorActionBadRequest("workload is required"))
+			return
+		}
+		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
+			return
+		}
+
+		resp, err := observability.FetchMetricSeries(ctx, request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		c.JSON(200, resp)
+		return
 	case "metrics_get_query":
 		var request observability.FetchMetricsRequest
 		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})

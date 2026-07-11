@@ -77,6 +77,32 @@ func queryGcloudLogs(ctx providers.CloudProviderContext, account providers.Accou
 		}
 	}
 
+	// Generic gap-fill: when nothing above scoped the query (SLO alerts, unmapped
+	// resource types — the evidence-starved cases), resolve the scope from the
+	// monitored resource via GCP's own APIs (services.get / metrics.get) rather than
+	// per-service code. Additive: existing service / log-metric / log-group paths win.
+	// A "fields …"-prefixed QueryString is the AWS-CloudWatch default the api-server
+	// fills in for empty queries; buildLogFilter ignores it for GCP, so it must not
+	// count as a real scope here either (else the resolver never runs and we'd return
+	// every log in the project).
+	hasRealQueryString := query.QueryString != "" && !strings.HasPrefix(query.QueryString, "fields ")
+	if resourceFilter == "" && !hasRealQueryString && query.LogGroupName == "" && query.ResourceType != "" {
+		scope, serr := resolveGcloudScope(ctx, account, GCPScopeInput{
+			Project:        session.ProjectId,
+			ResourceType:   query.ResourceType,
+			ResourceLabels: query.ResourceLabels,
+			MetricType:     query.MetricType,
+			AlertType:      query.AlertType,
+		})
+		if serr != nil {
+			logger.Warn("generic scope resolution failed", "error", serr, "resourceType", query.ResourceType)
+		} else {
+			resourceFilter = scope.LogFilter
+			logger.Info("resolved generic log scope", "source", scope.Source,
+				"resourceType", scope.ResourceType, "filter", scope.LogFilter)
+		}
+	}
+
 	filter := buildLogFilter(query, resourceFilter)
 	if filter == "" {
 		logger.Warn("empty log filter, returning no results", "service", query.ServiceName, "resource", query.ResourceId)

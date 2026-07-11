@@ -2,7 +2,6 @@ import { test } from "@playwright/test";
 import { navigateToMessagingQueueTab, testConnection, saveAndHandleAlreadyExists } from "./util";
 
 const requiredEnv = [
-  "RABBITMQ_TEST_HOST",
   "RABBITMQ_INTEGRATION_CONFIG_NAME",
   "RABBITMQ_SECRET",
 ];
@@ -21,7 +20,6 @@ test("Add RabbitMQ Account Integration", async ({ page }) => {
   await locators.rabbitmqAccountIdDropdown.click();
   await locators.rabbitmqAccountIdOption(process.env.CLUSTER!).first().click();
   await locators.rabbitmqAccountIdDropdown.press("Escape");
-  await locators.rabbitmqHostInput.fill(process.env.RABBITMQ_TEST_HOST!);
   await locators.rabbitmqConfigNameInput.fill(process.env.RABBITMQ_INTEGRATION_CONFIG_NAME!);
   await locators.rabbitmqK8sSecretInput.fill(process.env.RABBITMQ_SECRET!);
 
