@@ -3,7 +3,7 @@ global:
     registry: 'ghcr.io/nudgebee'
   imagePullSecrets: []
   initImages:
-    postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine'
+    postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine-nb1'
     curl: 'ghcr.io/nudgebee/curl:8.10.1'
   existingNudgebeeSecretName: ''
 nudgebee_registry_secret:

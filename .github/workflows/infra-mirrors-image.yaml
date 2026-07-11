@@ -58,6 +58,9 @@ jobs:
           - { image: redis,             context: deploy/kubernetes/nudgebee-mirrors/redis,             tag: 7.0.12-debian-11-r0-nb1 }
           - { image: rabbitmq,          context: deploy/kubernetes/nudgebee-mirrors/rabbitmq,          tag: 3.13.7-debian-12-r5-nb1 }
           - { image: postgres-exporter, context: deploy/kubernetes/nudgebee-mirrors/postgres-exporter, tag: 0.15.0-debian-11-r3-nb1 }
+          # Alpine re-mirrors of official images (apk upgrade; no version change).
+          - { image: postgres,          context: deploy/kubernetes/nudgebee-mirrors/postgres,          tag: 16.10-alpine-nb1 }
+          - { image: nginx,             context: deploy/kubernetes/nudgebee-mirrors/nginx,             tag: stable-alpine3.20-slim-nb1 }
     steps:
       - uses: actions/checkout@v4
 
