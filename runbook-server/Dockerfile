@@ -50,6 +50,7 @@ FROM alpine:3.22
 # package (e.g. c-ares CVE-2026-33630).
 ARG OS_PKG_EPOCH=2026-W28
 RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
+    && apk upgrade --no-cache \
     && apk add --no-cache iputils ca-certificates traceroute nodejs \
     icu-libs lttng-ust \
     && adduser -D -g '' appuser

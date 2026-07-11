@@ -37,6 +37,7 @@ FROM alpine:3.22 AS release-stage
 # CVE-2026-33630).
 ARG OS_PKG_EPOCH=2026-W28
 RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
+    && apk upgrade --no-cache \
     && apk add --no-cache git graphviz ca-certificates \
     && adduser -D -g '' appuser
 WORKDIR /app
