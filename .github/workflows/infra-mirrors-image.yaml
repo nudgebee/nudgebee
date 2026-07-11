@@ -1,0 +1,102 @@
+name: nudgebee infra-mirror images
+
+# Patched mirrors of the bitnami infra images (postgresql / redis / rabbitmq /
+# postgres-exporter) deployed alongside nudgebee — see docs/security/image-
+# hardening.md Phase 2 (WS3).
+#
+# Why: Bitnami sunset the free docker.io/bitnami/* images mid-2025; the archived
+# docker.io/bitnamilegacy/* tags we pin are frozen (no OS patches since ~Aug
+# 2025) and so accrue Debian CVEs. Each Dockerfile rebuilds the SAME bitnami
+# image (same app version + base — no data/behaviour change) with an apt-get
+# upgrade layer, so the still-security-supported Debian base picks up current
+# patches. Published to ghcr.io/<owner>/<image>:<tag>-nb1.
+#
+# OS_PKG_EPOCH is FED here (the ISO week), not committed like the app images:
+# the bitnamilegacy base is frozen, so the weekly schedule below is the only
+# thing that keeps these patched, and it needs a changing epoch to bust the apt
+# layer. No registry cache for the same reason (caching would re-freeze it).
+#
+# amd64 only — the cluster nodes are amd64. PRs build to validate, no push.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Monday 08:00 UTC — pull current Debian security patches onto the
+    # frozen bitnamilegacy bases even with no code change.
+    - cron: "0 8 * * 1"
+  push:
+    branches: ["main"]
+    paths:
+      - deploy/kubernetes/nudgebee-mirrors/**
+      - .github/workflows/infra-mirrors-image.yaml
+  pull_request:
+    branches: ["main"]
+    paths:
+      - deploy/kubernetes/nudgebee-mirrors/**
+      - .github/workflows/infra-mirrors-image.yaml
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: postgresql,        context: deploy/kubernetes/nudgebee-mirrors/postgresql,        tag: 16.1.0-debian-11-r16-nb1 }
+          - { image: redis,             context: deploy/kubernetes/nudgebee-mirrors/redis,             tag: 7.0.12-debian-11-r0-nb1 }
+          - { image: rabbitmq,          context: deploy/kubernetes/nudgebee-mirrors/rabbitmq,          tag: 3.13.7-debian-12-r5-nb1 }
+          - { image: postgres-exporter, context: deploy/kubernetes/nudgebee-mirrors/postgres-exporter, tag: 0.15.0-debian-11-r3-nb1 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - id: v
+        run: |
+          set -euo pipefail
+          ns="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          # PRs validate only; main / schedule / manual dispatch push.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then push=false; else push=true; fi
+          {
+            echo "namespace=$ns"
+            echo "push=$push"
+            # ISO week (e.g. 2026-W28) — busts the apt layer weekly so the frozen
+            # bitnamilegacy base still picks up current Debian patches.
+            echo "epoch=$(date -u +%G-W%V)"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        if: steps.v.outputs.push == 'true'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push ${{ matrix.image }} (push=${{ steps.v.outputs.push }})
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: ${{ steps.v.outputs.push == 'true' }}
+          platforms: linux/amd64
+          provenance: false
+          # No cache-from/to: we WANT a fresh apt pull each run; a registry cache
+          # would re-freeze the OS packages (the exact bug this job fixes).
+          build-args: |
+            OS_PKG_EPOCH=${{ steps.v.outputs.epoch }}
+          tags: ${{ env.REGISTRY }}/${{ steps.v.outputs.namespace }}/${{ matrix.image }}:${{ matrix.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=${{ matrix.image }}

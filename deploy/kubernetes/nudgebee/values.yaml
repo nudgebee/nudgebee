@@ -94,13 +94,13 @@ postgresql:
   image:
     registry: 'ghcr.io/nudgebee'
     repository: postgresql
-    tag: '16.1.0-debian-11-r16'
+    tag: '16.1.0-debian-11-r16-nb1'
   metrics:
     enabled: true
     image:
       registry: 'ghcr.io/nudgebee'
       repository: postgres-exporter
-      tag: '0.15.0-debian-11-r3'
+      tag: '0.15.0-debian-11-r3-nb1'
     serviceMonitor:
       enabled: true
     prometheusRule:
@@ -163,7 +163,7 @@ redis:
   image:
     registry: 'ghcr.io/nudgebee'
     repository: redis
-    tag: 7.0.12-debian-11-r0
+    tag: 7.0.12-debian-11-r0-nb1
   auth:
     password: 'password'
     existingSecret: 'redis'
@@ -176,7 +176,7 @@ rabbitmq:
   image:
     registry: 'ghcr.io/nudgebee'
     repository: rabbitmq
-    tag: 3.13.7-debian-12-r5-nb-3
+    tag: 3.13.7-debian-12-r5-nb1
   extraConfiguration: |-
     consumer_timeout = 3600000
   auth:
