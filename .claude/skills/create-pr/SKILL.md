@@ -4,6 +4,8 @@ user-invocable: true
 allowed-tools:
   - Bash
   - Read
+  - Edit
+  - Write
   - Glob
   - Grep
   - Task
@@ -11,7 +13,7 @@ allowed-tools:
 
 # Create Pull Request
 
-Create a pull request for the current branch. Optional argument: `$ARGUMENTS` (target base branch, defaults to `main`).
+Create a pull request for the current branch, then watch it through to a green, review-clean state — polling CI and review threads, fixing what can be auto-fixed, and surfacing what only a human can resolve (Step 11). Optional argument: `$ARGUMENTS` (target base branch, defaults to `main`).
 
 ## Step 1: Gather Context
 
@@ -291,3 +293,69 @@ Base: {base} <- {head}
 Services: {list}
 Validation: {pass/fail status per service}
 ```
+
+## Step 11: Watch CI & Review Until Green
+
+Creating the PR is not the finish line. Drive it to a green, review-clean state: poll CI and the review threads, fix everything you can, and surface only what a human must do. **Never fabricate approval, self-approve, or mark a human-only gate as done.**
+
+### 11.1 Poll the checks
+
+```bash
+gh pr checks {pr_number} --repo {owner/repo}
+```
+
+Poll on a loop — re-check every ~45–60s while any check is `pending`. Cap the total wait at ~25 min of wall-clock; if checks are still pending past that, report the current matrix and hand back rather than spinning. Treat the pass as "settled" once no check is `pending`.
+
+### 11.2 Triage each failing check
+
+For every `fail`, fetch the failing job's log and classify it:
+
+```bash
+gh run view --repo {owner/repo} --job {job_id} --log-failed | tail -80
+```
+
+| Failure | Class | Action |
+|---|---|---|
+| lint / prettier / gofmt / black | auto-fix | run the service's auto-format/fix (`make fmt`, `npm run lint2:fix`, `poetry run black .`), re-validate |
+| build / vet / type error | auto-fix | fix the code, re-run the service's validation |
+| unit test | auto-fix if cause is clear | reproduce locally, fix, re-run; if the failure is unrelated/flaky, re-run the job once |
+| migration version collision (`Vlabel-reuse`) | auto-fix | rebase on the base branch, then `./api-server/migrations/new-migration.sh` to renumber (fresh V + timestamp), move the SQL, delete the old files (see CLAUDE.md → Migrations) |
+| PR-title / semantic-scope check | auto-fix | correct the title via `gh pr edit` / `gh api` (scopes must be **lowercase**) |
+| screenshots-for-UI gate (`label-prs`) | **needs human** | the rule (external binary) wants real images dragged into the PR body — you cannot upload them; surface it |
+| flaky / external infra (timeouts, registry 5xx) | retry | `gh run rerun`; if it re-fails, surface it |
+| check needing secrets/env you don't have | **needs human** | surface it |
+
+Fix all auto-fixable failures **together**, re-run the affected service's validation locally, then follow the single-commit discipline (Steps 5–7): rebase if needed, **amend/squash into the one commit**, `git push --force-with-lease`. Do **not** add fix-up commits.
+
+### 11.3 Handle review comments
+
+Fetch review threads, including **bot reviewers** (e.g. `gemini-code-assist`, CodeRabbit):
+
+```bash
+gh api repos/{owner/repo}/pulls/{pr_number}/comments --paginate      # inline comments
+gh pr view {pr_number} --repo {owner/repo} --json reviews,comments    # review states + top-level
+```
+
+Triage each actionable comment — and **verify before acting** (bots hallucinate; confirm the symbol/line/behavior actually exists in your diff):
+
+- **In-scope + correct** → fix in code, fold into the single commit.
+- **Out-of-scope / pre-existing** (the flagged line isn't in your diff, or is code you didn't change) → do **not** edit; post a short reply so the thread resolves:
+  ```bash
+  gh api -X POST repos/{owner/repo}/pulls/{pr_number}/comments/{comment_id}/replies -f body="..."
+  ```
+- **False positive** → reply with the evidence.
+- **Needs product/business context** → surface to the user; don't guess.
+
+### 11.4 Loop
+
+Pushing fixes re-runs the checks and re-triggers bot review on `synchronize`. Return to 11.1. Repeat until **every required check is green AND every actionable review comment is fixed or answered**. Bound the loop (≤ ~4 fix-and-push cycles); if the same check keeps failing after a genuine fix, stop and surface it — don't loop blindly.
+
+### 11.5 Terminal report
+
+You **cannot** self-approve or upload screenshots, so stop at the first stable state and report which one it is:
+
+- ✅ **All checks green, review comments addressed — awaiting human approval.** (Success for the skill; approval is the human's to give.)
+- ⚠️ **Green except for human-only gates** (screenshots, human decision) — list exactly what the user must do.
+- ❌ **Blocked** — a check fails you couldn't fix; give the log excerpt and your diagnosis.
+
+Print the final check matrix, the review-comment disposition (fixed / replied / needs-user), and a one-sentence next action for the user.
