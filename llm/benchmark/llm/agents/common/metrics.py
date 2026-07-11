@@ -64,6 +64,7 @@ def get_token_metrics(session_id: str, account_id: str, tenant_id: str, user_id:
         "x-tenant-id": tenant_id,
         "x-user-id": user_id,
         "Content-Type": "application/json",
+        "x-action-token": os.getenv("LLM_SERVER_TOKEN", ""),
     }
     # API field is named "conversation_id" but server queries by session_id
     payload = json.dumps(
