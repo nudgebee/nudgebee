@@ -939,6 +939,26 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 			"completion_tokens", tu.CompletionTokens,
 			"conversation_id", query.ConversationId)
 	}
+	dao := core.GetConversationDao()
+
+	if dao == nil {
+		slog.Debug("code: skipping token usage tracking — conversation DAO unavailable")
+		return
+	}
+
+	// Cost at insert time — see trackTokenUsage rationale. Nil when the
+	// (provider, model) has no llm_model_pricing entry.
+	nonCachedPromptTokens := tu.PromptTokens - tu.CachedContentTokens
+	if nonCachedPromptTokens < 0 {
+		nonCachedPromptTokens = 0
+	}
+	var costUsd *float64
+	if cost, err := dao.GetConversationCost(provider, model, nonCachedPromptTokens, tu.CachedContentTokens, tu.CacheCreationTokens, tu.CompletionTokens, tu.ThinkingTokens); err == nil {
+		costUsd = &cost
+	} else {
+		slog.Debug("code: no pricing data for cost calc", "provider", provider, "model", model, "error", err)
+	}
+
 	// cache_ttl_minutes is no longer written — see trackTokenUsage rationale.
 	// Storage cost lives in llm_cache_lifecycle; per-call rows hold per-token
 	// costs only.
@@ -955,6 +975,7 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 		OutputTokens:        tu.CompletionTokens,
 		CachedInputTokens:   tu.CachedContentTokens,
 		CacheCreationTokens: tu.CacheCreationTokens,
+		CostUsd:             costUsd,
 		IsCacheHit:          tu.CachedContentTokens > 0,
 		LatencySeconds:      latencyPtr,
 		RequestStatus:       "success",
@@ -966,7 +987,7 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 		record.ThinkingTokens = &tt
 	}
 
-	if err := core.GetConversationDao().InsertTokenUsage(record); err != nil {
+	if err := dao.InsertTokenUsage(record); err != nil {
 		slog.Error("code: failed to insert token usage",
 			"error", err,
 			"conversation_id", query.ConversationId,

@@ -171,24 +171,25 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 
 	// --- Model calls (leaves) — fetch first so rollups are ready ---
 	var mcScans []struct {
-		ID                  string    `db:"id"`
-		AgentID             string    `db:"agent_id"`
-		MessageID           string    `db:"message_id"`
-		Model               string    `db:"llm_model"`
-		Provider            string    `db:"llm_provider"`
-		InputTokens         int       `db:"input_tokens"`
-		OutputTokens        int       `db:"output_tokens"`
-		CachedInputTokens   int       `db:"cached_input_tokens"`
-		CacheCreationTokens int       `db:"cache_creation_tokens"`
-		ThinkingTokens      int       `db:"thinking_tokens"`
-		LatencySeconds      float64   `db:"latency_seconds"`
-		TtftMs              int       `db:"ttft_ms"`
-		RetryAttempt        int       `db:"retry_attempt"`
-		IsCacheHit          bool      `db:"is_cache_hit"`
-		RequestStatus       string    `db:"request_status"`
-		StopReason          string    `db:"stop_reason"`
-		ErrorMessage        string    `db:"error_message"`
-		CreatedAt           time.Time `db:"created_at"`
+		ID                  string          `db:"id"`
+		AgentID             string          `db:"agent_id"`
+		MessageID           string          `db:"message_id"`
+		Model               string          `db:"llm_model"`
+		Provider            string          `db:"llm_provider"`
+		InputTokens         int             `db:"input_tokens"`
+		OutputTokens        int             `db:"output_tokens"`
+		CachedInputTokens   int             `db:"cached_input_tokens"`
+		CacheCreationTokens int             `db:"cache_creation_tokens"`
+		ThinkingTokens      int             `db:"thinking_tokens"`
+		LatencySeconds      float64         `db:"latency_seconds"`
+		TtftMs              int             `db:"ttft_ms"`
+		RetryAttempt        int             `db:"retry_attempt"`
+		IsCacheHit          bool            `db:"is_cache_hit"`
+		RequestStatus       string          `db:"request_status"`
+		StopReason          string          `db:"stop_reason"`
+		ErrorMessage        string          `db:"error_message"`
+		CreatedAt           time.Time       `db:"created_at"`
+		CostUsd             sql.NullFloat64 `db:"cost_usd"`
 	}
 	mcQuery := fmt.Sprintf(`
 		SELECT id::text, COALESCE(agent_id::text, '') AS agent_id, COALESCE(message_id::text, '') AS message_id,
@@ -200,7 +201,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 			retry_attempt, is_cache_hit, request_status,
 			COALESCE(stop_reason, '') AS stop_reason,
 			COALESCE(error_message, '') AS error_message,
-			created_at
+			created_at, cost_usd
 		FROM llm_conversation_token_usage
 		WHERE %s
 		ORDER BY created_at`, convScopeCTE)
@@ -228,12 +229,21 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 	var totalIn, totalOut, totalCached int64
 
 	for _, m := range mcScans {
-		p := pricing[m.Provider+":"+m.Model]
-		nonCached := m.InputTokens - m.CachedInputTokens
-		if nonCached < 0 {
-			nonCached = 0
+		// Prefer the cost persisted at insert time (see cost_usd column
+		// comment) — reconciles with the basic overview (GetConversationTokenUsage),
+		// which uses the same preference. Legacy rows without it fall back to a
+		// live recompute.
+		var cost float64
+		if m.CostUsd.Valid {
+			cost = m.CostUsd.Float64
+		} else {
+			p := pricing[m.Provider+":"+m.Model]
+			nonCached := m.InputTokens - m.CachedInputTokens
+			if nonCached < 0 {
+				nonCached = 0
+			}
+			cost = CalculateTotalCost(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
 		}
-		cost := CalculateTotalCost(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
 
 		if m.AgentID != "" {
 			a := agentAgg[m.AgentID]

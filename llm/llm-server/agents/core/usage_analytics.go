@@ -27,8 +27,12 @@ import (
 // here, matching the per-conversation metrics path.
 
 // perCallCostExpr is the per-call cost in USD for one llm_conversation_token_usage
-// row `t` joined to llm_model_pricing `p`. Tier-aware (long-ctx) per row.
-const perCallCostExpr = `(CASE
+// row `t` joined to llm_model_pricing `p`. Prefers the cost persisted on `t` at
+// insert time (see cost_usd column comment) — reconciles with the per-conversation
+// metrics (conversation_dao.go GetConversationTokenUsage) and tree
+// (conversation_tree.go), which use the same preference. Falls back to a live,
+// tier-aware (long-ctx) recompute for legacy rows with no stored cost_usd.
+const perCallCostExpr = `COALESCE(t.cost_usd, (CASE
 		WHEN p.context_threshold_tokens IS NOT NULL
 			 AND (t.input_tokens + COALESCE(t.cache_creation_tokens, 0)) > p.context_threshold_tokens
 			 AND p.cost_per_million_input_tokens_long_ctx IS NOT NULL
@@ -42,7 +46,7 @@ const perCallCostExpr = `(CASE
 			+ COALESCE(t.cached_input_tokens, 0) * COALESCE(p.cost_per_million_cached_input_tokens, p.cost_per_million_input_tokens)
 			+ COALESCE(t.cache_creation_tokens, 0) * COALESCE(p.cost_per_million_cache_creation_tokens, p.cost_per_million_input_tokens)
 			+ (t.output_tokens + COALESCE(t.thinking_tokens, 0)) * p.cost_per_million_output_tokens
-	END / 1000000.0)`
+	END / 1000000.0))`
 
 // cacheSavingsExpr values cached input tokens at the full (non-cached) input
 // rate — i.e. "what the cache avoided paying". Tier-aware: long-ctx calls are

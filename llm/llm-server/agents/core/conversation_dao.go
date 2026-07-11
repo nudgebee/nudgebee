@@ -359,20 +359,24 @@ type TokenUsageRecord struct {
 	OutputTokens        int
 	CachedInputTokens   int
 	CacheCreationTokens int
-	IsCacheHit          bool
-	CacheHitRate        *float64 // Nullable
-	RetryAttempt        int
-	FallbackFromModel   *string  // Nullable - immediate previous model
-	FallbackChain       *string  // Nullable - JSON array of all fallback models
-	LatencySeconds      *float64 // Nullable
-	RequestStatus       string   // 'success' or 'failure'
-	ErrorMessage        *string  // Nullable
-	ContentLength       *int     // Nullable
-	StopReason          *string  // Nullable
-	CacheTTLMinutes     *int     // Nullable - cache TTL in minutes at time of request
-	PromptMessages      *string  // Nullable - serialized prompt messages JSON (when LLM trace is enabled)
-	ResponseContent     *string  // Nullable - full LLM response text (when LLM trace is enabled)
-	ThinkingTokens      *int     // Nullable - Gemini 2.5+ hidden chain-of-thought tokens (usage.ThoughtsTokenCount). NULL when 0/unavailable.
+	// CostUsd is the USD cost of this call, computed via GetConversationCost at
+	// insert time. Nil when the (provider, model) has no llm_model_pricing entry —
+	// distinguishes "not priced" from "$0" for readers, which fall back to a live pricing JOIN when nil.
+	CostUsd           *float64
+	IsCacheHit        bool
+	CacheHitRate      *float64 // Nullable
+	RetryAttempt      int
+	FallbackFromModel *string  // Nullable - immediate previous model
+	FallbackChain     *string  // Nullable - JSON array of all fallback models
+	LatencySeconds    *float64 // Nullable
+	RequestStatus     string   // 'success' or 'failure'
+	ErrorMessage      *string  // Nullable
+	ContentLength     *int     // Nullable
+	StopReason        *string  // Nullable
+	CacheTTLMinutes   *int     // Nullable - cache TTL in minutes at time of request
+	PromptMessages    *string  // Nullable - serialized prompt messages JSON (when LLM trace is enabled)
+	ResponseContent   *string  // Nullable - full LLM response text (when LLM trace is enabled)
+	ThinkingTokens    *int     // Nullable - Gemini 2.5+ hidden chain-of-thought tokens (usage.ThoughtsTokenCount). NULL when 0/unavailable.
 	// Streaming-latency breakdown. ttft_ms / itl_ms_avg / tokens_per_second
 	// are NULL on non-streaming or legacy rows. was_streaming is FALSE on new
 	// non-streaming rows and NULL only on legacy rows pre-V722.
@@ -2431,7 +2435,8 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 			t.llm_model as ModelName,
 			t.llm_provider as ModelProviderName,
 			COALESCE(t.message_id::text, '') as MessageId,
-			t.conversation_id::text as ConversationId
+			t.conversation_id::text as ConversationId,
+			t.cost_usd as CostUsd
 		FROM llm_conversation_token_usage t
 		INNER JOIN llm_conversations c ON c.id = t.conversation_id
 		WHERE c.session_id = $1 AND c.account_id = $2::uuid;`
@@ -2459,6 +2464,7 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 		ModelProviderName   sql.NullString
 		MessageId           string
 		ConversationId      string
+		CostUsd             sql.NullFloat64
 	}
 
 	groups := make(map[string]*TokenMetrics)
@@ -2474,8 +2480,15 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 		if nonCached < 0 {
 			nonCached = 0
 		}
+
+		// Prefer the cost persisted at insert time (reconciles with every other
+		// cost surface — see cost_usd column comment). Legacy rows written before
+		// that column existed, or calls with no matching pricing entry at insert
+		// time, fall back to a live recompute here.
 		var cost float64
-		if call.ModelProviderName.Valid && call.ModelName.Valid {
+		if call.CostUsd.Valid {
+			cost = call.CostUsd.Float64
+		} else if call.ModelProviderName.Valid && call.ModelName.Valid {
 			key := call.ModelProviderName.String + ":" + call.ModelName.String
 			if pricing, ok := pricingMap[key]; ok {
 				cost = CalculateTotalCost(
@@ -3011,7 +3024,8 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			content_length, stop_reason, cache_ttl_minutes,
 			prompt_messages, response_content,
 			thinking_tokens,
-			ttft_ms, itl_ms_avg, tokens_per_second, was_streaming
+			ttft_ms, itl_ms_avg, tokens_per_second, was_streaming,
+			cost_usd
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8,
@@ -3022,7 +3036,8 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			$21, $22, $23,
 			$24, $25,
 			$26,
-			$27, $28, $29, $30
+			$27, $28, $29, $30,
+			$31
 		)
 	`
 
@@ -3038,6 +3053,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 		record.PromptMessages, record.ResponseContent,
 		record.ThinkingTokens,
 		record.TTFTMs, record.ITLMsAvg, record.TokensPerSecond, record.WasStreaming,
+		record.CostUsd,
 	)
 
 	if err != nil {
@@ -3058,6 +3074,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 				record.PromptMessages, record.ResponseContent,
 				record.ThinkingTokens,
 				record.TTFTMs, record.ITLMsAvg, record.TokensPerSecond, record.WasStreaming,
+				record.CostUsd,
 			)
 			if retryErr != nil {
 				return fmt.Errorf("failed to insert token usage (retry without agent_id): %w", retryErr)
