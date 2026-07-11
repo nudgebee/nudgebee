@@ -10,7 +10,9 @@ Scope = images this org **builds and publishes**, across three repos:
 | `k8s-agent` | nudgebee-agent, application-profiler-bpf |
 | `node-agent` | node-agent |
 
-**Out of scope:** vendored/mirrored third-party images (kubewatch, opencost, otel-collector-contrib, clickhouse, nova, popeye, kube-bench, cert-scanner, curl, trivy, postgres) and discarded build-stage/base images.
+**Out of scope (Phase 1):** discarded build-stage/base images.
+
+> **Phase 2 (added 2026-07-11):** a live scan of the running `nudgebee-oss` namespace showed the *deployed runtime dependencies* — Temporal, Qdrant, and the `ghcr.io/nudgebee/*` infra mirrors (redis / rabbitmq / postgres / postgres-exporter / nginx / kubewatch) — carry **~35× more fixable findings than all first-party services combined** (~2,000 vs ~61), including ~100 CRITICALs vs 0 on the services. Phase 1 measured ~3% of the deployed attack surface. Phase 2 brings the deployed runtime dependencies into scope. See [Phase 2 — deployed runtime dependencies](#phase-2--deployed-runtime-dependencies).
 
 ---
 
@@ -91,10 +93,74 @@ Machine-readable snapshot: [`baseline.json`](baseline.json).
 
 ---
 
+## Phase 2 — deployed runtime dependencies
+
+Phase 1 hardened the images we **build**. A live Trivy scan of every image **running** in the
+`nudgebee-oss` namespace (2026-07-11, 26 unique images incl. initContainers) showed those are a
+small slice of the real attack surface. Full per-image + CRITICAL detail: the namespace scan report
+(`nudgebee-oss-namespace-scan-2026-07-11`).
+
+### What the live scan found
+
+**Fleet:** 26 images · **2,148 fixable** + 526 unfixable C/H/M · **104 CRITICAL**.
+
+| Category | Images | Fixable C/H/M | CRIT | Ownership |
+|---|---|---|---|---|
+| First-party services | 13 | ~61 | 0 | we build — Phase 1 |
+| First-party agents (`nudgebee-agent`, `code-analysis-agent`) | 2 | ~89 | 1 | we build (agent repo / `:latest` tag) |
+| **First-party infra mirrors** (redis, rabbitmq, postgres, postgres-exporter, nginx, kubewatch) | 7 | **~805** | ~53 | **we publish the `ghcr.io/nudgebee/*` mirror** |
+| **Third-party** (Temporal ×3, Qdrant) | 4 | **~1,193** | 48 | upstream builds it |
+
+Worst single offenders: `temporalio/admin-tools:1.29.1` (506 / 24 CRIT), `temporalio/server:1.29.1`
+(357 / 15 CRIT), the debian-11 bitnami mirrors (`postgres-exporter`/`redis`/`postgresql` ~150–290
+each). The mirror CRITICALs are stale **debian-11 (bullseye)** OS packages; the Temporal CRITICALs
+are bundled Go deps (grpc, pgx, stdlib) only a newer Temporal release fixes.
+
+### What "done" means here (differs by who builds the image)
+
+- **Images we build** (services, agents, and the mirrors we bring into OSS): drive to **0 fixable
+  C/H/M** modulo a documented `.trivyignore` vendored floor → **enforce** gate.
+- **Images upstream owns** (Temporal, Qdrant): we can only **bump to the latest patched tag + pin**.
+  Residual is **report-only** — never a hard gate, because we can't patch upstream on our schedule.
+
+### Decisions taken (2026-07-11)
+
+- **Infra mirrors → build them in OSS.** The `ghcr.io/nudgebee/*` mirrors are not built in this repo
+  today (published by the enterprise/infra pipeline, only referenced in `values.yaml`). We will add
+  GHCR publish workflows here — same pattern as the python / cloud-collector / llm / ml base-image
+  workflows — that build a current bitnami tag (debian-12/13) with the weekly `OS_PKG_EPOCH` refresh.
+
+### Workstreams
+
+| WS | Scope | Fixable | Approach | Risk |
+|---|---|---|---|---|
+| **WS1** | First-party services | ~61 | Land #587/#588/#589; rag-server dep bump (safe transitive now, hold pypdf/transformers majors); `.trivyignore` vendored floor → flip services gate to **enforce** | low |
+| **WS2** | Agents | ~89 | Re-point `code-analysis-agent` deploy off `:latest` to the hardened edge tag; `nudgebee-agent` bump + release in the agent repo (with node-agent #291) | low–med · cross-repo |
+| **WS3** | Infra mirrors | ~805 | Add OSS publish workflows building current bitnami (debian-12/13) within the same app major; **test stateful DBs in `nudgebee-oss-qa` before prod** | **med–high** (stateful) |
+| **WS4** | Temporal + Qdrant | ~1,193 | Bump Temporal chart `0.72.0`→latest (newer server/ui/admin-tools) and Qdrant `v1.16.0`→latest; test in qa; residual report-only | med (compat) |
+| **WS5** | Gate + guardrail | — | Add all deployed images to `security-scan.yaml` as a **report-only** second matrix group; first-party group flips to **enforce**; third-party/mirror group stays report-only with a documented upstream floor | low |
+
+### Phase 2 plan
+
+| Iter | Objective | Status |
+|---|---|---|
+| **5** | WS5 report-only scan expansion (measure the whole deployed surface every run) | ⬜ |
+| **6** | WS1 finish + services gate → enforce (+ `.trivyignore` vendored floor) | ⬜ |
+| **7** | WS3 infra-mirror publish workflows on debian-12/13 (qa-tested) | ⬜ |
+| **8** | WS4 Temporal + Qdrant bumps (qa-tested); WS2 agent bumps | ⬜ |
+
+**Recommended order:** WS5 → WS1 → WS3 → WS4/WS2. Do WS5 first so progress on the big buckets is
+measured every run.
+
+---
+
 ## Progress log
 
 | Date | Iter | Change | Fixable C/H/M after |
 |---|---|---|---|
 | 2026-07-09 | 0 | Baseline scan of all 18 published images; tracker + scan workflow added | 3 / 83 / 190 |
+| 2026-07-10 | 1 | Go toolchain 1.26.4→1.26.5 across all 8 Go images (CVE-2026-42505 stdlib); `GOTOOLCHAIN=local` on all builders (#587 merged) | fleet 88 fixable |
+| 2026-07-11 | 1 | migrations `migrate` builder Go 1.26.5 (#588, open); committed `OS_PKG_EPOCH` cache-bust for c-ares + gzip/tar across 7 Dockerfiles (#589, open) | services → ~61 fixable |
+| 2026-07-11 | 2 | **Live scan of running `nudgebee-oss` namespace** (26 images) → deployed third-party surface is ~2,000 fixable / ~100 CRIT, ~35× the first-party services. Phase 2 opened. | fleet 2,148 fixable |
 
 _Update this table after every merged iteration PR. Re-run the scan workflow (or `trivy image --ignore-unfixed --severity CRITICAL,HIGH,MEDIUM <image>`) to get the new numbers._
