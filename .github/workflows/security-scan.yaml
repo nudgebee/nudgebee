@@ -1,6 +1,8 @@
 name: Image Security Scan
 
-# Trivy vulnerability scan of every first-party image this repo publishes.
+# Trivy vulnerability scan of every first-party image this repo publishes
+# (`scan` job) plus the third-party images deployed alongside nudgebee
+# (`scan-deployed` job, Phase 2 — always report-only).
 # Part of the image-hardening program — see docs/security/image-hardening.md.
 #
 # Ratchet model: we gate on FIXABLE CRITICAL/HIGH/MEDIUM only (--ignore-unfixed),
@@ -149,5 +151,103 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: scan-${{ matrix.image }}
+          path: result.json
+          retention-days: 14
+
+  # Phase 2 (see docs/security/image-hardening.md): the third-party images
+  # deployed ALONGSIDE nudgebee — Temporal, Qdrant, and the ghcr.io/nudgebee/*
+  # infra mirrors (redis/rabbitmq/postgres/...). A live scan of the nudgebee-oss
+  # namespace found these carry ~22x more fixable findings than all first-party
+  # images combined, yet were never measured. This job scans them for VISIBILITY
+  # only — it is always report-only (never gated), because upstream owns their
+  # fixes and we can only bump the pinned tag, not patch on our schedule.
+  # Refs are the tags pinned in deploy/kubernetes/nudgebee/values.yaml — keep in
+  # sync when those bump (WS3/WS4 will drive them down).
+  scan-deployed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        ref:
+          # --- ghcr.io/nudgebee infra mirrors ---
+          - ghcr.io/nudgebee/postgresql:16.1.0-debian-11-r16
+          - ghcr.io/nudgebee/postgres:16.10-alpine
+          - ghcr.io/nudgebee/redis:7.0.12-debian-11-r0
+          - ghcr.io/nudgebee/rabbitmq:3.13.7-debian-12-r5-nb-3
+          - ghcr.io/nudgebee/postgres-exporter:0.15.0-debian-11-r3
+          - ghcr.io/nudgebee/nginx:stable-alpine3.20-slim
+          - ghcr.io/nudgebee/kubewatch:2.14.1-nb.1
+          # --- genuinely third-party (upstream-owned) ---
+          - docker.io/qdrant/qdrant:v1.16.0
+          - docker.io/temporalio/server:1.29.1
+          - docker.io/temporalio/ui:2.42.1
+          - docker.io/temporalio/admin-tools:1.29.1-tctl-1.18.4-cli-1.5.0
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: '0.72.0'
+        run: |
+          set -euo pipefail
+          curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o /tmp/trivy.tgz
+          sudo tar -C /usr/local/bin -xzf /tmp/trivy.tgz trivy
+          trivy --version
+
+      - name: Update Trivy vulnerability DB
+        run: |
+          set -euo pipefail
+          n=0
+          until trivy image --download-db-only; do
+            n=$((n + 1))
+            if [ "$n" -ge 3 ]; then echo "::error::Trivy DB download failed after $n attempts"; exit 1; fi
+            echo "DB download attempt $n failed; retrying in 15s..."; sleep 15
+          done
+
+      - name: Scan ${{ matrix.ref }} (report-only)
+        env:
+          IMAGE_REF: ${{ matrix.ref }}
+        run: |
+          set -euo pipefail
+          echo "Scanning $IMAGE_REF (report-only — upstream-owned)"
+
+          trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM \
+            --skip-db-update --format table "$IMAGE_REF" || true
+
+          trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM \
+            --skip-db-update --format json -o result.json "$IMAGE_REF"
+
+          python3 - "$IMAGE_REF" <<'PY'
+          import json, sys, os
+          d = json.load(open("result.json"))
+          fx = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
+          nf = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
+          for r in d.get("Results") or []:
+              for v in r.get("Vulnerabilities") or []:
+                  s = v.get("Severity")
+                  if s not in fx: continue
+                  (fx if v.get("FixedVersion") else nf)[s] += 1
+          ref = sys.argv[1]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(f"### `{ref}` (report-only)\n\n")
+              f.write("| | CRITICAL | HIGH | MEDIUM |\n|---|---|---|---|\n")
+              f.write(f"| **fixable** | {fx['CRITICAL']} | {fx['HIGH']} | {fx['MEDIUM']} |\n")
+              f.write(f"| unfixable | {nf['CRITICAL']} | {nf['HIGH']} | {nf['MEDIUM']} |\n\n")
+          PY
+
+      - name: Sanitize artifact name
+        id: an
+        run: echo "name=$(echo '${{ matrix.ref }}' | sed 's#[/:]#_#g')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload scan JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-deployed-${{ steps.an.outputs.name }}
           path: result.json
           retention-days: 14
