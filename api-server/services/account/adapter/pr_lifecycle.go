@@ -543,7 +543,14 @@ func claimOrMarkResolution(dbms *database.DatabaseManager, tableName, id string,
 	// the internal mid-run re-dispatch uses it because it fires for a signal that
 	// genuinely arrived during the just-finished run, and finalize has already
 	// stamped last_pr_check_at, which would otherwise debounce it away.
-	window := fmt.Sprintf("$3 - interval '%s'", followupWebhookDebounce)
+	// $3 MUST be cast: it is an untyped bind parameter, and in `$3 - interval '...'`
+	// Postgres infers an untyped operand of `- interval` as `interval` (interval -
+	// interval = interval). That makes the whole window expression an interval, so
+	// `last_check < <window>` becomes `timestamp < interval` and every claim fails
+	// with "operator does not exist: timestamp without time zone < interval",
+	// silently killing all cron- and webhook-driven followups. Pinning the type to
+	// timestamptz keeps the expression a timestamp.
+	window := fmt.Sprintf("$3::timestamptz - interval '%s'", followupWebhookDebounce)
 	debounceClause := fmt.Sprintf("AND (cur.last_check IS NULL OR cur.last_check < %s)", window)
 	// debounceBlocked is true exactly when the row would have been claimed but for
 	// the debounce window — the one case where we preserve last_pr_check_at.

@@ -32,13 +32,21 @@ func TestPRLifecycleDispatchSQL_DB(t *testing.T) {
 		require.NoError(t, e)
 	}
 	mustExec(fmt.Sprintf(`DROP TABLE IF EXISTS %s`, tbl))
+	// last_pr_check_at is `timestamp without time zone` to MIRROR the real
+	// event_resolution / recommendation_resolution columns. This is load-bearing:
+	// claimOrMarkResolution compares last_pr_check_at against `$3 - interval '...'`,
+	// and Postgres infers the untyped `$3` differently depending on the left
+	// operand's type. With `timestamptz` the inference happens to succeed; with the
+	// real `timestamp without time zone` it infers `$3` as interval and the claim
+	// fails with "operator does not exist: timestamp without time zone < interval".
+	// Using timestamptz here would let that class of bug pass the test.
 	mustExec(fmt.Sprintf(`CREATE TABLE %s (
 		id text PRIMARY KEY,
 		pr_lifecycle_state text NOT NULL,
 		pr_iteration_count int NOT NULL DEFAULT 0,
 		pr_followup_pending boolean NOT NULL DEFAULT false,
 		status_message text,
-		last_pr_check_at timestamptz
+		last_pr_check_at timestamp without time zone
 	)`, tbl))
 	t.Cleanup(func() { _, _ = dbms.Db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s`, tbl)) })
 
