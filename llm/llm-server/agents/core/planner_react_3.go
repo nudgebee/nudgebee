@@ -282,7 +282,12 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 	// don't fire LLM summarization / "context_compression" cards without window pressure.
 	totalObsBytes := 0
 	for i := range intermediateSteps {
-		totalObsBytes += len(intermediateSteps[i].Observation)
+		// Count the evidence manifest with the same full-footprint semantics as the
+		// observation itself: this gate measures the uncompressed size to decide
+		// whether compression is needed at all (render then applies recency: old
+		// observations summarize, old evidence drops). Omitting evidence here would
+		// under-count and defer to the blunt whole-context hard-cap path.
+		totalObsBytes += len(intermediateSteps[i].Observation) + len(intermediateSteps[i].SubAgentEvidence)
 	}
 	maxContextTokens := o.resolveMaxContextTokens()
 	activationChars, hardCapChars := scratchpadBudget(maxContextTokens)
@@ -343,7 +348,7 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 			// Write observations for each action in the group
 			for j := i; j < groupEnd; j++ {
 				toolResponse := o.getToolResponse(&intermediateSteps[j], isRecent)
-				history.WriteString(o.formatObservation(intermediateSteps[j], toolResponse))
+				history.WriteString(o.formatObservation(intermediateSteps[j], toolResponse, isRecent))
 				history.WriteString("\n")
 				// Count each additional step in the group for compression tracking
 				if j > i {
@@ -362,7 +367,7 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 			history.WriteString("</thought_action>\n")
 
 			toolResponse := o.getToolResponse(&intermediateSteps[i], isRecent)
-			history.WriteString(o.formatObservation(step, toolResponse))
+			history.WriteString(o.formatObservation(step, toolResponse, isRecent))
 			history.WriteString("\n")
 			i++
 		}
@@ -1370,8 +1375,9 @@ func (o *NBReActPlanner3) diagnoseParseFailure(output string) string {
 // formatObservation builds the XML observation block for a step, including references.
 // When the action has a DisplayID (e.g. "E1", "E2") it is included as a step= attribute
 // so the LLM can reference it by that ID when producing its final answer.
-func (o *NBReActPlanner3) formatObservation(step NBAgentPlannerToolActionStep, toolResponse string) string {
+func (o *NBReActPlanner3) formatObservation(step NBAgentPlannerToolActionStep, toolResponse string, includeEvidence bool) string {
 	id := step.Action.DisplayID
+	var obs string
 	if len(step.References) > 0 {
 		var refsBuilder strings.Builder
 		refsBuilder.WriteString("<references>\n")
@@ -1380,26 +1386,40 @@ func (o *NBReActPlanner3) formatObservation(step NBAgentPlannerToolActionStep, t
 		}
 		refsBuilder.WriteString("</references>\n")
 		if id != "" {
-			return fmt.Sprintf(
+			obs = fmt.Sprintf(
 				"<observation step=%q tool=%q>\n<![CDATA[%s]]>\n%s</observation>",
 				id, step.Action.Tool, toolResponse, refsBuilder.String(),
 			)
+		} else {
+			obs = fmt.Sprintf(
+				"<observation tool=%q>\n<![CDATA[%s]]>\n%s</observation>",
+				step.Action.Tool, toolResponse, refsBuilder.String(),
+			)
 		}
-		return fmt.Sprintf(
-			"<observation tool=%q>\n<![CDATA[%s]]>\n%s</observation>",
-			step.Action.Tool, toolResponse, refsBuilder.String(),
-		)
-	}
-	if id != "" {
-		return fmt.Sprintf(
+	} else if id != "" {
+		obs = fmt.Sprintf(
 			"<observation step=%q tool=%q>\n<![CDATA[%s]]>\n</observation>",
 			id, step.Action.Tool, toolResponse,
 		)
+	} else {
+		obs = fmt.Sprintf(
+			"<observation tool=%q>\n<![CDATA[%s]]>\n</observation>",
+			step.Action.Tool, toolResponse,
+		)
 	}
-	return fmt.Sprintf(
-		"<observation tool=%q>\n<![CDATA[%s]]>\n</observation>",
-		step.Action.Tool, toolResponse,
-	)
+	// Append the sub-agent evidence manifest verbatim AFTER the observation, but only
+	// on steps that keep their full observation (recent, or no window pressure). Each
+	// block is budget-bounded (default 2KB), yet a long investigation accumulates one
+	// per sub-agent call; letting them ride every step forever would grow the scratchpad
+	// unbounded and dodge the recency rule that governs observations. Gating on
+	// includeEvidence (== isRecent) bounds total evidence at recentStepsFullContext ×
+	// maxChars under pressure and ages old evidence out alongside the observation it
+	// distilled — a finding the parent still needs by then belongs in the notebook, not
+	// the raw trail. No truncation here; it was capped at build time.
+	if includeEvidence && step.SubAgentEvidence != "" {
+		obs += "\n" + step.SubAgentEvidence
+	}
+	return obs
 }
 
 // Plan executes the ReAct logic to determine the next action(s) or final answer.

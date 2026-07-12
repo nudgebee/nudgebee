@@ -2190,10 +2190,11 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		followUpRequest.ToolId = action.ToolID
 
 		return NBAgentPlannerToolActionStep{
-				Action:      action,
-				Observation: observation.Data,
-				Status:      ToolStatusWaiting,
-				Followup:    &followUpRequest,
+				Action:           action,
+				Observation:      observation.Data,
+				Status:           ToolStatusWaiting,
+				Followup:         &followUpRequest,
+				SubAgentEvidence: observation.SubAgentEvidence,
 			}, &NBAgentPlannerFinishAction{
 				Data:              observation.Data,
 				Status:            ConversationStatusWaiting,
@@ -2207,12 +2208,13 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
 
 	result := NBAgentPlannerToolActionStep{
-		Action:      action,
-		Observation: observation.Data,
-		Status:      status,
-		IsTerminal:  observation.IsTerminal,
-		References:  observation.References,
-		Metadata:    observation.Metadata,
+		Action:           action,
+		Observation:      observation.Data,
+		Status:           status,
+		IsTerminal:       observation.IsTerminal,
+		References:       observation.References,
+		Metadata:         observation.Metadata,
+		SubAgentEvidence: observation.SubAgentEvidence,
 	}
 
 	// Cache successful results under both original and rewritten inputs

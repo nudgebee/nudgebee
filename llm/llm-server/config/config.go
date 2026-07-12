@@ -454,8 +454,23 @@ type appConfig struct {
 	// window — instead of a flat step count — stops compression from firing on small
 	// conversations. Default 0.75; values <=0 or >=1 fall back to the default.
 	LlmServerScratchpadCompressionActivationFraction float64 `mapstructure:"llm_server_scratchpad_compression_activation_fraction"`
-	EvaluationEnabled                                bool    `mapstructure:"llm_server_evaluation_enabled"`
-	AutoIdentifyAccountEnabled                       bool    `mapstructure:"llm_server_auto_identify_account_enabled"`
+	// LlmServerSubAgentEvidenceEnabled attaches a small, budget-bounded manifest of the
+	// concrete tool calls a sub-agent actually ran (tool + input + short output digest) to
+	// the observation the parent orchestrator ingests — carried as a SEPARATE field, not
+	// concatenated into the observation text, so it is exempt from scratchpad compression
+	// (the raw observation may be summarized as it ages; this distilled manifest survives
+	// verbatim). Without it the parent sees only the sub-agent's prose conclusion and cannot
+	// verify or reconcile the real artifacts (the query EXPLAIN'd, the grep that produced a
+	// count, etc.). Default false (opt-in).
+	LlmServerSubAgentEvidenceEnabled bool `mapstructure:"llm_server_sub_agent_evidence_enabled"`
+	// LlmServerSubAgentEvidenceMaxChars is the HARD total byte budget for that manifest. The
+	// whole block is capped here regardless of how many steps a sub-agent ran or how large
+	// their raw outputs were — a multi-MB fetch_logs step cannot inflate the parent context
+	// because the manifest is assembled newest-first (most-distilled steps win) and truncated
+	// to this budget. Default 2048; clamped to a 256 minimum.
+	LlmServerSubAgentEvidenceMaxChars int  `mapstructure:"llm_server_sub_agent_evidence_max_chars"`
+	EvaluationEnabled                 bool `mapstructure:"llm_server_evaluation_enabled"`
+	AutoIdentifyAccountEnabled        bool `mapstructure:"llm_server_auto_identify_account_enabled"`
 
 	// Termination cache configs
 	LlmServerMessageTerminationCacheTTLSeconds int `mapstructure:"llm_server_message_termination_cache_ttl_seconds"`
@@ -1034,6 +1049,8 @@ func init() {
 
 	viper.SetDefault("llm_server_scratchpad_summarization_enabled", true)
 	viper.SetDefault("llm_server_scratchpad_max_observation_chars", 65536)
+	viper.SetDefault("llm_server_sub_agent_evidence_enabled", false)
+	viper.SetDefault("llm_server_sub_agent_evidence_max_chars", 2048)
 	viper.SetDefault("llm_server_scratchpad_compression_activation_fraction", 0.75)
 
 	hostName, err := os.Hostname()

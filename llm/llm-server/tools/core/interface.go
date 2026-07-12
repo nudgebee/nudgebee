@@ -98,6 +98,13 @@ type NBToolResponse struct {
 	// observation text the UI renders stays byte-for-byte what the tool
 	// produced. Nil for tools that don't populate it.
 	Metadata *NBToolResponseMetadata `json:"metadata,omitempty"`
+	// SubAgentEvidence is a small, budget-bounded manifest of the concrete tool
+	// calls a sub-agent actually ran (set only for agent-type tools when the
+	// evidence feature is enabled). Kept OFF `Data` deliberately: it is rendered
+	// as a separate block after the observation and is exempt from scratchpad
+	// compression, so the distilled artifacts survive even when the raw
+	// observation is summarized as it ages. Empty for normal tools.
+	SubAgentEvidence string `json:"sub_agent_evidence,omitempty"`
 }
 
 // NBToolResponseMetadata is the typed seam for tool-execution metadata. New

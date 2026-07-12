@@ -203,6 +203,14 @@ type NBAgentPlannerToolActionStep struct {
 	// Computed once when the step is first compressed, then reused across subsequent
 	// scratchpad builds to avoid redundant LLM calls.
 	CompressedObservation string `json:"compressed_observation,omitempty"`
+	// SubAgentEvidence is a small, budget-bounded manifest of the concrete tool calls
+	// the sub-agent behind this step actually ran. It is rendered verbatim after the
+	// observation and — unlike Observation — is exempt from compression: the raw
+	// observation may be summarized as the step ages, but this distilled manifest
+	// survives so the orchestrator can always reconcile against the real artifacts.
+	// It is intentionally excluded from the scratchpad's compression-activation byte
+	// count so it never drags the window-pressure threshold. Empty for non-agent steps.
+	SubAgentEvidence string `json:"sub_agent_evidence,omitempty"`
 }
 
 type ToolStatus string

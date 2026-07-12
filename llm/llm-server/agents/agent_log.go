@@ -483,12 +483,19 @@ func (m LogAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 		nbRequestContext.Ctx.GetLogger().Info("log: caller's output_file ignored — using fetch_logs's existing reference", "requested", outputFile, "existing", references[0].Url)
 	}
 
+	// Build the bounded evidence manifest from the chronological step order
+	// BEFORE the in-place reverse below — otherwise the `logs` sub-agent (a
+	// high-volume target of the manifest) drops its evidence at this bespoke
+	// tool boundary, since this wrapper bypasses factory_agent's generic path.
+	subAgentEvidence := core.BuildSubAgentEvidenceForTool(nbRequestContext.Ctx, LogsAgentName, resp.AgentStepResponse)
+
 	if _, ok := agent.(core.NBAgentReActPlannerSummaryToolProvider); ok {
 		return toolcore.NBToolResponse{
-			Data:       logData,
-			Type:       toolcore.NBToolResponseTypeText,
-			Status:     toolcore.NBToolResponseStatusSuccess,
-			References: references,
+			Data:             logData,
+			Type:             toolcore.NBToolResponseTypeText,
+			Status:           toolcore.NBToolResponseStatusSuccess,
+			References:       references,
+			SubAgentEvidence: subAgentEvidence,
 		}, nil
 	}
 
@@ -502,17 +509,19 @@ func (m LogAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 				respType = toolcore.NBToolResponseTypeText
 			}
 			return toolcore.NBToolResponse{
-				Data:       respData,
-				Type:       respType,
-				Status:     toolcore.NBToolResponseStatusSuccess,
-				References: references,
+				Data:             respData,
+				Type:             respType,
+				Status:           toolcore.NBToolResponseStatusSuccess,
+				References:       references,
+				SubAgentEvidence: subAgentEvidence,
 			}, nil
 		}
 	}
 	return toolcore.NBToolResponse{
-		Data:       logData,
-		Type:       toolcore.NBToolResponseTypeText,
-		Status:     toolcore.NBToolResponseStatusSuccess,
-		References: references,
+		Data:             logData,
+		Type:             toolcore.NBToolResponseTypeText,
+		Status:           toolcore.NBToolResponseStatusSuccess,
+		References:       references,
+		SubAgentEvidence: subAgentEvidence,
 	}, nil
 }
