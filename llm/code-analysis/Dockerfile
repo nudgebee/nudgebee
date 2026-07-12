@@ -97,7 +97,18 @@ RUN ARCH=$(uname -m) && \
     ./google-cloud-sdk/install.sh --quiet --usage-reporting false --path-update false --command-completion false && \
     ./google-cloud-sdk/bin/gcloud components install beta alpha --quiet && \
     rm -rf ./google-cloud-sdk/.install/.backup ./google-cloud-sdk/.install/.download && \
+    rm -rf ./google-cloud-sdk/platform/bundledpythonunix ./google-cloud-sdk/bin/gcloud-crc32c && \
     rm -rf /root/.config/gcloud
+# Run gcloud on the system interpreter (which carries cryptography>=48, installed
+# below) instead of the SDK's bundled python. The bundle ships a frozen
+# cryptography (46.x) + pip that Google patches only on its own cadence, so it
+# accrued HIGH/MEDIUM CVEs we cannot apt/apk-upgrade; deleting it removes them.
+# gcloud-crc32c is a Go binary that only accelerates `gcloud storage` transfers
+# (unused here — GCS access goes through the Go SDK), so it is dead weight
+# carrying stdlib CVEs from Google's build toolchain. Validated: gcloud resolves
+# /usr/bin/python3 and the service-account auth crypto path works with the bundle
+# removed.
+ENV CLOUDSDK_PYTHON=/usr/bin/python3
 ENV PATH=/home/appuser/.local/bin:/home/appuser/bin:/app/google-cloud-sdk/bin:$PATH
 
 # Install Azure CLI in a venv to isolate its dependencies (e.g. urllib3 2.x)

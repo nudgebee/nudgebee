@@ -48,10 +48,19 @@ RUN python3 -m venv /opt/azure-cli-venv && \
     ln -s /opt/azure-cli-venv/bin/az /usr/local/bin/az && \
     az extension add --name costmanagement
 
-# Google Cloud SDK
+# Google Cloud SDK. Run gcloud on the system interpreter (cryptography>=48,
+# upgraded above) instead of the SDK's bundled python: the bundle ships a frozen
+# cryptography (46.x) + pip that Google patches on its own cadence, so it accrues
+# HIGH/MEDIUM CVEs we cannot apk-upgrade — deleting it removes them. gcloud-crc32c
+# is a Go binary that only accelerates `gcloud storage` CLI transfers (unused here
+# — GCS access goes through the Go SDK), so it is dead weight carrying stdlib CVEs
+# from Google's build toolchain. Validated: gcloud resolves /usr/bin/python3 and
+# the service-account auth crypto path works with the bundle removed.
 RUN apk add --no-cache --virtual .gcloud-build-deps git && \
     curl -o install.sh https://sdk.cloud.google.com && \
     bash install.sh --disable-prompts --install-dir=/usr/local && \
     rm install.sh && \
+    rm -rf /usr/local/google-cloud-sdk/platform/bundledpythonunix /usr/local/google-cloud-sdk/bin/gcloud-crc32c && \
     apk del .gcloud-build-deps
+ENV CLOUDSDK_PYTHON=/usr/bin/python3
 ENV PATH="/usr/local/google-cloud-sdk/bin:$PATH"
