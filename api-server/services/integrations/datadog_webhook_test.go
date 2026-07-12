@@ -568,3 +568,46 @@ func TestParseDatadogCloudSubject(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractServiceFromLogQuery(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{"single service with status filter", "service:dd-log-demo status:error", "dd-log-demo"},
+		{"service only", "service:checkout-api", "checkout-api"},
+		{"quoted phrase term ignored", `service:sqlserver "Login failed"`, "sqlserver"},
+		{"grouped service", "(service:payments) status:error", "payments"},
+		{"same service repeated is fine", "service:a service:a status:error", "a"},
+		{"quoted service value stripped", `service:"payments-api" status:error`, "payments-api"},
+		{"service inside another filter's quotes is ignored", `message:"error service:ghost" service:real`, "real"},
+		{"bare quoted phrase containing service is ignored", `"service:ghost" status:error`, ""},
+		{"only a service inside quotes yields nothing", `message:"boom service:ghost"`, ""},
+		{"no service term", "status:error env:prod", ""},
+		{"wildcard service ignored", "service:* status:error", ""},
+		{"multiple distinct services ambiguous", "service:a service:b", ""},
+		{"OR alternation ambiguous", "service:a OR service:b", ""},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, extractServiceFromLogQuery(tt.query))
+		})
+	}
+}
+
+// TestExtractServiceFromLogAlertQuery covers the full webhook path: parse the inner
+// query out of the monitor alert_query, then extract the service. This is the signal
+// a Recovered/No-Data log alert relies on (the Events-API `service:` tag is absent).
+func TestExtractServiceFromLogAlertQuery(t *testing.T) {
+	alertQuery := `logs("service:dd-log-demo status:error").index("*").rollup("count").last("5m") > 0`
+	inner, ok := parseLogAlertQuery(alertQuery)
+	assert.True(t, ok)
+	assert.Equal(t, "dd-log-demo", extractServiceFromLogQuery(inner))
+
+	// A metric monitor query is not a log query — parseLogAlertQuery declines it,
+	// so no service is extracted from the alert_query.
+	_, ok = parseLogAlertQuery(`avg:aws.rds.cpuutilization{dbinstanceidentifier:foo} > 80`)
+	assert.False(t, ok)
+}

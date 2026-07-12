@@ -1071,6 +1071,89 @@ func parseLogAlertQuery(monitorQuery string) (string, bool) {
 	return "", false
 }
 
+// extractServiceFromLogQuery pulls a single service name from a Datadog log search
+// query (the inner query of a log alert, e.g. `service:dd-log-demo status:error`).
+// It returns a service only when the query names exactly one concrete service:
+// alternation (`service:a OR service:b`) and wildcards (`service:*`) are ambiguous
+// and left to the existing resolution path (Events-API tag / LLM). The scan is
+// quote-aware: a `service:` that appears inside another filter's quoted value
+// (e.g. `message:"... service:x ..."`) or a bare quoted phrase is free text, not a
+// `service:` facet, and is skipped.
+func extractServiceFromLogQuery(logQuery string) string {
+	if logQuery == "" || strings.Contains(strings.ToUpper(logQuery), " OR ") {
+		return ""
+	}
+	found := ""
+	i, n := 0, len(logQuery)
+	for i < n {
+		switch c := logQuery[i]; {
+		case isLogQuerySep(c):
+			i++
+		case c == '"' || c == '\'':
+			// Bare quoted phrase (free-text search term) — not a facet; skip it.
+			i = skipQuotedValue(logQuery, i)
+		default:
+			// Bareword key up to ':' or a separator.
+			keyStart := i
+			for i < n && !isLogQuerySep(logQuery[i]) && logQuery[i] != ':' {
+				i++
+			}
+			if i >= n || logQuery[i] != ':' {
+				continue // bareword term, not a key:value facet
+			}
+			key := logQuery[keyStart:i]
+			i++ // consume ':'
+			// Value: a quoted span or a bareword up to the next separator.
+			var value string
+			if i < n && (logQuery[i] == '"' || logQuery[i] == '\'') {
+				vStart := i
+				i = skipQuotedValue(logQuery, i)
+				value = strings.Trim(logQuery[vStart:i], `"'`)
+			} else {
+				vStart := i
+				for i < n && !isLogQuerySep(logQuery[i]) {
+					i++
+				}
+				value = logQuery[vStart:i]
+			}
+			if !strings.EqualFold(strings.TrimSpace(key), "service") {
+				continue
+			}
+			value = strings.TrimSpace(value)
+			if value == "" || strings.Contains(value, "*") {
+				continue
+			}
+			if found != "" && !strings.EqualFold(found, value) {
+				return "" // more than one distinct service — ambiguous
+			}
+			found = value
+		}
+	}
+	return found
+}
+
+// isLogQuerySep reports whether c separates tokens in a Datadog log query.
+func isLogQuerySep(c byte) bool {
+	return c == ' ' || c == '(' || c == ')'
+}
+
+// skipQuotedValue returns the index just past the quoted span that starts at i
+// (logQuery[i] must be a quote), honoring backslash escapes. If the quote is
+// unterminated it returns len(s).
+func skipQuotedValue(s string, i int) int {
+	quote := s[i]
+	for i++; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++ // skip the escaped char
+			continue
+		}
+		if s[i] == quote {
+			return i + 1
+		}
+	}
+	return len(s)
+}
+
 func parseMetricFromMonitorQuery(monitorQuery string) (string, error) {
 	var metricAndThreshold string
 	if matches := rePrefix.FindStringSubmatch(monitorQuery); len(matches) == 2 {
@@ -1939,6 +2022,22 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	// down (which reads alert_query/alert_scope for filter-scoped cloud monitors).
 	if p.Alert.AlertScope != "" {
 		applyK8sSubject(parseDatadogK8sSubject([]string{p.Alert.AlertScope}))
+	}
+
+	// Deterministic service from the log alert query. A log monitor's alert_query
+	// (`logs("service:dd-log-demo status:error")...`) names the service in the raw
+	// webhook for EVERY transition — including Recovered / No Data, where the
+	// Datadog Events API event carries no `service:` tag and the body has no `tags=`
+	// param, so labels["service"] would otherwise be empty and the alert falls to
+	// the LLM even though the service is right there in the query. Only fills the
+	// gap: the Events-API tag (parsed into labels["service"] above) still wins when
+	// present, and parseLogAlertQuery returns false for non-log (metric) queries.
+	if labels["service"] == "" {
+		if logQuery, ok := parseLogAlertQuery(p.Alert.AlertQuery); ok {
+			if svc := extractServiceFromLogQuery(logQuery); svc != "" {
+				labels["service"] = svc
+			}
+		}
 	}
 
 	// Deterministic service-tag → workload match. Datadog tags every workload
