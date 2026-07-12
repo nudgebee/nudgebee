@@ -585,23 +585,16 @@ func MapRowToOpenTelemetryTrace(row map[string]interface{}) (common.OpenTelemetr
 
 func MapGroupingRowToTraceGroupingValues(row map[string]interface{}) (TraceGroupingValues, error) {
 	trace := TraceGroupingValues{}
-	if v, ok := row["count"].(float64); ok {
-		trace.Count = int(v)
-	}
-	if v, ok := row["error_count"].(float64); ok {
-		trace.ErrorCount = int(v)
-	}
-
-	if v, ok := row["p99_latency"].(float64); ok {
-		trace.P99Latency = int64(v)
-	}
-	if v, ok := row["p95_latency"].(float64); ok {
-		trace.P95Latency = int64(v)
-	}
-
-	if v, ok := row["max_latency"].(float64); ok {
-		trace.MaxLatency = int64(v)
-	}
+	// ClickHouse's FORMAT JSON round-trip (via the relay) serialises 64-bit
+	// integer aggregates — count(*), SUM(...), MAX(duration_ns) — as quoted
+	// strings, so a strict .(float64) assertion misses them and zeroes the
+	// field. clickhouseInt64 handles both the float64 (quantile) and string
+	// (UInt64) encodings. See PR #33750 for the same fix on CountTraces.
+	trace.Count = int(clickhouseInt64(row["count"]))
+	trace.ErrorCount = int(clickhouseInt64(row["error_count"]))
+	trace.P99Latency = clickhouseInt64(row["p99_latency"])
+	trace.P95Latency = clickhouseInt64(row["p95_latency"])
+	trace.MaxLatency = clickhouseInt64(row["max_latency"])
 	if v, ok := row["workload_namespace"].(string); ok {
 		trace.WorkloadNamespace = v
 	}
