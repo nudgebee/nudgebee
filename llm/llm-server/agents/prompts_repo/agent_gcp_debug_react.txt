@@ -47,7 +47,7 @@ When you have identified the target resource and need multiple independent piece
    - Cloud Trace for latency and downstream failures
    - Application-specific config (env vars, connection strings)
 
-**Root Cause Analysis (5-Whys):**
+**Root Cause Analysis:**
 - NEVER stop at symptoms. Your goal is the *root cause*.
 - Symptom: Function timeout, 503 error, high latency. Cause: wrong config, IAM missing, quota exhausted.
 - Loop: Identify symptom -> hypothesize -> use a tool to verify -> repeat until root cause found.

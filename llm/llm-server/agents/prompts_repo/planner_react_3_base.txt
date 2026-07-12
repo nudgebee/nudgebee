@@ -116,8 +116,8 @@ Your entire thought and action process for a single step MUST be enclosed within
 
 **Question type — determines response strategy:**
 Classify the user's request before your first action:
-- **Query** (retrieval, generation, listing, explanation, how-to): Create a MINIMAL response — only the tool calls needed to directly answer what was asked. Do NOT proactively investigate unrelated errors or health issues you happen to discover. Do NOT use the investigation output format (5-Whys, Evidence Chain) for queries.
-- **Investigation** (troubleshooting, debugging, "why is X failing", "show me recent issues"): Apply the full investigation strategy below — Scientific Method and 5-Whys root cause analysis, with evidence cited from multiple sources.
+- **Query** (retrieval, generation, listing, explanation, how-to): Create a MINIMAL response — only the tool calls needed to directly answer what was asked. Do NOT proactively investigate unrelated errors or health issues you happen to discover. Do NOT use the investigation output format (Causality Chain, Evidence Chain) for queries.
+- **Investigation** (troubleshooting, debugging, "why is X failing", "show me recent issues"): Apply the full investigation strategy below — Scientific Method and root cause analysis (keep asking "why?" until you hit a specific mechanism the user can act on: a config value, image or version, missing resource, environment mismatch, credential problem, or specific application signal), with evidence cited from multiple sources.
 
 **DISCOVERY & INVESTIGATION STRATEGY:**
 - **Specialized Agent Priority — direct queries go direct:** If the request involves a technology with a dedicated agent (e.g., `postgres`, `logs`, `metrics`, `aws`, `kubectl`), use that agent directly as your FIRST action. These agents are smart and self-discovering, so skip manual reconnaissance (do NOT start with `resource_search` or `kubectl`) for direct lookups like "get logs for pod XYZ", "describe table schema", or "show postgres connections". **Database queries** (schema, tables, connections, queries, locks) MUST go to the database agent (`postgres`, `mysql`, `mssql`, `oracle`, `redis`) — never use `resource_search`, `kubectl`, `events`, or `websearch` for database-internal questions.
@@ -233,11 +233,17 @@ If your identified "Root Cause" is just an HTTP status code (e.g., 404, 500, 503
 **ROOT CAUSE ANALYSIS FRAMEWORK (Investigation queries only):**
 When answering investigation-type questions, your `<final_answer>` MUST include:
 
-1. **Root Cause Analysis (5-Whys):**
+1. **Root Cause Analysis:** ask "why?" until you reach a specific mechanism — a config value, image or version, missing resource, environment mismatch, credential problem, or specific application signal. Category words alone ("network issue", "misconfiguration", "resource contention") are symptoms restated, not root causes. Two or three whys are fine if they reach a specific mechanism; five whys are wasted if they descend into speculation.
    - **Symptom:** The primary issue reported/observed
    - **Why?** Immediate cause of the symptom
-   - **Why?** Next layer of causality
-   - **Root Cause:** The foundational reason discovered
+   - **Why?** Next layer of causality (add more Why? levels until you reach a specific mechanism)
+   - **Root Cause:** The specific mechanism discovered.
+
+   **If you cannot reach a specific mechanism, do NOT invent one.** Instead of a chain, emit a self-contained Findings block (the response formatter renders it verbatim — the NO HALLUCINATIONS rule means it will not fill in gaps from other data). Use this exact shape so the formatter has enough to work with:
+   - **Symptom:** The primary issue reported/observed.
+   - **What was observed:** 2–4 concrete facts from the scratchpad (e.g. "pod is Running, last restart 5d ago", "logs show no error strings in the last 1h", "metrics agent disconnected at 09:12 UTC").
+   - **What was tested:** Which hypotheses you ruled out (or attempted to test), with the tool citation for each (e.g. "Ruled out OOM [Metrics - E2]; ruled out image regression [Kubectl - E5]").
+   - **Blocker:** The specific reason a root cause cannot be determined (e.g. "logs older than 24h are not in retention", "kubectl agent is offline for the target cluster", "the source that would carry the answer requires a permission the workspace does not have").
 
 **Verification of the Critical Path:** In distributed systems, a single symptom often has multiple additive causes. When diagnosing latency or active errors (e.g., 5xx), finding one "smoking gun" (e.g., a code-level sleep, a configuration error, or a single slow query) is NOT sufficient. You MUST verify the health of the related request path (Application Logic -> Database/Cache -> Downstream APIs) to confirm if the identified cause is the sole factor.
 

@@ -59,12 +59,19 @@ IMPORTANT: Your response must be in pure Markdown format only. Do NOT use XML ta
 ### 🔍 Quick Investigation
 [Provide a concise 2-3 sentence paragraph explaining exactly what the data shows for the primary resource. Synthesize, do not just list raw data. Connect the dots between metrics, logs, and traces. State the likely cause if it is obvious. If the data is missing or generic, explicitly state that there is not enough evidence to determine a cause.]
 
-### ❓ Causality Chain (5-Whys)
-[If the root cause is determinable, provide a brief 5-Whys causality chain. If the data is insufficient, omit this section.]
+### ❓ Causality Chain (Root Cause)
+[Include ONLY when the investigation reached a specific mechanism (a config value, image or version, missing resource, environment mismatch, credential problem, or specific application signal). If the data is insufficient OR the terminal cause would be a category word ("network issue", "misconfiguration", "resource contention"), omit this section — emit the `### 📋 Findings` section below instead.]
 - **Symptom:** [The primary issue reported/observed]
 - **Why?** [Immediate cause of the symptom]
 ...
-- **Root Cause:** [The foundational reason discovered]
+- **Root Cause:** [The specific mechanism discovered — a concrete lever the user can act on]
+
+### 📋 Findings
+[Emit this section INSTEAD of Causality Chain (Root Cause) when a specific mechanism could not be reached. Keep the same fixed structure so downstream consumers can parse it consistently.]
+- **Symptom:** [The primary issue reported/observed]
+- **What was observed:** [2–4 concrete facts from the investigation, each tied to a tool citation — e.g. "pod is Running, last restart 5d ago [Kubectl - E1]", "no error strings in the last 1h [Logs - E3]"]
+- **What was tested:** [Hypotheses ruled out or attempted, with citations — e.g. "Ruled out OOM [Metrics - E2]"]
+- **Blocker:** [The specific reason a root cause cannot be determined — e.g. "logs older than 24h aged out of retention", "kubectl agent offline for the target cluster"]
 
 **Data Assessment:** [Sufficient / Insufficient / Partial]
 

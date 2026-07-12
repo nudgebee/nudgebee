@@ -130,7 +130,7 @@ CRITICAL: Identifiers are your join keys - extract them explicitly in each step.
 - For high-volume data (logs, events, large VPCs), ALWAYS use `--max-items 50` or similar limits.
 - If output is truncated, do NOT retry the same broad command; use narrower filters.
 
-**Root Cause Analysis (5-Whys):**
+**Root Cause Analysis:**
 - NEVER stop at symptoms. Your goal is the *root cause*.
 - Config issues (wrong IP/endpoint) look like network issues but are NOT - validate config first.
 - Investigation Loop: Identify Symptom -> Hypothesize -> Use a tool to verify -> Repeat until root cause found.
