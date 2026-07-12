@@ -1353,6 +1353,12 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   // Dry run state
   const [isDryRunning, setIsDryRunning] = useState(false);
   const dryRunPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Cancellers for in-flight pollDryRunUntilDone loops. Each clears its interval
+  // and resolves its promise; all are invoked on unmount so no loop or awaiter
+  // is left hanging. A Set (not a single slot) because the per-task dry runs
+  // ('Run previous steps' / 'Dry run to task') aren't gated by isDryRunning and
+  // can overlap.
+  const dryRunAwaitCancelsRef = useRef<Set<() => void>>(new Set());
   const dryRunIdRef = useRef<string | null>(null);
   const dryRunExecutionIdRef = useRef<string | null>(null);
   const [dryRunResult, setDryRunResult] = useState<any>(null);
@@ -2692,13 +2698,21 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
         const startTime = Date.now();
         const terminalStatuses = ['COMPLETED', 'COMPLETE', 'FAILED', 'COMPLETE_WITH_ERROR', 'CANCELED', 'TERMINATED', 'TIMED_OUT'];
         let interval: ReturnType<typeof setInterval> | null = null;
+        // Settle this loop exactly once: stop the timer, deregister, resolve.
+        // resolve() is idempotent, so a terminal status racing an unmount is safe.
+        const finish = (value: any) => {
+          if (interval !== null) {
+            clearInterval(interval);
+            interval = null;
+          }
+          dryRunAwaitCancelsRef.current.delete(cancel);
+          resolve(value);
+        };
+        const cancel = () => finish(null);
         const poll = async () => {
           if (Date.now() - startTime > 600000) {
-            if (interval !== null) {
-              clearInterval(interval);
-            }
             snackbar.error('Dry run timed out');
-            resolve(null);
+            finish(null);
             return;
           }
           try {
@@ -2708,10 +2722,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
               return;
             }
             if (terminalStatuses.includes(execution.status)) {
-              if (interval !== null) {
-                clearInterval(interval);
-              }
-              resolve({
+              finish({
                 status: execution.status,
                 output: execution.workflow_result,
                 error: execution.error,
@@ -2722,6 +2733,9 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             console.error('Dry run polling error:', error);
           }
         };
+        // Register a canceller so unmount cleanup can stop the loop and unblock
+        // the awaiter (callers already handle a null result).
+        dryRunAwaitCancelsRef.current.add(cancel);
         poll();
         interval = setInterval(poll, 3000);
       });
@@ -3366,6 +3380,9 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       if (dryRunPollingRef.current) {
         clearInterval(dryRunPollingRef.current);
       }
+      // Stop any in-flight pollDryRunUntilDone loops and unblock their awaiters.
+      // Copy first: each cancel() deletes itself from the Set as it runs.
+      [...dryRunAwaitCancelsRef.current].forEach((cancel) => cancel());
     };
   }, []);
 

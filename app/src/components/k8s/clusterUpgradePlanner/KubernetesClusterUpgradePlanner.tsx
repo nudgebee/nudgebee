@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box, Typography } from '@mui/material';
 import { Button as DsButton } from '@ui/Button';
 import { Chip as DsChip } from '@ui/Chip';
@@ -84,6 +84,11 @@ const KubernetesClusterUpgradePlanner: React.FC<KubernetesClusterUpgradePlannerP
   const [upgradeSteps, setUpgradeSteps] = useState<UpgradeStep[]>();
   const [isLoading, setIsLoading] = useState(true);
 
+  const accountIdRef = useRef(accountId);
+  useEffect(() => {
+    accountIdRef.current = accountId;
+  }, [accountId]);
+
   // M6: Export plan as JSON file
   const handleExportPlan = () => {
     if (!upgradeSteps || !clusterInfo?.plan_id) return;
@@ -162,85 +167,60 @@ const KubernetesClusterUpgradePlanner: React.FC<KubernetesClusterUpgradePlannerP
     setIsCreatingPlan(true);
     setUpgradeSteps([]); // Clear existing steps when creating a new plan
     setIsLoading(true);
+
+    const requestedAccountId = accountId;
+
+    const fetchLatestPlan = async () => {
+      const fetchResponse = await apiKubernetes1.getUpgradePlans(requestedAccountId as string);
+      if (fetchResponse?.errors?.length) {
+        return null;
+      }
+      const plans = fetchResponse?.data?.upgrade_plan;
+      if (plans && plans.length > 0) {
+        const sortedPlans = [...plans].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        const latestPlan = sortedPlans[0];
+        if (latestPlan?.id) {
+          return { plans: sortedPlans, latestPlan };
+        }
+      }
+      return null;
+    };
+
     try {
-      const response = await apiKubernetes1.generateUpgradePlan(accountId as string);
+      const response = await apiKubernetes1.generateUpgradePlan(requestedAccountId as string);
       if (response?.errors?.length) {
-        snackbar.error('Failed to create upgrade plan. Please try again later.');
-        setIsCreatingPlan(false);
+        throw new Error('generateUpgradePlan returned errors');
+      }
+      // User already switched clusters — skip the follow-up fetch entirely.
+      if (accountIdRef.current !== requestedAccountId) {
         return;
       }
 
-      // Start polling for the upgrade plan
-      const pollForUpgradePlan = async () => {
-        try {
-          const pollResponse = await apiKubernetes1.getUpgradePlans(accountId as string);
-          if (pollResponse?.errors?.length) {
-            return null;
-          }
+      const result = await fetchLatestPlan();
+      // Re-check: the switch may have happened while the fetch was in flight.
+      if (accountIdRef.current !== requestedAccountId) {
+        return;
+      }
+      if (!result) {
+        throw new Error('created plan could not be fetched');
+      }
 
-          const plans = pollResponse.data.upgrade_plan;
-          // Check if we have plans (sort by created_at desc to get the latest)
-          if (plans && plans.length > 0) {
-            const sortedPlans = [...plans].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-            const latestPlan = sortedPlans[0];
-            if (latestPlan?.id) {
-              return { plans: sortedPlans, latestPlan };
-            }
-          }
-          return null;
-        } catch (error) {
-          console.error('Error polling upgrade plan:', error);
-          return null;
-        }
-      };
-
-      const startPolling = async () => {
-        // First poll immediately
-        const result = await pollForUpgradePlan();
-        if (result) {
-          setIsCreatingPlan(false);
-          setIsLoading(false);
-
-          // Update all plans and load the latest one
-          setAllPlans(result.plans);
-          loadPlan(result.latestPlan);
-
-          snackbar.success('Upgrade plan created successfully!');
-          return;
-        }
-
-        // If first poll didn't return data, start interval polling
-        const pollInterval = setInterval(async () => {
-          const result = await pollForUpgradePlan();
-          if (result) {
-            clearInterval(pollInterval);
-            setIsCreatingPlan(false);
-            setIsLoading(false);
-
-            // Update all plans and load the latest one
-            setAllPlans(result.plans);
-            loadPlan(result.latestPlan);
-
-            snackbar.success('Upgrade plan created successfully!');
-          }
-        }, 10000); // Poll every 10 seconds
-
-        // Optional: Add a timeout to stop polling after a certain time (e.g., 5 minutes)
-        setTimeout(() => {
-          clearInterval(pollInterval);
-          if (isCreatingPlan) {
-            setIsCreatingPlan(false);
-            setIsLoading(false);
-            snackbar.error('Upgrade plan creation timed out. Please try again.');
-          }
-        }, 300000); // 5 minutes timeout
-      };
-
-      startPolling();
+      setAllPlans(result.plans);
+      loadPlan(result.latestPlan);
+      snackbar.success('Upgrade plan created successfully!');
     } catch (error) {
       console.error('Error creating upgrade plan:', error);
+      if (accountIdRef.current !== requestedAccountId) {
+        return;
+      }
       snackbar.error('Failed to create upgrade plan. Please try again later.');
-      setIsCreatingPlan(false);
+    } finally {
+      // Only clear our own loading flags if still on the same account; on a
+      // switch the account-change effects manage them instead.
+      if (accountIdRef.current === requestedAccountId) {
+        setIsCreatingPlan(false);
+        setIsLoading(false);
+      }
     }
   };
 
@@ -296,6 +276,9 @@ const KubernetesClusterUpgradePlanner: React.FC<KubernetesClusterUpgradePlannerP
     setSelectedPlanId(null);
     setActiveStep(1);
     setActiveTask('');
+    // Clear the creating flag too: a create handler for the previous account may
+    // still be in flight, and its guarded finally won't reset it once switched.
+    setIsCreatingPlan(false);
   }, [accountId]);
 
   // Handler for plan selection
