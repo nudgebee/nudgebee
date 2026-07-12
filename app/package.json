@@ -74,7 +74,6 @@
     "socket.io-client": "^4.7.5",
     "swiper": "^12.1.2",
     "uuid": "^14.0.0",
-    "web-vitals": "^2.1.4",
     "ws": "^8.20.1"
   },
   "devDependencies": {
