@@ -299,7 +299,8 @@ const MessageItem = ({
         {/* Card Content Column */}
         <Box
           sx={{
-            width: '100%',
+            flex: 1,
+            minWidth: 0,
             mb: 'auto',
           }}
         >
