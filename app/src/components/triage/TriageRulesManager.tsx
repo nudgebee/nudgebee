@@ -286,8 +286,9 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
       const accountCell: any[] = [];
       if (isMultiAccountView) {
         const account = accounts.find((acc) => (acc.id || acc.value) === rule.account_id);
+        const accountName = rule.is_system_rule && !rule.account_id ? 'All Accounts' : account?.label || account?.account_name || rule.account_id;
         accountCell.push({
-          component: <Text showAutoEllipsis value={account?.label || account?.account_name || rule.account_id} />,
+          component: <Text showAutoEllipsis value={accountName} />,
           drilldownQuery,
         });
       }
