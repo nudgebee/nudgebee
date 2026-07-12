@@ -25,6 +25,7 @@ import (
 	"nudgebee/llm-gateway/proxy"
 	"nudgebee/llm-gateway/ratelimit"
 	"nudgebee/llm-gateway/routing"
+	"nudgebee/llm-gateway/secrets"
 
 	"github.com/Cyprinus12138/otelgin"
 	"github.com/gin-contrib/pprof"
@@ -209,7 +210,10 @@ func main() {
 
 	// Passthrough edge (/anthropic, /openai, /genai) over the embedded core, with
 	// auth resolving identity from the configured mode (user_auths by default).
-	proxy.RegisterRoutes(r, eng.Client, sink, bodyLog, auth.NewValidator(), router, limiter, pricer)
+	// Per-tenant provider credentials resolve from the integration tables; when a
+	// tenant has none the request falls back to the operator/account default
+	// (nbAccount). Fail-soft — an unreachable DB just means "use the default".
+	proxy.RegisterRoutes(r, eng.Client, sink, bodyLog, auth.NewValidator(), router, limiter, pricer, secrets.NewResolver())
 
 	srv := &http.Server{
 		Addr:    "0.0.0.0:" + config.Config.Port,

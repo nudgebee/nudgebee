@@ -24,7 +24,7 @@ func TestNormalizeProvider(t *testing.T) {
 	}
 	for in, want := range cases {
 		t.Run(in, func(t *testing.T) {
-			assert.Equal(t, want, normalizeProvider(in))
+			assert.Equal(t, want, NormalizeProvider(in))
 		})
 	}
 }

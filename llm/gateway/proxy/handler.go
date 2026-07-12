@@ -75,23 +75,41 @@ var hopByHopResponseHeaders = map[string]struct{}{
 // by the embedded Bifrost core client. The auth middleware runs first (resolving
 // identity / rejecting bad tokens); sink receives one usage event per request;
 // bodyLog stores full bodies when body logging is enabled (off by default).
-func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, bodyLog metering.BodyLogSink, validator auth.Validator, router routing.Resolver, limiter *ratelimit.Limiter, pricer *metering.Pricer) {
-	h := &handler{client: client, sink: sink, bodyLog: bodyLog, router: router, limiter: limiter, pricer: pricer}
-	// Order: authenticate → enforce quota → handle. Auth must run first (the limiter
-	// keys off identity); the limiter rejects with 429 before any provider call.
-	chain := []gin.HandlerFunc{auth.Middleware(validator), ratelimit.Middleware(limiter), h.handle}
+func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, bodyLog metering.BodyLogSink, validator auth.Validator, router routing.Resolver, limiter *ratelimit.Limiter, pricer *metering.Pricer, creds CredResolver) {
+	if creds == nil {
+		creds = noopCredResolver{}
+	}
+	h := &handler{
+		client:  client,
+		sink:    sink,
+		bodyLog: bodyLog,
+		limiter: limiter,
+		pricer:  pricer,
+		// Request pipeline (control stages), run after auth and before passthrough.
+		// route → ratelimit → resolver → phi. This is the OSS/EE seam: each stage is
+		// pluggable, so an OSS build can register no-op defaults later.
+		pipeline: NewPipeline(
+			routeStage{router: router},
+			ratelimitStage{limiter: limiter},
+			resolverStage{creds: creds},
+			phiStage{},
+		),
+	}
+	// Auth runs first (the pipeline keys off the resolved identity), then the handler
+	// runs the pipeline and forwards.
+	chain := []gin.HandlerFunc{auth.Middleware(validator), h.handle}
 	for prefix := range prefixProvider {
 		r.Any(prefix+"/*path", chain...)
 	}
 }
 
 type handler struct {
-	client  *bifrost.Bifrost
-	sink    metering.Sink
-	bodyLog metering.BodyLogSink
-	router  routing.Resolver
-	limiter *ratelimit.Limiter
-	pricer  *metering.Pricer
+	client   *bifrost.Bifrost
+	sink     metering.Sink
+	bodyLog  metering.BodyLogSink
+	limiter  *ratelimit.Limiter
+	pricer   *metering.Pricer
+	pipeline *Pipeline
 }
 
 func (h *handler) handle(c *gin.Context) {
@@ -128,29 +146,38 @@ func (h *handler) handle(c *gin.Context) {
 
 	identity := auth.FromContext(c)
 
-	// Routing (endpoint-scoped; passthrough when no rule). When a rule resolves a
-	// different model (e.g. an alias/tier), rewrite ONLY the model field/segment —
-	// everything else is preserved (this is not a schema translation).
-	decision := h.router.Resolve(routing.Input{
-		Provider: string(provider), Model: model,
-		TenantID: identity.TenantID, UserID: identity.UserID,
-	})
-	if decision.ResolvedModel != decision.RequestedModel {
-		body, path = rewriteModel(provider, body, path, decision.ResolvedModel)
-		model = decision.ResolvedModel
+	// The Bifrost context carries per-request state; the resolver stage sets a
+	// per-tenant credential on it, so it must exist before the pipeline runs.
+	bctx, cancel := schemas.NewBifrostContextWithCancel(c.Request.Context())
+
+	// Run the control pipeline (route → ratelimit → resolver → phi). Stages may
+	// rewrite the request shape, inject a tenant credential, or reject the request.
+	rc := &RequestContext{
+		Gin: c, Ctx: c.Request.Context(), Bctx: bctx,
+		Identity: identity, Provider: provider,
+		Model: model, Path: path, Body: body, Streaming: streaming,
+	}
+	if stop, err := h.pipeline.Run(rc); err != nil {
+		cancel()
+		slog.Error("proxy: request pipeline error", "error", err, "provider", provider, "path", path)
+		writeJSONError(c, http.StatusInternalServerError, "gateway_error", "request pipeline error")
+		return
+	} else if stop {
+		cancel() // a stage already wrote the rejection (e.g. 429)
+		return
 	}
 
 	req := &schemas.BifrostPassthroughRequest{
 		Provider:    provider,
-		Model:       model,
+		Model:       rc.Model,
 		Method:      c.Request.Method,
-		Path:        path,
+		Path:        rc.Path,
 		RawQuery:    c.Request.URL.RawQuery,
-		Body:        body,
+		Body:        rc.Body,
 		SafeHeaders: safeHeaders(c.Request.Header),
 	}
 
-	sessionID, sessionSource := resolveSession(c, body)
+	sessionID, sessionSource := resolveSession(c, rc.Body)
 	rm := &reqMeta{
 		reqID:         uuid.NewString(),
 		provider:      provider,
@@ -159,15 +186,10 @@ func (h *handler) handle(c *gin.Context) {
 		start:         start,
 		sessionID:     sessionID,
 		sessionSource: sessionSource,
-		reqAttrs:      extractRequestAttributes(provider, body),
+		reqAttrs:      extractRequestAttributes(provider, rc.Body),
 		identity:      identity,
-		decision:      decision,
+		decision:      rc.Decision,
 	}
-
-	// TODO(task 3): the auth middleware will have resolved NB identity into the
-	// gin context; carry {tenant,account,user} onto bctx here so nbCredsPlugin can
-	// resolve per-tenant credentials.
-	bctx, cancel := schemas.NewBifrostContextWithCancel(c.Request.Context())
 
 	if streaming {
 		h.stream(c, bctx, cancel, rm)

@@ -26,8 +26,8 @@ type providerCred struct {
 	endpoint string
 }
 
-// normalizeProvider maps llm-server provider names to Bifrost provider constants.
-func normalizeProvider(name string) schemas.ModelProvider {
+// NormalizeProvider maps llm-server provider names to Bifrost provider constants.
+func NormalizeProvider(name string) schemas.ModelProvider {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "anthropic":
 		return schemas.Anthropic
@@ -50,7 +50,7 @@ func normalizeProvider(name string) schemas.ModelProvider {
 // populates the structured cloud config (Bedrock here); for api-key providers it
 // sets Value. Returns ok=false when no credential material is present.
 func buildCred(cfg ProviderCredsConfig) (schemas.ModelProvider, providerCred, bool) {
-	provider := normalizeProvider(cfg.Provider)
+	provider := NormalizeProvider(cfg.Provider)
 	// Models=["*"] is required: core's key pool denies keys with an empty model
 	// list by default, so a wildcard is what lets this key serve any model.
 	key := schemas.Key{ID: string(provider) + "-nb", Models: schemas.WhiteList{"*"}}

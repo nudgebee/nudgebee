@@ -60,6 +60,10 @@ type Configuration struct {
 	GatewayDBMinConns   int    `mapstructure:"gateway_db_min_connections"`
 	GatewayDBIdleMinute int    `mapstructure:"gateway_db_idle_minutes"`
 
+	// Shared NB AES key (hex) used to decrypt per-tenant provider secrets stored in
+	// integration_config_values. Same key/scheme as llm-server (NUDGEBEE_ENCRYPTION_KEY).
+	NudgebeeEncryptionKey string `mapstructure:"nudgebee_encryption_key"`
+
 	// Metering sink — pluggable: "postgres" (default) or "clickhouse".
 	MeteringSink  string `mapstructure:"gateway_metering_sink"`
 	ClickhouseURL string `mapstructure:"clickhouse_url"`
@@ -152,6 +156,7 @@ var keyDefaults = map[string]any{
 	"gateway_db_min_connections":            2,
 	"gateway_db_idle_minutes":               5,
 	"gateway_metering_sink":                 SinkPostgres,
+	"nudgebee_encryption_key":               "",
 	"clickhouse_url":                        "",
 	"cache_provider":                        "inmemory",
 	"cache_expiration_minutes":              10,
