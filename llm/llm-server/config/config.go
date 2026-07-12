@@ -408,7 +408,23 @@ type appConfig struct {
 	LlmServerReActCritiqueEnabled bool `mapstructure:"llm_server_react_critique_enabled"`
 	LlmServerReAct3Enabled        bool `mapstructure:"llm_server_react3_enabled"`
 	LlmServerRewooToReact3Enabled bool `mapstructure:"llm_server_rewoo_to_react3_enabled"`
-	LlmServerThinkToolEnabled     bool `mapstructure:"llm_server_think_tool_enabled"`
+	// LlmServerThinkToolEnabled gates injection of the `think` tool into the
+	// six orchestrator agents (k8s / aws / azure / gcp / datadog / finops).
+	// Default flipped to false 2026-07-12 after 30d prod data showed the
+	// tool has never produced actionable reasoning:
+	//   - 88% of think calls were rejected by the in-Call narration guard
+	//     (#33080) as "not reasoning, just narration"
+	//   - Of the ~12% that passed, every sampled case was still narration
+	//     that the guard's regex happened to miss ("I have enough info,
+	//     will now provide final answer" x N)
+	//   - Zero observed cases where think meaningfully changed the model's
+	//     next action; the ReAct3 <thought> block already carries any
+	//     genuine reasoning inline
+	// Kept as a flag (not deleted) so ops can re-enable per-env for a
+	// week-long observation window; if signal remains flat, follow-up
+	// PR deletes the tool + all injection sites entirely.
+	// Rollback: set LLM_SERVER_THINK_TOOL_ENABLED=true in the env.
+	LlmServerThinkToolEnabled bool `mapstructure:"llm_server_think_tool_enabled"`
 	// KGToolsEnabled gates Knowledge Graph tools (kg_list_nodes, kg_list_path) on
 	// the service_dependency_graph agent, enabling static topology + CALLS queries
 	// alongside runtime metrics. Defaults to false — enable per-tenant for canary first.
@@ -899,7 +915,10 @@ func init() {
 	viper.SetDefault("llm_server_react_critique_enabled", false)
 	viper.SetDefault("llm_server_react3_enabled", true)
 	viper.SetDefault("llm_server_rewoo_to_react3_enabled", true)
-	viper.SetDefault("llm_server_think_tool_enabled", true)
+	// Flipped false 2026-07-12 — see LlmServerThinkToolEnabled docstring.
+	// Any env that wants the tool back sets LLM_SERVER_THINK_TOOL_ENABLED=true
+	// (env override still wins over SetDefault).
+	viper.SetDefault("llm_server_think_tool_enabled", false)
 	viper.SetDefault("llm_server_kg_tools_enabled", true)
 	viper.SetDefault("llm_server_kg_get_node_enabled", false)
 	viper.SetDefault("llm_server_evaluation_enabled", false)
