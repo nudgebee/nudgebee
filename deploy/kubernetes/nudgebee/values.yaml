@@ -351,48 +351,37 @@ temporal:
         namespace:
           - name: default
             retention: 10d
+      # Temporal helm chart 1.x restructured persistence: stores live under
+      # datastores.<name>.sql (raw server-config format), selected via
+      # defaultStore / visibilityStore. numHistoryShards MUST stay 512 — the value
+      # the existing deployment initialised with; it cannot be changed. createDatabase
+      # is false (the temporal / temporal_visibility DBs already exist); manageSchema
+      # true lets the chart's schema job run update-schema to migrate 1.29 -> 1.31.
       persistence:
-        default:
-          driver: 'sql'
-          sql:
-            driver: 'postgres12'
-            host: 'postgresql'
-            port: 5432
-            database: 'temporal'
-            user: 'postgres'
-            existingSecret: 'nudgebee-temporal'
-            tls:
-              enabled: false
-              enableHostVerification: false
-        visibility:
-          driver: 'sql'
-          sql:
-            driver: 'postgres12'
-            host: 'postgresql'
-            port: 5432
-            database: 'temporal_visibility'
-            user: 'postgres'
-            existingSecret: 'nudgebee-temporal'
-            tls:
-              enabled: false
-              enableHostVerification: false
-  schema:
-    createDatabase:
-      enabled: true
-    setup:
-      enabled: true
-    update:
-      enabled: true
-  cassandra:
-    enabled: false
-  mysql:
-    enabled: false
-  elasticsearch:
-    enabled: false
-  prometheus:
-    enabled: false
-  grafana:
-    enabled: false
+        defaultStore: default
+        visibilityStore: visibility
+        numHistoryShards: 512
+        datastores:
+          default:
+            sql:
+              pluginName: postgres12
+              connectAddr: 'postgresql:5432'
+              connectProtocol: 'tcp'
+              databaseName: temporal
+              user: 'postgres'
+              existingSecret: 'nudgebee-temporal'
+              createDatabase: false
+              manageSchema: true
+          visibility:
+            sql:
+              pluginName: postgres12
+              connectAddr: 'postgresql:5432'
+              connectProtocol: 'tcp'
+              databaseName: temporal_visibility
+              user: 'postgres'
+              existingSecret: 'nudgebee-temporal'
+              createDatabase: false
+              manageSchema: true
 workflow-server:
   enabled: true
   fullnameOverride: workflow-server
