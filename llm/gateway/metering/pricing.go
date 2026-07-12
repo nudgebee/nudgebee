@@ -2,12 +2,42 @@ package metering
 
 import (
 	"log/slog"
+	"regexp"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"nudgebee/llm-gateway/common"
 )
+
+var (
+	// trailing provider date suffix, e.g. "-20251001".
+	dateSuffixRe = regexp.MustCompile(`-\d{8}$`)
+	// a dashed 1-digit.1-digit version segment, e.g. "-4-5-" in claude-haiku-4-5-…
+	// (word-bounded so a date like "-4-20250514" is NOT touched).
+	dashVersionRe = regexp.MustCompile(`\b(\d)-(\d)\b`)
+)
+
+// normalizedCandidates returns fallback catalog keys to try when an exact model
+// match misses. Providers send real IDs (dated, dash-versioned like
+// "claude-haiku-4-5-20251001") while the NB catalog stores hand-normalized names
+// (dotted version, sometimes undated — "claude-sonnet-4.5-20250929"). Order:
+// date-stripped, dash→dot version, and both.
+func normalizedCandidates(model string) []string {
+	var out []string
+	add := func(s string) {
+		if s == "" || s == model || slices.Contains(out, s) {
+			return
+		}
+		out = append(out, s)
+	}
+	noDate := dateSuffixRe.ReplaceAllString(model, "")
+	add(noDate)
+	add(dashVersionRe.ReplaceAllString(model, "$1.$2"))
+	add(dashVersionRe.ReplaceAllString(noDate, "$1.$2"))
+	return out
+}
 
 // modelPrice holds per-million-token rates for a model (standard tier). Long-
 // context tiers are omitted from the budget ESTIMATE for now — the estimate errs
@@ -89,6 +119,15 @@ func (p *Pricer) CostUSD(model string, input, output, cacheRead, cacheWrite int)
 		return 0
 	}
 	mp, ok := (*cat)[model]
+	if !ok {
+		// Providers send real IDs (dated / dash-versioned); the catalog stores
+		// normalized names. Try normalized fallbacks before giving up.
+		for _, cand := range normalizedCandidates(model) {
+			if mp, ok = (*cat)[cand]; ok {
+				break
+			}
+		}
+	}
 	if !ok {
 		if _, warned := p.once.LoadOrStore(model, true); !warned {
 			slog.Warn("pricing: no catalog entry — cost counted as 0", "model", model)

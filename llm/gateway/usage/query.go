@@ -1,0 +1,427 @@
+// Package usage serves read-only aggregations over the gateway's own metering data
+// (llm_gateway_usage) for the AI Gateway dashboard. The response shape mirrors
+// llm-server's usage_analytics (UsageMetrics/Totals/GroupRow/TimeSeries) so the
+// existing cost-analyser frontend patterns port directly; the queries are the
+// gateway's own (all org traffic, not just agent conversations).
+package usage
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"time"
+
+	"nudgebee/llm-gateway/common"
+	"nudgebee/llm-gateway/metering"
+)
+
+// Request is the aggregation query. Grain is the tenant (the gateway keys usage by
+// tenant); account_ids are accepted for frontend parity but not yet scoped on.
+type Request struct {
+	TenantID    string
+	StartDate   time.Time
+	EndDate     time.Time
+	Granularity string // "day" (default) | "hour"
+}
+
+// Totals are the top-line KPIs. JSON tags match llm-server's UsageTotals.
+type Totals struct {
+	TotalCostUsd           float64 `json:"total_cost_usd"`
+	TotalRequests          int64   `json:"total_requests"`
+	TotalInputTokens       int64   `json:"total_input_tokens"`
+	TotalOutputTokens      int64   `json:"total_output_tokens"`
+	TotalCachedInputTokens int64   `json:"total_cached_input_tokens"`
+	CacheHitRatePct        float64 `json:"cache_hit_rate_pct"`
+	AvgLatencySeconds      float64 `json:"avg_latency_seconds"`
+}
+
+// GroupRow is one breakdown bucket (e.g. a provider, model, or user).
+type GroupRow struct {
+	Key               string  `json:"key"`
+	ID                string  `json:"id,omitempty"` // stable id for drill-down (user_id on the user breakdown)
+	CostUsd           float64 `json:"cost_usd"`
+	Requests          int64   `json:"requests"`
+	InputTokens       int64   `json:"input_tokens"`
+	OutputTokens      int64   `json:"output_tokens"`
+	CachedInputTokens int64   `json:"cached_input_tokens"`
+	CacheHitRatePct   float64 `json:"cache_hit_rate_pct"`
+	AvgLatencySeconds float64 `json:"avg_latency_seconds"`
+}
+
+// TimeSeriesRow is one point of the overall time series.
+type TimeSeriesRow struct {
+	Bucket   time.Time `json:"bucket"`
+	Key      string    `json:"key"` // "overall" for now
+	CostUsd  float64   `json:"cost_usd"`
+	Requests int64     `json:"requests"`
+	Tokens   int64     `json:"tokens"`
+}
+
+// TimeSeries mirrors llm-server's shape (a map keyed by dimension).
+type TimeSeries struct {
+	Granularity string                     `json:"granularity"`
+	ByDimension map[string][]TimeSeriesRow `json:"by_dimension"`
+}
+
+// Metrics is the full aggregation result.
+type Metrics struct {
+	Totals     Totals                `json:"totals"`
+	Breakdowns map[string][]GroupRow `json:"breakdowns"` // "provider", "model", "user"
+	TimeSeries *TimeSeries           `json:"time_series,omitempty"`
+}
+
+func cacheHitPct(cached, input int64) float64 {
+	denom := cached + input
+	if denom == 0 {
+		return 0
+	}
+	return 100 * float64(cached) / float64(denom)
+}
+
+// avgLatencySeconds converts a summed latency (ms) over N requests to average seconds.
+func avgLatencySeconds(sumMs, requests int64) float64 {
+	if requests == 0 {
+		return 0
+	}
+	return float64(sumMs) / float64(requests) / 1000
+}
+
+type pmRow struct {
+	Provider   string `db:"provider"`
+	Model      string `db:"model"`
+	Requests   int64  `db:"requests"`
+	Input      int64  `db:"input_tokens"`
+	Output     int64  `db:"output_tokens"`
+	CacheRead  int64  `db:"cache_read_tokens"`
+	CacheWrite int64  `db:"cache_write_tokens"`
+	LatencySum int64  `db:"latency_ms_sum"`
+}
+
+type tsRow struct {
+	Bucket     time.Time `db:"bucket"`
+	Model      string    `db:"model"`
+	Requests   int64     `db:"requests"`
+	Input      int64     `db:"input_tokens"`
+	Output     int64     `db:"output_tokens"`
+	CacheRead  int64     `db:"cache_read_tokens"`
+	CacheWrite int64     `db:"cache_write_tokens"`
+}
+
+type userRow struct {
+	UserID      string `db:"user_id"`
+	DisplayName string `db:"display_name"`
+	Username    string `db:"username"`
+	Model       string `db:"model"`
+	Requests    int64  `db:"requests"`
+	Input       int64  `db:"input_tokens"`
+	Output      int64  `db:"output_tokens"`
+	CacheRead   int64  `db:"cache_read_tokens"`
+	CacheWrite  int64  `db:"cache_write_tokens"`
+	LatencySum  int64  `db:"latency_ms_sum"`
+}
+
+// Aggregate runs the metric queries against the metering store and assembles the
+// result. Cost is computed per model via the pricer (its natural unit), then rolled
+// up to totals / provider / user / time-bucket. Latency is a request-weighted average.
+func Aggregate(ctx context.Context, db *common.DatabaseManager, pricer *metering.Pricer, req Request) (*Metrics, error) {
+	if req.EndDate.Before(req.StartDate) {
+		return nil, fmt.Errorf("usage: end_date must be >= start_date")
+	}
+	m := &Metrics{Breakdowns: map[string][]GroupRow{"provider": {}, "model": {}, "user": {}}}
+
+	// (provider, model) grouping → totals + by-provider + by-model.
+	const pmQuery = `
+		SELECT provider, model, count(*) AS requests,
+		       COALESCE(sum(input_tokens),0) AS input_tokens,
+		       COALESCE(sum(output_tokens),0) AS output_tokens,
+		       COALESCE(sum(cache_read_tokens),0) AS cache_read_tokens,
+		       COALESCE(sum(cache_write_tokens),0) AS cache_write_tokens,
+		       COALESCE(sum(latency_ms),0) AS latency_ms_sum
+		FROM llm_gateway_usage
+		WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3
+		GROUP BY provider, model`
+	var pm []pmRow
+	if err := db.QueryAndScan(&pm, pmQuery, req.TenantID, req.StartDate, req.EndDate); err != nil {
+		return nil, fmt.Errorf("usage: provider/model aggregation: %w", err)
+	}
+
+	byProvider := map[string]*GroupRow{}
+	provLatency := map[string]int64{}
+	var totalLatency int64
+	for _, r := range pm {
+		cost := pricer.CostUSD(r.Model, int(r.Input), int(r.Output), int(r.CacheRead), int(r.CacheWrite))
+		m.Totals.TotalRequests += r.Requests
+		m.Totals.TotalInputTokens += r.Input
+		m.Totals.TotalOutputTokens += r.Output
+		m.Totals.TotalCachedInputTokens += r.CacheRead
+		m.Totals.TotalCostUsd += cost
+		totalLatency += r.LatencySum
+
+		m.Breakdowns["model"] = append(m.Breakdowns["model"], GroupRow{
+			Key: r.Model, CostUsd: cost, Requests: r.Requests,
+			InputTokens: r.Input, OutputTokens: r.Output, CachedInputTokens: r.CacheRead,
+			CacheHitRatePct:   cacheHitPct(r.CacheRead, r.Input),
+			AvgLatencySeconds: avgLatencySeconds(r.LatencySum, r.Requests),
+		})
+		p := byProvider[r.Provider]
+		if p == nil {
+			p = &GroupRow{Key: r.Provider}
+			byProvider[r.Provider] = p
+		}
+		p.CostUsd += cost
+		p.Requests += r.Requests
+		p.InputTokens += r.Input
+		p.OutputTokens += r.Output
+		p.CachedInputTokens += r.CacheRead
+		provLatency[r.Provider] += r.LatencySum
+	}
+	m.Totals.CacheHitRatePct = cacheHitPct(m.Totals.TotalCachedInputTokens, m.Totals.TotalInputTokens)
+	m.Totals.AvgLatencySeconds = avgLatencySeconds(totalLatency, m.Totals.TotalRequests)
+	for name, p := range byProvider {
+		p.AvgLatencySeconds = avgLatencySeconds(provLatency[name], p.Requests)
+		p.CacheHitRatePct = cacheHitPct(p.CachedInputTokens, p.InputTokens)
+		m.Breakdowns["provider"] = append(m.Breakdowns["provider"], *p)
+	}
+	sortByRequests(m.Breakdowns["provider"])
+	sortByRequests(m.Breakdowns["model"])
+
+	users, err := byUser(db, pricer, req)
+	if err != nil {
+		return nil, err
+	}
+	m.Breakdowns["user"] = users
+
+	ts, err := timeSeries(db, pricer, req)
+	if err != nil {
+		return nil, err
+	}
+	m.TimeSeries = ts
+	return m, nil
+}
+
+func sortByRequests(rows []GroupRow) {
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Requests > rows[j].Requests })
+}
+
+// byUser breaks usage down by the calling user, resolving user_id → display name.
+func byUser(db *common.DatabaseManager, pricer *metering.Pricer, req Request) ([]GroupRow, error) {
+	const q = `
+		SELECT g.user_id, COALESCE(u.display_name,'') AS display_name,
+		       COALESCE(u.username::text,'') AS username, g.model, g.requests,
+		       g.input_tokens, g.output_tokens, g.cache_read_tokens, g.cache_write_tokens, g.latency_ms_sum
+		FROM (
+			SELECT user_id, model, count(*) AS requests,
+			       COALESCE(sum(input_tokens),0) AS input_tokens,
+			       COALESCE(sum(output_tokens),0) AS output_tokens,
+			       COALESCE(sum(cache_read_tokens),0) AS cache_read_tokens,
+			       COALESCE(sum(cache_write_tokens),0) AS cache_write_tokens,
+			       COALESCE(sum(latency_ms),0) AS latency_ms_sum
+			FROM llm_gateway_usage
+			WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3 AND user_id <> ''
+			GROUP BY user_id, model
+		) g
+		LEFT JOIN users u ON u.id::text = g.user_id`
+	var rows []userRow
+	if err := db.QueryAndScan(&rows, q, req.TenantID, req.StartDate, req.EndDate); err != nil {
+		return nil, fmt.Errorf("usage: by-user aggregation: %w", err)
+	}
+	byUID := map[string]*GroupRow{}
+	latency := map[string]int64{}
+	var order []string
+	for _, r := range rows {
+		label := r.DisplayName
+		if label == "" {
+			label = r.Username
+		}
+		if label == "" {
+			label = r.UserID
+		}
+		g := byUID[r.UserID]
+		if g == nil {
+			g = &GroupRow{Key: label, ID: r.UserID}
+			byUID[r.UserID] = g
+			order = append(order, r.UserID)
+		}
+		g.CostUsd += pricer.CostUSD(r.Model, int(r.Input), int(r.Output), int(r.CacheRead), int(r.CacheWrite))
+		g.Requests += r.Requests
+		g.InputTokens += r.Input
+		g.OutputTokens += r.Output
+		g.CachedInputTokens += r.CacheRead
+		latency[r.UserID] += r.LatencySum
+	}
+	out := make([]GroupRow, 0, len(order))
+	for _, uid := range order {
+		g := byUID[uid]
+		g.AvgLatencySeconds = avgLatencySeconds(latency[uid], g.Requests)
+		g.CacheHitRatePct = cacheHitPct(g.CachedInputTokens, g.InputTokens)
+		out = append(out, *g)
+	}
+	sortByRequests(out)
+	return out, nil
+}
+
+// ListRequest is the paginated recent-request query for the Requests tab. UserID,
+// when set, scopes to one user (drill-down from the Users tab).
+type ListRequest struct {
+	TenantID  string
+	StartDate time.Time
+	EndDate   time.Time
+	UserID    string
+	Limit     int
+	Offset    int
+}
+
+// RequestRow is one row of the recent-request list — the gateway analog of the LLM
+// Analyser's per-conversation rows (here, one row per forwarded request).
+type RequestRow struct {
+	CreatedAt         time.Time `json:"created_at"`
+	User              string    `json:"user"`
+	Provider          string    `json:"provider"`
+	Model             string    `json:"model"`
+	RequestedModel    string    `json:"requested_model"`
+	RoutingReason     string    `json:"routing_reason"`
+	StatusCode        int       `json:"status_code"`
+	Streaming         bool      `json:"streaming"`
+	InputTokens       int64     `json:"input_tokens"`
+	OutputTokens      int64     `json:"output_tokens"`
+	CachedInputTokens int64     `json:"cached_input_tokens"`
+	LatencyMs         int64     `json:"latency_ms"`
+	CostUsd           float64   `json:"cost_usd"`
+	SessionID         string    `json:"session_id"`
+}
+
+// RequestList is one page of recent requests plus the unpaged total (for the pager).
+type RequestList struct {
+	Rows   []RequestRow `json:"rows"`
+	Total  int64        `json:"total"`
+	Limit  int          `json:"limit"`
+	Offset int          `json:"offset"`
+}
+
+type reqScan struct {
+	CreatedAt      time.Time `db:"created_at"`
+	UserID         string    `db:"user_id"`
+	DisplayName    string    `db:"display_name"`
+	Username       string    `db:"username"`
+	Provider       string    `db:"provider"`
+	Model          string    `db:"model"`
+	RequestedModel string    `db:"requested_model"`
+	RoutingReason  string    `db:"routing_reason"`
+	StatusCode     int       `db:"status_code"`
+	Streaming      bool      `db:"streaming"`
+	Input          int64     `db:"input_tokens"`
+	Output         int64     `db:"output_tokens"`
+	CacheRead      int64     `db:"cache_read_tokens"`
+	CacheWrite     int64     `db:"cache_write_tokens"`
+	LatencyMs      int64     `db:"latency_ms"`
+	SessionID      string    `db:"session_id"`
+}
+
+// ListRequests returns a page of recent requests, newest first, with cost priced
+// per row. Limit is clamped to [1,200]; Total is the unpaged count for the pager.
+func ListRequests(ctx context.Context, db *common.DatabaseManager, pricer *metering.Pricer, req ListRequest) (*RequestList, error) {
+	if req.EndDate.Before(req.StartDate) {
+		return nil, fmt.Errorf("usage: end_date must be >= start_date")
+	}
+	limit := req.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	offset := max(0, req.Offset)
+
+	where := "g.tenant_id = $1 AND g.created_at >= $2 AND g.created_at < $3"
+	args := []any{req.TenantID, req.StartDate, req.EndDate}
+	if req.UserID != "" {
+		where += " AND g.user_id = $4"
+		args = append(args, req.UserID)
+	}
+
+	var total int64
+	// Scalar scan → QueryRowAndScan (db.Get); QueryAndScan is sqlx.Select and needs a slice.
+	if err := db.QueryRowAndScan(&total, "SELECT count(*) FROM llm_gateway_usage g WHERE "+where, args...); err != nil {
+		return nil, fmt.Errorf("usage: request count: %w", err)
+	}
+
+	q := fmt.Sprintf(`
+		SELECT g.created_at, g.user_id, COALESCE(u.display_name,'') AS display_name,
+		       COALESCE(u.username::text,'') AS username, g.provider, g.model,
+		       COALESCE(g.requested_model,'') AS requested_model,
+		       COALESCE(g.routing_reason,'') AS routing_reason,
+		       COALESCE(g.status_code,0) AS status_code, COALESCE(g.streaming,false) AS streaming,
+		       COALESCE(g.input_tokens,0) AS input_tokens, COALESCE(g.output_tokens,0) AS output_tokens,
+		       COALESCE(g.cache_read_tokens,0) AS cache_read_tokens, COALESCE(g.cache_write_tokens,0) AS cache_write_tokens,
+		       COALESCE(g.latency_ms,0) AS latency_ms,
+		       COALESCE(g.session_id,'') AS session_id
+		FROM llm_gateway_usage g
+		LEFT JOIN users u ON u.id::text = g.user_id
+		WHERE %s
+		ORDER BY g.created_at DESC
+		LIMIT %d OFFSET %d`, where, limit, offset)
+	var rows []reqScan
+	if err := db.QueryAndScan(&rows, q, args...); err != nil {
+		return nil, fmt.Errorf("usage: request list: %w", err)
+	}
+
+	out := make([]RequestRow, 0, len(rows))
+	for _, r := range rows {
+		user := r.DisplayName
+		if user == "" {
+			user = r.Username
+		}
+		if user == "" {
+			user = r.UserID
+		}
+		out = append(out, RequestRow{
+			CreatedAt: r.CreatedAt, User: user, Provider: r.Provider, Model: r.Model,
+			RequestedModel: r.RequestedModel, RoutingReason: r.RoutingReason,
+			StatusCode: r.StatusCode, Streaming: r.Streaming,
+			InputTokens: r.Input, OutputTokens: r.Output, CachedInputTokens: r.CacheRead,
+			LatencyMs: r.LatencyMs,
+			CostUsd:   pricer.CostUSD(r.Model, int(r.Input), int(r.Output), int(r.CacheRead), int(r.CacheWrite)),
+			SessionID: r.SessionID,
+		})
+	}
+	return &RequestList{Rows: out, Total: total, Limit: limit, Offset: offset}, nil
+}
+
+func timeSeries(db *common.DatabaseManager, pricer *metering.Pricer, req Request) (*TimeSeries, error) {
+	trunc := "day"
+	if req.Granularity == "hour" {
+		trunc = "hour"
+	}
+	// Group by (bucket, model) so cost can be computed per model, then rolled up to
+	// the bucket. trunc is from a fixed allowlist above — safe to interpolate.
+	q := fmt.Sprintf(`
+		SELECT date_trunc('%s', created_at) AS bucket, model,
+		       count(*) AS requests,
+		       COALESCE(sum(input_tokens),0) AS input_tokens,
+		       COALESCE(sum(output_tokens),0) AS output_tokens,
+		       COALESCE(sum(cache_read_tokens),0) AS cache_read_tokens,
+		       COALESCE(sum(cache_write_tokens),0) AS cache_write_tokens
+		FROM llm_gateway_usage
+		WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3
+		GROUP BY bucket, model
+		ORDER BY bucket`, trunc)
+	var rows []tsRow
+	if err := db.QueryAndScan(&rows, q, req.TenantID, req.StartDate, req.EndDate); err != nil {
+		return nil, fmt.Errorf("usage: time-series aggregation: %w", err)
+	}
+	byBucket := map[time.Time]*TimeSeriesRow{}
+	var order []time.Time
+	for _, r := range rows {
+		b := byBucket[r.Bucket]
+		if b == nil {
+			b = &TimeSeriesRow{Bucket: r.Bucket, Key: "overall"}
+			byBucket[r.Bucket] = b
+			order = append(order, r.Bucket)
+		}
+		b.Requests += r.Requests
+		b.Tokens += r.Input + r.Output
+		b.CostUsd += pricer.CostUSD(r.Model, int(r.Input), int(r.Output), int(r.CacheRead), int(r.CacheWrite))
+	}
+	out := make([]TimeSeriesRow, 0, len(order))
+	for _, t := range order {
+		out = append(out, *byBucket[t])
+	}
+	return &TimeSeries{Granularity: trunc, ByDimension: map[string][]TimeSeriesRow{"overall": out}}, nil
+}

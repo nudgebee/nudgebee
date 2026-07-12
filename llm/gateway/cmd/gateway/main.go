@@ -26,6 +26,7 @@ import (
 	"nudgebee/llm-gateway/ratelimit"
 	"nudgebee/llm-gateway/routing"
 	"nudgebee/llm-gateway/secrets"
+	"nudgebee/llm-gateway/usage"
 
 	"github.com/Cyprinus12138/otelgin"
 	"github.com/gin-contrib/pprof"
@@ -214,6 +215,13 @@ func main() {
 	// tenant has none the request falls back to the operator/account default
 	// (nbAccount). Fail-soft — an unreachable DB just means "use the default".
 	proxy.RegisterRoutes(r, eng.Client, sink, bodyLog, auth.NewValidator(), router, limiter, pricer, secrets.NewResolver())
+
+	// Read-only usage query plane (POST /rpc/usage/aggregate) for the AI Gateway
+	// dashboard — app → gateway service-to-service, guarded by the action token.
+	// Requires the pricer (cost) + metering store; skipped when the DB isn't wired.
+	if pricer != nil {
+		usage.RegisterRoutes(r, pricer, config.Config.GatewayActionToken)
+	}
 
 	srv := &http.Server{
 		Addr:    "0.0.0.0:" + config.Config.Port,

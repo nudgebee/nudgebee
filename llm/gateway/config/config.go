@@ -64,6 +64,12 @@ type Configuration struct {
 	// integration_config_values. Same key/scheme as llm-server (NUDGEBEE_ENCRYPTION_KEY).
 	NudgebeeEncryptionKey string `mapstructure:"nudgebee_encryption_key"`
 
+	// Service token for the read-only usage query plane (POST /rpc/usage/*), sent by
+	// the app's RPC gateway as X-ACTION-TOKEN. Separate from the NB-PAT passthrough auth.
+	// OPTIONAL: enforced when set; when unset the plane stays open (internal endpoint,
+	// gated by the RPC permission layer + network isolation).
+	GatewayActionToken string `mapstructure:"gateway_action_token"`
+
 	// Metering sink — pluggable: "postgres" (default) or "clickhouse".
 	MeteringSink  string `mapstructure:"gateway_metering_sink"`
 	ClickhouseURL string `mapstructure:"clickhouse_url"`
@@ -157,6 +163,7 @@ var keyDefaults = map[string]any{
 	"gateway_db_idle_minutes":               5,
 	"gateway_metering_sink":                 SinkPostgres,
 	"nudgebee_encryption_key":               "",
+	"gateway_action_token":                  "",
 	"clickhouse_url":                        "",
 	"cache_provider":                        "inmemory",
 	"cache_expiration_minutes":              10,
