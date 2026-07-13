@@ -44,7 +44,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import SavingsPlanEvidence from '@components/optimise-new/evidence/SavingsPlanEvidence';
 import CommandExecutionHistory from '@components/cloudaccount/CommandExecutionHistory';
-import ApplyMitigationModal from '@components/cloudaccount/ApplyMitigationModal';
+import ApplyMitigationModal, { stripOptionalMarkers } from '@components/cloudaccount/ApplyMitigationModal';
 
 type CanonicalSeverityLevel = 'critical' | 'high' | 'medium' | 'low' | 'info';
 const toCanonicalSeverityLevel = (severity: string | undefined): CanonicalSeverityLevel => {
@@ -1024,7 +1024,7 @@ function OptimizeMitigation({
         </Box>
         {markdowns ? (
           <MarkDowns
-            data={markdowns}
+            data={stripOptionalMarkers(markdowns)}
             sx={{ padding: 0, '& p:last-child': { marginBottom: 0 }, maxHeight: 'none', overflow: 'visible' }}
             allowExecutable={false}
             onLinkClick={null}

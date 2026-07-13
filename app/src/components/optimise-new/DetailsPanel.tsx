@@ -22,7 +22,7 @@ import recommendationApi from '@api1/recommendation';
 import { interpolateMitigations } from '@api1/recommendation/data';
 import { formatRuleName } from './utils';
 import { safetyBandTone, safetyBandLabel, getImpactSummary } from './safetyBand';
-import ApplyMitigationModal from '@components/cloudaccount/ApplyMitigationModal';
+import ApplyMitigationModal, { stripOptionalMarkers } from '@components/cloudaccount/ApplyMitigationModal';
 import { hasWriteAccess } from '@lib/auth';
 import InterpretationPanel from './interpretation/InterpretationPanel';
 import { buildInterpretation } from './interpretation/buildInterpretation';
@@ -320,7 +320,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
             {mitigations.map((step: string) => (
               <MarkDowns
                 key={step.substring(0, 60)}
-                data={step}
+                data={stripOptionalMarkers(step)}
                 sx={{ fontSize: ds.text.small, lineHeight: 1.6, color: ds.gray[500] }}
                 allowExecutable={undefined}
                 onLinkClick={undefined}
