@@ -17,6 +17,7 @@ import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import HandymanOutlinedIcon from '@mui/icons-material/HandymanOutlined';
 import PeopleAltOutlinedIcon from '@mui/icons-material/PeopleAltOutlined';
+import RateReviewOutlinedIcon from '@mui/icons-material/RateReviewOutlined';
 import CustomTabs from '@shared/CustomTabs';
 import { Banner } from '@ui/Banner';
 import { Chip } from '@ui/Chip';
@@ -29,6 +30,7 @@ import ModelsView from './views/ModelsView';
 import AgentsView from './views/AgentsView';
 import ToolsView from './views/ToolsView';
 import UsersView from './views/UsersView';
+import CritiqueAnalyser from '@components/llm/critique-analyser/CritiqueAnalyser';
 import { rowToRun } from './adapt';
 import { useConversationTree, useCostData } from './useCostData';
 import type { CostFilters } from './types';
@@ -67,7 +69,7 @@ function defaultFilters(): CostFilters {
   };
 }
 
-type TabId = 'overview' | 'conversations' | 'models' | 'agents' | 'tools' | 'users';
+type TabId = 'overview' | 'conversations' | 'models' | 'agents' | 'tools' | 'users' | 'critiques';
 
 export function CostAnalyser({ accountId }: CostAnalyserProps) {
   const [filters, setFilters] = React.useState<CostFilters>(() => defaultFilters());
@@ -137,6 +139,7 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
     { value: 'agents', text: 'Agents', icon: SmartToyOutlinedIcon, iconSize: 16 },
     { value: 'tools', text: 'Tools', icon: HandymanOutlinedIcon, iconSize: 16 },
     { value: 'users', text: 'Users', icon: PeopleAltOutlinedIcon, iconSize: 16 },
+    { value: 'critiques', text: 'Critiques', icon: RateReviewOutlinedIcon, iconSize: 16 },
   ];
 
   return (
@@ -154,21 +157,23 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
         </Chip>
       </Box>
 
-      {/* Filter bar sits below the sub-tabs; values persist across tabs. */}
-      <FilterBar
-        filters={filters}
-        onChange={patch}
-        onReset={reset}
-        options={usageFilters}
-        accountId={selectedAccountId}
-        onAccountChange={setSelectedAccountId}
-        anchorDate={anchorToday()}
-      />
+      {/* Hidden for Critiques — that tab has its own cross-tenant filter bar, no account concept. */}
+      {tab !== 'critiques' && (
+        <FilterBar
+          filters={filters}
+          onChange={patch}
+          onReset={reset}
+          options={usageFilters}
+          accountId={selectedAccountId}
+          onAccountChange={setSelectedAccountId}
+          anchorDate={anchorToday()}
+        />
+      )}
 
-      {/* The Agents and Tools tabs fetch their own data (ai_list_agent_costs /
-          ai_aggregate_tool_usage) and own their loading/error, so they sit outside
-          the shared metrics/list gate. */}
-      {tab === 'agents' ? (
+      {/* Agents, Tools, Users, Critiques fetch their own data, outside the shared metrics/list gate. */}
+      {tab === 'critiques' ? (
+        <CritiqueAnalyser />
+      ) : tab === 'agents' ? (
         <AgentsView accountId={effectiveAccountId} filters={filters} agentOptions={usageFilters?.agents ?? []} onSelectRun={openRunDirect} />
       ) : tab === 'tools' ? (
         <ToolsView accountId={effectiveAccountId} filters={filters} onSelectRun={openRunDirect} />

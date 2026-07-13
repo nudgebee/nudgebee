@@ -290,6 +290,9 @@ type IConversationDao interface {
 	GetLatestConversationBySessionIDWithMessages(sessionID string, accountId string) (*ConversationWithMessages, error)
 	ListConversations(accountId string, userId string, queryLike string, source string, limit int, offset int) ([]Conversation, error)
 	SaveCritique(critique *ConversationCritique) error
+	GetCritiqueSummary(filter CritiqueFilter) (CritiqueSummary, error)
+	GetCritiqueTrend(filter CritiqueFilter, granularity string) (CritiqueTrend, error)
+	GetCritiqueList(filter CritiqueFilter, limit, offset int) (CritiqueList, error)
 	SaveLongTermMemory(accountId, conversationId, messageId, content string, memoryType MemoryType) (string, error)
 	LoadLongTermMemories(accountId string, query string, limit int) ([]string, error)
 	ListLongTermMemories(accountId string, conversationId string, messageId string, memoryType string, query string, limit int, offset int) ([]LongTermMemory, error)

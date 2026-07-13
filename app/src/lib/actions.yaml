@@ -658,6 +658,53 @@ actions:
       - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
+  # Cross-tenant critique reads, no account/tenant scoping in the query.
+  # Gated tenant_admin(_readonly)/super_admin(_readonly) — sees ALL tenants' data.
+  - name: critiques_aggregate_all
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/completions/critiques-summary'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: super_admin
+      - role: super_admin_readonly
+    comment: 'Cross-tenant: refine-rate totals, per-agent breakdown, and heuristic feedback themes for the Critique Analytics dashboard'
+  - name: critiques_trend_all
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/completions/critiques-trend'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: super_admin
+      - role: super_admin_readonly
+    comment: 'Cross-tenant: judged/refined counts bucketed by day/week/month for the Critique Analytics Overview chart'
+  - name: critiques_list_all
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/completions/critiques-list'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: super_admin
+      - role: super_admin_readonly
+    comment: 'Cross-tenant: paginated raw critique rows (query, bad answer, feedback) for the Critique Analytics Browse view'
   - name: llm_gateway_aggregate_usage
     definition:
       kind: synchronous

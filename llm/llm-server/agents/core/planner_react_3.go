@@ -1729,6 +1729,7 @@ func (o *NBReActPlanner3) Plan(
 
 			if o.refinementAttempts >= o.maxRefinementAttempts {
 				logger.Warn("reactagent3: max refinement attempts reached, accepting current answer", "attempts", o.refinementAttempts)
+				MetricsCritiqueDecision(o.nbAgent.GetName(), "force_accept", o.refinementAttempts)
 				return nil, finish, nil
 			}
 		}
@@ -1752,6 +1753,7 @@ func (o *NBReActPlanner3) Plan(
 			decision, feedback := o.runCritique(input, scratchpad, finish.Data, intermediateSteps, logger)
 			if decision == "" || strings.EqualFold(decision, "accept") {
 				logger.Info("reactagent3: critique accepted answer", "decision", decision)
+				MetricsCritiqueDecision(o.nbAgent.GetName(), "accept", o.refinementAttempts)
 				return nil, finish, nil
 			}
 
@@ -1761,6 +1763,7 @@ func (o *NBReActPlanner3) Plan(
 			// window pressure is now the only compression trigger.
 			o.refinementAttempts++
 			logger.Info("reactagent3: answer rejected by critique, refining", "feedback", feedback, "attempt", o.refinementAttempts)
+			MetricsCritiqueDecision(o.nbAgent.GetName(), "refine", o.refinementAttempts)
 			o.refinementData = append(o.refinementData, struct {
 				feedback string
 				answer   string

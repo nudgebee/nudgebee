@@ -22,6 +22,9 @@ var (
 	metricsScratchpadSummarizationLatency  metric.Float64Histogram
 	metricsScratchpadSummarizationFallback metric.Int64Counter
 
+	// Answer critique decision metric.
+	metricsCritiqueDecision metric.Int64Counter
+
 	initCoreMetricsOnce sync.Once
 )
 
@@ -94,6 +97,14 @@ func InitMetrics() {
 		if err != nil {
 			slog.Error("metrics: failed to create nb_llm_scratchpad_summarization_fallback metric", "error", err)
 		}
+
+		metricsCritiqueDecision, err = coreMeter.Int64Counter(
+			"nb_llm_critique_decision",
+			metric.WithDescription("Number of ReAct3 answer-critique decisions, labeled by agent, decision, and refinement attempt"),
+		)
+		if err != nil {
+			slog.Error("metrics: failed to create nb_llm_critique_decision metric", "error", err)
+		}
 	})
 }
 
@@ -119,6 +130,18 @@ func MetricsScratchpadSummarizationFallback(toolName, reason string) {
 		metricsScratchpadSummarizationFallback.Add(context.Background(), 1, metric.WithAttributes(
 			attribute.String("tool", toolName),
 			attribute.String("reason", reason),
+		))
+	}
+}
+
+// MetricsCritiqueDecision records a ReAct3 critique decision: accept, refine, or force_accept.
+func MetricsCritiqueDecision(agentName, decision string, refinementAttempt int) {
+	InitMetrics()
+	if metricsCritiqueDecision != nil {
+		metricsCritiqueDecision.Add(context.Background(), 1, metric.WithAttributes(
+			attribute.String("agent", agentName),
+			attribute.String("decision", decision),
+			attribute.Int("attempt", refinementAttempt),
 		))
 	}
 }
