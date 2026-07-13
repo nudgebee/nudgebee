@@ -741,11 +741,23 @@ func validateZenDutyConfigurationAndReturnMetadata(ctx context.Context, configur
 // validateFreshdeskConfigurationAndReturnMetadata validates Freshdesk credentials
 // and returns the group list as projects (Project.Key is the numeric group_id)
 // plus the four static Freshdesk priorities.
+//
+// Connectivity is validated with a ticket read (which a ticket-scoped key can do)
+// so this is the authoritative validity gate — an invalid URL/key fails here and
+// the caller (SyncConfigurations) correctly disables the integration. Listing
+// groups is create-ticket metadata only and requires an admin-scoped key (a
+// ticket-read-only key gets 403), so a group-list failure is treated as
+// non-fatal: the integration stays enabled for read/RCA use with empty projects,
+// instead of being disabled for lacking group permission.
 func validateFreshdeskConfigurationAndReturnMetadata(ctx context.Context, configuration models.TicketConfigurations) ([]map[string]interface{}, error) {
+	if err := tools.QuickValidateFreshdesk(ctx, configuration); err != nil {
+		return nil, err
+	}
+
 	projects, err := tools.FetchFreshdeskGroups(ctx, configuration)
 	if err != nil {
-		slog.Error("Failed to fetch Freshdesk groups", "error", err)
-		return nil, err
+		slog.Warn("Freshdesk: could not list groups; create-ticket metadata unavailable, continuing with read-only capability", "error", err)
+		projects = []models.Project{}
 	}
 
 	priorities := []models.Priority{
