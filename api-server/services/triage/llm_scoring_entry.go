@@ -32,7 +32,10 @@ const mintTimeout = 2 * time.Minute
 // v2: the classifier now receives observed workload facts (ingress-backing, dependency fan-in,
 // operator labels) and grounding guidance, so blast/intrinsic are decided from topology facts
 // instead of guessed from the workload name.
-const classificationPromptVersion = 2
+// v3: reasoning is constrained to be class-generic (no cluster/node/pod/instance/timestamp) and the
+// concrete cluster name is dropped from the classifier context, so a cached verdict served across
+// clusters no longer carries the minting instance's cluster/job identity into downstream consumers.
+const classificationPromptVersion = 3
 
 // ComputeScoreLLM scores an event via its cached per-class verdict + the deterministic policy.
 // On cache miss it scores with a conservative fallback verdict and (best-effort, off the hot
@@ -347,7 +350,8 @@ func classificationPrompt(event *models.Event, facts workloadFacts) string {
 		"## recurrence_semantics:\n" +
 		"escalating = a crash/OOM/restart/disk-filling/persistent failure that worsens with repetition. noise = a chronic, frequently-recurring, typically-tolerated condition (queue backlog, low cache-hit, slow queries, flapping) — DAMPEN these. neutral = recurrence carries no signal.\n\n" +
 		"## env_sensitivity = how much a non-production discount applies: none (control-plane down, data loss) | partial (a crashing service in dev still matters) | full (dev slow-query, test-env SLO, lab).\n" +
-		"min_priority = LEAST-severe bound, max_priority = MOST-severe bound (P0 most severe, then P1, P2, P3 least). confidence MUST be a number 0.0-1.0; reasoning MUST be <= 200 characters."
+		"min_priority = LEAST-severe bound, max_priority = MOST-severe bound (P0 most severe, then P1, P2, P3 least). confidence MUST be a number 0.0-1.0; reasoning MUST be <= 200 characters.\n" +
+		"## reasoning — describe the alert CLASS generically. This verdict is CACHED and reused for every alert of the same kind across the whole tenant, so reasoning MUST NOT name a specific cluster, node, pod, job/instance suffix (e.g. 'popeye-scan-00947d98' -> 'a scan job'), IP, or timestamp. State why the class has this severity, not what one instance was."
 }
 
 // buildEventContext renders the compact alert context the classifier reasons over, including any
@@ -369,8 +373,11 @@ func buildEventContext(event *models.Event, facts workloadFacts) string {
 	if scope == "" {
 		scope = get(event.SubjectNamespace)
 	}
-	fmt.Fprintf(&b, "- subject: %s %s in namespace %s (cluster %s)\n",
-		get(event.SubjectOwnerKind), scope, get(event.SubjectNamespace), get(event.Cluster))
+	// Cluster is deliberately omitted: it is NOT part of the class key (signal_class.go), so a
+	// verdict minted from one cluster is served to every cluster in the tenant. Feeding the concrete
+	// cluster name only invited the classifier to echo it into the (cross-cluster) cached reasoning.
+	fmt.Fprintf(&b, "- subject: %s %s in namespace %s\n",
+		get(event.SubjectOwnerKind), scope, get(event.SubjectNamespace))
 	if d := get(event.Description); d != "" {
 		if len(d) > 300 {
 			d = d[:300]

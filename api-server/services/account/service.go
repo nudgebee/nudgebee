@@ -2621,7 +2621,7 @@ func UpdateAccountByAction(context *security.RequestContext, request AccountUpda
 			TargetID:      request.Id,
 			AccountID:     request.Id,
 			TableName:     "cloud_accounts",
-			NewData:       map[string]any{"id": request.Id, "status": request.Status, "account_name": request.AccountName},
+			NewData:       map[string]any{"id": request.Id, "status": request.Status, "account_name": request.AccountName, "account_env": request.AccountEnv},
 		})
 	}
 	return AccountUpdateResponse{AffectedRows: int(affected)}, nil

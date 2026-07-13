@@ -66,6 +66,10 @@ type AccountCreateRequest struct {
 	AgentAccessSecretV2 string         `json:"access_secret_v2,omitempty" mapstructure:"access_secret_v2" omitempty:"true"`
 	ExternalId          string         `json:"external_id,omitempty" mapstructure:"external_id" omitempty:"true"`
 	ParentAccountId     string         `json:"parent_account_id,omitempty" mapstructure:"parent_account_id" omitempty:"true"`
+	// AccountEnv is the environment tier (prod / non_prod) chosen at onboarding. It drives the
+	// triage env adjustment. Left empty for non-UI/other-provider creates, in which case the
+	// cloud_accounts.account_env DB default ('non_prod') applies.
+	AccountEnv string `json:"account_env,omitempty" mapstructure:"account_env" validate:"omitempty,oneof=prod non_prod" omitempty:"true"`
 }
 
 type RegenerateAgentKeysRequest struct {
