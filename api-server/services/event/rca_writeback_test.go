@@ -1,10 +1,14 @@
 package event
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"nudgebee/services/config"
 	"nudgebee/services/security"
 
 	"github.com/stretchr/testify/assert"
@@ -124,4 +128,38 @@ func TestRCAWritebackSourceSeam(t *testing.T) {
 	assert.True(t, ok, "pagerduty_webhook must be a registered writeback source")
 	assert.Equal(t, "pagerduty", pd.commentSource)
 	assert.Equal(t, "pagerduty", pd.configNamespace)
+}
+
+// TestPostIncidentCommentCarriesTenantSessionVariable pins the RPC contract
+// with ticket-server: bindAndAuthoriseTicketRequest unconditionally overwrites
+// the object's tenant with session_variables.tenant_id, so the tenant must be
+// present there — otherwise the ticket-server tool-config lookup runs with an
+// empty tenant and every add-comment fails with 400.
+func TestPostIncidentCommentCarriesTenantSessionVariable(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/tickets/rpc/add-comment", r.URL.Path)
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	orig := config.Config.TicketServiceUrl
+	config.Config.TicketServiceUrl = srv.URL
+	t.Cleanup(func() { config.Config.TicketServiceUrl = orig })
+
+	err := postIncidentComment("tenant-1", "acct-1", "zenduty", "incident-1", "note body")
+	assert.NoError(t, err)
+
+	sv, _ := gotBody["session_variables"].(map[string]any)
+	assert.Equal(t, "admin", sv["role"])
+	assert.Equal(t, "tenant-1", sv["tenant_id"])
+
+	input, _ := gotBody["input"].(map[string]any)
+	obj, _ := input["object"].(map[string]any)
+	assert.Equal(t, "tenant-1", obj["tenant"])
+	assert.Equal(t, "acct-1", obj["account_id"])
+	assert.Equal(t, "zenduty", obj["source"])
+	assert.Equal(t, "incident-1", obj["ticket_id"])
+	assert.Equal(t, "note body", obj["comment"])
 }

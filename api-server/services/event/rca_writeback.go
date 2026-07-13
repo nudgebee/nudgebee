@@ -274,7 +274,11 @@ func postIncidentComment(tenant, accountId, source, ticketId, comment string) er
 					"comment":    comment,
 				},
 			},
-			"session_variables": map[string]any{"role": "admin"},
+			// ticket-server's bindAndAuthoriseTicketRequest unconditionally
+			// overwrites the object's tenant with session_variables.tenant_id, so
+			// the tenant MUST travel here — with only "role" set, the lookup ran
+			// with an empty tenant and every add-comment failed with 400.
+			"session_variables": map[string]any{"role": "admin", "tenant_id": tenant},
 		}),
 		common.HttpWithHeaders(map[string]string{"Content-Type": "application/json"}),
 	)
