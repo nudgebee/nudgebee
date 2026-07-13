@@ -28,7 +28,9 @@ const (
 // DeriveSafetyBand maps a knowledge-graph ImpactSummary to a safety band. It is
 // deliberately conservative: it never returns "safe" unless the graph actually
 // observed the resource's neighbourhood, so a thin or absent graph downgrades to
-// "review"/"unknown" rather than manufacturing false confidence.
+// "review"/"unknown" rather than manufacturing false confidence. Only upstream
+// dependents feed the band — DownstreamDependencies are operator context, not
+// risk to callers.
 func DeriveSafetyBand(impact *core.ImpactSummary) (SafetyBand, string) {
 	if impact == nil || impact.CoverageConfidence == core.CoverageNone {
 		return SafetyBandUnknown, "resource not found in the dependency graph; impact unknown"

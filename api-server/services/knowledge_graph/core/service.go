@@ -4881,9 +4881,12 @@ func (s *Service) fetchEdgesBetweenNodesFiltered(nodeIDs []string, relationshipT
 		return []*DbEdge{}, nil
 	}
 
+	// source / contributing_sources feed the impact path's coverage grading and
+	// per-dependent provenance — without them every edge reads as single-source.
 	query := `
 		SELECT id, created_at, updated_at, relationship_type, properties,
-			   cloud_account_id, tenant_id, source_node_id, destination_node_id, level
+			   cloud_account_id, tenant_id, source_node_id, destination_node_id, level,
+			   source, contributing_sources
 		FROM knowledge_graph_edge
 		WHERE source_node_id = ANY($1::uuid[])
 		  AND destination_node_id = ANY($1::uuid[])
@@ -4912,20 +4915,28 @@ func (s *Service) fetchEdgesBetweenNodesFiltered(nodeIDs []string, relationshipT
 	var edges []*DbEdge
 	for rows.Next() {
 		edge := &DbEdge{}
-		var propertiesJSON []byte
+		var propertiesJSON, contributingJSON []byte
 		var relationshipType string
+		var source sql.NullString
 
 		err := rows.Scan(
 			&edge.ID, &edge.CreatedAt, &edge.UpdatedAt,
 			&relationshipType, &propertiesJSON,
 			&edge.CloudAccountID, &edge.TenantID,
 			&edge.SourceNodeID, &edge.DestinationNodeID, &edge.Level,
+			&source, &contributingJSON,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan edge: %w", err)
 		}
 		if err := json.Unmarshal(propertiesJSON, &edge.Properties); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal edge properties: %w", err)
+		}
+		edge.Source = source.String
+		if len(contributingJSON) > 0 {
+			if err := json.Unmarshal(contributingJSON, &edge.ContributingSources); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal edge contributing_sources: %w", err)
+			}
 		}
 		edge.RelationshipType = RelationshipType(relationshipType)
 		edges = append(edges, edge)

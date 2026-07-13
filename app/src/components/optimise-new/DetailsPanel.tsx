@@ -1,4 +1,4 @@
-import { Box, Typography, Divider, CircularProgress, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
+import { Box, Typography, Divider, CircularProgress, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tooltip } from '@mui/material';
 import { useState, useEffect, type ReactNode } from 'react';
 import { useEffectiveRecommendation } from '@hooks/useEffectiveRecommendation';
 import { Select as DsSelect } from '@ui/Select';
@@ -21,7 +21,16 @@ import { CollapsableCard } from '@ui/CollapsableCard';
 import recommendationApi from '@api1/recommendation';
 import { interpolateMitigations } from '@api1/recommendation/data';
 import { formatRuleName } from './utils';
-import { safetyBandTone, safetyBandLabel, getImpactSummary } from './safetyBand';
+import {
+  safetyBandTone,
+  safetyBandLabel,
+  getImpactSummary,
+  dependentRoleLabel,
+  proximityLabel,
+  provenanceLabel,
+  isProdEnvironment,
+  type DependentRef,
+} from './safetyBand';
 import ApplyMitigationModal, { stripOptionalMarkers } from '@components/cloudaccount/ApplyMitigationModal';
 import { hasWriteAccess } from '@lib/auth';
 import InterpretationPanel from './interpretation/InterpretationPanel';
@@ -61,9 +70,93 @@ const SafetyRow = ({ label, children }: { label: string; children: ReactNode }) 
   </Box>
 );
 
-// How many impacted workloads to show before collapsing behind a "Show all"
+// How many impacted workloads to show before collapsing behind a "Show more"
 // toggle — the backend caps the list at 50, too many to render inline.
-const DEP_COLLAPSE_LIMIT = 6;
+const DEP_COLLAPSE_LIMIT = 3;
+
+const PROXIMITY_HELP =
+  "How many dependency steps away this workload is. 'Direct' = it depends on this resource immediately; 'N hops' = it's reached through intermediaries.";
+
+// Wraps a chip so MUI Tooltip gets a ref-holding element (Label doesn't forward refs).
+const ChipTip = ({ title, children }: { title: string; children: ReactNode }) => (
+  <Tooltip title={title} arrow>
+    <Box component='span' sx={{ display: 'inline-flex' }}>
+      {children}
+    </Box>
+  </Tooltip>
+);
+
+// DependentRow — one blast-radius entry: identity line plus categorization
+// chips (kind, proximity, role, provenance, environment). Chips render only
+// when the backend attributed the field, so sparse graphs degrade to
+// name-only rows. Proximity is omitted downstream (always one hop).
+const DependentRow = ({ dep, direction }: { dep: DependentRef; direction: 'upstream' | 'downstream' }) => {
+  const id = dep.namespace ? `${dep.namespace}/${dep.name}` : dep.name;
+  const role = dependentRoleLabel(dep.relationship, direction);
+  const proximity = direction === 'upstream' ? proximityLabel(dep.hops_away) : null;
+  const provenance = provenanceLabel(dep.sources);
+  return (
+    <Box
+      sx={{
+        border: `1px solid ${ds.gray[200]}`,
+        borderRadius: ds.radius.md,
+        p: ds.space[2],
+        display: 'flex',
+        flexDirection: 'column',
+        gap: ds.space[1],
+        minWidth: 0,
+      }}
+    >
+      <Typography
+        title={id}
+        sx={{
+          fontFamily: 'var(--ds-font-mono)',
+          fontSize: ds.text.small,
+          color: ds.gray[700],
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {dep.namespace && <Box component='span' sx={{ color: ds.gray[500] }}>{`${dep.namespace}/`}</Box>}
+        <Box component='span' sx={{ fontWeight: ds.weight.semibold }}>
+          {dep.name}
+        </Box>
+      </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: ds.space[1] }}>
+        {dep.node_type && (
+          <Label size='sm' tone='neutral'>
+            {dep.node_type}
+          </Label>
+        )}
+        {proximity && (
+          <ChipTip title={PROXIMITY_HELP}>
+            <Label size='sm' tone='neutral'>
+              {proximity}
+            </Label>
+          </ChipTip>
+        )}
+        {role && (
+          <Label size='sm' tone={direction === 'upstream' ? 'info' : 'neutral'}>
+            {role}
+          </Label>
+        )}
+        {provenance && (
+          <ChipTip title={`Source: ${(dep.sources || []).join(', ')}`}>
+            <Label size='sm' tone='neutral'>
+              {provenance}
+            </Label>
+          </ChipTip>
+        )}
+        {dep.environment && (
+          <Label size='sm' tone={isProdEnvironment(dep.environment) ? 'critical' : 'neutral'}>
+            {dep.environment}
+          </Label>
+        )}
+      </Box>
+    </Box>
+  );
+};
 
 // BlastRadiusSection surfaces the knowledge-graph safety band + impact rollup.
 // Renders nothing until a recommendation carries the data (k8s recs once impact
@@ -72,6 +165,8 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
   const band = rec?.safety_band as string | undefined;
   const impact = getImpactSummary(rec);
   const [showAllDeps, setShowAllDeps] = useState(false);
+  const [showAllDownstream, setShowAllDownstream] = useState(false);
+  const downstream = impact?.downstream_dependencies || [];
   const hasImpactData = !!(
     impact &&
     (impact.dependent_count != null || impact.production_dependents != null || impact.coverage_confidence || impact.safety_reason)
@@ -101,17 +196,17 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
         )}
         {impact?.dependent_count != null && (
           <SafetyRow label='Dependent services'>
-            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.semibold }}>
-              {impact.dependent_count}
-              {impact.truncated ? '+' : ''}
-            </Typography>
-          </SafetyRow>
-        )}
-        {impact?.production_dependents != null && impact.production_dependents > 0 && (
-          <SafetyRow label='Production dependents'>
-            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.semibold }}>
-              {impact.production_dependents}
-            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.semibold }}>
+                {impact.dependent_count}
+                {impact.truncated ? '+' : ''}
+              </Typography>
+              {impact.production_dependents != null && (
+                <Label size='sm' tone={impact.production_dependents > 0 ? 'critical' : 'success'}>
+                  {`${impact.production_dependents} Prod`}
+                </Label>
+              )}
+            </Box>
           </SafetyRow>
         )}
         {impact?.coverage_confidence && (
@@ -127,32 +222,9 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
         {impact?.dependents && impact.dependents.length > 0 && (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], mt: ds.space[1] }}>
             <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium }}>Impacted workloads</Typography>
-            {(showAllDeps ? impact.dependents : impact.dependents.slice(0, DEP_COLLAPSE_LIMIT)).map((dep, i) => {
-              const id = dep.namespace ? `${dep.namespace}/${dep.name}` : dep.name;
-              return (
-                <Box key={`${id}-${i}`} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[2] }}>
-                  <Typography
-                    title={id}
-                    sx={{
-                      fontFamily: 'var(--ds-font-mono)',
-                      fontSize: ds.text.small,
-                      color: ds.gray[700],
-                      minWidth: 0,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {id}
-                  </Typography>
-                  {dep.environment && (
-                    <Label size='sm' tone='neutral'>
-                      {dep.environment}
-                    </Label>
-                  )}
-                </Box>
-              );
-            })}
+            {(showAllDeps ? impact.dependents : impact.dependents.slice(0, DEP_COLLAPSE_LIMIT)).map((dep, i) => (
+              <DependentRow key={`${dep.namespace || ''}/${dep.name}-${i}`} dep={dep} direction='upstream' />
+            ))}
             {impact.dependents.length > DEP_COLLAPSE_LIMIT && (
               <Typography
                 onClick={() => setShowAllDeps((v) => !v)}
@@ -165,7 +237,32 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
                   '&:hover': { textDecoration: 'underline' },
                 }}
               >
-                {showAllDeps ? 'Show less' : `Show all ${impact.dependents.length}`}
+                {showAllDeps ? 'Show less' : `Show more (${impact.dependents.length - DEP_COLLAPSE_LIMIT})`}
+              </Typography>
+            )}
+          </Box>
+        )}
+        {downstream.length > 0 && (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], mt: ds.space[1] }}>
+            <ChipTip title='What this resource itself calls, publishes to, or subscribes to. Context only — these are not at risk from the change and do not affect the safety band.'>
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium }}>Depends on</Typography>
+            </ChipTip>
+            {(showAllDownstream ? downstream : downstream.slice(0, DEP_COLLAPSE_LIMIT)).map((dep, i) => (
+              <DependentRow key={`${dep.namespace || ''}/${dep.name}-${i}`} dep={dep} direction='downstream' />
+            ))}
+            {downstream.length > DEP_COLLAPSE_LIMIT && (
+              <Typography
+                onClick={() => setShowAllDownstream((v) => !v)}
+                sx={{
+                  fontSize: ds.text.small,
+                  color: ds.blue[600],
+                  fontWeight: ds.weight.medium,
+                  cursor: 'pointer',
+                  mt: ds.space[1],
+                  '&:hover': { textDecoration: 'underline' },
+                }}
+              >
+                {showAllDownstream ? 'Show less' : `Show more (${downstream.length - DEP_COLLAPSE_LIMIT})`}
               </Typography>
             )}
           </Box>

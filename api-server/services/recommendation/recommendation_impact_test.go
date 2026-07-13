@@ -49,7 +49,8 @@ func TestAnnotateBreakdownWithImpactNoOp(t *testing.T) {
 // the safety UI and agent need.
 func TestCompactDependents(t *testing.T) {
 	deps := []core.ImpactedService{
-		{NodeID: "uuid-1", Name: "checkout", NodeType: core.NodeTypeWorkload, Namespace: "shop", Environment: "prod", HopsAway: 1},
+		{NodeID: "uuid-1", Name: "checkout", NodeType: core.NodeTypeWorkload, Namespace: "shop", Environment: "prod", HopsAway: 1,
+			Relationship: core.RelationshipCalls, Sources: []string{"ebpf", "traces"}},
 		{NodeID: "uuid-2", Name: "reporting", NodeType: core.NodeTypeService, Environment: "", HopsAway: 2},
 	}
 
@@ -61,6 +62,9 @@ func TestCompactDependents(t *testing.T) {
 	if first.Name != "checkout" || first.Namespace != "shop" || first.NodeType != string(core.NodeTypeWorkload) ||
 		first.Environment != "prod" || first.HopsAway != 1 {
 		t.Errorf("first dependent = %#v, want checkout/shop/workload/prod/1", first)
+	}
+	if first.Relationship != string(core.RelationshipCalls) || len(first.Sources) != 2 {
+		t.Errorf("first dependent attribution = %q/%v, want CALLS/[ebpf traces]", first.Relationship, first.Sources)
 	}
 	// node_id must not leak into the persisted shape (it's a graph-internal UUID).
 	// Environment is empty on the second: it must round-trip as omitted, not "".
