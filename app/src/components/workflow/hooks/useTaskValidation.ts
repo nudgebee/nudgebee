@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { isCronValid } from 'src/utils/common';
 import { validateDateTemplate } from 'src/utils/templateValidation';
+import { FOREACH_SUBTASK_BLOCKED_TYPES } from '../constants/foreachConstants';
 
 // Validation function for trigger configurations - validates required fields only
 export const validateTriggerData = (triggerType: string, params: any): { errors: Record<string, string>; isValid: boolean } => {
@@ -272,6 +273,50 @@ export const validateTaskData = (actionType: string, data: any, validationRules:
         warnings[fieldName] = [warnings[fieldName], ...res.warnings].filter(Boolean).join(' ');
       }
     }
+  }
+
+  // Foreach: validate the nested sub-task list ({id, type, params} entries) so the
+  // node warning icon and save-gating fire without opening the tasks editor.
+  // Error keys use the `tasks[i].<field>` prefix the ForeachTasksEditor slices
+  // per accordion; nested param errors recurse through this same function.
+  if (actionType === 'core.foreach') {
+    const subTasks: any[] = Array.isArray(data?.tasks) ? data.tasks : [];
+    if (subTasks.length === 0) {
+      errors['tasks'] = 'At least one sub-task is required';
+      isValid = false;
+    }
+    const seenIds = new Set<string>();
+    subTasks.forEach((sub: any, i: number) => {
+      const id = typeof sub?.id === 'string' ? sub.id.trim() : '';
+      if (!id) {
+        errors[`tasks[${i}].id`] = 'Sub-task name is required';
+        isValid = false;
+      } else if (seenIds.has(id)) {
+        errors[`tasks[${i}].id`] = `Duplicate sub-task name "${id}"`;
+        isValid = false;
+      } else {
+        seenIds.add(id);
+      }
+
+      if (!sub?.type) {
+        errors[`tasks[${i}].type`] = 'Sub-task action is required';
+        isValid = false;
+        return;
+      }
+      if (FOREACH_SUBTASK_BLOCKED_TYPES.has(sub.type)) {
+        errors[`tasks[${i}].type`] = `"${sub.type}" cannot run inside a foreach loop`;
+        isValid = false;
+        return;
+      }
+
+      const nested = validateTaskData(sub.type, sub.params ?? {}, validationRules);
+      if (!nested.isValid) {
+        for (const [key, message] of Object.entries(nested.errors)) {
+          errors[`tasks[${i}].params.${key}`] = message as string;
+        }
+        isValid = false;
+      }
+    });
   }
 
   return { errors, warnings, isValid };

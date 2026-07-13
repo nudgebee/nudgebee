@@ -30,6 +30,8 @@ import { FormCard } from '@shared/forms/FormComponents';
 import { toast as snackbar } from '@ui/Toast';
 import type { WorkflowExecutionTaskResponse } from '@api1/workflow/types';
 import CallWorkflowChildren from './components/CallWorkflowChildren';
+import ForeachIterationChildren from './components/ForeachIterationChildren';
+import { summarizeForeachIterations } from './utils/foreachIterations';
 import {
   workflowMessagingIcon,
   workflowSubWorkflowIcon,
@@ -795,6 +797,18 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
         newData.executionDuration = nextDuration;
       } else {
         delete newData.executionDuration;
+      }
+
+      // Foreach iteration progress ("{done}/{total} iterations" pill on the
+      // canvas node). Suppressed for skipped runs — no iterations happened.
+      const iterationSummary =
+        execTask && node.data?.taskConfig?.type === 'core.foreach' && nextStatus !== 'SKIPPED'
+          ? summarizeForeachIterations((execTask as any).children)
+          : null;
+      if (iterationSummary) {
+        newData.executionIterations = iterationSummary;
+      } else {
+        delete newData.executionIterations;
       }
 
       return {
@@ -1884,11 +1898,13 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                           wordBreak: 'break-word',
                         }}
                       >
+                        {/* Synthesized containers (foreach/group) never ran as an activity, so they
+                            carry definition params as `input` and no rendered_params — fall back. */}
                         {inlineInputViewMode === 'formatted' ? (
-                          renderFormattedField(selectedTaskData.rendered_params ?? {}, 'input')
+                          renderFormattedField(selectedTaskData.rendered_params ?? selectedTaskData.input ?? {}, 'input')
                         ) : (
                           <Box sx={{ fontFamily: 'monospace', fontSize: 'var(--ds-text-body)', color: ds.gray[700], whiteSpace: 'pre-wrap' }}>
-                            {JSON.stringify(selectedTaskData.rendered_params ?? {}, null, 2)}
+                            {JSON.stringify(selectedTaskData.rendered_params ?? selectedTaskData.input ?? {}, null, 2)}
                           </Box>
                         )}
                       </Box>
@@ -2078,6 +2094,20 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                   selectedTaskData.children.length > 0 && (
                     <CallWorkflowChildren tasks={selectedTaskData.children} copyToClipboard={copyToClipboard} />
                   )}
+
+                {/* Foreach iterations — per-iteration drill-down (populated by backend
+                    processWorkflowHistory, which groups loop children into synthetic
+                    "Iteration N" containers). */}
+                {selectedTaskData.type === 'core.foreach' &&
+                  (Array.isArray(selectedTaskData.children) && selectedTaskData.children.length > 0 ? (
+                    <ForeachIterationChildren entries={selectedTaskData.children} copyToClipboard={copyToClipboard} />
+                  ) : (
+                    String(selectedTaskData.status ?? '').toUpperCase() === 'COMPLETED' && (
+                      <Typography sx={{ mt: 2, fontSize: 'var(--ds-text-caption)', color: ds.gray[600], fontStyle: 'italic' }}>
+                        0 iterations — the items list was empty
+                      </Typography>
+                    )
+                  ))}
               </>
             ) : (
               renderDetailPanelFallback()

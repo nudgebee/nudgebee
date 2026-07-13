@@ -9,7 +9,7 @@ import CustomLabels from '@shared/widgets/CustomLabels';
 // Tasks that came back from the called workflow's execution detail. Matches the
 // shape produced by backend processWorkflowHistory (id, type, status, input,
 // output, start_time, end_time).
-interface ChildTask {
+export interface ChildTask {
   id: string;
   type?: string;
   status?: string;
@@ -26,7 +26,7 @@ interface CallWorkflowChildrenProps {
   copyToClipboard?: (text: string, label: string) => void;
 }
 
-const formatDuration = (start?: string, end?: string) => {
+export const formatDuration = (start?: string, end?: string) => {
   if (!start || !end) return '';
   const ms = new Date(end).getTime() - new Date(start).getTime();
   if (!Number.isFinite(ms) || ms < 0) return '';
@@ -34,7 +34,7 @@ const formatDuration = (start?: string, end?: string) => {
   return `${(ms / 1000).toFixed(2)}s`;
 };
 
-const ChildTaskCard: React.FC<{ task: ChildTask; copyToClipboard?: (text: string, label: string) => void }> = ({ task, copyToClipboard }) => {
+export const ChildTaskCard: React.FC<{ task: ChildTask; copyToClipboard?: (text: string, label: string) => void }> = ({ task, copyToClipboard }) => {
   const [expanded, setExpanded] = useState(true);
   const duration = formatDuration(task.start_time, task.end_time);
 

@@ -4008,11 +4008,13 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 		}
 
 		for containerID, children := range containerChildren {
-			// Find definitions to get the type
+			// Find definitions to get the type and params
 			var taskType string
+			var taskParams map[string]any
 			for _, t := range wfDef.Tasks {
 				if t.ID == containerID {
 					taskType = t.Type
+					taskParams = t.Params
 					break
 				}
 			}
@@ -4118,9 +4120,13 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 				containerTask.Children = children
 			} else {
 				containerTask = model.TaskExecutionDetails{
-					ID:       containerID,
-					Type:     taskType,
-					Status:   model.TaskStatusCompleted,
+					ID:     containerID,
+					Type:   taskType,
+					Status: model.TaskStatusCompleted,
+					// Synthesized containers never ran as an activity, so they have
+					// no recorded input. Surface the definition params instead —
+					// otherwise the executions panel renders every field as N/A.
+					Input:    taskParams,
 					Children: children,
 				}
 			}

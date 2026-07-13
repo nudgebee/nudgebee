@@ -34,28 +34,34 @@ func (t *ForEachTask) InputSchema() *types.Schema {
 				Type:        "any",
 				Description: "List of items to iterate over",
 				Required:    true,
+				Order:       1,
+			},
+			"item": {
+				Type:        "string",
+				Title:       "Iterator variable name",
+				Description: "Variable name for the current item (default: 'item')",
+				Default:     "item",
+				Required:    false,
+				Order:       2,
 			},
 			"tasks": {
 				Type:        "array",
 				Description: "List of tasks to execute for each iteration",
 				Required:    true,
-			},
-			"item": {
-				Type:        "string",
-				Description: "Variable name for the current item (default: 'item')",
-				Default:     "item",
-				Required:    false,
+				Order:       3,
 			},
 			"concurrency": {
 				Type:        "integer",
 				Description: "Max parallel iterations (0 or less means sequential, 1 means one at a time, >1 means N in parallel).",
 				Required:    false,
 				Default:     1,
+				Order:       4,
 			},
 			"output": {
 				Type:        "object",
 				Description: "Map of outputs to extract from each iteration",
 				Required:    false,
+				Order:       5,
 			},
 		},
 	}
@@ -75,8 +81,8 @@ func (t *ForEachTask) OutputSchema() *types.Schema {
 
 func (t *ForEachTask) RuntimeNotes() []string {
 	return []string{
-		"Access current item via {{ item }} (or custom name set via 'item' param) inside loop body tasks.",
-		"The item variable is injected into Vars and flattened to root context, so {{ item.field }} works directly.",
+		"Access current item via {{ LoopItem.item }} (or {{ LoopItem.<name> }} when a custom name is set via 'item' param) inside loop body tasks.",
+		"Only the LoopItem variable is injected into the iteration context — {{ LoopItem.item.field }} works; a bare {{ item }} does not resolve.",
 		"If 'items' is a JSON string, it will be automatically unmarshalled to an array.",
 		"Set concurrency > 1 for parallel execution. Default is sequential (concurrency=1).",
 	}
