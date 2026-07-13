@@ -3743,13 +3743,41 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 		if notebookProvider, ok := executor.agentPlanner.(NBAgentNotebookProvider); ok {
 			notebook = notebookProvider.GetNotebook()
 		}
-		ctx.GetLogger().Info("agentexecutor: triggering long-term memory extraction", "notebook_len", len(notebook), "has_notebook", notebook != "")
 
-		err := conversationAsyncTaskWorkerPool.Submit(submissionCtx, func() {
-			_ = extractLongTermMemory(bgCtx, request, response, notebook)
-		})
-		if err != nil {
-			ctx.GetLogger().Error("agentexecutor: failed to submit memory extraction task", "error", err)
+		// Long-term memory captures durable learnings from investigations. A plain
+		// retrieval / greeting (not an investigation AND with no notebook) yields
+		// nothing worth remembering, so skip its memory_extractor LLM call — this
+		// submission was previously unconditional and dominated per-query cost on
+		// trivial lookups (e.g. "list pods"). The notebook clause is a safety net:
+		// any turn that built a notebook was a real multi-step task, so it still
+		// extracts even if the keyword classifier reads the query as retrieval.
+		//
+		// Classify on the top-level user intent (OriginalQuery), not the delegated
+		// sub-query: this block also runs for sub-agents, whose request.Query is a
+		// mechanical brief ("list pods") that would misclassify an investigation as
+		// trivial and drop its memory. OriginalQuery holds the user's verbatim
+		// question and falls back to Query for top-level turns (executor.go sets it).
+		queryForClassification := request.OriginalQuery
+		if queryForClassification == "" {
+			queryForClassification = request.Query
+		}
+		// IsExplicitMemoryRequest keeps "remember X" / preference-setting turns:
+		// they aren't investigations and build no notebook, but are exactly what the
+		// memory_extractor is meant to store as user_preference facts.
+		worthRemembering := IsInvestigationRequestTask(queryForClassification) ||
+			notebook != "" ||
+			IsExplicitMemoryRequest(queryForClassification)
+		if worthRemembering {
+			ctx.GetLogger().Info("agentexecutor: triggering long-term memory extraction", "notebook_len", len(notebook), "has_notebook", notebook != "")
+
+			err := conversationAsyncTaskWorkerPool.Submit(submissionCtx, func() {
+				_ = extractLongTermMemory(bgCtx, request, response, notebook)
+			})
+			if err != nil {
+				ctx.GetLogger().Error("agentexecutor: failed to submit memory extraction task", "error", err)
+			}
+		} else {
+			ctx.GetLogger().Info("agentexecutor: skipping long-term memory extraction (trivial query, no notebook)", "query_len", len(queryForClassification))
 		}
 	} else {
 		ctx.GetLogger().Info("agentexecutor: skipping memory extraction - conditions not met",

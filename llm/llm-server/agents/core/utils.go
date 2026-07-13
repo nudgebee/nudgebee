@@ -263,6 +263,16 @@ var (
 
 	// retrievalPrefixRe — plain read-only/discovery verbs → Query.
 	retrievalPrefixRe = regexp.MustCompile(`(?i)^(get|list|show|display|fetch|count|how many|describe|whoami|version)\b`)
+
+	// memoryRequestRe — explicit "store this for later" / preference-setting
+	// intent. Such a turn ("remember our prod DB is 10.14.128.5", "from now on
+	// prefer the postgres agent") is neither an investigation nor notebook-bearing,
+	// yet the memory_extractor treats it as a HIGH-VALUE user_preference fact — so
+	// it must NOT be gated out of extraction. Mirrors the imperative phrasing the
+	// extractor prompt keys on ("remember …", "always …", "from now on …",
+	// "prefer …", "default to …"). "always"/"never" are paired with an action verb
+	// to avoid firing on plain state descriptions ("pod is always running").
+	memoryRequestRe = regexp.MustCompile(`(?i)(\bremember\b|\bkeep in mind\b|\bfrom now on\b|\bgoing forward\b|\bfor (future|the future|later) reference\b|\bmake a note\b|\bnote that\b|\bdefault to\b|\bprefer\b|\b(always|never) (use|prefer|apply|route|pick|choose|default|treat|assume|include|skip|avoid)\b)`)
 )
 
 // IsInvestigationRequestTask reports whether a query is a troubleshooting /
@@ -323,6 +333,17 @@ func IsInvestigationRequestTask(input string) bool {
 	}
 
 	return false
+}
+
+// IsExplicitMemoryRequest reports whether the user is explicitly asking the
+// assistant to remember something or declaring a durable preference/routing
+// rule (e.g. "remember our prod DB is 10.14.128.5", "from now on prefer the
+// postgres agent"). These turns are not investigations and build no notebook,
+// but they are exactly what the memory_extractor is meant to capture as
+// user_preference facts, so callers gating memory extraction must treat them as
+// worth remembering.
+func IsExplicitMemoryRequest(input string) bool {
+	return memoryRequestRe.MatchString(strings.TrimSpace(input))
 }
 
 // IsConversationalQuery checks if the input is a conversational query

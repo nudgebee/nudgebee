@@ -101,6 +101,41 @@ func TestIsInvestigationRequestTask(t *testing.T) {
 	}
 }
 
+func TestIsExplicitMemoryRequest(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		// --- explicit "remember this" / preference-setting (must be kept) ---
+		{"remember our prod DB is 10.14.128.5", true},
+		{"can you remember that the api key rotates weekly", true},
+		{"from now on prefer the postgres agent for schema questions", true},
+		{"always use loki for logs", true},
+		{"never use the shell tool in prod", true},
+		{"keep in mind the db host is external", true},
+		{"default to the nudgebee namespace", true},
+		{"note that the staging cluster is ephemeral", true},
+		{"going forward, route db questions to the postgres agent", true},
+		{"for future reference, the load balancer is an ALB", true},
+		{"i prefer elasticsearch over loki", true},
+
+		// --- plain retrieval / investigation (not memory-setting) ---
+		{"list pods", false},
+		{"why is checkout slow", false},
+		{"get logs for checkout-svc", false},
+		{"what is a kubernetes daemonset", false},
+		{"show me the restart policy", false},
+		// "always" without an action verb is a state description, not a rule
+		{"the pod is always running", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.expected, IsExplicitMemoryRequest(tt.input))
+		})
+	}
+}
+
 func TestIsConversationalQuery(t *testing.T) {
 	tests := []struct {
 		input    string
