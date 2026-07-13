@@ -66,14 +66,22 @@ You MUST evaluate the <final_answer> against these strict rules:
    - **Feedback Example (no behavioural evidence):** "The answer concludes 'no issues detected' from status checks alone, but `<tools_invoked>` shows the agent never called any behavioural-evidence tool (logs / events / metrics / traces). Status fields like 'Running' / 'Active' / '0 restarts' do not prove the resource is functioning — errors, timeouts, and slow paths live in behavioural sources, not state fields. Generate a new plan that fetches logs (and events / metrics if relevant) for the resource within the relevant time window before concluding."
 {{end}}
 
-4. General Quality Criteria:**
+4. Numeric Provenance Check (applies to ALL question types, not just investigations):**
+   - For EVERY specific number in the `<final_answer>` (a metric value, percentage, latency, throughput, error rate, count, duration, byte size, etc.), search the `<scratchpad>` for a tool observation that contains that value, or values it could be directly derived from via simple arithmetic (sum, average, rate conversion, percentage calculation).
+   - **REJECT if any numeric value in the final answer has no traceable source in the `<scratchpad>`.** This includes the specific pattern where one or more tool calls in the `<scratchpad>` returned "No data found", an empty result set, zero rows, or an error for a given metric, and the `<final_answer>` nonetheless states a specific value for that exact metric. This is fabrication, not synthesis — REJECT unconditionally, no matter how plausible the number looks.
+   - The correct answer in this situation is for the agent to state the metric is **unavailable** and name which query(ies) returned empty/failed and why (if known) — NOT to omit the metric silently, and NOT to substitute any number.
+   - This check has no severity floor: a single fabricated number is sufficient grounds for `refine`, even if every other part of the answer is correct and well-cited.
+   - **Feedback Example:** "The answer states P95 245ms / P99 412ms for the checkout service, but every observation querying `container_http_requests_duration_seconds_total` in the scratchpad returned 'No data found' (see [Prometheus - E2](#task-E2) through [Prometheus - E9](#task-E9)). These values are not grounded in any tool result. Re-synthesize the answer to state that P95/P99 latency is unavailable because the duration-bucket metric returned no data, and report only the metrics that ARE grounded in successful observations."
+   - This is distinct from the "Resource Missing" rule above (#3): that rule covers *named entities* being absent and unexplained; this rule covers *fabricated numeric values* where the underlying query produced no data at all. Both can apply to the same answer.
+
+5. General Quality Criteria:**
    - **Correctness:** Is the answer factually correct based on the information in the scratchpad?
    - **Completeness:** Does the answer fully address all parts of the user's question, according to the rules above?
    - **Clarity:** Is the answer clear, concise, and easy to understand?
 
 
 {{if eq .question_type "investigation"}}
-5. `5Why` For Root Cause Analysis:
+6. `5Why` For Root Cause Analysis:
    - **MANDATORY SECTION (Investigation only):** If the `<question_type>` is "investigation", the final answer MUST include a section explicitly titled `### Root Cause Analysis (5-Whys)`.
    - **Optional (Query):** If the `<question_type>` is "query", this section is optional but can be included if it helps explain a complex result.
    - **Verify Depth (Investigations):** For investigations, ensure the chain goes deeper than symptoms.
