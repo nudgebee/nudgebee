@@ -45,8 +45,8 @@ const INFO = {
   name: 'A name for this rule, shown in the rules list. Does not affect matching.',
   domain: 'What this rule targets: Kubernetes workloads/namespaces, or individual cloud resources (EC2/RDS/S3/…).',
   match: 'How resources are matched to the owner. Most specific scope wins when several rules match.',
-  accountOptional: 'Optional. Restrict this rule to one cloud account (cluster). Leave empty to apply across all accounts.',
-  accountRequired: 'The cloud account (cluster) the workloads belong to. Required — it drives the namespace and workload lists.',
+  accountOptional: 'Optional. Restrict this rule to one account (cluster). Leave empty to apply across all accounts.',
+  accountRequired: 'The account (cluster) the workloads belong to. Required — it drives the namespace and workload lists.',
   labelKey: 'The Kubernetes label key to match, e.g. "team".',
   labelValue: 'The label value to match, e.g. "payments". A workload matches when labels[key] equals this value.',
   namespaceScope: 'The Kubernetes namespace to match. Every workload in this namespace is owned by the selected owner.',
@@ -236,7 +236,7 @@ export default function OwnershipRuleModal({ open, onClose, rule }) {
             />
             <AccountSelect
               id='rule-account'
-              label={<LabelWithInfo text='Cloud account scope (optional)' info={INFO.accountOptional} />}
+              label={<LabelWithInfo text='Account scope (optional)' info={INFO.accountOptional} />}
               placeholder='All accounts'
               providerFilter={K8S}
               value={form.cloudAccountId}
@@ -249,7 +249,7 @@ export default function OwnershipRuleModal({ open, onClose, rule }) {
           <>
             <AccountSelect
               id='rule-account'
-              label={<LabelWithInfo text='Cloud account scope (optional)' info={INFO.accountOptional} />}
+              label={<LabelWithInfo text='Account scope (optional)' info={INFO.accountOptional} />}
               placeholder='All accounts'
               providerFilter={K8S}
               value={form.cloudAccountId}
@@ -269,7 +269,7 @@ export default function OwnershipRuleModal({ open, onClose, rule }) {
           <>
             <AccountSelect
               id='rule-account'
-              label={<LabelWithInfo text='Cloud account' info={INFO.accountRequired} />}
+              label={<LabelWithInfo text='Account' info={INFO.accountRequired} />}
               required
               clearable={false}
               providerFilter={K8S}
