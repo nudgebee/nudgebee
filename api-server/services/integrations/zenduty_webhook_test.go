@@ -58,7 +58,7 @@ const zendutyPrometheusPayload = `{
         "name": "Payments Team",
         "unique_id": "svc-payments"
       },
-      "urgency": 2
+      "urgency": 1
     }
   }
 }`
@@ -237,6 +237,23 @@ func TestZenduty_CustomPayload_PreventsServiceNameLeak(t *testing.T) {
 	// Subject unresolved is correct — better than the wrong-but-stable
 	// "Database Team" that the bug originally produced.
 	assert.Equal(t, "", got.EventSubjectName)
+
+	// No alert labels to refine severity from, so urgency drives it directly.
+	// ZenDuty urgency is binary and 1 = High — the invented 3-level scale used
+	// to parse this as Medium, which kept High incidents below the HIGH-only
+	// auto-investigation and RCA-writeback gates.
+	assert.Equal(t, event.EventPriorityHigh, inv.Severity)
+}
+
+// Test 3b: urgency 0 (Low) on a label-less payload maps to Low.
+func TestZenduty_CustomPayload_LowUrgencyMapsToLow(t *testing.T) {
+	zd := newZendutyIntegration(t)
+
+	lowPayload := strings.Replace(zendutyCustomPayload, `"urgency": 1`, `"urgency": 0`, 1)
+	out, err := zd.ProcessEventWebook(newTestCtx(), []core.IntegrationConfigValue{}, os.Getenv("TEST_ACCOUNT"), lowPayload)
+	assert.NoError(t, err)
+	assert.Len(t, out, 1)
+	assert.Equal(t, event.EventPriorityLow, out[0].Investigation.Severity)
 }
 
 // Test 4: Dedup stability across status transitions — same IncidentKey,

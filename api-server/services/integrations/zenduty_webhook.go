@@ -74,11 +74,12 @@ const (
 	ZenDutyStatusResolved     = 3
 )
 
-// ZenDuty Urgency Constants
+// ZenDuty Urgency Constants — ZenDuty urgency is binary: 0 = Low, 1 = High
+// (https://zenduty.com/docs/workflows/, trigger_data.urgency). There is no
+// medium and no value 2.
 const (
-	ZenDutyUrgencyLow    = 0
-	ZenDutyUrgencyMedium = 1
-	ZenDutyUrgencyHigh   = 2
+	ZenDutyUrgencyLow  = 0
+	ZenDutyUrgencyHigh = 1
 )
 
 // parseAssignedTo parses the assigned_to field which can be either a single object or an array.
@@ -261,8 +262,6 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	switch incident.Urgency {
 	case ZenDutyUrgencyHigh:
 		alert.Severity = event.EventPriorityHigh
-	case ZenDutyUrgencyMedium:
-		alert.Severity = event.EventPriorityMedium
 	default:
 		alert.Severity = event.EventPriorityLow
 	}
@@ -441,16 +440,10 @@ func mapZenDutyStatusToString(status int) string {
 
 // mapZenDutyUrgencyToString converts ZenDuty numeric urgency to string.
 func mapZenDutyUrgencyToString(urgency int) string {
-	switch urgency {
-	case ZenDutyUrgencyLow:
-		return "low"
-	case ZenDutyUrgencyMedium:
-		return "medium"
-	case ZenDutyUrgencyHigh:
+	if urgency == ZenDutyUrgencyHigh {
 		return "high"
-	default:
-		return "medium"
 	}
+	return "low"
 }
 
 // GetZenDutyIncidentDetails fetches full incident details from ZenDuty API.

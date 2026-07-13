@@ -263,9 +263,6 @@ func CreateZenDutyIncident(ctx *gin.Context, configuration models.TicketConfigur
 
 	// Map urgency from severity
 	urgency := clients.MapUrgencyFromString(ticket.Severity)
-	if urgency == 0 {
-		urgency = clients.ZenDutyUrgencyMedium
-	}
 
 	req := &clients.CreateIncidentRequest{
 		Title:     ticket.Title,
