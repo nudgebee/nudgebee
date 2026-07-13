@@ -1202,7 +1202,13 @@ func processTaskLoop(
 				paramMap[tasks.ParamAccountID] = wf.AccountID
 				paramMap[tasks.ParamWorkflowID] = wf.ID
 				paramMap[tasks.ParamUserID] = wf.UpdatedBy
-				paramMap[tasks.ParamVars] = tplCtx.Vars
+				// Intentionally do NOT attach the full template Vars (tplCtx.Vars) to the
+				// activity input. Params are already rendered above via ProcessValue, and
+				// TaskWrapper strips ParamVars before Execute, so no task ever reads it.
+				// Attaching it serialized the entire workflow Inputs (e.g. a ~672KB GitHub
+				// push payload) into EVERY activity input; a matrix/foreach fan-out then
+				// multiplied that past Temporal's 4MB gRPC limit, so RespondWorkflowTaskCompleted
+				// failed with ResourceExhausted and zero activities were ever committed.
 				paramMap[tasks.ParamWorkflowName] = wf.Name
 				if displayName := getUserDisplayName(wf); displayName != "" {
 					paramMap[tasks.ParamUserDisplayName] = displayName

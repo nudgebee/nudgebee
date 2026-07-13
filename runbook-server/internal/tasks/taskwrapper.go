@@ -55,7 +55,7 @@ func (tw *TaskWrapper) Execute(ctx context.Context, params map[string]any) (any,
 	delete(params, ParamAccountID)
 	delete(params, ParamWorkflowID)
 	delete(params, ParamUserID)
-	delete(params, ParamVars) // New: Remove ParamVars from params
+	delete(params, ParamVars) // Defensive: strip legacy ParamVars from in-flight (pre-fix) activity inputs; no longer attached by the executor
 	delete(params, ParamDryRun)
 	delete(params, ParamWorkflowName)
 	delete(params, ParamUserDisplayName)
