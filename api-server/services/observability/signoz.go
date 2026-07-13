@@ -137,6 +137,51 @@ func FlattenSignozQuery(q query.QueryWhereClause) ([]FlattenedClause, error) {
 	return result, nil
 }
 
+// signozResponseSnippet returns a truncated JSON rendering of a relay response
+// for logging / error context. Signoz payloads can be large, so it is capped.
+func signozResponseSnippet(resp map[string]any) string {
+	b, err := common.MarshalJson(resp)
+	if err != nil {
+		return "<unserializable response>"
+	}
+	const max = 1500
+	if len(b) > max {
+		return string(b[:max]) + "…(truncated)"
+	}
+	return string(b)
+}
+
+// extractSignozError pulls an explicit error message out of a Signoz/relay
+// response layer, if present. Signoz reports failures via an "error" field, an
+// "errorType", or a status marker rather than a well-formed result payload;
+// surfacing it beats masking it as a generic "field not found".
+func extractSignozError(m map[string]any) string {
+	if m == nil {
+		return ""
+	}
+	if v, ok := m["error"]; ok && v != nil {
+		if s, ok := v.(string); ok {
+			if s != "" {
+				return s
+			}
+		} else {
+			return fmt.Sprintf("%v", v)
+		}
+	}
+	if v, ok := m["errorType"]; ok && v != nil {
+		if s := fmt.Sprintf("%v", v); s != "" && s != "<nil>" {
+			return s
+		}
+	}
+	if st, ok := m["status"].(string); ok && strings.EqualFold(st, "error") {
+		if msg, ok := m["message"].(string); ok && msg != "" {
+			return msg
+		}
+		return "status=error"
+	}
+	return ""
+}
+
 func (s *SignozSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, error) {
 	if fetchLogRequest.Query == "" {
 		flattenedClauses, err := FlattenSignozQuery(fetchLogRequest.QueryRequest.Where)
@@ -239,18 +284,28 @@ func (s *SignozSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest F
 
 	data1, ok := resp["data"].(map[string]any)
 	if !ok || data1 == nil {
-		return nil, fmt.Errorf("data1 field not found or is nil from response")
+		ctx.GetLogger().Error("signoz: query_range response missing 'data'", "response", signozResponseSnippet(resp))
+		return nil, fmt.Errorf("signoz query_range: 'data' missing from relay response: %s", signozResponseSnippet(resp))
+	}
+	if errMsg := extractSignozError(data1); errMsg != "" {
+		return nil, fmt.Errorf("signoz query_range returned error: %s", errMsg)
 	}
 	data2, ok := data1["data"].(map[string]any)
 	if !ok || data2 == nil {
-		return nil, fmt.Errorf("data2 field not found or is nil from response")
+		ctx.GetLogger().Error("signoz: query_range response missing 'data.data'", "response", signozResponseSnippet(resp))
+		return nil, fmt.Errorf("signoz query_range: 'data.data' missing from relay response: %s", signozResponseSnippet(resp))
 	}
-	if errMsg, exists := data2["error"]; exists {
-		return nil, fmt.Errorf("API returned error: %v", errMsg)
+	if errMsg := extractSignozError(data2); errMsg != "" {
+		return nil, fmt.Errorf("signoz query_range returned error: %s", errMsg)
 	}
 	data3, ok := data2["data"].(map[string]any)
 	if !ok || data3 == nil {
-		return nil, fmt.Errorf("data3 field not found or is nil from response")
+		// Well-formed envelope but no nested result payload and no explicit error.
+		// Surface the actual body (not an opaque "data3 not found") so a malformed
+		// query or an unexpected Signoz shape is diagnosable instead of silently
+		// degrading callers to the kubectl fallback.
+		ctx.GetLogger().Error("signoz: query_range response missing 'data.data.data'", "response", signozResponseSnippet(resp))
+		return nil, fmt.Errorf("signoz query_range: unexpected response shape (no result payload): %s", signozResponseSnippet(resp))
 	}
 	result, ok := data3["result"].([]any)
 	if !ok || result == nil {

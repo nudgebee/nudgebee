@@ -558,6 +558,16 @@ func (t *NBLogTool) queryBuilderToSignozFilters(queryBuilder core.QueryBuilder) 
 				if skip {
 					continue
 				}
+				// Signoz `contains` is a substring match, not SQL LIKE. The query
+				// generator emits _ilike values wrapped in `%` (e.g. "%web-api%"),
+				// which _ilike maps to `contains`; left as-is those `%` are matched
+				// literally and never hit, so the query silently returns nothing.
+				// Strip surrounding `%` for contains. `like`/`nlike` keep them.
+				if signozOp == "contains" {
+					if s, ok := value.(string); ok {
+						value = strings.Trim(s, "%")
+					}
+				}
 				filters = append(filters, map[string]any{
 					"key":   map[string]string{"key": field},
 					"value": value,
