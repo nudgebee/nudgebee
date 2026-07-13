@@ -25,6 +25,7 @@ import (
 	"nudgebee/llm-gateway/proxy"
 	"nudgebee/llm-gateway/ratelimit"
 	"nudgebee/llm-gateway/routing"
+	"nudgebee/llm-gateway/rpc"
 	"nudgebee/llm-gateway/usage"
 
 	"github.com/Cyprinus12138/otelgin"
@@ -214,6 +215,13 @@ func main() {
 	// Requires the pricer (cost) + metering store; skipped when the DB isn't wired.
 	if pricer != nil {
 		usage.RegisterRoutes(r, pricer, config.Config.GatewayActionToken)
+	}
+
+	// Admin config-CRUD plane (POST /rpc/config/…) for the AI Gateway admin UI —
+	// app → gateway service-to-service, guarded by the action token. EE-only: the
+	// registrar is nil in the OSS build (ee/admin removed), so nothing mounts.
+	if reg := rpc.AdminRoutes(); reg != nil {
+		reg(r, config.Config.GatewayActionToken)
 	}
 
 	srv := &http.Server{
