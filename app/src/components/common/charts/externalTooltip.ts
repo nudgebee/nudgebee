@@ -14,6 +14,15 @@
 
 const TOOLTIP_ID = 'ds-chart-tooltip';
 
+function escapeHtml(str: unknown): string {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /** Compact currency for axis ticks / labels: $1.2k, $980, $0.50, $0. */
 export function compactCurrency(v: number): string {
   const abs = Math.abs(v);
@@ -60,7 +69,9 @@ interface TooltipRow {
 }
 
 function renderTable(title: string, rows: TooltipRow[], total?: { label: string; value: string }): string {
-  const head = title ? `<div style="font-weight:var(--ds-font-weight-semibold);color:var(--ds-gray-700);margin-bottom:6px">${title}</div>` : '';
+  const head = title
+    ? `<div style="font-weight:var(--ds-font-weight-semibold);color:var(--ds-gray-700);margin-bottom:6px">${escapeHtml(title)}</div>`
+    : '';
   const showShare = rows.some((r) => r.share != null);
   const bodyRows = rows.map((r, i) => {
     const last = i === rows.length - 1 && !total;
@@ -73,18 +84,26 @@ function renderTable(title: string, rows: TooltipRow[], total?: { label: string;
     return (
       `<tr>` +
       `<td style="padding:3px 10px 3px 0;border-right:1px solid rgba(0,0,0,0.04);${rowBorder}">` +
-      `<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${r.color};margin-right:6px;vertical-align:middle"></span>` +
-      `<span style="color:var(--ds-gray-600)">${r.label}</span>` +
+      `<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${escapeHtml(
+        r.color
+      )};margin-right:6px;vertical-align:middle"></span>` +
+      `<span style="color:var(--ds-gray-600)">${escapeHtml(r.label)}</span>` +
       `</td>` +
-      `<td style="padding:3px 0 3px 10px;text-align:right;font-variant-numeric:tabular-nums;color:var(--ds-gray-700);${rowBorder}">${r.value}</td>` +
+      `<td style="padding:3px 0 3px 10px;text-align:right;font-variant-numeric:tabular-nums;color:var(--ds-gray-700);${rowBorder}">${escapeHtml(
+        r.value
+      )}</td>` +
       shareCell +
       `</tr>`
     );
   });
   const totalRow = total
     ? `<tr>` +
-      `<td style="padding:5px 10px 1px 0;border-right:1px solid rgba(0,0,0,0.04);color:var(--ds-gray-700);font-weight:var(--ds-font-weight-semibold)">${total.label}</td>` +
-      `<td style="padding:5px 0 1px 10px;text-align:right;font-variant-numeric:tabular-nums;color:var(--ds-gray-700);font-weight:var(--ds-font-weight-semibold)">${total.value}</td>` +
+      `<td style="padding:5px 10px 1px 0;border-right:1px solid rgba(0,0,0,0.04);color:var(--ds-gray-700);font-weight:var(--ds-font-weight-semibold)">${escapeHtml(
+        total.label
+      )}</td>` +
+      `<td style="padding:5px 0 1px 10px;text-align:right;font-variant-numeric:tabular-nums;color:var(--ds-gray-700);font-weight:var(--ds-font-weight-semibold)">${escapeHtml(
+        total.value
+      )}</td>` +
       (showShare ? `<td></td>` : '') +
       `</tr>`
     : '';
