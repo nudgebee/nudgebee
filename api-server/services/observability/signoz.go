@@ -10,6 +10,7 @@ import (
 	"nudgebee/services/security"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // SignozSource is a LogSource implementation for Signoz.
@@ -146,7 +147,13 @@ func signozResponseSnippet(resp map[string]any) string {
 	}
 	const max = 1500
 	if len(b) > max {
-		return string(b[:max]) + "…(truncated)"
+		// Back up to a UTF-8 rune boundary so we never slice a multi-byte
+		// character in half and emit malformed UTF-8.
+		i := max
+		for i > 0 && !utf8.RuneStart(b[i]) {
+			i--
+		}
+		return string(b[:i]) + "…(truncated)"
 	}
 	return string(b)
 }
