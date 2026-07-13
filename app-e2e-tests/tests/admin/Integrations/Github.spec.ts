@@ -77,15 +77,15 @@ test("Test Github Connection", async ({ page }) => {
   }
 
   const moreBtn = githubRow
-    .getByRole("button", { name: "more" })
+    .getByRole("button", { name: "More actions" })
     .or(githubRow.locator("button").last())
     .first();
   await moreBtn.waitFor({ state: "visible", timeout: 10000 });
   await moreBtn.click();
 
-  const editMenuItem = page.getByRole("menuitem", { name: "Edit" });
+  const editMenuItem = page.locator('[role="menuitem"]:visible').filter({ hasText: "Edit" }).first();
   await editMenuItem.waitFor({ state: "visible", timeout: 10000 });
-  await editMenuItem.click();
+  await editMenuItem.click({ timeout: 5000 }).catch(() => editMenuItem.dispatchEvent("click"));
 
   await locators.githubTestConnectionBtn.waitFor({ state: "visible", timeout: 15000 });
 

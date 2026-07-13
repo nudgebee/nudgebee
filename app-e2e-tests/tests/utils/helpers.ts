@@ -17,18 +17,61 @@ export async function registerWelcomeTourAutoDismiss(page: Page): Promise<void> 
   pagesWithTourHandler.add(page);
 
   const snoozeBtn = page.locator("#tour-welcome-snooze");
+  const closeBtn = page.locator("#close-modal-btn");
+
+  // Returns true once the tour dialog is gone (Snooze button detached/hidden).
+  const dialogDismissed = () =>
+    snoozeBtn
+      .waitFor({ state: "hidden", timeout: 1500 })
+      .then(() => true)
+      .catch(() => false);
+
   await page.addLocatorHandler(snoozeBtn, async () => {
-    try {
-      await snoozeBtn.click({ timeout: 5000 });
-      console.log("Auto-dismissed Welcome tour popup via Snooze");
-    } catch {
+    // The dialog (DS Modal) runs a ~480ms pop-up keyframe on its container plus
+    // a height transition that re-fires when tenant branding resolves async, so
+    // the Snooze button keeps repositioning. A normal .click() waits for the
+    // element to be stable + hit-testable and times out while it animates.
+    // Strategy per attempt, most-reliable-first:
+    //   1. dispatchEvent — fires the React onClick synchronously with no
+    //      stability/hit-test wait (same pattern as clickRowMenuItem in
+    //      Integrations/util.ts); works even while the dialog animates.
+    //   2. force click on Snooze — bypasses the actionability wait too, in case
+    //      the synthetic event didn't register.
+    //   3. force click the modal's X (#close-modal-btn) — closes the dialog by
+    //      a different control if Snooze itself is somehow unresponsive.
+    // Retried a few times because the tour can re-mount on route changes.
+    for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        await page.locator("#close-modal-btn").click({ timeout: 5000 });
-        console.log("Auto-dismissed Welcome tour popup via Close");
-      } catch (err) {
-        console.error("Failed to auto-dismiss Welcome tour popup:", err);
+        await snoozeBtn.dispatchEvent("click", {}, { timeout: 5000 });
+        if (await dialogDismissed()) {
+          console.log("Auto-dismissed Welcome tour popup via Snooze");
+          return;
+        }
+      } catch {
+        /* fall through to the next fallback */
+      }
+
+      try {
+        await snoozeBtn.click({ timeout: 5000, force: true });
+        if (await dialogDismissed()) {
+          console.log("Auto-dismissed Welcome tour popup via Snooze (force click)");
+          return;
+        }
+      } catch {
+        /* fall through to the next fallback */
+      }
+
+      try {
+        await closeBtn.click({ timeout: 5000, force: true });
+        if (await dialogDismissed()) {
+          console.log("Auto-dismissed Welcome tour popup via Close");
+          return;
+        }
+      } catch {
+        /* retry the whole sequence */
       }
     }
+    console.error("Failed to auto-dismiss Welcome tour popup after 3 attempts");
   });
 }
 
