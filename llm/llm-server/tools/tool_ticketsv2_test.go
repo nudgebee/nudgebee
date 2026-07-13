@@ -186,9 +186,10 @@ func TestInferTicketPlatformFromQuery(t *testing.T) {
 		{"single platform lowercase", "list jira tickets", "jira"},
 		{"single platform mixed case", "Open GitHub Issues", "github"},
 		{"surrounding whitespace", "   pagerduty  alerts  ", "pagerduty"},
-		{"all six platforms recognized — gitlab", "show gitlab tickets", "gitlab"},
-		{"all six platforms recognized — servicenow", "servicenow incidents", "servicenow"},
-		{"all six platforms recognized — zenduty", "zenduty alerts", "zenduty"},
+		{"all seven platforms recognized — gitlab", "show gitlab tickets", "gitlab"},
+		{"all seven platforms recognized — servicenow", "servicenow incidents", "servicenow"},
+		{"all seven platforms recognized — zenduty", "zenduty alerts", "zenduty"},
+		{"all seven platforms recognized — freshdesk", "freshdesk tickets", "freshdesk"},
 		{"two distinct platforms → no inference", "compare jira and github", ""},
 		{"three distinct platforms → no inference", "jira github gitlab", ""},
 		{"no platform mentioned", "what is happening with my service", ""},
@@ -923,6 +924,7 @@ func TestTicketMasterV2_Metadata(t *testing.T) {
 		assert.Contains(t, desc, "ServiceNow")
 		assert.Contains(t, desc, "PagerDuty")
 		assert.Contains(t, desc, "ZenDuty")
+		assert.Contains(t, desc, "Freshdesk")
 	})
 
 	t.Run("InputSchema has command property", func(t *testing.T) {

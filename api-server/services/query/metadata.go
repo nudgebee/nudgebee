@@ -3014,7 +3014,7 @@ var table_metadata = map[string]TableDefinition{
 					json_agg(json_build_object('type', type, 'status', status, 'name', name) ORDER BY name) as integrations
 				FROM integrations
 				WHERE type IN (
-					'github', 'gitlab', 'jira', 'servicenow', 'pagerduty', 'zenduty',
+					'github', 'gitlab', 'jira', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk',
 					'pagerduty_webhook', 'zenduty_webhook', 'prometheus_alertmanager_webhook',
 					'datadog_webhook', 'azure_monitor_webhook', 'servicenow_webhook',
 					'postgresql', 'rabbitmq', 'mysql', 'redis', 'confluence', 'clickhouse',

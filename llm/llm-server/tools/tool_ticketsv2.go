@@ -35,7 +35,7 @@ const TicketMasterToolNameV2 = "ticket_master_v2"
 // listTicketIntegrations, the platform-inference helper, the human-readable
 // Description, and tests. Adding a new platform integration requires updating
 // only this list (and the corresponding integration handler).
-var supportedTicketPlatforms = []string{"jira", "github", "gitlab", "servicenow", "pagerduty", "zenduty"}
+var supportedTicketPlatforms = []string{"jira", "github", "gitlab", "servicenow", "pagerduty", "zenduty", "freshdesk"}
 
 // platformInferenceRegex matches any supported platform as a whole word
 // (case-insensitive). Word boundaries prevent false positives from substrings
@@ -56,7 +56,7 @@ func (m TicketMasterV2) GetType() core.NBToolType {
 }
 
 func (m TicketMasterV2) Description() string {
-	return `Manage tickets across Jira/GitHub/GitLab/ServiceNow/PagerDuty/ZenDuty. Input is a JSON object with operation_type ∈ {get_create_meta, create_ticket, add_comment, get_comments, get_ticket, list_tickets} plus per-op fields: create_ticket needs title (+ optional description/severity/project_key/ticket_type/assignee/additional_fields); add_comment needs ticket_id and comment_text; get_comments/get_ticket need ticket_id; list_tickets takes filters (status, priority, assignee, limit, offset, created_after, created_before, sort_by, sort_order). Call get_create_meta before create_ticket to discover required fields and valid assignees.`
+	return `Manage tickets across Jira/GitHub/GitLab/ServiceNow/PagerDuty/ZenDuty/Freshdesk. Input is a JSON object with operation_type ∈ {get_create_meta, create_ticket, add_comment, get_comments, get_ticket, list_tickets} plus per-op fields: create_ticket needs title (+ optional description/severity/project_key/ticket_type/assignee/additional_fields); add_comment needs ticket_id and comment_text; get_comments/get_ticket need ticket_id; list_tickets takes filters (status, priority, assignee, limit, offset, created_after, created_before, sort_by, sort_order). Call get_create_meta before create_ticket to discover required fields and valid assignees.`
 }
 
 func (m TicketMasterV2) InputSchema() core.ToolSchema {

@@ -295,7 +295,7 @@ func isToolConfigured(ctx *security.RequestContext, accountId string, tool NBToo
 		// Any ticket-type integration on the tenant. Tenant-scoped to match the
 		// resolver (ListToolConfigs / ToolConfigSourceTicketAll), which lists every
 		// enabled ticket integration on the tenant regardless of account link.
-		ticketTypes := []string{"jira", "github", "gitlab", "servicenow", "pagerduty", "zenduty"}
+		ticketTypes := []string{"jira", "github", "gitlab", "servicenow", "pagerduty", "zenduty", "freshdesk"}
 		for _, t := range ticketTypes {
 			if summary.TenantIntegrationTypes[t] {
 				return true
@@ -590,7 +590,7 @@ func ListToolConfigs(context *security.RequestContext, accountId string, tool NB
 			JOIN integration_config_values icv ON i.id = icv.integration_id
 			WHERE i.tenant_id IN (SELECT tenant FROM cloud_accounts WHERE id = $1)
 			  AND i.status = 'enabled'
-			  AND i.type IN ('jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty')
+			  AND i.type IN ('jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk')
 			GROUP BY i.id, i.name, i.type
 		`, accountId)
 		if err != nil {

@@ -30,7 +30,7 @@ func fetchConfigurationList() ([]models.TicketConfigurations, error) {
 			i.name,
 			i.status
 		FROM integrations i
-		WHERE i.type IN ('jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty')
+		WHERE i.type IN ('jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk')
 		  AND i.status = 'enabled'
 		ORDER BY i.created_at DESC
 	`
@@ -184,6 +184,7 @@ func SyncConfigurations() {
 		"servicenow": true,
 		"pagerduty":  true,
 		"zenduty":    true,
+		"freshdesk":  true,
 	}
 
 	configurations, err := fetchConfigurationList()

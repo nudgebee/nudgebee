@@ -451,6 +451,7 @@ const apiAccount = {
         'servicenow',
         'pagerduty',
         'zenduty',
+        'freshdesk',
         'pagerduty_webhook',
         'zenduty_webhook',
         'prometheus_alertmanager_webhook',

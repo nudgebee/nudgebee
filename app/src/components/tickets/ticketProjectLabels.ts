@@ -22,6 +22,7 @@ const TICKET_PROJECT_TERMS: Record<string, TicketProjectTerm> = {
   servicenow: { noun: 'Table', selectLabel: 'Select Table' },
   pagerduty: { noun: 'Service', selectLabel: 'Select PagerDuty Service' },
   zenduty: { noun: 'Service', selectLabel: 'Select ZenDuty Service' },
+  freshdesk: { noun: 'Group', selectLabel: 'Select Freshdesk Group' },
 };
 
 /**

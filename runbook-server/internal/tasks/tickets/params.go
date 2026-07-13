@@ -19,7 +19,7 @@ var incidentPlatforms = []string{"pagerduty", "zenduty"}
 // tasks (create / update / transition / comment / assign / get / get_comments)
 // can target — the registered ticket and incident managers in
 // ticket-server/services/tools.
-var ticketPlatforms = []string{"jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow"}
+var ticketPlatforms = []string{"jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow", "freshdesk"}
 
 // resolveTicketIntegrationID converts a frontend-supplied integration_id (which
 // may be a UUID or a name produced by template substitution like

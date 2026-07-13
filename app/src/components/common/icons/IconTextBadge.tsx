@@ -21,7 +21,7 @@
 import React, { ReactNode } from 'react';
 import { Box, Tooltip, Typography, SxProps, Theme } from '@mui/material';
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
-import { SlackIcon, MSTeamsIcon, GChatIcon, jiraIcon, serviceNowIcon, PagerDutyIcon } from '@assets';
+import { SlackIcon, MSTeamsIcon, GChatIcon, jiraIcon, serviceNowIcon, freshdeskIcon, PagerDutyIcon } from '@assets';
 import { colors } from 'src/utils/colors';
 import SafeIcon from './SafeIcon';
 
@@ -36,6 +36,7 @@ const PRESETS: Record<string, { icon: any; label: string; muiIcon?: ReactNode }>
   email: { icon: null, label: 'Email', muiIcon: <MailOutlineIcon /> },
   jira: { icon: jiraIcon, label: 'Jira' },
   servicenow: { icon: serviceNowIcon, label: 'ServiceNow' },
+  freshdesk: { icon: freshdeskIcon, label: 'Freshdesk' },
   pagerduty: { icon: PagerDutyIcon, label: 'PagerDuty' },
 };
 

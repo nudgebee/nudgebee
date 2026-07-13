@@ -2,6 +2,7 @@ import { Typography } from '@mui/material';
 import { useRouter } from 'next/router';
 import ServiceNowAccountModal from '@shared/ServiceNowAccountModal';
 import ZenDutyAccountModal from '@shared/ZenDutyAccountModal';
+import FreshdeskAccountModal from '@components/integrations/modal/FreshdeskAccountModal';
 import ListIntegrations from './ListIntegrations';
 import MessagingIntegrationTile from './MessagingIntegrationTile';
 import GoogleChatSpacesPanel from './GoogleChatSpacesPanel';
@@ -150,6 +151,15 @@ export default function AddAccountForm() {
           case 'zenduty':
             return (
               <TicketingIntegrationTile tool='zenduty' displayName='ZenDuty' cloudProvider='ZENDUTY' AccountModalComponent={ZenDutyAccountModal} />
+            );
+          case 'freshdesk':
+            return (
+              <TicketingIntegrationTile
+                tool='freshdesk'
+                displayName='Freshdesk'
+                cloudProvider='FRESHDESK'
+                AccountModalComponent={FreshdeskAccountModal}
+              />
             );
           case 'redis':
             return <ListIntegrations integrationName={'redis'} />;

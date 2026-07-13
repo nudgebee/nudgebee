@@ -8,6 +8,7 @@ import apiResources from '@api1/resources';
 import {
   JiraIcon,
   ServiceNowIcon,
+  FreshdeskIcon,
   PagerDutyIcon,
   GithubIcon,
   GitLabIcon,
@@ -45,6 +46,7 @@ const TICKET_TOOL_ICONS: Record<string, any> = {
   github: GithubIcon,
   gitlab: GitLabIcon,
   zenduty: ZenDutyIcon,
+  freshdesk: FreshdeskIcon,
 };
 
 const INTEGRATION_TYPE_ICONS: Record<string, any> = {

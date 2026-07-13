@@ -41,6 +41,7 @@ const TOOL_DISPLAY_NAMES = {
   servicenow: 'ServiceNow',
   pagerduty: 'PagerDuty',
   zenduty: 'ZenDuty',
+  freshdesk: 'Freshdesk',
 };
 
 const customPriorityOrder = ['Highest', 'High', 'Medium', 'Low', 'Lowest', 'NA', 'Critical'];
