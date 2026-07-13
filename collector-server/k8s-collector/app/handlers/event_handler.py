@@ -2421,6 +2421,8 @@ def handle_trivy_cis_scan(raw_content: dict, tenant: str, cloud_account_id: str,
     recommendations = []
     for r in report["data"]:
         for image in r["content"]:
+            if not image or "Results" not in image or image["Results"] is None:
+                continue
             results = image["Results"]
             for result in results:
                 if "Results" not in result or result["Results"] is None:
