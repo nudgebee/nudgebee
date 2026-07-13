@@ -1,24 +1,23 @@
 name: nudgebee-ml base image
 
 # Builds and publishes the OSS ML base image —
-# ghcr.io/<owner>/nudgebee-ml-base (Debian trixie + Miniforge/conda + Python
-# 3.11 + uv) that ml-k8s-server builds FROM (PYTHON_BASE).
+# ghcr.io/<owner>/nudgebee-ml-base (Wolfi + Miniforge/conda + Python 3.11 + uv)
+# that ml-k8s-server and rag-server build FROM (PYTHON_BASE).
 #
 # Why this workflow exists: same gap as the python / cloud-collector bases. The
 # enterprise infra pipeline publishes this base to ECR only, so the public GHCR
-# tag was pushed once (2025-06) and never refreshed — its Debian OS packages
-# drifted far behind (openssl/libgnutls/libpcre2 ... ~10 CRITICAL + ~590 HIGH
-# fixable). This gives the GHCR base a real, repeatable build.
+# tag was pushed once (2025-06) and never refreshed — its OS packages drifted far
+# behind. This gives the GHCR base a real, repeatable build.
 #
-# Freshness: the Dockerfile runs `apt-get upgrade`, so every rebuild picks up the
-# latest Debian security releases. The weekly `schedule` rebuilds even when the
-# Dockerfile hasn't changed, so the base can't silently go stale again.
+# Freshness: the Dockerfile tracks Wolfi :latest (continuously patched); the weekly
+# `schedule` rebuilds even when the Dockerfile hasn't changed so the base can't
+# silently go stale.
 #
-# amd64 only for now: the consumers (ml-k8s-server AND rag-server) are built
-# amd64-only in edge.yaml / release.yaml, so this base follows. The Dockerfile is
-# arch-aware (Wolfi + conda + the ML wheels all have aarch64 builds), so arm64
-# can be enabled here + on the consumers once their full dep trees are confirmed
-# on aarch64.
+# Multi-arch (amd64 + arm64): the enterprise test/prod pipeline builds the
+# consumers (ml-k8s-server, rag-server) for arm64 too (on self-hosted arm64
+# runners), so the base must ship an arm64 variant or the arm64 consumer build
+# fails with "no match for platform in manifest: not found". Wolfi + conda + the
+# ML wheels all publish aarch64 builds. Built natively per arch (no QEMU).
 #
 # Tags (on push to main / schedule / manual dispatch):
 #   :wolfi                 version-rolling tag consumers pin (tracks the base
@@ -27,7 +26,7 @@ name: nudgebee-ml base image
 #                          base migrated off Debian to Wolfi.
 #   :latest                rolling
 #   :<YYYYMMDD>-<sha7>      immutable snapshot for reproducible pins
-# PRs build to validate, but do not push.
+# PRs build both arches to validate, but do not push.
 #
 # Note on visibility: a new GHCR package defaults to *private*. After the first
 # push, flip ghcr.io/<owner>/nudgebee-ml-base to public in Settings -> Packages.
@@ -60,18 +59,18 @@ env:
   REGISTRY: ghcr.io
   IMAGE: nudgebee-ml-base
   CONTEXT: deploy/kubernetes/nudgebee-ml-base-image
-  # Debian major the base tracks; also the rolling tag consumers pin.
+  # Version-rolling tag consumers pin (tracks the base distro/toolchain family).
   STABLE_TAG: wolfi
 
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 10
+    outputs:
+      namespace: ${{ steps.v.outputs.namespace }}
+      snap: ${{ steps.v.outputs.snap }}
+      push: ${{ steps.v.outputs.push }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
       - id: v
         run: |
           set -euo pipefail
@@ -83,26 +82,75 @@ jobs:
             echo "push=$push"
           } >> "$GITHUB_OUTPUT"
 
+  # One cell per arch, built on its native runner (no QEMU). On push the per-arch
+  # image is published as :<STABLE_TAG>-<arch>; merge-manifest stitches them.
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
       - uses: docker/login-action@v3
-        if: steps.v.outputs.push == 'true'
+        if: needs.prepare.outputs.push == 'true'
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push (amd64, push=${{ steps.v.outputs.push }})
+      - name: Build ${{ matrix.arch }} (push=${{ needs.prepare.outputs.push }})
         uses: docker/build-push-action@v6
         with:
           context: ${{ env.CONTEXT }}
-          push: ${{ steps.v.outputs.push == 'true' }}
-          platforms: linux/amd64
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.v.outputs.namespace }}/${{ env.IMAGE }}:${{ env.STABLE_TAG }}
-            ${{ env.REGISTRY }}/${{ steps.v.outputs.namespace }}/${{ env.IMAGE }}:latest
-            ${{ env.REGISTRY }}/${{ steps.v.outputs.namespace }}/${{ env.IMAGE }}:${{ steps.v.outputs.snap }}
+          push: ${{ needs.prepare.outputs.push == 'true' }}
+          platforms: ${{ matrix.platform }}
+          tags: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ env.IMAGE }}:${{ env.STABLE_TAG }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.title=${{ env.IMAGE }}
-          cache-from: ${{ steps.v.outputs.push == 'true' && format('type=registry,ref={0}/{1}/{2}:buildcache', env.REGISTRY, steps.v.outputs.namespace, env.IMAGE) || '' }}
-          cache-to: ${{ steps.v.outputs.push == 'true' && format('type=registry,ref={0}/{1}/{2}:buildcache,mode=max', env.REGISTRY, steps.v.outputs.namespace, env.IMAGE) || '' }}
+          cache-from: ${{ needs.prepare.outputs.push == 'true' && format('type=registry,ref={0}/{1}/{2}:buildcache-{3}', env.REGISTRY, needs.prepare.outputs.namespace, env.IMAGE, matrix.arch) || '' }}
+          cache-to: ${{ needs.prepare.outputs.push == 'true' && format('type=registry,ref={0}/{1}/{2}:buildcache-{3},mode=max', env.REGISTRY, needs.prepare.outputs.namespace, env.IMAGE, matrix.arch) || '' }}
+
+  # Stitch the per-arch images into one multi-arch manifest and apply the
+  # canonical tags. Skipped on PRs (nothing was pushed to merge).
+  merge-manifest:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      REPO: ghcr.io/${{ needs.prepare.outputs.namespace }}/nudgebee-ml-base
+      SNAP: ${{ needs.prepare.outputs.snap }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        run: |
+          set -euo pipefail
+          echo "Merging ${REPO}:${STABLE_TAG} from per-arch images"
+          docker buildx imagetools create \
+            -t "${REPO}:${STABLE_TAG}" \
+            -t "${REPO}:latest" \
+            -t "${REPO}:${SNAP}" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
+            --annotation "index:org.opencontainers.image.title=${IMAGE}" \
+            "${REPO}:${STABLE_TAG}-amd64" \
+            "${REPO}:${STABLE_TAG}-arm64"
+
+          docker buildx imagetools inspect "${REPO}:${STABLE_TAG}" || true
