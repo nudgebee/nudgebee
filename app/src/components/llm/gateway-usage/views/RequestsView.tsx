@@ -32,6 +32,9 @@ interface RequestsViewProps {
   /** Set when drilled in from the Users tab — scopes the query to one user. */
   userFilter: { id: string; name: string } | null;
   onClearUser: () => void;
+  /** Set when drilled in from the Tools tab — scopes to requests that offered it. */
+  toolFilter: string | null;
+  onClearTool: () => void;
 }
 
 const LIMIT = 50;
@@ -145,15 +148,20 @@ function toRow(r: GatewayRequestRow, costSev: (v: number) => Severity) {
   ];
 }
 
-export function RequestsView({ filters, userFilter, onClearUser }: RequestsViewProps) {
+export function RequestsView({ filters, userFilter, onClearUser, toolFilter, onClearTool }: RequestsViewProps) {
   const [offset, setOffset] = React.useState(0);
 
   // Reset paging whenever the scope (date window or user filter) changes.
   React.useEffect(() => {
     setOffset(0);
-  }, [filters.startDate, filters.endDate, userFilter?.id]);
+  }, [filters.startDate, filters.endDate, userFilter?.id, toolFilter]);
 
-  const { loading, error, data } = useGatewayRequests(filters, { userId: userFilter?.id, limit: LIMIT, offset });
+  const { loading, error, data } = useGatewayRequests(filters, {
+    userId: userFilter?.id,
+    tool: toolFilter ?? undefined,
+    limit: LIMIT,
+    offset,
+  });
 
   const rows = data?.rows ?? [];
   const total = data?.total ?? 0;
@@ -165,11 +173,18 @@ export function RequestsView({ filters, userFilter, onClearUser }: RequestsViewP
   return (
     <Card>
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
-        {userFilter && (
-          <Box>
-            <Chip tone='info' onDismiss={onClearUser} id='gateway-requests-user-chip'>
-              User: {userFilter.name}
-            </Chip>
+        {(userFilter || toolFilter) && (
+          <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
+            {userFilter && (
+              <Chip tone='info' onDismiss={onClearUser} id='gateway-requests-user-chip'>
+                User: {userFilter.name}
+              </Chip>
+            )}
+            {toolFilter && (
+              <Chip tone='info' onDismiss={onClearTool} id='gateway-requests-tool-chip'>
+                Tool: {toolFilter}
+              </Chip>
+            )}
           </Box>
         )}
 

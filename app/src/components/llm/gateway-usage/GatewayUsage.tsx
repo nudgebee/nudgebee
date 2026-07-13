@@ -26,6 +26,7 @@ import DashboardOutlinedIcon from '@mui/icons-material/DashboardOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import PeopleAltOutlinedIcon from '@mui/icons-material/PeopleAltOutlined';
 import ReceiptLongOutlinedIcon from '@mui/icons-material/ReceiptLongOutlined';
+import HandymanOutlinedIcon from '@mui/icons-material/HandymanOutlined';
 import dayjs from 'dayjs';
 import CustomTabs from '@shared/navigation/Tabs';
 import { ToggleGroup } from '@ui/ToggleGroup';
@@ -36,6 +37,7 @@ import OverviewView from './views/OverviewView';
 import ModelsView from './views/ModelsView';
 import UsersView from './views/UsersView';
 import RequestsView from './views/RequestsView';
+import ToolsView from './views/ToolsView';
 import type { GatewayGranularity } from '@api1/gateway-usage';
 
 interface GatewayUsageProps {
@@ -67,7 +69,7 @@ const DATE_RANGE_SHORTCUTS = ['Last 24 Hours', 'Current Week', 'Current Month', 
 // Every sub-tab, and the source of truth for TabId — a new tab added here is
 // automatically deep-linkable, and one added only to `tabOptions` below fails to
 // type-check rather than silently resolving to the default.
-const TAB_IDS = ['connect', 'overview', 'models', 'users', 'requests'] as const;
+const TAB_IDS = ['connect', 'overview', 'models', 'users', 'requests', 'tools'] as const;
 
 type TabId = (typeof TAB_IDS)[number];
 
@@ -105,6 +107,8 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   // Bumped whenever the date window is set from somewhere other than the picker
   // itself (i.e. the Overview drill-in), to re-key it — see the picker below.
   const [dateResetNonce, setDateResetNonce] = React.useState(0);
+  // Tools → Requests drill-in: when set, the Requests tab is scoped to this tool.
+  const [selectedTool, setSelectedTool] = React.useState<string | null>(null);
 
   // Tenant scoping is server-side: the RPC gateway injects the x-tenant-id header
   // from the session, so the UI sends no tenant in the request.
@@ -187,6 +191,13 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   }, []);
   const onClearUser = React.useCallback(() => setSelectedUser(null), []);
 
+  // Drill-in from the Tools tab: scope Requests to this tool and jump to it.
+  const onSelectTool = React.useCallback((tool: string) => {
+    setSelectedTool(tool);
+    setTab('requests');
+  }, []);
+  const onClearTool = React.useCallback(() => setSelectedTool(null), []);
+
   // Pass MUI icons as component references (not JSX elements) so CustomTabs
   // renders them with its built-in `.tab-icon` styling (idle grey, selected
   // colour change) — matching every other CustomTabs usage.
@@ -198,6 +209,7 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
     { value: 'models', text: 'Models', icon: AutoAwesomeOutlinedIcon, iconSize: 16 },
     { value: 'users', text: 'Users', icon: PeopleAltOutlinedIcon, iconSize: 16 },
     { value: 'requests', text: 'Requests', icon: ReceiptLongOutlinedIcon, iconSize: 16 },
+    { value: 'tools', text: 'Tools', icon: HandymanOutlinedIcon, iconSize: 16 },
   ];
 
   return (
@@ -246,7 +258,10 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
       {tab === 'overview' && <OverviewView metrics={metrics} filters={filters} loading={loading} error={error} onSelectDay={onSelectDay} />}
       {tab === 'models' && <ModelsView metrics={metrics} loading={loading} error={error} />}
       {tab === 'users' && <UsersView metrics={metrics} loading={loading} error={error} onSelectUser={onSelectUser} />}
-      {tab === 'requests' && <RequestsView filters={filters} userFilter={selectedUser} onClearUser={onClearUser} />}
+      {tab === 'requests' && (
+        <RequestsView filters={filters} userFilter={selectedUser} onClearUser={onClearUser} toolFilter={selectedTool} onClearTool={onClearTool} />
+      )}
+      {tab === 'tools' && <ToolsView metrics={metrics} loading={loading} error={error} onSelectTool={onSelectTool} />}
     </Box>
   );
 }

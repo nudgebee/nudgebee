@@ -63,10 +63,23 @@ type TimeSeries struct {
 	ByDimension map[string][]TimeSeriesRow `json:"by_dimension"`
 }
 
+// ToolRow is one row of the tool breakdown. Phase 1 reports tools the caller
+// OFFERED (from the request's tool definitions, captured in attributes.actual.
+// tool_names) — how often each was made available and the request latency.
+// Per-tool cost/tokens are intentionally omitted: a request can offer several
+// tools, so attributing its cost/tokens to one would double-count. Which tools
+// were actually CALLED (+ failures) is a later phase.
+type ToolRow struct {
+	Tool              string  `json:"tool"`
+	Requests          int64   `json:"requests"` // requests that offered this tool
+	AvgLatencySeconds float64 `json:"avg_latency_seconds"`
+}
+
 // Metrics is the full aggregation result.
 type Metrics struct {
 	Totals     Totals                `json:"totals"`
 	Breakdowns map[string][]GroupRow `json:"breakdowns"` // "provider", "model", "user"
+	Tools      []ToolRow             `json:"tools"`
 	TimeSeries *TimeSeries           `json:"time_series,omitempty"`
 }
 
@@ -191,6 +204,12 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, pricer *metering
 	}
 	m.Breakdowns["user"] = users
 
+	tools, err := byTool(db, req)
+	if err != nil {
+		return nil, err
+	}
+	m.Tools = tools
+
 	ts, err := timeSeries(db, pricer, req)
 	if err != nil {
 		return nil, err
@@ -260,6 +279,43 @@ func byUser(db *common.DatabaseManager, pricer *metering.Pricer, req Request) ([
 	return out, nil
 }
 
+type toolScan struct {
+	Tool       string `db:"tool"`
+	Requests   int64  `db:"requests"`
+	LatencySum int64  `db:"latency_ms_sum"`
+}
+
+// byTool breaks usage down by the tools a request OFFERED (attributes.actual.
+// tool_names), unnesting the array so each offered tool counts once per request.
+// The `attributes LIKE '%tool_names%'` prefilter narrows the jsonb cast to rows
+// that actually carry the array (attributes is JSON text; empty/absent rows are
+// skipped). Phase 1 = offered tools + latency only.
+func byTool(db *common.DatabaseManager, req Request) ([]ToolRow, error) {
+	const q = `
+		SELECT tool, count(*) AS requests, COALESCE(sum(latency_ms),0) AS latency_ms_sum
+		FROM (
+			SELECT jsonb_array_elements_text(a #> '{actual,tool_names}') AS tool, latency_ms
+			FROM (
+				SELECT NULLIF(attributes,'')::jsonb AS a, latency_ms
+				FROM llm_gateway_usage
+				WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3
+				  AND attributes LIKE '%tool_names%'
+			) s
+			WHERE a #> '{actual,tool_names}' IS NOT NULL
+		) t
+		GROUP BY tool
+		ORDER BY requests DESC`
+	var rows []toolScan
+	if err := db.QueryAndScan(&rows, q, req.TenantID, req.StartDate, req.EndDate); err != nil {
+		return nil, fmt.Errorf("usage: by-tool aggregation: %w", err)
+	}
+	out := make([]ToolRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ToolRow{Tool: r.Tool, Requests: r.Requests, AvgLatencySeconds: avgLatencySeconds(r.LatencySum, r.Requests)})
+	}
+	return out, nil
+}
+
 // ListRequest is the paginated recent-request query for the Requests tab. UserID,
 // when set, scopes to one user (drill-down from the Users tab).
 type ListRequest struct {
@@ -267,6 +323,7 @@ type ListRequest struct {
 	StartDate time.Time
 	EndDate   time.Time
 	UserID    string
+	Tool      string // filter to requests that offered this tool (drill-in from Tools)
 	Limit     int
 	Offset    int
 }
@@ -332,8 +389,15 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, pricer *meter
 	where := "g.tenant_id = $1 AND g.created_at >= $2 AND g.created_at < $3"
 	args := []any{req.TenantID, req.StartDate, req.EndDate}
 	if req.UserID != "" {
-		where += " AND g.user_id = $4"
+		where += fmt.Sprintf(" AND g.user_id = $%d", len(args)+1)
 		args = append(args, req.UserID)
+	}
+	if req.Tool != "" {
+		// Requests that offered this tool (attributes.actual.tool_names contains it).
+		// jsonb_exists is the function form of `?` — the `?` operator would clash with
+		// the driver's placeholder handling. The LIKE prefilter narrows the jsonb cast.
+		where += fmt.Sprintf(" AND g.attributes LIKE '%%tool_names%%' AND jsonb_exists(NULLIF(g.attributes,'')::jsonb #> '{actual,tool_names}', $%d)", len(args)+1)
+		args = append(args, req.Tool)
 	}
 
 	var total int64

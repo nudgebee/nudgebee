@@ -93,6 +93,15 @@ func TestExtractRequestAttributes_OpenAIToolShape(t *testing.T) {
 	assert.Equal(t, []string{"lookup"}, a["tool_names"])
 }
 
+func TestExtractRequestAttributes_GeminiToolShape(t *testing.T) {
+	withCapture(t, true)
+	// Gemini declares many functions under a single tools[].functionDeclarations.
+	body := []byte(`{"tools":[{"functionDeclarations":[{"name":"get_weather"},{"name":"search"}]}]}`)
+	a := extractRequestAttributes(schemas.Gemini, body)
+	assert.Equal(t, []string{"get_weather", "search"}, a["tool_names"])
+	assert.Equal(t, 2, a["tool_count"])
+}
+
 func TestExtractRequestAttributes_DisabledReturnsNil(t *testing.T) {
 	withCapture(t, false)
 	assert.Nil(t, extractRequestAttributes(schemas.Anthropic, []byte(`{"model":"x","max_tokens":8}`)))

@@ -27,6 +27,7 @@ type apiListRequest struct {
 	StartDate string `json:"start_date"`
 	EndDate   string `json:"end_date"`
 	UserID    string `json:"user_id"` // optional drill-down from the Users tab
+	Tool      string `json:"tool"`    // optional drill-down from the Tools tab
 	Limit     int    `json:"limit"`
 	Offset    int    `json:"offset"`
 }
@@ -88,7 +89,7 @@ func RegisterRoutes(r *gin.Engine, pricer *metering.Pricer, token string) {
 		}
 		res, err := ListRequests(c.Request.Context(), db, pricer, ListRequest{
 			TenantID: tenantID, StartDate: start, EndDate: end,
-			UserID: req.UserID, Limit: req.Limit, Offset: req.Offset,
+			UserID: req.UserID, Tool: req.Tool, Limit: req.Limit, Offset: req.Offset,
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "request list failed"})

@@ -17,7 +17,7 @@ export interface GatewayRequestsData {
 
 export function useGatewayRequests(
   filters: { startDate: string; endDate: string },
-  opts: { userId?: string; limit: number; offset: number }
+  opts: { userId?: string; tool?: string; limit: number; offset: number }
 ): GatewayRequestsData {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -28,6 +28,7 @@ export function useGatewayRequests(
     startDate: filters.startDate,
     endDate: filters.endDate,
     userId: opts.userId ?? '',
+    tool: opts.tool ?? '',
     limit: opts.limit,
     offset: opts.offset,
   });
@@ -45,6 +46,7 @@ export function useGatewayRequests(
             startDate: `${filters.startDate}T00:00:00Z`,
             endDate: `${filters.endDate}T23:59:59.999Z`,
             userId: opts.userId,
+            tool: opts.tool,
             limit: opts.limit,
             offset: opts.offset,
           },

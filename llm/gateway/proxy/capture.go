@@ -50,6 +50,9 @@ func extractRequestAttributes(_ schemas.ModelProvider, body []byte) map[string]a
 			Function struct { // OpenAI
 				Name string `json:"name"`
 			} `json:"function"`
+			FunctionDeclarations []struct { // Gemini
+				Name string `json:"name"`
+			} `json:"functionDeclarations"`
 		} `json:"tools"`
 		ToolChoice json.RawMessage `json:"tool_choice"`
 	}
@@ -89,6 +92,9 @@ func toolNames(tools []struct {
 	Function struct {
 		Name string `json:"name"`
 	} `json:"function"`
+	FunctionDeclarations []struct {
+		Name string `json:"name"`
+	} `json:"functionDeclarations"`
 }) []string {
 	names := make([]string, 0, len(tools))
 	for _, t := range tools {
@@ -97,6 +103,12 @@ func toolNames(tools []struct {
 			names = append(names, t.Name) // Anthropic
 		case t.Function.Name != "":
 			names = append(names, t.Function.Name) // OpenAI
+		case len(t.FunctionDeclarations) > 0: // Gemini: one entry declares many functions
+			for _, fd := range t.FunctionDeclarations {
+				if fd.Name != "" {
+					names = append(names, fd.Name)
+				}
+			}
 		}
 	}
 	return names

@@ -68,9 +68,19 @@ export interface GatewayBreakdowns {
   user: GatewayGroupRow[];
 }
 
+/** One row of the tool breakdown — a tool the caller OFFERED (from request tool
+ * definitions). `requests` = how many requests made it available. Per-tool
+ * cost/tokens are omitted (a request can offer several tools → double-count). */
+export interface GatewayToolRow {
+  tool: string;
+  requests: number;
+  avg_latency_seconds: number;
+}
+
 export interface GatewayUsageMetrics {
   totals: GatewayTotals;
   breakdowns: GatewayBreakdowns;
+  tools: GatewayToolRow[];
   time_series: GatewayTimeSeries;
 }
 
@@ -118,6 +128,7 @@ export interface ListGatewayRequestsRequest {
   startDate: string; // RFC3339 UTC
   endDate: string; // RFC3339 UTC
   userId?: string; // optional drill-down from the Users tab
+  tool?: string; // optional drill-down from the Tools tab
   limit?: number;
   offset?: number;
 }
@@ -155,10 +166,10 @@ export async function aggregateGatewayUsage(req: AggregateGatewayUsageRequest, s
 /** List recent requests (paginated, newest first) for the Requests tab. */
 export async function listGatewayRequests(req: ListGatewayRequestsRequest, signal?: AbortSignal): Promise<GatewayRequestList | null> {
   const query = `mutation ListGatewayRequests(
-    $startDate: String!, $endDate: String!, $userId: String, $limit: Int, $offset: Int
+    $startDate: String!, $endDate: String!, $userId: String, $tool: String, $limit: Int, $offset: Int
   ) {
     llm_gateway_list_requests(request: {
-      start_date: $startDate, end_date: $endDate, user_id: $userId, limit: $limit, offset: $offset
+      start_date: $startDate, end_date: $endDate, user_id: $userId, tool: $tool, limit: $limit, offset: $offset
     }) {
       data
     }
@@ -170,6 +181,7 @@ export async function listGatewayRequests(req: ListGatewayRequestsRequest, signa
       startDate: req.startDate,
       endDate: req.endDate,
       userId: req.userId ?? '',
+      tool: req.tool ?? '',
       limit: req.limit ?? 50,
       offset: req.offset ?? 0,
     },
