@@ -11,6 +11,7 @@ import apiNotifications from '@api1/notification';
 import apiDashboard from '@api1/home';
 import apiKubernetes from '@api1/kubernetes';
 import SafeIcon from '@shared/icons/SafeIcon';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { DeleteIconRed as deleteIcon, writeIconLight } from '@assets';
 import { hasWriteAccess } from '@lib/auth';
 import DeleteNotificationRuleModal from './DeleteNotificationRuleModal';
@@ -20,6 +21,8 @@ import { ds } from 'src/utils/colors';
 import { safeJSONParse, snakeToTitleCase } from 'src/utils/common';
 import { PlatformChannelBadge } from '@shared/icons/IconTextBadge';
 import { Label } from '@ui/Label';
+
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 const Notifications = () => {
   const [rowsPerPage, setRowsPerPage] = useState(apiUser.getUserPreferencesTablePageSize());
@@ -57,6 +60,7 @@ const Notifications = () => {
           id: item.id,
           label: item.account_name,
           value: item.account_name,
+          group: item.cloud_provider || 'Other',
         }));
         const map = new Map<string, string>();
         response.forEach((item: any) => {
@@ -325,6 +329,8 @@ const Notifications = () => {
           <FilterDropdown
             id='notification-filter-cluster'
             label='Cluster'
+            grouped
+            groupIcon={renderAccountGroupIcon}
             options={clusterOption}
             value={selectedCluster ? clusterOption.find((o) => o.value === selectedCluster) ?? null : null}
             onSelect={(_e: any, item: any) => {

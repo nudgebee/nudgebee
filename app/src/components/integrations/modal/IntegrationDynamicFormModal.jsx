@@ -1944,6 +1944,8 @@ const IntegrationDynamicFormModal = ({
                       </Typography>
                       <FilterDropdown
                         label='Account'
+                        grouped
+                        groupIcon={renderAccountGroupIcon}
                         options={accountOptions}
                         value={rule.accountId}
                         onSelect={(_event, value) => handleRuleAccountChange(ruleIdx, value?.value ?? value)}

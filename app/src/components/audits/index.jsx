@@ -3,6 +3,7 @@ import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import DownloadButton from '@shared/buttons/DownloadButton';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import CustomTable2, { ExpandedRowComponent } from '@shared/tables/CustomTable2';
 import apiAudits from '@api1/audits';
 import Datetime from '@shared/format/Datetime';
@@ -118,6 +119,8 @@ const DiffTab = (option, query, _row) => {
   );
 };
 
+const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
 export const AuditsTable = () => {
   const auditsTableId = 'audits-table';
 
@@ -147,7 +150,7 @@ export const AuditsTable = () => {
       .then((res) => {
         let accounts =
           res?.data?.cloud_accounts?.rows?.map((item) => {
-            return { value: item.id, label: item.account_name };
+            return { value: item.id, label: item.account_name, group: item.cloud_provider || 'Other' };
           }) || [];
         setAccountFilter(accounts);
 
@@ -652,6 +655,8 @@ export const AuditsTable = () => {
         <FilterDropdown
           id='audit-filter-cluster'
           label='Cluster'
+          grouped
+          groupIcon={renderAccountGroupIcon}
           options={accountFilter}
           value={findOption(accountFilter, selectedAccount)}
           onSelect={(_e, item) => {

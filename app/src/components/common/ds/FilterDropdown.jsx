@@ -2,7 +2,9 @@
  * FilterDropdown
  * Spec:        app/design-system/primitives/forms/filter-dropdown.html
  * Variants:    multiple   = boolean        (single vs multi-select chips with limitTag)
- *              grouped    = boolean        (renders option groups with headers)
+ *              grouped    = boolean        (renders option groups with headers;
+ *                                           auto-collapses to a flat list when
+ *                                           the options span only one group)
  *              freeSolo   = boolean        (allow values not in options list)
  *
  * Option icons: an option's `icon` (svg asset src or JSX) renders as a 16px
@@ -878,6 +880,17 @@ function FilterDropdownButton({
     return ranked.map((r) => r.opt);
   }, [options, search]);
 
+  // Only render group headers when the full options list actually spans more
+  // than one group. With a single group (e.g. a tenant that has only K8s
+  // accounts) headers add noise, so we fall back to the flat list. Computed
+  // over `options` (not `filteredOptions`) so a search that narrows to one
+  // group doesn't make the headers flicker mid-typing.
+  const effectiveGrouped = useMemo(() => {
+    if (!grouped) return false;
+    const distinctGroups = new Set(options.map((opt) => snakeToTitleCase(typeof opt === 'object' && opt.group ? opt.group : 'Other')));
+    return distinctGroups.size > 1;
+  }, [grouped, options]);
+
   // Check if an option is selected
   const isSelected = useCallback(
     (opt) => {
@@ -1247,7 +1260,7 @@ function FilterDropdownButton({
         )}
 
         {/* Options */}
-        {grouped ? (
+        {effectiveGrouped ? (
           <GroupedOptionsList
             isOptionsLoading={isOptionsLoading}
             filteredOptions={filteredOptions}

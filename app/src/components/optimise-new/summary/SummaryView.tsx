@@ -133,6 +133,8 @@ const LoadingSkeleton = () => (
 
 // ─── Main component ────────────────────────────────────────────────────────
 
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
 const SummaryView = () => {
   const { nubiIconUrl, assistantName } = useTenantBranding();
 
@@ -249,7 +251,7 @@ const SummaryView = () => {
   const accountOptions = useMemo(
     () =>
       Object.entries(accounts)
-        .map(([id, a]) => ({ value: id, label: a.account_name }))
+        .map(([id, a]) => ({ value: id, label: a.account_name, group: a.cloud_provider || 'Other' }))
         .sort((a, b) => a.label.localeCompare(b.label)),
     [accounts]
   );
@@ -375,6 +377,8 @@ const SummaryView = () => {
               id='account-filter-select'
               label='Account'
               placeholder='All accounts'
+              grouped
+              groupIcon={renderAccountGroupIcon}
               options={accountOptions}
               value={accountOptions.find((opt) => opt.value === accountFilter) ?? null}
               onSelect={(_: unknown, opt: { value: string } | null) => setAccountFilter(opt?.value || null)}
