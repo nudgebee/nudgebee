@@ -82,21 +82,31 @@ type AgentDetails struct {
 }
 
 type AgentDetailsFeatures struct {
-	AlertManagerConnection *bool          `json:"alertManagerConnection" mapstructure:"alertManagerConnection"`
-	AlertmanagerUrl        *string        `json:"alertmanagerUrl" mapstructure:"alertmanagerUrl"`
-	GrafanaEnabled         *bool          `json:"grafanaEnabled" mapstructure:"grafanaEnabled"`
-	InstallationNamespace  *string        `json:"installationNamespace" mapstructure:"installationNamespace"`
-	AutoscalerEnabled      *bool          `json:"autoScalerEnabled" mapstructure:"autoScalerEnabled"`
-	AutoscalerNamespace    *string        `json:"autoScalerNamespace" mapstructure:"autoScalerNamespace"`
-	AutoscalerVersion      *string        `json:"autoScalerVersion" mapstructure:"autoScalerVersion"`
-	AutoscalerType         *string        `json:"autoScalerType" mapstructure:"autoScalerType"`
-	LogProviderUrl         *string        `json:"logProviderUrl" mapstructure:"logProviderUrl"`
-	LogProviderConfig      map[string]any `json:"logProviderConfig" mapstructure:"logProviderConfig"`
-	LogsConnection         *bool          `json:"logsConnection" mapstructure:"logsConnection"`
-	LogsConnectionProvider *string        `json:"logsConnectionProvider" mapstructure:"logsConnectionProvider"`
-	NodeAgentConnection    *bool          `json:"nodeAgentConnection" mapstructure:"nodeAgentConnection"`
-	NodeAgentCount         *int           `json:"nodeAgentCount" mapstructure:"nodeAgentCount"`
-	OpencostConnection     *bool          `json:"opencostConnection" mapstructure:"opencostConnection"`
+	AlertManagerConnection *bool   `json:"alertManagerConnection" mapstructure:"alertManagerConnection"`
+	AlertmanagerUrl        *string `json:"alertmanagerUrl" mapstructure:"alertmanagerUrl"`
+	// Per-feature failure reasons emitted by the agent's health checks alongside
+	// the boolean *Connection flags. Populated only when the corresponding health
+	// check failed (e.g. "signoz: 401 token is expired"); nil/empty when healthy.
+	// Pass-through JSONB — surfaced next to the "Disconnected" status in the UI.
+	PrometheusConnectionError   *string        `json:"prometheusConnectionError" mapstructure:"prometheusConnectionError"`
+	AlertManagerConnectionError *string        `json:"alertManagerConnectionError" mapstructure:"alertManagerConnectionError"`
+	LogsConnectionError         *string        `json:"logsConnectionError" mapstructure:"logsConnectionError"`
+	TracesConnectionError       *string        `json:"tracesConnectionError" mapstructure:"tracesConnectionError"`
+	NodeAgentConnectionError    *string        `json:"nodeAgentConnectionError" mapstructure:"nodeAgentConnectionError"`
+	OpencostConnectionError     *string        `json:"opencostConnectionError" mapstructure:"opencostConnectionError"`
+	GrafanaEnabled              *bool          `json:"grafanaEnabled" mapstructure:"grafanaEnabled"`
+	InstallationNamespace       *string        `json:"installationNamespace" mapstructure:"installationNamespace"`
+	AutoscalerEnabled           *bool          `json:"autoScalerEnabled" mapstructure:"autoScalerEnabled"`
+	AutoscalerNamespace         *string        `json:"autoScalerNamespace" mapstructure:"autoScalerNamespace"`
+	AutoscalerVersion           *string        `json:"autoScalerVersion" mapstructure:"autoScalerVersion"`
+	AutoscalerType              *string        `json:"autoScalerType" mapstructure:"autoScalerType"`
+	LogProviderUrl              *string        `json:"logProviderUrl" mapstructure:"logProviderUrl"`
+	LogProviderConfig           map[string]any `json:"logProviderConfig" mapstructure:"logProviderConfig"`
+	LogsConnection              *bool          `json:"logsConnection" mapstructure:"logsConnection"`
+	LogsConnectionProvider      *string        `json:"logsConnectionProvider" mapstructure:"logsConnectionProvider"`
+	NodeAgentConnection         *bool          `json:"nodeAgentConnection" mapstructure:"nodeAgentConnection"`
+	NodeAgentCount              *int           `json:"nodeAgentCount" mapstructure:"nodeAgentCount"`
+	OpencostConnection          *bool          `json:"opencostConnection" mapstructure:"opencostConnection"`
 	// OpencostServerSide is a server-managed marker stamped by the spend sync
 	// (spend.setOpenCostServerSide). It is true when OpenCost is collected
 	// server-side for this cluster (the migrated default, agent OpenCost off);
