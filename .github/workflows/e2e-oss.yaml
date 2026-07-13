@@ -1,0 +1,133 @@
+name: E2E Tests (Open Source)
+
+on:
+  # Run when the e2e tests or the login/config plumbing they depend on change
+  push:
+    branches:
+      - main
+    paths:
+      - "app-e2e-tests/tests/**"
+      - "app-e2e-tests/pages/**"
+      - "app-e2e-tests/playwright.config.ts"
+      - "app-e2e-tests/dt.js"
+      - ".github/workflows/e2e-oss.yaml"
+
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "app-e2e-tests/tests/**"
+      - "app-e2e-tests/pages/**"
+      - "app-e2e-tests/playwright.config.ts"
+      - "app-e2e-tests/dt.js"
+      - ".github/workflows/e2e-oss.yaml"
+
+  # Weekday run at 9:00 AM IST (03:30 UTC), Monday–Friday
+  schedule:
+    - cron: "30 3 * * 1-5" # 09:00 IST, Mon–Fri
+
+  workflow_dispatch:
+    inputs:
+      test_file:
+        description: "Specific test file(s) to run — comma-separated"
+        required: false
+        default: ""
+        type: string
+      run_all:
+        description: "Run complete test suite"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  e2e:
+    name: E2E PW Automation Tests (OSS)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    permissions:
+      contents: read
+
+    env:
+      E2E_ENVIRONMENT: oss
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ── Install Playwright and browsers ──
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: app-e2e-tests/package-lock.json
+
+      - name: Install E2E Dependencies
+        working-directory: ./app-e2e-tests
+        run: npm ci
+
+      - name: Install Playwright Browsers
+        working-directory: ./app-e2e-tests
+        run: npx playwright install --with-deps chromium
+
+      - name: Write OSS env file
+        working-directory: ./app-e2e-tests
+        env:
+          E2E_OSS_ENV: ${{ secrets.E2E_OSS_ENV }}
+        run: printf '%s\n' "$E2E_OSS_ENV" > .env.oss
+
+      # ── Run Playwright tests ──
+      - name: Run Playwright Tests
+        id: tests
+        working-directory: ./app-e2e-tests
+        env:
+          CI: "true"
+          INPUT_TEST_FILE: ${{ inputs.test_file }}
+          INPUT_RUN_ALL: ${{ inputs.run_all }}
+        run: |
+          rm -rf playwright-report
+          mkdir -p playwright-report
+
+          set +e
+
+          PW_CMD="node node_modules/.bin/playwright test --project=chromium"
+
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            if [ "$INPUT_RUN_ALL" == "true" ]; then
+              echo "Running complete test suite"
+              $PW_CMD
+            elif [ -n "$INPUT_TEST_FILE" ]; then
+              echo "Running specific test file(s): $INPUT_TEST_FILE"
+              FILES=$(echo "$INPUT_TEST_FILE" | tr ',' ' ')
+              $PW_CMD $FILES
+            else
+              echo "Running smoke tests (login + basic navigation)"
+              $PW_CMD tests/loginPage/
+            fi
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "Daily run — executing login + core tests"
+            $PW_CMD tests/loginPage/
+          else
+            echo "PR/push — running smoke tests"
+            $PW_CMD tests/loginPage/
+          fi
+
+          PW_EXIT=$?
+          set -e
+
+          if [ ! -f "playwright-report/results.json" ]; then
+            echo "::error::Playwright exited (code: $PW_EXIT) without generating a test report."
+            exit 1
+          fi
+
+          exit $PW_EXIT
+
+      # ── Upload test report ──
+      - name: Upload Playwright Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-oss
+          path: app-e2e-tests/playwright-report/
+          retention-days: 7

@@ -15,7 +15,10 @@
     "test:dev:headed": "cross-env E2E_ENVIRONMENT=dev npx playwright test --project=chromium --headed",
     "test:test": "cross-env E2E_ENVIRONMENT=test npx playwright test --project=chromium",
     "test:test:ui": "cross-env E2E_ENVIRONMENT=test npx playwright test --project=chromium --ui",
-    "test:test:headed": "cross-env E2E_ENVIRONMENT=test npx playwright test --project=chromium --headed"
+    "test:test:headed": "cross-env E2E_ENVIRONMENT=test npx playwright test --project=chromium --headed",
+    "test:oss": "cross-env E2E_ENVIRONMENT=oss npx playwright test --project=chromium",
+    "test:oss:ui": "cross-env E2E_ENVIRONMENT=oss npx playwright test --project=chromium --ui",
+    "test:oss:headed": "cross-env E2E_ENVIRONMENT=oss npx playwright test --project=chromium --headed"
   },
   "keywords": [],
   "author": "",
