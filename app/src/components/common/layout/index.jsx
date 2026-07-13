@@ -28,6 +28,7 @@ import Header1 from '@shared/header/Header1';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import SafeIcon from '@shared/icons/SafeIcon';
 import FirstLoginTour from '@components/onboarding/FirstLoginTour';
+import SectionFirstVisitTour from '@components/onboarding/SectionFirstVisitTour';
 import Tooltip from '@ui/Tooltip';
 import TenantSettings from '@shared/settings/TenantSettings';
 import ApiTokens from '@shared/settings/ApiTokens';
@@ -375,6 +376,9 @@ const PageLayout = ({ children }) => {
 
                   {/* Auto-launches the first-login sidebar walkthrough once; renders nothing. */}
                   <FirstLoginTour />
+
+                  {/* Offers a section's guided tour on first visit (Troubleshoot); renders nothing. */}
+                  <SectionFirstVisitTour />
 
                   <Box sx={styles.userMenuContainer}>
                     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>

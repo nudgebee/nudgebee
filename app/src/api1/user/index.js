@@ -10,6 +10,12 @@ export const PREFERENCE_TABLE_PAGE_SIZE = 'table_page_size';
 export const PREFERENCE_K8S_AGENT_SNACKBAR = 'k8s_agent_snackbar';
 // Set once the first-login app-overview tour has been shown (per browser).
 export const PREFERENCE_APP_TOUR_SEEN = 'app_tour_seen';
+// Set once the corresponding first-visit Troubleshoot tour has been shown, one
+// flag per top-level view (All Events overview / Investigations / Knowledge
+// Graph). Per browser, like the app-overview flag above.
+export const PREFERENCE_TROUBLESHOOT_TOUR_SEEN = 'troubleshoot_tour_seen';
+export const PREFERENCE_TROUBLESHOOT_INVESTIGATIONS_TOUR_SEEN = 'troubleshoot_investigations_tour_seen';
+export const PREFERENCE_TROUBLESHOOT_KG_TOUR_SEEN = 'troubleshoot_kg_tour_seen';
 // ISO timestamp high-water-mark for the Product Updates drawer — updates newer
 // than this are "unread". Replaces the standalone `nb.productUpdates.lastSeenAt`
 // key so it lives in the consolidated `nudgebee.userPreferences` entry.
@@ -20,6 +26,9 @@ const availablePreferences = [
   PREFERENCE_TABLE_PAGE_SIZE,
   PREFERENCE_K8S_AGENT_SNACKBAR,
   PREFERENCE_APP_TOUR_SEEN,
+  PREFERENCE_TROUBLESHOOT_TOUR_SEEN,
+  PREFERENCE_TROUBLESHOOT_INVESTIGATIONS_TOUR_SEEN,
+  PREFERENCE_TROUBLESHOOT_KG_TOUR_SEEN,
   PREFERENCE_PRODUCT_UPDATES_LAST_SEEN,
 ];
 

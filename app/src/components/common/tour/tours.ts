@@ -477,6 +477,83 @@ const troubleshootTour: TourDef = {
 };
 
 /**
+ * "Explore Investigations" orientation. Investigations is the second Troubleshoot
+ * view (SearchBlueIcon top tab) — the auto & manual root-cause analyses. Like
+ * troubleshoot-overview it's read-only: it walks the two sub-tabs and their
+ * listings. Anchors:
+ *   [id="anchor-tab-Investigations"] → the Investigations top tab
+ *   #tab-auto-investigated / #tab-manual-investigated → the two sub-tabs
+ *                                    (Tabs applies each tabOption's `id`)
+ *   #autoInvestigatedTable / #manualInvestigatedTable → the two listings
+ *                                    (CustomTable id; optional — empty on a fresh
+ *                                    tenant, so the step skips instead of ending
+ *                                    the tour)
+ * Step 1 opens the Investigations tab so the tour is robust when launched from
+ * another view; steps 2/4 switch sub-tabs on the always-present tab buttons so
+ * the (optional) table steps land on the right listing.
+ */
+const investigationsTour: TourDef = {
+  id: 'investigations',
+  title: 'Explore Investigations',
+  module: 'Troubleshoot',
+  description: 'Tour the automatic and manual root-cause analyses Nudgebee keeps for your incidents.',
+  route: '/troubleshoot',
+  steps: [
+    {
+      element: '[id="anchor-tab-Investigations"]',
+      title: 'Root-cause investigations',
+      description:
+        'Every root-cause analysis lands here — the ones Nudgebee runs automatically when an incident fires, and the ones you start yourself. Let’s look at both.',
+      side: 'bottom',
+      align: 'start',
+      // Make sure we're on the Investigations view before pointing at its sub-tabs.
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('[id="anchor-tab-Investigations"]')?.click();
+      },
+    },
+    {
+      element: '#tab-auto-investigated',
+      title: 'Auto Investigated',
+      description:
+        'When a significant incident fires, Nudgebee investigates it on its own — correlating pods, logs, metrics, and the service map into a root cause. We’ll open that list.',
+      side: 'bottom',
+      align: 'start',
+      // Ensure the Auto listing is the one shown for the next step.
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#tab-auto-investigated')?.click();
+      },
+    },
+    {
+      element: '#autoInvestigatedTable',
+      title: 'Automatic root-cause analyses',
+      description: 'Each row is an incident Nudgebee analysed for you. Open one for the full root cause, the evidence behind it, and the timeline.',
+      side: 'top',
+      align: 'center',
+      optional: true,
+    },
+    {
+      element: '#tab-manual-investigated',
+      title: 'Manual Investigated',
+      description: 'These are the deep-dives you kick off yourself from Ask Nudgebee. We’ll open that list.',
+      side: 'bottom',
+      align: 'start',
+      // Switch to the Manual listing for the final step.
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#tab-manual-investigated')?.click();
+      },
+    },
+    {
+      element: '#manualInvestigatedTable',
+      title: 'Your manual investigations',
+      description: 'Every analysis you started in Ask Nudgebee is saved here — reopen any session to pick up exactly where you left off.',
+      side: 'top',
+      align: 'center',
+      optional: true,
+    },
+  ],
+};
+
+/**
  * "Explore the Knowledge Graph" orientation. Knowledge Graph is the third
  * Troubleshoot view (feature-flagged) — a live ReactFlow service map, not a
  * table — so this tour teaches how to read and drive the graph. Anchors:
@@ -1093,6 +1170,7 @@ export const TOURS: Record<string, TourDef> = {
   [connectAzureTour.id]: connectAzureTour,
   [appOverviewTour.id]: appOverviewTour,
   [troubleshootTour.id]: troubleshootTour,
+  [investigationsTour.id]: investigationsTour,
   [knowledgeGraphTour.id]: knowledgeGraphTour,
   [automationFromCodeTour.id]: automationFromCodeTour,
   [automationWithAiTour.id]: automationWithAiTour,
