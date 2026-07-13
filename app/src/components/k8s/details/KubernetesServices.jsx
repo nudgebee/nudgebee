@@ -14,6 +14,7 @@ import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
 import Text from '@shared/format/Text';
 import { ds } from '@utils/colors';
+import { safeJSONParse } from '@utils/common';
 
 const NAMESPACE_HEADERS = ['Name', 'Namespaces', 'Type', 'Cluster-Ip', 'External-Ip', 'Ports', 'Age'];
 
@@ -84,7 +85,7 @@ const KubernetesServiceTable = ({ accountId }) => {
           }
         }
         if (typeof data === 'string') {
-          data = JSON.parse(data);
+          data = safeJSONParse(data) || [];
         }
         let allowedNamespace = getAllowedNamespaces(accountId);
         if (allowedNamespace != null && allowedNamespace.length > 0) {

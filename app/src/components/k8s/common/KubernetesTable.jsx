@@ -28,6 +28,7 @@ import {
   convertStringCase,
   formatDateForPlusMinusDuration,
   toSeverityLevel,
+  safeJSONParse,
 } from 'src/utils/common';
 const KubernetesServiceMap = dynamic(() => import('@components/k8s/details/KubernetesServiceMap'));
 import { jsonrepair } from 'jsonrepair';
@@ -303,7 +304,7 @@ export const KubernetesEventLog = ({ query }) => {
     if (parsedData !== undefined) {
       let evidencesData = query.evidences;
       if (typeof evidencesData === 'string') {
-        evidencesData = JSON.parse(query.evidences);
+        evidencesData = safeJSONParse(query.evidences) || [];
       }
       gzObject = evidencesData
         .filter((item) => item.type === 'gz')
@@ -944,7 +945,7 @@ const KubernetesRelatedEventTable = ({ query, tableName }) => {
   if (evidencedata) {
     let evidencesData = query?.evidences;
     if (typeof evidencesData === 'string') {
-      evidencesData = JSON.parse(query.evidences);
+      evidencesData = safeJSONParse(query.evidences) || [];
     }
     const filterdata = evidencesData.filter((f) => f.type === 'table' && f.data.table_name.includes(tableName));
     if (filterdata && filterdata.length > 0) {
@@ -2622,7 +2623,7 @@ const KubernetesTable = ({
 
     // Process evidences if present
     if (rowData?.evidences) {
-      const evidencesData = typeof rowData.evidences === 'string' ? JSON.parse(rowData.evidences) : rowData.evidences;
+      const evidencesData = (typeof rowData.evidences === 'string' ? safeJSONParse(rowData.evidences) : rowData.evidences) || [];
 
       for (const evidence of evidencesData) {
         if (evidence?.type === 'table') {

@@ -1541,12 +1541,12 @@ const Investigate = () => {
 
   const getResolutionForCard = (cardId) => {
     for (const resolution of eventResolutions) {
-      const d = typeof resolution.data === 'string' ? JSON.parse(resolution.data) : resolution.data;
+      const d = typeof resolution.data === 'string' ? safeJSONParse(resolution.data) : resolution.data;
       const input = d?.data;
       if (input?.card_id === cardId) return resolution;
     }
     for (const resolution of eventResolutions) {
-      const d = typeof resolution.data === 'string' ? JSON.parse(resolution.data) : resolution.data;
+      const d = typeof resolution.data === 'string' ? safeJSONParse(resolution.data) : resolution.data;
       const input = d?.data;
       if (!input || input.card_id) continue;
       if (cardId === 'MemoryAllocationCard' && input.container_name) return resolution;

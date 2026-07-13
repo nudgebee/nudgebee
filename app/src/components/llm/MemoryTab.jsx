@@ -14,6 +14,7 @@ import { Button } from '@ui/Button';
 import CustomSearch from '@shared/CustomSearch';
 import { Checkbox } from '@ui/Checkbox';
 import { ds } from '@utils/colors';
+import { safeJSONParse } from '@utils/common';
 
 const formatDate = (dateString) => {
   if (!dateString) {
@@ -327,7 +328,7 @@ const MemoryTab = ({ accountId }) => {
   const [pinnedMemories, setPinnedMemories] = useState(() => {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem(`nudgebee_pinned_memories_${accountId}`);
-      return new Set(stored ? JSON.parse(stored) : []);
+      return new Set(stored ? safeJSONParse(stored) : []);
     }
     return new Set();
   });

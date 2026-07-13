@@ -19,6 +19,7 @@ import CustomTable from '@shared/tables/CustomTable2';
 import { Modal } from '@ui/Modal';
 import { Select } from '@ui/Select';
 import { Button } from '@ui/Button';
+import { safeJSONParse } from '@utils/common';
 
 const SEVERITY_TO_DS_LEVEL = {
   critical: 'critical',
@@ -301,7 +302,7 @@ const KubernetesSecurityDetails = (props) => {
     let k8sRecommendationData = data?.recommendation?.map((item) => {
       let data = [];
       if (typeof item?.recommendation === 'string') {
-        item.recommendation = JSON.parse(item.recommendation);
+        item.recommendation = safeJSONParse(item.recommendation);
       }
       data.push({
         component: (

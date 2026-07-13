@@ -5,6 +5,7 @@ import AutoPilotHeaderCard from '@components/autopilot/card/AutoPilotHeaderCard'
 import AutoOptimizeForm from '@components/autopilot/form/AutoOptimizeVerticalRightSizingForm';
 import { formatMemory } from '@lib/formatter';
 import { ds } from 'src/utils/colors';
+import { safeJSONParse } from 'src/utils/common';
 import { toast as snackbar } from '@ui/Toast';
 import { ANNOTATIONS, CI_PREFIX } from '@lib/annotationKeys';
 import recommendationApi from '@api1/recommendation';
@@ -110,7 +111,7 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
     if (initialized || !recommendation?.recommendation) return;
 
     const recommendations =
-      typeof recommendation.recommendation === 'string' ? JSON.parse(recommendation.recommendation) : recommendation.recommendation;
+      typeof recommendation.recommendation === 'string' ? safeJSONParse(recommendation.recommendation) : recommendation.recommendation;
 
     if (!recommendations || typeof recommendations !== 'object') return;
 

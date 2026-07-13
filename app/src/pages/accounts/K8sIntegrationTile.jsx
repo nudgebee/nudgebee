@@ -301,7 +301,7 @@ const K8sIntegrationTile = () => {
         if (logLabels && logLabels.length == 1) {
           const logLabelStr = logLabels[0].value;
           if (logLabelStr) {
-            const logLabelValues = JSON.parse(logLabelStr);
+            const logLabelValues = safeJSONParse(logLabelStr) || {};
             if (logLabelValues.pod) {
               setLogPodLabel(logLabelValues.pod);
             }
@@ -322,9 +322,11 @@ const K8sIntegrationTile = () => {
         }
         const abandonedResourceConfig = cloudAccountAttributes[selectedAccountId].filter((l) => l.name == 'abandoned_resource');
         if (abandonedResourceConfig && abandonedResourceConfig.length == 1) {
-          const abandonedResourceValue = JSON.parse(abandonedResourceConfig[0].value);
-          setNetworkThreshold(abandonedResourceValue.network_threshold);
-          setObservationDays(abandonedResourceValue.observation_days);
+          const abandonedResourceValue = safeJSONParse(abandonedResourceConfig[0].value);
+          if (abandonedResourceValue) {
+            setNetworkThreshold(abandonedResourceValue.network_threshold);
+            setObservationDays(abandonedResourceValue.observation_days);
+          }
         }
       }
       apiKubernetes1.listAnomalyTemplate().then((res) => {

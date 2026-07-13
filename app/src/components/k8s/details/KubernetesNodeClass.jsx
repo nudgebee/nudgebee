@@ -21,7 +21,7 @@ import PropTypes from 'prop-types';
 import { DeleteIconRed as deleteIcon, PlusIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { toast as snackbar } from '@ui/Toast';
-import { compareVersions } from 'src/utils/common';
+import { compareVersions, safeJSONParse } from 'src/utils/common';
 import CustomTable from '@shared/tables/CustomTable';
 import { ds } from '@utils/colors';
 
@@ -135,7 +135,7 @@ const KubernetesNodeClass = ({ accountId }) => {
     }
 
     if (typeof data === 'string') {
-      data = JSON.parse(data);
+      data = safeJSONParse(data) || [];
     }
 
     if (data) {

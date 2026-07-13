@@ -5,6 +5,7 @@ import { useRouter } from 'next/router';
 import homeApi from '@api1/home';
 import { v4 as uuidv4 } from 'uuid';
 import apiAskNudgebee from '@api1/ask-nudgebee';
+import { safeJSONParse } from '@utils/common';
 import QuickLink from '@assets/home/new/quick-link.icon.svg';
 import WorkflowIconBlue from '@assets/workflow/workflow-icon-blue.icon.svg';
 import RecentErrorIcon from '@assets/home/new/recent-error.icon.svg';
@@ -1805,7 +1806,7 @@ const Home = () => {
         const recommendation = res?.data?.data?.recommendation?.rows || [];
         if (recommendation.length > 0) {
           const allRecommendations = recommendation.map((r) => r.recommendation);
-          const parsedArray = allRecommendations.map(JSON.parse);
+          const parsedArray = allRecommendations.map((r) => safeJSONParse(r)).filter(Boolean);
           const expiringSoon = parsedArray?.filter((item) => {
             const expiry = new Date(item.expiry_date);
             return expiry.getTime() - new Date().getTime() <= 30 * 24 * 60 * 60 * 1000;

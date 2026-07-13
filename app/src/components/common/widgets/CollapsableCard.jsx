@@ -13,6 +13,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import Label from '@ui/Label';
 import CustomBorderCard from '@ui/CustomBorderCard';
 import { ds } from '@utils/colors';
+import { safeJSONParse } from '@utils/common';
 
 function CollapsableCard({
   id,
@@ -42,7 +43,7 @@ function CollapsableCard({
 
   const getResolutionDescription = (resolution) => {
     if (!resolution?.data) return '';
-    const d = typeof resolution.data === 'string' ? JSON.parse(resolution.data) : resolution.data;
+    const d = typeof resolution.data === 'string' ? safeJSONParse(resolution.data) : resolution.data;
     const input = d?.data;
     if (!input) return '';
 
