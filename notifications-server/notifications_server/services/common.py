@@ -139,19 +139,31 @@ class CommonService:
         return {"data": channels}
 
     def get_discord_channels(self, messaging_platform):
-        """List text channels the Discord bot has access to across all guilds."""
+        """List text channels the Discord bot has access to across all guilds. An
+        empty list carries a hint (+ invite URL) so the UI can tell "bot not invited
+        to any server" apart from "bot lacks channel permissions"."""
         from notifications_server.clients.discord_client import DiscordClient
-        from notifications_server.services.discord.token_store import decrypt_token
+        from notifications_server.services.discord.token_store import resolve_token
 
         if not messaging_platform:
             return {"data": []}
 
-        token = decrypt_token(messaging_platform.token)
+        token = resolve_token(messaging_platform)
         result = DiscordClient.channels_list(token)
         if not result.get("ok"):
             LOG.error("Failed to list Discord channels: %s", result.get("error"))
-            return {"data": []}
-        return {"data": [{"name": c["name"], "id": c["id"]} for c in result.get("channels", [])]}
+            return {"data": [], "error": result.get("error")}
+
+        channels = [{"name": c["name"], "id": c["id"]} for c in result.get("channels", [])]
+        response = {"data": channels}
+        if not channels:
+            invite_url = DiscordClient.invite_url(messaging_platform.bot_id) if messaging_platform.bot_id else None
+            if result.get("guild_count", 0) == 0:
+                response["hint"] = "bot_not_in_any_server"
+                response["invite_url"] = invite_url
+            else:
+                response["hint"] = "no_visible_channels"
+        return response
 
     def list_users(self, platform, tenant):
         try:
@@ -2327,10 +2339,10 @@ class CommonService:
 
     def _send_test_discord(self, messaging_platform, channel_id, message):
         from notifications_server.clients.discord_client import DiscordClient
-        from notifications_server.services.discord.token_store import decrypt_token
+        from notifications_server.services.discord.token_store import resolve_token
 
         try:
-            token = decrypt_token(messaging_platform.token)
+            token = resolve_token(messaging_platform)
             response = DiscordClient.chat_post(token=token, channel_id=channel_id, content=message)
             if not response.get("ok"):
                 return {"success": False, "platform": "discord", "error": response.get("error", "Unknown error")}

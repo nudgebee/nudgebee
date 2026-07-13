@@ -441,13 +441,40 @@ class DiscordSender(BaseSender):
     async def acquire_discord_access_token(self, session, discord_installation):
         # Bot tokens are static (no refresh flow); stored encrypted, decrypt at use.
         # Isolate a decrypt failure to Discord so other platforms still deliver.
-        from notifications_server.services.discord.token_store import decrypt_token
+        from notifications_server.services.discord.token_store import resolve_token
 
         try:
-            return decrypt_token(discord_installation.token)
+            return resolve_token(discord_installation)
         except Exception as e:
             LOG.error("Failed to decrypt Discord bot token for installation %s: %s", discord_installation.id, e)
             return None
+
+    @staticmethod
+    async def check_if_sent_already(session, fingerprint, tenant_id, channel_id):
+        """Message id of the original Discord post for this fingerprint+channel, or
+        None — repeat findings reply to it instead of posting fresh messages."""
+        if not fingerprint:
+            return None
+        result = await session.execute(
+            select(SentNotifications)
+            .filter_by(tenant_id=tenant_id, fingerprint=fingerprint, discord_channel_id=channel_id)
+            .order_by(SentNotifications.created_at.desc())
+            .limit(1)
+        )
+        notification = result.scalars().first()
+        return notification.discord_message_id if notification else None
+
+    @staticmethod
+    def get_new_sent_notification(tenant_id, channel_id, message_id, fingerprint, account_id=None):
+        return SentNotifications(
+            id=uuid.uuid4(),
+            created_at=utc_now(),
+            tenant_id=tenant_id,
+            fingerprint=fingerprint,
+            account_id=account_id,
+            discord_channel_id=channel_id,
+            discord_message_id=message_id,
+        )
 
 
 # ----------------------------- Grouped Message Handler -----------------------------
@@ -709,11 +736,11 @@ class MessageService:
         type_,
     ):
         if type_ == "finding":
-            new_sent_notification, platform_responses = await self.send_finding_notification(
+            new_sent_notifications, platform_responses = await self.send_finding_notification(
                 session, tenant_id, parameters, fingerprint, installed_platforms
             )
-            if new_sent_notification:
-                session.add(new_sent_notification)
+            if new_sent_notifications:
+                session.add_all(new_sent_notifications)
                 await session.commit()
         elif type_ in template_mapping:
             platform_responses = await self.send_template_notification(
@@ -821,7 +848,9 @@ class MessageService:
     async def send_finding_notification(self, session, tenant_id, parameters, fingerprint, installed_platforms):
         finding = parameters.get("finding")
 
-        new_sent_notification = None
+        # One row per platform that threads (Slack, Discord) — collecting only the
+        # last one would break dedup for the other platform.
+        new_sent_notifications = []
         platform_responses = []
 
         for ip in installed_platforms:
@@ -835,11 +864,11 @@ class MessageService:
 
             response_data, sent_notification = await handler(session, tenant_id, ip, finding, fingerprint)
             if sent_notification:
-                new_sent_notification = sent_notification
+                new_sent_notifications.append(sent_notification)
             if response_data:
                 platform_responses.append(response_data)
 
-        return new_sent_notification, platform_responses
+        return new_sent_notifications, platform_responses
 
     def _get_finding_sender(self, platform):
         return {
@@ -989,7 +1018,7 @@ class MessageService:
             None,
         )
 
-    async def _send_finding_to_discord(self, session, tenant_id, ip, finding, _):
+    async def _send_finding_to_discord(self, session, tenant_id, ip, finding, fingerprint):
         token = await self.discord_sender.acquire_discord_access_token(session, ip)
         if not token:
             return None, None
@@ -1008,16 +1037,39 @@ class MessageService:
             LOG.error("No channel provided for Discord message")
             return failed_response("discord", reason="No channel ID provided"), None
 
-        result = await asyncio.to_thread(DiscordClient.chat_post, token=token, channel_id=channel_id, **discord_payload)
+        # Repeat findings reply to the original message (Slack-thread parity)
+        # instead of posting a fresh top-level message each time.
+        thread_id = await self.discord_sender.check_if_sent_already(session, fingerprint, tenant_id, channel_id)
+        if thread_id:
+            result = await asyncio.to_thread(
+                DiscordClient.reply_in_thread,
+                token=token,
+                channel_id=channel_id,
+                thread_ts=thread_id,
+                **discord_payload,
+            )
+        else:
+            result = await asyncio.to_thread(
+                DiscordClient.chat_post, token=token, channel_id=channel_id, **discord_payload
+            )
 
         if result and result.get("ok"):
+            sent_notification = None
+            if not thread_id and fingerprint:
+                sent_notification = self.discord_sender.get_new_sent_notification(
+                    tenant_id,
+                    channel_id,
+                    result.get("ts"),
+                    fingerprint,
+                    finding.get("cloud_account_id") if finding else None,
+                )
             return (
                 success_response(
                     "discord",
                     channel_id=channel_id,
                     message_ts=result.get("ts"),
                 ),
-                None,
+                sent_notification,
             )
 
         return (

@@ -46,6 +46,10 @@ const MessagingIntegrationTile = ({
   const [openInstallModal, setOpenInstallModal] = useState(false);
   const [botToken, setBotToken] = useState('');
   const [isInstalling, setIsInstalling] = useState(false);
+  // Discord bot invite guidance: set when the bot is in no server yet (install
+  // response or channel-list hint), so the user knows to invite it.
+  const [inviteUrl, setInviteUrl] = useState(null);
+  const [channelListHint, setChannelListHint] = useState(null);
 
   // Fetch installations
   const listMessagingPlatform = () => {
@@ -85,6 +89,9 @@ const MessagingIntegrationTile = ({
         .then((res) => {
           let opts = res?.data?.data?.map((item) => ({ label: item.name, value: item.id })) || [];
           setChannelOptions(opts);
+          if (provider === 'discord') {
+            setChannelListHint(res?.data?.hint ? { hint: res.data.hint, inviteUrl: res.data.invite_url } : null);
+          }
         })
         .finally(() => setIsLoadingChannels(false));
     }
@@ -135,13 +142,27 @@ const MessagingIntegrationTile = ({
     setIsInstalling(false);
     if (result?.success) {
       snackbar.success('Discord integration installed successfully!');
-      setOpenInstallModal(false);
       setBotToken('');
       listMessagingPlatform();
       fetchChannelList();
+      if (result?.guild_count === 0 && result?.invite_url) {
+        // Token is valid but the bot isn't in any server — keep the modal open
+        // and walk the user through the invite before they hunt for channels.
+        setInviteUrl(result.invite_url);
+      } else {
+        setOpenInstallModal(false);
+      }
     } else {
       snackbar.error(result?.error || 'Failed to install Discord integration');
     }
+  };
+
+  const closeInstallModal = () => {
+    setOpenInstallModal(false);
+    setBotToken('');
+    setInviteUrl(null);
+    listMessagingPlatform();
+    fetchChannelList();
   };
 
   const handleSendTest = async () => {
@@ -195,6 +216,9 @@ const MessagingIntegrationTile = ({
   const getMenuItems = (acc) => {
     if (!hasWriteAccess()) return [];
     const items = [{ label: 'Delete', id: 'delete' }];
+    if (provider === 'discord') {
+      items.push({ label: 'Update Token', id: 'update_token' });
+    }
     if (provider === 'ms_teams') {
       const channelsArray = Array.isArray(acc?.channels?.channels) ? acc.channels.channels : [];
       const channelList = channelsArray.map((c) => c.label || c.name) || [];
@@ -213,6 +237,8 @@ const MessagingIntegrationTile = ({
   const onMenuClick = (menuItem, acc) => {
     if (menuItem.id === 'delete') {
       setDeleteConfig(true);
+    } else if (menuItem.id === 'update_token') {
+      setOpenInstallModal(true);
     } else if (menuItem.id === 'edit') {
       if (provider === 'ms_teams') {
         openUpdateModal(acc);
@@ -424,29 +450,50 @@ const MessagingIntegrationTile = ({
       <Modal
         width='sm'
         open={openInstallModal}
-        handleClose={() => setOpenInstallModal(false)}
-        title='Install Discord Integration'
+        handleClose={closeInstallModal}
+        title={inviteUrl ? 'Invite the Bot to Your Server' : 'Install Discord Integration'}
         loader={isInstalling}
         actionButtons={
           <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', p: '12px 24px' }}>
-            <DsButton id='cancel-install-modal-btn' size='md' tone='secondary' onClick={() => setOpenInstallModal(false)} disabled={isInstalling}>
-              Cancel
-            </DsButton>
-            <DsButton id='save-install-modal-btn' size='md' tone='primary' disabled={isInstalling || !botToken} onClick={handleDiscordInstall}>
-              Install
-            </DsButton>
+            {inviteUrl ? (
+              <DsButton id='done-install-modal-btn' size='md' tone='primary' onClick={closeInstallModal}>
+                Done
+              </DsButton>
+            ) : (
+              <>
+                <DsButton id='cancel-install-modal-btn' size='md' tone='secondary' onClick={closeInstallModal} disabled={isInstalling}>
+                  Cancel
+                </DsButton>
+                <DsButton id='save-install-modal-btn' size='md' tone='primary' disabled={isInstalling || !botToken} onClick={handleDiscordInstall}>
+                  Install
+                </DsButton>
+              </>
+            )}
           </Box>
         }
       >
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '20px 24px' }}>
-          <Input
-            id='bot-token'
-            label='Discord Bot Token'
-            required
-            value={botToken}
-            onChange={(val) => setBotToken(val)}
-            placeholder='Enter your Discord bot token'
-          />
+          {inviteUrl ? (
+            <>
+              <Typography sx={{ fontSize: ds.text.body, color: ds.brand[500], lineHeight: 1.5 }}>
+                The bot token is saved, but the bot is not a member of any Discord server yet — no channels will be available until it is invited.
+                Open the invite page, pick your server, and authorize the bot (it only requests View Channels and Send Messages permissions).
+              </Typography>
+              <DsButton id='open-discord-invite-btn' size='md' tone='primary' onClick={() => window.open(inviteUrl, '_blank', 'noopener')}>
+                Open Discord Invite Page
+              </DsButton>
+            </>
+          ) : (
+            <Input
+              id='bot-token'
+              label='Discord Bot Token'
+              required
+              type='password'
+              value={botToken}
+              onChange={(val) => setBotToken(val)}
+              placeholder='Enter your Discord bot token'
+            />
+          )}
         </Box>
       </Modal>
 
@@ -546,20 +593,41 @@ const MessagingIntegrationTile = ({
               />
             </>
           ) : (
-            <Select
-              id='channels'
-              label='Channels'
-              required
-              value={channelVal}
-              options={channelOptions}
-              onChange={(next) => {
-                setChannelVal(next);
-                const opt = channelOptions.find((o) => o.value === next);
-                setChannelsValues({ name: opt?.label, id: opt?.value });
-              }}
-              disabled={isLoadingChannels}
-              placeholder={isLoadingChannels ? 'Loading…' : 'Select channel'}
-            />
+            <>
+              <Select
+                id='channels'
+                label='Channels'
+                required
+                value={channelVal}
+                options={channelOptions}
+                onChange={(next) => {
+                  setChannelVal(next);
+                  const opt = channelOptions.find((o) => o.value === next);
+                  setChannelsValues({ name: opt?.label, id: opt?.value });
+                }}
+                disabled={isLoadingChannels}
+                placeholder={isLoadingChannels ? 'Loading…' : 'Select channel'}
+              />
+              {provider === 'discord' && !isLoadingChannels && channelOptions.length === 0 && channelListHint && (
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[3] }}>
+                  <Typography sx={{ fontSize: ds.text.body, color: ds.brand[500], lineHeight: 1.5 }}>
+                    {channelListHint.hint === 'bot_not_in_any_server'
+                      ? 'The bot is not a member of any Discord server yet. Invite it to a server to see its channels here.'
+                      : 'The bot is in a server but cannot see any text channels. Grant it View Channels and Send Messages permissions.'}
+                  </Typography>
+                  {channelListHint.inviteUrl && (
+                    <DsButton
+                      id='open-discord-invite-map-btn'
+                      size='sm'
+                      tone='secondary'
+                      onClick={() => window.open(channelListHint.inviteUrl, '_blank', 'noopener')}
+                    >
+                      Open Discord Invite Page
+                    </DsButton>
+                  )}
+                </Box>
+              )}
+            </>
           )}
         </Box>
       </Modal>

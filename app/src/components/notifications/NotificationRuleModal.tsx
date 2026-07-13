@@ -97,6 +97,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
   const [selectedGChatChannel, setSelectedGChatChannel] = useState<string>('');
   const [discordChannelList, setDiscordChannelList] = useState([]);
   const [selectedDiscordChannel, setSelectedDiscordChannel] = useState<string>('');
+  const [discordChannelHint, setDiscordChannelHint] = useState<{ hint: string; inviteUrl?: string } | null>(null);
   const [email, setEmail] = useState('');
   const [selectedExclusionEmails, setSelectedExclusionEmails] = useState<Option[]>([]);
   const [selectedCluster, setSelectedCluster] = useState('');
@@ -579,6 +580,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
           const channels = res?.data?.channels || res?.data?.data || [];
           const teamOptions = channels.map((item: any) => ({ label: item.name, value: item.id }));
           setDiscordChannelList(teamOptions);
+          setDiscordChannelHint(res?.data?.hint ? { hint: res.data.hint, inviteUrl: res.data.invite_url } : null);
         })
         .finally(() => {
           setLoadingChannelList((prev) => ({
@@ -1824,6 +1826,21 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
                     {errors.discord && (
                       <FormHelperText error sx={{ mt: ds.space[1] }}>
                         {errors.discord}
+                      </FormHelperText>
+                    )}
+                    {!loadingChannelList.discord && discordChannelList.length === 0 && discordChannelHint && (
+                      <FormHelperText sx={{ mt: ds.space[1] }}>
+                        {discordChannelHint.hint === 'bot_not_in_any_server'
+                          ? 'The bot is not in any Discord server yet — invite it to see channels here.'
+                          : 'The bot cannot see any text channels — grant it View Channels and Send Messages.'}
+                        {discordChannelHint.inviteUrl && (
+                          <>
+                            {' '}
+                            <a href={discordChannelHint.inviteUrl} target='_blank' rel='noopener noreferrer'>
+                              Open invite page
+                            </a>
+                          </>
+                        )}
                       </FormHelperText>
                     )}
                   </Box>

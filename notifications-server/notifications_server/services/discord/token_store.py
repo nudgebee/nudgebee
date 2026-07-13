@@ -44,3 +44,14 @@ def decrypt_token(stored_token: str) -> str:
         return decrypt(stored_token)
     LOG.warning("Discord token is not encrypted; treating as legacy plaintext (re-encrypts on next save)")
     return stored_token
+
+
+def resolve_token(installation) -> str:
+    """Usable bot token for either store: integration-backed installs carry an
+    already-decrypted token (build_installation), legacy messaging_platforms rows
+    hold an encrypt()-format blob (or pre-encryption plaintext)."""
+    from notifications_server.services.messaging_installations import ORIGIN_INTEGRATION, ORIGIN_LEGACY
+
+    if getattr(installation, "_origin", ORIGIN_LEGACY) == ORIGIN_INTEGRATION:
+        return installation.token or ""
+    return decrypt_token(installation.token)

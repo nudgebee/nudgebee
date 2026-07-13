@@ -31,11 +31,11 @@ from notifications_server.utils.datetime_utils import utc_now
 LOG = logging.getLogger(__name__)
 
 # Messaging integration `type` equals the platform string.
-MESSAGING_PLATFORMS = ("slack", "ms_teams")
+MESSAGING_PLATFORMS = ("slack", "ms_teams", "discord")
 
 # Config-value field names. The encrypted set must mirror the IsEncrypted fields
 # declared in api-server slack.go / ms_teams.go.
-TOKEN_FIELD = {"slack": "bot_token", "ms_teams": "access_token"}
+TOKEN_FIELD = {"slack": "bot_token", "ms_teams": "access_token", "discord": "bot_token"}
 REFRESH_TOKEN_FIELD = "refresh_token"
 _SECRET_FIELDS = {"bot_token", "access_token", "refresh_token"}
 
@@ -73,6 +73,8 @@ def _default_channel_shape(platform: str, cfg: Dict[str, str]) -> Optional[Any]:
     channel_id = cfg.get("default_channel_id")
     if platform == "slack":
         return [{"id": channel_id}] if channel_id else None
+    if platform == "discord":
+        return {"id": channel_id} if channel_id else None
     team_id = cfg.get("default_team_id")
     if team_id and channel_id:
         return {"team_id": team_id, "channels": [{"id": channel_id}]}

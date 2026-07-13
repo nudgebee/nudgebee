@@ -18,6 +18,40 @@ class DiscordClient:
     MAX_RETRY_SLEEP_SECONDS = 5.0
     REQUEST_TIMEOUT_SECONDS = 10
 
+    # View Channels (1024) + Send Messages (2048) — the minimal permission set the
+    # notification bot needs; baked into the server-invite URL.
+    INVITE_PERMISSIONS = 3072
+
+    # Discord JSON error codes worth translating for users (permission problems).
+    _PERMISSION_ERROR_HINTS = {
+        50001: "Missing Access — the bot cannot see this channel/server; invite it or grant View Channels",
+        50013: "Missing Permissions — grant the bot Send Messages in this channel",
+    }
+
+    @classmethod
+    def invite_url(cls, client_id: str) -> str:
+        """Server-invite (OAuth2 authorize) URL for adding the bot to a guild."""
+        return (
+            f"https://discord.com/oauth2/authorize?client_id={client_id}&scope=bot&permissions={cls.INVITE_PERMISSIONS}"
+        )
+
+    @classmethod
+    def _error_message(cls, resp) -> str:
+        """Human-readable error from a Discord error response, with permission
+        errors translated into an actionable hint."""
+        try:
+            body = resp.json()
+            code = body.get("code")
+            hint = cls._PERMISSION_ERROR_HINTS.get(code)
+            if hint:
+                return f"{hint} (Discord error {code})"
+            message = body.get("message")
+            if message:
+                return f"{message} (HTTP {resp.status_code}, Discord error {code})"
+        except Exception:
+            pass
+        return f"HTTP {resp.status_code}: {resp.text[:300]}"
+
     @classmethod
     def get_headers(cls, token: str) -> Dict[str, str]:
         if not token.startswith("Bot "):
@@ -133,7 +167,60 @@ class DiscordClient:
         channels: List[Dict[str, Any]] = []
         for guild in guilds:
             channels.extend(cls._guild_text_channels(headers, guild))
-        return {"ok": True, "channels": channels}
+        return {"ok": True, "channels": channels, "guild_count": len(guilds)}
+
+    @classmethod
+    def guild_count(cls, token: str) -> Optional[int]:
+        """Number of guilds the bot is in, or None when the lookup fails."""
+        try:
+            return len(cls._list_guilds(cls.get_headers(token)))
+        except Exception:
+            LOG.exception("Failed to count Discord guilds")
+            return None
+
+    @classmethod
+    def _post_message(cls, token: str, channel_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """POST a message payload with embed-limit clamping and bounded retry on
+        HTTP 429 (respecting Retry-After), so an oversized or rate-limited send
+        cannot permanently wedge a redis-batched flush loop."""
+        from notifications_server.message_templates.discord.embed_utils import clamp_embeds
+
+        if payload.get("embeds"):
+            payload["embeds"] = clamp_embeds(payload["embeds"])
+
+        headers = cls.get_headers(token)
+        url = f"{cls.BASE_URL}/channels/{channel_id}/messages"
+        try:
+            resp = None
+            for attempt in range(cls.MAX_RATE_LIMIT_RETRIES + 1):
+                resp = requests.post(url, headers=headers, json=payload, timeout=cls.REQUEST_TIMEOUT_SECONDS)
+                if resp.status_code != 429:
+                    break
+                retry_after = cls._retry_after_seconds(resp)
+                if attempt >= cls.MAX_RATE_LIMIT_RETRIES or retry_after is None:
+                    break
+                time.sleep(max(0.0, min(retry_after, cls.MAX_RETRY_SLEEP_SECONDS)))
+            if resp is not None and resp.status_code in (200, 201):
+                data = resp.json()
+                # Return a dict containing 'data' to act similarly to Slack client responses
+                return {"ok": True, "ts": data.get("id"), "data": data}
+            error = cls._error_message(resp) if resp is not None else "no response"
+            LOG.error("Failed to post to Discord channel %s: %s", channel_id, error)
+            return {"ok": False, "error": error}
+        except Exception as e:
+            LOG.exception(f"Error posting message to Discord channel {channel_id}")
+            return {"ok": False, "error": str(e)}
+
+    @classmethod
+    def _message_payload(cls, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        if "content" in kwargs:
+            payload["content"] = kwargs["content"]
+        if "embeds" in kwargs:
+            payload["embeds"] = kwargs["embeds"]
+        if "text" in kwargs and not payload.get("content"):
+            payload["content"] = kwargs["text"]
+        return payload
 
     @classmethod
     def chat_post(cls, *, token: str, channel_id: str, **kwargs) -> Dict[str, Any]:
@@ -142,63 +229,16 @@ class DiscordClient:
         kwargs can contain 'content' (str) and 'embeds' (list).
         Returns {'ok': True, 'ts': 'message_id'} or {'ok': False, 'error': ...}
         """
-        headers = cls.get_headers(token)
-
-        payload = {}
-        if "content" in kwargs:
-            payload["content"] = kwargs["content"]
-        if "embeds" in kwargs:
-            payload["embeds"] = kwargs["embeds"]
-
-        if "text" in kwargs and not payload.get("content"):
-            payload["content"] = kwargs["text"]
-
-        try:
-            resp = requests.post(
-                f"{cls.BASE_URL}/channels/{channel_id}/messages", headers=headers, json=payload, timeout=10
-            )
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                # Return a dict containing 'data' to act similarly to Slack client responses
-                return {"ok": True, "ts": data.get("id"), "data": data}
-            else:
-                LOG.error(f"Failed to post to Discord channel {channel_id}: {resp.text}")
-                return {"ok": False, "error": resp.text}
-        except Exception as e:
-            LOG.exception(f"Error posting message to Discord channel {channel_id}")
-            return {"ok": False, "error": str(e)}
+        return cls._post_message(token, channel_id, cls._message_payload(kwargs))
 
     @classmethod
     def reply_in_thread(cls, *, token: str, channel_id: str, thread_ts: str, **kwargs) -> Dict[str, Any]:
         """
         Reply to a message via message_reference
         """
-        kwargs["message_reference"] = {"message_id": thread_ts, "fail_if_not_exists": False}
-
-        headers = cls.get_headers(token)
-        payload = {}
-        if "content" in kwargs:
-            payload["content"] = kwargs["content"]
-        if "embeds" in kwargs:
-            payload["embeds"] = kwargs["embeds"]
-        if "text" in kwargs and not payload.get("content"):
-            payload["content"] = kwargs["text"]
-
-        payload["message_reference"] = kwargs["message_reference"]
-
-        try:
-            resp = requests.post(
-                f"{cls.BASE_URL}/channels/{channel_id}/messages", headers=headers, json=payload, timeout=10
-            )
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                return {"ok": True, "ts": data.get("id"), "data": data}
-            else:
-                LOG.error(f"Failed to reply in Discord channel {channel_id}: {resp.text}")
-                return {"ok": False, "error": resp.text}
-        except Exception as e:
-            LOG.exception(f"Error replying in Discord channel {channel_id}")
-            return {"ok": False, "error": str(e)}
+        payload = cls._message_payload(kwargs)
+        payload["message_reference"] = {"message_id": thread_ts, "fail_if_not_exists": False}
+        return cls._post_message(token, channel_id, payload)
 
     @classmethod
     def validate_token(cls, token: str) -> Dict[str, Any]:
