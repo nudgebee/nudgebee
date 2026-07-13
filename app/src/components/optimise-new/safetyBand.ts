@@ -25,7 +25,7 @@ export interface DependentRef {
 export interface ImpactSummary {
   dependent_count?: number;
   production_dependents?: number;
-  coverage_confidence?: 'none' | 'low' | 'high';
+  coverage_confidence?: 'none' | 'low' | 'observed' | 'high';
   truncated?: boolean;
   safety_reason?: string;
   dependents?: DependentRef[];
@@ -121,3 +121,41 @@ export const provenanceLabel = (sources?: string[]): string | null => {
 // isProdEnvironment mirrors the backend's isProdEnv so prod dependents get the
 // critical treatment consistently.
 export const isProdEnvironment = (env?: string): boolean => ['prod', 'production', 'prd'].includes((env || '').trim().toLowerCase());
+
+// Graph-coverage presentation — tone, chip subtitle, ⓘ copy, and the
+// section-level explainer. Mirrors backend CoverageConfidence tiers
+// (knowledge_graph core impact.go): none / low / observed / high.
+export const coverageTone = (cov?: string): LabelTone =>
+  cov === 'high' ? 'success' : cov === 'observed' ? 'info' : cov === 'low' ? 'warning' : 'neutral';
+
+const COVERAGE_SUBTITLE: Record<string, string> = {
+  high: 'Corroborated by 2+ sources',
+  observed: 'Single signal, actively watching',
+  low: 'Based on a single source',
+  none: 'Not found in the graph',
+};
+export const coverageSubtitle = (cov?: string): string | null => (cov && COVERAGE_SUBTITLE[cov]) || null;
+
+export const COVERAGE_HELP =
+  'How many independent signals confirm these dependencies. High = corroborated by 2+ sources; Observed = an active traffic signal (eBPF, traces, or APM) watches this scope; Low = single-source and unverified; None = the resource was not found in the graph.';
+
+// coverageExplainer — the "Why coverage is X" banner under the section. Null
+// when no caveat is needed (high coverage). Copy varies with whether any
+// dependents were found: low + none-found is the "nobody was looking" caveat,
+// observed + none-found is honest negative evidence.
+export const coverageExplainer = (cov?: string, dependentCount?: number): string | null => {
+  switch (cov) {
+    case 'low':
+      return dependentCount
+        ? 'The dependencies we found each come from a single source and have not been cross-checked against a second signal (e.g. traces plus platform metadata). Treat this list as indicative, not exhaustive — there may be callers the graph has not seen yet.'
+        : 'Nothing points at this resource, but no active traffic signal was watching it either — absence of evidence, not evidence of absence.';
+    case 'observed':
+      return dependentCount
+        ? 'These dependencies come from an active traffic signal, but have not been corroborated by a second independent source.'
+        : 'An active traffic signal (eBPF, traces, or APM) watches this scope and reports nothing calling this resource.';
+    case 'none':
+      return 'This resource was not found in the dependency graph, so impact is unknown.';
+    default:
+      return null;
+  }
+};

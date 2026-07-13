@@ -42,10 +42,14 @@ func DeriveSafetyBand(impact *core.ImpactSummary) (SafetyBand, string) {
 	case impact.Truncated:
 		return SafetyBandRisky, "very large blast radius (dependents exceeded the traversal cap)"
 	case impact.DependentCount == 0:
-		if impact.CoverageConfidence == core.CoverageHigh {
+		switch impact.CoverageConfidence {
+		case core.CoverageHigh:
 			return SafetyBandSafe, "no known dependents (well-observed in the graph)"
+		case core.CoverageObserved:
+			return SafetyBandSafe, "no dependents seen by an active traffic signal watching this scope"
+		default:
+			return SafetyBandReview, "no dependents observed, but graph coverage is limited"
 		}
-		return SafetyBandReview, "no dependents observed, but graph coverage is limited"
 	default:
 		return SafetyBandReview, fmt.Sprintf("%d dependent(s); none detected as production", impact.DependentCount)
 	}

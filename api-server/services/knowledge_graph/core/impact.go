@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 // CoverageConfidence expresses how much to trust an ImpactSummary, so callers
@@ -16,13 +18,30 @@ const (
 	// CoverageNone — the resource was not found in the graph; impact is unknown
 	// (must not be read as "safe").
 	CoverageNone CoverageConfidence = "none"
-	// CoverageLow — the resource is present, but dependents (if any) were observed
-	// via only a single discovery source, or none were observed at all.
+	// CoverageLow — the resource is present, but nothing establishes an active
+	// signal was watching: dependents (if any) came from a single source and no
+	// flow evidence touches the resource or its account. Absence of evidence.
 	CoverageLow CoverageConfidence = "low"
+	// CoverageObserved — no multi-source corroboration, but the resource sits
+	// inside an active traffic signal's watched perimeter (eBPF / traces / APM
+	// asserted an edge touching it, or produced edges in its cloud account this
+	// build). The signal's silence about the resource is evidence of absence.
+	CoverageObserved CoverageConfidence = "observed"
 	// CoverageHigh — at least one dependency edge is corroborated by multiple
 	// discovery sources (e.g. traces + Datadog).
 	CoverageHigh CoverageConfidence = "high"
 )
+
+// flowObservationSources are the discovery sources that constitute active
+// traffic observation (as opposed to declared/structural metadata) — the
+// signals whose silence about a resource is meaningful.
+var flowObservationSources = map[string]bool{
+	"ebpf":             true,
+	"traces":           true,
+	"gcp-cloud-traces": true,
+	"datadog-apm":      true,
+	"newrelic-apm":     true,
+}
 
 // ImpactedService is one dependent of a resource: an application-level node that
 // relies on it and could be affected if the resource is rightsized or removed.
@@ -263,7 +282,118 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 		summary.DownstreamDependencies = downstream
 		summary.DownstreamCount = len(downstream)
 	}
+
+	// Upgrade low → observed when an active traffic signal demonstrably watches
+	// this resource: an edge touching the seed, or — for cluster-scoped seeds
+	// only — any flow-asserted edge in its cloud account. This is what lets a
+	// single-source tenant reach an honest "no callers" verdict instead of a
+	// permanent "low".
+	if summary.CoverageConfidence == CoverageLow {
+		observed := hasSeedFlowEvidence(nodeID, edges, summary.DownstreamDependencies)
+		if !observed && seedAccountIsClusterScoped(seed) {
+			observed, err = s.accountHasFlowObservedEdges(tenantID, seed.CloudAccountID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if observed {
+			summary.CoverageConfidence = CoverageObserved
+		}
+	}
 	return &summary, nil
+}
+
+// seedAccountIsClusterScoped reports whether the seed's cloud account maps to
+// a single observable scope. k8s-sourced nodes live in per-cluster accounts
+// (one cluster == one account row), so account-level flow evidence means the
+// seed's own cluster is watched. Cloud-sourced resources live in provider
+// accounts that may span several clusters plus uninstrumented callers (VMs,
+// external apps) — account-level evidence there could vouch for resources the
+// signal never watched, so they get no fallback and rely on seed-adjacent
+// evidence alone.
+func seedAccountIsClusterScoped(seed *DbNode) bool {
+	return seed != nil && seed.Source == "k8s"
+}
+
+// hasSeedFlowEvidence reports whether an active traffic signal asserted any
+// edge touching the seed — an upstream dependency edge incident to it, or a
+// downstream dependency attributed to a flow source. Either way the signal
+// demonstrably watches this resource, so finding no callers is evidence of
+// absence rather than absence of evidence.
+func hasSeedFlowEvidence(seedID string, upstreamEdges []*DbEdge, downstream []ImpactedService) bool {
+	for _, e := range upstreamEdges {
+		if e == nil || (e.SourceNodeID != seedID && e.DestinationNodeID != seedID) {
+			continue
+		}
+		if edgeHasFlowSource(e) {
+			return true
+		}
+	}
+	for _, d := range downstream {
+		for _, s := range d.Sources {
+			if flowObservationSources[s] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// edgeHasFlowSource reports whether any asserting source of the edge is an
+// active traffic signal, falling back to the winning Source for edges
+// predating the contributing_sources column.
+func edgeHasFlowSource(e *DbEdge) bool {
+	for _, cs := range e.ContributingSources {
+		if flowObservationSources[cs.Source] {
+			return true
+		}
+	}
+	return len(e.ContributingSources) == 0 && flowObservationSources[e.Source]
+}
+
+// accountHasFlowObservedEdges reports whether any active flow signal produced
+// an edge in this tenant+account — the scope-level fallback: with the account
+// under observation, a resource nothing points at is meaningfully
+// unreferenced. Account-scoped on purpose: a monitored cluster in one account
+// must not vouch for resources in an unmonitored one.
+func (s *Service) accountHasFlowObservedEdges(tenantID, accountID string) (bool, error) {
+	if accountID == "" {
+		return false, nil
+	}
+	sources := make([]string, 0, len(flowObservationSources))
+	for src := range flowObservationSources {
+		sources = append(sources, src)
+	}
+	sort.Strings(sources)
+	// `source` holds only the winning source after dedup (k8s outranks flow
+	// sources), so contributing_sources is probed too — as one explicit @>
+	// clause per source rather than `@> ANY(...)`, which GIN indexes cannot
+	// serve (no ScalarArrayOpExpr support; ANY would decay to scanning the
+	// tenant's edges).
+	conds := []string{"source = ANY($3::text[])"}
+	args := []interface{}{tenantID, accountID, pq.Array(sources)}
+	for _, src := range sources {
+		conds = append(conds, fmt.Sprintf("contributing_sources @> $%d::jsonb", len(args)+1))
+		args = append(args, fmt.Sprintf(`[{"source": %q}]`, src))
+	}
+	query := fmt.Sprintf(`
+		SELECT EXISTS (
+			SELECT 1 FROM knowledge_graph_edge
+			WHERE tenant_id = $1
+			  AND cloud_account_id = $2
+			  AND is_active = true
+			  AND level = 'Tenant'
+			  AND (%s)
+		)`, strings.Join(conds, " OR "))
+	row, err := s.dbManager.QueryRow(query, args...)
+	if err != nil {
+		return false, fmt.Errorf("flow-observation probe for account %s: %w", accountID, err)
+	}
+	var exists bool
+	if err := row.Scan(&exists); err != nil {
+		return false, fmt.Errorf("scan flow-observation probe for account %s: %w", accountID, err)
+	}
+	return exists, nil
 }
 
 // traverseDownstreamDependencies walks one hop in the opposite direction —

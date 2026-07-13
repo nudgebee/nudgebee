@@ -186,6 +186,47 @@ func TestSummarizeDownstream(t *testing.T) {
 	}
 }
 
+func TestHasSeedFlowEvidence(t *testing.T) {
+	seed := "seed"
+	flowEdge := &DbEdge{SourceNodeID: "a", DestinationNodeID: seed,
+		ContributingSources: []EdgeContributingSource{{Source: "ebpf"}}}
+	structuralEdge := &DbEdge{SourceNodeID: "b", DestinationNodeID: seed,
+		ContributingSources: []EdgeContributingSource{{Source: "k8s"}}}
+	nonIncident := &DbEdge{SourceNodeID: "a", DestinationNodeID: "b",
+		ContributingSources: []EdgeContributingSource{{Source: "traces"}}}
+	legacy := &DbEdge{SourceNodeID: seed, DestinationNodeID: "c", Source: "traces"}
+
+	if hasSeedFlowEvidence(seed, []*DbEdge{structuralEdge, nonIncident, nil}, nil) {
+		t.Error("structural-only / non-incident edges must not count as flow evidence")
+	}
+	if !hasSeedFlowEvidence(seed, []*DbEdge{structuralEdge, flowEdge}, nil) {
+		t.Error("flow-asserted edge incident to the seed must count")
+	}
+	if !hasSeedFlowEvidence(seed, []*DbEdge{legacy}, nil) {
+		t.Error("legacy Source fallback must count when contributing_sources is empty")
+	}
+	if !hasSeedFlowEvidence(seed, nil, []ImpactedService{{Name: "db", Sources: []string{"k8s", "datadog-apm"}}}) {
+		t.Error("flow-attributed downstream dependency must count")
+	}
+	if hasSeedFlowEvidence(seed, nil, []ImpactedService{{Name: "db", Sources: []string{"k8s"}}}) {
+		t.Error("structural-only downstream attribution must not count")
+	}
+}
+
+func TestSeedAccountIsClusterScoped(t *testing.T) {
+	if !seedAccountIsClusterScoped(&DbNode{Source: "k8s"}) {
+		t.Error("k8s-sourced seed lives in a per-cluster account and must allow the account fallback")
+	}
+	for _, src := range []string{"aws", "gcp", "azure", ""} {
+		if seedAccountIsClusterScoped(&DbNode{Source: src}) {
+			t.Errorf("%q-sourced seed must not get account-level vouching (provider accounts can span clusters and uninstrumented callers)", src)
+		}
+	}
+	if seedAccountIsClusterScoped(nil) {
+		t.Error("nil seed must not allow the fallback")
+	}
+}
+
 func TestDownstreamRelationshipStrings(t *testing.T) {
 	wl := downstreamRelationshipStrings(NodeTypeWorkload)
 	if len(wl) != 3 || wl[0] != string(RelationshipCalls) {

@@ -29,8 +29,13 @@ import {
   proximityLabel,
   provenanceLabel,
   isProdEnvironment,
+  coverageTone,
+  coverageSubtitle,
+  coverageExplainer,
+  COVERAGE_HELP,
   type DependentRef,
 } from './safetyBand';
+import { Banner } from '@ui/Banner';
 import ApplyMitigationModal, { stripOptionalMarkers } from '@components/cloudaccount/ApplyMitigationModal';
 import { hasWriteAccess } from '@lib/auth';
 import InterpretationPanel from './interpretation/InterpretationPanel';
@@ -167,6 +172,7 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
   const [showAllDeps, setShowAllDeps] = useState(false);
   const [showAllDownstream, setShowAllDownstream] = useState(false);
   const downstream = impact?.downstream_dependencies || [];
+  const explainer = coverageExplainer(impact?.coverage_confidence, impact?.dependent_count);
   const hasImpactData = !!(
     impact &&
     (impact.dependent_count != null || impact.production_dependents != null || impact.coverage_confidence || impact.safety_reason)
@@ -211,9 +217,18 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
         )}
         {impact?.coverage_confidence && (
           <SafetyRow label='Graph coverage'>
-            <Label size='sm' tone={impact.coverage_confidence === 'high' ? 'success' : impact.coverage_confidence === 'low' ? 'warning' : 'neutral'}>
-              {safetyBandLabel(impact.coverage_confidence)}
-            </Label>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], minWidth: 0 }}>
+              <ChipTip title={COVERAGE_HELP}>
+                <Label size='sm' tone={coverageTone(impact.coverage_confidence)}>
+                  {safetyBandLabel(impact.coverage_confidence)}
+                </Label>
+              </ChipTip>
+              {coverageSubtitle(impact.coverage_confidence) && (
+                <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], whiteSpace: 'nowrap' }}>
+                  {coverageSubtitle(impact.coverage_confidence)}
+                </Typography>
+              )}
+            </Box>
           </SafetyRow>
         )}
         {impact?.safety_reason && (
@@ -265,6 +280,16 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
                 {showAllDownstream ? 'Show less' : `Show more (${downstream.length - DEP_COLLAPSE_LIMIT})`}
               </Typography>
             )}
+          </Box>
+        )}
+        {explainer && (
+          <Box sx={{ mt: ds.space[1] }}>
+            <Banner
+              tone={impact?.coverage_confidence === 'observed' ? 'info' : 'warning'}
+              surface='section'
+              title={`Why coverage is ${safetyBandLabel(impact?.coverage_confidence)}`}
+              message={explainer}
+            />
           </Box>
         )}
       </Box>
