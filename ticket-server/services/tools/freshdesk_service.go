@@ -44,34 +44,48 @@ func init() {
 	ticket.RegisterTicketManager("freshdesk", &FreshdeskService{})
 }
 
+// freshdeskAttachment is a file attachment returned on a ticket or a conversation.
+// AttachmentURL is a pre-signed, short-lived S3 URL fetchable without a Freshdesk key.
+type freshdeskAttachment struct {
+	Name          string `json:"name"`
+	ContentType   string `json:"content_type"`
+	Size          int64  `json:"size"`
+	AttachmentURL string `json:"attachment_url"`
+}
+
 // freshdeskTicket is the subset of the Freshdesk REST v2 ticket object we map to
 // models.Ticket. Freshdesk status/priority are integers; created/updated are ISO
 // 8601 and unmarshal straight into *time.Time.
 type freshdeskTicket struct {
-	ID              int64      `json:"id"`
-	Subject         string     `json:"subject"`
-	Description     string     `json:"description"`
-	DescriptionText string     `json:"description_text"`
-	Status          int        `json:"status"`
-	Priority        int        `json:"priority"`
-	Tags            []string   `json:"tags"`
-	GroupID         *int64     `json:"group_id"`
-	ResponderID     *int64     `json:"responder_id"`
-	RequesterID     *int64     `json:"requester_id"`
-	Email           string     `json:"email"`
-	CreatedAt       *time.Time `json:"created_at"`
-	UpdatedAt       *time.Time `json:"updated_at"`
+	ID              int64                   `json:"id"`
+	Subject         string                  `json:"subject"`
+	Description     string                  `json:"description"`
+	DescriptionText string                  `json:"description_text"`
+	Status          int                     `json:"status"`
+	Priority        int                     `json:"priority"`
+	Tags            []string                `json:"tags"`
+	GroupID         *int64                  `json:"group_id"`
+	ResponderID     *int64                  `json:"responder_id"`
+	RequesterID     *int64                  `json:"requester_id"`
+	Email           string                  `json:"email"`
+	CreatedAt       *time.Time              `json:"created_at"`
+	UpdatedAt       *time.Time              `json:"updated_at"`
+	Attachments     []freshdeskAttachment   `json:"attachments"`
+	Conversations   []freshdeskConversation `json:"conversations"`
 }
 
-// freshdeskConversation is a reply or private note returned by /tickets/{id}/conversations.
+// freshdeskConversation is a reply or private note returned by /tickets/{id}/conversations
+// or embedded in a ticket fetched with ?include=conversations.
 type freshdeskConversation struct {
-	BodyText  string `json:"body_text"`
-	Body      string `json:"body"`
-	FromEmail string `json:"from_email"`
-	UserID    *int64 `json:"user_id"`
-	Private   bool   `json:"private"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID          int64                 `json:"id"`
+	BodyText    string                `json:"body_text"`
+	Body        string                `json:"body"`
+	FromEmail   string                `json:"from_email"`
+	UserID      *int64                `json:"user_id"`
+	Private     bool                  `json:"private"`
+	CreatedAt   string                `json:"created_at"`
+	UpdatedAt   string                `json:"updated_at"`
+	Attachments []freshdeskAttachment `json:"attachments"`
 }
 
 var freshdeskTicketIDRe = regexp.MustCompile(`^[0-9]+$`)
@@ -311,7 +325,69 @@ func freshdeskTicketToModel(config models.TicketConfigurations, ft freshdeskTick
 	if len(ft.Tags) > 0 {
 		t.Labels = ft.Tags
 	}
+
+	// File attachments: ticket-level, then per-conversation (tagged by source).
+	// For list rows both slices are empty (the list endpoint returns neither), so
+	// this stays a no-op there.
+	for _, a := range ft.Attachments {
+		t.Attachments = append(t.Attachments, freshdeskFileAttachment(a, "ticket"))
+	}
+	for _, c := range ft.Conversations {
+		for _, a := range c.Attachments {
+			t.Attachments = append(t.Attachments, freshdeskFileAttachment(a, fmt.Sprintf("conversation:%d", c.ID)))
+		}
+	}
+
+	// Inline images embedded in the description / conversation HTML (many tickets
+	// paste screenshots inline rather than attaching files). List rows carry no
+	// description or conversations, so this is a no-op there too.
+	t.Attachments = append(t.Attachments, freshdeskInlineImages(ft.Description, "inline")...)
+	for _, c := range ft.Conversations {
+		t.Attachments = append(t.Attachments, freshdeskInlineImages(c.Body, fmt.Sprintf("inline:conversation:%d", c.ID))...)
+	}
+
 	return t
+}
+
+// freshdeskFileAttachment maps a Freshdesk file attachment to the normalized model.
+func freshdeskFileAttachment(a freshdeskAttachment, source string) models.Attachment {
+	return models.Attachment{
+		Name:        a.Name,
+		ContentType: a.ContentType,
+		Size:        a.Size,
+		URL:         a.AttachmentURL,
+		Source:      source,
+	}
+}
+
+// freshdeskImgSrcRe extracts the src of each <img> tag from HTML. A bounded regex
+// is sufficient for Freshdesk's Froala-generated markup (see the gotcha in the plan).
+var freshdeskImgSrcRe = regexp.MustCompile(`(?i)<img[^>]+src="([^"]+)"`)
+
+// freshdeskInlineImages returns inline images embedded in a description/conversation
+// HTML body as attachments, keeping only Freshdesk-hosted inline URLs so email
+// signature/logo images don't leak in. The URL is a token link a human can open;
+// the agent can't read images, so these are surfaced for human review only.
+func freshdeskInlineImages(htmlContent, source string) []models.Attachment {
+	if htmlContent == "" {
+		return nil
+	}
+	var out []models.Attachment
+	for _, m := range freshdeskImgSrcRe.FindAllStringSubmatch(htmlContent, -1) {
+		// src comes from an HTML attribute, so entity-decode it (e.g. &amp; -> &)
+		// or a multi-param query string would be surfaced as a broken URL.
+		src := html.UnescapeString(m[1])
+		if !strings.Contains(src, "freshdesk") || !strings.Contains(src, "/inline") {
+			continue
+		}
+		out = append(out, models.Attachment{
+			Name:        fmt.Sprintf("inline-image-%d", len(out)+1),
+			ContentType: "image",
+			URL:         src,
+			Source:      source,
+		})
+	}
+	return out
 }
 
 // Get retrieves a Freshdesk ticket (with its conversation thread) and maps it to

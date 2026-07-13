@@ -110,6 +110,63 @@ func TestFreshdeskService_Get(t *testing.T) {
 	}
 }
 
+// TestFreshdeskService_Get_Attachments verifies that Get flattens ticket-level and
+// conversation-level file attachments plus Freshdesk-hosted inline images from the
+// description HTML, tagging each with the right Source, and filters out foreign
+// (non-Freshdesk) inline images such as email-signature logos.
+func TestFreshdeskService_Get_Attachments(t *testing.T) {
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": 55,
+			"subject": "With attachments",
+			"description": "<div>See <img src=\"https://indattachment.freshdesk.com/inline/attachment?token=abc&amp;expires=123\" class=\"fr-fic\"> and a logo <img src=\"https://cdn.example.com/signature-logo.png\"></div>",
+			"description_text": "See screenshot",
+			"status": 2,
+			"priority": 1,
+			"attachments": [
+				{"name": "app-error.log", "content_type": "text/plain", "size": 20481, "attachment_url": "https://s3.amazonaws.com/cdn.freshdesk.com/file1?Signature=x"}
+			],
+			"conversations": [
+				{"id": 9001, "body_text": "note", "attachments": [
+					{"name": "trace.json", "content_type": "application/json", "size": 512, "attachment_url": "https://s3.amazonaws.com/cdn.freshdesk.com/file2?Signature=y"}
+				]}
+			]
+		}`))
+	}))
+	defer stub.Close()
+
+	svc := &FreshdeskService{}
+	got, err := svc.Get(freshdeskTestCtx(), freshdeskTestConfig(stub.URL), "55")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	if len(got.Attachments) != 3 {
+		t.Fatalf("got %d attachments, want 3 (ticket file + conversation file + inline image): %+v", len(got.Attachments), got.Attachments)
+	}
+
+	bySource := map[string]models.Attachment{}
+	for _, a := range got.Attachments {
+		bySource[a.Source] = a
+	}
+
+	if a := bySource["ticket"]; a.Name != "app-error.log" || a.URL != "https://s3.amazonaws.com/cdn.freshdesk.com/file1?Signature=x" || a.ContentType != "text/plain" || a.Size != 20481 {
+		t.Errorf("ticket attachment = %+v", a)
+	}
+	if a := bySource["conversation:9001"]; a.Name != "trace.json" || a.URL != "https://s3.amazonaws.com/cdn.freshdesk.com/file2?Signature=y" {
+		t.Errorf("conversation attachment = %+v", a)
+	}
+	if a := bySource["inline"]; a.URL != "https://indattachment.freshdesk.com/inline/attachment?token=abc&expires=123" || a.ContentType != "image" {
+		t.Errorf("inline image attachment (HTML entity in src should be unescaped) = %+v", a)
+	}
+	for _, a := range got.Attachments {
+		if strings.Contains(a.URL, "signature-logo") {
+			t.Errorf("foreign (non-Freshdesk) inline image should be filtered out: %+v", a)
+		}
+	}
+}
+
 // TestFreshdeskService_Get_Unauthorized verifies a 401 surfaces a clear auth error.
 func TestFreshdeskService_Get_Unauthorized(t *testing.T) {
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

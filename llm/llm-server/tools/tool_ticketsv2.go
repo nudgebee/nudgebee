@@ -726,7 +726,13 @@ func handleV2GetTicket(ctx core.NbToolContext, req TicketV2OperationRequest) (st
 		return "", fmt.Errorf("ticket-server error: %s", result.Error)
 	}
 
-	t := result.Data
+	return renderV2TicketDetail(result.Data), nil
+}
+
+// renderV2TicketDetail formats a ticket detail as Markdown for the agent. It is
+// split out from handleV2GetTicket so the formatting — including the Attachments
+// section — is unit-testable without the live ticket-server fetch the handler does.
+func renderV2TicketDetail(t ticketServerTicketDetail) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "**%s** — %s\n", t.TicketID, t.Title)
 	if t.Status != "" {
@@ -759,8 +765,14 @@ func handleV2GetTicket(ctx core.NbToolContext, req TicketV2OperationRequest) (st
 	if t.Description != "" {
 		fmt.Fprintf(&sb, "\n**Description:**\n%s\n", t.Description)
 	}
-
-	return sb.String(), nil
+	if len(t.Attachments) > 0 {
+		fmt.Fprintf(&sb, "\n**Attachments (%d):**\n", len(t.Attachments))
+		for _, a := range t.Attachments {
+			fmt.Fprintf(&sb, "- %s (%s, %d bytes) [%s] — %s\n", a.Name, a.ContentType, a.Size, a.Source, a.URL)
+		}
+		sb.WriteString("Download text-like attachments (logs/.json/.yaml/.har/.csv/.txt) from the URL with shell_execute; the URL is pre-signed and short-lived, so fetch it promptly. Images/PDFs and inline screenshots (source \"inline\") can't be inspected here — note them as evidence needing human review.\n")
+	}
+	return sb.String()
 }
 
 func handleV2ListTickets(ctx core.NbToolContext, req TicketV2OperationRequest) (string, error) {
@@ -1499,20 +1511,31 @@ type ticketServerGetTicketResponse struct {
 }
 
 type ticketServerTicketDetail struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Severity    string `json:"severity"`
-	Status      string `json:"status"`
-	TicketID    string `json:"ticket_id"`
-	TicketType  string `json:"ticket_type"`
-	ProjectKey  string `json:"project_key"`
-	Assignee    string `json:"assignee"`
-	Reporter    string `json:"reporter"`
-	Platform    string `json:"platform"`
+	ID          string                   `json:"id"`
+	Title       string                   `json:"title"`
+	Description string                   `json:"description"`
+	Severity    string                   `json:"severity"`
+	Status      string                   `json:"status"`
+	TicketID    string                   `json:"ticket_id"`
+	TicketType  string                   `json:"ticket_type"`
+	ProjectKey  string                   `json:"project_key"`
+	Assignee    string                   `json:"assignee"`
+	Reporter    string                   `json:"reporter"`
+	Platform    string                   `json:"platform"`
+	URL         string                   `json:"url"`
+	CreatedAt   string                   `json:"created_at"`
+	Tags        string                   `json:"tags"`
+	Attachments []ticketServerAttachment `json:"attachments"`
+}
+
+// ticketServerAttachment mirrors ticket-server's models.Attachment (file or inline
+// image). URL is a source-provided, typically short-lived download/view link.
+type ticketServerAttachment struct {
+	Name        string `json:"name"`
+	ContentType string `json:"content_type"`
+	Size        int64  `json:"size"`
 	URL         string `json:"url"`
-	CreatedAt   string `json:"created_at"`
-	Tags        string `json:"tags"`
+	Source      string `json:"source"`
 }
 
 // --- Create-meta request/response types ---
