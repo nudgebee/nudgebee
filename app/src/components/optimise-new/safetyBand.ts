@@ -109,11 +109,13 @@ const PROVENANCE_BUCKETS: Array<{ sources: string[]; label: string }> = [
 ];
 
 // provenanceLabel collapses an edge's discovery sources into one chip label;
-// unknown sources (rule/DNS/IP inference) read as 'Inferred'.
+// unknown sources (rule/DNS/IP inference) read as 'Inferred'. Matching is
+// case-insensitive — the names cross a persistence boundary, and a casing
+// drift would otherwise degrade silently to 'Inferred'.
 export const provenanceLabel = (sources?: string[]): string | null => {
   if (!sources || sources.length === 0) return null;
   for (const bucket of PROVENANCE_BUCKETS) {
-    if (sources.some((s) => bucket.sources.includes(s))) return bucket.label;
+    if (sources.some((s) => bucket.sources.includes(s.toLowerCase()))) return bucket.label;
   }
   return 'Inferred';
 };

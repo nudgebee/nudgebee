@@ -259,9 +259,16 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
         )}
         {downstream.length > 0 && (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], mt: ds.space[1] }}>
-            <ChipTip title='What this resource itself calls, publishes to, or subscribes to. Context only — these are not at risk from the change and do not affect the safety band.'>
-              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium }}>Depends on</Typography>
-            </ChipTip>
+            {/* Typography forwards refs (and renders a <p>, which can't sit
+                inside ChipTip's span), so it takes the Tooltip directly. */}
+            <Tooltip
+              title='What this resource itself calls, publishes to, or subscribes to. Context only — these are not at risk from the change and do not affect the safety band.'
+              arrow
+            >
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium, alignSelf: 'flex-start' }}>
+                Depends on
+              </Typography>
+            </Tooltip>
             {(showAllDownstream ? downstream : downstream.slice(0, DEP_COLLAPSE_LIMIT)).map((dep, i) => (
               <DependentRow key={`${dep.namespace || ''}/${dep.name}-${i}`} dep={dep} direction='downstream' />
             ))}

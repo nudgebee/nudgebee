@@ -27,6 +27,7 @@ describe('safetyBand dependent categorization helpers', () => {
 
   it('collapses sources into the strongest provenance claim', () => {
     expect(provenanceLabel(['ebpf'])).toBe('Observed traffic');
+    expect(provenanceLabel(['eBPF'])).toBe('Observed traffic');
     expect(provenanceLabel(['k8s', 'traces'])).toBe('Observed in traces');
     expect(provenanceLabel(['manual', 'ebpf'])).toBe('User-declared');
     expect(provenanceLabel(['aws'])).toBe('Platform metadata');
