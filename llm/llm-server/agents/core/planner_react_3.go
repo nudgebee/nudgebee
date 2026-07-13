@@ -55,6 +55,14 @@ type NBReActPlanner3 struct {
 	// scope the system prompt uses, without recomputing the gate inline.
 	hypothesisModeEnabled bool
 
+	// leanMode is true when this turn built the lean orchestrator prompt (the
+	// investigation overlays were dropped for a top-level plain-retrieval turn).
+	// It keeps the RUNTIME in step with the prompt: notebook/answer-contract
+	// nudges and hypothesis handling must not fire for a turn whose prompt never
+	// introduced those concepts. Set once from ContextKeyPromptVariant, the same
+	// source the prompt build and cache key read.
+	leanMode bool
+
 	// planCallCount counts Plan() invocations on this in-memory instance. A
 	// fresh instance is built (and prior state unmarshalled) per user message,
 	// so 0 identifies the direction-setting first reasoning call of the turn —
@@ -160,6 +168,13 @@ func (o *NBReActPlanner3) saveCritique(critiqueType, input, critiquedContent, fe
 // literals) the default is true — matching pre-opt-out behavior so
 // existing tests aren't disturbed.
 func (o *NBReActPlanner3) notebookSectionEnabled() bool {
+	// A lean turn dropped the notebook discipline from its prompt, so the runtime
+	// notebook nudges (staleness, answer-contract) must stay silent — otherwise
+	// the model gets nudged about `## Answer Contract` / `<update_notebook>` it was
+	// never taught this turn.
+	if o.leanMode {
+		return false
+	}
 	if o.nbAgent == nil {
 		return true
 	}
@@ -2100,6 +2115,19 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	hypothesisModeEnabled := resolveHypothesisModeEnabled(request, agent)
 	orchestratorMode, executorMode := resolveReact3RoleModes(request)
 
+	// Lean prompt variant: on a top-level plain-retrieval turn (stamped by
+	// applyPromptVariant when the feature is enabled), drop the heavy investigation
+	// overlays — answer contract, notebook discipline, and hypothesis tree — via
+	// the existing {{if}} gates in planner_react_3_base.txt. Reading the same
+	// ContextKeyPromptVariant the cache key uses keeps the prompt shape and its
+	// cache slot in lockstep. executorMode is untouched (only top-level turns get
+	// the lean variant, and a top-level turn is never an executor sub-agent).
+	if promptVariantFromCtx(ctx) == promptVariantLean {
+		notebookEnabled = false
+		hypothesisModeEnabled = false
+		orchestratorMode = false
+	}
+
 	// Only declare template variables actually referenced in planner_react_3_base.txt.
 	// Dynamic vars (history, conversation_context, input, scratchpad) are in the human
 	// message to keep the system prefix stable for caching.
@@ -2287,6 +2315,11 @@ func NewReActAgent3(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 
 	prompt, tools := reActCreatePrompt3(ctx, systemMessage, nbAgent.GetSupportedTools(ctx), request.ConversationContext, extraMessages, request, nbAgent)
 
+	// Lean turn: read the same ContextKeyPromptVariant the prompt build and cache
+	// key use, so the runtime notebook/hypothesis gating stays consistent with the
+	// prompt actually sent this turn.
+	leanMode := promptVariantFromCtx(ctx) == promptVariantLean
+
 	return &NBReActPlanner3{
 		ctx:                   ctx,
 		llm:                   model,
@@ -2300,7 +2333,8 @@ func NewReActAgent3(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 		tools:                 tools,
 		enableCritique:        request.EnableCritique,
 		Notebook:              initialNotebook,
-		hypothesisModeEnabled: resolveHypothesisModeEnabled(request, nbAgent),
+		leanMode:              leanMode,
+		hypothesisModeEnabled: resolveHypothesisModeEnabled(request, nbAgent) && !leanMode,
 		// -1 sentinels mean "no notebook update yet observed".
 		notebookLastUpdateTurn:  -1,
 		notebookFirstUpdateTurn: -1,

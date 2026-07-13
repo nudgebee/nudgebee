@@ -47,6 +47,7 @@ type CacheRequest struct {
 	ApiKey         string
 	Scope          CacheScope
 	Capabilities   toolcore.AgentCapabilities // Optional; used to isolate cache slots when tool set varies per request
+	PromptVariant  string                     // Optional; isolates the lean vs full orchestrator prompt into distinct cache slots (empty = full/default)
 }
 
 // CacheResponse contains the result of cache operation
@@ -217,6 +218,13 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	agentName := req.AgentName
 	if fp := capabilityFingerprint(req.Capabilities); fp != "" {
 		agentName = req.AgentName + ":" + fp
+	}
+	// Isolate the lean vs full orchestrator prompt into distinct slots, for the
+	// same reason as the capability fingerprint: the lean prompt is a different
+	// cacheable prefix and must not overwrite the full-prompt slot. Empty
+	// (full/default) appends nothing, leaving existing slots byte-identical.
+	if req.PromptVariant != "" {
+		agentName = agentName + ":" + req.PromptVariant
 	}
 
 	// Generate cache key based on scope, including a short hash of the api key
@@ -777,6 +785,13 @@ func (p *GoogleAICacheProvider) InvalidateCache(ctx context.Context, req *CacheR
 	agentName := req.AgentName
 	if fp := capabilityFingerprint(req.Capabilities); fp != "" {
 		agentName = req.AgentName + ":" + fp
+	}
+	// Isolate the lean vs full orchestrator prompt into distinct slots, for the
+	// same reason as the capability fingerprint: the lean prompt is a different
+	// cacheable prefix and must not overwrite the full-prompt slot. Empty
+	// (full/default) appends nothing, leaving existing slots byte-identical.
+	if req.PromptVariant != "" {
+		agentName = agentName + ":" + req.PromptVariant
 	}
 	cacheKey := generateCacheKey(req.Scope, req.AccountId, req.ConversationId, agentName, req.Model, credsFingerprint(req.ApiKey, "", "", "", "", "", ""))
 

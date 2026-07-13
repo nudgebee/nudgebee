@@ -437,6 +437,13 @@ type appConfig struct {
 	// sub-agents get the executor overlay (stay in brief, surface anomalies as
 	// notes). Off = both overlays absent, prompt identical to pre-split behavior.
 	LlmServerReact3OrchestratorModeEnabled bool `mapstructure:"llm_server_react3_orchestrator_mode_enabled"`
+	// LlmServerReact3QueryLeanPromptEnabled drops the heavy investigation overlays
+	// (answer contract, notebook discipline, hypothesis tree) from the TOP-LEVEL
+	// orchestrator prompt on a plain-retrieval turn ("list pods"), and keys that
+	// lean prompt into its own cache slot so it does not thrash the full-prompt
+	// slot. Sub-agents and investigation turns are unaffected. Off = no-op, prompt
+	// and cache keys byte-identical to today. Opt-in for safe rollout.
+	LlmServerReact3QueryLeanPromptEnabled bool `mapstructure:"llm_server_react3_query_lean_prompt_enabled"`
 	// LlmServerReact3OrchestratorThinkingLevel is the thinking level applied to
 	// the orchestrator's direction-setting LLM calls (first plan call of a turn
 	// and post-critique refinement passes). Elevate-only: thinking level is
@@ -943,6 +950,7 @@ func init() {
 	// used to flip this on at boot; baking it in preserves that behavior.
 	viper.SetDefault("llm_server_react_critique_enabled", true)
 	viper.SetDefault("llm_server_react3_orchestrator_mode_enabled", false)
+	viper.SetDefault("llm_server_react3_query_lean_prompt_enabled", false)
 	viper.SetDefault("llm_server_react3_orchestrator_thinking_level", "medium")
 	// Flipped false 2026-07-12 — see LlmServerThinkToolEnabled docstring.
 	// Any env that wants the tool back sets LLM_SERVER_THINK_TOOL_ENABLED=true

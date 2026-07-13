@@ -131,6 +131,57 @@ func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent) *security.
 	)
 }
 
+// promptVariantForRequest returns promptVariantLean for a top-level plain-retrieval
+// turn when the query-lean prompt is enabled, else "" (full/default prompt).
+// Classification uses OriginalQuery (the user's verbatim top-level question,
+// falling back to Query) so a delegated sub-agent brief never drives the shape;
+// sub-agents always resolve to "" and keep the full prompt and their cache slots.
+func promptVariantForRequest(request NBAgentRequest) string {
+	if !config.Config.LlmServerReact3QueryLeanPromptEnabled {
+		return ""
+	}
+	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
+	if !isTopLevel {
+		return ""
+	}
+	query := request.OriginalQuery
+	if query == "" {
+		query = request.Query
+	}
+	if query == "" {
+		// Degenerate/malformed request — fall back to the full prompt rather than
+		// stripping the investigation machinery on an unknown query.
+		return ""
+	}
+	if IsInvestigationRequestTask(query) || request.ConversationSource == ConversationSourceInvestigation {
+		return ""
+	}
+	return promptVariantLean
+}
+
+// applyPromptVariant stamps ContextKeyPromptVariant with the turn's prompt shape.
+// It ALWAYS (re)stamps — mirroring applyAgentModelTier — so a sub-agent invoked
+// with the parent's context does not INHERIT the parent's "lean" variant: a
+// top-level plain-retrieval turn resolves to promptVariantLean, and everything
+// else (sub-agents, investigations, feature disabled) resolves to "" (full),
+// which keeps the prompt and cache key byte-identical to the pre-change behavior.
+func applyPromptVariant(ctx *security.RequestContext, request NBAgentRequest) *security.RequestContext {
+	if ctx == nil {
+		return nil
+	}
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		goCtx = context.Background()
+	}
+	return security.NewRequestContext(
+		context.WithValue(goCtx, ContextKeyPromptVariant, promptVariantForRequest(request)),
+		ctx.GetSecurityContext(),
+		ctx.GetLogger(),
+		ctx.GetTracer(),
+		ctx.GetMeter(),
+	)
+}
+
 func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) (NBAgentResponse, error) {
 	// --- Metrics: record start time
 	start := time.Now()
@@ -188,6 +239,12 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// override per call. See applyAgentModelTier for why a category-less agent
 	// must RESET (not inherit) the tier.
 	ctx = applyAgentModelTier(ctx, agent)
+
+	// Stamp the prompt variant (lean vs full) for this turn so the prompt build
+	// (planner) and the cache key read one source of truth and never drift.
+	// No-op unless the query-lean prompt is enabled AND this is a top-level
+	// plain-retrieval turn — sub-agents and investigations keep the full prompt.
+	ctx = applyPromptVariant(ctx, request)
 
 	// get history and use it as context - PARALLELIZED
 	var messageHistoryFomatter []prompts.MessageFormatter
