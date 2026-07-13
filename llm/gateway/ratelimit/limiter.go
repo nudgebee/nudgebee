@@ -24,6 +24,37 @@ func New(store CounterStore, limits LimitSource) *Limiter {
 	return &Limiter{store: store, limits: limits, now: time.Now}
 }
 
+// builderHook is an optionally-registered limiter builder. When none is registered
+// it is nil, Build returns nil, and Limiter.Enabled() is nil-safe (allow-all), so
+// enforcement is disabled.
+var builderHook func() *Limiter
+
+// RegisterBuilder registers a limiter builder. When none is registered, Build
+// returns nil (enforcement disabled).
+func RegisterBuilder(fn func() *Limiter) { builderHook = fn }
+
+// Build returns a fully-wired Limiter from the registered builder, or nil when none
+// is registered (enforcement disabled — allow-all). A nil *Limiter is allow-all
+// (Enabled() is nil-safe), so callers can use the result directly.
+func Build() *Limiter {
+	if builderHook == nil {
+		return nil
+	}
+	return builderHook()
+}
+
+// Close releases resources held by the limiter's limit source — e.g. a background
+// refresh ticker. Safe to call on a nil Limiter (allow-all, nothing to release).
+func (l *Limiter) Close() error {
+	if l == nil {
+		return nil
+	}
+	if c, ok := l.limits.(interface{ Close() error }); ok {
+		return c.Close()
+	}
+	return nil
+}
+
 // Enabled reports whether enforcement is active (store + limits configured).
 func (l *Limiter) Enabled() bool { return l != nil && l.store != nil && l.limits != nil }
 

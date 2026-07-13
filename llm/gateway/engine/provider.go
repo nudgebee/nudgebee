@@ -8,7 +8,7 @@ import (
 
 // ProviderCredsConfig is one operator-configured provider credential, populated
 // from the LLM_PROVIDER_* env family (mirroring llm-server's naming). It is the
-// prototype credential source; task 3 replaces it with per-tenant lookups.
+// operator/account credential source.
 type ProviderCredsConfig struct {
 	Provider     string // llm_provider (e.g. "anthropic", "gemini", "bedrock")
 	APIKey       string // llm_provider_api_key

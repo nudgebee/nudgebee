@@ -3,13 +3,8 @@ package metering
 import (
 	"fmt"
 	"log/slog"
-	"strconv"
-	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
-	"nudgebee/llm-gateway/common"
 	"nudgebee/llm-gateway/config"
 )
 
@@ -59,9 +54,17 @@ func CapBody(b []byte) string {
 // TTL returns the configured body-log expiry from now.
 func TTL() time.Duration { return time.Duration(config.Config.BodyTTLHours) * time.Hour }
 
-// NewBodyLogSink returns a DB-backed async body-log sink when body logging is
-// enabled and a sink DB is configured; otherwise a no-op. Never blocks: it
-// connects lazily and starts a background soft-cleanup of expired rows.
+// bodyLogHook is an optionally-registered body-log sink factory. When none is
+// registered it is nil and body logging is a no-op. Kept as a factory so the sink is
+// constructed lazily by NewBodyLogSink only when body logging is actually enabled.
+var bodyLogHook func() BodyLogSink
+
+// RegisterBodyLogSink registers a body-log sink factory. When none is registered,
+// NewBodyLogSink returns the no-op sink even when body logging is configured on.
+func RegisterBodyLogSink(fn func() BodyLogSink) { bodyLogHook = fn }
+
+// NewBodyLogSink returns an async body-log sink when body logging is enabled, a sink
+// DB is configured, AND a sink is registered; otherwise a no-op.
 func NewBodyLogSink() BodyLogSink {
 	if !config.Config.CaptureBody {
 		return noopBodyLog{}
@@ -70,175 +73,14 @@ func NewBodyLogSink() BodyLogSink {
 		slog.Warn("bodylog: gateway_capture_body=true but no sink DB configured — body logging disabled (noop)")
 		return noopBodyLog{}
 	}
-	s := &dbBodyLog{ch: make(chan BodyLog, bodyBufferSize), done: make(chan struct{})}
-	s.wg.Add(2)
-	go s.run()
-	go s.cleanupLoop()
-	slog.Warn("bodylog: ENABLED — full request/response bodies are being stored (data custody)", "ttl_hours", config.Config.BodyTTLHours, "max_bytes", config.Config.BodyMaxBytes)
-	return s
+	if bodyLogHook == nil {
+		slog.Warn("bodylog: gateway_capture_body=true but no body-log sink registered — body logging disabled (noop)")
+		return noopBodyLog{}
+	}
+	return bodyLogHook()
 }
-
-const (
-	bodyBufferSize   = 2048
-	bodyBatchMaxRows = 50
-	bodyBatchMaxWait = 2 * time.Second
-)
 
 type noopBodyLog struct{}
 
 func (noopBodyLog) Record(BodyLog) {}
 func (noopBodyLog) Close() error   { return nil }
-
-type dbBodyLog struct {
-	// db is set once by run() and read by the separate cleanupLoop() goroutine,
-	// so it must be accessed atomically to avoid a data race.
-	db      atomic.Pointer[common.DatabaseManager]
-	ch      chan BodyLog
-	done    chan struct{}
-	wg      sync.WaitGroup
-	dropped atomic.Int64
-}
-
-func (s *dbBodyLog) Record(b BodyLog) {
-	select {
-	case s.ch <- b:
-	default:
-		if n := s.dropped.Add(1); n%100 == 1 {
-			slog.Warn("bodylog: buffer full, dropping captured bodies", "dropped_total", n)
-		}
-	}
-}
-
-func (s *dbBodyLog) Close() error {
-	close(s.done)
-	s.wg.Wait()
-	return nil
-}
-
-func (s *dbBodyLog) run() {
-	defer s.wg.Done()
-	if s.db.Load() == nil {
-		db, err := common.GetDatabaseManager(common.MeteringSink)
-		if err != nil {
-			slog.Error("bodylog: sink DB unavailable — body logging disabled", "error", err)
-			// Drain until close so Record never blocks.
-			for {
-				select {
-				case <-s.ch:
-				case <-s.done:
-					return
-				}
-			}
-		}
-		s.db.Store(db)
-	}
-
-	batch := make([]BodyLog, 0, bodyBatchMaxRows)
-	ticker := time.NewTicker(bodyBatchMaxWait)
-	defer ticker.Stop()
-	flush := func() {
-		if len(batch) == 0 {
-			return
-		}
-		if err := s.insert(batch); err != nil {
-			slog.Error("bodylog: batch insert failed", "rows", len(batch), "error", err)
-		}
-		batch = batch[:0]
-	}
-	for {
-		select {
-		case b := <-s.ch:
-			batch = append(batch, b)
-			if len(batch) >= bodyBatchMaxRows {
-				flush()
-			}
-		case <-ticker.C:
-			flush()
-		case <-s.done:
-			for {
-				select {
-				case b := <-s.ch:
-					batch = append(batch, b)
-					if len(batch) >= bodyBatchMaxRows {
-						flush()
-					}
-				default:
-					flush()
-					return
-				}
-			}
-		}
-	}
-}
-
-// cleanupLoop periodically SOFT-deletes expired body-log rows (sets deleted_at).
-// A separate hard-purge of soft-deleted rows can be added later.
-func (s *dbBodyLog) cleanupLoop() {
-	defer s.wg.Done()
-	interval := time.Duration(config.Config.BodyCleanupIntervalMins) * time.Minute
-	if interval <= 0 {
-		interval = time.Hour
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			db := s.db.Load()
-			if db == nil {
-				continue
-			}
-			res, err := db.Exec(db.Db.Rebind(
-				`UPDATE llm_gateway_request_log SET deleted_at = $1 WHERE expires_at < $2 AND deleted_at IS NULL`),
-				time.Now().UTC(), time.Now().UTC())
-			if err != nil {
-				slog.Error("bodylog: cleanup failed", "error", err)
-				continue
-			}
-			if n, _ := res.RowsAffected(); n > 0 {
-				slog.Info("bodylog: soft-deleted expired rows", "count", n)
-			}
-		case <-s.done:
-			return
-		}
-	}
-}
-
-var bodyLogColumns = []string{
-	"id", "request_id", "created_at", "expires_at",
-	"tenant_id", "user_id", "session_id",
-	"provider", "model", "method", "path", "status_code",
-	"request_body", "response_body",
-}
-
-func (s *dbBodyLog) insert(rows []BodyLog) error {
-	n := len(bodyLogColumns)
-	var sb strings.Builder
-	sb.WriteString("INSERT INTO llm_gateway_request_log (")
-	sb.WriteString(strings.Join(bodyLogColumns, ","))
-	sb.WriteString(") VALUES ")
-	args := make([]any, 0, len(rows)*n)
-	for i, r := range rows {
-		if i > 0 {
-			sb.WriteByte(',')
-		}
-		sb.WriteByte('(')
-		for j := range n {
-			if j > 0 {
-				sb.WriteByte(',')
-			}
-			sb.WriteByte('$')
-			sb.WriteString(strconv.Itoa(i*n + j + 1))
-		}
-		sb.WriteByte(')')
-		args = append(args,
-			r.ID, r.RequestID, r.CreatedAt, r.ExpiresAt,
-			r.TenantID, r.UserID, r.SessionID,
-			r.Provider, r.Model, r.Method, r.Path, r.StatusCode,
-			r.RequestBody, r.ResponseBody,
-		)
-	}
-	db := s.db.Load()
-	_, err := db.Exec(db.Db.Rebind(sb.String()), args...)
-	return err
-}

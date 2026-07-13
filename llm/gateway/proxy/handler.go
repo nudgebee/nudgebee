@@ -75,10 +75,10 @@ var hopByHopResponseHeaders = map[string]struct{}{
 // by the embedded Bifrost core client. The auth middleware runs first (resolving
 // identity / rejecting bad tokens); sink receives one usage event per request;
 // bodyLog stores full bodies when body logging is enabled (off by default).
-func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, bodyLog metering.BodyLogSink, validator auth.Validator, router routing.Resolver, limiter *ratelimit.Limiter, pricer *metering.Pricer, creds CredResolver) {
-	if creds == nil {
-		creds = noopCredResolver{}
-	}
+func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, bodyLog metering.BodyLogSink, validator auth.Validator, router routing.Resolver, limiter *ratelimit.Limiter, pricer *metering.Pricer) {
+	// credResolver returns the registered credential resolver, or the no-op default
+	// (operator/account credential) when none is registered.
+	creds := credResolver()
 	h := &handler{
 		client:  client,
 		sink:    sink,
@@ -86,13 +86,13 @@ func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, 
 		limiter: limiter,
 		pricer:  pricer,
 		// Request pipeline (control stages), run after auth and before passthrough.
-		// route → ratelimit → resolver → phi. This is the OSS/EE seam: each stage is
-		// pluggable, so an OSS build can register no-op defaults later.
+		// route → ratelimit → resolver → filter. Each stage is pluggable; an unset
+		// stage defaults to pass-through.
 		pipeline: NewPipeline(
 			routeStage{router: router},
 			ratelimitStage{limiter: limiter},
 			resolverStage{creds: creds},
-			phiStage{},
+			filterStage{},
 		),
 	}
 	// Auth runs first (the pipeline keys off the resolved identity), then the handler
@@ -150,7 +150,7 @@ func (h *handler) handle(c *gin.Context) {
 	// per-tenant credential on it, so it must exist before the pipeline runs.
 	bctx, cancel := schemas.NewBifrostContextWithCancel(c.Request.Context())
 
-	// Run the control pipeline (route → ratelimit → resolver → phi). Stages may
+	// Run the control pipeline (route → ratelimit → resolver → filter). Stages may
 	// rewrite the request shape, inject a tenant credential, or reject the request.
 	rc := &RequestContext{
 		Gin: c, Ctx: c.Request.Context(), Bctx: bctx,

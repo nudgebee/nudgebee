@@ -1,6 +1,9 @@
-// Package secrets resolves a tenant's provider credential from the NB integration
-// tables so the gateway can inject per-tenant BYO keys per request. It is the
-// DB-backed implementation of the proxy pipeline's CredResolver seam.
+// Package secrets is the EE per-tenant BYO-key resolver: it resolves a tenant's
+// provider credential from the NB integration tables so the gateway can inject
+// per-tenant BYO keys per request. It is the DB-backed implementation of the proxy
+// pipeline's CredResolver seam; the OSS build uses the no-op default (operator
+// credential) and never links this package. Registered via proxy.RegisterCredResolver
+// in init().
 package secrets
 
 import (
@@ -15,7 +18,12 @@ import (
 	"nudgebee/llm-gateway/auth"
 	"nudgebee/llm-gateway/common"
 	"nudgebee/llm-gateway/engine"
+	"nudgebee/llm-gateway/proxy"
 )
+
+func init() {
+	proxy.RegisterCredResolver(NewResolver())
+}
 
 const cacheTTL = 30 * time.Minute
 
@@ -122,7 +130,7 @@ func (r *Resolver) fetch(ctx context.Context, tenantID string) (map[schemas.Mode
 			continue
 		}
 		if isEnc && value != "" {
-			dec, derr := common.Decrypt(value)
+			dec, derr := decrypt(value)
 			if derr != nil {
 				slog.Warn("secrets: could not decrypt config value; skipping", "name", name, "tenant_id", tenantID)
 				continue

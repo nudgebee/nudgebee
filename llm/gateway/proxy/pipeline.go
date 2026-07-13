@@ -13,8 +13,8 @@ import (
 // RequestContext is the mutable state threaded through the request pipeline. It is
 // built once per request after auth, then passed to each Stage in order. Stages
 // read identity/provider and may: rewrite the request shape (route), inject a
-// per-tenant credential onto Bctx (resolver), redact the body (phi), or reject the
-// request (ratelimit/phi). Terminal passthrough + metering are NOT stages — they
+// per-request credential onto Bctx (resolver), filter the body (filter), or reject
+// the request (ratelimit). Terminal passthrough + metering are NOT stages — they
 // run after the pipeline on the (possibly mutated) RequestContext.
 type RequestContext struct {
 	Gin  *gin.Context
@@ -25,7 +25,7 @@ type RequestContext struct {
 	Provider schemas.ModelProvider
 
 	// Mutable request shape. The route stage may rewrite Model/Body/Path (alias/tier
-	// resolution); a future phi stage may redact Body.
+	// resolution); the filter stage may transform Body.
 	Model string
 	Path  string
 	Body  []byte
@@ -42,9 +42,8 @@ type RequestContext struct {
 //     429) and the pipeline must halt without calling the provider.
 //   - a non-nil err is a fatal internal error; the runner writes a 500.
 //
-// The set of stages is where the OSS/EE line is drawn: control stages (route,
-// ratelimit, resolver, phi) are pluggable, so an OSS build can register no-op
-// defaults and an EE build can register the real implementations.
+// The control stages (route, ratelimit, resolver, filter) are pluggable; an unset
+// stage defaults to pass-through.
 type Stage interface {
 	Name() string
 	Handle(rc *RequestContext) (stop bool, err error)

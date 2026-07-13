@@ -28,11 +28,17 @@ api-server/services/ee/
 llm/llm-server/ee/
 llm/llm-server/cmd/imports_enterprise.go
 
-# NB AI Gateway — whole module EE-only for now. The request pipeline
-# (auth → route → ratelimit → resolver → phi → passthrough → meter) is being
-# built with pluggable stages so an OSS subset (tracking + visibility) can be
-# carved out later; until that line is drawn, exclude the entire module.
-llm/gateway/
+# NB AI Gateway — the module ships in OSS (passthrough proxy, auth, engine,
+# metering + usage dashboard, routing types/engine, in-memory rate-limit types).
+# The EE seams are carved into an ee/ subtree, wired through OSS registration
+# hooks (routing.RegisterRuleLoader, ratelimit.RegisterBuilder,
+# proxy.RegisterCredResolver, metering.RegisterBodyLogSink), so removing the
+# subtree + the bridge file below yields a compiling OSS build. EE-only pieces:
+# the DB routing-rule loader, the Redis rate-limit counter store + DB limit
+# loader, the per-tenant BYO-key resolver, and the full-body/PHI log sink.
+llm/gateway/ee/
+llm/gateway/cmd/gateway/imports_enterprise.go
+llm/gateway/docs/
 
 # ─── Frontend (TS / React) ───────────────────────────────────────────
 app/src/ee/

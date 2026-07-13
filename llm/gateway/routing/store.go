@@ -16,6 +16,27 @@ type Resolver interface {
 // LoaderFunc loads the current DB rule set. nil means "no DB source".
 type LoaderFunc func() ([]Rule, error)
 
+// ruleLoaderHook is an optionally-registered dynamic rule-loader factory. When none
+// is registered it is nil (static config-file rules only). Kept as a factory (not a
+// LoaderFunc) so the loader is constructed lazily by RuleLoader, at the point main
+// wires the Store.
+var ruleLoaderHook func() LoaderFunc
+
+// RegisterRuleLoader registers a dynamic rule-loader factory. When none is
+// registered, RuleLoader returns nil and the Store serves static config-file rules
+// only.
+func RegisterRuleLoader(fn func() LoaderFunc) { ruleLoaderHook = fn }
+
+// RuleLoader returns the registered dynamic rule loader, or nil when none is
+// registered (static config-file rules only). main passes the result to NewStore,
+// where a nil loader means "static only".
+func RuleLoader() LoaderFunc {
+	if ruleLoaderHook == nil {
+		return nil
+	}
+	return ruleLoaderHook()
+}
+
 // Store holds the live routing engine, combining static config-file rules with
 // DB rules that are refreshed periodically and hot-swapped atomically. Precedence:
 // within equal priority, tenant rules beat global (Engine), and DB rules beat

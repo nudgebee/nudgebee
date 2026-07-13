@@ -1,7 +1,7 @@
 // Package ratelimit enforces per-tenant/user quotas. Limits (metric × period ×
-// value × scope) are configured in the metastore; live counters are tracked in
-// Redis (distributed across replicas) or in-memory (single-pod dev). Windows are
-// calendar-aligned in UTC — the reset is implicit in the bucket key, no cron.
+// value × scope) are configured in the metastore; live counters are tracked by a
+// CounterStore. Windows are calendar-aligned in UTC — the reset is implicit in the
+// bucket key, no cron.
 package ratelimit
 
 import "time"
@@ -95,7 +95,7 @@ func ttl(p Period) time.Duration {
 	}
 }
 
-// key builds the Redis/counter key for a limit and scope at time t.
+// key builds the counter key for a limit and scope at time t.
 // rl:{tenant}:{user|-}:{metric}:{period}:{bucket}
 func key(tenant, user string, m Metric, p Period, t time.Time) string {
 	if user == "" {

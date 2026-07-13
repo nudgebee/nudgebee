@@ -7,14 +7,15 @@ import (
 	"time"
 
 	"nudgebee/llm-gateway/common"
+	"nudgebee/llm-gateway/ratelimit"
 )
 
 // LoaderFunc loads the current limit set from the metastore.
-type LoaderFunc func() ([]Limit, error)
+type LoaderFunc func() ([]ratelimit.Limit, error)
 
 // LimitStore caches limits from the metastore, refreshed on a ticker. Implements
-// LimitSource. Limits are indexed by tenant (tenant-wide, user_id="") and by
-// tenant|user so LimitsFor is a map lookup, not a scan.
+// ratelimit.LimitSource. Limits are indexed by tenant (tenant-wide, user_id="") and
+// by tenant|user so LimitsFor is a map lookup, not a scan.
 type LimitStore struct {
 	load LoaderFunc
 	cur  atomic.Pointer[limitIndex]
@@ -23,12 +24,12 @@ type LimitStore struct {
 }
 
 type limitIndex struct {
-	byTenant map[string][]Limit // user_id == ""
-	byUser   map[string][]Limit // key: tenant + "|" + user
+	byTenant map[string][]ratelimit.Limit // user_id == ""
+	byUser   map[string][]ratelimit.Limit // key: tenant + "|" + user
 }
 
-func newIndex(limits []Limit) *limitIndex {
-	idx := &limitIndex{byTenant: map[string][]Limit{}, byUser: map[string][]Limit{}}
+func newIndex(limits []ratelimit.Limit) *limitIndex {
+	idx := &limitIndex{byTenant: map[string][]ratelimit.Limit{}, byUser: map[string][]ratelimit.Limit{}}
 	for _, l := range limits {
 		if !l.Enabled {
 			continue
@@ -54,7 +55,7 @@ func NewLimitStore(load LoaderFunc, refresh time.Duration) *LimitStore {
 	return s
 }
 
-func (s *LimitStore) LimitsFor(tenant, user string) []Limit {
+func (s *LimitStore) LimitsFor(tenant, user string) []ratelimit.Limit {
 	idx := s.cur.Load()
 	if idx == nil {
 		return nil
@@ -62,7 +63,7 @@ func (s *LimitStore) LimitsFor(tenant, user string) []Limit {
 	out := idx.byTenant[tenant]
 	if user != "" {
 		if u := idx.byUser[tenant+"|"+user]; len(u) > 0 {
-			out = append(append([]Limit{}, out...), u...)
+			out = append(append([]ratelimit.Limit{}, out...), u...)
 		}
 	}
 	return out
@@ -102,12 +103,12 @@ func (s *LimitStore) Close() error {
 
 // DBLoader reads enabled limits from the metastore.
 func DBLoader() LoaderFunc {
-	return func() ([]Limit, error) {
+	return func() ([]ratelimit.Limit, error) {
 		db, err := common.GetDatabaseManager(common.Metastore)
 		if err != nil {
 			return nil, err
 		}
-		var limits []Limit
+		var limits []ratelimit.Limit
 		if err := db.QueryAndScan(&limits,
 			`SELECT tenant_id, user_id, metric, period, limit_value, enabled
 			   FROM llm_gateway_rate_limits WHERE enabled = true`); err != nil {

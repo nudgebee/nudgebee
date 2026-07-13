@@ -40,8 +40,8 @@ func normalizedCandidates(model string) []string {
 }
 
 // modelPrice holds per-million-token rates for a model (standard tier). Long-
-// context tiers are omitted from the budget ESTIMATE for now — the estimate errs
-// conservative (never under-charges), which is the safe side for budget guardrails.
+// context tiers are omitted from the cost estimate for now — the estimate errs
+// conservative (never under-charges).
 type modelPrice struct {
 	Input         float64 `db:"cost_per_million_input_tokens"`
 	Output        float64 `db:"cost_per_million_output_tokens"`
@@ -51,8 +51,7 @@ type modelPrice struct {
 }
 
 // Pricer computes request cost (USD) from the llm_model_pricing catalog, cached
-// and refreshed. Used to accumulate cost budgets; unknown models cost 0 (can't
-// estimate) and are logged once.
+// and refreshed. Unknown models cost 0 (can't estimate) and are logged once.
 type Pricer struct {
 	cur  atomic.Pointer[map[string]modelPrice]
 	done chan struct{}

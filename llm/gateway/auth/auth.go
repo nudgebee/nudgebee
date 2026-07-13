@@ -86,7 +86,7 @@ func (denyValidator) Validate(string) (Identity, bool) { return Identity{}, fals
 func (denyValidator) RequiresToken() bool              { return true }
 
 // staticValidator matches one configured token (constant-time) → one identity.
-// ASSUMPTION mode: stands in for the real per-tenant user_auths lookup.
+// ASSUMPTION mode: stands in for the real user_auths lookup.
 type staticValidator struct {
 	token    string
 	identity Identity

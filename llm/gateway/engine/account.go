@@ -13,8 +13,8 @@ import (
 //
 //   - GetConfiguredProviders declares which providers the gateway serves.
 //   - GetKeysForProvider returns the credential for the addressed provider. The
-//     ctx can carry NB identity (set before the request) for future per-tenant
-//     resolution; today creds are per-provider from operator config.
+//     ctx can carry NB identity (set before the request); by default creds are
+//     per-provider from operator config.
 //   - GetConfigForProvider returns a config for every configured provider (released
 //     core does NOT auto-initialise on a nil config — it errors "config is nil").
 //     We seed DefaultNetworkConfig so timeouts/retries are set, and leave BaseURL

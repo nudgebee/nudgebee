@@ -1,5 +1,5 @@
 // Command gateway is the NB AI Gateway edge: an everyone-facing service that
-// authenticates NB virtual keys, enforces rate limits/budgets, meters usage,
+// authenticates NB virtual keys, meters usage, optionally enforces rate limits,
 // and forwards traffic to providers via a co-located Bifrost HTTP sidecar
 // (native passthrough). This file is the process bootstrap; concern-specific
 // logic lives in sibling packages (auth, proxy, metering, ratelimit, routing).
@@ -25,7 +25,6 @@ import (
 	"nudgebee/llm-gateway/proxy"
 	"nudgebee/llm-gateway/ratelimit"
 	"nudgebee/llm-gateway/routing"
-	"nudgebee/llm-gateway/secrets"
 	"nudgebee/llm-gateway/usage"
 
 	"github.com/Cyprinus12138/otelgin"
@@ -167,37 +166,32 @@ func main() {
 		common.Close()
 	}()
 
-	// Routing: static config-file rules (fail startup if invalid) + per-tenant DB
-	// rules from the metastore, refreshed periodically and hot-swapped.
+	// Routing: static config-file rules (fail startup if invalid). A dynamic rule
+	// loader may additionally be registered; absent, only the static rules apply.
 	staticRules, err := routing.LoadFile(config.Config.RoutingConfig)
 	if err != nil {
 		slog.Error("main: routing config invalid", "error", err)
 		os.Exit(1)
 	}
+	// RuleLoader returns the registered dynamic rule loader, or nil when none is
+	// registered (static config-file rules only). NewStore treats a nil loader as
+	// "static only". The loader reads the metastore, so it's a no-op when no DB is
+	// configured.
 	var ruleLoader routing.LoaderFunc
 	if config.Config.GatewayDBURL != "" {
-		ruleLoader = routing.DBLoader()
+		ruleLoader = routing.RuleLoader()
 	}
 	router := routing.NewStore(staticRules, ruleLoader,
 		time.Duration(config.Config.RoutingRefreshSeconds)*time.Second)
 	defer func() { _ = router.Close() }()
 
-	// Rate limits + budgets: Redis (or in-memory) counters + metastore-configured
-	// limits + a pricing catalog for cost budgets. Enforcement is a no-op when no
-	// limits are configured.
-	var limiter *ratelimit.Limiter
+	// Rate-limit enforcement is active only when a limiter is registered. ratelimit.Build
+	// returns the registered limiter, or nil when none is registered — a nil *Limiter is
+	// allow-all (Enabled() is nil-safe). The pricing catalog + usage plane stay here.
+	limiter := ratelimit.Build()
+	defer func() { _ = limiter.Close() }() // nil-safe; stops the limit-source refresher
 	var pricer *metering.Pricer
 	if config.Config.GatewayDBURL != "" {
-		counters, cerr := ratelimit.NewStoreFromConfig()
-		if cerr != nil {
-			slog.Error("main: rate-limit counter store init failed", "error", cerr)
-			os.Exit(1)
-		}
-		limits := ratelimit.NewLimitStore(ratelimit.DBLoader(),
-			time.Duration(config.Config.RoutingRefreshSeconds)*time.Second)
-		defer func() { _ = limits.Close() }()
-		limiter = ratelimit.New(counters, limits)
-
 		pricer = metering.NewPricer(5 * time.Minute)
 		defer func() { _ = pricer.Close() }()
 	}
@@ -210,11 +204,10 @@ func main() {
 	}
 
 	// Passthrough edge (/anthropic, /openai, /genai) over the embedded core, with
-	// auth resolving identity from the configured mode (user_auths by default).
-	// Per-tenant provider credentials resolve from the integration tables; when a
-	// tenant has none the request falls back to the operator/account default
-	// (nbAccount). Fail-soft — an unreachable DB just means "use the default".
-	proxy.RegisterRoutes(r, eng.Client, sink, bodyLog, auth.NewValidator(), router, limiter, pricer, secrets.NewResolver())
+	// auth resolving identity from the configured mode (user_auths by default). The
+	// request credential resolver falls back to the operator/account default when
+	// none is registered.
+	proxy.RegisterRoutes(r, eng.Client, sink, bodyLog, auth.NewValidator(), router, limiter, pricer)
 
 	// Read-only usage query plane (POST /rpc/usage/aggregate) for the AI Gateway
 	// dashboard — app → gateway service-to-service, guarded by the action token.

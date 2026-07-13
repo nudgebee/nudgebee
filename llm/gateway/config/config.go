@@ -60,8 +60,7 @@ type Configuration struct {
 	GatewayDBMinConns   int    `mapstructure:"gateway_db_min_connections"`
 	GatewayDBIdleMinute int    `mapstructure:"gateway_db_idle_minutes"`
 
-	// Shared NB AES key (hex) used to decrypt per-tenant provider secrets stored in
-	// integration_config_values. Same key/scheme as llm-server (NUDGEBEE_ENCRYPTION_KEY).
+	// Shared NB key (hex). Same key/scheme as llm-server (NUDGEBEE_ENCRYPTION_KEY).
 	NudgebeeEncryptionKey string `mapstructure:"nudgebee_encryption_key"`
 
 	// Service token for the read-only usage query plane (POST /rpc/usage/*), sent by
@@ -74,9 +73,8 @@ type Configuration struct {
 	MeteringSink  string `mapstructure:"gateway_metering_sink"`
 	ClickhouseURL string `mapstructure:"clickhouse_url"`
 
-	// Cache / Redis — mirrors llm-server's naming so common/cache.go lifts cleanly.
-	// Used for distributed rate limiting/budgets (task 5). cache_provider selects
-	// "redis" (distributed, multi-replica) or "inmemory" (single-pod dev).
+	// Cache — mirrors llm-server's naming so common/cache.go lifts cleanly.
+	// cache_provider selects "redis" (multi-replica) or "inmemory" (single-pod dev).
 	CacheProvider           string `mapstructure:"cache_provider"`
 	CacheExpirationMinutes  int    `mapstructure:"cache_expiration_minutes"`
 	CacheInMemorySizeMb     int    `mapstructure:"cache_inmemory_size_mb"`

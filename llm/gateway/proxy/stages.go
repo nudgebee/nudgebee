@@ -58,20 +58,37 @@ func (s ratelimitStage) Handle(rc *RequestContext) (bool, error) {
 	return true, nil
 }
 
-// CredResolver resolves the provider credential for a specific tenant/request. It is
-// the seam for per-tenant BYO keys: ok=false means "no tenant-specific credential —
-// fall back to the operator/account default" (nbAccount.GetKeysForProvider). The
-// DB-backed implementation (integration tables) plugs in here.
+// CredResolver resolves the provider credential for a specific request. ok=false
+// means "no request-specific credential — fall back to the operator/account default"
+// (nbAccount.GetKeysForProvider). An alternate resolver may be registered.
 type CredResolver interface {
 	Resolve(ctx context.Context, provider schemas.ModelProvider, id auth.Identity) (schemas.Key, bool)
 }
 
-// noopCredResolver always falls back to the account/operator default. It is the OSS
-// default until the per-tenant resolver is registered.
+// noopCredResolver always falls back to the account/operator default. It is the
+// default until an alternate resolver is registered.
 type noopCredResolver struct{}
 
 func (noopCredResolver) Resolve(context.Context, schemas.ModelProvider, auth.Identity) (schemas.Key, bool) {
 	return schemas.Key{}, false
+}
+
+// credResolverHook is an optionally-registered credential resolver. When none is
+// registered it is nil and credResolver falls back to noopCredResolver (operator
+// default).
+var credResolverHook CredResolver
+
+// RegisterCredResolver registers an alternate credential resolver. When none is
+// registered, credResolver returns the no-op (operator/account default) resolver.
+func RegisterCredResolver(cr CredResolver) { credResolverHook = cr }
+
+// credResolver returns the registered resolver, or the no-op default (falls back to
+// the operator/account credential).
+func credResolver() CredResolver {
+	if credResolverHook == nil {
+		return noopCredResolver{}
+	}
+	return credResolverHook
 }
 
 // resolverStage injects the tenant's provider credential for THIS request. When one
@@ -89,9 +106,8 @@ func (s resolverStage) Handle(rc *RequestContext) (bool, error) {
 	return false, nil
 }
 
-// phiStage is the seam for PHI/DLP handling (redaction, secret-blocking) on the
-// outbound body. No-op today; the P2 guardrails implementation plugs in here.
-type phiStage struct{}
+// filterStage is an outbound-body filter seam; no-op by default.
+type filterStage struct{}
 
-func (phiStage) Name() string                         { return "phi" }
-func (phiStage) Handle(*RequestContext) (bool, error) { return false, nil }
+func (filterStage) Name() string                         { return "filter" }
+func (filterStage) Handle(*RequestContext) (bool, error) { return false, nil }
