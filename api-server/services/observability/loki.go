@@ -898,8 +898,17 @@ func (s *LokiSource) ExtractDataSliceFromRelay(resp map[string]any) ([]any, erro
 	if !ok || nestedData == nil {
 		return nil, fmt.Errorf("nested 'data' field not found or is nil in response: %v", data["data"])
 	}
+	// Loki returns {"status":"success"} with a null/absent data array when the
+	// query is valid but no labels exist in the time range (e.g. the range is
+	// past retention). Treat that as an empty result, not an error.
+	if nestedData["data"] == nil {
+		if status, _ := nestedData["status"].(string); status == "success" {
+			return []any{}, nil
+		}
+		return nil, fmt.Errorf("relay response has no 'data' and status is not success: %v", nestedData)
+	}
 	values, ok := nestedData["data"].([]interface{})
-	if !ok || values == nil {
+	if !ok {
 		return nil, fmt.Errorf("expected 'data' to be a slice but it was not or was nil")
 	}
 	return values, nil
@@ -941,7 +950,7 @@ func (s *LokiSource) QueryLabels(ctx *security.RequestContext, fetchLogRequest F
 		return nil, err
 	}
 
-	var output []OutputLogLabel
+	output := []OutputLogLabel{}
 	for _, v := range data3 {
 		if str, ok := v.(string); ok {
 			output = append(output, OutputLogLabel{

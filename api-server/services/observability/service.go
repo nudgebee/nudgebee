@@ -562,7 +562,32 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		}
 	}
 
+	// Snapshot the label names the caller referenced BEFORE the query runs, so a
+	// time range or other filter the backend injects during execution is not
+	// mistaken for a user-supplied label during validation below.
+	var referencedLabels map[string]struct{}
+	if fetchLogRequest.ValidateRequest {
+		referencedLabels = map[string]struct{}{}
+		collectWhereFieldNames(fetchLogRequest.QueryRequest.Where, referencedLabels)
+	}
+
 	logs, err := source.QueryLogs(ctx, fetchLogRequest)
+
+	// A query that matched nothing — or that failed with a backend error — is
+	// frequently caused by a mistyped label NAME in the where-clause (e.g.
+	// "service_nam" instead of "service_name"). Some backends silently return
+	// zero rows for an unknown label (Loki); others reject the query (ClickHouse).
+	// Either way the caller — notably an LLM agent — can't tell it should fix the
+	// label name. When the caller opts in via ValidateRequest, cross-check the
+	// referenced label names against the labels the provider exposes and, if any
+	// are unknown, replace the result with an actionable message. Best-effort: if
+	// every referenced label is recognized (or the label set can't be
+	// determined), fall through to the original error / empty result.
+	if fetchLogRequest.ValidateRequest && (err != nil || len(logs) == 0) {
+		if verr := validateReferencedLabels(ctx, source, fetchLogRequest, referencedLabels, filteringMap); verr != nil {
+			return FetchLogsResult{}, verr
+		}
+	}
 	if err != nil {
 		return FetchLogsResult{}, err
 	}
@@ -589,6 +614,164 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		}
 	}
 	return FetchLogsResult{Logs: logs, Query: usedQuery, Provider: provider}, nil
+}
+
+// lineContentFields are where-clause fields that filter the log message body
+// rather than a label. They are never returned by the backends' label-key APIs,
+// so they must be excluded from label-name validation to avoid false positives.
+var lineContentFields = []string{"content", "log", "message", "body", "line", "_line"}
+
+// collectWhereFieldNames walks a canonical where-clause and records every field
+// name referenced by a binary condition, across nested _and / _or / _not.
+func collectWhereFieldNames(where query.QueryWhereClause, out map[string]struct{}) {
+	for field := range where.Binary {
+		out[field] = struct{}{}
+	}
+	for _, c := range where.And {
+		collectWhereFieldNames(c, out)
+	}
+	for _, c := range where.Or {
+		collectWhereFieldNames(c, out)
+	}
+	if where.Not != nil {
+		collectWhereFieldNames(*where.Not, out)
+	}
+}
+
+// suggestLabels returns up to a few available labels that look related to an unknown
+// one (case-insensitive substring, either direction), so a typo can be corrected
+// without dumping the provider's full label list — which for trace backends can run to
+// hundreds of attributes and waste caller (LLM) tokens.
+func suggestLabels(unknown, available []string) []string {
+	const maxSuggestions = 5
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, u := range unknown {
+		lu := strings.ToLower(u)
+		for _, a := range available {
+			la := strings.ToLower(a)
+			if !strings.Contains(la, lu) && !strings.Contains(lu, la) {
+				continue
+			}
+			if _, ok := seen[a]; ok {
+				continue
+			}
+			seen[a] = struct{}{}
+			out = append(out, a)
+			if len(out) >= maxSuggestions {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+// unknownLabelError builds the actionable, token-conscious error returned when a query
+// references label names the provider doesn't expose. It names the unknown label(s) and
+// either the closest valid matches or a pointer to the label-listing action — never the
+// full label list. noun is "logs"/"traces", providerNoun is "log"/"trace".
+func unknownLabelError(noun, providerNoun, listAction string, unknown, available []string) error {
+	if suggestions := suggestLabels(unknown, available); len(suggestions) > 0 {
+		return fmt.Errorf("no %s matched: unknown label name(s) %v for this %s provider; closest valid label(s): %v", noun, unknown, providerNoun, suggestions)
+	}
+	return fmt.Errorf("no %s matched: unknown label name(s) %v for this %s provider; call %s for valid names", noun, unknown, providerNoun, listAction)
+}
+
+// unknownReferencedLabels partitions the referenced field names against the set the
+// provider recognizes. A field is "known" if the backend exposes it as a label
+// (availableLabels), it is an alias in the label mapping (either canonical or provider
+// side), or it is a line-content filter. It returns the sorted unknown fields and the
+// sorted available labels. Shared by the log and trace validators.
+func unknownReferencedLabels(referenced map[string]struct{}, availableLabels []string, filteringMap map[string]string) (unknown, available []string) {
+	known := make(map[string]struct{}, len(availableLabels)+len(filteringMap)*2+len(lineContentFields))
+	available = make([]string, 0, len(availableLabels))
+	for _, l := range availableLabels {
+		known[l] = struct{}{}
+		available = append(available, l)
+	}
+	for canonical, providerKey := range filteringMap {
+		known[canonical] = struct{}{}
+		known[providerKey] = struct{}{}
+	}
+	for _, f := range lineContentFields {
+		known[f] = struct{}{}
+	}
+	for f := range referenced {
+		if _, ok := known[f]; !ok {
+			unknown = append(unknown, f)
+		}
+	}
+	sort.Strings(unknown)
+	sort.Strings(available)
+	return unknown, available
+}
+
+// validateReferencedLabels checks, for a query that returned no logs (or failed),
+// whether the caller's where-clause references label names the log provider does not
+// expose. `referenced` is the set of field names snapshotted BEFORE the query ran, so
+// filters the backend injects during execution (e.g. a time range) are excluded. It
+// returns an actionable error naming the unknown label(s) and listing the available
+// ones, or nil when every referenced field is recognized. Best-effort: if the
+// available label set cannot be determined, it returns nil so the original error /
+// empty result is preserved. The referenced fields are in provider label space
+// (mapping was applied upstream in FetchLogs), matching the space QueryLabels returns.
+func validateReferencedLabels(ctx *security.RequestContext, source LogSource, fetchLogRequest FetchLogRequest, referenced map[string]struct{}, filteringMap map[string]string) error {
+	if len(referenced) == 0 {
+		return nil
+	}
+	labels, err := source.QueryLabels(ctx, FetchLogLabelRequest{
+		AccountId:         fetchLogRequest.AccountId,
+		LogProvider:       fetchLogRequest.LogProvider,
+		LogProviderSource: fetchLogRequest.LogProviderSource,
+		StartTime:         fetchLogRequest.StartTime,
+		EndTime:           fetchLogRequest.EndTime,
+	})
+	if err != nil || len(labels) == 0 {
+		// Cannot determine the available label set — don't block the query.
+		return nil
+	}
+	names := make([]string, len(labels))
+	for i, l := range labels {
+		names[i] = l.Label
+	}
+	unknown, available := unknownReferencedLabels(referenced, names, filteringMap)
+	if len(unknown) == 0 {
+		return nil
+	}
+	return unknownLabelError("logs", "log", "logs_list_labels", unknown, available)
+}
+
+// validateReferencedTraceLabels is the trace counterpart of validateReferencedLabels.
+// It validates against the same authoritative label set FetchTraceLabels exposes — the
+// canonical trace fields unioned with the merged label mapping and any backend-discovered
+// keys — because raw QueryLabels omits the canonical columns (service_name, span_name, …)
+// and would false-positive on them. mergedMapping is the caller's merged trace label
+// mapping. Fails open when live label discovery errors.
+func validateReferencedTraceLabels(ctx *security.RequestContext, source TraceSource, fetchTracesRequest TracesV3Request, referenced map[string]struct{}, mergedMapping map[string]string) error {
+	if len(referenced) == 0 {
+		return nil
+	}
+	discovered, err := source.QueryLabels(ctx, FetchTraceLabelRequest{
+		AccountId:      fetchTracesRequest.AccountId,
+		ProviderType:   fetchTracesRequest.ProviderType,
+		ProviderSource: fetchTracesRequest.ProviderSource,
+		StartTime:      fetchTracesRequest.StartTime,
+		EndTime:        fetchTracesRequest.EndTime,
+	})
+	if err != nil {
+		// Live discovery failed — can't confirm the backend label set; don't block.
+		return nil
+	}
+	authoritative := buildTraceLabels(mergedMapping, discovered)
+	names := make([]string, len(authoritative))
+	for i, l := range authoritative {
+		names[i] = l.Label
+	}
+	unknown, available := unknownReferencedLabels(referenced, names, mergedMapping)
+	if len(unknown) == 0 {
+		return nil
+	}
+	return unknownLabelError("traces", "trace", "traces_list_labels", unknown, available)
 }
 
 // normalizeOutputLogLabels adds canonical label names as aliases for provider-specific
@@ -1255,7 +1438,23 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 	filteringMap := source.GetLabelMapping()
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
-	return source.QueryTraces(context, fetchTracesRequest)
+	var referencedLabels map[string]struct{}
+	if fetchTracesRequest.ValidateRequest {
+		referencedLabels = map[string]struct{}{}
+		collectWhereFieldNames(fetchTracesRequest.QueryRequest.Where, referencedLabels)
+	}
+
+	traces, err := source.QueryTraces(context, fetchTracesRequest)
+	if fetchTracesRequest.ValidateRequest && (err != nil || len(traces) == 0) {
+		mergedMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId, source)
+		if verr := validateReferencedTraceLabels(context, source, fetchTracesRequest, referencedLabels, mergedMap); verr != nil {
+			return nil, verr
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return traces, nil
 }
 
 // GetRootSpansByTrace resolves the trace source and returns one root span per trace for the
@@ -1343,7 +1542,19 @@ func GetTracesWithRawResult(context *security.RequestContext, fetchTracesRequest
 	filteringMap := source.GetLabelMapping()
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
+	var referencedLabels map[string]struct{}
+	if fetchTracesRequest.ValidateRequest {
+		referencedLabels = map[string]struct{}{}
+		collectWhereFieldNames(fetchTracesRequest.QueryRequest.Where, referencedLabels)
+	}
+
 	raw, err := clickhouseSource.QueryTracesRaw(context, fetchTracesRequest)
+	if fetchTracesRequest.ValidateRequest && (err != nil || len(raw.Rows) == 0) {
+		mergedMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId, source)
+		if verr := validateReferencedTraceLabels(context, source, fetchTracesRequest, referencedLabels, mergedMap); verr != nil {
+			return TracesQueryResult{}, verr
+		}
+	}
 	if err != nil {
 		return TracesQueryResult{}, err
 	}

@@ -28,6 +28,12 @@ type FetchLogRequest struct {
 	StepInterval      int                     `json:"step_interval"`
 	Request           map[string]any          `json:"request"`
 	QueryRequest      LogsQueryBuilderRequest `json:"query_request"`
+	// ValidateRequest, when true, makes a query that returns no logs cross-check
+	// the referenced label NAMES against the labels the provider exposes and fail
+	// with an actionable error if any are unknown (e.g. a mistyped label name).
+	// Off by default so existing callers keep the plain empty-result behavior;
+	// opt-in callers (notably the LLM agent) enable it to self-correct.
+	ValidateRequest bool `json:"validate_request"`
 }
 
 type OutputLog struct {
@@ -340,6 +346,11 @@ type TracesV3Request struct {
 	// coercion in MapRowToOpenTelemetryTrace silently zeroes aggregation / custom-projection
 	// columns (e.g. avg(duration_ns), quantile(...)) — the raw table preserves them.
 	IncludeRawResult bool `json:"include_raw_result" mapstructure:"include_raw_result"`
+	// ValidateRequest mirrors FetchLogRequest.ValidateRequest for traces: when true,
+	// a query that returns no traces cross-checks the referenced label NAMES against
+	// the labels the trace provider exposes and fails with an actionable error if any
+	// are unknown. Off by default; opt-in callers (notably the LLM agent) enable it.
+	ValidateRequest bool `json:"validate_request" mapstructure:"validate_request"`
 }
 
 // RawTraceResult carries an arbitrary ClickHouse result set with column order and types preserved.

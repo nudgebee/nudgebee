@@ -110,6 +110,12 @@ type LogQueryRequest struct {
 	// v2 path; nil (omitted) for the legacy path that sends a pre-built Query,
 	// keeping that payload byte-identical.
 	QueryRequest *LogsQueryBuilderRequest `json:"query_request,omitempty"`
+	// ValidateRequest opts into services-server's label-name validation: when a
+	// where-clause query returns no logs (or errors), referenced label names are
+	// cross-checked against the provider's labels and an actionable error is
+	// returned instead of a silent empty result. Set by the canonical fetch_logs
+	// path so the agent can self-correct a mistyped label name.
+	ValidateRequest bool `json:"validate_request,omitempty"`
 }
 
 // LogsQueryBuilderRequest mirrors services-server's observability.LogsQueryBuilderRequest

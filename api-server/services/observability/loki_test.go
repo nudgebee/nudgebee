@@ -2278,6 +2278,28 @@ func TestLokiSource_QueryLabels_E2E(t *testing.T) {
 			expectedLabels: []string{"workload_namespace", "service_name"},
 		},
 		{
+			// Loki returns {"status":"success"} with no data array when the
+			// query is valid but the time range holds no logs (e.g. past
+			// retention). This must be an empty result, not an error.
+			name: "Success with no data (past retention)",
+			request: FetchLogLabelRequest{
+				AccountId:         testAccountID,
+				LogProvider:       "loki",
+				LogProviderSource: "grafana",
+				Request:           map[string]any{},
+				StartTime:         testStartTime,
+				EndTime:           testEndTime,
+			},
+			mockResponse: map[string]any{
+				"data": map[string]any{
+					"data": map[string]any{
+						"status": "success",
+					},
+				},
+			},
+			expectedLabels: []string{},
+		},
+		{
 			name: "Relay error",
 			request: FetchLogLabelRequest{
 				AccountId:         testAccountID,

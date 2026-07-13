@@ -210,6 +210,11 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		Request:      p.request,
 		Index:        p.index,
 		QueryRequest: &services_server.LogsQueryBuilderRequest{Where: where},
+		// Opt into label-name validation: on an empty/failed result the agent gets
+		// an actionable error naming the mistyped label instead of a silent empty
+		// result, so it can self-correct. Only meaningful on this canonical path,
+		// which sends the structured where-clause services-server validates.
+		ValidateRequest: true,
 	}
 
 	// Dev-only escape hatch: when an operator pins a provider via
