@@ -2250,7 +2250,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"code_analysis_rules":          prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
 		"security_rules":               prompts_repo.GetPrompt(prompts_repo.PromptSharedSecurityRules),
 		"memory_consumption_rules":     "",
-		"async_completion_rules":       WatchAsyncCompletionRulesPrompt(),
+		"async_completion_rules":       asyncCompletionRules(agent),
 		// Human message template vars (dynamic — change per conversation/iteration)
 		"today":                    time.Now().Format("January 02, 2006"),
 		"history":                  previousMessageStr,

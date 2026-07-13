@@ -187,6 +187,10 @@ func (l KubectlAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
 
+// IsWatchCapable: can apply mutating kubectl (rollout/scale/restart) whose
+// outcome completes later, so it may register a background watch.
+func (l KubectlAgent) IsWatchCapable() bool { return true }
+
 func (l KubectlAgent) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
 }

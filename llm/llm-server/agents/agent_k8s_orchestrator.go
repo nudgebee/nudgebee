@@ -135,6 +135,10 @@ func (l *K8sOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
+// IsWatchCapable: drives action sub-agents (restart/scale/rollout) whose outcome
+// completes later, so it may register a background watch.
+func (l *K8sOrchestratorAgent) IsWatchCapable() bool { return true }
+
 func (l *K8sOrchestratorAgent) GetModelCategory() core.ModelTier {
 	return core.ModelTierReasoning
 }

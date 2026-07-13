@@ -220,6 +220,10 @@ func (r RemediationAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
 
+// IsWatchCapable: applies remediations (rollout/restart/scale) whose outcome
+// completes later, so it may register a background watch.
+func (r RemediationAgent) IsWatchCapable() bool { return true }
+
 func (r RemediationAgent) UpdateExecutorLlmResponse(
 	actions []core.NBAgentPlannerToolAction,
 	finished *core.NBAgentPlannerFinishAction,

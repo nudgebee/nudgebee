@@ -49,6 +49,33 @@ func isWatchToolName(name string) bool {
 	return false
 }
 
+// WatchCapable is implemented by agents that take async mutating actions worth a
+// background watch. Default is OFF (read-only); only such agents opt in.
+type WatchCapable interface {
+	IsWatchCapable() bool
+}
+
+// agentWatchCapable reports whether watch tools + the async prompt wire for this
+// agent. False unless it implements WatchCapable returning true.
+func agentWatchCapable(agent NBAgent) bool {
+	if agent == nil {
+		return false
+	}
+	if w, ok := agent.(WatchCapable); ok {
+		return w.IsWatchCapable()
+	}
+	return false
+}
+
+// asyncCompletionRules returns the async prompt body for a watch-capable agent, or
+// "" for read-only agents (and when the flag is off).
+func asyncCompletionRules(agent NBAgent) string {
+	if !agentWatchCapable(agent) {
+		return ""
+	}
+	return WatchAsyncCompletionRulesPrompt()
+}
+
 // DefaultToolsOptOut lets an agent decline the planner's automatic default-tool injection
 // (shell_execute, load_skills). Implement and return true for agents whose tool list is
 // already curated by their parent — most importantly the dynamic delegate sub-agent, where
@@ -103,12 +130,10 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 		})
 	}
 
-	// 3. Inject watch tools globally when enabled. Mirrors the shell_execute pattern: any
-	// agent that takes async write actions (rollouts, jobs, helm/argocd/cert-manager,
-	// cloud-provider stack ops, github workflows, etc.) gets the same uniform watch
-	// capability, so we don't have to wire it per-agent. Same opt-out semantics as shell.
+	// 3. Inject watch tools only for watch-capable agents (read-only investigators
+	// would just register spurious watches). Still honours skipInjection.
 	if config.Config.WatchEnabled {
-		if !skipInjection {
+		if !skipInjection && agentWatchCapable(agent) {
 			for _, watchToolName := range watchToolNames {
 				already := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
 					return strings.EqualFold(t.Name(), watchToolName)

@@ -411,6 +411,10 @@ func (a GithubAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
 
+// IsWatchCapable: triggers workflow reruns whose outcome completes later, so it
+// may register a background watch.
+func (a GithubAgent) IsWatchCapable() bool { return true }
+
 func (a GithubAgent) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
 }

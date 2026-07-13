@@ -52,6 +52,10 @@ func (a *DatadogOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
+// IsWatchCapable: drives action sub-agents whose async outcome completes later,
+// so it may register a background watch.
+func (a *DatadogOrchestratorAgent) IsWatchCapable() bool { return true }
+
 func (a *DatadogOrchestratorAgent) GetModelCategory() core.ModelTier {
 	return core.ModelTierReasoning
 }
