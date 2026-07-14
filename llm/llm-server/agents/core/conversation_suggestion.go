@@ -7,6 +7,7 @@ import (
 	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
+	"sort"
 	"strings"
 	"time"
 
@@ -54,21 +55,32 @@ func HandleConversationSuggestionRequest(ctx *security.RequestContext, request C
 		}
 	}
 
-	agents := []string{}
-	for _, a := range ListAgents(ctx, request.AccountId, true) {
-		agentsData := fmt.Sprintf("%s:  %s", a.Name, a.Description)
-		agents = append(agents, agentsData)
+	// Build the per-account tools list. Sort by agent name so the byte
+	// sequence is deterministic across calls — ListAgents iterates a
+	// map internally and Go map iteration is intentionally randomized,
+	// so without this sort the cache blob would differ every call and
+	// hit rate would collapse to ~0%.
+	agentDtos := ListAgents(ctx, request.AccountId, true)
+	sort.SliceStable(agentDtos, func(i, j int) bool { return agentDtos[i].Name < agentDtos[j].Name })
+	agents := make([]string, 0, len(agentDtos))
+	for _, a := range agentDtos {
+		agents = append(agents, fmt.Sprintf("%s:  %s", a.Name, a.Description))
 	}
 
+	// Put the tools list in a second system message so it's captured by
+	// the Account-scope cache below (stable per account, changes only
+	// when agents are enabled/disabled). Previously this was inlined into
+	// the human message, which meant ~500-800 tokens of per-account-static
+	// content shipped fresh on every call.
 	llmMessages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, llmSystemInstructionForSuggestions),
+		llms.TextParts(llms.ChatMessageTypeSystem, "available_tools:\n"+strings.Join(agents, "\n")),
 		llms.TextParts(
 			llms.ChatMessageTypeHuman,
 			fmt.Sprintf(
-				"question: %s\nanswer: %s\navailable_tools:\n%s",
+				"question: %s\nanswer: %s",
 				mesasge.Message,
 				mesasge.Response,
-				strings.Join(agents, "\n"),
 			),
 		),
 	}
@@ -77,10 +89,14 @@ func HandleConversationSuggestionRequest(ctx *security.RequestContext, request C
 	var response *llms.ContentResponse
 	var lastErr error
 
-	// Create context with Global Cache Scope since suggestions use a static system prompt
+	// Account cache scope: the second system message above contains the
+	// per-account available_tools list, so different accounts must land in
+	// different cache slots. Global scope keys on agent+model only (see
+	// generateCacheKey), which would cause every account to thrash a single
+	// shared slot each time the tools-list bytes differ.
 	suggestionCtx := security.NewRequestContext(
 		context.WithValue(
-			context.WithValue(ctx.GetContext(), ContextKeyCacheScope, CacheScopeGlobal),
+			context.WithValue(ctx.GetContext(), ContextKeyCacheScope, CacheScopeAccount),
 			ContextKeyModelTier, ModelTierSummary,
 		),
 		ctx.GetSecurityContext(),
