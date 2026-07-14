@@ -75,6 +75,13 @@ func NewRequestContext(context context.Context, securityContext *SecurityContext
 	if tracer == nil {
 		tracer = otel.GetTracerProvider().Tracer("nudgebee-llm")
 	}
+	// Stamp the active trace_id / span_id onto the logger so every line logged
+	// through this context correlates with the rest of the platform in Loki.
+	// Only when a real span is present — a background context leaves the logger
+	// untouched rather than emitting an all-zero trace_id.
+	if sc := trace.SpanContextFromContext(context); sc.IsValid() {
+		logger = logger.With("trace_id", sc.TraceID().String(), "span_id", sc.SpanID().String())
+	}
 	return &RequestContext{context: context, securityContext: securityContext, logger: logger, tracer: tracer, meter: meter}
 }
 
@@ -101,10 +108,14 @@ func NewRequestContextForTenantAdmin(tenantId string) *RequestContext {
 // so downstream writes (token usage, conversations) are stamped with the system
 // user instead of an empty string, which a uuid column rejects (SQLSTATE 22P02).
 // Roles and account scope are identical to NewRequestContextForTenantAdmin.
-func NewRequestContextForTenantAdminWithUser(tenantId, userId string) *RequestContext {
+//
+// ctx carries the upstream trace context (e.g. the MQ consumer span extracted
+// from the message headers) so the distributed trace continues from the
+// publisher into this flow. Pass context.Background() when there is genuinely no
+// upstream trace.
+func NewRequestContextForTenantAdminWithUser(ctx context.Context, tenantId, userId string) *RequestContext {
 	sc := NewSecurityContextForTenantAccountAdmin(tenantId, userId, nil)
-	t := otel.GetTracerProvider().Tracer("nudgebee-llm")
-	return &RequestContext{context: context.Background(), securityContext: sc, logger: slog.Default(), tracer: t, meter: nil}
+	return NewRequestContext(ctx, sc, slog.Default(), nil, nil)
 }
 
 // CustomJSONHandler restructures log JSON output.

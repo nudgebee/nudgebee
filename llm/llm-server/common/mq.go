@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"log/slog"
@@ -10,7 +11,31 @@ import (
 	"time"
 
 	"github.com/wagslane/go-rabbitmq"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// mqExtractContext continues the distributed trace: it extracts the W3C context
+// the publisher injected into the AMQP headers and starts a consumer span, so
+// the processor's logs / outbound calls share the same trace_id as the
+// publisher. Mirrors the consumer path in api-server / cloud-collector mq.go.
+func mqExtractContext(headers map[string]interface{}) (context.Context, trace.Span) {
+	carrier := propagation.MapCarrier{}
+	for k, v := range headers {
+		// AMQP header values arrive as string or, depending on the publisher's
+		// client library / broker encoding, []byte. Handle both so trace
+		// context extraction doesn't silently fail.
+		switch val := v.(type) {
+		case string:
+			carrier[k] = val
+		case []byte:
+			carrier[k] = string(val)
+		}
+	}
+	ctx := otel.GetTextMapPropagator().Extract(context.Background(), carrier)
+	return otel.Tracer("mq").Start(ctx, "rabbitmq.consume", trace.WithSpanKind(trace.SpanKindConsumer))
+}
 
 var (
 	rbmqConnOnce sync.Once
@@ -96,7 +121,7 @@ func MqClose() {
 	rbmqConn = nil
 }
 
-func MqConsume(exchangeName string, routingKey string, queue string, processor func(data []byte) error) error {
+func MqConsume(exchangeName string, routingKey string, queue string, processor func(ctx context.Context, data []byte) error) error {
 	conn := getConnection()
 	if conn == nil {
 		slog.Error("rbmq: error connecting to rabbitmq")
@@ -148,7 +173,9 @@ func MqConsume(exchangeName string, routingKey string, queue string, processor f
 		for {
 			err := consumer.Run(
 				func(d rabbitmq.Delivery) rabbitmq.Action {
-					if perr := processor(d.Body); perr != nil {
+					ctx, span := mqExtractContext(d.Headers)
+					defer span.End()
+					if perr := processor(ctx, d.Body); perr != nil {
 						log.Printf("rbmq: error processing message on %s: %s", queue, perr)
 						return rabbitmq.NackRequeue
 					}
@@ -198,7 +225,7 @@ func MqConsume(exchangeName string, routingKey string, queue string, processor f
 // "<exchangeName>_<ServerName>" so the queue is uniquely owned by this
 // pod's connection and cleaned up by RabbitMQ when the pod disconnects.
 // No leaked queues survive a pod restart.
-func MqFanoutSubscribe(exchangeName string, processor func(data []byte) error) error {
+func MqFanoutSubscribe(exchangeName string, processor func(ctx context.Context, data []byte) error) error {
 	conn := getConnection()
 	if conn == nil {
 		slog.Error("rbmq: error connecting to rabbitmq for fanout subscribe")
@@ -244,7 +271,9 @@ func MqFanoutSubscribe(exchangeName string, processor func(data []byte) error) e
 		for {
 			err := consumer.Run(
 				func(d rabbitmq.Delivery) rabbitmq.Action {
-					if perr := processor(d.Body); perr != nil {
+					ctx, span := mqExtractContext(d.Headers)
+					defer span.End()
+					if perr := processor(ctx, d.Body); perr != nil {
 						log.Printf("rbmq fanout: error processing message on %s: %s", exchangeName, perr)
 						return rabbitmq.NackRequeue
 					}
@@ -281,6 +310,27 @@ func MqFanoutSubscribe(exchangeName string, processor func(data []byte) error) e
 }
 
 func MqPublish(exchangeName string, routingKey string, message ...any) error {
+	return mqPublish(context.Background(), exchangeName, routingKey, message...)
+}
+
+// MqPublishWithContext threads a request context into the publish so the active
+// W3C trace context (traceparent) is injected into the message headers. The
+// consuming service can then extract it and continue the same distributed trace.
+func MqPublishWithContext(ctx context.Context, exchangeName string, routingKey string, message ...any) error {
+	return mqPublish(ctx, exchangeName, routingKey, message...)
+}
+
+func mqPublish(ctx context.Context, exchangeName string, routingKey string, message ...any) error {
+	// Base header carried on every publish, plus the active W3C trace context
+	// (traceparent) injected from ctx so the consumer can continue the trace.
+	// A background ctx (the MqPublish path) simply has no span to inject.
+	headers := map[string]any{"x-nb-source": config.Config.OtelServiceName}
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	for k, v := range carrier {
+		headers[k] = v
+	}
+
 	var err error
 	for range maxAttempts {
 		err = nil
@@ -340,7 +390,7 @@ func MqPublish(exchangeName string, routingKey string, message ...any) error {
 				[]string{routingKey},
 				rabbitmq.WithPublishOptionsContentType("application/json"),
 				rabbitmq.WithPublishOptionsExchange(exchangeName),
-				rabbitmq.WithPublishOptionsHeaders(map[string]any{"x-nb-source": config.Config.OtelServiceName}),
+				rabbitmq.WithPublishOptionsHeaders(headers),
 			)
 			if err != nil {
 				break
