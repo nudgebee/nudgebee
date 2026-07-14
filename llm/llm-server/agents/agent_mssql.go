@@ -45,17 +45,18 @@ func (l MSSQLDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 
 	instructions := []string{
 		"**1. Analyze the Request:** Identify the goal (e.g., table structure, query optimization, data retrieval, performance diagnostics).",
-		"**2. Formulate T-SQL:** Construct a valid T-SQL `SELECT` query. **CRITICAL:** You are strictly forbidden from using `CREATE`, `UPDATE`, `DELETE`, `INSERT`, `DROP`, `ALTER`, or `EXEC` statements.",
-		"**3. Execute Query:** Use the `mssql_query_execute` tool with the following parameters:",
+		"**2. Introspect Unfamiliar Tables (MANDATORY):** For any table you have not already queried in this conversation, first run the schema-introspection query described in the constraints. Skipping this typically costs 3+ terminal `Invalid column name` / `Invalid object name` errors before landing on the right shape.",
+		"**3. Formulate T-SQL:** Construct a valid T-SQL `SELECT` query using the column names verified in step 2. **CRITICAL:** You are strictly forbidden from using `CREATE`, `UPDATE`, `DELETE`, `INSERT`, `DROP`, `ALTER`, or `EXEC` statements.",
+		"**4. Execute Query:** Use the `mssql_query_execute` tool with the following parameters:",
 		"   - `query` (Required): The T-SQL query string.",
 		"   - `database` (Optional): The specific database name if provided by the user.",
-		"**4. Interpret & Summarize:** Analyze the returned results. If no data is found, explain why.",
+		"**5. Interpret & Summarize:** Analyze the returned results. If no data is found, explain why.",
 	}
 
 	constraints := []string{
 		"You MUST use the `mssql_query_execute` tool for all database interactions. Do NOT provide answers without evidence from the database.",
 		"When broad data is requested (e.g., 'all users'), do NOT add restrictive filters unless requested.",
-		"If schema information is needed, query `INFORMATION_SCHEMA.TABLES` and `INFORMATION_SCHEMA.COLUMNS` first.",
+		"**Schema-first for unfamiliar tables (MANDATORY).** Before writing a `SELECT` against any table you have not already queried in this conversation, first introspect its columns via `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '<table>' AND TABLE_SCHEMA = 'dbo'` (and, if you're unsure the table even exists, `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME LIKE '%<pattern>%' AND TABLE_SCHEMA = 'dbo'` first). **Filter by `TABLE_SCHEMA` (default `'dbo'`, replace with the active schema when the user names one)** — without it `INFORMATION_SCHEMA` returns rows across every schema and you'll get duplicate/misleading columns when the same table name lives in multiple schemas. Both table and column hallucination are common failure modes; one introspection query prevents 3+ terminal `Invalid column name` / `Invalid object name` errors.",
 		"Use T-SQL syntax (not MySQL or PostgreSQL syntax). For example, use `TOP N` instead of `LIMIT N`.",
 		"For performance diagnostics, use Dynamic Management Views (DMVs) such as `sys.dm_exec_requests`, `sys.dm_exec_sessions`, `sys.dm_exec_query_stats`.",
 	}
@@ -68,6 +69,20 @@ func (l MSSQLDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 	}
 
 	examples := []core.NBAgentPromptExample{
+		{
+			Question: "Get order counts per customer in the sales DB",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolExecuteMSSQLQuery,
+					Input: `{"query": "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'orders' AND TABLE_SCHEMA = 'dbo'", "database": "sales"}`,
+				},
+				{
+					Tool:  tools.ToolExecuteMSSQLQuery,
+					Input: `{"query": "SELECT TOP 20 customer_id, COUNT(*) AS order_count FROM orders GROUP BY customer_id ORDER BY order_count DESC", "database": "sales"}`,
+				},
+			},
+			Explanation: "Introspect `orders` columns first to verify the join key is `customer_id` (not `customer` or `client_id` — common LLM guesses). Then the aggregation. The introspection cost is one query; the guess-and-fail alternative would cost 2-3 `Invalid column name` errors.",
+		},
 		{
 			Question: "Show me long running queries?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{

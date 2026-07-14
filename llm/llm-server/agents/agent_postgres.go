@@ -53,18 +53,19 @@ func (l PostgresDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query 
 
 	instructions := []string{
 		"**1. Analyze the Request:** Determine the goal (e.g., performance tuning, lock analysis, general investigation).",
-		"**2. Formulate Query:** Construct a valid PostgreSQL `SELECT` query. **CRITICAL:** You are strictly forbidden from using `CREATE`, `UPDATE`, `DELETE`, or `INSERT` statements.",
-		"**3. Execute Query:** Use the `postgres_query_execute` tool with the following parameters:",
+		"**2. Introspect Unfamiliar Tables (MANDATORY):** For any table you have not already queried in this conversation, first run the schema-introspection query described in the constraints. Skipping this typically costs 3+ terminal `column X does not exist` / `relation Y does not exist` errors before landing on the right shape.",
+		"**3. Formulate Query:** Construct a valid PostgreSQL `SELECT` query using the column names verified in step 2. **CRITICAL:** You are strictly forbidden from using `CREATE`, `UPDATE`, `DELETE`, or `INSERT` statements.",
+		"**4. Execute Query:** Use the `postgres_query_execute` tool with the following parameters:",
 		"   - `query` (Required): The SQL query string.",
 		"   - `database` (Optional): The target database name if specified by the user.",
 		"   - `instance` (Optional): The target instance/environment if specified by the user.",
-		"**4. Interpret & Summarize:** Analyze the returned data. If no rows are returned, explain why.",
+		"**5. Interpret & Summarize:** Analyze the returned data. If no rows are returned, explain why.",
 	}
 
 	constraints := []string{
 		"You MUST use the `postgres_query_execute` tool for all database interactions and MUST NOT answer questions without first querying the database using this tool.",
 		"When a user explicitly asks for 'all' data or uses similar broad terms, do NOT add restrictive `WHERE` clauses or filters unless specifically requested.",
-		"If schema information is needed to formulate an accurate query, first query `information_schema.tables` and `information_schema.columns`.",
+		"**Schema-first for unfamiliar tables (MANDATORY).** Before writing a `SELECT` against any table you have not already queried in this conversation, first introspect its columns via `SELECT column_name FROM information_schema.columns WHERE table_name = '<table>' AND table_schema = 'public'` (and, if you're unsure the table even exists, `SELECT table_name FROM information_schema.tables WHERE table_name ILIKE '%<pattern>%' AND table_schema = 'public'` first). **Filter by `table_schema` (default `'public'`, replace with the active schema when appropriate)** — without it `information_schema` returns rows across every schema and you'll get duplicate/misleading columns when the same table name lives in multiple schemas. Both table hallucination AND column hallucination (guessing a plausible column that doesn't exist in a real table) are common failure modes; one introspection query prevents 3+ terminal `column X does not exist` / `relation Y does not exist` errors.",
 	}
 	toolUsage := map[string][]string{
 		tools.ToolExecutePostgresQuery: {
@@ -81,6 +82,24 @@ func (l PostgresDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query 
 		}
 	}
 	examples := []core.NBAgentPromptExample{
+		{
+			Question: "Find the checkout workload in the demo namespace",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolExecutePostgresQuery,
+					Input: `{"query": "SELECT table_name FROM information_schema.tables WHERE table_name ILIKE '%workload%' AND table_schema = 'public';"}`,
+				},
+				{
+					Tool:  tools.ToolExecutePostgresQuery,
+					Input: `{"query": "SELECT column_name FROM information_schema.columns WHERE table_name = 'k8s_workloads' AND table_schema = 'public';"}`,
+				},
+				{
+					Tool:  tools.ToolExecutePostgresQuery,
+					Input: `{"query": "SELECT workload_name, namespace, workload_type FROM k8s_workloads WHERE workload_name = 'checkout' AND namespace = 'demo';"}`,
+				},
+			},
+			Explanation: "Two introspection queries first — list matching tables, then list columns — then the real query using verified names. Avoids the guess-and-fail cycle that would otherwise take 3+ terminal errors (`relation X does not exist`, `column Y does not exist`) before landing on the right shape. The introspection queries are cheap; the guess-and-fail loop is not.",
+		},
 		{
 			Question: "Can you optimize query performance of - select * from users?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{

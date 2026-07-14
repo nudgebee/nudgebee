@@ -49,19 +49,20 @@ func (l OracleDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query co
 
 	instructions := []string{
 		"**1. Analyze the Request:** Determine the goal (e.g., performance tuning, lock analysis, session investigation, schema exploration).",
-		"**2. Formulate Query:** Construct a valid Oracle SQL `SELECT` query. **CRITICAL:** You are strictly forbidden from using `CREATE`, `UPDATE`, `DELETE`, `INSERT`, `DROP`, `ALTER`, `EXECUTE`, or `CALL` statements.",
-		"**3. Execute Query:** Use the `oracle_query_execute` tool with the following parameters:",
+		"**2. Introspect Unfamiliar Tables (MANDATORY):** For any table you have not already queried in this conversation, first run the schema-introspection query described in the constraints. Skipping this typically costs 3+ terminal `ORA-00942: table or view does not exist` / `ORA-00904: invalid identifier` errors before landing on the right shape.",
+		"**3. Formulate Query:** Construct a valid Oracle SQL `SELECT` query using the column names verified in step 2. **CRITICAL:** You are strictly forbidden from using `CREATE`, `UPDATE`, `DELETE`, `INSERT`, `DROP`, `ALTER`, `EXECUTE`, or `CALL` statements.",
+		"**4. Execute Query:** Use the `oracle_query_execute` tool with the following parameters:",
 		"   - `query` (Required): The Oracle SQL query string. Do NOT include a trailing semicolon.",
 		"   - `database` (Optional): The target service name / PDB if specified by the user.",
 		"   - `instance` (Optional): The target instance/environment if specified by the user.",
-		"**4. Interpret & Summarize:** Analyze the returned data. If no rows are returned, explain why.",
+		"**5. Interpret & Summarize:** Analyze the returned data. If no rows are returned, explain why.",
 	}
 
 	constraints := []string{
 		"You MUST use the `oracle_query_execute` tool for all database interactions and MUST NOT answer questions without first querying the database.",
 		"Use Oracle SQL syntax. Do NOT use PostgreSQL or MySQL syntax (e.g., use `ROWNUM` or `FETCH FIRST N ROWS ONLY` instead of `LIMIT`).",
 		"When a user explicitly asks for 'all' data, do NOT add restrictive `WHERE` clauses unless requested.",
-		"For schema discovery, query `ALL_TABLES`, `ALL_COLUMNS`, `ALL_INDEXES` or `USER_TABLES`, `USER_COLUMNS`.",
+		"**Schema-first for unfamiliar tables (MANDATORY).** Before writing a `SELECT` against any table you have not already queried in this conversation, first introspect its columns via `SELECT column_name FROM USER_TAB_COLUMNS WHERE table_name = '<TABLE_UPPERCASE>'` (Oracle stores unquoted identifiers as uppercase). If you're unsure the table even exists, `SELECT table_name FROM USER_TABLES WHERE table_name LIKE '%<PATTERN>%'` first. **Prefer `USER_TAB_COLUMNS` / `USER_TABLES` over `ALL_TAB_COLUMNS` / `ALL_TABLES`** — the `ALL_` variants also scan every schema the user has *any* grant on (which can be slow on shared instances and produces duplicate rows for tables with the same name across schemas). Fall back to `ALL_` only when the user explicitly names a table in another schema. Both table and column hallucination are common failure modes; one introspection query prevents 3+ terminal `ORA-00942: table or view does not exist` / `ORA-00904: invalid identifier` errors.",
 		"For performance diagnostics, use Oracle dynamic views: `V$SESSION`, `V$SQL`, `V$LOCKED_OBJECT`, `GV$SESSION`, `V$ACTIVE_SESSION_HISTORY`.",
 		"Do NOT include a trailing semicolon in the query — it is added automatically.",
 	}
@@ -74,6 +75,20 @@ func (l OracleDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query co
 	}
 
 	examples := []core.NBAgentPromptExample{
+		{
+			Question: "How many rows are in the ORDERS table for customer ACME?",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolExecuteOracleQuery,
+					Input: `{"query": "SELECT column_name FROM USER_TAB_COLUMNS WHERE table_name = 'ORDERS'"}`,
+				},
+				{
+					Tool:  tools.ToolExecuteOracleQuery,
+					Input: `{"query": "SELECT COUNT(*) FROM orders WHERE customer_id = 'ACME'"}`,
+				},
+			},
+			Explanation: "Introspect columns first (uppercased `ORDERS` because Oracle stores unquoted identifiers as uppercase). Verifies the join key is `customer_id` before the aggregation — avoids the guess-and-fail cycle that would otherwise cost 2-3 `ORA-00904: invalid identifier` errors.",
+		},
 		{
 			Question: "Show me all active sessions",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
