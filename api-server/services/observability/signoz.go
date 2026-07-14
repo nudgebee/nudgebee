@@ -305,18 +305,15 @@ func (s *SignozSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest F
 	if errMsg := extractSignozError(data2); errMsg != "" {
 		return nil, fmt.Errorf("signoz query_range returned error: %s", errMsg)
 	}
-	data3, ok := data2["data"].(map[string]any)
-	if !ok || data3 == nil {
-		// Well-formed envelope but no nested result payload and no explicit error.
-		// Surface the actual body (not an opaque "data3 not found") so a malformed
-		// query or an unexpected Signoz shape is diagnosable instead of silently
-		// degrading callers to the kubectl fallback.
-		ctx.GetLogger().Error("signoz: query_range response missing 'data.data.data'", "response", signozResponseSnippet(resp))
-		return nil, fmt.Errorf("signoz query_range: unexpected response shape (no result payload): %s", signozResponseSnippet(resp))
-	}
-	result, ok := data3["result"].([]any)
+	// signoz_query_range nests the rows at data.data.result (envelope→data→result),
+	// not data.data.data.result — read straight from data2.
+	result, ok := data2["result"].([]any)
 	if !ok || result == nil {
-		return nil, fmt.Errorf("result field is not an array or is nil from response")
+		// Well-formed envelope but no result payload and no explicit error.
+		// Surface the actual body so a malformed query or an unexpected Signoz
+		// shape is diagnosable instead of silently degrading to the fallback.
+		ctx.GetLogger().Error("signoz: query_range response missing 'data.data.result'", "response", signozResponseSnippet(resp))
+		return nil, fmt.Errorf("signoz query_range: unexpected response shape (no result payload): %s", signozResponseSnippet(resp))
 	}
 	if len(result) == 0 {
 		return []OutputLog{}, nil
@@ -348,7 +345,8 @@ func (s *SignozSource) QueryLabels(ctx *security.RequestContext, fetchLogRequest
 		AccountID:  fetchLogRequest.AccountId,
 		ActionName: "signoz_label_suggest",
 		ActionParams: map[string]any{
-			"dataSource": "logs",
+			"aggregateAttribute": "",
+			"searchText":         "",
 		},
 		NoSinks: true,
 	}
@@ -372,14 +370,9 @@ func (s *SignozSource) QueryLabels(ctx *security.RequestContext, fetchLogRequest
 		ctx.GetLogger().Error("logs.FetchLogLabels data2 field not found or is nil from response", "data", data1)
 		return []OutputLogLabel{}, nil
 	}
-	data3, ok := data2["data"].(map[string]any)
-	if !ok || data3 == nil {
-		ctx.GetLogger().Error("logs.FetchLogLabels data3 field not found or is nil from response", "data", data1)
-		return []OutputLogLabel{}, nil
-	}
-	result, ok := data3["attributes"].([]any)
+	result, ok := data2["attributeKeys"].([]any)
 	if !ok || result == nil {
-		ctx.GetLogger().Error("logs.FetchLogLabels attributes field is not an array or is nil from response", "data", data1)
+		ctx.GetLogger().Error("logs.FetchLogLabels attributeKeys field is not an array or is nil from response", "data", data1)
 		return []OutputLogLabel{}, nil
 	}
 	if len(result) == 0 {
@@ -426,20 +419,18 @@ func (s *SignozSource) QueryLabelValues(ctx *security.RequestContext, fetchLogRe
 	if !ok || data2 == nil {
 		return nil, fmt.Errorf("logs.FetchLogLabelValues data2 field not found or is nil from response")
 	}
-	data3, ok := data2["data"].(map[string]any)
-	if !ok || data3 == nil {
-		return nil, fmt.Errorf("logs.FetchLogLabelValues data3 field not found or is nil from response")
-	}
+	// Values are at data.data.<type>AttributeValues (envelope→data→values), not
+	// nested one level deeper — read straight from data2.
 	var result []any
 	var ok1 bool
 
 	switch fetchLogRequest.Request["filterAttributeKeyDataType"] {
 	case "string":
-		result, ok1 = data3["stringAttributeValues"].([]any)
+		result, ok1 = data2["stringAttributeValues"].([]any)
 	case "number":
-		result, ok1 = data3["numberAttributeValues"].([]any)
+		result, ok1 = data2["numberAttributeValues"].([]any)
 	case "bool":
-		result, ok1 = data3["boolAttributeValues"].([]any)
+		result, ok1 = data2["boolAttributeValues"].([]any)
 	default:
 		return nil, fmt.Errorf("logs.FetchLogLabelValues unknown data type: %v", fetchLogRequest.Request["filterAttributeKeyDataType"])
 	}
@@ -727,11 +718,7 @@ func (s *SignozSource) parseSignozLogGroupResponse(resp map[string]any, endTime 
 	if errMsg, exists := data2["error"]; exists {
 		return LogGroupOutput{}, fmt.Errorf("signoz.QueryLogGroup: API error: %v", errMsg)
 	}
-	data3, ok := data2["data"].(map[string]any)
-	if !ok || data3 == nil {
-		return LogGroupOutput{}, nil
-	}
-	result, ok := data3["result"].([]any)
+	result, ok := data2["result"].([]any)
 	if !ok || len(result) == 0 {
 		return LogGroupOutput{}, nil
 	}
