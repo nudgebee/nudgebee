@@ -949,8 +949,8 @@ func init() {
 	// react_critique defaults to true: the ReWoo→ReAct3 upgrade (now permanent)
 	// used to flip this on at boot; baking it in preserves that behavior.
 	viper.SetDefault("llm_server_react_critique_enabled", true)
-	viper.SetDefault("llm_server_react3_orchestrator_mode_enabled", false)
-	viper.SetDefault("llm_server_react3_query_lean_prompt_enabled", false)
+	viper.SetDefault("llm_server_react3_orchestrator_mode_enabled", true)
+	viper.SetDefault("llm_server_react3_query_lean_prompt_enabled", true)
 	viper.SetDefault("llm_server_react3_orchestrator_thinking_level", "medium")
 	// Flipped false 2026-07-12 — see LlmServerThinkToolEnabled docstring.
 	// Any env that wants the tool back sets LLM_SERVER_THINK_TOOL_ENABLED=true
@@ -1105,7 +1105,7 @@ func init() {
 
 	viper.SetDefault("llm_server_scratchpad_summarization_enabled", true)
 	viper.SetDefault("llm_server_scratchpad_max_observation_chars", 65536)
-	viper.SetDefault("llm_server_sub_agent_evidence_enabled", false)
+	viper.SetDefault("llm_server_sub_agent_evidence_enabled", true)
 	viper.SetDefault("llm_server_sub_agent_evidence_max_chars", 2048)
 	viper.SetDefault("llm_server_scratchpad_compression_activation_fraction", 0.75)
 
