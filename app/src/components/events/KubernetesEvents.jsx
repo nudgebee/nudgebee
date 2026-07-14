@@ -857,23 +857,35 @@ const KubernetesEventsTable = ({
     if (defaultQuery) {
       query = { ...query, ...defaultQuery };
     }
-    if (selectedNamespace && isK8sFilterVisible) {
-      query.subject_namespace = selectedNamespace;
+    if (isK8sFilterVisible) {
+      if (selectedNamespace) {
+        query.subject_namespace = selectedNamespace;
+      } else {
+        delete query.subject_namespace;
+      }
+      if (selectedAggregationKey?.length > 0) {
+        query.aggregation_key = selectedAggregationKey.map((f) => f.value || f);
+      } else {
+        delete query.aggregation_key;
+      }
+      if (selectedWorkload) {
+        query.subject_name = selectedWorkload;
+      } else {
+        delete query.subject_name;
+      }
     }
     if (selectedSubjectType && isK8sFilterVisible) {
       query.subject_type = selectedSubjectType;
     }
-    if (selectedAggregationKey?.length > 0 && isK8sFilterVisible) {
-      query.aggregation_key = selectedAggregationKey.map((f) => f.value || f);
-    }
     if (selectedPriority) {
       query.priority = selectedPriority;
+    } else {
+      delete query.priority;
     }
     if (selectedStatus) {
       query.status = selectedStatus;
-    }
-    if (selectedWorkload && isK8sFilterVisible) {
-      query.subject_name = selectedWorkload;
+    } else {
+      delete query.status;
     }
     if (selectedSource && selectedSource.length > 0) {
       query.source = selectedSource?.map((e) => e.value);
