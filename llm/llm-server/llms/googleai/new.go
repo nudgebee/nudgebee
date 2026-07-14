@@ -37,10 +37,17 @@ func New(ctx context.Context, opts ...Option) (*GoogleAI, error) {
 		model: clientOptions.DefaultModel, // Store the default model
 	}
 
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+	clientConfig := &genai.ClientConfig{
 		APIKey:  clientOptions.APIKey,
 		Backend: genai.BackendGeminiAPI,
-	})
+	}
+	// Retarget the client at the NB AI Gateway when a base URL is configured.
+	// Empty leaves the SDK default (Google directly) untouched.
+	if clientOptions.BaseURL != "" {
+		clientConfig.HTTPOptions.BaseURL = clientOptions.BaseURL
+	}
+
+	client, err := genai.NewClient(ctx, clientConfig)
 	if err != nil {
 		return gi, err
 	}

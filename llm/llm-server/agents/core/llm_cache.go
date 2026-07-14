@@ -45,6 +45,7 @@ type CacheRequest struct {
 	Provider       string
 	Messages       []llms.MessageContent
 	ApiKey         string
+	Endpoint       string // Optional AI Gateway base URL; empty = talk to Google directly. Must match the generation client's endpoint so cache create/reference resolve to the same Google key.
 	Scope          CacheScope
 	Capabilities   toolcore.AgentCapabilities // Optional; used to isolate cache slots when tool set varies per request
 	PromptVariant  string                     // Optional; isolates the lean vs full orchestrator prompt into distinct cache slots (empty = full/default)
@@ -210,6 +211,18 @@ func (p *GoogleAICacheProvider) GetProviderName() string {
 	return "googleai"
 }
 
+// googleAICacheOpts builds the googleai client options shared by every cache
+// helper. Passing the same apiKey + endpoint the generation client uses is
+// mandatory: Gemini caches are isolated by credential/project, so a cache
+// created under one key/endpoint and referenced under another would miss or 403.
+func googleAICacheOpts(apiKey, endpoint string) []googleai.Option {
+	opts := []googleai.Option{googleai.WithAPIKey(apiKey)}
+	if endpoint != "" {
+		opts = append(opts, googleai.WithBaseURL(endpoint))
+	}
+	return opts
+}
+
 func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheRequest) *CacheResponse {
 	// Append a capability fingerprint to agentName so that requests with different
 	// allowed_tools sets get distinct Google AI CachedContent slots. Google AI uses
@@ -313,7 +326,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	}
 
 	// Use Google AI's CountTokens API for accurate token counting
-	cachingHelper, err := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(req.ApiKey))
+	cachingHelper, err := googleai.NewCachingHelper(ctx, googleAICacheOpts(req.ApiKey, req.Endpoint)...)
 	if err != nil {
 		slog.Warn("Google AI cache: Not using cache - Failed to create caching helper",
 			"error", err,
@@ -430,7 +443,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	// Cache hit path
 	if exists && cacheInfo.ExpiresAt.After(now) && cacheInfo.ContentHash == contentHash {
 		// Verify the cache actually exists in Google AI
-		if p.verifyCacheExists(ctx, cacheInfo.CacheName, req.ApiKey) {
+		if p.verifyCacheExists(ctx, cacheInfo.CacheName, req.ApiKey, req.Endpoint) {
 			timeToExpiry := cacheInfo.ExpiresAt.Sub(now)
 			slog.Info("Google AI cache: CACHE HIT - Using existing cache",
 				"cacheName", cacheInfo.CacheName,
@@ -499,7 +512,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 			// Explicitly delete the old Google AI cache. Without this delete, it sits
 			// orphaned for the remainder of its TTL paying full storage cost —
 			// historically the dominant cause of Gemini cache spend on this service.
-			if helper, helperErr := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(req.ApiKey)); helperErr == nil {
+			if helper, helperErr := googleai.NewCachingHelper(ctx, googleAICacheOpts(req.ApiKey, req.Endpoint)...); helperErr == nil {
 				if delErr := helper.DeleteCachedContent(ctx, cacheInfo.CacheName); delErr != nil {
 					slog.Warn("Google AI cache: failed to delete orphaned content_changed cache",
 						"error", delErr,
@@ -669,7 +682,7 @@ func (p *GoogleAICacheProvider) waitForSharedCacheInfo(cacheKey, contentHash str
 }
 
 func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheRequest, cacheableMessages []llms.MessageContent, contentHash, cacheKey string, tokenCount int32) (*CacheInfo, error) {
-	cachingHelper, err := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(req.ApiKey))
+	cachingHelper, err := googleai.NewCachingHelper(ctx, googleAICacheOpts(req.ApiKey, req.Endpoint)...)
 	if err != nil {
 		return nil, err
 	}
@@ -766,12 +779,12 @@ func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheReque
 	return cacheInfo, nil
 }
 
-func (p *GoogleAICacheProvider) verifyCacheExists(ctx context.Context, cacheName, apiKey string) bool {
+func (p *GoogleAICacheProvider) verifyCacheExists(ctx context.Context, cacheName, apiKey, endpoint string) bool {
 	if cacheName == "" {
 		return false
 	}
 
-	cachingHelper, err := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(apiKey))
+	cachingHelper, err := googleai.NewCachingHelper(ctx, googleAICacheOpts(apiKey, endpoint)...)
 	if err != nil {
 		slog.Warn("Failed to create caching helper for verification", "error", err)
 		return false
@@ -812,7 +825,7 @@ func (p *GoogleAICacheProvider) InvalidateCache(ctx context.Context, req *CacheR
 	}
 
 	// Delete from Google AI
-	cachingHelper, err := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(req.ApiKey))
+	cachingHelper, err := googleai.NewCachingHelper(ctx, googleAICacheOpts(req.ApiKey, req.Endpoint)...)
 	if err != nil {
 		return err
 	}

@@ -1074,6 +1074,10 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 		cacheManager := GetCacheManager()
 		appendAgentName := rc.agentName != ""
 		apiKey := getLLMApiKey(rc.accountId, rc.currentProvider, rc.agentName, appendAgentName, rc.resolution)
+		// Resolve the endpoint with the SAME layering the generation client uses,
+		// so cache create/reference and generation all resolve to the same key
+		// through the AI Gateway. Empty = talk to Google directly (default).
+		endpoint := getLLMApiEndpoint(rc.accountId, rc.currentProvider, rc.agentName, appendAgentName, rc.resolution)
 
 		// Pull tenant_id from security context so the lifecycle row gets the right
 		// tenant scoping for budget rollups. Best-effort — caller-context loss here
@@ -1091,6 +1095,7 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 			Provider:       rc.currentProvider,
 			Messages:       rc.promptMessages,
 			ApiKey:         apiKey,
+			Endpoint:       endpoint,
 			Scope:          rc.cacheScope,
 			Capabilities:   rc.capabilities,
 			PromptVariant:  rc.promptVariant,

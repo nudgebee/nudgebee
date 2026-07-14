@@ -450,9 +450,14 @@ func newBedrockFromConfig(model string, cfg map[string]string) (llms.Model, erro
 }
 
 func newGoogleAIFromConfig(model string, cfg map[string]string) (llms.Model, error) {
-	return googleai.New(
-		context.Background(),
+	opts := []googleai.Option{
 		googleai.WithAPIKey(cfg[cfgKeyAPIKey]),
 		googleai.WithDefaultModel(model),
-	)
+	}
+	// Validate the same path production uses: if a gateway endpoint is configured,
+	// test connectivity through it rather than directly to Google.
+	if endpoint := cfg[cfgKeyAPIEndpoint]; endpoint != "" {
+		opts = append(opts, googleai.WithBaseURL(endpoint))
+	}
+	return googleai.New(context.Background(), opts...)
 }
