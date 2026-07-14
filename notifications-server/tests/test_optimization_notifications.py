@@ -292,3 +292,31 @@ class TestPayloadParsing:
         assert parsed.new_counts.act_now == 2
         assert parsed.carryover_count == 99
         assert parsed.digest_date == "2026-05-18"
+
+
+# ---------------------------- Copy library + accrued waste ----------------------------
+
+
+class TestItemCopyAndWaste:
+    def test_rule_name_renders_curated_display_name(self):
+        text = _slack_text(get_recommendation_nudge_digest_message_template(_params())["blocks"])
+        assert "Workload rightsizing" in text
+        assert "Pod Right Sizing" not in text
+
+    def test_waste_clause_renders_above_floor(self):
+        params = _params()
+        params.recommendations_by_account["acc-1"].recommendations[0].wasted_since_detected = 1120.0
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params)["blocks"])
+        assert "wasted since detected" in text
+        assert "$1,120" in text
+
+    def test_waste_clause_hidden_below_floor(self):
+        params = _params()
+        params.recommendations_by_account["acc-1"].recommendations[0].wasted_since_detected = 4.0
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params)["blocks"])
+        assert "wasted since detected" not in text
+
+    def test_old_payload_without_waste_field_degrades(self):
+        # producer payloads predating wasted_since_detected default to 0 -> no clause
+        text = _slack_text(get_recommendation_nudge_digest_message_template(_params())["blocks"])
+        assert "wasted since detected" not in text

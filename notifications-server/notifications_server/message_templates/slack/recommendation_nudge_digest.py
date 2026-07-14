@@ -2,6 +2,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from pydantic import BaseModel
 
+from notifications_server import copy_library
 from notifications_server.configs.settings import public_ip, settings
 
 BAND_ORDER = ["Act Now", "Critical", "High"]
@@ -23,6 +24,7 @@ class DigestRecommendation(BaseModel):
     severity: str = "Medium"
     category: str = ""
     cta_url: str = ""
+    wasted_since_detected: float = 0
 
 
 class AccountRecommendations(BaseModel):
@@ -77,7 +79,17 @@ def format_savings(amount: float) -> str:
 
 
 def format_rule_name(rule_name: str) -> str:
-    return rule_name.replace("_", " ").replace("-", " ").title()
+    return copy_library.display_name(rule_name)
+
+
+# Accrued waste below this floor is noise, not urgency — skip the clause.
+WASTE_DISPLAY_FLOOR = 10
+
+
+def format_waste_clause(wasted: float) -> str:
+    if wasted < WASTE_DISPLAY_FLOOR:
+        return ""
+    return f" · {format_savings(wasted)} wasted since detected"
 
 
 def collect_recs_by_band(
@@ -212,7 +224,11 @@ def _append_slack_rec_blocks(
     """Append up to 5 recommendation blocks plus overflow text."""
     for _account_name, rec in band_recs[:5]:
         savings_text = f" — {format_savings(rec.estimated_savings)}/mo" if rec.estimated_savings > 0 else ""
-        rec_text = f"• *{rec.resource_name}* {format_rule_name(rec.rule_name)}{savings_text}  <{rec.cta_url}|Review>"
+        waste_text = format_waste_clause(rec.wasted_since_detected)
+        rec_text = (
+            f"• *{rec.resource_name}* {format_rule_name(rec.rule_name)}"
+            f"{savings_text}{waste_text}  <{rec.cta_url}|Review>"
+        )
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": rec_text}})
 
     remaining = len(band_recs) - 5

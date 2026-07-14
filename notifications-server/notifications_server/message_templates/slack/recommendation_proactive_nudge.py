@@ -8,6 +8,7 @@ from notifications_server.message_templates.slack.recommendation_nudge_digest im
     DigestRecommendation,
     format_rule_name,
     format_savings,
+    format_waste_clause,
 )
 
 
@@ -95,11 +96,12 @@ def get_recommendation_proactive_nudge_message_template(
             }
         )
         for rec in acc_data.recommendations[:5]:
+            waste_text = format_waste_clause(rec.wasted_since_detected)
             rec_text = (
                 f"{counter}. *{rec.resource_name}* — {format_rule_name(rec.rule_name)}\n"
                 f"    Score: {rec.finops_score}/100 · "
                 f"Savings: {format_savings(rec.estimated_savings)}/mo · "
-                f"Severity: {rec.severity} · Category: {rec.category}"
+                f"Severity: {rec.severity} · Category: {rec.category}{waste_text}"
             )
             blocks.append(
                 {

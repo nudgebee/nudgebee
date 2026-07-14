@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import List, Dict, Any
 from pydantic import BaseModel
 
+from notifications_server import copy_library
 from notifications_server.configs.settings import settings
 
 
@@ -150,7 +151,7 @@ def create_blocks_for_account(
 
         fields = []
         for aggregation_key, count in sorted_events:
-            fields.append(f"*{aggregation_key}:* {count} events")
+            fields.append(f"*{copy_library.display_name(aggregation_key)}:* {count} events")
 
         # Slack has a limit of 10 items per fields array, so split into chunks
         for i in range(0, len(fields), 10):
@@ -212,7 +213,7 @@ def create_account_attachment(
 
         fields = []
         for aggregation_key, count in sorted_events:
-            fields.append(f"*{aggregation_key}:* {count} events")
+            fields.append(f"*{copy_library.display_name(aggregation_key)}:* {count} events")
 
         for i in range(0, len(fields), 10):
             chunk = fields[i : i + 10]

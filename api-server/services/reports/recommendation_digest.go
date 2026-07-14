@@ -5,6 +5,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/recommendation"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"time"
@@ -14,16 +15,17 @@ import (
 )
 
 type digestRecommendation struct {
-	ID               string  `db:"id"`
-	RuleName         string  `db:"rule_name"`
-	ResourceName     string  `db:"resource_name"`
-	FinOpsScore      int     `db:"finops_score"`
-	FinOpsBand       string  `db:"finops_band"`
-	EstimatedSavings float64 `db:"estimated_savings"`
-	Severity         string  `db:"severity"`
-	Category         string  `db:"category"`
-	CloudAccountID   string  `db:"cloud_account_id"`
-	AccountName      string  `db:"account_name"`
+	ID               string    `db:"id"`
+	RuleName         string    `db:"rule_name"`
+	ResourceName     string    `db:"resource_name"`
+	FinOpsScore      int       `db:"finops_score"`
+	FinOpsBand       string    `db:"finops_band"`
+	EstimatedSavings float64   `db:"estimated_savings"`
+	Severity         string    `db:"severity"`
+	Category         string    `db:"category"`
+	CloudAccountID   string    `db:"cloud_account_id"`
+	AccountName      string    `db:"account_name"`
+	CreatedAt        time.Time `db:"created_at"`
 }
 
 // SendRecommendationNudgeDigest queries top recommendations by finops_score
@@ -67,7 +69,7 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 		var recs []digestRecommendation
 		err = dbms.Db.Select(&recs, `
 			SELECT id, rule_name, resource_name, finops_score, finops_band,
-				estimated_savings, severity, category, cloud_account_id, account_name
+				estimated_savings, severity, category, cloud_account_id, account_name, created_at
 			FROM (
 				SELECT r.id, r.rule_name,
 					COALESCE(r.account_object_id, r.id::varchar) AS resource_name,
@@ -78,6 +80,7 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 					r.category,
 					r.cloud_account_id::varchar AS cloud_account_id,
 					COALESCE(ca.account_name, r.cloud_account_id::varchar) AS account_name,
+					r.created_at,
 					ROW_NUMBER() OVER (
 						PARTITION BY regexp_replace(r.rule_name, '^.+_misconfigurations$', 'misconfigurations')
 						ORDER BY r.finops_score DESC NULLS LAST, r.estimated_savings DESC NULLS LAST, r.created_at DESC, r.id
@@ -147,15 +150,16 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 			// where the platform IS known (utm=slack-digest, teams-digest, etc.).
 			ctaURL := config.Config.BaseUrl + "/optimise?id=" + rec.ID + "&utm=digest&d=" + digestDate + "#recommendations"
 			recMap := map[string]any{
-				"id":                rec.ID,
-				"rule_name":         rec.RuleName,
-				"resource_name":     rec.ResourceName,
-				"finops_score":      rec.FinOpsScore,
-				"finops_band":       rec.FinOpsBand,
-				"estimated_savings": rec.EstimatedSavings,
-				"severity":          rec.Severity,
-				"category":          rec.Category,
-				"cta_url":           ctaURL,
+				"id":                    rec.ID,
+				"rule_name":             rec.RuleName,
+				"resource_name":         rec.ResourceName,
+				"finops_score":          rec.FinOpsScore,
+				"finops_band":           rec.FinOpsBand,
+				"estimated_savings":     rec.EstimatedSavings,
+				"severity":              rec.Severity,
+				"category":              rec.Category,
+				"cta_url":               ctaURL,
+				"wasted_since_detected": recommendation.WastedSinceDetected(rec.EstimatedSavings, rec.CreatedAt, time.Now().UTC()),
 			}
 
 			accID := rec.CloudAccountID
