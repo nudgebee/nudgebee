@@ -365,7 +365,7 @@ func (t *SubmitAnalysisTool) InputSchema() core.ToolSchema {
 					"type": "object",
 					"properties": map[string]any{
 						"file_path":  map[string]any{"type": "string", "description": "Repo-relative path"},
-						"line_start": map[string]any{"type": "integer", "description": "Starting line number (1-indexed)"},
+						"line_start": map[string]any{"type": "integer", "description": "Starting line number (1-indexed). Use 0 for whole-file or commit-level evidence (e.g. citing a commit from git log/show)."},
 						"line_end":   map[string]any{"type": "integer", "description": "Ending line number (omit if single line)"},
 						"snippet":    map[string]any{"type": "string", "description": "The actual code at those lines"},
 						"note":       map[string]any{"type": "string", "description": "Optional 1-line explanation of why this citation matters"},
@@ -445,8 +445,14 @@ func validateExploreContract(p SubmitAnalysisInput) []string {
 		if strings.TrimSpace(c.FilePath) == "" {
 			errs = append(errs, fmt.Sprintf("citations[%d].file_path is empty.", i))
 		}
-		if c.LineStart <= 0 {
-			errs = append(errs, fmt.Sprintf("citations[%d].line_start must be a positive line number (got %d).", i, c.LineStart))
+		// line_start 0 is allowed as "file-level / commit-level evidence": git
+		// archaeology answers legitimately cite a commit or a whole file rather
+		// than a line (e.g. "Check recent commits for schema changes ..."). A
+		// hard >0 requirement made such runs fail the contract on every retry
+		// and die to the parse-error fallback (observed on a real replay).
+		// Negative line numbers are still nonsense.
+		if c.LineStart < 0 {
+			errs = append(errs, fmt.Sprintf("citations[%d].line_start must be >= 0 (0 = whole-file/commit-level evidence; got %d).", i, c.LineStart))
 		}
 		// line_end is optional (defaults to line_start when zero), but if the
 		// LLM does provide it, the range must be coherent. Catching this

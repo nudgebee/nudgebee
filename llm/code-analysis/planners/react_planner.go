@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -83,12 +84,56 @@ type ReActPlanner struct {
 	consecutiveToolFailures map[string]int // tool_name -> consecutive failure count
 	maxConsecutiveFailures  int            // Maximum consecutive failures before forcing different approach
 
+	// repoAccessFailures counts steps that failed with an unrecoverable repo
+	// access error (repo not found / dead credentials), across ALL tools. The
+	// per-tool circuit breaker never trips on these because the agent rotates
+	// tools (repo_clone → cli git clone → gh), flailing for the whole iteration
+	// budget on a clone that can never succeed. First strike injects a hard
+	// stop-retrying instruction; second strike aborts the run with a clear,
+	// actionable error.
+	repoAccessFailures int
+
 	// Tool invocation tracking
 	toolTracker *common.ToolInvocationTracker // Track all tool invocations
 
 	// Observation limits
 	maxObservationLines int // Maximum lines per tool observation (0 = unlimited)
 	maxContextTokens    int // Approximate max context tokens before compaction
+
+	// recentObservationWindow bounds how many of the most recent tool
+	// observations are kept at full size in the prompt. Older observations are
+	// replaced with a compact, re-fetchable stub before each LLM call, because
+	// the agent has already acted on them and re-sending full file/search output
+	// every turn is the dominant (O(N^2)) token driver. 0 disables aging.
+	recentObservationWindow int
+
+	// seedLedger, when set before Plan(), pre-populates the fresh ledger with
+	// knowledge from a previous phase or retry attempt (specialist → fixer,
+	// fixer attempt N → N+1). Consumed by the next Plan() call.
+	seedLedger *Ledger
+
+	// agingBudgetTokens is the estimated prompt size at which observation aging
+	// activates. Below it aging is a strict no-op — normal runs see full raw
+	// context and are byte-identical to aging-off. See agingBudgetTokensFromEnv.
+	agingBudgetTokens int
+
+	// lastReflectedStep is the highest step number whose observation has been
+	// consolidated into the ledger by a reflection pass. Aging is gated on it:
+	// an observation may only be stubbed once its facts have been distilled
+	// (distill-then-drop). Without this gate, stubbing removes information
+	// without replacing it and the model reconstructs plausible-but-wrong
+	// details instead of re-reading (observed live: a hallucinated function
+	// name sourced from an aged-out file read).
+	lastReflectedStep int
+
+	// toolMsgMeta records, per Tool message appended to the conversation (in
+	// order), the max step number it carries plus a compact human-readable
+	// identity ("file_view planners/react_planner.go"). The aging gate uses the
+	// step number to map a Tool message back to its steps — Gemini function
+	// calls have empty ToolCallIDs, so position is the only reliable key on the
+	// genai path — and the identity makes the stub self-describing so the model
+	// knows exactly what was elided and how to re-fetch it.
+	toolMsgMeta []toolMsgMeta
 
 	// Deduplication tracking
 	executedCallHashes map[string]int // hash -> execution count
@@ -343,6 +388,8 @@ func NewReActPlanner(llmClient *llm.Client, tools []core.NBTool, maxIterations i
 		maxConsecutiveFailures:      defaultMaxConsecutiveFailures,
 		maxObservationLines:         500,
 		maxContextTokens:            200000,
+		recentObservationWindow:     recentObservationWindowFromEnv(),
+		agingBudgetTokens:           agingBudgetTokensFromEnv(),
 		executedCallHashes:          make(map[string]int),
 		readFiles:                   make(map[string]bool),
 		reflectionEvery:             defaultReflectionEvery,
@@ -522,8 +569,36 @@ func (p *ReActPlanner) executeSteps(ctx context.Context, steps []Step) {
 }
 
 // SetLogger sets the structured logger for the planner
+// SetSeedLedger stages prior knowledge for the NEXT Plan() call — used by the
+// orchestrator to hand the specialist's ledger to the fixer, and by the fixer
+// to carry its own ledger across retry attempts. Merge semantics: repeated
+// calls accumulate (deduplicated), so a specialist handoff, the previous
+// attempt's ledger and reviewer feedback compose. See Ledger.SeedFrom for what
+// is (and deliberately is not) carried.
+func (p *ReActPlanner) SetSeedLedger(l *Ledger) {
+	if l == nil || l.IsEmpty() {
+		return
+	}
+	if p.seedLedger == nil {
+		p.seedLedger = NewLedger(nil)
+	}
+	p.seedLedger.SeedFrom(l)
+}
+
+// Ledger returns the planner's current investigation ledger (nil before the
+// first Plan call). Callers must treat it as read-only.
+func (p *ReActPlanner) Ledger() *Ledger {
+	return p.ledger
+}
+
 func (p *ReActPlanner) SetLogger(logger *common.Logger) {
 	p.logger = logger
+	// Propagate to the LLM client so per-call token-usage diagnostics actually
+	// emit. Without this the client's logger stays nil and both the per-call
+	// usage log and the accumulation breakdown are silently dropped.
+	if p.llmClient != nil {
+		p.llmClient.SetLogger(logger)
+	}
 }
 
 // SetToolTracker sets the tool invocation tracker for the planner
@@ -559,6 +634,8 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 	// followup on the same workspace pod) — each gets its own recording slice
 	// instead of stomping on a shared one.
 	p.genaiSession = llm.NewGenAISession()
+	p.toolMsgMeta = nil
+	p.lastReflectedStep = 0
 
 	// Initialize step tracking and reset submit_analysis data
 	p.currentSteps = []Step{}
@@ -585,6 +662,21 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 	// helper.
 	p.goal = BuildGoal(query, tools.ModeFromContext(ctx))
 	p.ledger = NewLedger(nil)
+	// Carry-over: seed the fresh ledger with knowledge from a previous phase or
+	// retry attempt (specialist → fixer handoff, fixer attempt N → N+1) so the
+	// run does not re-investigate from step 1. Consumed once — the next Plan()
+	// starts clean unless the caller seeds again.
+	if p.seedLedger != nil {
+		p.ledger.SeedFrom(p.seedLedger)
+		p.seedLedger = nil
+		if p.logger != nil && !p.ledger.IsEmpty() {
+			p.logger.Log(common.EventPlanningProgress, "Seeded ledger from prior phase/attempt", map[string]any{
+				"findings":  len(p.ledger.Findings),
+				"citations": len(p.ledger.Citations),
+				"open":      len(p.ledger.OpenSubQuestions),
+			})
+		}
+	}
 	p.stepsSinceReflection = 0
 	// Reset stall-detection state so a reused planner (e.g. the commit-
 	// enforcement second pass) starts each Plan() with a clean progress history.
@@ -751,12 +843,64 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 						Parts: []llms.ContentPart{llms.TextPart(circuitMsg)},
 					})
 				}
+
+				// Fail fast on unrecoverable repo access: retrying (with any
+				// tool) cannot fix a missing repo or dead credentials.
+				if isUnrecoverableRepoAccess(s.Action, s.Observation+" "+s.Error) {
+					p.repoAccessFailures++
+					if p.logger != nil {
+						p.logger.Log(common.EventStepFailure, "Unrecoverable repository access error", map[string]any{
+							"tool":                 s.Action,
+							"repo_access_failures": p.repoAccessFailures,
+						})
+					}
+					if p.repoAccessFailures >= 2 {
+						// Terminate with the honest-abstention answer instead of a raw
+						// failure: it passes the downstream result contract (a repo-
+						// inaccessible run has no citations to offer) and won't trigger
+						// upstream retry storms.
+						if p.logger != nil {
+							p.logger.Log(common.EventPlanningComplete, "Terminating: unrecoverable repository access", map[string]any{
+								"repo_access_failures": p.repoAccessFailures,
+							})
+						}
+						p.finalizeInsufficientEvidence(ctx, result, s.Number+1,
+							fmt.Sprintf("Repository access is unrecoverable (repository not found or credentials rejected; last failing tool: %s). Fix the repository URL/credentials and re-run the analysis.", s.Action))
+						loopDone = true
+						break
+					}
+					llmConversation = append(llmConversation, llms.MessageContent{
+						Role: llms.ChatMessageTypeHuman,
+						Parts: []llms.ContentPart{llms.TextPart(
+							"[SYSTEM] Repository access failed with an UNRECOVERABLE error (repository not found or credentials rejected). " +
+								"Do NOT retry cloning or fetching with any tool (repo_clone, git, gh, glab, cli) — retries cannot succeed. " +
+								"Continue the analysis with files already available in the workspace, or call submit_analysis explaining that the repository is inaccessible.")},
+					})
+				}
 			case "completed":
 				p.consecutiveToolFailures[s.Action] = 0
 			}
 
+			// The repo-access abort above sets loopDone inside the switch, where
+			// `break` only exits the switch — exit the step loop here.
+			if loopDone {
+				break
+			}
+
 			// Handle submit_analysis completion
 			if s.Action == "submit_analysis" {
+				// A repo-inaccessible run can never satisfy the submit contract —
+				// explore mode demands citations and there is no code to cite —
+				// so any rejected submit after an unrecoverable repo-access error
+				// (contract "failed" or grounding "retriable_failed") would just
+				// burn iterations. Finalize with the honest abstention carrying
+				// the blocker instead.
+				if s.Status != "completed" && p.repoAccessFailures > 0 {
+					p.finalizeInsufficientEvidence(ctx, result, s.Number+1,
+						"Repository access is unrecoverable (repository not found or credentials rejected) — the analysis could not examine the code. Fix the repository URL/credentials and re-run.")
+					loopDone = true
+					break
+				}
 				if s.Status == "completed" {
 					result.FinalAnswer = p.extractFinalAnswer(s)
 					result.Status = "completed"
@@ -818,6 +962,15 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 				}
 			} else if updated != nil {
 				p.ledger.MergeUpdate(updated)
+
+				// Advance the distillation watermark: every step the reflection
+				// just saw is now consolidated into the ledger, so its raw
+				// observation is eligible for aging (distill-then-drop).
+				for i := range recent {
+					if recent[i].Number > p.lastReflectedStep {
+						p.lastReflectedStep = recent[i].Number
+					}
+				}
 
 				// Stall accounting: did the ledger advance since the previous
 				// reflection? A run that neither converges (ready_to_submit) nor
@@ -923,6 +1076,14 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 func (p *ReActPlanner) callLLM(ctx context.Context, messages []llms.MessageContent) (*llms.ContentChoice, error) {
 	llmCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
+
+	// Memory hierarchy, applied to the SENT copy only (stored history stays
+	// append-only): (1) age distilled-and-old tool observations to compact,
+	// re-fetchable stubs — re-sending full bodies every turn is the dominant
+	// token driver; (2) inject the investigation ledger so the distilled facts
+	// those stubs point to are always in front of the model.
+	messages = p.ageOldObservations(messages)
+	messages = p.injectLedgerBlock(messages)
 
 	// Use GenerateContentWithTools for proper tool schema handling
 	response, err := p.llmClient.GenerateContentWithTools(llmCtx, messages, p.toolDefs, p.genaiSession)
@@ -1662,6 +1823,246 @@ func (p *ReActPlanner) addToolOutput(toolID string, output string) {
 // AI messages contain TextContent (thought) + ToolCall parts.
 // Tool results use ToolCallResponse parts (ChatMessageTypeTool).
 // No "nudge" messages — the tool result is sufficient for the model to continue.
+// repoAccessTools are the tools whose failures can carry a git remote-access
+// error. Restricting the unrecoverable-access check to these (and to FAILED
+// steps only) avoids false positives from e.g. a successful ripgrep whose
+// matches happen to contain the words "repository not found".
+var repoAccessTools = map[string]bool{
+	"repo_clone": true,
+	"git":        true,
+	"gh":         true,
+	"glab":       true,
+	"cli":        true,
+}
+
+// isUnrecoverableRepoAccess reports whether a failed step's output indicates a
+// repository access error that no retry (with any tool) can fix: the repo does
+// not exist or the credentials are rejected. GitHub reports both a truly
+// missing repo and a private repo with bad auth as "Repository not found"; a
+// credential prompt in a non-interactive run surfaces as "could not read
+// Username".
+func isUnrecoverableRepoAccess(action, text string) bool {
+	if !repoAccessTools[action] {
+		return false
+	}
+	ls := strings.ToLower(text)
+	return strings.Contains(ls, "repository not found") ||
+		strings.Contains(ls, "could not read username") ||
+		strings.Contains(ls, "authentication failed") ||
+		strings.Contains(ls, "permission denied (publickey)") ||
+		strings.Contains(ls, "invalid username or token")
+}
+
+// observationStub bounds: an observation longer than stubThreshold is aged to a
+// short head (stubHeadBytes) plus a re-fetch hint. Head kept so the model still
+// recognizes what the step did; the body is recoverable by re-running the tool.
+const (
+	observationStubThreshold = 800
+	observationStubHeadBytes = 300
+)
+
+// toolMsgMeta identifies one Tool message appended to the conversation: the max
+// step number it carries (distillation gating) and a compact identity like
+// "file_view planners/react_planner.go" (self-describing stubs).
+type toolMsgMeta struct {
+	maxStep int
+	desc    string
+}
+
+// describeSteps builds the compact identity for a Tool message from its steps'
+// action + most informative argument. Deterministic in its inputs.
+func describeSteps(steps []Step) string {
+	var parts []string
+	for _, s := range steps {
+		if s.Action == "" || s.Action == "submit_analysis" {
+			continue
+		}
+		arg := ""
+		for _, k := range []string{"file_path", "path", "pattern", "command", "query"} {
+			if v, ok := s.ActionInput[k].(string); ok && v != "" {
+				arg = v
+				break
+			}
+		}
+		if len(arg) > 90 {
+			arg = arg[:90] + "…"
+		}
+		if arg != "" {
+			parts = append(parts, s.Action+" "+arg)
+		} else {
+			parts = append(parts, s.Action)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// recentObservationWindowFromEnv reads OBSERVATION_RECENT_WINDOW (number of most
+// recent tool observations to keep full when aging fires). Default 3, ON — safe
+// because aging is additionally pressure-gated (see agingBudgetTokensFromEnv):
+// it does nothing at all until the prompt crosses the token budget, so normal
+// runs are byte-identical to aging-off. Set 0 to disable entirely.
+func recentObservationWindowFromEnv() int {
+	v := strings.TrimSpace(os.Getenv("OBSERVATION_RECENT_WINDOW"))
+	if v == "" {
+		return 3
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 3
+	}
+	return n
+}
+
+// agingBudgetTokensFromEnv reads OBSERVATION_AGING_BUDGET_TOKENS — the estimated
+// prompt size at which observation aging activates. Below it, aging is a no-op
+// and the model sees full raw context (zero quality risk on normal runs). Above
+// it, distilled old observations are stubbed to stop the O(N^2) growth — these
+// are exactly the runs where cost explodes and context rot already degrades
+// answers. Same trigger philosophy as llm-server's scratchpad compression, with
+// an absolute budget instead of a fraction of a 1M window (which never fired).
+func agingBudgetTokensFromEnv() int {
+	const def = 45000
+	v := strings.TrimSpace(os.Getenv("OBSERVATION_AGING_BUDGET_TOKENS"))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
+}
+
+// stubObservation replaces a large observation body with its tool+args
+// identity, a short head, a pointer to the ledger, and a re-fetch hint.
+// Deterministic in its inputs, so an aged observation produces the same bytes
+// every turn — once stubbed it stays byte-stable (cache-friendly). The identity
+// line (e.g. "file_view planners/react_planner.go") matters more than the head:
+// for code output the first bytes are imports/noise, while the identity tells
+// the model exactly what was elided and how to re-fetch it.
+func stubObservation(tool, desc, content string) string {
+	if len(content) <= observationStubThreshold {
+		return content
+	}
+	id := desc
+	if id == "" {
+		id = tool
+	}
+	head := content
+	if len(head) > observationStubHeadBytes {
+		head = head[:observationStubHeadBytes]
+	}
+	return fmt.Sprintf("[ELIDED: full output of `%s` (%d chars). Key facts were distilled into the INVESTIGATION LEDGER below — do NOT answer from memory of this output; rely on the ledger, or re-run the tool for the raw text.]\n%s",
+		id, len(content), head)
+}
+
+// ageOldObservations returns a copy of messages in which tool observations that
+// are BOTH (a) older than the recent-K window and (b) already distilled into the
+// ledger by a reflection pass (step number <= lastReflectedStep) are replaced by
+// stubs. The distillation gate is what makes aging safe: information is never
+// dropped from the prompt before its facts are preserved in the ledger, so the
+// model is never forced to answer from a stub alone. Only Tool-role messages are
+// touched — AI messages (and their ThoughtSignatures) are left byte-identical, so
+// the genai signature replay is unaffected. The original slice is not mutated, so
+// the planner keeps the full observations for its own records and re-fetching.
+//
+// The Tool-message → step mapping is positional (p.toolMsgStepNums, recorded at
+// append time) and suffix-aligned, so a head-side compaction that removed early
+// messages cannot misattribute steps. Anything unmapped counts as NOT distilled
+// — never drop what we can't prove was preserved.
+func (p *ReActPlanner) ageOldObservations(messages []llms.MessageContent) []llms.MessageContent {
+	if p.recentObservationWindow <= 0 || p.lastReflectedStep <= 0 {
+		return messages
+	}
+	// Pressure gate: below the budget the prompt is small enough that raw
+	// context is strictly better — aging is a no-op and normal runs are
+	// byte-identical to aging-off. Above it, the O(N^2) resend is what both
+	// costs and rots; stubbing distilled-old observations bounds the tail.
+	if p.agingBudgetTokens > 0 && estimateMessageTokens(messages) < p.agingBudgetTokens {
+		return messages
+	}
+	var toolIdx []int
+	for i, m := range messages {
+		if m.Role == llms.ChatMessageTypeTool {
+			toolIdx = append(toolIdx, i)
+		}
+	}
+	if len(toolIdx) <= p.recentObservationWindow {
+		return messages
+	}
+	oldEnough := make(map[int]bool, len(toolIdx)-p.recentObservationWindow)
+	for _, idx := range toolIdx[:len(toolIdx)-p.recentObservationWindow] {
+		oldEnough[idx] = true
+	}
+	// Suffix-align recorded metadata with the Tool messages present: the last
+	// len(toolIdx) records correspond 1:1 to the last len(toolIdx) Tool
+	// messages even if earlier messages were compacted away.
+	align := len(p.toolMsgMeta) - len(toolIdx)
+	metaOfToolMsg := func(j int) toolMsgMeta { // j = ordinal among Tool messages
+		k := align + j
+		if k < 0 || k >= len(p.toolMsgMeta) {
+			return toolMsgMeta{} // unmapped -> not provably distilled
+		}
+		return p.toolMsgMeta[k]
+	}
+	ordinal := make(map[int]int, len(toolIdx)) // message index -> ordinal
+	for j, idx := range toolIdx {
+		ordinal[idx] = j
+	}
+	out := make([]llms.MessageContent, len(messages))
+	for i, m := range messages {
+		if !oldEnough[i] {
+			out[i] = m
+			continue
+		}
+		meta := metaOfToolMsg(ordinal[i])
+		if meta.maxStep <= 0 || meta.maxStep > p.lastReflectedStep {
+			out[i] = m // not yet distilled into the ledger — keep raw
+			continue
+		}
+		newParts := make([]llms.ContentPart, 0, len(m.Parts))
+		for _, part := range m.Parts {
+			if tr, ok := part.(llms.ToolCallResponse); ok {
+				newParts = append(newParts, llms.ToolCallResponse{
+					ToolCallID: tr.ToolCallID,
+					Name:       tr.Name,
+					Content:    stubObservation(tr.Name, meta.desc, tr.Content),
+				})
+			} else {
+				newParts = append(newParts, part)
+			}
+		}
+		out[i] = llms.MessageContent{Role: m.Role, Parts: newParts}
+	}
+	return out
+}
+
+// injectLedgerBlock appends the investigation ledger — the durable, distilled
+// facts the reflection step maintains — to the SENT copy of the conversation.
+// The ledger was previously maintained but never shown to the main loop, so the
+// agent could not use its own distilled memory; combined with aging this is the
+// full memory hierarchy: recent raw observations + permanent ledger + stubs.
+// Appended at the tail (after the last tool response) so FC→FR adjacency is
+// preserved and the churn from ledger updates never invalidates the stable
+// prompt prefix.
+func (p *ReActPlanner) injectLedgerBlock(messages []llms.MessageContent) []llms.MessageContent {
+	// Deliberately NOT gated on the aging flag: injecting the ledger was the
+	// best-quality arm in the pinned A/B even with full raw context (it beat
+	// the no-ledger baseline), so the agent gets its distilled memory whether
+	// or not old observations are being stubbed.
+	if p.ledger == nil || p.ledger.IsEmpty() {
+		return messages
+	}
+	block := "## INVESTIGATION LEDGER (durable facts distilled from ALL prior steps — trust this over your memory of elided outputs)\n\n" +
+		p.ledger.ToPromptBlock()
+	out := make([]llms.MessageContent, len(messages), len(messages)+1)
+	copy(out, messages)
+	return append(out, llms.MessageContent{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextContent{Text: block}},
+	})
+}
+
 // updateConversationMessagesMulti builds a single AI message with all ToolCalls
 // and a single Tool message with all ToolCallResponses, preserving IDs.
 func (p *ReActPlanner) updateConversationMessagesMulti(
@@ -1728,6 +2129,18 @@ func (p *ReActPlanner) updateConversationMessagesMulti(
 			Role:  llms.ChatMessageTypeTool,
 			Parts: toolParts,
 		})
+		// Record which steps this Tool message carries so the aging gate can
+		// tell when a reflection has distilled ALL of them. Keyed by message
+		// position (suffix-aligned in ageOldObservations) because Gemini
+		// function calls have empty ToolCallIDs — an ID-keyed map is always
+		// empty on the genai path.
+		maxStep := 0
+		for _, s := range steps {
+			if s.Action != "" && s.Number > maxStep {
+				maxStep = s.Number
+			}
+		}
+		p.toolMsgMeta = append(p.toolMsgMeta, toolMsgMeta{maxStep: maxStep, desc: describeSteps(steps)})
 	}
 
 	return messages

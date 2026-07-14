@@ -161,6 +161,20 @@ func (a *CodeFixerAgent) executeWithOptions(ctx context.Context, sessionCtx *ses
 		return nil, fmt.Errorf("failed to build template prompt: %w", err)
 	}
 
+	// Knowledge carry-over (see Ledger.SeedFrom): seed the next Plan with the
+	// previous attempt's ledger plus the reviewer feedback as an explicit open
+	// question, so a rework starts from what it already established instead of
+	// re-investigating from step 1. Composes with the specialist handoff the
+	// orchestrator stages via SetSeedLedger before the fix loop.
+	if prev := a.Planner.Ledger(); prev != nil && !prev.IsEmpty() {
+		a.Planner.SetSeedLedger(prev)
+	}
+	if reviewFeedback != "" {
+		fb := planners.NewLedger(nil)
+		fb.AddOpenQuestion("Reviewer feedback to address in this attempt: " + reviewFeedback)
+		a.Planner.SetSeedLedger(fb)
+	}
+
 	// Use ReAct planner with optimized prompts for efficiency
 	planResult, err := a.Planner.Plan(ctx, enhancedQuery, systemPrompt)
 	if err != nil {

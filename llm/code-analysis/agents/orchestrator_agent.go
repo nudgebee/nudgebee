@@ -447,6 +447,19 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 	} else {
 		a.reportProgress("Applying code fix...")
 	}
+
+	// Hand the specialist's distilled knowledge (findings + verbatim citations)
+	// to the fixer so it starts knowing what the RCA established instead of
+	// re-investigating the codebase from step 1. Whichever specialist ran, its
+	// ledger survives on its planner; SetSeedLedger merges are deduplicated.
+	if a.codeFixerAgent != nil && a.codeFixerAgent.Planner != nil {
+		for _, l := range []*planners.Ledger{
+			a.codeAgent.Ledger(), a.errorRCAAgent.Ledger(), a.performanceDebuggerAgent.Ledger(),
+		} {
+			a.codeFixerAgent.Planner.SetSeedLedger(l)
+		}
+	}
+
 	fixerResult, err := a.executeFixAndReviewLoop(ctx, sessionCtx, factsData)
 	if err != nil {
 		factsData["description"] = fmt.Sprintf("%s\n\nNote: Fix-review process failed: %v", factsData["description"], err)

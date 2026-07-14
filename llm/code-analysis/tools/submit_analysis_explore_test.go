@@ -58,16 +58,22 @@ func TestValidateExploreContract_RejectsCitationWithoutFilePath(t *testing.T) {
 	}
 }
 
-func TestValidateExploreContract_RejectsCitationWithoutLineStart(t *testing.T) {
+func TestValidateExploreContract_LineStartZeroIsFileLevelEvidence(t *testing.T) {
+	// line_start 0 = whole-file / commit-level evidence (git-archaeology answers
+	// cite commits, not lines). A hard >0 rule made such runs fail the contract
+	// on every retry and die to the parse-error fallback (seen on a real replay).
 	in := SubmitAnalysisInput{
 		Answer: "x",
 		Citations: []Citation{
 			{FilePath: "foo.go", LineStart: 0, Snippet: "y"},
 		},
 	}
-	errs := validateExploreContract(in)
-	if len(errs) == 0 {
-		t.Fatal("expected validation error for missing line_start")
+	if errs := validateExploreContract(in); len(errs) != 0 {
+		t.Fatalf("line_start=0 must be accepted as file-level evidence, got: %v", errs)
+	}
+	in.Citations[0].LineStart = -3
+	if errs := validateExploreContract(in); len(errs) == 0 {
+		t.Fatal("negative line_start must be rejected")
 	}
 }
 
