@@ -64,6 +64,13 @@ type PRFollowupResult struct {
 	// — without it, a PR that gets reviewed >2h after creation can hit the
 	// iteration cap before the reviewer ever shows up.
 	NoOp bool `json:"no_op,omitempty"`
+	// Unresolved narrows NoOp: the run had actionable input (review comments or a
+	// CI failure) but couldn't apply a change — the non-convergence case, as
+	// opposed to a genuine "nothing to do". It is observability-only (the cron
+	// still treats the run as a no_op, counter-neutral); the followup handler
+	// surfaces it as followup_unresolved so the otherwise-invisible "couldn't
+	// apply" share of no_ops is measurable. Only meaningful when NoOp is true.
+	Unresolved bool `json:"unresolved,omitempty"`
 }
 
 // reviewComment represents a single review comment that needs to be addressed.
@@ -453,6 +460,11 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	// that count toward the iteration budget.
 	if !agentChangedSomething && !result.CommentPosted {
 		result.NoOp = true
+		// Distinguish "couldn't apply" from "nothing to do": if there was
+		// actionable input (review comments or a CI failure) yet we produced no
+		// change, this no_op is really a non-convergence. Observability-only —
+		// the cron still treats it as a counter-neutral no_op.
+		result.Unresolved = len(pendingComments) > 0 || ciFailureLogs != ""
 	}
 
 	return result, nil

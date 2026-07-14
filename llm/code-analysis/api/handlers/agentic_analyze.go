@@ -258,9 +258,15 @@ type AnalysisResult struct {
 	SemanticAnalysis   *SemanticInfo    `json:"semantic_analysis,omitempty"`
 
 	// PIPELINE STATUS FIELDS - Expose review/build/fix details for transparency
-	RequiresFix        bool           `json:"requires_fix,omitempty"`
-	ExecutionStatus    string         `json:"execution_status,omitempty"`    // success, failed, partial_success, no_op (already-resolved / nothing to apply — fix flow & followup)
-	ExecutionSummary   string         `json:"execution_summary,omitempty"`   // CodeFixer's summary of what it did
+	RequiresFix      bool   `json:"requires_fix,omitempty"`
+	ExecutionStatus  string `json:"execution_status,omitempty"`  // success, failed, partial_success, no_op (already-resolved / nothing to apply — fix flow & followup)
+	ExecutionSummary string `json:"execution_summary,omitempty"` // CodeFixer's summary of what it did
+	// FollowupUnresolved narrows a followup no_op: true means the agent had
+	// actionable input (review comments / CI failure) but couldn't apply a change
+	// (non-convergence), vs a genuine "nothing to do". Additive & backward-compatible:
+	// the services-server cron reads it only for the outcome metric; an older cron
+	// ignores it. Only set on the PR-followup path.
+	FollowupUnresolved bool           `json:"followup_unresolved,omitempty"`
 	FilesModified      any            `json:"files_modified,omitempty"`      // List of files the fixer changed
 	VerificationPassed any            `json:"verification_passed,omitempty"` // Whether lint/build passed
 	PRCreationStatus   string         `json:"pr_creation_status,omitempty"`  // success, skipped, failed
@@ -1816,6 +1822,10 @@ func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cf
 		agentResponse.ExecutionStatus = "failed"
 	} else if result.NoOp {
 		agentResponse.ExecutionStatus = "no_op"
+		// Tag a no_op that was really a non-convergence (had actionable input but
+		// couldn't apply a change) so the cron's outcome metric can separate it
+		// from a genuine "nothing to do". Purely observability — still a no_op.
+		agentResponse.FollowupUnresolved = result.Unresolved
 	}
 	if result.CommitHash != "" {
 		agentResponse.ExecutionSummary = fmt.Sprintf("Committed and pushed: %s", result.CommitHash)

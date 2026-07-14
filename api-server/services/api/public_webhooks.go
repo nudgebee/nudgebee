@@ -264,11 +264,13 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 
 		prURL, action, terminal, interesting := extractGithubPRSignal(event)
 		if !interesting {
+			common.MetricsPRFollowupWebhook(c.Request.Context(), "ignored")
 			c.JSON(200, map[string]string{"status": "ignored"})
 			return
 		}
 
 		if prURL == "" {
+			common.MetricsPRFollowupWebhook(c.Request.Context(), "no_pr_url")
 			logger.Info("github webhook: event matched but no PR URL extracted",
 				"event_type", eventType, "action", action)
 			c.JSON(200, map[string]string{"status": "no_pr_url"})
@@ -283,6 +285,7 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 			return
 		}
 		if resolutionID == "" {
+			common.MetricsPRFollowupWebhook(c.Request.Context(), "no_match")
 			logger.Info("github webhook: no open resolution row for PR", "pr_url", prURL, "event_type", eventType)
 			c.JSON(200, map[string]string{"status": "no_match"})
 			return
@@ -297,6 +300,7 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 			if pre, ok := event.(*github.PullRequestEvent); ok {
 				merged = pre.GetPullRequest().GetMerged()
 			}
+			common.MetricsPRFollowupWebhook(c.Request.Context(), "terminal")
 			logger.Info("github webhook: PR terminal, retiring resolution",
 				"pr_url", prURL, "event_type", eventType, "action", action,
 				"merged", merged, "resolution_id", resolutionID, "table", tableName)
@@ -324,6 +328,7 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 			return
 		}
 
+		common.MetricsPRFollowupWebhook(c.Request.Context(), "dispatched")
 		logger.Info("github webhook: dispatching followup",
 			"pr_url", prURL,
 			"event_type", eventType,

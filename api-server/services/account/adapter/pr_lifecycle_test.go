@@ -71,6 +71,18 @@ func TestClassifyFollowupOutcome(t *testing.T) {
 			failureContext: "no actionable signal — must not consume a retry slot",
 		},
 		{
+			name:           "no_op with followup_unresolved=true tags unresolved but stays no_op",
+			responses:      []string{`{"execution_status":"no_op","followup_unresolved":true}`},
+			want:           followupOutcome{name: "no_op", newState: "needs_followup", counterDelta: 0, unresolved: true},
+			failureContext: "couldn't-apply must stay counter-neutral (no_op) yet be distinguishable for the metric",
+		},
+		{
+			name:           "no_op with followup_unresolved=false is a plain no_op",
+			responses:      []string{`{"execution_status":"no_op","followup_unresolved":false}`},
+			want:           followupOutcomeNoOp,
+			failureContext: "explicit false means genuine nothing-to-do",
+		},
+		{
 			name:           "execution_status=failed counts toward cap",
 			responses:      []string{`{"execution_status":"failed","failure_summary":"git push rejected"}`},
 			want:           followupOutcomeFailed,
@@ -109,6 +121,7 @@ func TestClassifyFollowupOutcome(t *testing.T) {
 			assert.Equal(t, tt.want.newState, got.newState, "newState mismatch — %s", tt.failureContext)
 			assert.Equal(t, tt.want.counterDelta, got.counterDelta, "counterDelta mismatch — %s", tt.failureContext)
 			assert.Equal(t, tt.want.resetCounter, got.resetCounter, "resetCounter mismatch — %s", tt.failureContext)
+			assert.Equal(t, tt.want.unresolved, got.unresolved, "unresolved mismatch — %s", tt.failureContext)
 		})
 	}
 }

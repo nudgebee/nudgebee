@@ -110,6 +110,101 @@ func TestMarkStaleResolutionsInTables_DB(t *testing.T) {
 	assert.Equal(t, "needs_followup", state(tables[1], "done"), "non-InProgress row untouched")
 }
 
+// TestReclaimStuckAddressingInTables_DB verifies the addressing-reaper UPDATE against
+// real Postgres: it returns to 'needs_followup' only PR rows that are open, in
+// 'addressing', and last checked longer ago than followupAddressingLease — preserving
+// the iteration count and clearing the pending flag. Rows still within the lease (a
+// genuinely in-flight run), non-addressing rows, non-PR rows, non-InProgress rows, and
+// rows with a NULL last_pr_check_at are all left untouched.
+//
+// DB-gated: skips when no database is reachable (CI without a metastore).
+func TestReclaimStuckAddressingInTables_DB(t *testing.T) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		t.Skipf("skipping: database not accessible: %v", err)
+	}
+
+	tables := []string{"zz_pr_reclaim_test_a", "zz_pr_reclaim_test_b"}
+	mustExec := func(q string, args ...any) {
+		_, e := dbms.Db.Exec(q, args...)
+		require.NoError(t, e)
+	}
+	for _, tbl := range tables {
+		mustExec(fmt.Sprintf(`DROP TABLE IF EXISTS %s`, tbl))
+		mustExec(fmt.Sprintf(`CREATE TABLE %s (
+			id text PRIMARY KEY,
+			type text NOT NULL,
+			status text NOT NULL,
+			pr_lifecycle_state text NOT NULL,
+			pr_iteration_count int NOT NULL DEFAULT 0,
+			pr_followup_pending boolean NOT NULL DEFAULT false,
+			status_message text,
+			last_pr_check_at timestamptz,
+			created_at timestamptz NOT NULL
+		)`, tbl))
+		tblName := tbl
+		t.Cleanup(func() { _, _ = dbms.Db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s`, tblName)) })
+	}
+
+	// checkMinsAgo controls last_pr_check_at (negative sentinel -> NULL); older than
+	// the 45-min lease is the only combination that reclaims. pending starts true so
+	// we can assert it is cleared.
+	seed := func(tbl, id, typ, status, state string, iters, checkMinsAgo int) {
+		var lastCheck any
+		if checkMinsAgo >= 0 {
+			lastCheck = fmt.Sprintf("%d minutes", checkMinsAgo)
+		}
+		if lastCheck == nil {
+			mustExec(fmt.Sprintf(`INSERT INTO %s
+				(id, type, status, pr_lifecycle_state, pr_iteration_count, pr_followup_pending, last_pr_check_at, created_at)
+				VALUES ($1,$2,$3,$4,$5, true, NULL, now())`, tbl),
+				id, typ, status, state, iters)
+			return
+		}
+		mustExec(fmt.Sprintf(`INSERT INTO %s
+			(id, type, status, pr_lifecycle_state, pr_iteration_count, pr_followup_pending, last_pr_check_at, created_at)
+			VALUES ($1,$2,$3,$4,$5, true, now() - ($6)::interval, now())`, tbl),
+			id, typ, status, state, iters, lastCheck)
+	}
+	row := func(tbl, id string) (state string, iters int, pending bool) {
+		require.NoError(t, dbms.Db.QueryRow(
+			fmt.Sprintf(`SELECT pr_lifecycle_state, pr_iteration_count, pr_followup_pending FROM %s WHERE id=$1`, tbl), id).
+			Scan(&state, &iters, &pending))
+		return
+	}
+
+	// Should reclaim: open PR, addressing, checked longer ago than the lease.
+	seed(tables[0], "stuck", "PullRequest", "InProgress", "addressing", 3, 60)
+	seed(tables[1], "stuck2", "PullRequest", "InProgress", "addressing", 0, 120)
+	// Should NOT reclaim:
+	seed(tables[0], "in_flight", "PullRequest", "InProgress", "addressing", 1, 10)  // within lease
+	seed(tables[0], "needs", "PullRequest", "InProgress", "needs_followup", 1, 60)  // not addressing
+	seed(tables[0], "null_check", "PullRequest", "InProgress", "addressing", 1, -1) // NULL last_check
+	seed(tables[1], "not_pr", "Recommendation", "InProgress", "addressing", 1, 60)  // wrong type
+	seed(tables[1], "done", "PullRequest", "Success", "addressing", 1, 60)          // not InProgress
+
+	ctx := security.NewRequestContextForSuperAdmin(nil, nil, nil)
+	n := reclaimStuckAddressingInTables(ctx, dbms, tables)
+	assert.Equal(t, int64(2), n, "exactly the two open+addressing+past-lease PR rows are reclaimed")
+
+	s, it, p := row(tables[0], "stuck")
+	assert.Equal(t, "needs_followup", s, "stuck row reclaimed")
+	assert.Equal(t, 3, it, "iteration count preserved (dead attempt not charged)")
+	assert.False(t, p, "pending flag cleared")
+	s, _, _ = row(tables[1], "stuck2")
+	assert.Equal(t, "needs_followup", s, "second stuck row reclaimed")
+
+	assertState := func(tbl, id, want string) {
+		s, _, _ := row(tbl, id)
+		assert.Equal(t, want, s, "%s should be untouched", id)
+	}
+	assertState(tables[0], "in_flight", "addressing")
+	assertState(tables[0], "needs", "needs_followup")
+	assertState(tables[0], "null_check", "addressing")
+	assertState(tables[1], "not_pr", "addressing")
+	assertState(tables[1], "done", "addressing")
+}
+
 // TestResurrectStaleResolution_DB verifies the webhook-only resurrection: a 'stale'
 // row is reset to needs_followup with a fresh (0) iteration budget and the pending
 // flag cleared, while a non-stale row is left untouched (the guard prevents a
