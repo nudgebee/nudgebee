@@ -78,6 +78,26 @@ func bucket(p Period, t time.Time) string {
 	}
 }
 
+// ResetAt returns when the calendar-aligned window for period p (the one containing
+// t) rolls over, in UTC. Surfaced on a 429 so a throttled client knows when to retry.
+func ResetAt(p Period, t time.Time) time.Time {
+	t = t.UTC()
+	switch p {
+	case PeriodMinute:
+		return t.Truncate(time.Minute).Add(time.Minute)
+	case PeriodHour:
+		return t.Truncate(time.Hour).Add(time.Hour)
+	case PeriodDay:
+		y, m, d := t.Date()
+		return time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC)
+	case PeriodMonth:
+		y, m, _ := t.Date()
+		return time.Date(y, m+1, 1, 0, 0, 0, 0, time.UTC)
+	default:
+		return t.Truncate(time.Minute).Add(time.Minute)
+	}
+}
+
 // ttl returns how long a bucket key lives (period length + slack) so stale buckets
 // auto-expire.
 func ttl(p Period) time.Duration {

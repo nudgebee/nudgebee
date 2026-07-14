@@ -208,6 +208,9 @@ func main() {
 	// auth resolving identity from the configured mode (user_auths by default). The
 	// request credential resolver falls back to the operator/account default when
 	// none is registered.
+	// Tell the proxy which providers have an operator credential so it can return a
+	// clear 403 (rather than a keyless upstream error) when no credential is available.
+	proxy.RegisterOperatorCreds(eng.HasProviderCred)
 	proxy.RegisterRoutes(r, eng.Client, sink, bodyLog, auth.NewValidator(), router, limiter, pricer)
 
 	// Read-only usage query plane (POST /rpc/usage/aggregate) for the AI Gateway

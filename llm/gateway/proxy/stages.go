@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -48,11 +50,15 @@ func (s ratelimitStage) Handle(rc *RequestContext) (bool, error) {
 	if ex == nil {
 		return false, nil
 	}
+	reset := ratelimit.ResetAt(ex.Period, time.Now())
+	if secs := int(time.Until(reset).Seconds()) + 1; secs > 0 {
+		rc.Gin.Header("Retry-After", strconv.Itoa(secs))
+	}
 	rc.Gin.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 		"error": gin.H{
 			"type": "rate_limit_exceeded",
-			"message": fmt.Sprintf("%s limit exceeded for %s (%s window)",
-				ex.Metric, ex.Scope, ex.Period),
+			"message": fmt.Sprintf("%s limit exceeded for %s (%s window); resets at %s UTC",
+				ex.Metric, ex.Scope, ex.Period, reset.Format("2006-01-02 15:04")),
 		},
 	})
 	return true, nil
@@ -64,6 +70,17 @@ func (s ratelimitStage) Handle(rc *RequestContext) (bool, error) {
 type CredResolver interface {
 	Resolve(ctx context.Context, provider schemas.ModelProvider, id auth.Identity) (schemas.Key, bool)
 }
+
+// operatorCredsHook, when registered, reports whether an operator/account credential
+// is configured for a provider. The resolver stage uses it to fail fast with a clear
+// 403 when neither a per-request (tenant) key nor an operator key exists — instead of
+// letting core call the provider with no credential (a confusing upstream error). Left
+// nil until registered, in which case the stage can't determine coverage and does not
+// block (preserves prior behavior).
+var operatorCredsHook func(schemas.ModelProvider) bool
+
+// RegisterOperatorCreds registers the operator-credential availability predicate.
+func RegisterOperatorCreds(fn func(schemas.ModelProvider) bool) { operatorCredsHook = fn }
 
 // noopCredResolver always falls back to the account/operator default. It is the
 // default until an alternate resolver is registered.
@@ -102,6 +119,21 @@ func (resolverStage) Name() string { return "resolver" }
 func (s resolverStage) Handle(rc *RequestContext) (bool, error) {
 	if key, ok := s.creds.Resolve(rc.Ctx, rc.Provider, rc.Identity); ok {
 		rc.Bctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
+		return false, nil
+	}
+	// No per-request (tenant) credential — the request falls back to the operator/
+	// account default. If we can determine that no operator credential exists either,
+	// fail fast with a clear 403 rather than letting core call the provider keyless
+	// (which surfaces to the client as a confusing upstream auth error).
+	if operatorCredsHook != nil && !operatorCredsHook(rc.Provider) {
+		rc.Gin.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"error": gin.H{
+				"type": "provider_not_configured",
+				"message": fmt.Sprintf("No %s credential is configured for your organization. Ask an administrator to add a %s key in NudgeBee integrations.",
+					rc.Provider, rc.Provider),
+			},
+		})
+		return true, nil
 	}
 	return false, nil
 }

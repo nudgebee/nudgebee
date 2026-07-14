@@ -16,12 +16,12 @@ func Middleware(v Validator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractToken(c)
 		if token == "" && v.RequiresToken() {
-			abort401(c, "missing NB token")
+			abort401(c, "Missing NB token. Set your NudgeBee token as the API key / bearer — see AI Gateway → Connect.")
 			return
 		}
 		id, ok := v.Validate(token)
 		if !ok {
-			abort401(c, "invalid NB token")
+			abort401(c, "Invalid or expired NB token. Generate a new one in NudgeBee → AI Gateway → Connect.")
 			return
 		}
 		c.Set(identityCtxKey, id)
