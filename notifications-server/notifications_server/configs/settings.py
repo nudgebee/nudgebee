@@ -411,12 +411,8 @@ class SlackSettings(BaseSettings):
     followup_options_threshold: int = Field(
         25, validation_alias=AliasChoices("FOLLOWUP_OPTIONS_THRESHOLD", "followup_options_threshold")
     )
-    # --- Image attachments in Nubi conversations (issue #33584) ---
-    # Off by default. Also requires the llm-server's LLM_SERVER_IMAGE_SUPPORT_ENABLED
-    # to be on — it is the source of truth and re-validates every image.
-    image_support_enabled: bool = Field(
-        False, validation_alias=AliasChoices("SLACK_IMAGE_SUPPORT_ENABLED", "slack_image_support_enabled")
-    )
+    # Always on. The llm-server's LLM_SERVER_IMAGE_SUPPORT_ENABLED remains the
+    # source of truth and re-validates every image.
     image_max_per_message: int = Field(
         4, validation_alias=AliasChoices("SLACK_IMAGE_MAX_PER_MESSAGE", "slack_image_max_per_message")
     )

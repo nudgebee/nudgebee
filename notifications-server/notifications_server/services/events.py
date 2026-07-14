@@ -174,10 +174,7 @@ class Events:
     def _stash_thread_images(self, event, team_id, thread_ts):
         """Download any images attached to this turn and cache them for the LLM
         payload. Always overwrites (with an empty list when there are none) so an
-        image-less turn does not resend a previous turn's image. No-op unless the
-        feature is enabled."""
-        if not settings.slack.image_support_enabled:
-            return
+        image-less turn does not resend a previous turn's image."""
         images, skipped = [], []
         files = event.get("files") or []
         if files:
@@ -190,18 +187,20 @@ class Events:
                     max_size_mb=settings.slack.image_max_size_mb,
                 )
             else:
-                LOG.warning("Slack image support enabled but no bot token for team %s; skipping images", team_id)
+                LOG.warning("Slack images present but no bot token for team %s; skipping images", team_id)
         self.cache.cache_thread_images(thread_ts, images)
         if skipped:
             LOG.info("Skipped %d Slack image(s) for thread %s: %s", len(skipped), thread_ts, "; ".join(skipped))
 
     def _attach_images(self, payload, thread_ts):
-        """Attach any cached images for this thread to the outgoing LLM payload."""
-        if not settings.slack.image_support_enabled:
-            return
+        """Attach any cached images for this thread to the outgoing LLM payload,
+        then clear the cache so paths that don't re-stash (button/dropdown
+        followups, account-selection re-processing) can't resend a prior turn's
+        image."""
         images = self.cache.get_thread_images(thread_ts)
         if images:
             payload["images"] = images
+            self.cache.cache_thread_images(thread_ts, [])
 
     @staticmethod
     def _validate_context_response_for_account_ids(context_account_ids, response):
