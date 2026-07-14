@@ -117,8 +117,18 @@ func GetThresholdSuggestion(ctx context.Context, db *sqlx.DB, ev models.Event, t
 		alertQuality = computeAlertQuality(ctx, db, source, alertRuleKey, accountID, tenantID)
 	}
 
-	// Compute suggestion
-	suggestion := computeSuggestion(alertDef, metricHistory, firingAnalysis, alertQuality)
+	// Compute suggestion. Prefer the baseline-fidelity path — segment the history into off-alert
+	// vs firing windows and diagnose deterministically — and fall back to the legacy statistical
+	// tuner only when it can't apply (no history, unknown operator, threshold 0).
+	fingerprint := ""
+	if ev.Fingerprint != nil {
+		fingerprint = *ev.Fingerprint
+	}
+	intervals := fetchFiringIntervals(ctx, db, source, alertRuleKey, fingerprint, accountID, tenantID)
+	suggestion, handledByBaseline := diagnoseWithBaseline(alertDef, metricHistory, intervals, alertQuality)
+	if !handledByBaseline {
+		suggestion = computeSuggestion(alertDef, metricHistory, firingAnalysis, alertQuality)
+	}
 
 	// If no suggestion could be computed, provide a specific error instead of the generic "no suggestion available"
 	var computeError string
@@ -132,10 +142,14 @@ func GetThresholdSuggestion(ctx context.Context, db *sqlx.DB, ev models.Event, t
 		}
 	}
 
-	// Run guardrails: validate suggestion against metric semantics and operational risk.
-	// Skip for insufficient_data — there is no real suggestion to validate, and its MetricP50=0
-	// would trip Gate 4's divide-by-MetricP50 for less-than alerts (and empty the reason).
-	if suggestion != nil && suggestion.RecommendationType != "insufficient_data" {
+	// Run guardrails for legacy suggestions and for baseline-path retunes (bounded-metric rejection
+	// still applies). Skip for insufficient_data (its MetricP50=0 would trip Gate 4's
+	// divide-by-MetricP50), and for baseline-path diagnoses that don't change the threshold
+	// (chronic / excursion / ambiguous) — their verdict is already final.
+	skipGuardrails := suggestion == nil ||
+		suggestion.RecommendationType == "insufficient_data" ||
+		(suggestion.Diagnosis != "" && suggestion.RecommendationType != "tune_threshold")
+	if !skipGuardrails {
 		risk := ValidateSuggestion(suggestion, alertDef, alertQuality)
 		// Guardrails (e.g. Gate 1) may change the threshold after estimateReduction already ran.
 		// Recompute reduction so the stored/displayed number describes the value we actually keep.
@@ -149,8 +163,10 @@ func GetThresholdSuggestion(ctx context.Context, db *sqlx.DB, ev models.Event, t
 			suggestion.RiskLevel = risk.Level
 			suggestion.RiskWarnings = risk.Warnings
 			suggestion.Confidence = AdjustConfidenceForRisk(suggestion.Confidence, risk)
-			// Rebuild user-facing reason with guardrail context
-			suggestion.Reason = BuildUserFacingReason(suggestion, alertDef, risk)
+			// Preserve the baseline-diagnosis narrative; only rebuild the terse reason for legacy suggestions.
+			if suggestion.Diagnosis == "" {
+				suggestion.Reason = BuildUserFacingReason(suggestion, alertDef, risk)
+			}
 		}
 	}
 
@@ -208,19 +224,49 @@ func extractAWSAlertDefinition(ctx context.Context, db *sqlx.DB, ev models.Event
 	return alertDef, nil
 }
 
-// extractAWSEvidenceFields parses the raw CloudWatch alarm JSON from evidences[0]
+// extractAWSEvidenceFields parses the raw CloudWatch alarm JSON from evidences[0].
+// CloudWatch alarm payloads use camelCase keys (comparisonOperator/period/evaluationPeriods); some
+// shapes use PascalCase — read both. Without this the operator was left blank, so every AWS alarm
+// bypassed the baseline-fidelity engine and fell back to the legacy path.
 func extractAWSEvidenceFields(ctx context.Context, db *sqlx.DB, eventID string, alertDef *AlertDefinition) {
-	if ev, ok := getEvidenceRawEvent(ctx, db, eventID); ok {
-		if operator, ok := ev["ComparisonOperator"].(string); ok {
-			alertDef.Operator = operator
-		}
-		if period, ok := ev["Period"].(float64); ok {
-			alertDef.Period = int(period)
-		}
-		if evalPeriods, ok := ev["EvaluationPeriods"].(float64); ok {
-			alertDef.EvaluationPeriods = int(evalPeriods)
+	ev, ok := getEvidenceRawEvent(ctx, db, eventID)
+	if !ok {
+		return
+	}
+	if op := evString(ev, "comparisonOperator", "ComparisonOperator"); op != "" {
+		alertDef.Operator = op // e.g. "GreaterThanThreshold" — isGreaterThanOperator handles the raw form
+	}
+	if p, ok := evInt(ev, "period", "Period"); ok {
+		alertDef.Period = p
+	}
+	if e, ok := evInt(ev, "evaluationPeriods", "EvaluationPeriods"); ok {
+		alertDef.EvaluationPeriods = e
+	}
+}
+
+// evString returns the first key present as a non-empty string.
+func evString(m map[string]interface{}, keys ...string) string {
+	for _, k := range keys {
+		if s, ok := m[k].(string); ok && s != "" {
+			return s
 		}
 	}
+	return ""
+}
+
+// evInt returns the first key present as an int, accepting either a JSON number or a numeric string.
+func evInt(m map[string]interface{}, keys ...string) (int, bool) {
+	for _, k := range keys {
+		switch v := m[k].(type) {
+		case float64:
+			return int(v), true
+		case string:
+			if n, err := strconv.Atoi(v); err == nil {
+				return n, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // getEvidenceRawEvent fetches evidences for an event and returns the raw event data (evidences[0])
@@ -590,7 +636,7 @@ func fetchAWSMetricHistory(ctx context.Context, labels map[string]interface{}, a
 		return nil
 	}
 
-	return metricsResponseToHistory(metricsResp, startTime, endTime, int(step.Seconds()))
+	return metricsResponseToHistory(metricsResp, startTime, endTime, int(step.Seconds()), alertDef.CurrentThreshold, isGreaterThanOperator(alertDef.Operator))
 }
 
 // safeCliArg validates that a string only contains safe characters for CLI arguments.
@@ -804,7 +850,7 @@ func fetchAzureMetricHistory(ctx context.Context, labels map[string]interface{},
 		return nil
 	}
 
-	return metricsResponseToHistory(metricsResp, startTime, endTime, int(step.Seconds()))
+	return metricsResponseToHistory(metricsResp, startTime, endTime, int(step.Seconds()), alertDef.CurrentThreshold, isGreaterThanOperator(alertDef.Operator))
 }
 
 // --- GCP support ---
@@ -1015,7 +1061,7 @@ func fetchGCPMetricHistory(ctx context.Context, labels map[string]interface{}, a
 		return nil
 	}
 
-	history := metricsResponseToHistory(metricsResp, startTime, endTime, int(step.Seconds()))
+	history := metricsResponseToHistory(metricsResp, startTime, endTime, int(step.Seconds()), alertDef.CurrentThreshold, isGreaterThanOperator(alertDef.Operator))
 	if history == nil || len(history.Values) == 0 {
 		slog.WarnContext(ctx, "threshold_suggestion: GCP metric query returned no data",
 			"service", serviceName, "metric", metricName, "account", accountID)
@@ -1331,7 +1377,97 @@ func fetchPrometheusMetricHistory(ctx context.Context, ev models.Event, alertDef
 		return nil
 	}
 
-	return parsePrometheusRangeResponse(respMap, "threshold_query", startTime, endTime)
+	// Phase B — analyze the series that actually fired, not a synthetic cross-series max-envelope
+	// (which matches no real series and lets one bad pod poison the whole rule).
+	seriesList := parsePrometheusSeriesList(respMap, "threshold_query", startTime, endTime)
+	if len(seriesList) == 0 {
+		return nil
+	}
+	// Analyze the series that actually fired — match on the firing event's labels so the metric
+	// series aligns with the fingerprint's firing intervals; fall back to the top-violating series
+	// when no series' labels match.
+	return selectSeriesForEvent(seriesList, GetLabelsMap(ev), alertDef.CurrentThreshold, isGreaterThanOperator(alertDef.Operator))
+}
+
+// parseSeriesLabels extracts the label set from a relay series entry's "metric" map (dropping the
+// __name__ meta-label). These labels are already in the relay response; the tuner just reads them now.
+func parseSeriesLabels(seriesMap map[string]any) map[string]string {
+	raw, ok := seriesMap["metric"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	labels := make(map[string]string, len(raw))
+	for k, v := range raw {
+		if k == "__name__" {
+			continue
+		}
+		if s, ok := v.(string); ok {
+			labels[k] = s
+		}
+	}
+	return labels
+}
+
+// parsePrometheusSeriesList parses the relay response into one MetricHistory per returned series (no
+// cross-series collapsing), each sorted by timestamp. Phase B selects among these.
+func parsePrometheusSeriesList(respMap map[string]any, queryKey string, startTime, endTime time.Time) []*MetricHistory {
+	queryResult, ok := respMap[queryKey]
+	if !ok {
+		return nil
+	}
+	qMap, ok := queryResult.(map[string]any)
+	if !ok {
+		return nil
+	}
+	seriesList, ok := qMap["series_list_result"].([]any)
+	if !ok || len(seriesList) == 0 {
+		return nil
+	}
+
+	var out []*MetricHistory
+	for _, seriesRaw := range seriesList {
+		seriesMap, ok := seriesRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		labels := parseSeriesLabels(seriesMap)
+		tsRaw, tsOK := seriesMap["timestamps"].([]any)
+		valRaw, valOK := seriesMap["values"].([]any)
+		if !tsOK || !valOK || len(tsRaw) == 0 {
+			continue
+		}
+		timestamps, values := parseSeriesData(tsRaw, valRaw)
+		if len(timestamps) == 0 {
+			continue
+		}
+		// Sort the (ts, value) pairs by timestamp — the relay does not guarantee ordering.
+		idx := make([]int, len(timestamps))
+		for i := range idx {
+			idx[i] = i
+		}
+		sort.Slice(idx, func(a, b int) bool { return timestamps[idx[a]] < timestamps[idx[b]] })
+		ts := make([]int64, len(timestamps))
+		vs := make([]float64, len(values))
+		for i, j := range idx {
+			ts[i] = timestamps[j]
+			vs[i] = values[j]
+		}
+		step := 60
+		if len(ts) > 1 {
+			if d := int(ts[1] - ts[0]); d >= 1 {
+				step = d
+			}
+		}
+		out = append(out, &MetricHistory{
+			Timestamps: ts,
+			Values:     vs,
+			Labels:     labels,
+			StartTime:  startTime.Format(time.RFC3339),
+			EndTime:    endTime.Format(time.RFC3339),
+			Step:       step,
+		})
+	}
+	return out
 }
 
 // parsePrometheusRangeResponse parses the relay ExecutePrometheus response into MetricHistory.
@@ -2259,36 +2395,42 @@ func GetLabelsMap(ev models.Event) map[string]interface{} {
 }
 
 // metricsResponseToHistory converts QueryMetricsResponse to MetricHistory
-func metricsResponseToHistory(resp cloud.QueryMetricsResponse, startTime, endTime time.Time, stepSeconds int) *MetricHistory {
+func metricsResponseToHistory(resp cloud.QueryMetricsResponse, startTime, endTime time.Time, stepSeconds int, threshold float64, isGT bool) *MetricHistory {
 	if len(resp.Items) == 0 {
 		return nil
 	}
 
-	// Use the first metric item. Zip timestamps+values and drop NaN/±Inf points —
-	// a ratio metric (e.g. x/0) can emit +Inf, which otherwise poisons every downstream
-	// statistic (p95/p99/MAD become Inf) and launders through to a degenerate suggestion.
-	item := resp.Items[0]
-	timestamps := make([]int64, 0, len(item.Timestamps))
-	values := make([]float64, 0, len(item.Values))
-	for i := 0; i < len(item.Timestamps) && i < len(item.Values); i++ {
-		v := item.Values[i]
-		if math.IsNaN(v) || math.IsInf(v, 0) {
+	// Phase B — build a cleaned MetricHistory per item and select the one that fires the most, rather
+	// than blindly taking Items[0] (multi-resource alerts were silently truncated). Zip timestamps+
+	// values and drop NaN/±Inf points — a ratio metric (e.g. x/0) can emit +Inf, which otherwise
+	// poisons every downstream statistic (p95/p99/MAD become Inf) and launders into a degenerate row.
+	var histories []*MetricHistory
+	for _, item := range resp.Items {
+		timestamps := make([]int64, 0, len(item.Timestamps))
+		values := make([]float64, 0, len(item.Values))
+		for i := 0; i < len(item.Timestamps) && i < len(item.Values); i++ {
+			v := item.Values[i]
+			if math.IsNaN(v) || math.IsInf(v, 0) {
+				continue
+			}
+			timestamps = append(timestamps, item.Timestamps[i].Unix())
+			values = append(values, v)
+		}
+		if len(values) == 0 {
 			continue
 		}
-		timestamps = append(timestamps, item.Timestamps[i].Unix())
-		values = append(values, v)
+		histories = append(histories, &MetricHistory{
+			Timestamps: timestamps,
+			Values:     values,
+			StartTime:  startTime.Format(time.RFC3339),
+			EndTime:    endTime.Format(time.RFC3339),
+			Step:       stepSeconds,
+		})
 	}
-	if len(values) == 0 {
+	if len(histories) == 0 {
 		return nil
 	}
-
-	return &MetricHistory{
-		Timestamps: timestamps,
-		Values:     values,
-		StartTime:  startTime.Format(time.RFC3339),
-		EndTime:    endTime.Format(time.RFC3339),
-		Step:       stepSeconds,
-	}
+	return selectFiringSeries(histories, threshold, isGT)
 }
 
 // computeMedian returns the median of a sorted slice

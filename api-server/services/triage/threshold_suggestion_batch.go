@@ -248,7 +248,8 @@ func processNoisyAlert(ctx *security.RequestContext, db *sqlx.DB, na noisyAlert,
 	// recommendation. review_alert rows are kept (stored 'ok') so their warnings/stats persist —
 	// ListThresholdSuggestions excludes them from the actionable list.
 	if response.Suggestion.EstimatedReduction == 0 &&
-		recType != "increase_duration" && recType != "tune_both" && recType != "disable" && recType != "review_alert" {
+		recType != "increase_duration" && recType != "tune_both" && recType != "disable" &&
+		recType != "review_alert" && recType != "investigate_signal" {
 		skipped.Add(1)
 		alertName := ""
 		if response.AlertDefinition != nil {
@@ -536,6 +537,17 @@ func upsertSuggestion(ctx context.Context, db *sqlx.DB, na noisyAlert, fingerpri
 		}
 		if len(response.Suggestion.RiskWarnings) > 0 {
 			stats["risk_warnings"] = response.Suggestion.RiskWarnings
+		}
+		// Baseline-fidelity decomposition — persisted for the eval set (no schema change).
+		if response.Suggestion.Diagnosis != "" {
+			stats["diagnosis"] = response.Suggestion.Diagnosis
+			stats["baseline_coverage"] = sanitizeFloat(response.Suggestion.BaselineCoverage)
+		}
+		if response.Suggestion.Baseline != nil {
+			stats["baseline"] = response.Suggestion.Baseline
+		}
+		if response.Suggestion.Firing != nil {
+			stats["firing"] = response.Suggestion.Firing
 		}
 		var err error
 		metricStatsJSON, err = json.Marshal(stats)
