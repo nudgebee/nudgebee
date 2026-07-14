@@ -36,6 +36,18 @@ function fmtCount(n: number | null | undefined): string {
   return n.toLocaleString('en-US');
 }
 
+/** Compact request-count formatter for chart axis ticks + on-bar totals (e.g. 1.2K,
+ * 980), matching the uppercase-K style of fmtTokens/fmtCost. TimeSeriesChart's
+ * `compactFormat` defaults to compactCurrency ($…), which is wrong for a request
+ * count — pass this so the count chart never renders a dollar sign. */
+function fmtCountCompact(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '—';
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
+  if (abs >= 1_000) return `${(v / 1_000).toFixed(abs >= 10_000 ? 0 : 1)}K`;
+  return `${Math.round(v)}`;
+}
+
 const numCell = { fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', fontVariantNumeric: 'tabular-nums' } as const;
 
 // ─── Requests-over-time (bar) ───────────────────────────────────────────────────
@@ -133,7 +145,7 @@ export function OverviewView({ metrics, filters, loading, error }: OverviewViewP
       {/* Requests over time. */}
       <Card>
         <SectionHeader title='Requests over time' icon={<ShowChartIcon />} />
-        <Chart.TimeSeries {...chart} shape='bar' format={(v) => fmtCount(v)} id='gateway-requests-over-time' />
+        <Chart.TimeSeries {...chart} shape='bar' format={fmtCount} compactFormat={fmtCountCompact} integerY id='gateway-requests-over-time' />
       </Card>
 
       {/* Breakdown tables. */}
