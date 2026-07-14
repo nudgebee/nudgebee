@@ -169,6 +169,9 @@ const SummaryView = () => {
   const [nubiQuery, setNubiQuery] = useState('');
   const [nubiAccountId, setNubiAccountId] = useState('');
   const [nubiConversationId, setNubiConversationId] = useState('');
+  // Bumped on every "Ask Nubi" click so the sidebar re-expands even when it's already visible
+  // (user collapsed it, then re-asked on the same or a different entry).
+  const [nubiOpenSignal, setNubiOpenSignal] = useState(0);
 
   // ── Handlers ──
   const handleOpenResource = useCallback((id: string) => {
@@ -215,6 +218,7 @@ const SummaryView = () => {
       setNubiAccountId(rec.account_id || '');
       setNubiConversationId(`recom_${rec.id}`);
       setNubiSidebarVisible(true);
+      setNubiOpenSignal((n) => n + 1);
     },
     [accounts]
   );
@@ -691,6 +695,7 @@ const SummaryView = () => {
                     setNubiAccountId(firstAccountId);
                     setNubiConversationId('optimize_summary_overview');
                     setNubiSidebarVisible(true);
+                    setNubiOpenSignal((n) => n + 1);
                   }}
                 >
                   Ask {assistantName || 'Nubi'} about any of this →
@@ -728,6 +733,7 @@ const SummaryView = () => {
       <NubiChatSidebar
         isVisible={nubiSidebarVisible}
         onClose={() => setNubiSidebarVisible(false)}
+        openSignal={nubiOpenSignal}
         accountId={nubiAccountId}
         query={nubiQuery}
         context={{ type: 'general', data: { conversationId: nubiConversationId } }}

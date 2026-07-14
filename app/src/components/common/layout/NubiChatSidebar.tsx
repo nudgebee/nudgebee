@@ -50,6 +50,11 @@ interface NubiChatSidebarProps {
   // lifts the overlay one step above the modal layer. The host Modal must also pass
   // `disableEnforceFocus`, or the Dialog's focus trap steals every keystroke from the chat input.
   aboveModal?: boolean;
+  // Bump this counter every time the parent (re)issues an "open" request. Because collapse
+  // state is internal, a parent that keeps `isVisible` pinned true (e.g. re-clicking "Ask Nubi"
+  // on the same or a different entry after the user collapsed the panel) has no other way to
+  // force the panel back open — changing this value re-expands it.
+  openSignal?: number;
 }
 
 const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
@@ -74,6 +79,7 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
   urlConversationId = '',
   urlSessionId = '',
   aboveModal = false,
+  openSignal,
 }) => {
   const theme = useTheme();
   const { assistantName, nubiIconUrl } = useTenantBranding();
@@ -129,6 +135,16 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
       setIsCollapsed(false);
     }
   }, [isVisible]);
+
+  // Re-expand whenever the parent re-issues an open request. This covers the case where
+  // `isVisible` is already true — re-clicking "Ask Nubi" on the same entry (nothing else
+  // changes) or on a different one (only the conversation switches) — so a collapsed panel
+  // always pops back open instead of staying a floating bubble.
+  useEffect(() => {
+    if (openSignal !== undefined) {
+      setIsCollapsed(false);
+    }
+  }, [openSignal]);
 
   // Determine positioning and animation
   const isOverlay = mode === 'overlay';
