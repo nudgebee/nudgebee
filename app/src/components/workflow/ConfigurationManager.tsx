@@ -290,28 +290,28 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, 
     }
   };
 
-  const getMenuItems = (): { label: string; id: number; icon: any }[] => {
+  const getMenuItems = (): { label: string; id: string; icon: any }[] => {
     if (!canEdit) {
       return [];
     }
     return [
       {
         label: 'Edit',
-        id: 1,
+        id: 'edit',
         icon: EditNewIcon,
       },
       {
         label: 'Delete',
-        id: 2,
+        id: 'delete',
         icon: DeleteIconRed,
       },
     ];
   };
 
   const onMenuClick = (menuItem: any, config: Config) => {
-    if (menuItem.id === 1) {
+    if (menuItem.id === 'edit') {
       handleEditConfig(config);
-    } else if (menuItem.id === 2) {
+    } else if (menuItem.id === 'delete') {
       handleDeleteConfig(config);
     }
   };

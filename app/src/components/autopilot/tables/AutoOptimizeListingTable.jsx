@@ -83,22 +83,22 @@ const AutoOptimizeListingTable = ({ defaultQuery = {}, handleOpenCreateAutoOptim
     let menuItems = [];
     menuItems.push({
       label: 'Edit',
-      id: 1,
+      id: 'edit',
     });
     if (item.status == 'Active') {
       menuItems.push({
         label: 'Disable',
-        id: 0,
+        id: 'toggle-enabled',
       });
     } else if (item?.status != 'DRAFT') {
       menuItems.push({
         label: 'Enable',
-        id: 0,
+        id: 'toggle-enabled',
       });
     } else if (item?.status == 'DRAFT') {
       menuItems.push({
         label: 'Check Status',
-        id: 2,
+        id: 'check-status',
       });
     }
 
@@ -227,7 +227,7 @@ const AutoOptimizeListingTable = ({ defaultQuery = {}, handleOpenCreateAutoOptim
   }, [currentPage, recordsPerPage, selectedStatus, router.query?.accountId, router.query?.name, selectedCategory, refresh, appliedName]);
 
   const onMenuClick = (menuItem, data) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'toggle-enabled') {
       setActiveToggleMenuOpen(true);
       setSelectedAutopilot(data);
     } else {
@@ -238,9 +238,9 @@ const AutoOptimizeListingTable = ({ defaultQuery = {}, handleOpenCreateAutoOptim
         data?.category === 'continuous_rightsize'
       ) {
         setAutoOptimizeData(data);
-        if (menuItem.id === 1) {
+        if (menuItem.id === 'edit') {
           handleOpenCreateAutoOptimize(data?.category);
-        } else if (menuItem.id === 2) {
+        } else if (menuItem.id === 'check-status') {
           setApprovalStatusModalOpen(true);
         }
       }

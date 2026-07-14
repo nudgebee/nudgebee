@@ -49,7 +49,7 @@ const KubernetesApplicationGrouping = () => {
       {
         icon: EditIcon,
         label: 'Edit',
-        id: 0,
+        id: 'edit',
       },
     ],
     []
@@ -66,7 +66,7 @@ const KubernetesApplicationGrouping = () => {
   }, []);
 
   const onMenuClick = useCallback((menuItem, dataItem) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'edit') {
       setIsEdit(true);
       setGroupingModalOpen(true);
       setGroupId(dataItem.id);

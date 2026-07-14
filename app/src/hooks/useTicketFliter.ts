@@ -15,14 +15,14 @@ const useTicketFliter = () => {
       {
         icon: TicketsIcon,
         label: 'Create Ticket',
-        id: 0,
+        id: 'create-ticket',
       },
     ];
     return MENU_ITEMS;
   };
 
   const onMenuClick = (menuItem: any, data: any) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'create-ticket') {
       setTicketData(data);
       setIsTicketCreateFormOpen(true);
     }

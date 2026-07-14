@@ -12,23 +12,23 @@ export const MENU_ITEMS = [
   {
     disabled: true,
     label: 'Start Instance',
-    id: 0,
+    id: 'start-instance',
   },
   {
     disabled: true,
     label: 'Stop Instance',
-    id: 1,
+    id: 'stop-instance',
   },
   {
     disabled: true,
     label: 'Terminate Instance',
-    id: 2,
+    id: 'terminate-instance',
   },
   {
     disabled: true,
     icon: plusIcon,
     label: 'Add Alarms',
-    id: 3,
+    id: 'add-alarms',
   },
 ];
 

@@ -752,20 +752,20 @@ const KubernetesEventsTable = ({
         {
           icon: TicketsIcon,
           label: 'Create Ticket',
-          id: 0,
+          id: 'create-ticket',
           disabled: disableTicket,
           iconBlack: true,
         },
         {
           icon: ClassifyIcon,
           label: 'Classify',
-          id: 4,
+          id: 'classify',
           iconBlack: true,
         },
         {
           icon: WorkflowIcon,
           label: 'Create Automation',
-          id: 5,
+          id: 'create-automation',
           iconBlack: true,
         },
       ];
@@ -774,7 +774,7 @@ const KubernetesEventsTable = ({
         {
           icon: TicketsIcon,
           label: 'Create Ticket',
-          id: 0,
+          id: 'create-ticket',
           disabled: disableTicket,
           iconBlack: true,
         },
@@ -784,15 +784,15 @@ const KubernetesEventsTable = ({
   };
 
   const onMenuClick = (menuItem, data) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'create-ticket') {
       setTicketData(data);
       setIsTicketCreateFormOpen(true);
     }
-    if (menuItem.id == 4) {
+    if (menuItem.id === 'classify') {
       setSelectedEvent(data);
       setIsClassifyModalOpen(true);
     }
-    if (menuItem.id === 5) {
+    if (menuItem.id === 'create-automation') {
       const accountId = data.account_id || router.query.accountId;
       const params = new URLSearchParams({ accountId, returnUrl: router.asPath });
       if (data.aggregation_key) params.set('eventType', data.aggregation_key);

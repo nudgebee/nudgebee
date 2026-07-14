@@ -153,13 +153,13 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
     return [
       {
         label: 'Edit',
-        id: 0,
+        id: 'edit',
       },
     ];
   };
 
   const onMenuClick = (menuItem, data) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'edit') {
       setIsEditing(true);
       listNodeClass();
       setSelectedNodePoolData(data);

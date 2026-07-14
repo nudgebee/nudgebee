@@ -70,7 +70,7 @@ const KubernetesHelmUpgradeRecommendation = ({ accountId, showUpdatedEmptyData =
   };
 
   const onMenuClick = (menuItem, data) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'create-ticket') {
       setTicketData(data);
       setIsTicketCreateFormOpen(true);
     }
@@ -118,7 +118,7 @@ const KubernetesHelmUpgradeRecommendation = ({ accountId, showUpdatedEmptyData =
             {
               icon: TicketsIcon,
               label: 'Create Ticket',
-              id: 0,
+              id: 'create-ticket',
               disabled: item.ticket !== undefined,
             },
           ];

@@ -199,7 +199,7 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
   const onMenuClick = (menuItems: any, data: any) => {
     const c = data?.values?.reduce((accumulator: number, currentValue: string) => accumulator + parseInt(currentValue), 0);
     setCount(c);
-    if (menuItems.id === 0) {
+    if (menuItems.id === 'create-ticket') {
       setTicketData(data);
       setIsTicketCreateFormOpen(true);
     }

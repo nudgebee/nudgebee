@@ -239,11 +239,11 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
     const items = [
       {
         label: 'Rename Account Name',
-        id: 0,
+        id: 'rename-account',
       },
       {
         label: item.status == 'disabled' ? 'Enable' : 'Disable',
-        id: 1,
+        id: 'toggle-enabled',
       },
       {
         label: 'Change Environment',
@@ -253,47 +253,47 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
     if (cloudProvider === 'Azure') {
       items.push({
         label: realtimeEventAccountIds.has(item.id) ? 'Manage Event Grid' : 'Connect Event Grid',
-        id: 2,
+        id: 'event-grid',
       });
     }
     if (cloudProvider === 'AWS') {
       items.push({
         label: realtimeEventAccountIds.has(item.id) ? 'Manage EventBridge' : 'Connect EventBridge',
-        id: 3,
+        id: 'eventbridge',
       });
     }
     if (cloudProvider === 'GCP') {
       items.push({
         label: 'Edit Billing Config',
-        id: 4,
+        id: 'billing-config',
       });
       items.push({
         label: realtimeEventAccountIds.has(item.id) ? 'Manage Real-Time Alerts' : 'Enable Real-Time Alerts',
-        id: 5,
+        id: 'real-time-alerts',
       });
     }
     if (cloudProvider === 'AWS') {
       items.push({
         label: 'Update Permissions',
-        id: 6,
+        id: 'update-permissions',
       });
     }
     return items;
   };
 
   const onMenuClick = (menuItem, data) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'rename-account') {
       setSelectedAccount(data);
       setNewAccountName(data.account_name);
       setRenameModalOpen(true);
       setRenameError('');
-    } else if (menuItem.id === 1) {
+    } else if (menuItem.id === 'toggle-enabled') {
       setUpdateAccountStatus({ name: data.account_name, id: data.id, status: data.status == 'disabled' ? 'active' : 'disabled' });
-    } else if (menuItem.id === 2) {
+    } else if (menuItem.id === 'event-grid') {
       handleOpenEventGridModal(data);
-    } else if (menuItem.id === 3) {
+    } else if (menuItem.id === 'eventbridge') {
       handleOpenEventBridgeModal(data);
-    } else if (menuItem.id === 4) {
+    } else if (menuItem.id === 'billing-config') {
       setSelectedAccount(data);
       let accountData = data.data || {};
       if (typeof accountData === 'string') {
@@ -308,10 +308,10 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
       setBillingDatasetName(billing.dataset_name || '');
       setBillingTableName(billing.table_name || '');
       setBillingModalOpen(true);
-    } else if (menuItem.id === 5) {
+    } else if (menuItem.id === 'real-time-alerts') {
       setWebhookModalAccount(data);
       setWebhookModalOpen(true);
-    } else if (menuItem.id === 6) {
+    } else if (menuItem.id === 'update-permissions') {
       handleUpdatePermissions(data);
     } else if (menuItem.id === 7) {
       setSelectedAccount(data);

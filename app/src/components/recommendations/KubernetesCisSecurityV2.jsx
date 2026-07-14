@@ -71,7 +71,7 @@ const KubernetesCisSecurity = (props) => {
   };
 
   const onMenuClick = (menuItem, data) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'create-ticket') {
       setTicketData(data);
       setIsTicketCreateFormOpen(true);
     }
@@ -94,7 +94,7 @@ const KubernetesCisSecurity = (props) => {
           {
             icon: TicketsIcon,
             label: 'Create Ticket',
-            id: 0,
+            id: 'create-ticket',
           },
         ];
         let k8sRecommendationData = res?.data?.recommendation.map((item) => {

@@ -85,7 +85,7 @@ interface WorkflowActionsCellProps {
   accountId: string | undefined;
   onStop: (workflow: any) => void;
   onEdit: (workflowId: string) => void;
-  getMenuItems: (workflow: any) => { label: string; id: number; icon: any; disabled?: boolean }[];
+  getMenuItems: (workflow: any) => { label: string; id: string; icon: any; disabled?: boolean }[];
   onMenuClick: (menuItem: any, workflow: any) => void;
 }
 
@@ -359,22 +359,22 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     }
   };
 
-  const getMenuItems = (workflow: any): { label: string; id: number; icon: any; disabled?: boolean }[] => {
-    const MENU_ITEMS: { label: string; id: number; icon: any; disabled?: boolean }[] = [];
+  const getMenuItems = (workflow: any): { label: string; id: string; icon: any; disabled?: boolean }[] => {
+    const MENU_ITEMS: { label: string; id: string; icon: any; disabled?: boolean }[] = [];
     const isRunning = ['RUNNING', 'IN_PROGRESS'].includes(workflow?.last_execution_status?.toUpperCase());
 
     if (accountId && hasWriteAccess(accountId)) {
       // Add trigger option for all workflows
       MENU_ITEMS.push({
         label: 'Manual run',
-        id: 3,
+        id: 'manual-run',
         icon: manualTriggerIcon,
         disabled: isRunning,
       });
 
       MENU_ITEMS.push({
         label: 'Duplicate',
-        id: 4,
+        id: 'duplicate',
         icon: CopyIconBlue,
       });
 
@@ -388,13 +388,13 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
         if (toggleAction === 'pause') {
           MENU_ITEMS.push({
             label: 'Pause',
-            id: 1,
+            id: 'pause',
             icon: pauseIcon,
           });
         } else if (toggleAction === 'activate') {
           MENU_ITEMS.push({
             label: 'Activate',
-            id: 2,
+            id: 'resume',
             icon: playIcon,
           });
         }
@@ -402,7 +402,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
 
       MENU_ITEMS.push({
         label: 'Delete',
-        id: 0,
+        id: 'delete',
         icon: DeleteIconRed,
       });
     }
@@ -411,7 +411,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const onMenuClick = (menuItem: any, workflow: any) => {
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'delete') {
       setSelectedWorkflow(workflow);
       setDeleteCallers(null);
       setDeleteCallersLoading(true);
@@ -436,16 +436,16 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
           }
         }
       })();
-    } else if (menuItem.id === 1) {
+    } else if (menuItem.id === 'pause') {
       setSelectedWorkflow(workflow);
       setPauseModalOpen(true);
-    } else if (menuItem.id === 2) {
+    } else if (menuItem.id === 'resume') {
       setSelectedWorkflow(workflow);
       setResumeModalOpen(true);
-    } else if (menuItem.id === 3) {
+    } else if (menuItem.id === 'manual-run') {
       setSelectedWorkflow(workflow);
       setTriggerModalOpen(true);
-    } else if (menuItem.id === 4) {
+    } else if (menuItem.id === 'duplicate') {
       handleDuplicateWorkflow(workflow);
     }
   };

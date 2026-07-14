@@ -108,10 +108,10 @@ const CloudAccountServices = (props: {
   type MenuItemFromList = (typeof MENU_ITEMS)[number];
   const onMenuClick = (menuItem: MenuItemFromList, clickedData: IResourceGrouping) => {
     // menuItem.id is still valid as MENU_ITEMS have an id field
-    if (menuItem.id === 0) {
+    if (menuItem.id === 'start-instance') {
       setTicketData(clickedData);
     }
-    if (menuItem.id === 1) {
+    if (menuItem.id === 'stop-instance') {
       setHelpBeeOpen(true);
     }
   };

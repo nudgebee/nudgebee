@@ -42,11 +42,11 @@ const CloudAccountMetrics = (props: { accountId: string | undefined; heading: st
     setPage(page - 1);
   };
 
-  const onMenuClick = (menuItem: { id: number }, data: any) => {
-    if (menuItem.id === 0) {
+  const onMenuClick = (menuItem: { id: string }, data: any) => {
+    if (menuItem.id === 'create-ticket') {
       setTicketData(data);
     }
-    if (menuItem.id === 1) {
+    if (menuItem.id === 'helpbee') {
       setHelpBeeOpen(true);
     }
   };
@@ -82,12 +82,12 @@ const CloudAccountMetrics = (props: { accountId: string | undefined; heading: st
             {
               icon: TicketsIcon,
               label: 'Create Ticket',
-              id: 0,
+              id: 'create-ticket',
             },
             {
               icon: getBrandingAsset('helpbeeIcon'),
               label: 'HelpBee',
-              id: 1,
+              id: 'helpbee',
             },
           ];
           data.push({

@@ -270,7 +270,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           {
             icon: TicketsIcon,
             label: existingTicket ? `Ticket created: ${existingTicket.ticket_id}` : 'Create Ticket',
-            id: 0,
+            id: 'create-ticket',
             disabled: !!existingTicket,
           },
         ];
