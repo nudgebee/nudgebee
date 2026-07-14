@@ -140,7 +140,7 @@ class LastDeploymentCard {
           <Typography>{`Namespace: ${this.deploymentHistory.namespace}`}</Typography>
           <Typography>{`Rollout Name: ${this.deploymentHistory.rolloutName}`}</Typography>
           <Typography>{`Service Name: ${this.deploymentHistory.service}`}</Typography>
-          <Typography>{`Time Range: ${this.deploymentHistory.timeRangeHours}`}</Typography>
+          <Typography>{`Time Range: ${this.deploymentHistory.timeRangeHours} hours`}</Typography>
           {this.deploymentHistory.diffData?.map((d, index) => {
             const isLast = index === this.deploymentHistory.diffData.length - 1;
 

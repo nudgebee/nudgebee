@@ -12,6 +12,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// deploymentHistoryLookback bounds how far before an event we search for a
+// preceding deployment (a configuration_change event on the same workload) to
+// correlate. Widened from 12h to 7d so events whose triggering deploy predates
+// the alert by more than half a day still surface a Deployment History card;
+// beyond that, correlation signal is too weak to be useful.
+const (
+	deploymentHistoryLookbackHours = 168
+	deploymentHistoryLookback      = deploymentHistoryLookbackHours * time.Hour
+	deploymentHistoryLookbackLabel = "7 days"
+)
+
 type deploymentHistoryAction struct{}
 
 type deploymentHistoryResponse struct {
@@ -160,7 +171,7 @@ func (a *deploymentHistoryAction) Execute(ctx PlaybookActionContext, rawParams m
 		RolloutName:      rolloutName,
 		Namespace:        namespace,
 		DeploymentsFound: len(deployments),
-		TimeRangeHours:   12,
+		TimeRangeHours:   deploymentHistoryLookbackHours,
 		Deployments:      deployments,
 	}
 
@@ -184,7 +195,7 @@ func (a *deploymentHistoryAction) Execute(ctx PlaybookActionContext, rawParams m
 	metadata := map[string]any{
 		"query-result-version": "1.0",
 		"query":                rawParams,
-		"time_range_hours":     12,
+		"time_range_hours":     deploymentHistoryLookbackHours,
 	}
 
 	additionalInfo := map[string]any{
@@ -229,8 +240,8 @@ func queryDeploymentEvents(accountId, rolloutName, namespace string, eventStartT
 		return nil, fmt.Errorf("failed to get database manager: %w", err)
 	}
 
-	// Calculate time range: 12 hours before event start time
-	startTime := eventStartTime.Add(-12 * time.Hour)
+	// Calculate time range: deploymentHistoryLookback before event start time
+	startTime := eventStartTime.Add(-deploymentHistoryLookback)
 
 	query := `
 		SELECT
@@ -456,7 +467,7 @@ func generateDeploymentInsights(deployments []deploymentEventSummary, eventStart
 
 	if len(deployments) == 0 {
 		insights = append(insights, PlaybookActionResponseInsight{
-			Message:  "No deployments found in the 12 hours before the event",
+			Message:  "No deployments found in the " + deploymentHistoryLookbackLabel + " before the event",
 			Severity: "info",
 		})
 		return insights
@@ -464,7 +475,7 @@ func generateDeploymentInsights(deployments []deploymentEventSummary, eventStart
 
 	// Insight 1: Summary
 	insights = append(insights, PlaybookActionResponseInsight{
-		Message:  fmt.Sprintf("Found %d deployment(s) in the 12 hours before the event", len(deployments)),
+		Message:  fmt.Sprintf("Found %d deployment(s) in the %s before the event", len(deployments), deploymentHistoryLookbackLabel),
 		Severity: "info",
 	})
 
