@@ -657,8 +657,13 @@ SectionHeader.propTypes = {
   tone: PropTypes.oneOf(['critical', 'info', 'warning', 'success', 'agent', 'neutral']),
 };
 
-const AutomationsCard = ({ workflowData, accountId, onManage }) => {
+const AutomationsCard = ({ workflowData, accountId, onManage, onViewWorkflows }) => {
   const { totalCount = 0, actionedCount = 0, configuredCount = 0 } = workflowData || {};
+
+  // Deep-link a stat to the automations listing with the matching filters.
+  // `filters` maps to the URL query params WorkflowListing reads (status / type /
+  // last_execution_status). accountId is threaded so the target lands on the same cluster.
+  const viewWorkflows = (filters) => onViewWorkflows?.({ accountId, ...filters });
 
   // Mirror the legacy behaviour: hide the card entirely when the cluster has no
   // workflows / no recent executions. Showing "0 / 0 / 0" looks like the fetch
@@ -707,9 +712,32 @@ const AutomationsCard = ({ workflowData, accountId, onManage }) => {
   return (
     <DSCard size='sm' elevation='flat' header={header} sx={{ overflow: 'hidden' }}>
       <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--ds-space-3)' }}>
-        <Stat size='sm' align='center' label='Configured' value={String(totalCount)} />
-        <Stat size='sm' align='center' label='Triggered (24h)' value={String(actionedCount)} />
-        <Stat size='sm' align='center' label='Event-based' value={String(configuredCount)} />
+        {/* Each stat deep-links to its filtered slice. onClick is only wired when the count
+            is non-zero so a 0 stat isn't a dead-end that navigates to an empty list. */}
+        <Stat
+          size='sm'
+          align='center'
+          label='Configured'
+          value={String(totalCount)}
+          id='automations-configured-stat'
+          onClick={totalCount > 0 ? () => viewWorkflows({ status: 'Active' }) : undefined}
+        />
+        <Stat
+          size='sm'
+          align='center'
+          label='Triggered (24h)'
+          value={String(actionedCount)}
+          id='automations-triggered-stat'
+          onClick={actionedCount > 0 ? () => viewWorkflows({ status: 'Active', last_execution_status: 'Completed' }) : undefined}
+        />
+        <Stat
+          size='sm'
+          align='center'
+          label='Event-based'
+          value={String(configuredCount)}
+          id='automations-event-based-stat'
+          onClick={configuredCount > 0 ? () => viewWorkflows({ status: 'Active', type: 'event' }) : undefined}
+        />
       </Box>
     </DSCard>
   );
@@ -718,6 +746,7 @@ AutomationsCard.propTypes = {
   workflowData: PropTypes.object,
   accountId: PropTypes.string,
   onManage: PropTypes.func,
+  onViewWorkflows: PropTypes.func,
 };
 
 const EMPTY_STATE_NO_DATA_THRESHOLD_MS = 48 * 60 * 60 * 1000;
@@ -2389,6 +2418,7 @@ const Home = () => {
           workflowData={workflowData}
           accountId={selectedCluster?.value || ''}
           onManage={(id) => window.open(`/automation?accountId=${id}&status=Active`, '_blank')}
+          onViewWorkflows={(query) => router.push({ pathname: '/automation', query })}
         />
         <PendingFollowUps accountId={cluster} />
         <HomeWidgets selectedCluster={selectedCluster} cluster={cluster} />
