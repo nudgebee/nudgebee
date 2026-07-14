@@ -792,6 +792,38 @@ const OptimizeNewPage = () => {
     setDetailOpen(true);
   };
 
+  // Notification deep link: /optimise?id=<recommendation_id>#recommendations opens
+  // that recommendation's detail panel. Fetched by id, independent of the table's
+  // filters and default status, so closed or filtered-out items still open. Tracks
+  // the last handled id so a different deep link arriving without a remount still
+  // opens, while filter changes stripping the param don't re-trigger.
+  const lastHandledDeepLinkId = useRef('');
+  useEffect(() => {
+    if (!router.isReady) return;
+    const deepLinkId = typeof router.query.id === 'string' ? router.query.id : '';
+    if (!deepLinkId || deepLinkId === lastHandledDeepLinkId.current) return;
+    lastHandledDeepLinkId.current = deepLinkId;
+    (async () => {
+      try {
+        const result: any = await recommendationApi.getK8sRecommendation({
+          recommendationId: deepLinkId,
+          status: [],
+          limit: 1,
+        });
+        const rec = result?.data?.recommendation?.[0];
+        if (rec) {
+          setSelectedRec(rec);
+          setDetailInitialTab(0);
+          setDetailOpen(true);
+        } else {
+          snackbar.error('The recommendation from your notification is no longer available.');
+        }
+      } catch {
+        snackbar.error('Failed to open the recommendation from your notification.');
+      }
+    })();
+  }, [router.isReady, router.query.id]);
+
   const buildTicketDescription = (rec: any): string => {
     const resourceName = rec.resource_name || rec.cloud_resourse?.name || '';
     const namespace = rec.resource_k8s_namespace || rec.cloud_resourse?.meta?.namespace || '';

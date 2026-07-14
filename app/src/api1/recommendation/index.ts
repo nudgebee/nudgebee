@@ -534,6 +534,7 @@ const apiRecommendations = {
     serviceName = '',
     version = 0,
     resource_ids,
+    recommendationId,
   }: {
     accountId?: string;
     category?: string;
@@ -554,6 +555,7 @@ const apiRecommendations = {
     serviceName?: string;
     version?: number;
     resource_ids?: string[];
+    recommendationId?: string;
   }) {
     try {
       if (accountId === 'demo') {
@@ -573,6 +575,9 @@ const apiRecommendations = {
       }
 
       const gqlQuery: any = {};
+      if (recommendationId) {
+        gqlQuery['id'] = { _eq: recommendationId };
+      }
       if (Array.isArray(accountId)) {
         gqlQuery['account_id'] = { _in: accountId };
       } else if (accountId) {

@@ -109,7 +109,7 @@ func ProcessProactiveNudges(ctx *security.RequestContext) error {
 		for _, rec := range recs {
 			totalSavings += rec.EstimatedSavings
 
-			ctaURL := config.Config.BaseUrl + "/optimise?id=" + rec.ID + "#summary"
+			ctaURL := config.Config.BaseUrl + "/optimise?id=" + rec.ID + "#recommendations"
 			recMap := map[string]any{
 				"id":                rec.ID,
 				"rule_name":         rec.RuleName,
