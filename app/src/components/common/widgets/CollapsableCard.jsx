@@ -33,6 +33,7 @@ function CollapsableCard({
   disabled = false,
   maxWidth = ds.space.mul(0, 750),
   eventResolution = null,
+  onCloseResolveComponent,
 }) {
   const [openResolveComponent, setOpenResolveComponent] = useState(false);
   const [showAll, setShowAll] = useState(false);
@@ -93,6 +94,7 @@ function CollapsableCard({
 
   const closeResolveComponent = () => {
     setOpenResolveComponent(false);
+    onCloseResolveComponent?.();
   };
 
   return (
@@ -286,7 +288,7 @@ function CollapsableCard({
                     }
                   }}
                 >
-                  Fix it
+                  {eventResolution?.status === 'Failed' ? 'Retry to fix it' : 'Fix it'}
                 </Button>
               </Box>
             ) : null}

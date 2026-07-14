@@ -252,18 +252,19 @@ function sortAvailableCards(cards, criticalCards, highCards, infoCards) {
   return prioritized.map(({ C }) => C);
 }
 
-// Poll the event resolutions every 5s while a workflow resolution is live so the
-// "Workflow Resolution Status" button updates without a manual page refresh.
+// Poll the event resolutions every 5s while any resolution (workflow run,
+// resource-change fix, PR, etc.) is InProgress so status labels/buttons
+// update without a manual page refresh.
 const EVENT_RESOLUTIONS_POLL_INTERVAL_MS = 5000;
 // After an automation is triggered the InProgress event_resolution row is created
 // server-side asynchronously, so keep polling for a grace window even before any
 // InProgress row shows up — otherwise a slow insert would never surface live.
 const EVENT_RESOLUTIONS_POLL_GRACE_MS = 60000;
 
-// A WorkflowExecution resolution is "live" while InProgress; used to decide
-// whether to keep polling the event resolutions for a status change.
-const hasInProgressWorkflowResolution = (resolutions) =>
-  Array.isArray(resolutions) && resolutions.some((r) => r?.type === 'WorkflowExecution' && r?.status === 'InProgress');
+// A resolution (workflow run, deployment resource change, PR, etc.) is "live"
+// while InProgress; used to decide whether to keep polling event resolutions
+// for a status change.
+const hasInProgressResolution = (resolutions) => Array.isArray(resolutions) && resolutions.some((r) => r?.status === 'InProgress');
 
 const Investigate = () => {
   const router = useRouter();
@@ -943,7 +944,7 @@ const Investigate = () => {
       const resolutions = await refetchEventResolutions();
       if (!resolutionsPollActiveRef.current || !isMountedRef.current || document.hidden) return;
       const withinGrace = Date.now() < resolutionsPollDeadlineRef.current;
-      if (hasInProgressWorkflowResolution(resolutions) || withinGrace) {
+      if (hasInProgressResolution(resolutions) || withinGrace) {
         resolutionsPollTimeoutRef.current = setTimeout(pollResolutions, EVENT_RESOLUTIONS_POLL_INTERVAL_MS);
       } else {
         resolutionsPollActiveRef.current = false;
@@ -971,7 +972,7 @@ const Investigate = () => {
   // Loading the page on an event whose workflow is already InProgress (e.g.
   // triggered earlier or from the listing page) should poll too.
   useEffect(() => {
-    if (hasInProgressWorkflowResolution(eventResolutions)) startResolutionsPoll();
+    if (hasInProgressResolution(eventResolutions)) startResolutionsPoll();
   }, [eventResolutions, startResolutionsPoll]);
 
   // The Raise-PR panel dispatches this after a successful apply. The PR
@@ -1477,7 +1478,13 @@ const Investigate = () => {
     });
   }, []);
 
-  const handleCloseResolveComponent = useCallback(() => setOpenResolveComponentId(null), []);
+  // Also fires when a Fix-it form inside a CollapsableCard closes (submit or
+  // cancel) — refetch so a just-created InProgress resolution replaces the
+  // "Fix it" button with a live status label without waiting for a poll tick.
+  const handleCloseResolveComponent = useCallback(() => {
+    setOpenResolveComponentId(null);
+    refetchEventResolutions();
+  }, [refetchEventResolutions]);
   const handleOpenResolveComponent = useCallback((id) => setOpenResolveComponentId(id), []);
 
   const handleInsightClick = (text) => {
