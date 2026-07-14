@@ -928,11 +928,16 @@ const KubernetesEventsTable = ({
 
     // Build row data from events + ticket map
     const buildRowData = (events, ticketReferenceMap) => {
+      // Pre-compute header names as a Set for O(1) lookups instead of
+      // rebuilding an array and calling .includes() per row.
+      const headersSet = new Set(currentHeader.map((h) => h.name));
+      // Pre-index accounts by id for O(1) lookup per row.
+      const accountById = isTroubleshootPage ? new Map(accounts.map((acc) => [acc.id || acc.value, acc])) : null;
+
       return events?.map((item) => {
         const row = [];
-        const headersArray = currentHeader.map((item) => item.name);
 
-        if (headersArray.includes('Severity')) {
+        if (headersSet.has('Severity')) {
           row.push({
             component: (
               <Box
@@ -956,8 +961,8 @@ const KubernetesEventsTable = ({
           });
         }
 
-        if (headersArray.includes('Application')) {
-          const account = isTroubleshootPage ? accounts.find((acc) => (acc.id || acc.value) === item.account_id) : null;
+        if (headersSet.has('Application')) {
+          const account = accountById?.get(item.account_id) ?? null;
           const cloudProvider = account?.cloud_provider || resolvedAccountType;
           const namespaceLabel = cloudProvider && cloudProvider !== 'K8s' ? 'svc' : 'ns';
           row.push({
@@ -996,7 +1001,7 @@ const KubernetesEventsTable = ({
             ),
           });
         }
-        if (headersArray.includes('Message') || headersArray.includes('Title')) {
+        if (headersSet.has('Message') || headersSet.has('Title')) {
           row.push({
             component: ClusterNameWithRegion({
               name: item.title,
@@ -1028,13 +1033,13 @@ const KubernetesEventsTable = ({
             data: item.title,
           });
         }
-        if (headersArray.includes('Event Type')) {
+        if (headersSet.has('Event Type')) {
           row.push({
             component: <Text showAutoEllipsis value={titleCaseForAggregationKey(item.aggregation_key)} />,
             data: item.aggregation_key,
           });
         }
-        if (headersArray.includes('Triage Score')) {
+        if (headersSet.has('Triage Score')) {
           row.push({
             component: (
               <Box sx={{ justifySelf: 'center', display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
@@ -1055,7 +1060,7 @@ const KubernetesEventsTable = ({
             ),
           });
         }
-        if (headersArray.includes('Alert Status')) {
+        if (headersSet.has('Alert Status')) {
           row.push({
             component: (
               <Box
@@ -1074,7 +1079,7 @@ const KubernetesEventsTable = ({
             ),
           });
         }
-        if (headersArray.includes('Error Type')) {
+        if (headersSet.has('Error Type')) {
           const alertData = safeJSONParse(item.labels) || '{}';
           if (alertData && Object.keys(alertData).length > 0) {
             const navigateUrl = !router.pathname.includes('/kubernetes/details')
@@ -1117,7 +1122,7 @@ const KubernetesEventsTable = ({
             });
           }
         }
-        if (headersArray.includes('Triage Status')) {
+        if (headersSet.has('Triage Status')) {
           row.push({
             component: (
               <NBStatusBadge
