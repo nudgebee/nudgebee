@@ -13,6 +13,7 @@
 import * as React from 'react';
 import { Box, CircularProgress } from '@mui/material';
 import dayjs from 'dayjs';
+import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import CustomTable2 from '@shared/tables/CustomTable';
 import { Card } from '@ui/Card';
 import { Banner } from '@ui/Banner';
@@ -26,6 +27,12 @@ import { makeSeverity, SeverityCell, type Severity } from '@components/llm/cost-
 import { useGatewayRequests } from '../useGatewayRequests';
 import type { GatewayFilters } from '../useGatewayData';
 import type { GatewayRequestRow } from '@api1/gateway-usage';
+
+// The per-request "view body" viewer is an ENTERPRISE surface — the EE body
+// viewer lives under the ee/ subtree, which is removed from the OSS build, so
+// this () => null stub stands in. The trigger only renders when row.can_view_body,
+// which is always false in OSS (body-logging is EE-only), so it never renders.
+const RequestBodyModal = (_props: { requestId: string; label: string; onClose: () => void }) => null;
 
 interface RequestsViewProps {
   filters: GatewayFilters;
@@ -50,17 +57,19 @@ const H = {
   latency: <HeaderLabel label='Latency' info='End-to-end latency for this request.' />,
   cost: <HeaderLabel label='Cost' info='Cost of this request.' />,
   status: <HeaderLabel label='Status' info='HTTP status the gateway returned for this request.' />,
+  body: <HeaderLabel label='Body' info='View the captured request and response body (when available for your own requests).' />,
 };
 
 const HEADERS = [
   { name: 'Time', width: '12%', component: H.time },
-  { name: 'User', width: '14%', component: H.user },
-  { name: 'Model', width: '20%', component: H.model },
-  { name: 'Provider', width: '11%', component: H.provider },
-  { name: 'Tokens', width: '12%', align: 'right' as const, component: H.tokens },
+  { name: 'User', width: '13%', component: H.user },
+  { name: 'Model', width: '19%', component: H.model },
+  { name: 'Provider', width: '10%', component: H.provider },
+  { name: 'Tokens', width: '11%', align: 'right' as const, component: H.tokens },
   { name: 'Latency', width: '9%', align: 'right' as const, component: H.latency },
-  { name: 'Cost', width: '11%', align: 'right' as const, component: H.cost },
+  { name: 'Cost', width: '10%', align: 'right' as const, component: H.cost },
   { name: 'Status', width: '8%', align: 'right' as const, component: H.status },
+  { name: 'Body', width: '8%', align: 'right' as const, component: H.body },
 ];
 
 function StatusPill({ code }: { code: number }) {
@@ -91,7 +100,7 @@ function StatusPill({ code }: { code: number }) {
   );
 }
 
-function toRow(r: GatewayRequestRow, costSev: (v: number) => Severity) {
+function toRow(r: GatewayRequestRow, costSev: (v: number) => Severity, onViewBody: (r: GatewayRequestRow) => void) {
   const routed = r.requested_model && r.requested_model !== r.model;
   return [
     { component: <Box sx={numCell}>{dayjs(r.created_at).format('DD MMM HH:mm')}</Box> },
@@ -145,11 +154,35 @@ function toRow(r: GatewayRequestRow, costSev: (v: number) => Severity) {
         </Box>
       ),
     },
+    {
+      align: 'right' as const,
+      component: (
+        <Box sx={{ display: 'inline-flex', justifyContent: 'flex-end', width: '100%' }}>
+          {r.can_view_body ? (
+            <Button
+              id={`gateway-request-body-btn-${r.id}`}
+              data-testid={`gateway-request-body-btn-${r.id}`}
+              tone='ghost'
+              size='sm'
+              composition='icon-only'
+              icon={<VisibilityOutlinedIcon />}
+              aria-label='View request body'
+              tooltip='View request body'
+              onClick={() => onViewBody(r)}
+            />
+          ) : (
+            <Box sx={{ ...numCell, textAlign: 'right' }}>—</Box>
+          )}
+        </Box>
+      ),
+    },
   ];
 }
 
 export function RequestsView({ filters, userFilter, onClearUser, toolFilter, onClearTool }: RequestsViewProps) {
   const [offset, setOffset] = React.useState(0);
+  // The row whose captured body is being viewed (EE). Null = modal closed.
+  const [bodyRow, setBodyRow] = React.useState<GatewayRequestRow | null>(null);
 
   // Reset paging whenever the scope (date window or user filter) changes.
   React.useEffect(() => {
@@ -166,7 +199,7 @@ export function RequestsView({ filters, userFilter, onClearUser, toolFilter, onC
   const rows = data?.rows ?? [];
   const total = data?.total ?? 0;
   const costSev = React.useMemo(() => makeSeverity(rows.map((r) => r.cost_usd)), [rows]);
-  const tableData = React.useMemo(() => rows.map((r) => toRow(r, costSev)), [rows, costSev]);
+  const tableData = React.useMemo(() => rows.map((r) => toRow(r, costSev, setBodyRow)), [rows, costSev]);
 
   const showEmpty = !loading && !error && rows.length === 0;
 
@@ -238,6 +271,17 @@ export function RequestsView({ filters, userFilter, onClearUser, toolFilter, onC
           )
         )}
       </Box>
+
+      {/* EE-only body viewer. RequestBodyModal is a () => null stub in OSS, and
+          bodyRow can never be set there (the trigger only shows when
+          can_view_body, which is always false in OSS), so this never renders. */}
+      {bodyRow && (
+        <RequestBodyModal
+          requestId={bodyRow.id}
+          label={`${bodyRow.model || 'request'} · ${dayjs(bodyRow.created_at).format('DD MMM HH:mm')}`}
+          onClose={() => setBodyRow(null)}
+        />
+      )}
     </Card>
   );
 }

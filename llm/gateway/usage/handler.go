@@ -89,7 +89,8 @@ func RegisterRoutes(r *gin.Engine, pricer *metering.Pricer, token string) {
 		}
 		res, err := ListRequests(c.Request.Context(), db, pricer, ListRequest{
 			TenantID: tenantID, StartDate: start, EndDate: end,
-			UserID: req.UserID, Tool: req.Tool, Limit: req.Limit, Offset: req.Offset,
+			UserID: req.UserID, Tool: req.Tool, CallerUserID: c.GetHeader("x-user-id"),
+			Limit: req.Limit, Offset: req.Offset,
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "request list failed"})

@@ -86,6 +86,13 @@ export interface GatewayUsageMetrics {
 
 /** One row of the recent-request list (Requests tab). */
 export interface GatewayRequestRow {
+  /** Fetch key for the body viewer — passed to `getRequestBody`. */
+  id: string;
+  /**
+   * Server-authoritative: true only when body-logging is on AND this row is the
+   * caller's own request. The UI shows the "view body" action only when true.
+   */
+  can_view_body: boolean;
   created_at: string; // RFC3339 UTC
   user: string; // resolved display name (falls back to user id)
   provider: string;
@@ -131,6 +138,17 @@ export interface ListGatewayRequestsRequest {
   tool?: string; // optional drill-down from the Tools tab
   limit?: number;
   offset?: number;
+}
+
+/**
+ * Captured request/response body for one gateway request (EE / body-logging).
+ * `available:false` — expired, soft-deleted, or not the caller's own request
+ * (indistinguishable by design: never leaks whether the row exists).
+ */
+export interface GatewayRequestBody {
+  available: boolean;
+  request_body?: string;
+  response_body?: string;
 }
 
 // ─── Caller ─────────────────────────────────────────────────────────────────────
@@ -189,4 +207,24 @@ export async function listGatewayRequests(req: ListGatewayRequestsRequest, signa
     signal
   );
   return response?.data?.data?.llm_gateway_list_requests?.data ?? null;
+}
+
+/**
+ * Fetch the captured request + response body for a single request (EE body view).
+ * Returns `{ available: false }` when the body wasn't captured, has expired, or
+ * isn't the caller's own request (the backend never distinguishes these cases).
+ */
+export async function getRequestBody(id: string, signal?: AbortSignal): Promise<GatewayRequestBody | null> {
+  const query = `mutation GetGatewayRequestBody($id: String!) {
+    llm_gateway_get_request_body(request: { id: $id }) {
+      data
+    }
+  }`;
+  const response = await queryGraphQL(query, 'GetGatewayRequestBody', { id }, undefined, signal);
+  if (response?.data?.errors?.length) {
+    // Surface a real fetch failure to the caller (→ error banner) rather than
+    // letting it fall through to the neutral "not captured" empty state.
+    throw new Error(response.data.errors[0]?.message || 'Failed to load the request body.');
+  }
+  return response?.data?.data?.llm_gateway_get_request_body?.data ?? null;
 }

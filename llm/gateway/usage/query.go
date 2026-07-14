@@ -319,18 +319,20 @@ func byTool(db *common.DatabaseManager, req Request) ([]ToolRow, error) {
 // ListRequest is the paginated recent-request query for the Requests tab. UserID,
 // when set, scopes to one user (drill-down from the Users tab).
 type ListRequest struct {
-	TenantID  string
-	StartDate time.Time
-	EndDate   time.Time
-	UserID    string
-	Tool      string // filter to requests that offered this tool (drill-in from Tools)
-	Limit     int
-	Offset    int
+	TenantID     string
+	StartDate    time.Time
+	EndDate      time.Time
+	UserID       string
+	Tool         string // filter to requests that offered this tool (drill-in from Tools)
+	CallerUserID string // the requesting user (x-user-id); a row's body is viewable only by its own user
+	Limit        int
+	Offset       int
 }
 
 // RequestRow is one row of the recent-request list — the gateway analog of the LLM
 // Analyser's per-conversation rows (here, one row per forwarded request).
 type RequestRow struct {
+	ID                string    `json:"id"` // usage row id; the key to fetch the captured body
 	CreatedAt         time.Time `json:"created_at"`
 	User              string    `json:"user"`
 	Provider          string    `json:"provider"`
@@ -345,6 +347,10 @@ type RequestRow struct {
 	LatencyMs         int64     `json:"latency_ms"`
 	CostUsd           float64   `json:"cost_usd"`
 	SessionID         string    `json:"session_id"`
+	// CanViewBody is true only when body-logging is on AND the caller owns this
+	// request — the UI shows the "view body" action on those rows. Server-authoritative;
+	// the body-fetch endpoint re-checks ownership.
+	CanViewBody bool `json:"can_view_body"`
 }
 
 // RequestList is one page of recent requests plus the unpaged total (for the pager).
@@ -356,6 +362,7 @@ type RequestList struct {
 }
 
 type reqScan struct {
+	ID             string    `db:"id"`
 	CreatedAt      time.Time `db:"created_at"`
 	UserID         string    `db:"user_id"`
 	DisplayName    string    `db:"display_name"`
@@ -407,7 +414,7 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, pricer *meter
 	}
 
 	q := fmt.Sprintf(`
-		SELECT g.created_at, g.user_id, COALESCE(u.display_name,'') AS display_name,
+		SELECT g.id, g.created_at, g.user_id, COALESCE(u.display_name,'') AS display_name,
 		       COALESCE(u.username::text,'') AS username, g.provider, g.model,
 		       COALESCE(g.requested_model,'') AS requested_model,
 		       COALESCE(g.routing_reason,'') AS routing_reason,
@@ -426,6 +433,9 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, pricer *meter
 		return nil, fmt.Errorf("usage: request list: %w", err)
 	}
 
+	// Body-view eligibility is server-authoritative: body-logging on AND the row is
+	// the caller's own request. The body-fetch endpoint re-checks ownership.
+	bodyEnabled := metering.BodyLoggingEnabled()
 	out := make([]RequestRow, 0, len(rows))
 	for _, r := range rows {
 		user := r.DisplayName
@@ -436,13 +446,15 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, pricer *meter
 			user = r.UserID
 		}
 		out = append(out, RequestRow{
+			ID:        r.ID,
 			CreatedAt: r.CreatedAt, User: user, Provider: r.Provider, Model: r.Model,
 			RequestedModel: r.RequestedModel, RoutingReason: r.RoutingReason,
 			StatusCode: r.StatusCode, Streaming: r.Streaming,
 			InputTokens: r.Input, OutputTokens: r.Output, CachedInputTokens: r.CacheRead,
-			LatencyMs: r.LatencyMs,
-			CostUsd:   pricer.CostUSD(r.Model, int(r.Input), int(r.Output), int(r.CacheRead), int(r.CacheWrite)),
-			SessionID: r.SessionID,
+			LatencyMs:   r.LatencyMs,
+			CostUsd:     pricer.CostUSD(r.Model, int(r.Input), int(r.Output), int(r.CacheRead), int(r.CacheWrite)),
+			SessionID:   r.SessionID,
+			CanViewBody: bodyEnabled && req.CallerUserID != "" && r.UserID == req.CallerUserID,
 		})
 	}
 	return &RequestList{Rows: out, Total: total, Limit: limit, Offset: offset}, nil
