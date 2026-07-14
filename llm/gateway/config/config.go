@@ -119,6 +119,13 @@ type Configuration struct {
 	SessionHeader     string `mapstructure:"gateway_session_header"`
 	CaptureAttributes bool   `mapstructure:"gateway_capture_attributes"`
 
+	// Default guardrail: a per-user cost cap (USD) applied as a backstop when a user
+	// has no explicit user-scoped cost limit configured, so a runaway client can't
+	// drain the org budget before an admin sets a limit. 0 = disabled (opt-in). Period
+	// is one of minute|hour|day|month (default day).
+	DefaultUserCostLimit  float64 `mapstructure:"gateway_default_user_cost_limit"`
+	DefaultUserCostPeriod string  `mapstructure:"gateway_default_user_cost_period"`
+
 	// Routing. Path to a JSON routing-rules config file (global/default rules);
 	// empty = passthrough only. Per-tenant rules come from the metastore table
 	// llm_gateway_routing_rules, refreshed every RoutingRefreshSeconds.
@@ -181,6 +188,8 @@ var keyDefaults = map[string]any{
 	"gateway_capture_attributes":            true,
 	"gateway_routing_config":                "",
 	"gateway_routing_refresh_seconds":       30,
+	"gateway_default_user_cost_limit":       0.0,   // per-user cost guardrail; 0 = disabled
+	"gateway_default_user_cost_period":      "day", // minute|hour|day|month
 	"gateway_capture_body":                  false,
 	"gateway_body_max_bytes":                1048576, // 1 MiB per body
 	"gateway_body_ttl_hours":                168,     // 7 days
