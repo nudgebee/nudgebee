@@ -9,7 +9,6 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import { ds } from 'src/utils/colors';
 import type { TemplateSuggestion } from '../TemplateTextField';
 import { StableTextField } from '../StableFormFields';
-import { FOREACH_SUBTASK_BLOCKED_TYPES } from '../../constants/foreachConstants';
 import { createTaskLabel, generateNodeCategories } from '../../constants/nodeCategories';
 import { getTaskIcon, PROVIDER_COLOR_LOGOS } from '../../nodes/ActionNode';
 import { validateTaskId } from '../../utils/taskUtils';
@@ -18,12 +17,15 @@ import SubTaskParamForm from './SubTaskParamForm';
 
 // Sub-task shape persisted in params.tasks. Extra keys (if / depends_on /
 // timeout — YAML-authored) are preserved verbatim via the index signature.
-export interface ForeachSubTask {
+export interface SubTask {
   id?: string;
   type?: string;
   params?: Record<string, any>;
   [key: string]: any;
 }
+
+// Backwards-compatible alias for the original foreach naming.
+export type ForeachSubTask = SubTask;
 
 // Action-picker option flattened from generateNodeCategories — same label,
 // description and icon ("logo") the node palette shows for each task.
@@ -35,18 +37,25 @@ interface ActionOption {
   category: string;
 }
 
-interface ForeachTasksEditorProps {
-  value: ForeachSubTask[];
-  onChange: (tasks: ForeachSubTask[]) => void;
-  // params.item — the loop variable name ({{ LoopItem.<itemVarName> }})
-  itemVarName: string;
-  // Full validation error map; foreach keys are prefixed `tasks[i].<field>`
+interface SubTasksEditorProps {
+  value: SubTask[];
+  onChange: (tasks: SubTask[]) => void;
+  // Full validation error map; sub-task keys are prefixed `tasks[i].<field>`
   errors: Record<string, string>;
   taskDefinitions: any[];
   viewOnlyMode?: boolean;
   previousTasks: PreviousTask[];
   workflowInputs: Array<{ id: string; type: string; description?: string }>;
   workflowConfigs: Array<{ key: string; value: string; type: string }>;
+  // Task types the accordion cannot host one level deep (containers, etc.)
+  blockedTypes: Set<string>;
+  // Container-scoped template suggestions (e.g. LoopItem for foreach); the
+  // editor forwards them to each sub-task's param form. Defaults to none.
+  extraSuggestions?: TemplateSuggestion[];
+  // Distinguishes data-testids / uid namespace between containers ('foreach' | 'group')
+  testIdPrefix: string;
+  // Container-specific copy for the header caption and empty state
+  copy: { helperText: React.ReactNode; emptyStateText: string };
 }
 
 // Same purple icon badge the canvas action nodes render (BaseNode's icon
@@ -87,20 +96,24 @@ const SubTaskIconBadge: React.FC<{ taskType?: string; label: string }> = ({ task
 };
 
 /**
- * Accordion-based editor for core.foreach's `tasks` param. Each sub-task is a
- * reorderable row that expands to a name field, an action (type) picker and a
- * schema-driven parameter form.
+ * Accordion-based editor for a container node's `tasks` param (core.foreach /
+ * core.group). Each sub-task is a reorderable row that expands to a name field,
+ * an action (type) picker and a schema-driven parameter form. Container-specific
+ * behaviour (blocked types, template suggestions, copy) is passed in via props.
  */
-const ForeachTasksEditor: React.FC<ForeachTasksEditorProps> = ({
+const SubTasksEditor: React.FC<SubTasksEditorProps> = ({
   value,
   onChange,
-  itemVarName,
   errors,
   taskDefinitions,
   viewOnlyMode = false,
   previousTasks,
   workflowInputs,
   workflowConfigs,
+  blockedTypes,
+  extraSuggestions = [],
+  testIdPrefix,
+  copy,
 }) => {
   // Stable per-row uids so React keys (and expansion state) survive
   // reorders — index keys would break TemplateTextField focus. Keyed by
@@ -112,15 +125,15 @@ const ForeachTasksEditor: React.FC<ForeachTasksEditorProps> = ({
   const uids = useMemo(
     () =>
       value.map((sub, index) => {
-        if (!sub || typeof sub !== 'object') return `foreach-sub-invalid-${index}`;
+        if (!sub || typeof sub !== 'object') return `${testIdPrefix}-sub-invalid-${index}`;
         let uid = uidMap.current.get(sub);
         if (!uid) {
-          uid = `foreach-sub-${uidCounter.current++}`;
+          uid = `${testIdPrefix}-sub-${uidCounter.current++}`;
           uidMap.current.set(sub, uid);
         }
         return uid;
       }),
-    [value]
+    [value, testIdPrefix]
   );
 
   const [expandedIds, setExpandedIds] = useState<string[]>([]);
@@ -135,37 +148,19 @@ const ForeachTasksEditor: React.FC<ForeachTasksEditorProps> = ({
     for (const [key, category] of Object.entries<any>(categories)) {
       if (key === 'triggers') continue;
       for (const [taskName, sub] of Object.entries<any>(category.subcategories ?? {})) {
-        if (FOREACH_SUBTASK_BLOCKED_TYPES.has(taskName) || sub.deprecated) continue;
+        if (blockedTypes.has(taskName) || sub.deprecated) continue;
         options.push({ name: taskName, label: sub.label, description: sub.description, icon: sub.icon, category: category.label });
       }
     }
     return options.sort((a, b) => a.category.localeCompare(b.category) || a.label.localeCompare(b.label));
-  }, [taskDefinitions]);
+  }, [taskDefinitions, blockedTypes]);
 
   const actionLabelFor = (taskType?: string) => {
     if (!taskType) return '';
     return actionOptions.find((o) => o.name === taskType)?.label ?? createTaskLabel(taskType);
   };
 
-  const loopItemSuggestions = useMemo<TemplateSuggestion[]>(
-    () => [
-      {
-        type: 'loop',
-        text: `LoopItem.${itemVarName}`,
-        description: 'Current loop item',
-        insertText: `{{ LoopItem.${itemVarName} }}`,
-      },
-      {
-        type: 'loop',
-        text: `LoopItem.${itemVarName}.<field>`,
-        description: 'A field of the current loop item (when items are objects)',
-        insertText: `{{ LoopItem.${itemVarName}.field }}`,
-      },
-    ],
-    [itemVarName]
-  );
-
-  const updateSubTask = (index: number, patch: Partial<ForeachSubTask>) => {
+  const updateSubTask = (index: number, patch: Partial<SubTask>) => {
     // Spread the original entry so YAML-authored keys (if / depends_on / …)
     // survive edits made through this editor. Carry the uid to the copied
     // object so the row's React key (expansion, focus) survives the edit.
@@ -197,8 +192,8 @@ const ForeachTasksEditor: React.FC<ForeachTasksEditorProps> = ({
   };
 
   const handleAdd = () => {
-    const newSub: ForeachSubTask = { id: nextUniqueId(), type: '', params: {} };
-    const uid = `foreach-sub-${uidCounter.current++}`;
+    const newSub: SubTask = { id: nextUniqueId(), type: '', params: {} };
+    const uid = `${testIdPrefix}-sub-${uidCounter.current++}`;
     uidMap.current.set(newSub, uid);
     onChange([...value, newSub]);
     setExpandedIds((prev) => [...prev, uid]);
@@ -235,7 +230,7 @@ const ForeachTasksEditor: React.FC<ForeachTasksEditorProps> = ({
 
   // Reordered entries keep their object identity, so uids travel with them —
   // no manual bookkeeping needed.
-  const handleReorder = (next: ForeachSubTask[]) => {
+  const handleReorder = (next: SubTask[]) => {
     onChange(next);
   };
 
@@ -255,7 +250,7 @@ const ForeachTasksEditor: React.FC<ForeachTasksEditorProps> = ({
     return sliced;
   };
 
-  const renderSubTaskBody = (sub: ForeachSubTask, index: number) => {
+  const renderSubTaskBody = (sub: SubTask, index: number) => {
     const taskDefinition = sub.type ? taskDefinitions.find((d: any) => d.name === sub.type) : null;
     const idError = validateTaskId(sub.id ?? '') || errors[`tasks[${index}].id`] || '';
     const typeError = errors[`tasks[${index}].type`] || '';
@@ -330,7 +325,7 @@ const ForeachTasksEditor: React.FC<ForeachTasksEditorProps> = ({
                 </li>
               )}
               renderInput={(params) => <TextField {...params} placeholder='Select action' error={!!typeError} helperText={typeError || undefined} />}
-              data-testid={`foreach-subtask-${index}-type-picker`}
+              data-testid={`${testIdPrefix}-subtask-${index}-type-picker`}
             />
           </Box>
         </Box>
@@ -342,7 +337,7 @@ const ForeachTasksEditor: React.FC<ForeachTasksEditorProps> = ({
             onChange={(fieldName, fieldValue) => updateSubTaskParam(index, fieldName, fieldValue)}
             errors={paramErrorsFor(index)}
             disabled={viewOnlyMode}
-            loopItemSuggestions={loopItemSuggestions}
+            extraSuggestions={extraSuggestions}
             previousTasks={previousTasks}
             workflowInputs={workflowInputs}
             workflowConfigs={workflowConfigs}
@@ -352,7 +347,7 @@ const ForeachTasksEditor: React.FC<ForeachTasksEditorProps> = ({
     );
   };
 
-  const renderSubTaskRow = (sub: ForeachSubTask, index: number, dragHandleProps: any) => {
+  const renderSubTaskRow = (sub: SubTask, index: number, dragHandleProps: any) => {
     const uid = uids[index];
     const errorCount = countSubTaskErrors(index);
     const label = sub.id || `Sub-task ${index + 1}`;
@@ -395,7 +390,7 @@ const ForeachTasksEditor: React.FC<ForeachTasksEditorProps> = ({
                     size='small'
                     onClick={() => requestDelete(index)}
                     aria-label={`Delete sub-task ${sub.id || index + 1}`}
-                    data-testid={`foreach-subtask-${index}-delete-btn`}
+                    data-testid={`${testIdPrefix}-subtask-${index}-delete-btn`}
                   >
                     <DeleteOutline sx={{ fontSize: 16, color: ds.gray[400] }} />
                   </IconButton>
@@ -418,14 +413,12 @@ const ForeachTasksEditor: React.FC<ForeachTasksEditorProps> = ({
           Sub-tasks ({value.length})
         </Typography>
         {!viewOnlyMode && (
-          <Button tone='secondary' size='sm' icon={<Add sx={{ fontSize: 16 }} />} onClick={handleAdd} data-testid='foreach-add-subtask-btn'>
+          <Button tone='secondary' size='sm' icon={<Add sx={{ fontSize: 16 }} />} onClick={handleAdd} data-testid={`${testIdPrefix}-add-subtask-btn`}>
             Add sub-task
           </Button>
         )}
       </Box>
-      <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400], mb: 1 }}>
-        Sub-tasks run sequentially for each item. Use {`{{ LoopItem.${itemVarName} }}`} in parameters to reference the current item.
-      </Typography>
+      <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400], mb: 1 }}>{copy.helperText}</Typography>
       {errors['tasks'] && <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-red-700)', mb: 1 }}>{errors['tasks']}</Typography>}
 
       {value.length === 0 ? (
@@ -437,11 +430,9 @@ const ForeachTasksEditor: React.FC<ForeachTasksEditorProps> = ({
             textAlign: 'center',
           }}
         >
-          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], mb: 1 }}>
-            No sub-tasks yet. Each item in the list will run these tasks in order.
-          </Typography>
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], mb: 1 }}>{copy.emptyStateText}</Typography>
           {!viewOnlyMode && (
-            <Button tone='primary' size='sm' onClick={handleAdd} data-testid='foreach-empty-add-subtask-btn'>
+            <Button tone='primary' size='sm' onClick={handleAdd} data-testid={`${testIdPrefix}-empty-add-subtask-btn`}>
               Add your first sub-task
             </Button>
           )}
@@ -493,4 +484,4 @@ const ForeachTasksEditor: React.FC<ForeachTasksEditorProps> = ({
   );
 };
 
-export default ForeachTasksEditor;
+export default SubTasksEditor;

@@ -2095,6 +2095,13 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                     <CallWorkflowChildren tasks={selectedTaskData.children} copyToClipboard={copyToClipboard} />
                   )}
 
+                {/* Group tasks — a group runs its tasks once as a single step, so
+                    its children are a flat task list (same synthesized-container
+                    shape as call-workflow, no per-iteration wrapper). */}
+                {selectedTaskData.type === 'core.group' && Array.isArray(selectedTaskData.children) && selectedTaskData.children.length > 0 && (
+                  <CallWorkflowChildren tasks={selectedTaskData.children} copyToClipboard={copyToClipboard} />
+                )}
+
                 {/* Foreach iterations — per-iteration drill-down (populated by backend
                     processWorkflowHistory, which groups loop children into synthetic
                     "Iteration N" containers). */}

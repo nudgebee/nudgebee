@@ -34,8 +34,9 @@ interface SubTaskParamFormProps {
   // De-prefixed error slice for this sub-task's params (plain field-name keys)
   errors: Record<string, string>;
   disabled?: boolean;
-  // `{{ LoopItem.<itemVar> }}` suggestions surfaced in every template field
-  loopItemSuggestions: TemplateSuggestion[];
+  // Container-scoped template suggestions surfaced in every template field
+  // (e.g. `{{ LoopItem.<itemVar> }}` for foreach; empty for group).
+  extraSuggestions?: TemplateSuggestion[];
   previousTasks: PreviousTask[];
   workflowInputs: Array<{ id: string; type: string; description?: string }>;
   workflowConfigs: Array<{ key: string; value: string; type: string }>;
@@ -51,8 +52,8 @@ const LABEL_SX = {
 } as const;
 
 /**
- * Schema-driven parameter form for a single foreach sub-task. A lean
- * re-composition of ActionDetailsSidebar's generic renderField path: same
+ * Schema-driven parameter form for a single container sub-task (foreach / group).
+ * A lean re-composition of ActionDetailsSidebar's generic renderField path: same
  * field-type resolution (resolveFieldType) and the same standalone field
  * components, without the sidebar-only branches (ticket dynamic fields,
  * channel pickers, resource cascades) — those degrade to template text
@@ -64,7 +65,7 @@ const SubTaskParamForm: React.FC<SubTaskParamFormProps> = ({
   onChange,
   errors,
   disabled = false,
-  loopItemSuggestions,
+  extraSuggestions = [],
   previousTasks,
   workflowInputs,
   workflowConfigs,
@@ -74,10 +75,10 @@ const SubTaskParamForm: React.FC<SubTaskParamFormProps> = ({
   const inputSchema: Record<string, SchemaProperty> = taskDefinition?.input_schema || {};
 
   // Fetch dropdown option sources for THIS sub-task's schema — the sidebar's
-  // own useTaskFormData call is keyed to core.foreach (no account/integration/
-  // notification/ticket fields), so it never fires the fetches sub-task
-  // dropdowns need. Passing `values` keeps the account → namespace / kind
-  // cascades working per sub-task.
+  // own useTaskFormData call is keyed to the container type (no account/
+  // integration/notification/ticket fields), so it never fires the fetches
+  // sub-task dropdowns need. Passing `values` keeps the account → namespace /
+  // kind cascades working per sub-task.
   const { cloudAccounts, integrations, namespaces, notifications, ticketConfigurations, resourceTypes, workloadKinds } = useTaskFormData(
     taskDefinition,
     taskDefinition?.name ?? null,
@@ -158,7 +159,7 @@ const SubTaskParamForm: React.FC<SubTaskParamFormProps> = ({
     const error = errors[fieldName] || '';
     const label = fieldSchema.title || formatFieldLabel(fieldName);
     const placeholder = FIELD_PLACEHOLDERS[fieldName] || fieldSchema.description || `Enter ${fieldName.replace(/_/g, ' ')}`;
-    // The foreach form skips the sidebar's resource-name cascade heuristic
+    // The sub-task form skips the sidebar's resource-name cascade heuristic
     // (no hasResourceNameField opt-in) — `name` renders as a template field.
     const fieldType = resolveFieldType(fieldName, fieldSchema);
 
@@ -188,7 +189,7 @@ const SubTaskParamForm: React.FC<SubTaskParamFormProps> = ({
     if (fieldType === 'switch') {
       return row(
         <Switch
-          id={`foreach-subtask-bool-${fieldName}-switch`}
+          id={`subtask-bool-${fieldName}-switch`}
           checked={fieldValue || false}
           onChange={(e) => onChange(fieldName, e.target.checked)}
           disabled={disabled}
@@ -305,7 +306,7 @@ const SubTaskParamForm: React.FC<SubTaskParamFormProps> = ({
             previousTasks={previousTasks}
             workflowInputs={workflowInputs}
             workflowConfigs={workflowConfigs}
-            builtinVariables={loopItemSuggestions}
+            builtinVariables={extraSuggestions}
             fullWidth
           />
         );
@@ -319,7 +320,7 @@ const SubTaskParamForm: React.FC<SubTaskParamFormProps> = ({
     }
 
     // textarea / timestamp / resource_dropdown / textfield → template-aware
-    // text input with LoopItem suggestions and Available Data drag-drop.
+    // text input with container suggestions and Available Data drag-drop.
     const isMultiline = fieldType === 'textarea';
     const isDropTarget = draggingOverField === fieldName;
     const dropHandlers = !disabled
@@ -357,7 +358,7 @@ const SubTaskParamForm: React.FC<SubTaskParamFormProps> = ({
               previousTasks={previousTasks}
               workflowInputs={workflowInputs}
               workflowConfigs={workflowConfigs}
-              builtinVariables={loopItemSuggestions}
+              builtinVariables={extraSuggestions}
               multiline={isMultiline}
               rows={isMultiline ? 5 : undefined}
               maxRows={isMultiline ? 10 : undefined}

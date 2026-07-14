@@ -19,7 +19,8 @@ import PlatformFieldItem from './components/PlatformFieldItem';
 import HybridField from './components/HybridField';
 import AccountField from './components/AccountField';
 import CallWorkflowFields from './components/CallWorkflowFields';
-import ForeachTasksEditor from './components/foreach/ForeachTasksEditor';
+import SubTasksEditor from './components/subtasks/SubTasksEditor';
+import { SUBTASK_BLOCKED_TYPES } from './constants/subtaskConstants';
 import FilterDropdown from '@ui/FilterDropdown';
 import { getPreviousTasksForNode, getSwitchChildNodeIds, getSwitchDryRunEligibility } from './utils/templateUtils';
 import {
@@ -1988,22 +1989,72 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       // foreach fields (items / item / concurrency / output) keep their
       // generic renderers below.
       if (selectedActionType === 'core.foreach' && fieldName === 'tasks') {
+        const itemVarName = typeof localData?.item === 'string' && localData.item.trim() ? localData.item.trim() : 'item';
+        const loopItemSuggestions: TemplateSuggestion[] = [
+          {
+            type: 'loop',
+            text: `LoopItem.${itemVarName}`,
+            description: 'Current loop item',
+            insertText: `{{ LoopItem.${itemVarName} }}`,
+          },
+          {
+            type: 'loop',
+            text: `LoopItem.${itemVarName}.<field>`,
+            description: 'A field of the current loop item (when items are objects)',
+            insertText: `{{ LoopItem.${itemVarName}.field }}`,
+          },
+        ];
         return (
           <Box key={fieldName} sx={{ mb: 2 }}>
             {/* Keyed by node id: the sidebar stays mounted across node switches, so
                 without a remount the editor's uid refs / expansion state would leak
                 between different foreach nodes. */}
-            <ForeachTasksEditor
+            <SubTasksEditor
               key={selectedNode?.id ?? 'foreach-tasks'}
               value={Array.isArray(fieldValue) ? fieldValue : []}
               onChange={(tasks) => handleDataChange(fieldName, tasks)}
-              itemVarName={typeof localData?.item === 'string' && localData.item.trim() ? localData.item.trim() : 'item'}
               errors={validationErrors}
               taskDefinitions={taskDefinitions}
               viewOnlyMode={viewOnlyMode}
               previousTasks={previousTasks}
               workflowInputs={workflowInputs}
               workflowConfigs={workflowConfigs}
+              blockedTypes={SUBTASK_BLOCKED_TYPES}
+              extraSuggestions={loopItemSuggestions}
+              testIdPrefix='foreach'
+              copy={{
+                helperText: (
+                  <>Sub-tasks run sequentially for each item. Use {`{{ LoopItem.${itemVarName} }}`} in parameters to reference the current item.</>
+                ),
+                emptyStateText: 'No sub-tasks yet. Each item in the list will run these tasks in order.',
+              }}
+            />
+          </Box>
+        );
+      }
+
+      // Group sub-task builder replaces the raw-JSON tasks field. Group runs its
+      // tasks once as a single step (no iteration / loop variable).
+      if (selectedActionType === 'core.group' && fieldName === 'tasks') {
+        return (
+          <Box key={fieldName} sx={{ mb: 2 }}>
+            {/* Keyed by node id — same remount rationale as foreach above. */}
+            <SubTasksEditor
+              key={selectedNode?.id ?? 'group-tasks'}
+              value={Array.isArray(fieldValue) ? fieldValue : []}
+              onChange={(tasks) => handleDataChange(fieldName, tasks)}
+              errors={validationErrors}
+              taskDefinitions={taskDefinitions}
+              viewOnlyMode={viewOnlyMode}
+              previousTasks={previousTasks}
+              workflowInputs={workflowInputs}
+              workflowConfigs={workflowConfigs}
+              blockedTypes={SUBTASK_BLOCKED_TYPES}
+              testIdPrefix='group'
+              copy={{
+                helperText: 'Tasks run together as a single step, in order.',
+                emptyStateText: 'No tasks yet. Add the tasks that should run together as one step.',
+              }}
             />
           </Box>
         );
