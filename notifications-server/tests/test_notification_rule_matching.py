@@ -11,6 +11,9 @@ troubleshoot finding falls back to the default channel.
 from notifications_server.services.message import (
     NotificationRuleMatcher,
     _finding_rule_source,
+    _rule_severities,
+    _severity_matches,
+    is_realtime_severity_gated,
 )
 
 
@@ -118,3 +121,78 @@ def test_cloud_template_account_only():
     assert account_id == "acc-5"
     assert namespace is None
     assert workload is None
+
+
+# ----------------------------- rule severity parsing -----------------------------
+
+
+def test_rule_severities_single_value():
+    # the UI stores a single lowercase value today ('high')
+    assert _rule_severities("high") == {"high"}
+    assert _rule_severities("HIGH") == {"high"}
+
+
+def test_rule_severities_tolerates_csv_and_array_strings():
+    assert _rule_severities("high,medium") == {"high", "medium"}
+    assert _rule_severities('["LOW", "INFO"]') == {"low", "info"}
+    assert _rule_severities("['low', 'info']") == {"low", "info"}
+    assert _rule_severities(["HIGH", "medium"]) == {"high", "medium"}
+
+
+def test_rule_severities_empty_is_wildcard():
+    assert _rule_severities(None) == set()
+    assert _rule_severities("") == set()
+    assert _rule_severities("  ") == set()
+
+
+# ----------------------------- severity match predicate -----------------------------
+
+
+def test_rule_without_severity_matches_any_priority():
+    assert _severity_matches(None, "HIGH")
+    assert _severity_matches(None, "LOW")
+    assert _severity_matches(None, None)
+
+
+def test_severity_scoped_rule_matches_only_listed_priorities():
+    # findings carry uppercase priority (DEBUG/INFO/LOW/MEDIUM/HIGH)
+    assert _severity_matches("high", "HIGH")
+    assert not _severity_matches("high", "MEDIUM")
+    assert not _severity_matches("high", "LOW")
+
+
+def test_severity_scoped_rule_skips_findings_without_priority():
+    assert not _severity_matches("high", None)
+    assert not _severity_matches("high", "")
+
+
+# ----------------------------- real-time severity gate -----------------------------
+
+
+def test_low_signal_priorities_are_gated_without_rules():
+    for priority in ("DEBUG", "INFO", "LOW", "low", "info"):
+        assert is_realtime_severity_gated(priority, []), priority
+
+
+def test_actionable_priorities_are_never_gated():
+    for priority in ("MEDIUM", "HIGH", "high"):
+        assert not is_realtime_severity_gated(priority, []), priority
+
+
+def test_unknown_or_missing_priority_is_not_gated():
+    assert not is_realtime_severity_gated(None, [])
+    assert not is_realtime_severity_gated("", [])
+    assert not is_realtime_severity_gated("CRITICAL", [])
+
+
+def test_rule_listing_the_priority_opts_into_realtime():
+    rules = [{"severity": "low", "delivery_mode": "real_time"}]
+    assert not is_realtime_severity_gated("LOW", rules)
+
+
+def test_wildcard_severity_rule_does_not_opt_in():
+    # a rule without a severity filter routes findings but is not an explicit
+    # opt-in for low-signal priorities
+    rules = [{"severity": None, "delivery_mode": "real_time"}]
+    assert is_realtime_severity_gated("LOW", rules)
+    assert is_realtime_severity_gated("INFO", rules)

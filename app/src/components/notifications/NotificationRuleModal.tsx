@@ -1369,7 +1369,13 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
                           setSelectedSeverity([value]);
                         }}
                         value={selectedSeverity.length > 0 ? selectedSeverity[0] : null}
-                        options={[{ label: 'High', value: 'high' }]}
+                        options={[
+                          { label: 'High', value: 'high' },
+                          { label: 'Medium', value: 'medium' },
+                          { label: 'Low', value: 'low' },
+                          { label: 'Info', value: 'info' },
+                          { label: 'Debug', value: 'debug' },
+                        ]}
                         size='sm'
                       />
                     </Box>

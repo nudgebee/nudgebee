@@ -73,6 +73,46 @@ def is_batch_delivery(matched_rules: List[Dict[str, Any]]):
     return any(rule.get("delivery_mode") == "batch" for rule in matched_rules)
 
 
+# Findings carry `priority` (DEBUG/INFO/LOW/MEDIUM/HIGH — see api-server
+# services/event/types). Low-signal findings are digest-only by default:
+# real-time delivery requires a matched rule that lists the priority
+# explicitly in its severity filter.
+REALTIME_GATED_PRIORITIES = {"debug", "info", "low"}
+
+
+def _rule_severities(rule_severity) -> set:
+    """Rule severity is a single value from the UI today; tolerate array-style or
+    comma-separated strings so a future multi-select doesn't silently break."""
+    if not rule_severity:
+        return set()
+    values = rule_severity
+    if isinstance(values, str):
+        stripped = values.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            values = [v.strip().strip("'").strip('"') for v in stripped[1:-1].split(",") if v.strip()]
+        else:
+            values = stripped.split(",")
+    elif not isinstance(values, (list, tuple, set)):
+        values = [values]
+    return {str(v).strip().lower() for v in values if str(v).strip()}
+
+
+def _severity_matches(rule_severity, finding_priority):
+    severities = _rule_severities(rule_severity)
+    if not severities:
+        return True
+    if not finding_priority:
+        return False
+    return str(finding_priority).strip().lower() in severities
+
+
+def is_realtime_severity_gated(finding_priority, matched_rules: List[Dict[str, Any]]):
+    priority = str(finding_priority or "").strip().lower()
+    if priority not in REALTIME_GATED_PRIORITIES:
+        return False
+    return not any(priority in _rule_severities(rule.get("severity")) for rule in matched_rules)
+
+
 def normalize_channel(channel):
     if channel is None:
         return None
@@ -157,6 +197,10 @@ class NotificationRuleMatcher:
             type_, kwargs
         )
 
+        finding_priority = None
+        if type_ == "finding":
+            finding_priority = ((kwargs.get("parameters") or {}).get("finding") or {}).get("priority")
+
         all_rules = await self.rules_service.get_notification_rules(tenant_id)
         if not all_rules:
             LOG.debug("No rules found for tenant %s (source=%s), using defaults", tenant_id, source)
@@ -171,6 +215,7 @@ class NotificationRuleMatcher:
                 and (rule.namespace == namespace or rule.namespace is None)
                 and (rule.workload == workload or rule.workload is None)
                 and (rule.aggregation_key == aggregation_key or rule.aggregation_key is None)
+                and (type_ != "finding" or _severity_matches(rule.severity, finding_priority))
                 and rule.is_active
             )
         ]
@@ -210,6 +255,7 @@ class NotificationRuleMatcher:
                         "channels": mapping.channels,
                         "expires_at": rule.expires_at,
                         "delivery_mode": rule.delivery_mode,
+                        "severity": rule.severity,
                     }
                     for mapping in mappings
                 )
@@ -226,6 +272,7 @@ class NotificationRuleMatcher:
                         "channels": None,
                         "expires_at": rule.expires_at,
                         "delivery_mode": rule.delivery_mode,
+                        "severity": rule.severity,
                     }
                 )
 
@@ -654,6 +701,22 @@ class MessageService:
                 matched_rules, source = await self.rule_matcher.match_notification_rules(
                     session, tenant_id, type_, payload
                 )
+
+                if type_ == "finding":
+                    finding_priority = (parameters.get("finding") or {}).get("priority")
+                    if is_realtime_severity_gated(finding_priority, matched_rules):
+                        LOG.debug(
+                            "Finding gated from real-time delivery (priority=%s, tenant=%s)",
+                            finding_priority,
+                            tenant_id,
+                        )
+                        return [
+                            system_response(
+                                "severity_gated",
+                                "Low/informational findings are digest-only by default; "
+                                "add a notification rule with this severity for real-time delivery",
+                            )
+                        ]
 
                 rule_result = self._maybe_return_rule_effect(matched_rules, tenant_id)
                 if rule_result is not None:
