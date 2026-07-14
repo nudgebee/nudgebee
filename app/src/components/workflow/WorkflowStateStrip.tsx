@@ -169,7 +169,7 @@ const WorkflowStateStrip: React.FC<WorkflowStateStripProps> = ({
           inline by the rename of "Save draft" → "Publish"). */}
       {!isNewWorkflow && (
         <Tooltip title={versioningInfoCopy}>
-          <Box sx={{ display: 'flex', alignItems: 'center', color: ds.gray[500], cursor: 'help' }} data-testid='workflow-versioning-info'>
+          <Box sx={{ display: 'flex', alignItems: 'center', color: ds.gray[500], cursor: 'pointer' }} data-testid='workflow-versioning-info'>
             <InfoOutlinedIcon sx={{ fontSize: ds.text.title }} />
           </Box>
         </Tooltip>

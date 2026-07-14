@@ -4549,7 +4549,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 width='sm'
                 contentStyles={{ padding: '0px' }}
                 actionButtons={
-                  <Box sx={{ display: 'flex', gap: 2, justifyContent: 'flex-end', p: 2 }}>
+                  <Box sx={{ display: 'flex', gap: 2, justifyContent: 'flex-end' }}>
                     <Button id='action-close-confirm-cancel-btn' tone='secondary' size='md' onClick={() => setActionDetailsSidebarOpen(true)}>
                       Cancel
                     </Button>
@@ -4621,7 +4621,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 width='sm'
                 contentStyles={{ padding: '0px' }}
                 actionButtons={
-                  <Box sx={{ display: 'flex', gap: 2, justifyContent: 'flex-end', p: 2 }}>
+                  <Box sx={{ display: 'flex', gap: 2, justifyContent: 'flex-end' }}>
                     <Button id='trigger-close-confirm-cancel-btn' tone='secondary' size='md' onClick={() => setTriggerConfigSidebarOpen(true)}>
                       Cancel
                     </Button>
@@ -4938,7 +4938,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             width='sm'
             title={`Checkout version ${confirmRestoreVersion?.version_number ?? ''}?`}
             actionButtons={
-              <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, p: 2 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
                 <Button tone='secondary' size='md' onClick={() => setConfirmRestoreVersion(null)} disabled={restoring}>
                   Cancel
                 </Button>
@@ -4955,12 +4955,10 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
               </Box>
             }
           >
-            <Box sx={{ p: 'var(--ds-space-4) 0' }}>
-              <Typography variant='body2' sx={{ color: ds.gray[700] }}>
-                Your current draft will be replaced with the contents of v{confirmRestoreVersion?.version_number}. The live version that runs
-                executions is NOT changed. Publish again to snapshot the restored draft as a new version.
-              </Typography>
-            </Box>
+            <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+              Your current draft will be replaced with the contents of v{confirmRestoreVersion?.version_number}. The live version that runs executions
+              is NOT changed. Publish again to snapshot the restored draft as a new version.
+            </Typography>
           </Modal>
 
           {/* Delete Version Confirmation Dialog */}
@@ -4970,7 +4968,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             width='sm'
             title={`Delete version ${confirmDeleteVersion?.version_number ?? ''}?`}
             actionButtons={
-              <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, p: 2 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
                 <Button tone='secondary' size='md' onClick={() => setConfirmDeleteVersion(null)} disabled={deleting}>
                   Cancel
                 </Button>
@@ -4980,12 +4978,10 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
               </Box>
             }
           >
-            <Box sx={{ p: 'var(--ds-space-4) 0' }}>
-              <Typography variant='body2' sx={{ color: ds.gray[700] }}>
-                This permanently removes the v{confirmDeleteVersion?.version_number} snapshot and cannot be undone. The live version and any past
-                executions are unaffected.
-              </Typography>
-            </Box>
+            <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+              This permanently removes the v{confirmDeleteVersion?.version_number} snapshot and cannot be undone. The live version and any past
+              executions are unaffected.
+            </Typography>
           </Modal>
 
           {/* Publish Dialog */}
@@ -4995,7 +4991,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             width='sm'
             title='Publish workflow version'
             actionButtons={
-              <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, p: 2 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
                 <Button tone='secondary' size='md' onClick={() => setPublishDialogOpen(false)} disabled={publishing}>
                   Cancel
                 </Button>
@@ -5012,7 +5008,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
               </Box>
             }
           >
-            <Box sx={{ p: 'var(--ds-space-4) 0' }}>
+            <Box>
               <Typography variant='body2' sx={{ mb: 2, color: ds.gray[700] }}>
                 Snapshot the current draft as a new immutable version. Optionally give it a label and a short changelog. New executions will run this
                 version if you mark it live.
@@ -5083,7 +5079,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             width='sm'
             title={`Make v${confirmLiveVersion?.version_number ?? ''} the live version?`}
             actionButtons={
-              <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, p: 2 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
                 <Button tone='secondary' size='md' onClick={() => setConfirmLiveVersion(null)} disabled={settingLive}>
                   Cancel
                 </Button>
@@ -5100,12 +5096,10 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
               </Box>
             }
           >
-            <Box sx={{ p: 'var(--ds-space-4) 0' }}>
-              <Typography variant='body2' sx={{ color: ds.gray[700] }}>
-                New executions will run v{confirmLiveVersion?.version_number}. Your current draft is preserved and remains separate — switching the
-                live pointer does not modify what you&apos;re editing.
-              </Typography>
-            </Box>
+            <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+              New executions will run v{confirmLiveVersion?.version_number}. Your current draft is preserved and remains separate — switching the live
+              pointer does not modify what you&apos;re editing.
+            </Typography>
           </Modal>
 
           {/* Exit-confirmation modal. Two variants share the same component so
@@ -5117,7 +5111,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             open={showUnsavedChangesDialog}
             title={exitVariant === 'unpublished' ? 'Unpublished changes' : 'Unsaved changes'}
             actionButtons={
-              <Box sx={{ display: 'flex', gap: 2, justifyContent: 'flex-end', p: 2 }}>
+              <Box sx={{ display: 'flex', gap: 2, justifyContent: 'flex-end' }}>
                 <Button id='workflow-unsaved-cancel-btn' tone='secondary' size='md' onClick={handleCancelNavigation} disabled={loading}>
                   Stay
                 </Button>
@@ -5128,19 +5122,17 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             }
             handleClose={handleCancelNavigation}
           >
-            <Box padding={'24px'}>
-              {exitVariant === 'unpublished' ? (
-                <Text
-                  value={
-                    workflowDataRef.current?.live_version_number
-                      ? `Your draft is saved but not published. All triggers will keep running Live version: v${workflowDataRef.current.live_version_number}, not your draft. Leave anyway?`
-                      : 'Your draft is saved but not published. All triggers will keep running the current live version, not your draft. Leave anyway?'
-                  }
-                />
-              ) : (
-                <Text value={'You have unsaved canvas edits. Leaving will lose them. Are you sure you want to leave?'} />
-              )}
-            </Box>
+            {exitVariant === 'unpublished' ? (
+              <Text
+                value={
+                  workflowDataRef.current?.live_version_number
+                    ? `Your draft is saved but not published. All triggers will keep running Live version: v${workflowDataRef.current.live_version_number}, not your draft. Leave anyway?`
+                    : 'Your draft is saved but not published. All triggers will keep running the current live version, not your draft. Leave anyway?'
+                }
+              />
+            ) : (
+              <Text value={'You have unsaved canvas edits. Leaving will lose them. Are you sure you want to leave?'} />
+            )}
           </Modal>
         </Box>
       </Box>
