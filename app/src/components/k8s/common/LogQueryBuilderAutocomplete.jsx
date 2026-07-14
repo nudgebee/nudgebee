@@ -304,7 +304,7 @@ const LogQueryBuilderAutocomplete = ({
     setCurrentStep('label');
     setPendingChip({ label: '', operator: '', value: '' });
     setLabels([]);
-    setValues([]);
+    setValues({});
     setLoadingValues(false);
     setLoadingLabels(false);
     setMetricsList([]);
@@ -317,6 +317,27 @@ const LogQueryBuilderAutocomplete = ({
   useEffect(() => {
     resetStates();
   }, [accountId]);
+
+  // Switching the log provider (provider switcher) must not leave the previous
+  // provider's labels/values in the filter. The fetch effects below only
+  // *replace* labels on a non-empty response, so a new provider that returns an
+  // empty/slow/errored label response would otherwise leave the old provider's
+  // labels visible. Clear the provider-specific transient state here (before the
+  // fetch effects run) so the builder always reflects the active provider; the
+  // fetch effects then repopulate it. Query chips are owned by the parent.
+  useEffect(() => {
+    setLabels([]);
+    setValues({});
+    setInputValue('');
+    setSuggestions([]);
+    setShowSuggestions(false);
+    setIsSuggestionsCapped(false);
+    setSelectedIndex(-1);
+    setCurrentStep('label');
+    setPendingChip({ label: '', operator: '', value: '' });
+    setMetricsList([]);
+    setIsMetricsLoading(false);
+  }, [logProvider]);
 
   // Cleanup debounce timer on unmount
   useEffect(() => {
