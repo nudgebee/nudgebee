@@ -36,6 +36,8 @@ interface FilterBarProps {
   onAccountChange?: (accountId: string) => void;
   /** "Today" anchor for the date presets (real today for live; fixture date for demo). */
   anchorDate?: string;
+  /** Show the shared Agent filter (hidden on the Agents tab, which has its own). */
+  showAgents?: boolean;
 }
 
 const DAY = 86_400_000;
@@ -139,7 +141,7 @@ function Field({ label, sample, children }: { label: string; sample?: boolean; c
   );
 }
 
-export function FilterBar({ filters, onChange, onReset, options, accountId = '', onAccountChange, anchorDate }: FilterBarProps) {
+export function FilterBar({ filters, onChange, onReset, options, accountId = '', onAccountChange, anchorDate, showAgents = true }: FilterBarProps) {
   const [open, setOpen] = React.useState(false);
   const anchorEnd = anchorDate || FIXTURE_ANCHOR;
 
@@ -149,6 +151,7 @@ export function FilterBar({ filters, onChange, onReset, options, accountId = '',
   // fictitious model/provider names as selectable values in a live view.
   const modelOptions = options?.models ?? [];
   const providerOptions = options?.providers ?? [];
+  const agentOptions = options?.agents ?? [];
   const sourceOptions = options?.sources ?? [];
   const statusOptions = options?.statuses ?? ['success', 'failure'];
   // User scope is single-select: pill shows the chosen user's name, clear-X resets
@@ -234,6 +237,16 @@ export function FilterBar({ filters, onChange, onReset, options, accountId = '',
           value={filters.providers}
           onSelect={(_e: unknown, sel: FDOption[]) => onChange({ providers: toValues(sel) })}
         />
+        {showAgents && (
+          <FilterDropdown
+            id='cost-filter-agent'
+            label='Agent'
+            multiple
+            options={agentOptions}
+            value={filters.agents}
+            onSelect={(_e: unknown, sel: FDOption[]) => onChange({ agents: toValues(sel) })}
+          />
+        )}
         <FilterDropdown
           id='cost-filter-source'
           label='Source'

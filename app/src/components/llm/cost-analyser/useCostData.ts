@@ -66,6 +66,7 @@ function toFilterRequest(accountId: string | undefined, f: CostFilters): UsageFi
     sources: f.sources ?? [],
     models: f.models,
     providers: f.providers,
+    agents: f.agents ?? [],
     statuses: f.statuses,
     // userId intentionally applied to ALL tabs (Overview, Models, Conversations, Agents, Tools) —
     // the drill-in from UsersView sets this scope so the whole report narrows to one user.
@@ -98,6 +99,7 @@ export function useCostData(accountId: string | undefined, filters: CostFilters)
     sources: filters.sources ?? [],
     models: filters.models,
     providers: filters.providers,
+    agents: filters.agents ?? [],
     statuses: filters.statuses,
     userId: filters.userId,
     nonce,

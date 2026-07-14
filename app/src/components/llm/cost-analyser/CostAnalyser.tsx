@@ -60,6 +60,7 @@ function defaultFilters(): CostFilters {
     sources: [],
     models: [],
     providers: [],
+    agents: [],
     statuses: [],
     userId: '',
     minCost: null,
@@ -167,6 +168,10 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
           accountId={selectedAccountId}
           onAccountChange={setSelectedAccountId}
           anchorDate={anchorToday()}
+          // The Agents tab owns local include/exclude agent controls (with a curated
+          // default exclude), so the shared Agent filter would be a redundant, no-op
+          // third control there — hide it and let that tab's own filters stand.
+          showAgents={tab !== 'agents'}
         />
       )}
 
