@@ -468,7 +468,7 @@ func executeViaProxyAgent(toolContext core.NbToolContext, module RelayJob, query
 		Timeout:      time.Second * time.Duration(config.Config.LlmServerRelayPodExecutionTimeoutSeconds),
 	}
 
-	response, err := relay.Execute(actionParam)
+	response, err := relay.Execute(toolContext.GoContext(), actionParam)
 	if err != nil {
 		return nil, fmt.Errorf("proxy agent db_query failed: %w", err)
 	}
@@ -575,7 +575,7 @@ func executeSSHViaProxyAgent(toolContext core.NbToolContext, command string, acc
 		Timeout:      time.Second * time.Duration(config.Config.LlmServerRelayPodExecutionTimeoutSeconds),
 	}
 
-	response, err := relay.Execute(actionParam)
+	response, err := relay.Execute(toolContext.GoContext(), actionParam)
 	if err != nil {
 		return nil, fmt.Errorf("proxy agent ssh_command failed: %w", err)
 	}
@@ -1021,7 +1021,7 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 		}
 	}
 	actionParam.Timeout = time.Second * time.Duration(config.Config.LlmServerRelayPodExecutionTimeoutSeconds)
-	response, err := relay.Execute(actionParam)
+	response, err := relay.Execute(toolContext.GoContext(), actionParam)
 	if err != nil {
 		return nil, err
 	}

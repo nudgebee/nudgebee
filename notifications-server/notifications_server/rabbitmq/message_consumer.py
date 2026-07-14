@@ -8,6 +8,8 @@ from typing import Callable
 
 import aio_pika
 from aio_pika import ExchangeType, Message
+from opentelemetry import trace
+from opentelemetry.propagate import extract
 
 from notifications_server.configs.settings import settings
 
@@ -156,7 +158,15 @@ class Consumer:
             if self.consume_callback:
                 try:
                     processed_body = self._decompress_message_body(raw_body, headers)
-                    await self.consume_callback(headers, processed_body)
+                    # Continue the distributed trace: extract the W3C context the
+                    # publisher injected into the AMQP headers and run the handler
+                    # inside a consumer span so downstream logs / outbound calls
+                    # share the same trace_id.
+                    ctx = extract(headers or {})
+                    with trace.get_tracer(__name__).start_as_current_span(
+                        "rabbitmq.consume", context=ctx, kind=trace.SpanKind.CONSUMER
+                    ):
+                        await self.consume_callback(headers, processed_body)
                 except Exception as e:
                     LOG.error(f"Error processing message {delivery_tag}: {e}, message {raw_body}, headers {headers}")
             self.acknowledge_message(delivery_tag, start_time)

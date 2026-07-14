@@ -25,7 +25,7 @@ func init() {
 	}
 }
 
-func processEventPostProcessMessage(data []byte) error {
+func processEventPostProcessMessage(msgCtx context.Context, data []byte) error {
 	var message EventPostProcessMessage
 	if err := common.UnmarshalJson(data, &message); err != nil {
 		slog.Error("event_queue: failed to unmarshal message", "error", err)
@@ -39,7 +39,7 @@ func processEventPostProcessMessage(data []byte) error {
 
 	logger := slog.Default().With("event_id", message.EventID)
 
-	ctx, eventMap, err := loadEventMap(message.EventID, logger)
+	ctx, eventMap, err := loadEventMap(msgCtx, message.EventID, logger)
 	if err != nil {
 		return nil // Already logged; don't requeue (malformed / missing event)
 	}
@@ -65,7 +65,7 @@ func processEventPostProcessMessage(data []byte) error {
 // re-fetches from DB, llm only checks existence, others forward metadata only);
 // has_evidences records whether they existed. Shared by the post-process
 // consumer and the investigation-completed consumer.
-func loadEventMap(eventID string, logger *slog.Logger) (*security.RequestContext, map[string]any, error) {
+func loadEventMap(msgCtx context.Context, eventID string, logger *slog.Logger) (*security.RequestContext, map[string]any, error) {
 	// Fail fast on an empty id rather than issuing a guaranteed-miss query.
 	// Both callers already guard this, so it is defensive belt-and-suspenders;
 	// the error is permanent (callers ACK), never requeued.
@@ -74,9 +74,11 @@ func loadEventMap(eventID string, logger *slog.Logger) (*security.RequestContext
 		return nil, nil, fmt.Errorf("eventID is empty")
 	}
 
-	// Build request context (same as RPC webhook handler uses)
+	// Build request context (same as RPC webhook handler uses). msgCtx carries
+	// the trace context extracted from the consumed message's headers, so the
+	// trace continues from the publisher into event post-processing.
 	ctx := security.NewRequestContext(
-		context.Background(),
+		msgCtx,
 		security.NewSecurityContextForSuperAdmin(),
 		logger, nil, nil,
 	)
@@ -90,7 +92,7 @@ func loadEventMap(eventID string, logger *slog.Logger) (*security.RequestContext
 	// Rebuild context with tenant from the event so downstream queries have proper tenant scoping
 	if eventObj.Tenant != nil && *eventObj.Tenant != "" {
 		ctx = security.NewRequestContext(
-			context.Background(),
+			msgCtx,
 			security.NewSecurityContextForTenantAdmin(*eventObj.Tenant),
 			logger, nil, nil,
 		)

@@ -153,7 +153,7 @@ func (m ElasticSearchExecuteTool) executeES(ctx core.NbToolContext, query string
 		ActionName:   "query_es",
 		ActionParams: queryObj,
 	}
-	response, err := relay.Execute(actionParam)
+	response, err := relay.Execute(ctx.GoContext(), actionParam)
 	if err != nil {
 		return nil, fmt.Errorf("executeES: relay execute: %w", err)
 	}

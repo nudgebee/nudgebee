@@ -142,7 +142,7 @@ func (m OpenObserve) ValidateConfig(sc *security.SecurityContext, config []core.
 }
 
 // TestConnection implements core.TestableIntegration to perform live connectivity checks.
-func (m OpenObserve) TestConnection(sc *security.SecurityContext, config []core.IntegrationConfigValue, accountId string) error {
+func (m OpenObserve) TestConnection(sc *security.RequestContext, config []core.IntegrationConfigValue, accountId string) error {
 	var openobserveURL, orgID, username, password string
 	for _, c := range config {
 		switch c.Name {

@@ -212,7 +212,7 @@ func ConsumeCloudAccountMetricsJobs(ctx *security.RequestContext, concurrency in
 		ctx.GetLogger().Error("metrics: failed to declare DLQ", "error", err)
 	}
 
-	processor := func(data []byte) error {
+	processor := func(msgCtx context.Context, data []byte) error {
 		var job CloudAccountMetricsJob
 		err := common.UnmarshalJson(data, &job)
 		if err != nil {
@@ -229,8 +229,10 @@ func ConsumeCloudAccountMetricsJobs(ctx *security.RequestContext, concurrency in
 		logger := ctx.GetLogger().With("accountId", job.AccountId, "service", job.ServiceName, "job_id", job.JobId)
 		logger.Info("metrics: processing metrics job")
 
-		// Create a new request context for this specific account
-		jobCtx := security.NewRequestContext(context.Background(), security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
+		// Create a new request context for this specific account. msgCtx carries
+		// the trace context extracted from the consumed message's headers, so the
+		// trace continues from the publisher into metrics ETL.
+		jobCtx := security.NewRequestContext(msgCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
 
 		// Execute StoreMetrices logic
 		_, err = StoreMetrices(jobCtx, job.AccountId, StoreMetricesRequest{

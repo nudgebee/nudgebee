@@ -22,6 +22,9 @@ import (
 	"nudgebee/code-analysis-agent/llm"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Environment variable names for receiving large payloads from llm-server
@@ -86,6 +89,10 @@ func main() {
 
 	flag.Parse()
 
+	// Wire the global W3C trace-context propagator so code-analysis joins the
+	// caller's distributed trace (inbound in server mode, TRACEPARENT env in CLI).
+	initTracePropagation()
+
 	// Debug: Log parsed flags (redact secrets to prevent credential leakage in logs)
 	log.Printf("DEBUG CLI: All flags parsed - analyze=%v, repo='%s', logs_len=%d, branch='%s', token='[REDACTED len=%d]', prompt='%s', agent='%s', raisePRValue='%s', eventId='%s', recommendationId='%s', accountId='%s'",
 		*analyze, *repoURL, len(*logs), *branch, len(*token), *prompt, *agent, raisePRValue, *eventId, *recommendationId, *accountId)
@@ -131,6 +138,10 @@ func main() {
 				promptValue = envPrompt
 			}
 		}
+
+		// Adopt the trace passed by the spawning llm-server (TRACEPARENT env) so
+		// this CLI analysis's logs carry the caller's trace_id.
+		common.SetGlobalTraceID(traceIDFromContext(traceparentFromEnv(context.Background())))
 
 		runCLIAnalysis(cfg, *repoURL, logsValue, *branch, *token, promptValue, *agent, *eventId, *recommendationId, *workflowId, *accountId, raisePR, *conversationId, *gitProvider, *mode)
 		return
@@ -201,6 +212,10 @@ func main() {
 	// Add middleware
 	router.Use(gin.Recovery())
 	router.Use(gin.Logger())
+	// Extract the inbound traceparent and echo it back, so an HTTP-invoked
+	// analysis continues the caller's distributed trace.
+	router.Use(traceExtractMiddleware())
+	router.Use(traceResponseHeaderMiddleware())
 	router.Use(authHandlerMiddleware())
 
 	// CORS middleware for development
@@ -687,4 +702,67 @@ func runFollowup(cfg *config.Config, repoURL, prURL, branch, token, gitProvider 
 		"analysis_id": analysisID,
 		"success":     result.Success,
 	})
+}
+
+// initTracePropagation wires the global W3C trace-context propagator so
+// code-analysis participates in distributed traces. No span exporter / SDK
+// TracerProvider is configured: trace_id propagation and logging do not require
+// one, and OpenTelemetry-Go's default no-op tracer preserves an extracted
+// remote parent span context — so an inbound traceparent still flows through
+// (server mode) and a TRACEPARENT passed in the environment is adopted (CLI
+// mode).
+//
+// These trace helpers live in main.go (not a separate file) because the build
+// system compiles cmd/main.go as a single file (Makefile, Dockerfile, and
+// cmd/cli_test.go all run `go build … cmd/main.go`), so a sibling file's
+// symbols would not be visible.
+func initTracePropagation() {
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{}, propagation.Baggage{}))
+}
+
+// traceExtractMiddleware extracts the inbound W3C traceparent from the request
+// headers into the request context, so handlers and outbound calls continue the
+// caller's trace. A hand-rolled equivalent of otelgin.Middleware — code-analysis
+// does not already depend on otelgin, and this avoids adding it for one use.
+func traceExtractMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx := otel.GetTextMapPropagator().Extract(c.Request.Context(),
+			propagation.HeaderCarrier(c.Request.Header))
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	}
+}
+
+// traceResponseHeaderMiddleware echoes the W3C trace context back on the
+// response headers so callers can correlate their request with this service.
+// Mirrors the same middleware in api-server / llm-server / relay-server.
+func traceResponseHeaderMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		prop := propagation.TraceContext{}
+		prop.Inject(c.Request.Context(), propagation.HeaderCarrier(c.Writer.Header()))
+		c.Next()
+	}
+}
+
+// traceparentFromEnv returns a context carrying the trace context from the
+// TRACEPARENT environment variable (set by the spawning llm-server) so a
+// CLI-mode analysis continues the caller's trace. Returns ctx unchanged when
+// TRACEPARENT is unset.
+func traceparentFromEnv(ctx context.Context) context.Context {
+	tp := os.Getenv("TRACEPARENT")
+	if tp == "" {
+		return ctx
+	}
+	return otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier{"traceparent": tp})
+}
+
+// traceIDFromContext returns the 32-hex W3C trace-id for the span in ctx, or ""
+// when there is no valid span context.
+func traceIDFromContext(ctx context.Context) string {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		return ""
+	}
+	return sc.TraceID().String()
 }

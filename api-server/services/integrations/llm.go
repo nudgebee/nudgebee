@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -466,7 +467,7 @@ type llmProbeResultJSON struct {
 //
 // Untestable targets (vertexai) count as success — the resolver still picks
 // them at runtime; only structural validation has run for them here.
-func (m LLM) TestConnection(_ *security.SecurityContext, values []core.IntegrationConfigValue, _ string) error {
+func (m LLM) TestConnection(rc *security.RequestContext, values []core.IntegrationConfigValue, _ string) error {
 	if config.Config.LLMServerEndpoint == "" {
 		return fmt.Errorf("llm_server_endpoint not configured; cannot run connectivity test")
 	}
@@ -482,7 +483,16 @@ func (m LLM) TestConnection(_ *security.SecurityContext, values []core.Integrati
 		headers[config.Config.LLMServerTokenHeader] = config.Config.LLMServerToken
 	}
 
+	// Thread the request's trace context so llm-server continues the same
+	// traceparent. rc may be nil (e.g. unit tests invoke TestConnection
+	// directly); fall back to a background context in that case.
+	reqCtx := context.Background()
+	if rc != nil && rc.GetContext() != nil {
+		reqCtx = rc.GetContext()
+	}
+
 	resp, err := common.HttpPost(url,
+		common.HttpWithContext(reqCtx),
 		common.HttpWithJsonBody(map[string]any{"config": cfg}),
 		common.HttpWithHeaders(headers),
 		// 90s: 5-way parallel probe across ~25 models, 15s per-probe budget on

@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"database/sql"
 	"log/slog"
 	"testing"
@@ -31,7 +32,7 @@ func withStubbedSeams(t *testing.T, loadErr error) *[]emittedCall {
 	})
 
 	calls := &[]emittedCall{}
-	loadEventMapFn = func(eventID string, logger *slog.Logger) (*security.RequestContext, map[string]any, error) {
+	loadEventMapFn = func(_ context.Context, eventID string, logger *slog.Logger) (*security.RequestContext, map[string]any, error) {
 		if loadErr != nil {
 			return nil, nil, loadErr
 		}
@@ -45,28 +46,28 @@ func withStubbedSeams(t *testing.T, loadErr error) *[]emittedCall {
 
 func TestProcessInvestigationCompleted_MalformedJSON(t *testing.T) {
 	calls := withStubbedSeams(t, nil)
-	err := processInvestigationCompleted([]byte("{not json"))
+	err := processInvestigationCompleted(context.Background(), []byte("{not json"))
 	assert.NoError(t, err)
 	assert.Empty(t, *calls, "no phase must be emitted on malformed payload")
 }
 
 func TestProcessInvestigationCompleted_MissingIDs(t *testing.T) {
 	calls := withStubbedSeams(t, nil)
-	err := processInvestigationCompleted([]byte(`{"status":"COMPLETED"}`))
+	err := processInvestigationCompleted(context.Background(), []byte(`{"status":"COMPLETED"}`))
 	assert.NoError(t, err)
 	assert.Empty(t, *calls)
 }
 
 func TestProcessInvestigationCompleted_NonTerminalSkipped(t *testing.T) {
 	calls := withStubbedSeams(t, nil)
-	err := processInvestigationCompleted([]byte(`{"event_id":"e-nonterminal","account_id":"a1","status":"IN_PROGRESS"}`))
+	err := processInvestigationCompleted(context.Background(), []byte(`{"event_id":"e-nonterminal","account_id":"a1","status":"IN_PROGRESS"}`))
 	assert.NoError(t, err)
 	assert.Empty(t, *calls, "non-terminal status must not emit a phase")
 }
 
 func TestProcessInvestigationCompleted_CompletedEmitsCompletedPhase(t *testing.T) {
 	calls := withStubbedSeams(t, nil)
-	err := processInvestigationCompleted([]byte(`{"event_id":"e-completed","account_id":"a1","status":"COMPLETED","summary":"the summary","investigation":"the rca","log_summary":"ls","log_analysis":"la"}`))
+	err := processInvestigationCompleted(context.Background(), []byte(`{"event_id":"e-completed","account_id":"a1","status":"COMPLETED","summary":"the summary","investigation":"the rca","log_summary":"ls","log_analysis":"la"}`))
 	require.NoError(t, err)
 	require.Len(t, *calls, 1)
 	c := (*calls)[0]
@@ -80,7 +81,7 @@ func TestProcessInvestigationCompleted_CompletedEmitsCompletedPhase(t *testing.T
 
 func TestProcessInvestigationCompleted_FailedEmitsFailedPhase(t *testing.T) {
 	calls := withStubbedSeams(t, nil)
-	err := processInvestigationCompleted([]byte(`{"event_id":"e-failed","account_id":"a1","status":"FAILED","status_reason":"boom"}`))
+	err := processInvestigationCompleted(context.Background(), []byte(`{"event_id":"e-failed","account_id":"a1","status":"FAILED","status_reason":"boom"}`))
 	require.NoError(t, err)
 	require.Len(t, *calls, 1, "FAILED must still emit (investigation.failed) so the event isn't dropped")
 	c := (*calls)[0]
@@ -93,8 +94,8 @@ func TestProcessInvestigationCompleted_FailedEmitsFailedPhase(t *testing.T) {
 func TestProcessInvestigationCompleted_DedupRunsOnce(t *testing.T) {
 	calls := withStubbedSeams(t, nil)
 	payload := []byte(`{"event_id":"e-dedup","account_id":"a1","status":"COMPLETED","summary":"s"}`)
-	require.NoError(t, processInvestigationCompleted(payload))
-	require.NoError(t, processInvestigationCompleted(payload))
+	require.NoError(t, processInvestigationCompleted(context.Background(), payload))
+	require.NoError(t, processInvestigationCompleted(context.Background(), payload))
 	assert.Len(t, *calls, 1, "duplicate completion envelopes must emit at most once per event")
 }
 
@@ -103,7 +104,7 @@ func TestProcessInvestigationCompleted_TokenBearingDropped(t *testing.T) {
 	// A token-bearing envelope belongs to runbook-server's consumer; api-server
 	// must drop it so it doesn't emit a phase for events it never deferred (a
 	// runbook investigation bypasses api-server's lifecycle).
-	err := processInvestigationCompleted([]byte(`{"task_token":"dGhpcy1pcy1hLXRva2Vu","event_id":"e-token","account_id":"a1","status":"COMPLETED","summary":"s"}`))
+	err := processInvestigationCompleted(context.Background(), []byte(`{"task_token":"dGhpcy1pcy1hLXRva2Vu","event_id":"e-token","account_id":"a1","status":"COMPLETED","summary":"s"}`))
 	assert.NoError(t, err)
 	assert.Empty(t, *calls, "token-bearing envelopes must not emit a lifecycle phase")
 }
@@ -112,7 +113,7 @@ func TestProcessInvestigationCompleted_NotFoundAcks(t *testing.T) {
 	// A missing event is permanent — the message must be ACK'd (no error
 	// returned) so it isn't requeued forever, and no phase is emitted.
 	calls := withStubbedSeams(t, sql.ErrNoRows)
-	err := processInvestigationCompleted([]byte(`{"event_id":"e-missing","account_id":"a1","status":"COMPLETED"}`))
+	err := processInvestigationCompleted(context.Background(), []byte(`{"event_id":"e-missing","account_id":"a1","status":"COMPLETED"}`))
 	assert.NoError(t, err)
 	assert.Empty(t, *calls, "no phase must be emitted when the event does not exist")
 }
@@ -121,7 +122,7 @@ func TestProcessInvestigationCompleted_TransientLoadErrorRequeues(t *testing.T) 
 	// A transient DB / network error must be returned so RabbitMQ requeues and
 	// the lifecycle phase still fires once the event loads — not silently dropped.
 	calls := withStubbedSeams(t, assert.AnError)
-	err := processInvestigationCompleted([]byte(`{"event_id":"e-loaderr","account_id":"a1","status":"COMPLETED"}`))
+	err := processInvestigationCompleted(context.Background(), []byte(`{"event_id":"e-loaderr","account_id":"a1","status":"COMPLETED"}`))
 	assert.Error(t, err, "a transient load error must requeue (return an error)")
 	assert.Empty(t, *calls, "no phase must be emitted when the event can't be loaded")
 }

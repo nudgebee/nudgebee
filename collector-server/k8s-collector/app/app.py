@@ -7,14 +7,48 @@ import time
 
 from flask import Flask, Response
 from flask_restx import Api
+from opentelemetry import trace
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from apis import register_urls
+
+
+class TraceIdFilter(logging.Filter):
+    """Inject the active OTel trace_id / span_id (bare 32/16-hex, matching the Go
+    services and Loki `trace_id` queries) into every LogRecord. Empty when no span
+    is active. Kept here in app.py — rather than a separate top-level otel_setup
+    module — so the logging.json filter reference resolves at import time and mypy
+    doesn't see the file under two module names (app.otel_setup vs otel_setup)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        ctx = trace.get_current_span().get_span_context()
+        record.trace_id = format(ctx.trace_id, "032x") if ctx.trace_id else ""
+        record.span_id = format(ctx.span_id, "016x") if ctx.span_id else ""
+        return True
+
+
+def setup_tracing() -> None:
+    """Install a real SDK TracerProvider (no exporter needed) so trace_id logging
+    and inbound / consumer trace continuation work, plus outbound HTTP propagation.
+    A real provider is required because Python's no-op tracer does not preserve an
+    extracted remote parent span context."""
+    resource = Resource.create({"service.name": os.environ.get("OTEL_SERVICE_NAME", "k8s-collector")})
+    trace.set_tracer_provider(TracerProvider(resource=resource))
+    RequestsInstrumentor().instrument()
+
 
 with open("config/logging.json", "rt") as f:
     logging_config = json.load(f)
 
 logging.config.dictConfig(logging_config)
+
+# Install the real SDK TracerProvider + outbound instrumentation after logging is
+# configured. Required so trace_id logging and inbound/consumer trace continuation work.
+setup_tracing()
 
 # Determine application environment - default to Production for security
 ENV_MAPPING = {
@@ -60,6 +94,9 @@ def register_blueprints(flask_app) -> None:
 
 def create_app():
     flask_app = Flask(__name__)
+    # Extract the inbound traceparent and start a server span so this agent
+    # continues the caller's distributed trace instead of starting a new root.
+    FlaskInstrumentor().instrument_app(flask_app)
     flask_app.config.from_object(config_dict[APP_ENV])
     register_extensions(flask_app)
     register_blueprints(flask_app)

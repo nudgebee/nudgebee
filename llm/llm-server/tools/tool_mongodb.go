@@ -179,7 +179,7 @@ func executeMongoViaProxyAgent(toolContext core.NbToolContext, action string, ac
 		Timeout:      time.Second * time.Duration(timeoutSeconds),
 	}
 
-	response, err := mongoRelayExecute(actionParam)
+	response, err := mongoRelayExecute(toolContext.GoContext(), actionParam)
 	if err != nil {
 		return "", fmt.Errorf("proxy agent %s failed: %w", action, err)
 	}

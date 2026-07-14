@@ -7,6 +7,8 @@ from typing import Any, Callable, Optional
 from kombu import Connection, Exchange, Queue, Message
 from kombu.mixins import ConsumerMixin
 from kombu.pools import producers
+from opentelemetry import trace
+from opentelemetry.propagate import extract
 
 from config import Configs
 from metrics import prometheus_metrics
@@ -304,7 +306,15 @@ class RabbitConsumer(ConsumerMixin):
             while retry_count < self.message_max_retries:
                 try:
                     logger.debug("Processing message (attempt %d)", retry_count + 1)
-                    self.callback(body)
+                    # Continue the distributed trace: extract the W3C context the
+                    # publisher injected into the AMQP headers and run the handler
+                    # inside a consumer span so downstream logs / outbound calls
+                    # share the same trace_id.
+                    ctx = extract(message.headers or {})
+                    with trace.get_tracer(__name__).start_as_current_span(
+                        "rabbitmq.consume", context=ctx, kind=trace.SpanKind.CONSUMER
+                    ):
+                        self.callback(body)
                 except Exception:
                     retry_count += 1
                     logger.exception("Message processing failed (attempt %d/%d)", retry_count, self.message_max_retries)

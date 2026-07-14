@@ -217,7 +217,7 @@ func GetServiceDependencyGraph(ctx security.RequestContext, accountId, namespace
 		},
 	}
 
-	response, err := relay.Execute(relay.ActionExecuteBody{
+	response, err := relay.Execute(ctx.GetContext(), relay.ActionExecuteBody{
 		AccountID:    accountId,
 		ActionName:   "service_map",
 		ActionParams: actionParams,

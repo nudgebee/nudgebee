@@ -461,7 +461,7 @@ func (m PrometheusExecuteTool) executePromQl(nbRequestContext core.NbToolContext
 		},
 	}
 	slog.Debug("prometheus query", "query", query, "start_time", startTimeString, "end_time", endTimeString)
-	response, err := relay.Execute(actionParam)
+	response, err := relay.Execute(nbRequestContext.GoContext(), actionParam)
 	if err != nil {
 		return nil, fmt.Errorf("executePromQl: relay execute: %w", err)
 	}

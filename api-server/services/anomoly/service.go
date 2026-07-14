@@ -1,6 +1,7 @@
 package anomoly
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -41,14 +42,17 @@ func init() {
 		config.Config.RabbitMqServicesAnomalyProcessingQueue,
 		config.Config.RabbitMqServicesAnomalyProcessingQueue,
 		config.Config.RabbitMqServicesAnomalyProcessingConcurrency, // Read concurrency from config
-		func(data []byte) error {
+		func(msgCtx context.Context, data []byte) error {
 			request := AnomalyProcessingMessage{}
 			err := common.UnmarshalJson(data, &request)
 			if err != nil {
 				slog.Error("anomaly: unable to unmarshal message", "error", err, "message", string(data))
 				return nil
 			}
-			ctx := security.NewRequestContextForTenantAdmin(request.TenantId, slog.Default(), nil, nil)
+			// Build the request context directly on msgCtx (the trace context
+			// extracted from the message headers) so anomaly processing logs /
+			// downstream calls share the trace_id, without a throwaway allocation.
+			ctx := security.NewRequestContext(msgCtx, security.NewSecurityContextForTenantAdmin(request.TenantId), slog.Default(), nil, nil)
 
 			ProcessAnomaly(ctx, request)
 			return nil

@@ -240,7 +240,7 @@ class OTELConfig:
     OTEL_EXPORTER_OTLP_ENDPOINT: str = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
     OTEL_EXPORTER: str = os.environ.get("OTEL_EXPORTER", "")
     OTEL_EXPORTER_OTLP_PROTOCOL: str = os.environ.get("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
-    OTEL_RESOURCE_ATTRIBUTES: str = ""
+    OTEL_RESOURCE_ATTRIBUTES: str = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
     service_name = os.environ.get("OTEL_SERVICE_NAME", "ml-k8s-server")
 
 

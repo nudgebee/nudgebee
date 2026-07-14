@@ -154,7 +154,7 @@ func ConsumeCloudAccountCostReportJobs(ctx *security.RequestContext, concurrency
 
 	ctx.GetLogger().Info("usagereport: starting cloud account cost report consumer", "concurrency", concurrency, "queue", config.Config.RabbitMqCloudAccountCostReportQueue, "exchange", config.Config.RabbitMqCloudAccountCostReportExchange)
 
-	processor := func(data []byte) error {
+	processor := func(msgCtx context.Context, data []byte) error {
 		var job CloudAccountCostReportJob
 		err := common.UnmarshalJson(data, &job)
 		if err != nil {
@@ -167,8 +167,10 @@ func ConsumeCloudAccountCostReportJobs(ctx *security.RequestContext, concurrency
 		logger := ctx.GetLogger().With("accountId", job.AccountId, "month", job.Month, "year", job.Year, "job_id", job.JobId)
 		logger.Info("usagereport: processing cost report job")
 
-		// Create a new request context for this specific account
-		jobCtx := security.NewRequestContext(context.Background(), security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
+		// Create a new request context for this specific account. msgCtx carries
+		// the trace context extracted from the consumed message's headers, so the
+		// trace continues from the publisher into cost-report ETL.
+		jobCtx := security.NewRequestContext(msgCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
 
 		// Execute StoreUsage logic
 		_, err = StoreUsage(jobCtx, job.AccountId, time.Month(job.Month), job.Year)
@@ -1171,7 +1173,7 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 
 	ctx.GetLogger().Info("postreport: starting cloud account post-report consumer", "concurrency", concurrency, "queue", config.Config.RabbitMqCloudAccountPostReportQueue, "exchange", config.Config.RabbitMqCloudAccountPostReportExchange)
 
-	processor := func(data []byte) error {
+	processor := func(msgCtx context.Context, data []byte) error {
 		var job CloudAccountPostReportJob
 		err := common.UnmarshalJson(data, &job)
 		if err != nil {
@@ -1185,10 +1187,12 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 		// consumer_timeout. The steps below are I/O-bound and honour this context, so
 		// a slow account is cut off and the job returns a retriable error instead of
 		// overrunning the broker timeout — see postReportProcessingTimeout.
-		// WithoutCancel detaches from the long-lived consumer context's cancellation
-		// (so a shutdown mid-job doesn't abort it) while retaining its trace/baggage
-		// values; the timeout then bounds it.
-		procCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), postReportProcessingTimeout)
+		// WithoutCancel detaches from cancellation (so a shutdown mid-job doesn't
+		// abort it) while retaining trace/baggage values; the timeout then bounds
+		// it. Based on msgCtx — the trace context extracted from the consumed
+		// message's headers — so the distributed trace continues into post-report
+		// ETL (and, as before, the job survives consumer shutdown).
+		procCtx, cancel := context.WithTimeout(context.WithoutCancel(msgCtx), postReportProcessingTimeout)
 		defer cancel()
 
 		// Acquire the per-account sync lock before doing any DB writes. This serializes
@@ -1219,6 +1223,8 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 
 		logger.Info("postreport: processing post-report job")
 
+		// procCtx is derived from msgCtx (above), so the trace extracted from the
+		// consumed message's headers continues from the publisher into post-report ETL.
 		jobCtx := security.NewRequestContext(procCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
 
 		// Step 1: Discover and store resources from cloud provider APIs

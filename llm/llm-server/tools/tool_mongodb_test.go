@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -32,7 +33,7 @@ func newMongoToolContext() core.NbToolContext {
 }
 
 // withFakeRelay swaps the relay seam for the duration of fn.
-func withFakeRelay(t *testing.T, fake func(relay.ActionExecuteBody) (map[string]any, error), fn func()) {
+func withFakeRelay(t *testing.T, fake func(context.Context, relay.ActionExecuteBody) (map[string]any, error), fn func()) {
 	t.Helper()
 	orig := mongoRelayExecute
 	mongoRelayExecute = fake
@@ -53,7 +54,7 @@ func TestMongoDBTool_SendsExpectedCommand(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.toolName, func(t *testing.T) {
 			var captured relay.ActionExecuteBody
-			fake := func(body relay.ActionExecuteBody) (map[string]any, error) {
+			fake := func(_ context.Context, body relay.ActionExecuteBody) (map[string]any, error) {
 				captured = body
 				return map[string]any{"data": `{"ok":1}`}, nil
 			}
@@ -83,7 +84,7 @@ func TestMongoDBTool_SendsExpectedCommand(t *testing.T) {
 
 func TestMongoDBTool_PassesThroughJSON(t *testing.T) {
 	doc := `{"connections":{"current":42,"available":51158},"ok":1}`
-	fake := func(relay.ActionExecuteBody) (map[string]any, error) {
+	fake := func(context.Context, relay.ActionExecuteBody) (map[string]any, error) {
 		return map[string]any{"data": doc}, nil
 	}
 
@@ -99,7 +100,7 @@ func TestMongoDBTool_PassesThroughJSON(t *testing.T) {
 }
 
 func TestMongoDBTool_SurfacesRelayError(t *testing.T) {
-	fake := func(relay.ActionExecuteBody) (map[string]any, error) {
+	fake := func(context.Context, relay.ActionExecuteBody) (map[string]any, error) {
 		return nil, errors.New("dial tcp mongo.internal:27017: connection refused")
 	}
 
@@ -114,7 +115,7 @@ func TestMongoDBTool_SurfacesRelayError(t *testing.T) {
 }
 
 func TestMongoDBTool_SurfacesForagerError(t *testing.T) {
-	fake := func(relay.ActionExecuteBody) (map[string]any, error) {
+	fake := func(context.Context, relay.ActionExecuteBody) (map[string]any, error) {
 		// forager reports the error inside the data document.
 		return map[string]any{"data": `{"error":"Authentication failed"}`}, nil
 	}
@@ -147,7 +148,7 @@ func TestMongoDBTool_RequiresAccountId(t *testing.T) {
 
 	tool := MongoDBTool{toolName: ToolMongoServerStatus}
 	called := false
-	withFakeRelay(t, func(relay.ActionExecuteBody) (map[string]any, error) {
+	withFakeRelay(t, func(context.Context, relay.ActionExecuteBody) (map[string]any, error) {
 		called = true
 		return map[string]any{"data": `{"ok":1}`}, nil
 	}, func() {

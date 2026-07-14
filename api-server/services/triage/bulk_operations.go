@@ -450,13 +450,14 @@ func init() {
 		BulkClassificationRoutingKey,
 		BulkClassificationQueue,
 		1, // concurrency=1 to process one job at a time
-		func(data []byte) error {
+		func(msgCtx context.Context, data []byte) error {
 			dbms, err := database.GetDatabaseManager(database.Metastore)
 			if err != nil {
 				slog.Error("Failed to get database for bulk classification", "error", err)
 				return err
 			}
-			return ProcessBulkClassification(context.Background(), dbms.Db, data)
+			// msgCtx carries the trace context extracted from the message headers.
+			return ProcessBulkClassification(msgCtx, dbms.Db, data)
 		},
 	)
 	if err != nil {

@@ -37,7 +37,7 @@ func init() {
 	}
 }
 
-func processKGUpdateMessage(data []byte) error {
+func processKGUpdateMessage(msgCtx context.Context, data []byte) error {
 	// 1. Unmarshal message
 	var message KGUpdateMessage
 	if err := common.UnmarshalJson(data, &message); err != nil {
@@ -65,7 +65,7 @@ func processKGUpdateMessage(data []byte) error {
 
 	// 3. Process KG update for tenant
 	logger.Info("kg_queue: starting KG update for tenant")
-	if err := processKGUpdateForTenant(message.TenantID, message.CorrelationID, logger); err != nil {
+	if err := processKGUpdateForTenant(msgCtx, message.TenantID, message.CorrelationID, logger); err != nil {
 		logger.Error("kg_queue: failed to process KG update", "error", err)
 		return nil // Ack to prevent infinite retry, error is logged
 	}
@@ -87,16 +87,17 @@ func tryClaimTenantProcessing(tenantID string, logger *slog.Logger) (bool, error
 }
 
 // processKGUpdateForTenant processes all enabled filters for a specific tenant
-func processKGUpdateForTenant(tenantID string, correlationID string, logger *slog.Logger) error {
+func processKGUpdateForTenant(msgCtx context.Context, tenantID string, correlationID string, logger *slog.Logger) error {
 	// Get database manager
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return err
 	}
 
-	// Create context with timeout
+	// Create context with timeout. msgCtx carries the trace context extracted
+	// from the consumed message's headers so the trace continues into the build.
 	timeout := time.Duration(config.Config.KGUpdateProcessingTimeoutMinutes) * time.Minute
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(msgCtx, timeout)
 	defer cancel()
 
 	// Create security context for tenant

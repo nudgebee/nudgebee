@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -150,7 +151,7 @@ func (m mcpIntegrationTool) Call(ctx NbToolContext, input NBToolCallRequest) (NB
 		"arguments": args,
 	}
 
-	response, err := executeMCPViaRelay(ctx.AccountId, m.config, "tools/call", callParams, time.Duration(config.Config.LlmServerMCPExecutionTimeoutSeconds)*time.Second)
+	response, err := executeMCPViaRelay(ctx.GoContext(), ctx.AccountId, m.config, "tools/call", callParams, time.Duration(config.Config.LlmServerMCPExecutionTimeoutSeconds)*time.Second)
 	if err != nil {
 		log.Error("mcp-integration: tool call failed", "error", err)
 		// Emit the failure as JSON so the tool response is consistently JSON
@@ -198,7 +199,7 @@ func classifyMCPError(err error) string {
 // executeMCPViaRelay sends an MCP JSON-RPC request through the relay server.
 // For direct mode: relay handles the HTTP call to the MCP server.
 // For vm_agent mode: relay routes to forager via RabbitMQ.
-func executeMCPViaRelay(accountID string, cfg mcpIntegrationConfig, method string, params map[string]any, timeout time.Duration) (string, error) {
+func executeMCPViaRelay(ctx context.Context, accountID string, cfg mcpIntegrationConfig, method string, params map[string]any, timeout time.Duration) (string, error) {
 	actionParams := map[string]any{
 		"method": method,
 	}
@@ -261,7 +262,7 @@ func executeMCPViaRelay(accountID string, cfg mcpIntegrationConfig, method strin
 		Timeout:      duration,
 	}
 
-	response, err := relay.Execute(body)
+	response, err := relay.Execute(ctx, body)
 	if err != nil {
 		return "", fmt.Errorf("relay MCP request failed: %w", err)
 	}
@@ -530,7 +531,7 @@ func (t mcpUnavailableTool) Call(_ NbToolContext, _ NBToolCallRequest) (NBToolRe
 func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 	log := slog.With("integration_id", cfg.IntegrationID, "integration_name", cfg.IntegrationName, "account_id", accountId)
 
-	response, err := executeMCPViaRelay(accountId, cfg, "tools/list", nil, time.Duration(config.Config.LlmServerMCPDiscoveryTimeoutSeconds)*time.Second)
+	response, err := executeMCPViaRelay(context.Background(), accountId, cfg, "tools/list", nil, time.Duration(config.Config.LlmServerMCPDiscoveryTimeoutSeconds)*time.Second)
 	if err != nil {
 		log.Error("mcp-integration: failed to discover tools", "error", err)
 		// Keep the integration visible (and consistently reported) instead of

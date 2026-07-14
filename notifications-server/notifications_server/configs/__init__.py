@@ -19,6 +19,8 @@ import json
 import logging.config
 import os
 
+from opentelemetry import trace
+
 from notifications_server.configs.settings import (
     # Main settings instance
     settings,
@@ -65,6 +67,18 @@ class HealthCheckFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         return record.getMessage().find("/health") == -1
+
+
+class TraceIdFilter(logging.Filter):
+    """Inject the active OTel trace_id / span_id (bare 32/16-hex, matching the
+    Go services and Loki `trace_id` queries) into every LogRecord. Empty when no
+    span is active."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        ctx = trace.get_current_span().get_span_context()
+        record.trace_id = format(ctx.trace_id, "032x") if ctx.trace_id else ""
+        record.span_id = format(ctx.span_id, "016x") if ctx.span_id else ""
+        return True
 
 
 # Backward compatibility: Configs as alias for settings

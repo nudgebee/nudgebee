@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -16,6 +17,9 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/wagslane/go-rabbitmq"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -387,7 +391,7 @@ func anyConsumerWedged() (string, bool) {
 	return "", false
 }
 
-func MqConsume(exchangeName string, routingKey string, queue string, concurrency int, processor func(data []byte) error) error {
+func MqConsume(exchangeName string, routingKey string, queue string, concurrency int, processor func(ctx context.Context, data []byte) error) error {
 	conn := getConnection()
 	if conn == nil {
 		slog.Error("rbmq: initial connection to rabbitmq failed for consumer setup", "queue", queue, "exchange", exchangeName)
@@ -541,6 +545,7 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 type mqPublishOptions struct {
 	Expiration time.Duration
 	Headers    map[string]any
+	Ctx        context.Context
 }
 
 type MqPublishOption func(o *mqPublishOptions)
@@ -548,6 +553,15 @@ type MqPublishOption func(o *mqPublishOptions)
 func MqPublishWithExpiration(expiration time.Duration) MqPublishOption {
 	return func(o *mqPublishOptions) {
 		o.Expiration = expiration
+	}
+}
+
+// MqPublishWithContext threads a request context into the publish so the active
+// W3C trace context (traceparent) is injected into the message headers. The
+// consuming service can then extract it and continue the same distributed trace.
+func MqPublishWithContext(ctx context.Context) MqPublishOption {
+	return func(o *mqPublishOptions) {
+		o.Ctx = ctx
 	}
 }
 
@@ -645,7 +659,7 @@ func isMessageInFlight(fingerprint string) bool {
 
 // processMessageAndDetermineAction handles the core message processing and decides the RabbitMQ action.
 // This function is called by the handler in consumer.Run.
-func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(data []byte) error, queueName string, exchangeName string) rabbitmq.Action {
+func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(ctx context.Context, data []byte) error, queueName string, exchangeName string) rabbitmq.Action {
 	fingerprint := messageFingerprint(d.Body)
 
 	// Poison message detection: when the pod OOM-kills or crashes, RabbitMQ auto-requeues
@@ -694,7 +708,26 @@ func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(da
 	markMessageInFlight(fingerprint)
 	defer clearMessageInFlight(fingerprint)
 
-	if err := processorFunc(d.Body); err != nil {
+	// Continue the distributed trace: extract the W3C context the publisher
+	// injected into the AMQP headers and run the processor inside a consumer
+	// span so its logs / outbound calls share the same trace_id.
+	carrier := propagation.MapCarrier{}
+	for k, v := range d.Headers {
+		// AMQP header values arrive as string or, depending on the publisher's
+		// client library / broker encoding, []byte. Handle both so trace
+		// context extraction doesn't silently fail.
+		switch val := v.(type) {
+		case string:
+			carrier[k] = val
+		case []byte:
+			carrier[k] = string(val)
+		}
+	}
+	ctx := otel.GetTextMapPropagator().Extract(context.Background(), carrier)
+	ctx, span := otel.Tracer("mq").Start(ctx, "rabbitmq.consume", trace.WithSpanKind(trace.SpanKindConsumer))
+	defer span.End()
+
+	if err := processorFunc(ctx, d.Body); err != nil {
 		// Check if this is a permanent error that should not be retried
 		var permErr *PermanentError
 		if errors.As(err, &permErr) {
@@ -923,6 +956,15 @@ func MqPublish(exchangeName string, routingKey string, message any, opts ...MqPu
 	for k, v := range options.Headers {
 		headers[k] = v
 	}
+	// Inject the active W3C trace context into the message headers so the
+	// consuming service can continue the same distributed trace.
+	if options.Ctx != nil {
+		carrier := propagation.MapCarrier{}
+		otel.GetTextMapPropagator().Inject(options.Ctx, carrier)
+		for k, v := range carrier {
+			headers[k] = v
+		}
+	}
 
 	publishOptsList := []func(*rabbitmq.PublishOptions){
 		rabbitmq.WithPublishOptionsContentType("application/json"),
@@ -1069,7 +1111,7 @@ func StartMqHeartbeat() {
 	// window, after which a missing round-trip is treated as unhealthy.
 	mqLastHeartbeatNanos.Store(time.Now().UnixNano())
 
-	err := MqConsume(mqHeartbeatExchange, mqHeartbeatKey, mqHeartbeatQueue, 1, func(_ []byte) error {
+	err := MqConsume(mqHeartbeatExchange, mqHeartbeatKey, mqHeartbeatQueue, 1, func(_ context.Context, _ []byte) error {
 		mqLastHeartbeatNanos.Store(time.Now().UnixNano())
 		return nil
 	})

@@ -1828,7 +1828,7 @@ func TestIntegrationConnectionByConfig(
 	// Today only LLM uses this — for everything else this is a no-op cast and
 	// we keep the prior "validation == success" behaviour.
 	if testable, ok := integration.(TestableIntegration); ok {
-		if testErr := testable.TestConnection(ctx.GetSecurityContext(), configValues, accountIds[0]); testErr != nil {
+		if testErr := testable.TestConnection(ctx, configValues, accountIds[0]); testErr != nil {
 			return testErr
 		}
 	}
@@ -1960,7 +1960,7 @@ func TestIntegrationConnection(ctx *security.RequestContext, integrationID strin
 	}
 
 	if testable, ok := integration.(TestableIntegration); ok {
-		if testErr := testable.TestConnection(ctx.GetSecurityContext(), configValues, accountIDs[0]); testErr != nil {
+		if testErr := testable.TestConnection(ctx, configValues, accountIDs[0]); testErr != nil {
 			return testErr
 		}
 	}

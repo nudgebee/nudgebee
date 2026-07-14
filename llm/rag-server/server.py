@@ -9,6 +9,9 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from filelock import FileLock, Timeout
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
 from qdrant_client.http.exceptions import ResponseHandlingException
 
 from config import setup_logger
@@ -131,6 +134,10 @@ async def lifespan(app: FastAPI):
     """
     # Startup
     set_global_trace()
+    # Propagate the traceparent on outbound HTTP (embedding / LLM providers,
+    # document scraping) so downstream services continue the same trace.
+    RequestsInstrumentor().instrument()
+    HTTPXClientInstrumentor().instrument()
     logger.info("FastAPI application starting up...")
 
     # Start the post-startup task in background thread
@@ -151,6 +158,9 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=lifespan,
     )
+    # Extract the inbound traceparent and start a server span so this service
+    # continues the caller's distributed trace instead of starting a new root.
+    FastAPIInstrumentor().instrument_app(app)
 
     @app.middleware("http")
     async def require_action_token(request: Request, call_next):

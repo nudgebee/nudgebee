@@ -7,14 +7,17 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from notifications_server import engine, slack_app, teams_app
 from notifications_server.configs import setup_logger, HealthCheckFilter, settings
 from notifications_server.processors.notification import NotificationProcessor
 from notifications_server.rabbitmq.message_consumer import Consumer
 from notifications_server.routers import tools, common, actions, llm_callbacks
+from notifications_server.tracing import setup_tracing
 
 setup_logger()
+setup_tracing()
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 LOG = logging.getLogger(__name__)
 
@@ -47,6 +50,9 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+# Extract the inbound traceparent and start a server span so this service
+# continues the caller's distributed trace instead of starting a new root.
+FastAPIInstrumentor().instrument_app(app)
 
 
 @app.exception_handler(RequestValidationError)

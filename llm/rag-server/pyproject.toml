@@ -24,6 +24,9 @@ dependencies = [
     # --- Observability ---
     "opentelemetry-distro==0.63b1",
     "opentelemetry-exporter-otlp==1.42.1",
+    "opentelemetry-instrumentation-fastapi==0.63b1",
+    "opentelemetry-instrumentation-requests==0.63b1",
+    "opentelemetry-instrumentation-httpx==0.63b1",
     "python-json-logger==4.0.0",
 
     # --- Vector database ---

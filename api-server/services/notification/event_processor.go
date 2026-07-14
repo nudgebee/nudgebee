@@ -54,7 +54,7 @@ func ProcessEvent(ctx *security.RequestContext, newEvent map[string]any) (err er
 		},
 	}
 
-	err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+	err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext()))
 	if err != nil {
 		ctx.GetLogger().Error("Error publishing message to queue", "error", err)
 		return err
@@ -135,7 +135,7 @@ func TriggerNotificationForRecommendationResolution(ctx *security.RequestContext
 		},
 	}
 	ctx.GetLogger().Info(fmt.Sprintf("Publishing recommendation resolution to notification - %s", recommendation.Id), "message", slog.AnyValue(message))
-	err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+	err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext()))
 	if err != nil {
 		ctx.GetLogger().Error("Error publishing message to queue", "error", err)
 		return err
@@ -171,7 +171,7 @@ func TriggerNotificationForEventResolution(ctx *security.RequestContext, event m
 		},
 	}
 	ctx.GetLogger().Info(fmt.Sprintf("Publishing event resolution to notification - %s", event.Id), "message", slog.AnyValue(message))
-	err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+	err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext()))
 	if err != nil {
 		ctx.GetLogger().Error("Error publishing message to queue", "error", err)
 		return err

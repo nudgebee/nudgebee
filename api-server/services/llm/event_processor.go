@@ -165,7 +165,7 @@ func ProcessEvent(ctx *security.RequestContext, event map[string]any) (err error
 		"event_id":   id,
 	}
 
-	err = common.MqPublish(config.Config.RabbitMqTroubleshootExchange, config.Config.RabbitMqTroubleshootQueue, message, common.MqPublishWithExpiration(1*time.Hour))
+	err = common.MqPublish(config.Config.RabbitMqTroubleshootExchange, config.Config.RabbitMqTroubleshootQueue, message, common.MqPublishWithExpiration(1*time.Hour), common.MqPublishWithContext(ctx.GetContext()))
 	if err != nil {
 		ctx.GetLogger().Error("llms: error publishing message to queue", "error", err)
 		return err

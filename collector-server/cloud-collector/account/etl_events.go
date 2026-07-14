@@ -105,7 +105,7 @@ func ConsumeCloudAccountEventsJobs(ctx *security.RequestContext, concurrency int
 		ctx.GetLogger().Error("events: failed to declare DLQ", "error", err)
 	}
 
-	processor := func(data []byte) error {
+	processor := func(msgCtx context.Context, data []byte) error {
 		var job CloudAccountEventsJob
 		err := common.UnmarshalJson(data, &job)
 		if err != nil {
@@ -122,8 +122,10 @@ func ConsumeCloudAccountEventsJobs(ctx *security.RequestContext, concurrency int
 		logger := ctx.GetLogger().With("accountId", job.AccountId, "job_id", job.JobId)
 		logger.Info("events: processing events job")
 
-		// Create a new request context for this specific account
-		jobCtx := security.NewRequestContext(context.Background(), security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
+		// Create a new request context for this specific account. msgCtx carries
+		// the trace context extracted from the consumed message's headers, so the
+		// trace continues from the publisher into event ETL.
+		jobCtx := security.NewRequestContext(msgCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
 
 		// Execute StoreEvents logic
 		_, err = StoreEvents(jobCtx, job.AccountId)

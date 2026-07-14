@@ -1,6 +1,7 @@
 package signoz
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"nudgebee/llm/agents/core"
@@ -33,13 +34,13 @@ func (d SignozLogQueryAgent) GetDescription() string {
 	return `Generate Signoz log query based on natural language question.`
 }
 
-func (d SignozLogQueryAgent) GetSupportedLabels(accountId string) (string, error) {
+func (d SignozLogQueryAgent) GetSupportedLabels(ctx context.Context, accountId string) (string, error) {
 	actionParam := relay.ActionExecuteBody{
 		AccountID:    accountId,
 		ActionName:   "signoz_label_suggest",
 		ActionParams: map[string]any{},
 	}
-	response, err := relay.Execute(actionParam)
+	response, err := relay.Execute(ctx, actionParam)
 	if err != nil {
 		return "", err
 	}
@@ -94,7 +95,7 @@ func (d SignozLogQueryAgent) GetSystemPrompt(ctx *security.RequestContext, query
 			time.Now().UTC().Format("2006-01-02 15:04:05"),
 		),
 		func() string {
-			labels, err := d.GetSupportedLabels(query.AccountId)
+			labels, err := d.GetSupportedLabels(ctx.GetContext(), query.AccountId)
 			if err != nil {
 				return "unknown fields"
 			}

@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"nudgebee/llm/common"
@@ -77,7 +78,9 @@ func GetLabelsList(index string, accountId string) (map[string]map[string]string
 			"index": index,
 		},
 	}
-	response, err := relay.Execute(actionParam)
+	// GetLabelsList is currently orphaned (no in-repo callers); it has no
+	// request-scoped context to thread, so it starts a fresh trace.
+	response, err := relay.Execute(context.Background(), actionParam)
 	if err != nil {
 		return nil, err
 	}

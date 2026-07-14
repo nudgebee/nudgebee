@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"nudgebee/llm/security"
 
@@ -188,6 +189,17 @@ type NbToolContext struct {
 	// selection across delegation. See NBAgentRequest field comments for semantics.
 	OriginalQuery    string
 	SelectedSkillIds []string
+}
+
+// GoContext returns the underlying context.Context for outbound trace
+// propagation, falling back to context.Background() when no RequestContext is
+// attached (e.g. discovery paths or tests). This keeps the otelhttp transport's
+// traceparent injection working without risking a nil-pointer panic.
+func (tc NbToolContext) GoContext() context.Context {
+	if tc.Ctx == nil || tc.Ctx.GetContext() == nil {
+		return context.Background()
+	}
+	return tc.Ctx.GetContext()
 }
 
 func NewNbToolContext(ctx *security.RequestContext, tool NBTool, accountId string, userId string, conversationId string, messageId string, agenId string, query string, history []llms.MessageContent, queryContext string, queryConfig NBQueryConfig, toolCallId string) NbToolContext {

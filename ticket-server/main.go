@@ -11,24 +11,57 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/Cyprinus12138/otelgin"
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
 
 	slogformatter "github.com/samber/slog-formatter"
 	sloggin "github.com/samber/slog-gin"
 
+	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 var errorFormatter = slogformatter.ErrorFormatter("error")
 var logger = slog.New(
-	slogformatter.NewFormatterHandler(errorFormatter)(
-		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		}),
-	),
+	traceContextHandler{
+		slogformatter.NewFormatterHandler(errorFormatter)(
+			slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+				Level: slog.LevelInfo,
+			}),
+		),
+	},
 )
+
+// traceContextHandler enriches every log record whose context carries a valid
+// OpenTelemetry span with trace_id / span_id, matching the field names used by
+// the other services (and Loki `trace_id` queries). The slog-gin access logger
+// logs with the request context, so per-request lines get trace_id for free;
+// any slog.*Context(ctx, …) call does too. Records logged with a background
+// context (plain slog.Info) simply carry no trace_id.
+type traceContextHandler struct {
+	slog.Handler
+}
+
+func (h traceContextHandler) Handle(ctx context.Context, r slog.Record) error {
+	if sc := oteltrace.SpanContextFromContext(ctx); sc.IsValid() {
+		r.AddAttrs(
+			slog.String("trace_id", sc.TraceID().String()),
+			slog.String("span_id", sc.SpanID().String()),
+		)
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+func (h traceContextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return traceContextHandler{h.Handler.WithAttrs(attrs)}
+}
+
+func (h traceContextHandler) WithGroup(name string) slog.Handler {
+	return traceContextHandler{h.Handler.WithGroup(name)}
+}
 
 func main() {
 	slog.SetDefault(logger)
@@ -57,6 +90,11 @@ func main() {
 	pprof.Register(router)
 	router.Use(gin.Recovery())
 	router.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/health")))
+	// Extract the inbound W3C traceparent into the request context (server span)
+	// and echo it back on the response, so ticket-server continues the caller's
+	// distributed trace instead of dropping it.
+	router.Use(otelgin.Middleware(common.SERVICE_NAME))
+	router.Use(traceResponseHeaderMiddleware())
 
 	routes.InitializeRoutes(router)
 
@@ -80,5 +118,16 @@ func main() {
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("Server listen failed:", "error", err)
+	}
+}
+
+// traceResponseHeaderMiddleware echoes the W3C trace context back on the
+// response headers so callers can correlate their request with this service's
+// span. Mirrors the same middleware in api-server / llm-server / cloud-collector.
+func traceResponseHeaderMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		prop := propagation.TraceContext{}
+		prop.Inject(c.Request.Context(), propagation.HeaderCarrier(c.Writer.Header()))
+		c.Next()
 	}
 }
