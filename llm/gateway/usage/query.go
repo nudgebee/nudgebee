@@ -100,56 +100,59 @@ func avgLatencySeconds(sumMs, requests int64) float64 {
 }
 
 type pmRow struct {
-	Provider   string `db:"provider"`
-	Model      string `db:"model"`
-	Requests   int64  `db:"requests"`
-	Input      int64  `db:"input_tokens"`
-	Output     int64  `db:"output_tokens"`
-	CacheRead  int64  `db:"cache_read_tokens"`
-	CacheWrite int64  `db:"cache_write_tokens"`
-	LatencySum int64  `db:"latency_ms_sum"`
+	Provider   string  `db:"provider"`
+	Model      string  `db:"model"`
+	Requests   int64   `db:"requests"`
+	Input      int64   `db:"input_tokens"`
+	Output     int64   `db:"output_tokens"`
+	CacheRead  int64   `db:"cache_read_tokens"`
+	CacheWrite int64   `db:"cache_write_tokens"`
+	LatencySum int64   `db:"latency_ms_sum"`
+	Cost       float64 `db:"cost_usd"`
 }
 
 type tsRow struct {
-	Bucket     time.Time `db:"bucket"`
-	Model      string    `db:"model"`
-	Requests   int64     `db:"requests"`
-	Input      int64     `db:"input_tokens"`
-	Output     int64     `db:"output_tokens"`
-	CacheRead  int64     `db:"cache_read_tokens"`
-	CacheWrite int64     `db:"cache_write_tokens"`
+	Bucket   time.Time `db:"bucket"`
+	Requests int64     `db:"requests"`
+	Input    int64     `db:"input_tokens"`
+	Output   int64     `db:"output_tokens"`
+	Cost     float64   `db:"cost_usd"`
 }
 
 type userRow struct {
-	UserID      string `db:"user_id"`
-	DisplayName string `db:"display_name"`
-	Username    string `db:"username"`
-	Model       string `db:"model"`
-	Requests    int64  `db:"requests"`
-	Input       int64  `db:"input_tokens"`
-	Output      int64  `db:"output_tokens"`
-	CacheRead   int64  `db:"cache_read_tokens"`
-	CacheWrite  int64  `db:"cache_write_tokens"`
-	LatencySum  int64  `db:"latency_ms_sum"`
+	UserID      string  `db:"user_id"`
+	DisplayName string  `db:"display_name"`
+	Username    string  `db:"username"`
+	Model       string  `db:"model"`
+	Requests    int64   `db:"requests"`
+	Input       int64   `db:"input_tokens"`
+	Output      int64   `db:"output_tokens"`
+	CacheRead   int64   `db:"cache_read_tokens"`
+	CacheWrite  int64   `db:"cache_write_tokens"`
+	LatencySum  int64   `db:"latency_ms_sum"`
+	Cost        float64 `db:"cost_usd"`
 }
 
 // Aggregate runs the metric queries against the metering store and assembles the
-// result. Cost is computed per model via the pricer (its natural unit), then rolled
-// up to totals / provider / user / time-bucket. Latency is a request-weighted average.
-func Aggregate(ctx context.Context, db *common.DatabaseManager, pricer *metering.Pricer, req Request) (*Metrics, error) {
+// result. Cost is summed from the per-row cost_usd snapshotted at write time (no
+// runtime pricing-catalog join), then rolled up to totals / provider / user /
+// time-bucket. Latency is a request-weighted average.
+func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*Metrics, error) {
 	if req.EndDate.Before(req.StartDate) {
 		return nil, fmt.Errorf("usage: end_date must be >= start_date")
 	}
 	m := &Metrics{Breakdowns: map[string][]GroupRow{"provider": {}, "model": {}, "user": {}}}
 
-	// (provider, model) grouping → totals + by-provider + by-model.
+	// (provider, model) grouping → totals + by-provider + by-model. Cost is summed
+	// from the per-row snapshot stored at write time (no runtime pricing catalog join).
 	const pmQuery = `
 		SELECT provider, model, count(*) AS requests,
 		       COALESCE(sum(input_tokens),0) AS input_tokens,
 		       COALESCE(sum(output_tokens),0) AS output_tokens,
 		       COALESCE(sum(cache_read_tokens),0) AS cache_read_tokens,
 		       COALESCE(sum(cache_write_tokens),0) AS cache_write_tokens,
-		       COALESCE(sum(latency_ms),0) AS latency_ms_sum
+		       COALESCE(sum(latency_ms),0) AS latency_ms_sum,
+		       COALESCE(sum(cost_usd),0) AS cost_usd
 		FROM llm_gateway_usage
 		WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3
 		GROUP BY provider, model`
@@ -162,7 +165,7 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, pricer *metering
 	provLatency := map[string]int64{}
 	var totalLatency int64
 	for _, r := range pm {
-		cost := pricer.CostUSD(r.Model, int(r.Input), int(r.Output), int(r.CacheRead), int(r.CacheWrite))
+		cost := r.Cost
 		m.Totals.TotalRequests += r.Requests
 		m.Totals.TotalInputTokens += r.Input
 		m.Totals.TotalOutputTokens += r.Output
@@ -198,7 +201,7 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, pricer *metering
 	sortByRequests(m.Breakdowns["provider"])
 	sortByRequests(m.Breakdowns["model"])
 
-	users, err := byUser(db, pricer, req)
+	users, err := byUser(db, req)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +213,7 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, pricer *metering
 	}
 	m.Tools = tools
 
-	ts, err := timeSeries(db, pricer, req)
+	ts, err := timeSeries(db, req)
 	if err != nil {
 		return nil, err
 	}
@@ -223,18 +226,19 @@ func sortByRequests(rows []GroupRow) {
 }
 
 // byUser breaks usage down by the calling user, resolving user_id → display name.
-func byUser(db *common.DatabaseManager, pricer *metering.Pricer, req Request) ([]GroupRow, error) {
+func byUser(db *common.DatabaseManager, req Request) ([]GroupRow, error) {
 	const q = `
 		SELECT g.user_id, COALESCE(u.display_name,'') AS display_name,
 		       COALESCE(u.username::text,'') AS username, g.model, g.requests,
-		       g.input_tokens, g.output_tokens, g.cache_read_tokens, g.cache_write_tokens, g.latency_ms_sum
+		       g.input_tokens, g.output_tokens, g.cache_read_tokens, g.cache_write_tokens, g.latency_ms_sum, g.cost_usd
 		FROM (
 			SELECT user_id, model, count(*) AS requests,
 			       COALESCE(sum(input_tokens),0) AS input_tokens,
 			       COALESCE(sum(output_tokens),0) AS output_tokens,
 			       COALESCE(sum(cache_read_tokens),0) AS cache_read_tokens,
 			       COALESCE(sum(cache_write_tokens),0) AS cache_write_tokens,
-			       COALESCE(sum(latency_ms),0) AS latency_ms_sum
+			       COALESCE(sum(latency_ms),0) AS latency_ms_sum,
+			       COALESCE(sum(cost_usd),0) AS cost_usd
 			FROM llm_gateway_usage
 			WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3 AND user_id <> ''
 			GROUP BY user_id, model
@@ -261,7 +265,7 @@ func byUser(db *common.DatabaseManager, pricer *metering.Pricer, req Request) ([
 			byUID[r.UserID] = g
 			order = append(order, r.UserID)
 		}
-		g.CostUsd += pricer.CostUSD(r.Model, int(r.Input), int(r.Output), int(r.CacheRead), int(r.CacheWrite))
+		g.CostUsd += r.Cost
 		g.Requests += r.Requests
 		g.InputTokens += r.Input
 		g.OutputTokens += r.Output
@@ -378,12 +382,14 @@ type reqScan struct {
 	CacheRead      int64     `db:"cache_read_tokens"`
 	CacheWrite     int64     `db:"cache_write_tokens"`
 	LatencyMs      int64     `db:"latency_ms"`
+	Cost           float64   `db:"cost_usd"`
 	SessionID      string    `db:"session_id"`
 }
 
-// ListRequests returns a page of recent requests, newest first, with cost priced
-// per row. Limit is clamped to [1,200]; Total is the unpaged count for the pager.
-func ListRequests(ctx context.Context, db *common.DatabaseManager, pricer *metering.Pricer, req ListRequest) (*RequestList, error) {
+// ListRequests returns a page of recent requests, newest first, with the cost that
+// was snapshotted per row at write time. Limit is clamped to [1,200]; Total is the
+// unpaged count for the pager.
+func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListRequest) (*RequestList, error) {
 	if req.EndDate.Before(req.StartDate) {
 		return nil, fmt.Errorf("usage: end_date must be >= start_date")
 	}
@@ -422,6 +428,7 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, pricer *meter
 		       COALESCE(g.input_tokens,0) AS input_tokens, COALESCE(g.output_tokens,0) AS output_tokens,
 		       COALESCE(g.cache_read_tokens,0) AS cache_read_tokens, COALESCE(g.cache_write_tokens,0) AS cache_write_tokens,
 		       COALESCE(g.latency_ms,0) AS latency_ms,
+		       COALESCE(g.cost_usd,0) AS cost_usd,
 		       COALESCE(g.session_id,'') AS session_id
 		FROM llm_gateway_usage g
 		LEFT JOIN users u ON u.id::text = g.user_id
@@ -452,7 +459,7 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, pricer *meter
 			StatusCode: r.StatusCode, Streaming: r.Streaming,
 			InputTokens: r.Input, OutputTokens: r.Output, CachedInputTokens: r.CacheRead,
 			LatencyMs:   r.LatencyMs,
-			CostUsd:     pricer.CostUSD(r.Model, int(r.Input), int(r.Output), int(r.CacheRead), int(r.CacheWrite)),
+			CostUsd:     r.Cost,
 			SessionID:   r.SessionID,
 			CanViewBody: bodyEnabled && req.CallerUserID != "" && r.UserID == req.CallerUserID,
 		})
@@ -460,23 +467,22 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, pricer *meter
 	return &RequestList{Rows: out, Total: total, Limit: limit, Offset: offset}, nil
 }
 
-func timeSeries(db *common.DatabaseManager, pricer *metering.Pricer, req Request) (*TimeSeries, error) {
+func timeSeries(db *common.DatabaseManager, req Request) (*TimeSeries, error) {
 	trunc := "day"
 	if req.Granularity == "hour" {
 		trunc = "hour"
 	}
-	// Group by (bucket, model) so cost can be computed per model, then rolled up to
-	// the bucket. trunc is from a fixed allowlist above — safe to interpolate.
+	// Cost is summed from the per-row snapshot, so we group by bucket only (no need to
+	// group by model for pricing). trunc is from a fixed allowlist above — safe to interpolate.
 	q := fmt.Sprintf(`
-		SELECT date_trunc('%s', created_at) AS bucket, model,
+		SELECT date_trunc('%s', created_at) AS bucket,
 		       count(*) AS requests,
 		       COALESCE(sum(input_tokens),0) AS input_tokens,
 		       COALESCE(sum(output_tokens),0) AS output_tokens,
-		       COALESCE(sum(cache_read_tokens),0) AS cache_read_tokens,
-		       COALESCE(sum(cache_write_tokens),0) AS cache_write_tokens
+		       COALESCE(sum(cost_usd),0) AS cost_usd
 		FROM llm_gateway_usage
 		WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3
-		GROUP BY bucket, model
+		GROUP BY bucket
 		ORDER BY bucket`, trunc)
 	var rows []tsRow
 	if err := db.QueryAndScan(&rows, q, req.TenantID, req.StartDate, req.EndDate); err != nil {
@@ -493,7 +499,7 @@ func timeSeries(db *common.DatabaseManager, pricer *metering.Pricer, req Request
 		}
 		b.Requests += r.Requests
 		b.Tokens += r.Input + r.Output
-		b.CostUsd += pricer.CostUSD(r.Model, int(r.Input), int(r.Output), int(r.CacheRead), int(r.CacheWrite))
+		b.CostUsd += r.Cost
 	}
 	out := make([]TimeSeriesRow, 0, len(order))
 	for _, t := range order {

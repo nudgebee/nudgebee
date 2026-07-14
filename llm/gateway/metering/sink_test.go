@@ -62,10 +62,13 @@ func TestDBSink_RecordInsertsRow(t *testing.T) {
 			"POST", "/v1/messages", false,
 			200, int64(1200), "req_test",
 			14, 7, 21, 0, 0, "",
+			0.05, // cost_usd — snapshotted at write time
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	s.Record(sampleEvent())
+	ev := sampleEvent()
+	ev.CostUsd = 0.05
+	s.Record(ev)
 	require.NoError(t, s.Close()) // drains + flushes before returning
 
 	assert.NoError(t, mock.ExpectationsWereMet())

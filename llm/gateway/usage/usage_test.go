@@ -20,7 +20,7 @@ func TestCacheHitPct(t *testing.T) {
 func newRouter(token string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	RegisterRoutes(r, nil, token)
+	RegisterRoutes(r, token)
 	return r
 }
 

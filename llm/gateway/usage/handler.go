@@ -7,7 +7,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"nudgebee/llm-gateway/common"
-	"nudgebee/llm-gateway/metering"
 	"nudgebee/llm-gateway/rpc"
 )
 
@@ -35,7 +34,7 @@ type apiListRequest struct {
 // RegisterRoutes mounts the read-only usage query API under /rpc/usage, guarded by
 // the service token (X-ACTION-TOKEN) that the app's RPC gateway forwards. This is a
 // separate plane from the NB-PAT passthrough lanes: app → gateway service-to-service.
-func RegisterRoutes(r *gin.Engine, pricer *metering.Pricer, token string) {
+func RegisterRoutes(r *gin.Engine, token string) {
 	g := r.Group("/rpc/usage", rpc.ServiceToken(token))
 
 	g.POST("/aggregate", func(c *gin.Context) {
@@ -57,7 +56,7 @@ func RegisterRoutes(r *gin.Engine, pricer *metering.Pricer, token string) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "metering store unavailable"})
 			return
 		}
-		res, err := Aggregate(c.Request.Context(), db, pricer, Request{
+		res, err := Aggregate(c.Request.Context(), db, Request{
 			TenantID: tenantID, StartDate: start, EndDate: end, Granularity: req.Granularity,
 		})
 		if err != nil {
@@ -87,7 +86,7 @@ func RegisterRoutes(r *gin.Engine, pricer *metering.Pricer, token string) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "metering store unavailable"})
 			return
 		}
-		res, err := ListRequests(c.Request.Context(), db, pricer, ListRequest{
+		res, err := ListRequests(c.Request.Context(), db, ListRequest{
 			TenantID: tenantID, StartDate: start, EndDate: end,
 			UserID: req.UserID, Tool: req.Tool, CallerUserID: c.GetHeader("x-user-id"),
 			Limit: req.Limit, Offset: req.Offset,

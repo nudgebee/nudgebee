@@ -215,9 +215,10 @@ func main() {
 
 	// Read-only usage query plane (POST /rpc/usage/aggregate) for the AI Gateway
 	// dashboard — app → gateway service-to-service, guarded by the action token.
-	// Requires the pricer (cost) + metering store; skipped when the DB isn't wired.
+	// Reads the metering store (cost is now snapshotted per row, so no pricer needed
+	// on the read path); skipped when the DB isn't wired. pricer != nil ⇒ DB configured.
 	if pricer != nil {
-		usage.RegisterRoutes(r, pricer, config.Config.GatewayActionToken)
+		usage.RegisterRoutes(r, config.Config.GatewayActionToken)
 	}
 
 	// Admin config-CRUD plane (POST /rpc/config/…) for the AI Gateway admin UI —

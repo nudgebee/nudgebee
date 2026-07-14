@@ -58,13 +58,19 @@ type UsageEvent struct {
 	LatencyMS  int64  `db:"latency_ms"`
 	RequestID  string `db:"request_id"`
 
-	// Usage (raw; cost computed on read). Zero when core extracted no billable usage.
+	// Usage (raw). Zero when core extracted no billable usage.
 	InputTokens      int    `db:"input_tokens"`
 	OutputTokens     int    `db:"output_tokens"`
 	TotalTokens      int    `db:"total_tokens"`
 	CacheReadTokens  int    `db:"cache_read_tokens"`
 	CacheWriteTokens int    `db:"cache_write_tokens"`
 	ServiceTier      string `db:"service_tier"`
+
+	// CostUsd is the cost SNAPSHOTTED at write time (tokens × the catalog price when
+	// the call ran), so historical spend is immutable and a later price change never
+	// retroactively rewrites it. Set by the handler from the pricer. Read paths sum
+	// this column instead of re-joining the pricing catalog.
+	CostUsd float64 `db:"cost_usd"`
 }
 
 // EventInput is what the edge knows at capture time, independent of core internals.

@@ -177,6 +177,7 @@ var usageColumns = []string{
 	"status_code", "latency_ms", "request_id",
 	"input_tokens", "output_tokens", "total_tokens",
 	"cache_read_tokens", "cache_write_tokens", "service_tier",
+	"cost_usd",
 }
 
 // insert writes a batch as a single multi-row INSERT. DatabaseManager.Exec
@@ -211,6 +212,7 @@ func (s *dbSink) insert(evs []UsageEvent) error {
 			ev.StatusCode, ev.LatencyMS, ev.RequestID,
 			ev.InputTokens, ev.OutputTokens, ev.TotalTokens,
 			ev.CacheReadTokens, ev.CacheWriteTokens, ev.ServiceTier,
+			ev.CostUsd,
 		)
 	}
 	// Rebind $N -> the driver's placeholder style (no-op for Postgres, ? for

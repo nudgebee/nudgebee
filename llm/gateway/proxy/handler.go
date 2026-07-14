@@ -391,12 +391,17 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 		RoutingReason:     string(rm.decision.Reason),
 		RoutingRule:       rm.decision.RuleID,
 	})
+	// Snapshot cost at write from the resolved model + actual tokens, so the stored
+	// row carries the price as it was when the call ran (read paths sum this instead
+	// of re-pricing on every query). The same value reconciles the quota below.
+	if h.pricer != nil {
+		ev.CostUsd = h.pricer.CostUSD(ev.Model, ev.InputTokens, ev.OutputTokens, ev.CacheReadTokens, ev.CacheWriteTokens)
+	}
 	h.sink.Record(ev)
 
 	// Reconcile token/cost usage against quotas (requests were counted pre-call).
 	if h.limiter.Enabled() && ev.TotalTokens > 0 {
-		cost := h.pricer.CostUSD(rm.req.Model, ev.InputTokens, ev.OutputTokens, ev.CacheReadTokens, ev.CacheWriteTokens)
-		h.limiter.Reconcile(ctx, ratelimit.Scope{TenantID: rm.identity.TenantID, UserID: rm.identity.UserID}, ev.TotalTokens, cost)
+		h.limiter.Reconcile(ctx, ratelimit.Scope{TenantID: rm.identity.TenantID, UserID: rm.identity.UserID}, ev.TotalTokens, ev.CostUsd)
 	}
 
 	// Full-body logging (off by default). Linked to the usage row via reqID.
