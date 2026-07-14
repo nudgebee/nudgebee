@@ -1,10 +1,11 @@
-from collections import defaultdict
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Union
 from datetime import datetime
 from pydantic import BaseModel
 
 from notifications_server.configs.settings import public_ip
 from notifications_server.message_templates.slack.slo import SLOAlertParams
+
+MAX_SLO_ITEMS = 5
 
 
 class SLOAlertSummaryParams(BaseModel):
@@ -15,44 +16,22 @@ def get_slo_aggregated_message_params(events: List[Dict[str, Any]]) -> SLOAlertS
     return SLOAlertSummaryParams(events=[SLOAlertParams(**e) for e in events])
 
 
-def create_account_attachment(account_name: str, acct_alerts: List[SLOAlertParams]) -> Dict[str, Any]:
-    """Create a collapsible attachment for account SLO alerts."""
-    acct_id = acct_alerts[0].account_id
-
-    lines = []
-    for alert in acct_alerts:
-        ts = int(float(alert.firing_since))
-        # Slack date formatter; fallback to human format
+def _firing_since_block(firing_since: Union[str, float, int]) -> str:
+    try:
+        ts = int(float(firing_since))
         fallback = datetime.fromtimestamp(ts).strftime("%d %B %Y %I:%M %p")
-        date_block = f"<!date^{ts}^{{date_short_pretty}} {{time}}|{fallback}>"
+    except (TypeError, ValueError, OSError, OverflowError):
+        return str(firing_since)
+    return f"<!date^{ts}^{{date_short_pretty}} {{time}}|{fallback}>"
 
-        lines.extend(
-            [
-                f"• Namespace: `{alert.namespace}` / Workload: `{alert.workload}`",
-                f"• SLO: `{alert.slo_name}`",
-                f"• Target: `{alert.slo_target}` / Current: `{alert.current_value}`",
-                f"• Burn Rate: `{alert.burn_rate or 'N/A'}` / Budget Left: `{alert.error_budget_remaining or 'N/A'}`",
-                f"• Firing Since: {date_block}",
-                "",  # blank line between different alerts
-            ]
-        )
 
-    blocks = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*Account:* <{public_ip()}/kubernetes/details/{acct_id}|{account_name}>",
-            },
-        },
-        {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines).strip()}},
-    ]
-
-    return {
-        "color": "#e91e63",
-        "fallback": f"{account_name}: {len(acct_alerts)} SLO breaches",
-        "blocks": blocks,
-    }
+def _burn_line(alert: SLOAlertParams) -> str:
+    parts = []
+    if alert.burn_rate not in (None, "", "N/A"):
+        parts.append(f"burning budget *{alert.burn_rate}× too fast*")
+    if alert.error_budget_remaining not in (None, "", "N/A"):
+        parts.append(f"*{alert.error_budget_remaining}* of budget left")
+    return " — ".join(parts)
 
 
 def get_grouped_slo_alerts_template(input_data: List[SLOAlertParams]) -> Dict[str, Any]:
@@ -61,28 +40,35 @@ def get_grouped_slo_alerts_template(input_data: List[SLOAlertParams]) -> Dict[st
     else:
         alerts = input_data
 
-    grouped: Dict[str, List[SLOAlertParams]] = defaultdict(list)
-    for alert in alerts:
-        grouped[alert.account_name].append(alert)
+    count = len(alerts)
+    headline = "1 SLO is burning error budget" if count == 1 else f"{count} SLOs are burning error budget"
 
-    # Header blocks
     blocks: List[Dict[str, Any]] = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*{len(alerts)} SLO Breach Alerts across {len(grouped)} accounts*",
-            },
-        },
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*{headline}*"}},
         {"type": "divider"},
     ]
 
-    # Create collapsible attachments for each account
-    attachments = []
-    for account_name, acct_alerts in grouped.items():
-        attachments.append(create_account_attachment(account_name, acct_alerts))
+    for alert in alerts[:MAX_SLO_ITEMS]:
+        lines = [
+            f"*{alert.slo_name}*",
+            f"At *{alert.current_value}* against a *{alert.slo_target}* target",
+        ]
+        burn = _burn_line(alert)
+        if burn:
+            lines.append(burn[0].upper() + burn[1:])
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
 
-    # Footer
+        account_link = f"<{public_ip()}/kubernetes/details/{alert.account_id}|{alert.account_name}>"
+        identity = (
+            f"{alert.namespace}/{alert.workload} · firing since {_firing_since_block(alert.firing_since)} · "
+            f"Acct {account_link}"
+        )
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": identity}]})
+
+    remaining = count - MAX_SLO_ITEMS
+    if remaining > 0:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"_+{remaining} more SLOs breaching_"}})
+
     blocks.append(
         {
             "type": "context",
@@ -91,8 +77,7 @@ def get_grouped_slo_alerts_template(input_data: List[SLOAlertParams]) -> Dict[st
     )
 
     return {
-        "text": "Grouped SLO Alert Summary",
-        "blocks": blocks,
-        "attachments": attachments[:20],  # Slack limit
+        "text": headline,
+        "blocks": blocks[:50],
         "unfurl_links": False,
     }
