@@ -1350,9 +1350,7 @@ func TestValidateToolInput_EmptyCommand(t *testing.T) {
 	// Empty command — simulates what the LLM sends when it hallucinates a blank input.
 	resp := validateToolInput(tool, toolcore.NBToolCallRequest{Command: ""})
 
-	if resp == nil {
-		t.Fatal("expected validation error, got nil")
-	}
+	require.NotNil(t, resp, "expected validation error, got nil")
 	t.Logf("Error returned to LLM: %q", resp.Data)
 	assert.Equal(t, toolcore.NBToolResponseStatusError, resp.Status)
 	assert.Contains(t, resp.Data, "kubectl_execute")
@@ -1394,9 +1392,7 @@ func TestValidateToolInput_MissingArgField(t *testing.T) {
 	}
 
 	resp := validateToolInput(tool, toolcore.NBToolCallRequest{})
-	if resp == nil {
-		t.Fatal("expected validation error, got nil")
-	}
+	require.NotNil(t, resp, "expected validation error, got nil")
 	t.Logf("Error returned to LLM: %q", resp.Data)
 	assert.Equal(t, toolcore.NBToolResponseStatusError, resp.Status)
 	assert.Contains(t, resp.Data, "metrics_series_match")

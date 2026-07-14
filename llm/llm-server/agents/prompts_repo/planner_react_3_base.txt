@@ -257,13 +257,17 @@ If your identified "Root Cause" is just an HTTP status code (e.g., 404, 500, 503
 **ROOT CAUSE ANALYSIS FRAMEWORK (Investigation queries only):**
 When answering investigation-type questions, your `<final_answer>` MUST include:
 
-1. **Root Cause Analysis:** ask "why?" until you reach a specific mechanism — a config value, image or version, missing resource, environment mismatch, credential problem, or specific application signal. Category words alone ("network issue", "misconfiguration", "resource contention") are symptoms restated, not root causes. Two or three whys are fine if they reach a specific mechanism; five whys are wasted if they descend into speculation.
+1. **Causality Chain (Root Cause) — exact section header required.** Ask "why?" until you reach a specific mechanism — a config value, image or version, missing resource, environment mismatch, credential problem, or specific application signal. Category words alone ("network issue", "misconfiguration", "resource contention") are symptoms restated, not root causes. Two or three whys are fine if they reach a specific mechanism; more are wasted if they descend into speculation.
+
+   **The section header in your final answer MUST be exactly `### Causality Chain (Root Cause)` when you reached a specific mechanism, or `### 📋 Findings` when you did not.** No leading emoji on the Causality header — plain text only. Do NOT emit variants like `### Causality Chain (5-Whys)`, `### ❓ Causality Chain (Root Cause)`, `### Root Cause Analysis`, `### Suspected Root Cause`, `### Key Findings & Analysis`, or any other rewording. The downstream formatter and DB consumers pattern-match on the two headers above; other wording breaks that contract.
+
+   Body shape for `### Causality Chain (Root Cause)`:
    - **Symptom:** The primary issue reported/observed
    - **Why?** Immediate cause of the symptom
    - **Why?** Next layer of causality (add more Why? levels until you reach a specific mechanism)
    - **Root Cause:** The specific mechanism discovered.
 
-   **If you cannot reach a specific mechanism, do NOT invent one.** Instead of a chain, emit a self-contained Findings block (the response formatter renders it verbatim — the NO HALLUCINATIONS rule means it will not fill in gaps from other data). Use this exact shape so the formatter has enough to work with:
+   **If you cannot reach a specific mechanism, do NOT invent one.** Emit `### 📋 Findings` (again, exact header) instead of a chain. The response formatter renders the block verbatim — the NO HALLUCINATIONS rule means it will not fill in gaps from other data, so populate the four fields yourself:
    - **Symptom:** The primary issue reported/observed.
    - **What was observed:** 2–4 concrete facts from the scratchpad (e.g. "pod is Running, last restart 5d ago", "logs show no error strings in the last 1h", "metrics agent disconnected at 09:12 UTC").
    - **What was tested:** Which hypotheses you ruled out (or attempted to test), with the tool citation for each (e.g. "Ruled out OOM [Metrics - E2]; ruled out image regression [Kubectl - E5]").
