@@ -153,6 +153,13 @@ func (s *SignozSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest F
 	if err := common.UnmarshalJson([]byte(fetchLogRequest.Query), &parsedQuery); err != nil {
 		return nil, fmt.Errorf("failed to parse Query JSON for signoz: %w", err)
 	}
+	// Signoz's filters.items must be a JSON array; if Query decodes to anything
+	// else (e.g. a string), fall back to an empty filter so Signoz doesn't reject
+	// the request with "cannot unmarshal string into []v3.FilterItem".
+	queryItems, ok := parsedQuery.([]any)
+	if !ok {
+		queryItems = []any{}
+	}
 	orderBy := []map[string]any{
 		{"columnName": "timestamp", "order": "desc"},
 	}
@@ -208,7 +215,7 @@ func (s *SignozSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest F
 						"functions":          []any{},
 						"filters": map[string]any{
 							"op":    op,
-							"items": parsedQuery,
+							"items": queryItems,
 						},
 						"expression":   "A",
 						"disabled":     false,
@@ -248,11 +255,7 @@ func (s *SignozSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest F
 	if errMsg, exists := data2["error"]; exists {
 		return nil, fmt.Errorf("API returned error: %v", errMsg)
 	}
-	data3, ok := data2["data"].(map[string]any)
-	if !ok || data3 == nil {
-		return nil, fmt.Errorf("data3 field not found or is nil from response")
-	}
-	result, ok := data3["result"].([]any)
+	result, ok := data2["result"].([]any)
 	if !ok || result == nil {
 		return nil, fmt.Errorf("result field is not an array or is nil from response")
 	}
@@ -286,7 +289,13 @@ func (s *SignozSource) QueryLabels(ctx *security.RequestContext, fetchLogRequest
 		AccountID:  fetchLogRequest.AccountId,
 		ActionName: "signoz_label_suggest",
 		ActionParams: map[string]any{
-			"dataSource": "logs",
+			// Signoz's /api/v3/autocomplete/attribute_keys rejects an empty
+			// aggregateOperator with HTTP 400 "invalid operator"; "noop" is the
+			// no-aggregation sentinel it expects for a plain key listing.
+			"dataSource":         "logs",
+			"aggregateOperator":  "noop",
+			"aggregateAttribute": "",
+			"searchText":         "",
 		},
 		NoSinks: true,
 	}
@@ -310,14 +319,9 @@ func (s *SignozSource) QueryLabels(ctx *security.RequestContext, fetchLogRequest
 		ctx.GetLogger().Error("logs.FetchLogLabels data2 field not found or is nil from response", "data", data1)
 		return []OutputLogLabel{}, nil
 	}
-	data3, ok := data2["data"].(map[string]any)
-	if !ok || data3 == nil {
-		ctx.GetLogger().Error("logs.FetchLogLabels data3 field not found or is nil from response", "data", data1)
-		return []OutputLogLabel{}, nil
-	}
-	result, ok := data3["attributes"].([]any)
+	result, ok := data2["attributeKeys"].([]any)
 	if !ok || result == nil {
-		ctx.GetLogger().Error("logs.FetchLogLabels attributes field is not an array or is nil from response", "data", data1)
+		ctx.GetLogger().Error("logs.FetchLogLabels attributeKeys field is not an array or is nil from response", "data", data1)
 		return []OutputLogLabel{}, nil
 	}
 	if len(result) == 0 {
@@ -339,6 +343,12 @@ func (s *SignozSource) QueryLabelValues(ctx *security.RequestContext, fetchLogRe
 		AccountID:  fetchLogRequest.AccountId,
 		ActionName: "signoz_value_suggest",
 		ActionParams: map[string]any{
+			// Signoz's /api/v3/autocomplete/attribute_values requires dataSource
+			// and a non-empty aggregateOperator; without them it returns
+			// HTTP 400 ("invalid data source" / "invalid operator").
+			"dataSource":                 "logs",
+			"aggregateOperator":          "noop",
+			"aggregateAttribute":         "",
 			"attributeKey":               fetchLogRequest.LabelName,
 			"filterAttributeKeyDataType": fetchLogRequest.Request["filterAttributeKeyDataType"],
 			"searchText":                 fetchLogRequest.Request["searchText"],
@@ -364,20 +374,16 @@ func (s *SignozSource) QueryLabelValues(ctx *security.RequestContext, fetchLogRe
 	if !ok || data2 == nil {
 		return nil, fmt.Errorf("logs.FetchLogLabelValues data2 field not found or is nil from response")
 	}
-	data3, ok := data2["data"].(map[string]any)
-	if !ok || data3 == nil {
-		return nil, fmt.Errorf("logs.FetchLogLabelValues data3 field not found or is nil from response")
-	}
 	var result []any
 	var ok1 bool
 
 	switch fetchLogRequest.Request["filterAttributeKeyDataType"] {
 	case "string":
-		result, ok1 = data3["stringAttributeValues"].([]any)
+		result, ok1 = data2["stringAttributeValues"].([]any)
 	case "number":
-		result, ok1 = data3["numberAttributeValues"].([]any)
+		result, ok1 = data2["numberAttributeValues"].([]any)
 	case "bool":
-		result, ok1 = data3["boolAttributeValues"].([]any)
+		result, ok1 = data2["boolAttributeValues"].([]any)
 	default:
 		return nil, fmt.Errorf("logs.FetchLogLabelValues unknown data type: %v", fetchLogRequest.Request["filterAttributeKeyDataType"])
 	}
@@ -665,11 +671,7 @@ func (s *SignozSource) parseSignozLogGroupResponse(resp map[string]any, endTime 
 	if errMsg, exists := data2["error"]; exists {
 		return LogGroupOutput{}, fmt.Errorf("signoz.QueryLogGroup: API error: %v", errMsg)
 	}
-	data3, ok := data2["data"].(map[string]any)
-	if !ok || data3 == nil {
-		return LogGroupOutput{}, nil
-	}
-	result, ok := data3["result"].([]any)
+	result, ok := data2["result"].([]any)
 	if !ok || len(result) == 0 {
 		return LogGroupOutput{}, nil
 	}
