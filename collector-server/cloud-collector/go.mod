@@ -27,7 +27,6 @@ require (
 	cloud.google.com/go/trace v1.16.0
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.21.1
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
-	github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus v1.10.0
 	github.com/Azure/azure-sdk-for-go/sdk/monitor/azquery v1.2.0
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/advisor/armadvisor v1.2.0
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/alertsmanagement/armalertsmanagement v0.11.0
@@ -78,7 +77,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/cloudfront v1.64.0
 	github.com/aws/aws-sdk-go-v2/service/cloudtrail v1.53.9
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.62.0
-	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.74.0
+	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.79.1
 	github.com/aws/aws-sdk-go-v2/service/codeartifact v1.38.23
 	github.com/aws/aws-sdk-go-v2/service/computeoptimizer v1.49.7
 	github.com/aws/aws-sdk-go-v2/service/configservice v1.66.0
@@ -92,13 +91,13 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ecrpublic v1.39.6
 	github.com/aws/aws-sdk-go-v2/service/ecs v1.82.4
 	github.com/aws/aws-sdk-go-v2/service/efs v1.41.13
-	github.com/aws/aws-sdk-go-v2/service/eks v1.84.0
+	github.com/aws/aws-sdk-go-v2/service/eks v1.89.1
 	github.com/aws/aws-sdk-go-v2/service/elasticache v1.50.8
 	github.com/aws/aws-sdk-go-v2/service/elasticbeanstalk v1.33.15
 	github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing v1.33.25
 	github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.54.12
 	github.com/aws/aws-sdk-go-v2/service/elasticsearchservice v1.40.0
-	github.com/aws/aws-sdk-go-v2/service/guardduty v1.65.2
+	github.com/aws/aws-sdk-go-v2/service/guardduty v1.83.0
 	github.com/aws/aws-sdk-go-v2/service/iam v1.54.4
 	github.com/aws/aws-sdk-go-v2/service/inspector2 v1.45.2
 	github.com/aws/aws-sdk-go-v2/service/kafka v1.54.0
@@ -113,7 +112,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sagemaker v1.254.0
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.7
 	github.com/aws/aws-sdk-go-v2/service/securityhub v1.65.0
-	github.com/aws/aws-sdk-go-v2/service/ses v1.35.0
+	github.com/aws/aws-sdk-go-v2/service/ses v1.36.1
 	github.com/aws/aws-sdk-go-v2/service/sfn v1.42.1
 	github.com/aws/aws-sdk-go-v2/service/sns v1.39.1
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.25
@@ -175,7 +174,6 @@ require (
 	cloud.google.com/go/iam v1.7.0 // indirect
 	cloud.google.com/go/longrunning v0.9.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
-	github.com/Azure/go-amqp v1.4.0 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.7.0 // indirect
 	github.com/ClickHouse/ch-go v0.71.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.32.0 // indirect
@@ -183,7 +181,7 @@ require (
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.55.0 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/apache/arrow/go/v15 v15.0.2 // indirect
-	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10 // indirect
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.14 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.23 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.30 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.30 // indirect
