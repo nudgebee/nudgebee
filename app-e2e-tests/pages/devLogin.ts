@@ -1,6 +1,7 @@
 import { Page } from "@playwright/test";
 
-export async function doDevLogin(page: Page): Promise<void> {
+export async function doDevLogin(page: Page, options: { selectCluster?: boolean } = {}): Promise<void> {
+  const { selectCluster: shouldSelectCluster = true } = options;
   const baseUrl     = process.env.BASE_URL;
   const username    = process.env.LDAP_USERNAME || "";
   const password    = process.env.LDAP_PASSWORD || "";
@@ -46,7 +47,7 @@ export async function doDevLogin(page: Page): Promise<void> {
   await page.waitForURL(/\/(home|workflow)/, { timeout: 50000 });
   await waitForLoaderToDisappear(page);
 
-  if (clusterName) {
+  if (shouldSelectCluster && clusterName) {
     await selectCluster(page, clusterName);
     await waitForLoaderToDisappear(page);
   }
