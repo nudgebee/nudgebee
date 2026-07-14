@@ -6,9 +6,11 @@ from notifications_server.configs.settings import public_ip, settings
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
     AccountRecommendations,
     DigestRecommendation,
-    format_rule_name,
+    accounts_phrase,
+    append_posture_item_blocks,
+    cost_headline,
+    flatten_ranked_recs,
     format_savings,
-    format_waste_clause,
 )
 
 
@@ -58,70 +60,24 @@ def get_recommendation_proactive_nudge_message_template(
     branding = settings.urls.branding_name
     blocks: List[Dict[str, Any]] = []
 
-    # Header
-    blocks.append(
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*{branding} FinOps Alert — Priority*",
-            },
-        }
-    )
-    blocks.append({"type": "divider"})
-
-    # Summary
-    summary = (
-        f"{params.total_recommendations} recommendations require immediate action\n"
-        f"Total recoverable: *{format_savings(params.total_recoverable_savings)}/mo*"
-    )
-    blocks.append(
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": summary},
-        }
-    )
-    blocks.append({"type": "divider"})
-
-    # Recommendations grouped by account
-    counter = 1
-    for _acc_id, acc_data in params.recommendations_by_account.items():
-        blocks.append(
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*{acc_data.account_name}*",
-                },
-            }
+    # Header: savings-first headline, branding demoted to a context line.
+    # All-zero-savings bundles fall back to a count headline instead of "$0.00/mo".
+    account_count = len(params.recommendations_by_account)
+    if params.total_recoverable_savings > 0:
+        headline = cost_headline(params.total_recoverable_savings, account_count)
+        context_line = f"{branding} priority alert · {params.total_recommendations} recommendations need action now"
+    else:
+        headline = (
+            f"{params.total_recommendations} priority recommendations need action "
+            f"across {accounts_phrase(account_count)}"
         )
-        for rec in acc_data.recommendations[:5]:
-            waste_text = format_waste_clause(rec.wasted_since_detected)
-            rec_text = (
-                f"{counter}. *{rec.resource_name}* — {format_rule_name(rec.rule_name)}\n"
-                f"    Score: {rec.finops_score}/100 · "
-                f"Savings: {format_savings(rec.estimated_savings)}/mo · "
-                f"Severity: {rec.severity} · Category: {rec.category}{waste_text}"
-            )
-            blocks.append(
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": rec_text},
-                }
-            )
-            counter += 1
+        context_line = f"{branding} priority alert"
+    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{headline}*"}})
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": context_line}]})
+    blocks.append({"type": "divider"})
 
-        remaining = len(acc_data.recommendations) - 5
-        if remaining > 0:
-            blocks.append(
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"  _and {remaining} more..._",
-                    },
-                }
-            )
+    # Top items across all accounts, priority-ordered, capped
+    append_posture_item_blocks(blocks, flatten_ranked_recs(params.recommendations_by_account), base_url)
 
     # Footer actions
     blocks.append({"type": "divider"})

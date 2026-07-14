@@ -103,12 +103,11 @@ class TestSlackDeltas:
         msg = get_recommendation_nudge_digest_message_template(params)
         text = _slack_text(msg["blocks"])
 
-        assert "$3,840/mo recoverable" in text
+        assert "You can cut $3,840/mo across 1 account" in text
+        assert "*In this brief:* 1 Priority · 2 Critical" in text
         assert "*New since yesterday:* 1 Priority · 3 Critical · 2 High" in text
         assert "*2 resolved* (saved $312.00/mo)" in text
         assert "195 still open from earlier" in text
-        # Legacy `5 Critical · 12 High · 3 Priority` totals are gone
-        assert "1 Priority · 2 Critical" not in text  # old act_now/critical/high path
 
     def test_new_counts_all_zero_renders_quiet_day(self):
         params = _params(
@@ -127,7 +126,7 @@ class TestSlackDeltas:
         params = _params()  # leaves new_counts=None and all delta ints at 0
         text = _slack_text(get_recommendation_nudge_digest_message_template(params)["blocks"])
 
-        assert "$3,840/mo recoverable" in text
+        assert "You can cut $3,840/mo across 1 account" in text
         assert "New since yesterday" not in text
         assert "still open from earlier" not in text
         assert "resolved" not in text.lower() or "Resolved" not in text  # no resolved line at all
@@ -140,16 +139,43 @@ class TestSlackDeltas:
         )
         text = _slack_text(get_recommendation_nudge_digest_message_template(params)["blocks"])
 
-        assert "recoverable" not in text
+        assert "You can cut" not in text  # no savings headline on a $0 digest
         assert "*New since yesterday:* 3 Critical" in text
 
     def test_footer_url_has_digest_utm_and_date(self):
         params = _params(new_counts=NewCounts(act_now=1, critical=0, high=0))
         blocks = get_recommendation_nudge_digest_message_template(params)["blocks"]
-        action_block = next(b for b in blocks if b.get("type") == "actions")
+        # per-item Details buttons come first; the footer CTA is the last actions block
+        action_block = [b for b in blocks if b.get("type") == "actions"][-1]
         url = action_block["elements"][0]["url"]
         assert "utm=slack-digest" in url
         assert "d=2026-05-18" in url
+
+    def test_items_capped_at_three_with_overflow_count(self):
+        recs = [
+            DigestRecommendation(
+                id=f"rec-{i}",
+                rule_name="pod_right_sizing",
+                resource_name=f"prod/Deployment/svc-{i}",
+                finops_score=90 - i,
+                finops_band="Act Now",
+                estimated_savings=100.0 + i,
+                cta_url=f"https://app/optimise?id=rec-{i}#recommendations",
+            )
+            for i in range(5)
+        ]
+        params = _params(
+            recommendations_by_account={"acc-1": AccountRecommendations(account_name="prod-aws", recommendations=recs)}
+        )
+        blocks = get_recommendation_nudge_digest_message_template(params)["blocks"]
+        text = _slack_text(blocks)
+
+        assert "svc-0" in text and "svc-1" in text and "svc-2" in text
+        assert "svc-3" not in text and "svc-4" not in text
+        assert "+2 more in the dashboard" in text
+        # highest-score item renders first, with facts and identity in a context line
+        assert "Priority · Score 90/100" in text
+        assert "Acct prod-aws" in text
 
     def test_block_count_within_slack_limit(self):
         # Even with deltas + a recommendation, we stay well under Slack's 50.
@@ -320,3 +346,42 @@ class TestItemCopyAndWaste:
         # producer payloads predating wasted_since_detected default to 0 -> no clause
         text = _slack_text(get_recommendation_nudge_digest_message_template(_params())["blocks"])
         assert "wasted since detected" not in text
+
+
+class TestPostureItemUrlAndHeadlineGuards:
+    def test_relative_cta_url_resolved_against_base_url(self):
+        params = _params()
+        params.recommendations_by_account["acc-1"].recommendations[0].cta_url = "/optimise?id=rec-1#recommendations"
+        blocks = get_recommendation_nudge_digest_message_template(params)["blocks"]
+        item_button = [b for b in blocks if b.get("type") == "actions"][0]
+        assert item_button["elements"][0]["url"] == "https://app/optimise?id=rec-1#recommendations"
+
+    def test_absolute_cta_url_untouched(self):
+        blocks = get_recommendation_nudge_digest_message_template(_params())["blocks"]
+        item_button = [b for b in blocks if b.get("type") == "actions"][0]
+        assert item_button["elements"][0]["url"].startswith("https://app/optimise?id=rec-1")
+
+    def test_nudge_zero_savings_headline_falls_back_to_count(self):
+        from notifications_server.message_templates.slack.recommendation_proactive_nudge import (
+            ProactiveNudgeParams,
+            get_recommendation_proactive_nudge_message_template,
+        )
+
+        rec = DigestRecommendation(
+            id="rec-9",
+            rule_name="popeye_misconfigurations",
+            resource_name="prod/Deployment/api",
+            finops_score=70,
+            finops_band="Act Now",
+            estimated_savings=0,
+        )
+        params = ProactiveNudgeParams(
+            total_recommendations=1,
+            total_recoverable_savings=0,
+            recommendations_by_account={"acc-1": AccountRecommendations(account_name="prod", recommendations=[rec])},
+            base_url="https://app",
+        )
+        text = _slack_text(get_recommendation_proactive_nudge_message_template(params)["blocks"])
+        assert "You can cut" not in text
+        assert "$0" not in text
+        assert "1 priority recommendations need action across 1 account" in text

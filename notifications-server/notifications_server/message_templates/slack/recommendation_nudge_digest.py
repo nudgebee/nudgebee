@@ -85,11 +85,89 @@ def format_rule_name(rule_name: str) -> str:
 # Accrued waste below this floor is noise, not urgency — skip the clause.
 WASTE_DISPLAY_FLOOR = 10
 
+# One tenant-level alert shows at most this many items; the rest is a count.
+MAX_ALERT_ITEMS = 3
+
 
 def format_waste_clause(wasted: float) -> str:
     if wasted < WASTE_DISPLAY_FLOOR:
         return ""
     return f" · {format_savings(wasted)} wasted since detected"
+
+
+def accounts_phrase(count: int) -> str:
+    return f"{count} account" if count == 1 else f"{count} accounts"
+
+
+def cost_headline(total_savings: float, account_count: int) -> str:
+    return f"You can cut {format_savings(total_savings)}/mo across {accounts_phrase(account_count)}"
+
+
+def flatten_ranked_recs(
+    recommendations_by_account: Dict[str, AccountRecommendations],
+) -> List[Tuple[str, DigestRecommendation]]:
+    """Flatten the per-account map into one list ordered by band, then score,
+    then savings — the alert shows the top items across all accounts."""
+    flat: List[Tuple[str, DigestRecommendation]] = []
+    for acc_data in recommendations_by_account.values():
+        for rec in acc_data.recommendations:
+            flat.append((acc_data.account_name, rec))
+    band_rank = {band: i for i, band in enumerate(BAND_ORDER)}
+    flat.sort(
+        key=lambda t: (band_rank.get(t[1].finops_band, len(BAND_ORDER)), -t[1].finops_score, -t[1].estimated_savings)
+    )
+    return flat
+
+
+def _absolute_url(url: str, base_url: str) -> str:
+    """Slack rejects the whole message when a URL button carries a relative
+    URL, so resolve producer-relative CTAs against the notification base."""
+    if url.startswith(("http://", "https://")) or not base_url:
+        return url
+    return f"{base_url.rstrip('/')}/{url.lstrip('/')}"
+
+
+def append_posture_item_blocks(
+    blocks: List[Dict[str, Any]],
+    ranked: List[Tuple[str, DigestRecommendation]],
+    base_url: str = "",
+) -> None:
+    """Render the top items in priority order: what & money first, then the
+    small facts/identity line, then the action."""
+    for account_name, rec in ranked[:MAX_ALERT_ITEMS]:
+        lines = [f"*{rec.resource_name}* — {format_rule_name(rec.rule_name)}"]
+        if rec.estimated_savings > 0:
+            lines.append(
+                f"Save *{format_savings(rec.estimated_savings)}/mo*{format_waste_clause(rec.wasted_since_detected)}"
+            )
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
+
+        band_display = BAND_DISPLAY_NAMES.get(rec.finops_band, rec.finops_band)
+        facts = f"{band_display} · Score {rec.finops_score}/100 · {rec.severity} · Acct {account_name}"
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": facts}]})
+
+        if rec.cta_url:
+            blocks.append(
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Details"},
+                            "url": _absolute_url(rec.cta_url, base_url),
+                        }
+                    ],
+                }
+            )
+
+    remaining = len(ranked) - MAX_ALERT_ITEMS
+    if remaining > 0:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"_+{remaining} more in the dashboard_"},
+            }
+        )
 
 
 def collect_recs_by_band(
@@ -110,16 +188,25 @@ def get_recommendation_nudge_digest_message_template(
     base_url = params.base_url or public_ip()
     blocks: List[Dict[str, Any]] = []
 
-    # Header
-    blocks.append(
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*{settings.urls.branding_name} {params.title}*",
-            },
-        }
-    )
+    # Header: savings-first headline when there is money on the table; digests
+    # without savings (e.g. security-only) keep the plain title.
+    if params.total_recoverable_savings > 0:
+        headline = cost_headline(params.total_recoverable_savings, len(params.recommendations_by_account))
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{headline}*"}})
+        branding_line = f"{settings.urls.branding_name} daily brief"
+        if params.digest_date:
+            branding_line += f" · {params.digest_date}"
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": branding_line}]})
+    else:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*{settings.urls.branding_name} {params.title}*",
+                },
+            }
+        )
     blocks.append({"type": "divider"})
 
     summary_lines = _build_summary_lines(params)
@@ -132,20 +219,8 @@ def get_recommendation_nudge_digest_message_template(
         )
         blocks.append({"type": "divider"})
 
-    # Recommendations grouped by band
-    recs_by_band = collect_recs_by_band(params)
-    for band in BAND_ORDER:
-        band_recs = recs_by_band[band]
-        if not band_recs:
-            continue
-        display_name = BAND_DISPLAY_NAMES.get(band, band)
-        blocks.append(
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*{display_name}*"},
-            }
-        )
-        _append_slack_rec_blocks(blocks, band_recs)
+    # Top items across all accounts, priority-ordered, capped
+    append_posture_item_blocks(blocks, flatten_ranked_recs(params.recommendations_by_account), base_url)
 
     # Footer with CTA. utm=slack-digest distinguishes digest clicks from other
     # Slack notifications; digest_date lets click-through analytics correlate
@@ -180,17 +255,25 @@ def get_recommendation_nudge_digest_message_template(
 
 
 def _build_summary_lines(params: RecommendationNudgeDigestParams) -> List[str]:
-    """Header lines below the title. Order: recoverable $, NEW counts, resolved + carryover.
+    """Header lines below the headline. Order: in-brief band counts, NEW counts,
+    resolved + carryover.
 
-    Lines are emitted conditionally so security-only digests don't get '$0/mo
-    recoverable' at the top, quiet days don't get an empty 'new' line, and
-    old-payload renders (new_counts is None) fall back to today's behaviour
-    minus the misleading top-20 band totals.
+    Lines are emitted conditionally: quiet days don't get an empty 'new' line,
+    and old-payload renders (new_counts is None) fall back to today's behaviour
+    minus the misleading top-20 band totals. Recoverable savings live in the
+    headline, not here.
     """
     lines: List[str] = []
 
-    if params.total_recoverable_savings > 0:
-        lines.append(f"*{format_savings(params.total_recoverable_savings)}/mo recoverable*")
+    brief_parts: List[str] = []
+    if params.act_now_count:
+        brief_parts.append(f"{params.act_now_count} Priority")
+    if params.critical_count:
+        brief_parts.append(f"{params.critical_count} Critical")
+    if params.high_count:
+        brief_parts.append(f"{params.high_count} High")
+    if brief_parts:
+        lines.append("*In this brief:* " + " · ".join(brief_parts))
 
     if params.new_counts is not None:
         parts: List[str] = []
@@ -215,30 +298,3 @@ def _build_summary_lines(params: RecommendationNudgeDigestParams) -> List[str]:
         lines.append(" · ".join(status_bits))
 
     return lines
-
-
-def _append_slack_rec_blocks(
-    blocks: List[Dict[str, Any]],
-    band_recs: List[Tuple[str, DigestRecommendation]],
-) -> None:
-    """Append up to 5 recommendation blocks plus overflow text."""
-    for _account_name, rec in band_recs[:5]:
-        savings_text = f" — {format_savings(rec.estimated_savings)}/mo" if rec.estimated_savings > 0 else ""
-        waste_text = format_waste_clause(rec.wasted_since_detected)
-        rec_text = (
-            f"• *{rec.resource_name}* {format_rule_name(rec.rule_name)}"
-            f"{savings_text}{waste_text}  <{rec.cta_url}|Review>"
-        )
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": rec_text}})
-
-    remaining = len(band_recs) - 5
-    if remaining > 0:
-        blocks.append(
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"  _and {remaining} more..._",
-                },
-            }
-        )
