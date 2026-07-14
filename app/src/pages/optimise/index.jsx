@@ -30,11 +30,14 @@ export async function getServerSideProps() {
     props: {
       enableLlmAnalyser: process.env.UI_ENABLE_LLM_ANALYSER === 'true',
       enableLlmGateway: process.env.UI_ENABLE_LLM_GATEWAY === 'true',
+      // Public base URL of the AI Gateway, surfaced to the Connect tab's setup
+      // snippets. Empty when unset — the Connect tab shows a "not configured" state.
+      llmGatewayUrl: process.env.LLM_GATEWAY_PUBLIC_URL || '',
     },
   };
 }
 
-const Optimise = ({ enableLlmAnalyser, enableLlmGateway }) => {
+const Optimise = ({ enableLlmAnalyser, enableLlmGateway, llmGatewayUrl }) => {
   const router = useRouter();
   const { selectedCluster } = useData();
   const [activeTab, setActiveTab] = useState(null);
@@ -190,7 +193,7 @@ const Optimise = ({ enableLlmAnalyser, enableLlmGateway }) => {
             />
           )}
           {activeTab === 4 && <CostAnalyser />}
-          {activeTab === 5 && <GatewayUsage />}
+          {activeTab === 5 && <GatewayUsage gatewayUrl={llmGatewayUrl} />}
         </ErrorBoundary>
       )}
     </>

@@ -20,6 +20,7 @@
  */
 import * as React from 'react';
 import { Box } from '@mui/material';
+import RocketLaunchOutlinedIcon from '@mui/icons-material/RocketLaunchOutlined';
 import DashboardOutlinedIcon from '@mui/icons-material/DashboardOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import PeopleAltOutlinedIcon from '@mui/icons-material/PeopleAltOutlined';
@@ -29,6 +30,7 @@ import CustomTabs from '@shared/navigation/Tabs';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import { useGatewayData, type GatewayFilters } from './useGatewayData';
+import ConnectView from './views/ConnectView';
 import OverviewView from './views/OverviewView';
 import ModelsView from './views/ModelsView';
 import UsersView from './views/UsersView';
@@ -38,6 +40,8 @@ import type { GatewayGranularity } from '@api1/gateway-usage';
 interface GatewayUsageProps {
   /** The selected account; scopes the request (empty = all accessible accounts). */
   accountId?: string;
+  /** The gateway's public base URL, for the Connect tab's snippets (empty when unconfigured). */
+  gatewayUrl?: string;
 }
 
 const DAY_MS = 86_400_000;
@@ -59,9 +63,9 @@ const GRANULARITY_OPTIONS: { value: GatewayGranularity; label: string }[] = [
 
 const DATE_RANGE_SHORTCUTS = ['Last 24 Hours', 'Current Week', 'Current Month', 'Last Month'];
 
-type TabId = 'overview' | 'models' | 'users' | 'requests';
+type TabId = 'connect' | 'overview' | 'models' | 'users' | 'requests';
 
-export function GatewayUsage({ accountId }: GatewayUsageProps) {
+export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   const [filters, setFilters] = React.useState<GatewayFilters>(() => defaultFilters());
   const [tab, setTab] = React.useState<TabId>('overview');
   // Users → Requests drill-in: when set, the Requests tab is scoped to this user.
@@ -101,6 +105,7 @@ export function GatewayUsage({ accountId }: GatewayUsageProps) {
   // renders them with its built-in `.tab-icon` styling (idle grey, selected
   // colour change) — matching every other CustomTabs usage.
   const tabOptions = [
+    { value: 'connect', text: 'Connect', icon: RocketLaunchOutlinedIcon, iconSize: 16 },
     { value: 'overview', text: 'Overview', icon: DashboardOutlinedIcon, iconSize: 16 },
     { value: 'models', text: 'Models', icon: AutoAwesomeOutlinedIcon, iconSize: 16 },
     { value: 'users', text: 'Users', icon: PeopleAltOutlinedIcon, iconSize: 16 },
@@ -120,24 +125,28 @@ export function GatewayUsage({ accountId }: GatewayUsageProps) {
           ariaLabel='AI Gateway screens'
         />
 
-        <Box id='gateway-filter-bar' sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
-          <ToggleGroup
-            selection='single'
-            size='sm'
-            ariaLabel='Chart granularity'
-            value={filters.granularity}
-            onChange={(g) => setFilters((f) => ({ ...f, granularity: g as GatewayGranularity }))}
-            options={GRANULARITY_OPTIONS}
-          />
-          <CustomDateTimeRangePicker
-            passedSelectedDateTime={dateTimeValue}
-            onChange={handleDateRangeChange}
-            minDate={dayjs().subtract(1, 'year')}
-            shortCuts={DATE_RANGE_SHORTCUTS}
-          />
-        </Box>
+        {/* The date/granularity controls only apply to the data tabs, not Connect. */}
+        {tab !== 'connect' && (
+          <Box id='gateway-filter-bar' sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
+            <ToggleGroup
+              selection='single'
+              size='sm'
+              ariaLabel='Chart granularity'
+              value={filters.granularity}
+              onChange={(g) => setFilters((f) => ({ ...f, granularity: g as GatewayGranularity }))}
+              options={GRANULARITY_OPTIONS}
+            />
+            <CustomDateTimeRangePicker
+              passedSelectedDateTime={dateTimeValue}
+              onChange={handleDateRangeChange}
+              minDate={dayjs().subtract(1, 'year')}
+              shortCuts={DATE_RANGE_SHORTCUTS}
+            />
+          </Box>
+        )}
       </Box>
 
+      {tab === 'connect' && <ConnectView gatewayUrl={gatewayUrl} />}
       {tab === 'overview' && <OverviewView metrics={metrics} filters={filters} loading={loading} error={error} />}
       {tab === 'models' && <ModelsView metrics={metrics} loading={loading} error={error} />}
       {tab === 'users' && <UsersView metrics={metrics} loading={loading} error={error} onSelectUser={onSelectUser} />}
