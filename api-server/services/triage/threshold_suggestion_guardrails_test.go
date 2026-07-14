@@ -96,8 +96,10 @@ func TestCheckThresholdEligibility_EligibleAlert(t *testing.T) {
 	}
 }
 
-func TestValidateSuggestion_CapsPercentageMetric(t *testing.T) {
-	// TargetDown: > 10 → > 100 (impossible for percentage metric)
+func TestValidateSuggestion_RejectsPercentageMetricAtCeiling(t *testing.T) {
+	// TargetDown: > 10 → > 100 (at the ceiling for a percentage metric). The metric sitting at
+	// its bound is a persistent-failure signal, so Gate 1 now REJECTS (keeps current threshold
+	// and routes to review) rather than capping to a fireable-but-useless 95.
 	alertDef := &AlertDefinition{
 		MetricName:       "100 * (count by(cluster, job) (up == 0) / count by(cluster, job) (up))",
 		Operator:         ">",
@@ -113,14 +115,41 @@ func TestValidateSuggestion_CapsPercentageMetric(t *testing.T) {
 	if risk.Level != "dangerous" {
 		t.Errorf("expected risk level 'dangerous', got %q", risk.Level)
 	}
-	if suggestion.SuggestedThreshold != 95 {
-		t.Errorf("expected threshold to be capped at 95, got %f", suggestion.SuggestedThreshold)
+	if suggestion.SuggestedThreshold != alertDef.CurrentThreshold {
+		t.Errorf("expected threshold kept at current (%f), got %f", alertDef.CurrentThreshold, suggestion.SuggestedThreshold)
+	}
+	if suggestion.RecommendationType != "review_alert" {
+		t.Errorf("expected recommendation_type 'review_alert', got %q", suggestion.RecommendationType)
 	}
 	if suggestion.Confidence != "low" {
 		t.Errorf("expected confidence downgraded to 'low', got %q", suggestion.Confidence)
 	}
 	if len(risk.Warnings) == 0 {
 		t.Error("expected at least one warning")
+	}
+}
+
+func TestValidateSuggestion_SkipsInsufficientData(t *testing.T) {
+	// insufficient_data abstains with MetricP50=0. A "<" operator alert must NOT trip Gate 4's
+	// divide-by-MetricP50 (which would yield +Inf and overwrite the type). ValidateSuggestion
+	// should no-op ("safe") and preserve the recommendation type.
+	alertDef := &AlertDefinition{
+		MetricName:       "pg_cache_hit_ratio",
+		Operator:         "<",
+		CurrentThreshold: 0.98,
+	}
+	suggestion := &ThresholdSuggestion{
+		RecommendationType: "insufficient_data",
+		SuggestedThreshold: 0.98,
+		MetricP50:          0,
+		Confidence:         "low",
+	}
+	risk := ValidateSuggestion(suggestion, alertDef, nil)
+	if risk.Level != "safe" {
+		t.Errorf("expected risk 'safe' for insufficient_data, got %q", risk.Level)
+	}
+	if suggestion.RecommendationType != "insufficient_data" {
+		t.Errorf("expected recommendation_type preserved, got %q", suggestion.RecommendationType)
 	}
 }
 

@@ -185,6 +185,11 @@ func ValidateSuggestion(suggestion *ThresholdSuggestion, alertDef *AlertDefiniti
 	if suggestion == nil || alertDef == nil {
 		return &SuggestionRisk{Level: "safe"}
 	}
+	// Nothing to validate for abstain/ineligible outcomes — their MetricP50 is 0, which would
+	// trip the Gate 4 baseline-mismatch division for less-than operators.
+	if suggestion.RecommendationType == "insufficient_data" || suggestion.RecommendationType == "not_eligible" {
+		return &SuggestionRisk{Level: "safe"}
+	}
 
 	hint := detectMetricHints(alertDef)
 	risk := &SuggestionRisk{Level: "safe"}
@@ -205,23 +210,26 @@ func ValidateSuggestion(suggestion *ThresholdSuggestion, alertDef *AlertDefiniti
 	// --- Gate 1: Bounded metric check ---
 	// Never suggest a threshold outside a metric's natural range.
 	if hint.isBounded {
+		// The data sitting at/beyond a metric's natural bound is a persistent-failure signal,
+		// not noise to tune away. Reject (don't cap): keep the current threshold and route to
+		// review, rather than emit a fireable-but-useless number like upperBound*0.95.
 		if isGreaterThanOperator(alertDef.Operator) && suggestion.SuggestedThreshold >= hint.upperBound {
 			risk.Warnings = append(risk.Warnings,
-				fmt.Sprintf("This metric is bounded at %.0f%s. Suggesting > %.0f%s would make this alert impossible to fire.",
-					hint.upperBound, hint.humanUnit, hint.upperBound, hint.humanUnit))
-			// Cap to a reasonable value within bounds
-			suggestion.SuggestedThreshold = roundTo(hint.upperBound*0.95, 2)
-			suggestion.Reason += " [Capped: metric is bounded, original suggestion exceeded maximum.]"
+				fmt.Sprintf("This metric is bounded at %.0f%s and the data sits at/near that ceiling — a persistent-failure signal, not noise. Investigate the signal or fix the alert definition rather than raising the threshold.",
+					hint.upperBound, hint.humanUnit))
+			suggestion.SuggestedThreshold = alertDef.CurrentThreshold
+			suggestion.RecommendationType = "review_alert"
 			risk.Level = "dangerous"
 			suggestion.Confidence = "low"
 		}
 		if isLessThanOperator(alertDef.Operator) && suggestion.SuggestedThreshold <= hint.lowerBound {
-			suggestion.SuggestedThreshold = roundTo(hint.lowerBound*1.05, 2)
+			risk.Warnings = append(risk.Warnings,
+				fmt.Sprintf("This metric is bounded at %.0f and the data sits at/near that floor — a persistent-failure signal, not noise. Investigate or fix the alert definition rather than lowering the threshold.",
+					hint.lowerBound))
+			suggestion.SuggestedThreshold = alertDef.CurrentThreshold
+			suggestion.RecommendationType = "review_alert"
 			risk.Level = "dangerous"
 			suggestion.Confidence = "low"
-			risk.Warnings = append(risk.Warnings,
-				fmt.Sprintf("This metric is bounded at %.0f. Suggesting < %.0f would make this alert impossible to fire.",
-					hint.lowerBound, hint.lowerBound))
 		}
 	}
 
@@ -292,13 +300,17 @@ func ValidateSuggestion(suggestion *ThresholdSuggestion, alertDef *AlertDefiniti
 				fmt.Sprintf("This change would suppress ~%.0f%% of alerts, but %.0f%% of current alerts are being actively engaged with. This suggests the alert is valuable and aggressive noise reduction may cause missed incidents.",
 					suggestion.EstimatedReduction, alertQuality.EngagementRate*100))
 			suggestion.Confidence = "low"
-		} else if suggestion.EstimatedReduction == 100 {
+		} else {
+			// >= 95% suppression, regardless of engagement. Engagement is ~0 platform-wide,
+			// so the EngagementRate>0.2 branch above is effectively dead code — this backstops it:
+			// any near-total suppression is flagged for review rather than surfaced as clean advice.
 			if risk.Level != "dangerous" {
 				risk.Level = "review"
 			}
 			suggestion.RecommendationType = "review_alert"
 			risk.Warnings = append(risk.Warnings,
-				"This change would suppress all historical alerts for this rule. While noise reduction is the goal, a 100% reduction means this alert would have never fired — verify the new threshold still catches real issues.")
+				fmt.Sprintf("This change would suppress ~%.0f%% of historical alerts for this rule — verify the new threshold still catches real issues before applying.",
+					suggestion.EstimatedReduction))
 		}
 	}
 
@@ -317,6 +329,13 @@ func ValidateSuggestion(suggestion *ThresholdSuggestion, alertDef *AlertDefiniti
 				suggestion.Confidence = "medium"
 			}
 		}
+	}
+
+	// Backstop: any dangerous suggestion must be surfaced as review_alert, never as clean
+	// advice. Gates 1/4 already set this; this catches gates that raise risk to "dangerous"
+	// without changing the recommendation type.
+	if risk.Level == "dangerous" && suggestion.RecommendationType != "disable" {
+		suggestion.RecommendationType = "review_alert"
 	}
 
 	return risk

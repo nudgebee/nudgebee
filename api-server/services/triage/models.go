@@ -580,7 +580,7 @@ type ThresholdSuggestion struct {
 	MetricMAD          float64  `json:"metric_mad"`
 	EstimatedReduction float64  `json:"estimated_reduction"`
 	Method             string   `json:"method,omitempty"`              // "MAD", "IQR", "P95", "spike"
-	RecommendationType string   `json:"recommendation_type,omitempty"` // "tune_threshold", "increase_duration", "tune_both", "disable", "none"
+	RecommendationType string   `json:"recommendation_type,omitempty"` // "tune_threshold", "increase_duration", "tune_both", "disable", "none", "review_alert", "insufficient_data", "not_eligible"
 	SuggestedDuration  int      `json:"suggested_duration,omitempty"`  // suggested evaluation window in minutes (0 = no change)
 	DurationReason     string   `json:"duration_reason,omitempty"`
 	RiskLevel          string   `json:"risk_level,omitempty"`    // "safe", "review", "dangerous" — operational risk of applying this suggestion

@@ -132,9 +132,19 @@ func GetThresholdSuggestion(ctx context.Context, db *sqlx.DB, ev models.Event, t
 		}
 	}
 
-	// Run guardrails: validate suggestion against metric semantics and operational risk
-	if suggestion != nil {
+	// Run guardrails: validate suggestion against metric semantics and operational risk.
+	// Skip for insufficient_data — there is no real suggestion to validate, and its MetricP50=0
+	// would trip Gate 4's divide-by-MetricP50 for less-than alerts (and empty the reason).
+	if suggestion != nil && suggestion.RecommendationType != "insufficient_data" {
 		risk := ValidateSuggestion(suggestion, alertDef, alertQuality)
+		// Guardrails (e.g. Gate 1) may change the threshold after estimateReduction already ran.
+		// Recompute reduction so the stored/displayed number describes the value we actually keep.
+		if metricHistory != nil && len(metricHistory.Values) > 0 {
+			sortedVals := append([]float64(nil), metricHistory.Values...)
+			sort.Float64s(sortedVals)
+			suggestion.EstimatedReduction = estimateReduction(sortedVals, alertDef.CurrentThreshold,
+				suggestion.SuggestedThreshold, isGreaterThanOperator(alertDef.Operator))
+		}
 		if risk != nil {
 			suggestion.RiskLevel = risk.Level
 			suggestion.RiskWarnings = risk.Warnings
@@ -1419,12 +1429,12 @@ func parseSeriesData(tsRaw, valRaw []any) ([]int64, []float64) {
 		switch v := valRaw[i].(type) {
 		case string:
 			f, err := strconv.ParseFloat(v, 64)
-			if err != nil || math.IsNaN(f) {
+			if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
 				continue
 			}
 			val = f
 		case float64:
-			if math.IsNaN(v) {
+			if math.IsNaN(v) || math.IsInf(v, 0) {
 				continue
 			}
 			val = v
@@ -1669,6 +1679,11 @@ func collectStoredMetricValues(ctx context.Context, db *sqlx.DB, fingerprint, ac
 	return values
 }
 
+// minThresholdSamples is the floor of metric-history points required to compute a
+// distribution-based threshold suggestion. Below this, MAD/IQR/P95 are noise, so we
+// abstain with "insufficient_data" rather than emit a confident-looking number.
+const minThresholdSamples = 20
+
 // computeSuggestion generates a threshold recommendation based on metric data
 func computeSuggestion(alertDef *AlertDefinition, metricHistory *MetricHistory, firingAnalysis *FiringAnalysis, alertQuality *AlertQualityScore) *ThresholdSuggestion {
 	if metricHistory == nil || len(metricHistory.Values) == 0 {
@@ -1676,6 +1691,18 @@ func computeSuggestion(alertDef *AlertDefinition, metricHistory *MetricHistory, 
 			return computeSuggestionFromFiringValues(alertDef, firingAnalysis)
 		}
 		return nil
+	}
+
+	// Minimum-sample gate: distribution-based tuning on a handful of points is noise.
+	if len(metricHistory.Values) < minThresholdSamples {
+		return &ThresholdSuggestion{
+			RecommendationType: "insufficient_data",
+			Confidence:         "low",
+			SuggestedThreshold: alertDef.CurrentThreshold,
+			EstimatedReduction: 0,
+			Reason: fmt.Sprintf("Only %d metric samples available (need at least %d) — insufficient data to tune reliably.",
+				len(metricHistory.Values), minThresholdSamples),
+		}
 	}
 
 	sorted := make([]float64, len(metricHistory.Values))
@@ -1738,6 +1765,7 @@ func computeSuggestion(alertDef *AlertDefinition, metricHistory *MetricHistory, 
 							"Alert fires %.1f times/day. Raise threshold from %.2f to %.2f (spike analysis: %d values exceed threshold, spike median=%.2f, MAD=%.2f). Estimated %.0f%% reduction.",
 							firingAnalysis.AvgFiringsPerDay, currentThreshold, spikeSuggestion, len(aboveThreshold), spikeMed, spikeMAD, reduction)
 						suggestion.Confidence = computeConfidence(aboveThreshold, currentThreshold, spikeSuggestion, alertQuality)
+						computeDurationRecommendation(suggestion, alertDef, alertQuality)
 						return suggestion
 					}
 				}
@@ -1747,6 +1775,9 @@ func computeSuggestion(alertDef *AlertDefinition, metricHistory *MetricHistory, 
 			suggestion.Reason = fmt.Sprintf("Current threshold (%.2f) is already above the suggested value (%.2f). The alert appears correctly tuned.", currentThreshold, suggestedThreshold)
 			suggestion.Confidence = "low"
 			suggestion.EstimatedReduction = 0
+			// Threshold is already correct, but the alert may still be transient — let the
+			// duration path recommend increasing the evaluation window instead of doing nothing.
+			computeDurationRecommendation(suggestion, alertDef, alertQuality)
 			return suggestion
 		}
 
@@ -1770,6 +1801,7 @@ func computeSuggestion(alertDef *AlertDefinition, metricHistory *MetricHistory, 
 			suggestion.Reason = fmt.Sprintf("Current threshold (%.2f) is already below the suggested value (%.2f). The alert appears correctly tuned.", currentThreshold, suggestedThreshold)
 			suggestion.Confidence = "low"
 			suggestion.EstimatedReduction = 0
+			computeDurationRecommendation(suggestion, alertDef, alertQuality)
 			return suggestion
 		}
 
@@ -2232,16 +2264,27 @@ func metricsResponseToHistory(resp cloud.QueryMetricsResponse, startTime, endTim
 		return nil
 	}
 
-	// Use the first metric item
+	// Use the first metric item. Zip timestamps+values and drop NaN/±Inf points —
+	// a ratio metric (e.g. x/0) can emit +Inf, which otherwise poisons every downstream
+	// statistic (p95/p99/MAD become Inf) and launders through to a degenerate suggestion.
 	item := resp.Items[0]
-	timestamps := make([]int64, len(item.Timestamps))
-	for i, ts := range item.Timestamps {
-		timestamps[i] = ts.Unix()
+	timestamps := make([]int64, 0, len(item.Timestamps))
+	values := make([]float64, 0, len(item.Values))
+	for i := 0; i < len(item.Timestamps) && i < len(item.Values); i++ {
+		v := item.Values[i]
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			continue
+		}
+		timestamps = append(timestamps, item.Timestamps[i].Unix())
+		values = append(values, v)
+	}
+	if len(values) == 0 {
+		return nil
 	}
 
 	return &MetricHistory{
 		Timestamps: timestamps,
-		Values:     item.Values,
+		Values:     values,
 		StartTime:  startTime.Format(time.RFC3339),
 		EndTime:    endTime.Format(time.RFC3339),
 		Step:       stepSeconds,

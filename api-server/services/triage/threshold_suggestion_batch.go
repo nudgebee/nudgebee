@@ -87,22 +87,29 @@ func AnalyzeNoisyAlerts(ctx *security.RequestContext) error {
 	// Skip alert_rule_keys that don't need re-processing:
 	// - Any status processed in the last 24 hours (recently computed)
 	// - status='ok' rows less than 7 days old (still valid, no need to re-query metrics)
-	var recentKeys []string
-	if err = db.Select(&recentKeys, `
-		SELECT alert_rule_key FROM event_threshold_suggestions
+	type recentKeyRow struct {
+		AlertRuleKey   string `db:"alert_rule_key"`
+		CloudAccountID string `db:"cloud_account_id"`
+	}
+	var recentRows []recentKeyRow
+	if err = db.Select(&recentRows, `
+		SELECT alert_rule_key, cloud_account_id FROM event_threshold_suggestions
 		WHERE alert_rule_key IS NOT NULL
 		  AND (computed_at > NOW() - INTERVAL '24 hours'
 		       OR (status = 'ok' AND computed_at > NOW() - INTERVAL '7 days'))`); err != nil {
 		ctx.GetLogger().Warn("threshold_suggestion_batch: failed to query recent keys, processing all", "error", err)
 	}
-	recentSet := make(map[string]bool, len(recentKeys))
-	for _, key := range recentKeys {
-		recentSet[key] = true
+	// Key by (alert_rule_key, cloud_account_id) to match the table's conflict target. Keying on
+	// alert_rule_key alone would let one account's computed alert (e.g. a bare Prometheus
+	// alertname like "TargetDown") skip every other account's and tenant's same-named alert.
+	recentSet := make(map[string]bool, len(recentRows))
+	for _, r := range recentRows {
+		recentSet[r.AlertRuleKey+"\x00"+r.CloudAccountID] = true
 	}
 
 	pending := make([]noisyAlert, 0, len(noisy))
 	for _, na := range noisy {
-		if !recentSet[na.AlertRuleKey] {
+		if !recentSet[na.AlertRuleKey+"\x00"+na.CloudAccountID] {
 			pending = append(pending, na)
 		}
 	}
@@ -218,9 +225,30 @@ func processNoisyAlert(ctx *security.RequestContext, db *sqlx.DB, na noisyAlert,
 		return
 	}
 
-	// Skip only if there's truly nothing actionable: no threshold change AND no duration/disable recommendation
+	// Insufficient data: store as 'skipped' (an allowed status) so it's excluded from the
+	// actionable list. NOTE: the status column has a CHECK constraint (V682/V735) that only
+	// permits ok/skipped/error/not_eligible — a distinct 'insufficient_data' status would need a
+	// migration. The reason string carries the "insufficient data" detail; recommendation_type
+	// stays 'insufficient_data' on the suggestion for callers that inspect it.
+	if recType == "insufficient_data" {
+		skipped.Add(1)
+		reason := response.Suggestion.Reason
+		if reason == "" {
+			reason = "insufficient data to tune"
+		}
+		alertName := ""
+		if response.AlertDefinition != nil {
+			alertName = response.AlertDefinition.AlarmName
+		}
+		upsertSkippedSuggestion(ctx.GetContext(), db, na, "skipped", reason, alertName)
+		return
+	}
+
+	// Skip only if there's truly nothing actionable: no threshold change AND no duration/disable
+	// recommendation. review_alert rows are kept (stored 'ok') so their warnings/stats persist —
+	// ListThresholdSuggestions excludes them from the actionable list.
 	if response.Suggestion.EstimatedReduction == 0 &&
-		recType != "increase_duration" && recType != "tune_both" && recType != "disable" {
+		recType != "increase_duration" && recType != "tune_both" && recType != "disable" && recType != "review_alert" {
 		skipped.Add(1)
 		alertName := ""
 		if response.AlertDefinition != nil {
@@ -397,7 +425,7 @@ func GetCachedSkippedReason(ctx context.Context, db *sqlx.DB, alertRuleKey, clou
 		SELECT source, reason, status, alert_name
 		FROM event_threshold_suggestions
 		WHERE alert_rule_key = $1 AND cloud_account_id = $2
-		  AND status IN ('skipped', 'error')
+		  AND status IN ('skipped', 'error', 'not_eligible', 'insufficient_data')
 		  AND computed_at > NOW() - INTERVAL '7 days'
 	`, alertRuleKey, cloudAccountID)
 	if err != nil {
@@ -669,7 +697,9 @@ func ListThresholdSuggestions(ctx context.Context, db *sqlx.DB, tenantID string,
 		offset = 0
 	}
 
-	where := "WHERE tenant_id = $1 AND status = 'ok'"
+	// Exclude review_alert from the actionable list — these are flagged-for-review, not clean
+	// advice (Gate 1/4/5 route ceiling-pinned / baseline-mismatch / near-total-suppression here).
+	where := "WHERE tenant_id = $1 AND status = 'ok' AND COALESCE(metric_stats->>'recommendation_type', '') <> 'review_alert'"
 	args := []interface{}{tenantID}
 	argIdx := 2
 
