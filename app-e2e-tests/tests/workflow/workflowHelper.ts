@@ -8,19 +8,11 @@ export function generateWorkflowName(baseName: string): string {
   return `${baseName} ${suffix}`;
 }
 
-/**
- * Cleans up the automation the current test created by driving the UI: go back
- * to the listing, search for it by name, open ITS 3-dot menu (targeted by the
- * created workflow's id from the editor URL so no other row is touched), then
- * Delete → confirm. Call after the workflow has been created and run.
- */
 export async function deleteCreatedWorkflow(
   page: Page,
   locators: WorkflowLocators,
   workflowName: string
 ): Promise<void> {
-  // The editor URL is `/workflow/<id>?accountId=...`; capture the id so we click
-  // exactly this workflow's menu and never any other automation's.
   let workflowId: string | undefined;
   try {
     workflowId = new URL(page.url()).pathname.match(/\/workflow\/([0-9a-fA-F-]{36})/)?.[1];
@@ -28,31 +20,30 @@ export async function deleteCreatedWorkflow(
     workflowId = undefined;
   }
 
-  // Back to the automation listing. Leaving the editor with a saved-but-not-
-  // published draft pops an "Unpublished changes" guard — confirm "Leave page".
   await locators.backBtn.click();
   const leavePageBtn = page.getByRole("button", { name: "Leave page" });
   await leavePageBtn
     .waitFor({ state: "visible", timeout: 3000 })
     .then(() => leavePageBtn.click())
     .catch(() => {});
-  await page.waitForURL(/\/auto-pilot/, { timeout: 15000 });
 
-  // Surface the just-created row via the name search.
-  await locators.nameSearchInput.waitFor({ state: "visible", timeout: 15000 });
+  await locators.nameSearchInput
+    .waitFor({ state: "visible", timeout: 15000 })
+    .catch(() => page.waitForURL(/\/(auto-pilot|automation)/, { timeout: 15000 }));
+
   await locators.nameSearchInput.fill(workflowName);
   await locators.nameSearchInput.press("Enter");
   await page.waitForTimeout(1000);
 
-  // Open this row's 3-dot menu. The trigger id carries the workflow id; fall
-  // back to the only menu on the filtered listing if the id wasn't captured.
   const menuTrigger = workflowId
     ? page.locator(`#workflow-menu-${workflowId}`)
     : page.locator('[id^="workflow-menu-"]').first();
   await menuTrigger.waitFor({ state: "visible", timeout: 15000 });
   await menuTrigger.click();
 
-  await page.getByRole("menuitem", { name: "Delete" }).click();
+  const deleteMenuItem = page.locator('[role="menuitem"]:visible', { hasText: "Delete" }).first();
+  await deleteMenuItem.waitFor({ state: "attached", timeout: 15000 });
+  await deleteMenuItem.dispatchEvent("click");
 
   await locators.deleteConfirmBtn.waitFor({ state: "visible", timeout: 15000 });
   await locators.deleteConfirmBtn.click();
@@ -72,9 +63,10 @@ export async function loginAndNavigateToNewWorkflow(
 
   await locators.autoPilotSidenavBtn.waitFor({ state: "visible", timeout: 30000 });
   await locators.autoPilotSidenavBtn.click();
-  await page.waitForURL(/\/auto-pilot/, { timeout: 15000 });
 
-  await locators.createAutomationBtn.waitFor({ state: "visible", timeout: 30000 });
+  await locators.createAutomationBtn
+    .waitFor({ state: "visible", timeout: 30000 })
+    .catch(() => page.waitForURL(/\/(auto-pilot|automation)/, { timeout: 15000 }));
   await locators.createAutomationBtn.click();
   await locators.createNewAutomationModal.waitFor({ state: "visible", timeout: 15000 });
   await locators.makeAnAutomationCard.waitFor({ state: "visible", timeout: 10000 });
@@ -193,8 +185,6 @@ export async function selectTicketIntegration(
   await integrationBtn.waitFor({ state: "visible", timeout: 15000 });
   await integrationBtn.click();
 
-  // Primary: exact text match. Fallback: a role=option row containing the name
-  // (handles extra icons/whitespace/adornments inside the option row).
   const exactOption = locators.dialog.getByText(integrationName, { exact: true });
   if (await exactOption.first().isVisible().catch(() => false)) {
     await exactOption.first().click();
@@ -209,9 +199,6 @@ export async function selectProjectKey(
   locators: WorkflowLocators,
   projectKey: string
 ): Promise<void> {
-  // Fallback: the project_key field can default to Expression mode (a template
-  // text field) instead of the Select dropdown. If the dropdown trigger isn't
-  // present, flip the field to Select mode via its toggle first.
   if (!(await locators.projectKeyDropdown.isVisible().catch(() => false))) {
     const selectTab = locators.dialog
       .locator(".MuiToggleButtonGroup-grouped")
@@ -230,8 +217,6 @@ export async function selectProjectKey(
   await page.keyboard.type(projectKey);
   await page.waitForTimeout(300);
 
-  // Primary: option containing the full key. Fallback: match the repo segment
-  // after the last "/" (some providers label options by repo name only).
   const fullOption = page.locator('[role="option"]').filter({ hasText: projectKey }).first();
   if (await fullOption.isVisible().catch(() => false)) {
     await fullOption.click();
@@ -368,17 +353,6 @@ export async function runWorkflowWithGraphQLValidation(
   console.log("GraphQL validation passed: triggerWorkflow fired and returned 200");
 }
 
-/**
- * Blocks until the manual run kicked off by `runWorkflowWithGraphQLValidation`
- * reaches a terminal state, so callers don't delete a still-executing workflow.
- *
- * Completion signal: the "Run current" button is labelled "Running..." while the
- * run is in flight (`isTestRunning`) and returns to "Run current" at every
- * terminal status — so waiting for that text passes immediately if the run
- * already finished, or blocks until it does. The app fires an outcome snackbar
- * together with that flip; we read whichever toast appears and fail on a
- * non-success outcome.
- */
 export async function waitForExecutionToComplete(
   page: Page,
   locators: WorkflowLocators,
@@ -387,10 +361,6 @@ export async function waitForExecutionToComplete(
   await expect(locators.runBtn).toContainText("Run current", { timeout: timeoutMs });
   console.log("Workflow execution reached a terminal state");
 
-  // The outcome snackbar fires alongside the button flip. Wait for whichever
-  // one appears (no fixed delay — resolves as soon as it renders) and fail on a
-  // non-success outcome. If it already dismissed (very fast run) the GraphQL
-  // validation in runWorkflowWithGraphQLValidation covers that path.
   const outcomeToast = page
     .getByText(/Automation execution (completed successfully|failed|was terminated|timed out|completed with errors)/i)
     .first();
