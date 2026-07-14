@@ -12,7 +12,8 @@
  * Requests owns its own paginated fetch (`useGatewayRequests`).
  *
  * Users → Requests drill-in: clicking a user on the Users tab scopes the Requests
- * tab to that user and switches to it; a removable chip clears the scope.
+ * tab to that user and switches to it; the Requests tab's own User filter
+ * dropdown shows and edits the same scope.
  *
  * All aggregate figures come from `llm_gateway_aggregate_usage` (the gateway's
  * `POST /rpc/usage/aggregate`) via `useGatewayData`. Scoped to the current tenant
@@ -189,7 +190,8 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
     setSelectedUser({ id, name });
     setTab('requests');
   }, []);
-  const onClearUser = React.useCallback(() => setSelectedUser(null), []);
+  // The Requests tab's User dropdown reads/writes the same scope.
+  const onChangeUser = React.useCallback((user: { id: string; name: string } | null) => setSelectedUser(user), []);
 
   // Drill-in from the Tools tab: scope Requests to this tool and jump to it.
   const onSelectTool = React.useCallback((tool: string) => {
@@ -259,7 +261,15 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
       {tab === 'models' && <ModelsView metrics={metrics} loading={loading} error={error} />}
       {tab === 'users' && <UsersView metrics={metrics} loading={loading} error={error} onSelectUser={onSelectUser} />}
       {tab === 'requests' && (
-        <RequestsView filters={filters} userFilter={selectedUser} onClearUser={onClearUser} toolFilter={selectedTool} onClearTool={onClearTool} />
+        <RequestsView
+          filters={filters}
+          metrics={metrics}
+          metricsLoading={loading}
+          userFilter={selectedUser}
+          onChangeUser={onChangeUser}
+          toolFilter={selectedTool}
+          onClearTool={onClearTool}
+        />
       )}
       {tab === 'tools' && <ToolsView metrics={metrics} loading={loading} error={error} onSelectTool={onSelectTool} />}
     </Box>

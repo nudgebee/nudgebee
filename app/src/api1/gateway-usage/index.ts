@@ -134,7 +134,10 @@ export interface AggregateGatewayUsageRequest {
 export interface ListGatewayRequestsRequest {
   startDate: string; // RFC3339 UTC
   endDate: string; // RFC3339 UTC
-  userId?: string; // optional drill-down from the Users tab
+  userId?: string; // optional; Users-tab drill-down or the User filter
+  providers?: string[]; // optional; empty = all providers
+  models?: string[]; // optional; empty = all (routed) models
+  status?: string; // optional; 'success' (2xx) | 'error' (everything else)
   tool?: string; // optional drill-down from the Tools tab
   limit?: number;
   offset?: number;
@@ -181,24 +184,32 @@ export async function aggregateGatewayUsage(req: AggregateGatewayUsageRequest, s
   return response?.data?.data?.llm_gateway_aggregate_usage?.data ?? null;
 }
 
-/** List recent requests (paginated, newest first) for the Requests tab. */
-export async function listGatewayRequests(req: ListGatewayRequestsRequest, signal?: AbortSignal): Promise<GatewayRequestList | null> {
-  const query = `mutation ListGatewayRequests(
-    $startDate: String!, $endDate: String!, $userId: String, $tool: String, $limit: Int, $offset: Int
+/** Exported for the rpcGateway contract test — asserts this mutation parses into
+ * an upstream body that carries every filter field the Go handler binds. */
+export const LIST_GATEWAY_REQUESTS = `mutation ListGatewayRequests(
+    $startDate: String!, $endDate: String!, $userId: String, $providers: [String!], $models: [String!],
+    $status: String, $tool: String, $limit: Int, $offset: Int
   ) {
     llm_gateway_list_requests(request: {
-      start_date: $startDate, end_date: $endDate, user_id: $userId, tool: $tool, limit: $limit, offset: $offset
+      start_date: $startDate, end_date: $endDate, user_id: $userId, providers: $providers, models: $models,
+      status: $status, tool: $tool, limit: $limit, offset: $offset
     }) {
       data
     }
   }`;
+
+/** List recent requests (paginated, newest first) for the Requests tab. */
+export async function listGatewayRequests(req: ListGatewayRequestsRequest, signal?: AbortSignal): Promise<GatewayRequestList | null> {
   const response = await queryGraphQL(
-    query,
+    LIST_GATEWAY_REQUESTS,
     'ListGatewayRequests',
     {
       startDate: req.startDate,
       endDate: req.endDate,
       userId: req.userId ?? '',
+      providers: arr(req.providers),
+      models: arr(req.models),
+      status: req.status ?? '',
       tool: req.tool ?? '',
       limit: req.limit ?? 50,
       offset: req.offset ?? 0,

@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"nudgebee/llm-gateway/common"
@@ -321,14 +322,17 @@ func byTool(db *common.DatabaseManager, req Request) ([]ToolRow, error) {
 }
 
 // ListRequest is the paginated recent-request query for the Requests tab. UserID,
-// when set, scopes to one user (drill-down from the Users tab).
+// when set, scopes to one user (drill-down from the Users tab or the User filter).
 type ListRequest struct {
 	TenantID     string
 	StartDate    time.Time
 	EndDate      time.Time
 	UserID       string
-	Tool         string // filter to requests that offered this tool (drill-in from Tools)
-	CallerUserID string // the requesting user (x-user-id); a row's body is viewable only by its own user
+	Providers    []string // filter to these providers (empty = all)
+	Models       []string // filter to these routed models (empty = all)
+	Status       string   // "" (all) | "success" (2xx) | "error" (everything else)
+	Tool         string   // filter to requests that offered this tool (drill-in from Tools)
+	CallerUserID string   // the requesting user (x-user-id); a row's body is viewable only by its own user
 	Limit        int
 	Offset       int
 }
@@ -386,6 +390,53 @@ type reqScan struct {
 	SessionID      string    `db:"session_id"`
 }
 
+// listRequestsFilter builds the WHERE clause + args for ListRequests (count and
+// page queries share it, so the pager total always matches the rows). Filters
+// compose with AND; empty values mean "no filter". Extracted for unit testing.
+func listRequestsFilter(req ListRequest) (string, []any) {
+	where := "g.tenant_id = $1 AND g.created_at >= $2 AND g.created_at < $3"
+	args := []any{req.TenantID, req.StartDate, req.EndDate}
+	if req.UserID != "" {
+		where += fmt.Sprintf(" AND g.user_id = $%d", len(args)+1)
+		args = append(args, req.UserID)
+	}
+	if len(req.Providers) > 0 {
+		where += inClause("g.provider", req.Providers, &args)
+	}
+	if len(req.Models) > 0 {
+		where += inClause("g.model", req.Models, &args)
+	}
+	// The two status classes partition ALL rows — a row with no recorded status
+	// (NULL/0, e.g. an aborted stream) counts as "error" — so success + error =
+	// everything and no row silently vanishes from both filters. Written without
+	// COALESCE so a plain index on status_code stays usable (sargable).
+	switch req.Status {
+	case "success":
+		where += " AND g.status_code BETWEEN 200 AND 299"
+	case "error":
+		where += " AND (g.status_code IS NULL OR g.status_code NOT BETWEEN 200 AND 299)"
+	}
+	if req.Tool != "" {
+		// Requests that offered this tool (attributes.actual.tool_names contains it).
+		// jsonb_exists is the function form of `?` — the `?` operator would clash with
+		// the driver's placeholder handling. The LIKE prefilter narrows the jsonb cast.
+		where += fmt.Sprintf(" AND g.attributes LIKE '%%tool_names%%' AND jsonb_exists(NULLIF(g.attributes,'')::jsonb #> '{actual,tool_names}', $%d)", len(args)+1)
+		args = append(args, req.Tool)
+	}
+	return where, args
+}
+
+// inClause appends vals to args and returns an " AND col IN ($n,…)" fragment with
+// numbered placeholders (driver-agnostic — no array-binding support needed).
+func inClause(col string, vals []string, args *[]any) string {
+	ph := make([]string, len(vals))
+	for i, v := range vals {
+		*args = append(*args, v)
+		ph[i] = fmt.Sprintf("$%d", len(*args))
+	}
+	return fmt.Sprintf(" AND %s IN (%s)", col, strings.Join(ph, ","))
+}
+
 // ListRequests returns a page of recent requests, newest first, with the cost that
 // was snapshotted per row at write time. Limit is clamped to [1,200]; Total is the
 // unpaged count for the pager.
@@ -399,19 +450,7 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 	}
 	offset := max(0, req.Offset)
 
-	where := "g.tenant_id = $1 AND g.created_at >= $2 AND g.created_at < $3"
-	args := []any{req.TenantID, req.StartDate, req.EndDate}
-	if req.UserID != "" {
-		where += fmt.Sprintf(" AND g.user_id = $%d", len(args)+1)
-		args = append(args, req.UserID)
-	}
-	if req.Tool != "" {
-		// Requests that offered this tool (attributes.actual.tool_names contains it).
-		// jsonb_exists is the function form of `?` — the `?` operator would clash with
-		// the driver's placeholder handling. The LIKE prefilter narrows the jsonb cast.
-		where += fmt.Sprintf(" AND g.attributes LIKE '%%tool_names%%' AND jsonb_exists(NULLIF(g.attributes,'')::jsonb #> '{actual,tool_names}', $%d)", len(args)+1)
-		args = append(args, req.Tool)
-	}
+	where, args := listRequestsFilter(req)
 
 	var total int64
 	// Scalar scan → QueryRowAndScan (db.Get); QueryAndScan is sqlx.Select and needs a slice.

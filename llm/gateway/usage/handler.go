@@ -23,12 +23,15 @@ type apiRequest struct {
 
 // apiListRequest is the body for the paginated recent-request list (Requests tab).
 type apiListRequest struct {
-	StartDate string `json:"start_date"`
-	EndDate   string `json:"end_date"`
-	UserID    string `json:"user_id"` // optional drill-down from the Users tab
-	Tool      string `json:"tool"`    // optional drill-down from the Tools tab
-	Limit     int    `json:"limit"`
-	Offset    int    `json:"offset"`
+	StartDate string   `json:"start_date"`
+	EndDate   string   `json:"end_date"`
+	UserID    string   `json:"user_id"`   // optional; Users-tab drill-down or the User filter
+	Providers []string `json:"providers"` // optional; empty = all providers
+	Models    []string `json:"models"`    // optional; empty = all (routed) models
+	Status    string   `json:"status"`    // optional; "success" (2xx) | "error" (everything else)
+	Tool      string   `json:"tool"`      // optional drill-down from the Tools tab
+	Limit     int      `json:"limit"`
+	Offset    int      `json:"offset"`
 }
 
 // RegisterRoutes mounts the read-only usage query API under /rpc/usage, guarded by
@@ -88,7 +91,8 @@ func RegisterRoutes(r *gin.Engine, token string) {
 		}
 		res, err := ListRequests(c.Request.Context(), db, ListRequest{
 			TenantID: tenantID, StartDate: start, EndDate: end,
-			UserID: req.UserID, Tool: req.Tool, CallerUserID: c.GetHeader("x-user-id"),
+			UserID: req.UserID, Providers: req.Providers, Models: req.Models, Status: req.Status,
+			Tool: req.Tool, CallerUserID: c.GetHeader("x-user-id"),
 			Limit: req.Limit, Offset: req.Offset,
 		})
 		if err != nil {
