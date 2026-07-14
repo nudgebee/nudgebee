@@ -62,6 +62,17 @@ func newFetchLogsAgent(accountId string) *FetchLogsAgent {
 	return &FetchLogsAgent{accountId: accountId, provider: provider}
 }
 
+// effectiveProvider is pure — never writes to the receiver, which is shared
+// across requests via the 30-minute tool caches. "k8s" = no services-server
+// backend, i.e. the kubectl path (same as at construction).
+func (a *FetchLogsAgent) effectiveProvider(request core.NBAgentRequest) services_server.ObservabilityProvider {
+	provider := tools.EffectiveLogProvider(a.provider, request.QueryConfig.LogProviderOverride)
+	if strings.EqualFold(provider.Provider, "k8s") {
+		return services_server.ObservabilityProvider{}
+	}
+	return provider
+}
+
 func (a *FetchLogsAgent) GetName() string { return FetchLogsAgentName }
 
 func (a *FetchLogsAgent) GetNameAliases() []string { return []string{"Fetch Logs"} }
@@ -85,13 +96,13 @@ func (a *FetchLogsAgent) GetPlannerType() core.AgentPlannerType {
 }
 
 func (a *FetchLogsAgent) Execute(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
-	provider := strings.ToLower(a.provider.Provider)
+	provider := a.effectiveProvider(request)
 
-	switch provider {
+	switch strings.ToLower(provider.Provider) {
 	case "datadog":
 		return a.generateDatadogLogQueryAndExecute(ctx, request)
 	case "loki", "signoz", "es", "elasticsearch":
-		return a.generateLogQueryAndExecute(ctx, request)
+		return a.generateLogQueryAndExecute(ctx, request, provider)
 	default:
 		return a.generateKubeCtlLogQueryAndExecute(ctx, request)
 	}
@@ -114,9 +125,9 @@ func (a *FetchLogsAgent) generateKubeCtlLogQueryAndExecute(ctx *security.Request
 	return makeFetchResponse(a.GetName(), cmd, logs, fileRef, mergeRefs(toolRefs, fileRefs)), nil
 }
 
-func (a *FetchLogsAgent) generateLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
-	a.ensureLabelsAndIndices()
-	jsonQuery, err := generateLogQuery(ctx, request, a.provider.Provider, a.fields, a.indices, a.provider.DefaultIndex)
+func (a *FetchLogsAgent) generateLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider) (core.NBAgentResponse, error) {
+	fields, indices := a.labelsAndIndices(provider)
+	jsonQuery, err := generateLogQuery(ctx, request, provider.Provider, fields, indices, provider.DefaultIndex)
 	if err != nil {
 		return errorResponse(a.GetName(), fmt.Errorf("loki/es query extraction: %w", err)), nil
 	}
@@ -124,13 +135,13 @@ func (a *FetchLogsAgent) generateLogQueryAndExecute(ctx *security.RequestContext
 	if err != nil {
 		return errorResponse(a.GetName(), fmt.Errorf("logs_execute: %w", err)), nil
 	}
-	if matched, reason := looksLikeFetchError(a.provider.Provider, logs); matched {
-		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", a.provider.Provider, reason)), nil
+	if matched, reason := looksLikeFetchError(provider.Provider, logs); matched {
+		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", provider.Provider, reason)), nil
 	}
-	if strings.EqualFold(a.provider.Provider, "loki") {
+	if strings.EqualFold(provider.Provider, "loki") {
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 	}
-	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, a.provider.Provider, logs)
+	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
 	return makeFetchResponse(a.GetName(), jsonQuery, logs, fileRef, mergeRefs(toolRefs, fileRefs)), nil
 }
 
@@ -151,34 +162,32 @@ func (a *FetchLogsAgent) generateDatadogLogQueryAndExecute(ctx *security.Request
 	return makeFetchResponse(a.GetName(), ddQuery, logs, fileRef, mergeRefs(toolRefs, fileRefs)), nil
 }
 
-// ensureLabelsAndIndices populates fields (Loki/Signoz/ES labels) and, for ES,
-// the named index aliases — both injected into the query-generator prompt so
-// the LLM picks correct labels/indices instead of guessing.
-//
-// Surfacing the fetch-labels error matters because a silent fall-through
-// produces nil fields → the translator's prompt path takes the "no labels
-// known" branch and uses backend defaults that are wrong for ES/Signoz
-// (canonical labels differ). Round 2's deleted agent logged this; the
-// unification must keep that visibility.
-func (a *FetchLogsAgent) ensureLabelsAndIndices() {
-	a.labelsOnce.Do(func() {
-		labels, err := fetchProviderLabels(a.accountId, a.provider)
-		if err != nil {
-			slog.Warn("fetch_logs: failed to fetch provider labels — translator will fall back to backend defaults", "error", err, "provider", a.provider.Provider, "account_id", a.accountId)
-		}
-		a.fields = labels
-		if tools.IsESLogProvider(a.provider.Provider) {
-			a.indices = utils.GetESAccountIndexConfig(a.accountId).Indices
-		}
-	})
+// labelsAndIndices feeds the query-generator prompt real labels/indices instead
+// of guesses. The labelsOnce memo lives on a shared instance and is only valid
+// for the account's own provider — an override fetches fresh.
+func (a *FetchLogsAgent) labelsAndIndices(provider services_server.ObservabilityProvider) ([]string, map[string]string) {
+	if strings.EqualFold(provider.Provider, a.provider.Provider) {
+		a.labelsOnce.Do(func() { a.fields, a.indices = fetchLabelsAndIndices(a.accountId, provider) })
+		return a.fields, a.indices
+	}
+	return fetchLabelsAndIndices(a.accountId, provider)
 }
 
-func fetchProviderLabels(accountId string, provider services_server.ObservabilityProvider) ([]string, error) {
-	t, err := tools.NewNBLogTool(accountId)
-	if err != nil {
-		return nil, err
+// fetchLabelsAndIndices warns on an empty list rather than failing: the caller
+// then falls back to backend defaults that are wrong for ES/Signoz, and this
+// warn is the only signal an operator gets that an override named a backend the
+// account has no integration for.
+func fetchLabelsAndIndices(accountId string, provider services_server.ObservabilityProvider) ([]string, map[string]string) {
+	labels := tools.NewNBLogToolWithProvider(accountId, provider).QueryLabels()
+	if len(labels) == 0 {
+		slog.Warn("fetch_logs: no provider labels — translator will fall back to backend defaults",
+			"provider", provider.Provider, "account_id", accountId)
 	}
-	return t.QueryLabels(), nil
+	var indices map[string]string
+	if tools.IsESLogProvider(provider.Provider) {
+		indices = utils.GetESAccountIndexConfig(accountId).Indices
+	}
+	return labels, indices
 }
 
 // callTool invokes a registered tool. Uses NewNbToolContext so per-account

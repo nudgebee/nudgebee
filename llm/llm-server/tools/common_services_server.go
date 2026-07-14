@@ -217,10 +217,10 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		ValidateRequest: true,
 	}
 
-	// Dev-only escape hatch: when an operator pins a provider via
-	// LLM_SERVER_LOG_PROVIDER_OVERRIDE (local setups with no integration rows for
-	// services-server to resolve), forward it so the query targets that backend.
-	if strings.TrimSpace(config.Config.LLMServerLogProviderOverride) != "" {
+	// Escape hatch: a pinned provider (env var or per-request override) may have no
+	// integration row for services-server to resolve, so forward it explicitly.
+	if strings.TrimSpace(config.Config.LLMServerLogProviderOverride) != "" ||
+		strings.TrimSpace(ctx.QueryConfig.LogProviderOverride) != "" {
 		logRequest.LogProvider = logProvider.Provider
 		logRequest.LogProviderSource = logProvider.IntegrationSource
 	}
@@ -386,6 +386,27 @@ func GetMetricsProvider(accountId string) (services_server.ObservabilityProvider
 		Provider:          metricsConnectionProvider,
 		IntegrationSource: "agent",
 	}, nil
+}
+
+// EffectiveLogProvider returns the provider for one call: request override, else
+// the account-resolved one. Callers MUST keep it a local — log tools/agents are
+// shared via 30-minute caches (custom_agent.go), so writing it back pins the
+// backend for the whole account and races parallel tool calls.
+//
+// Not lowercased, IntegrationSource left empty: api-server's getLogSource switch
+// is case-sensitive ("ES") and resolves the true source itself; forcing "agent"
+// 400s datadog and every other user-source backend.
+func EffectiveLogProvider(resolved services_server.ObservabilityProvider, requestOverride string) services_server.ObservabilityProvider {
+	override := strings.TrimSpace(requestOverride)
+	if override == "" {
+		return resolved
+	}
+	// Same backend restated: keep the resolved value — it carries Capabilities /
+	// DefaultIndex / IntegrationSource that query generation needs.
+	if strings.EqualFold(override, resolved.Provider) {
+		return resolved
+	}
+	return services_server.ObservabilityProvider{Provider: override}
 }
 
 func GetLogProvider(accountId string) (services_server.ObservabilityProvider, error) {

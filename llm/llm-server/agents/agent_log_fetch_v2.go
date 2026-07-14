@@ -56,16 +56,17 @@ func (a *FetchLogsAgentV2) canonicalEnabled(ctx *security.RequestContext) bool {
 // the services-server path fails or returns no logs, it falls back to kubectl
 // (kubectlFallback).
 func (a *FetchLogsAgentV2) Execute(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
-	// Flag off → behave exactly as v1.
+	// Flag off → behave exactly as v1 (which applies the override itself).
 	if !a.canonicalEnabled(ctx) {
 		return a.FetchLogsAgent.Execute(ctx, request)
 	}
 
-	provider := strings.ToLower(strings.TrimSpace(a.provider.Provider))
+	provider := a.effectiveProvider(request)
+	providerName := strings.ToLower(strings.TrimSpace(provider.Provider))
 
 	// No services-server log backend (empty / k8s-only) → kubectl directly; there
 	// is nothing to fall back from.
-	if provider == "" {
+	if providerName == "" {
 		return a.generateKubeCtlLogQueryAndExecute(ctx, request)
 	}
 
@@ -73,10 +74,10 @@ func (a *FetchLogsAgentV2) Execute(ctx *security.RequestContext, request core.NB
 	// which stays on its proven facet-syntax path (the v1 datadog executor).
 	var resp core.NBAgentResponse
 	var err error
-	if provider == "datadog" {
+	if providerName == "datadog" {
 		resp, err = a.generateDatadogLogQueryAndExecute(ctx, request)
 	} else {
-		resp, err = a.generateCanonicalLogQueryAndExecute(ctx, request)
+		resp, err = a.generateCanonicalLogQueryAndExecute(ctx, request, provider)
 	}
 	if err != nil {
 		return resp, err
@@ -84,7 +85,7 @@ func (a *FetchLogsAgentV2) Execute(ctx *security.RequestContext, request core.NB
 
 	// Fall back to kubectl when services-server errored or returned no logs.
 	if resp.Status == core.ConversationStatusFailed || fetchResponseIsEmpty(resp) {
-		return a.kubectlFallback(ctx, request, resp)
+		return a.kubectlFallback(ctx, request, provider, resp)
 	}
 	return resp, nil
 }
@@ -94,9 +95,9 @@ func (a *FetchLogsAgentV2) Execute(ctx *security.RequestContext, request core.NB
 // in-cluster access) and the services-server path had at least answered honestly
 // (succeeded but empty), the original response is preferred so a real "no logs"
 // answer isn't masked by a kubectl access error.
-func (a *FetchLogsAgentV2) kubectlFallback(ctx *security.RequestContext, request core.NBAgentRequest, primary core.NBAgentResponse) (core.NBAgentResponse, error) {
+func (a *FetchLogsAgentV2) kubectlFallback(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider, primary core.NBAgentResponse) (core.NBAgentResponse, error) {
 	ctx.GetLogger().Info("fetch_logs v2: services-server returned error/empty — falling back to kubectl",
-		"provider", a.provider.Provider, "primary_status", primary.Status)
+		"provider", provider.Provider, "primary_status", primary.Status)
 	kresp, err := a.generateKubeCtlLogQueryAndExecute(ctx, request)
 	if err != nil {
 		return kresp, err
@@ -136,9 +137,9 @@ func fetchResponseIsEmpty(resp core.NBAgentResponse) bool {
 	return false
 }
 
-func (a *FetchLogsAgentV2) generateCanonicalLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
-	a.ensureLabelsAndIndices()
-	jsonQuery, err := generateCanonicalLogQuery(ctx, request, a.provider, a.fields, a.indices)
+func (a *FetchLogsAgentV2) generateCanonicalLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider) (core.NBAgentResponse, error) {
+	fields, indices := a.labelsAndIndices(provider)
+	jsonQuery, err := generateCanonicalLogQuery(ctx, request, provider, fields, indices)
 	if err != nil {
 		return errorResponse(a.GetName(), fmt.Errorf("canonical query extraction: %w", err)), nil
 	}
@@ -146,13 +147,13 @@ func (a *FetchLogsAgentV2) generateCanonicalLogQueryAndExecute(ctx *security.Req
 	if err != nil {
 		return errorResponse(a.GetName(), fmt.Errorf("logs_execute_v2: %w", err)), nil
 	}
-	if matched, reason := looksLikeFetchError(a.provider.Provider, logs); matched {
-		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", a.provider.Provider, reason)), nil
+	if matched, reason := looksLikeFetchError(provider.Provider, logs); matched {
+		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", provider.Provider, reason)), nil
 	}
-	if strings.EqualFold(a.provider.Provider, "loki") {
+	if strings.EqualFold(provider.Provider, "loki") {
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 	}
-	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, a.provider.Provider, logs)
+	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
 	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, fileRef, mergeRefs(toolRefs, fileRefs)), nil
 }
 

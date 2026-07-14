@@ -225,7 +225,7 @@ func TestCanonicalLogQueryGeneration_Live(t *testing.T) {
 	// exactly as the agent does at request time.
 	agent := newFetchLogsAgentV2(account)
 	require.NotEmpty(t, agent.provider.Provider, "account has no services-server log provider configured")
-	agent.ensureLabelsAndIndices()
+	agent.fields, agent.indices = fetchLabelsAndIndices(account, agent.provider)
 	ctx := security.NewRequestContextForTenantAccountAdmin(tenant, user, []string{account})
 
 	cases := []struct {

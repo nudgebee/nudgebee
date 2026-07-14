@@ -96,7 +96,10 @@ func (t *NBLogToolV2) InputSchema() core.ToolSchema {
 // an empty Query (executeFetchLogsCanonical). One path serves every provider;
 // services-server owns the canonical→provider resolution and native query build.
 func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-	nbRequestContext.Ctx.GetLogger().Info("logs_v2: executing canonical getLogs tool call", "query", input.Command, "provider", t.logProvider.Provider)
+	// Local, never written back to the receiver — see NBLogTool.Call.
+	logProvider := EffectiveLogProvider(t.logProvider, nbRequestContext.QueryConfig.LogProviderOverride)
+
+	nbRequestContext.Ctx.GetLogger().Info("logs_v2: executing canonical getLogs tool call", "query", input.Command, "provider", logProvider.Provider)
 
 	queryBuilder, err := core.BuildLogQueryBuilder(nbRequestContext, input.Command)
 	if err != nil {
@@ -137,9 +140,9 @@ func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToo
 		configs["index"] = queryBuilder.Index
 	}
 
-	response, err := executeFetchLogsCanonical(nbRequestContext, t.logProvider, queryBuilder.Where, configs)
+	response, err := executeFetchLogsCanonical(nbRequestContext, logProvider, queryBuilder.Where, configs)
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("logs_v2: unable to execute canonical query", "provider", t.logProvider.Provider, "error", err.Error())
+		nbRequestContext.Ctx.GetLogger().Error("logs_v2: unable to execute canonical query", "provider", logProvider.Provider, "error", err.Error())
 		return core.NBToolResponse{
 			Data:   "",
 			Status: core.NBToolResponseStatusError,
@@ -152,7 +155,7 @@ func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToo
 			NoLogsFoundPrefix+" for %s (canonical where: %s; time range: %s to %s, limit: %d). "+
 				"The query executed successfully but returned no results. "+
 				"Suggestions: check if label names/values are correct, try broader filters, or expand the time range.",
-			t.logProvider.Provider, string(whereJSON), start.Format(time.RFC3339), end.Format(time.RFC3339), queryBuilder.Limit,
+			logProvider.Provider, string(whereJSON), start.Format(time.RFC3339), end.Format(time.RFC3339), queryBuilder.Limit,
 		)
 		return core.NBToolResponse{
 			Data:   noLogsMsg,
