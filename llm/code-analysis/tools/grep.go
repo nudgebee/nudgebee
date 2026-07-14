@@ -187,20 +187,24 @@ func (t *GrepTool) Execute(ctx context.Context, input map[string]any) core.NBToo
 		}
 	}
 
-	// Strategy 1: Try git grep first (if in git repo)
+	// Strategy 1: git grep first (authoritative in a git repo).
 	result := t.tryGitGrep(pattern, include, caseInsensitive, lineNumbers, int(maxResults))
 	if result.Status == "success" {
 		return result
 	}
 
-	// Strategy 2: Fall back to system grep
-	result = t.trySystemGrep(pattern, searchPath, include, caseInsensitive, lineNumbers, int(maxResults))
-	if result.Status == "success" {
-		return result
-	}
+	// Strategy 2: system grep fallback (rg is the primary/recommended search
+	// tool; grep is a single fallback for non-git or rg-less environments).
+	return t.trySystemGrep(pattern, searchPath, include, caseInsensitive, lineNumbers, int(maxResults))
+}
 
-	// Strategy 3: Fall back to find + grep
-	return t.tryFindGrep(pattern, searchPath, include, caseInsensitive, lineNumbers, int(maxResults))
+// isNoMatchExit reports whether an exec error is grep's "no lines selected"
+// (exit code 1), which is a successful empty search, not a failure.
+func isNoMatchExit(err error) bool {
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return exitErr.ExitCode() == 1
+	}
+	return false
 }
 
 func (t *GrepTool) tryGitGrep(pattern, include string, caseInsensitive, lineNumbers bool, maxResults int) core.NBToolResponse {
@@ -224,6 +228,9 @@ func (t *GrepTool) tryGitGrep(pattern, include string, caseInsensitive, lineNumb
 
 	output, err := cmd.CombinedOutput() // Capture both stdout and stderr
 	if err != nil {
+		if isNoMatchExit(err) {
+			return noMatchResponse(map[string]any{"method": "git grep"})
+		}
 		errorMsg := fmt.Sprintf("git grep failed: %v", err)
 		if len(output) > 0 {
 			errorMsg += fmt.Sprintf("\nError details: %s", string(output))
@@ -253,6 +260,9 @@ func (t *GrepTool) trySystemGrep(pattern, searchPath, include string, caseInsens
 	cmd := exec.Command("grep", args...)
 	output, err := cmd.CombinedOutput() // Capture both stdout and stderr
 	if err != nil {
+		if isNoMatchExit(err) {
+			return noMatchResponse(map[string]any{"method": "grep"})
+		}
 		errorMsg := fmt.Sprintf("grep failed: %v", err)
 		if len(output) > 0 {
 			errorMsg += fmt.Sprintf("\nError details: %s", string(output))
@@ -263,118 +273,13 @@ func (t *GrepTool) trySystemGrep(pattern, searchPath, include string, caseInsens
 	return t.formatResults("grep", string(output), maxResults)
 }
 
-func (t *GrepTool) tryFindGrep(pattern, searchPath, include string, caseInsensitive, lineNumbers bool, maxResults int) core.NBToolResponse {
-	// Build find command
-	findArgs := []string{searchPath, "-type", "f"}
-
-	if include != "" {
-		findArgs = append(findArgs, "-name", include)
-	}
-
-	findArgs = append(findArgs, "-exec", "grep")
-
-	if lineNumbers {
-		findArgs = append(findArgs, "-Hn")
-	} else {
-		findArgs = append(findArgs, "-H")
-	}
-
-	if caseInsensitive {
-		findArgs = append(findArgs, "-i")
-	}
-
-	findArgs = append(findArgs, pattern, "{}", "+")
-
-	cmd := exec.Command("find", findArgs...)
-	output, err := cmd.CombinedOutput() // Capture both stdout and stderr
-	if err != nil {
-		errorMsg := fmt.Sprintf("find + grep failed: %v", err)
-		if len(output) > 0 {
-			errorMsg += fmt.Sprintf("\nError details: %s", string(output))
-		}
-		return core.NBToolResponse{
-			Status: "error",
-			Error:  errorMsg,
-		}
-	}
-
-	return t.formatResults("find + grep", string(output), maxResults)
-}
-
 func (t *GrepTool) formatResults(method, output string, maxResults int) core.NBToolResponse {
-	if strings.TrimSpace(output) == "" {
-		return core.NBToolResponse{
-			Status:      "success",
-			Observation: "No matches found",
-			Data:        map[string]any{"matches": []string{}, "method": method},
-		}
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return noMatchResponse(map[string]any{"method": method})
 	}
 
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-
-	// Limit results
-	if len(lines) > maxResults {
-		lines = lines[:maxResults]
-	}
-
-	var matches []map[string]any
-	observation := fmt.Sprintf("Found %d matches using %s:\n\n", len(lines), method)
-
-	for i, line := range lines {
-		if line == "" {
-			continue
-		}
-
-		// Parse grep output format: file:line:content or file:content
-		parts := strings.SplitN(line, ":", 3)
-		if len(parts) >= 2 {
-			file := parts[0]
-			lineNum := ""
-			content := ""
-
-			if len(parts) == 3 {
-				lineNum = parts[1]
-				content = strings.TrimSpace(parts[2])
-			} else {
-				content = strings.TrimSpace(parts[1])
-			}
-
-			// Make file path relative to workspace
-			if strings.HasPrefix(file, t.workspaceDir) {
-				file = strings.TrimPrefix(file, t.workspaceDir+"/")
-			}
-
-			match := map[string]any{
-				"file":    file,
-				"content": content,
-			}
-			if lineNum != "" {
-				match["line"] = lineNum
-			}
-
-			matches = append(matches, match)
-
-			if lineNum != "" {
-				observation += fmt.Sprintf("%d. **%s:%s**\n", i+1, file, lineNum)
-			} else {
-				observation += fmt.Sprintf("%d. **%s**\n", i+1, file)
-			}
-			observation += fmt.Sprintf("   `%s`\n\n", content)
-		}
-	}
-
-	if len(lines) == maxResults {
-		observation += fmt.Sprintf("*(Limited to %d results)*\n", maxResults)
-	}
-
-	return core.NBToolResponse{
-		Status:      "success",
-		Observation: observation,
-		Data: map[string]any{
-			"matches":     matches,
-			"total_count": len(matches),
-			"method":      method,
-			"truncated":   len(lines) == maxResults,
-		},
-	}
+	lines := strings.Split(trimmed, "\n")
+	matches, order, byFile := parseMatchLines(lines, t.workspaceDir)
+	return renderContentMatches(matches, order, byFile, maxResults, map[string]any{"method": method})
 }

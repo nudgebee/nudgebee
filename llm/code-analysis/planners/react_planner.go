@@ -94,6 +94,18 @@ type ReActPlanner struct {
 	executedCallHashes map[string]int // hash -> execution count
 	mu                 sync.Mutex     // Guards executedCallHashes and other shared state
 
+	// Grounding: relative paths of files actually opened with file_view this run.
+	// A submit_analysis whose citations all point at files that were never opened
+	// is treated as ungrounded — the "cite a grep hit you never read" failure mode —
+	// and rejected. Guarded by mu (file_view steps can run concurrently).
+	readFiles map[string]bool
+
+	// submitUngrounded records whether the most recent submit_analysis attempt was
+	// rejected by the grounding gate. When retries are exhausted on an ungrounded
+	// submit, the planner abstains (honest "insufficient evidence") instead of
+	// returning a fabricated answer.
+	submitUngrounded bool
+
 	// runMemory is the per-run working memory shared across all phases of one
 	// /analyze run. When set, identical read-only tool calls are served from its
 	// cache instead of being re-executed and re-appended. nil for legacy callers
@@ -195,10 +207,22 @@ func (rc *RepositoryContext) generateIntelligentWorkingScope() string {
 		scope += "**Strategy:** Extract insights from error messages and stack traces\n"
 	}
 
+	// Monorepo scope: the module list is detected in DetectMonorepoStructure but
+	// was previously computed and discarded. Surfacing it here steers the agent to
+	// search within the owning module instead of grepping the whole tree (which
+	// floods and matches unrelated code).
+	if rc.IsMonorepo && len(rc.KnownModules) > 0 {
+		scope += "\n**Monorepo — scope your search to a module:**\n"
+		scope += fmt.Sprintf("- Detected modules: %s\n", strings.Join(rc.KnownModules, ", "))
+		scope += "- Identify which module owns the code, then pass `path:\"<module>\"` to rg/grep so results stay in that module.\n"
+		scope += "- A repo-wide pattern (no path/type) on a large monorepo floods and matches unrelated code — narrow first.\n"
+	}
+
 	scope += "\n**Intelligence Guidelines:**\n"
 	scope += "- Analyze the problem context to determine what information you need\n"
 	scope += "- Choose tools based on the specific investigation requirements\n"
 	scope += "- If you need file access but don't have repository cloned, clone first\n"
+	scope += "- Search LOCATES code; it is not evidence. Open a file with file_view and cite only what you read.\n"
 	scope += "- Focus on understanding the root cause, not just surface symptoms\n"
 
 	return scope
@@ -248,6 +272,10 @@ func (rc *RepositoryContext) DetectMonorepoStructure() {
 		for mod := range moduleMap {
 			rc.KnownModules = append(rc.KnownModules, mod)
 		}
+		// Sort for a stable order: KnownModules is rendered into the agent's
+		// system prompt, and a non-deterministic order (map iteration) would
+		// churn the prompt prefix and defeat prompt caching across runs.
+		sort.Strings(rc.KnownModules)
 	}
 }
 
@@ -316,6 +344,7 @@ func NewReActPlanner(llmClient *llm.Client, tools []core.NBTool, maxIterations i
 		maxObservationLines:         500,
 		maxContextTokens:            200000,
 		executedCallHashes:          make(map[string]int),
+		readFiles:                   make(map[string]bool),
 		reflectionEvery:             defaultReflectionEvery,
 	}
 }
@@ -380,10 +409,25 @@ func (p *ReActPlanner) ResetCallHashes() {
 // hashToolCall produces a deterministic hash for a (action, input) pair,
 // ignoring fields that vary between retries (e.g. working_directory).
 func (p *ReActPlanner) hashToolCall(action string, input map[string]any) string {
+	// For search tools, collapse variants that are the same query in spirit so the
+	// dedup circuit-breaker catches case/glob-tweak flailing (re-running a search as
+	// `foo`→`Foo`→`foo`+case_insensitive counts as one query, not three "new" ones).
+	// Pattern is folded to lowercase and the case flag dropped; `path`/`type`/`glob`
+	// are preserved because they express genuinely different search scopes.
+	isSearch := action == "rg" || action == "grep"
 	filtered := make(map[string]any, len(input))
 	for k, v := range input {
 		if k == "working_directory" {
 			continue
+		}
+		if isSearch && k == "case_insensitive" {
+			continue
+		}
+		if isSearch && k == "pattern" {
+			if s, ok := v.(string); ok {
+				filtered[k] = strings.ToLower(strings.TrimSpace(s))
+				continue
+			}
 		}
 		filtered[k] = v
 	}
@@ -721,9 +765,19 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 				} else if s.Status == "retriable_failed" {
 					p.submitRetryCount++
 					if p.submitRetryCount > p.maxSubmitRetries {
-						result.FinalAnswer = p.extractFinalAnswer(s)
-						result.Status = "failed"
-						result.Error = fmt.Sprintf("submit_analysis failed after %d retries: %s", p.submitRetryCount, s.Error)
+						if p.submitUngrounded {
+							// The agent kept trying to submit an answer it never grounded
+							// in code. Abstain honestly instead of failing opaquely or
+							// surfacing the ungrounded answer. Use s.Number+1 so the
+							// abstention step doesn't collide with the failed submit's
+							// number (already appended above).
+							p.finalizeInsufficientEvidence(ctx, result, s.Number+1,
+								fmt.Sprintf("The answer could not be grounded in code after %d attempts.", p.submitRetryCount))
+						} else {
+							result.FinalAnswer = p.extractFinalAnswer(s)
+							result.Status = "failed"
+							result.Error = fmt.Sprintf("submit_analysis failed after %d retries: %s", p.submitRetryCount, s.Error)
+						}
 						loopDone = true
 						break
 					}
@@ -1345,6 +1399,33 @@ func (p *ReActPlanner) executeStep(ctx context.Context, step *Step) {
 	} else {
 		step.Status = "completed"
 		step.Observation = p.formatObservation(tool, result)
+
+		// Record files opened with file_view so the grounding gate can tell an
+		// answer cited from real reads apart from one cited from grep noise.
+		if step.Action == "file_view" {
+			if fp, ok := step.ActionInput["file_path"].(string); ok {
+				p.recordFileRead(fp)
+			}
+		}
+
+		// Grounding gate: reject a submit whose citations ALL point at files never
+		// opened with file_view (the "cite a grep hit you never read" hallucination).
+		// Retriable — the agent re-reads and cites real evidence, or abstains.
+		if step.Action == "submit_analysis" {
+			if reject, msg := p.checkSubmitGrounding(step.ActionInput); reject {
+				p.submitUngrounded = true
+				step.Status = "retriable_failed"
+				step.Error = msg
+				step.Observation = msg
+				if p.logger != nil {
+					p.logger.Log(common.EventStepFailure, "submit_analysis rejected: ungrounded citations", map[string]any{
+						"step_number": step.Number,
+					})
+				}
+				return
+			}
+			p.submitUngrounded = false
+		}
 
 		// Run-scoped memory: cache read-only results so an identical later call (in
 		// any phase) is served from memory; a mutating tool invalidates cached reads
@@ -2065,6 +2146,14 @@ func ledgerMadeProgress(prevFindings, prevCitations, prevOpenQ int, prevEdits bo
 // when the iteration ceiling is hit and when the stall detector fires — the
 // agent gets one final, structured answer instead of an empty envelope.
 func (p *ReActPlanner) runForcedSubmit(ctx context.Context, result *PlannerResult, stepNumber int, query, systemPrompt string) {
+	// Honest abstention instead of fabrication: if the run reached its budget with
+	// no grounded basis for an answer, report insufficient evidence rather than
+	// asking the LLM to synthesize a plausible-but-unverified root cause.
+	if p.shouldAbstainForced() {
+		p.finalizeInsufficientEvidence(ctx, result, stepNumber, "Reached the investigation budget without confirming the cause in code.")
+		return
+	}
+
 	if p.logger != nil {
 		p.logger.Log(common.EventPlanningComplete, "Forcing submit_analysis...", map[string]any{"iteration": result.Iterations})
 	}
