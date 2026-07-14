@@ -130,8 +130,15 @@ export function TimeSeriesChart({
   }, [series]);
 
   const yTickFormat: YTickFormat = integerY ? 'int' : compactFormat;
+  const base = baseChartOptions((raw) => format(Number(raw)), { stacked, integerY, yTickFormat });
+  // A single column (e.g. one selected day) otherwise pins its point/bar to the
+  // y-axis edge — offset the category axis so it sits centered in its band. Only
+  // for the degenerate single-point case, so multi-point line/area charts still
+  // span edge-to-edge.
+  const singleColumn = labels.length === 1;
   const options = {
-    ...baseChartOptions((raw) => format(Number(raw)), { stacked, integerY, yTickFormat }),
+    ...base,
+    ...(singleColumn ? { scales: { ...base.scales, x: { ...base.scales.x, offset: true } } } : {}),
     ...(onSelectPoint
       ? { onClick: (_e: unknown, els: { index: number }[]) => els?.length && onSelectPoint(labels[els[0].index], els[0].index) }
       : {}),

@@ -34,6 +34,8 @@ interface OverviewViewProps {
   onSelectModel?: (model: string) => void;
   /** Click a source in the breakdown to filter the report to it. */
   onSelectSource?: (source: string) => void;
+  /** Click a cost-over-time column to re-scope the report to that bucket's date span. */
+  onSelectPeriod?: (startDate: string, endDate: string) => void;
 }
 
 export function OverviewView({
@@ -46,6 +48,7 @@ export function OverviewView({
   onAnalyse,
   onSelectModel,
   onSelectSource,
+  onSelectPeriod,
 }: OverviewViewProps) {
   const current = totalsToKpi(metrics?.totals);
   const previous = totalsToKpi(prevTotals ?? undefined);
@@ -64,6 +67,7 @@ export function OverviewView({
         granularity={filters.granularity}
         startDate={filters.startDate}
         endDate={filters.endDate}
+        onSelectPeriod={onSelectPeriod}
       />
 
       <BreakdownWidgets byModel={byModel} bySource={bySource} onSelectModel={onSelectModel} onSelectSource={onSelectSource} />

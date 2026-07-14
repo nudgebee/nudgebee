@@ -204,6 +204,7 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
                     accountNameById={accountNameById}
                     onSelectModel={(model) => patch({ models: [model] })}
                     onSelectSource={(source) => patch({ sources: [source] })}
+                    onSelectPeriod={(startDate, endDate) => patch({ startDate, endDate })}
                   />
                 ))}
               {tab === 'conversations' && (
