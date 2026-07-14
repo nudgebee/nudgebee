@@ -418,6 +418,35 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 			expectedSubject:   "checkout",
 			expectedNamespace: "demo",
 		},
+		{
+			// Declared subject from a rendered markdown body.details string
+			// ("Subject Name/Namespace/Type"). The pod name + kind are carried
+			// through so the downstream pod->owner lookup can resolve them.
+			name:           "declared subject_name (pod) resolves with namespace and kind",
+			initialSubject: "",
+			labels: map[string]string{
+				"subject_name":      "flagd-5d6b76f8b8-87njz",
+				"subject_namespace": "demo",
+				"subject_type":      "pod",
+			},
+			title:             "Investigate Event - High P95 latency for flagd in demo namespace",
+			expectedSubject:   "flagd-5d6b76f8b8-87njz",
+			expectedNamespace: "demo",
+			expectedKind:      "pod",
+		},
+		{
+			// The explicitly declared subject wins over inferred label keys.
+			name:           "declared subject_name wins over job label",
+			initialSubject: "",
+			labels: map[string]string{
+				"subject_name": "checkout",
+				"subject_type": "deployment",
+				"job":          "kubelet",
+			},
+			title:           "Investigate Event - something",
+			expectedSubject: "checkout",
+			expectedKind:    "deployment",
+		},
 	}
 
 	for _, tt := range tests {
@@ -444,6 +473,48 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestApplyStringDetailsSubjectLabels covers mining the declared subject from an
+// unstructured markdown body.details string (the AlertSourceUnknown shape PagerDuty
+// delivers for rendered alerts that carry no __pd_cef_payload map).
+func TestApplyStringDetailsSubjectLabels(t *testing.T) {
+	const rawAlertContent = "**Title**: High P95 latency for flagd in demo namespace\n" +
+		"**Priority**: MEDIUM\n" +
+		"**Aggregation Key**: OtelDemoHighLatency\n" +
+		"**Subject Type**: pod\n" +
+		"**Subject Name**: flagd-5d6b76f8b8-87njz\n" +
+		"**Subject Namespace**: demo\n"
+
+	t.Run("mines subject fields from markdown string", func(t *testing.T) {
+		labels := map[string]string{}
+		applyStringDetailsSubjectLabels(rawAlertContent, labels)
+		assert.Equal(t, "flagd-5d6b76f8b8-87njz", labels["subject_name"])
+		assert.Equal(t, "demo", labels["subject_namespace"])
+		assert.Equal(t, "pod", labels["subject_type"])
+	})
+
+	t.Run("does not overwrite existing labels", func(t *testing.T) {
+		labels := map[string]string{"subject_name": "already-set", "subject_namespace": "kept"}
+		applyStringDetailsSubjectLabels(rawAlertContent, labels)
+		assert.Equal(t, "already-set", labels["subject_name"])
+		assert.Equal(t, "kept", labels["subject_namespace"])
+		assert.Equal(t, "pod", labels["subject_type"]) // still filled since it was empty
+	})
+
+	t.Run("no-op without a Subject Name", func(t *testing.T) {
+		labels := map[string]string{}
+		applyStringDetailsSubjectLabels("**Priority**: HIGH\nsome free text", labels)
+		assert.Empty(t, labels["subject_name"])
+		assert.Empty(t, labels["subject_type"])
+	})
+
+	t.Run("no-op on empty inputs", func(t *testing.T) {
+		labels := map[string]string{}
+		applyStringDetailsSubjectLabels("", labels)
+		assert.Empty(t, labels)
+		applyStringDetailsSubjectLabels(rawAlertContent, nil) // must not panic
+	})
 }
 
 // TestExtractGCPMonitoringSubject covers deterministic parsing of GCP Cloud

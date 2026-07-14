@@ -153,6 +153,33 @@ func getStringDetailsFromBody(incident *Incident) string {
 	return ""
 }
 
+// applyStringDetailsSubjectLabels mines the declared subject from an unstructured
+// markdown body.details string ("**Subject Name**: <pod>", "**Subject Namespace**:
+// <ns>", "**Subject Type**: <kind>") into structured labels, without overwriting
+// labels already populated by extractBodyDetails. PagerDuty delivers this shape for
+// rendered alerts that carry no __pd_cef_payload map (e.g. NudgeBee "Investigate
+// Event -" re-raises), which extractBodyDetails classifies AlertSourceUnknown and
+// leaves without subject labels. resolveSubjectFromLabels then keys off subject_name/
+// subject_namespace/subject_type. No-op unless a Subject Name is present.
+func applyStringDetailsSubjectLabels(stringDetails string, labels map[string]string) {
+	if stringDetails == "" || labels == nil {
+		return
+	}
+	name := extractMarkdownField(stringDetails, "Subject Name")
+	if name == "" {
+		return
+	}
+	if labels["subject_name"] == "" {
+		labels["subject_name"] = name
+	}
+	if ns := extractMarkdownField(stringDetails, "Subject Namespace"); ns != "" && labels["subject_namespace"] == "" {
+		labels["subject_namespace"] = ns
+	}
+	if st := extractMarkdownField(stringDetails, "Subject Type"); st != "" && labels["subject_type"] == "" {
+		labels["subject_type"] = strings.ToLower(st)
+	}
+}
+
 // BodyDetails contains the nested details structure from PagerDuty
 type BodyDetails struct {
 	PdCefPayload   PdCefPayload   `json:"__pd_cef_payload"`
@@ -656,6 +683,25 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 	accountMapping := core.ParseAccountMapping(settings, sc.GetLogger())
 	accountId = core.ApplyAccountMapping(accountId, parsedPayload.Investigation.Labels, accountMapping)
 
+	// A pod-typed subject (e.g. a rendered "Subject Type: pod" body) carries a
+	// ReplicaSet hash that never matches k8s_workloads by name; resolve it to its
+	// owning workload first so matchWorkloadAndEnrich validates the controller, not
+	// the hash-suffixed pod. Mirrors the Datadog webhook path (lookupPodOwner).
+	if parsedPayload.EventSubjectName != "" && parsedPayload.EventSubjectKind == "pod" {
+		if dbms, dbErr := database.GetDatabaseManager(database.Metastore); dbErr == nil {
+			tenantId := sc.GetSecurityContext().GetTenantId()
+			if owner, kind, ns, ok := lookupPodOwner(sc, dbms, tenantId, []string{accountId},
+				parsedPayload.EventSubjectNamespace, parsedPayload.EventSubjectName); ok {
+				parsedPayload.Investigation.Labels["pod"] = parsedPayload.EventSubjectName
+				parsedPayload.EventSubjectName = owner
+				parsedPayload.EventSubjectKind = kind
+				if parsedPayload.EventSubjectNamespace == "" {
+					parsedPayload.EventSubjectNamespace = ns
+				}
+			}
+		}
+	}
+
 	// Validate and enrich subject against k8s_workloads inventory
 	if parsedPayload.EventSubjectName != "" {
 		matchWorkloadAndEnrich(sc, &parsedPayload, accountId)
@@ -769,6 +815,12 @@ func EnrichWithPagerDutyIncident(sc *security.RequestContext, parsedPayload *cor
 
 	// Extract data from body details using generic approach
 	extractBodyDetails(incident, parsedPayload)
+
+	// PagerDuty sometimes delivers body.details as an unstructured markdown string
+	// instead of the structured __pd_cef_payload map, in which case extractBodyDetails
+	// yields no subject labels. Mine the declared subject from the string before the
+	// downstream resolveSubjectFromLabels / LLM fallback consume the labels.
+	applyStringDetailsSubjectLabels(getStringDetailsFromBody(incident), parsedPayload.Investigation.Labels)
 
 	if incident.Body.Details == nil {
 		sc.GetLogger().Warn("pagerdutywebhook: body.details is null after all fetch attempts",
@@ -3443,6 +3495,23 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 	labels := parsedPayload.Investigation.Labels
 	if labels == nil {
 		return
+	}
+
+	// Explicit declared subject (webhook_subject_mappings markdown fields:
+	// "Subject Name/Namespace/Type"). When present this is the authoritative subject,
+	// so it wins over the inferred label keys below. A pod-typed subject carries a
+	// ReplicaSet hash; lookupPodOwner / matchWorkloadAndEnrich resolve it to the owning
+	// workload downstream.
+	if parsedPayload.EventSubjectName == "" {
+		if name := labels["subject_name"]; name != "" {
+			parsedPayload.EventSubjectName = name
+			if parsedPayload.EventSubjectNamespace == "" {
+				parsedPayload.EventSubjectNamespace = labels["subject_namespace"]
+			}
+			if kind := labels["subject_type"]; kind != "" {
+				parsedPayload.EventSubjectKind = kind
+			}
+		}
 	}
 
 	// Resolve subject name if not already set from title regex.
