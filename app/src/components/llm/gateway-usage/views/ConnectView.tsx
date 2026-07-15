@@ -145,7 +145,7 @@ export function ConnectView({ gatewayUrl }: ConnectViewProps) {
           >
             Generate token
           </Button>
-          <Button id='gateway-connect-manage-tokens-btn' tone='ghost' onClick={() => setTokenOpen(true)}>
+          <Button id='gateway-connect-manage-tokens-btn' tone='secondary' onClick={() => setTokenOpen(true)}>
             Manage tokens
           </Button>
         </Box>

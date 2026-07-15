@@ -102,6 +102,9 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   const [tab, setTab] = React.useState<TabId>(() => subTabFromHash() ?? DEFAULT_TAB);
   // Users → Requests drill-in: when set, the Requests tab is scoped to this user.
   const [selectedUser, setSelectedUser] = React.useState<{ id: string; name: string } | null>(null);
+  // Bumped whenever the date window is set from somewhere other than the picker
+  // itself (i.e. the Overview drill-in), to re-key it — see the picker below.
+  const [dateResetNonce, setDateResetNonce] = React.useState(0);
 
   // Tenant scoping is server-side: the RPC gateway injects the x-tenant-id header
   // from the session, so the UI sends no tenant in the request.
@@ -169,6 +172,14 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
     }));
   };
 
+  // Drill-in from the Overview chart: clicking a column narrows the window to that
+  // single day. Every view reads the same `filters`, so the whole report — KPIs,
+  // chart, breakdowns — re-scopes with it.
+  const onSelectDay = React.useCallback((date: string) => {
+    setFilters((f) => ({ ...f, startDate: date, endDate: date }));
+    setDateResetNonce((n) => n + 1);
+  }, []);
+
   // Drill-in from the Users tab: scope Requests to this user and jump to it.
   const onSelectUser = React.useCallback((id: string, name: string) => {
     setSelectedUser({ id, name });
@@ -213,7 +224,15 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
               onChange={(g) => setFilters((f) => ({ ...f, granularity: g as GatewayGranularity }))}
               options={GRANULARITY_OPTIONS}
             />
+            {/* The picker snapshots `passedSelectedDateTime` into its own state and
+                only re-reads it when `resetDateTime` is set, so a window changed
+                from outside it (the Overview drill-in) would leave its label showing
+                the old range while the data below refreshed. Re-keying remounts it
+                against the new value — same approach as the cost analyser's
+                FilterBar. The nonce only moves on a drill-in, so the picker isn't
+                remounted while the user is driving it. */}
             <CustomDateTimeRangePicker
+              key={`gateway-date-picker-${dateResetNonce}`}
               passedSelectedDateTime={dateTimeValue}
               onChange={handleDateRangeChange}
               minDate={dayjs().subtract(1, 'year')}
@@ -224,7 +243,7 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
       </Box>
 
       {tab === 'connect' && <ConnectView gatewayUrl={gatewayUrl} />}
-      {tab === 'overview' && <OverviewView metrics={metrics} filters={filters} loading={loading} error={error} />}
+      {tab === 'overview' && <OverviewView metrics={metrics} filters={filters} loading={loading} error={error} onSelectDay={onSelectDay} />}
       {tab === 'models' && <ModelsView metrics={metrics} loading={loading} error={error} />}
       {tab === 'users' && <UsersView metrics={metrics} loading={loading} error={error} onSelectUser={onSelectUser} />}
       {tab === 'requests' && <RequestsView filters={filters} userFilter={selectedUser} onClearUser={onClearUser} />}
