@@ -19,6 +19,7 @@ import { Stat } from '@ui/Stat';
 import { Card } from '@ui/Card';
 import { Banner } from '@ui/Banner';
 import Chart from '@ui/Chart';
+import { ToggleGroup } from '@ui/ToggleGroup';
 import CustomTable2 from '@shared/tables/CustomTable';
 import { fmtCost, fmtTokens, fmtDuration } from '@components/llm/cost-analyser/format';
 import type { GatewayFilters } from '../useGatewayData';
@@ -50,17 +51,36 @@ function fmtCountCompact(v: number | null | undefined): string {
 
 const numCell = { fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', fontVariantNumeric: 'tabular-nums' } as const;
 
-// ─── Requests-over-time (bar) ───────────────────────────────────────────────────
+// ─── Usage-over-time (bar) ──────────────────────────────────────────────────────
 
-/** Fold the `overall` series into the generic `Chart.TimeSeries` `{labels, series}` shape. */
+/** The metric plotted on the over-time chart. Cost is the default (governance view). */
+type Metric = 'cost' | 'requests' | 'tokens';
+
+const METRIC_OPTIONS: { value: Metric; label: string }[] = [
+  { value: 'cost', label: 'Cost' },
+  { value: 'requests', label: 'Requests' },
+  { value: 'tokens', label: 'Tokens' },
+];
+
+const METRIC_LABEL: Record<Metric, string> = { cost: 'Cost', requests: 'Requests', tokens: 'Tokens' };
+
+/** Fold the `overall` series into the generic `Chart.TimeSeries` `{labels, series}` shape
+ * for the chosen metric. */
 function overallToSeries(
   rows: GatewayTimeSeriesRow[],
-  granularity: GatewayGranularity
+  granularity: GatewayGranularity,
+  metric: Metric
 ): { labels: string[]; series: { key: string; data: number[] }[] } {
   const sorted = [...rows].sort((a, b) => a.bucket.localeCompare(b.bucket));
   const fmt = granularity === 'hour' ? 'DD MMM HH:00' : 'DD MMM';
   const labels = sorted.map((r) => dayjs(r.bucket).format(fmt));
-  return { labels, series: [{ key: 'Requests', data: sorted.map((r) => r.requests) }] };
+  const pick =
+    metric === 'cost'
+      ? (r: GatewayTimeSeriesRow) => r.cost_usd
+      : metric === 'tokens'
+      ? (r: GatewayTimeSeriesRow) => r.tokens
+      : (r: GatewayTimeSeriesRow) => r.requests;
+  return { labels, series: [{ key: METRIC_LABEL[metric], data: sorted.map(pick) }] };
 }
 
 // ─── Breakdown table ────────────────────────────────────────────────────────────
@@ -109,7 +129,8 @@ function SectionHeader({ title, icon }: { title: string; icon: React.ReactNode }
 export function OverviewView({ metrics, filters, loading, error }: OverviewViewProps) {
   const totals = metrics?.totals;
   const overallRows = metrics?.time_series?.by_dimension?.overall ?? [];
-  const chart = React.useMemo(() => overallToSeries(overallRows, filters.granularity), [overallRows, filters.granularity]);
+  const [metric, setMetric] = React.useState<Metric>('cost');
+  const chart = React.useMemo(() => overallToSeries(overallRows, filters.granularity, metric), [overallRows, filters.granularity, metric]);
 
   if (error) return <Banner tone='critical' title='Could not load gateway usage' message={error} />;
 
@@ -142,10 +163,25 @@ export function OverviewView({ metrics, filters, loading, error }: OverviewViewP
         </Card>
       </Box>
 
-      {/* Requests over time. */}
+      {/* Usage over time — Cost (default) | Requests | Tokens. */}
       <Card>
-        <SectionHeader title='Requests over time' icon={<ShowChartIcon />} />
-        <Chart.TimeSeries {...chart} shape='bar' format={fmtCount} compactFormat={fmtCountCompact} integerY id='gateway-requests-over-time' />
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
+          <SectionHeader title={`${METRIC_LABEL[metric]} over time`} icon={<ShowChartIcon />} />
+          <ToggleGroup selection='single' size='sm' ariaLabel='Chart metric' value={metric} onChange={setMetric} options={METRIC_OPTIONS} />
+        </Box>
+        {/* key={metric} forces a remount when the metric changes, so the chart's
+            on-bar-total / axis plugins re-init with the right formatter — otherwise a
+            reused instance keeps the previous metric's compactFormat (e.g. the cost $).
+            Cost → default compactCurrency ($); requests/tokens → plain counts, no $. */}
+        <Chart.TimeSeries
+          key={metric}
+          {...chart}
+          shape='bar'
+          format={metric === 'cost' ? fmtCost : fmtCount}
+          compactFormat={metric === 'cost' ? undefined : fmtCountCompact}
+          integerY={metric !== 'cost'}
+          id='gateway-usage-over-time'
+        />
       </Card>
 
       {/* Breakdown tables. */}
