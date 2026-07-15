@@ -110,9 +110,13 @@ def _apply_migrations():
                 elif isinstance(val, str):
                     default = f" DEFAULT '{val}'"
 
+            # IF NOT EXISTS makes this idempotent under the multi-worker boot
+            # race: every process runs _apply_migrations, and Postgres serializes
+            # the ALTERs on the table lock, so the losers no-op instead of raising
+            # DuplicateColumn.
             sql = (
                 f'ALTER TABLE "{table_name}" '
-                f'ADD COLUMN "{col.name}" {col_type} {nullable}{default}'
+                f'ADD COLUMN IF NOT EXISTS "{col.name}" {col_type} {nullable}{default}'
             )
 
             try:
