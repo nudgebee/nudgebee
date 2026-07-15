@@ -2156,6 +2156,7 @@ const ServiceMapContent = () => {
                 }
               >
                 <FilterDropdown
+                  id='kg-filter-account'
                   label='Account'
                   options={accountOptions}
                   value={draftAccountIds}
@@ -2173,6 +2174,7 @@ const ServiceMapContent = () => {
                 }
               >
                 <FilterDropdown
+                  id='kg-filter-node-type'
                   label='Node Type'
                   options={mergedNodeTypeOptions}
                   value={draftNodeTypes}
@@ -2207,6 +2209,7 @@ const ServiceMapContent = () => {
                 }
               >
                 <FilterDropdown
+                  id='kg-filter-node'
                   label='Node'
                   options={filterNodeOptions}
                   value={draftNodes}
@@ -2240,6 +2243,7 @@ const ServiceMapContent = () => {
                 }
               >
                 <FilterDropdown
+                  id='kg-filter-level'
                   label='Level'
                   options={levelOptions}
                   value={draftLevel}
@@ -2249,7 +2253,9 @@ const ServiceMapContent = () => {
               </FilterWithInfo>
             </Box>
 
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+            {/* id anchors the guided tour's label/attribute step; LogQueryBuilderAutocomplete
+                takes no id of its own, so the pair is spotlit via this wrapper. */}
+            <Box id='kg-filter-label-attribute' sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
               <LogQueryBuilderAutocomplete
                 logProvider='knowledge_graph'
                 accountId={''}

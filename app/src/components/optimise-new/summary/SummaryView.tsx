@@ -90,8 +90,8 @@ const severityLabel = (severity: string) => {
 
 // A single labelled filter facet: caption label tightly coupled to its controls.
 // Facets are separated from each other by whitespace, not divider rules.
-const FilterFacet = ({ label, children }: { label: string; children: ReactNode }) => (
-  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+const FilterFacet = ({ id, label, children }: { id?: string; label: string; children: ReactNode }) => (
+  <Box id={id} sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
     <Typography sx={{ fontSize: ds.text.caption, fontWeight: ds.weight.medium, color: ds.gray[500], whiteSpace: 'nowrap' }}>{label}</Typography>
     <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], flexWrap: 'wrap' }}>{children}</Box>
   </Box>
@@ -300,6 +300,7 @@ const SummaryView = () => {
       <Box sx={{ flex: 1, minWidth: 0 }}>
         {/* Headline bar — KPI focus */}
         <Card
+          id='summary-savings-card'
           size='sm'
           sx={{
             display: 'flex',
@@ -342,7 +343,7 @@ const SummaryView = () => {
         >
           {/* Filter facets */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[4], flexWrap: 'wrap' }}>
-            <FilterFacet label='Category'>
+            <FilterFacet id='summary-filter-category' label='Category'>
               <Chip size='sm' tone='neutral' pressed={categoryFilter === null} onClick={() => setCategoryFilter(null)}>
                 All
               </Chip>
@@ -359,7 +360,7 @@ const SummaryView = () => {
               ))}
             </FilterFacet>
 
-            <FilterFacet label='Provider'>
+            <FilterFacet id='summary-filter-provider' label='Provider'>
               <Chip size='sm' tone='neutral' pressed={providerFilter === null} onClick={() => setProviderFilter(null)}>
                 All
               </Chip>
@@ -515,6 +516,7 @@ const SummaryView = () => {
                     items={sortMenuItems}
                   />
                   <ToggleGroup
+                    id='summary-view-toggle'
                     selection='single'
                     size='sm'
                     value={viewMode}

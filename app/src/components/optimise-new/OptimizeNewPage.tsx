@@ -1295,6 +1295,23 @@ const OptimizeNewPage = () => {
             </WidgetCard>
           );
         })}
+
+        <WidgetCard
+          id='optimize-card-savings'
+          sx={{
+            flex: 1,
+            minWidth: 0,
+            mt: 0,
+            padding: `${ds.space[3]} ${ds.space[4]}`,
+          }}
+        >
+          <Stat
+            size='md'
+            label='Total Savings'
+            info={{ tooltip: 'Total estimated monthly savings if all recommendations are applied' }}
+            value={cardsLoading ? '…' : <CostCallout size='md' tone='high-savings' value={totalSavings} period='/ mo' />}
+          />
+        </WidgetCard>
       </Box>
 
       <ListingLayout id='optimize-recommendations' sx={{ mt: ds.space[4] }}>

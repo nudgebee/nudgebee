@@ -37,12 +37,22 @@ export type TourAlign = 'start' | 'center' | 'end';
  * Access capability a guide requires. A guide walks the user through *doing*
  * something, so it should only be offered to users who can actually do it —
  * otherwise the tour dead-ends on a role-gated button that isn't rendered.
- *   'write' → the acting user needs write access (mirrors the `hasWriteAccess()`
- *             gate on the action button the guide drives, e.g. "Add New User").
- * Omit `requires` for guides everyone can run (e.g. the app overview).
+ *
+ * The app has two distinct write gates and they are NOT interchangeable — pick
+ * the one the guide's target button actually uses:
+ *   'write'         → tenant-scoped, mirroring a bare `hasWriteAccess()` gate
+ *                     (e.g. "Add New User"). Note this effectively means
+ *                     tenant_admin only: with no accountId, `hasWriteAccess()`
+ *                     can only return true via its tenant_admin branch.
+ *   'account-write' → account-scoped, mirroring a `hasWriteAccess(accountId)`
+ *                     gate (e.g. "Create Automation"). account_admins pass this
+ *                     but NOT 'write', so using 'write' for an account-scoped
+ *                     button hides the guide from users who can see the button.
+ * Omit `requires` for guides everyone can run — the app overview, or a
+ * read-only orientation tour that drives no gated action.
  * Resolved by `canAccessTour` in ./tourAccess.
  */
-export type TourCapability = 'write';
+export type TourCapability = 'write' | 'account-write';
 
 export interface TourStepDef {
   /** CSS selector for the element to spotlight. */
@@ -92,10 +102,20 @@ export interface TourDef {
    */
   requires?: TourCapability;
   /**
-   * Tenant feature flag (a `feature_id`) this guide needs. When set, the guide
-   * is hidden unless the flag is enabled — e.g. the Knowledge Graph guide, whose
-   * whole surface only exists behind its feature flag. Resolved via the cached
+   * Tenant feature flag (a `feature_id`) this guide needs — e.g. the "Ask AI"
+   * guide, whose card only renders when WORKFLOWS is on. Resolved via the cached
    * feature flags (`hasFeatureAccessCached`); see `canAccessTour`.
+   *
+   * ONLY for opt-in flags (absent row = feature off). `hasFeatureAccessCached`
+   * is fail-closed: it needs an explicit `status === 'enabled'` row, so an
+   * opt-OUT flag (default-on, absent row = feature ON) would hide the guide from
+   * exactly the tenants that have the feature. Gate those guides on nothing —
+   * their surface renders for everyone anyway.
+   *
+   * Callers must warm the flag cache (`fetchFeatureFlagsForTenant`) before
+   * evaluating, then re-render — GuidesMenu, SectionFirstVisitTour and the
+   * product-updates drawer do. A bare `TourLauncher` does NOT, so don't reach
+   * for `requiresFeature` on a guide launched only from one.
    */
   requiresFeature?: string;
   /**
@@ -595,14 +615,37 @@ const investigationsTour: TourDef = {
  * Troubleshoot view (feature-flagged) — a live ReactFlow service map, not a
  * table — so this tour teaches how to read and drive the graph. Anchors:
  *   [id="anchor-tab-Knowledge Graph"] → the KG top tab (opens selectedFilter=2)
- *   #kg-canvas              → the graph canvas (graphWrapperRef Box)
- *   #kg-filter-panel        → the left filter sidebar (WidgetCard; gone when collapsed)
+ *   #kg-canvas              → the graph canvas (graphWrapperRef Box). Note it also
+ *                             hosts the "Graph Too Large to Render" state, so the
+ *                             step is safe even when the graph won't draw.
+ *   #kg-filter-panel        → the left filter sidebar (WidgetCard)
+ *   #auto-complete-kg-filter-{account,node-type,node,level}
+ *                           → the four filter dropdowns. FilterDropdown re-emits
+ *                             its `id` as `auto-complete-<kebab(id)>`; the explicit
+ *                             `id` props were added with this guide, since these
+ *                             previously fell back to `label` (`#auto-complete-account`
+ *                             etc.) — ids derived from display copy, which a wording
+ *                             change would silently break.
+ *   #kg-filter-label-attribute → Box wrapping the Label + Attribute query builders
+ *                                (LogQueryBuilderAutocomplete takes no id)
+ *   [data-testid="kg-apply-filters-btn"] → Apply Filters (disabled until edited)
  *   #auto-complete-kg-node-search → node search in the top-right toolbar
- *                                   (FilterDropdown prefixes its id — see step 4)
  *   #relationship-types-btn → the Relationships legend button (hover shows legend)
  *   #kg-settings-btn        → the Settings button (tenant admins only)
- * Step 1 opens the KG tab so the rest can anchor its elements; if the KG feature
- * flag is off that tab is absent and the tour ends there (KG isn't available).
+ * Step 1 opens the KG tab so the rest can anchor its elements.
+ *
+ * The filter panel unmounts entirely when collapsed (`!isFilterCollapsed &&`), so
+ * the canvas step re-opens it via `onBeforeNext` and every panel-internal step is
+ * `optional` — if that click ever fails, the guide skips the filters and carries on
+ * to search/relationships/settings instead of dead-ending. `optional`'s short wait
+ * is safe here because expanding is synchronous React state, not a fetch.
+ *
+ * Deliberately ungated. TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH is an OPT-OUT flag
+ * enforced server-side by the nightly build cron, so the KG tab is always
+ * rendered (see pages/troubleshoot/index.jsx) and every user can run this guide.
+ * Declaring `requiresFeature` here would invert that: `hasFeatureAccessCached`
+ * needs an explicit `status === 'enabled'` row, which default-on tenants don't
+ * have — hiding the guide from everyone who has the feature.
  */
 const knowledgeGraphTour: TourDef = {
   id: 'knowledge-graph',
@@ -610,9 +653,6 @@ const knowledgeGraphTour: TourDef = {
   module: 'Troubleshoot',
   description: 'Read your live service map — nodes, dependencies, filters, and search.',
   route: '/troubleshoot',
-  // KG is behind a tenant feature flag; hide the guide when it's off (the tab it
-  // drives isn't rendered, so the tour would otherwise dead-end on step 1).
-  requiresFeature: 'TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH',
   steps: [
     {
       element: '[id="anchor-tab-Knowledge Graph"]',
@@ -632,13 +672,72 @@ const knowledgeGraphTour: TourDef = {
         'Every node is a service, workload, or cloud resource; every edge is a real dependency {brand} discovered between them. Drag to pan, scroll to zoom. Too many nodes to draw? The filters come next.',
       side: 'top',
       align: 'center',
+      // Re-open the filter sidebar if the user has it collapsed, so the filter
+      // steps below have something to anchor to. The button only exists while
+      // collapsed, so this is a no-op when the panel is already open.
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('[data-testid="kg-expand-filters-btn"]')?.click();
+      },
     },
     {
       element: '#kg-filter-panel',
       title: 'Scope the map',
-      description: 'Narrow the graph by account, node type, and label or attribute — set how many hops to expand from a node, then Apply.',
+      description:
+        'The graph only draws up to 1,500 nodes, and a real estate is far bigger — so filtering isn’t optional here, it’s how you use the map. Let’s walk the controls.',
       side: 'right',
       align: 'start',
+      optional: true,
+    },
+    {
+      element: '#auto-complete-kg-filter-account',
+      title: 'Account',
+      description: 'Scope the map to specific cloud accounts. Leave it empty to include every connected AWS, GCP, Azure and Kubernetes account.',
+      side: 'right',
+      align: 'start',
+      optional: true,
+    },
+    {
+      element: '#auto-complete-kg-filter-node-type',
+      title: 'Node Type',
+      description:
+        'Restrict the map to certain kinds of resource — Workload, Service, EC2 Instance, VPC, and so on. Pair it with Account to isolate a slice of your infrastructure.',
+      side: 'right',
+      align: 'start',
+      optional: true,
+    },
+    {
+      element: '#auto-complete-kg-filter-node',
+      title: 'Node',
+      description:
+        'Start from specific nodes. Type-ahead matches on name, namespace, region and type — the map is then built outwards from what you pick.',
+      side: 'right',
+      align: 'start',
+      optional: true,
+    },
+    {
+      element: '#auto-complete-kg-filter-level',
+      title: 'Level — how far to expand',
+      description:
+        'Traversal depth: how many relationship hops to follow out from the matched nodes. Level 1 shows direct neighbours only; each level beyond that grows the graph fast. This is your main lever when it won’t render.',
+      side: 'right',
+      align: 'start',
+      optional: true,
+    },
+    {
+      element: '#kg-filter-label-attribute',
+      title: 'Label & Attribute',
+      description:
+        'Filter on the metadata itself — match nodes by a label (e.g. env=prod) or by an attribute of the resource. Useful for slicing one team or environment out of a shared cluster.',
+      side: 'right',
+      align: 'start',
+      optional: true,
+    },
+    {
+      element: '[data-testid="kg-apply-filters-btn"]',
+      title: 'Apply your filters',
+      description: 'Nothing changes until you apply — the button wakes up once you’ve edited a filter. Clear All resets the map back to everything.',
+      side: 'right',
+      align: 'end',
       optional: true,
     },
     {
@@ -980,6 +1079,11 @@ const connectAzureTour: TourDef = {
  * sub-modal ids (#wf-code-*, #wf-ai-*, #wf-template-*) were added alongside
  * these guides. AI and templates are feature-gated, so those two guides declare
  * `requiresFeature` (WORKFLOWS / WORKFLOW_TEMPLATES) and hide where it's off.
+ *
+ * All four are 'account-write': the "Create Automation" button they drive is
+ * gated on `hasWriteAccess(accountId)` (WorkflowListing.tsx), which account
+ * admins pass — so 'write' (tenant-scoped) would hide these guides from users
+ * who can see the button.
  */
 const automationFromCodeTour: TourDef = {
   id: 'automation-from-code',
@@ -987,8 +1091,7 @@ const automationFromCodeTour: TourDef = {
   module: 'Automations',
   description: 'Import an automation by pasting its JSON or YAML definition.',
   route: '/automation',
-  // The "Create Automation" button is write-gated (hasWriteAccess(accountId)).
-  requires: 'write',
+  requires: 'account-write',
   steps: [
     {
       element: '#workflow-listing-create-btn',
@@ -1033,7 +1136,7 @@ const automationWithAiTour: TourDef = {
   module: 'Automations',
   description: 'Describe what you want in plain language and let AI draft the automation.',
   route: '/automation',
-  requires: 'write',
+  requires: 'account-write',
   // The "Ask AI" card is enabled by the WORKFLOWS feature flag.
   requiresFeature: 'WORKFLOWS',
   steps: [
@@ -1081,7 +1184,7 @@ const automationFromTemplateTour: TourDef = {
   module: 'Automations',
   description: 'Start from a pre-built automation for a common scenario.',
   route: '/automation',
-  requires: 'write',
+  requires: 'account-write',
   // The "From a template" card is enabled by the WORKFLOW_TEMPLATES flag.
   requiresFeature: 'WORKFLOW_TEMPLATES',
   steps: [
@@ -1138,7 +1241,7 @@ const automationFromScratchTour: TourDef = {
   module: 'Automations',
   description: 'Open the builder and pick a starting trigger for a blank automation.',
   route: '/automation',
-  requires: 'write',
+  requires: 'account-write',
   steps: [
     {
       element: '#workflow-listing-create-btn',

@@ -20,6 +20,11 @@ boundaries (e.g. a button that opens a modal that mounts later).
 | `index.ts`              | Barrel export (`TourProvider`, `useTour`, `TOURS`, `canAccessTour`, …).                                        |
 | `../../styles/tour.css` | Brand styling, scoped to `.nb-tour-popover`. Global CSS, imported in `_app.tsx`.                               |
 
+Four surfaces launch guides, and **all four gate through `canAccessTour`**: the
+central catalog (`onboarding/GuidesMenu.jsx`), the contextual `TourLauncher`,
+the first-visit offer (`onboarding/SectionFirstVisitTour.jsx`), and the
+product-updates drawer (`common/widgets/ProductUpdatesDrawerContent.tsx`).
+
 The provider is mounted once in [`_app.tsx`](../../../pages/_app.tsx) inside the
 authenticated tree, so any component can launch a tour.
 
@@ -85,7 +90,14 @@ function MyToolbar() {
    };
    ```
 
-3. **Add a launcher** wherever it makes sense (`useTour().start('invite-team')`).
+3. **Gate it to match the button it drives** — set `requires` (and
+   `requiresFeature`) by reading the target button's actual gate expression. See
+   [_Gating a guide_](#gating-a-guide-permissions); the defaults are easy to get
+   subtly wrong.
+
+4. **Add a launcher** wherever it makes sense — or nothing at all: giving the
+   tour a `module` is enough for it to appear in the central Guides catalog
+   automatically.
 
 > Tip: if advancing a step has a _destructive or irreversible_ side-effect (e.g.
 > a "Next" that actually creates a record, like the cluster-connect "Next"),
