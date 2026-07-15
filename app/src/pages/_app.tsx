@@ -18,6 +18,7 @@ import 'swiper/css/bundle';
 import '../styles/CustomSwiperCarousel.css';
 import 'driver.js/dist/driver.css';
 import '../styles/tour.css';
+import '../styles/nubi-animation.css';
 import { useThemeProvider } from '@hooks/useThemeProvider';
 
 // Use of the <SessionProvider> is mandatory to allow components that call

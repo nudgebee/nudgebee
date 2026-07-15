@@ -182,7 +182,7 @@ const ECSSummaryView = ({ accountId = '', serviceName = 'AmazonECS', resourceId 
   };
 
   const renderMetricsSummary = () => {
-    if (loadingMetrics) return <Loader style={{ height: '100%', width: '100%' }} />;
+    if (loadingMetrics) return <Loader style={{ position: 'static', height: '100%', width: '100%' }} />;
     const metricKeys = Object.keys(renderMetricsData);
     if (metricKeys.length === 0) {
       return (

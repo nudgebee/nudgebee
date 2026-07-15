@@ -3669,7 +3669,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 transition: isResizingRef.current ? 'none' : 'margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
               }}
             >
-              <Suspense fallback={<Loader style={{ height: '100%', width: '100%' }} />}>
+              <Suspense fallback={<Loader style={{ position: 'static', height: '100%', width: '100%' }} />}>
                 <ExecutionsView
                   workflowId={workflowId}
                   accountId={accountId}
@@ -3819,7 +3819,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                   }}
                 >
                   {loading ? (
-                    <Loader style={{ height: '100%', width: '100%' }} />
+                    <Loader style={{ position: 'static', height: '100%', width: '100%' }} />
                   ) : (
                     <>
                       {/* Workflow Canvas - Editor Mode Only */}

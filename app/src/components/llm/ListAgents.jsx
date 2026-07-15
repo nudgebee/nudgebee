@@ -618,7 +618,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
         <Box sx={{ minHeight: '400px' }}>
           {isLoadingKbs ? (
             <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '350px' }}>
-              <Loader style={{ height: '100%', width: '100%' }} />
+              <Loader style={{ position: 'static', height: '100%', width: '100%' }} />
             </Box>
           ) : availableKbs.length === 0 ? (
             <Box

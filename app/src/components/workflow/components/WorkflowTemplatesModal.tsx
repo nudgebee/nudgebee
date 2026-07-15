@@ -523,7 +523,7 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
                 height: ds.space.mul(3, 25),
               }}
             >
-              <Loader style={{ height: '100%', width: '100%' }} />
+              <Loader style={{ position: 'static', height: '100%', width: '100%' }} />
             </Box>
           ) : displayedWorkflows.length === 0 ? (
             <Box

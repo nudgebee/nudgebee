@@ -2,8 +2,18 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import Loader from '@shared/Loader';
 
-jest.mock('@assets', () => ({ Loadergif: 'loader.gif' }));
+// Drive the three loader branches (mascot / neutral spinner / branded image)
+// deterministically instead of relying on the real config fetch.
+let mockBranding = { loaderUrl: '', isWhiteLabel: false, loading: false };
+jest.mock('@hooks/useTenantBranding', () => ({
+  useBrandingConfig: () => mockBranding,
+}));
 
+// The mascot no longer needs bundled assets; keep @assets stubbed so the real
+// (svg-heavy) module isn't pulled into the Loader render tree.
+jest.mock('@assets', () => ({}));
+
+// next/image -> plain <img> so the branded-loader branch is assertable.
 jest.mock('next/image', () => ({
   __esModule: true,
   default: ({ src, alt, style, unoptimized, ...props }) =>
@@ -11,74 +21,69 @@ jest.mock('next/image', () => ({
 }));
 
 describe('Loader', () => {
-  it('renders the loader image', () => {
-    render(<Loader />);
-    const image = screen.getByTestId('loader-image');
-    expect(image).toBeInTheDocument();
+  beforeEach(() => {
+    mockBranding = { loaderUrl: '', isWhiteLabel: false, loading: false };
   });
 
-  it('renders image with correct alt text', () => {
+  it('renders the animated Nubi mascot for the default tenant', () => {
     render(<Loader />);
-    const image = screen.getByAltText('Loading...');
-    expect(image).toBeInTheDocument();
+    expect(screen.getByTestId('nubi-animation-flying')).toBeInTheDocument();
+    expect(screen.queryByTestId('loader-image')).not.toBeInTheDocument();
   });
 
-  it('renders image with the Loadergif source', () => {
+  it('exposes an accessible "Loading..." label', () => {
     render(<Loader />);
-    const image = screen.getByTestId('loader-image');
-    expect(image).toHaveAttribute('src', 'loader.gif');
+    expect(screen.getByLabelText('Loading...')).toBeInTheDocument();
   });
 
-  it('renders image with unoptimized set to true', () => {
+  it('renders the brand-neutral spinner (no bee) while branding config is loading', () => {
+    mockBranding = { loaderUrl: '', isWhiteLabel: false, loading: true };
+    render(<Loader />);
+    expect(screen.getByRole('status')).toBeInTheDocument();
+    expect(screen.queryByTestId('nubi-animation-flying')).not.toBeInTheDocument();
+  });
+
+  it('renders the brand-neutral spinner (no bee) for white-label tenants', () => {
+    mockBranding = { loaderUrl: '', isWhiteLabel: true, loading: false };
+    render(<Loader />);
+    expect(screen.getByRole('status')).toBeInTheDocument();
+    expect(screen.queryByTestId('nubi-animation-flying')).not.toBeInTheDocument();
+  });
+
+  it('renders the tenant loader image when an explicit loaderUrl is set', () => {
+    mockBranding = { loaderUrl: 'https://cdn.example.com/ria.svg', isWhiteLabel: false, loading: false };
     render(<Loader />);
     const image = screen.getByTestId('loader-image');
+    expect(image).toHaveAttribute('src', 'https://cdn.example.com/ria.svg');
+    expect(image).toHaveAttribute('alt', 'Loading...');
     expect(image).toHaveAttribute('data-unoptimized', 'true');
+    expect(image).toHaveStyle({ width: 'calc(var(--ds-space-0) * 75)' });
+    expect(image).toHaveStyle({ height: 'auto' });
   });
 
-  it('renders a wrapper div with full-screen styles', () => {
+  it('renders a centered overlay wrapper', () => {
     const { container } = render(<Loader />);
     const wrapper = container.firstChild;
     expect(wrapper.tagName).toBe('DIV');
     expect(wrapper).toHaveStyle({ display: 'flex' });
     expect(wrapper).toHaveStyle({ justifyContent: 'center' });
     expect(wrapper).toHaveStyle({ alignItems: 'center' });
-    expect(wrapper).toHaveStyle({ height: '100vh' });
-    expect(wrapper).toHaveStyle({ width: '100vw' });
+    expect(wrapper).toHaveStyle({ position: 'absolute' });
   });
 
-  it('applies default styles when no style prop is provided', () => {
-    const { container } = render(<Loader />);
-    const wrapper = container.firstChild;
-    expect(wrapper).toHaveStyle({ height: '100vh' });
-    expect(wrapper).toHaveStyle({ width: '100vw' });
+  it('merges a custom style prop with the defaults', () => {
+    const { container } = render(<Loader style={{ marginTop: '10px' }} />);
+    expect(container.firstChild).toHaveStyle({ display: 'flex' });
+    expect(container.firstChild).toHaveStyle({ marginTop: '10px' });
   });
 
-  it('merges custom style prop with default styles', () => {
-    const { container } = render(<Loader style={{ backgroundColor: 'red' }} />);
-    const wrapper = container.firstChild;
-    // The component spreads style prop into loaderStyle, so display:flex and custom styles coexist
-    expect(wrapper).toHaveStyle({ display: 'flex' });
+  it('lets callers override the default position', () => {
+    const { container } = render(<Loader style={{ position: 'static' }} />);
+    expect(container.firstChild).toHaveStyle({ position: 'static' });
   });
 
-  it('overrides default styles with custom style prop', () => {
-    const { container } = render(<Loader style={{ height: '50vh', width: '50vw' }} />);
-    const wrapper = container.firstChild;
-    expect(wrapper).toHaveStyle({ height: '50vh' });
-    expect(wrapper).toHaveStyle({ width: '50vw' });
-  });
-
-  it('renders image with correct inline styles', () => {
-    render(<Loader />);
-    const image = screen.getByTestId('loader-image');
-    expect(image).toHaveStyle({ width: 'calc(var(--ds-space-0) * 75)' });
-    expect(image).toHaveStyle({ height: 'auto' });
-  });
-
-  it('renders without crashing when no props are passed', () => {
+  it('renders without crashing', () => {
     expect(() => render(<Loader />)).not.toThrow();
-  });
-
-  it('renders without crashing when style prop is an empty object', () => {
     expect(() => render(<Loader style={{}} />)).not.toThrow();
   });
 });

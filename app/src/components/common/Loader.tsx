@@ -1,7 +1,7 @@
 import React, { type CSSProperties } from 'react';
 import Head from 'next/head';
-import { Loadergif } from '@assets'; // Bundled fallback GIF
 import SafeIcon from '@shared/icons/SafeIcon';
+import NubiAnimation from '@shared/NubiAnimation';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { ds } from 'src/utils/colors';
 
@@ -12,21 +12,31 @@ interface LoaderProps {
 const Loader: React.FC<LoaderProps> = ({ style }) => {
   const { loaderUrl, isWhiteLabel, loading } = useBrandingConfig();
 
+  // Absolute overlay centered in the loader's nearest positioned ancestor.
+  // For in-app loaders that's the PageLayout content region (position: relative),
+  // so the loader fills the CONTENT area — not the whole viewport — and never
+  // overflows into horizontal/vertical scrollbars the way `100vw`/`100vh` did.
+  // For pre-shell loaders (auth/account guards) no ancestor is positioned, so it
+  // falls back to the viewport and centers full-screen. Being out of flow, it
+  // stays put even as sibling chrome (header, tab bars) hydrates in above it,
+  // instead of being pushed down. It intentionally blocks pointer events over the
+  // area it covers (the default of a loading overlay); a caller that needs the
+  // underlying UI to stay interactive can pass `style={{ pointerEvents: 'none' }}`.
   const loaderStyle: CSSProperties = {
+    position: 'absolute',
+    inset: 0,
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
-    height: '100vh', // Full viewport height
-    width: '100vw', // Full viewport width
     ...style, // Merge with any additional styles passed as props
   };
 
   // Brand-neutral CSS spinner. It carries no logo, so it's safe to show before we know the
   // tenant (no Nudgebee-bee leak on white-label). Being pure inline CSS — inline styles plus a
   // @keyframes injected into <head> via next/head — it paints AND animates in the
-  // statically-prerendered HTML at FCP, before the JS bundle hydrates. The bundled GIF, by
-  // contrast, is a raster image React only injects after the bundle parses, so on a long-loading
-  // page it appeared on an otherwise blank screen ~4.7s in and became the LCP element. The
+  // statically-prerendered HTML at FCP, before the JS bundle hydrates. The branded loaders
+  // below, by contrast, only render after the bundle parses (historically the bundled GIF
+  // appeared on an otherwise blank screen ~4.7s in and became the LCP element). The
   // `--ds-*` tokens come from the render-blocking critical CSS in _document; the hex values are
   // neutral fallbacks. The keyframes go through next/head (keyed) so they land in <head> as
   // valid HTML and are de-duplicated if more than one Loader mounts.
@@ -63,22 +73,28 @@ const Loader: React.FC<LoaderProps> = ({ style }) => {
   //   1. Explicit per-tenant loaderUrl (e.g. Rackspace's ria-icon) — always wins.
   //   2. White-label client with no explicit loaderUrl — the brand-neutral spinner above
   //      (no per-client config, never leaks the Nudgebee bee).
-  //   3. Default (Nudgebee) tenant — the bundled nubi bee GIF.
+  //   3. Default (Nudgebee) tenant — the flying-Nubi mascot animation (CSS/SVG,
+  //      replaced the bundled Loader.gif).
   if (!loaderUrl && isWhiteLabel) {
     return neutralSpinner;
   }
 
-  const iconSrc = loaderUrl || Loadergif;
+  if (!loaderUrl) {
+    return (
+      <div style={loaderStyle} role='status'>
+        <NubiAnimation state='flying' size={ds.space.mul(0, 75)} ariaLabel='Loading...' />
+      </div>
+    );
+  }
 
   return (
-    <div style={loaderStyle}>
+    <div style={loaderStyle} role='status'>
       <SafeIcon
         unoptimized={true}
-        src={iconSrc}
+        src={loaderUrl}
         alt='Loading...'
-        // Intrinsic dims required by next/image when src is a URL string;
-        // ignored for the bundled StaticImageData fallback. CSS below keeps
-        // the visual size at 150px regardless of source.
+        // Intrinsic dims required by next/image when src is a URL string.
+        // CSS below keeps the visual size at 150px regardless of source.
         width={150}
         height={116}
         style={{

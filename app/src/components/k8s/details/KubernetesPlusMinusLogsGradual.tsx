@@ -309,7 +309,7 @@ const KubernetesPlusMinusLogsGradual: React.FC<KubernetesPlusMinusLogsGradualPro
   };
 
   if (initialLoading) {
-    return <Loader style={{ height: ds.space.mul(0, 100), width: '100%' }} />;
+    return <Loader style={{ position: 'static', height: ds.space.mul(0, 100), width: '100%' }} />;
   }
 
   return (

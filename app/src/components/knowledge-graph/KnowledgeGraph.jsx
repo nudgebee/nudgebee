@@ -2441,7 +2441,7 @@ const ServiceMapContent = () => {
               </Box>
             )}
             {isGraphLoading ? (
-              <Loader style={{ width: '100%', height: '100%' }} />
+              <Loader style={{ position: 'static', width: '100%', height: '100%' }} />
             ) : isLimitExceeded ? (
               <Box display='flex' flexDirection='column' alignItems='center' justifyContent='center' height='100%' width='100%' p={ds.space[6]}>
                 <Box

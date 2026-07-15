@@ -244,7 +244,7 @@ export const TriageRuleEventsTable = ({ query, onOpenTicketForm }) => {
   if (loading) {
     return (
       <Box p={ds.space[4]}>
-        <Loader style={{ height: ds.space.mul(0, 100), width: '100%' }} />
+        <Loader style={{ position: 'static', height: ds.space.mul(0, 100), width: '100%' }} />
       </Box>
     );
   }

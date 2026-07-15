@@ -313,7 +313,6 @@ export const scheduleBlackSVG = require('@assets/schedule_black.svg');
 export const uploadIcon = require('@assets/upload_dummy.svg');
 export const userIcon = require('@assets/ou-management/g_user.svg');
 export const error404Image = require('@assets/404_image.svg');
-export const Loadergif = require('@assets/Loader.gif');
 export const workflowLoadergif = require('@assets/workflowLoader.gif');
 
 export const copyRightImg = require('@assets/financials/copy1.svg');

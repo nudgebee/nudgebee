@@ -142,7 +142,7 @@ const DevOpsTimelineMUI = ({ eventId }: { eventId: string }) => {
   if (isLoading) {
     return (
       <Box display='flex' justifyContent='center' p={ds.space.mul(0, 20)}>
-        <Loader style={{ width: ds.space.mul(0, 50), height: ds.space.mul(0, 150) }} />
+        <Loader style={{ position: 'static', width: ds.space.mul(0, 50), height: ds.space.mul(0, 150) }} />
       </Box>
     );
   }
