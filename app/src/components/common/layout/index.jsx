@@ -399,13 +399,11 @@ const PageLayout = ({ children }) => {
                           </Typography>
                         </Tooltip>
                       )}
-                      <Tooltip title='Account Settings' placement='left'>
-                        <IconButton id='account-setting' onClick={(e) => setAnchorElUser(e.currentTarget)} size='small'>
-                          <Box>
-                            <SafeIcon alt='Settings Icon' src={ProfileOutlineIcon} width={16} height={16} />
-                          </Box>
-                        </IconButton>
-                      </Tooltip>
+                      <IconButton id='account-setting' onClick={(e) => setAnchorElUser(e.currentTarget)} size='small'>
+                        <Box>
+                          <SafeIcon alt='Settings Icon' src={ProfileOutlineIcon} width={16} height={16} />
+                        </Box>
+                      </IconButton>
                       <Menu
                         id='menu-appbar'
                         sx={{ '.css-1xyun6z-MuiPaper-root-MuiPopover-paper-MuiMenu-paper': { left: '62px !important' } }}

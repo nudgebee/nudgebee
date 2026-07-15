@@ -209,7 +209,7 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
             fontWeight={'400'}
             color={'var(--ds-gray-700)'}
           >
-            <SafeIcon src={SettingsIcon} alt='settings' /> Settings
+            <SafeIcon src={SettingsIcon} alt='settings' /> Tenant Settings
           </Typography>
         </MenuItem>
       );
