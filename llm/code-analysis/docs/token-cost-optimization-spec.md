@@ -87,7 +87,28 @@ efficiency work is kept, but behind flags and after the defect fixes.
   prefix weight (cold-start only ≈ cents) and removing tools limits the agent.
 - **"$4.49 is a dashboard artifact"** — falsified; cost is real (long-ctx tier).
 
-## 4. Next steps (outside this PR)
+## 4. Roadmap v3 — consolidated next phase (priority order)
+
+| # | Change | Size | Where |
+|---|---|---|---|
+| 1 | **Reflection structured-output**: genai `responseSchema` for ledger JSON — kills the parse-failure class throttling aging/carry-over/termination | S | code-analysis |
+| 2 | **Instruction-file pointer**: detect `AGENTS.md`/`CLAUDE.md`/`GEMINI.md`/`CONVENTIONS.md` at clone → ONE-LINE pointer in repo context; agent reads on demand via file_view (query-based, never injected wholesale, never executed) | XS | code-analysis |
+| 3 | **Chat RaisePr intent**: explicit phrase ("raise a pr", "create a pull request") in a direct `@agent_code_2` message → `RaisePr=true` at the chat entrypoint (entrypoint-owns-intent rule); ack message confirms. Today chat can NEVER produce a PR | S | llm-server |
+| 4 | **Model tiering** planning/execution/summary (`LLM_MODEL_PLANNING/EXECUTION/SUMMARY`, each falling back to the single model): specialist loops=planning; **fixer=execution with slim fresh context + leaner template** (Aider architect/editor pattern — editor gets plan text only, no history, no map); router/reflection/compaction/evidence/PR-assembly=summary. One model per loop, never mid-loop | M | code-analysis |
+| 5 | **Tier forwarding + dev config**: `ForwardedLLMConfig` carries the 3 tier picks (llm-server already resolves `LlmTierModels`); dev drops 3.1-pro-for-everything → planning-only or flash. Biggest pure-$ change | S+config | llm-server + env |
+| 6 | **Post-edit syntax gate** (parse-only, tri-state, advisory): after each `replace`/`write_file`, run a dependency-free parse check (`gofmt -e` for .go, `python3 -m py_compile` for .py; no matching parser → silently not-checked). NEVER runs project builds/linters/tests (workspace pod has no dependency builder — env-shaped failures must not exist). Failure appends ONE bounded observation; never blocks | S | code-analysis |
+| 7 | **replace.go hardening** (Aider editblock lessons): near-miss "did you mean these actual lines" failure report; applied-edits bookkeeping ("don't re-send"); uniform-leading-whitespace-offset and `...`-ellipsis matchers. NO edit-distance fuzzy replace (Aider deliberately dead-coded it — too risky) | S | code-analysis |
+| 8 | **Persistence across runs/follow-ups** — version-keyed knowledge, NEVER conclusions (the event-RCA-pinned-to-first-occurrence bug is the proven failure mode): (a) store the run's final ledger on the analysis record; follow-ups forward it → `SetSeedLedger`, stamped with repo HEAD ("from commit X — verify" when HEAD moved); (b) repo-knowledge cache keyed repo@HEAD (module roots, instruction-file locations) beside the existing clone cache; (c) long-term gotchas → emit to llm-server's existing memory system, no parallel store | M | both |
+| 9 | **Telemetry**: dev/prod readout of aging activation, iteration saturation (was 59%), gate-advisory rate, fix-loop call counts; per-run token totals in `/status` so llm-server records them | XS | both |
+
+Aider comparison findings backing items 4/6/7: architect/editor split (planner in prose, cheap
+editor with fresh minimal context), default lint = tree-sitter/parse-only fatal-only (NOT
+project toolchains), bounded reflection (max 3) with block-level failure reports. Aider does
+NOT auto-read AGENTS.md/CLAUDE.md (manual `--read` only) — item 2 goes beyond it, following
+the Claude Code / Codex / Cursor convention. Skipped from Aider: cache-keepalive pings (our
+runs are continuous), edit-distance fuzzy matching (they dead-coded it themselves).
+
+## 4b. Next steps (previous list, still valid)
 
 - **A1 — Dev model config**: move dev's code agent off `gemini-3.1-pro-preview`
   to a flash-tier model (verify ALL override layers: env, helm, DB llm-config).

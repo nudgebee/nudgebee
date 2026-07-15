@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -225,6 +226,85 @@ func convertToLlmsTools(tools []ToolDefinition) []llms.Tool {
 // back into subsequent requests.
 //
 // This approach matches how Gemini CLI handles multi-turn function calling.
+// ensureGenAIClient lazily constructs the direct genai client (once).
+func (c *Client) ensureGenAIClient() error {
+	if c.genaiClient != nil {
+		return nil
+	}
+	if c.config.LLM.ApiKey == "" {
+		return fmt.Errorf("LLM_PROVIDER_API_KEY environment variable is required for GoogleAI provider")
+	}
+	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey:  c.config.LLM.ApiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create genai client: %w", err)
+	}
+	c.genaiClient = client
+	return nil
+}
+
+// ErrStructuredOutputUnsupported is returned by GenerateStructuredJSON when the
+// configured provider has no native structured-output path; callers fall back
+// to plain generation plus their own text-extraction parsing.
+var ErrStructuredOutputUnsupported = errors.New("structured output not supported for this provider")
+
+// GenerateStructuredJSON forces the model to return JSON conforming to schema,
+// using genai's ResponseMIMEType + ResponseSchema (GoogleAI only). Built for
+// the reflection step: free-text ledger responses measurably failed to parse
+// 1-2x per run (prose around the JSON, truncation), silently stalling the
+// distillation watermark that observation aging and ledger carry-over depend
+// on. Single attempt, no retry loop — mirrors GenerateContentNoRetry semantics
+// (a failed reflection is non-fatal; the caller keeps its prior ledger).
+func (c *Client) GenerateStructuredJSON(ctx context.Context, messages []llms.MessageContent, schema *genai.Schema) (string, error) {
+	if Provider(c.config.LLM.Provider) != ProviderGoogleAI {
+		return "", ErrStructuredOutputUnsupported
+	}
+	if err := c.ensureGenAIClient(); err != nil {
+		return "", err
+	}
+	systemInstruction, history := convertMessagesToGenAI(messages)
+	if len(history) == 0 {
+		return "", fmt.Errorf("no messages to send")
+	}
+	temp := float32(0.1)
+	cfg := &genai.GenerateContentConfig{
+		MaxOutputTokens:  8192,
+		Temperature:      &temp,
+		ResponseMIMEType: "application/json",
+		ResponseSchema:   schema,
+	}
+	if systemInstruction != nil {
+		cfg.SystemInstruction = systemInstruction
+	}
+	resp, err := c.genaiClient.Models.GenerateContent(ctx, c.config.LLM.Model, history, cfg)
+	if err != nil {
+		return "", fmt.Errorf("structured generation failed (model=%s): %w", c.config.LLM.Model, err)
+	}
+	if resp == nil || len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
+		return "", fmt.Errorf("structured generation returned no candidates")
+	}
+	if resp.UsageMetadata != nil {
+		c.addTokenUsage(
+			int(resp.UsageMetadata.PromptTokenCount),
+			int(resp.UsageMetadata.CandidatesTokenCount),
+			int(resp.UsageMetadata.TotalTokenCount),
+			int(resp.UsageMetadata.CachedContentTokenCount),
+		)
+	}
+	var b strings.Builder
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if part != nil && part.Text != "" {
+			b.WriteString(part.Text)
+		}
+	}
+	if strings.TrimSpace(b.String()) == "" {
+		return "", fmt.Errorf("structured generation returned empty text")
+	}
+	return b.String(), nil
+}
+
 func (c *Client) generateContentWithGenAI(
 	ctx context.Context,
 	messages []llms.MessageContent,
@@ -232,18 +312,8 @@ func (c *Client) generateContentWithGenAI(
 	session *GenAISession,
 ) (*llms.ContentResponse, error) {
 	// Create genai client (lazily, once)
-	if c.genaiClient == nil {
-		if c.config.LLM.ApiKey == "" {
-			return nil, fmt.Errorf("LLM_PROVIDER_API_KEY environment variable is required for GoogleAI provider")
-		}
-		client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
-			APIKey:  c.config.LLM.ApiKey,
-			Backend: genai.BackendGeminiAPI,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create genai client: %w", err)
-		}
-		c.genaiClient = client
+	if err := c.ensureGenAIClient(); err != nil {
+		return nil, err
 	}
 
 	// Convert langchaingo messages to genai format, extracting system instruction.

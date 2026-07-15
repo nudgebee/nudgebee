@@ -2,14 +2,58 @@ package planners
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/tmc/langchaingo/llms"
+	"google.golang.org/genai"
 
 	"nudgebee/code-analysis-agent/common"
+	"nudgebee/code-analysis-agent/llm"
 )
+
+// ledgerGenAISchema is the genai structured-output schema for the reflection
+// ledger — the machine-enforced twin of ledgerJSONSchema (ledger.go). Keeping
+// both in sync matters: this one guarantees parseability, the text one remains
+// the fallback contract for providers without native structured output.
+var ledgerGenAISchema = &genai.Schema{
+	Type: genai.TypeObject,
+	Properties: map[string]*genai.Schema{
+		"findings": {
+			Type: genai.TypeArray,
+			Items: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"claim":              {Type: genai.TypeString},
+					"evidence_step_ids":  {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeInteger}},
+					"sub_question_index": {Type: genai.TypeInteger},
+				},
+				Required: []string{"claim"},
+			},
+		},
+		"citations": {
+			Type: genai.TypeArray,
+			Items: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"file_path":  {Type: genai.TypeString},
+					"line_start": {Type: genai.TypeInteger},
+					"line_end":   {Type: genai.TypeInteger},
+					"snippet":    {Type: genai.TypeString},
+					"note":       {Type: genai.TypeString},
+				},
+				Required: []string{"file_path", "line_start", "snippet"},
+			},
+		},
+		"open_sub_questions": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
+		"answer":             {Type: genai.TypeString},
+		"confidence":         {Type: genai.TypeString, Enum: []string{"High", "Medium", "Low"}},
+		"ready_to_submit":    {Type: genai.TypeBoolean},
+	},
+	Required: []string{"ready_to_submit"},
+}
 
 // defaultReflectionEvery is the cadence at which the planner runs a reflection
 // pass. K=5 means: after every 5 completed tool calls, ask the cheap model to
@@ -66,21 +110,33 @@ func (p *ReActPlanner) reflect(ctx context.Context, goal *Goal, prior *Ledger, r
 		},
 	}
 
-	response, err := p.llmClient.GenerateContentNoRetry(rctx, messages)
-	if err != nil {
-		return prior, fmt.Errorf("reflect: LLM call failed: %w", err)
-	}
-	if len(response.Choices) == 0 {
-		return prior, fmt.Errorf("reflect: LLM returned no choices")
-	}
-
-	raw := response.Choices[0].Content
-	jsonStr := p.extractJSONFromContent(p.logger, raw)
-	if jsonStr == "" {
-		jsonStr = p.repairTruncatedJSON(raw)
-	}
-	if jsonStr == "" {
-		return prior, fmt.Errorf("reflect: no parseable JSON in LLM output (len=%d)", len(raw))
+	// Structured output first (GoogleAI): schema-enforced JSON eliminates the
+	// prose-around-JSON / truncation parse failures that measurably stalled the
+	// distillation watermark 1-2x per run. Falls back to the free-text path for
+	// providers without native structured output.
+	var jsonStr string
+	structured, serr := p.llmClient.GenerateStructuredJSON(rctx, messages, ledgerGenAISchema)
+	switch {
+	case serr == nil:
+		jsonStr = structured
+	case errors.Is(serr, llm.ErrStructuredOutputUnsupported):
+		response, err := p.llmClient.GenerateContentNoRetry(rctx, messages)
+		if err != nil {
+			return prior, fmt.Errorf("reflect: LLM call failed: %w", err)
+		}
+		if len(response.Choices) == 0 {
+			return prior, fmt.Errorf("reflect: LLM returned no choices")
+		}
+		raw := response.Choices[0].Content
+		jsonStr = p.extractJSONFromContent(p.logger, raw)
+		if jsonStr == "" {
+			jsonStr = p.repairTruncatedJSON(raw)
+		}
+		if jsonStr == "" {
+			return prior, fmt.Errorf("reflect: no parseable JSON in LLM output (len=%d)", len(raw))
+		}
+	default:
+		return prior, fmt.Errorf("reflect: LLM call failed: %w", serr)
 	}
 
 	next, err := ParseLedgerJSON(jsonStr)

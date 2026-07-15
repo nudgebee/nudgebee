@@ -158,6 +158,10 @@ func (t *WriteFileTool) Execute(_ context.Context, input map[string]any) core.NB
 	if purpose != "" {
 		observation += " (" + purpose + ")"
 	}
+	// Post-edit syntax gate (advisory, parse-only, tri-state) — same as the
+	// replace tool: a freshly written file with broken syntax is caught here
+	// for free instead of by LLM review or CI.
+	observation = CheckEditedFileSyntax(resolvedAbsPath).AppendToObservation(observation)
 	return core.CreateSuccessResponse(observation, observation, map[string]any{
 		"file_path":     filePath,
 		"absolute_path": resolvedAbsPath,
