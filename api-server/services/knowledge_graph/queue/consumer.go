@@ -45,7 +45,9 @@ func processKGUpdateMessage(msgCtx context.Context, data []byte) error {
 		return nil // Don't requeue malformed messages
 	}
 
-	logger := slog.Default().With(
+	// Stamp trace_id/span_id from the consumer span (msgCtx) so the whole KG
+	// update flow — which threads this logger, not a RequestContext — correlates.
+	logger := common.LoggerWithTrace(msgCtx, slog.Default()).With(
 		"tenant_id", message.TenantID,
 		"source", message.Source,
 		"correlation_id", message.CorrelationID,

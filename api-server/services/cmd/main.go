@@ -36,11 +36,17 @@ import (
 const CTX_IS_PUBLIC = "isPublic"
 
 var errorFormatter = slogformatter.ErrorFormatter("error")
+
+// TraceLogHandler stamps trace_id/span_id from the record context onto every
+// slog.XxxContext line, so context-style logging correlates in Loki without
+// threading a stamped logger through every call site.
 var logger = slog.New(
-	slogformatter.NewFormatterHandler(errorFormatter)(
-		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		}),
+	common.NewTraceLogHandler(
+		slogformatter.NewFormatterHandler(errorFormatter)(
+			slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+				Level: slog.LevelInfo,
+			}),
+		),
 	),
 )
 

@@ -42,7 +42,8 @@ func processWebhookMessage(msgCtx context.Context, data []byte) error {
 	sc := security.NewRequestContext(msgCtx, security.NewSecurityContextForSuperAdmin(), logger, nil, nil)
 
 	if err := core.ProcessStoredWebhook(sc, message.WebhookRowID); err != nil {
-		logger.Error("webhook_queue: failed to process stored webhook", "error", err)
+		// sc's logger carries the trace_id/span_id stamped by NewRequestContext.
+		sc.GetLogger().Error("webhook_queue: failed to process stored webhook", "error", err)
 		return nil // Don't requeue — errors are handled internally
 	}
 

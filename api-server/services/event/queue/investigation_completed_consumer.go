@@ -168,14 +168,17 @@ func processInvestigationCompleted(msgCtx context.Context, data []byte) error {
 		extra["analysis_status_reason"] = env.StatusReason
 	}
 
-	logger.Info("investigation_completed_queue: emitting lifecycle phase", "phase", string(phase), "status", env.Status)
+	// Log through the request context from here on — its logger carries the
+	// trace_id/span_id stamped by NewRequestContext (plus event_id/account_id
+	// from the logger passed into loadEventMapFn above).
+	ctx.GetLogger().Info("investigation_completed_queue: emitting lifecycle phase", "phase", string(phase), "status", env.Status)
 	emitLifecycleFn(ctx, phase, eventMap, extra)
 
 	// Mark processed only after the deferred processors have run, so a
 	// transient failure above doesn't permanently suppress this event.
 	if err := common.CacheSet(investigationCompletedDedupNamespace, dedupKey, []byte("1"),
 		common.CacheSetWithExpiration(investigationCompletedDedupTTL)); err != nil {
-		logger.Warn("investigation_completed_queue: failed to set dedup marker (may double-run on redelivery)", "error", err)
+		ctx.GetLogger().Warn("investigation_completed_queue: failed to set dedup marker (may double-run on redelivery)", "error", err)
 	}
 
 	return nil

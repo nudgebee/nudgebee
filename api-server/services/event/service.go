@@ -1,6 +1,7 @@
 package event
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"errors"
@@ -1349,10 +1350,20 @@ func truncateStringToMaxBytes(s string, maxBytes int) string {
 // insertConfig holds optional InsertEvent behavior toggles.
 type insertConfig struct {
 	skipWorkflowRefire bool
+	publishCtx         context.Context
 }
 
 // InsertOption configures InsertEvent.
 type InsertOption func(*insertConfig)
+
+// WithPublishContext threads the caller's trace context into the post-process
+// MQ publishes, so the event queue consumer — and everything it fans out to
+// (triage, llm analysis, notifications) — continues the caller's distributed
+// trace instead of starting a fresh root. A nil / span-less context is a no-op
+// (MqPublish injects headers only when a valid span is present).
+func WithPublishContext(ctx context.Context) InsertOption {
+	return func(c *insertConfig) { c.publishCtx = ctx }
+}
 
 // WithoutWorkflowRefire disables the event-trigger workflow re-fire that
 // InsertEvent otherwise enqueues when it UPDATES an existing FIRING event.
@@ -1474,6 +1485,7 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 			map[string]any{"event_id": id},
 			common.MqPublishWithExpiration(1*time.Hour),
 			common.MqPublishWithBackgroundRetry(),
+			common.MqPublishWithContext(cfg.publishCtx),
 		)
 	} else if !cfg.skipWorkflowRefire && strings.EqualFold(string(event.Status), string(EventStatusFiring)) {
 		// Re-fire of an existing event: ON CONFLICT updated an already-present row.
@@ -1491,6 +1503,7 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 			map[string]any{"event_id": id, "workflow_only": true},
 			common.MqPublishWithExpiration(1*time.Hour),
 			common.MqPublishWithBackgroundRetry(),
+			common.MqPublishWithContext(cfg.publishCtx),
 		)
 	}
 
@@ -1843,7 +1856,7 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 			"tenant", tenantId,
 			"account_id", accountId)
 
-		id, err := InsertEvent(webhookEvent, id)
+		id, err := InsertEvent(webhookEvent, id, WithPublishContext(sc.GetContext()))
 
 		if err != nil {
 			sc.GetLogger().Error("InvestigateEvent: InsertEvent failed",

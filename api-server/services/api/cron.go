@@ -55,8 +55,8 @@ func buildContextFromCronPayload(c *gin.Context, h *CronRequest, tracer *trace.T
 	} else {
 		ctx = context.Background()
 	}
-	span := trace.SpanFromContext(ctx)
-	childLogger := logger.With("cron_job", h.Name, "cron_id", h.Id, "trace_id", span.SpanContext().TraceID().String())
+	// trace_id/span_id are stamped by NewRequestContext from ctx.
+	childLogger := logger.With("cron_job", h.Name, "cron_id", h.Id)
 	return security.NewRequestContext(ctx, security.NewSecurityContextForSuperAdmin(), childLogger, tracer, meter)
 }
 
