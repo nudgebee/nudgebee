@@ -302,7 +302,7 @@ const KubernetesDashboardIssues: React.FC<KubernetesTableProps> = ({ id, allClus
               )
               .then((issueResponse) => {
                 const workloadCount = issueResponse
-                  .filter((row: any) => ['Job', 'StatefulSet', 'Deployment', 'DaemonSet'].includes(row.subject_type))
+                  .filter((row: any) => ['Job', 'StatefulSet', 'Deployment', 'DaemonSet', 'Rollout'].includes(row.subject_type))
                   .reduce((acc: any, row: any) => acc + row.event_count, 0);
                 setFilterOptions((prevFilterOptions) => {
                   // prevFilterOptions is the state after counts were cleared on L240
@@ -346,7 +346,7 @@ const KubernetesDashboardIssues: React.FC<KubernetesTableProps> = ({ id, allClus
     setIssueSubTab(value);
     if (value === 1) {
       setFindingType('issue');
-      setIssueSubType(['Job', 'StatefulSet', 'Deployment', 'DaemonSet']);
+      setIssueSubType(['Job', 'StatefulSet', 'Deployment', 'DaemonSet', 'Rollout']);
     } else if (value === 2) {
       setIssueSubType(['cluster']);
     } else if (value === 0) {

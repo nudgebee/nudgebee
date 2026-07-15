@@ -32,7 +32,7 @@ func (a *podLogAction) CanAutoExecute(ctx PlaybookActionContext) bool {
 		kind = strings.ToLower(ctx.GetEvent().SubjectType)
 	}
 	// Skip for workload types — logs_enricher expects a pod name, not a workload name.
-	if kind == "deployment" || kind == "daemonset" || kind == "statefulset" || kind == "replicaset" {
+	if kind == "deployment" || kind == "daemonset" || kind == "statefulset" || kind == "replicaset" || kind == "rollout" {
 		return false
 	}
 	// Resolve namespace: SubjectNamespace is canonical, Labels is fallback

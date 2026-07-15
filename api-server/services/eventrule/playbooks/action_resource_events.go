@@ -25,7 +25,7 @@ func (a *resourceEventsAction) CanAutoExecute(ctx PlaybookActionContext) bool {
 	if !resourceEventsAggKeys[ctx.GetEvent().AggregationKey] {
 		// Also fire for any pod/node-subject event from a trigger.
 		st := strings.ToLower(ctx.GetEvent().SubjectType)
-		if st != "pod" && st != "node" && st != "deployment" && st != "statefulset" && st != "daemonset" && st != "job" {
+		if st != "pod" && st != "node" && st != "deployment" && st != "statefulset" && st != "daemonset" && st != "job" && st != "rollout" {
 			return false
 		}
 	}

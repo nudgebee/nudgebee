@@ -100,7 +100,7 @@ const Notifications = () => {
       if (selectedNamespace) {
         const query: any = {};
         query['namespace'] = selectedNamespace;
-        query['kind'] = 'Deployment';
+        query['kind'] = ['Deployment', 'Rollout'];
         const response: any = await apiKubernetes.getAllK8sWorkload(query);
         const workloadNameArray: string[] = response?.data.map((item: any) => item.name);
         const uniqueWorkloadNames = Array.from(new Set(workloadNameArray));

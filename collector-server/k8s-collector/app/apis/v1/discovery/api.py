@@ -30,7 +30,7 @@ class Discovery(BaseAuthApi):
         cloud_account_id = request.cloud_account_id
         tenant = request.tenant
         if resource_type == "service":
-            types = ["Pod", "DaemonSet", "StatefulSet", "Deployment"]
+            types = ["Pod", "DaemonSet", "StatefulSet", "Deployment", "Rollout"]
         elif resource_type == "node":
             types = ["node"]
         else:

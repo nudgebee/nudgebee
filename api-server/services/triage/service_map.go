@@ -217,7 +217,7 @@ func (g *DependencyGraph) registerNodeAliases(canonical, namespace, nodeType, na
 	}
 	// Event-side kind synonyms. nodeType is the canonical form (from the graph
 	// source); the rest are what different event collectors typically write.
-	kinds := []string{nodeType, "Deployment", "StatefulSet", "DaemonSet", "Pod", "Service", "Workload"}
+	kinds := []string{nodeType, "Deployment", "StatefulSet", "DaemonSet", "Rollout", "Pod", "Service", "Workload"}
 	seen := make(map[string]struct{}, len(kinds)*2)
 	for _, kind := range kinds {
 		if kind == "" {

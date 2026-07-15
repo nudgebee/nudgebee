@@ -30,7 +30,7 @@ interface EvidencePanelProps {
   fullRecommendation?: any;
 }
 
-const K8S_RESOURCE_TYPES = new Set(['Pod', 'Deployment', 'StatefulSet', 'DaemonSet', 'ReplicaSet', 'Job', 'CronJob']);
+const K8S_RESOURCE_TYPES = new Set(['Pod', 'Deployment', 'StatefulSet', 'DaemonSet', 'ReplicaSet', 'Job', 'CronJob', 'Rollout']);
 
 const RIGHTSIZING_RULE_MAP: Record<string, string> = {
   replica_right_sizing: 'replica',

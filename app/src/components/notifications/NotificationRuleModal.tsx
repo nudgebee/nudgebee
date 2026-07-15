@@ -318,7 +318,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
         const query: any = {};
         query['namespace'] = selectedNamespace;
         query['cloud_account_id'] = selectedCluster;
-        query['workload_type'] = 'Deployment';
+        query['workload_type'] = ['Deployment', 'Rollout'];
         query.isActive = true;
         setLoadingDropdown((prev) => ({
           ...prev,

@@ -62,13 +62,14 @@ type K8sResourceSearchStrategy struct {
 var k8sResourceTypeMappings = map[string][]string{
 	"pod":                {"pods", "po"},
 	"service":            {"services", "svc"},
-	"deployment":         {"deployments", "deploy", "statefulsets", "sts", "daemonsets", "ds"}, // Generic "deployment" includes all workload types
+	"deployment":         {"deployments", "deploy", "statefulsets", "sts", "daemonsets", "ds", "rollouts"}, // Generic "deployment" includes all workload types
 	"statefulset":        {"statefulsets", "sts"},
 	"daemonset":          {"daemonsets", "ds"},
 	"job":                {"jobs", "cronjobs", "cj"}, // Generic "job" includes both job types
 	"cronjob":            {"cronjobs", "cj"},
-	"workload":           {"deployments", "statefulsets", "daemonsets", "jobs", "cronjobs"}, // Generic workload term
-	"app":                {"deployments", "statefulsets", "daemonsets"},                     // Generic app term
+	"rollout":            {"rollouts", "ro"},
+	"workload":           {"deployments", "statefulsets", "daemonsets", "jobs", "cronjobs", "rollouts"}, // Generic workload term
+	"app":                {"deployments", "statefulsets", "daemonsets", "rollouts"},                     // Generic app term
 	"configmap":          {"configmaps", "cm"},
 	"secret":             {"secrets"},
 	"ingress":            {"ingresses", "ing"},
@@ -1034,7 +1035,7 @@ func (r K8sResourceSearchTool) expandWorkloadResources(resources []K8sResourceIn
 	expandedResources = append(expandedResources, resources...) // Keep original resources
 
 	for _, resource := range resources {
-		if resource.Type == "deployments" || resource.Type == "statefulsets" || resource.Type == "daemonsets" || resource.Type == "jobs" {
+		if resource.Type == "deployments" || resource.Type == "statefulsets" || resource.Type == "daemonsets" || resource.Type == "jobs" || resource.Type == "rollouts" {
 			relatedPods := r.findRelatedPods(resource, nbRequestContext)
 			expandedResources = append(expandedResources, relatedPods...)
 		}
