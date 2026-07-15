@@ -20,6 +20,7 @@
  */
 import * as React from 'react';
 import { Box } from '@mui/material';
+import { useRouter } from 'next/router';
 import RocketLaunchOutlinedIcon from '@mui/icons-material/RocketLaunchOutlined';
 import DashboardOutlinedIcon from '@mui/icons-material/DashboardOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
@@ -63,17 +64,91 @@ const GRANULARITY_OPTIONS: { value: GatewayGranularity; label: string }[] = [
 
 const DATE_RANGE_SHORTCUTS = ['Last 24 Hours', 'Current Week', 'Current Month', 'Last Month'];
 
-type TabId = 'connect' | 'overview' | 'models' | 'users' | 'requests';
+// Every sub-tab, and the source of truth for TabId — a new tab added here is
+// automatically deep-linkable, and one added only to `tabOptions` below fails to
+// type-check rather than silently resolving to the default.
+const TAB_IDS = ['connect', 'overview', 'models', 'users', 'requests'] as const;
+
+type TabId = (typeof TAB_IDS)[number];
+
+// The parent's top-level fragment for this tab (optimise page `filterOptions`).
+// The sub-tab is encoded as `#ai-gateway/<sub-tab>` so a shared link lands on the
+// exact sub-tab. TabId doubles as the URL fragment — no separate mapping needed.
+const PARENT_FRAGMENT = 'ai-gateway';
+const DEFAULT_TAB: TabId = 'overview';
+
+// Resolves the current URL hash to the sub-tab it selects.
+//   null            — the hash isn't this tab's (we're heading to another top-level
+//                     tab); leave our state alone.
+//   DEFAULT_TAB     — the hash is ours but names no valid sub-tab. A bare `#ai-gateway`
+//                     is what the top-level tab's own link points at, so it must resolve
+//                     to the default rather than "no opinion" — otherwise clicking that
+//                     tab strips the sub-fragment and the URL stops matching the screen.
+//                     Mirrors Auto Optimize, whose parent tab resets to its first sub-tab.
+//   TabId           — the sub-tab named in `#ai-gateway/<sub-tab>`.
+function subTabFromHash(): TabId | null {
+  if (typeof window === 'undefined') return null;
+  const hash = decodeURIComponent((window.location.hash || '').replace('#', ''));
+  const [parent, sub] = hash.split('/');
+  if (parent !== PARENT_FRAGMENT) return null;
+  return TAB_IDS.includes(sub as TabId) ? (sub as TabId) : DEFAULT_TAB;
+}
 
 export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
+  const router = useRouter();
   const [filters, setFilters] = React.useState<GatewayFilters>(() => defaultFilters());
-  const [tab, setTab] = React.useState<TabId>('overview');
+  // Initialize from the URL so a deep link (`#ai-gateway/users`) opens on that
+  // sub-tab; fall back to Overview.
+  const [tab, setTab] = React.useState<TabId>(() => subTabFromHash() ?? DEFAULT_TAB);
   // Users → Requests drill-in: when set, the Requests tab is scoped to this user.
   const [selectedUser, setSelectedUser] = React.useState<{ id: string; name: string } | null>(null);
 
   // Tenant scoping is server-side: the RPC gateway injects the x-tenant-id header
   // from the session, so the UI sends no tenant in the request.
   const { loading, error, metrics } = useGatewayData(accountId, filters);
+
+  // Tab → URL. Writing `#ai-gateway/<tab>` on every tab change (click or drill-in)
+  // makes the current sub-tab shareable and survives reload. A shallow `replace`
+  // keeps this out of the history stack and off the data-fetch path; the parent
+  // optimise page matches on the `ai-gateway` prefix only, so it stays on this tab
+  // and ignores the sub-fragment (it has no `tabOptions`).
+  //
+  // The guards mean mount never navigates: `tab` is seeded from the hash, so they
+  // already agree. Only a real tab change writes.
+  React.useEffect(() => {
+    const sub = subTabFromHash();
+    // A foreign hash means another top-level tab owns the URL — either we're being
+    // switched away from, or a click on our own tab hasn't landed its navigation
+    // yet (AnchorComponent selects the tab synchronously, ahead of the Link push).
+    // Writing here would clobber that hash and race the navigation already in
+    // flight. Same rule as the reader below: not our hash, not our business.
+    if (sub === null || sub === tab) return;
+    // `replace` rejects with a `cancelled` error ("Cancel rendering route") when a
+    // newer navigation supersedes this one — e.g. a top-level tab click landing
+    // mid-flight. The newer URL is the one we want, so a cancellation is expected,
+    // not a failure; absorb it and let any real navigation error surface.
+    router
+      .replace({ pathname: router.pathname, query: router.query, hash: `#${PARENT_FRAGMENT}/${tab}` }, undefined, { shallow: true })
+      .catch((err: Error & { cancelled?: boolean }) => {
+        if (!err?.cancelled) throw err;
+      });
+    // Deliberately keyed on `tab` alone: this effect writes, and the one below reads.
+    // Adding `router` (a fresh object each render) would re-fire the write on every
+    // navigation and fight that reader. The closed-over router is from this commit,
+    // so its pathname/query are current.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  // URL → tab, for hash changes that don't originate from setTab: browser
+  // back/forward, and the top-level AI Gateway tab's own link (which points at a
+  // bare `#ai-gateway`, and so resolves to the default sub-tab — without this the
+  // screen would keep showing the old sub-tab that the URL no longer names).
+  // A null means the hash belongs to another top-level tab and isn't ours to act on.
+  React.useEffect(() => {
+    const sub = subTabFromHash();
+    if (sub && sub !== tab) setTab(sub);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router.asPath]);
 
   // Bridge the 'YYYY-MM-DD' strings to the picker's epoch-ms model and back.
   const dateTimeValue = React.useMemo(
@@ -104,7 +179,9 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   // Pass MUI icons as component references (not JSX elements) so CustomTabs
   // renders them with its built-in `.tab-icon` styling (idle grey, selected
   // colour change) — matching every other CustomTabs usage.
-  const tabOptions = [
+  // `value: TabId` ties each tab to TAB_IDS, so a tab can't be shown here without
+  // also being deep-linkable.
+  const tabOptions: { value: TabId; text: string; icon: React.ElementType; iconSize: number }[] = [
     { value: 'connect', text: 'Connect', icon: RocketLaunchOutlinedIcon, iconSize: 16 },
     { value: 'overview', text: 'Overview', icon: DashboardOutlinedIcon, iconSize: 16 },
     { value: 'models', text: 'Models', icon: AutoAwesomeOutlinedIcon, iconSize: 16 },
