@@ -514,7 +514,7 @@ class Transformer:
 
     @staticmethod
     def __to_link_button(i, link):
-        return {
+        button = {
             "type": "button",
             "text": {
                 "type": "plain_text",
@@ -523,6 +523,9 @@ class Transformer:
             "action_id": f"{ACTION_LINK}_{i}",
             "url": link.url,
         }
+        if getattr(link, "style", None):
+            button["style"] = link.style
+        return button
 
     @staticmethod
     def __get_action_block_for_choices(choices: Dict[str, CallbackChoice] = None):

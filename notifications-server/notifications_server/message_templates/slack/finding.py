@@ -11,10 +11,12 @@ from notifications_server.configs.settings import (
     URLRoutes,
 )
 from notifications_server.message_templates.base import BaseBlock
+from notifications_server.message_templates.slack.recommendation_nudge_digest import STRIPE_CRITICAL, STRIPE_HIGH
 from notifications_server.message_templates.blocks import (
     MarkdownBlock,
     CallbackBlock,
     CallbackChoice,
+    ContextBlock,
     DividerBlock,
     FileBlock,
     ActionListBlock,
@@ -148,7 +150,14 @@ def _create_evidence_attachment(evidence_slack_blocks: List) -> dict:
     }
 
 
-def _to_blocks(slack_app, report_blocks: List[BaseBlock], evidence_blocks: List[BaseBlock], title: str, installation):
+def _to_blocks(
+    slack_app,
+    report_blocks: List[BaseBlock],
+    evidence_blocks: List[BaseBlock],
+    title: str,
+    installation,
+    stripe_color=None,
+):
     # Separate main blocks into file and other blocks
     file_blocks, other_blocks = _separate_blocks(report_blocks)
 
@@ -170,6 +179,12 @@ def _to_blocks(slack_app, report_blocks: List[BaseBlock], evidence_blocks: List[
             attachments.append(_create_evidence_attachment(evidence_slack_blocks))
 
         file_blocks.extend(evidence_file_blocks)
+
+    # Severity stripe (design mocks): the finding body ships as one colored
+    # attachment; evidences keep their own attachment behind it.
+    if stripe_color and output_blocks:
+        attachments.insert(0, {"color": stripe_color, "fallback": title, "blocks": output_blocks})
+        output_blocks = []
 
     LOG.debug(
         f"--sending to slack--\ntitle:{title}\nblocks: {output_blocks}\nattachments:"
@@ -223,7 +238,7 @@ def get_slack_finding_message(slack_app, installation, finding):
         ),
     ]
     identity = " · ".join(bit for bit in identity_bits if bit)
-    blocks.extend([MarkdownBlock(text=identity), DividerBlock()])
+    blocks.extend([ContextBlock(text=identity), DividerBlock()])
 
     # Create separate list for evidence blocks
     evidence_blocks: List[BaseBlock] = []
@@ -264,6 +279,7 @@ def get_slack_finding_message(slack_app, installation, finding):
                             LinkProp(
                                 text="View Details",
                                 url=investigate_url,
+                                style="primary",
                             )
                         ]
                     )
@@ -273,4 +289,6 @@ def get_slack_finding_message(slack_app, installation, finding):
         )
     )
 
-    return _to_blocks(slack_app, blocks, evidence_blocks, title, installation)
+    priority = (finding.get("priority") or "").strip().upper()
+    stripe = STRIPE_CRITICAL if priority == "HIGH" else STRIPE_HIGH
+    return _to_blocks(slack_app, blocks, evidence_blocks, title, installation, stripe_color=stripe)

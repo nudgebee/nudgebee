@@ -4,7 +4,13 @@ from pydantic import BaseModel
 
 from notifications_server import copy_library
 from notifications_server.configs.settings import settings, URLRoutes
-from notifications_server.message_templates.slack.recommendation_nudge_digest import MAX_ALERT_ITEMS, accounts_phrase
+from notifications_server.message_templates.slack.recommendation_nudge_digest import (
+    MAX_ALERT_ITEMS,
+    STRIPE_CRITICAL,
+    accounts_phrase,
+    item_attachment,
+    neutral_footer_attachment,
+)
 
 
 class Account(BaseModel):
@@ -112,43 +118,46 @@ def get_batched_findings_message_template(payload: BatchedFindingsPayload):
         create_divider_block(),
     ]
 
+    attachments = []
     shown = criticals[:MAX_ALERT_ITEMS]
     for finding in shown:
-        blocks.append(create_section_block(f"*{finding.title}*\n*{finding.count}×* in the window"))
         account_name = accounts_map.get(finding.account_id, finding.account_id)
         facts = (
             f"{finding.severity.title()} priority · {format_finding_workload(finding)} · "
             f"{finding.cluster} · Acct {account_name}"
         )
-        blocks.append(create_context_block(facts))
-        blocks.append(
+        item_blocks = [
+            create_section_block(f"*{finding.title}*\n*{finding.count}×* in the window"),
+            create_context_block(facts),
             {
                 "type": "actions",
                 "elements": [
                     {
                         "type": "button",
                         "text": {"type": "plain_text", "text": "Details"},
+                        "style": "primary",
                         "url": settings.urls.investigate_url(
                             finding.account_id, finding.id, utm_source=URLRoutes.UTMSource.SLACK
                         ),
                     }
                 ],
-            }
-        )
+            },
+        ]
+        attachments.append(item_attachment(STRIPE_CRITICAL, finding.title, item_blocks))
 
+    footer_blocks = []
     remaining = payload.total_findings_count - sum(f.count for f in shown)
     if remaining > 0:
-        blocks.append(create_section_block(f"_+{remaining} more findings in the window_"))
+        footer_blocks.append(create_section_block(f"_+{remaining} more findings in the window_"))
 
     top_aggregated = _merged_aggregated(payload)
     if top_aggregated:
         also_seen = " · ".join(f"{copy_library.display_name(key)} ({count})" for key, count in top_aggregated)
-        blocks.append(create_context_block(f"Also seen: {also_seen}"))
+        footer_blocks.append(create_context_block(f"Also seen: {also_seen}"))
 
-    blocks.append(create_divider_block())
     if len(unique_account_ids) == 1:
         only_account = next(iter(unique_account_ids))
-        blocks.append(
+        footer_blocks.append(
             {
                 "type": "actions",
                 "elements": [
@@ -162,10 +171,12 @@ def get_batched_findings_message_template(payload: BatchedFindingsPayload):
             }
         )
     else:
-        blocks.append(create_section_block(f"View all findings on {settings.urls.branding_link('slack')}"))
+        footer_blocks.append(create_section_block(f"View all findings on {settings.urls.branding_link('slack')}"))
+    attachments.append(neutral_footer_attachment(footer_blocks, "View all findings"))
 
     return {
         "text": f"{headline} — {payload.total_findings_count} findings",
         "blocks": blocks[:50],
+        "attachments": attachments[:20],
         "unfurl_links": False,
     }

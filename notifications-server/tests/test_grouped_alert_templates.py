@@ -21,9 +21,19 @@ from notifications_server.message_templates.slack.grouped_slo_notification impor
 from notifications_server.message_templates.slack.slo import SLOAlertParams
 
 
-def _text(blocks: List[Dict[str, Any]]) -> str:
+def _flat(msg_or_blocks):
+    """Accept a template result dict or a raw block list; items now ride in
+    colored attachments, so text/button extraction walks both."""
+    if isinstance(msg_or_blocks, dict):
+        return list(msg_or_blocks.get("blocks", [])) + [
+            b for a in msg_or_blocks.get("attachments", []) for b in a.get("blocks", [])
+        ]
+    return msg_or_blocks
+
+
+def _text(blocks) -> str:
     parts: List[str] = []
-    for b in blocks:
+    for b in _flat(blocks):
         if isinstance(b.get("text"), dict):
             parts.append(b["text"].get("text", ""))
         for e in b.get("elements", []) or []:
@@ -32,9 +42,9 @@ def _text(blocks: List[Dict[str, Any]]) -> str:
     return "\n".join(parts)
 
 
-def _buttons(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _buttons(blocks) -> List[Dict[str, Any]]:
     out = []
-    for b in blocks:
+    for b in _flat(blocks):
         if b.get("type") == "actions":
             out.extend(b["elements"])
     return out
@@ -75,12 +85,12 @@ class TestBatchedFindings:
     def test_criticals_render_capped_with_details_buttons(self):
         payload = _findings_payload([_finding(i, count=10 - i) for i in range(5)], total=40)
         msg = get_batched_findings_message_template(payload)
-        text = _text(msg["blocks"])
+        text = _text(msg)
 
         assert "Top critical findings across 1 account" in text
         assert "Crash loop on svc-0" in text and "Crash loop on svc-2" in text
         assert "Crash loop on svc-3" not in text  # capped at 3
-        buttons = _buttons(msg["blocks"])
+        buttons = _buttons(msg)
         detail_urls = [b["url"] for b in buttons if b["text"]["text"] == "Details"]
         assert len(detail_urls) == 3
         assert "id=f-0" in detail_urls[0] and "accountId=acc-1" in detail_urls[0]
@@ -88,31 +98,31 @@ class TestBatchedFindings:
     def test_overflow_counts_events_not_items(self):
         # shown items carry 10+9+8=27 occurrences of 40 total -> +13 more
         payload = _findings_payload([_finding(i, count=10 - i) for i in range(5)], total=40)
-        text = _text(get_batched_findings_message_template(payload)["blocks"])
+        text = _text(get_batched_findings_message_template(payload))
         assert "+13 more findings in the window" in text
 
     def test_no_criticals_headline_uses_total(self):
         payload = _findings_payload([], aggregated={"acc-1": {"CPUThrottlingHigh": 7}}, total=7)
-        text = _text(get_batched_findings_message_template(payload)["blocks"])
+        text = _text(get_batched_findings_message_template(payload))
         assert "7 findings across 1 account" in text
 
     def test_critical_count_drives_exact_headline(self):
         # 8 distinct criticals but only top-3 rendered — headline states the true 8
         payload = _findings_payload([_finding(i, count=10 - i) for i in range(5)], total=60, critical_count=8)
-        text = _text(get_batched_findings_message_template(payload)["blocks"])
+        text = _text(get_batched_findings_message_template(payload))
         assert "8 critical findings across 1 account" in text
         assert "Top critical findings" not in text
 
     def test_single_critical_headline_is_singular(self):
         payload = _findings_payload([_finding(0)], total=1, critical_count=1)
-        text = _text(get_batched_findings_message_template(payload)["blocks"])
+        text = _text(get_batched_findings_message_template(payload))
         assert "1 critical finding across 1 account" in text
         assert "1 critical findings" not in text
 
     def test_old_payload_without_count_falls_back(self):
         # critical_count defaults to 0 -> count-free headline, unchanged behavior
         payload = _findings_payload([_finding(0)], total=1)
-        text = _text(get_batched_findings_message_template(payload)["blocks"])
+        text = _text(get_batched_findings_message_template(payload))
         assert "Top critical findings across 1 account" in text
 
     def test_also_seen_uses_display_names(self):
@@ -120,19 +130,19 @@ class TestBatchedFindings:
             [_finding(0)],
             aggregated={"acc-1": {"CPUThrottlingHigh": 7, "image_pull_backoff_reporter": 3}},
         )
-        text = _text(get_batched_findings_message_template(payload)["blocks"])
+        text = _text(get_batched_findings_message_template(payload))
         assert "Also seen: CPU throttling (7) · Image pull failure (3)" in text
 
     def test_single_account_footer_links_events(self):
         payload = _findings_payload([_finding(0)])
-        buttons = _buttons(get_batched_findings_message_template(payload)["blocks"])
+        buttons = _buttons(get_batched_findings_message_template(payload))
         view_all = [b for b in buttons if b["text"]["text"] == "View all findings"]
         assert len(view_all) == 1
         assert "accountId=acc-1" in view_all[0]["url"]
 
     def test_identity_context_line(self):
         payload = _findings_payload([_finding(0)])
-        text = _text(get_batched_findings_message_template(payload)["blocks"])
+        text = _text(get_batched_findings_message_template(payload))
         assert "High priority · svc-0 (payments) · prod-eu · Acct prod-aws" in text
 
 
@@ -158,19 +168,19 @@ def _slo(name: str, current="99.42%", target="99.90%", burn=14, budget="22%") ->
 
 class TestGroupedSlo:
     def test_humanized_value_and_burn_lines(self):
-        text = _text(get_grouped_slo_alerts_template([_slo("checkout-availability")])["blocks"])
+        text = _text(get_grouped_slo_alerts_template([_slo("checkout-availability")]))
         assert "1 SLO is burning error budget" in text
         assert "At *99.42%* against a *99.90%* target" in text
         assert "Burning budget *14× too fast* — *22%* of budget left" in text
         assert "payments/checkout-api" in text and "Acct" in text
 
     def test_missing_burn_fields_drop_the_line(self):
-        text = _text(get_grouped_slo_alerts_template([_slo("s", burn=None, budget=None)])["blocks"])
+        text = _text(get_grouped_slo_alerts_template([_slo("s", burn=None, budget=None)]))
         assert "too fast" not in text and "budget left" not in text
 
     def test_plural_headline_and_overflow(self):
         alerts = [_slo(f"slo-{i}") for i in range(7)]
-        text = _text(get_grouped_slo_alerts_template(alerts)["blocks"])
+        text = _text(get_grouped_slo_alerts_template(alerts))
         assert "7 SLOs are burning error budget" in text
         assert "+2 more SLOs breaching" in text
 
@@ -195,23 +205,25 @@ def _anomaly(i: int, description: str = None) -> AnomalyAlertParams:
 class TestGroupedAnomaly:
     def test_items_with_details_buttons(self):
         msg = get_grouped_anomaly_alerts_template([_anomaly(0), _anomaly(1)])
-        text = _text(msg["blocks"])
+        text = _text(msg)
         assert "2 anomalies detected across 1 account" in text
         assert "High priority" in text and "nat-gw (network)" in text and "Acct prod-aws" in text
-        urls = [b["url"] for b in _buttons(msg["blocks"])]
+        urls = [b["url"] for b in _buttons(msg)]
         assert any("id=find-0" in u for u in urls) and any("id=find-1" in u for u in urls)
 
     def test_cap_and_overflow(self):
-        text = _text(get_grouped_anomaly_alerts_template([_anomaly(i) for i in range(8)])["blocks"])
+        text = _text(get_grouped_anomaly_alerts_template([_anomaly(i) for i in range(8)]))
         assert "+3 more anomalies detected" in text
 
-    def test_no_attachments_in_output(self):
+    def test_items_carry_severity_stripes(self):
         msg = get_grouped_anomaly_alerts_template([_anomaly(0)])
-        assert "attachments" not in msg
+        colors = [a["color"] for a in msg["attachments"]]
+        assert colors[0] == "#D97A2B"  # anomaly item stripe
+        assert colors[-1] == "#94A3B8"  # neutral footer stripe
 
     def test_spend_description_renders_without_zscore(self):
         desc = "Daily spend of $208.00 for account prod exceeds baseline average of $14.00 (z-score: 4.32)"
-        text = _text(get_grouped_anomaly_alerts_template([_anomaly(0, description=desc)])["blocks"])
+        text = _text(get_grouped_anomaly_alerts_template([_anomaly(0, description=desc)]))
         assert "Daily spend of $208.00 for account prod exceeds baseline average of $14.00" in text
         assert "z-score" not in text
 
@@ -219,15 +231,15 @@ class TestGroupedAnomaly:
         # k8s metric anomalies set description == title; no redundant value line
         alert = _anomaly(0)
         alert.description = alert.title
-        blocks = get_grouped_anomaly_alerts_template([alert])["blocks"]
-        # exactly one section carries the title text (the header), no duplicate value line
+        msg = get_grouped_anomaly_alerts_template([alert])
+        # exactly one section carries the title text (the item title), no duplicate value line
         title_sections = [
-            b for b in blocks if b.get("type") == "section" and alert.title in b.get("text", {}).get("text", "")
+            b for b in _flat(msg) if b.get("type") == "section" and alert.title in b.get("text", {}).get("text", "")
         ]
         assert len(title_sections) == 1
 
     def test_missing_description_is_safe(self):
-        text = _text(get_grouped_anomaly_alerts_template([_anomaly(0)])["blocks"])
+        text = _text(get_grouped_anomaly_alerts_template([_anomaly(0)]))
         assert "NAT gateway data processing spike 0" in text
 
 
@@ -241,5 +253,19 @@ class TestTimestampRobustness:
     def test_anomaly_bad_timestamp_falls_back_to_raw(self):
         alert = _anomaly(0)
         alert.starts_at = "not-a-date"
-        text = _text(get_grouped_anomaly_alerts_template([alert])["blocks"])
+        text = _text(get_grouped_anomaly_alerts_template([alert]))
         assert "not-a-date" in text
+
+
+class TestSloBadges:
+    def test_fast_burn_is_breaching(self):
+        text = _text(get_grouped_slo_alerts_template([_slo("s", burn=14)]))
+        assert "`BREACHING`" in text
+
+    def test_slow_burn_is_degrading(self):
+        text = _text(get_grouped_slo_alerts_template([_slo("s", burn=4)]))
+        assert "`DEGRADING`" in text
+
+    def test_non_numeric_burn_defaults_to_breaching(self):
+        text = _text(get_grouped_slo_alerts_template([_slo("s", burn=None)]))
+        assert "`BREACHING`" in text

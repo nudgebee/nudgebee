@@ -3,7 +3,12 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from notifications_server.configs.settings import settings, URLRoutes
-from notifications_server.message_templates.slack.recommendation_nudge_digest import accounts_phrase
+from notifications_server.message_templates.slack.recommendation_nudge_digest import (
+    STRIPE_HIGH,
+    accounts_phrase,
+    item_attachment,
+    neutral_footer_attachment,
+)
 
 MAX_ANOMALY_ITEMS = 5
 
@@ -72,13 +77,14 @@ def get_grouped_anomaly_alerts_template(input_data: List[AnomalyAlertParams]) ->
         {"type": "divider"},
     ]
 
+    attachments = []
     for alert in alerts[:MAX_ANOMALY_ITEMS]:
         title = alert.title or f"{alert.subject_name} anomaly"
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*"}})
+        item_blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*"}}]
 
         value_line = _anomaly_value_line(alert)
         if value_line:
-            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": value_line}})
+            item_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": value_line}})
 
         identity_bits = [
             f"{alert.priority.title()} priority" if alert.priority else "",
@@ -87,16 +93,17 @@ def get_grouped_anomaly_alerts_template(input_data: List[AnomalyAlertParams]) ->
             f"Acct {alert.cluster or alert.cloud_account_id}",
         ]
         identity = " · ".join(bit for bit in identity_bits if bit)
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": identity}]})
+        item_blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": identity}]})
 
         if alert.finding_id:
-            blocks.append(
+            item_blocks.append(
                 {
                     "type": "actions",
                     "elements": [
                         {
                             "type": "button",
                             "text": {"type": "plain_text", "text": "Details"},
+                            "style": "primary",
                             "url": settings.urls.investigate_url(
                                 alert.cloud_account_id, alert.finding_id, utm_source=URLRoutes.UTMSource.SLACK
                             ),
@@ -104,14 +111,15 @@ def get_grouped_anomaly_alerts_template(input_data: List[AnomalyAlertParams]) ->
                     ],
                 }
             )
+        attachments.append(item_attachment(STRIPE_HIGH, title, item_blocks))
 
+    footer_blocks = []
     remaining = total_alerts - MAX_ANOMALY_ITEMS
     if remaining > 0:
-        blocks.append(
+        footer_blocks.append(
             {"type": "section", "text": {"type": "mrkdwn", "text": f"_+{remaining} more anomalies detected_"}}
         )
-
-    blocks.append(
+    footer_blocks.append(
         {
             "type": "context",
             "elements": [
@@ -122,9 +130,11 @@ def get_grouped_anomaly_alerts_template(input_data: List[AnomalyAlertParams]) ->
             ],
         }
     )
+    attachments.append(neutral_footer_attachment(footer_blocks, "Anomaly summary"))
 
     return {
         "text": headline,
         "blocks": blocks[:50],
+        "attachments": attachments[:20],
         "unfurl_links": False,
     }

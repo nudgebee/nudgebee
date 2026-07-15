@@ -10,6 +10,9 @@ from notifications_server.message_templates.slack.recommendation_nudge_digest im
     _absolute_url,
     accounts_phrase,
     format_rule_name,
+    item_attachment,
+    neutral_footer_attachment,
+    severity_stripe,
     short_resource_name,
 )
 
@@ -66,52 +69,74 @@ def get_security_posture_alert_message_template(params: SecurityPostureAlertPara
         headline = f"Top {len(shown)} high-severity security findings — no criticals today"
         remaining = params.high_count - len(shown)
 
+    if criticals:
+        shown_phrase = "These are" if len(shown) > 1 else "This is"
+        intro = (
+            f"{shown_phrase} worth interrupting you for. "
+            f"{params.high_count} high-severity findings are queued in the dashboard and don't need action today."
+            if params.high_count > 0
+            else f"{shown_phrase} worth interrupting you for."
+        )
+    else:
+        intro = "Nothing critical. These are the highest-severity open items if you have capacity this week."
+
     context_bits = [f"{settings.urls.branding_name} security alert"]
     context_bits.append(f"Critical {params.critical_count}")
     context_bits.append(f"High {params.high_count} · in dashboard")
+    context_bits.append(f"Accounts {account_count}")
 
     blocks: List[Dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": f"*{headline}*"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": intro}},
         {"type": "context", "elements": [{"type": "mrkdwn", "text": " · ".join(context_bits)}]},
         {"type": "divider"},
     ]
 
+    attachments = []
     for account_name, rec in shown:
         badge = f" `{rec.severity.upper()}`" if rec.severity else ""
-        title = f"*{format_rule_name(rec.rule_name)} — {short_resource_name(rec.resource_name)}*{badge}"
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": title}})
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"Acct {account_name}"}]})
+        title = f"{format_rule_name(rec.rule_name)} — {short_resource_name(rec.resource_name)}"
+        item_blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*{badge}"}},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": f"Acct {account_name}"}]},
+        ]
         if rec.cta_url:
-            blocks.append(
+            item_blocks.append(
                 {
                     "type": "actions",
                     "elements": [
                         {
                             "type": "button",
                             "text": {"type": "plain_text", "text": "Details"},
+                            "style": "primary",
                             "url": _absolute_url(rec.cta_url, base_url),
                         }
                     ],
                 }
             )
+        attachments.append(item_attachment(severity_stripe(rec.severity), title, item_blocks))
 
+    total_findings = params.critical_count + params.high_count
+    view_all_label = f"View all {total_findings} findings" if total_findings > 1 else "View all findings"
+
+    footer_blocks = []
     if remaining > 0:
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"_+{remaining} more in the dashboard_"}})
-
-    blocks.append({"type": "divider"})
+        footer_blocks.append(
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"_+{remaining} more in the dashboard_"}}
+        )
     if account_count == 1:
         only_account = next(iter(params.recommendations_by_account))
         view_all_url = (
             f"{base_url.rstrip('/')}/kubernetes/details/{only_account}"
             f"?accountId={only_account}&utm=security-alert#security/image-scan"
         )
-        blocks.append(
+        footer_blocks.append(
             {
                 "type": "actions",
                 "elements": [
                     {
                         "type": "button",
-                        "text": {"type": "plain_text", "text": "View all findings"},
+                        "text": {"type": "plain_text", "text": view_all_label},
                         "url": view_all_url,
                         "style": "primary",
                     }
@@ -119,13 +144,13 @@ def get_security_posture_alert_message_template(params: SecurityPostureAlertPara
             }
         )
     else:
-        blocks.append(
+        footer_blocks.append(
             {
                 "type": "section",
                 "text": {"type": "mrkdwn", "text": f"View all findings on {settings.urls.branding_link('slack')}"},
             }
         )
-    blocks.append(
+    footer_blocks.append(
         {
             "type": "context",
             "elements": [
@@ -136,9 +161,11 @@ def get_security_posture_alert_message_template(params: SecurityPostureAlertPara
             ],
         }
     )
+    attachments.append(neutral_footer_attachment(footer_blocks, "View all findings"))
 
     return {
         "text": headline,
         "blocks": blocks[:50],
+        "attachments": attachments[:20],
         "unfurl_links": False,
     }

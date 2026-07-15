@@ -334,6 +334,7 @@ class CallbackBlock(BaseBlock):
 class LinkProp(BaseModel):
     text: str
     url: str
+    style: Optional[str] = None
 
 
 class LinksBlock(BaseBlock):

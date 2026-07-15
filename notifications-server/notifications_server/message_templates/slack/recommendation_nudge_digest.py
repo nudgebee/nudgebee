@@ -91,6 +91,28 @@ WASTE_DISPLAY_FLOOR = 10
 MAX_ALERT_ITEMS = 3
 
 
+# Severity stripe palette, matching the approved preview mocks. Slack renders
+# the colored left bar only on attachments, so each item ships as its own
+# attachment; headers stay in top-level blocks, which render above attachments,
+# and footers ride a neutral-stripe attachment so they land below the items.
+STRIPE_CRITICAL = "#C93A36"
+STRIPE_HIGH = "#D97A2B"
+STRIPE_SAVINGS = "#2C8C55"
+STRIPE_NEUTRAL = "#94A3B8"
+
+
+def severity_stripe(severity: str) -> str:
+    return STRIPE_CRITICAL if (severity or "").strip().lower() == "critical" else STRIPE_HIGH
+
+
+def item_attachment(color: str, fallback: str, blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return {"color": color, "fallback": fallback, "blocks": blocks}
+
+
+def neutral_footer_attachment(blocks: List[Dict[str, Any]], fallback: str = "More") -> Dict[str, Any]:
+    return item_attachment(STRIPE_NEUTRAL, fallback, blocks)
+
+
 def format_waste_clause(wasted: float) -> str:
     if wasted < WASTE_DISPLAY_FLOOR:
         return ""
@@ -143,47 +165,47 @@ def _absolute_url(url: str, base_url: str) -> str:
     return f"{base_url.rstrip('/')}/{url.lstrip('/')}"
 
 
-def append_posture_item_blocks(
-    blocks: List[Dict[str, Any]],
+def build_posture_item_attachments(
     ranked: List[Tuple[str, DigestRecommendation]],
     base_url: str = "",
-) -> None:
-    """Render the top items in priority order: what & money first, then the
-    small facts/identity line, then the action."""
+    color=STRIPE_SAVINGS,
+) -> List[Dict[str, Any]]:
+    """One colored attachment per item, in priority order: what & money first,
+    then the small facts/identity line, then the action. `color` is a hex
+    string or a callable(rec) -> hex."""
+    attachments: List[Dict[str, Any]] = []
     for account_name, rec in ranked[:MAX_ALERT_ITEMS]:
-        lines = [f"*{format_rule_name(rec.rule_name)} — {short_resource_name(rec.resource_name)}*"]
+        item_blocks: List[Dict[str, Any]] = []
+        title = f"{format_rule_name(rec.rule_name)} — {short_resource_name(rec.resource_name)}"
+        lines = [f"*{title}*"]
         if rec.estimated_savings > 0:
             lines.append(
                 f"Save *{format_savings(rec.estimated_savings)}/mo*{format_waste_clause(rec.wasted_since_detected)}"
             )
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
+        item_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
 
         band_display = BAND_DISPLAY_NAMES.get(rec.finops_band, rec.finops_band)
         facts = f"{band_display} · Score {rec.finops_score}/100 · {rec.severity} · Acct {account_name}"
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": facts}]})
+        item_blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": facts}]})
 
         if rec.cta_url:
-            blocks.append(
+            item_blocks.append(
                 {
                     "type": "actions",
                     "elements": [
                         {
                             "type": "button",
                             "text": {"type": "plain_text", "text": "Details"},
+                            "style": "primary",
                             "url": _absolute_url(rec.cta_url, base_url),
                         }
                     ],
                 }
             )
 
-    remaining = len(ranked) - MAX_ALERT_ITEMS
-    if remaining > 0:
-        blocks.append(
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"_+{remaining} more in the dashboard_"},
-            }
-        )
+        stripe = color(rec) if callable(color) else color
+        attachments.append(item_attachment(stripe, title, item_blocks))
+    return attachments
 
 
 def collect_recs_by_band(
@@ -235,18 +257,26 @@ def get_recommendation_nudge_digest_message_template(
         )
         blocks.append({"type": "divider"})
 
-    # Top items across all accounts, priority-ordered, capped
-    append_posture_item_blocks(blocks, flatten_ranked_recs(params.recommendations_by_account), base_url)
+    # Top items across all accounts, priority-ordered, capped, one colored
+    # attachment per item (the severity/savings stripe from the design mocks)
+    ranked = flatten_ranked_recs(params.recommendations_by_account)
+    attachments = build_posture_item_attachments(ranked, base_url)
 
-    # Footer with CTA. utm=slack-digest distinguishes digest clicks from other
-    # Slack notifications; digest_date lets click-through analytics correlate
+    # Footer rides a neutral attachment so it renders below the items.
+    # utm=slack-digest distinguishes digest clicks from other Slack
+    # notifications; digest_date lets click-through analytics correlate
     # clicks back to a specific brief.
     footer_url = f"{base_url}/optimise?utm=slack-digest"
     if params.digest_date:
         footer_url += f"&d={params.digest_date}"
     footer_url += "#recommendations"
-    blocks.append({"type": "divider"})
-    blocks.append(
+    footer_blocks: List[Dict[str, Any]] = []
+    remaining = len(ranked) - MAX_ALERT_ITEMS
+    if remaining > 0:
+        footer_blocks.append(
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"_+{remaining} more in the dashboard_"}}
+        )
+    footer_blocks.append(
         {
             "type": "actions",
             "elements": [
@@ -262,10 +292,12 @@ def get_recommendation_nudge_digest_message_template(
             ],
         }
     )
+    attachments.append(neutral_footer_attachment(footer_blocks, "View all recommendations"))
 
     return {
         "text": f"{params.title} - {format_savings(params.total_recoverable_savings)}/mo recoverable",
         "blocks": blocks[:50],
+        "attachments": attachments[:20],
         "unfurl_links": False,
     }
 

@@ -4,13 +4,15 @@ from pydantic import BaseModel
 
 from notifications_server.configs.settings import public_ip, settings
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
+    MAX_ALERT_ITEMS,
     AccountRecommendations,
     DigestRecommendation,
     accounts_phrase,
-    append_posture_item_blocks,
+    build_posture_item_attachments,
     cost_headline,
     flatten_ranked_recs,
     format_savings,
+    neutral_footer_attachment,
 )
 
 
@@ -76,12 +78,18 @@ def get_recommendation_proactive_nudge_message_template(
     blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": context_line}]})
     blocks.append({"type": "divider"})
 
-    # Top items across all accounts, priority-ordered, capped
-    append_posture_item_blocks(blocks, flatten_ranked_recs(params.recommendations_by_account), base_url)
+    # Top items across all accounts, priority-ordered, capped, one savings-
+    # striped attachment per item; footer rides a neutral attachment below them.
+    ranked = flatten_ranked_recs(params.recommendations_by_account)
+    attachments = build_posture_item_attachments(ranked, base_url)
 
-    # Footer actions
-    blocks.append({"type": "divider"})
-    blocks.append(
+    footer_blocks = []
+    remaining = len(ranked) - MAX_ALERT_ITEMS
+    if remaining > 0:
+        footer_blocks.append(
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"_+{remaining} more in the dashboard_"}}
+        )
+    footer_blocks.append(
         {
             "type": "actions",
             "elements": [
@@ -99,6 +107,7 @@ def get_recommendation_proactive_nudge_message_template(
             ],
         }
     )
+    attachments.append(neutral_footer_attachment(footer_blocks, "View all recommendations"))
 
     fallback = (
         f"Priority: {params.total_recommendations} recommendations — "
@@ -108,5 +117,6 @@ def get_recommendation_proactive_nudge_message_template(
     return {
         "text": fallback,
         "blocks": blocks[:50],
+        "attachments": attachments[:20],
         "unfurl_links": False,
     }

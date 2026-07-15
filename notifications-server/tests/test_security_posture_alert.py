@@ -13,9 +13,19 @@ from notifications_server.message_templates.slack.security_posture_alert import 
 )
 
 
-def _text(blocks: List[Dict[str, Any]]) -> str:
+def _flat(msg_or_blocks):
+    """Accept a template result dict or a raw block list; items now ride in
+    colored attachments, so text/button extraction walks both."""
+    if isinstance(msg_or_blocks, dict):
+        return list(msg_or_blocks.get("blocks", [])) + [
+            b for a in msg_or_blocks.get("attachments", []) for b in a.get("blocks", [])
+        ]
+    return msg_or_blocks
+
+
+def _text(blocks) -> str:
     parts: List[str] = []
-    for b in blocks:
+    for b in _flat(blocks):
         if isinstance(b.get("text"), dict):
             parts.append(b["text"].get("text", ""))
         for e in b.get("elements", []) or []:
@@ -52,7 +62,7 @@ def _params(criticals: int, highs: int, critical_count=None, high_count=None):
 class TestSecurityPostureAlert:
     def test_critical_only_with_true_count_and_badge(self):
         msg = get_security_posture_alert_message_template(_params(criticals=4, highs=3, critical_count=8))
-        text = _text(msg["blocks"])
+        text = _text(msg)
         assert "8 critical security findings across 1 account" in text
         assert "`CRITICAL`" in text
         assert "`HIGH`" not in text  # highs stay out of the message when criticals exist
@@ -62,24 +72,45 @@ class TestSecurityPostureAlert:
 
     def test_high_fallback_when_no_criticals(self):
         msg = get_security_posture_alert_message_template(_params(criticals=0, highs=7, high_count=7))
-        text = _text(msg["blocks"])
+        text = _text(msg)
         assert "Top 5 high-severity security findings — no criticals today" in text
         assert "`HIGH`" in text
         assert "+2 more in the dashboard" in text
 
     def test_singular_critical_headline(self):
-        text = _text(get_security_posture_alert_message_template(_params(criticals=1, highs=0))["blocks"])
+        text = _text(get_security_posture_alert_message_template(_params(criticals=1, highs=0)))
         assert "1 critical security finding across 1 account" in text
 
     def test_details_and_view_all_buttons(self):
         msg = get_security_posture_alert_message_template(_params(criticals=1, highs=0))
-        buttons = [e for b in msg["blocks"] if b.get("type") == "actions" for e in b["elements"]]
+        buttons = [e for b in _flat(msg) if b.get("type") == "actions" for e in b["elements"]]
         labels = [b["text"]["text"] for b in buttons]
         assert "Details" in labels and "View all findings" in labels
         assert all("#security/image-scan" in b["url"] for b in buttons)
+        details = [b for b in buttons if b["text"]["text"] == "Details"][0]
+        assert details.get("style") == "primary"
+
+    def test_view_all_label_counts_total_findings(self):
+        msg = get_security_posture_alert_message_template(_params(criticals=4, highs=3, critical_count=4, high_count=3))
+        buttons = [e for b in _flat(msg) if b.get("type") == "actions" for e in b["elements"]]
+        labels = [b["text"]["text"] for b in buttons]
+        assert "View all 7 findings" in labels
+
+    def test_intro_and_account_chip(self):
+        msg = get_security_posture_alert_message_template(_params(criticals=2, highs=3))
+        text = _text(msg)
+        assert "worth interrupting you for" in text
+        assert "queued in the dashboard" in text
+        assert "Accounts 1" in text
+
+    def test_item_stripes_by_severity(self):
+        msg = get_security_posture_alert_message_template(_params(criticals=1, highs=0))
+        assert msg["attachments"][0]["color"] == "#C93A36"
+        msg = get_security_posture_alert_message_template(_params(criticals=0, highs=2, high_count=2))
+        assert msg["attachments"][0]["color"] == "#D97A2B"
 
     def test_counts_context_line(self):
-        text = _text(get_security_posture_alert_message_template(_params(criticals=2, highs=5))["blocks"])
+        text = _text(get_security_posture_alert_message_template(_params(criticals=2, highs=5)))
         assert "Critical 2" in text and "High 5 · in dashboard" in text
 
     def test_relative_cta_url_resolved_against_base_url(self):
@@ -88,6 +119,6 @@ class TestSecurityPostureAlert:
             0
         ].cta_url = "/kubernetes/details/acc-1#security/image-scan"
         msg = get_security_posture_alert_message_template(params)
-        buttons = [e for b in msg["blocks"] if b.get("type") == "actions" for e in b["elements"]]
+        buttons = [e for b in _flat(msg) if b.get("type") == "actions" for e in b["elements"]]
         details = [b for b in buttons if b["text"]["text"] == "Details"][0]
         assert details["url"] == "https://app/kubernetes/details/acc-1#security/image-scan"

@@ -58,10 +58,20 @@ def _params(**overrides) -> RecommendationNudgeDigestParams:
     return RecommendationNudgeDigestParams(**base)
 
 
-def _slack_text(blocks: List[Dict[str, Any]]) -> str:
-    """Concatenate all rendered mrkdwn text in a Slack block list."""
+def _flat(msg_or_blocks):
+    """Accept a template result dict or a raw block list; items now ride in
+    colored attachments, so text/button extraction walks both."""
+    if isinstance(msg_or_blocks, dict):
+        return list(msg_or_blocks.get("blocks", [])) + [
+            b for a in msg_or_blocks.get("attachments", []) for b in a.get("blocks", [])
+        ]
+    return msg_or_blocks
+
+
+def _slack_text(blocks) -> str:
+    """Concatenate all rendered mrkdwn text in a Slack message or block list."""
     parts: List[str] = []
-    for b in blocks:
+    for b in _flat(blocks):
         if "text" in b and isinstance(b["text"], dict) and "text" in b["text"]:
             parts.append(b["text"]["text"])
         for f in b.get("fields", []) or []:
@@ -101,7 +111,7 @@ class TestSlackDeltas:
             carryover_count=195,
         )
         msg = get_recommendation_nudge_digest_message_template(params)
-        text = _slack_text(msg["blocks"])
+        text = _slack_text(msg)
 
         assert "You can cut $3,840/mo across 1 account" in text
         assert "*In this brief:* 1 Priority · 2 Critical" in text
@@ -115,7 +125,7 @@ class TestSlackDeltas:
             resolved_count=0,
             carryover_count=247,
         )
-        text = _slack_text(get_recommendation_nudge_digest_message_template(params)["blocks"])
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
 
         assert "_No new recommendations since yesterday._" in text
         assert "247 still open from earlier" in text
@@ -124,7 +134,7 @@ class TestSlackDeltas:
     def test_old_payload_omits_delta_lines(self):
         # No new_counts/resolved/carryover provided -> graceful degrade
         params = _params()  # leaves new_counts=None and all delta ints at 0
-        text = _slack_text(get_recommendation_nudge_digest_message_template(params)["blocks"])
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
 
         assert "You can cut $3,840/mo across 1 account" in text
         assert "New since yesterday" not in text
@@ -137,16 +147,16 @@ class TestSlackDeltas:
             new_counts=NewCounts(act_now=0, critical=3, high=0),
             carryover_count=247,
         )
-        text = _slack_text(get_recommendation_nudge_digest_message_template(params)["blocks"])
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
 
         assert "You can cut" not in text  # no savings headline on a $0 digest
         assert "*New since yesterday:* 3 Critical" in text
 
     def test_footer_url_has_digest_utm_and_date(self):
         params = _params(new_counts=NewCounts(act_now=1, critical=0, high=0))
-        blocks = get_recommendation_nudge_digest_message_template(params)["blocks"]
+        msg = get_recommendation_nudge_digest_message_template(params)
         # per-item Details buttons come first; the footer CTA is the last actions block
-        action_block = [b for b in blocks if b.get("type") == "actions"][-1]
+        action_block = [b for b in _flat(msg) if b.get("type") == "actions"][-1]
         url = action_block["elements"][0]["url"]
         assert "utm=slack-digest" in url
         assert "d=2026-05-18" in url
@@ -167,8 +177,8 @@ class TestSlackDeltas:
         params = _params(
             recommendations_by_account={"acc-1": AccountRecommendations(account_name="prod-aws", recommendations=recs)}
         )
-        blocks = get_recommendation_nudge_digest_message_template(params)["blocks"]
-        text = _slack_text(blocks)
+        msg = get_recommendation_nudge_digest_message_template(params)
+        text = _slack_text(msg)
 
         assert "svc-0" in text and "svc-1" in text and "svc-2" in text
         assert "svc-3" not in text and "svc-4" not in text
@@ -325,26 +335,26 @@ class TestPayloadParsing:
 
 class TestItemCopyAndWaste:
     def test_rule_name_renders_curated_display_name(self):
-        text = _slack_text(get_recommendation_nudge_digest_message_template(_params())["blocks"])
+        text = _slack_text(get_recommendation_nudge_digest_message_template(_params()))
         assert "Workload rightsizing" in text
         assert "Pod Right Sizing" not in text
 
     def test_waste_clause_renders_above_floor(self):
         params = _params()
         params.recommendations_by_account["acc-1"].recommendations[0].wasted_since_detected = 1120.0
-        text = _slack_text(get_recommendation_nudge_digest_message_template(params)["blocks"])
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
         assert "wasted since detected" in text
         assert "$1,120" in text
 
     def test_waste_clause_hidden_below_floor(self):
         params = _params()
         params.recommendations_by_account["acc-1"].recommendations[0].wasted_since_detected = 4.0
-        text = _slack_text(get_recommendation_nudge_digest_message_template(params)["blocks"])
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
         assert "wasted since detected" not in text
 
     def test_old_payload_without_waste_field_degrades(self):
         # producer payloads predating wasted_since_detected default to 0 -> no clause
-        text = _slack_text(get_recommendation_nudge_digest_message_template(_params())["blocks"])
+        text = _slack_text(get_recommendation_nudge_digest_message_template(_params()))
         assert "wasted since detected" not in text
 
 
@@ -352,13 +362,13 @@ class TestPostureItemUrlAndHeadlineGuards:
     def test_relative_cta_url_resolved_against_base_url(self):
         params = _params()
         params.recommendations_by_account["acc-1"].recommendations[0].cta_url = "/optimise?id=rec-1#recommendations"
-        blocks = get_recommendation_nudge_digest_message_template(params)["blocks"]
-        item_button = [b for b in blocks if b.get("type") == "actions"][0]
+        msg = get_recommendation_nudge_digest_message_template(params)
+        item_button = [b for b in _flat(msg) if b.get("type") == "actions"][0]
         assert item_button["elements"][0]["url"] == "https://app/optimise?id=rec-1#recommendations"
 
     def test_absolute_cta_url_untouched(self):
-        blocks = get_recommendation_nudge_digest_message_template(_params())["blocks"]
-        item_button = [b for b in blocks if b.get("type") == "actions"][0]
+        msg = get_recommendation_nudge_digest_message_template(_params())
+        item_button = [b for b in _flat(msg) if b.get("type") == "actions"][0]
         assert item_button["elements"][0]["url"].startswith("https://app/optimise?id=rec-1")
 
     def test_nudge_zero_savings_headline_falls_back_to_count(self):
@@ -381,7 +391,7 @@ class TestPostureItemUrlAndHeadlineGuards:
             recommendations_by_account={"acc-1": AccountRecommendations(account_name="prod", recommendations=[rec])},
             base_url="https://app",
         )
-        text = _slack_text(get_recommendation_proactive_nudge_message_template(params)["blocks"])
+        text = _slack_text(get_recommendation_proactive_nudge_message_template(params))
         assert "You can cut" not in text
         assert "$0" not in text
         assert "1 priority recommendations need action across 1 account" in text
@@ -389,7 +399,7 @@ class TestPostureItemUrlAndHeadlineGuards:
 
 class TestItemTitleAndCategoryChips:
     def test_item_title_leads_with_rule_display_name(self):
-        text = _slack_text(get_recommendation_nudge_digest_message_template(_params())["blocks"])
+        text = _slack_text(get_recommendation_nudge_digest_message_template(_params()))
         assert "*Workload rightsizing — prod/Deployment/payments-api*" in text
 
     def test_long_arm_id_resource_is_shortened(self):
@@ -399,15 +409,15 @@ class TestItemTitleAndCategoryChips:
         )
         params = _params()
         params.recommendations_by_account["acc-1"].recommendations[0].resource_name = arm
-        text = _slack_text(get_recommendation_nudge_digest_message_template(params)["blocks"])
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
         assert "/subscriptions/" not in text
         assert "nudgebee-windows-vm_osdisk_1_05141b666c7840ceabb" in text
 
     def test_category_chips_render_sorted(self):
         params = _params(category_savings={"RightSizing": 1800.0, "Configuration": 760.0, "InfraUpgrade": 2100.0})
-        text = _slack_text(get_recommendation_nudge_digest_message_template(params)["blocks"])
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
         assert "*By category:* Infra upgrades $2,100 · Rightsizing $1,800 · Configuration $760.00" in text
 
     def test_no_category_chips_without_data(self):
-        text = _slack_text(get_recommendation_nudge_digest_message_template(_params())["blocks"])
+        text = _slack_text(get_recommendation_nudge_digest_message_template(_params()))
         assert "By category" not in text
