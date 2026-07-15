@@ -24,6 +24,7 @@ import (
 
 	"nudgebee/llm-gateway/auth"
 	"nudgebee/llm-gateway/config"
+	"nudgebee/llm-gateway/edgeerr"
 	"nudgebee/llm-gateway/metering"
 	"nudgebee/llm-gateway/ratelimit"
 	"nudgebee/llm-gateway/routing"
@@ -125,11 +126,11 @@ func (h *handler) handle(c *gin.Context) {
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeJSONError(c, http.StatusRequestEntityTooLarge, "request_too_large",
+			edgeerr.Write(c, string(provider), http.StatusRequestEntityTooLarge, "request_too_large",
 				"request body exceeds the gateway limit")
 			return
 		}
-		writeJSONError(c, http.StatusBadRequest, "invalid_request", "could not read request body")
+		edgeerr.Write(c, string(provider), http.StatusBadRequest, "invalid_request", "could not read request body")
 		return
 	}
 
@@ -160,7 +161,7 @@ func (h *handler) handle(c *gin.Context) {
 	if stop, err := h.pipeline.Run(rc); err != nil {
 		cancel()
 		slog.Error("proxy: request pipeline error", "error", err, "provider", provider, "path", path)
-		writeJSONError(c, http.StatusInternalServerError, "gateway_error", "request pipeline error")
+		edgeerr.Write(c, string(provider), http.StatusInternalServerError, "gateway_error", "request pipeline error")
 		return
 	} else if stop {
 		cancel() // a stage already wrote the rejection (e.g. 429, or a block 403)

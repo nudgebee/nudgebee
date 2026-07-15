@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"nudgebee/llm-gateway/auth"
+	"nudgebee/llm-gateway/edgeerr"
 	"nudgebee/llm-gateway/ratelimit"
 	"nudgebee/llm-gateway/routing"
 )
@@ -34,9 +34,7 @@ func (s routeStage) Handle(rc *RequestContext) (bool, error) {
 		if alt := rc.Decision.ResolvedModel; alt != "" {
 			msg = fmt.Sprintf("%s Use %q instead.", msg, alt)
 		}
-		rc.Gin.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-			"error": gin.H{"type": "model_not_allowed", "message": msg},
-		})
+		edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusForbidden, "model_not_allowed", msg)
 		return true, nil
 	}
 	if rc.Decision.ResolvedModel != rc.Decision.RequestedModel {
@@ -65,13 +63,9 @@ func (s ratelimitStage) Handle(rc *RequestContext) (bool, error) {
 	if secs := int(time.Until(reset).Seconds()) + 1; secs > 0 {
 		rc.Gin.Header("Retry-After", strconv.Itoa(secs))
 	}
-	rc.Gin.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-		"error": gin.H{
-			"type": "rate_limit_exceeded",
-			"message": fmt.Sprintf("%s limit exceeded for %s (%s window); resets at %s UTC",
-				ex.Metric, ex.Scope, ex.Period, reset.Format("2006-01-02 15:04")),
-		},
-	})
+	edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusTooManyRequests, "rate_limit_exceeded",
+		fmt.Sprintf("%s limit exceeded for %s (%s window); resets at %s UTC",
+			ex.Metric, ex.Scope, ex.Period, reset.Format("2006-01-02 15:04")))
 	return true, nil
 }
 
@@ -137,13 +131,9 @@ func (s resolverStage) Handle(rc *RequestContext) (bool, error) {
 	// fail fast with a clear 403 rather than letting core call the provider keyless
 	// (which surfaces to the client as a confusing upstream auth error).
 	if operatorCredsHook != nil && !operatorCredsHook(rc.Provider) {
-		rc.Gin.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-			"error": gin.H{
-				"type": "provider_not_configured",
-				"message": fmt.Sprintf("No %s credential is configured for your organization. Ask an administrator to add a %s key in NudgeBee integrations.",
-					rc.Provider, rc.Provider),
-			},
-		})
+		edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusForbidden, "provider_not_configured",
+			fmt.Sprintf("No %s credential is configured for your organization. Ask an administrator to add a %s key in NudgeBee integrations.",
+				rc.Provider, rc.Provider))
 		return true, nil
 	}
 	return false, nil
