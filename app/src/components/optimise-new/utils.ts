@@ -169,6 +169,20 @@ const buildContainerPatch = (containerName: string, entries: any[], workloadType
     limits.push(`memory=${formatMemValue(Number(mem.recommended.limit))}`);
   }
 
+  // Stock kubectl's `set resources` only supports built-in workload types, not
+  // the Argo Rollout CRD — emit an edit instruction with the values instead.
+  if (workloadType.toLowerCase() === 'rollout') {
+    const lines = [`# Argo Rollout: kubectl set resources does not support the Rollout CRD.`];
+    lines.push(`# In \`kubectl edit rollout/${workloadName} -n ${ns}\`, set for container "${containerName}":`);
+    if (requests.length > 0) {
+      lines.push(`#   requests: ${requests.join(', ')}`);
+    }
+    if (limits.length > 0) {
+      lines.push(`#   limits: ${limits.join(', ')}`);
+    }
+    return requests.length > 0 || limits.length > 0 ? [lines.join('\n')] : [];
+  }
+
   const base = `kubectl set resources ${workloadType}/${workloadName} -n ${ns} -c ${containerName}`;
   const patches: string[] = [];
   if (requests.length > 0) {
