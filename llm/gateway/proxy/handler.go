@@ -413,7 +413,13 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	if h.pricer != nil {
 		ev.CostUsd = h.pricer.CostUSD(ev.Model, ev.InputTokens, ev.OutputTokens, ev.CacheReadTokens, ev.CacheWriteTokens)
 	}
-	h.sink.Record(ev)
+	// Skip recording non-inference admin calls (cache/list/countTokens) unless enabled
+	// — they have no model and 0 tokens, so they'd only clutter the dashboard. The
+	// quota reconcile below still runs (those calls do consume provider quota).
+	record := config.Config.CaptureAdminCalls || !isAdminCall(rm.req.Path)
+	if record {
+		h.sink.Record(ev)
+	}
 
 	// Reconcile token/cost usage against quotas (requests were counted pre-call).
 	if h.limiter.Enabled() && ev.TotalTokens > 0 {
@@ -421,7 +427,7 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	}
 
 	// Full-body logging (off by default). Linked to the usage row via reqID.
-	if metering.BodyLoggingEnabled() {
+	if record && metering.BodyLoggingEnabled() {
 		now := time.Now().UTC()
 		h.bodyLog.Record(metering.BodyLog{
 			ID:           uuid.NewString(),

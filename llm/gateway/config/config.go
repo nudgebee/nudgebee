@@ -119,6 +119,13 @@ type Configuration struct {
 	SessionHeader     string `mapstructure:"gateway_session_header"`
 	CaptureAttributes bool   `mapstructure:"gateway_capture_attributes"`
 
+	// CaptureAdminCalls: when true, non-inference auxiliary calls (model caching,
+	// countTokens, model listing) are recorded as usage rows too. Off by default —
+	// these have no model and 0 tokens, so they only clutter the Requests tab and
+	// inflate counts. They always count toward rate limits regardless (they hit the
+	// provider); this flag only controls whether they appear in the usage dashboard.
+	CaptureAdminCalls bool `mapstructure:"gateway_capture_admin_calls"`
+
 	// Default guardrail: a per-user cost cap (USD) applied as a backstop when a user
 	// has no explicit user-scoped cost limit configured, so a runaway client can't
 	// drain the org budget before an admin sets a limit. 0 = disabled (opt-in). Period
@@ -186,6 +193,7 @@ var keyDefaults = map[string]any{
 	"gateway_static_user_id":                "",
 	"gateway_session_header":                "x-nb-session-id",
 	"gateway_capture_attributes":            true,
+	"gateway_capture_admin_calls":           false,
 	"gateway_routing_config":                "",
 	"gateway_routing_refresh_seconds":       30,
 	"gateway_default_user_cost_limit":       0.0,   // per-user cost guardrail; 0 = disabled

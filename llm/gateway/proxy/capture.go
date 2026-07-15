@@ -278,6 +278,27 @@ func rewriteGeminiModelPath(path, resolved string) string {
 
 // modelFromPath extracts the model for providers that carry it in the URL rather
 // than the body (Gemini: /models/{model}:generateContent or /models/{model}).
+// isAdminCall reports whether a forwarded path is a non-inference auxiliary call —
+// model caching (cachedContents), token counting (:countTokens), or model listing
+// (…/models) — which produce no model and no billable usage. Metered into the usage
+// dashboard only when gateway_capture_admin_calls is on; otherwise skipped so these
+// don't clutter the Requests tab. They still hit the provider, so rate limits and the
+// quota reconcile are unaffected.
+func isAdminCall(path string) bool {
+	// Trim a trailing slash so a model-list call with one (e.g. /v1/models/) still
+	// matches the "/models" suffix rather than slipping through as inference.
+	p := strings.TrimSuffix(strings.ToLower(path), "/")
+	switch {
+	case strings.Contains(p, "/cachedcontents"):
+		return true
+	case strings.Contains(p, ":counttokens"):
+		return true
+	case strings.HasSuffix(p, "/models"):
+		return true
+	}
+	return false
+}
+
 func modelFromPath(provider schemas.ModelProvider, path string) string {
 	if provider != schemas.Gemini {
 		return ""
