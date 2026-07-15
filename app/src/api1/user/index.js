@@ -16,6 +16,10 @@ export const PREFERENCE_APP_TOUR_SEEN = 'app_tour_seen';
 export const PREFERENCE_TROUBLESHOOT_TOUR_SEEN = 'troubleshoot_tour_seen';
 export const PREFERENCE_TROUBLESHOOT_INVESTIGATIONS_TOUR_SEEN = 'troubleshoot_investigations_tour_seen';
 export const PREFERENCE_TROUBLESHOOT_KG_TOUR_SEEN = 'troubleshoot_kg_tour_seen';
+// Same, for the other sections that offer a tour on first visit.
+export const PREFERENCE_OPTIMIZE_TOUR_SEEN = 'optimize_tour_seen';
+export const PREFERENCE_TICKETS_TOUR_SEEN = 'tickets_tour_seen';
+export const PREFERENCE_CLOUD_TOUR_SEEN = 'cloud_tour_seen';
 // ISO timestamp high-water-mark for the Product Updates drawer — updates newer
 // than this are "unread". Replaces the standalone `nb.productUpdates.lastSeenAt`
 // key so it lives in the consolidated `nudgebee.userPreferences` entry.
@@ -29,6 +33,9 @@ const availablePreferences = [
   PREFERENCE_TROUBLESHOOT_TOUR_SEEN,
   PREFERENCE_TROUBLESHOOT_INVESTIGATIONS_TOUR_SEEN,
   PREFERENCE_TROUBLESHOOT_KG_TOUR_SEEN,
+  PREFERENCE_OPTIMIZE_TOUR_SEEN,
+  PREFERENCE_TICKETS_TOUR_SEEN,
+  PREFERENCE_CLOUD_TOUR_SEEN,
   PREFERENCE_PRODUCT_UPDATES_LAST_SEEN,
 ];
 

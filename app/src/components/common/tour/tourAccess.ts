@@ -8,7 +8,7 @@
  * accessors in `@lib/auth` — the same ones the gated action buttons use — so a
  * guide's visibility matches its target button exactly.
  */
-import { hasWriteAccess, hasFeatureAccessCached } from '@lib/auth';
+import { hasWriteAccess, hasFeatureAccessCached, isUiFeatureEnabled } from '@lib/auth';
 import type { TourDef } from './tours';
 
 export function canAccessTour(tour: TourDef): boolean {
@@ -19,6 +19,11 @@ export function canAccessTour(tour: TourDef): boolean {
   // caller must have warmed them (GuidesMenu does on open); until then the guide
   // stays hidden rather than dead-ending.
   if (tour.requiresFeature && !hasFeatureAccessCached(tour.requiresFeature)) {
+    return false;
+  }
+  // Deployment-level UI toggles (UI_ENABLE_*). Read straight off the session, so
+  // no warming is needed — unlike the tenant flags above.
+  if (tour.requiresUiFeature && !isUiFeatureEnabled(tour.requiresUiFeature)) {
     return false;
   }
   return true;

@@ -63,12 +63,9 @@
   background-color: var(--ds-brand-100, #f1f5f9);
 }
 
-/* Restart button (injected) sits at the far left: Restart · progress · Next. */
+/* Footer reads Back · progress · Next. */
 .nb-tour-popover .driver-popover-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-.nb-tour-popover .nb-tour-restart {
-  margin: 0;
 }

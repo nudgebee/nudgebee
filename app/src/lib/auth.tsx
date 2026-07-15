@@ -237,6 +237,24 @@ export function isTenantAdmin(): boolean {
   return false;
 }
 
+/**
+ * Deployment-level UI toggle (a `UI_ENABLE_*` env var on the pod), read off the
+ * session — see `uiFeatures` in [...nextauth].ts.
+ *
+ * This is NOT a tenant feature flag: it is per-deployment, not per-tenant, so
+ * `hasFeatureAccess` / `requiresFeature` can't answer it. Use it when a surface
+ * is gated on one of these vars but the code asking isn't the page that receives
+ * them as props — e.g. the guided-tour catalog deciding whether /optimise will
+ * render its LLM Analyser / AI Gateway tabs.
+ *
+ * Sync and needs no warming (unlike `hasFeatureAccessCached`): `withAuth`
+ * populates `userData` before any of this renders. Fails closed if the session
+ * predates the field.
+ */
+export function isUiFeatureEnabled(feature: 'llmAnalyser' | 'llmGateway'): boolean {
+  return Boolean(userData?.uiFeatures?.[feature]);
+}
+
 const featureData: Record<string, any> = Object.create(null);
 
 const LIST_TENANT_FEATURE_FLAGS = `

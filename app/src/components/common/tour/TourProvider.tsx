@@ -98,28 +98,6 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
       // The spotlit element stays interactive so users can type into the field
       // being explained. (driver.js default, set explicitly for intent.)
       disableActiveInteraction: false,
-      // driver.js has no native "Restart" button — inject one into the footer.
-      onPopoverRender: tour.showRestart
-        ? (popover): void => {
-            if (popover.footer.querySelector('.nb-tour-restart')) {
-              return;
-            }
-            const restartBtn = document.createElement('button');
-            restartBtn.type = 'button';
-            restartBtn.className = 'driver-popover-prev-btn nb-tour-restart';
-            restartBtn.textContent = 'Restart';
-            restartBtn.addEventListener('click', (e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (isTransitioningRef.current) {
-                return;
-              }
-              void goTo(0, 1);
-            });
-            // Far left of the footer → Restart · progress · Next.
-            popover.footer.insertBefore(restartBtn, popover.footer.firstChild);
-          }
-        : undefined,
       onDestroyed: () => {
         driverRef.current = null;
         setActiveTourId(null);
@@ -178,8 +156,8 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
           side: step.side ?? 'bottom',
           align: step.align ?? 'start',
           progressText: `${i + 1 + progressOffset} of ${totalSteps}`,
-          // With a Restart button, drop Back — Restart returns to step 1.
-          showButtons: tour.showRestart || i === 0 ? ['next', 'close'] : ['next', 'previous', 'close'],
+          // No Back on step 1 — there's nowhere to go back to.
+          showButtons: i === 0 ? ['next', 'close'] : ['next', 'previous', 'close'],
           nextBtnText: isLast ? 'Done' : 'Next',
           prevBtnText: 'Back',
           onPrevClick: async () => {
