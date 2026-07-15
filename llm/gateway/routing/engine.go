@@ -32,7 +32,19 @@ func NewEngine(rules []Rule) *Engine {
 			e.byTenant[r.TenantID] = append(e.byTenant[r.TenantID], r)
 		}
 	}
-	byPriority := func(rs []Rule) { sort.SliceStable(rs, func(i, j int) bool { return rs[i].Priority < rs[j].Priority }) }
+	// Order within a scope: priority asc; then a deny (block) wins a same-priority tie
+	// (an admin can block a model regardless of a competing redirect). For every other
+	// tie the STABLE sort preserves input order — the Store depends on this (DB rules
+	// are merged before config-file rules, so DB wins ties), and the DB loader's
+	// ORDER BY makes that input order itself deterministic (no coin-flip on a tie).
+	byPriority := func(rs []Rule) {
+		sort.SliceStable(rs, func(i, j int) bool {
+			if rs[i].Priority != rs[j].Priority {
+				return rs[i].Priority < rs[j].Priority
+			}
+			return rs[i].Target.Deny && !rs[j].Target.Deny // deny first; else keep input order
+		})
+	}
 	byPriority(e.global)
 	for _, rs := range e.byTenant {
 		byPriority(rs)
@@ -59,6 +71,14 @@ func (e *Engine) Resolve(in Input) Decision {
 			continue
 		}
 		d.RuleID = r.ID
+		if r.Target.Deny {
+			// Block: reject the request. ResolvedModel carries the suggested
+			// alternative (empty when the rule sets none). The proxy turns this into a 403.
+			d.Reason = ReasonBlocked
+			d.Denied = true
+			d.ResolvedModel = r.Target.Model
+			return d
+		}
 		if r.Target.Model != "" {
 			d.ResolvedModel = r.Target.Model
 		}

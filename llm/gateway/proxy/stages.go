@@ -28,6 +28,17 @@ func (s routeStage) Handle(rc *RequestContext) (bool, error) {
 		Provider: string(rc.Provider), Model: rc.Model,
 		TenantID: rc.Identity.TenantID, UserID: rc.Identity.UserID,
 	})
+	// A block rule matched: reject with a clear 403 instead of forwarding.
+	if rc.Decision.Denied {
+		msg := fmt.Sprintf("Model %q is not permitted for your organization.", rc.Decision.RequestedModel)
+		if alt := rc.Decision.ResolvedModel; alt != "" {
+			msg = fmt.Sprintf("%s Use %q instead.", msg, alt)
+		}
+		rc.Gin.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"error": gin.H{"type": "model_not_allowed", "message": msg},
+		})
+		return true, nil
+	}
 	if rc.Decision.ResolvedModel != rc.Decision.RequestedModel {
 		rc.Body, rc.Path = rewriteModel(rc.Provider, rc.Body, rc.Path, rc.Decision.ResolvedModel)
 		rc.Model = rc.Decision.ResolvedModel

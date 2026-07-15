@@ -14,6 +14,7 @@ const (
 	ReasonTier        Reason = "tier"         // NB tier hint → a model
 	ReasonFallback    Reason = "fallback"     // primary failed, a fallback was used
 	ReasonLoadBalance Reason = "load_balance" // selected from a weighted pool
+	ReasonBlocked     Reason = "blocked"      // a deny rule rejected the request (403)
 )
 
 // Affinity controls cache-safety when a target is a pool. "single" keeps one target
@@ -45,6 +46,11 @@ type Target struct {
 	Endpoint             // primary destination
 	Fallbacks []Endpoint `json:"fallbacks,omitempty"` // ordered; tried on failure only
 	Affinity  string     `json:"affinity,omitempty"`  // AffinitySingle (default) | AffinityPrefixHash
+	// Deny turns the rule into a BLOCK: a matching request is rejected (403) instead
+	// of forwarded. Endpoint.Model, if set, is surfaced as a suggested alternative in
+	// the error. A deny wins over a redirect rule at the same priority (see the engine
+	// sort), so an admin can block a model regardless of other rules' ordering.
+	Deny bool `json:"deny,omitempty"`
 }
 
 // Rule is one routing rule. Rules are ordered by (tenant-specific first, then
@@ -70,4 +76,7 @@ type Decision struct {
 	Reason            Reason
 	Fallbacks         []Endpoint // chain actually attempted, if any
 	Strategy          string     // affinity / weighted / …
+	// Denied is set when a block rule matched: the request must be rejected (403), not
+	// forwarded. ResolvedModel then carries the suggested alternative (if the rule set one).
+	Denied bool
 }

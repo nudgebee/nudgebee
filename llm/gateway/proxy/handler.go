@@ -163,7 +163,23 @@ func (h *handler) handle(c *gin.Context) {
 		writeJSONError(c, http.StatusInternalServerError, "gateway_error", "request pipeline error")
 		return
 	} else if stop {
-		cancel() // a stage already wrote the rejection (e.g. 429)
+		cancel() // a stage already wrote the rejection (e.g. 429, or a block 403)
+		// Record a blocked attempt so it's visible in the dashboard (status 403,
+		// routing_reason "blocked") — governance needs to see who hit a blocked model.
+		if rc.Decision.Denied {
+			h.sink.Record(metering.NewEvent(metering.EventInput{
+				Provider: provider, Model: rc.Decision.RequestedModel,
+				Method: c.Request.Method, Path: path,
+				StatusCode:        http.StatusForbidden,
+				LatencyMS:         time.Since(start).Milliseconds(),
+				RequestedProvider: string(provider),
+				RequestedModel:    rc.Decision.RequestedModel,
+				RoutingReason:     string(rc.Decision.Reason),
+				RoutingRule:       rc.Decision.RuleID,
+				TenantID:          identity.TenantID, AccountID: identity.AccountID,
+				UserID: identity.UserID, TokenID: identity.TokenID,
+			}))
+		}
 		return
 	}
 
