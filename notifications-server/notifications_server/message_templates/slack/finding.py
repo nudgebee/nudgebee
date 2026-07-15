@@ -21,7 +21,6 @@ from notifications_server.message_templates.blocks import (
     LinksBlock,
     LinkProp,
     ActionElement,
-    ListBlock,
 )
 from notifications_server.services.actions import AskAIParams
 from notifications_server.services.events import Events
@@ -208,21 +207,23 @@ def get_slack_finding_message(slack_app, installation, finding):
     subject_namespace = finding.get("subject_namespace") or "default"
     cloud_account_id = finding.get("cloud_account_id")
 
-    blocks: List[BaseBlock] = [MarkdownBlock(text=f"{title}")]
+    priority = finding.get("priority") or ""
+    badge = f" `{priority.upper()}`" if priority else ""
+    blocks: List[BaseBlock] = [MarkdownBlock(text=f"*{title}*{badge}")]
 
-    meta = [
+    # One compact identity line (what/where/when) instead of labelled rows,
+    # matching the posture-alert hierarchy.
+    identity_bits = [
+        f"Acct *{cluster}*" if cluster else "",
+        f"{subject_namespace}/{subject_name}" if subject_name else subject_namespace,
         (
-            f"*Reported At:* <!date^{int(created_at)}^{{date_short_pretty}} {{time}}|April 14th, 2024 12:00 PM>"
+            f"reported <!date^{int(created_at)}^{{date_short_pretty}} {{time}}|April 14th, 2024 12:00 PM>"
             if created_at
             else ""
         ),
-        f"*Account:* *{cluster}*" if cluster else "",
-        f"*Namespace:* {subject_namespace}",
-        f"*Workload: {subject_name}*",
     ]
-
-    # Filter out empty strings in meta
-    blocks.extend([ListBlock(items=[item for item in meta if item]), DividerBlock()])
+    identity = " · ".join(bit for bit in identity_bits if bit)
+    blocks.extend([MarkdownBlock(text=identity), DividerBlock()])
 
     # Create separate list for evidence blocks
     evidence_blocks: List[BaseBlock] = []

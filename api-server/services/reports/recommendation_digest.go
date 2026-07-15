@@ -89,6 +89,7 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 				LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
 				WHERE r.tenant_id = $1
 					AND r.status = 'Open'
+					AND r.category <> 'Security'
 					AND r.finops_band IN ('Act Now', 'Critical', 'High')
 					AND (
 						r.last_nudged_at IS NULL
@@ -128,6 +129,30 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 
 		digestDate := time.Now().UTC().Format("2006-01-02")
 
+		// Tenant-wide open savings by category for the header chips — the
+		// top-20 body alone would misstate the mix.
+		type categorySaving struct {
+			Category string  `db:"category"`
+			Savings  float64 `db:"savings"`
+		}
+		var categoryRows []categorySaving
+		err = dbms.Db.Select(&categoryRows, `
+			SELECT category, COALESCE(SUM(estimated_savings), 0) AS savings
+			FROM recommendation
+			WHERE tenant_id = $1
+			  AND status = 'Open'
+			  AND category <> 'Security'
+			  AND estimated_savings > 0
+			GROUP BY category`, t.Id)
+		if err != nil {
+			ctx.GetLogger().Error("recommendation digest: error querying category savings", "error", err, "tenant", t.Id)
+			categoryRows = nil
+		}
+		categorySavings := make(map[string]float64, len(categoryRows))
+		for _, row := range categoryRows {
+			categorySavings[row.Category] = row.Savings
+		}
+
 		// Aggregate counts and savings
 		var totalSavings float64
 		var actNowCount, criticalCount, highCount int
@@ -164,6 +189,9 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 
 			accID := rec.CloudAccountID
 			recsByAccount[accID] = append(recsByAccount[accID], recMap)
+			if rec.AccountName != "" && rec.AccountName != accID {
+				accountNameMap[accID] = rec.AccountName
+			}
 		}
 
 		// Build recommendations_by_account with account names
@@ -192,6 +220,7 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 				"act_now_count":              actNowCount,
 				"critical_count":             criticalCount,
 				"high_count":                 highCount,
+				"category_savings":           categorySavings,
 				"recommendations_by_account": recommendationsByAccount,
 				"base_url":                   config.Config.BaseUrl,
 				"new_counts":                 newCounts,
@@ -251,6 +280,7 @@ func queryDigestDeltas(db *sqlx.DB, tenantID string, cutoff time.Time) (map[stri
 		FROM recommendation
 		WHERE tenant_id = $1
 		  AND status = 'Open'
+		  AND category <> 'Security'
 		  AND created_at > $2
 		  AND finops_band IN ('Act Now', 'Critical', 'High')
 		GROUP BY finops_band`, tenantID, cutoff)
@@ -283,6 +313,7 @@ func queryDigestDeltas(db *sqlx.DB, tenantID string, cutoff time.Time) (map[stri
 		FROM recommendation
 		WHERE tenant_id = $1
 		  AND status IN ('Closed', 'Dismissed')
+		  AND category <> 'Security'
 		  AND updated_at > $2`, tenantID, cutoff)
 	if err != nil {
 		return nil, 0, 0, 0, err
@@ -294,6 +325,7 @@ func queryDigestDeltas(db *sqlx.DB, tenantID string, cutoff time.Time) (map[stri
 		FROM recommendation
 		WHERE tenant_id = $1
 		  AND status = 'Open'
+		  AND category <> 'Security'
 		  AND created_at <= $2`, tenantID, cutoff)
 	if err != nil {
 		return nil, 0, 0, 0, err

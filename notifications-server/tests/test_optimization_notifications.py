@@ -385,3 +385,29 @@ class TestPostureItemUrlAndHeadlineGuards:
         assert "You can cut" not in text
         assert "$0" not in text
         assert "1 priority recommendations need action across 1 account" in text
+
+
+class TestItemTitleAndCategoryChips:
+    def test_item_title_leads_with_rule_display_name(self):
+        text = _slack_text(get_recommendation_nudge_digest_message_template(_params())["blocks"])
+        assert "*Workload rightsizing — prod/Deployment/payments-api*" in text
+
+    def test_long_arm_id_resource_is_shortened(self):
+        arm = (
+            "/subscriptions/19e207a9-769d-4afd-b261-10bbed2d43e8/resourcegroups/nudgebee-dev_group"
+            "/providers/microsoft.compute/disks/nudgebee-windows-vm_osdisk_1_05141b666c7840ceabb"
+        )
+        params = _params()
+        params.recommendations_by_account["acc-1"].recommendations[0].resource_name = arm
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params)["blocks"])
+        assert "/subscriptions/" not in text
+        assert "nudgebee-windows-vm_osdisk_1_05141b666c7840ceabb" in text
+
+    def test_category_chips_render_sorted(self):
+        params = _params(category_savings={"RightSizing": 1800.0, "Configuration": 760.0, "InfraUpgrade": 2100.0})
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params)["blocks"])
+        assert "*By category:* Infra upgrades $2,100 · Rightsizing $1,800 · Configuration $760.00" in text
+
+    def test_no_category_chips_without_data(self):
+        text = _slack_text(get_recommendation_nudge_digest_message_template(_params())["blocks"])
+        assert "By category" not in text

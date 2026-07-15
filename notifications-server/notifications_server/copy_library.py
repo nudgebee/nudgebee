@@ -63,12 +63,28 @@ EVENT_DISPLAY_NAMES = {
 
 # Ingested alert aggregation_keys are arbitrary tenant strings, so cap the
 # dedup set: beyond the cap, new unmapped keys neither accumulate nor log.
+CATEGORY_DISPLAY_NAMES = {
+    "RightSizing": "Rightsizing",
+    "K8sSpotRecommendation": "Spot",
+    "InfraUpgrade": "Infra upgrades",
+    "Configuration": "Configuration",
+    "Security": "Security",
+    "CostAnomaly": "Cost anomalies",
+    "Anomaly": "Anomalies",
+}
+
 _unmapped_reported: set = set()
 MAX_UNMAPPED_TRACKED = 1000
 
 
 def _fallback(key: str) -> str:
     return key.replace("_", " ").replace("-", " ").title()
+
+
+def category_display_name(category) -> str:
+    if not category:
+        return ""
+    return CATEGORY_DISPLAY_NAMES.get(category) or _fallback(category)
 
 
 def display_name(key) -> str:

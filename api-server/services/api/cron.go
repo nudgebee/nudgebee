@@ -95,6 +95,17 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 				ctx.GetLogger().Info("cron: recommendation nudge digest done", "duration", time.Since(t0))
 			}()
 			c.JSON(200, gin.H{"status": "ok"})
+		case "security-posture-alert":
+			go func() {
+				t0 := time.Now()
+				ctx.GetLogger().Info("cron: sending security posture alert")
+				err := reports.SendSecurityPostureAlert(ctx)
+				if err != nil {
+					ctx.GetLogger().Error("cron: error sending security posture alert", "error", err)
+				}
+				ctx.GetLogger().Info("cron: security posture alert done", "duration", time.Since(t0))
+			}()
+			c.JSON(200, gin.H{"status": "ok"})
 		case "recommendation-proactive-nudge":
 			go func() {
 				t0 := time.Now()

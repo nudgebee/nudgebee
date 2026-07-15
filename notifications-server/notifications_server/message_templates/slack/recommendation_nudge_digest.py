@@ -56,6 +56,8 @@ class RecommendationNudgeDigestParams(BaseModel):
     carryover_count: int = 0
     delta_window_hours: int = 24
     digest_date: str = ""
+    # Tenant-wide open savings by category (producer-computed), for header chips
+    category_savings: Dict[str, float] = {}
 
 
 def get_recommendation_nudge_digest_message_params(
@@ -99,6 +101,20 @@ def accounts_phrase(count: int) -> str:
     return f"{count} account" if count == 1 else f"{count} accounts"
 
 
+# Long path-style identifiers (ARM IDs, ARNs) drown the message; short k8s
+# triplets (ns/Kind/name) stay as-is. Per the spec: short names, IDs hidden.
+MAX_RESOURCE_NAME = 60
+
+
+def short_resource_name(name: str) -> str:
+    if not name or len(name) <= MAX_RESOURCE_NAME:
+        return name
+    tail = name.rsplit("/", 1)[-1] or name
+    if len(tail) > MAX_RESOURCE_NAME:
+        tail = tail[: MAX_RESOURCE_NAME - 1] + "…"
+    return tail
+
+
 def cost_headline(total_savings: float, account_count: int) -> str:
     return f"You can cut {format_savings(total_savings)}/mo across {accounts_phrase(account_count)}"
 
@@ -135,7 +151,7 @@ def append_posture_item_blocks(
     """Render the top items in priority order: what & money first, then the
     small facts/identity line, then the action."""
     for account_name, rec in ranked[:MAX_ALERT_ITEMS]:
-        lines = [f"*{rec.resource_name}* — {format_rule_name(rec.rule_name)}"]
+        lines = [f"*{format_rule_name(rec.rule_name)} — {short_resource_name(rec.resource_name)}*"]
         if rec.estimated_savings > 0:
             lines.append(
                 f"Save *{format_savings(rec.estimated_savings)}/mo*{format_waste_clause(rec.wasted_since_detected)}"
@@ -274,6 +290,16 @@ def _build_summary_lines(params: RecommendationNudgeDigestParams) -> List[str]:
         brief_parts.append(f"{params.high_count} High")
     if brief_parts:
         lines.append("*In this brief:* " + " · ".join(brief_parts))
+
+    if params.category_savings:
+        top_categories = sorted(params.category_savings.items(), key=lambda kv: kv[1], reverse=True)[:4]
+        chips = " · ".join(
+            f"{copy_library.category_display_name(cat)} {format_savings(savings)}"
+            for cat, savings in top_categories
+            if savings > 0
+        )
+        if chips:
+            lines.append(f"*By category:* {chips}")
 
     if params.new_counts is not None:
         parts: List[str] = []

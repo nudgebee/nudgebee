@@ -89,6 +89,7 @@ func ProcessProactiveNudges(ctx *security.RequestContext) error {
 				LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
 				WHERE r.tenant_id = $1
 					AND r.status = 'Open'
+					AND r.category <> 'Security'
 					AND r.finops_band = 'Act Now'
 					AND (r.last_nudged_at IS NULL OR r.last_nudged_at < now() - interval '24 hours')
 			) ranked
@@ -127,6 +128,9 @@ func ProcessProactiveNudges(ctx *security.RequestContext) error {
 
 			accID := rec.CloudAccountID
 			recsByAccount[accID] = append(recsByAccount[accID], recMap)
+			if rec.AccountName != "" && rec.AccountName != accID {
+				accountNameMap[accID] = rec.AccountName
+			}
 		}
 
 		// Build recommendations_by_account with account names

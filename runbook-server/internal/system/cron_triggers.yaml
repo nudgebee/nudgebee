@@ -127,6 +127,19 @@
     timeout_seconds: 180
     tolerance_seconds: 21600
   comment: Daily FinOps recommendation digest at 8 AM UTC
+- name: security-posture-alert
+  webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
+  schedule: '30 8 * * *'
+  payload: {}
+  headers:
+    - name: X-ACTION-TOKEN
+      value_from_env: ACTION_API_SERVER_TOKEN
+  retry_conf:
+    num_retries: 0
+    retry_interval_seconds: 10
+    timeout_seconds: 180
+    tolerance_seconds: 21600
+  comment: Daily tenant-level security posture alert at 8:30 AM UTC
 - name: recommendation-proactive-nudge
   webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
   schedule: '0 */6 * * *'
