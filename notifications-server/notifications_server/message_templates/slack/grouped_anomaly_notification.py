@@ -23,6 +23,20 @@ class AnomalyAlertParams(BaseModel):
     updated_at: Optional[str] = None
     subject_type: Optional[str] = None
     subject_owner: Optional[str] = None
+    # Spend anomalies carry a baseline-vs-observed sentence here (e.g. "Daily
+    # spend of $208 ... exceeds baseline average of $14"); metric anomalies set
+    # it equal to the title and are filtered out at render.
+    description: Optional[str] = None
+
+
+def _anomaly_value_line(alert: AnomalyAlertParams) -> str:
+    """The evidence line under the title. Only spend anomalies carry a
+    baseline-vs-observed description distinct from the title; the trailing
+    z-score is producer jargon, dropped for the channel."""
+    desc = (alert.description or "").strip()
+    if not desc or desc == (alert.title or "").strip():
+        return ""
+    return desc.split(" (z-score:")[0].strip()
 
 
 class AnomalyAlertSummaryParams(BaseModel):
@@ -61,6 +75,10 @@ def get_grouped_anomaly_alerts_template(input_data: List[AnomalyAlertParams]) ->
     for alert in alerts[:MAX_ANOMALY_ITEMS]:
         title = alert.title or f"{alert.subject_name} anomaly"
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*"}})
+
+        value_line = _anomaly_value_line(alert)
+        if value_line:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": value_line}})
 
         identity_bits = [
             f"{alert.priority.title()} priority" if alert.priority else "",

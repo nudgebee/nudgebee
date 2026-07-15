@@ -55,12 +55,15 @@ def _finding(i: int, count: int = 1, account_id: str = "acc-1") -> BatchedFindin
     )
 
 
-def _findings_payload(criticals: List[BatchedFinding], aggregated=None, total=None) -> BatchedFindingsPayload:
+def _findings_payload(
+    criticals: List[BatchedFinding], aggregated=None, total=None, critical_count=None
+) -> BatchedFindingsPayload:
     return BatchedFindingsPayload(
         organization_id="org-1",
         organization_name="TestOrg",
         accounts={"data": {"accounts": [{"id": "acc-1", "account_name": "prod-aws"}]}},
         critical_findings=criticals,
+        critical_count=critical_count if critical_count is not None else 0,
         aggregated_findings=aggregated or {},
         total_findings_count=total if total is not None else sum(f.count for f in criticals),
         batch_start_time=datetime(2026, 7, 14, 8, 0, tzinfo=timezone.utc),
@@ -92,6 +95,25 @@ class TestBatchedFindings:
         payload = _findings_payload([], aggregated={"acc-1": {"CPUThrottlingHigh": 7}}, total=7)
         text = _text(get_batched_findings_message_template(payload)["blocks"])
         assert "7 findings across 1 account" in text
+
+    def test_critical_count_drives_exact_headline(self):
+        # 8 distinct criticals but only top-3 rendered — headline states the true 8
+        payload = _findings_payload([_finding(i, count=10 - i) for i in range(5)], total=60, critical_count=8)
+        text = _text(get_batched_findings_message_template(payload)["blocks"])
+        assert "8 critical findings across 1 account" in text
+        assert "Top critical findings" not in text
+
+    def test_single_critical_headline_is_singular(self):
+        payload = _findings_payload([_finding(0)], total=1, critical_count=1)
+        text = _text(get_batched_findings_message_template(payload)["blocks"])
+        assert "1 critical finding across 1 account" in text
+        assert "1 critical findings" not in text
+
+    def test_old_payload_without_count_falls_back(self):
+        # critical_count defaults to 0 -> count-free headline, unchanged behavior
+        payload = _findings_payload([_finding(0)], total=1)
+        text = _text(get_batched_findings_message_template(payload)["blocks"])
+        assert "Top critical findings across 1 account" in text
 
     def test_also_seen_uses_display_names(self):
         payload = _findings_payload(
@@ -153,7 +175,7 @@ class TestGroupedSlo:
         assert "+2 more SLOs breaching" in text
 
 
-def _anomaly(i: int) -> AnomalyAlertParams:
+def _anomaly(i: int, description: str = None) -> AnomalyAlertParams:
     return AnomalyAlertParams(
         id=f"a-{i}",
         title=f"NAT gateway data processing spike {i}",
@@ -166,6 +188,7 @@ def _anomaly(i: int) -> AnomalyAlertParams:
         finding_id=f"find-{i}",
         cluster="prod-aws",
         cloud_account_id="acc-1",
+        description=description,
     )
 
 
@@ -185,6 +208,27 @@ class TestGroupedAnomaly:
     def test_no_attachments_in_output(self):
         msg = get_grouped_anomaly_alerts_template([_anomaly(0)])
         assert "attachments" not in msg
+
+    def test_spend_description_renders_without_zscore(self):
+        desc = "Daily spend of $208.00 for account prod exceeds baseline average of $14.00 (z-score: 4.32)"
+        text = _text(get_grouped_anomaly_alerts_template([_anomaly(0, description=desc)])["blocks"])
+        assert "Daily spend of $208.00 for account prod exceeds baseline average of $14.00" in text
+        assert "z-score" not in text
+
+    def test_description_equal_to_title_is_skipped(self):
+        # k8s metric anomalies set description == title; no redundant value line
+        alert = _anomaly(0)
+        alert.description = alert.title
+        blocks = get_grouped_anomaly_alerts_template([alert])["blocks"]
+        # exactly one section carries the title text (the header), no duplicate value line
+        title_sections = [
+            b for b in blocks if b.get("type") == "section" and alert.title in b.get("text", {}).get("text", "")
+        ]
+        assert len(title_sections) == 1
+
+    def test_missing_description_is_safe(self):
+        text = _text(get_grouped_anomaly_alerts_template([_anomaly(0)])["blocks"])
+        assert "NAT gateway data processing spike 0" in text
 
 
 class TestTimestampRobustness:

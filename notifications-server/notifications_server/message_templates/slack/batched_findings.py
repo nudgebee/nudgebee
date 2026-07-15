@@ -38,6 +38,7 @@ class BatchedFindingsPayload(BaseModel):
     organization_name: str
     accounts: AccountsDataD
     critical_findings: List[BatchedFinding]
+    critical_count: int = 0  # true distinct-critical count; critical_findings is capped
     aggregated_findings: Dict[str, Dict[str, int]]  # account_id -> {aggregation_key -> count}
     total_findings_count: int
     batch_start_time: datetime
@@ -92,9 +93,12 @@ def get_batched_findings_message_template(payload: BatchedFindingsPayload):
 
     criticals = sorted(payload.critical_findings, key=lambda f: f.count, reverse=True)
 
-    # The producer caps the critical list, so the headline avoids claiming an
-    # exact critical count; totals live in the context line.
-    if criticals:
+    # critical_count is the true distinct-critical total (the list is capped).
+    # Fall back to a count-free headline for payloads predating the field.
+    if payload.critical_count > 0:
+        noun = "critical finding" if payload.critical_count == 1 else "critical findings"
+        headline = f"{payload.critical_count} {noun} across {accounts_phrase(account_count)}"
+    elif criticals:
         headline = f"Top critical findings across {accounts_phrase(account_count)}"
     else:
         headline = f"{payload.total_findings_count} findings across {accounts_phrase(account_count)}"

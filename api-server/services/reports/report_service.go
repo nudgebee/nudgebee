@@ -774,6 +774,7 @@ type BatchedFindingsPayload struct {
 	OrganizationName   string                    `json:"organization_name"`
 	Accounts           AccountsDataD             `json:"accounts"`
 	CriticalFindings   []BatchedFinding          `json:"critical_findings"`
+	CriticalCount      int                       `json:"critical_count"`      // distinct critical types, pre-cap (CriticalFindings is capped at 5)
 	AggregatedFindings map[string]map[string]int `json:"aggregated_findings"` // account_id -> {aggregation_key -> count}
 	TotalFindingsCount int                       `json:"total_findings_count"`
 	BatchStartTime     time.Time                 `json:"batch_start_time"`
@@ -956,6 +957,10 @@ func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 			continue
 		}
 
+		// Distinct critical types before the top-5 cap, so the alert headline can
+		// state the true count even though only the top few are rendered.
+		criticalCount := len(tenantCriticalMap[tenantID])
+
 		var topCriticalFindings []BatchedFinding
 		if criticalMap := tenantCriticalMap[tenantID]; criticalMap != nil {
 			allCritical := make([]*BatchedFinding, 0, len(criticalMap))
@@ -982,6 +987,7 @@ func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 			OrganizationName:   tenantInfo.Name,
 			Accounts:           AccountsDataD{Data: AccountsData{Accounts: accounts}},
 			CriticalFindings:   topCriticalFindings,
+			CriticalCount:      criticalCount,
 			AggregatedFindings: tenantAgg[tenantID],
 			TotalFindingsCount: tenantCount[tenantID],
 			BatchStartTime:     start,
