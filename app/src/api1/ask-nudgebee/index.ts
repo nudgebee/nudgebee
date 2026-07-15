@@ -1803,8 +1803,14 @@ const api = {
         }
       }
     `;
-    const response = await queryGraphQL(LIST_WATCHES_BY_CONVERSATION, 'AILlmWatchList', { conversationId });
-    return response?.data?.data?.ai_list_watches_by_conversation?.data?.watches || [];
+
+    //TODO: Remove Try catch once the flag is set to true and the action is registered.
+    try {
+      const response = await queryGraphQL(LIST_WATCHES_BY_CONVERSATION, 'AILlmWatchList', { conversationId });
+      return response?.data?.data?.ai_list_watches_by_conversation?.data?.watches || [];
+    } catch {
+      return [];
+    }
   },
 
   async cancelWatch({ watchId }: { watchId: string }) {
