@@ -290,6 +290,9 @@ class AgentBenchmarkRequest(BaseModel):
         None  # Number of parallel test workers (default from env or 2)
     )
     run_name: Optional[str] = None  # Human-readable name for the run
+    # Pins the log backend for every request in this run, forwarded to the
+    # llm-server chat config (e.g. "k8s" forces kubectl logs). None = account default.
+    log_provider_override: Optional[str] = None
 
 
 class GatherBenchmarkRequest(BaseModel):
@@ -302,6 +305,7 @@ class GatherBenchmarkRequest(BaseModel):
     tag_filter: Optional[str] = None
     test_filter: Optional[str] = None
     cc_emails: Optional[List[str]] = None
+    log_provider_override: Optional[str] = None
 
 
 USE_ORCHESTRATOR = os.getenv("USE_ORCHESTRATOR", "true").lower() == "true"
@@ -321,6 +325,7 @@ async def run_agent_benchmark_and_notify(  # noqa: C901
     cc_emails: Optional[List[str]] = None,
     parallel_workers: Optional[int] = None,
     skip_indices: Optional[str] = None,
+    log_provider_override: Optional[str] = None,
 ):
     """
     Runs the pytest benchmark for a specific agent and sends the report via email.
@@ -402,6 +407,7 @@ async def run_agent_benchmark_and_notify(  # noqa: C901
                 tag_filter=tag_filter,
                 skip_indices=skip_indices,
                 tool_config=tool_config,
+                log_provider_override=log_provider_override,
             )
 
             # Report & email (same as pytest path)
@@ -571,6 +577,11 @@ async def run_agent_benchmark_and_notify(  # noqa: C901
     # Add tool_config if provided
     if tool_config:
         env_vars["TOOL_CONFIG"] = tool_config
+
+    # Pin the log backend for this run's requests (read by benchmark.py's
+    # _execute_query and forwarded to the llm-server chat config).
+    if log_provider_override:
+        env_vars["LOG_PROVIDER_OVERRIDE"] = log_provider_override
 
     # Pass test selection to env vars (used by refactored agents)
     if max_tests is not None:
@@ -750,6 +761,7 @@ async def trigger_agent_benchmark(
         cc_emails=request.cc_emails,
         parallel_workers=request.parallel_workers,
         run_name=request.run_name,
+        log_provider_override=request.log_provider_override,
     )
 
     background_tasks.add_task(
@@ -766,6 +778,7 @@ async def trigger_agent_benchmark(
         request.tag_filter,
         request.cc_emails,
         request.parallel_workers,
+        log_provider_override=request.log_provider_override,
     )
 
     message = f"{agent_name.upper()} agent benchmark started."
@@ -846,6 +859,7 @@ async def gather_benchmark_tests(
         test_filter=request.test_filter,
         tag_filter=request.tag_filter,
         cc_emails=request.cc_emails,
+        log_provider_override=request.log_provider_override,
     )
 
     tests_summary = [{"test_id": tid, "test_index": gi} for _fp, tid, gi in test_cases]
@@ -1804,6 +1818,8 @@ async def _run_single_test_task(run_id: str, test_index: int, config: dict):
     )
     if config.get("tool_config"):
         env["TOOL_CONFIG"] = config["tool_config"]
+    if config.get("log_provider_override"):
+        env["LOG_PROVIDER_OVERRIDE"] = config["log_provider_override"]
 
     cmd = [
         "python",
@@ -2080,6 +2096,7 @@ async def _run_followup_task(  # noqa: C901
                 conversation_id=conversation_id,
                 agent_id=agent_id,
                 message_id=message_id,
+                log_provider_override=run_config.get("log_provider_override"),
             ),
         )
 
@@ -2335,6 +2352,7 @@ async def run_all_gathered_tests(
         config.get("tag_filter"),
         config.get("cc_emails"),
         config.get("parallel_workers"),
+        log_provider_override=config.get("log_provider_override"),
     )
 
     return {
@@ -2373,6 +2391,7 @@ async def rerun_benchmark(
         config.get("tag_filter"),
         config.get("cc_emails"),
         config.get("parallel_workers"),
+        log_provider_override=config.get("log_provider_override"),
     )
 
     return {
@@ -2428,6 +2447,7 @@ async def rerun_specific_tests(
         config.get("tag_filter"),
         config.get("cc_emails"),
         config.get("parallel_workers"),
+        log_provider_override=config.get("log_provider_override"),
     )
 
     return {
@@ -2478,6 +2498,7 @@ async def restart_benchmark(
         config.get("cc_emails"),
         parallel_workers=config.get("parallel_workers"),
         skip_indices=skip_indices,
+        log_provider_override=config.get("log_provider_override"),
     )
 
     skipped = len(completed_indices)

@@ -182,7 +182,12 @@ def _execute_query(
     final_query = f"@{agent} {query}" if prefix_query else query
     start_time = time.time()
     llm_result = call_llm(
-        final_query, account_id, tenant_id, user_id, config=llm_config
+        final_query,
+        account_id,
+        tenant_id,
+        user_id,
+        config=llm_config,
+        log_provider_override=os.getenv("LOG_PROVIDER_OVERRIDE") or None,
     )
     elapsed = round(time.time() - start_time, 2)
     docs = extractor(llm_result.data, account_id, tool_names, db_tool_name)

@@ -193,6 +193,7 @@ def create_run(
     cc_emails: list = None,
     parallel_workers: int = None,
     run_name: str = None,
+    log_provider_override: str = None,
 ) -> str:
     """Create a new benchmark run and return its ID."""
     run_id = uuid.uuid4().hex[:12]
@@ -221,6 +222,7 @@ def create_run(
             parallel_workers=parallel_workers,
             run_name=run_name,
             cc_emails=cc_emails,
+            log_provider_override=log_provider_override,
             errors=[],
         )
         db.add(run)
@@ -1251,6 +1253,7 @@ def _run_config(run: BenchmarkRun) -> dict:
         "account_id": run.account_id,
         "tenant_id": run.tenant_id,
         "tool_config": run.tool_config,
+        "log_provider_override": run.log_provider_override,
         "max_tests": run.max_tests,
         "test_indices": run.test_indices,
         "test_filter": run.test_filter,
@@ -1604,6 +1607,7 @@ def _run_to_status(run: BenchmarkRun) -> dict:
         "model_names": _get_model_info(run, "model_names"),
         "model_providers": _get_model_info(run, "model_providers"),
         "tool_config": getattr(run, "tool_config", None) or "",
+        "log_provider_override": getattr(run, "log_provider_override", None) or "",
         "cc_emails": run.cc_emails or [],
         "user_email": _get_user_email(run.user_id),
         "tag_filter": run.tag_filter or "",
@@ -2581,6 +2585,7 @@ def create_gathered_run(
     test_filter: str = None,
     tag_filter: str = None,
     cc_emails: list = None,
+    log_provider_override: str = None,
 ) -> str:
     """Create a run in GATHERED state with pending test result rows.
 
@@ -2610,6 +2615,7 @@ def create_gathered_run(
             test_filter=test_filter,
             tag_filter=tag_filter,
             cc_emails=cc_emails,
+            log_provider_override=log_provider_override,
             progress_current=0,
             progress_total=len(test_cases),
             errors=[],

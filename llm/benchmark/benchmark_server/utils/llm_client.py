@@ -89,6 +89,7 @@ def call_llm(
     conversation_id=None,
     agent_id=None,
     message_id=None,
+    log_provider_override=None,
     timeout=LLM_POLL_TIMEOUT,
     poll_interval=LLM_POLL_INTERVAL,
     on_submit: Optional[Callable[[str], None]] = None,
@@ -120,6 +121,12 @@ def call_llm(
     }
     if use_async:
         payload["async"] = True
+    # Pin the log backend for this request (e.g. "k8s" forces kubectl logs).
+    # Rides the chat-scoped ``config`` object as the llm-server's NBQueryConfig
+    # field, same carrier as tool_configs above.
+    if log_provider_override:
+        config = dict(config or {})
+        config["log_provider_override"] = log_provider_override
     if config:
         payload["config"] = config
     if conversation_id:
