@@ -8,12 +8,16 @@
 import * as React from 'react';
 import dayjs from 'dayjs';
 import { Box, Typography } from '@mui/material';
+import TourOutlinedIcon from '@mui/icons-material/TourOutlined';
 import Card from '@ui/Card';
 import Chip from '@ui/Chip';
 import Skeleton from '@ui/Skeleton';
 import EmptyState from '@ui/EmptyState';
+import { Button } from '@ui/Button';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import Link from '@ui/Link';
+import { TOURS, canAccessTour, useLaunchGuide } from '@components/common/tour';
+import { fetchFeatureFlagsForTenant } from '@lib/auth';
 import type { ProductUpdate } from '@api1/product-updates';
 
 export interface ProductUpdatesDrawerContentProps {
@@ -22,6 +26,12 @@ export interface ProductUpdatesDrawerContentProps {
   error: string | null;
   /** Last-seen high-water-mark captured when the drawer opened; flags "New" items. */
   seenAt: string | null;
+  /**
+   * Close the drawer before a tour launches — a tour spotlights the page
+   * underneath and may navigate to its own route first, so the drawer must get
+   * out of the way. Omitted where no tour launcher is shown.
+   */
+  onRequestClose?: () => void;
 }
 
 type CategoryTone = 'info' | 'success' | 'neutral' | 'agent';
@@ -41,8 +51,14 @@ const formatDate = (iso?: string | null): string => {
   return d.isValid() ? d.format('MMM D, YYYY') : '—';
 };
 
-function UpdateCard({ update, isNew }: { update: ProductUpdate; isNew: boolean }) {
+function UpdateCard({ update, isNew, onLaunchTour }: { update: ProductUpdate; isNew: boolean; onLaunchTour: (tourId: string) => void }) {
   const category = update.category?.trim();
+
+  // On-demand: only updates that declare a tour that actually exists and the
+  // user can run (canAccessTour — same gate as the Guides catalog, so we never
+  // offer a tour that dead-ends on a role/feature-gated screen) get a launcher.
+  const tour = update.tour_id ? TOURS[update.tour_id] : undefined;
+  const tourAvailable = tour ? canAccessTour(tour) : false;
 
   const header = (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
@@ -73,11 +89,28 @@ function UpdateCard({ update, isNew }: { update: ProductUpdate; isNew: boolean }
     </Box>
   );
 
-  const footer = update.url ? (
-    <Link href={update.url} openInNew secondaryText>
-      Learn more
-    </Link>
-  ) : undefined;
+  const footer =
+    tourAvailable || update.url ? (
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-3)', flexWrap: 'wrap' }}>
+        {tourAvailable && (
+          <Button
+            id={`product-update-tour-${update.id}`}
+            data-testid={`product-update-tour-${update.id}`}
+            tone='link'
+            size='sm'
+            icon={<TourOutlinedIcon fontSize='small' />}
+            onClick={() => onLaunchTour(update.tour_id as string)}
+          >
+            Take the tour
+          </Button>
+        )}
+        {update.url && (
+          <Link href={update.url} openInNew secondaryText>
+            Learn more
+          </Link>
+        )}
+      </Box>
+    ) : undefined;
 
   return (
     <Card variant='outlined' size='sm' header={header} footer={footer} data-testid={`product-update-${update.id}`}>
@@ -105,7 +138,34 @@ function LoadingState() {
   );
 }
 
-export default function ProductUpdatesDrawerContent({ updates, loading, error, seenAt }: ProductUpdatesDrawerContentProps) {
+export default function ProductUpdatesDrawerContent({ updates, loading, error, seenAt, onRequestClose }: ProductUpdatesDrawerContentProps) {
+  const launch = useLaunchGuide();
+  // Warm the tenant feature-flag cache so feature-gated product-update tours
+  // resolve correctly in canAccessTour (mirrors GuidesMenu); the state flip
+  // re-runs each card's availability check once the flags land.
+  const [, setFlagsReady] = React.useState(false);
+  React.useEffect(() => {
+    let cancelled = false;
+    fetchFeatureFlagsForTenant().finally(() => {
+      if (!cancelled) {
+        setFlagsReady(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleLaunchTour = React.useCallback(
+    (tourId: string) => {
+      // Close the drawer first — the tour highlights the page beneath it and may
+      // navigate to its own route.
+      onRequestClose?.();
+      launch(tourId);
+    },
+    [launch, onRequestClose]
+  );
+
   if (loading) {
     return <LoadingState />;
   }
@@ -121,7 +181,12 @@ export default function ProductUpdatesDrawerContent({ updates, loading, error, s
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
       {updates.map((update) => (
-        <UpdateCard key={update.id} update={update} isNew={update.highlight !== false && (!seenAt || update.published_at > seenAt)} />
+        <UpdateCard
+          key={update.id}
+          update={update}
+          isNew={update.highlight !== false && (!seenAt || update.published_at > seenAt)}
+          onLaunchTour={handleLaunchTour}
+        />
       ))}
     </Box>
   );

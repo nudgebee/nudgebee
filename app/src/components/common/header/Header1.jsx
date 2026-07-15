@@ -1114,6 +1114,7 @@ const Header1 = ({ showBorder = false }) => {
           loading={productUpdates.loading}
           error={productUpdates.error}
           seenAt={updatesSeenSnapshot}
+          onRequestClose={() => setUpdatesDrawerOpen(false)}
         />
       </CustomDrawer>
       <GuidesMenu open={guidesOpen} onClose={() => setGuidesOpen(false)} />

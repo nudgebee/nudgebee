@@ -8,6 +8,15 @@ export interface ProductUpdate {
   url?: string | null;
   /** false => shown in the drawer but never highlighted (historical back-catalog). Defaults true. */
   highlight?: boolean;
+  /**
+   * Optional in-app guided tour to offer for this update — the registry id of a
+   * tour in `TOURS` (`@components/common/tour`). When set and the tour both
+   * exists and is runnable by the user, the drawer card shows a "Take the tour"
+   * launcher; otherwise the card renders without one (on-demand per update).
+   * Wire key is snake_case to match the rest of this payload; absent on updates
+   * (or backends) that don't declare a tour, which simply hides the launcher.
+   */
+  tour_id?: string | null;
   published_at: string;
 }
 
@@ -21,6 +30,7 @@ query ProductUpdatesList {
       category
       url
       highlight
+      tour_id
       published_at
     }
   }
