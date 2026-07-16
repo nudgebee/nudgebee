@@ -60,7 +60,7 @@ func sendToDLQWithConfig(ctx *security.RequestContext, originalMessage []byte, e
 		Timestamp:       time.Now().UTC().Format(time.RFC3339),
 	}
 
-	publishErr := common.MqPublish(dlqExchange, dlqQueue, dlqMessage)
+	publishErr := common.MqPublish(dlqExchange, dlqQueue, dlqMessage, common.MqPublishWithContext(ctx.GetContext()))
 	if publishErr != nil {
 		ctx.GetLogger().Error("failed to publish to DLQ", "error", publishErr, "originalError", err)
 	} else {
@@ -110,7 +110,7 @@ func StoreDailyUsageReportForAllAccounts(ctx *security.RequestContext) {
 			Month:     int(t0.Month()),
 			Year:      t0.Year(),
 		}
-		err = common.MqPublish(config.Config.RabbitMqCloudAccountCostReportExchange, config.Config.RabbitMqCloudAccountCostReportQueue, currentMonthJob)
+		err = common.MqPublish(config.Config.RabbitMqCloudAccountCostReportExchange, config.Config.RabbitMqCloudAccountCostReportQueue, currentMonthJob, common.MqPublishWithContext(ctx.GetContext()))
 		if err != nil {
 			ctx.GetLogger().Error("usagereport: failed to publish current month job", "error", err, "accountId", accountId, "job_id", currentMonthJob.JobId)
 			failedCount++
@@ -129,7 +129,7 @@ func StoreDailyUsageReportForAllAccounts(ctx *security.RequestContext) {
 				Month:     int(previousMonthTime.Month()),
 				Year:      previousMonthTime.Year(),
 			}
-			err = common.MqPublish(config.Config.RabbitMqCloudAccountCostReportExchange, config.Config.RabbitMqCloudAccountCostReportQueue, previousMonthJob)
+			err = common.MqPublish(config.Config.RabbitMqCloudAccountCostReportExchange, config.Config.RabbitMqCloudAccountCostReportQueue, previousMonthJob, common.MqPublishWithContext(ctx.GetContext()))
 			if err != nil {
 				ctx.GetLogger().Error("usagereport: failed to publish previous month job", "error", err, "accountId", accountId, "job_id", previousMonthJob.JobId)
 				failedCount++
@@ -478,6 +478,7 @@ func publishPostReportJob(ctx *security.RequestContext, accountId string, month 
 		config.Config.RabbitMqCloudAccountPostReportExchange,
 		config.Config.RabbitMqCloudAccountPostReportQueue,
 		postReportJob,
+		common.MqPublishWithContext(ctx.GetContext()),
 	)
 	if publishErr != nil {
 		ctx.GetLogger().Error("usagereport: failed to publish post-report job", "error", publishErr, "accountId", accountId)
@@ -611,7 +612,7 @@ func sendDailySpendNotification(ctx *security.RequestContext, accountId, account
 		},
 	}
 
-	err := common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+	err := common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext()))
 	if err != nil {
 		ctx.GetLogger().Error("usagereport: error publishing message to queue", "error", err)
 		return err
@@ -1260,7 +1261,7 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 		logger.Info("postreport: successfully processed post-report job")
 
 		// Notify KG system that data has been updated for this tenant
-		publishKGUpdate(job.TenantId)
+		publishKGUpdate(procCtx, job.TenantId)
 
 		return nil
 	}

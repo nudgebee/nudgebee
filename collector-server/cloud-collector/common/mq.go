@@ -18,6 +18,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/wagslane/go-rabbitmq"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -728,6 +729,11 @@ func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(ct
 	defer span.End()
 
 	if err := processorFunc(ctx, d.Body); err != nil {
+		// No-op under the default noop tracer; marks the consumer span failed
+		// when a real exporter is configured.
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+
 		// Check if this is a permanent error that should not be retried
 		var permErr *PermanentError
 		if errors.As(err, &permErr) {

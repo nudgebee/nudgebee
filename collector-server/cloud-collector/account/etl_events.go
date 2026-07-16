@@ -75,7 +75,7 @@ func StoreEventsForAllAccounts(ctx *security.RequestContext) {
 			AccountId: accountId,
 			TenantId:  tenantId,
 		}
-		err = common.MqPublish(config.Config.RabbitMqCloudAccountEventsExchange, config.Config.RabbitMqCloudAccountEventsQueue, job)
+		err = common.MqPublish(config.Config.RabbitMqCloudAccountEventsExchange, config.Config.RabbitMqCloudAccountEventsQueue, job, common.MqPublishWithContext(ctx.GetContext()))
 		if err != nil {
 			ctx.GetLogger().Error("events: failed to publish job", "error", err, "accountId", accountId, "job_id", job.JobId)
 			failedCount++

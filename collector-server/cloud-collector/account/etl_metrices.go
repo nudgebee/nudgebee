@@ -181,7 +181,7 @@ func StoreMetricesForAllAccounts(ctx *security.RequestContext, targetAccountId s
 				EndDate:         endDate.Format(time.RFC3339),
 				TargetAccountId: targetAccountId,
 			}
-			err = common.MqPublish(config.Config.RabbitMqCloudAccountMetricsExchange, config.Config.RabbitMqCloudAccountMetricsQueue, job)
+			err = common.MqPublish(config.Config.RabbitMqCloudAccountMetricsExchange, config.Config.RabbitMqCloudAccountMetricsQueue, job, common.MqPublishWithContext(ctx.GetContext()))
 			if err != nil {
 				ctx.GetLogger().Error("metrics: failed to publish job", "error", err, "accountId", accountId, "service", serviceName, "job_id", job.JobId)
 				failedCount++

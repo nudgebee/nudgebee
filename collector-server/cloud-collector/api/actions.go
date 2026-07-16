@@ -27,8 +27,10 @@ func buildContextFromCronPayload(c *gin.Context, h *ActionCronRequest, tracer *t
 	} else {
 		ctx = context.Background()
 	}
-	span := trace.SpanFromContext(ctx)
-	childLogger := logger.With("cron_job", h.Name, "cron_id", h.Id, "trace_id", span.SpanContext().TraceID().String())
+	// trace_id/span_id stamping happens inside NewRequestContext (only when the
+	// caller propagated a valid traceparent), so an unpropagated cron call no
+	// longer logs an all-zero trace_id.
+	childLogger := logger.With("cron_job", h.Name, "cron_id", h.Id)
 	return security.NewRequestContext(ctx, security.NewSecurityContextForSuperAdmin(), childLogger, tracer, meter)
 }
 

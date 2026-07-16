@@ -662,7 +662,7 @@ func handleCloudProviderApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.
 			AccountId: request.AccountId,
 			TenantId:  tenantId,
 		}
-		err = common.MqPublish(config.Config.RabbitMqCloudAccountEventsExchange, config.Config.RabbitMqCloudAccountEventsQueue, job)
+		err = common.MqPublish(config.Config.RabbitMqCloudAccountEventsExchange, config.Config.RabbitMqCloudAccountEventsQueue, job, common.MqPublishWithContext(c.Request.Context()))
 		if err != nil {
 			logger.Error("store_events: failed to publish job", "error", err, "accountId", request.AccountId, "job_id", job.JobId)
 			c.JSON(500, buildApiResponse(nil, fmt.Errorf("failed to enqueue events job: %w", err)))
