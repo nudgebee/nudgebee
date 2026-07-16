@@ -204,6 +204,30 @@ func findModuleRoots(repoDir string) []ModuleRoot {
 	return roots
 }
 
+// FormatFacts returns just the stable repository facts (modules with their
+// verify commands, build system, config files) without the file tree — sized for
+// injection into every agent's prompt, not only the one that ran repo_clone.
+func (idx *RepoIndex) FormatFacts() string {
+	var b strings.Builder
+	if idx.PrimaryLanguage != "" {
+		fmt.Fprintf(&b, "Primary language: %s\n", extToLanguage(idx.PrimaryLanguage))
+	}
+	if len(idx.ModuleRoots) > 0 {
+		b.WriteString("Modules (build/verify from the module's directory, not the repo root):\n")
+		for _, m := range idx.ModuleRoots {
+			loc := m.Path
+			if loc == "." {
+				loc = "<repo root>"
+			}
+			fmt.Fprintf(&b, "  - %s (%s) — verify: cd %s && %s\n", loc, m.Kind, m.Path, m.Build)
+		}
+	}
+	if len(idx.ConfigFiles) > 0 {
+		fmt.Fprintf(&b, "Config: %s\n", strings.Join(idx.ConfigFiles, ", "))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // FormatAsContext returns compact text for injection into LLM context.
 func (idx *RepoIndex) FormatAsContext() string {
 	var b strings.Builder

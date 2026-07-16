@@ -11,6 +11,12 @@ The following operator-authored skills provide authoritative, project-specific g
 <objective>
 Accurately implement the code modifications described in the `implementation_instructions` from the `Audit Findings`.
 </objective>
+{{if .RepoFacts}}
+<repository-facts>
+Discovered structure of this repository (authoritative — do not re-derive):
+{{.RepoFacts}}
+</repository-facts>
+{{end}}
 
 <implementation-instructions>
 {{if .AuditFindings.implementation_instructions}}
@@ -72,7 +78,11 @@ After all edits, verify:
 
 1. **Syntax:** Re-read modified files — check brackets, quotes, commas, indentation, variable definitions.
 
-2. **Build/Lint** (REQUIRED via `cli` tool):
+{{if .HarnessVerify}}2. **Build/Lint:** Do NOT run build, lint, or test commands yourself — the system
+   builds the affected modules automatically after you submit. If verification
+   fails, you will receive the exact compiler/linter output to fix — iterate on
+   your current changes; never start over or revert working edits.
+{{else}}2. **Build/Lint** (REQUIRED via `cli` tool):
 {{if .BuildConfig}}
    **Custom Build Commands:**
 {{if .BuildConfig.SetupCommand}}   - Setup: `{{.BuildConfig.SetupCommand}}`
@@ -96,6 +106,7 @@ After all edits, verify:
    b. Run lint/format scoped to modified files
    c. If lint fails, fix with `file_view` + `replace`, re-run
    d. After 3 failed attempts, set `verification_passed: false` and report
+{{end}}
 
 3. **Final Report:** Use `submit_analysis` with:
    - `execution_status`: "success", "failed", or "partial_success"

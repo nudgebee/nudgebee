@@ -151,6 +151,13 @@ type ReActPlanner struct {
 	// returning a fabricated answer.
 	submitUngrounded bool
 
+	// submitGate, when set, is consulted before a submit_analysis is accepted.
+	// A rejection keeps the SAME planning session alive: the message becomes the
+	// step observation and the model iterates on its current work (used for
+	// harness-run build verification in fix mode). The gate owns its own retry
+	// bounds — the planner never loops on it unboundedly.
+	submitGate func(actionInput map[string]any) (reject bool, msg string)
+
 	// runMemory is the per-run working memory shared across all phases of one
 	// /analyze run. When set, identical read-only tool calls are served from its
 	// cache instead of being re-executed and re-appended. nil for legacy callers
@@ -468,6 +475,11 @@ func (p *ReActPlanner) SetMaxIterations(n int) {
 
 // SetRunMemory attaches the per-run working memory shared across phases. When set,
 // identical read-only tool calls are served from its cache instead of re-executing.
+// SetSubmitGate installs (or clears, with nil) the submit_analysis gate.
+func (p *ReActPlanner) SetSubmitGate(gate func(actionInput map[string]any) (bool, string)) {
+	p.submitGate = gate
+}
+
 func (p *ReActPlanner) SetRunMemory(rm *RunMemory) {
 	p.runMemory = rm
 }
@@ -1619,6 +1631,23 @@ func (p *ReActPlanner) executeStep(ctx context.Context, step *Step) {
 				return
 			}
 			p.submitUngrounded = false
+
+			// Submit gate (e.g. harness-run build verification): a rejection feeds
+			// the verbatim evidence back as the observation and the model keeps
+			// iterating in THIS session — no fresh loop, no reverted work.
+			if p.submitGate != nil {
+				if reject, msg := p.submitGate(step.ActionInput); reject {
+					step.Status = "retriable_failed"
+					step.Error = msg
+					step.Observation = msg
+					if p.logger != nil {
+						p.logger.Log(common.EventStepFailure, "submit_analysis rejected by submit gate", map[string]any{
+							"step_number": step.Number,
+						})
+					}
+					return
+				}
+			}
 		}
 
 		// Run-scoped memory: cache read-only results so an identical later call (in

@@ -110,6 +110,13 @@ func (a *CodeFixerAgent) ExecuteWithRevert(ctx context.Context, sessionCtx *sess
 	return a.executeWithOptions(ctx, sessionCtx, auditFindings, true, reviewFeedback)
 }
 
+// ExecuteWithFeedback reworks a fix with verification/review feedback while
+// KEEPING the working tree — the attempt iterates forward on its own edits
+// instead of reverting and rediscovering them (the dominant fix-mode token waste).
+func (a *CodeFixerAgent) ExecuteWithFeedback(ctx context.Context, sessionCtx *session.SessionContext, auditFindings map[string]any, reviewFeedback string) (map[string]any, error) {
+	return a.executeWithOptions(ctx, sessionCtx, auditFindings, false, reviewFeedback)
+}
+
 // executeWithOptions is the internal implementation with revert capabilities
 func (a *CodeFixerAgent) executeWithOptions(ctx context.Context, sessionCtx *session.SessionContext, auditFindings map[string]any, shouldRevert bool, reviewFeedback string) (map[string]any, error) {
 	actionType := "implementing fix"
@@ -425,6 +432,8 @@ func (a *CodeFixerAgent) buildTemplatePrompt(auditFindings map[string]any, sessi
 		"InvestigationHistory": sessionCtx.GetScratchpad(),
 		"BuildConfig":          sessionCtx.BuildConfig,
 		"BuildVerifyEnabled":   a.config.Agent.BuildVerifyEnabled,
+		"HarnessVerify":        a.config.Agent.HarnessVerify,
+		"RepoFacts":            sessionCtx.RepoFacts,
 		"Skills":               sessionCtx.SkillsContext,
 	}
 

@@ -273,6 +273,7 @@ type AnalysisResult struct {
 	PRCreationReason   string         `json:"pr_creation_reason,omitempty"`  // Why PR was skipped/failed
 	Review             map[string]any `json:"review,omitempty"`              // Review agent feedback, issues, syntax errors
 	BuildVerification  map[string]any `json:"build_verification,omitempty"`  // Lint/build command results
+	Verification       map[string]any `json:"verification,omitempty"`        // Harness-run tri-state verdict (verified|unverified|failed) with verbatim evidence
 	FailureSummary     string         `json:"failure_summary,omitempty"`     // Human-readable summary when pipeline fails
 }
 
@@ -1033,6 +1034,9 @@ func (ah *AgenticAnalyzeHandler) parseAgentResponse(responseStr string) (*Analys
 	}
 	if buildData, ok := flexibleResult["build_verification"].(map[string]any); ok {
 		result.BuildVerification = buildData
+	}
+	if verification, ok := flexibleResult["verification"].(map[string]any); ok {
+		result.Verification = verification
 	}
 
 	return &result, nil

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"nudgebee/code-analysis-agent/tools/core"
 )
@@ -49,10 +50,18 @@ type CLIOutput struct {
 	Command    string `json:"command"`
 	WorkingDir string `json:"working_dir"`
 	ExitCode   int    `json:"exit_code"`
-	Stdout     string `json:"stdout"`
-	Stderr     string `json:"stderr"`
-	Error      string `json:"error,omitempty"`
-	Duration   string `json:"duration"`
+	// StageExitCodes holds the per-stage exit codes (bash PIPESTATUS) of the final
+	// pipeline in the command, when it had more than one stage. The overall ExitCode
+	// only reflects the last stage, which hides earlier failures (`go build | grep -v
+	// noise` reports grep's code, not the build's) — these are the honest codes.
+	StageExitCodes []int  `json:"stage_exit_codes,omitempty"`
+	Stdout         string `json:"stdout"`
+	Stderr         string `json:"stderr"`
+	Error          string `json:"error,omitempty"`
+	Duration       string `json:"duration"`
+	// SpillPath is set when output exceeded the context cap; the full untruncated
+	// output is preserved there so no signal is silently dropped.
+	SpillPath string `json:"spill_path,omitempty"`
 }
 
 func NewCLITool(workspaceDir string) *CLITool {
@@ -248,6 +257,59 @@ func (t *CLITool) Execute(ctx context.Context, input map[string]any) core.NBTool
 	// Debug logging (can be enabled for troubleshooting)
 	// fmt.Printf("DEBUG CLI: command='%s' in dir='%s'\n", result.Command, result.WorkingDir)
 
+	// Per-stage pipeline verdict: the pipeline's exit code only reflects its last
+	// stage, so `go build | grep -v noise` can report success on a broken build and
+	// failure on a clean one. When per-stage codes are available, judge every stage
+	// honestly; a grep-family stage exiting 1 just means "no matches", not failure.
+	if stages := lastPipelineStages(result.Command); len(result.StageExitCodes) > 1 && len(result.StageExitCodes) == len(stages) {
+		failed := false
+		parts := make([]string, 0, len(stages))
+		for i, code := range result.StageExitCodes {
+			bin := stageBinary(stages[i])
+			note := ""
+			if code != 0 {
+				if isGrepFamily(bin) && code == 1 {
+					note = " (no matches)"
+				} else {
+					failed = true
+				}
+			}
+			parts = append(parts, fmt.Sprintf("%s=%d%s", bin, code, note))
+		}
+		stageSummary := strings.Join(parts, ", ")
+		observation += "\nPipeline stage exits: " + stageSummary
+		if result.SpillPath != "" {
+			observation += fmt.Sprintf("\nFull untruncated output saved to: %s (read with file_view if needed)", result.SpillPath)
+		}
+		// Combined output lands in Stdout on pipeline exit 0 and Stderr otherwise,
+		// which no longer tracks the honest verdict — show whichever is populated.
+		output := result.Stdout
+		if output == "" {
+			output = result.Stderr
+		}
+		if !failed {
+			observation += "\nCommand succeeded"
+			if output != "" {
+				observation += fmt.Sprintf("\nOutput:\n%s", output)
+			} else {
+				observation += "\nNo output captured"
+			}
+			return core.CreateSuccessResponse(
+				fmt.Sprintf("Command executed: %s", commandToExecute),
+				observation,
+				response,
+			)
+		}
+		observation += "\nCommand failed"
+		if output != "" {
+			observation += fmt.Sprintf("\nError:\n%s", output)
+		}
+		return core.CreateErrorResponse(
+			fmt.Sprintf("Pipeline stage failed (stage exits: %s)", stageSummary),
+			observation,
+		)
+	}
+
 	if result.ExitCode == 0 {
 		observation += "\nCommand succeeded"
 		// Include stdout in observation for LLM to see
@@ -326,13 +388,98 @@ func isSearchNoMatch(cmd string) bool {
 			continue
 		}
 		// Match on the binary's base name so `/usr/bin/grep` / `./bin/rg` also count.
-		switch filepath.Base(fields[cmdIdx]) {
-		case "rg", "ripgrep", "grep", "egrep", "fgrep", "ag":
-			return true
-		}
-		return false // last real stage isn't a search tool
+		return isGrepFamily(filepath.Base(fields[cmdIdx])) // last real stage decides
 	}
 	return false
+}
+
+// isGrepFamily reports whether the binary is a search tool for which exit code 1
+// means "no matches found" rather than an error.
+func isGrepFamily(bin string) bool {
+	switch bin {
+	case "rg", "ripgrep", "grep", "egrep", "fgrep", "ag":
+		return true
+	}
+	return false
+}
+
+// lastPipelineStages splits the command's final shell statement into its pipe
+// stages. Statements are separated by ';', newline, '&&' and '||'; single-quoted
+// and double-quoted regions are respected so `grep "a|b"` stays one stage. Only
+// the final statement matters because bash PIPESTATUS reflects the last pipeline
+// executed. The split is intentionally shallow — pipes inside `$(...)` or
+// backticks may miscount stages, in which case callers fall back to the plain
+// pipeline exit code (stage-count mismatch), never to a wrong verdict.
+func lastPipelineStages(cmd string) []string {
+	var stages []string
+	var cur strings.Builder
+	inSingle, inDouble := false, false
+	flushStage := func() {
+		if s := strings.TrimSpace(cur.String()); s != "" {
+			stages = append(stages, s)
+		}
+		cur.Reset()
+	}
+	newStatement := func() {
+		stages = stages[:0]
+		cur.Reset()
+	}
+	escaped := false
+	runes := []rune(cmd)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		// Backslash escapes the next character (outside single quotes, where the
+		// shell treats it literally) — so `\"` doesn't toggle quote state and `\|`
+		// isn't a pipe.
+		if escaped {
+			cur.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' && !inSingle {
+			escaped = true
+			cur.WriteRune(r)
+			continue
+		}
+		switch {
+		case r == '\'' && !inDouble:
+			inSingle = !inSingle
+			cur.WriteRune(r)
+		case r == '"' && !inSingle:
+			inDouble = !inDouble
+			cur.WriteRune(r)
+		case inSingle || inDouble:
+			cur.WriteRune(r)
+		case r == ';' || r == '\n':
+			newStatement()
+		case r == '&' && i+1 < len(runes) && runes[i+1] == '&':
+			newStatement()
+			i++
+		case r == '|' && i+1 < len(runes) && runes[i+1] == '|':
+			newStatement()
+			i++
+		case r == '|':
+			flushStage()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	flushStage()
+	return stages
+}
+
+// stageBinary extracts the base name of the binary a pipeline stage invokes,
+// skipping leading env-var assignments (`FOO=bar grep ...` → "grep").
+func stageBinary(stage string) string {
+	fields := strings.Fields(stage)
+	i := 0
+	for i < len(fields) && strings.Contains(fields[i], "=") {
+		i++
+	}
+	if i >= len(fields) {
+		return ""
+	}
+	return filepath.Base(fields[i])
 }
 
 func (t *CLITool) executeCommand(ctx context.Context, command, workingDir string, timeout time.Duration, githubToken string) *CLIOutput {
@@ -354,9 +501,24 @@ func (t *CLITool) executeCommand(ctx context.Context, command, workingDir string
 
 	// Check if command contains shell features (pipes, redirections, etc.)
 	var cmd *exec.Cmd
+	wantStageExits := false
 	if t.containsShellFeatures(command) {
-		// Use shell to execute complex commands
-		cmd = exec.CommandContext(cmdCtx, "sh", "-c", command)
+		// Multi-stage pipelines get bash with PIPESTATUS capture: the pipeline exit
+		// code alone is the LAST stage's, which hides earlier failures (a broken
+		// `go build | grep -v noise` looks like success). Kill switch:
+		// NB_CLI_STAGE_EXITS=false restores plain sh semantics.
+		if len(lastPipelineStages(command)) > 1 && os.Getenv("NB_CLI_STAGE_EXITS") != "false" {
+			if bashPath, err := exec.LookPath("bash"); err == nil {
+				wrapped := command + "\n" +
+					`__nb_ps=("${PIPESTATUS[@]}"); printf '\n` + pipeStatusMarker + ` %s\n' "${__nb_ps[*]}"; exit "${__nb_ps[${#__nb_ps[@]}-1]}"`
+				cmd = exec.CommandContext(cmdCtx, bashPath, "-c", wrapped)
+				wantStageExits = true
+			}
+		}
+		if cmd == nil {
+			// Use shell to execute complex commands
+			cmd = exec.CommandContext(cmdCtx, "sh", "-c", command)
+		}
 	} else {
 		// Parse simple commands into parts
 		args := strings.Fields(command)
@@ -379,6 +541,12 @@ func (t *CLITool) executeCommand(ctx context.Context, command, workingDir string
 
 	// Use CombinedOutput for simpler, more reliable output capture
 	output, err := cmd.CombinedOutput()
+
+	if wantStageExits {
+		var codes []int
+		output, codes = extractPipeStatus(output)
+		result.StageExitCodes = codes
+	}
 
 	// Store the output and provide more detailed error information
 	if err != nil {
@@ -414,20 +582,119 @@ func (t *CLITool) executeCommand(ctx context.Context, command, workingDir string
 		}
 	}
 
-	// Limit output size to prevent context bloat
-	if len(result.Stdout) > 4*1024 {
-		// Provide helpful suggestion for large git outputs
-		truncationMessage := "\n... [output truncated] ..."
-		if strings.HasPrefix(command, "git show") && !strings.Contains(command, "--name-only") && !strings.Contains(command, "--") {
-			truncationMessage = "\n... [output truncated - consider using 'git show --name-only " + strings.TrimPrefix(command, "git show ") + "' to see changed files, or 'git show <commit> -- <specific-file>' for targeted diff] ..."
-		}
-		result.Stdout = result.Stdout[:4*1024] + truncationMessage
+	// Limit output size to prevent context bloat. Never drop signal silently:
+	// the full output is spilled to a file (path surfaced to the model), and the
+	// truncated view keeps head AND tail — build/test failures print the error at
+	// the end, which head-only truncation used to cut off.
+	const stdoutCap, stderrCap = 4 * 1024, 2 * 1024
+	if len(result.Stdout) > stdoutCap || len(result.Stderr) > stderrCap {
+		result.SpillPath = spillFullOutput(command, result.Stdout, result.Stderr)
 	}
-	if len(result.Stderr) > 2*1024 {
-		result.Stderr = result.Stderr[:2*1024] + "\n... [error truncated] ..."
+	if len(result.Stdout) > stdoutCap {
+		// Provide helpful suggestion for large git outputs
+		hint := ""
+		if strings.HasPrefix(command, "git show") && !strings.Contains(command, "--name-only") && !strings.Contains(command, "--") {
+			hint = " - consider using 'git show --name-only " + strings.TrimPrefix(command, "git show ") + "' to see changed files, or 'git show <commit> -- <specific-file>' for targeted diff"
+		}
+		result.Stdout = headTailTruncate(result.Stdout, 3*1024, 1024, result.SpillPath, hint)
+	}
+	if len(result.Stderr) > stderrCap {
+		result.Stderr = headTailTruncate(result.Stderr, 1024, 1024, result.SpillPath, "")
 	}
 
 	return result
+}
+
+// pipeStatusMarker prefixes the synthetic line the bash wrapper prints so the
+// per-stage PIPESTATUS codes can be recovered from combined output.
+const pipeStatusMarker = "__NB_PIPESTATUS__"
+
+// extractPipeStatus strips the wrapper's marker line from combined output and
+// parses the per-stage exit codes. Missing marker (command exited early, timeout)
+// returns the output unchanged with nil codes — callers fall back to the plain
+// pipeline exit code.
+func extractPipeStatus(output []byte) ([]byte, []int) {
+	s := string(output)
+	idx := strings.LastIndex(s, pipeStatusMarker)
+	if idx == -1 {
+		return output, nil
+	}
+	line := s[idx:]
+	if nl := strings.IndexByte(line, '\n'); nl != -1 {
+		line = line[:nl]
+	}
+	var codes []int
+	for _, f := range strings.Fields(strings.TrimPrefix(line, pipeStatusMarker)) {
+		var c int
+		if _, err := fmt.Sscanf(f, "%d", &c); err != nil {
+			return output, nil
+		}
+		codes = append(codes, c)
+	}
+	if len(codes) == 0 {
+		return output, nil
+	}
+	// Strip the marker line (and the blank line the wrapper printed before it).
+	cleaned := strings.TrimRight(s[:idx], "\n")
+	return []byte(cleaned), codes
+}
+
+// spillFullOutput writes the complete command output to a pod-local temp file
+// (never inside the repo workspace — that would pollute git status and diffs)
+// and returns its path, or "" if writing failed.
+func spillFullOutput(command, stdout, stderr string) string {
+	dir := filepath.Join(os.TempDir(), "nb-tool-output")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	f, err := os.CreateTemp(dir, "cli-*.log")
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# command: %s\n", command)
+	if stdout != "" {
+		b.WriteString("# --- stdout ---\n")
+		b.WriteString(stdout)
+		b.WriteString("\n")
+	}
+	if stderr != "" {
+		b.WriteString("# --- stderr ---\n")
+		b.WriteString(stderr)
+		b.WriteString("\n")
+	}
+	if _, err := f.WriteString(b.String()); err != nil {
+		_ = f.Close()
+		return ""
+	}
+	if err := f.Close(); err != nil {
+		return ""
+	}
+	return f.Name()
+}
+
+// headTailTruncate keeps the first head and last tail bytes of s with an honest
+// marker in between stating how much was cut and where the full output lives.
+func headTailTruncate(s string, head, tail int, spillPath, hint string) string {
+	if len(s) <= head+tail {
+		return s
+	}
+	// Snap both cut points to rune boundaries so a multi-byte character is never
+	// split (head/tail stay byte budgets; the adjustment is at most 3 bytes).
+	for head > 0 && !utf8.RuneStart(s[head]) {
+		head--
+	}
+	tailStart := len(s) - tail
+	for tailStart < len(s) && !utf8.RuneStart(s[tailStart]) {
+		tailStart++
+	}
+	spillNote := ""
+	if spillPath != "" {
+		spillNote = "; full output: " + spillPath
+	}
+	return s[:head] +
+		fmt.Sprintf("\n... [output truncated: %d bytes total, showing first %d and last %d%s%s] ...\n", len(s), head, len(s)-tailStart, spillNote, hint) +
+		s[tailStart:]
 }
 
 func (t *CLITool) isDangerousCommand(command string) bool {
