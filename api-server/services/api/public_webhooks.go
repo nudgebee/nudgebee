@@ -96,7 +96,7 @@ func genericWebhookHandler(webhookName string, tracer *trace.Tracer, meter *metr
 		}
 
 		payload := string(bodybytes)
-		sc := security.NewRequestContextForSuperAdmin(logger, tracer, meter)
+		sc := security.NewRequestContext(c.Request.Context(), security.NewSecurityContextForSuperAdmin(), logger, tracer, meter)
 
 		webhookRowID, err := core.ValidateAndStoreWebhook(sc, requestUrl, headers, payload)
 		if err != nil {
@@ -107,7 +107,7 @@ func genericWebhookHandler(webhookName string, tracer *trace.Tracer, meter *metr
 			return
 		}
 
-		if pubErr := webhook_queue.PublishWebhookProcess(webhookRowID); pubErr != nil {
+		if pubErr := webhook_queue.PublishWebhookProcess(c.Request.Context(), webhookRowID); pubErr != nil {
 			// RabbitMQ unavailable — fall back to sync processing
 			logger.Warn("webhook: RabbitMQ unavailable, falling back to sync processing", "webhook", webhookName, "error", pubErr)
 			if procErr := core.ProcessStoredWebhook(sc, webhookRowID); procErr != nil {

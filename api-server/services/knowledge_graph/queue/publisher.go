@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"time"
 
 	"nudgebee/services/common"
@@ -9,8 +10,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// PublishKGUpdate publishes a KG update message for a tenant
-func PublishKGUpdate(tenantID string, source string) error {
+// PublishKGUpdate publishes a KG update message for a tenant. ctx carries the
+// caller's trace context so the consumer continues the same distributed trace.
+func PublishKGUpdate(ctx context.Context, tenantID string, source string) error {
 	message := KGUpdateMessage{
 		TenantID:      tenantID,
 		Source:        source,
@@ -22,5 +24,6 @@ func PublishKGUpdate(tenantID string, source string) error {
 		config.Config.RabbitMqKGUpdateExchange,
 		config.Config.RabbitMqKGUpdateQueue,
 		message,
+		common.MqPublishWithContext(ctx),
 	)
 }

@@ -304,7 +304,7 @@ func SendDailyHighlightEmailReport(context *security.RequestContext, request Ten
 		insights.Data["recommendation_security_groupings_v2"] = map[string]interface{}{"rows": []interface{}{}}
 		message := prepareEmailMessage(emails, totalPotentialSavings, totalOpportunityLost, highlight1, highlight2, insights, tenant)
 		context.GetLogger().Debug("Payload", "Payload", message)
-		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(context.GetContext()))
 		if err != nil {
 			context.GetLogger().Error("error sending daily_highlight_report email", "error", err)
 			continue
@@ -411,7 +411,7 @@ func SendDailyAgentStatusEmail(context *security.RequestContext, query TenantRep
 
 		message := prepareAgentEmailMessage(emails, accountAgentStatus, tenant)
 		context.GetLogger().Debug("Message payload prepared", "payload", message)
-		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(context.GetContext()))
 		if err != nil {
 			context.GetLogger().Error("Error publishing message to RabbitMQ", "error", err)
 			continue
@@ -605,7 +605,7 @@ func SendDailyEventsSummaryReport(context *security.RequestContext, request Tena
 			continue
 		}
 		context.GetLogger().Debug("Message payload prepared", "payload", message)
-		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(context.GetContext()))
 		if err != nil {
 			context.GetLogger().Error("Error publishing message to RabbitMQ", "error", err)
 			continue
@@ -1003,7 +1003,7 @@ func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 		}
 
 		ctx.GetLogger().Debug("Message payload prepared", "tenant", tenantID, "total", tenantCount[tenantID])
-		if err := common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message); err != nil {
+		if err := common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext())); err != nil {
 			ctx.GetLogger().Error("error publishing batched findings message", "tenant", tenantID, "error", err)
 		}
 	}

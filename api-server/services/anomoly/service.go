@@ -360,7 +360,7 @@ func processSingleApplicationMlAsync(
 		EndTime:                 endTime,
 		EvaluationPeriodMinutes: &evaluationPeriodMinutes,
 		AnomalyType:             anomalyConfig.AnomalyType,
-	}, common.MqPublishWithExpiration(time.Hour*1))
+	}, common.MqPublishWithExpiration(time.Hour*1), common.MqPublishWithContext(ctx.GetContext()))
 
 	if err != nil {
 		slog.Error("anomaly: unable to publish ML message to anomaly processing queue", "error", err, "app", app.Name, "accountId", accountId)

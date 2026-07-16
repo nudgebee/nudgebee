@@ -161,7 +161,7 @@ func ProcessProactiveNudges(ctx *security.RequestContext) error {
 			},
 		}
 
-		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext()))
 		if err != nil {
 			ctx.GetLogger().Error("proactive nudge: error publishing", "error", err, "tenant", t.Id)
 			continue

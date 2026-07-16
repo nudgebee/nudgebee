@@ -510,7 +510,7 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 			queuedCount := 0
 			failedCount := 0
 			for tenantID := range tenantIDSet {
-				if err := kgqueue.PublishKGUpdate(tenantID, "cron"); err != nil {
+				if err := kgqueue.PublishKGUpdate(ctx.GetContext(), tenantID, "cron"); err != nil {
 					ctx.GetLogger().Error("cron: failed to publish KG update message", "tenant_id", tenantID, "error", err)
 					failedCount++
 				} else {

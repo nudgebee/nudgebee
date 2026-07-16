@@ -83,7 +83,7 @@ func queueBulkClassification(ctx context.Context, db *sqlx.DB, job BulkClassific
 	}
 
 	// 4. Publish to RabbitMQ queue
-	if err := common.MqPublish(BulkClassificationExchange, BulkClassificationRoutingKey, job); err != nil {
+	if err := common.MqPublish(BulkClassificationExchange, BulkClassificationRoutingKey, job, common.MqPublishWithContext(ctx)); err != nil {
 		slog.ErrorContext(ctx, "Failed to publish bulk classification job", "error", err, "job_id", jobID)
 		// Update status to failed
 		updateBulkOperationStatus(ctx, db, jobID, BulkStatusFailed, "Failed to queue job")

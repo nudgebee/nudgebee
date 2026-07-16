@@ -206,7 +206,7 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 
 		// If a specific tenant is requested, queue only that tenant
 		if specificTenantID != "" {
-			if err := kgqueue.PublishKGUpdate(specificTenantID, "cron"); err != nil {
+			if err := kgqueue.PublishKGUpdate(ctx.GetContext(), specificTenantID, "cron"); err != nil {
 				ctx.GetLogger().Error("failed to publish KG update message for specific tenant",
 					"tenant_id", specificTenantID,
 					"error", err)
@@ -269,7 +269,7 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 		queuedCount := 0
 		failedCount := 0
 		for tenantID := range tenantIDSet {
-			if err := kgqueue.PublishKGUpdate(tenantID, "cron"); err != nil {
+			if err := kgqueue.PublishKGUpdate(ctx.GetContext(), tenantID, "cron"); err != nil {
 				ctx.GetLogger().Error("failed to publish KG update message",
 					"tenant_id", tenantID,
 					"error", err)

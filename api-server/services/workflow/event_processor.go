@@ -54,7 +54,7 @@ func ProcessEvent(ctx *security.RequestContext, event map[string]any) (err error
 		lightweight[k] = v
 	}
 
-	err = common.MqPublish(config.Config.RabbitMqRunbookEventExchange, config.Config.RabbitMqRunbookEventRoutingKey, lightweight, common.MqPublishWithExpiration(2*time.Hour))
+	err = common.MqPublish(config.Config.RabbitMqRunbookEventExchange, config.Config.RabbitMqRunbookEventRoutingKey, lightweight, common.MqPublishWithExpiration(2*time.Hour), common.MqPublishWithContext(ctx.GetContext()))
 	if err != nil {
 		ctx.GetLogger().Error("workflow: error publishing message to queue", "error", err)
 		return err

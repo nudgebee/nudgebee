@@ -237,7 +237,7 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 			"total_recs", len(recs),
 			"total_savings", totalSavings)
 
-		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext()))
 		if err != nil {
 			ctx.GetLogger().Error("recommendation digest: error publishing", "error", err, "tenant", t.Id)
 			continue

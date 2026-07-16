@@ -176,7 +176,7 @@ func SendSecurityPostureAlert(ctx *security.RequestContext) error {
 			},
 		}
 
-		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext()))
 		if err != nil {
 			ctx.GetLogger().Error("security posture alert: error publishing", "error", err, "tenant", t.Id)
 			continue
