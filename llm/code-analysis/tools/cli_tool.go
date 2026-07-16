@@ -304,9 +304,10 @@ func (t *CLITool) Execute(ctx context.Context, input map[string]any) core.NBTool
 		if output != "" {
 			observation += fmt.Sprintf("\nError:\n%s", output)
 		}
-		return core.CreateErrorResponse(
+		return core.CreateErrorResponseWithData(
 			fmt.Sprintf("Pipeline stage failed (stage exits: %s)", stageSummary),
 			observation,
+			response,
 		)
 	}
 
@@ -349,7 +350,7 @@ func (t *CLITool) Execute(ctx context.Context, input map[string]any) core.NBTool
 			errorMsg = result.Stderr
 		}
 
-		return core.CreateErrorResponse(errorMsg, observation)
+		return core.CreateErrorResponseWithData(errorMsg, observation, response)
 	}
 }
 

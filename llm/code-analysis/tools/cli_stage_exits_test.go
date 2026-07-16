@@ -86,6 +86,11 @@ func TestPipelineVerdicts(t *testing.T) {
 	if !strings.Contains(resp.Observation, "compile error: bad import") {
 		t.Errorf("observation must carry the real error text, got: %q", resp.Observation)
 	}
+	// Error responses must keep their structured data: the fix verifier reads
+	// exit codes from it, and failed commands are exactly where that matters.
+	if data, ok := resp.Data.(map[string]any); !ok || data["result"] == nil {
+		t.Errorf("error response must carry CLIOutput data, got %T", resp.Data)
+	}
 
 	// Clean stage, grep matches nothing → pipeline exit 1 → was a confusing "exit 1 but succeeded".
 	resp = tool.Execute(context.Background(), map[string]any{

@@ -1209,6 +1209,7 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 	var lastFixerResult map[string]any
 	var lastReviewResult ReviewResult
 	var lastVerification *VerificationResult
+	lastFailureEvidence := ""
 
 	// Repository facts (module roots + verify commands) discovered once and shared
 	// with every agent: the fixer historically guessed the build directory because
@@ -1227,12 +1228,23 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 	if a.config.Agent.HarnessVerify && a.config.Agent.InloopVerify && a.codeFixerAgent != nil && a.codeFixerAgent.Planner != nil {
 		const maxInloopRejects = 3
 		rejects := 0
+		lastGateEvidence := ""
 		a.codeFixerAgent.Planner.SetSubmitGate(func(_ map[string]any) (bool, string) {
 			res := a.getFixVerifier().Verify(ctx, a.currentWorkingDir, sessionCtx.BuildConfig)
 			inloopVerification = &res
 			if res.Status != VerificationFailed {
 				return false, ""
 			}
+			// Identical failure evidence means iterating cannot change the outcome
+			// (an environmental or policy gate, not a code problem) — release the
+			// submit for honest failure handling instead of burning retries.
+			// Measured: an unpassable gate cost 56 calls / 814K tokens without this.
+			evidence := res.Evidence()
+			if evidence == lastGateEvidence {
+				a.logger.Log(common.EventStepFailure, "Verification failed with identical evidence — releasing submit; retrying cannot help", nil)
+				return false, ""
+			}
+			lastGateEvidence = evidence
 			rejects++
 			if rejects >= maxInloopRejects {
 				a.logger.Log(common.EventStepFailure, "In-loop verification still failing — releasing submit for honest failure handling", map[string]any{
@@ -1245,7 +1257,9 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 		defer a.codeFixerAgent.Planner.SetSubmitGate(nil)
 	}
 
+	attemptsRun := 0
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		attemptsRun = attempt
 		if attempt > 1 {
 			a.reportProgress(fmt.Sprintf("Reworking fix (attempt %d/%d)...", attempt, maxAttempts))
 		}
@@ -1415,6 +1429,17 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 		if harnessVerification != nil {
 			lastVerification = harnessVerification
 			if harnessVerification.Status == VerificationFailed {
+				// Same evidence as the previous attempt: the failure is invariant to
+				// the fixer's changes — stop and report honestly instead of paying
+				// for another attempt that cannot alter the verdict.
+				evidence := harnessVerification.Evidence()
+				if evidence == lastFailureEvidence {
+					a.logger.Log(common.EventStepFailure, "Verification failed with identical evidence across attempts — stopping", map[string]any{
+						"attempt": attempt,
+					})
+					break
+				}
+				lastFailureEvidence = evidence
 				if attempt < maxAttempts {
 					feedback := "BUILD VERIFICATION FAILED (harness-run). Fix the errors below — do NOT start over; iterate on your current changes.\n\n" + harnessVerification.Evidence()
 					sessionCtx.AddToScratchpad("HarnessVerifier", feedback)
@@ -1519,7 +1544,7 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 			lastFixerResult["execution_status"] = "failed"
 			lastFixerResult["execution_summary"] = fmt.Sprintf(
 				"Fix applied but harness build verification FAILED after %d attempt(s). Evidence:\n%s",
-				maxAttempts, lastVerification.Evidence(),
+				attemptsRun, lastVerification.Evidence(),
 			)
 		}
 	} else if lastReviewResult.Attempt > 0 && !lastReviewResult.Approved {

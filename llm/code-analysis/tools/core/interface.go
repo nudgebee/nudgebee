@@ -79,6 +79,19 @@ func CreateErrorResponse(errorMsg, observation string) NBToolResponse {
 	}
 }
 
+// CreateErrorResponseWithData is CreateErrorResponse plus structured data.
+// Failure responses that drop their data lose real diagnostics for programmatic
+// consumers — e.g. the fix verifier reads exit codes from the CLI result, which
+// used to be absent exactly on the failed commands it cares about most.
+func CreateErrorResponseWithData(errorMsg, observation string, data any) NBToolResponse {
+	return NBToolResponse{
+		Status:      "error",
+		Error:       errorMsg,
+		Observation: observation,
+		Data:        data,
+	}
+}
+
 // Helper function to parse input parameters
 func ParseInput(input map[string]any, target any) error {
 	jsonData, err := json.Marshal(input)

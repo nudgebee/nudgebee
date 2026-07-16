@@ -350,16 +350,10 @@ func (ah *AgenticAnalyzeHandler) HandleAnalyze(c *gin.Context) {
 		return
 	}
 
-	// Workload fields are required for normal analysis but not for PR followup
-	if !req.Followup {
-		if req.WorkloadName == "" || req.WorkloadNamespace == "" || req.WorkloadKind == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"error":   "workload_name, workload_namespace, and workload_kind are required for non-followup requests",
-			})
-			return
-		}
-	}
+	// Workload identity is optional context: it only labels the conversation and
+	// garnishes the relevance-check prompt. Requiring it was a holdover from the
+	// original "correlate this K8s workload's logs" use case — generic requests
+	// (chat fixes, repo maintenance) have no workload and are equally valid.
 
 	analysisID := newAnalysisID()
 
@@ -1147,6 +1141,9 @@ func (ah *AgenticAnalyzeHandler) extractAuthorString(data map[string]any) string
 }
 
 func (ah *AgenticAnalyzeHandler) createConversationContext(req AgenticAnalyzeRequest) string {
+	if req.WorkloadName == "" {
+		return fmt.Sprintf("Code analysis session in account %s", req.CloudAccountID)
+	}
 	return fmt.Sprintf("Code analysis session for %s/%s (%s) in account %s",
 		req.WorkloadNamespace, req.WorkloadName, req.WorkloadKind, req.CloudAccountID)
 }
@@ -1480,6 +1477,15 @@ func applyRelevanceAdvisory(agentResponse *AnalysisResult, check *RelevanceCheck
 	agentResponse.Description += advisory
 }
 
+// workloadContextLine renders the optional workload identity for prompt context,
+// or "" when the request has no workload (generic/chat-driven analyses).
+func workloadContextLine(req AgenticAnalyzeRequest) string {
+	if req.WorkloadName == "" {
+		return ""
+	}
+	return fmt.Sprintf("Workload: %s/%s (%s)\n", req.WorkloadNamespace, req.WorkloadName, req.WorkloadKind)
+}
+
 func (ah *AgenticAnalyzeHandler) validateResponseRelevanceWithLLM(ctx context.Context, client *llm.Client, agentResponse *AnalysisResult, req AgenticAnalyzeRequest, logger *common.Logger) (*RelevanceCheckResult, error) {
 	// Create a focused prompt for the LLM to evaluate relevance
 	relevancePrompt := fmt.Sprintf(`You are a relevance validator for code analysis results. Your job is to determine if an automated analysis actually addresses the user's specific request.
@@ -1488,8 +1494,7 @@ USER'S ORIGINAL REQUEST:
 ======================
 Logs: %s
 Prompt: %s
-Workload: %s/%s (%s)
-
+%s
 AGENT'S ANALYSIS RESULT:
 ========================
 Title: %s
@@ -1518,7 +1523,7 @@ Provide your assessment in JSON format:
   "reasoning": "Detailed explanation of why the analysis is or isn't relevant to the user's request",
   "recommendation": "What should be done next - either validate the current findings or suggest refocusing",
   "confidence_level": "high/medium/low"
-}`, req.Logs, req.Prompt, req.WorkloadNamespace, req.WorkloadName, req.WorkloadKind,
+}`, req.Logs, req.Prompt, workloadContextLine(req),
 		agentResponse.Title, agentResponse.Description, agentResponse.FilePath, agentResponse.ErrorMessage)
 
 	// Use the LLM client to get relevance assessment
