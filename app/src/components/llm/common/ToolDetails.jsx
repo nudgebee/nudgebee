@@ -28,6 +28,8 @@ import KubernetesTable from '@components/k8s/common/KubernetesTable';
 import { mapToTableData } from '@components/k8s/details/KubernetesLogStash';
 import { LogDate } from '@components/k8s/common/LogDate';
 import KubernetesSecurityDetails from '@components/recommendations/security/KubernetesSecurityDetails';
+import { DiffViewer } from '@ui/DiffViewer';
+import CodeBlock from '@ui/CodeBlock';
 import { convertToReadableFormat } from 'src/utils/common';
 
 const FRIENDLY_TOOL_NAMES = {
@@ -138,6 +140,126 @@ const prettifyJsonFencesInMarkdown = (text) => {
     }
     return match;
   });
+};
+
+// Code-edit tools (code-analysis `replace` and friends) carry the proposed
+// change as old_string/new_string in parameters — render those as a real diff
+// instead of an escaped JSON blob.
+const CODE_EDIT_TOOL_NAMES = ['replace', 'str_replace', 'edit_file'];
+
+export const parseCodeEditParams = (tc) => {
+  if (!tc || !CODE_EDIT_TOOL_NAMES.includes(tc.tool_name) || typeof tc.parameters !== 'string') {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(tc.parameters);
+    if (parsed && typeof parsed.old_string === 'string' && typeof parsed.new_string === 'string') {
+      return parsed;
+    }
+  } catch (e) {
+    console.warn('parseCodeEditParams: parameters JSON parse failed', e);
+  }
+  return null;
+};
+
+export const diffLanguageForFile = (filePath) => {
+  const ext = (filePath || '').split('.').pop()?.toLowerCase();
+  switch (ext) {
+    case 'json':
+      return 'json';
+    case 'yaml':
+    case 'yml':
+      return 'yaml';
+    case 'js':
+    case 'jsx':
+    case 'ts':
+    case 'tsx':
+      return 'javascript';
+    case 'sh':
+    case 'bash':
+      return 'shell';
+    case 'md':
+      return 'markdown';
+    case 'sql':
+      return 'sql';
+    default:
+      return 'text';
+  }
+};
+
+// Persisted parameters can be an unparseable JSON fragment (older backend rows
+// were truncated mid-string). Decode the common JSON escapes so the fallback
+// reads as text instead of an escaped string literal.
+export const lenientUnescape = (text) => {
+  if (!text || typeof text !== 'string' || !text.includes('\\')) {
+    return text;
+  }
+  return text
+    .replace(/\\u003c/gi, '<')
+    .replace(/\\u003e/gi, '>')
+    .replace(/\\u0026/gi, '&')
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"');
+};
+
+// file_view responses come back as "NNN: content" lines with the file's real
+// line numbers baked into the text. Parse them so the excerpt renders as a
+// proper code block with a real-numbered gutter instead of raw prefixed text.
+const FILE_VIEW_TOOL_NAMES = ['file_view', 'file_read', 'read_file'];
+
+export const parseFileViewData = (tc) => {
+  if (!tc || !FILE_VIEW_TOOL_NAMES.includes(tc.tool_name) || typeof tc.response !== 'string' || !tc.response.trim()) {
+    return null;
+  }
+  const lines = tc.response.replace(/\r\n/g, '\n').split('\n');
+  const matches = lines.map((l) => l.match(/^(\d+):(?: (.*))?$/));
+  const matchedCount = matches.filter(Boolean).length;
+  const nonEmptyCount = lines.filter((l) => l.trim()).length;
+  if (matchedCount === 0 || matchedCount < nonEmptyCount * 0.8) {
+    return null;
+  }
+  const first = matches.find(Boolean);
+  const code = lines.map((l, i) => (matches[i] ? matches[i][2] || '' : l)).join('\n');
+  let filePath = '';
+  try {
+    const params = JSON.parse(tc.parameters);
+    filePath = typeof params?.file_path === 'string' ? params.file_path : '';
+  } catch (e) {
+    console.warn('parseFileViewData: parameters JSON parse failed', e);
+  }
+  return { filePath, startLine: parseInt(first[1], 10), code };
+};
+
+// Old backend rows were truncated mid-JSON (always inside the giant
+// "_tool_outputs" working-memory blob) and can't be parsed. Salvage a display
+// string: drop the working-memory keys textually and decode escapes. Returns
+// null when nothing but working memory remains.
+export const salvageTruncatedParams = (text) => {
+  if (!text || typeof text !== 'string') {
+    return text;
+  }
+  let out = text;
+  let stripped = false;
+  const toIdx = out.indexOf('"_tool_outputs"');
+  if (toIdx !== -1) {
+    // Truncation happens inside this blob, so nothing useful follows it.
+    out = out.slice(0, toIdx);
+    stripped = true;
+  }
+  const intentionRe = /"__intention"\s*:\s*"(?:[^"\\]|\\.)*"\s*,?/;
+  if (intentionRe.test(out)) {
+    // Already rendered as the Thought section — pure duplication here.
+    out = out.replace(intentionRe, '');
+    stripped = true;
+  }
+  if (stripped) {
+    out = out.replace(/^\s*\{\s*/, '').replace(/[\s,{]+$/, '');
+    if (!out) {
+      return null;
+    }
+  }
+  return lenientUnescape(out);
 };
 
 const isPreformattedText = (text) => {
@@ -797,11 +919,16 @@ const ParametersBox = ({ parameters }) => {
               return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(parameters, null, 2)}</pre>;
             }
             if (typeof parameters === 'object') {
-              parsed = parameters;
+              // Shallow-copy so stripping working-memory keys below doesn't mutate the prop.
+              parsed = { ...parameters };
             } else if (typeof parameters === 'string' && parameters.trim().startsWith('{')) {
               parsed = JSON.parse(parameters);
             }
             if (parsed && typeof parsed === 'object') {
+              // Planner working memory persisted by older backends — internal
+              // plumbing, never useful to show.
+              delete parsed._tool_outputs;
+              delete parsed.__intention;
               // Executor-style tools (shell, kubectl, ...) put the executable in
               // `command` and the actual command line in `args`. Showing only
               // `command` ("shell") hides what actually ran, so prefer `args`.
@@ -821,7 +948,17 @@ const ParametersBox = ({ parameters }) => {
           } catch (e) {
             console.warn('ParametersBox: parameters JSON parse failed', e);
           }
-          return <Box sx={{ wordBreak: 'break-all' }}>{parameters}</Box>;
+          // Unparseable (e.g. truncated JSON from older rows): strip the
+          // working-memory blob and decode escapes so it reads as text.
+          const salvaged = salvageTruncatedParams(parameters);
+          if (salvaged === null || salvaged === undefined) {
+            return (
+              <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', fontStyle: 'italic', fontFamily: ds.font.sans }}>
+                Internal working memory omitted (record truncated server-side).
+              </Typography>
+            );
+          }
+          return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{salvaged}</pre>;
         })()}
       </Box>
     </Box>
@@ -843,6 +980,8 @@ const ToolCallSection = ({ tc, index, accountId, reasoning }) => {
   const tcStatus = tc.status;
 
   const prettyThought = tryPrettifyJson(thought);
+  const codeEdit = parseCodeEditParams(tc);
+  const fileView = parseFileViewData(tc);
 
   return (
     <Box sx={{ mb: ds.space[4] }}>
@@ -879,22 +1018,63 @@ const ToolCallSection = ({ tc, index, accountId, reasoning }) => {
         </Box>
       )}
 
-      {/* Parameters / Query */}
-      <ParametersBox parameters={tc.parameters} />
+      {/* Code-edit tools: render the proposed change as a diff instead of raw JSON */}
+      {codeEdit ? (
+        <Box sx={{ mb: ds.space[2] }}>
+          <Typography sx={sectionLabelSx}>Proposed Change</Typography>
+          {codeEdit.purpose && (
+            <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)', fontFamily: ds.font.sans, mb: ds.space[1] }}>
+              {codeEdit.purpose}
+            </Typography>
+          )}
+          <DiffViewer
+            originalCode={codeEdit.old_string}
+            newCode={codeEdit.new_string}
+            mode='unified'
+            fileName={codeEdit.file_path}
+            language={diffLanguageForFile(codeEdit.file_path)}
+            data-testid={`tool-details-code-edit-diff-${index}`}
+          />
+        </Box>
+      ) : fileView ? null : (
+        /* Parameters / Query — file_view's params (path + line range) are fully
+           conveyed by the code block header below, so its raw JSON is skipped */
+        <ParametersBox parameters={tc.parameters} />
+      )}
 
       {/* Response */}
-      {responseText && (
+      {fileView ? (
         <Box>
-          <SectionLabel label='Response' copyText={responseText} toastMessage='Response copied to clipboard' />
-          <Box sx={contentBoxSx}>
-            <FormattedToolResponse
-              responseText={responseText}
-              toolName={tcName}
-              toolCall={{ agentName: tc.tool_name, tool: tc.tool_name, tool_name: tc.tool_name }}
-              accountId={accountId}
-            />
-          </Box>
+          <SectionLabel label='Response' />
+          <CodeBlock
+            code={fileView.code}
+            title={
+              fileView.filePath
+                ? `${fileView.filePath} · lines ${fileView.startLine}–${fileView.startLine + fileView.code.split('\n').length - 1}`
+                : undefined
+            }
+            language={fileView.filePath ? fileView.filePath.split('.').pop() : undefined}
+            showLineNumbers
+            lineNumberStart={fileView.startLine}
+            maxHeight={420}
+            copyToast='File excerpt copied to clipboard'
+            data-testid={`tool-details-file-view-${index}`}
+          />
         </Box>
+      ) : (
+        responseText && (
+          <Box>
+            <SectionLabel label='Response' copyText={responseText} toastMessage='Response copied to clipboard' />
+            <Box sx={contentBoxSx}>
+              <FormattedToolResponse
+                responseText={responseText}
+                toolName={tcName}
+                toolCall={{ agentName: tc.tool_name, tool: tc.tool_name, tool_name: tc.tool_name }}
+                accountId={accountId}
+              />
+            </Box>
+          </Box>
+        )
       )}
     </Box>
   );
@@ -995,6 +1175,8 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
   const status = toolCall.response_status || toolCall.status;
   const toolCalls = toolCall.toolCalls || [];
   const hasMultipleToolCalls = toolCalls.length > 1;
+  const codeEdits = hasMultipleToolCalls ? toolCalls.map(parseCodeEditParams).filter(Boolean) : [];
+  const editedFiles = [...new Set(codeEdits.map((e) => e.file_path).filter(Boolean))];
 
   // Per-tool reasoning lookup: match a tool-call-like object's candidate ids against the
   // time-split reasoning map so each tool shows the thinking that produced it.
@@ -1087,6 +1269,26 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
         <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', mb: ds.space[3], fontFamily: ds.font.sans }}>
           {toolCalls.length} tool calls
         </Typography>
+      )}
+
+      {/* Rollup of proposed code edits so changes aren't buried in the call list */}
+      {editedFiles.length > 0 && (
+        <Box sx={{ mb: ds.space[3] }} data-testid='tool-details-proposed-changes'>
+          <Typography sx={sectionLabelSx}>
+            Proposed Changes — {codeEdits.length} edit{codeEdits.length !== 1 ? 's' : ''} in {editedFiles.length} file
+            {editedFiles.length !== 1 ? 's' : ''}
+          </Typography>
+          <Box sx={contentBoxSx}>
+            {editedFiles.map((f) => (
+              <Typography
+                key={f}
+                sx={{ fontSize: 'var(--ds-text-small)', fontFamily: '"Roboto Mono", monospace', color: 'var(--ds-gray-700)', wordBreak: 'break-all' }}
+              >
+                {f}
+              </Typography>
+            ))}
+          </Box>
+        </Box>
       )}
 
       {/* Multiple tool calls: render each one */}
