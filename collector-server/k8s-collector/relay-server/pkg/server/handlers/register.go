@@ -373,7 +373,19 @@ func RegisterHandler(
 							actionName := gjson.GetBytes(d.Body, "body.action_name").String()
 							requestID := gjson.GetBytes(d.Body, "request_id").String()
 
-							deliveryLogger := logger.With(
+							// Continue the request trace injected on publish (pkg/mq
+							// rpc_client) so this delivery's logs correlate with the
+							// originating backend request. The session logger carries the
+							// WS registration's trace_id, so rebuild from rootLogger when
+							// a per-request trace is present — With can't replace an
+							// already-stamped key. Deliveries without trace headers keep
+							// the session logger (current behavior).
+							baseLogger := logger
+							if sc := trace.SpanContextFromContext(mq.ExtractTraceContext(context.Background(), d.Headers)); sc.IsValid() {
+								baseLogger = rootLogger.With("account_id", accountID,
+									"trace_id", sc.TraceID().String(), "span_id", sc.SpanID().String())
+							}
+							deliveryLogger := baseLogger.With(
 								"corr_id", d.CorrelationId,
 								"request_id", requestID,
 								"action", actionName,

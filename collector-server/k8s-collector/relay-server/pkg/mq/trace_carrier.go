@@ -1,7 +1,10 @@
 package mq
 
 import (
+	"context"
+
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
 )
 
 // amqpHeaderCarrier adapts an amqp.Table to the OpenTelemetry
@@ -38,4 +41,12 @@ func (c amqpHeaderCarrier) Keys() []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// ExtractTraceContext returns ctx enriched with the W3C trace context
+// (traceparent / tracestate) carried in the AMQP message headers, as injected
+// by the publish side (see rpc_client.go). When the headers carry no valid
+// trace context, ctx is returned unchanged.
+func ExtractTraceContext(ctx context.Context, headers amqp.Table) context.Context {
+	return otel.GetTextMapPropagator().Extract(ctx, amqpHeaderCarrier(headers))
 }
