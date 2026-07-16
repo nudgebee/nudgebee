@@ -498,6 +498,7 @@ const apiAccount = {
         'google_chat_space',
         'slack',
         'ms_teams',
+        'discord',
       ];
 
       const accountsWhere = gqlStringify({ cloud_provider: { _in: cloudProviders } });
