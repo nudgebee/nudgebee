@@ -14,14 +14,10 @@ test("API testing Cloud Account -> AWS -> Optimize -> Security", async ({
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabOptimize).toBeVisible();
-  await locators.AnchorTabOptimize.hover();
-  await locators.OptimizeSecurityTab.waitFor({ state: "visible" });
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.OptimizeSecurityTab.click();
+      await locators.navigateToSubTab(locators.AnchorTabOptimize, locators.OptimizeSecurityTab, locators.OptimizeSecurityTabUrl);
       await page.waitForLoadState("domcontentloaded");
     },
     {

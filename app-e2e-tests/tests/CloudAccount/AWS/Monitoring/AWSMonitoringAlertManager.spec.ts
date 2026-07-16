@@ -14,13 +14,10 @@ test("API testing Cloud Account -> AWS -> Monitoring -> Alert Manager", async ({
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabMonitoring).toBeVisible();
-  await locators.AnchorTabMonitoring.hover();
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.MonitoringAlertManager.click();
+      await locators.navigateToSubTab(locators.AnchorTabMonitoring, locators.MonitoringAlertManager, locators.MonitoringAlertManagerUrl);
       await page.waitForLoadState("networkidle");
     },
     {

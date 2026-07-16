@@ -14,13 +14,10 @@ test("API testing Cloud Account -> AWS ECS -> Events", async ({
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabECS).toBeVisible();
-  await locators.AnchorTabECS.hover();
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.ECSEvents.click();
+      await locators.navigateToSubTab(locators.AnchorTabECS, locators.ECSEvents, locators.ECSEventsUrl);
       await page.waitForLoadState("networkidle");
     },
     {

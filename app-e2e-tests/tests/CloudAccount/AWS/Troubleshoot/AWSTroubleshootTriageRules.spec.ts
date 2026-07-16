@@ -14,14 +14,10 @@ test("API testing Cloud Account -> AWS -> Troubleshoot -> Triage Rules", async (
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabTroubleshoot).toBeVisible();
-  await locators.AnchorTabTroubleshoot.hover();
-  await locators.TroubleshootTriageRules.waitFor({ state: "visible" });
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.TroubleshootTriageRules.click();
+      await locators.navigateToSubTab(locators.AnchorTabTroubleshoot, locators.TroubleshootTriageRules, locators.TroubleshootTriageRulesUrl);
       await page.waitForLoadState("domcontentloaded");
     },
     {

@@ -13,10 +13,7 @@ test("API testing Cloud Account -> AWS -> Troubleshoot -> Events", async ({
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabTroubleshoot).toBeVisible();
-  await locators.AnchorTabTroubleshoot.hover();
-  await locators.TroubleshootEvents.waitFor({ state: "visible" });
-  await locators.TroubleshootEvents.click();
+  await locators.navigateToSubTab(locators.AnchorTabTroubleshoot, locators.TroubleshootEvents, locators.TroubleshootEventsUrl);
   await page.waitForLoadState("domcontentloaded");
 
   await expect(locators.AnchorTabTroubleshoot).toBeVisible();

@@ -14,13 +14,10 @@ test("API testing Cloud Account -> AWS ECS -> Optimize", async ({
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabECS).toBeVisible();
-  await locators.AnchorTabECS.hover();
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.ECSOptimize.click();
+      await locators.navigateToSubTab(locators.AnchorTabECS, locators.ECSOptimize, locators.ECSOptimizeUrl);
       await page.waitForLoadState("networkidle");
     },
     {

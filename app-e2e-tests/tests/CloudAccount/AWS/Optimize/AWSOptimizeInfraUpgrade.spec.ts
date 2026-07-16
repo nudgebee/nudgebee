@@ -14,14 +14,10 @@ test("API testing Cloud Account -> AWS -> Optimize -> Infra Upgrade", async ({
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabOptimize).toBeVisible();
-  await locators.AnchorTabOptimize.hover();
-  await locators.OptimizeInfraUpgrade.waitFor({ state: "visible" });
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.OptimizeInfraUpgrade.click();
+      await locators.navigateToSubTab(locators.AnchorTabOptimize, locators.OptimizeInfraUpgrade, locators.OptimizeInfraUpgradeUrl);
       await page.waitForLoadState("domcontentloaded");
     },
     {

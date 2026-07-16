@@ -14,13 +14,10 @@ test("API testing Cloud Account -> AWS RDS -> Optimize", async ({
   await loginPage.doFullLogin();
   await locators.openAWSCloudAccountFromConfig();
 
-  await expect(locators.AnchorTabRDS).toBeVisible();
-  await locators.AnchorTabRDS.hover();
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.RDSOptimize.click();
+      await locators.navigateToSubTab(locators.AnchorTabRDS, locators.RDSOptimize, locators.RDSOptimizeUrl);
       await page.waitForLoadState("networkidle");
     },
     {
