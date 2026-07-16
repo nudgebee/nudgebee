@@ -378,7 +378,20 @@ class RabbitConsumer(ConsumerMixin):
 
         # Submit message processing to thread pool and return immediately
         # This keeps the consumer loop responsive for heartbeats
-        self._executor.submit(self._process_message_in_thread, body, message)
+        try:
+            self._executor.submit(self._process_message_in_thread, body, message)
+        except RuntimeError as e:
+            logger.warning("Failed to submit message to executor: %s", e)
+            self._active_tasks_gauge.dec()
+            prometheus_metrics.set_worker_threads(
+                self.queue_name,
+                self._active_tasks_gauge.get(),
+                self.max_workers,
+            )
+            try:
+                message.reject(requeue=True)
+            except Exception:
+                pass
 
     def on_connection_error(self, exc, interval):
         """Handle connection errors - will retry indefinitely"""
