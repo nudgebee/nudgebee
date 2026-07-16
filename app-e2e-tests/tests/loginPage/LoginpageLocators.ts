@@ -1,6 +1,7 @@
 import { Page, Locator } from "@playwright/test";
 
 export class LoginPageLocators {
+    readonly magicLinkButton: Locator;
     readonly magicLinkInputField: Locator;
     readonly sendMagicLinkButton: Locator;
     readonly ldapUsernameInputField: Locator;
@@ -10,6 +11,7 @@ export class LoginPageLocators {
     readonly magicLinkLoginErrorMessage: Locator;
 
     constructor(page: Page) {
+        this.magicLinkButton = page.getByRole('button', { name: /Login via Magic Link/i });
         this.magicLinkInputField = page.locator('#magicEmail');
         this.sendMagicLinkButton = page.locator('#magic-link-submit');
         this.ldapUsernameInputField = page.locator('#credsLdapUsername');

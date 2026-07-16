@@ -11,7 +11,10 @@ test('Magic link testing', async ({ page }) => {
   const SUCCESS_URL_PART ='/auth/verify-request';
 
   await page.goto(SIGNIN_URL);
-  await expect(page.getByText('Welcome back!')).toBeVisible();
+  await expect(page.getByText('Hey! Welcome back')).toBeVisible();
+
+  // Click the magic link tile to switch the signin view before the email field renders
+  await locators.magicLinkButton.click();
 
   // Wait for providers to load and magic link input to render
   await locators.magicLinkInputField.waitFor({ state: "visible", timeout: 30000 });
@@ -40,7 +43,9 @@ test('Magic link testing', async ({ page }) => {
     if (currentUrl.includes(ERROR_URL_PART)) {
       console.log(`Retrying magic link flow, attempt: ${attempt}`);
       await page.goto(SIGNIN_URL);
-      await expect(page.getByText('Welcome back!')).toBeVisible();
+      await expect(page.getByText('Hey! Welcome back')).toBeVisible();
+      await locators.magicLinkButton.click();
+      await locators.magicLinkInputField.waitFor({ state: "visible", timeout: 30000 });
     }
   }
   await expect(page.url()).toContain(SUCCESS_URL_PART);
