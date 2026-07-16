@@ -170,19 +170,19 @@ jobs:
       fail-fast: false
       matrix:
         ref:
-          # --- ghcr.io/nudgebee infra mirrors ---
-          - ghcr.io/nudgebee/postgresql:16.1.0-debian-11-r16
-          - ghcr.io/nudgebee/postgres:16.10-alpine
-          - ghcr.io/nudgebee/redis:7.0.12-debian-11-r0
-          - ghcr.io/nudgebee/rabbitmq:3.13.7-debian-12-r5-nb-3
-          - ghcr.io/nudgebee/postgres-exporter:0.15.0-debian-11-r3
-          - ghcr.io/nudgebee/nginx:stable-alpine3.20-slim
+          # --- ghcr.io/nudgebee infra mirrors (current values.yaml pins) ---
+          - ghcr.io/nudgebee/postgresql:16.1.0-debian-11-r16-nb1
+          - ghcr.io/nudgebee/postgres:16.10-alpine-nb2
+          - ghcr.io/nudgebee/redis:7.0.12-debian-11-r0-nb2
+          - ghcr.io/nudgebee/rabbitmq:3.13.7-debian-12-r5-nb1
+          - ghcr.io/nudgebee/postgres-exporter:v0.20.1
+          - ghcr.io/nudgebee/nginx:stable-alpine3.20-slim-nb1
           - ghcr.io/nudgebee/kubewatch:2.14.1-nb.1
           # --- genuinely third-party (upstream-owned) ---
-          - docker.io/qdrant/qdrant:v1.16.0
-          - docker.io/temporalio/server:1.29.1
-          - docker.io/temporalio/ui:2.42.1
-          - docker.io/temporalio/admin-tools:1.29.1-tctl-1.18.4-cli-1.5.0
+          # temporal-ui removed: the Web UI is disabled in the chart (not deployed).
+          - ghcr.io/nudgebee/qdrant:v1.18.2
+          - docker.io/temporalio/server:1.31.1
+          - docker.io/temporalio/admin-tools:1.31.1
     steps:
       - uses: docker/login-action@v3
         with:
