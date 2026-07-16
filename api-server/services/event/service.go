@@ -861,16 +861,41 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 		if r.Fingerprint == nil || r.AggregationKey == nil {
 			return EventRecommendationApplyResponse{}, common.ErrorBadRequest("event has no fingerprint or aggregation key; cannot look up its log analysis")
 		}
-		eventLogAnalysisRow := dbms.Db.QueryRowx("SELECT analysis from event_log_analysis WHERE analysis_type = 'log_analysis' and cloud_account_id = $1 AND event_fingerprint = $2 AND event_aggregation_key = $3 AND status = 'COMPLETED'", query.AccountId, *r.Fingerprint, *r.AggregationKey)
+		// Select the status alongside the analysis instead of filtering on
+		// status = 'COMPLETED'. Filtering collapsed three distinct states —
+		// still-running, failed, and genuinely-missing — into a single
+		// sql.ErrNoRows, so a failed analysis surfaced a misleading "wait for it
+		// to finish" message. Reading the status back lets us report each state
+		// accurately. The (cloud_account_id, event_fingerprint,
+		// event_aggregation_key, analysis_type) tuple is unique, so this still
+		// matches at most one row.
+		eventLogAnalysisRow := dbms.Db.QueryRowx("SELECT analysis, status, status_reason from event_log_analysis WHERE analysis_type = 'log_analysis' and cloud_account_id = $1 AND event_fingerprint = $2 AND event_aggregation_key = $3", query.AccountId, *r.Fingerprint, *r.AggregationKey)
 		if eventLogAnalysisRow.Err() != nil {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("invalid event_log_analysis - %s", query.EventId)
 		}
 		eventLogAnalysisDetail := map[string]any{}
 		if err = eventLogAnalysisRow.MapScan(eventLogAnalysisDetail); err != nil {
+			// No log_analysis row at all: the user clicked Raise PR before the
+			// analysis was created. Surface that instead of the raw sql.ErrNoRows,
+			// which is meaningless in the UI and invisible in the logs.
 			if errors.Is(err, sql.ErrNoRows) {
-				return EventRecommendationApplyResponse{}, common.ErrorNotFound("no completed log analysis found for this event; re-run the analysis before raising a PR")
+				ctx.GetLogger().Warn("raise PR requested before event log analysis started", "event_id", query.EventId, "account_id", query.AccountId)
+				return EventRecommendationApplyResponse{}, common.ErrorBadRequest("log analysis for this event has not completed yet; wait for it to finish and retry")
 			}
+			ctx.GetLogger().Error("failed to load event log analysis", "error", err, "event_id", query.EventId, "account_id", query.AccountId)
 			return EventRecommendationApplyResponse{}, err
+		}
+		// The row exists but may not be usable yet. Report a failed run distinctly
+		// from a still-running one so the user knows whether to re-run the analysis
+		// or simply wait and retry.
+		if analysisStatus, _ := eventLogAnalysisDetail["status"].(string); analysisStatus != "COMPLETED" {
+			if analysisStatus == "FAILED" {
+				statusReason, _ := eventLogAnalysisDetail["status_reason"].(string)
+				ctx.GetLogger().Warn("raise PR requested but event log analysis failed", "event_id", query.EventId, "account_id", query.AccountId, "status_reason", statusReason)
+				return EventRecommendationApplyResponse{}, common.ErrorBadRequest("log analysis for this event failed; re-run the analysis before raising a PR")
+			}
+			ctx.GetLogger().Warn("raise PR requested before event log analysis completed", "event_id", query.EventId, "account_id", query.AccountId, "status", analysisStatus)
+			return EventRecommendationApplyResponse{}, common.ErrorBadRequest("log analysis for this event has not completed yet; wait for it to finish and retry")
 		}
 		analysisStr, _ := eventLogAnalysisDetail["analysis"].(string)
 		var result map[string]any
