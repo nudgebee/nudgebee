@@ -3,7 +3,24 @@ import { getUserById, getUsers, getUserGroups, getUserGroup, getUserGroupUsers, 
 import cache from '@lib/cache';
 
 export const PREFERENCE_LAST_ACCOUNT_ID = 'last_account';
+// Map of tenantId -> cloud_provider (K8s/AWS/Azure/GCP) -> last account id
+// selected for that provider within that tenant. Separate from
+// PREFERENCE_LAST_ACCOUNT_ID (which only tracks the single most-recent
+// account across all providers) so a feature that needs "the last K8s
+// cluster" can find one even when the user's most recent pick overall was
+// e.g. an AWS account. Scoped by tenant since account ids aren't unique
+// across tenants.
+export const PREFERENCE_LAST_ACCOUNT_ID_BY_PROVIDER = 'last_account_by_provider';
 export const PREFERENCE_TABLE_PAGE_SIZE = 'table_page_size';
+// Map of tenantId -> array of up to RECENT_PAGE_SEARCHES_LIMIT header-search
+// result `value`s (paths), most-recent-first. Scoped per tenant like
+// PREFERENCE_LAST_ACCOUNT_ID_BY_PROVIDER — the header search's option list
+// (and therefore its `value`s) differs per tenant. Only the identifying
+// `value` is stored (not the whole option object, which can carry a JSX
+// `icon` element that doesn't survive JSON.stringify) — callers re-resolve
+// each value against their current options list to render it.
+export const PREFERENCE_RECENT_PAGE_SEARCHES = 'recent_page_searches';
+const RECENT_PAGE_SEARCHES_LIMIT = 3;
 // Map of clusterValue -> true for K8s-agent banners the user has dismissed.
 // Replaces the old per-cluster `latest-<clusterValue>-K8sAgentSnackbar` keys so
 // we keep a single consolidated entry under `nudgebee.userPreferences`.
@@ -27,6 +44,8 @@ export const PREFERENCE_PRODUCT_UPDATES_LAST_SEEN = 'product_updates_last_seen';
 
 const availablePreferences = [
   PREFERENCE_LAST_ACCOUNT_ID,
+  PREFERENCE_LAST_ACCOUNT_ID_BY_PROVIDER,
+  PREFERENCE_RECENT_PAGE_SEARCHES,
   PREFERENCE_TABLE_PAGE_SIZE,
   PREFERENCE_K8S_AGENT_SNACKBAR,
   PREFERENCE_APP_TOUR_SEEN,
@@ -517,6 +536,61 @@ const apiUser = {
     }
     data[key] = value;
     localStorage.setItem('nudgebee.userPreferences', JSON.stringify(data));
+  },
+
+  // Last account id the user selected for a given cloud_provider (K8s/AWS/Azure/GCP),
+  // scoped per tenant. Lets a feature that needs "an account of this provider type"
+  // fall back to the user's most recent pick for that specific provider, even if
+  // their overall most-recent pick (PREFERENCE_LAST_ACCOUNT_ID) was a different
+  // provider. Scoped by tenantId because account ids are tenant-specific — without
+  // this, a user who belongs to/switches between multiple tenants could have a
+  // cached account id from one tenant resolved while viewing another.
+  getLastAccountIdForProvider: function (provider, tenantId) {
+    if (!provider || !tenantId) {
+      return null;
+    }
+    const prefs = apiUser.getUserPreferences() || {};
+    const map = prefs[PREFERENCE_LAST_ACCOUNT_ID_BY_PROVIDER] || {};
+    // Keyed by the uppercased provider — callers pass cloud_provider verbatim
+    // (e.g. ClusterDropDown.jsx's newClusterObj.cloud_provider), whose casing
+    // isn't guaranteed consistent across accounts/backends, so normalize here
+    // rather than relying on every call site to do it.
+    return map[tenantId]?.[provider.toUpperCase()] || null;
+  },
+
+  setLastAccountIdForProvider: function (provider, accountId, tenantId) {
+    if (!provider || !accountId || !tenantId) {
+      return;
+    }
+    const prefs = apiUser.getUserPreferences() || {};
+    const existing = prefs[PREFERENCE_LAST_ACCOUNT_ID_BY_PROVIDER] || {};
+    const map = { ...existing, [tenantId]: { ...(existing[tenantId] || {}), [provider.toUpperCase()]: accountId } };
+    apiUser.storeUserPreferences(PREFERENCE_LAST_ACCOUNT_ID_BY_PROVIDER, map);
+  },
+
+  // Up to RECENT_PAGE_SEARCHES_LIMIT most-recently-selected header search
+  // result values (paths) for a tenant, most-recent first.
+  getRecentPageSearches: function (tenantId) {
+    if (!tenantId) {
+      return [];
+    }
+    const prefs = apiUser.getUserPreferences() || {};
+    const map = prefs[PREFERENCE_RECENT_PAGE_SEARCHES] || {};
+    return map[tenantId] || [];
+  },
+
+  // Moves `value` to the front of the tenant's recent list, dedupes it out of
+  // any existing position, and caps at RECENT_PAGE_SEARCHES_LIMIT.
+  addRecentPageSearch: function (value, tenantId) {
+    if (!value || !tenantId) {
+      return;
+    }
+    const prefs = apiUser.getUserPreferences() || {};
+    const existing = prefs[PREFERENCE_RECENT_PAGE_SEARCHES] || {};
+    const currentList = existing[tenantId] || [];
+    const updated = [value, ...currentList.filter((v) => v !== value)].slice(0, RECENT_PAGE_SEARCHES_LIMIT);
+    const map = { ...existing, [tenantId]: updated };
+    apiUser.storeUserPreferences(PREFERENCE_RECENT_PAGE_SEARCHES, map);
   },
 
   getHistory: async function ({ accountId, module, limit, offset }) {

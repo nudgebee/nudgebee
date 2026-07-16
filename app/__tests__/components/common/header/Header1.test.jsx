@@ -82,6 +82,7 @@ jest.mock('@context/DataContext', () => ({
 // Mock @lib/auth
 jest.mock('@lib/auth', () => ({
   hasWriteAccess: jest.fn(() => true),
+  hasFeatureAccess: jest.fn(() => Promise.resolve(false)),
 }));
 
 // Mock @api1/kubernetes

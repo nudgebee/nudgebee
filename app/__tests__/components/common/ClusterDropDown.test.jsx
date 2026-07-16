@@ -49,6 +49,10 @@ jest.mock('src/utils/colors', () => ({
   },
 }));
 
+jest.mock('next-auth/react', () => ({
+  useSession: () => ({ data: { tenant: { id: 'tenant-1' } }, status: 'authenticated' }),
+}));
+
 jest.mock('@context/DataContext', () => ({
   useData: () => ({
     selectedCluster: { value: 'cluster-1', label: 'Cluster 1' },
@@ -95,6 +99,8 @@ jest.mock('@api1/user', () => ({
     getUserPreferences: jest.fn().mockReturnValue({}),
     storeUserPreferences: jest.fn(),
     getUserPreferencesTablePageSize: jest.fn().mockReturnValue(10),
+    getLastAccountIdForProvider: jest.fn(),
+    setLastAccountIdForProvider: jest.fn(),
   },
   PREFERENCE_LAST_ACCOUNT_ID: 'lastAccountId',
 }));

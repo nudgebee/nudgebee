@@ -39,10 +39,11 @@ import WorkflowIconBlue from '@assets/workflow/workflow-icon-blue.icon.svg';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { useRouter } from 'next/router';
 import { useData } from '@context/DataContext';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, hasFeatureAccess } from '@lib/auth';
 import apiKubernetes from '@api1/kubernetes';
 import IconButton from '@mui/material/IconButton';
 import ClusterDropdown from '@shared/navigation/ClusterDropDown';
+import GlobalPageSearch from '@shared/navigation/GlobalPageSearch';
 import { useSession } from 'next-auth/react';
 import { DropdownMenu } from '@ui/DropdownMenu';
 import GuidesMenu from '@components/onboarding/GuidesMenu';
@@ -105,6 +106,13 @@ const Header1 = ({ showBorder = false }) => {
       markProductUpdatesSeen();
     }
   }, [updatesDrawerOpen, markProductUpdatesSeen]);
+
+  // Backend feature flag, off by default — enable per-tenant via the
+  // feature_flag table (dev-tenant-only today; not yet rolled out to test/prod).
+  const [globalSearchEnabled, setGlobalSearchEnabled] = useState(false);
+  useEffect(() => {
+    hasFeatureAccess('GLOBAL_PAGE_SEARCH').then(setGlobalSearchEnabled);
+  }, []);
 
   const [anchorActiveTab, setAnchorActiveTab] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
@@ -762,12 +770,13 @@ const Header1 = ({ showBorder = false }) => {
         >
           <Box
             sx={{
-              display: 'flex',
-              background: ds.background[100],
-              justifyContent: 'space-between',
+              display: 'grid',
+              gridTemplateColumns: `minmax(${ds.space.mul(0, 200)}, auto) 1fr auto`,
               alignItems: 'center',
+              background: ds.background[100],
               height: ds.space.mul(0, 28),
               px: ds.space[6],
+              gap: ds.space[3],
             }}
           >
             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
@@ -784,6 +793,13 @@ const Header1 = ({ showBorder = false }) => {
                   {anchorActiveTab.name}
                 </Typography>
               </Box>
+            </Box>
+            {/* Always mounted as the grid's 2nd (of 3) column, flag or no flag — the
+                parent grid assigns columns by DOM order, so omitting this Box entirely
+                when the flag is off would shift the right-side icon group (the 3rd
+                child below) into this middle 1fr column instead of the trailing auto one. */}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], justifyContent: 'flex-start', flex: 1 }}>
+              {globalSearchEnabled && <GlobalPageSearch />}
             </Box>
             <Box display={'flex'} alignItems={'center'} justifyContent={'center'} gap={ds.space[3]}>
               <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: ds.space[2] }}>

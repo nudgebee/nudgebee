@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { useRouter } from 'next/router';
+import { useSession } from 'next-auth/react';
 import PropTypes from 'prop-types';
 import homeApi from '@api1/home';
 import userApi, { PREFERENCE_LAST_ACCOUNT_ID } from '@api1/user';
@@ -42,6 +43,8 @@ const useClusterData = (allCluster, setAllCluster) => {
 
 const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = false, noLabel = false, ...dropdownProps }) => {
   const router = useRouter();
+  const { data: session } = useSession();
+  const tenantId = session?.tenant?.id;
   const { selectedCluster, setSelectedCluster, allCluster, setAllCluster, setProviderCapabilities } = useData();
 
   const fetchProviderCapabilities = React.useCallback(
@@ -126,6 +129,9 @@ const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = 
             setSelectedCluster(newClusterObj);
             setClusterValue(initialId);
             userApi.storeUserPreferences(PREFERENCE_LAST_ACCOUNT_ID, initialId);
+            if (newClusterObj?.cloud_provider) {
+              userApi.setLastAccountIdForProvider(newClusterObj.cloud_provider, initialId, tenantId);
+            }
             fetchProviderCapabilities(initialId);
           }
         }
@@ -137,7 +143,7 @@ const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = 
     return () => {
       isMounted = false;
     };
-  }, [selectedCluster, clusterValue, allCluster, disableRouteChanges, router, urlAccountId, fetchProviderCapabilities]);
+  }, [selectedCluster, clusterValue, allCluster, disableRouteChanges, router, urlAccountId, fetchProviderCapabilities, tenantId]);
 
   React.useEffect(() => {
     // Effect: Sync state when Browser Back/Forward button is used
@@ -157,6 +163,9 @@ const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = 
       const newClusterObj = allCluster?.find((item) => item.value === newValue);
       setClusterValue(newValue); // 1. Update Local State
       userApi.storeUserPreferences(PREFERENCE_LAST_ACCOUNT_ID, newValue); // 2. Persist Preference
+      if (newClusterObj?.cloud_provider) {
+        userApi.setLastAccountIdForProvider(newClusterObj.cloud_provider, newValue, tenantId); // 2b. Persist per-provider preference
+      }
 
       if (!disableRouteChanges && router.pathname !== '/kubernetes/details/[KubernetesDetails]') {
         // 3. Update Router
@@ -173,7 +182,7 @@ const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = 
         }
       }
     },
-    [allCluster, disableRouteChanges, router, onChange, setSelectedCluster, fetchProviderCapabilities]
+    [allCluster, disableRouteChanges, router, onChange, setSelectedCluster, fetchProviderCapabilities, tenantId]
   );
 
   return (

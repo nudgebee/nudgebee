@@ -253,6 +253,9 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
   const sidebar = (
     <>
       <Box
+        // Lets other global keyboard-shortcut handlers (e.g. Header1's Cmd/Ctrl+K)
+        // detect that the chat is open even though this panel isn't a role="dialog".
+        data-nubi-chat-open={isVisible || undefined}
         sx={{
           ...getPositionStyles(),
           width: effectiveWidth,
