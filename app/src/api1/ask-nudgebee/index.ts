@@ -34,6 +34,9 @@ import type {
 
 const EVENT_DETAILS_RETRIEVAL_TITLE = 'Event details retrieval by ID';
 
+// Per-env watch flag: /v1/watches mounts only when LLM_SERVER_WATCH_ENABLED is on; a 404 latches it off for the page session.
+let watchFeatureDisabled = false;
+
 // --- ai_get_conversation_v3 helpers ----------------------------------------
 // The new action returns flat arrays; consumers want the legacy nested shape
 // (llm_conversations[].llm_conversation_messages[].llm_conversation_agents[]
@@ -1774,6 +1777,7 @@ const api = {
   // tenant scoping is now enforced in llm-server's HTTP handlers
   // (api/watches.go) rather than Hasura row permissions.
   async listWatchesByConversation({ conversationId }: { conversationId: string }) {
+    if (watchFeatureDisabled) return [];
     const LIST_WATCHES_BY_CONVERSATION = `
       query AILlmWatchList($conversationId: String!) {
         ai_list_watches_by_conversation(request: { conversation_id: $conversationId }) {
@@ -1803,10 +1807,14 @@ const api = {
         }
       }
     `;
-
-    //TODO: Remove Try catch once the flag is set to true and the action is registered.
     try {
       const response = await queryGraphQL(LIST_WATCHES_BY_CONVERSATION, 'AILlmWatchList', { conversationId });
+      const errs: { extensions?: { upstream?: { status?: number } } }[] = response?.data?.errors ?? [];
+      if (errs.some((e) => e?.extensions?.upstream?.status === 404)) {
+        // Latch client-side only: the module var is shared per-process on the server.
+        if (typeof window !== 'undefined') watchFeatureDisabled = true;
+        return [];
+      }
       return response?.data?.data?.ai_list_watches_by_conversation?.data?.watches || [];
     } catch {
       return [];
