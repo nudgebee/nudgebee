@@ -16,6 +16,7 @@ import (
 	"nudgebee/runbook/internal/system"
 	"nudgebee/runbook/internal/tasks"
 	"nudgebee/runbook/internal/templatesource"
+	"nudgebee/runbook/internal/tracing"
 	"nudgebee/runbook/internal/workflow"
 	configSvc "nudgebee/runbook/services/config"
 	"nudgebee/runbook/services/optimizer"
@@ -26,7 +27,9 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/worker"
+	temporalworkflow "go.temporal.io/sdk/workflow"
 	"google.golang.org/grpc"
 )
 
@@ -97,6 +100,14 @@ func main() {
 	temporalClient, err := client.Dial(client.Options{
 		HostPort:      temporalGRPCAddress,
 		DataConverter: dc,
+		// Route Temporal SDK logs through the service's structured slog logger
+		// (JSON to stdout) instead of the SDK's plaintext default, so worker/
+		// workflow lines are parseable in Loki alongside the rest of the service.
+		Logger: tlog.NewStructuredLogger(logger),
+		// Carry the W3C trace context through workflow/activity headers so a
+		// distributed trace entering via MQ or HTTP survives the durable
+		// execution and reaches activities' outbound calls (see internal/tracing).
+		ContextPropagators: []temporalworkflow.ContextPropagator{tracing.NewPropagator()},
 		ConnectionOptions: client.ConnectionOptions{
 			DialOptions: []grpc.DialOption{
 				grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64 * 1024 * 1024)),

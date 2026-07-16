@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"log/slog"
@@ -10,6 +11,10 @@ import (
 	"time"
 
 	"github.com/wagslane/go-rabbitmq"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -81,7 +86,7 @@ func MqClose() {
 	rbmqConn = nil
 }
 
-func MqConsume(exchangeName string, routingKey string, queue string, processor func(data []byte) error) error {
+func MqConsume(exchangeName string, routingKey string, queue string, processor func(ctx context.Context, data []byte) error) error {
 	conn := getConnection()
 	if conn == nil {
 		slog.Error("rbmq: error connecting to rabbitmq")
@@ -133,7 +138,21 @@ func MqConsume(exchangeName string, routingKey string, queue string, processor f
 		for {
 			err := consumer.Run(
 				func(d rabbitmq.Delivery) rabbitmq.Action {
-					if perr := processor(d.Body); perr != nil {
+					// Continue the distributed trace: extract the W3C context the
+					// publisher injected into the message headers and start a
+					// consumer span, so the processor's logs / outbound calls share
+					// the same trace_id.
+					ctx := extractTraceContext(d.Headers)
+					ctx, span := otel.Tracer("mq").Start(ctx, "rabbitmq.consume", trace.WithSpanKind(trace.SpanKindConsumer))
+					perr := processor(ctx, d.Body)
+					if perr != nil {
+						// No-op under the default noop tracer; marks the span
+						// failed when a real exporter is configured.
+						span.RecordError(perr)
+						span.SetStatus(codes.Error, perr.Error())
+					}
+					span.End()
+					if perr != nil {
 						log.Printf("rbmq: error processing message on %s: %s", queue, perr)
 						return rabbitmq.NackRequeue
 					}
@@ -172,7 +191,31 @@ func MqConsume(exchangeName string, routingKey string, queue string, processor f
 	return nil
 }
 
+// extractTraceContext restores the W3C trace context (traceparent /
+// tracestate) from AMQP message headers. Header values arrive as string or,
+// depending on the publisher's client library, []byte — both are handled so
+// extraction doesn't silently fail.
+func extractTraceContext(headers map[string]any) context.Context {
+	carrier := propagation.MapCarrier{}
+	for k, v := range headers {
+		switch val := v.(type) {
+		case string:
+			carrier[k] = val
+		case []byte:
+			carrier[k] = string(val)
+		}
+	}
+	return otel.GetTextMapPropagator().Extract(context.Background(), carrier)
+}
+
+// MqPublish publishes without a trace context (background/cron callers).
+// Callers holding a request or activity context should use MqPublishCtx so
+// the consumer continues the same distributed trace.
 func MqPublish(exchangeName string, routingKey string, message ...any) error {
+	return MqPublishCtx(context.Background(), exchangeName, routingKey, message...)
+}
+
+func MqPublishCtx(ctx context.Context, exchangeName string, routingKey string, message ...any) error {
 	var err error
 	for range maxAttempts {
 		err = nil
@@ -227,12 +270,22 @@ func MqPublish(exchangeName string, routingKey string, message ...any) error {
 				}
 			}
 
+			headers := map[string]any{"x-nb-source": config.Config.OtelServiceName}
+			// Inject the active W3C trace context into the message headers so
+			// the consuming service can continue the same distributed trace.
+			// No-op when ctx carries no span.
+			carrier := propagation.MapCarrier{}
+			otel.GetTextMapPropagator().Inject(ctx, carrier)
+			for k, v := range carrier {
+				headers[k] = v
+			}
+
 			err = publisher.Publish(
 				data,
 				[]string{routingKey},
 				rabbitmq.WithPublishOptionsContentType("application/json"),
 				rabbitmq.WithPublishOptionsExchange(exchangeName),
-				rabbitmq.WithPublishOptionsHeaders(map[string]any{"x-nb-source": config.Config.OtelServiceName}),
+				rabbitmq.WithPublishOptionsHeaders(headers),
 			)
 			if err != nil {
 				break

@@ -71,24 +71,28 @@ func (c *InvestigationCompletionConsumer) Start() error {
 // suspended activity. Returns nil on every code path so messages are
 // always ack'd — a hung activity is preferable to an MQ redelivery
 // storm. Failures are logged and surface in metrics / dashboards.
-func (c *InvestigationCompletionConsumer) processMessage(data []byte) error {
+func (c *InvestigationCompletionConsumer) processMessage(msgCtx context.Context, data []byte) error {
+	// msgCtx carries the trace context llm-server injected when publishing the
+	// completion envelope, so these logs correlate with the investigation.
+	logger := common.LoggerWithTrace(msgCtx, c.logger)
+
 	var env investigationCompletedEnvelope
 	if err := common.UnmarshalJson(data, &env); err != nil {
-		c.logger.Error("investigation completion: failed to decode envelope", "error", err, "data", string(data))
+		logger.Error("investigation completion: failed to decode envelope", "error", err, "data", string(data))
 		return nil
 	}
 	if env.TaskToken == "" {
-		c.logger.Warn("investigation completion: empty task_token, dropping", "event_id", env.EventID)
+		logger.Warn("investigation completion: empty task_token, dropping", "event_id", env.EventID)
 		return nil
 	}
 
 	tokenBytes, err := base64.StdEncoding.DecodeString(env.TaskToken)
 	if err != nil {
-		c.logger.Error("investigation completion: invalid base64 task_token, dropping", "error", err, "event_id", env.EventID)
+		logger.Error("investigation completion: invalid base64 task_token, dropping", "error", err, "event_id", env.EventID)
 		return nil
 	}
 
-	ctx := context.Background()
+	ctx := msgCtx
 
 	if env.Status == investigationStatusFailed {
 		errMsg := env.Error
@@ -98,9 +102,9 @@ func (c *InvestigationCompletionConsumer) processMessage(data []byte) error {
 		if errMsg == "" {
 			errMsg = "investigation failed without specific error"
 		}
-		c.logger.Info("investigation completion: failing activity", "event_id", env.EventID, "error", errMsg)
+		logger.Info("investigation completion: failing activity", "event_id", env.EventID, "error", errMsg)
 		if err := c.temporalClient.CompleteActivity(ctx, tokenBytes, nil, errors.New(errMsg)); err != nil {
-			c.logActivityError("CompleteActivity (failure)", err, env.EventID)
+			c.logActivityError(logger, "CompleteActivity (failure)", err, env.EventID)
 		}
 		return nil
 	}
@@ -114,9 +118,9 @@ func (c *InvestigationCompletionConsumer) processMessage(data []byte) error {
 		"status":        env.Status,
 		"status_reason": env.StatusReason,
 	}
-	c.logger.Info("investigation completion: resuming activity", "event_id", env.EventID, "status", env.Status)
+	logger.Info("investigation completion: resuming activity", "event_id", env.EventID, "status", env.Status)
 	if err := c.temporalClient.CompleteActivity(ctx, tokenBytes, output, nil); err != nil {
-		c.logActivityError("CompleteActivity", err, env.EventID)
+		c.logActivityError(logger, "CompleteActivity", err, env.EventID)
 	}
 	return nil
 }
@@ -125,11 +129,11 @@ func (c *InvestigationCompletionConsumer) processMessage(data []byte) error {
 // activity already terminated (most often via StartToCloseTimeout while
 // the analysis was running longer than the workflow allowed). Anything
 // else stays at warn so it shows up in dashboards.
-func (c *InvestigationCompletionConsumer) logActivityError(op string, err error, eventID string) {
+func (c *InvestigationCompletionConsumer) logActivityError(logger *slog.Logger, op string, err error, eventID string) {
 	var notFound *serviceerror.NotFound
 	if errors.As(err, &notFound) {
-		c.logger.Info("investigation completion: activity already terminated, ignoring", "op", op, "event_id", eventID)
+		logger.Info("investigation completion: activity already terminated, ignoring", "op", op, "event_id", eventID)
 		return
 	}
-	c.logger.Warn("investigation completion: temporal returned error", "op", op, "error", err, "event_id", eventID)
+	logger.Warn("investigation completion: temporal returned error", "op", op, "error", err, "event_id", eventID)
 }

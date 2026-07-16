@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"log/slog"
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/model"
@@ -35,10 +36,15 @@ func (c *Consumer) Start(exchange, routingKey, queue string) error {
 	return common.MqConsume(exchange, routingKey, queue, c.ProcessMessage)
 }
 
-func (c *Consumer) ProcessMessage(data []byte) error {
+func (c *Consumer) ProcessMessage(msgCtx context.Context, data []byte) error {
+	// msgCtx carries the trace context extracted from the message headers
+	// (api-server's lifecycle publish injects it), so this consumer's logs and
+	// the workflows it starts continue the publisher's distributed trace.
+	logger := common.LoggerWithTrace(msgCtx, c.logger)
+
 	var event map[string]any
 	if err := common.UnmarshalJson(data, &event); err != nil {
-		c.logger.Error("failed to parse event message", "error", err, "data", string(data))
+		logger.Error("failed to parse event message", "error", err, "data", string(data))
 		return nil
 	}
 
@@ -50,7 +56,7 @@ func (c *Consumer) ProcessMessage(data []byte) error {
 	}
 
 	if eventType == "" {
-		c.logger.Warn("event message missing event_type, aggregation_key, or type field", "data", string(data))
+		logger.Warn("event message missing event_type, aggregation_key, or type field", "data", string(data))
 		return nil // Ack and drop
 	}
 
@@ -70,7 +76,7 @@ func (c *Consumer) ProcessMessage(data []byte) error {
 	}
 
 	if accountID == "" {
-		c.logger.Warn("event message missing account_id or cloud_account_id, cannot route to tenant workflows", "data", string(data))
+		logger.Warn("event message missing account_id or cloud_account_id, cannot route to tenant workflows", "data", string(data))
 		return nil // Ack and drop, or maybe dlq? For now drop.
 	}
 
@@ -89,11 +95,16 @@ func (c *Consumer) ProcessMessage(data []byte) error {
 		return nil
 	}
 
-	c.logger.Info("event matched workflows", "event_type", eventType, "match_count", len(matches))
+	logger.Info("event matched workflows", "event_type", eventType, "match_count", len(matches))
 
 	// 2. Execute Workflows
 	for _, rule := range matches {
-		reqCtx := security.NewRequestContextForTenantAccountAdmin(rule.TenantID, "00000000-0000-0000-0000-000000000000", []string{rule.AccountID})
+		// Build the request context on msgCtx so the trace continues into the
+		// workflow start (service.go threads it into temporalClient.ExecuteWorkflow,
+		// and the tracing.Propagator carries it through Temporal headers).
+		reqCtx := security.NewRequestContext(msgCtx,
+			security.NewSecurityContextForTenantAccountAdmin(rule.TenantID, "00000000-0000-0000-0000-000000000000", []string{rule.AccountID}),
+			c.logger, nil, nil)
 
 		// Wrap the event payload in an "event" key so it's accessible as a single object in the workflow inputs.
 		inputs := map[string]any{
@@ -106,14 +117,14 @@ func (c *Consumer) ProcessMessage(data []byte) error {
 		}
 		runID, err := c.executor.ExecuteWorkflow(reqCtx, rule.AccountID, rule.WorkflowID, triggerType, inputs)
 		if err != nil {
-			c.logger.Error("failed to execute matched workflow",
+			logger.Error("failed to execute matched workflow",
 				"workflow_id", rule.WorkflowID,
 				"event_type", eventType,
 				"event_id", event["id"],
 				"error", err,
 			)
 		} else {
-			c.logger.Info("triggered workflow", "workflow_id", rule.WorkflowID, "run_id", runID)
+			logger.Info("triggered workflow", "workflow_id", rule.WorkflowID, "run_id", runID)
 		}
 	}
 

@@ -229,7 +229,7 @@ func (s *IntegrationTestSuite) TestEventTriggerWorkflow() {
 	eventData, err := json.Marshal(eventPayload)
 	s.Require().NoError(err, "Failed to marshal event payload")
 
-	err = s.eventConsumer.ProcessMessage(eventData)
+	err = s.eventConsumer.ProcessMessage(context.Background(), eventData)
 	s.Require().NoError(err, "Failed to process event message")
 
 	// 3. Verify that a workflow execution was triggered
@@ -429,7 +429,7 @@ func (s *IntegrationTestSuite) fireEventAndAwaitNewRun(workflowID string, payloa
 	eventData, err := json.Marshal(payload)
 	s.Require().NoError(err, "Failed to marshal event payload")
 
-	err = s.eventConsumer.ProcessMessage(eventData)
+	err = s.eventConsumer.ProcessMessage(context.Background(), eventData)
 	s.Require().NoError(err, "Failed to process event message")
 
 	var runID string
@@ -498,7 +498,7 @@ func (s *IntegrationTestSuite) TestEventTriggerWorkflow_ArrayEventType() {
 		"source":     "some-other-source",
 	})
 	s.Require().NoError(err)
-	err = s.eventConsumer.ProcessMessage(mismatchPayload)
+	err = s.eventConsumer.ProcessMessage(context.Background(), mismatchPayload)
 	s.Require().NoError(err)
 
 	// 4. Unrelated event type must NOT fire.
@@ -508,7 +508,7 @@ func (s *IntegrationTestSuite) TestEventTriggerWorkflow_ArrayEventType() {
 		"source":     "integration-test-array",
 	})
 	s.Require().NoError(err)
-	err = s.eventConsumer.ProcessMessage(unrelatedPayload)
+	err = s.eventConsumer.ProcessMessage(context.Background(), unrelatedPayload)
 	s.Require().NoError(err)
 
 	// Give the system a moment in case a stray run would land — then assert exactly 2 executions.
@@ -570,7 +570,7 @@ func (s *IntegrationTestSuite) TestEventTriggerWorkflow_WildcardFilterOnly() {
 		"source":     "wrong-source",
 	})
 	s.Require().NoError(err)
-	err = s.eventConsumer.ProcessMessage(mismatchPayload)
+	err = s.eventConsumer.ProcessMessage(context.Background(), mismatchPayload)
 	s.Require().NoError(err)
 
 	// 4. Other tenant must NOT fire.
@@ -580,7 +580,7 @@ func (s *IntegrationTestSuite) TestEventTriggerWorkflow_WildcardFilterOnly() {
 		"source":     "integration-test-wildcard",
 	})
 	s.Require().NoError(err)
-	err = s.eventConsumer.ProcessMessage(otherTenantPayload)
+	err = s.eventConsumer.ProcessMessage(context.Background(), otherTenantPayload)
 	s.Require().NoError(err)
 
 	time.Sleep(2 * time.Second)

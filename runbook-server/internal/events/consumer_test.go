@@ -54,7 +54,7 @@ func TestConsumer_ProcessMessage(t *testing.T) {
 	}
 	mockExecutor.On("ExecuteWorkflow", mock.Anything, "acc-1", "wf-1", model.WorkflowTriggerEvent, expectedInputs).Return("run-1", nil)
 
-	err := consumer.ProcessMessage(data)
+	err := consumer.ProcessMessage(context.Background(), data)
 	assert.NoError(t, err)
 	mockExecutor.AssertExpectations(t)
 
@@ -66,17 +66,17 @@ func TestConsumer_ProcessMessage(t *testing.T) {
 	}
 	dataNoMatch, _ := json.Marshal(payloadNoMatch)
 	// Executor should NOT be called
-	err = consumer.ProcessMessage(dataNoMatch)
+	err = consumer.ProcessMessage(context.Background(), dataNoMatch)
 	assert.NoError(t, err)
 
 	// 3. Invalid JSON Case
-	err = consumer.ProcessMessage([]byte("{invalid-json"))
+	err = consumer.ProcessMessage(context.Background(), []byte("{invalid-json"))
 	assert.NoError(t, err) // Should return nil (ack) to avoid poison loop
 
 	// 4. Missing Event Type
 	payloadNoType := map[string]any{"foo": "bar"}
 	dataNoType, _ := json.Marshal(payloadNoType)
-	err = consumer.ProcessMessage(dataNoType)
+	err = consumer.ProcessMessage(context.Background(), dataNoType)
 	assert.NoError(t, err)
 }
 
@@ -110,7 +110,7 @@ func TestConsumer_ProcessMessage_UsesRuleTriggerType(t *testing.T) {
 	// Should use rule.TriggerType (optimization), not infer from event name
 	mockExecutor.On("ExecuteWorkflow", mock.Anything, "acc-1", "wf-opt", model.WorkflowTriggerOptimization, mock.Anything).Return("run-1", nil)
 
-	err := consumer.ProcessMessage(data)
+	err := consumer.ProcessMessage(context.Background(), data)
 	assert.NoError(t, err)
 	mockExecutor.AssertExpectations(t)
 }

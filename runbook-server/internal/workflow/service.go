@@ -1082,7 +1082,10 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	setTriggeredByUser(wf, ctx.GetSecurityContext().GetUserId())
 	wf.RestrictToAccountConfigs = !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead)
 
-	we, err := s.temporalClient.ExecuteWorkflow(context.Background(), options, s.workflowExecutor.ExecuteWorkflowInternal, wf, inputs)
+	// Thread the request context so the tracing.Propagator injects the
+	// caller's trace context into the workflow header (start call is a fast
+	// gRPC roundtrip; matches the retrigger path below).
+	we, err := s.temporalClient.ExecuteWorkflow(ctx.GetContext(), options, s.workflowExecutor.ExecuteWorkflowInternal, wf, inputs)
 	if err != nil {
 		return "", err
 	}
