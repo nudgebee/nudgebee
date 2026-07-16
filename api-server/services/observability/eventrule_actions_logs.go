@@ -1571,6 +1571,13 @@ func (a *observabilityLogAction) CanAutoExecute(ctx playbooks.PlaybookActionCont
 		return false
 	}
 
+	// Events carrying a trace_id can be correlated directly, even without a
+	// workload name (e.g. APM / webhook alerts) — as long as the backend can
+	// actually filter on trace_id.
+	if ctx.GetEvent().Labels["trace_id"] != "" && logSourceSupportsTraceIDFilter(requestCtx, ctx.GetAccountId(), source) {
+		return true
+	}
+
 	if autoExecutor, ok := source.(PlaybookQueryGenerator); ok {
 		return autoExecutor.CanGenerateQuery(ctx)
 	}
@@ -1586,6 +1593,19 @@ func (a *observabilityLogAction) CanAutoExecute(ctx playbooks.PlaybookActionCont
 func (a *observabilityLogAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
 	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
 	source, err := getLogSourceForAccount(requestCtx, ctx.GetAccountId(), "", "")
+
+	// Trace-correlated logs take priority over workload logs when the event
+	// carries a trace_id and the backend can actually filter on it. Falls
+	// through to the generator/workload paths when the query matches nothing.
+	if err == nil && source != nil && ctx.GetEvent().Labels["trace_id"] != "" &&
+		logSourceSupportsTraceIDFilter(requestCtx, ctx.GetAccountId(), source) {
+		result, traceErr := a.autoExecuteByTraceID(ctx)
+		if traceErr == nil && result != nil {
+			return result, nil
+		}
+		ctx.GetLogger().Info("observability: trace_id log query found nothing, falling back",
+			"trace_id", ctx.GetEvent().Labels["trace_id"], "error", traceErr)
+	}
 
 	// Try PlaybookQueryGenerator if source supports it
 	if err == nil && source != nil {
@@ -1609,6 +1629,89 @@ func (a *observabilityLogAction) AutoExecute(ctx playbooks.PlaybookActionContext
 
 	// Fallback: workload-based query via configured log source, then relay
 	return a.autoExecuteByWorkload(ctx)
+}
+
+// autoExecuteByTraceID queries the configured log source for logs correlated to the
+// event's trace_id label. The where clause uses the canonical "trace_id" key so
+// getMergedLabelMapping can translate it to the provider-specific field name.
+// Returns (nil, nil) when the query matches nothing so the caller falls back to the
+// workload-based query.
+func (a *observabilityLogAction) autoExecuteByTraceID(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
+	traceID := ctx.GetEvent().Labels["trace_id"]
+
+	endTime := time.Now().UnixMilli()
+	startTime := endTime - int64(60*60*1000) // 1 hour default
+	if ctx.GetEvent().StartedAt != nil {
+		startTime = ctx.GetEvent().StartedAt.UnixMilli()
+	}
+	if ctx.GetEvent().EndedAt != nil {
+		endTime = ctx.GetEvent().EndedAt.UnixMilli()
+	}
+	// The trace query is deliberately unscoped (traces cross namespaces), so cap
+	// the window: a long-lived alert (StartedAt days ago, no EndedAt) must not
+	// turn it into a full-backend scan over days of logs.
+	const maxTraceWindowMs = int64(6 * 60 * 60 * 1000)
+	if endTime-startTime > maxTraceWindowMs {
+		startTime = endTime - maxTraceWindowMs
+	}
+
+	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
+	logResult, err := FetchLogs(requestCtx, FetchLogRequest{
+		AccountId: ctx.GetAccountId(),
+		StartTime: startTime,
+		EndTime:   endTime,
+		Limit:     1000,
+		QueryRequest: LogsQueryBuilderRequest{
+			Where: query.QueryWhereClause{
+				Binary: query.BinaryWhereClause{"trace_id": {query.Eq: traceID}},
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(logResult.Logs) == 0 {
+		return nil, nil
+	}
+
+	ctx.GetLogger().Info("observability: logs auto action found trace-correlated results",
+		"trace_id", traceID, "count", len(logResult.Logs))
+	additionalInfo := addExecutedQueryInfo(map[string]any{"title": "Trace Logs For - " + traceID}, logResult)
+	return a.buildLogResponse(logResult.Logs, map[string]any{
+		"trace_id": traceID,
+		"source":   "configured_integration",
+	}, additionalInfo)
+}
+
+// logSourceSupportsTraceIDFilter reports whether the source can actually filter on
+// trace_id. Sources that declare trace_id (canonical or mapped name) in
+// GetIgnoredQueryRequestKeys strip the condition before querying, which would turn a
+// "logs for this trace" query into an unfiltered log dump presented as trace
+// evidence — worse than falling back to the workload query.
+func logSourceSupportsTraceIDFilter(ctx *security.RequestContext, accountId string, source LogSource) bool {
+	filter, ok := source.(QueryRequestKeyFilter)
+	if !ok {
+		return true
+	}
+	return traceIDFilterSurvivesStrip(getMergedLabelMapping(ctx, accountId, source), filter)
+}
+
+// traceIDFilterSurvivesStrip reports whether a trace_id condition survives the
+// source's ignored-key strip. Ignored keys are declared in provider space and
+// stripped AFTER label-mapping runs (see FetchLogs), so compare against the
+// post-mapping name: a tenant-level mapping of trace_id to a filterable provider
+// field means the mapped condition survives, overriding the source's default ignore.
+func traceIDFilterSurvivesStrip(mapping map[string]string, filter QueryRequestKeyFilter) bool {
+	mappedKey := "trace_id"
+	if mapping["trace_id"] != "" {
+		mappedKey = mapping["trace_id"]
+	}
+	for _, key := range filter.GetIgnoredQueryRequestKeys() {
+		if key == mappedKey {
+			return false
+		}
+	}
+	return true
 }
 
 // autoExecuteByWorkload queries logs using the event's workload name and

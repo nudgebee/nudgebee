@@ -1447,6 +1447,42 @@ func TestBuildLokiQuery(t *testing.T) {
 			expected: `{app="services-server", namespace="nudgebee"} |~ "(?i:.*error.*)|(?i:.*fatal.*)"`,
 			wantErr:  false,
 		},
+		{
+			// trace_id is not an indexed stream label — it must render as a line
+			// filter, with a catch-all selector since trace correlation is not
+			// scoped to a namespace (traces cross namespaces).
+			name: "Trace id alone becomes line filter with catch-all selector",
+			request: LogsQueryBuilderRequest{
+				Where: query.QueryWhereClause{
+					Binary: map[string]map[query.BinaryWhereClauseType]interface{}{
+						"trace_id": {query.Eq: "bf2edd20410b130854122b3cbe75e002"},
+					},
+				},
+			},
+			expected: `{namespace=~".+"} |= "bf2edd20410b130854122b3cbe75e002"`,
+			wantErr:  false,
+		},
+		{
+			name: "Trace id with label selector keeps the label and adds line filter",
+			request: LogsQueryBuilderRequest{
+				Where: query.QueryWhereClause{
+					And: []query.QueryWhereClause{
+						{
+							Binary: map[string]map[query.BinaryWhereClauseType]interface{}{
+								"namespace": {query.Eq: "demo"},
+							},
+						},
+						{
+							Binary: map[string]map[query.BinaryWhereClauseType]interface{}{
+								"trace_id": {query.Eq: "bf2edd20410b130854122b3cbe75e002"},
+							},
+						},
+					},
+				},
+			},
+			expected: `{namespace="demo"}  |= "bf2edd20410b130854122b3cbe75e002"`,
+			wantErr:  false,
+		},
 	}
 
 	for _, tc := range testCases {

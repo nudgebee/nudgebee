@@ -493,3 +493,37 @@ func TestAddExecutedQueryInfo(t *testing.T) {
 		assert.False(t, hasProvider)
 	})
 }
+
+// traceIgnoringKeyFilter declares trace_id as an ignored (unfilterable) query key.
+type traceIgnoringKeyFilter struct{}
+
+func (traceIgnoringKeyFilter) GetIgnoredQueryRequestKeys() []string {
+	return []string{"trace_id"}
+}
+
+func TestLogSourceSupportsTraceIDFilter(t *testing.T) {
+	// The wrapper short-circuits before any mapping lookup for sources that
+	// don't implement QueryRequestKeyFilter (getMergedLabelMapping needs a live
+	// security context, so the mapping-dependent cases test the pure helper).
+	t.Run("source without QueryRequestKeyFilter supports trace_id", func(t *testing.T) {
+		assert.True(t, logSourceSupportsTraceIDFilter(nil, "", &LokiSource{}))
+	})
+
+	t.Run("source that strips trace_id does not support it", func(t *testing.T) {
+		nr := &NewRelicLogSource{}
+		assert.False(t, traceIDFilterSurvivesStrip(nr.GetLabelMapping(), nr))
+		dt := &DynatraceLogSource{}
+		assert.False(t, traceIDFilterSurvivesStrip(dt.GetLabelMapping(), dt))
+	})
+
+	t.Run("label mapping to a filterable field overrides the ignore", func(t *testing.T) {
+		// The strip runs after label-mapping, so trace_id mapped to traceId
+		// survives GetIgnoredQueryRequestKeys()=["trace_id"].
+		mapping := map[string]string{"trace_id": "traceId"}
+		assert.True(t, traceIDFilterSurvivesStrip(mapping, traceIgnoringKeyFilter{}))
+	})
+
+	t.Run("nil mapping keeps the canonical name and the ignore applies", func(t *testing.T) {
+		assert.False(t, traceIDFilterSurvivesStrip(nil, traceIgnoringKeyFilter{}))
+	})
+}

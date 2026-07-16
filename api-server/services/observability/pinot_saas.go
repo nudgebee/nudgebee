@@ -302,7 +302,12 @@ func (p *PinotSaasSource) GetQuery(ctx *security.RequestContext, req FetchLogReq
 		return "", fmt.Errorf("pinot.GetQuery: %w", err)
 	}
 	p.applyMergedLabelOverrides(ctx, req.AccountId, cfg)
-	where, err := buildPinotWhereClause(req.QueryRequest.Where)
+	// Schema is cached (5 min TTL) — needed to decide whether trace_id is a real
+	// column or must be rewritten to a message-contains filter. FetchLogs routes
+	// through GetQuery, so this is the effective query-build path.
+	schema, _ := fetchPinotSchemaDirect(req.AccountId, cfg)
+	rewritten := rewritePinotTraceIDFilter(req.QueryRequest.Where, schema, cfg.MessageCol)
+	where, err := buildPinotWhereClause(rewritten)
 	if err != nil {
 		return "", fmt.Errorf("pinot.GetQuery: %w", err)
 	}
@@ -341,7 +346,8 @@ func (p *PinotSaasSource) QueryLogs(ctx *security.RequestContext, req FetchLogRe
 	if req.Query != "" {
 		sqlQuery = req.Query
 	} else {
-		where, whereErr := buildPinotWhereClause(req.QueryRequest.Where)
+		rewritten := rewritePinotTraceIDFilter(req.QueryRequest.Where, schema, cfg.MessageCol)
+		where, whereErr := buildPinotWhereClause(rewritten)
 		if whereErr != nil {
 			return nil, fmt.Errorf("pinot.QueryLogs: %w", whereErr)
 		}

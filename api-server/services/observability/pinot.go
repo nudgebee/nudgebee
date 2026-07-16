@@ -220,7 +220,13 @@ func (p *PinotSource) GetSupportedOperators() []string {
 func (p *PinotSource) GetQuery(ctx *security.RequestContext, req FetchLogRequest) (string, error) {
 	table := pinotStringParam(req.Request, "pinot_table", "")
 	tsCol := pinotStringParam(req.Request, "pinot_timestamp_col", "ts")
-	where, err := buildPinotWhereClause(req.QueryRequest.Where)
+	msgCol := pinotStringParam(req.Request, "pinot_message_col", "log")
+	// Schema is cached (5 min TTL) — needed to decide whether trace_id is a real
+	// column or must be rewritten to a message-contains filter. FetchLogs routes
+	// through GetQuery, so this is the effective query-build path.
+	schema, _ := fetchPinotSchema(ctx, req.AccountId, table)
+	rewritten := rewritePinotTraceIDFilter(req.QueryRequest.Where, schema, msgCol)
+	where, err := buildPinotWhereClause(rewritten)
 	if err != nil {
 		return "", fmt.Errorf("pinot.GetQuery: %w", err)
 	}
@@ -258,7 +264,8 @@ func (p *PinotSource) QueryLogs(ctx *security.RequestContext, req FetchLogReques
 	if req.Query != "" {
 		sqlQuery = req.Query
 	} else {
-		where, err := buildPinotWhereClause(req.QueryRequest.Where)
+		rewritten := rewritePinotTraceIDFilter(req.QueryRequest.Where, schema, msgCol)
+		where, err := buildPinotWhereClause(rewritten)
 		if err != nil {
 			return nil, fmt.Errorf("pinot.QueryLogs: %w", err)
 		}
@@ -720,6 +727,95 @@ func extractPinotRelayData(resp map[string]any) ([]byte, error) {
 }
 
 // ---- SQL building ----
+
+// pinotSchemaHasColumn reports whether the table schema declares the named column.
+func pinotSchemaHasColumn(schema *pinotSchemaResponse, col string) bool {
+	if schema == nil {
+		return false
+	}
+	for _, f := range schema.DimensionFieldSpecs {
+		if f.Name == col {
+			return true
+		}
+	}
+	for _, f := range schema.MetricFieldSpecs {
+		if f.Name == col {
+			return true
+		}
+	}
+	for _, f := range schema.DateTimeFieldSpecs {
+		if f.Name == col {
+			return true
+		}
+	}
+	return false
+}
+
+// rewritePinotTraceIDFilter rewrites trace_id equality/contains conditions to a
+// message-column contains (LIKE '%id%') filter when the table has no trace_id
+// column. Log tables commonly carry the trace id inside the message text rather
+// than a dedicated column, and a condition on a non-existent column fails the
+// whole Pinot query — this mirrors the Loki line-filter special case. Tables
+// that DO declare a trace_id column keep the direct column condition.
+func rewritePinotTraceIDFilter(where query.QueryWhereClause, schema *pinotSchemaResponse, msgCol string) query.QueryWhereClause {
+	if msgCol == "" || pinotSchemaHasColumn(schema, "trace_id") {
+		return where
+	}
+	return rewritePinotTraceIDToContains(where, msgCol)
+}
+
+// rewritePinotTraceIDToContains returns a rewritten copy of the clause. Binary
+// maps and And/Or/Not children are cloned before modification — Go maps/slices
+// are reference types, so mutating in place would leak the rewrite back into the
+// caller's QueryWhereClause (req.QueryRequest.Where), which is logged and reused
+// by later pipeline stages.
+func rewritePinotTraceIDToContains(where query.QueryWhereClause, msgCol string) query.QueryWhereClause {
+	if len(where.Binary) > 0 {
+		cloned := make(query.BinaryWhereClause, len(where.Binary))
+		for col, ops := range where.Binary {
+			clonedOps := make(map[query.BinaryWhereClauseType]any, len(ops))
+			for op, val := range ops {
+				clonedOps[op] = val
+			}
+			cloned[col] = clonedOps
+		}
+		if ops, ok := cloned["trace_id"]; ok {
+			for op, val := range ops {
+				if op != query.Eq && op != query.Contains {
+					continue // other operators keep their (failing) column semantics
+				}
+				if cloned[msgCol] == nil {
+					cloned[msgCol] = map[query.BinaryWhereClauseType]any{}
+				}
+				cloned[msgCol][query.Contains] = val
+				delete(ops, op)
+			}
+			if len(ops) == 0 {
+				delete(cloned, "trace_id")
+			}
+		}
+		where.Binary = cloned
+	}
+	if len(where.And) > 0 {
+		rewritten := make([]query.QueryWhereClause, len(where.And))
+		for i, child := range where.And {
+			rewritten[i] = rewritePinotTraceIDToContains(child, msgCol)
+		}
+		where.And = rewritten
+	}
+	if len(where.Or) > 0 {
+		rewritten := make([]query.QueryWhereClause, len(where.Or))
+		for i, child := range where.Or {
+			rewritten[i] = rewritePinotTraceIDToContains(child, msgCol)
+		}
+		where.Or = rewritten
+	}
+	if where.Not != nil {
+		rewritten := rewritePinotTraceIDToContains(*where.Not, msgCol)
+		where.Not = &rewritten
+	}
+	return where
+}
 
 // buildPinotWhereClause converts a QueryWhereClause to a Pinot SQL WHERE fragment.
 func buildPinotWhereClause(where query.QueryWhereClause) (string, error) {

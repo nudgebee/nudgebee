@@ -88,19 +88,29 @@ func (s *LokiSource) BuildLokiQuery(req LogsQueryBuilderRequest) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("failed to extract label selectors: %w", err)
 	}
-	if labelSelectors == "" {
-		sb.WriteString("{}")
-	} else {
-		sb.WriteString("{")
-		sb.WriteString(labelSelectors)
-		sb.WriteString("}")
-	}
 
 	// 2. Filters (from Binary like, contains, etc.)
 	filterExpr, err := buildWhere(req.Where)
 	if err != nil {
 		return "", fmt.Errorf("failed to build where clause: %w", err)
 	}
+
+	if labelSelectors == "" {
+		if filterExpr != "" {
+			// Loki rejects a bare "{}" stream selector, but a line-filter-only
+			// query (e.g. trace_id correlation, which must not be scoped to one
+			// namespace since traces cross namespaces) is legitimate. Use a
+			// non-empty-compatible catch-all matcher to satisfy the parser.
+			sb.WriteString(`{namespace=~".+"}`)
+		} else {
+			sb.WriteString("{}")
+		}
+	} else {
+		sb.WriteString("{")
+		sb.WriteString(labelSelectors)
+		sb.WriteString("}")
+	}
+
 	if filterExpr != "" {
 		sb.WriteString(" ")
 		sb.WriteString(filterExpr)
@@ -214,8 +224,11 @@ func processBinaryLabelSelectors(binary map[string]map[query.BinaryWhereClauseTy
 }
 
 func buildLabelSelector(field string, op query.BinaryWhereClauseType, val any) (labelSelector, error) {
-	// Skip "log" field - it should be handled by buildWhere as a line filter, not a label selector
-	if field == "log" {
+	// Skip "log" and "trace_id" fields - they are handled by buildWhere as line
+	// filters, not label selectors. trace_id is not an indexed stream label in
+	// Loki; the canonical trace→logs correlation (as Grafana's trace-to-logs
+	// feature does it) is a line filter on the trace id token.
+	if field == "log" || field == "trace_id" {
 		return labelSelector{}, nil
 	}
 
@@ -524,7 +537,10 @@ func buildWhere(where query.QueryWhereClause) (string, error) {
 		for op, val := range ops {
 			sval := fmt.Sprintf("%v", val)
 
-			if field == "log" { // interpret "log" as message content filter
+			// Interpret "log" as message content filter. trace_id is matched the
+			// same way: it lives in the log line (or structured metadata), not in
+			// the stream labels, so an equality on it becomes a `|=` line filter.
+			if field == "log" || field == "trace_id" {
 				switch op {
 				case query.Contains, query.Eq:
 					// Contains: substring match using |= (no regex needed)
