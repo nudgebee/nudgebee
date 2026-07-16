@@ -120,6 +120,16 @@ func TestStage22CanAutoExecutePredicates(t *testing.T) {
 			makeCtx("Kubernetes Warning Event", "pod", "p1", "ns", nil), true},
 		{"event_resource_events/skips on OOM", &eventResourceEventsAction{},
 			makeCtx("pod_oom_killer_enricher", "pod", "p1", "ns", nil), false},
+
+		// service_endpoints
+		{"service_endpoints/fires on service_no_endpoints with service subject", &serviceEndpointsAction{},
+			makeCtx("service_no_endpoints", "service", "web-svc", "ns", nil), true},
+		{"service_endpoints/skips on other aggKey", &serviceEndpointsAction{},
+			makeCtx("report_crash_loop", "service", "web-svc", "ns", nil), false},
+		{"service_endpoints/skips on non-service subject", &serviceEndpointsAction{},
+			makeCtx("service_no_endpoints", "pod", "p1", "ns", nil), false},
+		{"service_endpoints/skips when no subject_name", &serviceEndpointsAction{},
+			makeCtx("service_no_endpoints", "service", "", "ns", nil), false},
 	}
 
 	for _, tc := range cases {

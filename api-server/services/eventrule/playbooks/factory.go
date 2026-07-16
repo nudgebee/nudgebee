@@ -49,6 +49,7 @@ func init() {
 	RegisterAction("node_running_pods_enricher", &nodeRunningPodsAction{})
 	RegisterAction("node_status_enricher", &nodeStatusAction{})
 	RegisterAction("event_resource_events_enricher", &eventResourceEventsAction{})
+	RegisterAction("service_endpoints_enricher", &serviceEndpointsAction{})
 }
 
 var actions = make(map[string]PlaybookAction)

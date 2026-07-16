@@ -100,6 +100,7 @@ var readActions = map[string]bool{
 	"oom_killer_enricher":                 true,
 	"pod_metric_enricher":                 true,
 	"pod_node_metrics_enricher":           true,
+	"service_endpoints_enricher":          true,
 
 	// External observability/incident fetches (read details only).
 	"alert_rule_details":           true,
