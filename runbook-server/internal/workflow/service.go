@@ -4425,6 +4425,20 @@ func (s *Service) PublishWorkflow(ctx *security.RequestContext, accountId, id st
 		}
 		return nil, err
 	}
+	// No-change guard: publishing a draft that is byte-for-byte (JSONB
+	// semantically) identical to the live version would only mint a duplicate
+	// workflow_versions row, so reject it outright. Find computes
+	// DraftDiffersFromLive as true whenever no live version exists, keeping
+	// first-time publishes unaffected. Known TOCTOU: Find runs outside
+	// PublishVersion's tx, so a concurrent racing publish can still slip
+	// through — worst case is the old (pre-guard) behavior.
+	if wf.LiveVersionID != nil && !wf.DraftDiffersFromLive {
+		liveV := 0
+		if wf.LiveVersionNumber != nil {
+			liveV = *wf.LiveVersionNumber
+		}
+		return nil, common.ErrorBadRequest(fmt.Sprintf("no changes to publish: draft is identical to live version v%d", liveV))
+	}
 	userID := ctx.GetSecurityContext().GetUserId()
 	v, err := s.store.PublishVersion(ctx.GetContext(), id, userID, model.WorkflowVersionSourcePublish, name, description, nil, status)
 	if err != nil {

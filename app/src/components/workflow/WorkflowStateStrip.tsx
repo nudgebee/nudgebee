@@ -11,10 +11,12 @@ interface WorkflowStateStripProps {
   /** Canvas has edits not yet persisted to the saved draft. */
   hasUnsavedChanges?: boolean;
   /**
-   * Draft has been edited since the last publish (saved or unsaved). Independent
-   * of hasUnsavedChanges so the "unpublished changes" warning persists after the
-   * user clicks Save Draft. Owned by WorkflowBuilderNotebook (session-scoped flag
-   * that flips true on first edit and resets on a successful publish or reload).
+   * Saved draft differs from the published live version. Independent of
+   * hasUnsavedChanges so the "unpublished changes" warning persists after the
+   * user clicks Save Draft. Owned by WorkflowBuilderNotebook, which mirrors the
+   * server-computed workflow_get.draft_differs_from_live (JSONB compare of the
+   * draft vs the live snapshot) on load and after every save/publish/restore
+   * refetch — correct across reloads, unlike the old session-scoped flag.
    */
   draftAheadOfLive?: boolean;
   liveVersionNumber?: number | null;
@@ -69,9 +71,13 @@ const WorkflowStateStrip: React.FC<WorkflowStateStripProps> = ({
   // "Unpublished" tracks both saved + unsaved edits. hasUnsavedChanges flips
   // back to false once the user clicks Save Draft, but the draft is still
   // unpublished against the live version, so the chip must persist.
-  // draftAheadOfLive (session-scoped, owned by WorkflowBuilderNotebook) keeps
-  // the warning visible across the save/publish boundary.
+  // draftAheadOfLive (server-derived, owned by WorkflowBuilderNotebook) keeps
+  // the warning visible across the save/publish boundary and across reloads.
   const hasUnpublished = hasUnsavedChanges || draftAheadOfLive;
+  // Publish is pointless when the draft is already identical to the live
+  // version (it would only mint a duplicate version — the backend rejects it
+  // too). Never-published workflows (no live version) are always publishable.
+  const canPublish = hasUnpublished || !hasLiveVersion;
   const draftChipLabel = isCheckedOut
     ? `Draft based on v${draftVersionNumber ?? '?'}${hasUnpublished ? ' + unpublished changes' : ''}`
     : hasUnpublished
@@ -183,7 +189,15 @@ const WorkflowStateStrip: React.FC<WorkflowStateStripProps> = ({
       {!isNewWorkflow && (
         <>
           {onPublish && (
-            <Button id='workflow-publish-btn' data-testid='workflow-publish-btn' onClick={onPublish} tone='primary' size='sm'>
+            <Button
+              id='workflow-publish-btn'
+              data-testid='workflow-publish-btn'
+              onClick={onPublish}
+              tone='primary'
+              size='sm'
+              disabled={!canPublish}
+              tooltip={canPublish ? undefined : `No changes to publish — your draft matches live version v${liveVersionNumber ?? '?'}.`}
+            >
               Publish
             </Button>
           )}

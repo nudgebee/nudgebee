@@ -116,6 +116,7 @@ query GetWorkflowById($accountId:String!, $workflowId:String!) {
     draft_version_id
     draft_version_number
     draft_version_name
+    draft_differs_from_live
     tags
     tenant_id
     updated_at

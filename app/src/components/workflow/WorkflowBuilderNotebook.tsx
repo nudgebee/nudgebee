@@ -152,6 +152,10 @@ interface WorkflowData {
   draft_version_id?: string | null;
   draft_version_number?: number | null;
   draft_version_name?: string | null;
+  // Server-computed: draft (workflows.definition) differs from the live version
+  // snapshot (JSONB compare), or no live version exists yet. Mirrored into
+  // draftAheadOfLive so the Publish button state survives reloads.
+  draft_differs_from_live?: boolean;
   // Server-side change marker — used to detect when the assistant has edited the
   // workflow out-of-band so the builder can refresh only on a genuine change.
   updated_at?: string | null;
@@ -1118,9 +1122,10 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           const workflow = response.data?.workflow_get;
           if (workflow) {
             setWorkflowData(workflow);
-            // Fresh load — assume the saved draft is in sync with live until the
-            // user edits. (Cross-session stale drafts aren't detectable here.)
-            setDraftAheadOfLive(false);
+            // Server-computed truth: workflows.definition vs live version
+            // definition (JSONB compare). Survives reloads — a draft saved in a
+            // previous session still reports as ahead of live.
+            setDraftAheadOfLive(Boolean(workflow.draft_differs_from_live));
 
             let taskCount = 0;
             let triggerCount = 0;
@@ -1418,9 +1423,11 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     updateTriggerConfig,
   } = useWorkflowInteractions(dynamicCategories, taskDefinitions);
 
-  // Saved draft is ahead of the published live version (saved but not published).
-  // Best-effort, session-scoped: flips true once the user makes any change, and
-  // resets on fresh load and on a successful Publish.
+  // Saved draft differs from the published live version (saved but not
+  // published). Server-derived: mirrors workflow_get's draft_differs_from_live
+  // (JSONB compare of workflows.definition vs the live version snapshot), so it
+  // is correct across reloads and after every save/publish refetch. Unsaved
+  // canvas edits are tracked separately by hasUnsavedChanges.
   const [draftAheadOfLive, setDraftAheadOfLive] = useState(false);
 
   // Unsaved changes tracking hook
@@ -1444,12 +1451,6 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     enabled: canEdit,
     hasUnpublishedChanges: draftAheadOfLive,
   });
-
-  // Once the user diverges from the saved draft, the saved draft will be ahead
-  // of the live version until they Publish.
-  useEffect(() => {
-    if (hasUnsavedChanges) setDraftAheadOfLive(true);
-  }, [hasUnsavedChanges]);
 
   const { undo, redo } = useWorkflowHistory({
     nodes,
@@ -1710,6 +1711,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
 
               if (reloadedWorkflow) {
                 setWorkflowData(reloadedWorkflow);
+                setDraftAheadOfLive(Boolean(reloadedWorkflow.draft_differs_from_live));
 
                 // Update nodes and edges with fresh data
                 if (reloadedWorkflow.definition) {
@@ -1798,6 +1800,10 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
               const reloadedWorkflow = reloadResponse.data?.workflow_get;
               if (reloadedWorkflow) {
                 setWorkflowData(reloadedWorkflow);
+                // Refresh the ahead-of-live flag from server truth. Also
+                // re-disables Publish when the user reverted their edits and
+                // saved a draft identical to the live version.
+                setDraftAheadOfLive(Boolean(reloadedWorkflow.draft_differs_from_live));
 
                 // Update nodes and edges with reloaded data
                 if (reloadedWorkflow.definition) {
@@ -1909,7 +1915,10 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       pauseChangeDetection();
       try {
         setWorkflowData(reloaded);
-        setDraftAheadOfLive(false);
+        // The assistant just changed the saved draft server-side, so take the
+        // server-computed flag (almost certainly true here) instead of the old
+        // hardcoded false, which wrongly hid the unpublished-changes state.
+        setDraftAheadOfLive(Boolean(reloaded.draft_differs_from_live));
         if (reloaded.definition) {
           const { nodes: nextNodes, edges: nextEdges } = convertWorkflowToReactFlow(
             reloaded.definition,
@@ -1989,6 +1998,9 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
         const reloadedWorkflow = reloadResponse?.data?.workflow_get;
         if (reloadedWorkflow) {
           setWorkflowData(reloadedWorkflow);
+          // The restore rewrote the draft, so re-derive the ahead-of-live flag
+          // from server truth (restored content may or may not match live).
+          setDraftAheadOfLive(Boolean(reloadedWorkflow.draft_differs_from_live));
           if (reloadedWorkflow.definition) {
             const { nodes: reloadedNodes, edges: reloadedEdges } = convertWorkflowToReactFlow(
               reloadedWorkflow.definition,
@@ -2120,13 +2132,17 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       setPublishDialogOpen(false);
       await refreshVersions();
       if (publishSetLive) {
-        // Draft is now the live version. Clear the ahead-of-live flag and refresh
-        // workflowData so the state strip reflects the new live version number.
+        // Draft is now the live version. Clear the ahead-of-live flag
+        // optimistically, then refresh workflowData + the flag from server
+        // truth so the state strip reflects the new live version number.
         setDraftAheadOfLive(false);
         try {
           const reload: any = await apiWorkflow.getWorkflowById(accountId, workflowId);
           const reloaded = reload?.data?.workflow_get;
-          if (reloaded) setWorkflowData(reloaded);
+          if (reloaded) {
+            setWorkflowData(reloaded);
+            setDraftAheadOfLive(Boolean(reloaded.draft_differs_from_live));
+          }
         } catch {
           /* non-fatal: strip will refresh on next load */
         }
