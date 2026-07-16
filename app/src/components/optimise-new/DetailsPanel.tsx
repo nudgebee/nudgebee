@@ -36,6 +36,7 @@ import {
   type DependentRef,
 } from './safetyBand';
 import { Banner } from '@ui/Banner';
+import DsTooltip from '@ui/Tooltip';
 import ApplyMitigationModal, { stripOptionalMarkers } from '@components/cloudaccount/ApplyMitigationModal';
 import { hasWriteAccess } from '@lib/auth';
 import InterpretationPanel from './interpretation/InterpretationPanel';
@@ -68,9 +69,13 @@ const SectionHeading = ({ children, action }: { children: ReactNode; action?: Re
 );
 
 // SafetyRow — a label + value/chip pair for the Blast Radius & Safety section.
+// The label sits in a fixed-width column so every row's value starts at the same
+// x (aligned), rather than being pushed to the far edge.
 const SafetyRow = ({ label, children }: { label: string; children: ReactNode }) => (
-  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[2] }}>
-    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium }}>{label}</Typography>
+  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium, flexShrink: 0, minWidth: '150px' }}>
+      {label}
+    </Typography>
     {children}
   </Box>
 );
@@ -81,6 +86,34 @@ const DEP_COLLAPSE_LIMIT = 3;
 
 const PROXIMITY_HELP =
   "How many dependency steps away this workload is. 'Direct' = it depends on this resource immediately; 'N hops' = it's reached through intermediaries.";
+
+const BLAST_RADIUS_HELP =
+  'What else could be affected if you apply this change — the workloads that depend on this resource, how directly, and how confident we are in that picture.';
+
+// Plain-language explanation for each safety band, shown in the header chip tooltip.
+const SAFETY_BAND_HELP: Record<string, string> = {
+  safe: 'No dependents were found and the graph is well-observed. Generally safe to apply.',
+  review:
+    'Either dependents exist but none look production, or none were found but graph coverage is limited. Safe to apply after a quick human check.',
+  risky: 'Production dependents would be affected, or the blast radius is very large. Review carefully before applying.',
+  unknown: "This resource isn't in the dependency graph, so its impact can't be measured — don't assume it's safe.",
+};
+
+// Turns the safety band + impact counts into a one-line verdict for the banner
+// at the top of the card. Non-success verdicts get a colored callout; success
+// verdicts stay quiet (no banner).
+const deriveVerdict = (
+  band?: string,
+  prod?: number,
+  depCount?: number,
+  truncated?: boolean
+): { tone: 'success' | 'warning' | 'critical'; title: string } => {
+  if ((prod ?? 0) > 0) return { tone: 'critical', title: `${prod} production dependent${prod === 1 ? '' : 's'} affected` };
+  if (band === 'risky' || truncated) return { tone: 'critical', title: 'Large blast radius' };
+  if (band === 'unknown') return { tone: 'warning', title: 'Impact unknown' };
+  if (depCount === 0 || band === 'safe') return { tone: 'success', title: 'No known dependents' };
+  return { tone: 'success', title: 'Contained blast radius' };
+};
 
 // Wraps a chip so MUI Tooltip gets a ref-holding element (Label doesn't forward refs).
 const ChipTip = ({ title, children }: { title: string; children: ReactNode }) => (
@@ -135,11 +168,13 @@ const DependentRow = ({ dep, direction }: { dep: DependentRef; direction: 'upstr
           </Label>
         )}
         {proximity && (
-          <ChipTip title={PROXIMITY_HELP}>
-            <Label size='sm' tone='neutral'>
-              {proximity}
-            </Label>
-          </ChipTip>
+          <DsTooltip variant='explainer' title='Proximity' desc={PROXIMITY_HELP}>
+            <Box component='span' sx={{ display: 'inline-flex', cursor: 'help' }}>
+              <Label size='sm' tone='neutral'>
+                {proximity}
+              </Label>
+            </Box>
+          </DsTooltip>
         )}
         {role && (
           <Label size='sm' tone={direction === 'upstream' ? 'info' : 'neutral'}>
@@ -178,27 +213,51 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
     (impact.dependent_count != null || impact.production_dependents != null || impact.coverage_confidence || impact.safety_reason)
   );
   if (!band && !hasImpactData) return null;
+  const verdict = deriveVerdict(band, impact?.production_dependents, impact?.dependent_count, impact?.truncated);
   return (
     <Card
       elevation='flat'
       size='sm'
       data-testid='blast-radius-safety'
       header={
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
-          <ShieldOutlinedIcon sx={{ fontSize: '18px', color: ds.gray[500] }} />
-          <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
-            Blast Radius &amp; Safety
-          </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[2] }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+            <ShieldOutlinedIcon sx={{ fontSize: '18px', color: ds.gray[500] }} />
+            <DsTooltip variant='explainer' title='Blast Radius & Safety' desc={BLAST_RADIUS_HELP}>
+              <Typography
+                component='span'
+                sx={{
+                  fontFamily: 'var(--ds-font-display)',
+                  fontSize: ds.text.body,
+                  fontWeight: ds.weight.semibold,
+                  color: ds.gray[700],
+                  cursor: 'help',
+                }}
+              >
+                Blast Radius &amp; Safety
+              </Typography>
+            </DsTooltip>
+          </Box>
+          {band && (
+            <DsTooltip variant='explainer' title={`Safety: ${safetyBandLabel(band)}`} desc={SAFETY_BAND_HELP[band] ?? ''}>
+              <Box component='span' sx={{ display: 'inline-flex', cursor: 'help' }}>
+                <Label size='sm' tone={safetyBandTone(band)} dot>
+                  {safetyBandLabel(band)}
+                </Label>
+              </Box>
+            </DsTooltip>
+          )}
         </Box>
       }
     >
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
-        {band && (
-          <SafetyRow label='Safety'>
-            <Label size='sm' tone={safetyBandTone(band)} dot>
-              {safetyBandLabel(band)}
-            </Label>
-          </SafetyRow>
+        {verdict.tone !== 'success' && (
+          <Banner
+            surface='section'
+            tone={verdict.tone}
+            title={verdict.title}
+            message={impact?.safety_reason || 'Blast radius assessed from the dependency graph.'}
+          />
         )}
         {impact?.dependent_count != null && (
           <SafetyRow label='Dependent services'>
@@ -218,11 +277,13 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
         {impact?.coverage_confidence && (
           <SafetyRow label='Graph coverage'>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], minWidth: 0 }}>
-              <ChipTip title={COVERAGE_HELP}>
-                <Label size='sm' tone={coverageTone(impact.coverage_confidence)}>
-                  {safetyBandLabel(impact.coverage_confidence)}
-                </Label>
-              </ChipTip>
+              <DsTooltip variant='explainer' title={`Graph coverage: ${safetyBandLabel(impact.coverage_confidence)}`} desc={COVERAGE_HELP}>
+                <Box component='span' sx={{ display: 'inline-flex', cursor: 'help' }}>
+                  <Label size='sm' tone={coverageTone(impact.coverage_confidence)}>
+                    {safetyBandLabel(impact.coverage_confidence)}
+                  </Label>
+                </Box>
+              </DsTooltip>
               {coverageSubtitle(impact.coverage_confidence) && (
                 <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], whiteSpace: 'nowrap' }}>
                   {coverageSubtitle(impact.coverage_confidence)}
@@ -231,7 +292,7 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
             </Box>
           </SafetyRow>
         )}
-        {impact?.safety_reason && (
+        {impact?.safety_reason && verdict.tone === 'success' && (
           <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], lineHeight: 1.6, mt: ds.space[1] }}>{impact.safety_reason}</Typography>
         )}
         {impact?.dependents && impact.dependents.length > 0 && (

@@ -107,8 +107,8 @@ const TONE_TOKENS: Record<BannerTone, ToneTokens> = {
 };
 
 const SURFACE_TOKENS: Record<BannerSurface, { padding: string; radius: string; marginBottom: string }> = {
-  page: { padding: 'var(--ds-space-3) var(--ds-space-4)', radius: 'var(--ds-radius-md)', marginBottom: 'var(--ds-space-4)' },
-  section: { padding: 'var(--ds-space-2) var(--ds-space-3)', radius: 'var(--ds-radius-sm)', marginBottom: 'var(--ds-space-3)' },
+  page: { padding: 'var(--ds-space-3) var(--ds-space-4)', radius: 'var(--ds-radius-lg)', marginBottom: 'var(--ds-space-4)' },
+  section: { padding: 'var(--ds-space-2) var(--ds-space-3)', radius: 'var(--ds-radius-lg)', marginBottom: 'var(--ds-space-3)' },
 };
 
 export function Banner({
