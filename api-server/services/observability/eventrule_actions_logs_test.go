@@ -1,9 +1,11 @@
 package observability
 
 import (
+	"encoding/json"
 	"log/slog"
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/internal/testenv"
+	"nudgebee/services/query"
 	"os"
 	"testing"
 	"time"
@@ -321,5 +323,173 @@ func TestParseLogTextToOutputLogs(t *testing.T) {
 		require.Len(t, entries, 1)
 		assert.Equal(t, `{"time":"t1","msg":`, entries[0].Message)
 		assert.Empty(t, entries[0].Timestamp)
+	})
+}
+
+// signozFilterItem builds one SigNoz filter item in the {key:{key},op,value} shape.
+func signozFilterItem(key, op string, value any) map[string]any {
+	return map[string]any{"key": map[string]any{"key": key}, "op": op, "value": value}
+}
+
+func TestSignozFilterItemsToWhereClause(t *testing.T) {
+	t.Run("array form ANDs items and round-trips through FlattenSignozQuery", func(t *testing.T) {
+		items := []any{
+			signozFilterItem("k8s.pod.name", "=", "checkout-abc"),
+			signozFilterItem("k8s.namespace.name", "=", "shop"),
+		}
+		where, err := signozFilterItemsToWhereClause(items)
+		require.NoError(t, err)
+
+		flattened, err := FlattenSignozQuery(where)
+		require.NoError(t, err)
+		require.Len(t, flattened, 2)
+		assert.Equal(t, "k8s.pod.name", flattened[0].Key["key"])
+		assert.Equal(t, "=", flattened[0].Op)
+		assert.Equal(t, "checkout-abc", flattened[0].Value)
+		assert.Equal(t, "k8s.namespace.name", flattened[1].Key["key"])
+	})
+
+	t.Run("map form with items key", func(t *testing.T) {
+		q := map[string]any{"op": "AND", "items": []any{signozFilterItem("service.name", "=", "cart")}}
+		where, err := signozFilterItemsToWhereClause(q)
+		require.NoError(t, err)
+		flattened, err := FlattenSignozQuery(where)
+		require.NoError(t, err)
+		require.Len(t, flattened, 1)
+		assert.Equal(t, "service.name", flattened[0].Key["key"])
+	})
+
+	t.Run("[]map[string]any form", func(t *testing.T) {
+		items := []map[string]any{signozFilterItem("trace_id", "=", "xyz")}
+		where, err := signozFilterItemsToWhereClause(items)
+		require.NoError(t, err)
+		flattened, err := FlattenSignozQuery(where)
+		require.NoError(t, err)
+		require.Len(t, flattened, 1)
+		assert.Equal(t, "trace_id", flattened[0].Key["key"])
+	})
+
+	t.Run("contains op is preserved through the round-trip", func(t *testing.T) {
+		where, err := signozFilterItemsToWhereClause([]any{signozFilterItem("k8s.deployment.name", "contains", "cart")})
+		require.NoError(t, err)
+		flattened, err := FlattenSignozQuery(where)
+		require.NoError(t, err)
+		require.Len(t, flattened, 1)
+		assert.Equal(t, "contains", flattened[0].Op)
+	})
+
+	t.Run("unsupported op errors", func(t *testing.T) {
+		_, err := signozFilterItemsToWhereClause([]any{signozFilterItem("x", "weird_op", "y")})
+		assert.Error(t, err)
+	})
+
+	t.Run("no valid items errors", func(t *testing.T) {
+		_, err := signozFilterItemsToWhereClause([]any{})
+		assert.Error(t, err)
+	})
+}
+
+func TestBuildSignozRawQueryFromWhere(t *testing.T) {
+	startTime := time.UnixMilli(1766406993000)
+	endTime := time.UnixMilli(1766410593000)
+	where := query.QueryWhereClause{And: []query.QueryWhereClause{
+		{Binary: query.BinaryWhereClause{"k8s.pod.name": {Eq: "checkout-abc"}}},
+		{Binary: query.BinaryWhereClause{"k8s.namespace.name": {Eq: "shop"}}},
+	}}
+
+	raw, err := buildSignozRawQueryFromWhere(where, startTime, endTime)
+	require.NoError(t, err)
+
+	cq := raw["compositeQuery"].(map[string]any)
+	a := cq["builderQueries"].(map[string]any)["A"].(map[string]any)
+	items := a["filters"].(map[string]any)["items"].([]map[string]any)
+	require.Len(t, items, 2)
+	assert.Equal(t, "k8s.pod.name", items[0]["key"].(map[string]any)["key"])
+	assert.Equal(t, "=", items[0]["op"])
+	assert.Equal(t, "checkout-abc", items[0]["value"])
+
+	// The reconstructed composite must feed the Logs Explorer URL builder cleanly.
+	url, err := buildSignozLogsExplorerURL("https://telemetry.example.com", raw, startTime, endTime)
+	require.NoError(t, err)
+	assert.Contains(t, url, "compositeQuery=")
+}
+
+func TestExtractLogInsights(t *testing.T) {
+	t.Run("severity-first surfaces ERROR/FATAL lines as Critical", func(t *testing.T) {
+		logs := []OutputLog{
+			{Message: "all good", Severity: "INFO"},
+			{Message: "boom happened", Severity: "ERROR"},
+			{Message: "kaboom", Severity: "FATAL"},
+		}
+		insights := extractLogInsights(logs, 10)
+		require.Len(t, insights, 2)
+		assert.Equal(t, "ERROR: boom happened", insights[0].Message)
+		assert.Equal(t, "Critical", insights[0].Severity)
+		assert.Equal(t, "FATAL: kaboom", insights[1].Message)
+	})
+
+	t.Run("caps at maxErrors", func(t *testing.T) {
+		logs := []OutputLog{
+			{Message: "e1", Severity: "ERROR"},
+			{Message: "e2", Severity: "ERROR"},
+			{Message: "e3", Severity: "ERROR"},
+		}
+		assert.Len(t, extractLogInsights(logs, 2), 2)
+	})
+
+	t.Run("falls back to pattern extraction when no severity-tagged errors", func(t *testing.T) {
+		logs := []OutputLog{{Message: "connection error: timeout dialing upstream", Severity: "INFO"}}
+		assert.NotEmpty(t, extractLogInsights(logs, 10))
+	})
+
+	t.Run("clean logs yield no insights", func(t *testing.T) {
+		logs := []OutputLog{{Message: "request served in 3ms", Severity: "INFO"}}
+		assert.Empty(t, extractLogInsights(logs, 10))
+	})
+}
+
+func TestBuildLogsActionResponse(t *testing.T) {
+	logs := []OutputLog{
+		{Timestamp: "t1", Message: "status=500 error serving request", Severity: "ERROR", Labels: map[string]any{"pod": "cart-1"}},
+		{Timestamp: "t2", Message: "ok", Severity: "INFO", Labels: map[string]any{"pod": "cart-1"}},
+	}
+
+	resp := buildLogsActionResponse(
+		logs, "My Logs", map[string]any{"action_name": "cloud_logs"}, 5, map[string]any{"q": 1},
+		[]RegexLabelExtractor{{Pattern: `status=(\d+)`, LabelName: "status_code"}}, nil,
+	)
+	require.NotNil(t, resp)
+
+	// Data marshals to {"data": [ {timestamp,message,labels,severity}, ... ]}
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(resp.GetData().(string)), &payload))
+	arr, ok := payload["data"].([]any)
+	require.True(t, ok)
+	assert.Len(t, arr, 2)
+
+	ai := resp.GetAdditionalInfo()
+	assert.Equal(t, "My Logs", ai["title"])
+	assert.Equal(t, "cloud_logs", ai["action_name"])
+	assert.NotNil(t, ai["log_summary"])
+
+	assert.NotEmpty(t, resp.GetInsights())
+
+	assert.Contains(t, resp.ExtractLabels(), "status_code")
+}
+
+func TestAddExecutedQueryInfo(t *testing.T) {
+	t.Run("records query and provider", func(t *testing.T) {
+		info := addExecutedQueryInfo(map[string]any{"action_name": "cloud_logs"}, FetchLogsResult{Query: `{service.name="cart"}`, Provider: "loki"})
+		assert.Equal(t, `{service.name="cart"}`, info["executed_query"])
+		assert.Equal(t, "loki", info["provider"])
+		assert.Equal(t, "cloud_logs", info["action_name"])
+	})
+
+	t.Run("skips empty values and tolerates nil map", func(t *testing.T) {
+		info := addExecutedQueryInfo(nil, FetchLogsResult{})
+		_, hasQuery := info["executed_query"]
+		_, hasProvider := info["provider"]
+		assert.False(t, hasQuery)
+		assert.False(t, hasProvider)
 	})
 }

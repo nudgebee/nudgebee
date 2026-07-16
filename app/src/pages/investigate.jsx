@@ -1813,29 +1813,69 @@ const Investigate = () => {
   }, [showTrendChart]);
 
   const showReferenceLinks = () => {
-    const referenceLinks = (row?.evidences || [])
+    const evidences = row?.evidences || [];
+    const referenceLinks = evidences
       ?.map((e, i) => ({
         title: e?.additional_info?.title || e?.additional_info?.action_name || `Reference ${i}`,
         url: e?.additional_info?.reference_url,
       }))
       .filter((f) => f.url);
-    if (referenceLinks.length) {
+    // Executed provider query FetchLogs actually ran (with the resolved provider), shown for reference.
+    const referenceQueries = evidences
+      ?.map((e, i) => ({
+        title: e?.additional_info?.title || e?.additional_info?.action_name || `Reference ${i}`,
+        provider: e?.additional_info?.provider,
+        query: e?.additional_info?.executed_query,
+      }))
+      .filter((f) => f.query);
+    if (referenceLinks.length || referenceQueries.length) {
       return (
         <Box sx={{ mt: ds.space[4] }}>
           <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)', mb: ds.space[2] }}>References</Typography>
           <Divider sx={{ mb: ds.space[3] }} />
-          <Box
-            component='ul'
-            sx={{ listStyleType: 'disc', pl: 'var(--ds-space-4)', m: 0, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}
-          >
-            {referenceLinks.map((d) => (
-              <li key={d.url}>
-                <Link href={d.url} openInNew style={{ fontSize: 'var(--ds-text-body-lg)', color: ds.blue[600] }}>
-                  {d.title}
-                </Link>
-              </li>
-            ))}
-          </Box>
+          {referenceLinks.length > 0 && (
+            <Box
+              component='ul'
+              sx={{ listStyleType: 'disc', pl: 'var(--ds-space-4)', m: 0, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}
+            >
+              {referenceLinks.map((d) => (
+                <li key={d.url}>
+                  <Link href={d.url} openInNew style={{ fontSize: 'var(--ds-text-body-lg)', color: ds.blue[600] }}>
+                    {d.title}
+                  </Link>
+                </li>
+              ))}
+            </Box>
+          )}
+          {referenceQueries.length > 0 && (
+            <Box sx={{ mt: referenceLinks.length > 0 ? ds.space[3] : 0, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
+              {referenceQueries.map((d, idx) => (
+                <Box key={`query-${idx}`}>
+                  <Typography sx={{ fontSize: 'var(--ds-text-body-md)', fontWeight: 'var(--ds-font-weight-medium)', mb: ds.space[1] }}>
+                    {d.title}
+                    {d.provider ? ` · ${d.provider}` : ''}
+                  </Typography>
+                  <Box
+                    component='pre'
+                    sx={{
+                      m: 0,
+                      p: ds.space[2],
+                      fontFamily: 'monospace',
+                      fontSize: 'var(--ds-text-body-sm)',
+                      color: ds.gray[700],
+                      backgroundColor: ds.gray[100],
+                      borderRadius: 'var(--ds-radius-sm, 4px)',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-all',
+                      overflowX: 'auto',
+                    }}
+                  >
+                    {d.query}
+                  </Box>
+                </Box>
+              ))}
+            </Box>
+          )}
         </Box>
       );
     }

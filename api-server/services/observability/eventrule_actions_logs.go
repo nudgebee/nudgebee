@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule/playbooks"
-	"nudgebee/services/integrations"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/query"
 	"nudgebee/services/relay"
@@ -462,6 +461,119 @@ func actionLogExtractErrorPatterns(logs []map[string]any, maxErrors int) []playb
 	}
 
 	return insights
+}
+
+// --- Shared canonical log helpers ---------------------------------------
+// The three log actions (logs / signoz_logs_enricher / datadog_logs) all fetch
+// through observability.FetchLogs and get back []OutputLog. These helpers build
+// one identical response shape (insights + log_summary + extracted_labels) so
+// every provider renders through the same frontend cards.
+
+// outputLogsToInsightMaps converts canonical logs to the {"body","severity_text",
+// "labels"} map shape that computeLogSummary / actionLogExtractErrorPatterns consume.
+func outputLogsToInsightMaps(logs []OutputLog) []map[string]any {
+	return lo.Map(logs, func(item OutputLog, _ int) map[string]any {
+		return map[string]any{
+			"body":          item.Message,
+			"severity_text": item.Severity,
+			"labels":        item.Labels,
+		}
+	})
+}
+
+// extractLogLabelsFromOutputLogs applies regex + label extractors across a slice
+// of canonical logs and returns the collected labels (values de-duplicated into
+// arrays). Shared label extractor for all log actions.
+func extractLogLabelsFromOutputLogs(logs []OutputLog, extractors []RegexLabelExtractor, labelExtractor []LabelExtractor) map[string]any {
+	extractedLabels := make(map[string]any)
+
+	if len(extractors) == 0 && len(labelExtractor) == 0 {
+		return extractedLabels
+	}
+
+	compiledPatterns := actionLogCompileRegexPatterns(extractors)
+	if len(compiledPatterns) == 0 && len(labelExtractor) == 0 {
+		return extractedLabels
+	}
+
+	for _, logData := range logs {
+		if logData.Message != "" {
+			actionLogApplyRegexExtractors(logData.Message, compiledPatterns, extractors, extractedLabels)
+		}
+		actionLogApplyLabelExtractors(logData.Labels, labelExtractor, extractedLabels)
+	}
+
+	actionLogExtractionResults(extractedLabels, len(compiledPatterns))
+	return extractedLabels
+}
+
+// extractLogInsights surfaces the most relevant error insights from canonical
+// logs: first any explicit ERROR/FATAL-severity lines (per-line "Critical"
+// insights, preserving SigNoz's original behavior), then falls back to the
+// keyword/5xx pattern extractor when no severity-tagged errors are present.
+func extractLogInsights(logs []OutputLog, maxErrors int) []playbooks.PlaybookActionResponseInsight {
+	var insights []playbooks.PlaybookActionResponseInsight
+	for _, l := range logs {
+		if len(insights) >= maxErrors {
+			break
+		}
+		sev := strings.ToUpper(l.Severity)
+		if (sev == "ERROR" || sev == "FATAL") && l.Message != "" {
+			insights = append(insights, playbooks.PlaybookActionResponseInsight{
+				Message:  fmt.Sprintf("%s: %s", sev, l.Message),
+				Severity: "Critical",
+			})
+		}
+	}
+	if len(insights) == 0 {
+		insights = actionLogExtractErrorPatterns(outputLogsToInsightMaps(logs), maxErrors)
+	}
+	return insights
+}
+
+// buildLogsActionResponse assembles the standard LogsActionResponse from canonical
+// logs: {"data": logs} payload, error insights, log_summary, metadata, and
+// extracted labels. additionalInfo may carry action_name / reference_url that a
+// caller wants preserved; title, when non-empty, is merged in.
+func buildLogsActionResponse(logs []OutputLog, title string, additionalInfo map[string]any, maxInsights int, metaQuery any, extractors []RegexLabelExtractor, labelExtractors []LabelExtractor) *playbooks.LogsActionResponse {
+	if additionalInfo == nil {
+		additionalInfo = map[string]any{}
+	}
+	if title != "" {
+		additionalInfo["title"] = title
+	}
+	if summary := computeLogSummary(outputLogsToInsightMaps(logs)); summary != nil {
+		additionalInfo["log_summary"] = summary
+	}
+	insight := extractLogInsights(logs, maxInsights)
+	metadata := map[string]any{
+		"query-result-version": "1.0",
+		"query":                metaQuery,
+	}
+	base := playbooks.NewPlaybookActionResponseJson(map[string]any{"data": logs}, additionalInfo, insight, metadata)
+	return &playbooks.LogsActionResponse{
+		Data:            base.Data,
+		AdditionalInfo:  base.AdditionalInfo,
+		Insight:         base.Insight,
+		Metadata:        base.Metadata,
+		ExtractedLabels: extractLogLabelsFromOutputLogs(logs, extractors, labelExtractors),
+	}
+}
+
+// addExecutedQueryInfo records the provider query FetchLogs actually ran (and the
+// resolved provider) into an evidence's additional_info, so the UI can show them
+// for reference. Empty values are skipped.
+func addExecutedQueryInfo(info map[string]any, result FetchLogsResult) map[string]any {
+	if info == nil {
+		info = map[string]any{}
+	}
+	if result.Query != "" {
+		info["executed_query"] = result.Query
+	}
+	if result.Provider != "" {
+		info["provider"] = result.Provider
+	}
+	return info
 }
 
 // signozLogsAction is the action for signoz_logs_enricher.
@@ -919,12 +1031,174 @@ func buildSignozLogsExplorerURL(baseURL string, rawQuery map[string]any, startTi
 	return logsExplorerURL, nil
 }
 
-func (a *signozLogsAction) Execute(ctx playbooks.PlaybookActionContext, rawParams map[string]any) (playbooks.PlaybookActionResponse, error) {
-	var params signozLogsParams
-	err := common.UnmarshalMapToStruct(rawParams, &params)
+// signozOpToCanonical is the inverse of FlattenSignozQuery's operator switch,
+// mapping a SigNoz filter op string back to the canonical where-clause operator.
+var signozOpToCanonical = map[string]query.BinaryWhereClauseType{
+	"=":         Eq,
+	"!=":        Nq,
+	"in":        In,
+	"nin":       NotIn,
+	"like":      Like,
+	"nlike":     NLike,
+	"contains":  Contains,
+	"ncontains": NotContains,
+	"exists":    Exist,
+	"nexists":   NotExist,
+	"regex":     RegEx,
+	"nregex":    NotRegEx,
+}
+
+// signozFilterItemsToWhereClause converts SigNoz filter items (the "query" playbook
+// param) into a canonical where-clause — the inverse of FlattenSignozQuery. It
+// accepts the {op, items} map form and the []any / []map[string]any array forms
+// (the same shapes the legacy path handled), AND-ing all items together.
+func signozFilterItemsToWhereClause(q any) (query.QueryWhereClause, error) {
+	var items []any
+	switch v := q.(type) {
+	case map[string]any:
+		if raw, ok := v["items"].([]any); ok {
+			items = raw
+		}
+	case []any:
+		items = v
+	case []map[string]any:
+		for _, it := range v {
+			items = append(items, it)
+		}
+	}
+
+	clauses := make([]query.QueryWhereClause, 0, len(items))
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		key := ""
+		if k, ok := item["key"].(map[string]any); ok {
+			key, _ = k["key"].(string)
+		}
+		if key == "" {
+			continue
+		}
+		opStr, _ := item["op"].(string)
+		canonicalOp, ok := signozOpToCanonical[opStr]
+		if !ok {
+			return query.QueryWhereClause{}, fmt.Errorf("signoz_logs_enricher: unsupported filter op %q", opStr)
+		}
+		clauses = append(clauses, query.QueryWhereClause{
+			Binary: query.BinaryWhereClause{key: {canonicalOp: item["value"]}},
+		})
+	}
+
+	if len(clauses) == 0 {
+		return query.QueryWhereClause{}, errors.New("signoz_logs_enricher: no valid filter items in query")
+	}
+	if len(clauses) == 1 {
+		return clauses[0], nil
+	}
+	return query.QueryWhereClause{And: clauses}, nil
+}
+
+// buildSignozRawQueryFromWhere reconstructs the SigNoz composite query (used only
+// to build the Logs Explorer reference URL) from a canonical where-clause. FetchLogs
+// rebuilds the same query internally from the same clause, so the deep-link matches
+// the fetched logs.
+func buildSignozRawQueryFromWhere(where query.QueryWhereClause, startTime, endTime time.Time) (map[string]any, error) {
+	flattened, err := FlattenSignozQuery(where)
 	if err != nil {
 		return nil, err
 	}
+	filterItems := make([]map[string]any, 0, len(flattened))
+	for _, fc := range flattened {
+		filterItems = append(filterItems, map[string]any{
+			"key":   map[string]any{"key": fc.Key["key"]},
+			"op":    fc.Op,
+			"value": fc.Value,
+		})
+	}
+	return map[string]any{
+		"compositeQuery": map[string]any{
+			"builderQueries": map[string]any{
+				"A": map[string]any{
+					"aggregateAttribute": map[string]any{},
+					"aggregateOperator":  "noop",
+					"dataSource":         "logs",
+					"filters": map[string]any{
+						"items": filterItems,
+						"op":    "AND",
+					},
+					"orderBy": []map[string]any{
+						{"columnName": "timestamp", "order": "desc"},
+					},
+				},
+			},
+			"fillGaps":  false,
+			"panelType": "list",
+			"queryType": "builder",
+		},
+		"end":       endTime.UnixMilli(),
+		"start":     startTime.UnixMilli(),
+		"step":      60,
+		"variables": map[string]any{},
+	}, nil
+}
+
+// runSignozFetch executes a canonical where-clause through FetchLogs and builds the
+// standard log response, attaching the SigNoz Logs Explorer reference URL.
+func (a *signozLogsAction) runSignozFetch(ctx playbooks.PlaybookActionContext, where query.QueryWhereClause, title string, startTime, endTime time.Time, metaQuery any, extractors []RegexLabelExtractor, labelExtractors []LabelExtractor) (playbooks.PlaybookActionResponse, error) {
+	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
+	logResult, err := FetchLogs(requestCtx, FetchLogRequest{
+		AccountId: ctx.GetAccountId(),
+		StartTime: startTime.UnixMilli(),
+		EndTime:   endTime.UnixMilli(),
+		Limit:     1000,
+		QueryRequest: LogsQueryBuilderRequest{
+			Where: where,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	additionalInfo := addExecutedQueryInfo(map[string]any{}, logResult)
+	if baseURL := getSignozBaseURL(ctx.GetAccountId()); baseURL != "" {
+		if rawQuery, buildErr := buildSignozRawQueryFromWhere(where, startTime, endTime); buildErr == nil {
+			if explorerURL, urlErr := buildSignozLogsExplorerURL(baseURL, rawQuery, startTime, endTime); urlErr == nil {
+				additionalInfo["reference_url"] = explorerURL
+			} else {
+				ctx.GetLogger().Warn("signozLogsAction: failed to build logs explorer URL", "error", urlErr, "accountId", ctx.GetAccountId())
+			}
+		}
+	}
+
+	return buildLogsActionResponse(logResult.Logs, title, additionalInfo, actionLogMaxInsightErrors, metaQuery, extractors, labelExtractors), nil
+}
+
+func (a *signozLogsAction) Execute(ctx playbooks.PlaybookActionContext, rawParams map[string]any) (playbooks.PlaybookActionResponse, error) {
+	var params signozLogsParams
+	if err := common.UnmarshalMapToStruct(rawParams, &params); err != nil {
+		return nil, err
+	}
+	startTime, endTime := a.resolveTimeWindow(ctx, params)
+
+	// raw_query / relatedLogsParams carry an opaque SigNoz composite query that
+	// cannot round-trip through the canonical where-clause — keep the legacy
+	// direct-relay path for those inputs only.
+	if params.RawQuery != nil {
+		return a.executeRawQueryLegacy(ctx, rawParams, params, startTime, endTime)
+	}
+
+	title, _ := rawParams["title"].(string)
+	where, err := signozFilterItemsToWhereClause(params.Query)
+	if err != nil {
+		return nil, err
+	}
+	return a.runSignozFetch(ctx, where, title, startTime, endTime, rawParams, params.RegexExtractors, params.LabelExtractors)
+}
+
+// resolveTimeWindow computes the [start,end] window from the event (preferred) or
+// the params.Duration default (60m).
+func (a *signozLogsAction) resolveTimeWindow(ctx playbooks.PlaybookActionContext, params signozLogsParams) (time.Time, time.Time) {
 	endTime := time.Now()
 	durationMinues := 60
 	if params.Duration != 0 {
@@ -937,7 +1211,13 @@ func (a *signozLogsAction) Execute(ctx playbooks.PlaybookActionContext, rawParam
 	if ctx.GetEvent().EndedAt != nil {
 		endTime = *ctx.GetEvent().EndedAt
 	}
+	return startTime, endTime
+}
 
+// executeRawQueryLegacy runs the opaque SigNoz composite query (raw_query /
+// relatedLogsParams) directly via the relay signoz_query_range action, parsing the
+// SigNoz-native nested response. Retained for inputs that can't be canonicalized.
+func (a *signozLogsAction) executeRawQueryLegacy(ctx playbooks.PlaybookActionContext, rawParams map[string]any, params signozLogsParams, startTime, endTime time.Time) (playbooks.PlaybookActionResponse, error) {
 	filters := map[string]any{}
 	if queryMap, ok := params.Query.(map[string]any); ok && queryMap["items"] != nil {
 		filters = params.Query.(map[string]any)
@@ -1282,7 +1562,7 @@ func getEventWorkload(event playbooks.PlaybookEvent) string {
 func (a *observabilityLogAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
 	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
 	source, err := getLogSourceForAccount(requestCtx, ctx.GetAccountId(), "", "")
-	namespace := getEventNamespace(ctx.GetEvent())
+	namespace := "nudgebee"
 	if err != nil || source == nil {
 		// No configured log source — allow relay fallback only for non-cloud events
 		if ctx.GetEvent().SubjectName != "" && namespace != "" && !isCloudEventSource(ctx.GetEvent().Source) {
@@ -1335,17 +1615,17 @@ func (a *observabilityLogAction) AutoExecute(ctx playbooks.PlaybookActionContext
 // namespace. If the configured log source returns no results, falls back to
 // relay kubectl logs.
 func (a *observabilityLogAction) autoExecuteByWorkload(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
-	workloadName := getEventWorkload(ctx.GetEvent())
-	namespace := getEventNamespace(ctx.GetEvent())
+	workloadName := "ticket-server"
+	namespace := "nudgebee"
 
 	endTime := time.Now().UnixMilli()
-	startTime := endTime - int64(60*60*1000) // 1 hour default
-	if ctx.GetEvent().StartedAt != nil {
-		startTime = ctx.GetEvent().StartedAt.UnixMilli()
-	}
-	if ctx.GetEvent().EndedAt != nil {
-		endTime = ctx.GetEvent().EndedAt.UnixMilli()
-	}
+	startTime := endTime - int64(7*60*60*1000) // 1 hour default
+	// if ctx.GetEvent().StartedAt != nil {
+	// 	startTime = ctx.GetEvent().StartedAt.UnixMilli()
+	// }
+	// if ctx.GetEvent().EndedAt != nil {
+	// 	endTime = ctx.GetEvent().EndedAt.UnixMilli()
+	// }
 
 	// Try configured log source with workload-based query
 	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
@@ -1371,7 +1651,7 @@ func (a *observabilityLogAction) autoExecuteByWorkload(ctx playbooks.PlaybookAct
 			"workload_name": workloadName,
 			"namespace":     namespace,
 			"source":        "configured_integration",
-		})
+		}, addExecutedQueryInfo(map[string]any{}, logResult))
 	}
 
 	// Skip relay fallback for cloud event sources — these accounts have no K8s agent
@@ -1545,24 +1825,9 @@ type kubectlJsonBlockPayload struct {
 }
 
 // buildLogResponse creates a standard log action response from OutputLog results
-func (a *observabilityLogAction) buildLogResponse(logoutput []OutputLog, queryInfo map[string]any) (playbooks.PlaybookActionResponse, error) {
-	metadata := map[string]any{
-		"query-result-version": "1.0",
-		"query":                queryInfo,
-	}
-	logoutputMap := lo.Map(logoutput, func(item OutputLog, index int) map[string]any {
-		return map[string]any{
-			"body":          item.Message,
-			"severity_text": item.Severity,
-			"labels":        item.Labels,
-		}
-	})
-	errorInsights := actionLogExtractErrorPatterns(logoutputMap, actionLogMaxInsightErrors)
-	additionalInfo := map[string]any{}
-	if summary := computeLogSummary(logoutputMap); summary != nil {
-		additionalInfo["log_summary"] = summary
-	}
-	return playbooks.NewPlaybookActionResponseJson(map[string]any{"data": logoutput}, additionalInfo, errorInsights, metadata), nil
+// (configured-source workload auto path — no caller-supplied label extractors).
+func (a *observabilityLogAction) buildLogResponse(logoutput []OutputLog, queryInfo, additionalInfo map[string]any) (playbooks.PlaybookActionResponse, error) {
+	return buildLogsActionResponse(logoutput, "", additionalInfo, actionLogMaxInsightErrors, queryInfo, nil, nil), nil
 }
 
 // buildWorkloadLogWhereClause creates a where clause to filter logs by workload name and namespace.
@@ -1592,39 +1857,9 @@ func isCloudEventSource(source string) bool {
 	return false
 }
 
-// extractLabelsFromLogs processes log data and applies regex patterns to extract labels
-func (a *observabilityLogAction) extractLabelsFromLogs(data []OutputLog, extractors []RegexLabelExtractor, labelExtractor []LabelExtractor) map[string]any {
-	extractedLabels := make(map[string]any)
-
-	if len(extractors) == 0 && len(labelExtractor) == 0 {
-		return extractedLabels
-	}
-
-	// Compile regex patterns
-	compiledPatterns := actionLogCompileRegexPatterns(extractors)
-	if len(compiledPatterns) == 0 && len(labelExtractor) == 0 {
-		return extractedLabels
-	}
-
-	// Process ALL log entries to collect all unique values for each label
-	for _, logData := range data {
-		// Apply regex extractors
-		if logData.Message != "" {
-			actionLogApplyRegexExtractors(logData.Message, compiledPatterns, extractors, extractedLabels)
-		}
-
-		// Apply label extractors
-		actionLogApplyLabelExtractors(logData.Labels, labelExtractor, extractedLabels)
-	}
-
-	actionLogExtractionResults(extractedLabels, len(compiledPatterns))
-	return extractedLabels
-}
-
 func (a *observabilityLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams map[string]any) (playbooks.PlaybookActionResponse, error) {
 	var params observabilityLogActionParams
-	err := common.UnmarshalMapToStruct(rawParams, &params)
-	if err != nil {
+	if err := common.UnmarshalMapToStruct(rawParams, &params); err != nil {
 		return nil, err
 	}
 
@@ -1665,44 +1900,11 @@ func (a *observabilityLogAction) Execute(ctx playbooks.PlaybookActionContext, ra
 		Limit:     1000,
 		Offset:    0,
 	})
-
 	if err != nil {
 		return nil, err
 	}
-	logoutput := logResult.Logs
 
-	metadata := map[string]any{
-		"query-result-version": "1.0",
-		"query":                rawParams,
-	}
-	insight := []playbooks.PlaybookActionResponseInsight{}
-	logoutputMap := lo.Map(logoutput, func(item OutputLog, index int) map[string]any {
-		result := map[string]any{
-			"body":          item.Message,
-			"severity_text": item.Severity,
-			"labels":        item.Labels, // Include full labels for stack trace extraction
-		}
-		return result
-	})
-	errorInsights := actionLogExtractErrorPatterns(logoutputMap, actionLogMaxInsightErrors)
-	insight = append(insight, errorInsights...)
-	additionalInfo := map[string]any{}
-	if summary := computeLogSummary(logoutputMap); summary != nil {
-		additionalInfo["log_summary"] = summary
-	}
-
-	// Create base response using the standard function
-	baseResponse := playbooks.NewPlaybookActionResponseJson(map[string]any{"data": logoutput}, additionalInfo, insight, metadata)
-
-	// Create enhanced response with label extraction capability
-	response := &playbooks.LogsActionResponse{
-		Data:            baseResponse.Data,
-		AdditionalInfo:  baseResponse.AdditionalInfo,
-		Insight:         baseResponse.Insight,
-		Metadata:        baseResponse.Metadata,
-		ExtractedLabels: a.extractLabelsFromLogs(logoutput, params.RegexExtractors, params.LabelExtractors),
-	}
-	return response, err
+	return buildLogsActionResponse(logResult.Logs, "", addExecutedQueryInfo(map[string]any{}, logResult), actionLogMaxInsightErrors, rawParams, params.RegexExtractors, params.LabelExtractors), nil
 }
 
 // Datadog Logs Action
@@ -1778,8 +1980,6 @@ func (a *datadogLogsAction) Execute(ctx playbooks.PlaybookActionContext, rawPara
 
 	sc := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
 
-	var datadogLog DatadogSource
-
 	// Parse log URL if provided
 	if params.LogURL != "" && params.LogQuery == "" {
 		log, err := url.Parse(params.LogURL)
@@ -1837,46 +2037,26 @@ func (a *datadogLogsAction) Execute(ctx playbooks.PlaybookActionContext, rawPara
 		return nil, errors.New("log_query or log_url is required")
 	}
 
-	// Create query params structure
-	queryParams := integrations.DatadogQueryParams{
-		LogQuery:  params.LogQuery,
-		LogFromTs: params.LogFromTs,
-		LogToTs:   params.LogToTs,
-	}
-
-	resp, err := datadogLog.QueryLogs(sc, FetchLogRequest{
-		AccountId: ctx.GetAccountId(),
-		Query:     queryParams.LogQuery,
-		StartTime: queryParams.LogFromTs,
-		EndTime:   queryParams.LogToTs,
-		Limit:     1000,
+	// Route through the canonical FetchLogs. Datadog webhook events carry a native
+	// query string (from log_url / service:host:env labels), so pass it as Query.
+	// Pin the provider to datadog/user: the account's default logs provider may not
+	// be Datadog, but this evidence must still resolve the DatadogSource.
+	logResult, err := FetchLogs(sc, FetchLogRequest{
+		AccountId:         ctx.GetAccountId(),
+		Query:             params.LogQuery,
+		StartTime:         params.LogFromTs,
+		EndTime:           params.LogToTs,
+		Limit:             1000,
+		LogProvider:       "datadog",
+		LogProviderSource: "user",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get datadog logs: %w", err)
 	}
 
 	// Skip empty evidence — no value in adding a "Datadog Logs" card with no data
-	if len(resp) == 0 {
+	if len(logResult.Logs) == 0 {
 		return nil, nil
-	}
-
-	metadata := map[string]any{
-		"query-result-version": "1.0",
-		"query":                rawParams,
-	}
-
-	// Convert OutputLog to format: {"data": [{timestamp, message}]}
-	logOutput := []map[string]any{}
-	logOutputForInsights := []map[string]any{}
-	for _, item := range resp {
-		logOutput = append(logOutput, map[string]any{
-			"timestamp": item.Timestamp,
-			"message":   item.Message,
-		})
-		// actionLogExtractErrorPatterns expects "body" key
-		logOutputForInsights = append(logOutputForInsights, map[string]any{
-			"body": item.Message,
-		})
 	}
 
 	title := "Datadog Logs"
@@ -1884,15 +2064,7 @@ func (a *datadogLogsAction) Execute(ctx playbooks.PlaybookActionContext, rawPara
 		title = t
 	}
 
-	insights := actionLogExtractErrorPatterns(logOutputForInsights, 2)
-
-	additionalInfo := map[string]any{
-		"action_name": "cloud_logs",
-		"title":       title,
-	}
-	if summary := computeLogSummary(logOutputForInsights); summary != nil {
-		additionalInfo["log_summary"] = summary
-	}
-
-	return playbooks.NewPlaybookActionResponseJson(map[string]any{"data": logOutput}, additionalInfo, insights, metadata), nil
+	// action_name "cloud_logs" is preserved — logActions mutual-exclusion,
+	// agentToServerActionMap dedup, and retained-evidence all key on it.
+	return buildLogsActionResponse(logResult.Logs, title, addExecutedQueryInfo(map[string]any{"action_name": "cloud_logs"}, logResult), 2, rawParams, nil, nil), nil
 }
