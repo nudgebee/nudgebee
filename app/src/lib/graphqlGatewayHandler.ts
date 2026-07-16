@@ -124,10 +124,13 @@ export async function handleGatewayRequest(req: NextApiRequest, res: NextApiResp
     } finally {
       timing.total_ms = Math.round(performance.now() - t0);
       const totalMs = timing.total_ms;
+      // trace_id from the forwarded traceparent (00-<trace_id>-<span_id>-<flags>)
+      // so this line joins the backend services' logs for the same request in Loki.
+      const traceId = traceParent.split('-')[1] || '';
       if (totalMs > SLOW_THRESHOLD_MS) {
-        console.warn(`[${opts.logPrefix}] SLOW ${operationName} ${totalMs}ms`, JSON.stringify(timing));
+        console.warn(`[${opts.logPrefix}] SLOW ${operationName} ${totalMs}ms trace_id=${traceId}`, JSON.stringify(timing));
       } else {
-        console.log(`[${opts.logPrefix}] ${operationName} ${totalMs}ms`, JSON.stringify(timing));
+        console.log(`[${opts.logPrefix}] ${operationName} ${totalMs}ms trace_id=${traceId}`, JSON.stringify(timing));
       }
       span.end();
     }

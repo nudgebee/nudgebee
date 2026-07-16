@@ -210,7 +210,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing.total_ms = Math.round(performance.now() - t0);
       const totalMs = timing.total_ms;
       const logFn = totalMs > SLOW_THRESHOLD_MS ? console.warn : console.log;
-      logFn(`[rpc-proxy] ${methodForLog} ${totalMs}ms`, JSON.stringify(timing));
+      // trace_id from the forwarded traceparent (00-<trace_id>-<span_id>-<flags>)
+      // so this line joins the backend services' logs for the same request in Loki.
+      const traceId = traceParent.split('-')[1] || '';
+      logFn(`[rpc-proxy] ${methodForLog} ${totalMs}ms trace_id=${traceId}`, JSON.stringify(timing));
       span.end();
     }
   });
