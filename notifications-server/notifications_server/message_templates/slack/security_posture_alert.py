@@ -8,9 +8,11 @@ from notifications_server.message_templates.slack.recommendation_nudge_digest im
     DigestRecommendation,
     MAX_ALERT_ITEMS,
     _absolute_url,
-    accounts_phrase,
+    accounts_scope,
     format_rule_name,
-    item_attachment,
+    header_block,
+    legacy_attachment,
+    link_button,
     neutral_footer_attachment,
     severity_stripe,
     short_resource_name,
@@ -53,6 +55,7 @@ def _flatten(params: SecurityPostureAlertParams) -> List[Tuple[str, DigestRecomm
 def get_security_posture_alert_message_template(params: SecurityPostureAlertParams) -> Dict[str, Any]:
     base_url = params.base_url or public_ip()
     account_count = len(params.recommendations_by_account)
+    scope = accounts_scope([acc.account_name for acc in params.recommendations_by_account.values()])
 
     flat = _flatten(params)
     criticals = [(name, rec) for name, rec in flat if rec.severity == "Critical"]
@@ -62,7 +65,7 @@ def get_security_posture_alert_message_template(params: SecurityPostureAlertPara
     if criticals:
         shown = criticals[:MAX_ALERT_ITEMS]
         noun = "critical security finding" if params.critical_count == 1 else "critical security findings"
-        headline = f"{params.critical_count} {noun} across {accounts_phrase(account_count)}"
+        headline = f"{params.critical_count} {noun} {scope}"
         remaining = params.critical_count - len(shown)
     else:
         shown = highs[:MAX_HIGH_FALLBACK_ITEMS]
@@ -86,7 +89,7 @@ def get_security_posture_alert_message_template(params: SecurityPostureAlertPara
     context_bits.append(f"Accounts {account_count}")
 
     blocks: List[Dict[str, Any]] = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"*{headline}*"}},
+        header_block(headline),
         {"type": "section", "text": {"type": "mrkdwn", "text": intro}},
         {"type": "context", "elements": [{"type": "mrkdwn", "text": " · ".join(context_bits)}]},
         {"type": "divider"},
@@ -96,72 +99,41 @@ def get_security_posture_alert_message_template(params: SecurityPostureAlertPara
     for account_name, rec in shown:
         badge = f" `{rec.severity.upper()}`" if rec.severity else ""
         title = f"{format_rule_name(rec.rule_name)} — {short_resource_name(rec.resource_name)}"
-        item_blocks = [
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*{badge}"}},
-            {"type": "context", "elements": [{"type": "mrkdwn", "text": f"Acct {account_name}"}]},
-        ]
+        actions = None
         if rec.cta_url:
-            item_blocks.append(
-                {
-                    "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Details"},
-                            "style": "primary",
-                            "url": _absolute_url(rec.cta_url, base_url),
-                        }
-                    ],
-                }
+            actions = [link_button("Details", _absolute_url(rec.cta_url, base_url), style="primary")]
+        attachments.append(
+            legacy_attachment(
+                severity_stripe(rec.severity),
+                title,
+                text=f"*{title}*{badge}\nAcct: {account_name}",
+                actions=actions,
             )
-        attachments.append(item_attachment(severity_stripe(rec.severity), title, item_blocks))
+        )
 
     total_findings = params.critical_count + params.high_count
     view_all_label = f"View all {total_findings} findings" if total_findings > 1 else "View all findings"
 
-    footer_blocks = []
+    footer_lines = []
     if remaining > 0:
-        footer_blocks.append(
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"_+{remaining} more in the dashboard_"}}
-        )
+        footer_lines.append(f"_+{remaining} more in the dashboard_")
+    footer_actions = None
     if account_count == 1:
         only_account = next(iter(params.recommendations_by_account))
         view_all_url = (
             f"{base_url.rstrip('/')}/kubernetes/details/{only_account}"
             f"?accountId={only_account}&utm=security-alert#security/image-scan"
         )
-        footer_blocks.append(
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": view_all_label},
-                        "url": view_all_url,
-                        "style": "primary",
-                    }
-                ],
-            }
-        )
+        footer_actions = [link_button(view_all_label, view_all_url, style="primary")]
     else:
-        footer_blocks.append(
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"View all findings on {settings.urls.branding_link('slack')}"},
-            }
+        footer_lines.append(f"View all findings on {settings.urls.branding_link('slack')}")
+    attachments.append(
+        neutral_footer_attachment(
+            text="\n".join(footer_lines),
+            actions=footer_actions,
+            fallback="View all findings",
         )
-    footer_blocks.append(
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": "Only critical findings appear here; when there are none, the top 5 high show instead.",
-                }
-            ],
-        }
     )
-    attachments.append(neutral_footer_attachment(footer_blocks, "View all findings"))
 
     return {
         "text": headline,

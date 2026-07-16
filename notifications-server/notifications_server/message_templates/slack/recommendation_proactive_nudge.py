@@ -7,11 +7,13 @@ from notifications_server.message_templates.slack.recommendation_nudge_digest im
     MAX_ALERT_ITEMS,
     AccountRecommendations,
     DigestRecommendation,
-    accounts_phrase,
+    accounts_scope,
     build_posture_item_attachments,
     cost_headline,
     flatten_ranked_recs,
     format_savings,
+    header_block,
+    link_button,
     neutral_footer_attachment,
 )
 
@@ -64,17 +66,14 @@ def get_recommendation_proactive_nudge_message_template(
 
     # Header: savings-first headline, branding demoted to a context line.
     # All-zero-savings bundles fall back to a count headline instead of "$0.00/mo".
-    account_count = len(params.recommendations_by_account)
+    scope = accounts_scope([acc.account_name for acc in params.recommendations_by_account.values()])
     if params.total_recoverable_savings > 0:
-        headline = cost_headline(params.total_recoverable_savings, account_count)
+        headline = cost_headline(params.total_recoverable_savings, scope)
         context_line = f"{branding} priority alert · {params.total_recommendations} recommendations need action now"
     else:
-        headline = (
-            f"{params.total_recommendations} priority recommendations need action "
-            f"across {accounts_phrase(account_count)}"
-        )
+        headline = f"{params.total_recommendations} priority recommendations need action {scope}"
         context_line = f"{branding} priority alert"
-    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{headline}*"}})
+    blocks.append(header_block(headline))
     blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": context_line}]})
     blocks.append({"type": "divider"})
 
@@ -83,31 +82,17 @@ def get_recommendation_proactive_nudge_message_template(
     ranked = flatten_ranked_recs(params.recommendations_by_account)
     attachments = build_posture_item_attachments(ranked, base_url)
 
-    footer_blocks = []
     remaining = len(ranked) - MAX_ALERT_ITEMS
-    if remaining > 0:
-        footer_blocks.append(
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"_+{remaining} more in the dashboard_"}}
-        )
-    footer_blocks.append(
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "View All Recommendations"},
-                    "url": f"{base_url}/optimise?utm=slack#recommendations",
-                    "style": "primary",
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Ask Nubi"},
-                    "url": build_ask_nubi_url(params, base_url, "slack"),
-                },
+    attachments.append(
+        neutral_footer_attachment(
+            text=f"_+{remaining} more in the dashboard_" if remaining > 0 else "",
+            actions=[
+                link_button("View All Recommendations", f"{base_url}/optimise?utm=slack#recommendations", "primary"),
+                link_button("Ask Nubi", build_ask_nubi_url(params, base_url, "slack")),
             ],
-        }
+            fallback="View all recommendations",
+        )
     )
-    attachments.append(neutral_footer_attachment(footer_blocks, "View all recommendations"))
 
     fallback = (
         f"Priority: {params.total_recommendations} recommendations — "

@@ -1,16 +1,21 @@
-from typing import List, Dict, Any, Union
-from datetime import datetime
+from typing import List, Dict, Any, Optional, Union
+from datetime import datetime, timezone
 from pydantic import BaseModel
 
 from notifications_server.configs.settings import public_ip
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
     STRIPE_CRITICAL,
-    item_attachment,
+    header_block,
+    legacy_attachment,
+    link_button,
     neutral_footer_attachment,
 )
 from notifications_server.message_templates.slack.slo import SLOAlertParams
 
 MAX_SLO_ITEMS = 5
+
+# Guard against producers sending ms/us epochs (would render far-future dates).
+MAX_REASONABLE_EPOCH = 4102444800  # 2100-01-01
 
 
 class SLOAlertSummaryParams(BaseModel):
@@ -21,13 +26,27 @@ def get_slo_aggregated_message_params(events: List[Dict[str, Any]]) -> SLOAlertS
     return SLOAlertSummaryParams(events=[SLOAlertParams(**e) for e in events])
 
 
-def _firing_since_block(firing_since: Union[str, float, int]) -> str:
+def _epoch(value: Union[str, float, int]) -> Optional[int]:
     try:
-        ts = int(float(firing_since))
-        fallback = datetime.fromtimestamp(ts).strftime("%d %B %Y %I:%M %p")
-    except (TypeError, ValueError, OSError, OverflowError):
-        return str(firing_since)
-    return f"<!date^{ts}^{{date_short_pretty}} {{time}}|{fallback}>"
+        ts = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    if 0 < ts < MAX_REASONABLE_EPOCH:
+        return ts
+    return None
+
+
+def _firing_since(firing_since: Union[str, float, int]) -> str:
+    """Inline localized time via Slack's <!date> token; raw value when the
+    producer sends something unparseable."""
+    ts = _epoch(firing_since)
+    if ts is None:
+        return f"firing since {firing_since}"
+    try:
+        fallback = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d %b %Y %I:%M %p UTC")
+    except (ValueError, OSError, OverflowError):
+        return f"firing since {firing_since}"
+    return f"firing since <!date^{ts}^{{date_short_pretty}} {{time}}|{fallback}>"
 
 
 # Fast-burn threshold: at >=10x the budget drains within hours -> BREACHING;
@@ -60,10 +79,7 @@ def get_grouped_slo_alerts_template(input_data: List[SLOAlertParams]) -> Dict[st
     count = len(alerts)
     headline = "1 SLO is burning error budget" if count == 1 else f"{count} SLOs are burning error budget"
 
-    blocks: List[Dict[str, Any]] = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"*{headline}*"}},
-        {"type": "divider"},
-    ]
+    blocks: List[Dict[str, Any]] = [header_block(headline), {"type": "divider"}]
 
     attachments = []
     for alert in alerts[:MAX_SLO_ITEMS]:
@@ -74,31 +90,26 @@ def get_grouped_slo_alerts_template(input_data: List[SLOAlertParams]) -> Dict[st
         burn = _burn_line(alert)
         if burn:
             lines.append(burn[0].upper() + burn[1:])
-
-        account_link = f"<{public_ip()}/kubernetes/details/{alert.account_id}|{alert.account_name}>"
-        identity = (
-            f"{alert.namespace}/{alert.workload} · firing since {_firing_since_block(alert.firing_since)} · "
-            f"Acct {account_link}"
+        lines.append(
+            f"{alert.namespace}/{alert.workload} · Acct: {alert.account_name} · {_firing_since(alert.firing_since)}"
         )
-        item_blocks = [
-            {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}},
-            {"type": "context", "elements": [{"type": "mrkdwn", "text": identity}]},
-        ]
-        attachments.append(item_attachment(STRIPE_CRITICAL, alert.slo_name, item_blocks))
 
-    footer_blocks = []
+        attachments.append(
+            legacy_attachment(
+                STRIPE_CRITICAL,
+                alert.slo_name,
+                text="\n".join(lines),
+                actions=[
+                    link_button("Details", f"{public_ip()}/kubernetes/details/{alert.account_id}", style="primary")
+                ],
+            )
+        )
+
     remaining = count - MAX_SLO_ITEMS
     if remaining > 0:
-        footer_blocks.append(
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"_+{remaining} more SLOs breaching_"}}
+        attachments.append(
+            neutral_footer_attachment(text=f"_+{remaining} more SLOs breaching_", fallback="SLO summary")
         )
-    footer_blocks.append(
-        {
-            "type": "context",
-            "elements": [{"type": "mrkdwn", "text": "Review impacted workloads to restore SLO compliance."}],
-        }
-    )
-    attachments.append(neutral_footer_attachment(footer_blocks, "SLO summary"))
 
     return {
         "text": headline,

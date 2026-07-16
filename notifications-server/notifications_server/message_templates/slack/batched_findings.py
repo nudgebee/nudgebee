@@ -8,7 +8,10 @@ from notifications_server.message_templates.slack.recommendation_nudge_digest im
     MAX_ALERT_ITEMS,
     STRIPE_CRITICAL,
     accounts_phrase,
-    item_attachment,
+    accounts_scope,
+    header_block,
+    legacy_attachment,
+    link_button,
     neutral_footer_attachment,
 )
 
@@ -99,18 +102,24 @@ def get_batched_findings_message_template(payload: BatchedFindingsPayload):
 
     criticals = sorted(payload.critical_findings, key=lambda f: f.count, reverse=True)
 
+    scope = (
+        accounts_scope([accounts_map.get(acc_id, acc_id) for acc_id in unique_account_ids])
+        if unique_account_ids
+        else f"across {accounts_phrase(account_count)}"
+    )
+
     # critical_count is the true distinct-critical total (the list is capped).
     # Fall back to a count-free headline for payloads predating the field.
     if payload.critical_count > 0:
         noun = "critical finding" if payload.critical_count == 1 else "critical findings"
-        headline = f"{payload.critical_count} {noun} across {accounts_phrase(account_count)}"
+        headline = f"{payload.critical_count} {noun} {scope}"
     elif criticals:
-        headline = f"Top critical findings across {accounts_phrase(account_count)}"
+        headline = f"Top critical findings {scope}"
     else:
-        headline = f"{payload.total_findings_count} findings across {accounts_phrase(account_count)}"
+        headline = f"{payload.total_findings_count} findings {scope}"
 
     blocks: List[Dict[str, Any]] = [
-        create_section_block(f"*{headline}*"),
+        header_block(headline),
         create_context_block(
             f"{payload.organization_name} findings summary · "
             f"{payload.total_findings_count} findings between {_time_range(payload)}"
@@ -124,55 +133,50 @@ def get_batched_findings_message_template(payload: BatchedFindingsPayload):
         account_name = accounts_map.get(finding.account_id, finding.account_id)
         facts = (
             f"{finding.severity.title()} priority · {format_finding_workload(finding)} · "
-            f"{finding.cluster} · Acct {account_name}"
+            f"{finding.cluster} · Acct: {account_name}"
         )
-        item_blocks = [
-            create_section_block(f"*{finding.title}*\n*{finding.count}×* in the window"),
-            create_context_block(facts),
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Details"},
-                        "style": "primary",
-                        "url": settings.urls.investigate_url(
-                            finding.account_id, finding.id, utm_source=URLRoutes.UTMSource.SLACK
-                        ),
-                    }
-                ],
-            },
-        ]
-        attachments.append(item_attachment(STRIPE_CRITICAL, finding.title, item_blocks))
+        details_url = settings.urls.investigate_url(
+            finding.account_id, finding.id, utm_source=URLRoutes.UTMSource.SLACK
+        )
+        attachments.append(
+            legacy_attachment(
+                STRIPE_CRITICAL,
+                finding.title,
+                text=f"*{finding.title}*\n*{finding.count}×* in the window\n{facts}",
+                actions=[link_button("Details", details_url, style="primary")],
+            )
+        )
 
-    footer_blocks = []
+    footer_lines = []
     remaining = payload.total_findings_count - sum(f.count for f in shown)
     if remaining > 0:
-        footer_blocks.append(create_section_block(f"_+{remaining} more findings in the window_"))
+        footer_lines.append(f"_+{remaining} more findings in the window_")
 
     top_aggregated = _merged_aggregated(payload)
     if top_aggregated:
-        also_seen = " · ".join(f"{copy_library.display_name(key)} ({count})" for key, count in top_aggregated)
-        footer_blocks.append(create_context_block(f"Also seen: {also_seen}"))
+        footer_lines.append(
+            "Also seen: " + " · ".join(f"{copy_library.display_name(key)} ({count})" for key, count in top_aggregated)
+        )
 
+    footer_actions = None
     if len(unique_account_ids) == 1:
         only_account = next(iter(unique_account_ids))
-        footer_blocks.append(
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "View all findings"},
-                        "url": settings.urls.events_url(only_account, utm_source=URLRoutes.UTMSource.SLACK),
-                        "style": "primary",
-                    }
-                ],
-            }
-        )
+        footer_actions = [
+            link_button(
+                "View all findings",
+                settings.urls.events_url(only_account, utm_source=URLRoutes.UTMSource.SLACK),
+                style="primary",
+            )
+        ]
     else:
-        footer_blocks.append(create_section_block(f"View all findings on {settings.urls.branding_link('slack')}"))
-    attachments.append(neutral_footer_attachment(footer_blocks, "View all findings"))
+        footer_lines.append(f"View all findings on {settings.urls.branding_link('slack')}")
+    attachments.append(
+        neutral_footer_attachment(
+            text="\n".join(footer_lines),
+            actions=footer_actions,
+            fallback="View all findings",
+        )
+    )
 
     return {
         "text": f"{headline} — {payload.total_findings_count} findings",

@@ -1,12 +1,15 @@
+import re
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel
 
 from notifications_server.configs.settings import settings, URLRoutes
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
     STRIPE_HIGH,
-    accounts_phrase,
-    item_attachment,
+    accounts_scope,
+    header_block,
+    legacy_attachment,
+    link_button,
     neutral_footer_attachment,
 )
 
@@ -34,6 +37,11 @@ class AnomalyAlertParams(BaseModel):
     description: Optional[str] = None
 
 
+# Dollar amounts, percentages, and Nx multipliers in the producer sentence get
+# mrkdwn bold so the observed-vs-baseline numbers pop (matches the mocks).
+_STAT_PATTERN = re.compile(r"\$[\d,]+(?:\.\d+)?|\b\d+(?:\.\d+)?(?:%|x|×)")
+
+
 def _anomaly_value_line(alert: AnomalyAlertParams) -> str:
     """The evidence line under the title. Only spend anomalies carry a
     baseline-vs-observed description distinct from the title; the trailing
@@ -41,7 +49,8 @@ def _anomaly_value_line(alert: AnomalyAlertParams) -> str:
     desc = (alert.description or "").strip()
     if not desc or desc == (alert.title or "").strip():
         return ""
-    return desc.split(" (z-score:")[0].strip()
+    value_line = desc.split(" (z-score:")[0].strip()
+    return _STAT_PATTERN.sub(lambda m: f"*{m.group(0)}*", value_line)
 
 
 class AnomalyAlertSummaryParams(BaseModel):
@@ -52,13 +61,15 @@ def get_anomaly_aggregated_message_params(events: List[Dict[str, Any]]) -> Anoma
     return AnomalyAlertSummaryParams(events=[AnomalyAlertParams(**e) for e in events])
 
 
-def _started_block(starts_at: str) -> str:
+def _started(starts_at: str) -> str:
+    """Inline localized start time via Slack's <!date> token; raw producer
+    string when it doesn't parse."""
     try:
         ts = int(datetime.fromisoformat(starts_at.replace("Z", "+00:00")).timestamp())
-        fallback = datetime.fromtimestamp(ts).strftime("%d %b %Y %I:%M %p")
+        fallback = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d %b %Y %I:%M %p UTC")
     except (TypeError, ValueError, OSError, OverflowError):
-        return starts_at
-    return f"<!date^{ts}^{{date_short_pretty}} {{time}}|{fallback}>"
+        return f"started {starts_at}" if starts_at else ""
+    return f"started <!date^{ts}^{{date_short_pretty}} {{time}}|{fallback}>"
 
 
 def get_grouped_anomaly_alerts_template(input_data: List[AnomalyAlertParams]) -> Dict[str, Any]:
@@ -68,69 +79,43 @@ def get_grouped_anomaly_alerts_template(input_data: List[AnomalyAlertParams]) ->
         alerts = input_data
 
     total_alerts = len(alerts)
-    account_count = len({alert.cloud_account_id for alert in alerts})
+    account_names = {alert.cloud_account_id: (alert.cluster or alert.cloud_account_id) for alert in alerts}
     noun = "anomaly" if total_alerts == 1 else "anomalies"
-    headline = f"{total_alerts} {noun} detected across {accounts_phrase(account_count)}"
+    headline = f"{total_alerts} {noun} detected {accounts_scope(list(account_names.values()))}"
 
-    blocks: List[Dict[str, Any]] = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"*{headline}*"}},
-        {"type": "divider"},
-    ]
+    blocks: List[Dict[str, Any]] = [header_block(headline), {"type": "divider"}]
 
     attachments = []
     for alert in alerts[:MAX_ANOMALY_ITEMS]:
         title = alert.title or f"{alert.subject_name} anomaly"
-        item_blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*"}}]
-
+        lines = [f"*{title}*"]
         value_line = _anomaly_value_line(alert)
         if value_line:
-            item_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": value_line}})
+            lines.append(value_line)
 
-        identity_bits = [
+        subject = f"{alert.subject_name} ({alert.subject_namespace})" if alert.subject_namespace else alert.subject_name
+        facts_bits = [
             f"{alert.priority.title()} priority" if alert.priority else "",
-            f"started {_started_block(alert.starts_at)}",
-            f"{alert.subject_name} ({alert.subject_namespace})" if alert.subject_namespace else alert.subject_name,
-            f"Acct {alert.cluster or alert.cloud_account_id}",
+            subject,
+            f"Acct: {alert.cluster or alert.cloud_account_id}",
+            _started(alert.starts_at),
         ]
-        identity = " · ".join(bit for bit in identity_bits if bit)
-        item_blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": identity}]})
+        lines.append(" · ".join(bit for bit in facts_bits if bit))
 
+        actions = None
         if alert.finding_id:
-            item_blocks.append(
-                {
-                    "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Details"},
-                            "style": "primary",
-                            "url": settings.urls.investigate_url(
-                                alert.cloud_account_id, alert.finding_id, utm_source=URLRoutes.UTMSource.SLACK
-                            ),
-                        }
-                    ],
-                }
+            details_url = settings.urls.investigate_url(
+                alert.cloud_account_id, alert.finding_id, utm_source=URLRoutes.UTMSource.SLACK
             )
-        attachments.append(item_attachment(STRIPE_HIGH, title, item_blocks))
+            actions = [link_button("Details", details_url, style="primary")]
 
-    footer_blocks = []
+        attachments.append(legacy_attachment(STRIPE_HIGH, title, text="\n".join(lines), actions=actions))
+
     remaining = total_alerts - MAX_ANOMALY_ITEMS
     if remaining > 0:
-        footer_blocks.append(
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"_+{remaining} more anomalies detected_"}}
+        attachments.append(
+            neutral_footer_attachment(text=f"_+{remaining} more anomalies detected_", fallback="Anomaly summary")
         )
-    footer_blocks.append(
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": "Review detected anomalies and investigate impacted workloads in your clusters.",
-                }
-            ],
-        }
-    )
-    attachments.append(neutral_footer_attachment(footer_blocks, "Anomaly summary"))
 
     return {
         "text": headline,

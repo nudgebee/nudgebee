@@ -15,7 +15,6 @@ from notifications_server.message_templates.slack.recommendation_nudge_digest im
     format_savings,
 )
 from notifications_server.message_templates.slack.recommendation_resolution import (
-    BAND_DISPLAY_NAMES,
     RecommendationResolutionParams,
 )
 
@@ -25,17 +24,13 @@ RESOLUTION_COLOR = 3066993  # green (#2ecc71)
 def get_discord_recommendation_resolution_template(params: RecommendationResolutionParams) -> Dict[str, Any]:
     base_url = params.base_url or public_ip()
     branding = settings.urls.branding_name
-    band_display = BAND_DISPLAY_NAMES.get(params.finops_band, params.finops_band)
 
     cta_url = f"{base_url}/optimise?id={params.recommendation_id}#resolutions"
     view_all_url = f"{base_url}/optimise?utm=discord#recommendations"
     description_lines = [
         f"**{params.resource_name}**",
         f"{format_rule_name(params.rule_name)} · {params.account_name}",
-        (
-            f"{band_display} · Score: {params.finops_score}/100 · "
-            f"Savings: {format_savings(params.estimated_savings)}/mo"
-        ),
+        (f"{params.severity} priority · " f"Savings: {format_savings(params.estimated_savings)}/mo"),
         "",
         f"[View Details]({cta_url}) · [View All Recommendations]({view_all_url})",
     ]

@@ -11,7 +11,6 @@ from notifications_server.configs.settings import (
     URLRoutes,
 )
 from notifications_server.message_templates.base import BaseBlock
-from notifications_server.message_templates.slack.recommendation_nudge_digest import STRIPE_CRITICAL, STRIPE_HIGH
 from notifications_server.message_templates.blocks import (
     MarkdownBlock,
     CallbackBlock,
@@ -31,8 +30,8 @@ from notifications_server.utils.transformer import Transformer
 LOG = logging.getLogger(__name__)
 
 
-def add_callback(title, action, action_params):
-    callback = CallbackBlock({title: CallbackChoice(action=action, action_params=action_params)})
+def add_callback(title, action, action_params, style=None):
+    callback = CallbackBlock({title: CallbackChoice(action=action, action_params=action_params, style=style)})
     return callback
 
 
@@ -141,12 +140,31 @@ def _separate_blocks(blocks: List[BaseBlock]) -> tuple:
     return file_blocks, other_blocks
 
 
+def _blocks_to_mrkdwn(slack_blocks: List[dict]) -> str:
+    """Flatten converted evidence blocks into one mrkdwn string. Slack stamps
+    an "Added by {app}" byline under any attachment carrying Block Kit
+    ``blocks``, so evidences ride a legacy text attachment instead. Evidence
+    content only ever converts to section/context/header/divider blocks
+    (Transformer.to_slack drops everything else)."""
+    parts: List[str] = []
+    for block in slack_blocks:
+        block_type = block.get("type")
+        if block_type == "section" and isinstance(block.get("text"), dict):
+            parts.append(block["text"].get("text", ""))
+        elif block_type == "context":
+            parts.extend(el.get("text", "") for el in block.get("elements", []) if isinstance(el, dict))
+        elif block_type == "header":
+            parts.append(f"*{block.get('text', {}).get('text', '')}*")
+    return "\n".join(p for p in parts if p)
+
+
 def _create_evidence_attachment(evidence_slack_blocks: List) -> dict:
-    """Create an attachment dict for evidence blocks."""
+    """Create a legacy (non-blocks) attachment for evidence content."""
     return {
         "color": "#ff6b6b",
-        "blocks": evidence_slack_blocks,
         "fallback": "Evidence details",
+        "mrkdwn_in": ["text"],
+        "text": _blocks_to_mrkdwn(evidence_slack_blocks),
     }
 
 
@@ -156,7 +174,6 @@ def _to_blocks(
     evidence_blocks: List[BaseBlock],
     title: str,
     installation,
-    stripe_color=None,
 ):
     # Separate main blocks into file and other blocks
     file_blocks, other_blocks = _separate_blocks(report_blocks)
@@ -166,7 +183,9 @@ def _to_blocks(
 
     message = Transformer.prepare_slack_text(slack_app, installation, title, max_file_size_kb=100, files=file_blocks)
 
-    # Convert main blocks to slack format
+    # Convert main blocks to slack format. They stay TOP-LEVEL: moving them
+    # into a colored attachment makes Slack render the fallback text as a
+    # duplicate heading and stamp the "Added by {app}" byline.
     output_blocks = [block for b in other_blocks for block in Transformer.to_slack(b)]
 
     # Process evidence blocks into attachment
@@ -175,16 +194,11 @@ def _to_blocks(
         evidence_file_blocks, evidence_other_blocks = _separate_blocks(evidence_blocks)
         evidence_slack_blocks = [block for b in evidence_other_blocks for block in Transformer.to_slack(b)]
 
-        if evidence_slack_blocks:
-            attachments.append(_create_evidence_attachment(evidence_slack_blocks))
+        evidence_text_attachment = _create_evidence_attachment(evidence_slack_blocks)
+        if evidence_text_attachment["text"]:
+            attachments.append(evidence_text_attachment)
 
         file_blocks.extend(evidence_file_blocks)
-
-    # Severity stripe (design mocks): the finding body ships as one colored
-    # attachment; evidences keep their own attachment behind it.
-    if stripe_color and output_blocks:
-        attachments.insert(0, {"color": stripe_color, "fallback": title, "blocks": output_blocks})
-        output_blocks = []
 
     LOG.debug(
         f"--sending to slack--\ntitle:{title}\nblocks: {output_blocks}\nattachments:"
@@ -245,7 +259,7 @@ def get_slack_finding_message(slack_app, installation, finding):
     add_evidences(evidence_blocks, finding, is_cloud)
 
     tenant_id = str(installation.tenant_id)
-    # Added "Ask nubi" callback
+    # Added "Ask nubi" callback; grey so View Details stays the one primary.
     ask_ai_callback = add_callback(
         "Ask Nubi to Analyse!",
         Events.query_llm_server,
@@ -260,6 +274,7 @@ def get_slack_finding_message(slack_app, installation, finding):
             search_term=title,
             tenant_id=tenant_id,
         ),
+        style="default",
     )
 
     # Build investigate URL using centralized settings
@@ -289,6 +304,4 @@ def get_slack_finding_message(slack_app, installation, finding):
         )
     )
 
-    priority = (finding.get("priority") or "").strip().upper()
-    stripe = STRIPE_CRITICAL if priority == "HIGH" else STRIPE_HIGH
-    return _to_blocks(slack_app, blocks, evidence_blocks, title, installation, stripe_color=stripe)
+    return _to_blocks(slack_app, blocks, evidence_blocks, title, installation)

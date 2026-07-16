@@ -9,14 +9,6 @@ from notifications_server.message_templates.slack.recommendation_nudge_digest im
     format_savings,
 )
 
-BAND_DISPLAY_NAMES = {
-    "Act Now": "Priority",
-    "Critical": "Critical",
-    "High": "High",
-    "Medium": "Medium",
-    "Low": "Low",
-}
-
 
 def get_teams_recommendation_resolution_template(
     params: RecommendationResolutionParams,
@@ -24,7 +16,6 @@ def get_teams_recommendation_resolution_template(
     base_url = params.base_url or public_ip()
     branding = settings.urls.branding_name
     body: List[Dict[str, Any]] = []
-    band_display = BAND_DISPLAY_NAMES.get(params.finops_band, params.finops_band)
 
     # Header
     body.append(
@@ -43,7 +34,7 @@ def get_teams_recommendation_resolution_template(
         {"title": "Resource", "value": params.resource_name},
         {"title": "Rule", "value": format_rule_name(params.rule_name)},
         {"title": "Account", "value": params.account_name},
-        {"title": "Band", "value": f"{band_display} ({params.finops_score}/100)"},
+        {"title": "Priority", "value": params.severity},
         {"title": "Savings", "value": f"{format_savings(params.estimated_savings)}/mo"},
         {"title": "Status", "value": params.status},
     ]

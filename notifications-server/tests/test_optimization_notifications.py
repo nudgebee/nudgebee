@@ -58,20 +58,17 @@ def _params(**overrides) -> RecommendationNudgeDigestParams:
     return RecommendationNudgeDigestParams(**base)
 
 
-def _flat(msg_or_blocks):
-    """Accept a template result dict or a raw block list; items now ride in
-    colored attachments, so text/button extraction walks both."""
-    if isinstance(msg_or_blocks, dict):
-        return list(msg_or_blocks.get("blocks", [])) + [
-            b for a in msg_or_blocks.get("attachments", []) for b in a.get("blocks", [])
-        ]
-    return msg_or_blocks
+def _attachments(msg) -> List[Dict[str, Any]]:
+    return msg.get("attachments", []) if isinstance(msg, dict) else []
 
 
-def _slack_text(blocks) -> str:
-    """Concatenate all rendered mrkdwn text in a Slack message or block list."""
+def _slack_text(msg_or_blocks) -> str:
+    """Concatenate rendered mrkdwn from top-level blocks plus legacy
+    attachment text/footer strings (items ride legacy attachments — Block Kit
+    blocks inside attachments make Slack stamp an "Added by {app}" byline)."""
     parts: List[str] = []
-    for b in _flat(blocks):
+    blocks = msg_or_blocks.get("blocks", []) if isinstance(msg_or_blocks, dict) else msg_or_blocks
+    for b in blocks:
         if "text" in b and isinstance(b["text"], dict) and "text" in b["text"]:
             parts.append(b["text"]["text"])
         for f in b.get("fields", []) or []:
@@ -84,7 +81,26 @@ def _slack_text(blocks) -> str:
                     parts.append(txt.get("text", ""))
                 else:
                     parts.append(txt)
+    for a in _attachments(msg_or_blocks):
+        for key in ("pretext", "text", "footer"):
+            if a.get(key):
+                parts.append(a[key])
     return "\n".join(parts)
+
+
+def _slack_buttons(msg) -> List[Dict[str, Any]]:
+    """Normalize Block Kit and legacy-attachment buttons to {text, url, style}."""
+    out: List[Dict[str, Any]] = []
+    for b in msg.get("blocks", []):
+        if b.get("type") == "actions":
+            for e in b["elements"]:
+                out.append(
+                    {"text": e.get("text", {}).get("text", ""), "url": e.get("url", ""), "style": e.get("style")}
+                )
+    for a in _attachments(msg):
+        for e in a.get("actions", []) or []:
+            out.append({"text": e.get("text", ""), "url": e.get("url", ""), "style": e.get("style")})
+    return out
 
 
 def _teams_text(card: Dict[str, Any]) -> str:
@@ -103,61 +119,51 @@ def _teams_text(card: Dict[str, Any]) -> str:
 
 
 class TestSlackDeltas:
-    def test_deltas_populated_renders_three_lines(self):
+    def test_summary_stats_block_removed_from_slack_brief(self):
+        # The In-this-brief / By-category / New-since-yesterday / resolved
+        # stats block was cut from the Slack brief (user call, 2026-07-16):
+        # headline + items carry the message. Teams/GChat keep their own.
         params = _params(
             new_counts=NewCounts(act_now=1, critical=3, high=2),
             resolved_count=2,
             resolved_savings=312.0,
             carryover_count=195,
+            category_savings={"RightSizing": 1800.0, "InfraUpgrade": 2100.0},
         )
         msg = get_recommendation_nudge_digest_message_template(params)
         text = _slack_text(msg)
 
-        assert "You can cut $3,840/mo across 1 account" in text
-        assert "*In this brief:* 1 Priority · 2 Critical" in text
-        assert "*New since yesterday:* 1 Priority · 3 Critical · 2 High" in text
-        assert "*2 resolved* (saved $312.00/mo)" in text
-        assert "195 still open from earlier" in text
-
-    def test_new_counts_all_zero_renders_quiet_day(self):
-        params = _params(
-            new_counts=NewCounts(act_now=0, critical=0, high=0),
-            resolved_count=0,
-            carryover_count=247,
-        )
-        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
-
-        assert "_No new recommendations since yesterday._" in text
-        assert "247 still open from earlier" in text
-        assert "New since yesterday: " not in text  # exact "no parts" branch
+        assert "You can cut $3,840/mo in prod-aws" in text
+        assert "In this brief" not in text
+        assert "By category" not in text
+        assert "New since yesterday" not in text
+        assert "resolved" not in text
+        assert "still open from earlier" not in text
 
     def test_old_payload_omits_delta_lines(self):
         # No new_counts/resolved/carryover provided -> graceful degrade
         params = _params()  # leaves new_counts=None and all delta ints at 0
         text = _slack_text(get_recommendation_nudge_digest_message_template(params))
 
-        assert "You can cut $3,840/mo across 1 account" in text
+        assert "You can cut $3,840/mo in prod-aws" in text
         assert "New since yesterday" not in text
         assert "still open from earlier" not in text
-        assert "resolved" not in text.lower() or "Resolved" not in text  # no resolved line at all
 
-    def test_savings_zero_hides_recoverable_line(self):
+    def test_savings_zero_keeps_plain_title_headline(self):
         params = _params(
             total_recoverable_savings=0,
             new_counts=NewCounts(act_now=0, critical=3, high=0),
             carryover_count=247,
         )
-        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
+        msg = get_recommendation_nudge_digest_message_template(params)
 
-        assert "You can cut" not in text  # no savings headline on a $0 digest
-        assert "*New since yesterday:* 3 Critical" in text
+        assert "You can cut" not in _slack_text(msg)  # no savings headline on a $0 digest
+        assert msg["blocks"][0]["type"] == "header"
 
     def test_footer_url_has_digest_utm_and_date(self):
         params = _params(new_counts=NewCounts(act_now=1, critical=0, high=0))
         msg = get_recommendation_nudge_digest_message_template(params)
-        # per-item Details buttons come first; the footer CTA is the last actions block
-        action_block = [b for b in _flat(msg) if b.get("type") == "actions"][-1]
-        url = action_block["elements"][0]["url"]
+        url = [b for b in _slack_buttons(msg) if b["text"] == "View All Recommendations"][0]["url"]
         assert "utm=slack-digest" in url
         assert "d=2026-05-18" in url
 
@@ -183,9 +189,9 @@ class TestSlackDeltas:
         assert "svc-0" in text and "svc-1" in text and "svc-2" in text
         assert "svc-3" not in text and "svc-4" not in text
         assert "+2 more in the dashboard" in text
-        # highest-score item renders first, with facts and identity in a context line
-        assert "Priority · Score 90/100" in text
-        assert "Acct prod-aws" in text
+        # trailing facts line carries severity + account only — no score, no band word
+        assert "Score" not in text and "/100" not in text
+        assert msg["attachments"][0]["text"].endswith("Medium priority · Acct: prod-aws")
 
     def test_block_count_within_slack_limit(self):
         # Even with deltas + a recommendation, we stay well under Slack's 50.
@@ -214,7 +220,7 @@ class TestTeamsDeltas:
 
         assert "Recoverable: $3,840/mo" in text
         assert "New since yesterday: 1 Priority · 3 Critical · 2 High" in text
-        assert "Resolved: 2 (saved $312.00/mo)" in text
+        assert "Resolved: 2 (saved $312/mo)" in text
         assert "Still open from earlier: 195" in text
 
     def test_new_counts_all_zero_shows_none(self):
@@ -264,7 +270,7 @@ class TestGoogleChatDeltas:
 
         assert "*$3,840/mo recoverable*" in text
         assert "*New since yesterday:* 1 Priority · 3 Critical · 2 High" in text
-        assert "*2 resolved* (saved $312.00/mo)" in text
+        assert "*2 resolved* (saved $312/mo)" in text
         assert "195 still open from earlier" in text
 
     def test_new_counts_all_zero_renders_quiet_day(self):
@@ -363,13 +369,13 @@ class TestPostureItemUrlAndHeadlineGuards:
         params = _params()
         params.recommendations_by_account["acc-1"].recommendations[0].cta_url = "/optimise?id=rec-1#recommendations"
         msg = get_recommendation_nudge_digest_message_template(params)
-        item_button = [b for b in _flat(msg) if b.get("type") == "actions"][0]
-        assert item_button["elements"][0]["url"] == "https://app/optimise?id=rec-1#recommendations"
+        details = [b for b in _slack_buttons(msg) if b["text"] == "Details"][0]
+        assert details["url"] == "https://app/optimise?id=rec-1#recommendations"
 
     def test_absolute_cta_url_untouched(self):
         msg = get_recommendation_nudge_digest_message_template(_params())
-        item_button = [b for b in _flat(msg) if b.get("type") == "actions"][0]
-        assert item_button["elements"][0]["url"].startswith("https://app/optimise?id=rec-1")
+        details = [b for b in _slack_buttons(msg) if b["text"] == "Details"][0]
+        assert details["url"].startswith("https://app/optimise?id=rec-1")
 
     def test_nudge_zero_savings_headline_falls_back_to_count(self):
         from notifications_server.message_templates.slack.recommendation_proactive_nudge import (
@@ -394,7 +400,7 @@ class TestPostureItemUrlAndHeadlineGuards:
         text = _slack_text(get_recommendation_proactive_nudge_message_template(params))
         assert "You can cut" not in text
         assert "$0" not in text
-        assert "1 priority recommendations need action across 1 account" in text
+        assert "1 priority recommendations need action in prod" in text
 
 
 class TestItemTitleAndCategoryChips:
@@ -413,11 +419,201 @@ class TestItemTitleAndCategoryChips:
         assert "/subscriptions/" not in text
         assert "nudgebee-windows-vm_osdisk_1_05141b666c7840ceabb" in text
 
-    def test_category_chips_render_sorted(self):
+    def test_category_chips_removed_with_summary_block(self):
         params = _params(category_savings={"RightSizing": 1800.0, "Configuration": 760.0, "InfraUpgrade": 2100.0})
         text = _slack_text(get_recommendation_nudge_digest_message_template(params))
-        assert "*By category:* Infra upgrades $2,100 · Rightsizing $1,800 · Configuration $760.00" in text
-
-    def test_no_category_chips_without_data(self):
-        text = _slack_text(get_recommendation_nudge_digest_message_template(_params()))
         assert "By category" not in text
+
+
+# ---------------------------- Rightsizing change summary ----------------------------
+
+
+def _pod_rec(recommendation) -> DigestRecommendation:
+    return DigestRecommendation(
+        id="rec-rs",
+        rule_name="pod_right_sizing",
+        resource_name="prod/Deployment/payments-api",
+        finops_score=85,
+        finops_band="Act Now",
+        estimated_savings=184.0,
+        severity="High",
+        cta_url="https://app/optimise?id=rec-rs#recommendations",
+        recommendation=recommendation,
+    )
+
+
+class TestRightsizingChangeSummary:
+    """Rightsizing items must state the change itself (current -> recommended);
+    a bare rule name + savings reads as 'too big a message for too little info'."""
+
+    def test_pod_rightsizing_renders_cpu_and_memory_change(self):
+        rec = _pod_rec(
+            {
+                "payments-api": [
+                    {"resource": "cpu", "allocated": {"request": 2.0}, "recommended": {"request": 0.5}},
+                    {
+                        "resource": "memory",
+                        "allocated": {"request": 4 * 1024**3},
+                        "recommended": {"request": 1024**3},
+                    },
+                ]
+            }
+        )
+        params = _params(
+            recommendations_by_account={"acc-1": AccountRecommendations(account_name="prod-aws", recommendations=[rec])}
+        )
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
+        assert "CPU *2 cores → 500m*" in text
+        assert "Memory *4Gi → 1Gi*" in text
+
+    def test_replica_rightsizing_renders_replica_change(self):
+        rec = _pod_rec({"recommendation": {"allocated_replica": 8, "recommended_replica": 4}})
+        rec.rule_name = "replica_right_sizing"
+        params = _params(
+            recommendations_by_account={"acc-1": AccountRecommendations(account_name="prod-aws", recommendations=[rec])}
+        )
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
+        assert "Replicas *8 → 4*" in text
+
+    def test_replica_series_fallback(self):
+        rec = _pod_rec(
+            {"recommendation": {"allocated": [{"replicas": 6}, {"replicas": 8}], "recommended": [{"replicas": 4}]}}
+        )
+        rec.rule_name = "replica_right_sizing"
+        params = _params(
+            recommendations_by_account={"acc-1": AccountRecommendations(account_name="prod-aws", recommendations=[rec])}
+        )
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
+        assert "Replicas *8 → 4*" in text
+
+    def test_multi_container_summary_shows_first_plus_count(self):
+        rec = _pod_rec(
+            {
+                "app": [{"resource": "cpu", "allocated": {"request": 1.0}, "recommended": {"request": 0.25}}],
+                "sidecar": [{"resource": "cpu", "allocated": {"request": 0.5}, "recommended": {"request": 0.1}}],
+            }
+        )
+        params = _params(
+            recommendations_by_account={"acc-1": AccountRecommendations(account_name="prod-aws", recommendations=[rec])}
+        )
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
+        assert "+1 more containers" in text
+
+    def test_missing_or_malformed_recommendation_degrades_silently(self):
+        for bad in (None, {}, {"payments-api": "not-a-list"}, {"payments-api": [{"resource": "cpu"}]}, [1, 2]):
+            rec = _pod_rec(bad)
+            params = _params(
+                recommendations_by_account={
+                    "acc-1": AccountRecommendations(account_name="prod-aws", recommendations=[rec])
+                }
+            )
+            text = _slack_text(get_recommendation_nudge_digest_message_template(params))
+            assert "Save *$184/mo*" in text  # item still renders
+            assert "→" not in text  # just without a change line
+
+    def test_unchanged_values_render_no_change_line(self):
+        rec = _pod_rec({"app": [{"resource": "cpu", "allocated": {"request": 1.0}, "recommended": {"request": 1.0}}]})
+        params = _params(
+            recommendations_by_account={"acc-1": AccountRecommendations(account_name="prod-aws", recommendations=[rec])}
+        )
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
+        assert "→" not in text
+
+
+class TestRenderedChromeGuards:
+    """Guards for Slack chrome that burned us live: score leakage and the
+    "Added by {app}" byline from Block Kit blocks inside attachments."""
+
+    def test_no_score_anywhere(self):
+        params = _params(new_counts=NewCounts(act_now=1, critical=3, high=2), resolved_count=2)
+        text = _slack_text(get_recommendation_nudge_digest_message_template(params))
+        assert "Score" not in text and "/100" not in text
+
+    def test_digest_attachments_are_legacy(self):
+        msg = get_recommendation_nudge_digest_message_template(_params())
+        assert msg["attachments"], "items must ride attachments (severity stripe)"
+        for a in msg["attachments"]:
+            assert "blocks" not in a
+            assert "text" in a["mrkdwn_in"]
+
+    def test_nudge_attachments_are_legacy(self):
+        from notifications_server.message_templates.slack.recommendation_proactive_nudge import (
+            ProactiveNudgeParams,
+            get_recommendation_proactive_nudge_message_template,
+        )
+
+        params = ProactiveNudgeParams(
+            total_recommendations=1,
+            total_recoverable_savings=100.0,
+            recommendations_by_account={
+                "acc-1": AccountRecommendations(account_name="prod", recommendations=[_pod_rec({})])
+            },
+            base_url="https://app",
+        )
+        msg = get_recommendation_proactive_nudge_message_template(params)
+        for a in msg["attachments"]:
+            assert "blocks" not in a
+        labels = [b["text"] for a in msg["attachments"] for b in a.get("actions", []) or []]
+        assert "Ask Nubi" in labels and "View All Recommendations" in labels
+
+    def test_item_facts_line_format(self):
+        msg = get_recommendation_nudge_digest_message_template(_params())
+        assert msg["attachments"][0]["text"].endswith("High priority · Acct: prod-aws")
+
+    def test_no_footer_or_ts_keys_anywhere(self):
+        # Slack appends "Added by {app}" to the attachment footer row, so the
+        # footer/ts fields are banned alongside blocks-in-attachments.
+        msg = get_recommendation_nudge_digest_message_template(_params())
+        for a in msg["attachments"]:
+            assert "footer" not in a and "ts" not in a and "blocks" not in a
+
+    def test_headline_is_a_header_block(self):
+        msg = get_recommendation_nudge_digest_message_template(_params())
+        assert msg["blocks"][0]["type"] == "header"
+        assert "You can cut $3,840/mo in prod-aws" == msg["blocks"][0]["text"]["text"]
+
+    def test_resolution_is_outcome_first(self):
+        from notifications_server.message_templates.slack.recommendation_resolution import (
+            get_recommendation_resolution_message_params,
+            get_recommendation_resolution_message_template,
+        )
+
+        params = get_recommendation_resolution_message_params(
+            recommendation_id="rec-42",
+            rule_name="pod_right_sizing",
+            resource_name="payments/Deployment/checkout-api",
+            account_id="acc-1",
+            account_name="prod-aws",
+            estimated_savings=820.0,
+            severity="High",
+            status="Closed",
+            resolution={"resolver": "auto", "type": "applied", "status": "success"},
+            base_url="https://app",
+        )
+        msg = get_recommendation_resolution_message_template(params)
+        assert msg["blocks"][0]["type"] == "header"
+        assert msg["blocks"][0]["text"]["text"] == "$820/mo recovered — Workload rightsizing"
+        att = msg["attachments"][0]
+        assert "footer" not in att and "blocks" not in att
+        assert "Applied automatically" in att["text"]
+        assert "Resolver:" not in att["text"] and "Status:" not in att["text"]  # no KV jargon
+        labels = [b["text"] for b in att["actions"]]
+        assert labels == ["View Details", "View All Recommendations"]
+
+    def test_resolution_dismissed_never_claims_savings(self):
+        from notifications_server.message_templates.slack.recommendation_resolution import (
+            get_recommendation_resolution_message_params,
+            get_recommendation_resolution_message_template,
+        )
+
+        params = get_recommendation_resolution_message_params(
+            recommendation_id="rec-43",
+            rule_name="pod_right_sizing",
+            resource_name="x",
+            estimated_savings=500.0,
+            status="Dismissed",
+            base_url="https://app",
+        )
+        msg = get_recommendation_resolution_message_template(params)
+        assert msg["blocks"][0]["text"]["text"] == "Dismissed — Workload rightsizing"
+        assert "recovered" not in msg["text"]

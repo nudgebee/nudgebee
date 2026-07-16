@@ -56,12 +56,16 @@ def _params(accounts: Dict[str, str]) -> ProactiveNudgeParams:
 
 
 def _slack_ask_nubi_url(msg: Dict[str, Any]) -> str:
-    blocks = list(msg.get("blocks", [])) + [b for a in msg.get("attachments", []) for b in a.get("blocks", [])]
-    for block in blocks:
+    for block in msg.get("blocks", []):
         if block.get("type") != "actions":
             continue
         for el in block.get("elements", []):
             if el.get("text", {}).get("text") == "Ask Nubi":
+                return el["url"]
+    # footer CTAs ride legacy attachments (plain-string button text)
+    for a in msg.get("attachments", []):
+        for el in a.get("actions", []) or []:
+            if el.get("text") == "Ask Nubi":
                 return el["url"]
     return ""
 

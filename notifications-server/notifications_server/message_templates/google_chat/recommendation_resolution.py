@@ -9,14 +9,6 @@ from notifications_server.message_templates.slack.recommendation_nudge_digest im
     format_savings,
 )
 
-BAND_DISPLAY_NAMES = {
-    "Act Now": "Priority",
-    "Critical": "Critical",
-    "High": "High",
-    "Medium": "Medium",
-    "Low": "Low",
-}
-
 
 def get_gchat_recommendation_resolution_template(
     params: RecommendationResolutionParams,
@@ -24,16 +16,12 @@ def get_gchat_recommendation_resolution_template(
     base_url = params.base_url or public_ip()
     branding = settings.urls.branding_name
     lines: List[str] = []
-    band_display = BAND_DISPLAY_NAMES.get(params.finops_band, params.finops_band)
 
     lines.append(f"*{branding} Recommendation Resolved*")
     lines.append("-" * 25)
     lines.append(f"*{params.resource_name}*")
     lines.append(f"{format_rule_name(params.rule_name)} \u00b7 {params.account_name}")
-    lines.append(
-        f"{band_display} \u00b7 Score: {params.finops_score}/100 \u00b7 "
-        f"Savings: {format_savings(params.estimated_savings)}/mo"
-    )
+    lines.append(f"{params.severity} priority \u00b7 " f"Savings: {format_savings(params.estimated_savings)}/mo")
     lines.append("")
     lines.append(f"Status: {params.status}")
 

@@ -25,6 +25,9 @@ class DigestRecommendation(BaseModel):
     category: str = ""
     cta_url: str = ""
     wasted_since_detected: float = 0
+    # Raw `recommendation` JSONB from the producer; shape varies per rule, so
+    # typed Any — change_summary() parses the rule families it understands.
+    recommendation: Any = None
 
 
 class AccountRecommendations(BaseModel):
@@ -77,6 +80,8 @@ def get_recommendation_nudge_digest_message_params(
 def format_savings(amount: float) -> str:
     if amount >= 1000:
         return f"${amount:,.0f}"
+    if amount == int(amount):
+        return f"${int(amount)}"  # "$820", not "$820.00" — cents are noise
     return f"${amount:.2f}"
 
 
@@ -105,12 +110,70 @@ def severity_stripe(severity: str) -> str:
     return STRIPE_CRITICAL if (severity or "").strip().lower() == "critical" else STRIPE_HIGH
 
 
-def item_attachment(color: str, fallback: str, blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
-    return {"color": color, "fallback": fallback, "blocks": blocks}
+def legacy_attachment(
+    color: str,
+    fallback: str,
+    text: str = "",
+    actions: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """A LEGACY attachment: color stripe + mrkdwn text + URL buttons, and
+    nothing else. Slack stamps an "Added by {app}" byline on attachments that
+    carry Block Kit ``blocks`` (standalone row) or a ``footer``/``ts`` field
+    (appended to the footer row) — verified live — so none of those keys may
+    ever appear here. Identity/facts ride the last line of ``text``."""
+    attachment: Dict[str, Any] = {"color": color, "fallback": fallback, "mrkdwn_in": ["text"]}
+    if text:
+        attachment["text"] = text
+    if actions:
+        # Docs require callback_id on attachments carrying buttons; link
+        # buttons never post an interaction payload, so this is inert.
+        attachment["callback_id"] = "nb_link_actions"
+        attachment["actions"] = actions
+    return attachment
 
 
-def neutral_footer_attachment(blocks: List[Dict[str, Any]], fallback: str = "More") -> Dict[str, Any]:
-    return item_attachment(STRIPE_NEUTRAL, fallback, blocks)
+def link_button(text: str, url: str, style: str = "") -> Dict[str, Any]:
+    """Legacy-attachment URL button — ``text`` is a plain string here, not a
+    Block Kit text object."""
+    button: Dict[str, Any] = {"type": "button", "text": text, "url": url}
+    if style:
+        button["style"] = style
+    return button
+
+
+def neutral_footer_attachment(
+    text: str = "",
+    actions: Optional[List[Dict[str, Any]]] = None,
+    fallback: str = "More",
+) -> Dict[str, Any]:
+    return legacy_attachment(STRIPE_NEUTRAL, fallback, text=text, actions=actions)
+
+
+def header_block(text: str) -> Dict[str, Any]:
+    """Top-level headline with real visual weight (Slack renders `header`
+    blocks large). Plain text only — keep formulations asterisk-free."""
+    return {"type": "header", "text": {"type": "plain_text", "text": text[:150]}}
+
+
+def item_facts_line(severity: str, account_name: str) -> str:
+    """The trailing facts line of an item: ``High priority · Acct: prod``.
+    No finops score, no band word — the stripe carries urgency, and the
+    label:value colon keeps the account name readable."""
+    bits = []
+    if severity:
+        bits.append(f"{severity} priority")
+    if account_name:
+        bits.append(f"Acct: {account_name}")
+    return " · ".join(bits)
+
+
+def accounts_scope(account_names: List[str]) -> str:
+    """Headline scope: name the account when there is exactly one
+    ("in prod-aws"), count them otherwise ("across 3 accounts")."""
+    names = [n for n in account_names if n]
+    if len(account_names) == 1 and names:
+        return f"in {names[0]}"
+    return f"across {accounts_phrase(len(account_names))}"
 
 
 def format_waste_clause(wasted: float) -> str:
@@ -137,8 +200,90 @@ def short_resource_name(name: str) -> str:
     return tail
 
 
-def cost_headline(total_savings: float, account_count: int) -> str:
-    return f"You can cut {format_savings(total_savings)}/mo across {accounts_phrase(account_count)}"
+def cost_headline(total_savings: float, scope: str) -> str:
+    return f"You can cut {format_savings(total_savings)}/mo {scope}"
+
+
+def _format_cores(value: float) -> str:
+    if value >= 1:
+        trimmed = f"{value:.1f}".rstrip("0").rstrip(".")
+        return f"{trimmed} core" if trimmed == "1" else f"{trimmed} cores"
+    return f"{int(round(value * 1000))}m"
+
+
+def _format_memory_bytes(value: float) -> str:
+    mib = value / (1024 * 1024)
+    if mib >= 1024:
+        trimmed = f"{mib / 1024:.1f}".rstrip("0").rstrip(".")
+        return f"{trimmed}Gi"
+    return f"{int(round(mib))}Mi"
+
+
+def _pod_rightsizing_summary(recommendation: Dict[str, Any]) -> str:
+    """recommendation = {container: [{resource, allocated{request}, recommended{request}}]}
+    with CPU in cores and memory in bytes (same shape the exports parse)."""
+    per_container: List[Tuple[str, str]] = []
+    for container, resources in recommendation.items():
+        if not isinstance(resources, list):
+            continue
+        bits = []
+        for res in resources:
+            if not isinstance(res, dict):
+                continue
+            current = (res.get("allocated") or {}).get("request")
+            proposed = (res.get("recommended") or {}).get("request")
+            if current is None or proposed is None or current == proposed:
+                continue
+            if res.get("resource") == "cpu":
+                bits.append(f"CPU *{_format_cores(current)} → {_format_cores(proposed)}*")
+            elif res.get("resource") == "memory":
+                bits.append(f"Memory *{_format_memory_bytes(current)} → {_format_memory_bytes(proposed)}*")
+        if bits:
+            per_container.append((container, " · ".join(bits)))
+    if not per_container:
+        return ""
+    container, line = per_container[0]
+    if len(per_container) == 1:
+        return line
+    return f"{container}: {line} · +{len(per_container) - 1} more containers"
+
+
+def _replica_rightsizing_summary(recommendation: Dict[str, Any]) -> str:
+    """Replica payloads nest under a ``recommendation`` key with either
+    allocated_replica/recommended_replica scalars or allocated/recommended
+    time-series (last actual, first proposed)."""
+    data = recommendation.get("recommendation")
+    if not isinstance(data, dict):
+        data = recommendation
+    current = data.get("allocated_replica")
+    if current is None:
+        series = data.get("allocated")
+        if isinstance(series, list) and series and isinstance(series[-1], dict):
+            current = series[-1].get("replicas")
+    proposed = data.get("recommended_replica")
+    if proposed is None:
+        series = data.get("recommended")
+        if isinstance(series, list) and series and isinstance(series[0], dict):
+            proposed = series[0].get("replicas")
+    if current is None or proposed is None or current == proposed:
+        return ""
+    return f"Replicas *{int(current)} → {int(proposed)}*"
+
+
+def change_summary(rule_name: str, recommendation: Any) -> str:
+    """One mrkdwn line stating the change itself (current → recommended) so a
+    rightsizing item carries its numbers, not just a rule name. Unknown rule
+    shapes and malformed producer JSON yield '' — never a failed digest."""
+    if not isinstance(recommendation, dict):
+        return ""
+    try:
+        if rule_name == "pod_right_sizing":
+            return _pod_rightsizing_summary(recommendation)
+        if rule_name == "replica_right_sizing":
+            return _replica_rightsizing_summary(recommendation)
+    except (TypeError, ValueError, AttributeError, KeyError, IndexError):
+        return ""
+    return ""
 
 
 def flatten_ranked_recs(
@@ -170,41 +315,31 @@ def build_posture_item_attachments(
     base_url: str = "",
     color=STRIPE_SAVINGS,
 ) -> List[Dict[str, Any]]:
-    """One colored attachment per item, in priority order: what & money first,
-    then the small facts/identity line, then the action. `color` is a hex
-    string or a callable(rec) -> hex."""
+    """One colored legacy attachment per item, in priority order: what & money
+    first, then the concrete change, then severity/account in the small plain
+    footer. `color` is a hex string or a callable(rec) -> hex."""
     attachments: List[Dict[str, Any]] = []
     for account_name, rec in ranked[:MAX_ALERT_ITEMS]:
-        item_blocks: List[Dict[str, Any]] = []
         title = f"{format_rule_name(rec.rule_name)} — {short_resource_name(rec.resource_name)}"
         lines = [f"*{title}*"]
         if rec.estimated_savings > 0:
             lines.append(
                 f"Save *{format_savings(rec.estimated_savings)}/mo*{format_waste_clause(rec.wasted_since_detected)}"
             )
-        item_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
+        change = change_summary(rec.rule_name, rec.recommendation)
+        if change:
+            lines.append(change)
 
-        band_display = BAND_DISPLAY_NAMES.get(rec.finops_band, rec.finops_band)
-        facts = f"{band_display} · Score {rec.finops_score}/100 · {rec.severity} · Acct {account_name}"
-        item_blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": facts}]})
+        facts = item_facts_line(rec.severity, account_name)
+        if facts:
+            lines.append(facts)
 
+        actions = None
         if rec.cta_url:
-            item_blocks.append(
-                {
-                    "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Details"},
-                            "style": "primary",
-                            "url": _absolute_url(rec.cta_url, base_url),
-                        }
-                    ],
-                }
-            )
+            actions = [link_button("Details", _absolute_url(rec.cta_url, base_url), style="primary")]
 
         stripe = color(rec) if callable(color) else color
-        attachments.append(item_attachment(stripe, title, item_blocks))
+        attachments.append(legacy_attachment(stripe, title, text="\n".join(lines), actions=actions))
     return attachments
 
 
@@ -229,33 +364,15 @@ def get_recommendation_nudge_digest_message_template(
     # Header: savings-first headline when there is money on the table; digests
     # without savings (e.g. security-only) keep the plain title.
     if params.total_recoverable_savings > 0:
-        headline = cost_headline(params.total_recoverable_savings, len(params.recommendations_by_account))
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{headline}*"}})
+        scope = accounts_scope([acc.account_name for acc in params.recommendations_by_account.values()])
+        blocks.append(header_block(cost_headline(params.total_recoverable_savings, scope)))
         branding_line = f"{settings.urls.branding_name} daily brief"
         if params.digest_date:
             branding_line += f" · {params.digest_date}"
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": branding_line}]})
     else:
-        blocks.append(
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*{settings.urls.branding_name} {params.title}*",
-                },
-            }
-        )
+        blocks.append(header_block(f"{settings.urls.branding_name} {params.title}"))
     blocks.append({"type": "divider"})
-
-    summary_lines = _build_summary_lines(params)
-    if summary_lines:
-        blocks.append(
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": "\n".join(summary_lines)},
-            }
-        )
-        blocks.append({"type": "divider"})
 
     # Top items across all accounts, priority-ordered, capped, one colored
     # attachment per item (the severity/savings stripe from the design mocks)
@@ -270,29 +387,14 @@ def get_recommendation_nudge_digest_message_template(
     if params.digest_date:
         footer_url += f"&d={params.digest_date}"
     footer_url += "#recommendations"
-    footer_blocks: List[Dict[str, Any]] = []
     remaining = len(ranked) - MAX_ALERT_ITEMS
-    if remaining > 0:
-        footer_blocks.append(
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"_+{remaining} more in the dashboard_"}}
+    attachments.append(
+        neutral_footer_attachment(
+            text=f"_+{remaining} more in the dashboard_" if remaining > 0 else "",
+            actions=[link_button("View All Recommendations", footer_url, style="primary")],
+            fallback="View all recommendations",
         )
-    footer_blocks.append(
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "View All Recommendations",
-                    },
-                    "url": footer_url,
-                    "style": "primary",
-                }
-            ],
-        }
     )
-    attachments.append(neutral_footer_attachment(footer_blocks, "View all recommendations"))
 
     return {
         "text": f"{params.title} - {format_savings(params.total_recoverable_savings)}/mo recoverable",
@@ -300,59 +402,3 @@ def get_recommendation_nudge_digest_message_template(
         "attachments": attachments[:20],
         "unfurl_links": False,
     }
-
-
-def _build_summary_lines(params: RecommendationNudgeDigestParams) -> List[str]:
-    """Header lines below the headline. Order: in-brief band counts, NEW counts,
-    resolved + carryover.
-
-    Lines are emitted conditionally: quiet days don't get an empty 'new' line,
-    and old-payload renders (new_counts is None) fall back to today's behaviour
-    minus the misleading top-20 band totals. Recoverable savings live in the
-    headline, not here.
-    """
-    lines: List[str] = []
-
-    brief_parts: List[str] = []
-    if params.act_now_count:
-        brief_parts.append(f"{params.act_now_count} Priority")
-    if params.critical_count:
-        brief_parts.append(f"{params.critical_count} Critical")
-    if params.high_count:
-        brief_parts.append(f"{params.high_count} High")
-    if brief_parts:
-        lines.append("*In this brief:* " + " · ".join(brief_parts))
-
-    if params.category_savings:
-        top_categories = sorted(params.category_savings.items(), key=lambda kv: kv[1], reverse=True)[:4]
-        chips = " · ".join(
-            f"{copy_library.category_display_name(cat)} {format_savings(savings)}"
-            for cat, savings in top_categories
-            if savings > 0
-        )
-        if chips:
-            lines.append(f"*By category:* {chips}")
-
-    if params.new_counts is not None:
-        parts: List[str] = []
-        if params.new_counts.act_now:
-            parts.append(f"{params.new_counts.act_now} Priority")
-        if params.new_counts.critical:
-            parts.append(f"{params.new_counts.critical} Critical")
-        if params.new_counts.high:
-            parts.append(f"{params.new_counts.high} High")
-        if parts:
-            lines.append("*New since yesterday:* " + " · ".join(parts))
-        else:
-            lines.append("_No new recommendations since yesterday._")
-
-    status_bits: List[str] = []
-    if params.resolved_count:
-        suffix = f" (saved {format_savings(params.resolved_savings)}/mo)" if params.resolved_savings > 0 else ""
-        status_bits.append(f"*{params.resolved_count} resolved*{suffix}")
-    if params.carryover_count:
-        status_bits.append(f"{params.carryover_count} still open from earlier")
-    if status_bits:
-        lines.append(" · ".join(status_bits))
-
-    return lines

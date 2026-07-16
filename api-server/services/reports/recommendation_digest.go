@@ -1,6 +1,7 @@
 package reports
 
 import (
+	"encoding/json"
 	"nudgebee/services/account"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
@@ -26,6 +27,9 @@ type digestRecommendation struct {
 	CloudAccountID   string    `db:"cloud_account_id"`
 	AccountName      string    `db:"account_name"`
 	CreatedAt        time.Time `db:"created_at"`
+	// Raw `recommendation` JSONB — the template renders a per-rule change
+	// summary (CPU/mem/replica current → recommended) from it.
+	RecommendationRaw []byte `db:"recommendation"`
 }
 
 // SendRecommendationNudgeDigest queries top recommendations by finops_score
@@ -69,7 +73,7 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 		var recs []digestRecommendation
 		err = dbms.Db.Select(&recs, `
 			SELECT id, rule_name, resource_name, finops_score, finops_band,
-				estimated_savings, severity, category, cloud_account_id, account_name, created_at
+				estimated_savings, severity, category, cloud_account_id, account_name, created_at, recommendation
 			FROM (
 				SELECT r.id, r.rule_name,
 					COALESCE(r.account_object_id, r.id::varchar) AS resource_name,
@@ -81,6 +85,7 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 					r.cloud_account_id::varchar AS cloud_account_id,
 					COALESCE(ca.account_name, r.cloud_account_id::varchar) AS account_name,
 					r.created_at,
+					r.recommendation,
 					ROW_NUMBER() OVER (
 						PARTITION BY regexp_replace(r.rule_name, '^.+_misconfigurations$', 'misconfigurations')
 						ORDER BY r.finops_score DESC NULLS LAST, r.estimated_savings DESC NULLS LAST, r.created_at DESC, r.id
@@ -185,6 +190,9 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 				"category":              rec.Category,
 				"cta_url":               ctaURL,
 				"wasted_since_detected": recommendation.WastedSinceDetected(rec.EstimatedSavings, rec.CreatedAt, time.Now().UTC()),
+			}
+			if len(rec.RecommendationRaw) > 0 {
+				recMap["recommendation"] = json.RawMessage(rec.RecommendationRaw)
 			}
 
 			accID := rec.CloudAccountID
