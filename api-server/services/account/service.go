@@ -1273,7 +1273,7 @@ func AwsOnBoardUrl(context *security.RequestContext, query AccountCreateRequest)
 			AutoDetectionEnabled: config.Config.AwsOrgSnsTopicArn != "",
 		}, nil
 	}
-	return AwsOnBoardResponse{}, fmt.Errorf("acount: only for AWS")
+	return AwsOnBoardResponse{}, fmt.Errorf("account: only for AWS")
 }
 
 // AwsOnboardStatus checks if a single-account auto-registration has completed.
