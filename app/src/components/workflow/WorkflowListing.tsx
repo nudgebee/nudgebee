@@ -1021,7 +1021,17 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     }
 
     if (status === 'FAILED') {
-      return { status: 'FAILED', errorMessage: lastGenMsg?.response || 'Automation generation failed. Please try again.' };
+      // The generation message's own `response` is empty for the Automation flow — the actionable
+      // detail (e.g. an auto-save failure with the runbook server's reason) lives on the agent
+      // record. Fall back to the last agent response before the generic message.
+      const agentResponse = (lastGenMsg?.llm_conversation_agents || [])
+        .map((a: any) => a?.response)
+        .filter(Boolean)
+        .pop();
+      return {
+        status: 'FAILED',
+        errorMessage: lastGenMsg?.response || agentResponse || 'Automation generation failed. Please try again.',
+      };
     }
 
     if (status !== 'WAITING') {

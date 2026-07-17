@@ -486,6 +486,39 @@ func (s *APITestSuite) TestCreateWorkflow() {
 
 		mockService.AssertExpectations(t)
 	})
+
+	// A common.Error wrapped by fmt.Errorf("...: %w", err) — as CreateWorkflow does for
+	// schedule-trigger input validation — must still surface its real 400 code and message,
+	// not collapse into a generic 500 "failed to create workflow". Regression guard for #34098.
+	s.T().Run("Wrapped common.Error surfaces real status and message", func(t *testing.T) {
+		workflow := model.Workflow{
+			Name: "test-workflow",
+			Definition: model.WorkflowDefinition{
+				Triggers: []model.Trigger{{Type: model.WorkflowTriggerManual}},
+				Tasks:    []model.Task{{ID: "task-1", Type: "scripting.run_script", Params: map[string]any{"script": "echo 'hello'"}}},
+			},
+		}
+		wrapped := fmt.Errorf("invalid inputs for schedule trigger index 0: %w",
+			common.ErrorBadRequest("required input 'recipients' is missing"))
+		mockService.On("CreateWorkflow", mock.Anything, "test-account", mock.AnythingOfType("model.Workflow")).Return("", "", wrapped).Once()
+
+		body, _ := json.Marshal(workflow)
+		req, _ := http.NewRequest(http.MethodPost, "/workflows", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Tenant-ID", "test-tenant")
+		req.Header.Set("X-Account-ID", "test-account")
+		req.Header.Set("X-User-ID", "test-user")
+		w := httptest.NewRecorder()
+		s.server.router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		var response map[string]any
+		err := json.Unmarshal(w.Body.Bytes(), &response)
+		assert.NoError(t, err)
+		assert.Contains(t, response["error"], "required input 'recipients' is missing")
+
+		mockService.AssertExpectations(t)
+	})
 }
 
 func (s *APITestSuite) TestUpdateWorkflow() {

@@ -49,7 +49,8 @@ func (s *Server) listWorkflowVersions(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
 		}
-		if commonErr, ok := err.(common.Error); ok {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
 			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
 			return
 		}
@@ -78,7 +79,8 @@ func (s *Server) getWorkflowVersion(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
 		}
-		if commonErr, ok := err.(common.Error); ok {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
 			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
 			return
 		}
@@ -107,7 +109,8 @@ func (s *Server) restoreWorkflowVersion(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
 		}
-		if commonErr, ok := err.(common.Error); ok {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
 			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
 			return
 		}
@@ -149,7 +152,8 @@ func (s *Server) publishWorkflowVersion(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
 		}
-		if commonErr, ok := err.(common.Error); ok {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
 			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
 			return
 		}
@@ -178,7 +182,8 @@ func (s *Server) makeWorkflowVersionLive(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
 		}
-		if commonErr, ok := err.(common.Error); ok {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
 			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
 			return
 		}
@@ -206,7 +211,8 @@ func (s *Server) deleteWorkflowVersion(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "workflow version not found"})
 			return
 		}
-		if commonErr, ok := err.(common.Error); ok {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
 			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
 			return
 		}
@@ -241,7 +247,8 @@ func (s *Server) updateWorkflowVersionMetadata(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
 		}
-		if commonErr, ok := err.(common.Error); ok {
+		var commonErr common.Error
+		if errors.As(err, &commonErr) {
 			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
 			return
 		}
