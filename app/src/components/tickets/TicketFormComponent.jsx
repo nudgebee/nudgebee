@@ -80,7 +80,7 @@ const TicketFormComponent = ({ fields, initialValues, onChanges, configurationId
       } else {
         keyValues = value;
       }
-    } else if (fields[key].type == 'multicheckboxes') {
+    } else if (fields[key].type == 'multicheckboxes' || fields[key].type == 'multiselect') {
       keyValues = (value || []).map((v) => ({ id: v }));
     } else if (fields[key].type == 'datetime') {
       keyValues = value?.valueOf();
@@ -171,6 +171,39 @@ const TicketFormComponent = ({ fields, initialValues, onChanges, configurationId
                 />
               </Grid>
             );
+          case 'text':
+            return (
+              <Grid item xs={12} key={field.key}>
+                <Input
+                  id={field.key}
+                  type='textarea'
+                  rows={3}
+                  size='sm'
+                  value={initialValues[field.key] || ''}
+                  required={field?.required || false}
+                  label={field.name}
+                  onChange={(next) => handleChange(field.key, next)}
+                  onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}
+                  error={showError || ''}
+                />
+              </Grid>
+            );
+          case 'number':
+            return (
+              <Grid item xs={6} key={field.key}>
+                <Input
+                  id={field.key}
+                  type='number'
+                  size='sm'
+                  value={initialValues[field.key] ?? ''}
+                  required={field?.required || false}
+                  label={field.name}
+                  onChange={(next) => handleChange(field.key, next)}
+                  onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}
+                  error={showError || ''}
+                />
+              </Grid>
+            );
           case 'select': {
             const rawVal = initialValues[field.key];
             const resolvedVal = typeof rawVal === 'object' && rawVal !== null ? rawVal?.id : rawVal;
@@ -214,6 +247,7 @@ const TicketFormComponent = ({ fields, initialValues, onChanges, configurationId
                 />
               </Grid>
             );
+          case 'multiselect':
           case 'multicheckboxes':
             return (
               <Grid item xs={12} key={field.key} onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}>
@@ -224,7 +258,7 @@ const TicketFormComponent = ({ fields, initialValues, onChanges, configurationId
                   label={field.name}
                   required={field?.required || false}
                   options={options[field.key] || []}
-                  value={initialValues[field.key]?.map((o) => o.id) || []}
+                  value={initialValues[field.key]?.map((o) => (typeof o === 'object' && o !== null ? o.id : o)) || []}
                   onChange={(next) => handleChange(field.key, next)}
                   error={showError || ''}
                 />
@@ -259,6 +293,8 @@ const TicketFormComponent = ({ fields, initialValues, onChanges, configurationId
               </Grid>
             );
           default:
+            // Type outside the vocabulary = backend/frontend drift; surface it.
+            console.warn(`TicketFormComponent: no renderer for field type "${field.type}" (${field.key})`);
             return null;
         }
       });

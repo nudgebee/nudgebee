@@ -9,7 +9,7 @@ import (
 	"nudgebee/tickets-server/database"
 	"nudgebee/tickets-server/models"
 	ticketmgr "nudgebee/tickets-server/services/ticket"
-	_ "nudgebee/tickets-server/services/tools" // Import to trigger init() registrations
+	"nudgebee/tickets-server/services/tools"
 	"strings"
 	"time"
 
@@ -302,6 +302,27 @@ func ListTicketConfigsForTenant(tenantId string) ([]models.TicketConfigOption, e
 	return options, nil
 }
 
+// encodeJiraTicketFields normalizes a Jira ticket's additional_fields into
+// wire shapes before create, using the cached create-meta that drove the form.
+// Best-effort: on meta failure the payload passes through unchanged.
+func encodeJiraTicketFields(ctx *gin.Context, configuration models.TicketConfigurations, ticket *models.Ticket) {
+	if configuration.Tool != "jira" {
+		return
+	}
+	additionalFields, ok := ticket.AdditionalFields.(map[string]interface{})
+	if !ok || len(additionalFields) == 0 {
+		return
+	}
+	var fieldMeta map[string]tools.FieldInfo
+	if meta, err := fetchCreateMetaCached(ctx, configuration, ticket.ProjectKey); err != nil {
+		slog.Warn("jira create: create-meta unavailable, sending additional fields unencoded",
+			"integration", configuration.ID, "project", ticket.ProjectKey, "error", slog.AnyValue(err))
+	} else {
+		fieldMeta = tools.FieldsForIssueType(meta, ticket.TicketType)
+	}
+	ticket.AdditionalFields = tools.EncodeJiraAdditionalFields(fieldMeta, additionalFields)
+}
+
 func CreateIssue(ctx *gin.Context, ticket models.Ticket) (models.TicketInsertResponse, error) {
 	slog.Info("New ticket create request received for:", "ticket", ticket)
 
@@ -344,6 +365,7 @@ func CreateIssue(ctx *gin.Context, ticket models.Ticket) (models.TicketInsertRes
 	if !ok {
 		return GetErrorResponse("unsupported ticketing tool."), fmt.Errorf("unsupported tool: %s", configuration.Tool)
 	}
+	encodeJiraTicketFields(ctx, configuration, &ticket)
 	ticket, err = manager.Create(ctx, configuration, ticket)
 
 	if err != nil {
