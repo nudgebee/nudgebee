@@ -1,6 +1,8 @@
 package common
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -601,13 +603,64 @@ func getCrashCount(headers map[string]any) int64 {
 	}
 }
 
+// inFlightMessages tracks the body fingerprints of messages this process is currently
+// handling. RabbitMQ sets Redelivered=true not only after a consumer crash but also when
+// a handler outlives the broker's consumer_timeout: the channel is force-closed with a
+// 406 PRECONDITION_FAILED and the unacked message is requeued while the handler is still
+// running. A redelivery whose body is still in flight here therefore proves the process
+// is alive (a timeout, not a crash) and must not count toward maxCrashRedeliveries (#33760).
+// Note: with multiple replicas a timeout redelivery can land on a different pod, where it
+// falls back to the crash-count path — same behavior as before this fix, no regression.
+var (
+	inFlightMessagesMux sync.Mutex
+	inFlightMessages    = map[string]int{}
+)
+
+func messageFingerprint(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func markMessageInFlight(fingerprint string) {
+	inFlightMessagesMux.Lock()
+	defer inFlightMessagesMux.Unlock()
+	inFlightMessages[fingerprint]++
+}
+
+func clearMessageInFlight(fingerprint string) {
+	inFlightMessagesMux.Lock()
+	defer inFlightMessagesMux.Unlock()
+	if inFlightMessages[fingerprint] <= 1 {
+		delete(inFlightMessages, fingerprint)
+	} else {
+		inFlightMessages[fingerprint]--
+	}
+}
+
+func isMessageInFlight(fingerprint string) bool {
+	inFlightMessagesMux.Lock()
+	defer inFlightMessagesMux.Unlock()
+	return inFlightMessages[fingerprint] > 0
+}
+
 // processMessageAndDetermineAction handles the core message processing and decides the RabbitMQ action.
 // This function is called by the handler in consumer.Run.
 func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(data []byte) error, queueName string, exchangeName string) rabbitmq.Action {
+	fingerprint := messageFingerprint(d.Body)
+
 	// Poison message detection: when the pod OOM-kills or crashes, RabbitMQ auto-requeues
 	// unacked messages with Redelivered=true. Without this check, the same message causes
 	// infinite crash loops. We track crash redeliveries and discard after maxCrashRedeliveries.
 	if d.Redelivered {
+		// A redelivery of a message that is still being processed in this process is a
+		// broker consumer_timeout requeue of a slow-but-healthy handler, not a crash.
+		// Discard the duplicate — the in-flight handler owns the work.
+		if isMessageInFlight(fingerprint) {
+			slog.Info("rbmq: redelivered message is still being processed here (broker consumer_timeout), discarding duplicate without crash count",
+				"queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag, "body_size", len(d.Body))
+			return rabbitmq.NackDiscard
+		}
+
 		crashCount := getCrashCount(d.Headers)
 		if crashCount >= int64(maxCrashRedeliveries) {
 			slog.Error("rbmq: poison message detected - discarding after repeated crash redeliveries",
@@ -637,6 +690,9 @@ func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(da
 
 	retryCount := getRetryCount(d.Headers)
 	slog.Debug("rbmq: processing message", "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag, "retry_count", retryCount)
+
+	markMessageInFlight(fingerprint)
+	defer clearMessageInFlight(fingerprint)
 
 	if err := processorFunc(d.Body); err != nil {
 		// Check if this is a permanent error that should not be retried

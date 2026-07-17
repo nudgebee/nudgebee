@@ -4,6 +4,9 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/wagslane/go-rabbitmq"
 )
 
 // resetConsumerHealthState clears the package-level consumer-health registry so each
@@ -176,5 +179,70 @@ func TestMigrateQueueDurabilityIfMismatch_NonMismatch(t *testing.T) {
 	}
 	if migrateQueueDurabilityIfMismatch("cloud_account_events", nil) {
 		t.Fatal("expected false for a nil error")
+	}
+}
+
+func TestMessageInFlightTracking(t *testing.T) {
+	fp := messageFingerprint([]byte(`{"job_id":"test"}`))
+	if isMessageInFlight(fp) {
+		t.Fatal("expected fingerprint to not be in flight initially")
+	}
+	markMessageInFlight(fp)
+	markMessageInFlight(fp)
+	if !isMessageInFlight(fp) {
+		t.Fatal("expected fingerprint to be in flight after marking")
+	}
+	clearMessageInFlight(fp)
+	if !isMessageInFlight(fp) {
+		t.Fatal("expected fingerprint to stay in flight while one handler remains")
+	}
+	clearMessageInFlight(fp)
+	if isMessageInFlight(fp) {
+		t.Fatal("expected fingerprint to be cleared after all handlers finish")
+	}
+}
+
+// A Redelivered delivery whose body is still being processed in this process is a
+// broker consumer_timeout requeue, not a crash: it must be discarded without invoking
+// the processor and without counting toward maxCrashRedeliveries (#33760).
+func TestProcessMessage_ConsumerTimeoutRedeliveryDiscardedWithoutRerun(t *testing.T) {
+	body := []byte(`{"job_id":"slow-job"}`)
+	fp := messageFingerprint(body)
+	markMessageInFlight(fp)
+	defer clearMessageInFlight(fp)
+
+	processorCalled := false
+	d := rabbitmq.Delivery{Delivery: amqp.Delivery{Redelivered: true, Body: body}}
+	action := processMessageAndDetermineAction(d, func(data []byte) error {
+		processorCalled = true
+		return nil
+	}, "test_queue", "test_exchange")
+
+	if action != rabbitmq.NackDiscard {
+		t.Fatalf("expected NackDiscard for in-flight timeout redelivery, got %v", action)
+	}
+	if processorCalled {
+		t.Fatal("processor must not run for a duplicate of an in-flight message")
+	}
+}
+
+// A Redelivered delivery that is NOT in flight here keeps the crash-recovery path:
+// the message is republished with an incremented crash count (which, without a broker
+// in unit tests, fails and falls back to NackRequeue) and the processor is not invoked.
+func TestProcessMessage_CrashRedeliveryKeepsCrashPath(t *testing.T) {
+	body := []byte(`{"job_id":"crashed-job"}`)
+
+	processorCalled := false
+	d := rabbitmq.Delivery{Delivery: amqp.Delivery{Redelivered: true, Body: body, Headers: amqp.Table{crashCountHeader: int64(1)}}}
+	action := processMessageAndDetermineAction(d, func(data []byte) error {
+		processorCalled = true
+		return nil
+	}, "test_queue", "test_exchange")
+
+	if action == rabbitmq.Ack {
+		t.Fatalf("crash redelivery must not be acked as normal work, got %v", action)
+	}
+	if processorCalled {
+		t.Fatal("processor must not run on the crash-redelivery path")
 	}
 }

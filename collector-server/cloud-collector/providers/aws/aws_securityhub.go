@@ -125,6 +125,7 @@ func (a *awsSecurityHub) GetRecommendations(ctx providers.CloudProviderContext, 
 	}
 
 	paginator := securityhub.NewGetFindingsPaginator(svc, &securityhub.GetFindingsInput{})
+	skippedNoControlId := 0
 	for paginator.HasMorePages() {
 		findings, err := paginator.NextPage(ctx.GetContext())
 		if err != nil {
@@ -150,12 +151,13 @@ func (a *awsSecurityHub) GetRecommendations(ctx providers.CloudProviderContext, 
 
 			ruleName := "aws_securityhub"
 			if finding.Compliance != nil {
-				if finding.Compliance.SecurityControlId != nil {
-					ruleName = "aws_securityhub_" + strings.ToLower(*finding.Compliance.SecurityControlId)
-				} else {
-					ctx.GetLogger().Error("failed to fetch securityhub finding", "finding", finding.Id)
+				if finding.Compliance.SecurityControlId == nil {
+					// Compliance findings without a SecurityControlId (e.g. AWS Config
+					// rule findings) have no security control to map to a rule name.
+					skippedNoControlId++
 					continue
 				}
+				ruleName = "aws_securityhub_" + strings.ToLower(*finding.Compliance.SecurityControlId)
 			}
 
 			recommendation := providers.Recommendation{
@@ -172,6 +174,10 @@ func (a *awsSecurityHub) GetRecommendations(ctx providers.CloudProviderContext, 
 			}
 			recommendations = append(recommendations, recommendation)
 		}
+	}
+
+	if skippedNoControlId > 0 {
+		ctx.GetLogger().Info("securityhub: skipped compliance findings without SecurityControlId", "count", skippedNoControlId, "accountNumber", account.AccountNumber)
 	}
 
 	return recommendations, nil
