@@ -192,8 +192,8 @@ jobs:
           - ghcr.io/nudgebee/node-agent:0.1.3
           - ghcr.io/nudgebee/forager:main-2f95659
           # --- agent-chart runtime dependencies (clickhouse mirror + otel) ---
-          - ghcr.io/nudgebee/clickhouse:24.12.4-debian-12-r0-nb-2
-          - ghcr.io/nudgebee/opentelemetry-collector-contrib:0.75.0
+          - ghcr.io/nudgebee/clickhouse:24.12.4-debian-12-r0-nb-3
+          - ghcr.io/nudgebee/opentelemetry-collector-contrib:0.156.0
     steps:
       - uses: docker/login-action@v3
         with:
