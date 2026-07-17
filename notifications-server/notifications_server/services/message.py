@@ -945,13 +945,16 @@ class MessageService:
         thread_id = await self.slack_sender.check_if_sent_already(session, fingerprint, ip.team_id, ip.channels)
         message, output_blocks, attachments = get_slack_finding_message(self.slack_app, ip, finding)
 
+        # Empty text/blocks must be OMITTED: with no blocks Slack renders a
+        # non-empty text as a duplicate heading, and slack_sdk drops None
+        # kwargs cleanly (the hybrid finding card is attachment-only).
         slack_response = await asyncio.to_thread(
             self.slack_sender.post_to_slack,
             tenant_id,
             ip,
             thread_id,
-            text=message,
-            blocks=output_blocks,
+            text=message or None,
+            blocks=output_blocks or None,
             attachments=attachments,
             display_as_bot=True,
         )

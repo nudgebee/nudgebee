@@ -49,7 +49,22 @@ class SlackActionsBaseService:
 
 
 class SlackInteractiveActionsService(SlackActionsBaseService):
+    @staticmethod
+    def normalize_legacy_payload(data):
+        """Legacy attachment buttons (the hybrid finding card) arrive as
+        ``interactive_message`` payloads: same top-level channel/team/user and
+        the same signed ``value``, but the click context lives in
+        ``original_message``/``message_ts`` instead of ``message``. Normalize
+        so the shared click routing works unchanged."""
+        if data.get("type") == "interactive_message" and not data.get("message"):
+            message = dict(data.get("original_message") or {})
+            if "ts" not in message and data.get("message_ts"):
+                message["ts"] = data["message_ts"]
+            data["message"] = message
+        return data
+
     def execute_action(self, data):
+        data = self.normalize_legacy_payload(data)
         channel_id = data["channel"]["id"]
         team_id = data["team"]["id"]
         slack_user_id = data["user"]["id"]
@@ -72,7 +87,8 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
 
     def perform_click_action(self, channel_id, team_id, slack_user_id, user_email, data):
         action_data = data["actions"][0]
-        action_id = action_data.get("action_id")
+        # Legacy attachment buttons have no action_id (only name/value).
+        action_id = action_data.get("action_id") or ""
 
         if action_id.startswith("select_cluster_option"):
             self.event_service.update_account_for_event(
