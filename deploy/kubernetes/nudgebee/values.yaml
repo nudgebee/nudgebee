@@ -350,7 +350,14 @@ temporal:
     # Re-enable if operators want the dashboard for debugging.
     enabled: false
   admintools:
-    enabled: true
+    # Disabled: the admintools Deployment is only a standing shell with the
+    # temporal/tctl CLI for operators to exec into — no nudgebee component uses
+    # it (workflow-server talks to temporal-frontend:7233 via SDK). Schema
+    # create/setup/update jobs and namespace bootstrap run the admin-tools
+    # image transiently regardless of this flag (gated on schema.* below), so
+    # migrations still work. Re-enable ad hoc for tctl debugging:
+    #   helm upgrade ... --set temporal.admintools.enabled=true
+    enabled: false
   server:
     enabled: true
     replicaCount: 1
