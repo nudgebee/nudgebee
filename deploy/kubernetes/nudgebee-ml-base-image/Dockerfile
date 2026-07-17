@@ -65,12 +65,17 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then MF_ARCH=aarch64; else MF_ARCH=x86_64; f
     # outright instead of chasing an upstream rattler release. Removal downgrades
     # conda three patches (26.5.3 -> 26.5.0, still libmamba-solvered) — a
     # deliberate trade, and it clears the pyo3 finding on both consumers
-    # (ml-k8s-server, rag-server). Guarded: miniforge tracks releases/latest, so
-    # if upstream stops bundling the experimental solver, `conda remove` would
-    # PackagesNotFoundError and break every rebuild — skip when absent (the
-    # desired end-state) but still hard-fail if it is present and removal errors.
-    if "${CONDA_DIR}/bin/conda" list -n base | grep -qE "^(conda-rattler-solver|py-rattler)[[:space:]]"; then \
-      "${CONDA_DIR}/bin/conda" remove -n base conda-rattler-solver py-rattler -y; \
-    else echo "rattler solver not bundled; skipping removal"; fi && \
+    # (ml-k8s-server, rag-server). Guarded per package: miniforge tracks
+    # releases/latest, so upstream may drop one or both packages from the bundle;
+    # `conda remove` PackagesNotFoundErrors on any absent name, which would break
+    # every rebuild. Skip each absent package (the desired end-state) but still
+    # hard-fail if one is present and its removal errors. Removing
+    # conda-rattler-solver first also removes py-rattler (its dependency) — the
+    # second iteration then skips it cleanly.
+    for pkg in conda-rattler-solver py-rattler; do \
+      if "${CONDA_DIR}/bin/conda" list -n base | grep -qE "^${pkg}[[:space:]]"; then \
+        "${CONDA_DIR}/bin/conda" remove -n base "$pkg" -y; \
+      else echo "$pkg not bundled; skipping removal"; fi; \
+    done && \
     "${CONDA_DIR}/bin/conda" clean --yes --all && \
     rm -rf /root/.cache
