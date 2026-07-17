@@ -13,17 +13,17 @@ Open-source SRE copilot — observability, FinOps, runbook automation, and incid
 Nudgebee is an open-source SRE copilot that watches your Kubernetes clusters and AWS / Azure / GCP accounts, turns raw signals into ranked findings, and walks operators through investigation and remediation. It bundles:
 
 - **Observability ingestion** — Kubernetes events, metrics, traces, plus cloud-provider scans across AWS, Azure, and GCP.
-- **FinOps & cost optimization** — surface unused / underutilized resources (idle workloads, oversized pods, stale snapshots, dangling volumes) and right-sizing recommendations across cloud and Kubernetes.
+- **FinOps & cost optimization** — surfaces unused / underutilized resources (idle workloads, oversized pods, stale snapshots, dangling volumes) and right-sizing recommendations across cloud and Kubernetes.
 - **LLM-powered triage** — agentic planners that reproduce, root-cause, and propose fixes for incidents.
 - **ChatOps** — Slack / Teams chatbot for SRE workflows: query state, run runbooks, ack alerts, and drive investigations from the channel where on-call already lives.
-- **Runbook automation** — codify recurring fixes as reusable runbooks and trigger them from chat, alert, or schedule.
+- **Runbook automation** — codifies recurring fixes as reusable runbooks and triggers them from chat, alert, or schedule.
 - **Ticketing + notifications** — bidirectional sync with Jira, ServiceNow, PagerDuty, Zenduty; alert delivery to Slack, Teams, email.
 
 > _Dashboard screenshot — to be added. Track [discussion thread](https://github.com/nudgebee/nudgebee/discussions) or contribute via a PR._
 
 ## Quick Start (Local Development)
 
-The fastest way to run Nudgebee from source. **Infra in containers, backend and frontend from source on the host.** This is the path contributors should use.
+This is the fastest way to run Nudgebee from source. **Infra in containers, backend and frontend from source on the host.** This is the path contributors should use.
 
 ### Prerequisites
 
@@ -122,7 +122,7 @@ Open <http://localhost:3000>.
 
 On the sign-in page, click **Admin Login**. Then:
 
-- **Email**: any address (e.g. `dev@example.com`) — a tenant + admin user are created automatically on first sign-in.
+- **Email**: any address (e.g. `dev@example.com`) — a tenant and an admin user are created automatically on first sign-in.
 - **Password**: literally `Test!24#5` — the value of `NEXTAUTH_DUMMY_CREDS_PASSWORD` shipped in `app/.env.example`. Type it exactly; this is the dummy-credentials provider, not your own password.
 
 ### Secrets & required env vars
@@ -141,8 +141,8 @@ non-local deployment, generate fresh values and review the notes below.
 
 ### Troubleshooting
 
-- **`error pinging postgres: lookup postgres: no such host`** from backend → `APP_DATABASE_URL` in `api-server/services/.env` still uses container hostname. Replace `@postgres:5432` with `@localhost:5432`.
-- **`migrate: error: pq: relation "..." already exists`** → tracker schema drifted from actual tables. Inspect `SELECT version, dirty FROM nudgebee.schema_migrations;` and use `migrate force <version>` to align. See [api-server/migrations/README.md](api-server/migrations/README.md#troubleshooting).
+- **`error pinging postgres: lookup postgres: no such host`** from backend → `APP_DATABASE_URL` in `api-server/services/.env` still uses the container hostname. Replace `@postgres:5432` with `@localhost:5432`.
+- **`migrate: error: pq: relation "..." already exists`** → the tracker schema drifted from actual tables. Inspect `SELECT version, dirty FROM nudgebee.schema_migrations;` and use `migrate force <version>` to align. See [api-server/migrations/README.md](api-server/migrations/README.md#troubleshooting).
 - **Action call from frontend returns 502 `RPC gateway could not handle the operation`** → the requested action isn't registered in `app/src/lib/actions.yaml`, or it's a subscription / fragment / parse error. Check the frontend dev-server console for the unhandled reason.
 
 ---
@@ -183,7 +183,7 @@ Open <http://localhost:3000> and sign in with any email + that password. See [de
 The platform is live but empty. A quick tour that takes ~10 minutes:
 
 1. **Connect a cloud account or a Kubernetes cluster** — _Settings → Integrations_. Onboarding a real cluster lets the K8s collector populate the knowledge graph; an AWS / GCP / Azure account lights up the spend + recommendations surfaces. Without at least one of these, most of the dashboard is intentionally empty.
-2. **Wire up a notification channel** — _Settings → Integrations → Slack / Teams / Email_. Without one, you can still try the product, but notifications + chatops flows won't reach you.
+2. **Wire up a notification channel** — _Settings → Integrations → Slack / Teams / Email_. Without one, you can still try the product, but notifications + ChatOps flows won't reach you.
 3. **Run a sample runbook** — _Runbooks → Library_. The bundled library has runnable examples (health-check loops, K8s investigation, cost spotlights). Run one manually to see end-to-end orchestration.
 4. **Ask the AI assistant something** — bottom-right corner of the dashboard. It can answer questions about your connected clusters, walk you through a recommendation, or kick off an investigation.
 
@@ -355,11 +355,11 @@ We welcome contributions! Before opening your first PR:
 2. Review the [Code of Conduct](./CODE_OF_CONDUCT.md).
 3. Browse [open issues](https://github.com/nudgebee/nudgebee/issues) — look for `good first issue` and `help wanted` labels if you're getting started.
 
-By contributing, you agree your contributions are licensed under the [Business Source License 1.1](./LICENSE) (and its Change License, Apache 2.0). On your first PR, the [CLA Assistant](https://cla-assistant.io/) bot will post a one-click sign link — subsequent PRs need no further action.
+By contributing, you agree that your contributions are licensed under the [Business Source License 1.1](./LICENSE) (and its Change License, Apache 2.0). On your first PR, the [CLA Assistant](https://cla-assistant.io/) bot will post a one-click sign link — subsequent PRs need no further action.
 
 ## Security
 
-If you believe you have found a security vulnerability in Nudgebee, **please do not open a public GitHub issue**. Instead follow the responsible disclosure process in [SECURITY.md](./SECURITY.md).
+If you believe you have found a security vulnerability in Nudgebee, **please do not open a public GitHub issue**. Instead, follow the responsible disclosure process in [SECURITY.md](./SECURITY.md).
 
 ## Telemetry
 
