@@ -8,7 +8,7 @@ image:
   # Copied via deploy/kubernetes/nudgebee-mirrors/clone-third-party.sh (crane).
   repository: ghcr.io/nudgebee/qdrant
   pullPolicy: IfNotPresent
-  tag: "v1.18.2"
+  tag: "v1.18.3"
 
 imagePullSecrets: [ ]
 nameOverride: ""

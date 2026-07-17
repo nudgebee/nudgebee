@@ -15,7 +15,7 @@ NS="${GHCR_NAMESPACE:-ghcr.io/nudgebee}"
 
 # src -> dst:tag
 IMAGES=(
-  "docker.io/qdrant/qdrant:v1.18.2 qdrant:v1.18.2"
+  "docker.io/qdrant/qdrant:v1.18.3 qdrant:v1.18.3"
 )
 
 for entry in "${IMAGES[@]}"; do
