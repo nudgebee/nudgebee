@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import CustomTable2 from '@shared/tables/CustomTable2';
 import { useRouter } from 'next/router';
 import PropTypes from 'prop-types';
@@ -59,12 +59,8 @@ const CloudAccountTable = ({
 }) => {
   const normalizedTableHeadingCenter = Array.isArray(tableHeadingCenter) ? tableHeadingCenter : tableHeadingCenter ? [tableHeadingCenter] : [];
   const router = useRouter();
-  const [accountId, setAccountId] = useState(router.query.KubernetesDetails || router.query.accountId);
+  const accountId = router.query.KubernetesDetails || router.query.accountId;
   const [requiredTabs, setRequiredTabs] = useState({});
-
-  useEffect(() => {
-    setAccountId(router.query.KubernetesDetails || router.query.accountId);
-  }, [router.query.KubernetesDetails, router.query.accountId]);
 
   function expandedComponentFn(_option, _query, _row) {
     return <>No Data</>;

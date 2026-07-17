@@ -53,7 +53,6 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
   const [cpuLimit, setCPULimit] = useState();
   const [memoryLimit, setMemoryLimit] = useState();
   const [formSubmitting, setFormSubmitting] = useState(false);
-  const [provider, setProvider] = useState('');
   const [errors, setErrors] = useState({
     name: '',
     nodeClassRef: '',
@@ -77,10 +76,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
   // Top row (Name + Node Class) — scrolled into view when submit fails so the
   // user doesn't have to manually scroll up to find the missed mandatory field.
   const mandatoryFieldsRef = useRef(null);
-
-  useEffect(() => {
-    setProvider(selectedCluster?.k8s_provider ?? '');
-  }, [selectedCluster]);
+  const provider = selectedCluster?.k8s_provider ?? '';
 
   const listNodeClass = useCallback(() => {
     const isKarpenterEnable =

@@ -44,7 +44,6 @@ const KubernetesNodeClass = ({ accountId }) => {
     amiFamily: '',
   });
   const [amiFamily, setAMIFamily] = useState('');
-  const [isEKSCluster, setIsEKSCluster] = useState(false);
   const [newLabel, setNewLabel] = useState({
     key: '',
     value: '',
@@ -52,10 +51,7 @@ const KubernetesNodeClass = ({ accountId }) => {
   const [newBlockDeviceMappings, setNewBlockDeviceMappings] = useState({});
 
   const { selectedCluster } = useData();
-
-  useEffect(() => {
-    setIsEKSCluster(selectedCluster?.k8s_provider === 'EKS');
-  }, [selectedCluster]);
+  const isEKSCluster = selectedCluster?.k8s_provider === 'EKS';
 
   const getMenuItems = () => {
     if (!hasWriteAccess(accountId)) {
