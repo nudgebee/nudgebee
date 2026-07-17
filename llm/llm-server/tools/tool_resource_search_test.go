@@ -981,3 +981,65 @@ func TestResourceSearchTool_SearchDbForResources(t *testing.T) {
 	results3 := tool.searchDbForResources("", accountId, dummyCtx)
 	assert.Equal(t, 0, len(results3))
 }
+
+// normalizeK8sType must collapse both cloud_resourses Kind names ("Pod") and
+// kubectl short/plural forms ("pods", "po") to the same canonical singular,
+// since searchDbForResources now returns Kind-cased types from cloud_resourses.
+func TestNormalizeK8sType(t *testing.T) {
+	cases := map[string]string{
+		"Pod": "pod", "pods": "pod", "po": "pod", "  Pod  ": "pod",
+		"Deployment": "deployment", "deploy": "deployment", "deployments": "deployment",
+		"ReplicaSet": "replicaset", "rs": "replicaset",
+		"StatefulSet": "statefulset", "sts": "statefulset",
+		"DaemonSet": "daemonset", "ds": "daemonset",
+		"Service": "service", "svc": "service", "services": "service",
+		"node": "node", "nodes": "node", "no": "node",
+		"Job": "job", "jobs": "job",
+		"CronJob": "cronjob", "cj": "cronjob",
+		"Ingress": "ingress", "ingresses": "ingress", "ing": "ingress",
+		"NetworkPolicy": "networkpolicy", "networkpolicies": "networkpolicy", "netpol": "networkpolicy",
+		"StorageClass": "storageclass", "storageclasses": "storageclass", "sc": "storageclass",
+		"ConfigMap": "configmap", "configmaps": "configmap", "cm": "configmap",
+		"Secret": "secret", "secrets": "secret",
+		"PersistentVolume": "persistentvolume", "persistentvolumes": "persistentvolume", "pv": "persistentvolume",
+		"PersistentVolumeClaim": "persistentvolumeclaim", "persistentvolumeclaims": "persistentvolumeclaim", "pvc": "persistentvolumeclaim",
+		"Namespace": "namespace", "namespaces": "namespace", "ns": "namespace",
+		"ServiceAccount": "serviceaccount", "serviceaccounts": "serviceaccount", "sa": "serviceaccount",
+		"CustomResourceDefinition": "customresourcedefinition", "customresourcedefinitions": "customresourcedefinition", "crd": "customresourcedefinition", "crds": "customresourcedefinition",
+	}
+	for in, want := range cases {
+		assert.Equalf(t, want, normalizeK8sType(in), "normalizeK8sType(%q)", in)
+	}
+}
+
+// filterResourcesByType must match across sources: a "pods" request keeps both a
+// cloud_resourses "Pod" row and a kubectl "pods" row, and a specific-kind
+// request drops everything else.
+func TestFilterResourcesByType_CrossSourceNaming(t *testing.T) {
+	tool := K8sResourceSearchTool{}
+	resources := []K8sResourceInfo{
+		{Name: "api-service-5669c76956-cjkxn", Type: "Pod"},  // cloud_resourses
+		{Name: "api-service", Type: "Deployment"},            // cloud_resourses
+		{Name: "api-service-5669c76956", Type: "ReplicaSet"}, // cloud_resourses
+		{Name: "api-service-live-xyz", Type: "pods"},         // kubectl
+	}
+
+	pods := tool.filterResourcesByType(resources, "pods")
+	assert.Len(t, pods, 2, "both Kind-cased 'Pod' and kubectl 'pods' must match a pods request")
+	for _, r := range pods {
+		assert.Equal(t, "pod", normalizeK8sType(r.Type))
+	}
+
+	deploys := tool.filterResourcesByType(resources, "deployment")
+	assert.Len(t, deploys, 1)
+	assert.Equal(t, "api-service", deploys[0].Name)
+}
+
+func TestIsSpecificResourceType(t *testing.T) {
+	tool := K8sResourceSearchTool{}
+	assert.True(t, tool.isSpecificResourceType("pods"))
+	assert.True(t, tool.isSpecificResourceType("Deployment"))
+	assert.False(t, tool.isSpecificResourceType(""))
+	assert.False(t, tool.isSpecificResourceType("all"))
+	assert.False(t, tool.isSpecificResourceType("resource"))
+}

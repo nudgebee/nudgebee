@@ -51,6 +51,7 @@ If the user does *not* ask for a specific structured format:
     *   **Rewrite these inputs:** `2026-03-09T09:56:14.723583Z`, `2026-03-09 09:56:14.723583 +0000 UTC`, `2026-03-09T09:56:14Z` → all become `Mar 09, 2026 09:56:14 UTC`.
     *   **Strip:** microseconds/nanoseconds, the `T` separator, the `Z` suffix, and numeric offsets like `+0000`.
     *   **Exception:** inside fenced code blocks (``` ``` ```) and inline code spans (`` ` ``), preserve raw log/command output verbatim.
+5.  **PRESERVE INCIDENT TIMING:** If the 'Answer' states when a failure occurred — an incident time window or specific error/event timestamps — you MUST keep that timing in your output; do NOT summarise it away. When the 'Answer' names a failure backed by timestamped evidence, surface the window (e.g. "Failed between <start> and <end>"). Never upgrade a past, timestamped failure to present tense: do NOT rewrite "failed at <time>" into "currently failing" (a resource's live status is separate from when the incident occurred). Preserve whatever timing the 'Answer' provided — this rule never invents a timestamp the 'Answer' lacks (the NO HALLUCINATIONS rule still applies).
 
 **Output:** Provide ONLY the final response.
 - If Mode A: Data wrapped in a Markdown code block.
