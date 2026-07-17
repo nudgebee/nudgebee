@@ -23,6 +23,7 @@ import { Typography, Popover, InputBase } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import { ds } from '@utils/colors';
 import Chip from '@ui/Chip';
+import Divider from '@ui/Divider';
 import { Label } from '@ui/Label';
 import CustomTooltip from '@ui/Tooltip';
 import SafeIcon from '@shared/icons/SafeIcon';
@@ -40,6 +41,9 @@ import {
   azureDetailsSearchFragments,
   gcpDetailsSearchFragments,
   pathAcronym,
+  wordsOf,
+  fuzzyTokenMatches,
+  MIN_FUZZY_TOKEN_LENGTH,
 } from '@lib/navSearchPages';
 
 // Layout constants for the result list — mirrors ds/FilterDropdown.jsx's own
@@ -125,38 +129,14 @@ const AccountMentionChip = ({ account }) => (
   </Chip>
 );
 
-// Segments that should stay all-caps when a provider-detail search entry's
-// slug (e.g. "k8s/apps-infra/pvc") is title-cased into its display label —
-// plain title-casing would otherwise read "Pvc"/"Sql"/"Ec2".
-const NAV_SEARCH_LABEL_ACRONYMS = new Set(['pv', 'pvc', 'dbms', 'slo', 'cis', 'ssl', 'vm', 'sql', 'mi', 'api', 'ec2', 'rds', 's3', 'ecs']);
-
-// The right-aligned `type` chip defaults to a 15-char tooltip-truncation
-// limit and a 40%-of-row max width (both sized for short region/namespace
-// chips elsewhere in the app) — too narrow for a full path like
-// "/aws/optimize/recommendation-resolution". Both are overridden per-option
-// via typeCharLimit/typeMaxWidth below.
+// ds/FilterDropdown.jsx's own `type` chip (which OptionItem below is ported
+// from) defaults to a 15-char tooltip-truncation limit and a 40%-of-row max
+// width — both sized for short region/namespace chips, too narrow for a full
+// path like "/aws/optimize/recommendation-resolution". Every nav-search row
+// needs the wider path-sized limits below, so OptionItem applies these
+// directly instead of the FilterDropdown defaults.
 const NAV_SEARCH_PATH_CHAR_LIMIT = 50;
 const NAV_SEARCH_PATH_MAX_WIDTH = '60%';
-
-const titleCaseWord = (word) =>
-  NAV_SEARCH_LABEL_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1);
-
-// Provider-detail fragment lists (k8sDetailsSearchFragments etc.) only carry
-// a slash-joined slug like "k8s/apps-infra/pvc" — there's no separate human
-// title. Derive one by dropping the leading provider segment (already shown
-// via the row's own icon) and title-casing what's left. For a provider-level
-// tab this is just the tab name ("k8s/summary" -> "Summary"); for a
-// per-service tab it's "<service> <tab>" ("aws/ec2/summary" -> "EC2
-// Summary", "k8s/apps-infra/pvc" -> "Apps Infra PVC") — the service segment
-// is what disambiguates otherwise-identical labels, since every service has
-// its own "Summary"/"Events"/"Instances" tab that would otherwise all read
-// the same without it.
-const navSearchProviderLabel = (slug) =>
-  slug
-    .split('/')
-    .slice(1)
-    .map((segment) => segment.split('-').map(titleCaseWord).join(' '))
-    .join(' ');
 
 // Search rows for one provider's detail-page tabs (K8s/AWS/Azure/GCP), or []
 // if no account of that provider is resolvable yet (fresh tenant, no such
@@ -167,18 +147,15 @@ const navSearchProviderItems = (fragments, provider, accountId, basePath) =>
   accountId
     ? fragments.map((entry) => {
         const path = `${basePath}/${accountId}#${entry.fragment}`;
-        const label = navSearchProviderLabel(entry.label);
         return {
-          label,
+          label: entry.label,
           icon: <CloudProviderIcon cloud_provider={provider} width='16px' height='16px' />,
-          type: `/${entry.label}`,
-          typeTextTransform: 'none',
-          typeCharLimit: NAV_SEARCH_PATH_CHAR_LIMIT,
-          typeMaxWidth: NAV_SEARCH_PATH_MAX_WIDTH,
+          type: `/${entry.slug}`,
           value: path,
           path,
           accountId,
-          searchText: `${provider} ${label} ${entry.label} ${pathAcronym(entry.label)}`,
+          acronym: pathAcronym(entry.slug),
+          searchText: `${provider} ${entry.slug} ${pathAcronym(entry.slug)}`,
         };
       })
     : [];
@@ -302,12 +279,10 @@ const navSearchStaticItems = navSearchPages.map((page) => {
     label: page.label,
     icon: NAV_SEARCH_GROUP_ICON[page.group],
     type: `/${fragmentPath}`,
-    typeTextTransform: 'none',
-    typeCharLimit: NAV_SEARCH_PATH_CHAR_LIMIT,
-    typeMaxWidth: NAV_SEARCH_PATH_MAX_WIDTH,
     value: page.path,
     path: page.path,
-    searchText: `${page.group} ${page.label} ${fragmentPath} ${pathAcronym(fragmentPath)}`,
+    acronym: pathAcronym(fragmentPath),
+    searchText: `${page.group} ${fragmentPath} ${pathAcronym(fragmentPath)}`,
   };
 });
 
@@ -436,13 +411,10 @@ const OptionItem = React.memo(function OptionItem({ opt, highlighted = false, na
         </Box>
       )}
       {opt?.type && (
-        <Box sx={{ ml: 'auto', flexShrink: 0, maxWidth: opt.typeMaxWidth ?? '40%' }}>
-          {/* Label capitalizes by default; pass typeTextTransform='none' for chips
-              holding case-sensitive identifiers (namespace, region, path) so
-              their casing is preserved verbatim. tooltipCharLimit defaults to 15;
-              typeCharLimit/typeMaxWidth (set on the nav-search path chips above)
-              override both for the longer full-path text these rows show. */}
-          <Label text={opt.type} textTransform={opt.typeTextTransform} maxWidth='100%' displayTooltip tooltipCharLimit={opt.typeCharLimit ?? 15} />
+        <Box sx={{ ml: 'auto', flexShrink: 0, maxWidth: NAV_SEARCH_PATH_MAX_WIDTH }}>
+          {/* Label capitalizes by default; every opt.type here is a slash-joined
+              path (case-sensitive), so textTransform is forced off. */}
+          <Label text={opt.type} textTransform='none' maxWidth='100%' displayTooltip tooltipCharLimit={NAV_SEARCH_PATH_CHAR_LIMIT} />
         </Box>
       )}
     </Box>
@@ -455,24 +427,10 @@ const OptionItem = React.memo(function OptionItem({ opt, highlighted = false, na
 // right before it.
 const startsNewSection = (opt, prevOpt) => !!opt?.sectionLabel && opt.sectionLabel !== prevOpt?.sectionLabel;
 
-// `legendItems` (only ever passed for the "All Pages" caption — see
-// accountLegendItems in the main component below) renders inline, on the
-// same row as the label text, not stacked below it: {provider, name} for
-// each of AWS/Azure/GCP/K8s that currently resolves to an account. A
-// provider-detail row under "All Pages" only shows its own tab's path in the
-// `type` chip, not which account resolveSearchAccountId picked for that
-// provider, so this answers "which account will I land in" before the click.
-// A provider with no resolved account (fresh tenant, none connected yet) is
-// omitted rather than shown blank; the whole row wraps to a second line if
-// the popover is too narrow to fit everything on one.
-function SectionCaption({ label, legendItems = [] }) {
+function SectionCaption({ label }) {
   return (
     <Box
       sx={{
-        display: 'flex',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-        gap: ds.space[2],
         padding: 'var(--ds-overlay-item-padding-md)',
         margin: '0 var(--ds-overlay-item-margin-x)',
       }}
@@ -484,33 +442,10 @@ function SectionCaption({ label, legendItems = [] }) {
           color: 'var(--ds-gray-500)',
           textTransform: 'uppercase',
           letterSpacing: '0.02em',
-          flexShrink: 0,
         }}
       >
         {label}
       </Typography>
-      {legendItems.length > 0 && (
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: ds.space[1], ml: 'auto' }}>
-          {legendItems.map((item) => (
-            // displayTooltip shortens long account names (e.g. "gcp-dev -
-            // centered-binder-487409-m5") so the 4-chip group is narrow
-            // enough to actually fit on the same line as the "ALL PAGES"
-            // label — otherwise flex-wrap drops the whole group (it wraps as
-            // one flex item, not per-chip) to its own line below the label.
-            <Chip
-              key={item.provider}
-              variant='tag'
-              tone='info'
-              size='xs'
-              icon={<CloudProviderIcon cloud_provider={item.provider} width='12px' height='12px' />}
-              displayTooltip
-              tooltipCharLimit={18}
-            >
-              {item.name}
-            </Chip>
-          ))}
-        </Box>
-      )}
     </Box>
   );
 }
@@ -527,7 +462,7 @@ const scrollboxSx = {
 
 // Flat, virtualized-when-large result list. No "selected" section (this box
 // never has a `value`) and no group headers — see the file-level comment.
-function OptionsList({ filteredOptions, highlightedIndex, onSelect, accountLegendItems = [] }) {
+function OptionsList({ filteredOptions, highlightedIndex, onSelect }) {
   const navActive = highlightedIndex >= 0;
   const scrollRef = useRef(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -586,7 +521,12 @@ function OptionsList({ filteredOptions, highlightedIndex, onSelect, accountLegen
     const isNewSection = startsNewSection(opt, filteredOptions[idx - 1]);
     return (
       <React.Fragment key={(opt.sectionLabel || '') + '-' + opt.value}>
-        {isNewSection && <SectionCaption label={opt.sectionLabel} legendItems={opt.sectionLabel === 'All Pages' ? accountLegendItems : []} />}
+        {/* idx !== 0 excludes the very first section's own caption (nothing
+            above it to divide from) — the only other section boundary is
+            Recents -> Suggested Pages, so this only ever renders when a
+            Recents run precedes it. */}
+        {isNewSection && idx !== 0 && <Divider sx={{ marginTop: 0, marginBottom: 0 }} />}
+        {isNewSection && <SectionCaption label={opt.sectionLabel} />}
         <OptionItem opt={opt} highlighted={idx === highlightedIndex} navIndex={idx} navActive={navActive} onSelect={onSelect} />
       </React.Fragment>
     );
@@ -639,21 +579,6 @@ export default function GlobalPageSearch() {
   const awsSearchAccountId = useMemo(() => resolveSearchAccountId('AWS'), [resolveSearchAccountId]);
   const azureSearchAccountId = useMemo(() => resolveSearchAccountId('Azure'), [resolveSearchAccountId]);
   const gcpSearchAccountId = useMemo(() => resolveSearchAccountId('GCP'), [resolveSearchAccountId]);
-
-  // {provider, name} for each provider that currently resolves to an account —
-  // rendered inline on the "All Pages" caption row (see SectionCaption's
-  // `legendItems` prop), so the user can tell which account each provider's
-  // rows under "All Pages" will actually navigate into. A provider with no
-  // resolved account yet is dropped rather than shown with a blank name.
-  const accountLegendItems = useMemo(() => {
-    const resolveName = (id) => allCluster?.find((c) => c.value === id)?.label;
-    return [
-      { provider: 'AWS', name: resolveName(awsSearchAccountId) },
-      { provider: 'Azure', name: resolveName(azureSearchAccountId) },
-      { provider: 'GCP', name: resolveName(gcpSearchAccountId) },
-      { provider: 'K8s', name: resolveName(k8sSearchAccountId) },
-    ].filter((item) => item.name);
-  }, [allCluster, awsSearchAccountId, azureSearchAccountId, gcpSearchAccountId, k8sSearchAccountId]);
 
   // Navigates to a search result. K8s/AWS/Azure/GCP results carry `accountId`
   // for whichever account resolveSearchAccountId picked. ClusterDropDown
@@ -804,26 +729,23 @@ export default function GlobalPageSearch() {
   );
 
   // Two lists under one plain caption each (opt.sectionLabel): recent picks
-  // under "Recents", then the full navSearchItems under "All Pages" — a
-  // recent pick intentionally still appears in "All Pages" too (as a
-  // separate option copy), not just "Recents". "All Pages" is always tagged
-  // (even with zero recents, when it's the only section) since its caption
-  // row is also where the AWS/Azure/GCP/K8s account-legend chips live — the
-  // one place a first-time user (no recents yet) can see which account each
-  // provider's rows resolve to. "Recents" is prepended only once there's at
-  // least one recent pick. Still one flat array under the hood, so the
-  // ArrowUp/ArrowDown + Enter-to-select keyboard nav below works identically
-  // whether one or both sections are present.
+  // under "Recents", then the full navSearchItems under "Suggested Pages" — a
+  // recent pick intentionally still appears in "Suggested Pages" too (as a
+  // separate option copy), not just "Recents". "Suggested Pages" is always tagged
+  // (even with zero recents, when it's the only section) for a consistent
+  // caption. "Recents" is prepended only once there's at least one recent
+  // pick. Still one flat array under the hood, so the ArrowUp/ArrowDown +
+  // Enter-to-select keyboard nav below works identically whether one or both
+  // sections are present.
   //
   // Recent rows additionally get `accountName`/`cloud_provider` stamped on
   // (when the recent pick carries an accountId) so OptionItem can render an
   // account-name chip — a recent value's account isn't shown anywhere else
-  // in the row, and unlike the "All Pages" run (see accountLegendItems
-  // below), a Recents row's account isn't necessarily the provider's
-  // *current* resolved account (it's whatever account the user was actually
-  // in when they picked it), so a shared legend can't stand in for it here.
+  // in the row, and (unlike a provider's current resolved account) isn't
+  // necessarily the provider's current one — it's whatever account the user
+  // was actually in when they picked it.
   const navSearchItemsWithRecent = useMemo(() => {
-    const allOptions = navSearchItems.map((opt) => ({ ...opt, sectionLabel: 'All Pages' }));
+    const allOptions = navSearchItems.map((opt) => ({ ...opt, sectionLabel: 'Suggested Pages' }));
     if (recentSearchValues.length === 0) {
       return allOptions;
     }
@@ -858,14 +780,32 @@ export default function GlobalPageSearch() {
   // Plain queries keep case-insensitive substring semantics, ranked so an
   // exact/prefix name match surfaces above a row that only matches as a
   // substring or via `searchText` (e.g. "services-server" should show the
-  // exact "services-server" row above "nudgebee-services-server"). Ranking is
-  // scoped to each contiguous sectionLabel run, not the whole array: a global
-  // sort would let a well-matching "All Pages" row sort ahead of a
-  // weaker-matching "Recents" row, splitting the "Recents" run in two and
-  // firing its caption a second time further down (startsNewSection
-  // re-triggers on every re-entry into a label).
+  // exact "services-server" row above "nudgebee-services-server"). An exact
+  // hit on the option's own pathAcronym short form (e.g. "umu" for
+  // user-management/users) ranks just below an exact label match and above
+  // every plain prefix/substring tier, since typing the acronym is a
+  // deliberate, unambiguous shorthand rather than an incidental substring
+  // hit. Below that, two more permissive tiers handle multi-word and mis-typed queries: the
+  // query is split on whitespace and every token must match *somewhere* in
+  // the haystack, independent of order (so "rds aws" finds "AWS RDS
+  // Summary" same as "aws rds" would) — a token that fails a substring check
+  // falls back to a small edit-distance match against individual haystack
+  // words (see fuzzyTokenMatches in @lib/navSearchPages), so e.g. "servics"
+  // still finds "AWS Services". Ranking is scoped to each contiguous
+  // sectionLabel run, not the whole array: a global sort would let a
+  // well-matching "Suggested Pages" row sort ahead of a weaker-matching "Recents"
+  // row, splitting the "Recents" run in two and firing its caption a second
+  // time further down (startsNewSection re-triggers on every re-entry into a
+  // label).
   const filteredOptions = useMemo(() => {
-    const q = search.trim();
+    const rawQuery = search.trim();
+    // In mention mode every candidate's searchText is `@label` and the typed
+    // text is guaranteed to start with '@' (that's what gates mentionMode
+    // itself) — stripping it before matching means that guaranteed character
+    // doesn't count against the token below, in particular the fuzzy
+    // fallback's edit-distance budget, which would otherwise spend part of
+    // its typo tolerance accounting for the '@' instead of an actual typo.
+    const q = mentionMode ? rawQuery.slice(1).trimStart() : rawQuery;
     if (!q) {
       return searchBoxOptions;
     }
@@ -894,26 +834,62 @@ export default function GlobalPageSearch() {
         segments.push({ label, items: [opt] });
       }
     });
+    const queryTokens = lower.split(/\s+/).filter(Boolean);
     const rankOf = (opt) => {
       const label = (opt?.label ?? '').toLowerCase();
       const extra = opt?.searchText ? String(opt.searchText).toLowerCase() : '';
-      const inLabel = label.includes(lower);
-      if (!inLabel && !extra.includes(lower)) return null;
+      const full = extra ? `${label} ${extra}` : label;
       if (label === lower) return 0;
-      if (label.startsWith(lower)) return 1;
-      if (inLabel) return 2;
-      return 3;
+      // An exact hit on the option's own pathAcronym (e.g. "umu" for
+      // user-management/users) is a deliberate, unambiguous shorthand the
+      // user typed on purpose — rank it above a mere label prefix/substring
+      // match instead of letting it fall in with every other searchText hit
+      // (tier 4 below), where it could tie with an unrelated option that
+      // just happens to contain "umu" as a substring somewhere.
+      if (opt?.acronym && opt.acronym === lower) return 1;
+      if (label.startsWith(lower)) return 2;
+      if (label.includes(lower)) return 3;
+      if (full.includes(lower)) return 4;
+
+      // Neither the whole query nor a single-token query matched as a
+      // substring — try per-token AND matching, falling back to fuzzy only
+      // for the tokens that don't substring-match. A single fully-unmatched
+      // token is tolerated (ranked below a complete match) once the query has
+      // 3+ tokens — enough remaining tokens still constrain the match — but a
+      // 1-2 token query stays strict AND, since tolerating a miss there would
+      // let a single word carry the whole match (e.g. "aws rds" surfacing any
+      // page that merely mentions "aws"). A second miss always excludes.
+      let usedFuzzy = false;
+      let missedCount = 0;
+      let words = null;
+      for (const token of queryTokens) {
+        if (full.includes(token)) continue;
+        if (token.length >= MIN_FUZZY_TOKEN_LENGTH) {
+          words = words ?? wordsOf(full);
+          if (fuzzyTokenMatches(token, words)) {
+            usedFuzzy = true;
+            continue;
+          }
+        }
+        missedCount += 1;
+        if (missedCount > 1 || queryTokens.length < 3) {
+          return null;
+        }
+      }
+      if (missedCount === 1) return 7;
+      return usedFuzzy ? 6 : 5;
     };
     return segments.flatMap(({ items }) => {
       const ranked = [];
       items.forEach((opt, i) => {
         const rank = rankOf(opt);
-        if (rank !== null) ranked.push({ opt, rank, i });
+        if (rank === null) return;
+        ranked.push({ opt, rank, i });
       });
       ranked.sort((a, b) => a.rank - b.rank || a.i - b.i);
       return ranked.map((r) => r.opt);
     });
-  }, [searchBoxOptions, search]);
+  }, [searchBoxOptions, search, mentionMode]);
 
   const searchPlaceholder = scopedAccount
     ? `Search for ${scopedAccount.label}…`
@@ -1072,12 +1048,6 @@ export default function GlobalPageSearch() {
     [open, filteredOptions, highlightedIndex, handleOptionSelect]
   );
 
-  // Search input only renders once there's enough to search — matches
-  // ds/FilterDropdown.jsx's own >8-options threshold — or when a caller-ish
-  // mode forces it: mention mode's account list can be short, and a scoped
-  // search still needs typing to work.
-  const showSearchInput = searchBoxOptions.length > 8 || mentionMode || Boolean(scopedAccount);
-
   return (
     // Forces this instance's popover to the viewport center regardless of trigger
     // position, and gives it a Modal-like (@ui/Modal) pop-in + dark backdrop.
@@ -1095,7 +1065,7 @@ export default function GlobalPageSearch() {
       sx={{
         position: 'relative',
         width: '100%',
-        maxWidth: ds.space.mul(0, 120),
+        maxWidth: '80%',
         // top is a fixed offset (not 50%) so the panel's top edge stays put as its
         // height changes with the result count — true vertical centering would
         // re-center around a shrinking/growing box, making the top edge visibly
@@ -1151,7 +1121,7 @@ export default function GlobalPageSearch() {
           '&:focus-visible': { borderColor: 'var(--ds-blue-500)', boxShadow: '0 0 0 3px var(--ds-blue-100)' },
           ...(open && { borderColor: 'var(--ds-blue-500)', boxShadow: '0 0 0 3px var(--ds-blue-100)' }),
           width: '100%',
-          maxWidth: ds.space.mul(0, 120),
+          maxWidth: '80%',
           pl: ds.space[6],
         }}
       >
@@ -1188,82 +1158,74 @@ export default function GlobalPageSearch() {
         }}
         onKeyDown={handleKeyDown}
       >
-        {showSearchInput && (
-          <Box sx={{ margin: `${ds.space.mul(0, 5)} ${ds.space.mul(0, 5)} ${ds.space.mul(0, 3)} ${ds.space.mul(0, 5)}`, position: 'relative' }}>
-            <SearchIcon
-              sx={{
-                position: 'absolute',
-                left: ds.space.mul(0, 5),
-                top: '50%',
-                transform: 'translateY(-50%)',
-                fontSize: 12,
-                opacity: 0.35,
-                pointerEvents: 'none',
-                zIndex: 1,
-              }}
-            />
-            <InputBase
-              inputRef={searchRef}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              startAdornment={scopedAccount ? <AccountMentionChip account={scopedAccount} /> : undefined}
-              placeholder={searchPlaceholder}
-              onKeyDown={(e) => {
-                if (e.key === 'Backspace' && search === '') {
-                  handleBackspaceWhenEmpty();
+        <Box sx={{ margin: `${ds.space.mul(0, 5)} ${ds.space.mul(0, 5)} ${ds.space.mul(0, 3)} ${ds.space.mul(0, 5)}`, position: 'relative' }}>
+          <SearchIcon
+            sx={{
+              position: 'absolute',
+              left: ds.space.mul(0, 5),
+              top: '50%',
+              transform: 'translateY(-50%)',
+              fontSize: 12,
+              opacity: 0.35,
+              pointerEvents: 'none',
+              zIndex: 1,
+            }}
+          />
+          <InputBase
+            inputRef={searchRef}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            startAdornment={scopedAccount ? <AccountMentionChip account={scopedAccount} /> : undefined}
+            placeholder={searchPlaceholder}
+            onKeyDown={(e) => {
+              if (e.key === 'Backspace' && search === '') {
+                handleBackspaceWhenEmpty();
+              }
+              handleKeyDown(e);
+              // handleKeyDown is also wired to the Popover's own onKeyDown,
+              // which this event would otherwise reach too via bubbling —
+              // stop it for exactly the keys handleKeyDown consumes so
+              // Arrow nav / Enter-select don't double-apply. Everything
+              // else (typing, Ctrl+K, etc.) bubbles normally.
+              if (e.key === 'Escape' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || (e.key === 'Enter' && highlightedIndex >= 0)) {
+                e.stopPropagation();
+              }
+              if (e.key === 'Enter' && highlightedIndex < 0 && filteredOptions.length > 0) {
+                e.preventDefault();
+                // Select exact match first, otherwise select if only one result.
+                const q = search.trim().toLowerCase();
+                const exactMatch = filteredOptions.find((opt) => (opt?.label ?? '').toLowerCase() === q);
+                if (exactMatch) {
+                  handleOptionSelect(exactMatch);
+                } else if (filteredOptions.length === 1) {
+                  handleOptionSelect(filteredOptions[0]);
                 }
-                handleKeyDown(e);
-                // handleKeyDown is also wired to the Popover's own onKeyDown,
-                // which this event would otherwise reach too via bubbling —
-                // stop it for exactly the keys handleKeyDown consumes so
-                // Arrow nav / Enter-select don't double-apply. Everything
-                // else (typing, Ctrl+K, etc.) bubbles normally.
-                if (e.key === 'Escape' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || (e.key === 'Enter' && highlightedIndex >= 0)) {
-                  e.stopPropagation();
-                }
-                if (e.key === 'Enter' && highlightedIndex < 0 && filteredOptions.length > 0) {
-                  e.preventDefault();
-                  // Select exact match first, otherwise select if only one result.
-                  const q = search.trim().toLowerCase();
-                  const exactMatch = filteredOptions.find((opt) => (opt?.label ?? '').toLowerCase() === q);
-                  if (exactMatch) {
-                    handleOptionSelect(exactMatch);
-                  } else if (filteredOptions.length === 1) {
-                    handleOptionSelect(filteredOptions[0]);
-                  }
-                }
-              }}
-              sx={{
-                width: '100%',
-                fontSize: 'var(--ds-text-body)',
-                color: 'var(--ds-gray-700)',
-                border: '1px solid var(--ds-gray-200)',
-                backgroundColor: 'var(--ds-gray-100)',
-                borderRadius: ds.radius.md,
-                padding: `${ds.space.mul(0, 3)} ${ds.space.mul(0, 5)} ${ds.space.mul(0, 3)} ${ds.space.mul(0, 14)}`,
-                transition: 'all 0.15s ease',
-                '&.Mui-focused': {
-                  backgroundColor: 'var(--ds-background-100)',
-                  borderColor: 'var(--ds-blue-500)',
-                  boxShadow: '0 0 0 3px var(--ds-blue-100)',
-                },
-                '& input::placeholder': { color: 'var(--ds-gray-500)', opacity: 1 },
-                '& .MuiInputBase-input': { padding: 0 },
-              }}
-            />
-          </Box>
-        )}
-
-        <OptionsList
-          filteredOptions={filteredOptions}
-          highlightedIndex={highlightedIndex}
-          onSelect={handleOptionSelect}
-          accountLegendItems={accountLegendItems}
-        />
-
-        <Box sx={{ borderTop: '1px solid var(--ds-gray-200)' }}>
-          <GlobalSearchFooterHints mentionMode={mentionMode} />
+              }
+            }}
+            sx={{
+              width: '100%',
+              fontSize: 'var(--ds-text-body)',
+              color: 'var(--ds-gray-700)',
+              border: '1px solid var(--ds-gray-200)',
+              backgroundColor: 'var(--ds-gray-100)',
+              borderRadius: ds.radius.md,
+              padding: `${ds.space.mul(0, 3)} ${ds.space.mul(0, 5)} ${ds.space.mul(0, 3)} ${ds.space.mul(0, 14)}`,
+              transition: 'all 0.15s ease',
+              '&.Mui-focused': {
+                backgroundColor: 'var(--ds-background-100)',
+                borderColor: 'var(--ds-blue-500)',
+                boxShadow: '0 0 0 3px var(--ds-blue-100)',
+              },
+              '& input::placeholder': { color: 'var(--ds-gray-500)', opacity: 1 },
+              '& .MuiInputBase-input': { padding: 0 },
+            }}
+          />
         </Box>
+
+        <OptionsList filteredOptions={filteredOptions} highlightedIndex={highlightedIndex} onSelect={handleOptionSelect} />
+
+        <Divider sx={{ marginTop: 0, marginBottom: 0 }} />
+        <GlobalSearchFooterHints mentionMode={mentionMode} />
       </Popover>
 
       {/* Leading search icon, matching the one shown inside the open popover's own
@@ -1286,7 +1248,7 @@ export default function GlobalPageSearch() {
       <Box
         sx={{
           position: 'absolute',
-          right: ds.space[6],
+          right: '30%',
           top: '50%',
           transform: 'translateY(-50%)',
           display: 'flex',
