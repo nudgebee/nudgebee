@@ -112,7 +112,23 @@ describe('Modal', () => {
       const dialogContent = document.querySelector('.MuiDialogContent-root') as HTMLElement;
       expect(dialogContent).not.toBeNull();
       expect(dialogContent.parentElement).toHaveClass('MuiBox-root');
-      expect(dialogContent.parentElement).toHaveStyle({ height: '240px' });
+      expect(dialogContent.parentElement).toHaveStyle({ height: '241px' });
+    });
+
+    // `scrollHeight` is whole-pixel, so it can under-report a fractional body by
+    // half a pixel. Pinning it exactly leaves the wrapper short of its own
+    // content, which raises a scrollbar, narrows the body, re-wraps the text a
+    // line taller, and then measures a height that no longer needs the scrollbar
+    // — flickering forever. Staying a pixel proud is what breaks that loop.
+    it('pins the wrapper a pixel proud of the measured content so a subpixel shortfall cannot raise a scrollbar (#34242)', () => {
+      setScrollHeight(198);
+      render(
+        <Modal open={true} handleClose={jest.fn()} title='Fractional content'>
+          body content
+        </Modal>
+      );
+      const wrapper = (document.querySelector('.MuiDialogContent-root') as HTMLElement).parentElement as HTMLElement;
+      expect(parseInt(getComputedStyle(wrapper).height, 10)).toBeGreaterThan(198);
     });
 
     it('re-measures and grows the wrapper height when content changes size across a re-render', () => {
@@ -123,7 +139,7 @@ describe('Modal', () => {
         </Modal>
       );
       let dialogContent = document.querySelector('.MuiDialogContent-root') as HTMLElement;
-      expect(dialogContent.parentElement).toHaveStyle({ height: '120px' });
+      expect(dialogContent.parentElement).toHaveStyle({ height: '121px' });
 
       // Simulates a table swapping its loading skeleton for real, taller rows.
       setScrollHeight(600);
@@ -133,7 +149,7 @@ describe('Modal', () => {
         </Modal>
       );
       dialogContent = document.querySelector('.MuiDialogContent-root') as HTMLElement;
-      expect(dialogContent.parentElement).toHaveStyle({ height: '600px' });
+      expect(dialogContent.parentElement).toHaveStyle({ height: '601px' });
     });
 
     it('skips the measured wrapper and keeps the fixed-height behavior when maxHeight is set', () => {
