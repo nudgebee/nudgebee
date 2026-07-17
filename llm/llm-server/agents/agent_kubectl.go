@@ -196,28 +196,36 @@ func (l KubectlAgent) GetCacheScope() core.CacheScope {
 }
 
 func (l KubectlAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlannerToolAction, toolResponse string) string {
-	if strings.EqualFold(toolRequest.Tool, tools.ToolExecuteKubectlCommand) {
-		resultsMap := map[string]any{}
-		err := common.UnmarshalJson([]byte(toolResponse), &resultsMap)
-		if err != nil {
-			return toolResponse
-		}
+	return filterKubectlLogResponse(toolRequest, toolResponse)
+}
 
-		stdout := ""
-		stderr := ""
-		if v, isOk := resultsMap["stdout"].(string); isOk {
-			stdout = v
-		}
-		if v, isOk := resultsMap["stderr"].(string); isOk {
-			stderr = v
-		}
-
-		// Handle kubectl logs specifically
-		if strings.Contains(toolRequest.ToolInput, "kubectl logs") {
-			logs := tools.GetErrorLinesFromLogStringOrDefault(stdout+stderr, true)
-			return strings.Join(logs, "\n")
-		}
-
+// filterKubectlLogResponse condenses a kubectl_execute response to error-context log
+// lines when the command was a `kubectl logs` invocation. For any other command, or an
+// unparseable payload, the response is returned unchanged. Shared by the kubectl
+// sub-agent and the direct k8s orchestrator so both surface logs identically.
+func filterKubectlLogResponse(toolRequest core.NBAgentPlannerToolAction, toolResponse string) string {
+	if !strings.EqualFold(toolRequest.Tool, tools.ToolExecuteKubectlCommand) {
+		return toolResponse
 	}
-	return toolResponse
+	// Only kubectl logs output is condensed; everything else passes through untouched.
+	if !strings.Contains(toolRequest.ToolInput, "kubectl logs") {
+		return toolResponse
+	}
+
+	resultsMap := map[string]any{}
+	if err := common.UnmarshalJson([]byte(toolResponse), &resultsMap); err != nil {
+		return toolResponse
+	}
+
+	stdout := ""
+	stderr := ""
+	if v, isOk := resultsMap["stdout"].(string); isOk {
+		stdout = v
+	}
+	if v, isOk := resultsMap["stderr"].(string); isOk {
+		stderr = v
+	}
+
+	logs := tools.GetErrorLinesFromLogStringOrDefault(stdout+stderr, true)
+	return strings.Join(logs, "\n")
 }

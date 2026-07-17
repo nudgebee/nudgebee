@@ -21,6 +21,14 @@ import (
 
 const AgentK8sOrchestratorName = "k8s_orchestrator"
 
+// AgentK8sOrchestrator2Name is an explicit, @-invocable handle that always runs the
+// direct-kubectl (v2) behavior regardless of the K8sOrchestratorV2Enabled flag. The
+// router never selects it; it exists so v1 (the flag-gated default) and v2 can be
+// invoked side by side — `@k8s_orchestrator` vs `@k8s_orchestrator_2` — for live eval
+// on the same deployment without a config flip. Both names share ONE implementation;
+// only (name, mode) differ, and the distinct name gives it a distinct cache key.
+const AgentK8sOrchestrator2Name = "k8s_orchestrator_2"
+
 func init() {
 	core.RegisterNBAgentFactoryWithAliases(AgentK8sOrchestratorName, func(accountId string) (core.NBAgent, error) {
 		return newK8sOrchestratorAgent(accountId), nil
@@ -34,6 +42,20 @@ func init() {
 		InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorName)
 	})
 
+	// Explicit always-direct eval handle (see AgentK8sOrchestrator2Name). Same
+	// implementation, distinct name → distinct cache key, invocable by @name only.
+	core.RegisterNBAgentFactoryWithAliases(AgentK8sOrchestrator2Name, func(accountId string) (core.NBAgent, error) {
+		return newK8sOrchestrator2Agent(accountId), nil
+	}, "k8s_debug_2")
+	core.RegisterAgentCacheInvalidator(func(accountId string, agentName string) {
+		if agentName == "" || agentName == AgentK8sOrchestrator2Name {
+			InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestrator2Name)
+		}
+	})
+	toolcore.RegisterToolCacheInvalidator(func(accountId string) {
+		InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestrator2Name)
+	})
+
 	common.CacheSubscribe("agent_invalidation", func(message string) {
 		parts := strings.Split(message, ":")
 		if len(parts) == 2 {
@@ -43,21 +65,49 @@ func init() {
 	})
 }
 
+// newK8sOrchestratorAgent is the primary, router-selected agent: its kubectl mode
+// follows the K8sOrchestratorV2Enabled global flag (the rollout knob).
 func newK8sOrchestratorAgent(accountId string) core.NBAgent {
+	return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestratorName, config.Config.K8sOrchestratorV2Enabled)
+}
+
+// newK8sOrchestrator2Agent is the always-direct eval handle (see AgentK8sOrchestrator2Name):
+// v2 behavior regardless of the flag, for live side-by-side comparison against the primary.
+func newK8sOrchestrator2Agent(accountId string) core.NBAgent {
+	return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestrator2Name, true)
+}
+
+// newK8sOrchestratorAgentMode builds the primary-named agent in an explicit kubectl
+// mode. Tests use it to exercise delegating (false) and direct (true) behavior.
+func newK8sOrchestratorAgentMode(accountId string, useKubectlDirect bool) core.NBAgent {
+	return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestratorName, useKubectlDirect)
+}
+
+// newK8sOrchestratorAgentNamed is the shared constructor. name drives identity and the
+// cache key (so the primary and the eval handle stay isolated); useKubectlDirect drives
+// the kubectl tool, the prompt's {{if .use_kubectl_direct}} branch, and the log filter.
+func newK8sOrchestratorAgentNamed(accountId, name string, useKubectlDirect bool) core.NBAgent {
 	return &K8sOrchestratorAgent{
-		accountId: accountId,
+		accountId:        accountId,
+		name:             name,
+		useKubectlDirect: useKubectlDirect,
 	}
 }
 
 type K8sOrchestratorAgent struct {
-	accountId string
+	accountId        string
+	name             string
+	useKubectlDirect bool
 }
 
 func (l *K8sOrchestratorAgent) GetName() string {
-	return AgentK8sOrchestratorName
+	return l.name
 }
 
 func (a *K8sOrchestratorAgent) GetNameAliases() []string {
+	if a.name == AgentK8sOrchestrator2Name {
+		return []string{"Debugger2", "k8s_debug_2"}
+	}
 	return []string{"Debugger", "k8s_debug"}
 }
 
@@ -66,10 +116,39 @@ func (l *K8sOrchestratorAgent) GetDescription() string {
 }
 
 func (l *K8sOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	return getSupportedTools(ctx, l.accountId, l.GetName())
+	// v2 (direct) holds kubectl_execute and runs kubectl itself; v1 (delegating)
+	// holds the kubectl sub-agent. Cache keys off GetName(); since the mode is fixed
+	// per deploy by the global flag, only one tool set is ever cached in production.
+	kubectlTool := KubectlAgentName
+	if l.useKubectlDirect {
+		kubectlTool = tools.ToolExecuteKubectlCommand
+	}
+	return getSupportedTools(ctx, l.accountId, l.GetName(), kubectlTool)
 }
 
 func (l *K8sOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+	// useKubectlDirect drives the prompt's {{if .use_kubectl_direct}} blocks: run
+	// kubectl_execute directly (v2) vs route kubectl work through the `kubectl` sub-agent (v1).
+	return renderK8sDebugReactPrompt(ctx, query, l.useKubectlDirect)
+}
+
+// UpdateToolResponseForPlanner condenses kubectl_execute log output for the planner
+// when running kubectl directly (v2). In delegating mode (v1) the kubectl sub-agent
+// does its own filtering, so this is a passthrough.
+func (l *K8sOrchestratorAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlannerToolAction, toolResponse string) string {
+	if l.useKubectlDirect {
+		return filterKubectlLogResponse(toolRequest, toolResponse)
+	}
+	return toolResponse
+}
+
+// renderK8sDebugReactPrompt renders the shared agent_k8s_debug_react prompt for both
+// k8s orchestrators. The useKubectlDirect flag drives the {{if .use_kubectl_direct}}
+// blocks in the prompt file: false = delegate kubectl work to the `kubectl` sub-agent,
+// true = hold and run `kubectl_execute` directly. All kubectl guidance lives in the
+// prompt file (gated by that flag), not appended here in Go, so the two orchestrators
+// cannot drift apart.
+func renderK8sDebugReactPrompt(ctx *security.RequestContext, query core.NBAgentRequest, useKubectlDirect bool) core.NBAgentPrompt {
 	promptKey := prompts.PromptAgentK8sDebugReact
 	promptRepoKey := prompts_repo.PromptAgentK8sDebugReact
 
@@ -90,6 +169,7 @@ func (l *K8sOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, que
 		"data_protection_rules": prompts_repo.GetPrompt(prompts_repo.PromptSharedDataProtectionRules),
 		"code_analysis_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
 		"time_handling_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),
+		"use_kubectl_direct":    useKubectlDirect,
 	}
 	// Render conditional blocks ({{if .remediation_enabled}}, {{.data_protection_rules}}, etc.).
 	// Two-pass strategy:
@@ -205,7 +285,10 @@ func InvalidateAgentSupportedToolsCache(accountId string, agentName string) {
 	agentSupportedToolsCacheInstance.delete(accountId, agentName)
 }
 
-func getSupportedTools(ctx *security.RequestContext, accountId string, agentName string) []toolcore.NBTool {
+// getSupportedTools builds the k8s orchestrator tool list. kubectlTool is the first
+// base tool: KubectlAgentName for the delegating orchestrator, or
+// tools.ToolExecuteKubectlCommand for the direct orchestrator that runs kubectl itself.
+func getSupportedTools(ctx *security.RequestContext, accountId string, agentName string, kubectlTool string) []toolcore.NBTool {
 	var staticTools []toolcore.NBTool
 
 	if cached, ok := agentSupportedToolsCacheInstance.get(accountId, agentName); ok {
@@ -218,7 +301,7 @@ func getSupportedTools(ctx *security.RequestContext, accountId string, agentName
 			toolNames = agentToolNames
 		} else {
 
-			baseTools := []string{KubectlAgentName, LogsAgentName, WebSearchAgentName, PostgresAgentName, EventsAgentName, TracesAgentName, MetricsAgentName, RedisAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RabbitMQAgentName, SecurityAgentName, HelmAgentName, GithubAgentName, getTicketAgentName(), WorkflowAgentName, ServiceDependencyGraph, VisualizationAgentName, RecommendationsAgentName, aws.AwsAgentName, aws.AgentAwsObservabilityName, GcpAgentName, AzureAgentName, ResourceSearchAgentName, ServerAgentName, AgentCode2, DelegateAgentToolName}
+			baseTools := []string{kubectlTool, LogsAgentName, WebSearchAgentName, PostgresAgentName, EventsAgentName, TracesAgentName, MetricsAgentName, RedisAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RabbitMQAgentName, SecurityAgentName, HelmAgentName, GithubAgentName, getTicketAgentName(), WorkflowAgentName, ServiceDependencyGraph, VisualizationAgentName, RecommendationsAgentName, aws.AwsAgentName, aws.AgentAwsObservabilityName, GcpAgentName, AzureAgentName, ResourceSearchAgentName, ServerAgentName, AgentCode2, DelegateAgentToolName}
 
 			// Conditionally add remediation agent based on feature flag
 			if config.Config.RemediationAgentEnabled {
