@@ -112,6 +112,19 @@ describe('GlobalPageSearch', () => {
     await waitFor(() => expect(screen.queryByText('All Events')).not.toBeInTheDocument());
   });
 
+  it('shows the All Pages caption and its provider-account legend even with no recents yet', () => {
+    mockDataContextValue = {
+      selectedCluster: null,
+      allCluster: [{ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' }],
+      setSelectedCluster: mockSetSelectedCluster,
+    };
+    render(<GlobalPageSearch />);
+    openSearch();
+    expect(screen.queryByText('Recents')).not.toBeInTheDocument();
+    expect(screen.getByText('All Pages')).toBeInTheDocument();
+    expect(screen.getByText('AWS Prod')).toBeInTheDocument();
+  });
+
   it('shows a Recents section for previously-picked pages, alongside the full list', () => {
     mockGetRecentPageSearches.mockReturnValue(['/troubleshoot#all-events/all']);
     render(<GlobalPageSearch />);
@@ -120,6 +133,23 @@ describe('GlobalPageSearch', () => {
     expect(screen.getByText('All Pages')).toBeInTheDocument();
     // One copy in "Recents", one in "All Pages".
     expect(screen.getAllByText('All Events')).toHaveLength(2);
+  });
+
+  it('shows an account-name chip on a recent search that carries an accountId, and a provider legend under All Pages', () => {
+    mockGetRecentPageSearches.mockReturnValue(['/cloud-account/details/aws-1#summary']);
+    mockDataContextValue = {
+      selectedCluster: null,
+      allCluster: [{ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' }],
+      setSelectedCluster: mockSetSelectedCluster,
+    };
+    render(<GlobalPageSearch />);
+    openSearch();
+    expect(screen.getByText('Recents')).toBeInTheDocument();
+    expect(screen.getByText('All Pages')).toBeInTheDocument();
+    // One "AWS Prod" chip on the Recents row (its resolved account), one more
+    // in the provider legend under "All Pages" (AWS is the only provider with
+    // a resolved account in this fixture).
+    expect(screen.getAllByText('AWS Prod')).toHaveLength(2);
   });
 
   it('scopes results to a mentioned account and navigates into its detail page', () => {

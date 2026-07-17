@@ -49,7 +49,7 @@ const OPTION_HEIGHT = 36;
 const OVERSCAN_COUNT = 10;
 const VIRTUALIZATION_THRESHOLD = 200;
 const MAX_LIST_HEIGHT = 420;
-const POPOVER_WIDTH = ds.space.mul(0, 320);
+const POPOVER_WIDTH = ds.space.mul(0, 340);
 
 // Icon shown per header-search row: the parent page's icon (same icons the
 // main nav uses for these sections), not a distinct icon per tab.
@@ -138,17 +138,24 @@ const NAV_SEARCH_LABEL_ACRONYMS = new Set(['pv', 'pvc', 'dbms', 'slo', 'cis', 's
 const NAV_SEARCH_PATH_CHAR_LIMIT = 50;
 const NAV_SEARCH_PATH_MAX_WIDTH = '60%';
 
+const titleCaseWord = (word) =>
+  NAV_SEARCH_LABEL_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1);
+
 // Provider-detail fragment lists (k8sDetailsSearchFragments etc.) only carry
 // a slash-joined slug like "k8s/apps-infra/pvc" — there's no separate human
-// title. Derive one from the slug's last segment so the search row reads
-// "PVC" instead of the whole slug; the full slug moves to the row's `type`
-// (path) chip instead.
+// title. Derive one by dropping the leading provider segment (already shown
+// via the row's own icon) and title-casing what's left. For a provider-level
+// tab this is just the tab name ("k8s/summary" -> "Summary"); for a
+// per-service tab it's "<service> <tab>" ("aws/ec2/summary" -> "EC2
+// Summary", "k8s/apps-infra/pvc" -> "Apps Infra PVC") — the service segment
+// is what disambiguates otherwise-identical labels, since every service has
+// its own "Summary"/"Events"/"Instances" tab that would otherwise all read
+// the same without it.
 const navSearchProviderLabel = (slug) =>
   slug
     .split('/')
-    .pop()
-    .split('-')
-    .map((word) => (NAV_SEARCH_LABEL_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1)))
+    .slice(1)
+    .map((segment) => segment.split('-').map(titleCaseWord).join(' '))
     .join(' ');
 
 // Search rows for one provider's detail-page tabs (K8s/AWS/Azure/GCP), or []
@@ -407,12 +414,27 @@ const OptionItem = React.memo(function OptionItem({ opt, highlighted = false, na
       }}
     >
       {opt?.icon && <SafeIcon src={opt.icon} alt={opt?.type ?? ''} style={{ width: 16, height: 16, flexShrink: 0, objectFit: 'contain' }} />}
-      {opt?.badge && (
-        <Box sx={{ flexShrink: 0, maxWidth: '35%' }}>
-          <Label text={opt.badge} tone='info' maxWidth='100%' displayTooltip tooltipCharLimit={18} />
+      <OptionLabel label={opt?.label ?? ''} />
+      {opt?.accountName && (
+        <Box sx={{ flexShrink: 0, maxWidth: '30%' }}>
+          {/* Chip has no CSS truncation of its own (whiteSpace: 'nowrap', no
+              overflow: hidden) — a long account name would otherwise spill
+              past this 30% slot and collide with the path chip. displayTooltip
+              shortens the actual text (not just visually), same fix the
+              `type` Label chip below already uses for the same row-crowding
+              problem. */}
+          <Chip
+            variant='tag'
+            tone='info'
+            size='xs'
+            icon={<CloudProviderIcon cloud_provider={opt.cloud_provider} width='12px' height='12px' />}
+            displayTooltip
+            tooltipCharLimit={15}
+          >
+            {opt.accountName}
+          </Chip>
         </Box>
       )}
-      <OptionLabel label={opt?.label ?? ''} />
       {opt?.type && (
         <Box sx={{ ml: 'auto', flexShrink: 0, maxWidth: opt.typeMaxWidth ?? '40%' }}>
           {/* Label capitalizes by default; pass typeTextTransform='none' for chips
@@ -433,21 +455,63 @@ const OptionItem = React.memo(function OptionItem({ opt, highlighted = false, na
 // right before it.
 const startsNewSection = (opt, prevOpt) => !!opt?.sectionLabel && opt.sectionLabel !== prevOpt?.sectionLabel;
 
-function SectionCaption({ label }) {
+// `legendItems` (only ever passed for the "All Pages" caption — see
+// accountLegendItems in the main component below) renders inline, on the
+// same row as the label text, not stacked below it: {provider, name} for
+// each of AWS/Azure/GCP/K8s that currently resolves to an account. A
+// provider-detail row under "All Pages" only shows its own tab's path in the
+// `type` chip, not which account resolveSearchAccountId picked for that
+// provider, so this answers "which account will I land in" before the click.
+// A provider with no resolved account (fresh tenant, none connected yet) is
+// omitted rather than shown blank; the whole row wraps to a second line if
+// the popover is too narrow to fit everything on one.
+function SectionCaption({ label, legendItems = [] }) {
   return (
-    <Typography
+    <Box
       sx={{
+        display: 'flex',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: ds.space[2],
         padding: 'var(--ds-overlay-item-padding-md)',
         margin: '0 var(--ds-overlay-item-margin-x)',
-        fontSize: 'var(--ds-text-caption)',
-        fontWeight: 'var(--ds-font-weight-semibold)',
-        color: 'var(--ds-gray-500)',
-        textTransform: 'uppercase',
-        letterSpacing: '0.02em',
       }}
     >
-      {label}
-    </Typography>
+      <Typography
+        sx={{
+          fontSize: 'var(--ds-text-caption)',
+          fontWeight: 'var(--ds-font-weight-semibold)',
+          color: 'var(--ds-gray-500)',
+          textTransform: 'uppercase',
+          letterSpacing: '0.02em',
+          flexShrink: 0,
+        }}
+      >
+        {label}
+      </Typography>
+      {legendItems.length > 0 && (
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: ds.space[1], ml: 'auto' }}>
+          {legendItems.map((item) => (
+            // displayTooltip shortens long account names (e.g. "gcp-dev -
+            // centered-binder-487409-m5") so the 4-chip group is narrow
+            // enough to actually fit on the same line as the "ALL PAGES"
+            // label — otherwise flex-wrap drops the whole group (it wraps as
+            // one flex item, not per-chip) to its own line below the label.
+            <Chip
+              key={item.provider}
+              variant='tag'
+              tone='info'
+              size='xs'
+              icon={<CloudProviderIcon cloud_provider={item.provider} width='12px' height='12px' />}
+              displayTooltip
+              tooltipCharLimit={18}
+            >
+              {item.name}
+            </Chip>
+          ))}
+        </Box>
+      )}
+    </Box>
   );
 }
 
@@ -463,7 +527,7 @@ const scrollboxSx = {
 
 // Flat, virtualized-when-large result list. No "selected" section (this box
 // never has a `value`) and no group headers — see the file-level comment.
-function OptionsList({ filteredOptions, highlightedIndex, onSelect }) {
+function OptionsList({ filteredOptions, highlightedIndex, onSelect, accountLegendItems = [] }) {
   const navActive = highlightedIndex >= 0;
   const scrollRef = useRef(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -518,12 +582,15 @@ function OptionsList({ filteredOptions, highlightedIndex, onSelect }) {
     );
   }
 
-  const renderRow = (opt, idx) => (
-    <React.Fragment key={`${opt.value}-${idx}`}>
-      {startsNewSection(opt, filteredOptions[idx - 1]) && <SectionCaption label={opt.sectionLabel} />}
-      <OptionItem opt={opt} highlighted={idx === highlightedIndex} navIndex={idx} navActive={navActive} onSelect={onSelect} />
-    </React.Fragment>
-  );
+  const renderRow = (opt, idx) => {
+    const isNewSection = startsNewSection(opt, filteredOptions[idx - 1]);
+    return (
+      <React.Fragment key={(opt.sectionLabel || '') + '-' + opt.value}>
+        {isNewSection && <SectionCaption label={opt.sectionLabel} legendItems={opt.sectionLabel === 'All Pages' ? accountLegendItems : []} />}
+        <OptionItem opt={opt} highlighted={idx === highlightedIndex} navIndex={idx} navActive={navActive} onSelect={onSelect} />
+      </React.Fragment>
+    );
+  };
 
   return (
     <Box ref={scrollRef} onScroll={handleScroll} sx={scrollboxSx}>
@@ -572,6 +639,21 @@ export default function GlobalPageSearch() {
   const awsSearchAccountId = useMemo(() => resolveSearchAccountId('AWS'), [resolveSearchAccountId]);
   const azureSearchAccountId = useMemo(() => resolveSearchAccountId('Azure'), [resolveSearchAccountId]);
   const gcpSearchAccountId = useMemo(() => resolveSearchAccountId('GCP'), [resolveSearchAccountId]);
+
+  // {provider, name} for each provider that currently resolves to an account —
+  // rendered inline on the "All Pages" caption row (see SectionCaption's
+  // `legendItems` prop), so the user can tell which account each provider's
+  // rows under "All Pages" will actually navigate into. A provider with no
+  // resolved account yet is dropped rather than shown with a blank name.
+  const accountLegendItems = useMemo(() => {
+    const resolveName = (id) => allCluster?.find((c) => c.value === id)?.label;
+    return [
+      { provider: 'AWS', name: resolveName(awsSearchAccountId) },
+      { provider: 'Azure', name: resolveName(azureSearchAccountId) },
+      { provider: 'GCP', name: resolveName(gcpSearchAccountId) },
+      { provider: 'K8s', name: resolveName(k8sSearchAccountId) },
+    ].filter((item) => item.name);
+  }, [allCluster, awsSearchAccountId, azureSearchAccountId, gcpSearchAccountId, k8sSearchAccountId]);
 
   // Navigates to a search result. K8s/AWS/Azure/GCP results carry `accountId`
   // for whichever account resolveSearchAccountId picked. ClusterDropDown
@@ -724,22 +806,36 @@ export default function GlobalPageSearch() {
   // Two lists under one plain caption each (opt.sectionLabel): recent picks
   // under "Recents", then the full navSearchItems under "All Pages" — a
   // recent pick intentionally still appears in "All Pages" too (as a
-  // separate option copy), not just "Recents". Only added once there's at
-  // least one recent pick — with none yet, a lone "All Pages" caption over
-  // every single result would just be clutter. Still one flat array under
-  // the hood, so the ArrowUp/ArrowDown + Enter-to-select keyboard nav below
-  // works identically across both sections.
+  // separate option copy), not just "Recents". "All Pages" is always tagged
+  // (even with zero recents, when it's the only section) since its caption
+  // row is also where the AWS/Azure/GCP/K8s account-legend chips live — the
+  // one place a first-time user (no recents yet) can see which account each
+  // provider's rows resolve to. "Recents" is prepended only once there's at
+  // least one recent pick. Still one flat array under the hood, so the
+  // ArrowUp/ArrowDown + Enter-to-select keyboard nav below works identically
+  // whether one or both sections are present.
+  //
+  // Recent rows additionally get `accountName`/`cloud_provider` stamped on
+  // (when the recent pick carries an accountId) so OptionItem can render an
+  // account-name chip — a recent value's account isn't shown anywhere else
+  // in the row, and unlike the "All Pages" run (see accountLegendItems
+  // below), a Recents row's account isn't necessarily the provider's
+  // *current* resolved account (it's whatever account the user was actually
+  // in when they picked it), so a shared legend can't stand in for it here.
   const navSearchItemsWithRecent = useMemo(() => {
+    const allOptions = navSearchItems.map((opt) => ({ ...opt, sectionLabel: 'All Pages' }));
     if (recentSearchValues.length === 0) {
-      return navSearchItems;
+      return allOptions;
     }
     const recentOptions = recentSearchValues
       .map(resolveRecentOption)
       .filter(Boolean)
-      .map((opt) => ({ ...opt, sectionLabel: 'Recents' }));
-    const allOptions = navSearchItems.map((opt) => ({ ...opt, sectionLabel: 'All Pages' }));
+      .map((opt) => {
+        const account = opt.accountId ? allCluster?.find((c) => c.value === opt.accountId) : null;
+        return { ...opt, sectionLabel: 'Recents', accountName: account?.label, cloud_provider: account?.cloud_provider };
+      });
     return [...recentOptions, ...allOptions];
-  }, [navSearchItems, recentSearchValues, resolveRecentOption]);
+  }, [navSearchItems, recentSearchValues, resolveRecentOption, allCluster]);
 
   // Once an account is picked, results are scoped to just that account's
   // provider detail pages — reuses the same navSearchProviderItems helper the
@@ -1158,7 +1254,12 @@ export default function GlobalPageSearch() {
           </Box>
         )}
 
-        <OptionsList filteredOptions={filteredOptions} highlightedIndex={highlightedIndex} onSelect={handleOptionSelect} />
+        <OptionsList
+          filteredOptions={filteredOptions}
+          highlightedIndex={highlightedIndex}
+          onSelect={handleOptionSelect}
+          accountLegendItems={accountLegendItems}
+        />
 
         <Box sx={{ borderTop: '1px solid var(--ds-gray-200)' }}>
           <GlobalSearchFooterHints mentionMode={mentionMode} />
