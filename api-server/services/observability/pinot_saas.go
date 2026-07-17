@@ -27,6 +27,7 @@ const (
 	PinotNamespaceCol  = "pinot_namespace_col"
 	PinotPodCol        = "pinot_pod_col"
 	PinotContainerCol  = "pinot_container_col"
+	PinotAppCol        = "pinot_app_col"
 	PinotTLSSkipVerify = "pinot_tls_skip_verify"
 )
 
@@ -44,6 +45,7 @@ type PinotConfig struct {
 	NamespaceCol  string // log-group grouping column (default: namespace)
 	PodCol        string // log-group grouping column (default: pod)
 	ContainerCol  string // log-group grouping column (default: container)
+	AppCol        string // canonical "app" mapping (optional, no default — see SeverityCol)
 	TLSSkipVerify bool   // user-configured opt-in for self-signed certs
 }
 
@@ -107,6 +109,8 @@ func GetPinotConfig(ctx *security.RequestContext, accountId string) (*PinotConfi
 			cfg.PodCol = value
 		case PinotContainerCol:
 			cfg.ContainerCol = value
+		case PinotAppCol:
+			cfg.AppCol = value
 		case PinotTLSSkipVerify:
 			cfg.TLSSkipVerify = strings.EqualFold(strings.TrimSpace(value), "true")
 		}
@@ -237,6 +241,9 @@ func (p *PinotSaasSource) GetDynamicLabelMapping(ctx *security.RequestContext, a
 	if cfg.ContainerCol != "" {
 		m["container"] = cfg.ContainerCol
 	}
+	if cfg.AppCol != "" {
+		m["app"] = cfg.AppCol
+	}
 	if cfg.SeverityCol != "" {
 		m["level"] = cfg.SeverityCol
 	}
@@ -266,6 +273,9 @@ func (p *PinotSaasSource) applyMergedLabelOverrides(ctx *security.RequestContext
 	}
 	if v := merged["container"]; v != "" {
 		cfg.ContainerCol = v
+	}
+	if v := merged["app"]; v != "" {
+		cfg.AppCol = v
 	}
 	if v := merged["level"]; v != "" {
 		cfg.SeverityCol = v
