@@ -865,7 +865,105 @@ func FetchLogGroup(ctx *security.RequestContext, fetchLogGroupRequest FetchLogGr
 	if err != nil {
 		return LogGroupOutput{}, err
 	}
-	return source.QueryLogGroup(ctx, fetchLogGroupRequest)
+	out, err := source.QueryLogGroup(ctx, fetchLogGroupRequest)
+	if err != nil {
+		return LogGroupOutput{}, err
+	}
+	return mergeLogGroupsByPattern(out), nil
+}
+
+// mergeLogGroupsByPattern collapses groups describing the same pattern in the same
+// place, so that pattern_hash identifies exactly one row.
+//
+// Sources split into two camps. Some group in-process by pattern hash (Loki,
+// SolarWinds, Loggly) and arrive already merged — for them this is a no-op. The
+// rest push aggregation down to the provider and group by the *raw* message
+// (Elasticsearch terms, Dynatrace summarize, Pinot GROUP BY, New Relic FACET), so
+// one pattern arrives split across a row per message variant, every row carrying
+// the same pattern_hash. The UI treats pattern_hash as a ticket reference id and
+// resolves it with a findIndex, so duplicate hashes silently attach a ticket to
+// whichever row happens to come first.
+//
+// Merging centrally lets each source keep the strategy that suits it while the
+// invariant holds for all of them.
+func mergeLogGroupsByPattern(out LogGroupOutput) LogGroupOutput {
+	type mergeKey struct{ hash, namespace, workload, level string }
+
+	type entry struct {
+		group *LogGroup
+		tsIdx map[int64]int // timestamp -> index into Timestamps/Values
+	}
+
+	merged := make(map[mergeKey]*entry, len(out.Groups))
+	order := make([]mergeKey, 0, len(out.Groups))
+
+	for i := range out.Groups {
+		g := out.Groups[i]
+		key := mergeKey{hash: g.PatternHash, namespace: g.Namespace, workload: g.Workload, level: g.Level}
+
+		existing, ok := merged[key]
+		if !ok {
+			cp := g
+			cp.Timestamps = append([]int64(nil), g.Timestamps...)
+			cp.Values = append([]float64(nil), g.Values...)
+
+			tsIdx := make(map[int64]int, len(cp.Timestamps))
+			for j, ts := range cp.Timestamps {
+				tsIdx[ts] = j
+			}
+
+			merged[key] = &entry{group: &cp, tsIdx: tsIdx}
+			order = append(order, key)
+			continue
+		}
+
+		existing.group.Count += g.Count
+
+		// Series are summed per timestamp rather than concatenated: the Prometheus
+		// source returns a real multi-point series, and the rest a single point.
+		for j, ts := range g.Timestamps {
+			var v float64
+			if j < len(g.Values) {
+				v = g.Values[j]
+			}
+			if idx, found := existing.tsIdx[ts]; found {
+				existing.group.Values[idx] += v
+				continue
+			}
+			existing.tsIdx[ts] = len(existing.group.Timestamps)
+			existing.group.Timestamps = append(existing.group.Timestamps, ts)
+			existing.group.Values = append(existing.group.Values, v)
+		}
+	}
+
+	groups := make([]LogGroup, 0, len(order))
+	for _, key := range order {
+		g := merged[key].group
+		sort.Sort(&timestampedValues{timestamps: g.Timestamps, values: g.Values})
+		groups = append(groups, *g)
+	}
+
+	// Merging changes counts, so the by-count ordering the sources applied no
+	// longer holds.
+	sort.SliceStable(groups, func(i, j int) bool { return groups[i].Count > groups[j].Count })
+
+	return LogGroupOutput{Groups: groups}
+}
+
+// timestampedValues keeps a group's Values aligned with its Timestamps while
+// sorting chronologically.
+type timestampedValues struct {
+	timestamps []int64
+	values     []float64
+}
+
+func (t *timestampedValues) Len() int           { return len(t.timestamps) }
+func (t *timestampedValues) Less(i, j int) bool { return t.timestamps[i] < t.timestamps[j] }
+func (t *timestampedValues) Swap(i, j int) {
+	t.timestamps[i], t.timestamps[j] = t.timestamps[j], t.timestamps[i]
+	if i < len(t.values) && j < len(t.values) {
+		t.values[i], t.values[j] = t.values[j], t.values[i]
+	}
 }
 
 // providerStaticCaps holds all statically-declared boolean capabilities for a provider.

@@ -720,7 +720,10 @@ func (s *NewRelicLogSource) QueryLogGroup(ctx *security.RequestContext, req Fetc
 	// Pod naming: {workload}-{replica-hash}-{pod-hash} or {workload}-{pod-hash}
 	// FACET order: message, namespace_name, workload_name, container_name
 	startTime, endTime := s.getTimeRangeSeconds(req.StartTime, req.EndTime)
-	nrqlQuery := fmt.Sprintf("SELECT count(*) as value FROM Log WHERE %s FACET message, namespace_name, capture(pod_name, r'^(?P<workload>.+?)(-[a-z0-9]{5,10})?-[a-z0-9]{5}$') as workload_name, container_name SINCE %d UNTIL %d LIMIT 100",
+	// last_seen rides along with the count so each group reports when it actually
+	// last occurred; without it every group reports the end of the query window and
+	// the UI shows one time for every row.
+	nrqlQuery := fmt.Sprintf("SELECT count(*) as value, max(timestamp) as last_seen FROM Log WHERE %s FACET message, namespace_name, capture(pod_name, r'^(?P<workload>.+?)(-[a-z0-9]{5,10})?-[a-z0-9]{5}$') as workload_name, container_name SINCE %d UNTIL %d LIMIT 100",
 		strings.Join(conditions, " AND "), startTime, endTime)
 
 	ctx.GetLogger().Info("NewRelic Log Group Query", "query", nrqlQuery)
@@ -837,6 +840,23 @@ func generateRawHash(value string) string {
 	return encoded
 }
 
+// newRelicLastSeenUnix reads the last_seen aggregate off a faceted NRQL result as
+// unix seconds, falling back to the supplied window end when it is absent or
+// unusable. New Relic reports timestamps as epoch milliseconds.
+func newRelicLastSeenUnix(result map[string]any, fallbackSec int64) int64 {
+	switch v := result["last_seen"].(type) {
+	case float64:
+		if v > 0 {
+			return int64(v) / 1000
+		}
+	case string:
+		if ms, err := strconv.ParseFloat(v, 64); err == nil && ms > 0 {
+			return int64(ms) / 1000
+		}
+	}
+	return fallbackSec
+}
+
 // convertToLogGroupOutput converts NRQL faceted results to LogGroupOutput format
 func (s *NewRelicLogSource) convertToLogGroupOutput(results []map[string]any, timestamp int64) LogGroupOutput {
 	groups := make([]LogGroup, 0, len(results))
@@ -849,7 +869,7 @@ func (s *NewRelicLogSource) convertToLogGroupOutput(results []map[string]any, ti
 		}
 
 		group := LogGroup{
-			Timestamps: []int64{timestamp},
+			Timestamps: []int64{newRelicLastSeenUnix(r, timestamp)},
 			Values:     []float64{count},
 			Count:      int64(math.Round(count)),
 		}

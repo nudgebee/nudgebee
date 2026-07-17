@@ -380,9 +380,14 @@ func buildHiveLogGroupSQL(cols hiveLogGroupCols, tsMode hiveTsMode, startMs, end
 		conditions = append(conditions, fmt.Sprintf("%s LIKE '%s-%%'", podColQ, hiveEscapeString(selectedWorkload)))
 	}
 
+	// max_ts rides along with the count so each group reports when it actually last
+	// occurred; without it every group reports the end of the query window and the
+	// UI shows one time for every row. It is an aggregate, so it needs no GROUP BY
+	// entry.
 	return fmt.Sprintf(
-		"SELECT %s, COUNT(*) AS cnt FROM %s WHERE %s GROUP BY %s ORDER BY cnt DESC LIMIT %d",
+		"SELECT %s, COUNT(*) AS cnt, MAX(%s) AS max_ts FROM %s WHERE %s GROUP BY %s ORDER BY cnt DESC LIMIT %d",
 		strings.Join(selectCols, ", "),
+		tsColQ,
 		hiveQualifiedTable(cols.Database, cols.Table),
 		strings.Join(conditions, " AND "),
 		strings.Join(groupCols, ", "),
@@ -390,9 +395,60 @@ func buildHiveLogGroupSQL(cols hiveLogGroupCols, tsMode hiveTsMode, startMs, end
 	)
 }
 
+// hiveMaxTsToUnixSec builds a converter from the MAX(ts) aggregate to unix
+// seconds, honouring how the tenant's timestamp column is stored. Returns 0 for a
+// value it cannot read, which callers treat as "no reading". Mirrors
+// pinotMaxTsToUnixSec.
+func hiveMaxTsToUnixSec(mode hiveTsMode) func(any) int64 {
+	if mode.IsString {
+		goFmt := mode.GoFormat
+		return func(v any) int64 {
+			s, ok := v.(string)
+			if !ok || s == "" || goFmt == "" {
+				return 0
+			}
+			t, err := time.Parse(goFmt, s)
+			if err != nil {
+				return 0
+			}
+			return t.Unix()
+		}
+	}
+
+	// ScaleFactor is the divisor taking epoch-ms to the column's unit, so it is
+	// also the multiplier taking the column's value back to ms.
+	sf := mode.ScaleFactor
+	if sf <= 0 {
+		sf = 1
+	}
+	return func(v any) int64 {
+		var f float64
+		switch x := v.(type) {
+		case float64:
+			f = x
+		case int64:
+			f = float64(x)
+		case int:
+			f = float64(x)
+		case string:
+			n, err := strconv.ParseFloat(x, 64)
+			if err != nil {
+				return 0
+			}
+			f = n
+		default:
+			return 0
+		}
+		if f <= 0 {
+			return 0
+		}
+		return int64(f*float64(sf)) / 1000
+	}
+}
+
 // parseHiveLogGroupBytes parses a Hive resultset JSON into LogGroupOutput.
 // Delegates to parseHiveLogGroupFromStruct after unmarshalling.
-func parseHiveLogGroupBytes(data []byte, cols hiveLogGroupCols, endTime int64) (LogGroupOutput, error) {
+func parseHiveLogGroupBytes(data []byte, cols hiveLogGroupCols, tsMode hiveTsMode, endTime int64) (LogGroupOutput, error) {
 	var r hiveQueryResponse
 	if err := json.Unmarshal(data, &r); err != nil {
 		return LogGroupOutput{}, fmt.Errorf("hive: failed to unmarshal log-group response: %w", err)
@@ -400,7 +456,7 @@ func parseHiveLogGroupBytes(data []byte, cols hiveLogGroupCols, endTime int64) (
 	if len(r.Errors) > 0 {
 		return LogGroupOutput{}, fmt.Errorf("hive log-group query error: %v", r.Errors[0])
 	}
-	return parseHiveLogGroupFromStruct(&r, cols, endTime), nil
+	return parseHiveLogGroupFromStruct(&r, cols, tsMode, endTime), nil
 }
 
 // QueryLogGroup implements LogGroupSource for the relay-mode Hive integration.
@@ -445,7 +501,7 @@ func (h *HiveSource) QueryLogGroup(ctx *security.RequestContext, req FetchLogGro
 	if err != nil {
 		return LogGroupOutput{}, fmt.Errorf("hive.QueryLogGroup: %w", err)
 	}
-	return parseHiveLogGroupBytes(rawBytes, cols, req.EndTime)
+	return parseHiveLogGroupBytes(rawBytes, cols, tsMode, req.EndTime)
 }
 
 func fetchHiveSchema(ctx *security.RequestContext, accountId, db, table string) (*hiveSchemaResponse, error) {

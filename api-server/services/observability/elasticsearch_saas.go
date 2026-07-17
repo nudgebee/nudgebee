@@ -765,6 +765,11 @@ func (e *ElasticSaasSource) QueryLogGroup(ctx *security.RequestContext, req Fetc
 					"levels": map[string]any{
 						"terms": map[string]any{"field": "level", "size": 10},
 					},
+					// Read back by parseESLogGroupResponse. Without it every group
+					// reports the end of the query window as its last-seen.
+					"last_seen": map[string]any{
+						"max": map[string]any{"field": "@timestamp"},
+					},
 				},
 			},
 		},

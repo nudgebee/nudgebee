@@ -714,6 +714,7 @@ func groupSWLogsByPattern(logs []OutputLog, podNamespaces map[string]string, sel
 		container string
 		level     string
 		count     int64
+		lastSeen  int64 // unix seconds of the newest line in the group
 	}
 
 	grouped := make(map[string]*groupEntry)
@@ -751,16 +752,14 @@ func groupSWLogsByPattern(logs []OutputLog, podNamespaces map[string]string, sel
 			grouped[compositeKey] = entry
 		}
 		entry.count++
+
+		if ts := logLastSeenUnix(log.Timestamp); ts > entry.lastSeen {
+			entry.lastSeen = ts
+		}
 	}
 
-	var endTimeSec int64
-	if endTime <= 0 {
-		endTimeSec = time.Now().Unix()
-	} else if endTime >= 1e12 {
-		endTimeSec = endTime / 1000
-	} else {
-		endTimeSec = endTime
-	}
+	// Only used when a group's own lines carry no parseable timestamp.
+	endTimeSec := logGroupWindowEndUnix(endTime)
 
 	groups := make([]LogGroup, 0, len(grouped))
 	for _, entry := range grouped {
@@ -782,6 +781,11 @@ func groupSWLogsByPattern(logs []OutputLog, podNamespaces map[string]string, sel
 			level = "error"
 		}
 
+		lastSeen := entry.lastSeen
+		if lastSeen <= 0 {
+			lastSeen = endTimeSec
+		}
+
 		groups = append(groups, LogGroup{
 			Sample:      entry.sample,
 			Namespace:   entry.namespace,
@@ -791,7 +795,7 @@ func groupSWLogsByPattern(logs []OutputLog, podNamespaces map[string]string, sel
 			PatternHash: entry.hash,
 			Level:       level,
 			Count:       entry.count,
-			Timestamps:  []int64{endTimeSec},
+			Timestamps:  []int64{lastSeen},
 			Values:      []float64{float64(entry.count)},
 		})
 	}

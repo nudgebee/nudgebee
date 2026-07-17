@@ -157,6 +157,34 @@ func ParseDateToMillis(dateStr string) (int64, error) {
 	return 0, errors.New("no matching date format found for: " + dateStr)
 }
 
+// logGroupWindowEndUnix normalizes a request's end time to unix seconds. Callers
+// use it only as the fallback for a group whose own lines yield no timestamp —
+// reporting it as a group's last-seen makes every row read as the same time.
+func logGroupWindowEndUnix(endTime int64) int64 {
+	switch {
+	case endTime <= 0:
+		return time.Now().Unix()
+	case endTime >= 1e12: // milliseconds
+		return endTime / 1000
+	default:
+		return endTime
+	}
+}
+
+// logLastSeenUnix converts an OutputLog timestamp to unix seconds for use as a log
+// group's last-seen. Returns 0 when the timestamp is absent or unparseable, which
+// callers treat as "no reading" and fall back to the query window.
+func logLastSeenUnix(timestamp string) int64 {
+	if timestamp == "" {
+		return 0
+	}
+	ms, err := ParseDateToMillis(timestamp)
+	if err != nil {
+		return 0
+	}
+	return ms / 1000
+}
+
 // isEmptyWhereClause returns true when a QueryWhereClause has no conditions at all.
 func isEmptyWhereClause(where query.QueryWhereClause) bool {
 	return len(where.Binary) == 0 && len(where.And) == 0 && len(where.Or) == 0 && where.Not == nil

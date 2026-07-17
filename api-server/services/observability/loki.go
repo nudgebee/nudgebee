@@ -1216,6 +1216,7 @@ func (s *LokiSource) groupLogsByPattern(logs []OutputLog, endTime int64) LogGrou
 		container string
 		level     string
 		count     int64
+		lastSeen  int64 // unix seconds of the newest line in the group
 	}
 
 	grouped := make(map[string]*groupEntry) // keyed by hash|namespace|workload|level
@@ -1260,23 +1261,25 @@ func (s *LokiSource) groupLogsByPattern(logs []OutputLog, endTime int64) LogGrou
 			grouped[compositeKey] = entry
 		}
 		entry.count++
+
+		if ts := logLastSeenUnix(log.Timestamp); ts > entry.lastSeen {
+			entry.lastSeen = ts
+		}
 	}
 
-	// Use the end of the query window as the single timestamp.
-	var endTimeSec int64
-	if endTime <= 0 {
-		endTimeSec = time.Now().Unix()
-	} else if endTime >= 1e12 {
-		endTimeSec = endTime / 1000
-	} else {
-		endTimeSec = endTime
-	}
+	// Only used when a group's own lines carry no parseable timestamp.
+	endTimeSec := logGroupWindowEndUnix(endTime)
 
 	groups := make([]LogGroup, 0, len(grouped))
 	for _, entry := range grouped {
 		containerID := ""
 		if entry.namespace != "" && entry.workload != "" {
 			containerID = fmt.Sprintf("/k8s/%s/%s", entry.namespace, entry.workload)
+		}
+
+		lastSeen := entry.lastSeen
+		if lastSeen <= 0 {
+			lastSeen = endTimeSec
 		}
 
 		groups = append(groups, LogGroup{
@@ -1291,7 +1294,7 @@ func (s *LokiSource) groupLogsByPattern(logs []OutputLog, endTime int64) LogGrou
 			PatternHash: entry.hash,
 			Level:       entry.level,
 			Count:       entry.count,
-			Timestamps:  []int64{endTimeSec},
+			Timestamps:  []int64{lastSeen},
 			Values:      []float64{float64(entry.count)},
 		})
 	}

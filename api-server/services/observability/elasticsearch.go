@@ -858,6 +858,11 @@ func (e *ElasticSource) QueryLogGroup(ctx *security.RequestContext, req FetchLog
 				"levels": map[string]any{
 					"terms": map[string]any{"field": "level", "size": 10},
 				},
+				// When the pattern was last seen. Without it every group reports the
+				// end of the query window and the UI shows one time for every row.
+				"last_seen": map[string]any{
+					"max": map[string]any{"field": "@timestamp"},
+				},
 			},
 		},
 	}
@@ -890,6 +895,33 @@ func (e *ElasticSource) QueryLogGroup(ctx *security.RequestContext, req FetchLog
 	}
 
 	return parseESLogGroupResponse(rawJSON, req.EndTime)
+}
+
+// esBucketLastSeenUnix reads the last_seen sub-aggregation off a log group bucket
+// as unix seconds, falling back to the end of the query window when the bucket has
+// no usable reading.
+//
+// Note the unit change: a max over a date field comes back as epoch millis, and the
+// group's Timestamps are seconds (the UI multiplies them by 1000). endTime is
+// millis for the same reason the range filter declares epoch_millis.
+func esBucketLastSeenUnix(bucket map[string]any, endTime int64) int64 {
+	agg, ok := bucket["last_seen"].(map[string]any)
+	if !ok {
+		return logGroupWindowEndUnix(endTime)
+	}
+
+	if v, ok := agg["value"].(float64); ok && v > 0 {
+		return int64(v) / 1000
+	}
+
+	// A date field mapped as a string aggregates to value_as_string only.
+	if s, ok := agg["value_as_string"].(string); ok {
+		if ts := logLastSeenUnix(s); ts > 0 {
+			return ts
+		}
+	}
+
+	return logGroupWindowEndUnix(endTime)
 }
 
 // parseESLogGroupResponse parses ES aggregation response into LogGroupOutput.
@@ -926,7 +958,7 @@ func parseESLogGroupResponse(rawJSON string, endTime int64) (LogGroupOutput, err
 
 		group := LogGroup{
 			Sample:     message,
-			Timestamps: []int64{endTime},
+			Timestamps: []int64{esBucketLastSeenUnix(bucket, endTime)},
 			Values:     []float64{count},
 			Count:      int64(math.Round(count)),
 		}

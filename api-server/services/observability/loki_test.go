@@ -2701,3 +2701,56 @@ func TestLokiGroupLogsByPattern(t *testing.T) {
 		assert.Equal(t, generatePatternHash(long), out.Groups[0].PatternHash)
 	})
 }
+
+func TestLokiGroupLogsByPatternLastSeen(t *testing.T) {
+	s := &LokiSource{}
+	labels := map[string]any{"namespace": "prod", "pod": "api-7d9f4b6c5d-x2k9p", "container": "api"}
+
+	// Well inside any plausible query window, so a group reporting the window end
+	// instead of its own last line is unmistakable.
+	const (
+		windowEndMs = int64(1784210110000) // 2026-07-17T02:55:10Z
+		oldTs       = "2026-07-17T00:00:00Z"
+		newTs       = "2026-07-17T02:00:00Z"
+	)
+
+	logLine := func(ts, msg string) OutputLog {
+		return OutputLog{Timestamp: ts, Message: msg, Labels: labels, Severity: s.extractSeverity(msg)}
+	}
+
+	t.Run("A group reports its own newest line, not the query window end", func(t *testing.T) {
+		out := s.groupLogsByPattern([]OutputLog{
+			logLine(oldTs, `level=error msg="db timeout"`),
+			logLine(newTs, `level=error msg="db timeout"`),
+		}, windowEndMs)
+
+		require.Len(t, out.Groups, 1)
+		wantSec, err := ParseDateToMillis(newTs)
+		require.NoError(t, err)
+		assert.Equal(t, []int64{wantSec / 1000}, out.Groups[0].Timestamps)
+	})
+
+	t.Run("Groups report different times from each other", func(t *testing.T) {
+		// The bug this replaces: every row rendered the same "Last Time", because
+		// the window end was stamped onto every group.
+		out := s.groupLogsByPattern([]OutputLog{
+			logLine(oldTs, `level=error msg="db timeout"`),
+			logLine(newTs, `level=error msg="auth rejected"`),
+		}, windowEndMs)
+
+		require.Len(t, out.Groups, 2)
+		assert.NotEqual(t, out.Groups[0].Timestamps[0], out.Groups[1].Timestamps[0])
+		for _, g := range out.Groups {
+			assert.NotEqual(t, windowEndMs/1000, g.Timestamps[0], "group fell back to the window end")
+		}
+	})
+
+	t.Run("Unparseable timestamps fall back to the window end", func(t *testing.T) {
+		out := s.groupLogsByPattern([]OutputLog{
+			logLine("not-a-timestamp", `level=error msg="db timeout"`),
+		}, windowEndMs)
+
+		require.Len(t, out.Groups, 1)
+		assert.Equal(t, []int64{windowEndMs / 1000}, out.Groups[0].Timestamps)
+	})
+}
