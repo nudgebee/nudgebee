@@ -187,10 +187,10 @@ jobs:
           # Measured here so the daily scan covers the whole deployed surface;
           # fixes land in the k8s-agent / node-agent / forager repos and these
           # refs are bumped on their releases.
-          - ghcr.io/nudgebee/nudgebee-agent:2026-07-16T14-08-07_14f6a1ab3847086e7b53a770876b54d8e9f31180
-          - ghcr.io/nudgebee/application-profiler-bpf:0.1.1
+          - ghcr.io/nudgebee/nudgebee-agent:2026-07-17T04-32-36_5d6b67def3ede8e306d467fea4242b36c9eb9c68
+          - ghcr.io/nudgebee/application-profiler-bpf:4f4b455
           - ghcr.io/nudgebee/node-agent:0.1.3
-          - ghcr.io/nudgebee/forager:main-cca8173
+          - ghcr.io/nudgebee/forager:main-2f95659
     steps:
       - uses: docker/login-action@v3
         with:
