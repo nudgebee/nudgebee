@@ -43,6 +43,7 @@ import RecommendationDetailPanel from './RecommendationDetailPanel';
 import { type SeverityLevel } from './SeverityBadge';
 import {
   NON_SECURITY_CATEGORIES,
+  UPGRADE_PLANNER_RULES,
   DEFAULT_STATUS,
   CATEGORY_LABELS,
   formatRuleName,
@@ -407,6 +408,7 @@ const OptimizeNewPage = () => {
       const query: any = {};
 
       query.category = merged.category.length > 0 ? merged.category : NON_SECURITY_CATEGORIES;
+      query.excludeRuleName = UPGRADE_PLANNER_RULES;
       query.status = DEFAULT_STATUS;
 
       if (merged.account.length > 0) {
@@ -478,6 +480,7 @@ const OptimizeNewPage = () => {
         const allRows = await recommendationApi.getK8sRecommendationSummaryByRuleName({
           accountId,
           category: NON_SECURITY_CATEGORIES as any,
+          excludeRuleName: UPGRADE_PLANNER_RULES,
           status: DEFAULT_STATUS,
           severity: [...SEVERITY_ORDER],
         });
@@ -528,6 +531,7 @@ const OptimizeNewPage = () => {
         const rows = await recommendationApi.getK8sRecommendationSummaryByRuleName({
           accountId,
           category: activeCategories as any,
+          excludeRuleName: UPGRADE_PLANNER_RULES,
           accountObjectId: filters.search || undefined,
           status: DEFAULT_STATUS,
           severity: [...SEVERITY_ORDER],
