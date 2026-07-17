@@ -1,5 +1,5 @@
 import { Box, Grid, Typography } from '@mui/material';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { withAccountGuard } from '@shared/AccountGuard';
 import { useRouter } from 'next/router';
 import homeApi from '@api1/home';
@@ -1940,23 +1940,33 @@ const Home = () => {
     setShowModal(false);
   };
 
-  const troubleshootItems = insightData.filter(
-    (o) =>
-      o.type == 'Troubleshooting' ||
-      o.rule?.category == 'Troubleshooting' ||
-      o.type == 'Performance' ||
-      (selectedCluster?.cloud_provider != 'K8s' && o.type == 'Ops')
+  // Memoize category filters — insightData only changes on API response, not on
+  // unrelated state updates (e.g. typing in the "Ask Nubi" input).
+  const troubleshootItems = useMemo(
+    () =>
+      insightData.filter(
+        (o) =>
+          o.type == 'Troubleshooting' ||
+          o.rule?.category == 'Troubleshooting' ||
+          o.type == 'Performance' ||
+          (selectedCluster?.cloud_provider != 'K8s' && o.type == 'Ops')
+      ),
+    [insightData, selectedCluster?.cloud_provider]
   );
-  const optimizeItems = insightData.filter(
-    (g) =>
-      g.type == 'Optimization' ||
-      g.rule?.category == 'Optimization' ||
-      g.type == 'Cost' ||
-      g.type == 'InfraUpgrade' ||
-      g.type == 'Security' ||
-      g.type == 'Configuration'
+  const optimizeItems = useMemo(
+    () =>
+      insightData.filter(
+        (g) =>
+          g.type == 'Optimization' ||
+          g.rule?.category == 'Optimization' ||
+          g.type == 'Cost' ||
+          g.type == 'InfraUpgrade' ||
+          g.type == 'Security' ||
+          g.type == 'Configuration'
+      ),
+    [insightData]
   );
-  const opsItems = insightData.filter((g) => g.type == 'Ops' || g.rule?.category == 'Ops');
+  const opsItems = useMemo(() => insightData.filter((g) => g.type == 'Ops' || g.rule?.category == 'Ops'), [insightData]);
 
   const securityHasExternal =
     Object.keys(imageScanData).length > 0 ||
@@ -1970,15 +1980,13 @@ const Home = () => {
   const troubleshootSubtitle = 'Active incidents and event trends';
   const optimizeSubtitle = 'Right-sizing, storage, and cost recommendations';
 
-  // Security subtitle stays live — driven by separate image-scan / cert APIs
-  // whose counts match the row data exactly.
-  const securitySubtitle = (() => {
+  const securitySubtitle = useMemo(() => {
     const parts = [];
     if (imageScanData?.totalCritical) parts.push(`${imageScanData.totalCritical} critical CVEs`);
     if (certificateData?.expiringSoon) parts.push(`${certificateData.expiringSoon} certs expiring`);
     if (opsItems.length) parts.push(`${opsItems.length} ops issues`);
     return parts.length ? parts.join(' · ') : 'Vulnerabilities, certificates, image scans';
-  })();
+  }, [imageScanData?.totalCritical, certificateData?.expiringSoon, opsItems.length]);
 
   return (
     <Grid container spacing={6} mt='calc(var(--ds-space-0) * 14)'>
