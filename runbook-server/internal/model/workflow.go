@@ -719,7 +719,6 @@ type WorkflowExecutionSummary struct {
 	VersionNumber      *int                    `json:"version_number,omitempty"`
 }
 
-
 // ListWorkflowExecutionResponse contains a list of workflow executions.
 type ListWorkflowExecutionResponse struct {
 	Executions    []WorkflowExecutionSummary `json:"executions"`
