@@ -41,6 +41,10 @@ export interface InputProps {
   size?: InputSize;
   type?: InputType;
   placeholder?: string;
+  /** Animate the placeholder with a typewriter effect when the input is empty. */
+  animatePlaceholder?: boolean;
+  /** Typing speed in ms per character. Default 60. */
+  typingSpeed?: number;
   required?: boolean;
   disabled?: boolean;
   readOnly?: boolean;
@@ -107,12 +111,14 @@ export function Input({
   size = 'md',
   type = 'text',
   placeholder,
+  animatePlaceholder = false,
+  typingSpeed = 60,
   required,
   disabled,
   readOnly,
   inputMode,
   rows,
-  minRows,
+  minRows = 3,
   maxRows = 20,
   name,
   autoComplete,
@@ -133,18 +139,62 @@ export function Input({
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const styleCacheRef = React.useRef<{ lineH: number; padding: number } | null>(null);
 
+  // Typewriter placeholder animation
+  const [animatedPlaceholder, setAnimatedPlaceholder] = React.useState('');
+  const charIndexRef = React.useRef(0);
+  const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  React.useEffect(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+
+    if (!animatePlaceholder || !placeholder || value) {
+      charIndexRef.current = 0;
+      setAnimatedPlaceholder('');
+      return;
+    }
+
+    charIndexRef.current = 0;
+
+    const type = () => {
+      const idx = charIndexRef.current;
+      if (idx <= (placeholder?.length ?? 0)) {
+        setAnimatedPlaceholder(placeholder.slice(0, idx));
+        charIndexRef.current = idx + 1;
+        timerRef.current = setTimeout(type, typingSpeed);
+      } else {
+        // Pause at full text, then restart
+        timerRef.current = setTimeout(() => {
+          charIndexRef.current = 0;
+          type();
+        }, 1500);
+      }
+    };
+
+    type();
+
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [animatePlaceholder, placeholder, value, typingSpeed]);
+
+  const effectivePlaceholder = animatePlaceholder ? animatedPlaceholder : placeholder;
+
   React.useEffect(() => {
     const el = textareaRef.current;
     if (!el || !isTextarea) return;
+    if (!styleCacheRef.current) {
+      const { lineHeight, paddingTop, paddingBottom, fontSize } = window.getComputedStyle(el);
+      const lineH = parseFloat(lineHeight) || parseFloat(fontSize) * 1.4;
+      const padding = parseFloat(paddingTop) + parseFloat(paddingBottom);
+      styleCacheRef.current = { lineH, padding };
+    }
+    const { lineH, padding } = styleCacheRef.current;
+    el.style.minHeight = minRows ? `${minRows * lineH + padding}px` : '';
     el.style.height = 'auto';
     if (maxRows) {
-      if (!styleCacheRef.current) {
-        const { lineHeight, paddingTop, paddingBottom } = window.getComputedStyle(el);
-        const lineH = parseFloat(lineHeight) || parseFloat(window.getComputedStyle(el).fontSize) * 1.4;
-        const padding = parseFloat(paddingTop) + parseFloat(paddingBottom);
-        styleCacheRef.current = { lineH, padding };
-      }
-      const { lineH, padding } = styleCacheRef.current;
       const cap = maxRows * lineH + padding;
       if (el.scrollHeight > cap) {
         el.style.height = `${cap}px`;
@@ -156,7 +206,7 @@ export function Input({
     } else {
       el.style.height = `${el.scrollHeight}px`;
     }
-  }, [value, isTextarea, maxRows]);
+  }, [value, isTextarea, maxRows, minRows]);
 
   // readOnly beats disabled per spec — disabled hides the value from copy-paste.
   const effectiveDisabled = disabled && !readOnly;
@@ -172,7 +222,6 @@ export function Input({
   const inputBaseSx = {
     width: '100%',
     height: isTextarea ? 'auto' : tokens.height,
-    minHeight: isTextarea ? '80px' : undefined,
     padding: isTextarea ? `6px ${rightInset} 6px ${leftInset}` : `0 ${rightInset} 0 ${leftInset}`,
     // No fontFamily — value text inherits the body default (Roboto via MUI).
     // The label below uses --ds-font-display (Poppins) explicitly.
@@ -204,7 +253,7 @@ export function Input({
     id: inputId,
     name,
     value,
-    placeholder,
+    placeholder: effectivePlaceholder,
     required,
     disabled: effectiveDisabled,
     readOnly,
@@ -219,8 +268,7 @@ export function Input({
   };
 
   const inputEl = isTextarea ? (
-    // @ts-expect-error MUI Box prop forwarding doesn't type ref/minRows/maxRows on textarea
-    <Box component='textarea' ref={textareaRef} rows={rows} minRows={minRows} maxRows={maxRows} spellCheck={false} {...sharedInputProps} />
+    <Box component='textarea' ref={textareaRef} rows={rows} spellCheck={false} {...sharedInputProps} />
   ) : (
     <Box component='input' type={type} inputMode={inputMode} {...sharedInputProps} />
   );

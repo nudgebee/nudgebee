@@ -4,6 +4,7 @@ interface GlobalContextOutput {
   id: string;
   tenant_id: string;
   account_id: string;
+  account_name?: string;
   name: string;
   description?: string;
   data: string;
@@ -64,6 +65,7 @@ const apiGlobalContext = {
             id
             tenant_id
             account_id
+            account_name
             name
             description
             data
@@ -103,6 +105,8 @@ const apiGlobalContext = {
           format: gc.data_format,
           fileName: gc.data_filename,
           status: gc.status,
+          account_id: gc.account_id,
+          account_name: gc.account_name,
           created_at: gc.created_at,
           updated_at: gc.updated_at,
           created_by: gc.created_by ? { display_name: gc.created_by } : null,

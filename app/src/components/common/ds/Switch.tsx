@@ -5,8 +5,6 @@
  *              composition = 'switch-only' | 'label-left' | 'label-left+description' (auto from props)
  *              state = off | on | loading | disabled
  *
- * Migration:   `import CustomSwitch from '@shared/CustomSwitch'`
- *           →  `import { Switch } from '@ui/Switch'`
  *
  * Don't (per spec):
  *   - Use Switch in forms with a submit button — use Checkbox instead.

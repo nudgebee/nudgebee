@@ -1,6 +1,5 @@
 import {
   Grid,
-  IconButton,
   Typography,
   Stepper,
   Step,
@@ -20,56 +19,56 @@ import { useState, useEffect, useCallback } from 'react';
 import PropTypes from 'prop-types';
 import apiAccount from '@api1/account';
 import apiIntegrations from '@api1/integrations';
-import { Modal } from '@shared/modal';
+import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
-import { snackbar } from '@shared/snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 import MarkDowns from '@shared/viewers/MarkDowns';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import { safeJSONParse } from 'src/utils/common';
 
 const StepConnectorStyled = styled(StepConnector)(() => ({
   [`&.${stepConnectorClasses.alternativeLabel}`]: {
-    top: 10,
-    left: 'calc(-50% + 16px)',
-    right: 'calc(50% + 16px)',
+    top: ds.space.mul(1, 5),
+    left: `calc(-50% + ${ds.space[4]})`,
+    right: `calc(50% + ${ds.space[4]})`,
   },
   [`&.${stepConnectorClasses.active}, &.${stepConnectorClasses.completed}`]: {
     [`& .${stepConnectorClasses.line}`]: {
-      borderColor: colors.success,
+      borderColor: ds.green[500],
       borderTopWidth: 2,
     },
   },
   [`& .${stepConnectorClasses.line}`]: {
-    borderColor: colors.border.secondary,
+    borderColor: ds.brand[200],
     borderTopWidth: 1,
-    borderRadius: 1,
+    borderRadius: ds.radius.sm,
   },
 }));
 
 const StepIconCustom = ({ active, completed, icon }) => {
   const styles = completed
-    ? { backgroundColor: colors.success, border: 'none', color: colors.white }
+    ? { backgroundColor: ds.green[500], border: 'none', color: ds.background[100] }
     : {
-        backgroundColor: colors.white,
-        border: active ? `1px solid ${colors.success}` : `1px solid ${colors.border.secondary}`,
-        color: active ? colors.success : colors.text.greyDark,
+        backgroundColor: ds.background[100],
+        border: active ? `1px solid ${ds.green[500]}` : `1px solid ${ds.brand[200]}`,
+        color: active ? ds.green[500] : ds.gray[600],
       };
 
   return (
     <Box
       sx={{
-        width: '24px',
-        height: '24px',
-        borderRadius: '50%',
+        width: ds.space[5],
+        height: ds.space[5],
+        borderRadius: ds.radius.pill,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        fontSize: '14px',
+        fontSize: ds.text.bodyLg,
         fontWeight: 'bold',
         ...styles,
       }}
     >
-      {completed ? <Check sx={{ fontSize: '16px' }} /> : icon}
+      {completed ? <Check sx={{ fontSize: ds.text.title }} /> : icon}
     </Box>
   );
 };
@@ -295,46 +294,50 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
 
   return (
     <Modal width='md' open={open} handleClose={handleClose} title={isAlreadyEnabled && !showWizard ? 'Real-Time Alerts' : 'Enable Real-Time Alerts'}>
-      <Box sx={{ px: 3, pt: 1, pb: 3 }}>
+      <Box sx={{ px: ds.space[5], pt: ds.space[2], pb: ds.space[5] }}>
         {isAlreadyEnabled && !showWizard && (
           <>
-            <Alert icon={<CheckCircleOutline fontSize='small' />} severity='success' sx={{ mb: 2, mt: 2 }}>
+            <Alert icon={<CheckCircleOutline fontSize='small' />} severity='success' sx={{ mb: ds.space[4], mt: ds.space[4] }}>
               Real-time alerts are enabled for project <strong>{projectId}</strong>.
             </Alert>
-            <Typography sx={{ fontSize: '14px', color: colors.text.secondary, mb: 2 }}>
+            <Typography sx={{ fontSize: ds.text.bodyLg, color: ds.brand[500], mb: ds.space[4] }}>
               A webhook notification channel is configured and attached to alert policies in this GCP project. Alerts will be forwarded to Nudgebee
               automatically.
             </Typography>
-            <Grid container spacing={2} mt={1} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
-              <Grid item>
-                <Button size='md' tone='secondary' onClick={handleClose}>
-                  Close
-                </Button>
-              </Grid>
-              <Grid item>
-                <Button
-                  size='md'
-                  tone='primary'
-                  onClick={() => {
-                    setShowWizard(true);
-                    setStep(0);
-                  }}
-                >
-                  Re-run Setup
-                </Button>
-              </Grid>
-            </Grid>
+            <Box
+              sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[4], mt: ds.space[2], '& button': { minWidth: ds.space.mul(1, 35) } }}
+            >
+              <Button size='md' tone='secondary' onClick={handleClose}>
+                Close
+              </Button>
+              <Button
+                size='md'
+                tone='primary'
+                onClick={() => {
+                  setShowWizard(true);
+                  setStep(0);
+                }}
+              >
+                Re-run Setup
+              </Button>
+            </Box>
           </>
         )}
 
         {showWizard && (
           <>
-            <Stepper activeStep={step} alternativeLabel connector={<StepConnectorStyled />} sx={{ mb: 3, mt: 2 }}>
+            <Stepper activeStep={step} alternativeLabel connector={<StepConnectorStyled />} sx={{ mb: ds.space[5], mt: ds.space[4] }}>
               {STEPS.map((label, idx) => (
                 <Step key={label} completed={step > idx}>
                   <StepLabel
                     StepIconComponent={StepIconCustom}
-                    sx={{ '& .MuiStepLabel-label': { fontSize: '13px', mt: 0.5, color: step === idx ? colors.success : colors.text.greyDark } }}
+                    sx={{
+                      '& .MuiStepLabel-label': {
+                        fontSize: ds.text.body,
+                        mt: ds.space[1],
+                        color: step === idx ? ds.green[500] : ds.gray[600],
+                      },
+                    }}
                   >
                     {label}
                   </StepLabel>
@@ -344,93 +347,105 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
 
             {step === 0 && (
               <>
-                <Typography sx={{ fontSize: '14px', color: colors.text.secondary, mb: 2 }}>
+                <Typography sx={{ fontSize: ds.text.bodyLg, color: ds.brand[500], mb: ds.space[4] }}>
                   Forward GCP Cloud Monitoring alerts to Nudgebee in real-time via a webhook notification channel. This lets you see alerts alongside
                   your cloud resources without delay.
                 </Typography>
 
-                <Box sx={{ mb: 2 }}>
+                <Box sx={{ mb: ds.space[4] }}>
                   <Box
-                    sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: 0.5, py: 1 }}
+                    role='button'
+                    tabIndex={0}
+                    sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: ds.space[1], py: ds.space[2] }}
                     onClick={() => setGuideExpanded(!guideExpanded)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setGuideExpanded(!guideExpanded);
+                      }
+                    }}
                   >
-                    <HelpOutline sx={{ fontSize: 18, color: colors.text.tertiary }} />
-                    <Typography sx={{ fontSize: 13, color: colors.text.tertiary, fontWeight: 500 }}>
+                    <HelpOutline sx={{ fontSize: 18, color: ds.gray[600] }} />
+                    <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], fontWeight: ds.weight.medium }}>
                       Setup Guide — IAM permissions required
                     </Typography>
-                    {guideExpanded ? <ExpandLess sx={{ color: colors.text.tertiary }} /> : <ExpandMore sx={{ color: colors.text.tertiary }} />}
+                    {guideExpanded ? <ExpandLess sx={{ color: ds.gray[600] }} /> : <ExpandMore sx={{ color: ds.gray[600] }} />}
                   </Box>
                   <Collapse in={guideExpanded}>
                     <Box
                       sx={{
-                        mt: 1,
-                        p: 2,
-                        bgcolor: colors.background.suggestionCardBG,
-                        borderRadius: '8px',
-                        border: `1px solid ${colors.border.secondaryLightest}`,
+                        mt: ds.space[2],
+                        p: ds.space[4],
+                        bgcolor: ds.background[200],
+                        borderRadius: ds.radius.lg,
+                        border: `1px solid ${ds.gray[300]}`,
                       }}
                     >
-                      <MarkDowns data={buildSetupGuide(projectId)} sx={{ maxHeight: '300px', overflowY: 'auto' }} />
+                      <MarkDowns data={buildSetupGuide(projectId)} sx={{ maxHeight: ds.space.mul(1, 75), overflowY: 'auto' }} />
                     </Box>
                   </Collapse>
                 </Box>
 
-                <Grid container spacing={2} mt={1} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
-                  <Grid item>
-                    <Button size='md' tone='secondary' onClick={handleClose}>
-                      Cancel
-                    </Button>
-                  </Grid>
-                  <Grid item>
-                    <Button size='md' tone='primary' onClick={() => setStep(1)}>
-                      Next
-                    </Button>
-                  </Grid>
-                </Grid>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    justifyContent: 'flex-end',
+                    gap: ds.space[4],
+                    mt: ds.space[2],
+                    '& button': { minWidth: ds.space.mul(1, 35) },
+                  }}
+                >
+                  <Button size='md' tone='secondary' onClick={handleClose}>
+                    Cancel
+                  </Button>
+                  <Button size='md' tone='primary' onClick={() => setStep(1)}>
+                    Next
+                  </Button>
+                </Box>
               </>
             )}
 
             {step === 1 && (
               <>
-                <Typography sx={{ fontSize: '14px', color: colors.text.secondary, mb: 2 }}>
+                <Typography sx={{ fontSize: ds.text.bodyLg, color: ds.brand[500], mb: ds.space[4] }}>
                   Verifying that the service account has the required Cloud Monitoring permissions.
                 </Typography>
 
                 {isCheckingPermission && (
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, py: 3, justifyContent: 'center' }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[3], py: ds.space[5], justifyContent: 'center' }}>
                     <CircularProgress size={24} />
-                    <Typography sx={{ fontSize: '14px', color: colors.text.greyDark }}>Checking permissions...</Typography>
+                    <Typography sx={{ fontSize: ds.text.bodyLg, color: ds.gray[600] }}>Checking permissions...</Typography>
                   </Box>
                 )}
 
                 {!isCheckingPermission && permissionResult?.has_permission && (
-                  <Alert icon={<CheckCircleOutline fontSize='small' />} severity='success' sx={{ mb: 2 }}>
+                  <Alert icon={<CheckCircleOutline fontSize='small' />} severity='success' sx={{ mb: ds.space[4] }}>
                     Service account has the required monitoring permissions.
                   </Alert>
                 )}
 
                 {!isCheckingPermission && permissionResult && !permissionResult.has_permission && (
                   <>
-                    <Alert icon={<ErrorOutline fontSize='small' />} severity='error' sx={{ mb: 2 }}>
+                    <Alert icon={<ErrorOutline fontSize='small' />} severity='error' sx={{ mb: ds.space[4] }}>
                       {permissionResult.error_detail || 'Service account lacks Cloud Monitoring permissions.'}
                     </Alert>
                     <Box
                       sx={{
-                        p: 1.5,
-                        bgcolor: colors.background.suggestionCardBG,
-                        borderRadius: '8px',
-                        border: `1px solid ${colors.border.secondaryLightest}`,
-                        mb: 2,
+                        p: ds.space[3],
+                        bgcolor: ds.background[200],
+                        borderRadius: ds.radius.lg,
+                        border: `1px solid ${ds.gray[300]}`,
+                        mb: ds.space[4],
                       }}
                     >
-                      <Typography sx={{ fontSize: '13px', color: colors.text.secondary, mb: 1 }}>
+                      <Typography sx={{ fontSize: ds.text.body, color: ds.brand[500], mb: ds.space[2] }}>
                         Grant the <strong>Monitoring Editor</strong> role to the service account, then click <strong>Re-check</strong>.
                       </Typography>
                       <Link
                         href={`https://console.cloud.google.com/iam-admin/iam?project=${projectId}`}
                         target='_blank'
                         rel='noopener noreferrer'
-                        sx={{ fontSize: '13px' }}
+                        sx={{ fontSize: ds.text.body }}
                       >
                         Open GCP IAM Console →
                       </Link>
@@ -438,58 +453,60 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
                   </>
                 )}
 
-                <Grid container spacing={2} mt={1} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
-                  <Grid item>
-                    <Button size='md' tone='secondary' onClick={() => setStep(0)}>
-                      Back
-                    </Button>
-                  </Grid>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    justifyContent: 'flex-end',
+                    gap: ds.space[4],
+                    mt: ds.space[2],
+                    '& button': { minWidth: ds.space.mul(1, 35) },
+                  }}
+                >
+                  <Button size='md' tone='secondary' onClick={() => setStep(0)}>
+                    Back
+                  </Button>
                   {!isCheckingPermission && permissionResult && !permissionResult.has_permission && (
-                    <Grid item>
-                      <Button size='md' tone='secondary' onClick={checkPermission}>
-                        Re-check
-                      </Button>
-                    </Grid>
-                  )}
-                  <Grid item>
-                    <Button size='md' tone='primary' disabled={isCheckingPermission || !permissionResult} onClick={() => setStep(2)}>
-                      Next
+                    <Button size='md' tone='secondary' onClick={checkPermission}>
+                      Re-check
                     </Button>
-                  </Grid>
-                </Grid>
+                  )}
+                  <Button size='md' tone='primary' disabled={isCheckingPermission || !permissionResult} onClick={() => setStep(2)}>
+                    Next
+                  </Button>
+                </Box>
               </>
             )}
 
             {step === 2 && (
               <>
                 {isSettingUp && (
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, py: 3, justifyContent: 'center' }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[3], py: ds.space[5], justifyContent: 'center' }}>
                     <CircularProgress size={24} />
-                    <Typography sx={{ fontSize: '14px', color: colors.text.greyDark }}>Setting up real-time alerts...</Typography>
+                    <Typography sx={{ fontSize: ds.text.bodyLg, color: ds.gray[600] }}>Setting up real-time alerts...</Typography>
                   </Box>
                 )}
 
                 {setupError && (
-                  <Alert severity='error' sx={{ mb: 2 }}>
+                  <Alert severity='error' sx={{ mb: ds.space[4] }}>
                     {setupError}
                   </Alert>
                 )}
 
                 {String(setupStatus) === 'success' && (
-                  <Alert icon={<CheckCircleOutline fontSize='small' />} severity='success' sx={{ mb: 2 }}>
+                  <Alert icon={<CheckCircleOutline fontSize='small' />} severity='success' sx={{ mb: ds.space[4] }}>
                     Real-time alerts enabled successfully. A webhook notification channel has been created in project <strong>{projectId}</strong>.
                   </Alert>
                 )}
 
                 {String(setupStatus) === 'fallback' && webhookUrl && (
                   <>
-                    <Alert severity='warning' sx={{ mb: 2 }}>
+                    <Alert severity='warning' sx={{ mb: ds.space[4] }}>
                       {setupFailReason || 'Auto-setup could not complete. You can set it up manually using the instructions below.'}
                     </Alert>
 
-                    <Grid container spacing={2} mb={2}>
+                    <Grid container spacing={ds.space[4]} mb={ds.space[4]}>
                       <Grid item xs={12}>
-                        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[2] }}>
                           <Box sx={{ flex: 1 }}>
                             <Input
                               value={webhookUrl}
@@ -501,9 +518,15 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
                               help='Copy this URL and paste it as the Endpoint URL in GCP Console.'
                             />
                           </Box>
-                          <IconButton aria-label='copy webhook url' onClick={() => handleCopy(webhookUrl)} sx={{ mt: '22px' }}>
-                            {copied ? <Check fontSize='small' color='success' /> : <ContentCopy fontSize='small' />}
-                          </IconButton>
+                          <Box sx={{ mt: ds.space[5] }}>
+                            <Button
+                              tone='ghost'
+                              composition='icon-only'
+                              aria-label='copy webhook url'
+                              onClick={() => handleCopy(webhookUrl)}
+                              icon={copied ? <Check fontSize='small' color='success' /> : <ContentCopy fontSize='small' />}
+                            />
+                          </Box>
                         </Box>
                       </Grid>
                     </Grid>
@@ -512,45 +535,47 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
                   </>
                 )}
 
-                <Grid container spacing={2} mt={1} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
-                  <Grid item>
-                    <Button size='md' tone='secondary' onClick={handleClose}>
-                      Close
-                    </Button>
-                  </Grid>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    justifyContent: 'flex-end',
+                    gap: ds.space[4],
+                    mt: ds.space[2],
+                    '& button': { minWidth: ds.space.mul(1, 35) },
+                  }}
+                >
+                  <Button size='md' tone='secondary' onClick={handleClose}>
+                    Close
+                  </Button>
                   {setupError && (
-                    <Grid item>
-                      <Button
-                        size='md'
-                        tone='primary'
-                        onClick={() => {
-                          setSetupError('');
-                          setSetupStatus(null);
-                          setWebhookUrl('');
-                        }}
-                      >
-                        Retry
-                      </Button>
-                    </Grid>
+                    <Button
+                      size='md'
+                      tone='primary'
+                      onClick={() => {
+                        setSetupError('');
+                        setSetupStatus(null);
+                        setWebhookUrl('');
+                      }}
+                    >
+                      Retry
+                    </Button>
                   )}
                   {String(setupStatus) === 'fallback' && (
-                    <Grid item>
-                      <Button
-                        size='md'
-                        tone='primary'
-                        onClick={() =>
-                          window.open(
-                            `https://console.cloud.google.com/monitoring/alerting/notifications/webhooks/new?project=${projectId}`,
-                            '_blank',
-                            'noopener,noreferrer'
-                          )
-                        }
-                      >
-                        Open GCP Console
-                      </Button>
-                    </Grid>
+                    <Button
+                      size='md'
+                      tone='primary'
+                      onClick={() =>
+                        window.open(
+                          `https://console.cloud.google.com/monitoring/alerting/notifications/webhooks/new?project=${projectId}`,
+                          '_blank',
+                          'noopener,noreferrer'
+                        )
+                      }
+                    >
+                      Open GCP Console
+                    </Button>
                   )}
-                </Grid>
+                </Box>
               </>
             )}
           </>

@@ -117,7 +117,7 @@ const WorkflowStateStrip: React.FC<WorkflowStateStripProps> = ({
                   backgroundColor: ds.amber[400],
                 }}
               />
-              <Typography sx={{ fontSize: '12px', fontWeight: 500, color: ds.gray[700], whiteSpace: 'nowrap' }}>Unsaved changes</Typography>
+              <Typography sx={{ fontSize: ds.text.small, fontWeight: 500, color: ds.gray[700], whiteSpace: 'nowrap' }}>Unsaved changes</Typography>
             </Box>
           </Tooltip>
         )}
@@ -170,7 +170,7 @@ const WorkflowStateStrip: React.FC<WorkflowStateStripProps> = ({
       {!isNewWorkflow && (
         <Tooltip title={versioningInfoCopy}>
           <Box sx={{ display: 'flex', alignItems: 'center', color: ds.gray[500], cursor: 'help' }} data-testid='workflow-versioning-info'>
-            <InfoOutlinedIcon sx={{ fontSize: 16 }} />
+            <InfoOutlinedIcon sx={{ fontSize: ds.text.title }} />
           </Box>
         </Tooltip>
       )}
@@ -194,7 +194,7 @@ const WorkflowStateStrip: React.FC<WorkflowStateStripProps> = ({
               onClick={onHistory}
               tone='secondary'
               size='sm'
-              icon={<HistoryIcon sx={{ fontSize: 16 }} />}
+              icon={<HistoryIcon sx={{ fontSize: ds.text.title }} />}
             >
               History
             </Button>

@@ -125,7 +125,7 @@ Not strictly enforced (no `.golangci.yml` config). Follow stdlib → external �
 - **`llms/`** — LLM provider clients (Bedrock, Azure, OpenAI, Vertex AI, etc.)
 - **`config/`** — service configuration management
 - **`common/`** — shared utilities, MQ handling, schedulers, worker pools
-- **`security/`** — authentication, authorization, RequestContext
+- **`security/`** — authentication, authorization, RequestContext. Outbound LLM payload inspection (credential gate, future redact / tokenize) is the egressfilter package — see [docs/llm-egress-filter.md](docs/llm-egress-filter.md).
 - **`workflows/`** — workflow/automation service integration
 - **`relay/`** — relay server communication for Kubernetes operations
 

@@ -1165,10 +1165,22 @@ func (p *ReActPlanner) executeStep(ctx context.Context, step *Step) {
 		secureInput = p.injectToolOutputs(secureInput)
 	}
 
-	// Track tool invocation if tracker is available
+	// Carry the step's thought (the reasoning that led to this tool call) into the
+	// tracked invocation so callers can render per-step reasoning, like other
+	// agents. Tools are wrapped by TrackedToolWrapper, which reads the intention
+	// from the "__intention" input key and strips it before executing the real
+	// tool — so set it here. The direct-tracker branch below covers the (rare)
+	// case where the planner tracks tools itself instead of via the wrapper.
+	if step.Thought != "" {
+		if secureInput == nil {
+			secureInput = make(map[string]any)
+		}
+		secureInput["__intention"] = step.Thought
+	}
+
 	var invocationID string
 	if p.toolTracker != nil {
-		invocationID = p.toolTracker.StartInvocation(step.Action, secureInput)
+		invocationID = p.toolTracker.StartInvocationWithIntention(step.Action, secureInput, step.Thought)
 		if p.logger != nil {
 			p.logger.Log(common.EventToolStart, "Tool execution started", map[string]any{
 				"tool_name":     step.Action,
@@ -1186,6 +1198,11 @@ func (p *ReActPlanner) executeStep(ctx context.Context, step *Step) {
 			err = fmt.Errorf("%s", result.Error)
 		}
 		p.toolTracker.CompleteInvocation(invocationID, result.Data, result.Status, err)
+		// Stash the human-readable observation so callers can render a clean,
+		// plain-text step result instead of the raw tool data blob.
+		if result.Observation != "" {
+			p.toolTracker.AddMetadata(invocationID, "observation", result.Observation)
+		}
 		if p.logger != nil {
 			p.logger.Log(common.EventToolComplete, "Tool execution completed", map[string]any{
 				"tool_name":     step.Action,

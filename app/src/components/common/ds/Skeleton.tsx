@@ -1,23 +1,10 @@
 /**
- * Skeleton — DS V2 of legacy ShimmerLoading + NewShimmerloading + SummarySkeletonLoader + ThreeDotLoader.
+ * Skeleton
  * Spec:        app/design-system/primitives/feedback/skeleton.html
  * Variants:    shape = 'text' | 'rect' | 'circle'
  *              size  = 'caption' | 'text' | 'title' | 'heading'  (for shape='text', matches type-scale row heights)
  *              animation = 'shimmer' | 'none'                    (auto-honors prefers-reduced-motion via --ds-motion-* tokens)
  *              composition presets: <Skeleton.TableRow columns={N} /> · <Skeleton.Card /> · <Skeleton.ChatMessage />
- *
- * Migration:   `import ShimmerLoading from '@shared/ShimmerLoading'`
- *              `import NewShimmerloading from '@shared/NewShimmerloading'`
- *              `import SummarySkeletonLoader from '@shared/SummarySkeletonLoader'`
- *              `import ThreeDotLoader from '@shared/ThreeDotLoader'`
- *           →  `import { Skeleton } from '@ui/Skeleton'`
- *
- *   V1 pattern                                     →  V2 pattern
- *   <ShimmerLoading isLoading={l}>{...}</...>      →  {l ? <Skeleton shape='text' /> : <>{...}</>}
- *   <ShimmerLoading isLoading lines={3} />         →  <Stack>{[1,2,3].map(i=> <Skeleton key={i} shape='text' />)}</Stack>
- *   <NewShimmerloading />                          →  <Skeleton.Card />
- *   <SummarySkeletonLoader />                      →  <Skeleton.Card />
- *   <ThreeDotLoader />                             →  prefer ProgressLinear for slow ops; or <Skeleton shape='text' size='caption' />
  *
  * Don't (per spec):
  *   - Don't render Skeleton at dimensions that don't match the eventual content (no layout shift).

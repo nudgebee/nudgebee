@@ -6,8 +6,6 @@
  *              delta tone (cost-axis): 'high-savings' | 'savings' | 'neutral' | 'waste' | 'high-waste'
  *              align = 'start' | 'center'
  *
- * Migration:   `import SummaryWidget from '@components/optimise/SummaryWidget'`
- *           →  `import { Stat } from '@ui/Stat'`
  *
  *   V1 prop          →  V2 prop
  *   title            →  label
@@ -33,7 +31,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import { formatNumber } from '@lib/formatter';
-import CustomTooltip from '@shared/CustomTooltip';
+import Tooltip from '@ui/Tooltip';
 
 export type StatSize = 'sm' | 'md' | 'hero';
 export type StatAlign = 'start' | 'center';
@@ -231,11 +229,11 @@ export function Stat({
               {label}
             </Typography>
             {info && (
-              <CustomTooltip title={info.tooltip} placement={info.position ?? 'top'}>
+              <Tooltip title={info.tooltip} placement={info.position ?? 'top'}>
                 <IconButton size='small' sx={{ p: 0, color: 'var(--ds-gray-500)' }} aria-label={`Info about ${label}`}>
                   <InfoOutlinedIcon sx={{ fontSize: 14 }} />
                 </IconButton>
-              </CustomTooltip>
+              </Tooltip>
             )}
           </Box>
           {headerRight && <Box sx={{ flexShrink: 0 }}>{headerRight}</Box>}

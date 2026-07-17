@@ -13,7 +13,7 @@ import HelpBeeModal from '@components/helpbee';
 import { TicketsIcon } from '@assets';
 import { getBrandingAsset } from '@hooks/useTenantBranding';
 import SafeIcon from '@shared/icons/SafeIcon';
-import type { ICustomTable2Row } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/Instances';
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import Text from '@shared/format/Text';
 import { ds } from '@utils/colors';
@@ -81,7 +81,7 @@ const CloudAccountSecurity = (props: { accountId: string | undefined; serviceNam
       .then((res: any) => {
         setLoading(false);
         const eventsData = res.data?.events?.map((item: any) => {
-          const data: ICustomTable2Row[] = [];
+          const data: ICustomTableRow[] = [];
           const MENU_ITEMS = [
             {
               id: `${TABLE_ID}-action-${item.id}-create-ticket`,
@@ -108,7 +108,7 @@ const CloudAccountSecurity = (props: { accountId: string | undefined; serviceNam
 
           data.push({
             component: (
-              <Box sx={{ minWidth: '200px' }}>
+              <Box sx={{ minWidth: ds.space.mul(0, 100) }}>
                 <Text showAutoEllipsis value={item.subject_name} />
                 {item.subject_namespace && <Text secondaryText value={`ns: ${item.subject_namespace}`} />}
               </Box>

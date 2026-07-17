@@ -115,6 +115,11 @@ func (m PrometheusExecuteTool) InputSchema() core.ToolSchema {
 	}
 }
 
+// promQLParser is a shared, stateless PromQL parser. ParseExpr builds a fresh
+// internal parser per call from the (immutable) Options, so a single package-level
+// instance is safe to reuse concurrently and avoids per-call allocations.
+var promQLParser = parser.NewParser(parser.Options{})
+
 // validatePromQLSyntax parses the query locally using the Prometheus parser.
 // Returns a structured, LLM-actionable error string on failure, or empty string if valid.
 // Common error types and suggested fixes are included so the LLM can self-correct
@@ -124,7 +129,7 @@ func validatePromQLSyntax(query string) string {
 	if q == "" {
 		return ""
 	}
-	if _, err := parser.ParseExpr(q); err != nil {
+	if _, err := promQLParser.ParseExpr(q); err != nil {
 		msg := err.Error()
 		// Classify the error and add a fix hint for the LLM
 		hint := ""

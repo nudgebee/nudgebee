@@ -15,7 +15,7 @@ requires-python = ">=3.10,<=3.14"
 dependencies = [
     # --- Core framework ---
     "aiofiles==25.1.0",
-    "fastapi==0.135.3",
+    "fastapi==0.139.0",
     "uvicorn[standard]==0.44.0",
     "python-multipart==0.0.31",
     "python-dotenv==1.2.2",
@@ -27,7 +27,7 @@ dependencies = [
     "python-json-logger==4.0.0",
 
     # --- Vector database ---
-    "qdrant-client>=1.16.0,<1.17.0",
+    "qdrant-client==1.16.0",
 
     # --- Database & storage ---
     "psycopg2-binary==2.9.10",
@@ -38,23 +38,43 @@ dependencies = [
     "pymongo==4.11.3",
 
     # --- AI/LLM SDKs (direct, no langchain) ---
-    "openai>=1.97.0",
-    "anthropic>=0.40.0",
+    "openai==2.26.0",
+    "anthropic==0.84.0",
     "azure-ai-inference>=1.0.0b9",
-    "google-genai>=1.66.0",
+    "google-genai==1.66.0",
 
     # --- On-device embeddings ---
-    "sentence-transformers[onnx]>=3.4.0",
-    "huggingface-hub==0.30.1",
-    "hf_xet>=1.1.0",
+    # transformers >=5.5.0 clears CVE-2026-4372 / CVE-2026-5241 (RCE via malicious
+    # model load) and CVE-2026-1839. The old `sentence-transformers[onnx]` extra
+    # capped transformers at <4.58 through optimum-onnx — which is unused here: the
+    # ONNX embedding backend in rag/core/embeddings/local.py calls onnxruntime
+    # directly, never optimum. So drop the extra, pin onnxruntime explicitly (keeps
+    # that backend working), and force transformers 5.x. transformers 5.x in turn
+    # requires huggingface-hub >=1.5 (we use only the stable hf_hub_download API).
+    "sentence-transformers>=5.6.0",
+    "transformers>=5.5.0",
+    "onnxruntime>=1.23.2",
+    "huggingface-hub>=1.5.0",
+    "hf_xet==1.3.2",
     "numpy>=1.26.0",
 
     # --- Document processing ---
     "tiktoken==0.12.0",
     "beautifulsoup4==4.14.3",
-    "unstructured==0.18.18",
+    "unstructured==0.18.32",
     "pymupdf==1.27.2.2",
     "jq==1.10.0",
+
+    # --- Security-forced transitive bumps (CVE fixes; none imported directly) ---
+    # Pulled transitively (msal->PyJWT, rsa->pyasn1, sentence-transformers->onnx/
+    # transformers, unstructured->pypdf, fastapi->starlette). Pinned here to force
+    # the patched versions. setuptools<81 guards the ml-base pkg_resources crash.
+    "PyJWT>=2.13.0",
+    "pyasn1>=0.6.3",
+    "onnx>=1.22.0",
+    "pypdf>=6.13.3",
+    "starlette>=1.3.1",
+    "setuptools<81",
 
     # --- External integrations ---
     "atlassian-python-api==4.0.7",
@@ -86,10 +106,10 @@ dependencies = [
     "pygments==2.20.0",
     "rsa==4.9",
     "simsimd==6.2.1",
-    "soupsieve==2.8.3",
+    "soupsieve==2.8.4",
     "sympy==1.13.3",
     "typer==0.24.1",
-    "typing-extensions==4.13.2",
+    "typing-extensions==4.16.0",
     "typing-inspection==0.4.2",
     "watchfiles==1.1.1",
     "yarl==1.19.0",

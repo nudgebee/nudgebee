@@ -77,8 +77,8 @@ var eventSummary string
 //go:embed event_general_summary.txt
 var eventGeneralSummary string
 
-//go:embed event_investigation_summary.txt
-var eventInvestigationSummary string
+//go:embed event_investigation.txt
+var eventInvestigation string
 
 //go:embed memory_extractor.txt
 var memoryExtractor string
@@ -201,7 +201,7 @@ const PromptEvaluatorQueryResponse = "evaluator_query_response"
 const PromptEvaluatorToolCalls = "evaluator_tool_calls"
 const PromptEventSummary = "event_summary"
 const PromptEventGeneralSummary = "event_general_summary"
-const PromptEventInvestigationSummary = "event_investigation_summary"
+const PromptEventInvestigation = "event_investigation"
 const PromptMemoryExtractor = "memory_extractor"
 const PromptAgentK8sDebug = "agent_k8s_debug"
 const PromptAgentK8sDebugReact = "agent_k8s_debug_react"
@@ -289,8 +289,8 @@ func GetPrompt(module string, args ...any) string {
 		data = eventSummary
 	case PromptEventGeneralSummary:
 		data = eventGeneralSummary
-	case PromptEventInvestigationSummary:
-		data = eventInvestigationSummary
+	case PromptEventInvestigation:
+		data = eventInvestigation
 	case PromptMemoryExtractor:
 		data = memoryExtractor
 	case PromptAgentK8sDebug:

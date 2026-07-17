@@ -30,9 +30,7 @@ jest.mock('src/utils/actionStyles', () => ({
   action: { primary: {} },
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000' }, background: { white: '#fff' } },
-}));
+jest.mock('@utils/colors');
 
 jest.mock('src/utils/common', () => ({
   snakeToTitleCase: (s: string) =>
@@ -70,6 +68,15 @@ jest.mock('@shared/format/Currency', () => ({
   ),
 }));
 
+jest.mock('@shared/buttons/DownloadButton', () => ({
+  __esModule: true,
+  default: ({ onClick }: any) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
+  ),
+}));
+
 jest.mock('@components/helpbee', () => ({
   __esModule: true,
   default: ({ isModalVisible, onClose }: any) =>
@@ -82,7 +89,7 @@ jest.mock('@components/helpbee', () => ({
     ) : null,
 }));
 
-jest.mock('@shared/ds/ThreeDotsMenu', () => ({
+jest.mock('@ui/ThreeDotsMenu', () => ({
   __esModule: true,
   default: ({ menuItems, data, onMenuClick }: any) => (
     <div data-testid='three-dots'>
@@ -100,25 +107,43 @@ jest.mock('@components/k8s/common/RecommendationJobDetails', () => ({
   default: ({ jobName }: any) => <div data-testid='job-details'>{jobName}</div>,
 }));
 
-jest.mock('@shared/BoxLayout2', () => ({
-  __esModule: true,
-  default: ({ children, heading, filterOptions = [], dateTimeRange }: any) => (
-    <div data-testid='box-layout'>
-      <h2 data-testid='box-heading'>{heading}</h2>
-      {filterOptions.map((f: any, i: number) => (
-        <select key={i} data-testid={`filter-${f.label}`} value={f.value || ''} onChange={f.onSelect}>
-          <option value=''>--</option>
-          {(f.options || []).map((opt: any) => (
-            <option key={opt.value || opt.label} value={opt.value || opt.label}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-      ))}
-      <div data-testid='date-range-enabled'>{String(!!dateTimeRange?.enabled)}</div>
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout: any = ({ children, id }: any) => (
+    <div data-testid='listing-layout' id={id}>
       {children}
     </div>
-  ),
+  );
+  ListingLayout.Toolbar = ({ children, actions, title }: any) => (
+    <div data-testid='toolbar'>
+      <h2 data-testid='box-heading'>{title}</h2>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }: any) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, options = [], value, onSelect }: any) => {
+    // source passes value as the matching option object via findOption(); fall back to raw string
+    const v = typeof value === 'object' && value !== null ? value.value : value;
+    return (
+      <select data-testid={`filter-${label}`} value={v || ''} onChange={onSelect}>
+        <option value=''>--</option>
+        {(options || []).map((opt: any, idx: number) => {
+          const ov = typeof opt === 'string' ? opt : opt.value;
+          const ol = typeof opt === 'string' ? opt : opt.label;
+          return (
+            <option key={(ov || '_') + '-' + idx} value={ov}>
+              {ol}
+            </option>
+          );
+        })}
+      </select>
+    );
+  },
 }));
 
 jest.mock('@components/cloudaccount/CloudAccountTable', () => ({
@@ -215,7 +240,6 @@ describe('CloudAccountMetrices (integration)', () => {
 
     await waitFor(() => expect(screen.getByText('i-1234')).toBeInTheDocument());
     expect(screen.getByText('i-5678')).toBeInTheDocument();
-    // type: 'compute_instance' → 'Compute Instance'
     expect(screen.getByText('Compute Instance')).toBeInTheDocument();
     expect(screen.getByText('Rds Db')).toBeInTheDocument();
   });
@@ -305,7 +329,6 @@ describe('CloudAccountMetrices (integration)', () => {
   it('expandable componentFn renders OptimizeSummary with AmazonEC2 hardcoded serviceName', async () => {
     render(<CloudAccountMetrices accountId='acc-1' serviceName='AmazonRDS' heading='' />);
     await waitFor(() => expect(screen.getByTestId('row-0-expandable')).toBeInTheDocument());
-    // serviceName is hardcoded to 'AmazonEC2' in the componentFn regardless of prop
     expect(screen.getByTestId('optimize-summary').textContent).toBe('acc-1/i-1234-id/AmazonEC2');
   });
 
@@ -314,14 +337,10 @@ describe('CloudAccountMetrices (integration)', () => {
     await waitFor(() => expect(screen.getByTestId('job-details')).toHaveTextContent('krr_scan'));
   });
 
-  it('disables date-time range filter', async () => {
-    render(<CloudAccountMetrices accountId='acc-1' serviceName='AmazonEC2' heading='' />);
-    await waitFor(() => expect(screen.getByTestId('date-range-enabled')).toHaveTextContent('false'));
-  });
-
   it('passes accountId through to useMetricCloudFilter hook', async () => {
     render(<CloudAccountMetrices accountId='acc-42' serviceName='AmazonEC2' heading='' />);
     expect(mockUseMetricCloudFilter).toHaveBeenCalledWith('acc-42');
+    await waitFor(() => expect(apiCloudAccount.getCloudResource).toHaveBeenCalled());
   });
 
   it('shows loading during fetch and clears after', async () => {

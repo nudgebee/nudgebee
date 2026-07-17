@@ -2,7 +2,7 @@ import React from 'react';
 import { Box } from '@mui/material';
 import Tooltip from '@ui/Tooltip';
 import DataObjectIcon from '@mui/icons-material/DataObject';
-import { Modal } from '@shared/modal';
+import { Modal } from '@ui/Modal';
 import Text from '@shared/format/Text';
 import WidgetCard from '@ui/WidgetCard';
 import { workflowAddIcon, workflowAiIcon, workflowTemplateIcon } from '@assets';
@@ -61,7 +61,8 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
             gap: 'var(--ds-space-4)',
             '&:hover': {
               transform: 'translateY(-2px)',
-              boxShadow: '0px 4px 20px -1px rgba(229, 229, 229, 8), 0px 2px 20px 0px rgb(233, 233, 233)',
+              boxShadow:
+                '0 var(--ds-space-1) calc(var(--ds-space-0) * 10) -1px rgba(229, 229, 229, 8), 0 var(--ds-space-0) calc(var(--ds-space-0) * 10) 0 rgb(233, 233, 233)',
               border: '1px solid var(--ds-purple-300)',
             },
             transition: 'all 0.2s ease',
@@ -128,7 +129,8 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
                   ? {
                       '&:hover': {
                         transform: 'translateY(-2px)',
-                        boxShadow: '0px 4px 20px -1px rgba(229, 229, 229, 8), 0px 2px 20px 0px rgb(233, 233, 233)',
+                        boxShadow:
+                          '0 var(--ds-space-1) calc(var(--ds-space-0) * 10) -1px rgba(229, 229, 229, 8), 0 var(--ds-space-0) calc(var(--ds-space-0) * 10) 0 rgb(233, 233, 233)',
                         border: '1px solid var(--ds-purple-300)',
                       },
                     }
@@ -199,7 +201,8 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
                   ? {
                       '&:hover': {
                         transform: 'translateY(-2px)',
-                        boxShadow: '0px 4px 20px -1px rgba(229, 229, 229, 8), 0px 2px 20px 0px rgb(233, 233, 233)',
+                        boxShadow:
+                          '0 var(--ds-space-1) calc(var(--ds-space-0) * 10) -1px rgba(229, 229, 229, 8), 0 var(--ds-space-0) calc(var(--ds-space-0) * 10) 0 rgb(233, 233, 233)',
                         border: '1px solid var(--ds-purple-300)',
                       },
                     }
@@ -283,7 +286,8 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
             gap: 'var(--ds-space-4)',
             '&:hover': {
               transform: 'translateY(-2px)',
-              boxShadow: '0px 4px 20px -1px rgba(229, 229, 229, 8), 0px 2px 20px 0px rgb(233, 233, 233)',
+              boxShadow:
+                '0 var(--ds-space-1) calc(var(--ds-space-0) * 10) -1px rgba(229, 229, 229, 8), 0 var(--ds-space-0) calc(var(--ds-space-0) * 10) 0 rgb(233, 233, 233)',
               border: '1px solid var(--ds-purple-300)',
             },
             transition: 'all 0.2s ease',

@@ -2,7 +2,7 @@ import { Box, Typography } from '@mui/material';
 import CopyButton from '@shared/buttons/CopyButton';
 import { plusIcon } from '@assets';
 // TODO(ds-migration): BarChart is canvas/Chart.js code — no DS equivalent yet.
-import BarChart from '@shared/charts/BarChart';
+import Chart from '@ui/Chart';
 import { convertStringCase } from 'src/utils/common';
 import apiRecommendations from '@api1/recommendation';
 import React from 'react';
@@ -268,10 +268,10 @@ export const DrilldownDetails = ({ data, showCopyIconOnHover = false }: any) => 
         linear-gradient(to right,
         transparent calc(33.33% - 9px),
         ${dividerColor} calc(33.33% - 9px),
-        ${dividerColor} calc(33.33% - 8px),
-        transparent calc(33.33% - 8px),
-        transparent calc(66.66% + 8px),
-        ${dividerColor} calc(66.66% + 8px),
+        ${dividerColor} calc(33.33% - ${ds.space[2]}),
+        transparent calc(33.33% - ${ds.space[2]}),
+        transparent calc(66.66% + ${ds.space[2]}),
+        ${dividerColor} calc(66.66% + ${ds.space[2]}),
         ${dividerColor} calc(66.66% + 9px),
         transparent calc(66.66% + 9px)
       )
@@ -291,7 +291,7 @@ export const DrilldownDetails = ({ data, showCopyIconOnHover = false }: any) => 
             More Details
           </Typography>
           {Object.keys(allGraphData).map((r) => (
-            <BarChart key={r} chartTitle={r} data={allGraphData[r].values} labels={allGraphData[r].labels} />
+            <Chart.Bar key={r} chartTitle={r} data={allGraphData[r].values} labels={allGraphData[r].labels} />
           ))}
         </>
       )}

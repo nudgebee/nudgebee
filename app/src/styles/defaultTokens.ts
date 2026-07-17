@@ -489,6 +489,7 @@ export const DEFAULT_CSS_TOKENS: Record<string, string> = {
   '--ds-font-mono': "'JetBrains Mono', 'Consolas', 'Monaco', 'Courier New', monospace",
 
   // Spacing
+  '--ds-space-0': '2px',
   '--ds-space-1': '4px',
   '--ds-space-2': '8px',
   '--ds-space-3': '12px',

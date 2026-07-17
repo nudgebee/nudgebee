@@ -1,7 +1,8 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Box } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { Input } from '@ui/Input';
+import { ds } from '@utils/colors';
 
 const TenantAccountCommonSettings = ({ logSettings, setLogSettings }) => {
   const handleChange = (field) => (value) => {
@@ -19,10 +20,15 @@ const TenantAccountCommonSettings = ({ logSettings, setLogSettings }) => {
   ];
 
   return (
-    <Box display='grid' gridTemplateColumns='1fr 1fr' gap='16px'>
-      {fields.map(({ label, field, placeholder }) => (
-        <Input key={field} size='sm' label={label} value={logSettings[field] || ''} placeholder={placeholder} onChange={handleChange(field)} />
-      ))}
+    <Box>
+      <Typography sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', mb: ds.space[4] }}>
+        Log Label Mapper
+      </Typography>
+      <Box display='grid' gridTemplateColumns='1fr 1fr' gap={ds.space[4]}>
+        {fields.map(({ label, field, placeholder }) => (
+          <Input key={field} size='sm' label={label} value={logSettings[field] || ''} placeholder={placeholder} onChange={handleChange(field)} />
+        ))}
+      </Box>
     </Box>
   );
 };

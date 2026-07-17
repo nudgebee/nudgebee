@@ -770,6 +770,30 @@
     "cloud_providers": ["azure"]
   },
   {
+    "unique_id": "130",
+    "insight_format": "{} GCP alerts are currently FIRING",
+    "type": "Addition",
+    "source": "Event",
+    "category": "Ops",
+    "range": 1,
+    "range_unit": "DAY",
+    "filters": [
+      {
+        "column": "source",
+        "value": ["GCP_Metric_Alert", "gcp_monitoring_webhook"],
+        "operator": "in"
+      },
+      {
+        "column": "status",
+        "value": "FIRING",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": ["gcp"]
+  },
+  {
     "unique_id": "114",
     "insight_format": "{} resources missing required tags/labels",
     "type": "Addition",

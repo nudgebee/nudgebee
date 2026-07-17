@@ -5,6 +5,15 @@ jest.mock('@assets/check.svg', () => ({
   default: { src: 'check.svg' },
 }));
 
+jest.mock('@shared/buttons/DownloadButton', () => ({
+  __esModule: true,
+  default: ({ onClick }) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      Download
+    </button>
+  ),
+}));
+
 describe('KubernetesPrometheus', () => {
   const baseProps = {
     accountId: '123',

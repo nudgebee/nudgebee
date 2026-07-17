@@ -9,7 +9,7 @@ global:
   imagePullSecrets: []
 
 image:
-  repository: cost-server
+  repository: nudgebee-cost-server
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: 'latest'

@@ -5,9 +5,10 @@ import apiUserManagement from '@api1/user';
 import { Label } from '@ui/Label';
 import { hasWriteAccess } from '@lib/auth';
 import UserModal from './modal/UserModal';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import Text from '@shared/format/Text';
 import { ListingLayout } from '@ui/ListingLayout';
+import { ds } from '@utils/colors';
 import { action } from 'src/utils/actionStyles';
 import { toast as snackbar } from '@ui/Toast';
 import { useSession } from 'next-auth/react';
@@ -82,8 +83,8 @@ const UserGroupUsers = ({ groupId, onUserUpdate }) => {
                         component='img'
                         sx={{
                           marginX: 'auto',
-                          height: '16px',
-                          width: '16px',
+                          height: ds.space[4],
+                          width: ds.space[4],
                         }}
                         alt='more'
                         src={writeIcon.default.src}
@@ -131,7 +132,7 @@ const UserGroupUsers = ({ groupId, onUserUpdate }) => {
       />
       <ListingLayout id='box-user-group-users'>
         <ListingLayout.Body>
-          <CustomTable2
+          <CustomTable
             checkForTabsWithData={function () {
               return;
             }}

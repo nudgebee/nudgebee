@@ -1,0 +1,72 @@
+# Enterprise overlay for the nudgebee umbrella chart.
+#
+# Use this in addition to values.yaml to deploy from the private nudgebee
+# registry (mirrored on AWS ECR via registry.nudgebee.com) instead of public
+# GHCR. This is intended for internal high-frequency deploys where Docker Hub
+# rate limits on init-container images would otherwise be a problem.
+#
+# Usage:
+#   helm install nudgebee ./nudgebee \
+#     -f nudgebee/values.yaml \
+#     -f nudgebee/values-enterprise.yaml \
+#     --set nudgebee_secret.NUDGEBEE_LICENSE=<license-key> \
+#     --set nudgebee_registry_secret.password=<registry-password>
+
+global:
+  image:
+    registry: 'registry.nudgebee.com'
+  imagePullSecrets:
+    - name: nudgebee-registry-secret
+  initImages:
+    postgres: 'registry.nudgebee.com/postgres:16.10-alpine'
+    curl: 'registry.nudgebee.com/curl:8.10.1'
+
+nudgebee_registry_secret:
+  enabled: true
+  username: 'nudgebee'
+  # password: set via --set or a secrets file; falls back to NUDGEBEE_LICENSE.
+
+postgresql:
+  image:
+    registry: registry.nudgebee.com
+    repository: postgres
+    tag: '16.1.0-debian-11-r16'
+  metrics:
+    # Upstream prometheus-community postgres_exporter (see values.yaml). The EE
+    # infra pipeline (nudgebee-infra) must mirror
+    # quay.io/prometheuscommunity/postgres-exporter:v0.20.1 ->
+    # registry.nudgebee.com/postgres-exporter:v0.20.1 before this reaches an EE
+    # deploy. The shared alert rules in values.yaml already track the v0.20 metric
+    # renames, so EE and OSS stay consistent.
+    image:
+      registry: registry.nudgebee.com
+      repository: postgres-exporter
+      tag: 'v0.20.1'
+
+redis:
+  image:
+    registry: registry.nudgebee.com
+    repository: redis
+    tag: 7.0.12-debian-11-r0
+
+rabbitmq:
+  image:
+    registry: registry.nudgebee.com
+    repository: rabbitmq
+    tag: 3.13.7-debian-12-r5-nb-3
+
+app:
+  nginx:
+    image:
+      registry: registry.nudgebee.com
+      repository: nginx
+      tag: stable-alpine3.20-slim
+
+postgres_migrations:
+  image:
+    repository: nudgebee-migration
+
+llm-server:
+  env:
+    LLM_SERVER_AGENT_CODEAGENT_IMAGE: 'registry.nudgebee.com/code-analysis-agent:latest'
+    LLM_SERVER_AGENT_CODEAGENT_IMAGE_PULL_SECRET: 'nudgebee-registry-secret'

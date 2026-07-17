@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
-import { Box } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { Divider } from '@ui/Divider';
+import { CostCallout } from '@ui/CostCallout';
 import ClusterNameWithRegion from './ClusterNameWithRegion';
 import KubernetesNodePodStatus from './KubernetesNodePodStatus';
-import CostView from '@shared/CostView';
 import apiKubernetes from '@api1/kubernetes';
 import Link from 'next/link';
 import { ArrowRightBlueIcon } from '@assets';
@@ -34,6 +34,12 @@ const ClusterViewCard = ({ clusterName = '', accountId = '', nodeData = [], podD
       console.error(error);
     }
   };
+
+  const lastMonthCost = cost[1]?.cost;
+  const forecastCost = cost[2]?.cost;
+  const hasValidComparison = typeof lastMonthCost === 'number' && typeof forecastCost === 'number';
+  const forecastTone = hasValidComparison ? (lastMonthCost > forecastCost ? 'high-savings' : 'waste') : 'neutral';
+  const forecastArrow = hasValidComparison ? (lastMonthCost > forecastCost ? 'down' : 'up') : 'none';
 
   return (
     <Box
@@ -87,7 +93,31 @@ const ClusterViewCard = ({ clusterName = '', accountId = '', nodeData = [], podD
           <KubernetesNodePodStatus data={podData} />
         </Box>
         <Divider sx={{ stroke: 'var(--ds-brand-300)', width: '100%', height: '1px' }} />
-        <CostView data={cost} />
+        {cost?.length > 0 ? (
+          <Box sx={{ display: 'flex', gap: 'var(--ds-space-4)', justifyContent: 'space-between' }}>
+            {cost.map((entry, index) => (
+              <Box key={index}>
+                <Typography sx={{ color: 'var(--ds-gray-400)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }}>
+                  {entry?.name}
+                </Typography>
+                {typeof entry?.cost === 'number' ? (
+                  <CostCallout
+                    value={entry.cost}
+                    size='lg'
+                    tone={entry.name === 'Forecast Month' ? forecastTone : 'neutral'}
+                    arrow={entry.name === 'Forecast Month' ? forecastArrow : 'none'}
+                  />
+                ) : (
+                  <Typography sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-gray-600)' }}>
+                    {entry?.cost}
+                  </Typography>
+                )}
+              </Box>
+            ))}
+          </Box>
+        ) : (
+          <Typography sx={{ color: 'var(--ds-gray-400)', fontSize: 'var(--ds-text-small)' }}>No cost data provided.</Typography>
+        )}
       </Box>
     </Box>
   );

@@ -139,8 +139,15 @@ jobs:
         run: |
           set -euo pipefail
           SNAP="${DATE}-${SHA_SHORT}"
-          echo "Merging ${REPO}:${SNAP} (+ :latest) from per-arch images"
+          # STABLE is the version-rolling tag consumers pin (mirrors the python
+          # base's :3.12). It tracks the Alpine major.minor the base is built on,
+          # so weekly rebuilds roll security patches WITHIN alpine 3.22 but never
+          # silently jump to a new major (which would risk breaking tooling).
+          # Bump this in lockstep with the FROM alpine:X.Y in the base Dockerfile.
+          STABLE="alpine3.22"
+          echo "Merging ${REPO}:${SNAP} (+ :${STABLE} + :latest) from per-arch images"
           docker buildx imagetools create \
+            -t "${REPO}:${STABLE}" \
             -t "${REPO}:latest" \
             -t "${REPO}:${SNAP}" \
             --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
@@ -149,4 +156,4 @@ jobs:
             "${REPO}:${SNAP}-amd64" \
             "${REPO}:${SNAP}-arm64"
 
-          docker buildx imagetools inspect "${REPO}:latest" || true
+          docker buildx imagetools inspect "${REPO}:${STABLE}" || true

@@ -10,17 +10,20 @@ jest.mock('@api1/recommendation', () => ({
   },
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000' }, background: { white: '#fff' } },
-}));
+jest.mock('@utils/colors');
 
-jest.mock('@shared', () => ({
-  Text: ({ value }) => <span>{value}</span>,
-}));
-
-jest.mock('@shared/widgets/CustomLabels', () => ({
+jest.mock('@shared/format/Text', () => ({
   __esModule: true,
-  default: ({ text }) => <span data-testid={`label-${text}`}>{text}</span>,
+  default: ({ value }) => <span>{value}</span>,
+}));
+
+// Per-row severity column now uses ds/SeverityIcon (level prop, lowercased
+// via toDsSeverityLevel) instead of the old CustomLabels. Prefix with
+// `severity-icon-` to avoid colliding with the SeverityInfographic mock's
+// `severity-Critical` testids (capitalised).
+jest.mock('@ui/SeverityIcon', () => ({
+  __esModule: true,
+  SeverityIcon: ({ level }) => <span data-testid={`severity-icon-${level}`}>sev</span>,
 }));
 
 jest.mock('@components/k8s/common/SeverityInfographic', () => ({
@@ -49,12 +52,12 @@ jest.mock('@shared/widgets/InfographicList', () => ({
   ),
 }));
 
-jest.mock('./../../../../src/components/recommendations/security/KubernetesSecurityDetails', () => ({
+jest.mock('@components/recommendations/security/KubernetesSecurityDetails', () => ({
   __esModule: true,
   default: ({ query }) => <div data-testid='security-details'>{query?.vulnerabilityId || ''}</div>,
 }));
 
-jest.mock('@shared/tables/CustomTable2', () => ({
+jest.mock('@shared/tables/CustomTable', () => ({
   __esModule: true,
   default: ({ id, tableData, headers, loading, expandable }) => (
     <div data-testid='custom-table' id={id}>
@@ -168,11 +171,10 @@ describe('KubernetesSecurityCVE (integration)', () => {
   it('renders CVE table rows with vulnerability_id + counts + severity', async () => {
     render(<KubernetesSecurityCVE kubernetes={{ id: 'acc-1' }} query={{ status: 'Open' }} tableId='cve-table' />);
 
-    // CVE id appears in both row cell AND expandable detail tab (test stub) — use getAllByText
     await waitFor(() => expect(screen.getAllByText('CVE-2024-1234').length).toBeGreaterThan(0));
     expect(screen.getByText('CVE-2024-5678')).toBeInTheDocument();
-    expect(screen.getByTestId('label-Critical')).toBeInTheDocument();
-    expect(screen.getByTestId('label-High')).toBeInTheDocument();
+    expect(screen.getByTestId('severity-icon-critical')).toBeInTheDocument();
+    expect(screen.getByTestId('severity-icon-high')).toBeInTheDocument();
   });
 
   it('renders severity infographic with counts from API', async () => {
@@ -260,7 +262,6 @@ describe('KubernetesSecurityCVE (integration)', () => {
 
     render(<KubernetesSecurityCVE kubernetes={{ id: 'acc-1' }} query={{}} tableId='cve-table' />);
 
-    // Default initial dashes still shown
     await waitFor(() => expect(screen.getByTestId('severity-Critical')).toHaveTextContent('Critical:-'));
     errorSpy.mockRestore();
   });

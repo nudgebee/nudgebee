@@ -564,7 +564,7 @@ const SigNozQueryAutocomplete = ({ accountId, onQueryChange, queryItems }) => {
             startAdornment: <InputAdornment position='start'>{getStepIcon()}</InputAdornment>,
             sx: {
               fontFamily: 'monospace',
-              fontSize: '0.875rem',
+              fontSize: ds.text.bodyLg,
             },
           }}
           sx={{
@@ -647,11 +647,11 @@ const SigNozQueryAutocomplete = ({ accountId, onQueryChange, queryItems }) => {
                     secondary={suggestion.description}
                     primaryTypographyProps={{
                       fontFamily: 'monospace',
-                      fontSize: '0.875rem',
+                      fontSize: ds.text.bodyLg,
                       fontWeight: 'medium',
                     }}
                     secondaryTypographyProps={{
-                      fontSize: '0.75rem',
+                      fontSize: ds.text.small,
                     }}
                   />
                 </ListItem>
@@ -674,7 +674,7 @@ const SigNozQueryAutocomplete = ({ accountId, onQueryChange, queryItems }) => {
                 color='primary'
                 sx={{
                   fontFamily: 'monospace',
-                  '& .MuiChip-label': { fontSize: '0.75rem' },
+                  '& .MuiChip-label': { fontSize: ds.text.small },
                 }}
               />
             ))}
@@ -690,14 +690,14 @@ const SigNozQueryAutocomplete = ({ accountId, onQueryChange, queryItems }) => {
                         width: ds.space.mul(0, 3),
                       },
                       '&::-webkit-scrollbar-track': {
-                        backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                        backgroundColor: `color-mix(in srgb, ${ds.background[100]} 10%, transparent)`,
                         borderRadius: 'var(--ds-radius-sm)',
                       },
                       '&::-webkit-scrollbar-thumb': {
-                        backgroundColor: 'rgba(255, 255, 255, 0.3)',
+                        backgroundColor: `color-mix(in srgb, ${ds.background[100]} 30%, transparent)`,
                         borderRadius: 'var(--ds-radius-sm)',
                         '&:hover': {
-                          backgroundColor: 'rgba(255, 255, 255, 0.5)',
+                          backgroundColor: `color-mix(in srgb, ${ds.background[100]} 50%, transparent)`,
                         },
                       },
                     }}
@@ -709,18 +709,18 @@ const SigNozQueryAutocomplete = ({ accountId, onQueryChange, queryItems }) => {
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'space-between',
-                          backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                          backgroundColor: `color-mix(in srgb, ${ds.background[100]} 10%, transparent)`,
                           borderRadius: 'var(--ds-radius-sm)',
                           padding: 'var(--ds-space-1) var(--ds-space-2)',
                           mb: index < chips.slice(2).length - 1 ? ds.space[1] : 0,
-                          border: '1px solid rgba(255, 255, 255, 0.2)',
+                          border: `1px solid color-mix(in srgb, ${ds.background[100]} 20%, transparent)`,
                         }}
                       >
                         <Typography
                           variant='caption'
                           sx={{
                             fontFamily: 'monospace',
-                            fontSize: '0.75rem',
+                            fontSize: ds.text.small,
                             flex: 1,
                             wordBreak: 'break-word',
                           }}
@@ -737,11 +737,11 @@ const SigNozQueryAutocomplete = ({ accountId, onQueryChange, queryItems }) => {
                             ml: ds.space[2],
                             width: ds.space[4],
                             height: ds.space[4],
-                            color: 'rgba(255, 255, 255, 0.7)',
+                            color: `color-mix(in srgb, ${ds.background[100]} 70%, transparent)`,
                             flexShrink: 0,
                             '&:hover': {
-                              color: 'white',
-                              backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                              color: ds.background[100],
+                              backgroundColor: `color-mix(in srgb, ${ds.background[100]} 10%, transparent)`,
                             },
                           }}
                         >
@@ -756,8 +756,8 @@ const SigNozQueryAutocomplete = ({ accountId, onQueryChange, queryItems }) => {
                 componentsProps={{
                   tooltip: {
                     sx: {
-                      backgroundColor: 'rgba(97, 97, 97, 0.92)',
-                      color: 'white',
+                      backgroundColor: `color-mix(in srgb, ${ds.gray[600]} 92%, transparent)`,
+                      color: ds.background[100],
                       maxWidth: ds.space.mul(0, 200),
                       maxHeight: ds.space.mul(0, 175),
                       padding: 'var(--ds-space-3)',
@@ -790,7 +790,7 @@ const SigNozQueryAutocomplete = ({ accountId, onQueryChange, queryItems }) => {
                     fontFamily: 'monospace',
                     cursor: 'help',
                     '& .MuiChip-label': {
-                      fontSize: '0.75rem',
+                      fontSize: ds.text.small,
                       fontWeight: 'bold',
                     },
                   }}
@@ -821,7 +821,7 @@ const SigNozQueryAutocomplete = ({ accountId, onQueryChange, queryItems }) => {
         <Typography variant='subtitle2' gutterBottom sx={{ fontWeight: 'medium' }}>
           How to use:
         </Typography>
-        <Box component='ul' sx={{ m: 0, pl: ds.space[4], '& li': { fontSize: '0.75rem', color: 'text.secondary', mb: ds.space[1] } }}>
+        <Box component='ul' sx={{ m: 0, pl: ds.space[4], '& li': { fontSize: ds.text.small, color: 'text.secondary', mb: ds.space[1] } }}>
           <li>Type freely: &quot;service.name = my-api&quot; or use suggestions step by step</li>
           <li>If you type an exact label name, operators will appear automatically</li>
           <li>After selecting an operator, values for that label will be suggested</li>

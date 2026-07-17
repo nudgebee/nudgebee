@@ -481,7 +481,7 @@ const CustomNode = memo(({ data, selected }) => {
           border: data.entireNodeInstance?.IsHealthy === false ? `2px solid ${ds.red[500]}` : 'none',
           borderRadius: 'var(--ds-radius-lg)',
           display: 'inline-block',
-          boxShadow: selected ? '0 0 0 2px #2196f3' : 'none',
+          boxShadow: selected ? `0 0 0 ${ds.space[0]} ${ds.blue[500]}` : 'none',
         }}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}

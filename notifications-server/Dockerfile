@@ -2,7 +2,11 @@
 # Base image. OSS installs use the public GHCR mirror of our internal
 # Python base (Alpine + uv + native build deps preinstalled). EE deploys
 # override PYTHON_BASE to their internal registry via --build-arg.
-ARG PYTHON_BASE=ghcr.io/nudgebee/nudgebee-python:3.12-20250919-140344
+# Rolling :3.12 tag (rebuilt weekly on patched Alpine + latest uv/pip), matching
+# the k8s-collector base pin. The old dated tag :3.12-20250919-140344 shipped an
+# unpatched Alpine + uv 0.8.18 / pip 25.0.1 (5 fixable pip/uv CVEs); :3.12 scans
+# clean. EE deploys still override PYTHON_BASE via --build-arg.
+ARG PYTHON_BASE=ghcr.io/nudgebee/nudgebee-python:3.12
 FROM ${PYTHON_BASE} AS python-base
 RUN apk update && \
     apk upgrade --no-cache && \

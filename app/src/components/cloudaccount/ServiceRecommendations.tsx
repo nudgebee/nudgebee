@@ -10,7 +10,7 @@ import { Button as DsButton } from '@ui/Button';
 import { SeverityIcon as DsSeverityIcon } from '@ui/SeverityIcon';
 import CloudAccountTable from './CloudAccountTable';
 import SafeIcon from '@shared/icons/SafeIcon';
-import type { ICustomTable2Row } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/Instances';
 import { usePagination } from '@hooks/usePagination';
 import Datetime from '@shared/format/Datetime';
 import { ds } from '@utils/colors';
@@ -74,7 +74,7 @@ const CATEGORY_OPTIONS = [
 ];
 
 const ServiceRecommendations: React.FC<ServiceRecommendationsProps> = ({ accountId, serviceName, provider: _provider }) => {
-  const [recommendations, setRecommendations] = useState<ICustomTable2Row[][]>([]);
+  const [recommendations, setRecommendations] = useState<ICustomTableRow[][]>([]);
   const [recommendationsCount, setRecommendationsCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const { page, rowsPerPage, changePage, setPage } = usePagination(10);
@@ -156,7 +156,7 @@ const ServiceRecommendations: React.FC<ServiceRecommendationsProps> = ({ account
             }
           }
 
-          const data: ICustomTable2Row[] = [];
+          const data: ICustomTableRow[] = [];
 
           let recommendationDetails = apiRecommendations.getRecommendationDetails(item.category, item.rule_name);
           if (!recommendationDetails) {

@@ -6,7 +6,7 @@ import { usePagination } from '@hooks/usePagination';
 import { interpolateMitigations, buildDescriptionMarkdown } from '@api1/recommendation/data';
 import { useEffectiveRecommendation } from '@hooks/useEffectiveRecommendation';
 import apiRecommendations, { RECOMMENDATION_STATUS } from '@api1/recommendation';
-import type { ICustomTable2Row } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/Instances';
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import { Box, Typography } from '@mui/material';
 import WidgetCard from '@ui/WidgetCard';
@@ -371,7 +371,7 @@ const CloudOptimizeRecommendationsTable = (props: {
     setSelectedRecommendation(null);
   };
 
-  const buildRecommendationRow = (item: any, ticketReferenceMap: Map<string, any>): ICustomTable2Row[] => {
+  const buildRecommendationRow = (item: any, ticketReferenceMap: Map<string, any>): ICustomTableRow[] => {
     let serviceName = '';
     let objectName = '';
 
@@ -459,7 +459,7 @@ const CloudOptimizeRecommendationsTable = (props: {
 
     const recommendationValue = config.getRecommendationText(recommenedationDetails, item);
 
-    const data: ICustomTable2Row[] = [];
+    const data: ICustomTableRow[] = [];
 
     // Severity + Updated At
     data.push({

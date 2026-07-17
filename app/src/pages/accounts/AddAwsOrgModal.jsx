@@ -1,22 +1,24 @@
-import { Grid, Typography, Box, IconButton, Tooltip, Chip, Stepper, Step, StepLabel, Divider } from '@mui/material';
+import { Grid, Typography, Box, Stepper, Step, StepLabel } from '@mui/material';
+import { Chip } from '@ui/Chip';
+import { Divider } from '@ui/Divider';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { useState, useEffect, useRef } from 'react';
 import apiAccount from '@api1/account';
-import { Modal } from '@shared/modal';
+import { Modal } from '@ui/Modal';
 import { Input } from '@ui/Input';
 import { isK8sAccountNameValid } from 'src/utils/common';
 import { Button } from '@ui/Button';
-import { snackbar } from '@shared/snackbarService';
-import { colors } from 'src/utils/colors';
+import { toast as snackbar } from '@ui/Toast';
+import { ds } from 'src/utils/colors';
 import { CopyIconBlue } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 
 const STATUS_COLORS = {
-  active: '#4CAF50',
-  pending: '#FF9800',
-  disabled: '#9E9E9E',
-  failed: '#F44336',
+  active: ds.green[400],
+  pending: ds.amber[400],
+  disabled: ds.gray[400],
+  failed: ds.red[500],
 };
 
 const AddAwsOrgModal = ({ open, onClose }) => {
@@ -150,17 +152,19 @@ const AddAwsOrgModal = ({ open, onClose }) => {
 
   const renderStep1 = () => (
     <>
-      <Grid container mb={2}>
+      <Grid container mb={ds.space[4]}>
         <Grid item xs={12}>
           <Box>
-            <Typography sx={{ fontSize: '20px', fontWeight: 500, color: '#374151', mb: 1 }}>Set Organization Name</Typography>
-            <Typography variant='body2' sx={{ color: colors.secondary.dark, fontSize: '12px' }}>
+            <Typography sx={{ fontSize: ds.text.heading, fontWeight: ds.weight.medium, color: ds.brand[500], mb: ds.space[2] }}>
+              Set Organization Name
+            </Typography>
+            <Typography variant='body2' sx={{ color: ds.gray[400], fontSize: ds.text.small }}>
               Enter a display name for your AWS Organization. This will be used to identify the organization in Nudgebee.
             </Typography>
           </Box>
         </Grid>
         <Grid item xs={12} md={6}>
-          <Box sx={{ mt: 2 }}>
+          <Box sx={{ mt: ds.space[4] }}>
             <Input
               value={accountName}
               size='sm'
@@ -175,87 +179,104 @@ const AddAwsOrgModal = ({ open, onClose }) => {
         </Grid>
       </Grid>
 
-      <Divider sx={{ my: 1, borderStyle: 'dotted', borderColor: '#D0D0D0', borderBottomWidth: '2px' }} />
+      <Divider style='dashed' color={ds.brand[200]} thickness={2} sx={{ my: ds.space[2] }} />
 
-      <Grid item xs={12} mt={2}>
-        <Typography sx={{ fontWeight: 500, fontSize: '13px', mb: 1, color: '#374151' }}>What happens next</Typography>
-        <Box sx={{ p: 1.5, backgroundColor: '#f8f9fa', borderRadius: '8px', border: '1px solid #dee2e6' }}>
-          <Box sx={{ pl: 2 }}>
-            <Typography component='div' sx={{ fontSize: '12px', lineHeight: 1.4, mb: 0.5 }}>
+      <Grid item xs={12} mt={ds.space[4]}>
+        <Typography sx={{ fontWeight: ds.weight.medium, fontSize: ds.text.body, mb: ds.space[2], color: ds.brand[500] }}>
+          What happens next
+        </Typography>
+        <Box sx={{ p: ds.space[3], backgroundColor: ds.background[200], borderRadius: ds.radius.lg, border: `1px solid ${ds.gray[300]}` }}>
+          <Box sx={{ pl: ds.space[4] }}>
+            <Typography component='div' sx={{ fontSize: ds.text.small, lineHeight: 1.4, mb: ds.space[1] }}>
               <span style={{ fontWeight: 'bold' }}>1. Generate credentials:</span> A verification token and StackSet template URL will be created for
               you.
             </Typography>
-            <Typography component='div' sx={{ fontSize: '12px', lineHeight: 1.4, mb: 0.5 }}>
+            <Typography component='div' sx={{ fontSize: ds.text.small, lineHeight: 1.4, mb: ds.space[1] }}>
               <span style={{ fontWeight: 'bold' }}>2. Deploy StackSet:</span> Launch the CloudFormation StackSet in your AWS Management Account
               console.
             </Typography>
-            <Typography component='div' sx={{ fontSize: '12px', lineHeight: 1.4, mb: 0.5 }}>
+            <Typography component='div' sx={{ fontSize: ds.text.small, lineHeight: 1.4, mb: ds.space[1] }}>
               <span style={{ fontWeight: 'bold' }}>3. Use service-managed permissions:</span> Deploy to your entire organization or selected OUs with
               automatic deployment for new accounts.
             </Typography>
-            <Typography component='div' sx={{ fontSize: '12px', lineHeight: 1.4, mb: 0.5 }}>
+            <Typography component='div' sx={{ fontSize: ds.text.small, lineHeight: 1.4, mb: ds.space[1] }}>
               <span style={{ fontWeight: 'bold' }}>4. Automatic registration:</span> Member accounts will appear automatically as the StackSet deploys
               to each account.
             </Typography>
           </Box>
         </Box>
-        <Box sx={{ mt: 1.5, p: 1.5, backgroundColor: '#FFF8E1', borderRadius: '8px', border: '1px solid #FFE082' }}>
-          <Typography sx={{ fontSize: '12px', lineHeight: 1.5, color: '#5D4037' }}>
+        <Box
+          sx={{
+            mt: ds.space[3],
+            p: ds.space[3],
+            backgroundColor: ds.amber[100],
+            borderRadius: ds.radius.lg,
+            border: `1px solid ${ds.yellow[300]}`,
+          }}
+        >
+          <Typography sx={{ fontSize: ds.text.small, lineHeight: 1.5, color: ds.pink[700] }}>
             <span style={{ fontWeight: 'bold' }}>Note:</span> StackSets deploy only to member accounts, not the management account itself. If you also
             need to monitor your management account, add it separately using <span style={{ fontWeight: 'bold' }}>Add AWS Account</span>.
           </Typography>
         </Box>
       </Grid>
 
-      <Grid container spacing={2} mt={3} mb={2} justifyContent='flex-end'>
-        <Grid item>
-          <Button id='cancel-org-btn' size='md' tone='secondary' onClick={() => handleCloseModal(false)} disabled={isSubmitting}>
-            Cancel
-          </Button>
-        </Grid>
-        <Grid item>
-          <Button
-            id='generate-token-btn'
-            size='md'
-            tone='primary'
-            loading={isSubmitting}
-            disabled={!accountName || !!validationError.accountName || isSubmitting}
-            onClick={handleGenerateToken}
-          >
-            Next
-          </Button>
-        </Grid>
-      </Grid>
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'flex-end',
+          gap: ds.space[4],
+          mt: ds.space[5],
+          mb: ds.space[4],
+          '& button': { minWidth: ds.space.mul(1, 35) },
+        }}
+      >
+        <Button id='cancel-org-btn' size='md' tone='secondary' onClick={() => handleCloseModal(false)} disabled={isSubmitting}>
+          Cancel
+        </Button>
+        <Button
+          id='generate-token-btn'
+          size='md'
+          tone='primary'
+          loading={isSubmitting}
+          disabled={!accountName || !!validationError.accountName || isSubmitting}
+          onClick={handleGenerateToken}
+        >
+          Next
+        </Button>
+      </Box>
     </>
   );
 
   const renderStep2 = () => (
-    <Box mt={2} mb={2}>
+    <Box mt={ds.space[4]} mb={ds.space[4]}>
       {/* Verification Token Section */}
       <Grid item xs={12}>
         <Box>
-          <Typography sx={{ fontSize: '20px', fontWeight: 500, color: '#374151', mb: 1 }}>Verification Token</Typography>
-          <Typography variant='body2' sx={{ color: colors.secondary.dark, fontSize: '12px' }}>
+          <Typography sx={{ fontSize: ds.text.heading, fontWeight: ds.weight.medium, color: ds.brand[500], mb: ds.space[2] }}>
+            Verification Token
+          </Typography>
+          <Typography variant='body2' sx={{ color: ds.gray[400], fontSize: ds.text.small }}>
             Copy this token now — it is shown only once and will be needed as a StackSet parameter.
           </Typography>
         </Box>
       </Grid>
 
-      <Box display='flex' alignItems='flex-start' mt={2}>
+      <Box display='flex' alignItems='flex-start' mt={ds.space[4]}>
         <Box
           sx={{
-            backgroundColor: '#2F2F2F',
-            padding: 1.5,
-            borderRadius: 1,
+            backgroundColor: ds.brand[700],
+            padding: ds.space[3],
+            borderRadius: ds.radius.sm,
             flexGrow: 1,
             overflowX: 'auto',
           }}
         >
-          <Typography variant='body2' sx={{ fontSize: '14px', color: 'white', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+          <Typography variant='body2' sx={{ fontSize: ds.text.bodyLg, color: ds.background[100], fontFamily: 'monospace', wordBreak: 'break-all' }}>
             {verificationToken}
           </Typography>
 
-          <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
+          <Box sx={{ display: 'flex', gap: ds.space[2], mt: ds.space[2] }}>
             <Button
               id='copy-token-btn'
               size='sm'
@@ -263,40 +284,41 @@ const AddAwsOrgModal = ({ open, onClose }) => {
               icon={<SafeIcon src={CopyIconBlue} alt='copy token' height={16} width={16} />}
               iconPlacement='start'
               onClick={handleCopyToken}
-            >
-              Copy Token
-            </Button>
+              sx={{ fontSize: ds.text.small }}
+            />
           </Box>
         </Box>
       </Box>
 
-      <Divider sx={{ my: 3 }} />
+      <Divider sx={{ my: ds.space[5] }} />
 
       {/* Template URL Section */}
       <Grid item xs={12}>
         <Box>
-          <Typography sx={{ fontSize: '20px', fontWeight: 500, color: '#374151', mb: 1 }}>StackSet Template URL</Typography>
-          <Typography variant='body2' sx={{ color: colors.secondary.dark, fontSize: '12px' }}>
+          <Typography sx={{ fontSize: ds.text.heading, fontWeight: ds.weight.medium, color: ds.brand[500], mb: ds.space[2] }}>
+            StackSet Template URL
+          </Typography>
+          <Typography variant='body2' sx={{ color: ds.gray[400], fontSize: ds.text.small }}>
             This URL points to the CloudFormation template that will be deployed to each member account.
           </Typography>
         </Box>
       </Grid>
 
-      <Box display='flex' alignItems='flex-start' mt={2}>
+      <Box display='flex' alignItems='flex-start' mt={ds.space[4]}>
         <Box
           sx={{
-            backgroundColor: '#2F2F2F',
-            padding: 1.5,
-            borderRadius: 1,
+            backgroundColor: ds.brand[700],
+            padding: ds.space[3],
+            borderRadius: ds.radius.sm,
             flexGrow: 1,
             overflowX: 'auto',
           }}
         >
-          <Typography variant='body2' sx={{ fontSize: '13px', color: 'white', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+          <Typography variant='body2' sx={{ fontSize: ds.text.body, color: ds.background[100], fontFamily: 'monospace', wordBreak: 'break-all' }}>
             {templateUrl}
           </Typography>
 
-          <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
+          <Box sx={{ display: 'flex', gap: ds.space[2], mt: ds.space[2] }}>
             <Button
               id='copy-template-url-btn'
               size='sm'
@@ -304,9 +326,8 @@ const AddAwsOrgModal = ({ open, onClose }) => {
               icon={<SafeIcon src={CopyIconBlue} alt='copy url' height={16} width={16} />}
               iconPlacement='start'
               onClick={handleCopyTemplateUrl}
-            >
-              Copy URL
-            </Button>
+              sx={{ fontSize: ds.text.small }}
+            />
           </Box>
         </Box>
       </Box>
@@ -314,18 +335,20 @@ const AddAwsOrgModal = ({ open, onClose }) => {
       {/* StackSet Parameters */}
       {Object.keys(stackSetParameters).length > 0 && (
         <>
-          <Divider sx={{ my: 3 }} />
+          <Divider sx={{ my: ds.space[5] }} />
 
           <Grid item xs={12}>
             <Box>
-              <Typography sx={{ fontSize: '20px', fontWeight: 500, color: '#374151', mb: 1 }}>StackSet Parameters</Typography>
-              <Typography variant='body2' sx={{ color: colors.secondary.dark, fontSize: '12px', mb: 2 }}>
+              <Typography sx={{ fontSize: ds.text.heading, fontWeight: ds.weight.medium, color: ds.brand[500], mb: ds.space[2] }}>
+                StackSet Parameters
+              </Typography>
+              <Typography variant='body2' sx={{ color: ds.gray[400], fontSize: ds.text.small, mb: ds.space[4] }}>
                 Fill these parameter values in the AWS CloudFormation console when creating the StackSet.
               </Typography>
             </Box>
           </Grid>
 
-          <Box sx={{ p: 1.5, backgroundColor: '#f8f9fa', borderRadius: '8px', border: '1px solid #dee2e6' }}>
+          <Box sx={{ p: ds.space[3], backgroundColor: ds.background[200], borderRadius: ds.radius.lg, border: `1px solid ${ds.gray[300]}` }}>
             {Object.entries(stackSetParameters).map(([key, value]) => (
               <Box
                 key={key}
@@ -333,13 +356,13 @@ const AddAwsOrgModal = ({ open, onClose }) => {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
-                  py: 0.75,
-                  borderBottom: '1px solid #E8E8E8',
+                  py: ds.space.mul(0, 3),
+                  borderBottom: `1px solid ${ds.gray[200]}`,
                   '&:last-child': { borderBottom: 'none' },
                 }}
               >
-                <Box sx={{ minWidth: '200px' }}>
-                  <Typography variant='body2' sx={{ fontWeight: 600, fontSize: '12px', color: '#374151' }}>
+                <Box sx={{ minWidth: ds.space.mul(1, 50) }}>
+                  <Typography variant='body2' sx={{ fontWeight: ds.weight.semibold, fontSize: ds.text.small, color: ds.brand[500] }}>
                     {key}
                   </Typography>
                 </Box>
@@ -347,10 +370,10 @@ const AddAwsOrgModal = ({ open, onClose }) => {
                   sx={{
                     flex: 1,
                     fontFamily: 'monospace',
-                    fontSize: '11px',
+                    fontSize: ds.text.caption,
                     wordBreak: 'break-all',
-                    mx: 1,
-                    color: '#374151',
+                    mx: ds.space[2],
+                    color: ds.brand[500],
                   }}
                 >
                   {value}
@@ -364,20 +387,19 @@ const AddAwsOrgModal = ({ open, onClose }) => {
                     navigator.clipboard.writeText(value);
                     snackbar.success(`${key} copied`);
                   }}
-                >
-                  Copy
-                </Button>
+                  sx={{ fontSize: ds.text.caption, minWidth: 'auto' }}
+                />
               </Box>
             ))}
           </Box>
         </>
       )}
 
-      <Divider sx={{ my: 3 }} />
+      <Divider sx={{ my: ds.space[5] }} />
 
       {/* Launch Button */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Typography variant='body2' sx={{ color: colors.secondary.dark, fontSize: '12px' }}>
+        <Typography variant='body2' sx={{ color: ds.gray[400], fontSize: ds.text.small }}>
           Open the AWS CloudFormation console to create the StackSet with the template and parameters above.
         </Typography>
         <Button
@@ -395,50 +417,56 @@ const AddAwsOrgModal = ({ open, onClose }) => {
       {/* Organization Status — appears after launching */}
       {isPolling && (
         <>
-          <Divider sx={{ my: 3 }} />
+          <Divider sx={{ my: ds.space[5] }} />
 
           <Box>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Typography sx={{ fontSize: '20px', fontWeight: 500, color: '#374151' }}>Organization Status</Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: ds.space[2] }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+                <Typography sx={{ fontSize: ds.text.heading, fontWeight: ds.weight.medium, color: ds.brand[500] }}>Organization Status</Typography>
                 <Chip
-                  label={orgStatus || 'loading...'}
-                  size='small'
+                  size='sm'
                   sx={{
-                    bgcolor: STATUS_COLORS[orgStatus] || '#9E9E9E',
-                    color: '#fff',
-                    fontWeight: 600,
-                    fontSize: '11px',
+                    bgcolor: STATUS_COLORS[orgStatus] || ds.gray[400],
+                    color: ds.background[100],
+                    fontWeight: ds.weight.semibold,
+                    fontSize: ds.text.caption,
+                    border: 'none',
                   }}
-                />
+                >
+                  {orgStatus || 'loading...'}
+                </Chip>
               </Box>
-              <Tooltip title='Refresh status'>
-                <IconButton size='small' onClick={fetchOrgStatus}>
-                  <RefreshIcon fontSize='small' />
-                </IconButton>
-              </Tooltip>
+              <Button
+                tone='ghost'
+                composition='icon-only'
+                size='sm'
+                icon={<RefreshIcon fontSize='small' />}
+                onClick={fetchOrgStatus}
+                aria-label='Refresh status'
+                tooltip='Refresh status'
+              />
             </Box>
 
-            <Typography variant='body2' sx={{ color: colors.secondary.dark, fontSize: '12px', mb: 2 }}>
+            <Typography variant='body2' sx={{ color: ds.gray[400], fontSize: ds.text.small, mb: ds.space[4] }}>
               {memberAccounts.length} member account{memberAccounts.length !== 1 ? 's' : ''} registered
               {isPolling && ' (auto-refreshing every 10s)'}
             </Typography>
 
             {memberAccounts.length > 0 && (
-              <Box sx={{ maxHeight: '200px', overflowY: 'auto' }}>
+              <Box sx={{ maxHeight: ds.space.mul(1, 50), overflowY: 'auto' }}>
                 <Box
                   sx={{
                     display: 'grid',
-                    gridTemplateColumns: '1fr 1fr 100px 140px',
-                    gap: '4px 12px',
-                    p: 1,
-                    backgroundColor: '#f8f9fa',
-                    borderRadius: '8px 8px 0 0',
-                    border: '1px solid #dee2e6',
+                    gridTemplateColumns: `1fr 1fr ${ds.space.mul(1, 25)} ${ds.space.mul(1, 35)}`,
+                    gap: `${ds.space[1]} ${ds.space[3]}`,
+                    p: ds.space[2],
+                    backgroundColor: ds.background[200],
+                    borderRadius: `${ds.radius.lg} ${ds.radius.lg} 0 0`,
+                    border: `1px solid ${ds.gray[300]}`,
                     borderBottom: 'none',
-                    fontWeight: 600,
-                    fontSize: '12px',
-                    color: '#374151',
+                    fontWeight: ds.weight.semibold,
+                    fontSize: ds.text.small,
+                    color: ds.brand[500],
                   }}
                 >
                   <Box>Account Number</Box>
@@ -451,30 +479,32 @@ const AddAwsOrgModal = ({ open, onClose }) => {
                     key={account.account_id}
                     sx={{
                       display: 'grid',
-                      gridTemplateColumns: '1fr 1fr 100px 140px',
-                      gap: '4px 12px',
-                      p: 1,
-                      border: '1px solid #dee2e6',
+                      gridTemplateColumns: `1fr 1fr ${ds.space.mul(1, 25)} ${ds.space.mul(1, 35)}`,
+                      gap: `${ds.space[1]} ${ds.space[3]}`,
+                      p: ds.space[2],
+                      border: `1px solid ${ds.gray[300]}`,
                       borderTop: 'none',
-                      fontSize: '13px',
-                      '&:last-child': { borderRadius: '0 0 8px 8px' },
+                      fontSize: ds.text.body,
+                      '&:last-child': { borderRadius: `0 0 ${ds.radius.lg} ${ds.radius.lg}` },
                     }}
                   >
-                    <Box sx={{ fontFamily: 'monospace', fontSize: '12px' }}>{account.account_number}</Box>
+                    <Box sx={{ fontFamily: 'monospace', fontSize: ds.text.small }}>{account.account_number}</Box>
                     <Box>{account.account_name}</Box>
                     <Box>
                       <Chip
-                        label={account.status}
-                        size='small'
+                        size='sm'
                         sx={{
-                          bgcolor: STATUS_COLORS[account.status] || '#9E9E9E',
-                          color: '#fff',
-                          fontSize: '10px',
-                          height: '20px',
+                          bgcolor: STATUS_COLORS[account.status] || ds.gray[400],
+                          color: ds.background[100],
+                          fontSize: ds.text.caption,
+                          height: ds.space.mul(1, 5),
+                          border: 'none',
                         }}
-                      />
+                      >
+                        {account.status}
+                      </Chip>
                     </Box>
-                    <Box sx={{ fontSize: '11px', color: colors.secondary.dark }}>
+                    <Box sx={{ fontSize: ds.text.caption, color: ds.gray[400] }}>
                       {account.created_at ? new Date(account.created_at).toLocaleString() : '-'}
                     </Box>
                   </Box>
@@ -485,14 +515,14 @@ const AddAwsOrgModal = ({ open, onClose }) => {
             {memberAccounts.length === 0 && (
               <Box
                 sx={{
-                  p: 2,
+                  p: ds.space[4],
                   textAlign: 'center',
-                  backgroundColor: '#f8f9fa',
-                  borderRadius: '8px',
-                  border: '1px solid #dee2e6',
+                  backgroundColor: ds.background[200],
+                  borderRadius: ds.radius.lg,
+                  border: `1px solid ${ds.gray[300]}`,
                 }}
               >
-                <Typography variant='body2' sx={{ color: colors.secondary.dark, fontSize: '12px' }}>
+                <Typography variant='body2' sx={{ color: ds.gray[400], fontSize: ds.text.small }}>
                   No member accounts registered yet. Deploy the StackSet and accounts will appear here as they register.
                 </Typography>
               </Box>
@@ -502,13 +532,20 @@ const AddAwsOrgModal = ({ open, onClose }) => {
       )}
 
       {/* Footer buttons */}
-      <Grid container spacing={2} mt={3} mb={2} justifyContent='flex-end'>
-        <Grid item>
-          <Button id='close-org-btn' size='md' tone='secondary' onClick={() => handleCloseModal(isPolling || memberAccounts.length > 0)}>
-            Close
-          </Button>
-        </Grid>
-      </Grid>
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'flex-end',
+          gap: ds.space[4],
+          mt: ds.space[5],
+          mb: ds.space[4],
+          '& button': { minWidth: ds.space.mul(1, 35) },
+        }}
+      >
+        <Button id='close-org-btn' size='md' tone='secondary' onClick={() => handleCloseModal(isPolling || memberAccounts.length > 0)}>
+          Close
+        </Button>
+      </Box>
     </Box>
   );
 
@@ -520,8 +557,8 @@ const AddAwsOrgModal = ({ open, onClose }) => {
       title='AWS Organization Onboarding'
       loader={isSubmitting}
     >
-      <Box sx={{ px: 3 }}>
-        <Box sx={{ mb: 3, mt: 2 }}>
+      <Box sx={{ px: ds.space[5] }}>
+        <Box sx={{ mb: ds.space[5], mt: ds.space[4] }}>
           <Stepper activeStep={step - 1} orientation='horizontal'>
             <Step>
               <StepLabel>Set Organization Name</StepLabel>

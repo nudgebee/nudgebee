@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { Box, IconButton, Tooltip } from '@mui/material';
 import { ContentCopy } from '@mui/icons-material';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 
 interface JsonTreeViewProps {
   readonly data: unknown;
@@ -63,11 +63,13 @@ function KeyLabel({ keyName, path, templatePrefix }: Readonly<{ keyName: string 
     <>
       <Tooltip
         title={
-          <Box sx={{ p: 1, maxWidth: 400 }}>
-            <Box sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-600)', mb: 0.5 }}>
+          <Box sx={{ p: ds.space[2], maxWidth: 400 }}>
+            <Box
+              sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-600)', mb: ds.space[1] }}
+            >
               Reference this field
             </Box>
-            <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-brand-400)', mb: 1, lineHeight: 1.4 }}>
+            <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-brand-400)', mb: ds.space[2], lineHeight: 1.4 }}>
               Use this template expression to access the value of <strong style={{ color: 'var(--ds-purple-600)' }}>{String(keyName)}</strong> in
               subsequent workflow steps.
             </Box>
@@ -75,11 +77,11 @@ function KeyLabel({ keyName, path, templatePrefix }: Readonly<{ keyName: string 
               onClick={handleCopy}
               sx={{
                 fontFamily: FONT_FAMILY,
-                fontSize: '11.5px',
+                fontSize: ds.text.caption,
                 bgcolor: 'var(--ds-background-300)',
                 color: 'var(--ds-brand-500)',
-                px: 1.5,
-                py: 1,
+                px: ds.space[3],
+                py: ds.space[2],
                 borderRadius: 'var(--ds-radius-md)',
                 border: '1px solid var(--ds-brand-150)',
                 cursor: 'pointer',
@@ -90,7 +92,7 @@ function KeyLabel({ keyName, path, templatePrefix }: Readonly<{ keyName: string 
             >
               {templateExpr}
             </Box>
-            <Box sx={{ fontSize: 'var(--ds-text-caption)', color: copied ? '#16a34a' : '#94a3b8', mt: 0.75, fontWeight: copied ? 600 : 400 }}>
+            <Box sx={{ fontSize: 'var(--ds-text-caption)', color: copied ? ds.green[600] : ds.gray[400], mt: 0.75, fontWeight: copied ? 600 : 400 }}>
               {copied ? 'Copied to clipboard!' : 'Click the expression to copy'}
             </Box>
           </Box>
@@ -104,7 +106,7 @@ function KeyLabel({ keyName, path, templatePrefix }: Readonly<{ keyName: string 
             sx: {
               bgcolor: 'var(--ds-background-100)',
               color: 'var(--ds-brand-600)',
-              boxShadow: '0 4px 20px rgba(0,0,0,0.12), 0 1px 4px rgba(0,0,0,0.08)',
+              boxShadow: `0 ${ds.space[1]} 20px color-mix(in srgb, ${ds.gray[700]} 12%, transparent), 0 1px ${ds.space[1]} ${ds.gray.alpha[200]}`,
               border: '1px solid var(--ds-brand-150)',
               borderRadius: 'var(--ds-radius-lg)',
               '& .MuiTooltip-arrow': { color: 'var(--ds-background-100)', '&::before': { border: '1px solid var(--ds-brand-150)' } },
@@ -113,7 +115,14 @@ function KeyLabel({ keyName, path, templatePrefix }: Readonly<{ keyName: string 
           },
         }}
       >
-        <span style={{ color: SYN.key, fontWeight: 'var(--ds-font-weight-medium)', cursor: 'pointer', borderBottom: '1px dashed #5c21a544' }}>
+        <span
+          style={{
+            color: SYN.key,
+            fontWeight: 'var(--ds-font-weight-medium)',
+            cursor: 'pointer',
+            borderBottom: `1px dashed color-mix(in srgb, ${ds.purple[500]} 27%, transparent)`,
+          }}
+        >
           {displayKey}
         </span>
       </Tooltip>
@@ -144,9 +153,9 @@ function Toggle({ expanded, onClick }: Readonly<{ expanded: boolean; onClick: ()
         width: 16,
         height: 16,
         cursor: 'pointer',
-        borderRadius: 3,
-        fontSize: 10,
-        marginRight: 4,
+        borderRadius: ds.radius.sm,
+        fontSize: ds.text.caption,
+        marginRight: ds.space[1],
         verticalAlign: 'middle',
         color: SYN.toggle,
         border: '1px solid var(--ds-gray-300)',
@@ -158,13 +167,13 @@ function Toggle({ expanded, onClick }: Readonly<{ expanded: boolean; onClick: ()
       }}
       onMouseEnter={(e) => {
         (e.target as HTMLButtonElement).style.color = SYN.toggleHover;
-        (e.target as HTMLButtonElement).style.borderColor = '#90caf9';
-        (e.target as HTMLButtonElement).style.background = '#e3f2fd';
+        (e.target as HTMLButtonElement).style.borderColor = ds.blue[300];
+        (e.target as HTMLButtonElement).style.background = ds.blue[100];
       }}
       onMouseLeave={(e) => {
         (e.target as HTMLButtonElement).style.color = SYN.toggle;
-        (e.target as HTMLButtonElement).style.borderColor = '#ddd';
-        (e.target as HTMLButtonElement).style.background = '#fff';
+        (e.target as HTMLButtonElement).style.borderColor = ds.gray[300];
+        (e.target as HTMLButtonElement).style.background = ds.background[100];
       }}
     >
       {expanded ? '\u25BC' : '\u25B6'}
@@ -206,7 +215,7 @@ function tryParseJsonString(value: unknown): object | null {
 // ─── Render primitive leaf node ───
 function PrimitiveNode({ keyLabel, value, comma }: Readonly<{ keyLabel: React.ReactNode; value: string | number | boolean | null; comma: string }>) {
   return (
-    <div style={{ paddingLeft: 4, lineHeight: 1.7 }}>
+    <div style={{ paddingLeft: ds.space[1], lineHeight: 1.7 }}>
       {keyLabel}
       <JsonValue value={value} />
       {comma}
@@ -262,7 +271,7 @@ function JsonNode({ keyName, value, depth, defaultExpanded, isLast, parentPath, 
 
   if (entries.length === 0) {
     return (
-      <div style={{ paddingLeft: 4, lineHeight: 1.7 }}>
+      <div style={{ paddingLeft: ds.space[1], lineHeight: 1.7 }}>
         {keyLabel}
         <span style={{ color: SYN.brace }}>
           {open}
@@ -274,7 +283,7 @@ function JsonNode({ keyName, value, depth, defaultExpanded, isLast, parentPath, 
   }
 
   return (
-    <div style={{ paddingLeft: 4, lineHeight: 1.7 }}>
+    <div style={{ paddingLeft: ds.space[1], lineHeight: 1.7 }}>
       <div>
         <Toggle expanded={expanded} onClick={toggle} />
         {keyLabel}
@@ -306,7 +315,7 @@ function JsonNode({ keyName, value, depth, defaultExpanded, isLast, parentPath, 
       </div>
       {expanded && (
         <>
-          <div style={{ paddingLeft: 20, borderLeft: `1px solid ${SYN.guide}`, marginLeft: 7 }}>
+          <div style={{ paddingLeft: ds.space.mul(0, 10), borderLeft: `1px solid ${SYN.guide}`, marginLeft: ds.space[2] }}>
             {entries.map(([k, v], i) => (
               <JsonNode
                 key={String(k)}
@@ -320,7 +329,7 @@ function JsonNode({ keyName, value, depth, defaultExpanded, isLast, parentPath, 
               />
             ))}
           </div>
-          <div style={{ paddingLeft: 4 }}>
+          <div style={{ paddingLeft: ds.space[1] }}>
             <span style={{ color: SYN.brace }}>{close}</span>
             {comma}
           </div>
@@ -334,8 +343,8 @@ function JsonNode({ keyName, value, depth, defaultExpanded, isLast, parentPath, 
 export default function JsonTreeView({
   data,
   defaultExpanded = 2,
-  maxHeight = '400px',
-  fontSize = '12px',
+  maxHeight = ds.space.mul(0, 200),
+  fontSize = ds.text.small,
   bare = false,
   showCopy,
   templatePrefix,
@@ -376,7 +385,7 @@ export default function JsonTreeView({
         sx={{
           fontFamily: FONT_FAMILY,
           fontSize,
-          color: colors.text.secondary,
+          color: ds.brand[500],
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
           lineHeight: 1.6,
@@ -402,8 +411,8 @@ export default function JsonTreeView({
         ...(bare
           ? {}
           : {
-              background: colors.background.tertiaryLightestestest,
-              border: `1px solid ${colors.border.secondaryLight}`,
+              background: ds.background[200],
+              border: `1px solid ${ds.gray[200]}`,
               borderRadius: 'var(--ds-radius-lg)',
               padding: 'var(--ds-space-3)',
             }),

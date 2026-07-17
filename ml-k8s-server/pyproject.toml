@@ -35,6 +35,24 @@ pydantic = "^2.10.3"
 kombu = "^5.4.2"
 kubernetes = "^26.1.0"
 
+# Security: pin patched versions of otherwise-transitive deps flagged HIGH by
+# the image scan (pulled in via boto3 / tensorflow / packaging tooling). These
+# floors don't change functionality; they just keep the resolved graph off the
+# vulnerable releases.
+urllib3 = ">=2.7.0"
+cryptography = ">=48.0.1"
+Brotli = ">=1.2.0"
+"jaraco.context" = ">=6.1.0"
+wheel = ">=0.46.2"
+msgpack = ">=1.2.1"
+# Cap setuptools below 81: 82 removed the legacy `pkg_resources` module and 81
+# deprecates it, but opentelemetry-instrumentation-system-metrics (0.48b0) still
+# imports it at startup. The freshly rebuilt conda base ships setuptools 82, so
+# without this pin the service crashes on boot with "No module named
+# 'pkg_resources'". Staying on 80.x keeps pkg_resources present and warning-free.
+# Revisit once the opentelemetry-instrumentation stack is pkg_resources-free.
+setuptools = ">=68,<81"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

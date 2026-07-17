@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Box, Typography, Paper } from '@mui/material';
 import { Button } from '@ui/Button';
-import { FormField } from '@shared/NewReusabeFormComponents';
+import { FormField } from '@shared/forms/FormComponents';
 
 interface ClarificationOption {
   label: string;
@@ -65,7 +65,7 @@ export default function ClarificationQuestion({
               cursor: disabled ? 'default' : 'pointer',
               border: '1px solid',
               borderColor: 'divider',
-              borderRadius: 1,
+              borderRadius: 'var(--ds-radius-sm)',
               opacity: disabled ? 0.6 : 1,
               transition: 'all 0.15s',
               '&:hover': disabled
@@ -118,7 +118,7 @@ export default function ClarificationQuestion({
               cursor: disabled ? 'default' : 'pointer',
               border: '1px dashed',
               borderColor: 'divider',
-              borderRadius: 1,
+              borderRadius: 'var(--ds-radius-sm)',
               opacity: disabled ? 0.6 : 1,
               '&:hover': disabled
                 ? {}

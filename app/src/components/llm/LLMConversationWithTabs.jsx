@@ -6,7 +6,7 @@ import ConversationCollapsableCard from './common/ConversationCollapsableCard';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { FinalResponseIcon } from '@assets';
 import apiAskNudgebee from '@api1/ask-nudgebee';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { convertToReadableFormat } from 'src/utils/common';
 import { ds } from '@utils/colors';
 import Text from '@shared/format/Text';
@@ -126,7 +126,7 @@ const LLMConversationWithTabs = ({
         width: '100%',
         bgcolor: 'var(--ds-background-100)',
         borderRadius: ds.radius.lg,
-        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
+        boxShadow: `0 2px 8px ${ds.gray.alpha[200]}`,
       }}
     >
       <Tabs

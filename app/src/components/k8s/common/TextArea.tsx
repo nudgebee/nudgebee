@@ -1,4 +1,4 @@
-import CustomButton from '@shared/NewCustomButton';
+import { Button } from '@ui/Button';
 import TextareaAutosize, { type TextareaAutosizeProps } from '@mui/material/TextareaAutosize';
 import { Avatar, Box, ClickAwayListener, Popper, styled, Typography } from '@mui/material';
 import type { Theme } from '@mui/material/styles';
@@ -304,7 +304,7 @@ const AutoSuggestTextarea: React.FC<AutoSuggestTextareaProps> = ({
                       padding: 'var(--ds-space-2)',
                       cursor: 'pointer',
                       textAlign: 'left',
-                      backgroundColor: selectedIndex === index ? '#f0f0f0' : 'transparent',
+                      backgroundColor: selectedIndex === index ? 'var(--ds-gray-100)' : 'transparent',
                       '&:hover': { backgroundColor: 'var(--ds-blue-100)', borderRadius: 'var(--ds-radius-sm)', color: ds.blue[500] },
                       fontSize: 'var(--ds-text-body)',
                       fontWeight: 'var(--ds-font-weight-regular)',
@@ -348,19 +348,23 @@ const AutoSuggestTextarea: React.FC<AutoSuggestTextareaProps> = ({
       </div>
       {chatScreen && (
         <Box sx={{ borderLeft: '0.75px solid var(--ds-brand-200)', pl: 'var(--ds-space-4)' }}>
-          <CustomButton
-            sx={{ marginTop: 'var(--ds-space-1)' }}
-            size='Medium'
-            onClick={() => {
-              if (isFollowUp && allowStop) {
-                buttonProperties.onClickStop();
-              } else {
-                buttonProperties.onClick(text);
+          <Box sx={{ marginTop: 'var(--ds-space-1)' }}>
+            <Button
+              size='md'
+              onClick={() => {
+                if (isFollowUp && allowStop) {
+                  buttonProperties.onClickStop();
+                } else {
+                  buttonProperties.onClick(text);
+                }
+              }}
+              icon={
+                isFollowUp && allowStop ? <StopIcon sx={{ color: 'white' }} /> : <SafeIcon src={ArrowRightWhiteIcon} alt='' width={18} height={18} />
               }
-            }}
-            startIcon={isFollowUp && allowStop ? <StopIcon sx={{ color: 'white' }} /> : ArrowRightWhiteIcon}
-            disabled={!(isFollowUp && allowStop) && (!text || !buttonProperties.enable)}
-          />
+              aria-label={isFollowUp && allowStop ? 'Stop' : 'Send'}
+              disabled={!(isFollowUp && allowStop) && (!text || !buttonProperties.enable)}
+            />
+          </Box>
         </Box>
       )}
 
@@ -440,16 +444,18 @@ const AutoSuggestTextarea: React.FC<AutoSuggestTextareaProps> = ({
             <Typography>or use @</Typography>
           </Box>
           <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--ds-space-3)' }}>
-            <CustomButton
-              id='set-text-btn'
-              sx={{ marginTop: 'var(--ds-space-1)' }}
-              size='Medium'
-              onClick={() => {
-                buttonProperties.onClick(text);
-              }}
-              startIcon={ArrowRightWhiteIcon}
-              disabled={!text || !buttonProperties.enable}
-            />
+            <Box sx={{ marginTop: 'var(--ds-space-1)' }}>
+              <Button
+                id='set-text-btn'
+                size='md'
+                onClick={() => {
+                  buttonProperties.onClick(text);
+                }}
+                icon={<SafeIcon src={ArrowRightWhiteIcon} alt='' width={18} height={18} />}
+                aria-label='Send'
+                disabled={!text || !buttonProperties.enable}
+              />
+            </Box>
           </Box>
         </Box>
       ) : null}

@@ -1,5 +1,5 @@
 import { Box, Grid, Typography } from '@mui/material';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import homeApi from '@api1/home';
 import { v4 as uuidv4 } from 'uuid';
@@ -14,7 +14,7 @@ import PvcSightSizing from '@assets/kubernetes/optimize-icons/pv-right-sizing.ic
 import TroubleshootIconBlue from '@assets/header/TroubleshootIconBlue.icon.svg';
 import OptimizeIconBlue from '@assets/header/optimize-blue.icon.svg';
 import OptimizeGaugeIcon from '@assets/home/optimize-icon.svg';
-import { getBrandingAsset, getNubiIconUrl } from '@hooks/useTenantBranding';
+import { getBrandingAsset, getNubiIconUrl, getIsWhiteLabel } from '@hooks/useTenantBranding';
 import DataBaseBlueIcon from '@assets/kubernetes/app-nodes-icons/database-blue.icon.svg';
 import SirenBlueIcon from '@assets/home/new/siren-rounded-blue.icon.svg';
 import TicketBlueIcon from '@assets/home/new/ticket-blue.icon.svg';
@@ -41,7 +41,6 @@ import GCPComputeEngineIcon from '@assets/cloud-account/gcp-compute-engine.icon.
 import GCPCloudSQLIcon from '@assets/cloud-account/gcp-cloud-sql.icon.svg';
 import GCPCloudStorageIcon from '@assets/cloud-account/gcp-cloud-storage.icon.svg';
 import PropTypes from 'prop-types';
-import { colors } from 'src/utils/colors';
 import Link from 'next/link';
 import apiWorkflow from '@api1/workflow';
 import { getLast24Hrs } from '@lib/datetime';
@@ -74,10 +73,9 @@ import GppMaybeOutlinedIcon from '@mui/icons-material/GppMaybeOutlined';
 import ImageOutlinedIcon from '@mui/icons-material/ImageOutlined';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { useData } from '@context/DataContext';
-import CustomButton from '@shared/NewCustomButton';
-import { snackbar } from '@shared/snackbarService';
-import { Textarea } from '@components/k8s/common/TextArea';
-import K8sAccountModal from '@shared/K8sAccountModal';
+import { toast as snackbar } from '@ui/Toast';
+import { Input } from '@ui/Input';
+import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { getUserSession } from '@lib/auth';
 import { FiArrowRight } from 'react-icons/fi';
@@ -493,7 +491,7 @@ const ServiceChipRow = ({ applications, rule, accountId, maxShown = 4 }) => {
                 color: 'var(--ds-gray-500)',
                 backgroundColor: 'var(--ds-gray-50)',
                 borderColor: 'var(--ds-gray-100)',
-                fontWeight: 400,
+                fontWeight: 'var(--ds-font-weight-regular)',
                 ...(moreHref && {
                   cursor: 'pointer',
                   '&:hover': { backgroundColor: 'var(--ds-gray-100)', color: 'var(--ds-gray-700)' },
@@ -514,7 +512,7 @@ ServiceChipRow.propTypes = {
   maxShown: PropTypes.number,
 };
 
-const InsightRow = ({ item = {}, type = '', currencySymbol = '$' }) => {
+const InsightRow = React.memo(({ item = {}, type = '', currencySymbol = '$' }) => {
   const visible = type === 'troubleshooting' || type === 'optimization' || type === 'Ops';
   if (!visible) return null;
   const severity = getInsightSeverity(item);
@@ -554,7 +552,10 @@ const InsightRow = ({ item = {}, type = '', currencySymbol = '$' }) => {
         <InsightIcon severity={severity} icon={CategoryIcon} />
       </Box>
       <Box sx={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
-        <Typography component='span' sx={{ fontSize: '13px', lineHeight: 1.5, color: 'var(--ds-gray-700)', fontWeight: 400 }}>
+        <Typography
+          component='span'
+          sx={{ fontSize: 'var(--ds-text-body)', lineHeight: 1.5, color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-regular)' }}
+        >
           {splitTitleByHighlights(displayTitle).map((seg, i) => (
             <Box
               key={i}
@@ -585,7 +586,7 @@ const InsightRow = ({ item = {}, type = '', currencySymbol = '$' }) => {
       )}
     </Box>
   );
-};
+});
 InsightRow.propTypes = {
   item: PropTypes.object,
   type: PropTypes.string,
@@ -597,7 +598,7 @@ const SECTION_TONE = {
   info: { bg: 'var(--ds-blue-100)', color: 'var(--ds-blue-600)' },
   warning: { bg: 'var(--ds-amber-100)', color: 'var(--ds-amber-600)' },
   success: { bg: 'var(--ds-green-100)', color: 'var(--ds-green-600)' },
-  agent: { bg: 'var(--ds-violet-100, #EDE9FE)', color: 'var(--ds-violet-600, #7C3AED)' },
+  agent: { bg: 'var(--ds-violet-100, var(--ds-blue-200))', color: 'var(--ds-violet-600, var(--ds-purple-500))' },
   neutral: { bg: 'var(--ds-gray-100)', color: 'var(--ds-gray-700)' },
 };
 
@@ -626,8 +627,8 @@ const SectionHeader = ({ icon, title, subtitle, tone = 'neutral' }) => {
         <Typography
           sx={{
             fontFamily: 'Poppins, sans-serif',
-            fontSize: '14px',
-            fontWeight: 600,
+            fontSize: 'var(--ds-text-body-lg)',
+            fontWeight: 'var(--ds-font-weight-semibold)',
             color: 'var(--ds-gray-900)',
             lineHeight: 1.3,
             letterSpacing: '-0.01em',
@@ -636,7 +637,11 @@ const SectionHeader = ({ icon, title, subtitle, tone = 'neutral' }) => {
           {title}
         </Typography>
         {subtitle && (
-          <Typography sx={{ fontFamily: 'Poppins, sans-serif', fontSize: '11px', color: 'var(--ds-gray-500)', mt: '1px' }}>{subtitle}</Typography>
+          <Typography
+            sx={{ fontFamily: 'Poppins, sans-serif', fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', mt: 'var(--ds-space-1)' }}
+          >
+            {subtitle}
+          </Typography>
         )}
       </Box>
     </Box>
@@ -680,8 +685,8 @@ const AutomationsCard = ({ workflowData, accountId, onManage }) => {
         <Typography
           sx={{
             fontFamily: 'Poppins, sans-serif',
-            fontSize: '13px',
-            fontWeight: 600,
+            fontSize: 'var(--ds-text-body)',
+            fontWeight: 'var(--ds-font-weight-semibold)',
             color: 'var(--ds-gray-900)',
             letterSpacing: '-0.01em',
           }}
@@ -712,7 +717,78 @@ AutomationsCard.propTypes = {
   onManage: PropTypes.func,
 };
 
-const renderContent = (title, accountId, cloudProvider) => {
+const EMPTY_STATE_NO_DATA_THRESHOLD_MS = 48 * 60 * 60 * 1000;
+
+const isConnectionStale = (createdAt) => {
+  if (!createdAt) return false;
+  const ts = new Date(createdAt).getTime();
+  if (Number.isNaN(ts)) return false;
+  return Date.now() - ts > EMPTY_STATE_NO_DATA_THRESHOLD_MS;
+};
+
+const openSupportChat = () => {
+  if (typeof window !== 'undefined') {
+    window?.$chatwoot?.toggle('open');
+  }
+};
+
+// Support chat is only available on saas-tier deployments.
+const isSupportChatAvailable = () => getUserSession()?.tier === 'saas';
+
+// The Nudgebee mascot illustrations are Nudgebee branding, so they only render on the
+// default (non-white-labeled) deployment. On a partner / white-labeled tenant we drop
+// the left illustration entirely rather than show the bee or the partner's logo (their
+// asset overrides resolve to a logo, which looks broken at illustration size).
+const renderNoDataState = ({ illustrationKey, alt, heading, body, secondary }) => {
+  const showMascot = !getIsWhiteLabel();
+  return (
+    <Box maxWidth={'90%'} mx={'auto'} py={2}>
+      <Grid container spacing={1}>
+        {showMascot && (
+          <Grid item xs={3} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <SafeIcon src={getBrandingAsset(illustrationKey)} alt={alt} width={180} height={180} />
+          </Grid>
+        )}
+        <Grid item xs={showMascot ? 9 : 12} sx={{ display: 'flex', alignItems: 'center' }}>
+          <Box>
+            <Typography
+              sx={{
+                mb: 1,
+                fontSize: 'var(--ds-text-title)',
+                fontWeight: 'var(--ds-font-weight-semibold)',
+                lineHeight: 'var(--ds-text-title-lh)',
+                color: 'var(--ds-gray-700)',
+              }}
+            >
+              {heading}
+            </Typography>
+            <Box
+              sx={{
+                fontSize: 'var(--ds-text-body-lg)',
+                fontWeight: 'var(--ds-font-weight-regular)',
+                color: 'var(--ds-gray-600)',
+                lineHeight: '28px',
+              }}
+            >
+              {body}
+              {isSupportChatAvailable() && (
+                <>
+                  {' '}
+                  <Button tone='secondary' size='xs' onClick={openSupportChat} trailingAccent={<ArrowForwardIcon />}>
+                    Contact support
+                  </Button>
+                </>
+              )}
+              {secondary}
+            </Box>
+          </Box>
+        </Grid>
+      </Grid>
+    </Box>
+  );
+};
+
+const renderContent = (title, accountId, cloudProvider, noData = false) => {
   const isK8s = cloudProvider === 'K8s';
   const detailsBase = isK8s ? '/kubernetes/details' : '/cloud-account/details';
   const getLink = (type) => {
@@ -726,6 +802,37 @@ const renderContent = (title, accountId, cloudProvider) => {
       return `/kubernetes/details/${accountId}#security/cluster-upgrade`;
     }
   };
+
+  // Account connected long ago with still no data — surface a "couldn't find
+  // anything" state with a support escape hatch instead of the optimistic
+  // "still collecting" copy.
+  if (noData) {
+    switch (title) {
+      case 'Troubleshoot':
+        return renderNoDataState({
+          illustrationKey: 'troubleshootBee',
+          alt: 'Bee with magnifying glass',
+          heading: "It's quiet… a little too quiet.",
+          body: "I've been watching for incidents and error trends on this account for a couple of days and turned up nothing at all. No news can be good news, but a complete blank this long after connecting usually means the data isn't reaching me.",
+        });
+      case 'Optimize':
+        return renderNoDataState({
+          illustrationKey: 'optimizeBee',
+          alt: 'Bee with magnifying glass',
+          heading: "I don't have enough usage data to suggest anything yet.",
+          body: "Right-sizing, storage, and cost tips come from watching trends — and by now I'd expect at least a few days' worth. Since there's still nothing to chew on, this account may not be sending its metrics through.",
+        });
+      case 'Security & Compliance':
+        return renderNoDataState({
+          illustrationKey: 'securityBee',
+          alt: 'Bee inspecting for security findings',
+          heading: 'No scans, certificates, or findings have come through.',
+          body: 'Vulnerabilities, certificate alerts, and image scan results should have surfaced by now. An empty board this long after connecting points to a setup or connection gap rather than a clean bill of health.',
+        });
+      default:
+        break;
+    }
+  }
 
   switch (title) {
     case 'Troubleshoot':
@@ -776,7 +883,7 @@ const renderContent = (title, accountId, cloudProvider) => {
       return (
         <Box maxWidth={'90%'} mx={'auto'} py={2}>
           <Grid container spacing={1}>
-            <Grid item xs={3} sx={{ '@media (max-width: 1200px)': { pl: '0px !important', pr: '20px !important' } }}>
+            <Grid item xs={3} sx={{ '@media (max-width: 1200px)': { pl: '0px !important', pr: 'var(--ds-space-4) !important' } }}>
               <SafeIcon src={getBrandingAsset('optimizeBee')} alt='Bee with magnifying glass' width={180} height={180} />
             </Grid>
             <Grid item xs={9} sx={{ display: 'flex', alignItems: 'center' }}>
@@ -821,7 +928,15 @@ const renderContent = (title, accountId, cloudProvider) => {
         <Box maxWidth={'90%'} mx={'auto'} py={2}>
           <Grid container spacing={2}>
             <Grid item xs={9}>
-              <Typography sx={{ mb: 2, fontSize: '18px', fontweight: '400', lineHeight: '21.09px', color: colors.text.secondary }}>
+              <Typography
+                sx={{
+                  mb: 'var(--ds-space-4)',
+                  fontSize: 'var(--ds-text-title)',
+                  fontweight: '400',
+                  lineHeight: '21.09px',
+                  color: 'var(--ds-brand-500)',
+                }}
+              >
                 I can help with a bunch of things! Just tell me what you need
               </Typography>
               {[
@@ -830,47 +945,15 @@ const renderContent = (title, accountId, cloudProvider) => {
                 { label: 'Create automations', action: 'Create Now', type: 'workflow' },
                 { label: "Upgrading K8s? Let's figure it out", action: 'Explore upgrade path', type: 'upgrade' },
               ].map((item, index) => (
-                <Box key={index} sx={{ borderBottom: '0.5px dotted #D0D0D0', padding: '9px 0px 0px 0px', width: '60%' }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: '10px', mb: 1, flexWrap: 'wrap' }}>
-                    <Typography sx={{ fontSize: '14px', fontweight: '400', lineHeight: '18px', color: '#1B2D4A' }}>{item.label}</Typography>
+                <Box key={index} sx={{ borderBottom: '0.5px dotted var(--ds-brand-200)', padding: 'var(--ds-space-2) 0px 0px 0px', width: '60%' }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', mb: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
+                    <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontweight: '400', lineHeight: '18px', color: 'var(--ds-brand-600)' }}>
+                      {item.label}
+                    </Typography>
                     <Link href={getLink(item.type)}>
-                      <CustomButton
-                        sx={{
-                          padding: '0px 8px !important',
-                          fontSize: '12px',
-                          color: '#1B2D4A',
-                          backgroundColor: '#FFFFFF',
-                          border: '0.5px solid #1B2D4A',
-                          height: '22px',
-                          alignItems: 'center',
-                          gap: '4px',
-                          minWidth: 'fit-content',
-                          '& .MuiButton-endIcon svg,img': {
-                            height: '14px',
-                            width: '17px',
-                            filter:
-                              'brightness(0) saturate(100%) invert(14%) sepia(23%) saturate(1507%) hue-rotate(178deg) brightness(96%) contrast(92%)',
-                          },
-                          '&:hover': {
-                            backgroundColor: '#FFFFFF',
-                          },
-                        }}
-                        text={item.action}
-                        endIcon={
-                          <Box
-                            sx={{
-                              backgroundColor: '#FACF39',
-                              borderRadius: '2px',
-                              height: '14px',
-                              display: 'flex',
-                              justifyContent: 'center',
-                              alignItems: 'center',
-                            }}
-                          >
-                            <FiArrowRight />
-                          </Box>
-                        }
-                      />
+                      <Button tone='secondary' size='xs' trailingAccent={<FiArrowRight />}>
+                        {item.action}
+                      </Button>
                     </Link>
                   </Box>
                 </Box>
@@ -939,6 +1022,7 @@ const CardsBlock = ({
   accountId = '',
   loadingInsights = false,
   hasExternalData = false,
+  connectedAt = '',
   currencySymbol = '$',
   cloudProvider = '',
   meta = null,
@@ -946,6 +1030,15 @@ const CardsBlock = ({
   footer = null,
   extra = null,
 }) => {
+  // Defer the connection-age check to the client. isConnectionStale() reads Date.now(),
+  // which differs between the SSR render and client hydration; evaluating it during render
+  // risks a hydration mismatch when the age sits near the 48h threshold. Computing it in an
+  // effect (after mount) keeps the first client render identical to the server's.
+  const [isStale, setIsStale] = useState(false);
+  useEffect(() => {
+    setIsStale(isConnectionStale(connectedAt));
+  }, [connectedAt]);
+
   const generateRows = (rowItems) => {
     return rowItems.map((item) => <InsightRow item={item} key={item.id} type={type} currencySymbol={currencySymbol} />);
   };
@@ -980,7 +1073,7 @@ const CardsBlock = ({
       return renderSkeletonRows(4);
     }
     if (shouldShowEmptyState) {
-      return renderContent(title, accountId, cloudProvider);
+      return renderContent(title, accountId, cloudProvider, isStale);
     }
     return generateRows(items);
   };
@@ -1014,6 +1107,7 @@ CardsBlock.propTypes = {
   accountId: PropTypes.string,
   loadingInsights: PropTypes.bool,
   hasExternalData: PropTypes.bool,
+  connectedAt: PropTypes.string,
   currencySymbol: PropTypes.string,
   cloudProvider: PropTypes.string,
   meta: PropTypes.node,
@@ -1079,8 +1173,8 @@ const HomeWidgets = ({ quickLinksData, selectedCluster, cluster }) => {
       <Typography
         sx={{
           fontFamily: 'Poppins, sans-serif',
-          fontSize: '13px',
-          fontWeight: 600,
+          fontSize: 'var(--ds-text-body)',
+          fontWeight: 'var(--ds-font-weight-semibold)',
           color: 'var(--ds-gray-900)',
           letterSpacing: '-0.01em',
         }}
@@ -1094,60 +1188,86 @@ const HomeWidgets = ({ quickLinksData, selectedCluster, cluster }) => {
   // already-tinted) to gray-700.
   const GRAY_700_FILTER = 'brightness(0) saturate(100%) invert(28%) sepia(3%) saturate(0%) hue-rotate(0deg) brightness(95%) contrast(90%)';
 
+  const isLoading = !selectedCluster?.cloud_provider;
+
+  const skeletonGrid = (
+    <Box
+      display={'grid'}
+      gridTemplateColumns={'1fr 1fr'}
+      gap={'var(--ds-space-2)'}
+      sx={{ '@media (max-width: 1250px)': { gridTemplateColumns: '1fr' } }}
+    >
+      {Array.from({ length: 8 }).map((_, i) => (
+        <Box key={i} display='flex' alignItems='center' gap='var(--ds-space-2)' sx={{ px: 'var(--ds-space-2)', py: 'var(--ds-space-1)' }}>
+          <Skeleton shape='rect' width={18} height={18} />
+          <Skeleton shape='text' size='text' width={`${50 + ((i * 7) % 30)}%`} />
+        </Box>
+      ))}
+    </Box>
+  );
+
   return (
     <DSCard size='sm' elevation='flat' header={header} sx={{ overflow: 'hidden' }}>
-      <Box
-        display={'grid'}
-        gridTemplateColumns={'1fr 1fr'}
-        gap={'7px'}
-        sx={{
-          '@media (max-width: 1250px)': {
-            gridTemplateColumns: '1fr',
-          },
-        }}
-      >
-        {links.map((link) => (
-          <Link href={buildUrl(selectedCluster, cluster, link.fragment, 'details', {})} key={link.name} style={{ textDecoration: 'none' }}>
-            <Box
-              display={'flex'}
-              alignItems={'center'}
-              gap='var(--ds-space-2)'
-              borderRadius='var(--ds-radius-md)'
-              sx={{
-                px: 'var(--ds-space-2)',
-                py: '6px',
-                cursor: 'pointer',
-                '& .ql-icon': {
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  width: 18,
-                  height: 18,
-                  flexShrink: 0,
-                  transition: 'filter 0.2s ease',
-                  filter: GRAY_700_FILTER,
-                  '& img, & svg': {
-                    maxWidth: '100%',
-                    maxHeight: '100%',
-                    objectFit: 'contain',
-                  },
-                },
-                '&:hover': {
-                  backgroundColor: 'var(--ds-brand-100)',
-                  '& .ql-icon': { filter: GRAY_700_FILTER },
-                },
-              }}
+      {isLoading ? (
+        skeletonGrid
+      ) : (
+        <Box
+          display={'grid'}
+          gridTemplateColumns={'1fr 1fr'}
+          gap={'var(--ds-space-2)'}
+          sx={{
+            '@media (max-width: 1250px)': {
+              gridTemplateColumns: '1fr',
+            },
+          }}
+        >
+          {links.map((link) => (
+            <Link
+              href={buildUrl(selectedCluster, selectedCluster?.value || cluster, link.fragment, 'details', {})}
+              key={link.name}
+              style={{ textDecoration: 'none' }}
             >
-              <Box className='ql-icon'>
-                <SafeIcon src={link.icon} alt={link.name} width='16px' height='16px' />
+              <Box
+                display={'flex'}
+                alignItems={'center'}
+                gap='var(--ds-space-2)'
+                borderRadius='var(--ds-radius-md)'
+                sx={{
+                  px: 'var(--ds-space-2)',
+                  py: 'var(--ds-space-1)',
+                  cursor: 'pointer',
+                  '& .ql-icon': {
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 18,
+                    height: 18,
+                    flexShrink: 0,
+                    transition: 'filter 0.2s ease',
+                    filter: GRAY_700_FILTER,
+                    '& img, & svg': {
+                      maxWidth: '100%',
+                      maxHeight: '100%',
+                      objectFit: 'contain',
+                    },
+                  },
+                  '&:hover': {
+                    backgroundColor: 'var(--ds-brand-100)',
+                    '& .ql-icon': { filter: GRAY_700_FILTER },
+                  },
+                }}
+              >
+                <Box className='ql-icon'>
+                  <SafeIcon src={link.icon} alt={link.name} width='16px' height='16px' />
+                </Box>
+                <Typography fontSize={'var(--ds-text-small)'} fontWeight={400} color='var(--ds-gray-700)'>
+                  {link.name}
+                </Typography>
               </Box>
-              <Typography fontSize={'var(--ds-text-small)'} fontWeight={400} color='var(--ds-gray-700)'>
-                {link.name}
-              </Typography>
-            </Box>
-          </Link>
-        ))}
-      </Box>
+            </Link>
+          ))}
+        </Box>
+      )}
     </DSCard>
   );
 };
@@ -1177,7 +1297,6 @@ const Home = () => {
   });
   const [loadingConversation, setLoadingConversation] = useState(false);
   const { selectedCluster, allCluster } = useData();
-  const textareaRef = useRef(null);
   const currencySymbol = useCurrencySymbol(cluster);
   // Map integers to fragments based on KubernetesDetails config
   const QuickLinksData = [
@@ -1856,41 +1975,43 @@ const Home = () => {
   })();
 
   return (
-    <Grid container spacing={6} mt='28px'>
+    <Grid container spacing={6} mt='calc(var(--ds-space-0) * 14)'>
       <Grid item xs={9} sx={{ pt: '0px !important' }}>
         <Grid container>
           <K8sAccountModal openModal={showModal} handleClose={closeModal} />
-          <Grid item xs={12} sx={{ mr: '24px', pb: '16px' }}>
+          <Grid item xs={12} sx={{ mr: 'var(--ds-space-5)', pb: 'var(--ds-space-4)' }}>
             <DSCard
               size='sm'
               elevation='raised'
               sx={{
+                padding: '0 var(--ds-space-3)',
                 display: 'flex',
                 alignItems: 'center',
                 boxShadow: '0 4px 14px rgba(0, 0, 0, 0.1)',
                 gap: 'var(--ds-space-3)',
 
-                transition: 'border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease',
+                transition: 'border-color 200ms ease, box-shadow 200ms ease',
                 '&:hover': {
-                  borderColor: 'var(--ds-blue-300)',
-                  boxShadow: '0 4px 14px rgba(0, 0, 0, 0.1)',
+                  borderColor: 'var(--ds-gray-400)',
                 },
                 '&:focus-within': {
                   borderColor: 'var(--ds-blue-500)',
-                  boxShadow: '0 0 0 3px rgba(59, 130, 246, 0.06), 0 6px 18px rgba(59, 130, 246, 0.14)',
+                  boxShadow: '0 0 0 3px var(--ds-blue-100)',
                 },
                 '& textarea': {
                   width: '100%',
-                  border: 0,
+                  border: '0 !important',
+                  borderRadius: '0 !important',
+                  boxShadow: 'none !important',
+                  backgroundColor: 'transparent !important',
                   resize: 'none',
-                  boxShadow: 'none',
                   color: 'var(--ds-gray-800)',
-                  fontWeight: 400,
-                  fontSize: '15px',
+                  fontWeight: 'var(--ds-font-weight-regular)',
+                  fontSize: 'var(--ds-text-body-lg)',
                   textAlign: 'left',
-                  padding: '0 var(--ds-space-3) 0 0 !important',
-                  '&::placeholder': { color: 'var(--ds-gray-500)', fontWeight: 400, fontSize: '15px' },
-                  '&:focus': { boxShadow: 'none' },
+                  padding: 'var(--ds-space-5) var(--ds-space-2) var(--ds-space-2) 0 !important',
+                  '&::placeholder': { color: 'var(--ds-gray-500)', fontWeight: 'var(--ds-font-weight-regular)', fontSize: 'var(--ds-text-body-lg)' },
+                  '&:focus': { boxShadow: 'none !important' },
                   '&::-webkit-scrollbar': { display: 'none' },
                 },
                 '& .MuiOutlinedInput-notchedOutline': { border: '0 !important' },
@@ -1901,7 +2022,7 @@ const Home = () => {
                   width: 36,
                   height: 36,
                   borderRadius: '50%',
-                  backgroundColor: 'var(--ds-yellow-200, #FFF3D0)',
+                  backgroundColor: 'var(--ds-yellow-200, var(--ds-yellow-200))',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -1913,18 +2034,14 @@ const Home = () => {
                 <SafeIcon src={getNubiIconUrl()} alt='nubi' width={28} height={28} />
               </Box>
               <Box sx={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', minHeight: 36 }}>
-                <Textarea
-                  ref={textareaRef}
+                <Input
                   id='custom-textarea'
-                  fontSize='15px'
-                  fontWeight='400'
+                  type='textarea'
                   value={generateQuestionText}
-                  maxLength={500000}
-                  placeholder={'How can I assist you today?'}
-                  onChange={(e) => {
-                    setGenerateQuestionText(e.target.value);
-                  }}
-                  sx={{ width: '100%', ':disabled': { opacity: 0.5 } }}
+                  placeholder='How can I assist you today?'
+                  animatePlaceholder
+                  minRows={1}
+                  onChange={(val) => setGenerateQuestionText(val)}
                   maxRows={5}
                   disabled={loadingConversation}
                 />
@@ -1943,7 +2060,7 @@ const Home = () => {
             </DSCard>
           </Grid>
           {getUserSession()?.user?.name && allCluster?.length == 1 ? (
-            <Grid item xs={12} sx={{ mr: '24px', pb: 'var(--ds-space-4)' }}>
+            <Grid item xs={12} sx={{ mr: 'var(--ds-space-5)', pb: 'var(--ds-space-4)' }}>
               <CollapsableCard
                 elevation='flat'
                 defaultOpen={allCluster?.length == 0 || false}
@@ -1962,10 +2079,10 @@ const Home = () => {
                 <Box
                   sx={{
                     display: 'grid',
-                    gridTemplateColumns: '220px 1fr',
+                    gridTemplateColumns: 'calc(var(--ds-space-0) * 110) 1fr',
                     gap: 'var(--ds-space-5)',
                     '@media (max-width: 1230px)': {
-                      gridTemplateColumns: '150px 1fr',
+                      gridTemplateColumns: 'calc(var(--ds-space-0) * 75) 1fr',
                     },
                   }}
                 >
@@ -1983,7 +2100,7 @@ const Home = () => {
                           flexWrap: 'wrap',
                         }}
                       >
-                        <Box sx={{ flex: 1, minWidth: '240px' }}>
+                        <Box sx={{ flex: 1, minWidth: 'calc(var(--ds-space-0) * 120)' }}>
                           {getUserSession()?.user?.name && (
                             <Typography
                               sx={{
@@ -2146,6 +2263,7 @@ const Home = () => {
           type={'troubleshooting'}
           accountId={selectedCluster.value || ''}
           loadingInsights={loadingInsights.troubleshooting}
+          connectedAt={selectedCluster?.created_at || ''}
           currencySymbol={currencySymbol || '$'}
           cloudProvider={selectedCluster?.cloud_provider || ''}
           footer={
@@ -2170,6 +2288,7 @@ const Home = () => {
             type={'optimization'}
             accountId={selectedCluster?.value || ''}
             loadingInsights={loadingInsights.troubleshooting}
+            connectedAt={selectedCluster?.created_at || ''}
             currencySymbol={currencySymbol || '$'}
             cloudProvider={selectedCluster?.cloud_provider || ''}
             footer={
@@ -2178,7 +2297,9 @@ const Home = () => {
                 size='xs'
                 icon={<KeyboardArrowRightIcon />}
                 iconPlacement='end'
-                onClick={() => window.open(`/optimise?accountId=${selectedCluster?.value || ''}`, '_blank')}
+                onClick={() =>
+                  window.open(`/optimise?accountId=${selectedCluster?.value || ''}&account=${selectedCluster?.value || ''}#recommendations`, '_blank')
+                }
               >
                 View all recommendations
               </Button>
@@ -2195,6 +2316,7 @@ const Home = () => {
             type={'Ops'}
             loadingInsights={loadingInsights.k8sOps}
             accountId={selectedCluster?.value || ''}
+            connectedAt={selectedCluster?.created_at || ''}
             currencySymbol={currencySymbol || '$'}
             hasExternalData={securityHasExternal}
             footer={
@@ -2225,7 +2347,7 @@ const Home = () => {
                     <Box sx={{ flexShrink: 0 }}>
                       <InsightIcon severity='critical' icon={ImageOutlinedIcon} />
                     </Box>
-                    <Typography sx={{ flex: 1, minWidth: 0, fontSize: '13px', lineHeight: 1.5, color: 'var(--ds-gray-800)' }}>
+                    <Typography sx={{ flex: 1, minWidth: 0, fontSize: 'var(--ds-text-body)', lineHeight: 1.5, color: 'var(--ds-gray-800)' }}>
                       {`${imageScanData.appCount} apps have ${imageScanData.totalCritical} critical CVEs in ${imageScanData.imageCount} images`}
                     </Typography>
                     <Button
@@ -2257,7 +2379,7 @@ const Home = () => {
                     <Box sx={{ flexShrink: 0 }}>
                       <InsightIcon severity='high' icon={LockOutlinedIcon} />
                     </Box>
-                    <Typography sx={{ flex: 1, minWidth: 0, fontSize: '13px', lineHeight: 1.5, color: 'var(--ds-gray-800)' }}>
+                    <Typography sx={{ flex: 1, minWidth: 0, fontSize: 'var(--ds-text-body)', lineHeight: 1.5, color: 'var(--ds-gray-800)' }}>
                       {`${certificateData.expiringSoon} certificates expiring in less than 30 days`}
                     </Typography>
                     <Button
@@ -2276,7 +2398,11 @@ const Home = () => {
           />
         )}
       </Grid>
-      <Grid item xs={3} sx={{ pl: '15px !important', pt: '0px !important', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <Grid
+        item
+        xs={3}
+        sx={{ pl: 'var(--ds-space-4) !important', pt: '0px !important', display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}
+      >
         <AutomationsCard
           workflowData={workflowData}
           accountId={selectedCluster?.value || ''}

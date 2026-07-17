@@ -12,7 +12,7 @@ annotated-types==0.7.0
     # via pydantic
 anthropic==0.84.0
     # via ragserver (pyproject.toml)
-anyio==4.9.0
+anyio==4.14.1
     # via
     #   anthropic
     #   google-genai
@@ -20,17 +20,17 @@ anyio==4.9.0
     #   openai
     #   starlette
     #   watchfiles
-asgiref==3.8.1
+asgiref==3.11.1
     # via ragserver (pyproject.toml)
 atlassian-python-api==4.0.7
     # via ragserver (pyproject.toml)
 azure-ai-inference==1.0.0b9
     # via ragserver (pyproject.toml)
-azure-core==1.38.2
+azure-core==1.41.0
     # via azure-ai-inference
 backoff==2.2.1
     # via unstructured
-beautifulsoup4==4.13.4
+beautifulsoup4==4.14.3
     # via
     #   ragserver (pyproject.toml)
     #   atlassian-python-api
@@ -44,7 +44,7 @@ botocore==1.42.74
     #   ragserver (pyproject.toml)
     #   boto3
     #   s3transfer
-botocore-stubs==1.38.46
+botocore-stubs==1.43.14
     # via types-botocore
 certifi==2026.2.25
     # via
@@ -53,9 +53,9 @@ certifi==2026.2.25
     #   httpx
     #   kubernetes
     #   requests
-cffi==2.0.0
+cffi==2.1.0
     # via cryptography
-cfgv==3.4.0
+cfgv==3.5.0
     # via pre-commit
 charset-normalizer==3.4.1
     # via
@@ -70,6 +70,8 @@ click==8.2.1
     #   python-oxmsg
     #   typer
     #   uvicorn
+coloredlogs==15.0.1
+    # via onnxruntime
 cryptography==48.0.1
     # via
     #   ragserver (pyproject.toml)
@@ -79,39 +81,45 @@ cryptography==48.0.1
     #   unstructured-client
 dataclasses-json==0.6.7
     # via unstructured
-deprecated==1.2.18
+defusedxml==0.7.1
+    # via nltk
+deprecated==1.3.1
     # via atlassian-python-api
-distlib==0.4.0
+distlib==0.4.3
     # via virtualenv
 distro==1.9.0
     # via
     #   anthropic
     #   google-genai
     #   openai
-dnspython==2.7.0
+dnspython==2.8.0
     # via pymongo
-docstring-parser==0.16
+docstring-parser==0.18.0
     # via anthropic
 durationpy==0.10
     # via
     #   ragserver (pyproject.toml)
     #   kubernetes
-emoji==2.14.1
+emoji==2.15.0
     # via unstructured
-fastapi==0.135.3
+exceptiongroup==1.3.1
+    # via
+    #   anyio
+    #   pytest
+fastapi==0.139.0
     # via ragserver (pyproject.toml)
-filelock==3.20.3
+filelock==3.29.0
     # via
     #   ragserver (pyproject.toml)
     #   huggingface-hub
+    #   python-discovery
     #   torch
-    #   transformers
     #   virtualenv
 filetype==1.2.0
     # via unstructured
 flake8==6.1.0
     # via ragserver (pyproject.toml)
-flatbuffers==25.2.10
+flatbuffers==25.12.19
     # via onnxruntime
 frozenlist==1.5.0
     # via ragserver (pyproject.toml)
@@ -120,17 +128,17 @@ fsspec==2026.4.0
     #   ragserver (pyproject.toml)
     #   huggingface-hub
     #   torch
-google-auth==2.49.0
+google-auth==2.55.2
     # via
     #   google-genai
     #   kubernetes
 google-genai==1.66.0
     # via ragserver (pyproject.toml)
-googleapis-common-protos==1.69.2
+googleapis-common-protos==1.75.0
     # via
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
-grpcio==1.71.0
+grpcio==1.82.1
     # via
     #   opentelemetry-exporter-otlp-proto-grpc
     #   qdrant-client
@@ -141,8 +149,10 @@ h11==0.16.0
 h2==4.3.0
     # via httpx
 hf-xet==1.3.2
-    # via ragserver (pyproject.toml)
-hpack==4.1.0
+    # via
+    #   ragserver (pyproject.toml)
+    #   huggingface-hub
+hpack==4.2.0
     # via h2
 html5lib==1.1
     # via unstructured
@@ -151,29 +161,31 @@ httpcore==1.0.9
     #   ragserver (pyproject.toml)
     #   httpx
     #   unstructured-client
-httptools==0.6.4
+httptools==0.8.0
     # via uvicorn
 httpx==0.28.1
     # via
     #   anthropic
     #   google-genai
+    #   huggingface-hub
     #   openai
     #   qdrant-client
     #   unstructured-client
 httpx-sse==0.4.1
     # via ragserver (pyproject.toml)
-huggingface-hub==0.30.1
+huggingface-hub==1.7.0
     # via
     #   ragserver (pyproject.toml)
-    #   optimum
     #   sentence-transformers
     #   tokenizers
     #   transformers
+humanfriendly==10.0
+    # via coloredlogs
 hyperframe==6.1.0
     # via h2
-identify==2.6.15
+identify==2.6.19
     # via pre-commit
-idna==3.16
+idna==3.18
     # via
     #   anyio
     #   httpx
@@ -181,24 +193,22 @@ idna==3.16
     #   yarl
 ijson==2.6.1
     # via pysnow
-importlib-metadata==7.1.0
-    # via opentelemetry-api
 iniconfig==2.3.0
     # via pytest
 isodate==0.7.2
     # via azure-ai-inference
 jinja2==3.1.6
     # via torch
-jiter==0.10.0
+jiter==0.16.0
     # via
     #   anthropic
     #   openai
-jmespath==1.0.1
+jmespath==1.1.0
     # via
     #   atlassian-python-api
     #   boto3
     #   botocore
-joblib==1.5.1
+joblib==1.5.3
     # via
     #   nltk
     #   scikit-learn
@@ -208,13 +218,15 @@ kubernetes==32.0.1
     # via ragserver (pyproject.toml)
 langdetect==1.0.9
     # via unstructured
-lxml==6.0.0
+llvmlite==0.48.0
+    # via numba
+lxml==6.1.1
     # via unstructured
-markdown-it-py==3.0.0
+markdown-it-py==4.2.0
     # via rich
 markupsafe==3.0.3
     # via jinja2
-marshmallow==3.26.1
+marshmallow==3.26.2
     # via dataclasses-json
 mccabe==0.7.0
     # via flake8
@@ -240,21 +252,21 @@ mypy-extensions==1.1.0
     #   black
     #   mypy
     #   typing-inspect
-nest-asyncio==1.6.0
-    # via unstructured-client
-networkx==3.6.1
+networkx==3.4.2
     # via torch
-nltk==3.9.1
+nltk==3.10.0
     # via unstructured
-nodeenv==1.9.1
+nodeenv==1.10.0
     # via pre-commit
-numpy==2.4.2
+numba==0.66.0
+    # via unstructured
+numpy==2.2.6
     # via
     #   ragserver (pyproject.toml)
     #   ml-dtypes
+    #   numba
     #   onnx
     #   onnxruntime
-    #   optimum
     #   qdrant-client
     #   scikit-learn
     #   scipy
@@ -269,13 +281,13 @@ oauthlib==3.3.1
     #   requests-oauthlib
 olefile==0.47
     # via python-oxmsg
-onnx==1.20.1
-    # via optimum-onnx
-onnxruntime==1.24.3
-    # via optimum-onnx
+onnx==1.22.0
+    # via ragserver (pyproject.toml)
+onnxruntime==1.23.2
+    # via ragserver (pyproject.toml)
 openai==2.26.0
     # via ragserver (pyproject.toml)
-opentelemetry-api==1.40.0
+opentelemetry-api==1.42.1
     # via
     #   opentelemetry-distro
     #   opentelemetry-exporter-otlp-proto-grpc
@@ -283,63 +295,59 @@ opentelemetry-api==1.40.0
     #   opentelemetry-instrumentation
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
-opentelemetry-distro==0.61b0
+opentelemetry-distro==0.63b1
     # via ragserver (pyproject.toml)
-opentelemetry-exporter-otlp==1.40.0
+opentelemetry-exporter-otlp==1.42.1
     # via ragserver (pyproject.toml)
-opentelemetry-exporter-otlp-proto-common==1.40.0
+opentelemetry-exporter-otlp-proto-common==1.42.1
     # via
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
-opentelemetry-exporter-otlp-proto-grpc==1.40.0
+opentelemetry-exporter-otlp-proto-grpc==1.42.1
     # via opentelemetry-exporter-otlp
-opentelemetry-exporter-otlp-proto-http==1.40.0
+opentelemetry-exporter-otlp-proto-http==1.42.1
     # via opentelemetry-exporter-otlp
-opentelemetry-instrumentation==0.61b0
+opentelemetry-instrumentation==0.63b1
     # via opentelemetry-distro
-opentelemetry-proto==1.40.0
+opentelemetry-proto==1.42.1
     # via
     #   opentelemetry-exporter-otlp-proto-common
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
-opentelemetry-sdk==1.40.0
+opentelemetry-sdk==1.42.1
     # via
     #   opentelemetry-distro
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
-opentelemetry-semantic-conventions==0.61b0
+opentelemetry-semantic-conventions==0.63b1
     # via
     #   opentelemetry-instrumentation
     #   opentelemetry-sdk
-optimum==2.1.0
-    # via optimum-onnx
-optimum-onnx==0.1.0
-    # via sentence-transformers
 orjson==3.11.8
     # via ragserver (pyproject.toml)
-packaging==24.2
+packaging==26.2
     # via
     #   black
     #   huggingface-hub
     #   marshmallow
     #   onnxruntime
     #   opentelemetry-instrumentation
-    #   optimum
     #   pytest
     #   transformers
-pathspec==1.0.4
+pathspec==1.1.1
     # via
     #   black
     #   mypy
-platformdirs==4.5.0
+platformdirs==4.10.0
     # via
     #   black
+    #   python-discovery
     #   virtualenv
 pluggy==1.6.0
     # via pytest
 portalocker==3.2.0
     # via qdrant-client
-pre-commit==3.4.0
+pre-commit==4.6.0
     # via ragserver (pyproject.toml)
 propcache==0.3.1
     # via
@@ -360,17 +368,18 @@ psycopg2-binary==2.9.10
     # via ragserver (pyproject.toml)
 py-cpuinfo==9.0.0
     # via pytest-benchmark
-pyasn1==0.6.1
+pyasn1==0.6.4
     # via
+    #   ragserver (pyproject.toml)
     #   pyasn1-modules
     #   rsa
 pyasn1-modules==0.4.2
     # via google-auth
 pycodestyle==2.11.1
     # via flake8
-pycparser==2.22
+pycparser==3.0
     # via cffi
-pydantic==2.11.2
+pydantic==2.11.3
     # via
     #   ragserver (pyproject.toml)
     #   anthropic
@@ -384,7 +393,7 @@ pydantic-core==2.33.1
     # via
     #   ragserver (pyproject.toml)
     #   pydantic
-pydantic-settings==2.13.1
+pydantic-settings==2.14.2
     # via ragserver (pyproject.toml)
 pyflakes==3.1.0
     # via flake8
@@ -393,13 +402,19 @@ pygments==2.20.0
     #   ragserver (pyproject.toml)
     #   pytest
     #   rich
-pyjwt==2.10.1
-    # via msal
+pyjwt==2.13.0
+    # via
+    #   ragserver (pyproject.toml)
+    #   msal
 pymongo==4.11.3
     # via ragserver (pyproject.toml)
 pymupdf==1.27.2.2
     # via ragserver (pyproject.toml)
-pypdf==5.9.0
+pypdf==6.14.2
+    # via
+    #   ragserver (pyproject.toml)
+    #   unstructured-client
+pypdfium2==5.11.0
     # via unstructured-client
 pysnow==0.7.17
     # via ragserver (pyproject.toml)
@@ -413,12 +428,14 @@ python-dateutil==2.9.0.post0
     # via
     #   botocore
     #   kubernetes
+python-discovery==1.4.4
+    # via virtualenv
 python-dotenv==1.2.2
     # via
     #   ragserver (pyproject.toml)
     #   pydantic-settings
     #   uvicorn
-python-iso639==2025.2.18
+python-iso639==2026.4.20
     # via unstructured
 python-json-logger==4.0.0
     # via ragserver (pyproject.toml)
@@ -434,7 +451,7 @@ pytokens==0.4.1
     # via black
 pytz==2019.3
     # via pysnow
-pyyaml==6.0.2
+pyyaml==6.0.3
     # via
     #   huggingface-hub
     #   kubernetes
@@ -443,20 +460,19 @@ pyyaml==6.0.2
     #   uvicorn
 qdrant-client==1.16.0
     # via ragserver (pyproject.toml)
-rapidfuzz==3.13.0
+rapidfuzz==3.14.5
     # via unstructured
-regex==2024.11.6
+regex==2026.7.10
     # via
     #   nltk
     #   tiktoken
     #   transformers
-requests==2.32.5
+requests==2.34.2
     # via
     #   atlassian-python-api
     #   azure-core
     #   google-auth
     #   google-genai
-    #   huggingface-hub
     #   kubernetes
     #   msal
     #   opentelemetry-exporter-otlp-proto-http
@@ -464,7 +480,6 @@ requests==2.32.5
     #   requests-oauthlib
     #   requests-toolbelt
     #   tiktoken
-    #   transformers
     #   unstructured
 requests-oauthlib==1.3.1
     # via
@@ -473,26 +488,28 @@ requests-oauthlib==1.3.1
     #   pysnow
 requests-toolbelt==1.0.0
     # via unstructured-client
-rich==14.0.0
+rich==15.0.0
     # via typer
 rsa==4.9
-    # via
-    #   ragserver (pyproject.toml)
-    #   google-auth
+    # via ragserver (pyproject.toml)
 s3transfer==0.16.0
     # via
     #   ragserver (pyproject.toml)
     #   boto3
-safetensors==0.7.0
+safetensors==0.8.0
     # via transformers
-scikit-learn==1.8.0
+scikit-learn==1.7.2
     # via sentence-transformers
-scipy==1.17.1
+scipy==1.15.3
     # via
     #   scikit-learn
     #   sentence-transformers
-sentence-transformers==5.2.3
+sentence-transformers==5.6.0
     # via ragserver (pyproject.toml)
+setuptools==80.10.2
+    # via
+    #   ragserver (pyproject.toml)
+    #   torch
 shellingham==1.5.4
     # via typer
 simsimd==6.2.1
@@ -507,35 +524,39 @@ six==1.17.0
 sniffio==1.3.1
     # via
     #   anthropic
-    #   anyio
     #   google-genai
     #   openai
-soupsieve==2.8.3
+soupsieve==2.8.4
     # via
     #   ragserver (pyproject.toml)
     #   beautifulsoup4
 sqlalchemy==2.0.49
     # via ragserver (pyproject.toml)
-starlette==1.0.0
-    # via fastapi
+starlette==1.3.1
+    # via
+    #   ragserver (pyproject.toml)
+    #   fastapi
 sympy==1.13.3
     # via
     #   ragserver (pyproject.toml)
     #   onnxruntime
     #   torch
-tenacity==9.1.2
+tenacity==9.1.4
     # via google-genai
 threadpoolctl==3.6.0
     # via scikit-learn
 tiktoken==0.12.0
     # via ragserver (pyproject.toml)
-tokenizers==0.21.4
+tokenizers==0.22.2
     # via transformers
-torch==2.10.0
+tomli==2.4.1
     # via
-    #   optimum
-    #   sentence-transformers
-tqdm==4.67.1
+    #   black
+    #   mypy
+    #   pytest
+torch==2.13.0
+    # via sentence-transformers
+tqdm==4.68.4
     # via
     #   huggingface-hub
     #   nltk
@@ -543,13 +564,15 @@ tqdm==4.67.1
     #   sentence-transformers
     #   transformers
     #   unstructured
-transformers==4.53.3
+transformers==5.14.0
     # via
-    #   optimum
-    #   optimum-onnx
+    #   ragserver (pyproject.toml)
     #   sentence-transformers
 typer==0.24.1
-    # via ragserver (pyproject.toml)
+    # via
+    #   ragserver (pyproject.toml)
+    #   huggingface-hub
+    #   transformers
 types-aiofiles==25.1.0.20251011
     # via ragserver (pyproject.toml)
 types-awscrt==0.31.3
@@ -568,20 +591,26 @@ types-psutil==7.2.2.20260130
     # via ragserver (pyproject.toml)
 types-requests==2.32.4.20250913
     # via ragserver (pyproject.toml)
-types-webencodings==0.5.0.20251108
+types-webencodings==0.5.0.20260408
     # via types-html5lib
-typing-extensions==4.13.2
+typing-extensions==4.16.0
     # via
     #   ragserver (pyproject.toml)
     #   anthropic
     #   anyio
+    #   asgiref
     #   atlassian-python-api
     #   azure-ai-inference
     #   azure-core
     #   beautifulsoup4
+    #   black
+    #   cryptography
+    #   exceptiongroup
     #   fastapi
     #   google-genai
+    #   grpcio
     #   huggingface-hub
+    #   multidict
     #   mypy
     #   onnx
     #   openai
@@ -592,6 +621,8 @@ typing-extensions==4.13.2
     #   opentelemetry-semantic-conventions
     #   pydantic
     #   pydantic-core
+    #   pyjwt
+    #   pypdf
     #   python-oxmsg
     #   sentence-transformers
     #   sqlalchemy
@@ -600,6 +631,8 @@ typing-extensions==4.13.2
     #   typing-inspect
     #   typing-inspection
     #   unstructured
+    #   uvicorn
+    #   virtualenv
 typing-inspect==0.9.0
     # via dataclasses-json
 typing-inspection==0.4.2
@@ -608,9 +641,9 @@ typing-inspection==0.4.2
     #   fastapi
     #   pydantic
     #   pydantic-settings
-unstructured==0.18.18
+unstructured==0.18.32
     # via ragserver (pyproject.toml)
-unstructured-client==0.41.0
+unstructured-client==0.42.12
     # via unstructured
 urllib3==2.7.0
     # via
@@ -621,11 +654,11 @@ urllib3==2.7.0
     #   types-requests
 uvicorn==0.44.0
     # via ragserver (pyproject.toml)
-uvloop==0.21.0
+uvloop==0.22.1
     # via uvicorn
 validators==0.34.0
     # via ragserver (pyproject.toml)
-virtualenv==20.35.4
+virtualenv==21.6.1
     # via pre-commit
 watchfiles==1.1.1
     # via
@@ -633,13 +666,13 @@ watchfiles==1.1.1
     #   uvicorn
 webencodings==0.5.1
     # via html5lib
-websocket-client==1.8.0
+websocket-client==1.9.0
     # via kubernetes
-websockets==15.0.1
+websockets==16.1
     # via
     #   google-genai
     #   uvicorn
-wrapt==1.17.2
+wrapt==2.2.2
     # via
     #   deprecated
     #   opentelemetry-instrumentation
@@ -647,6 +680,4 @@ wrapt==1.17.2
 yarl==1.19.0
     # via ragserver (pyproject.toml)
 zipp==3.21.0
-    # via
-    #   ragserver (pyproject.toml)
-    #   importlib-metadata
+    # via ragserver (pyproject.toml)

@@ -93,12 +93,12 @@ If `$ARGUMENTS` is provided, use it as the commit subject but still prepend the 
 | `relay` | `collector-server/k8s-collector/relay-server/` |
 | `collector" | `collector-server/cloud-collector/`, `collector-server/k8s-collector/app/` |
 | `deps` | Dependency updates |
-| `#xxx` | Issue number — use for `api-server/services/`, `api-server/migrations/`, `deploy/`, `.github/`, or any cross-service change |
+| `NB-xxx` | Ticket number — use for `api-server/services/`, `api-server/migrations/`, `deploy/`, `.github/`, or any cross-service change |
 
 **Rules:**
 - **Single scope:** `fix(ui): handle null pointer in settings page`
-- **Issue number scope:** `feat(#123): add Azure onboarding flow`
-- Scope is **required** — if no dedicated scope matches, use an issue number `#xxx`
+- **Ticket number scope:** `feat(NB-1234): add Azure onboarding flow`
+- Scope is **required** — if no dedicated scope matches, use a ticket number `NB-xxx` or `nb-xxx`
 
 If no `$ARGUMENTS`, analyze the diff to generate an appropriate message. Present the proposed message to the user for confirmation before committing.
 

@@ -1,8 +1,8 @@
 import React from 'react';
 import { Box, Typography, IconButton } from '@mui/material';
 import { ContentCopy, InfoOutlined } from '@mui/icons-material';
-import Text from '../format/Text';
-import { colors } from 'src/utils/colors';
+import Text from '@shared/format/Text';
+import { ds } from 'src/utils/colors';
 import JsonTreeView from '@shared/viewers/JsonTreeView';
 
 interface FieldRendererProps {
@@ -17,7 +17,7 @@ interface FieldRendererProps {
 const FieldRenderer: React.FC<FieldRendererProps> = ({ data, schema, taskType, fieldType, taskDefinitions, copyToClipboard }) => {
   if (!taskType || !data || typeof data !== 'object') {
     return (
-      <Box sx={{ textAlign: 'center', color: colors.tertiary, py: 4 }}>
+      <Box sx={{ textAlign: 'center', color: ds.gray[600], py: 4 }}>
         <Typography>No schema available for formatting</Typography>
       </Box>
     );
@@ -28,7 +28,7 @@ const FieldRenderer: React.FC<FieldRendererProps> = ({ data, schema, taskType, f
 
   if (!fieldSchema || Object.keys(fieldSchema).length === 0) {
     return (
-      <Box sx={{ textAlign: 'center', color: colors.tertiary, py: 4 }}>
+      <Box sx={{ textAlign: 'center', color: ds.gray[600], py: 4 }}>
         <Typography>
           No {fieldType} schema defined for {taskType}
         </Typography>
@@ -67,8 +67,8 @@ const FieldRenderer: React.FC<FieldRendererProps> = ({ data, schema, taskType, f
           flexDirection: 'column',
           gap: 0.75,
           padding: 'var(--ds-space-3) var(--ds-space-4)',
-          backgroundColor: colors.background.white,
-          border: `1px solid ${colors.border.secondaryLight}`,
+          backgroundColor: ds.background[100],
+          border: `1px solid ${ds.gray[200]}`,
           borderRadius: 'var(--ds-radius-md)',
         }}
       >
@@ -80,7 +80,7 @@ const FieldRenderer: React.FC<FieldRendererProps> = ({ data, schema, taskType, f
               gap: 0.5,
               fontFamily: 'Poppins, sans-serif',
               fontWeight: 'var(--ds-font-weight-semibold)',
-              color: colors.text.secondary,
+              color: ds.brand[500],
               fontSize: 'var(--ds-text-caption)',
             }}
           >
@@ -89,7 +89,7 @@ const FieldRenderer: React.FC<FieldRendererProps> = ({ data, schema, taskType, f
               <Box
                 component='span'
                 sx={{
-                  color: colors.text.secondaryDark,
+                  color: ds.gray[400],
                   fontSize: 'var(--ds-text-caption)',
                   fontWeight: 'var(--ds-font-weight-regular)',
                 }}
@@ -102,8 +102,8 @@ const FieldRenderer: React.FC<FieldRendererProps> = ({ data, schema, taskType, f
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
             <Box
               sx={{
-                backgroundColor: colors.background.tertiaryLightest,
-                color: colors.text.secondaryDark,
+                backgroundColor: ds.gray[100],
+                color: ds.gray[400],
                 px: 0.75,
                 py: 0.25,
                 borderRadius: 0.5,
@@ -118,7 +118,7 @@ const FieldRenderer: React.FC<FieldRendererProps> = ({ data, schema, taskType, f
             <IconButton
               size='small'
               onClick={() => copyToClipboard(displayValue, `${key} value`)}
-              sx={{ color: colors.text.secondaryDark, padding: 'var(--ds-space-1)' }}
+              sx={{ color: ds.gray[400], padding: 'var(--ds-space-1)' }}
             >
               <ContentCopy sx={{ fontSize: 'var(--ds-text-small)' }} />
             </IconButton>
@@ -132,13 +132,13 @@ const FieldRenderer: React.FC<FieldRendererProps> = ({ data, schema, taskType, f
             ((value.trim().startsWith('{') && value.trim().endsWith('}')) || (value.trim().startsWith('[') && value.trim().endsWith(']')));
 
           if (isComplexType || isJsonString) {
-            return <JsonTreeView data={value} defaultExpanded={2} maxHeight='200px' fontSize='12px' />;
+            return <JsonTreeView data={value} defaultExpanded={2} maxHeight={ds.space.mul(0, 100)} fontSize={ds.text.small} />;
           }
 
           return (
             <Box
               sx={{
-                color: colors.text.secondary,
+                color: ds.brand[500],
                 fontSize: 'var(--ds-text-small)',
                 fontWeight: 'var(--ds-font-weight-regular)',
                 wordBreak: 'break-word',
@@ -157,8 +157,8 @@ const FieldRenderer: React.FC<FieldRendererProps> = ({ data, schema, taskType, f
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
-        <InfoOutlined sx={{ fontSize: 'var(--ds-text-body-lg)', color: colors.text.secondaryDark }} />
-        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondaryDark }}>
+        <InfoOutlined sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.gray[400] }} />
+        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400] }}>
           Formatted according to {taskType} {fieldType} schema
         </Typography>
       </Box>

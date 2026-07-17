@@ -1,10 +1,9 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef, memo } from 'react';
 import { Box, Typography } from '@mui/material';
 import dayjs from 'dayjs';
 import PropTypes from 'prop-types';
 import { ds } from '@utils/colors';
 import { Chip } from '@ui/Chip';
-import Text from '@shared/format/Text';
 
 const formatTimestamp = (iso) => {
   const d = dayjs(iso);
@@ -28,8 +27,27 @@ const hueFor = (s) => {
   return HUES[Math.abs(h) % HUES.length];
 };
 
-const MemoryCard = ({ memory }) => {
+const MemoryCard = memo(({ memory }) => {
   const hue = hueFor(memory.memory_type);
+  const [expanded, setExpanded] = useState(false);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+  const contentRef = useRef(null);
+
+  const content = memory.content || '';
+
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el || expanded) {
+      return undefined;
+    }
+    const measure = () => {
+      setIsOverflowing(el.scrollHeight > el.clientHeight + 1);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [content, expanded]);
 
   return (
     <Box
@@ -62,21 +80,49 @@ const MemoryCard = ({ memory }) => {
         </Chip>
       </Box>
 
-      <Text
-        value={memory.content || ''}
-        showAutoEllipsis
-        lineClamp={PREVIEW_LINES}
+      <Box
+        ref={contentRef}
         sx={{
+          display: '-webkit-box',
+          WebkitLineClamp: expanded ? 'unset' : PREVIEW_LINES,
+          WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
           fontSize: 'var(--ds-text-small)',
           fontFamily: ds.font.sans,
           color: 'var(--ds-gray-700)',
           lineHeight: 1.4,
           whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
         }}
-      />
+      >
+        {content}
+      </Box>
+
+      {(isOverflowing || expanded) && (
+        <Box
+          component='button'
+          type='button'
+          onClick={() => setExpanded((v) => !v)}
+          data-testid='memory-card-toggle-btn'
+          sx={{
+            mt: ds.space[1],
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            cursor: 'pointer',
+            fontSize: 'var(--ds-text-small)',
+            fontFamily: ds.font.sans,
+            color: 'var(--ds-blue-700)',
+            fontWeight: 'var(--ds-font-weight-medium)',
+            '&:hover': { textDecoration: 'underline' },
+          }}
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </Box>
+      )}
     </Box>
   );
-};
+});
 
 MemoryCard.propTypes = {
   memory: PropTypes.object.isRequired,

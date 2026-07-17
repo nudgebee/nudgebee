@@ -1,0 +1,21 @@
+# Trivy ignore file — scoped, justified suppressions for the security scans /
+# CI gate. Keep entries narrow (path + id) and always include a statement.
+
+misconfigurations:
+  # benchmark-server is an internal LLM-benchmark harness (NOT part of the
+  # deployed nudgebee product / umbrella chart). Its orchestrator runs
+  # `kubectl apply` of arbitrary scenario manifests under this ServiceAccount to
+  # stand up real cluster fixtures for the LLM to debug — and some scenarios
+  # include `kind: Secret`. So create/delete on secrets is a functional
+  # requirement here, not a misconfiguration. It is intended to run against a
+  # disposable/isolated benchmark cluster, never production.
+  - id: AVD-KSV-0041
+    paths:
+      # Scoped to benchmark-server ONLY. A bare "templates/clusterrole.yaml"
+      # would also match a direct `trivy config deploy/kubernetes/<other-svc>`
+      # scan and silently ignore a real KSV041 elsewhere — so keep the
+      # benchmark-server path segment in the glob.
+      - "**/benchmark-server/templates/clusterrole.yaml"
+    statement: >-
+      benchmark-server harness needs secret create/delete to kubectl-apply
+      scenario manifests (some include kind: Secret); not deployed in prod.

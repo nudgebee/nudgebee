@@ -17,21 +17,37 @@ import (
 )
 
 // GenerateTasks generates tasks based on recommendations and rules.
-func (s *optimizerService) GenerateTasks(ctx context.Context, autoOptimizeID uuid.UUID) ([]model.AutoOptimizeTask, error) {
+func (s *optimizerService) GenerateTasks(ctx context.Context, autoOptimizeID uuid.UUID) (resultTasks []model.AutoOptimizeTask, retErr error) {
 	ao, err := s.dao.GetAutoOptimize(ctx, autoOptimizeID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch auto optimize %s: %w", autoOptimizeID, err)
 	}
 
 	// 1. Pre-flight Checks
-	if err := s.checkPreFlight(ctx, ao); err != nil {
+	skip, err := s.checkPreFlight(ctx, ao)
+	if err != nil {
 		return nil, err
+	}
+	if skip {
+		return nil, nil
 	}
 
 	ao.ExecutionStatus = string(model.AutopilotExecutionStatusInProgress)
 	if err := s.dao.SaveAutoOptimize(ctx, *ao); err != nil {
 		return nil, fmt.Errorf("failed to set execution status to InProgress: %w", err)
 	}
+
+	// A failure anywhere past this point would otherwise leave the run with no
+	// task record and the config stuck in InProgress — the audit gap in #33483.
+	// Record the failure as a visible task row, reset the execution state, and
+	// finish the run cleanly. The schedule is the retry, so we don't fail the
+	// Temporal activity (which would re-run and duplicate the record).
+	defer func() {
+		if retErr != nil {
+			s.recordRunFailure(ctx, ao, retErr)
+			retErr = nil
+		}
+	}()
 
 	recommendations, err := s.dao.GetFullRecommendationsForOptimizerCategory(ctx, ao.AccountID, ao.Category)
 	if err != nil {
@@ -257,9 +273,54 @@ func (s *optimizerService) sendToConfiguredChannels(ao *model.AutoOptimize, buil
 	}
 }
 
-func (s *optimizerService) checkPreFlight(ctx context.Context, ao *model.AutoOptimize) error {
+// recordRunFailure persists a terminal, visible task row for a scheduled run
+// that failed before producing any tasks, and clears the InProgress execution
+// status. Without it a failed run leaves no trace in the Tasks tab under any
+// status filter and the config sticks in InProgress (#33483). Best-effort: it
+// logs and returns rather than propagating, since the run has already failed.
+func (s *optimizerService) recordRunFailure(ctx context.Context, ao *model.AutoOptimize, cause error) {
+	// The run often fails *because* ctx was cancelled or timed out (a slow/hung
+	// DB call, or the activity's StartToCloseTimeout). Detach from that
+	// cancellation so the cleanup writes still land — otherwise the config
+	// stays InProgress with no record, the exact gap this is meant to close.
+	// Bounded by a timeout so a hung write can't leak the goroutine.
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+
+	if ao.ExecutionStatus != string(model.AutopilotExecutionStatusIdle) {
+		ao.ExecutionStatus = string(model.AutopilotExecutionStatusIdle)
+		if err := s.dao.SaveAutoOptimize(cleanupCtx, *ao); err != nil {
+			slog.Error("Failed to reset execution status after run failure", "id", ao.ID, "error", err)
+		}
+	}
+
+	now := time.Now().UTC()
+	reason := cause.Error()
+	failure := model.AutoOptimizeTask{
+		ID:             uuid.New(),
+		AutoPilotID:    ao.ID,
+		TenantID:       ao.TenantID,
+		AccountID:      ao.AccountID,
+		Status:         string(model.AutopilotTaskStatusFailed),
+		Name:           "Optimization run",
+		Reason:         &reason,
+		Error:          &reason,
+		ScheduledTime:  now,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		ResourceFilter: model.AutoOptimizeResourceFilter{},
+		Meta:           map[string]any{},
+		Attributes:     model.AutoOptimizeTaskAttributes{},
+	}
+	if err := s.dao.SaveAutoOptimizeTasks(cleanupCtx, []model.AutoOptimizeTask{failure}); err != nil {
+		slog.Error("Failed to record run failure", "id", ao.ID, "error", err)
+	}
+}
+
+func (s *optimizerService) checkPreFlight(ctx context.Context, ao *model.AutoOptimize) (bool, error) {
 	if ao.Status != model.AutoOptimizeStatusActive && ao.Status != model.AutoOptimizeStatusDryrun {
-		return fmt.Errorf("auto optimize %s is not active (status: %s)", ao.ID, ao.Status)
+		slog.Info("Auto optimize is not active, skipping task generation", "id", ao.ID, "status", ao.Status)
+		return true, nil
 	}
 
 	now := time.Now().UTC()
@@ -267,7 +328,7 @@ func (s *optimizerService) checkPreFlight(ctx context.Context, ao *model.AutoOpt
 		slog.Info("Auto optimize expired, disabling", "id", ao.ID, "end_at", *ao.EndAt)
 		ao.Status = model.AutoOptimizeStatusDisabled
 		if err := s.dao.SaveAutoOptimize(ctx, *ao); err != nil {
-			return fmt.Errorf("failed to disable expired auto optimize %s: %w", ao.ID, err)
+			return false, fmt.Errorf("failed to disable expired auto optimize %s: %w", ao.ID, err)
 		}
 
 		err := s.temporalClient.ScheduleClient().GetHandle(ctx, s.scheduleID(ao.ID)).Pause(ctx, client.SchedulePauseOptions{
@@ -277,19 +338,23 @@ func (s *optimizerService) checkPreFlight(ctx context.Context, ao *model.AutoOpt
 			slog.Error("failed to pause schedule for expired auto optimize", "id", ao.ID, "error", err)
 		}
 
-		return fmt.Errorf("auto optimize %s has expired (EndAt: %s) and is now disabled", ao.ID, *ao.EndAt)
+		return true, nil
 	}
 
 	agent, err := s.dao.GetAgent(ctx, ao.AccountID)
 	if err != nil {
-		return fmt.Errorf("failed to fetch agent for account %s: %w", ao.AccountID, err)
+		return false, fmt.Errorf("failed to fetch agent for account %s: %w", ao.AccountID, err)
 	}
 
 	if agent.Status == "NotConnected" {
-		return fmt.Errorf("agent for account %s is not connected", ao.AccountID)
+		// Environmental, not a run failure: skip quietly like a disabled config
+		// (mirrors #33393) so the activity completes instead of erroring and
+		// retrying. The run resumes on its own once the agent reconnects.
+		slog.Info("Agent not connected, skipping task generation", "id", ao.ID, "account_id", ao.AccountID)
+		return true, nil
 	}
 
-	return nil
+	return false, nil
 }
 
 func (s *optimizerService) updateExecutionState(ctx context.Context, ao *model.AutoOptimize) error {

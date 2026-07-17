@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import PropTypes from 'prop-types';
 import { Drawer, Box, Typography, IconButton, Paper } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 
 const SECONDARY_TRANSITION_MS = 260;
 
@@ -127,12 +127,12 @@ const ResizeHandle = ({ onMouseDown, ariaLabel = 'Resize drawer' }) => (
       left: '-3px',
       top: 0,
       bottom: 0,
-      width: '6px',
+      width: ds.space.mul(0, 3),
       cursor: 'col-resize',
       zIndex: 1,
       backgroundColor: 'transparent',
       transition: 'background-color 0.15s ease',
-      '&:hover, &:active': { backgroundColor: colors.border.primary },
+      '&:hover, &:active': { backgroundColor: ds.blue[500] },
     }}
   />
 );
@@ -150,13 +150,11 @@ const DrawerHeader = ({ title, onClose }) => (
       justifyContent: 'space-between',
       px: 'var(--ds-space-4)',
       py: 'var(--ds-space-3)',
-      borderBottom: `1px solid ${colors.border.primaryLight}`,
+      borderBottom: `1px solid ${ds.blue[300]}`,
       flexShrink: 0,
     }}
   >
-    <Typography
-      sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)', fontFamily: 'Roboto', color: colors.text.secondary }}
-    >
+    <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)', fontFamily: 'Roboto', color: ds.brand[500] }}>
       {title}
     </Typography>
     <IconButton onClick={onClose} size='small' data-testid='custom-drawer-close'>
@@ -173,7 +171,7 @@ DrawerHeader.propTypes = {
 const MODERN_INSET = 16;
 const MODERN_RADIUS = 16;
 
-const CustomDrawer = ({ open, onClose, title, width = '450px', children, onWidthChange, resizable = true, variant = 'default' }) => {
+const CustomDrawer = ({ open, onClose, title, width = ds.space.mul(0, 225), children, onWidthChange, resizable = true, variant = 'default' }) => {
   const { width: drawerWidth, handleMouseDown } = useDrawerResize(width, STORAGE_KEY, resizable);
   const effectiveWidth = drawerWidth;
   const isModern = variant === 'modern';
@@ -191,7 +189,7 @@ const CustomDrawer = ({ open, onClose, title, width = '450px', children, onWidth
       sx={{ zIndex: 1200 }}
       slotProps={{
         backdrop: {
-          sx: { backgroundColor: 'rgba(15, 23, 42, 0.25)' },
+          sx: { backgroundColor: `color-mix(in srgb, ${ds.gray[700]} 25%, transparent)` },
         },
       }}
       PaperProps={{
@@ -206,11 +204,11 @@ const CustomDrawer = ({ open, onClose, title, width = '450px', children, onWidth
                 right: `${MODERN_INSET}px`,
                 height: 'auto',
                 borderRadius: `${MODERN_RADIUS}px`,
-                backgroundColor: colors.background.tertiaryLightestest,
-                boxShadow: '0 12px 32px rgba(0, 0, 0, 0.16)',
+                backgroundColor: ds.background[200],
+                boxShadow: `0 ${ds.space[3]} ${ds.space[6]} color-mix(in srgb, ${ds.gray[700]} 16%, transparent)`,
               }
             : {
-                boxShadow: '-4px 0 12px rgba(0, 0, 0, 0.08)',
+                boxShadow: `${ds.space.mul(1, -1)} 0 ${ds.space[3]} ${ds.gray.alpha[200]}`,
               }),
         },
       }}
@@ -303,15 +301,15 @@ const SecondaryDrawer = ({ open, onClose, title, rightOffset = 0, defaultWidth =
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
-          backgroundColor: colors.background.white,
+          backgroundColor: ds.background[100],
           ...(isModern
             ? {
                 borderRadius: `${MODERN_RADIUS}px`,
-                boxShadow: '0 12px 32px rgba(0, 0, 0, 0.16)',
+                boxShadow: `0 ${ds.space[3]} ${ds.space[6]} color-mix(in srgb, ${ds.gray[700]} 16%, transparent)`,
               }
             : {
-                boxShadow: '-4px 0 12px rgba(0, 0, 0, 0.08)',
-                borderRight: `1px solid ${colors.border.primary}`,
+                boxShadow: `${ds.space.mul(1, -1)} 0 ${ds.space[3]} ${ds.gray.alpha[200]}`,
+                borderRight: `1px solid ${ds.blue[500]}`,
               }),
         }}
       >

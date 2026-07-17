@@ -1,7 +1,7 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import k8sApi from '@api1/kubernetes';
 import { ListingLayout } from '@ui/ListingLayout';
-import KubernetesTable2 from '@components/k8s/common/KubernetesTable2';
+import KubernetesTable from '@components/k8s/common/KubernetesTable';
 import { Typography, Box } from '@mui/material';
 import { Input } from '@ui/Input';
 import CodeMirror, { EditorView } from '@uiw/react-codemirror';
@@ -9,10 +9,10 @@ import { yaml } from '@codemirror/lang-yaml';
 import Datetime from '@shared/format/Datetime';
 import { action } from 'src/utils/actionStyles';
 import { hasWriteAccess } from '@lib/auth';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
-import { Modal } from '@shared/modal';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
+import { Modal } from '@ui/Modal';
 import yaml1 from 'js-yaml';
-import FilterDropdownButton from '@shared/FilterDropdownButton';
+import FilterDropdown from '@ui/FilterDropdown';
 import {
   awsInstanceCategory,
   awsInstanceFamily,
@@ -29,7 +29,7 @@ import { convertToGB } from '@lib/formatter';
 import { DeleteIconRed as deleteIcon, PlusIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { Button as DsButton } from '@ui/Button';
-import { snackbar } from '@shared/snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 import { ds } from 'src/utils/colors';
 
 const KubernetesAutoScalerNodePool = ({ accountId }) => {
@@ -74,6 +74,9 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
   const [consolidationPolicies, setConsolidationPolicies] = useState(['WhenUnderutilized', 'WhenEmpty']);
   const [isLoadingNodeClass, setIsLoadingNodeClass] = useState(false);
   const { selectedCluster } = useData();
+  // Top row (Name + Node Class) — scrolled into view when submit fails so the
+  // user doesn't have to manually scroll up to find the missed mandatory field.
+  const mandatoryFieldsRef = useRef(null);
 
   useEffect(() => {
     setProvider(selectedCluster?.k8s_provider ?? '');
@@ -566,12 +569,24 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
   };
 
   const handleSubmit = () => {
-    if (!name || name.trim() == '') {
-      setErrors((prevErrors) => ({
-        ...prevErrors,
-        ['name']: `Name is required`,
-      }));
-      return;
+    // Mandatory-field validation only applies to the Auto Config form; the
+    // Manual (YAML) tab is gated separately by `validationMessage`.
+    if (condition === 'auto-config') {
+      const nameMissing = !name || name.trim() === '';
+      const nodeClassMissing = !nodeClassRef || (typeof nodeClassRef === 'string' && nodeClassRef.trim() === '');
+
+      if (nameMissing || nodeClassMissing) {
+        setErrors((prevErrors) => ({
+          ...prevErrors,
+          name: nameMissing ? 'Name is required' : '',
+          nodeClassRef: nodeClassMissing ? 'Node Class is required' : '',
+        }));
+        const missingFields = [nameMissing && 'Name', nodeClassMissing && 'Node Class'].filter(Boolean);
+        snackbar.error(`Please fill the mandatory field${missingFields.length > 1 ? 's' : ''}: ${missingFields.join(', ')}`);
+        // Bring the missed field(s) back into view so the user doesn't have to scroll up.
+        mandatoryFieldsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
     }
     setFormSubmitting(true);
     if ('spec' in selectedNodePoolData) {
@@ -809,7 +824,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
           sx={{
             p: 'var(--ds-space-4) var(--ds-space-5)',
             borderBottom: '1px solid var(--ds-blue-400)',
-            boxShadow: '0px 2px 12px 2px #00000014',
+            boxShadow: `0px ${ds.space[0]} ${ds.space[3]} ${ds.space[0]} ${ds.gray.alpha[200]}`,
             display: 'flex',
             alignItems: 'center',
             gap: 'var(--ds-space-3)',
@@ -848,7 +863,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
                 }}
                 editable={true}
                 style={{
-                  border: `2px solid ${validationMessage.startsWith('YAML is valid') ? 'green' : 'red'}`,
+                  border: `2px solid ${validationMessage.startsWith('YAML is valid') ? ds.green[500] : ds.red[500]}`,
                   borderRadius: 'var(--ds-radius-lg)',
                 }}
               />
@@ -861,31 +876,42 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
         <Box sx={{ p: 'var(--ds-space-5) var(--ds-space-5)', display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
           {condition == 'auto-config' && (
             <>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-4)' }}>
+              <Box ref={mandatoryFieldsRef} sx={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--ds-space-4)' }}>
                 <Box sx={{ width: ds.space.mul(0, 118) }}>
                   <Input
                     value={name}
                     size='sm'
                     id='name'
                     label='Name'
+                    required
                     placeholder='Enter Name'
                     onChange={(value) => handleUpdates('name', value)}
                     error={errors.name || undefined}
                   />
                 </Box>
-                <FilterDropdownButton
-                  id='node-class'
-                  label='Node Class'
-                  value={nodeClassRef}
-                  options={nodeClasses}
-                  onSelect={(event) => {
-                    handleUpdates('nodeClassRef', event.target.value || '');
-                  }}
-                  isOptionsLoading={isLoadingNodeClass}
-                  sx={{ width: ds.space.mul(0, 118), height: ds.space.mul(0, 20) }}
-                />
+                <Box sx={{ width: ds.space.mul(0, 118) }}>
+                  <FilterDropdown
+                    id='node-class'
+                    label='Node Class'
+                    required
+                    value={nodeClassRef}
+                    options={nodeClasses}
+                    onSelect={(event) => {
+                      const value = event.target.value || '';
+                      handleUpdates('nodeClassRef', value);
+                      setErrors((prevErrors) => ({ ...prevErrors, nodeClassRef: value ? '' : 'Node Class is required' }));
+                    }}
+                    isOptionsLoading={isLoadingNodeClass}
+                    sx={{ width: ds.space.mul(0, 118), height: ds.space.mul(0, 20) }}
+                  />
+                  {errors.nodeClassRef && (
+                    <Typography sx={{ mt: ds.space[1], fontSize: 'var(--ds-text-caption)', color: 'var(--ds-red-600)' }} role='alert'>
+                      {errors.nodeClassRef}
+                    </Typography>
+                  )}
+                </Box>
               </Box>
-              <FilterDropdownButton
+              <FilterDropdown
                 id='instance-family'
                 label='Instance Family'
                 multiple
@@ -897,7 +923,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
                 }}
                 sx={{ minWidth: ds.space.mul(0, 100) }}
               />
-              <FilterDropdownButton
+              <FilterDropdown
                 id='instance-cpu'
                 label='Instance CPU'
                 multiple
@@ -909,7 +935,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
                 }}
                 sx={{ minWidth: ds.space.mul(0, 100) }}
               />
-              <FilterDropdownButton
+              <FilterDropdown
                 id='instance-zone'
                 label='Instance Zone'
                 multiple
@@ -921,7 +947,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
                 }}
                 sx={{ minWidth: ds.space.mul(0, 100) }}
               />
-              <FilterDropdownButton
+              <FilterDropdown
                 id='capacity-type'
                 label='Capacity Type'
                 multiple
@@ -983,7 +1009,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
               </Box>
               {provider == 'EKS' ? (
                 <>
-                  <FilterDropdownButton
+                  <FilterDropdown
                     id='instance-architecture'
                     label='Instance Architecture'
                     multiple
@@ -995,7 +1021,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
                     }}
                     sx={{ minWidth: ds.space.mul(0, 100) }}
                   />
-                  <FilterDropdownButton
+                  <FilterDropdown
                     id='instance-type'
                     label='Instance Type'
                     multiple
@@ -1007,7 +1033,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
                     }}
                     sx={{ minWidth: ds.space.mul(0, 100) }}
                   />
-                  <FilterDropdownButton
+                  <FilterDropdown
                     id='instance-category'
                     label='Instance Category'
                     multiple
@@ -1028,7 +1054,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
                     <br /># If using &apos;WhenEmpty&apos;, Karpenter will only consider nodes for consolidation that contain no workload pods
                   </Typography>
 
-                  <FilterDropdownButton
+                  <FilterDropdown
                     id='consolidation-policy'
                     label='Consolidation Policy'
                     value={consolidationPolicy}
@@ -1119,7 +1145,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
               )}
               <Box display='flex' alignItems='center' mb={ds.space[4]} gap={ds.space[2]}>
                 <Input label='Key' value={newTaints.key ?? ''} onChange={(value) => handleNewTaintsChange('key', value)} size='sm' />
-                <FilterDropdownButton
+                <FilterDropdown
                   id='taint-effect'
                   label='Effect'
                   value={newTaints.effect ?? ''}
@@ -1127,7 +1153,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
                   onSelect={(e) => handleNewTaintsChange('effect', e.target.value)}
                   sx={{ minWidth: ds.space.mul(0, 100), height: ds.space.mul(0, 20) }}
                 />
-                <FilterDropdownButton
+                <FilterDropdown
                   id='taint-operator'
                   label='Operator'
                   value={newTaints.operator ?? ''}
@@ -1187,7 +1213,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
               )}
               <Box display='flex' alignItems='center' mb={ds.space[4]} gap={ds.space[2]}>
                 <Input label='Key' value={newStartupTaints.key ?? ''} onChange={(value) => handleNewStartupTaintsChange('key', value)} size='sm' />
-                <FilterDropdownButton
+                <FilterDropdown
                   id='startup-taint-effect'
                   label='Effect'
                   value={newStartupTaints.effect ?? ''}
@@ -1195,7 +1221,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
                   onSelect={(e) => handleNewStartupTaintsChange('effect', e.target.value)}
                   sx={{ minWidth: ds.space.mul(0, 100), height: ds.space.mul(0, 20) }}
                 />
-                <FilterDropdownButton
+                <FilterDropdown
                   id='startup-taint-operator'
                   label='Operator'
                   value={newStartupTaints.operator ?? ''}
@@ -1298,7 +1324,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
           }
         />
         <ListingLayout.Body>
-          <KubernetesTable2
+          <KubernetesTable
             id={'auto-scaler'}
             headers={['Kind', 'Name', 'Time', 'CPU', 'Memory', 'Pods', '']}
             data={data}
@@ -1333,7 +1359,7 @@ const autoScalerDetailJSONFn = (accountId, drilldownQuery) => {
         extensions={[yaml(), EditorView.lineWrapping]}
         editable={false}
         style={{
-          border: '1px solid silver',
+          border: `1px solid ${ds.gray[300]}`,
         }}
       />
     );

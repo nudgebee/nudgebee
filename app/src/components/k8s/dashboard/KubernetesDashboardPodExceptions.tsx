@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { podExceptionHeader } from '@lib/kubernetesData';
 import apiKubernetes from '@api1/kubernetes';
-import SeverityIcon from '@shared/widgets/SeverityIcon';
-import CustomLabels from '@shared/widgets/CustomLabels';
+import SeverityIcon from '@ui/SeverityIcon';
+import { Label } from '@ui/Label';
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import { useRouter } from 'next/router';
 import { Box, Typography } from '@mui/material';
@@ -12,16 +12,17 @@ import FilterDropdown from '@ui/FilterDropdown';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import Datetime from '@shared/format/Datetime';
-import InvestigateButton from '@shared/InvestigateButton';
-import CreateTicketButton from '@shared/CreateTicketButton';
+import { FiArrowRight } from 'react-icons/fi';
+import { Button } from '@ui/Button';
+import SafeIcon from '@shared/icons/SafeIcon';
+import TicketsIcon from '@assets/sidebar-icon/tickets-icon.svg';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import type { TicketDataPojo } from 'src/utils/common';
-import { action } from 'src/utils/actionStyles';
-import CustomTabs from '@shared/CustomTabsForDrilldown';
-import CustomTable from '@shared/tables/CustomTable2';
-import { snackbar } from '@shared/snackbarService';
+import Tabs from '@shared/navigation/TabsForDrilldown';
+import CustomTable from '@shared/tables/CustomTable';
+import { toast as snackbar } from '@ui/Toast';
 
-interface KubernetesTable2Props {
+interface KubernetesTableProps {
   id: string;
   headers: string[];
   data: any[];
@@ -49,7 +50,7 @@ interface FilterRequest {
   subject_namespace?: string;
 }
 
-const KubernetesDashboardPodExceptions: React.FC<KubernetesTable2Props> = ({ id, allClusters, tab, clusterOption, allNameSpaces }) => {
+const KubernetesDashboardPodExceptions: React.FC<KubernetesTableProps> = ({ id, allClusters, tab, clusterOption, allNameSpaces }) => {
   const filterOptions = [
     {
       name: 'Pod Exception',
@@ -171,7 +172,7 @@ const KubernetesDashboardPodExceptions: React.FC<KubernetesTable2Props> = ({ id,
               ),
               drilldownQuery: { workloadName: e?.workload_name, namespaceName: e?.namespace_name },
             });
-            data.push({ component: <CustomLabels margin='auto' text={e?.status} /> });
+            data.push({ component: <Label margin='auto' text={e?.status} /> });
             data.push({ text: e?.subject_type });
             data.push({
               component: (
@@ -192,21 +193,35 @@ const KubernetesDashboardPodExceptions: React.FC<KubernetesTable2Props> = ({ id,
             data.push({ text: e?.subject_namespace });
             data.push({ text: e?.restart_count || '-' });
             data.push({ component: <Datetime baseDate={new Date()} value={e?.starts_at} /> });
-            data.push({ component: <SeverityIcon severityType={e?.priority} />, data: e?.priority });
+            data.push({ component: <SeverityIcon level={e?.priority} />, data: e?.priority });
             data.push({
               component: (
                 <Box
                   display={'flex'}
                   flexDirection={'row'}
                   alignItems={'center'}
-                  gap={'6px'}
+                  gap={'calc(var(--ds-space-0) * 3)'}
                   position={'sticky'}
                   right={'0px'}
                   justifyContent={'flex-end'}
                 >
-                  <InvestigateButton url={`/investigate?id=${e?.id}&accountId=${e?.account_id}`} />
-                  <CreateTicketButton
-                    sx={{ ...action.primary }}
+                  <Button
+                    tone='secondary'
+                    size='xs'
+                    trailingAccent={<FiArrowRight />}
+                    href={`/investigate?id=${e?.id}&accountId=${e?.account_id}`}
+                    data-testid='investigate-btn'
+                  >
+                    Investigate
+                  </Button>
+                  <Button
+                    tone='ghost'
+                    size='sm'
+                    composition='icon-only'
+                    icon={<SafeIcon priority src={TicketsIcon} alt='Create Ticket' />}
+                    tooltip='Create Ticket'
+                    aria-label='Create Ticket'
+                    id='create-ticket'
                     onClick={(event: React.MouseEvent) => {
                       event.stopPropagation();
                       openTicketModal(e);
@@ -270,7 +285,7 @@ const KubernetesDashboardPodExceptions: React.FC<KubernetesTable2Props> = ({ id,
 
   const makeAccountClicklable = (account_id: string, account_name: string) => {
     return (
-      <Typography style={{ fontSize: 12 }}>
+      <Typography style={{ fontSize: 'var(--ds-text-small)' }}>
         Cluster:{' '}
         <ReactLink
           href={'/kubernetes/details/' + account_id + '#summary'}
@@ -398,7 +413,7 @@ const KubernetesDashboardPodExceptions: React.FC<KubernetesTable2Props> = ({ id,
           />
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
-          <CustomTabs options={filterOptions[0].tabOptions} value={aggregationKey} onChange={handleChangeAggregationKey} />
+          <Tabs options={filterOptions[0].tabOptions} value={aggregationKey} onChange={handleChangeAggregationKey} />
           <div ref={tableRef}>
             <CustomTable
               id={tableId}

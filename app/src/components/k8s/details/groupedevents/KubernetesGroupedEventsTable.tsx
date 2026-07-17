@@ -454,6 +454,21 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     { startTime: new Date(selectedDateRange.startDate).toISOString(), endTime: new Date(selectedDateRange.endDate).toISOString() }
   );
 
+  // Derive account type synchronously from the accounts list — same race-free
+  // pattern as KubernetesEvents: accountType state lags one render behind when
+  // accounts load, so we compute directly from the array.
+  const resolvedAccountType = useMemo(() => {
+    if (!accounts?.length || !selectedAccountId?.length) return accountType;
+    const id = selectedAccountId[0];
+    const account: any = accounts.find((acc: any) => (acc.id || acc.value) === id);
+    return account?.cloud_provider ?? accountType;
+  }, [accounts, selectedAccountId, accountType]);
+
+  const isK8sFilterVisible = resolvedAccountType === 'K8s' && (!isTroubleshootPage || selectedAccountId.length > 0);
+  const isCloudFilterVisible = ['AWS', 'GCP', 'Azure'].includes(resolvedAccountType) && (!isTroubleshootPage || selectedAccountId.length > 0);
+  // Workload filter is only rendered on non-troubleshoot pages.
+  const isWorkloadFilterVisible = !isTroubleshootPage;
+
   useEffect(() => {
     const raw = accountId || (router.query.accountId as string);
     const next = raw ? raw.split(',').filter(Boolean) : [];
@@ -719,13 +734,10 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
 
     setLoading(true);
 
-    const isCloudAccount = accountType === 'AWS' || accountType === 'GCP' || accountType === 'Azure';
     const query: any = {
       account_id: selectedAccountId.length ? selectedAccountId : undefined,
       start_date: new Date(selectedDateRange.startDate),
       end_date: new Date(selectedDateRange.endDate),
-      subject_name: selectedWorkload,
-      subject_namespace: isCloudAccount && selectedServiceName ? selectedServiceName : selectedNamespace,
       aggregation_key: selectedAggregationKey?.map((e: any) => e.value) || [],
       // Dashboard-only: hide low-signal config-change records from every grouped list.
       aggregation_key_nin: isTroubleshootPage ? EXCLUDED_TRIAGE_AGGREGATION_KEYS : undefined,
@@ -737,6 +749,16 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       nb_status: selectedNBStatus.length > 0 ? selectedNBStatus.map((s) => s?.value || s) : undefined,
       is_new_issue: selectedIssueType === 'new' ? true : selectedIssueType === 'recurring' ? false : undefined,
     };
+
+    if (isK8sFilterVisible) {
+      if (selectedNamespace) query.subject_namespace = selectedNamespace;
+    }
+    if (isCloudFilterVisible) {
+      if (selectedServiceName) query.subject_namespace = selectedServiceName;
+    }
+    if (isWorkloadFilterVisible) {
+      if (selectedWorkload) query.subject_name = selectedWorkload;
+    }
 
     let cols: string[] = [];
     let groupCols: string[] = [];
@@ -854,7 +876,10 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     selectedNBStatus,
     selectedIssueType,
     selectedServiceName,
-    accountType,
+    resolvedAccountType,
+    isK8sFilterVisible,
+    isCloudFilterVisible,
+    isWorkloadFilterVisible,
     sortConfig,
   ]);
 
@@ -873,7 +898,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
         groupEventType,
         isTroubleshootPage,
         accounts,
-        accountType,
+        resolvedAccountType,
         selectedDateRange,
         onMenuClick,
         () => fetchTableDataRef.current?.(),
@@ -890,7 +915,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       groupEventType,
       isTroubleshootPage,
       accounts,
-      accountType,
+      resolvedAccountType,
       selectedDateRange,
       onMenuClick,
       handleClassifySelect,
@@ -1049,7 +1074,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
             value: selectedWorkload,
           },
         ]
-      : accountType === 'K8s' && selectedAccountId.length
+      : isK8sFilterVisible
       ? [
           {
             type: 'dropdown',
@@ -1060,7 +1085,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
             isOptionsLoading: isOptionsLoading.namespace,
           },
         ]
-      : (accountType === 'AWS' || accountType === 'GCP' || accountType === 'Azure') && selectedAccountId.length
+      : isCloudFilterVisible
       ? [
           {
             type: 'dropdown',

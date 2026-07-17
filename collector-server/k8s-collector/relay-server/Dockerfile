@@ -1,5 +1,10 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.26.4-alpine AS build-stage
+FROM golang:1.26.5-alpine AS build-stage
+
+# Use the builder image's bundled Go toolchain, never an auto-downloaded one.
+# Pins the compile to the base's Go and gives the build layer a distinct cache
+# key so a stale toolchain can't slip back in via edge.yaml's registry cache.
+ENV GOTOOLCHAIN=local
 
 WORKDIR /app
 

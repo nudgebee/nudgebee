@@ -1,8 +1,15 @@
 # syntax=docker/dockerfile:1.7
 # Base image. OSS installs use the public GHCR mirror of our internal
-# ML base (conda + Python 3.12 + ML deps preinstalled). EE deploys
+# ML base (conda + conda `myenv` Python 3.11 + ML deps preinstalled). EE deploys
 # override PYTHON_BASE to their internal registry via --build-arg.
-ARG PYTHON_BASE=ghcr.io/nudgebee/nudgebee-ml-base:3.12-20250926-063300
+# Pinned to the :wolfi tag (the Wolfi-based, continuously-patched, build-
+# essential-free conda base that ml-k8s-server also uses). The Wolfi migration
+# cleared the Debian-essential perl-base CRITICALs + ~121 NOFIX Debian OS CVEs
+# the old debian:trixie-slim base carried. rag-server's requires-python
+# (>=3.10,<=3.14) is satisfied by the base's Python 3.11.8, and its heavy deps
+# (sentence-transformers -> torch) install from prebuilt wheels, so the
+# toolchain-free base is sufficient.
+ARG PYTHON_BASE=ghcr.io/nudgebee/nudgebee-ml-base:wolfi
 FROM ${PYTHON_BASE} AS uv-base
 LABEL org.nudgebee.image.authors="dev@nudgebee.com"
 

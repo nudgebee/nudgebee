@@ -16,14 +16,14 @@ import { Bar } from 'react-chartjs-2';
 import Text from '@shared/format/Text';
 import { Chip } from '@ui/Chip';
 
-import LineChart from '@shared/charts/LineCharts';
+import Chart from '@ui/Chart';
 import observability from '@api1/observability';
 import k8sApi from '@api1/kubernetes';
 import { getDateString } from '@lib/datetime';
 import KubernetesEventsTable from '@components/events/KubernetesEvents';
 import { type ThresholdSuggestionItem } from '@api1/triage';
 import WidgetCard from '@ui/WidgetCard';
-import { ds } from 'src/utils/colors';
+import { ds, resolveColor, resolveColors, withAlpha } from 'src/utils/colors';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, Title, ChartTooltip, Legend);
 
@@ -249,13 +249,13 @@ const buildPercentileChart = (
     return null;
   }
 
-  // Chart.js uses canvas — keep resolved hex colors, not CSS vars
+  // Chart.js renders to <canvas> — resolveColor() reads computed values from :root and returns hex strings.
   const thresholdLines: Array<{ value: number; color: string; label: string }> = [];
   if (current_threshold !== undefined && current_threshold > 0) {
-    thresholdLines.push({ value: current_threshold, color: '#c8323a', label: `Current: ${formatNumber(current_threshold)}` });
+    thresholdLines.push({ value: current_threshold, color: resolveColor(ds.red[500]), label: `Current: ${formatNumber(current_threshold)}` });
   }
   if (suggested_threshold !== undefined && suggested_threshold > 0 && suggested_threshold !== current_threshold) {
-    thresholdLines.push({ value: suggested_threshold, color: '#2ca84c', label: `Suggested: ${formatNumber(suggested_threshold)}` });
+    thresholdLines.push({ value: suggested_threshold, color: resolveColor(ds.green[500]), label: `Suggested: ${formatNumber(suggested_threshold)}` });
   }
 
   const allValues = [...percentiles.map((p) => p.value), ...thresholdLines.map((l) => l.value)];
@@ -353,13 +353,13 @@ const MetricChart = ({ data }: { data: ThresholdSuggestionItem }): React.ReactEl
     }
 
     if (chartData && chartData.values.length > 0) {
-      // Chart.js uses canvas — keep resolved hex colors, not CSS vars
+      // Chart.js renders to <canvas> — resolveColor() reads computed values from :root and returns hex strings.
       const thresholdDatasets: any[] = [];
       if (current_threshold !== undefined) {
         thresholdDatasets.push({
           label: `Current (${current_threshold.toFixed(2)})`,
           data: Array(chartData.values.length).fill(current_threshold),
-          borderColor: '#c8323a',
+          borderColor: resolveColor(ds.red[500]),
           borderDash: [6, 4],
           borderWidth: 2,
           pointRadius: 0,
@@ -370,7 +370,7 @@ const MetricChart = ({ data }: { data: ThresholdSuggestionItem }): React.ReactEl
         thresholdDatasets.push({
           label: `Suggested (${suggested_threshold.toFixed(2)})`,
           data: Array(chartData.values.length).fill(suggested_threshold),
-          borderColor: '#2ca84c',
+          borderColor: resolveColor(ds.green[500]),
           borderDash: [6, 4],
           borderWidth: 2,
           pointRadius: 0,
@@ -381,14 +381,14 @@ const MetricChart = ({ data }: { data: ThresholdSuggestionItem }): React.ReactEl
       return (
         <Box>
           <Text value='Metric History (7d)' sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, mb: ds.space[1], color: ds.gray[700] }} />
-          <LineChart
+          <Chart.Line
             labels={chartData.labels}
             dataset={[
               {
                 label: data.metric_name || 'Metric Value',
                 data: chartData.values,
-                borderColor: '#5b9eff',
-                backgroundColor: 'rgba(91, 158, 255, 0.1)',
+                borderColor: resolveColor(ds.blue[400]),
+                backgroundColor: withAlpha(resolveColor(ds.blue[400]), 0.1),
                 borderWidth: 1.5,
                 pointRadius: 0,
                 fill: true,
@@ -422,8 +422,8 @@ const MetricChart = ({ data }: { data: ThresholdSuggestionItem }): React.ReactEl
       {
         label: 'Metric Value',
         data: chartInfo.percentiles.map((p) => p.value),
-        // Chart.js canvas — resolved hex values for DS blue scale
-        backgroundColor: ['#d6ebff', '#5b9eff', '#0c64d6', '#0a4ea3'].slice(0, chartInfo.percentiles.length),
+        // Chart.js renders to <canvas> — resolveColors() reads computed values from :root and returns hex strings.
+        backgroundColor: resolveColors([ds.blue[200], ds.blue[400], ds.blue[600], ds.blue[700]]).slice(0, chartInfo.percentiles.length),
         borderRadius: 4,
         barPercentage: 0.6,
       },
@@ -538,7 +538,7 @@ const EventTrendChart = ({ data }: { data: ThresholdSuggestionItem }): React.Rea
   return (
     <Box>
       <Text value='Alert Firing Trend (30d)' sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, mb: ds.space[1], color: ds.gray[700] }} />
-      <LineChart data={trendData.data} labels={trendData.labels} loading={loading} chartLabel='Firings per day' minHeight={160} />
+      <Chart.Line data={trendData.data} labels={trendData.labels} loading={loading} chartLabel='Firings per day' minHeight={160} />
     </Box>
   );
 };

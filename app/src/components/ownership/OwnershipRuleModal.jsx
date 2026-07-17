@@ -172,7 +172,7 @@ export default function OwnershipRuleModal({ open, onClose, rule }) {
 
   const actionButtons = (
     <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end', width: '100%' }}>
-      <DsButton tone='secondary' size='md' onClick={() => onClose(false)} id='rule-cancel'>
+      <DsButton tone='secondary' size='md' onClick={() => onClose(false)} disabled={saving} id='rule-cancel'>
         Cancel
       </DsButton>
       <DsButton tone='primary' size='md' onClick={handleSave} disabled={!valid} loading={saving} id='rule-save'>
@@ -182,7 +182,14 @@ export default function OwnershipRuleModal({ open, onClose, rule }) {
   );
 
   return (
-    <Modal open={open} handleClose={() => onClose(false)} title={rule ? 'Edit rule' : 'Add rule'} width='sm' actionButtons={actionButtons}>
+    <Modal
+      open={open}
+      handleClose={() => (saving ? undefined : onClose(false))}
+      title={rule ? 'Edit rule' : 'Add rule'}
+      width='sm'
+      loader={saving}
+      actionButtons={actionButtons}
+    >
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)', py: 1 }}>
         <Input
           id='rule-name'

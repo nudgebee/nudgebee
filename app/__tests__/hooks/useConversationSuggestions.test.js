@@ -92,12 +92,15 @@ describe('useConversationSuggestions', () => {
 
   it('does not throw when API call fails', async () => {
     mockGetSuggestions.mockRejectedValue(new Error('Network error'));
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const { result } = renderHook(() => useConversationSuggestions('acc-1'));
     await expect(
       act(async () => {
         await result.current.fetchSuggestions('conv-1', 'msg-1');
       })
     ).resolves.not.toThrow();
+    expect(errorSpy).toHaveBeenCalledWith('Error fetching conversation suggestions:', expect.any(Error));
     expect(result.current.suggestions).toEqual([]);
+    errorSpy.mockRestore();
   });
 });

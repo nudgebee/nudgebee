@@ -33,6 +33,11 @@ var thresholdSuggestionSources = map[string]bool{
 // gcpMetricTypeRegex extracts metric.type from GCP monitoring filter strings
 var gcpMetricTypeRegex = regexp.MustCompile(`metric\.type\s*=\s*"([^"]+)"`)
 
+// promQLParser is a shared, stateless PromQL parser. ParseExpr builds a fresh
+// internal parser per call, so one package-level instance is concurrency-safe
+// and avoids per-call allocations.
+var promQLParser = parser.NewParser(parser.Options{})
+
 // GetThresholdSuggestion analyzes an alert event and suggests a threshold adjustment
 func GetThresholdSuggestion(ctx context.Context, db *sqlx.DB, ev models.Event, tenantID string) ThresholdSuggestionResponse {
 	source := ""
@@ -1080,7 +1085,7 @@ func extractPromQLThreshold(exprStr string) (*promQLThreshold, error) {
 		return nil, fmt.Errorf("expression uses absent() — detects missing metrics, not threshold violations")
 	}
 
-	expr, err := parser.ParseExpr(exprStr)
+	expr, err := promQLParser.ParseExpr(exprStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid PromQL: %w", err)
 	}

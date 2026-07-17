@@ -2,13 +2,13 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Box, Typography, Chip, Avatar, useTheme } from '@mui/material';
 import { ErrorOutline, CheckCircleOutline, Commit, CloudQueue, InfoOutlined } from '@mui/icons-material';
 import apiKubernetes1 from '@api1/kubernetes1';
-import Loader from '../Loader';
-import { snackbar } from '../snackbarService';
-import { colors } from 'src/utils/colors';
-import WidgetCard from '@shared/WidgetCard';
-import CopyableText from '@shared/CopyableText';
+import Loader from '@shared/Loader';
+import { toast as snackbar } from '@ui/Toast';
+import { ds } from 'src/utils/colors';
+import WidgetCard from '@ui/WidgetCard';
+import CopyButton from '@shared/buttons/CopyButton';
 import { ExternalLinkIcon } from '@assets';
-import SafeIcon from '../icons/SafeIcon';
+import SafeIcon from '@shared/icons/SafeIcon';
 
 interface TimelineMetadata {
   cloud_account_id?: string;
@@ -62,7 +62,7 @@ const getEventProps = (item: TimelineItem) => {
     return { icon: <ErrorOutline sx={{ fontSize: 16 }} />, color: 'error', label: 'Correlated Alert' };
   }
   if (ref_type === 'event_history') {
-    return { icon: <InfoOutlined sx={{ fontSize: 16, color: colors.text.primary }} />, color: 'grey', label: 'Status Change' };
+    return { icon: <InfoOutlined sx={{ fontSize: 16, color: ds.blue[500] }} />, color: 'grey', label: 'Status Change' };
   }
   if (ref_type === 'config_change') {
     return { icon: <Commit sx={{ fontSize: 16 }} />, color: 'info', label: 'Config Change' };
@@ -73,7 +73,7 @@ const getEventProps = (item: TimelineItem) => {
   if (ref_type === 'workload') {
     return { icon: <CloudQueue sx={{ fontSize: 16 }} />, color: 'secondary', label: 'Workload' };
   }
-  return { icon: <InfoOutlined sx={{ fontSize: 16, color: colors.text.primary }} />, color: 'grey', label: 'Event' };
+  return { icon: <InfoOutlined sx={{ fontSize: 16, color: ds.blue[500] }} />, color: 'grey', label: 'Event' };
 };
 
 // Get navigation URL based on item type, returns null if not navigable
@@ -141,8 +141,8 @@ const DevOpsTimelineMUI = ({ eventId }: { eventId: string }) => {
 
   if (isLoading) {
     return (
-      <Box display='flex' justifyContent='center' p={5}>
-        <Loader style={{ width: '100px', height: '300px' }} />
+      <Box display='flex' justifyContent='center' p={ds.space.mul(0, 20)}>
+        <Loader style={{ width: ds.space.mul(0, 50), height: ds.space.mul(0, 150) }} />
       </Box>
     );
   }
@@ -162,17 +162,24 @@ const DevOpsTimelineMUI = ({ eventId }: { eventId: string }) => {
   return (
     <Box sx={{ margin: 'var(--ds-space-2) var(--ds-space-5) 0px var(--ds-space-5)' }}>
       {/* Header */}
-      <Box sx={{ mb: 3, pb: 2, borderBottom: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
-        <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)', color: colors.text.secondary }}>
+      <Box
+        sx={{
+          mb: ds.space[5],
+          pb: ds.space[4],
+          borderBottom: 1,
+          borderColor: 'divider',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--ds-space-1)',
+        }}
+      >
+        <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)', color: ds.brand[500] }}>
           Event ID:
         </Typography>
-        <CopyableText
-          copyableText={timelineData.event_id}
-          iconPosition='end'
-          sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: colors.text.secondary }}
-        >
+        <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
           {timelineData.event_id}
-        </CopyableText>
+          <CopyButton text={timelineData.event_id} />
+        </Box>
       </Box>
 
       {/* Timeline List */}
@@ -189,31 +196,38 @@ const DevOpsTimelineMUI = ({ eventId }: { eventId: string }) => {
           // @ts-ignore
 
           return (
-            <Box component='li' key={index} sx={{ display: 'flex', gap: 2, minHeight: 60, pb: 0 }}>
+            <Box component='li' key={index} sx={{ display: 'flex', gap: ds.space[4], minHeight: ds.space.mul(0, 30), pb: 0 }}>
               {/* Timestamp */}
-              <Box display='flex' alignItems='flex-start' justifyContent='right' color='text.secondary' minWidth={140} pt={0.5}>
+              <Box
+                display='flex'
+                alignItems='flex-start'
+                justifyContent='right'
+                color='text.secondary'
+                minWidth={ds.space.mul(0, 70)}
+                pt={ds.space[1]}
+              >
                 <Typography variant='caption' sx={{ fontFamily: 'monospace', fontSize: 'var(--ds-text-small)' }}>
                   {formatDate(item.timestamp)}
                 </Typography>
               </Box>
 
               {/* ICON + Line */}
-              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 24 }}>
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: ds.space[5] }}>
                 <Avatar
                   sx={{
-                    width: 28,
-                    height: 28,
-                    bgcolor: item.ref_type === 'event' && item.action === 'fired' ? colorMain : 'white',
-                    boxShadow: '0px 4px 4px -1px rgba(229, 229, 229, 0.4), 0px 2px 4px 0px rgb(233, 233, 233)',
-                    color: item.ref_type === 'event' && item.action === 'fired' ? 'white' : colorMain,
-                    border: item.ref_type === 'event' && item.action === 'fired' ? 'none' : '1px solid #EBEBEB',
+                    width: ds.space.mul(0, 14),
+                    height: ds.space.mul(0, 14),
+                    bgcolor: item.ref_type === 'event' && item.action === 'fired' ? colorMain : ds.background[100],
+                    boxShadow: `0px ${ds.space[1]} ${ds.space[1]} -1px color-mix(in srgb, ${ds.gray[300]} 40%, transparent), 0px ${ds.space[0]} ${ds.space[1]} 0px ${ds.gray[200]}`,
+                    color: item.ref_type === 'event' && item.action === 'fired' ? ds.background[100] : colorMain,
+                    border: item.ref_type === 'event' && item.action === 'fired' ? 'none' : `1px solid ${ds.gray[200]}`,
                     zIndex: 1,
                   }}
                 >
                   {styles.icon}
                 </Avatar>
 
-                {!isLast && <Box sx={{ width: '2px', flexGrow: 1, bgcolor: 'grey.300', my: 0.5 }} />}
+                {!isLast && <Box sx={{ width: ds.space[0], flexGrow: 1, bgcolor: 'grey.300', my: ds.space[1] }} />}
               </Box>
 
               {/* Content */}
@@ -228,33 +242,35 @@ const DevOpsTimelineMUI = ({ eventId }: { eventId: string }) => {
                   mb: 'var(--ds-space-4)',
                   borderRadius: 'var(--ds-radius-lg)',
                   padding: 'var(--ds-space-3) var(--ds-space-4)',
-                  border: `1px solid ${colors.border.secondaryLight}`,
-                  backgroundColor: colors.background.tertiaryLightestestest,
+                  border: `1px solid ${ds.gray[200]}`,
+                  backgroundColor: ds.background[200],
                   cursor: isNavigable ? 'pointer' : 'default',
                   transition: 'all 0.3s ease',
                   ...(isNavigable && {
                     '&:hover': {
-                      boxShadow: '0px 4px 6px -1px rgba(229, 229, 229, 0.1), 0px 2px 6px 0px rgb(233, 233, 233)',
+                      boxShadow: `0px ${ds.space[1]} ${ds.space.mul(0, 3)} -1px color-mix(in srgb, ${ds.gray[300]} 10%, transparent), 0px ${
+                        ds.space[0]
+                      } ${ds.space.mul(0, 3)} 0px ${ds.gray[200]}`,
                       transform: 'translateY(-1px)',
                       '& .timeline-text': {
-                        color: colors.text.primary,
+                        color: ds.blue[500],
                       },
                     },
                   }),
                 }}
               >
                 <Box display='flex' flexDirection='column'>
-                  <Box display='flex' alignItems='center' justifyContent='space-between' marginBottom='4px'>
+                  <Box display='flex' alignItems='center' justifyContent='space-between' marginBottom={ds.space[1]}>
                     <Chip
                       label={styles.label}
                       size='small'
                       sx={{
-                        height: 20,
+                        height: ds.space.mul(0, 10),
                         fontSize: 'var(--ds-text-caption)',
                         fontFamily: 'poppins',
                         fontWeight: 'var(--ds-font-weight-semibold)',
                         color: styles.color === 'grey' ? 'text.primary' : `${styles.color}.dark`,
-                        bgcolor: 'white',
+                        bgcolor: ds.background[100],
                         border: '1px solid',
                         borderColor: styles.color === 'grey' ? 'grey.300' : `${styles.color}.light`,
                         width: 'fit-content',
@@ -264,7 +280,7 @@ const DevOpsTimelineMUI = ({ eventId }: { eventId: string }) => {
                   </Box>
                   <Typography
                     className='timeline-text'
-                    sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-regular)', color: colors.text.secondary }}
+                    sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-regular)', color: ds.brand[500] }}
                   >
                     {item.summary}
                   </Typography>

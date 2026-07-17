@@ -3,7 +3,6 @@ import { Box, Typography, Menu, MenuItem, ListItemText, ListItemIcon } from '@mu
 import { Button } from '@ui/Button';
 import { ContentCopy, Check, FormatAlignLeft, KeyboardArrowDown, AutoAwesome } from '@mui/icons-material';
 import { Input } from '@ui/Input';
-import { colors } from 'src/utils/colors';
 import { getPresetsForField, FIELD_HELPER_TEXT, FIELD_PLACEHOLDERS, type Preset } from './advancedConfigPresets';
 import { useCopyToClipboard } from '@components/workflow/hooks/useCopyToClipboard';
 
@@ -132,7 +131,7 @@ const JsonConfigField: React.FC<JsonConfigFieldProps> = ({
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
         <Typography
           variant='body2'
-          sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary }}
+          sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' }}
         >
           {label}
         </Typography>
@@ -149,8 +148,8 @@ const JsonConfigField: React.FC<JsonConfigFieldProps> = ({
                 onClick={handlePresetClick}
                 icon={
                   <Box sx={{ display: 'inline-flex', alignItems: 'center' }}>
-                    <AutoAwesome sx={{ fontSize: 16 }} />
-                    <KeyboardArrowDown sx={{ fontSize: 14 }} />
+                    <AutoAwesome sx={{ fontSize: 'var(--ds-text-title)' }} />
+                    <KeyboardArrowDown sx={{ fontSize: 'var(--ds-text-body-lg)' }} />
                   </Box>
                 }
               />
@@ -158,7 +157,7 @@ const JsonConfigField: React.FC<JsonConfigFieldProps> = ({
                 {presets.map((preset, index) => (
                   <MenuItem key={index} onClick={() => handlePresetSelect(preset)} sx={{ minWidth: 200 }}>
                     <ListItemIcon>
-                      <AutoAwesome sx={{ fontSize: 16 }} />
+                      <AutoAwesome sx={{ fontSize: 'var(--ds-text-title)' }} />
                     </ListItemIcon>
                     <ListItemText
                       primary={preset.label}
@@ -178,7 +177,7 @@ const JsonConfigField: React.FC<JsonConfigFieldProps> = ({
             tooltip='Format JSON'
             aria-label='Format JSON'
             disabled={disabled || !localValue.trim()}
-            icon={<FormatAlignLeft sx={{ fontSize: 16 }} />}
+            icon={<FormatAlignLeft sx={{ fontSize: 'var(--ds-text-title)' }} />}
             onClick={handleFormat}
           />
           <Button
@@ -188,7 +187,13 @@ const JsonConfigField: React.FC<JsonConfigFieldProps> = ({
             tooltip={copied ? 'Copied!' : 'Copy'}
             aria-label='Copy'
             disabled={!localValue.trim()}
-            icon={copied ? <Check sx={{ fontSize: 16, color: 'success.main' }} /> : <ContentCopy sx={{ fontSize: 16 }} />}
+            icon={
+              copied ? (
+                <Check sx={{ fontSize: 'var(--ds-text-title)', color: 'success.main' }} />
+              ) : (
+                <ContentCopy sx={{ fontSize: 'var(--ds-text-title)' }} />
+              )
+            }
             onClick={handleCopy}
           />
         </Box>
@@ -211,14 +216,14 @@ const JsonConfigField: React.FC<JsonConfigFieldProps> = ({
             mt: 0.5,
             px: 1,
             py: 0.25,
-            bgcolor: colors.background.greenLabel,
-            borderRadius: 0.5,
+            bgcolor: 'var(--ds-green-100)',
+            borderRadius: 'var(--ds-space-0)',
             display: 'inline-flex',
             alignItems: 'center',
             gap: 0.5,
           }}
         >
-          <Check sx={{ fontSize: 12, color: 'success.main' }} />
+          <Check sx={{ fontSize: 'var(--ds-text-small)', color: 'success.main' }} />
           <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'success.main' }}>Valid JSON</Typography>
         </Box>
       )}

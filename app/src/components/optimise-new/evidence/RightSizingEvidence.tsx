@@ -8,7 +8,7 @@ import BoltIcon from '@mui/icons-material/Bolt';
 import BarChartIcon from '@mui/icons-material/BarChart';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import TimelineIcon from '@mui/icons-material/Timeline';
-import LineChart from '@shared/charts/LineCharts';
+import Chart from '@ui/Chart';
 import k8sApi from '@api1/kubernetes';
 import { SavingsFooter, SectionTitle } from '@components/optimise-new/EvidencePanel';
 import { safeParseJSON } from '@components/optimise-new/utils';
@@ -78,14 +78,14 @@ const ValueArrow = ({
   const pct = current != null && recommended != null ? calculatePercentage(recommended, current) : '';
 
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'nowrap' }}>
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3), flexWrap: 'nowrap' }}>
       <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.regular, whiteSpace: 'nowrap' }}>
         {currentDisplay}
       </Typography>
       {isChanged ? (
-        <ArrowForwardIcon sx={{ fontSize: '14px', color: ds.green[600], flexShrink: 0 }} />
+        <ArrowForwardIcon sx={{ fontSize: ds.text.bodyLg, color: ds.green[600], flexShrink: 0 }} />
       ) : (
-        <DragHandleIcon sx={{ fontSize: '14px', color: ds.gray[500], flexShrink: 0 }} />
+        <DragHandleIcon sx={{ fontSize: ds.text.bodyLg, color: ds.gray[500], flexShrink: 0 }} />
       )}
       <Typography
         sx={{
@@ -180,7 +180,7 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
 
   if (containers.length === 0) {
     return (
-      <Box sx={{ p: '14px' }}>
+      <Box sx={{ p: ds.space.mul(0, 7) }}>
         <Typography sx={{ fontSize: ds.text.body, color: ds.gray[500], fontStyle: 'italic' }}>No right-sizing data available.</Typography>
         {estimatedSavings != null && estimatedSavings !== 0 && <SavingsFooter savings={estimatedSavings} />}
       </Box>
@@ -209,8 +209,8 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
   const memReccLine = memReccValue != null ? trendData.map(() => Number(formatMemory(memReccValue, 'bytes', 'mb', false))) : null;
 
   return (
-    <Box sx={{ p: '14px' }}>
-      <SectionTitle title='Resource Right-Sizing' muiIcon={<BoltIcon sx={{ fontSize: '16px' }} />} />
+    <Box sx={{ p: ds.space.mul(0, 7) }}>
+      <SectionTitle title='Resource Right-Sizing' muiIcon={<BoltIcon sx={{ fontSize: ds.text.title }} />} />
 
       {/* CPU/Memory Trend Charts */}
       {trendLoading && (
@@ -223,7 +223,7 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
           sx={{
             backgroundColor: ds.gray[100],
             borderRadius: ds.radius.lg,
-            p: '10px',
+            p: ds.space.mul(0, 5),
             mb: ds.space[3],
             border: `1px solid ${ds.gray[200]}`,
           }}
@@ -235,17 +235,17 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
       )}
       {hasTrendData && (
         <>
-          <SectionTitle title='CPU (cores) — 7 day trend' muiIcon={<TimelineIcon sx={{ fontSize: '16px' }} />} />
+          <SectionTitle title='CPU (cores) — 7 day trend' muiIcon={<TimelineIcon sx={{ fontSize: ds.text.title }} />} />
           <Box
             sx={{
               backgroundColor: ds.gray[100],
               borderRadius: ds.radius.lg,
-              p: '10px',
+              p: ds.space.mul(0, 5),
               mb: ds.space[3],
               border: `1px solid ${ds.gray[200]}`,
             }}
           >
-            <LineChart
+            <Chart.Line
               data={[cpuUsage, ...(cpuReccLine ? [cpuReccLine] : []), cpuRequest, ...(cpuLimit.some((v: any) => v != null) ? [cpuLimit] : [])]}
               labels={trendLabels}
               colors={[
@@ -264,17 +264,17 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
               dynamicHeight={false}
             />
           </Box>
-          <SectionTitle title='Memory (MB) — 7 day trend' muiIcon={<TimelineIcon sx={{ fontSize: '16px' }} />} />
+          <SectionTitle title='Memory (MB) — 7 day trend' muiIcon={<TimelineIcon sx={{ fontSize: ds.text.title }} />} />
           <Box
             sx={{
               backgroundColor: ds.gray[100],
               borderRadius: ds.radius.lg,
-              p: '10px',
+              p: ds.space.mul(0, 5),
               mb: ds.space[3],
               border: `1px solid ${ds.gray[200]}`,
             }}
           >
-            <LineChart
+            <Chart.Line
               data={[memUsage, ...(memReccLine ? [memReccLine] : []), memRequest, ...(memLimit.some((v: any) => v != null) ? [memLimit] : [])]}
               labels={trendLabels}
               colors={[
@@ -301,7 +301,7 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
           borderRadius: ds.radius.lg,
           border: `1px solid ${ds.gray[200]}`,
           mb: ds.space[3],
-          '& .MuiTableCell-root': { px: '10px', py: '7px', fontSize: ds.text.small, borderColor: ds.gray[100] },
+          '& .MuiTableCell-root': { px: ds.space.mul(0, 5), py: ds.space[2], fontSize: ds.text.small, borderColor: ds.gray[100] },
         }}
       >
         <Table size='small'>
@@ -349,13 +349,13 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
       {/* Limits table */}
       {containers.some(({ cpu, memory }) => cpu?.allocated?.limit || memory?.allocated?.limit) && (
         <>
-          <SectionTitle title='Limits' muiIcon={<BarChartIcon sx={{ fontSize: '16px' }} />} />
+          <SectionTitle title='Limits' muiIcon={<BarChartIcon sx={{ fontSize: ds.text.title }} />} />
           <TableContainer
             sx={{
               borderRadius: ds.radius.lg,
               border: `1px solid ${ds.gray[200]}`,
               mb: ds.space[3],
-              '& .MuiTableCell-root': { px: '10px', py: '7px', fontSize: ds.text.small, borderColor: ds.gray[100] },
+              '& .MuiTableCell-root': { px: ds.space.mul(0, 5), py: ds.space[2], fontSize: ds.text.small, borderColor: ds.gray[100] },
             }}
           >
             <Table size='small'>
@@ -414,8 +414,8 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
         const hasUtilization = cpuP99 != null || memP99 != null;
         if (!hasUtilization) return null;
         return (
-          <Box key={`util-${containerName}`} sx={{ mb: '10px' }}>
-            <SectionTitle title={`Utilization — ${containerName}`} muiIcon={<TrendingUpIcon sx={{ fontSize: '16px' }} />} />
+          <Box key={`util-${containerName}`} sx={{ mb: ds.space.mul(0, 5) }}>
+            <SectionTitle title={`Utilization — ${containerName}`} muiIcon={<TrendingUpIcon sx={{ fontSize: ds.text.title }} />} />
             <Box
               sx={{
                 backgroundColor: ds.gray[100],
@@ -449,7 +449,7 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
       {/* Detailed percentile data */}
       {containers.some(({ cpu, memory }) => cpu?.add_info || memory?.add_info) && (
         <>
-          <SectionTitle title='Usage Percentiles' muiIcon={<TrendingUpIcon sx={{ fontSize: '16px' }} />} />
+          <SectionTitle title='Usage Percentiles' muiIcon={<TrendingUpIcon sx={{ fontSize: ds.text.title }} />} />
           {containers.map(({ containerName, cpu, memory }) => {
             const hasPercentiles = cpu?.add_info || memory?.add_info;
             if (!hasPercentiles) return null;
@@ -459,12 +459,14 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
                 sx={{
                   backgroundColor: ds.gray[100],
                   borderRadius: ds.radius.lg,
-                  p: '10px',
+                  p: ds.space.mul(0, 5),
                   mb: ds.space[2],
                   border: `1px solid ${ds.gray[200]}`,
                 }}
               >
-                <Typography sx={{ fontSize: ds.text.caption, fontWeight: ds.weight.semibold, color: ds.gray[500], mb: '6px', fontStyle: 'italic' }}>
+                <Typography
+                  sx={{ fontSize: ds.text.caption, fontWeight: ds.weight.semibold, color: ds.gray[500], mb: ds.space.mul(0, 3), fontStyle: 'italic' }}
+                >
                   {containerName}
                 </Typography>
                 <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: ds.space[1] }}>
@@ -499,7 +501,7 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
 };
 
 const PercentileItem = ({ label, value }: { label: string; value: string }) => (
-  <Box sx={{ display: 'flex', justifyContent: 'space-between', py: '3px' }}>
+  <Box sx={{ display: 'flex', justifyContent: 'space-between', py: ds.space[1] }}>
     <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>{label}</Typography>
     <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[700], fontWeight: ds.weight.medium, fontFamily: 'monospace' }}>{value}</Typography>
   </Box>
@@ -565,7 +567,7 @@ const UtilizationBar = ({
               height: ds.space.mul(1, 5),
               width: ds.space[0],
               backgroundColor: ds.green[600],
-              borderRadius: '1px',
+              borderRadius: 'calc(var(--ds-radius-sm) / 2)',
               zIndex: 1,
             }}
             title={`Recommended: ${fmt(recommended!)} ${unit}`}
@@ -573,13 +575,13 @@ const UtilizationBar = ({
         )}
       </Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: ds.space[0] }}>
-        <Typography sx={{ fontSize: '9px', color: ds.gray[500] }}>0</Typography>
+        <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>0</Typography>
         {recPct != null && (
-          <Typography sx={{ fontSize: '9px', color: ds.green[600], fontWeight: ds.weight.semibold }}>
+          <Typography sx={{ fontSize: ds.text.caption, color: ds.green[600], fontWeight: ds.weight.semibold }}>
             Rec: {fmt(recommended!)} {unit}
           </Typography>
         )}
-        <Typography sx={{ fontSize: '9px', color: ds.gray[500] }}>
+        <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>
           {fmt(allocated)} {unit}
         </Typography>
       </Box>

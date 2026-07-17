@@ -156,8 +156,8 @@ export const queryGraphQL = async (
 
     return result;
   } catch (error) {
-    console.log('error on api call', error);
     const e = error as any;
+    console.error('error on api call', e?.response?.status ?? e?.code ?? 'unknown', e?.message);
     if (e.response?.status == 401 && !isServer()) {
       window.location.href = '/api/auth/signin';
     } else if (e.response?.status == 500 && !isServer()) {
@@ -429,7 +429,7 @@ export const hitRelayServer = async (data: any, type = '') => {
     });
     return result;
   } catch (error: any) {
-    console.log('error on external api call', error);
+    console.error('error on external api call', error?.response?.status ?? error?.code ?? 'unknown', error?.message);
     return error?.response;
   }
 };

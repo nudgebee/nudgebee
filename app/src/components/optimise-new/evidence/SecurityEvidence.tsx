@@ -20,8 +20,8 @@ const SecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSaving
     const remediationUrl = rec.Remediation?.Recommendation?.Url;
 
     return (
-      <Box sx={{ p: '14px' }}>
-        <SectionTitle title='Security Finding' muiIcon={<ShieldIcon sx={{ fontSize: '16px' }} />} />
+      <Box sx={{ p: ds.space.mul(0, 7) }}>
+        <SectionTitle title='Security Finding' muiIcon={<ShieldIcon sx={{ fontSize: ds.text.title }} />} />
 
         {rec.Title && (
           <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>{rec.Title}</Typography>
@@ -45,7 +45,7 @@ const SecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSaving
           sx={{
             backgroundColor: ds.gray[100],
             borderRadius: ds.radius.lg,
-            p: '10px',
+            p: ds.space.mul(0, 5),
             border: `1px solid ${ds.gray[200]}`,
             mb: ds.space[3],
           }}
@@ -60,7 +60,7 @@ const SecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSaving
         {/* Remediation */}
         {(remediationText || remediationUrl) && (
           <>
-            <SectionTitle title='Remediation' muiIcon={<BuildIcon sx={{ fontSize: '16px' }} />} />
+            <SectionTitle title='Remediation' muiIcon={<BuildIcon sx={{ fontSize: ds.text.title }} />} />
             <Box sx={{ backgroundColor: ds.green[100], borderRadius: ds.radius.lg, p: ds.space[3], border: `1px solid ${ds.green[200]}` }}>
               {remediationText && (
                 <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], lineHeight: 1.6, mb: remediationUrl ? ds.space[2] : 0 }}>
@@ -88,8 +88,8 @@ const SecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSaving
 
   // ─── Generic security format ───
   return (
-    <Box sx={{ p: '14px' }}>
-      <SectionTitle title='Security Details' muiIcon={<ShieldIcon sx={{ fontSize: '16px' }} />} />
+    <Box sx={{ p: ds.space.mul(0, 7) }}>
+      <SectionTitle title='Security Details' muiIcon={<ShieldIcon sx={{ fontSize: ds.text.title }} />} />
 
       <Box
         sx={{

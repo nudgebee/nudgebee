@@ -99,9 +99,8 @@ func executeFetchLogs(ctx core.NbToolContext, logProvider services_server.Observ
 		}
 	}
 
-	if logProvider.IntegrationSource == "" {
-		logProvider.IntegrationSource = "agent"
-	}
+	// Leave an empty source empty: api-server re-resolves it from the account's
+	// integration. Forcing "agent" here would pin SaaS providers to the wrong backend.
 
 	logRequest := services_server.LogQueryRequest{
 		Query:             query,

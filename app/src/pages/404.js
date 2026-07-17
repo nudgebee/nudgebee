@@ -1,6 +1,6 @@
 import { isRenderedInIframe } from 'src/utils/common';
-import { colors } from 'src/utils/colors';
-import CustomButton from '@shared/NewCustomButton';
+import { ds } from 'src/utils/colors';
+import { Button } from '@ui/Button';
 import { error404Image } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { useRouter } from 'next/router';
@@ -26,8 +26,8 @@ export default function Custom404() {
         alignItems: 'center',
         height: 'auto',
         textAlign: 'center',
-        marginTop: '80px',
-        gap: '40px',
+        marginTop: 'var(--ds-space-7)',
+        gap: 'var(--ds-space-6)',
       }}
     >
       <div
@@ -37,7 +37,7 @@ export default function Custom404() {
           flexDirection: 'column',
           justifyContent: 'center',
           alignItems: 'center',
-          padding: '10px auto',
+          padding: 'var(--ds-space-2) auto',
           textAlign: 'center',
           margin: '0px',
         }}
@@ -47,17 +47,17 @@ export default function Custom404() {
             fontSize: '170px',
             fontWeight: 'bold',
             margin: '0px',
-            color: colors.background.sideBar,
+            color: ds.brand[600],
           }}
         >
           404
         </h1>
         <p
           style={{
-            fontSize: '15px',
-            fontWeight: 500,
+            fontSize: 'var(--ds-text-body-lg)',
+            fontWeight: 'var(--ds-font-weight-medium)',
             margin: '0px',
-            color: colors.background.sideBar,
+            color: ds.brand[600],
           }}
         >
           Oops! The page you&lsquo;re looking for doesn&lsquo;t exist.
@@ -79,14 +79,15 @@ export default function Custom404() {
             height: 'auto',
           }}
         />
-        <CustomButton
-          variant='tertiary'
-          size='Medium'
-          text={'Go to Homepage'}
+        <Button
+          tone='secondary'
+          size='md'
           onClick={() => {
             router.push(`/home`);
           }}
-        />
+        >
+          Go to Homepage
+        </Button>
       </div>
     </div>
   );

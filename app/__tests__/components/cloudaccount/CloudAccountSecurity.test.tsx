@@ -27,52 +27,44 @@ jest.mock('src/utils/actionStyles', () => ({
   action: { primary: {} },
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000' }, background: { white: '#fff' } },
+jest.mock('@utils/colors');
+
+jest.mock('@utils/common', () => ({
+  toSeverityLevel: (s: string) => String(s || '').toLowerCase(),
 }));
 
-jest.mock('@shared/BoxLayout2', () => ({
+jest.mock('@shared/format/Text', () => ({
   __esModule: true,
-  default: ({ children, filterOptions = [], heading }: any) => (
-    <div data-testid='box-layout'>
-      <h2>{heading}</h2>
-      {filterOptions.map((f: any, i: number) => (
-        <select key={i} data-testid={`filter-${f.label}`} onChange={f.onSelect}>
-          <option value=''>--</option>
-          {(f.options || []).map((opt: any) => (
-            <option key={opt.value || opt.label} value={opt.value || opt.label}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-      ))}
-      {children}
-    </div>
+  default: ({ value }: any) => <span>{value}</span>,
+}));
+
+jest.mock('@shared/format/Datetime', () => ({
+  __esModule: true,
+  default: ({ value }: any) => <span data-testid='datetime'>{value}</span>,
+}));
+
+jest.mock('@ui/SeverityIcon', () => ({
+  __esModule: true,
+  SeverityIcon: ({ level }: any) => <span data-testid={`severity-${level}`}>sev</span>,
+}));
+
+jest.mock('@components/k8s/common/ClusterNameWithRegion', () => ({
+  __esModule: true,
+  default: ({ name }: any) => <span data-testid='cluster-name'>{name}</span>,
+}));
+
+jest.mock('@shared/buttons/DownloadButton', () => ({
+  __esModule: true,
+  default: ({ onClick }: any) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
   ),
 }));
 
-jest.mock('./../../../src/components/cloudaccount/CloudAccountTable', () => ({
+jest.mock('@shared/icons/SafeIcon', () => ({
   __esModule: true,
-  default: ({ id, data, totalRows, loading, pageNumber, onPageChange, expandable }: any) => (
-    <div data-testid='cloud-account-table' id={id}>
-      {loading && <div data-testid='loading'>loading</div>}
-      <div data-testid='total'>{totalRows}</div>
-      <div data-testid='page'>{pageNumber}</div>
-      <div data-testid='expandable-text'>{expandable?.tabs?.[0]?.text}</div>
-      {(data || []).map((row: any, i: number) => (
-        <div key={i} data-testid={`row-${i}`}>
-          {row.map((cell: any, j: number) => (
-            <span key={j} data-testid={`cell-${i}-${j}`}>
-              {cell.component}
-            </span>
-          ))}
-        </div>
-      ))}
-      <button data-testid='next-page' onClick={() => onPageChange(2)}>
-        Next
-      </button>
-    </div>
-  ),
+  default: ({ alt }: any) => <span data-testid={`icon-${alt}`}>icon</span>,
 }));
 
 jest.mock('@components/helpbee', () => ({
@@ -87,37 +79,84 @@ jest.mock('@components/helpbee', () => ({
     ) : null,
 }));
 
-jest.mock('@shared/ds/ThreeDotsMenu', () => ({
+jest.mock('@ui/Button', () => ({
   __esModule: true,
-  default: ({ menuItems, data, onMenuClick }: any) => (
+  Button: ({ children, onClick, disabled }: any) => (
+    <button data-testid={`btn-${typeof children === 'string' ? children : 'icon'}`} onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
+  ),
+}));
+
+jest.mock('@ui/DropdownMenu', () => ({
+  __esModule: true,
+  DropdownMenu: ({ items, trigger }: any) => (
     <div data-testid='three-dots'>
-      {(menuItems || []).map((mi: any) => (
-        <button key={mi.id} data-testid={`menu-${mi.label}`} onClick={() => onMenuClick(mi, data)}>
-          {mi.label}
+      {trigger}
+      {(items || []).map((it: any) => (
+        <button key={it.id} data-testid={`menu-${it.label}`} onClick={() => it.onSelect?.()} disabled={it.disabled}>
+          {it.label}
         </button>
       ))}
     </div>
   ),
 }));
 
-jest.mock('@components/k8s/common/ClusterNameWithRegion', () => ({
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout: any = ({ children, id }: any) => (
+    <div data-testid='listing-layout' id={id}>
+      {children}
+    </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }: any) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }: any) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
   __esModule: true,
-  default: ({ name }: any) => <span data-testid='cluster-name'>{name}</span>,
+  default: ({ label, options = [], value, onSelect }: any) => (
+    <select data-testid={`filter-${label}`} value={value || ''} onChange={onSelect}>
+      <option value=''>--</option>
+      {(options || []).map((opt: any, idx: number) => {
+        const v = typeof opt === 'string' ? opt : opt.value;
+        const l = typeof opt === 'string' ? opt : opt.label;
+        return (
+          <option key={(v || '_') + '-' + idx} value={v}>
+            {l}
+          </option>
+        );
+      })}
+    </select>
+  ),
 }));
 
-jest.mock('@shared/format/Text', () => ({
+jest.mock('@components/cloudaccount/CloudAccountTable', () => ({
   __esModule: true,
-  default: ({ value }: any) => <span>{value}</span>,
-}));
-
-jest.mock('@shared/format/Datetime', () => ({
-  __esModule: true,
-  default: ({ value }: any) => <span data-testid='datetime'>{value}</span>,
-}));
-
-jest.mock('@shared/widgets/SeverityIcon', () => ({
-  __esModule: true,
-  default: ({ severityType }: any) => <span data-testid={`severity-${severityType}`}>sev</span>,
+  default: ({ id, data, totalRows, loading, pageNumber, onPageChange }: any) => (
+    <div data-testid='cloud-account-table' id={id}>
+      {loading && <div data-testid='loading'>loading</div>}
+      <div data-testid='total'>{totalRows}</div>
+      <div data-testid='page'>{pageNumber}</div>
+      {(data || []).map((row: any, i: number) => (
+        <div key={i} data-testid={`row-${i}`}>
+          {row.map((cell: any, j: number) => (
+            <span key={j} data-testid={`cell-${i}-${j}`}>
+              {cell.component}
+            </span>
+          ))}
+        </div>
+      ))}
+      <button data-testid='next-page' onClick={() => onPageChange(2)}>
+        Next
+      </button>
+    </div>
+  ),
 }));
 
 import CloudAccountSecurity from '@components/cloudaccount/CloudAccountSecurity';
@@ -158,11 +197,8 @@ describe('CloudAccountSecurity (integration)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockUseCloudFilter.mockReturnValue({
-      serviceNamesFilter: [{ label: 'EC2', value: 'ec2' }],
-      severityFilterType: [
-        { label: 'High', value: 'high' },
-        { label: 'Critical', value: 'critical' },
-      ],
+      serviceNamesFilter: ['ec2'],
+      severityFilterType: ['High', 'Critical'],
     });
     apiCloudAccount.listEvents.mockResolvedValue(mockResponse());
   });
@@ -208,7 +244,7 @@ describe('CloudAccountSecurity (integration)', () => {
     await waitFor(() => expect(apiCloudAccount.listEvents).toHaveBeenCalled());
     apiCloudAccount.listEvents.mockClear();
 
-    fireEvent.change(screen.getByTestId('filter-Severity'), { target: { value: 'high' } });
+    fireEvent.change(screen.getByTestId('filter-Severity'), { target: { value: 'High' } });
 
     await waitFor(() => expect(apiCloudAccount.listEvents).toHaveBeenCalled());
     expect(apiCloudAccount.listEvents.mock.calls[0][2]).toBe(0);
@@ -284,5 +320,9 @@ describe('CloudAccountSecurity (integration)', () => {
   it('passes accountId hook through to useCloudFilter', async () => {
     render(<CloudAccountSecurity accountId='acc-42' serviceName='ec2' />);
     expect(mockUseCloudFilter).toHaveBeenCalledWith('acc-42');
+    // Wait for the mount-effect's async fetch to settle, otherwise the
+    // setLoading/setEvents/setEventsCount that fire after this test returns
+    // leak into the next test and trigger an act() warning.
+    await waitFor(() => expect(apiCloudAccount.listEvents).toHaveBeenCalled());
   });
 });

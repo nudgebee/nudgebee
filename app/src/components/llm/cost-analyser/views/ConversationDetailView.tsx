@@ -27,8 +27,8 @@ import { Chip } from '@ui/Chip';
 import { Label } from '@ui/Label';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { EmptyState } from '@ui/EmptyState';
-import CustomTable2 from '@shared/tables/CustomTable2';
-import CustomTabs from '@shared/CustomTabs';
+import CustomTable2 from '@shared/tables/CustomTable';
+import CustomTabs from '@shared/navigation/Tabs';
 import TraceWaterfall from '../components/TraceWaterfall';
 import CostTreemap from '../components/CostTreemap';
 import ConversationUsagePanel from '../components/ConversationUsagePanel';
@@ -356,7 +356,7 @@ function splitSections(text: string): { title: string; body: string }[] {
 
 /** Collapsible section card for the System tab: heading + size/lines + copy, body
  * in a scroll box. */
-function SectionCard({ title, body, defaultOpen }: { title: string; body: string; defaultOpen: boolean }) {
+const SectionCard = React.memo(function SectionCard({ title, body, defaultOpen }: { title: string; body: string; defaultOpen: boolean }) {
   const [open, setOpen] = React.useState(defaultOpen);
   return (
     <Box sx={{ border: '1px solid var(--ds-gray-200)', borderRadius: 'var(--ds-radius-md)', overflow: 'hidden' }}>
@@ -399,7 +399,7 @@ function SectionCard({ title, body, defaultOpen }: { title: string; body: string
       </Collapse>
     </Box>
   );
-}
+});
 
 /** System tab: sub-tabs per system message (when >1), each split into collapsible
  * section cards by heading. Falls back to a single scroll block when a message has
@@ -642,7 +642,7 @@ function buildComponentTree(components: PromptComponent[]): {
  * (rendered nested + indented); the toggle reveals the metadata grid and, for leaf
  * nodes, the verbatim content as a copyable JSON block (component / parent / loc /
  * size / content). */
-function ComponentNode({
+const ComponentNode = React.memo(function ComponentNode({
   c,
   childrenOf,
   byId,
@@ -773,7 +773,7 @@ function ComponentNode({
       </Collapse>
     </Box>
   );
-}
+});
 
 /** One ranked optimization: lever + technique chips, projected saving, the explicit
  * accuracy-impact note (always shown — the methodology's core guardrail), and detail. */

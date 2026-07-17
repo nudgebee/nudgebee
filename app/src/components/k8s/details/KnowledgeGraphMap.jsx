@@ -85,7 +85,7 @@ const getLayoutedElements = async (nodes, edges) => {
 };
 
 const KGNode = memo(({ data }) => {
-  const color = data.color || '#6b7280';
+  const color = data.color || ds.gray[500];
   const isTarget = data.isTarget;
 
   return (
@@ -95,7 +95,7 @@ const KGNode = memo(({ data }) => {
         borderRadius: 'var(--ds-radius-md)',
         background: 'var(--ds-background-100)',
         border: `2px solid ${isTarget ? color : 'var(--ds-brand-150)'}`,
-        boxShadow: isTarget ? `0 0 0 2px ${color}33` : '0 1px 3px rgba(0,0,0,0.08)',
+        boxShadow: isTarget ? `0 0 0 ${ds.space[0]} ${color}33` : `0 1px 3px ${ds.gray.alpha[200]}`,
         minWidth: ds.space.mul(0, 80),
         display: 'flex',
         alignItems: 'center',
@@ -166,7 +166,7 @@ function transformKGData(kgNodes, kgEdges, targetService) {
     const name = node.properties?.name || node.unique_key || node.id;
     const namespace = node.properties?.namespace || '';
     const nodeType = node.node_type || 'Service';
-    const color = NODE_TYPE_COLORS[nodeType] || '#6b7280';
+    const color = NODE_TYPE_COLORS[nodeType] || ds.gray[500];
     const typeLabel = NODE_TYPE_LABELS[nodeType] || nodeType.substring(0, 3).toUpperCase();
     const isTarget = name === targetService;
 
@@ -185,8 +185,8 @@ function transformKGData(kgNodes, kgEdges, targetService) {
       source: edge.source_node_id,
       target: edge.dest_node_id,
       animated: edge.relationship_type === 'CALLS',
-      style: { stroke: edge.relationship_type === 'CALLS' ? '#3b82f6' : '#94a3b8', strokeWidth: 1.5 },
-      markerEnd: { type: 'arrow', color: edge.relationship_type === 'CALLS' ? '#3b82f6' : '#94a3b8' },
+      style: { stroke: edge.relationship_type === 'CALLS' ? ds.blue[500] : ds.gray[500], strokeWidth: 1.5 },
+      markerEnd: { type: 'arrow', color: edge.relationship_type === 'CALLS' ? ds.blue[500] : ds.gray[500] },
       label: edge.relationship_type !== 'CALLS' ? edge.relationship_type : '',
       labelStyle: { fontSize: 9, fill: 'var(--ds-gray-600)' },
     }));
@@ -281,7 +281,7 @@ const KnowledgeGraphMapInner = ({ nodes: kgNodes, edges: kgEdges, targetService 
         proOptions={{ hideAttribution: true }}
       >
         <Controls showInteractive={false} />
-        <Background variant={BackgroundVariant.Dots} gap={16} size={1} color='#e5e7eb' />
+        <Background variant={BackgroundVariant.Dots} gap={16} size={1} color={ds.gray[200]} />
         <MiniMap
           nodeStrokeWidth={2}
           nodeColor={(node) => (node.data?.isTarget ? node.data.color : 'var(--ds-brand-150)')}

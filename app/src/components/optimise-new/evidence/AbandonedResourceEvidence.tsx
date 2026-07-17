@@ -19,7 +19,10 @@ const AbandonedResourceEvidence = ({ recommendation, estimatedSavings, cloudReso
 
   const traffic = rec.traffic ?? rec.network_traffic;
   const threshold = rec.threshold;
-  const duration = rec.duration || '7';
+  // The payload carries the observation window as `window` (e.g. "7 DAY"); older
+  // recs used `duration`. Normalise "7 DAY" → "7 days".
+  const windowLabel =
+    typeof rec.window === 'string' && rec.window ? rec.window.toLowerCase().replace(/\bday\b/, 'days') : `${rec.duration || '7'} days`;
   const message = rec.message || '';
   const cpu = rec.cpu;
   const memory = rec.memory;
@@ -37,15 +40,15 @@ const AbandonedResourceEvidence = ({ recommendation, estimatedSavings, cloudReso
   }
 
   return (
-    <Box sx={{ p: '14px' }}>
-      <SectionTitle title='Abandoned Workload Detection' muiIcon={<ReportProblemIcon sx={{ fontSize: '16px' }} />} />
+    <Box sx={{ p: ds.space.mul(0, 7) }}>
+      <SectionTitle title='Abandoned Workload Detection' muiIcon={<ReportProblemIcon sx={{ fontSize: ds.text.title }} />} />
 
       {/* Warning banner */}
       <Box
         sx={{
           display: 'flex',
           alignItems: 'flex-start',
-          gap: '10px',
+          gap: ds.space.mul(0, 5),
           p: ds.space[3],
           backgroundColor: ds.amber[100],
           borderRadius: ds.radius.lg,
@@ -53,13 +56,13 @@ const AbandonedResourceEvidence = ({ recommendation, estimatedSavings, cloudReso
           mb: ds.space[3],
         }}
       >
-        <WarningAmberIcon sx={{ fontSize: '18px', color: ds.amber[700], mt: '1px' }} />
+        <WarningAmberIcon sx={{ fontSize: ds.text.title, color: ds.amber[700], mt: ds.space[0] }} />
         <Box>
           <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.amber[700], mb: ds.space[1] }}>
             Low Activity Detected
           </Typography>
           <Typography sx={{ fontSize: ds.text.small, color: ds.amber[700], lineHeight: 1.5 }}>
-            {message || `This workload shows minimal network traffic over the last ${duration} days, suggesting it may be abandoned or unused.`}
+            {message || `This workload shows minimal network traffic over the last ${windowLabel}, suggesting it may be abandoned or unused.`}
           </Typography>
         </Box>
       </Box>
@@ -78,13 +81,13 @@ const AbandonedResourceEvidence = ({ recommendation, estimatedSavings, cloudReso
         {resourceType && <MetricRow label='Type' value={resourceType} />}
         {namespace && <MetricRow label='Namespace' value={namespace} />}
         {controller && <MetricRow label='Controller' value={`${controllerKind}/${controller}`} />}
-        <MetricRow label='Observation Period' value={`${duration} days`} />
+        <MetricRow label='Observation Period' value={windowLabel} />
       </Box>
 
       {/* Traffic metric */}
       {traffic != null && (
         <>
-          <SectionTitle title='Network Traffic' muiIcon={<InfoIcon sx={{ fontSize: '16px' }} />} />
+          <SectionTitle title='Network Traffic' muiIcon={<InfoIcon sx={{ fontSize: ds.text.title }} />} />
           <Box
             sx={{
               backgroundColor: ds.gray[100],
@@ -123,10 +126,10 @@ const AbandonedResourceEvidence = ({ recommendation, estimatedSavings, cloudReso
                   value={Math.min(trafficPct, 100)}
                   sx={{
                     height: '6px',
-                    borderRadius: '3px',
+                    borderRadius: ds.radius.sm,
                     backgroundColor: ds.gray[200],
                     '& .MuiLinearProgress-bar': {
-                      borderRadius: '3px',
+                      borderRadius: ds.radius.sm,
                       backgroundColor: trafficPct < 10 ? ds.red[600] : ds.amber[500],
                     },
                   }}
@@ -140,12 +143,12 @@ const AbandonedResourceEvidence = ({ recommendation, estimatedSavings, cloudReso
       {/* Resource usage */}
       {(cpu != null || memory != null) && (
         <>
-          <SectionTitle title='Resource Usage' muiIcon={<BoltIcon sx={{ fontSize: '16px' }} />} />
+          <SectionTitle title='Resource Usage' muiIcon={<BoltIcon sx={{ fontSize: ds.text.title }} />} />
           <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: ds.space[2], mb: ds.space[3] }}>
             {cpu != null && (
               <Box
                 sx={{
-                  p: '10px',
+                  p: ds.space.mul(0, 5),
                   borderRadius: ds.radius.lg,
                   backgroundColor: ds.gray[100],
                   border: `1px solid ${ds.gray[200]}`,
@@ -161,7 +164,7 @@ const AbandonedResourceEvidence = ({ recommendation, estimatedSavings, cloudReso
             {memory != null && (
               <Box
                 sx={{
-                  p: '10px',
+                  p: ds.space.mul(0, 5),
                   borderRadius: ds.radius.lg,
                   backgroundColor: ds.gray[100],
                   border: `1px solid ${ds.gray[200]}`,

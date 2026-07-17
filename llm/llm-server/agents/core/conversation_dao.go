@@ -263,13 +263,13 @@ type IConversationDao interface {
 	TerminateConversation(context *security.RequestContext, accountId, conversationId string) error
 	CountWaitingSubAgents(parentAgentId, messageId string) (int, error)
 	MarkInProgressConversationAsKilled() error
-	GetConversationTokenUsage(conversationId string) ([]TokenMetrics, error)
+	GetConversationTokenUsage(conversationId, accountId string) ([]TokenMetrics, error)
 	GetConversationCost(provider string, model string, nonCachedInputTokens, cachedInputTokens, cacheCreationTokens, outputTokens, thinkingTokens int) (float64, error)
 	GetConversationCosts(models []string) (map[string]modelPricing, error)
-	GetConversationTokenUsageDetailed(conversationId string) ([]TokenUsageDetailedRecord, error)
+	GetConversationTokenUsageDetailed(conversationId, accountId string) ([]TokenUsageDetailedRecord, error)
 	GetConversationLifecycleStorageCost(conversationId string, tenantId string) (float64, error)
-	GetConversationToolCallsStats(conversationId string) (ToolCallsStats, error)
-	GetConversationTimeBreakdown(conversationId string) (TimeBreakdown, error)
+	GetConversationToolCallsStats(conversationId, accountId string) (ToolCallsStats, error)
+	GetConversationTimeBreakdown(conversationId, accountId string) (TimeBreakdown, error)
 	GetConversationTimeAggregates(filter ConversationTimeAggregatesFilter) (ConversationTimeAggregates, error)
 	GetUsageMetrics(filter UsageMetricsFilter, dims []string, topN int, granularity string) (UsageMetrics, error)
 	GetUsageFilters(filter UsageMetricsFilter) (UsageFilters, error)
@@ -2385,7 +2385,7 @@ func (chat *ConversationDao) GetConversationCosts(models []string) (map[string]m
 	return pricingMap, nil
 }
 
-func (chat *ConversationDao) GetConversationTokenUsage(conversationId string) ([]TokenMetrics, error) {
+func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId string) ([]TokenMetrics, error) {
 
 	// Fetch Pricing Map upfront to avoid N+1 queries
 	pricingMap, err := chat.fetchModelPricing()
@@ -2395,36 +2395,33 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId string) ([
 		pricingMap = make(map[string]modelPricing)
 	}
 
-	// Query the new llm_conversation_token_usage table
-	// Since the new table has per-API-call granularity (multiple rows per agent),
-	// we need to SUM tokens for each agent across all API calls
-	// Group by agent_name instead of agent_id to avoid duplicate agent names in UI
-	// when same agent executes multiple times (retries, fallbacks, multiple LLM calls)
+	// Query the new llm_conversation_token_usage table at its native
+	// per-API-call granularity (multiple rows per agent). Pricing is tiered
+	// on each call's own prompt size (see CalculateTotalCost), so cost MUST
+	// be computed per row before summing — SUMing tokens across many calls
+	// first and pricing the aggregate once would push a large conversation's
+	// combined volume over the long-ctx threshold even when no single call
+	// did, wildly inflating cost. Group by agent_name instead of agent_id to
+	// avoid duplicate agent names in UI when the same agent executes
+	// multiple times (retries, fallbacks, multiple LLM calls).
 	// NOTE: AgentId field removed from query - UI should use AgentName as identifier
 	query := `
 		SELECT
 			COALESCE(t.agent_name, '') as AgentName,
-			SUM(t.input_tokens) as InputTokens,
-			SUM(t.output_tokens) as OutputTokens,
-			SUM(COALESCE(t.cached_input_tokens, 0)) as CachedInputTokens,
-			SUM(t.input_tokens - COALESCE(t.cached_input_tokens, 0)) as NonCachedInputTokens,
-			SUM(COALESCE(t.cache_creation_tokens, 0)) as CacheCreationTokens,
-			SUM(COALESCE(t.thinking_tokens, 0)) as ThinkingTokens,
-			CASE
-				WHEN SUM(t.input_tokens) > 0
-				THEN (SUM(COALESCE(t.cached_input_tokens, 0))::float8 / SUM(t.input_tokens)::float8) * 100
-				ELSE NULL
-			END as CacheHitRate,
+			t.input_tokens as InputTokens,
+			t.output_tokens as OutputTokens,
+			COALESCE(t.cached_input_tokens, 0) as CachedInputTokens,
+			COALESCE(t.cache_creation_tokens, 0) as CacheCreationTokens,
+			COALESCE(t.thinking_tokens, 0) as ThinkingTokens,
 			t.llm_model as ModelName,
 			t.llm_provider as ModelProviderName,
-			t.message_id::text as MessageId,
+			COALESCE(t.message_id::text, '') as MessageId,
 			t.conversation_id::text as ConversationId
 		FROM llm_conversation_token_usage t
 		INNER JOIN llm_conversations c ON c.id = t.conversation_id
-		WHERE c.session_id = $1
-		GROUP BY t.agent_name, t.llm_model, t.llm_provider, t.message_id, t.conversation_id;`
+		WHERE c.session_id = $1 AND c.account_id = $2::uuid;`
 
-	rows, err := chat.dbManager.Db.Queryx(query, conversationId)
+	rows, err := chat.dbManager.Db.Queryx(query, conversationId, accountId)
 
 	if err != nil {
 		slog.Error("executing query", "error", err)
@@ -2435,32 +2432,82 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId string) ([
 			slog.Error("Failed to close rows", "error", err)
 		}
 	}()
-	agents := []TokenMetrics{}
+
+	type rawCall struct {
+		AgentName           string
+		InputTokens         int
+		OutputTokens        int
+		CachedInputTokens   int
+		CacheCreationTokens int
+		ThinkingTokens      int
+		ModelName           sql.NullString
+		ModelProviderName   sql.NullString
+		MessageId           string
+		ConversationId      string
+	}
+
+	groups := make(map[string]*TokenMetrics)
+	var order []string
 	for rows.Next() {
-		var individualAgentStat TokenMetrics
-		err := rows.StructScan(&individualAgentStat)
-		if err != nil {
+		var call rawCall
+		if err := rows.StructScan(&call); err != nil {
 			slog.Error("Scan error", "error", err)
 			return nil, err
 		}
 
-		// Initialize cost to 0, will calculate dynamically
-		individualAgentStat.Cost = 0
-
-		if individualAgentStat.ModelProviderName.Valid && individualAgentStat.ModelName.Valid {
-			key := individualAgentStat.ModelProviderName.String + ":" + individualAgentStat.ModelName.String
+		nonCached := call.InputTokens - call.CachedInputTokens
+		if nonCached < 0 {
+			nonCached = 0
+		}
+		var cost float64
+		if call.ModelProviderName.Valid && call.ModelName.Valid {
+			key := call.ModelProviderName.String + ":" + call.ModelName.String
 			if pricing, ok := pricingMap[key]; ok {
-				individualAgentStat.Cost = CalculateTotalCost(
+				cost = CalculateTotalCost(
 					&pricing,
-					individualAgentStat.NonCachedInputTokens,
-					individualAgentStat.CachedInputTokens,
-					individualAgentStat.CacheCreationTokens,
-					individualAgentStat.OutputTokens,
-					individualAgentStat.ThinkingTokens,
+					nonCached,
+					call.CachedInputTokens,
+					call.CacheCreationTokens,
+					call.OutputTokens,
+					call.ThinkingTokens,
 				)
 			}
 		}
-		agents = append(agents, individualAgentStat)
+
+		groupKey := call.AgentName + "|" + call.ModelName.String + "|" + call.ModelProviderName.String + "|" + call.MessageId + "|" + call.ConversationId
+		stat := groups[groupKey]
+		if stat == nil {
+			stat = &TokenMetrics{
+				AgentName:         call.AgentName,
+				ModelName:         call.ModelName,
+				ModelProviderName: call.ModelProviderName,
+				MessageId:         call.MessageId,
+				ConversationId:    call.ConversationId,
+			}
+			groups[groupKey] = stat
+			order = append(order, groupKey)
+		}
+		stat.InputTokens += call.InputTokens
+		stat.OutputTokens += call.OutputTokens
+		stat.CachedInputTokens += call.CachedInputTokens
+		stat.NonCachedInputTokens += nonCached
+		stat.CacheCreationTokens += call.CacheCreationTokens
+		stat.ThinkingTokens += call.ThinkingTokens
+		stat.Cost += cost
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("rows iteration error", "error", err)
+		return nil, err
+	}
+
+	agents := make([]TokenMetrics, len(order))
+	for i, key := range order {
+		stat := groups[key]
+		if stat.InputTokens > 0 {
+			rate := (float64(stat.CachedInputTokens) / float64(stat.InputTokens)) * 100
+			stat.CacheHitRate = sql.NullFloat64{Float64: rate, Valid: true}
+		}
+		agents[i] = *stat
 	}
 	return agents, nil
 }
@@ -2514,11 +2561,11 @@ type TokenUsageDetailedRecord struct {
 }
 
 // GetConversationTokenUsageDetailed returns all individual token usage records for detailed analysis
-func (chat *ConversationDao) GetConversationTokenUsageDetailed(conversationId string) ([]TokenUsageDetailedRecord, error) {
+func (chat *ConversationDao) GetConversationTokenUsageDetailed(conversationId, accountId string) ([]TokenUsageDetailedRecord, error) {
 	query := `
 		SELECT
 			t.conversation_id::text as ConversationID,
-			t.message_id::text as MessageID,
+			COALESCE(t.message_id::text, '') as MessageID,
 			t.agent_id::text as AgentID,
 			t.agent_name as AgentName,
 			t.llm_provider as LLMProvider,
@@ -2532,10 +2579,10 @@ func (chat *ConversationDao) GetConversationTokenUsageDetailed(conversationId st
 			t.latency_seconds as LatencySeconds
 		FROM llm_conversation_token_usage t
 		INNER JOIN llm_conversations c ON c.id = t.conversation_id
-		WHERE c.session_id = $1
+		WHERE c.session_id = $1 AND c.account_id = $2::uuid
 		ORDER BY t.created_at ASC;`
 
-	rows, err := chat.dbManager.Db.Queryx(query, conversationId)
+	rows, err := chat.dbManager.Db.Queryx(query, conversationId, accountId)
 	if err != nil {
 		slog.Error("executing detailed token usage query", "error", err)
 		return nil, err
@@ -2555,6 +2602,10 @@ func (chat *ConversationDao) GetConversationTokenUsageDetailed(conversationId st
 			return nil, err
 		}
 		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("detailed token usage rows iteration error", "error", err)
+		return nil, err
 	}
 	return records, nil
 }
@@ -2643,7 +2694,7 @@ func (chat *ConversationDao) GetConversationLifecycleStorageCost(conversationId 
 }
 
 // GetConversationToolCallsStats returns tool call statistics for a conversation
-func (chat *ConversationDao) GetConversationToolCallsStats(conversationId string) (ToolCallsStats, error) {
+func (chat *ConversationDao) GetConversationToolCallsStats(conversationId, accountId string) (ToolCallsStats, error) {
 	query := `
 		SELECT
 			COUNT(*) as total,
@@ -2652,7 +2703,7 @@ func (chat *ConversationDao) GetConversationToolCallsStats(conversationId string
 			COUNT(*) FILTER (WHERE tc.status = 'in_progress') as in_progress
 		FROM llm_conversation_tool_calls tc
 		INNER JOIN llm_conversations c ON c.id = tc.conversation_id
-		WHERE c.session_id = $1;`
+		WHERE c.session_id = $1 AND c.account_id = $2::uuid;`
 
 	var stats struct {
 		Total      int `db:"total"`
@@ -2661,7 +2712,7 @@ func (chat *ConversationDao) GetConversationToolCallsStats(conversationId string
 		InProgress int `db:"in_progress"`
 	}
 
-	err := chat.dbManager.Db.Get(&stats, query, conversationId)
+	err := chat.dbManager.Db.Get(&stats, query, conversationId, accountId)
 	if err != nil {
 		slog.Error("getting tool calls stats", "error", err)
 		return ToolCallsStats{}, err
@@ -2676,16 +2727,16 @@ func (chat *ConversationDao) GetConversationToolCallsStats(conversationId string
 }
 
 // GetConversationTimeBreakdown calculates time breakdown for a conversation
-func (chat *ConversationDao) GetConversationTimeBreakdown(conversationId string) (TimeBreakdown, error) {
+func (chat *ConversationDao) GetConversationTimeBreakdown(conversationId, accountId string) (TimeBreakdown, error) {
 	query := `
 		WITH conversation_ids AS (
-			SELECT id FROM llm_conversations WHERE session_id = $1
+			SELECT id FROM llm_conversations WHERE session_id = $1 AND account_id = $2::uuid
 		),
 		wall_time AS (
 			SELECT
 				COALESCE(SUM(EXTRACT(EPOCH FROM (updated_at - created_at))), 0) as seconds
 			FROM llm_conversations
-			WHERE session_id = $1
+			WHERE session_id = $1 AND account_id = $2::uuid
 		),
 		agent_time AS (
 			SELECT
@@ -2716,7 +2767,7 @@ func (chat *ConversationDao) GetConversationTimeBreakdown(conversationId string)
 		ToolTime  float64 `db:"tool_time"`
 	}
 
-	err := chat.dbManager.Db.Get(&result, query, conversationId)
+	err := chat.dbManager.Db.Get(&result, query, conversationId, accountId)
 	if err != nil {
 		slog.Error("getting conversation time breakdown", "error", err)
 		return TimeBreakdown{}, err

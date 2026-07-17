@@ -81,6 +81,15 @@ mutation CloudApplyCommand(
 }
 `;
 
+export const CLOUD_SYNC_SERVICE = `
+mutation CloudSyncService($account_id: String!, $service_name: String!, $regions: [String!]) {
+  cloud_sync_service(account_id: $account_id, service_name: $service_name, regions: $regions) {
+    success
+    message
+  }
+}
+`;
+
 export const LIST_RESOURCE_ACTION_HISTORY = `
 query ListResourceActionHistory($limit: Int, $offset: Int) {
   audit_groupings_v2(where: __WHERE__) {
@@ -663,6 +672,23 @@ export function extractGraphQLErrorMessage(response: any): string {
 }
 
 const apiCloudAccount = {
+  // Re-collect the resource inventory for a single cloud service for an account.
+  // Returns { success, message }; throws on transport errors.
+  syncCloudService: async function (accountId: string, serviceName: string, regions?: string[]): Promise<{ success: boolean; message?: string }> {
+    if (accountId === 'demo') {
+      return { success: true };
+    }
+    const response = await queryGraphQL(CLOUD_SYNC_SERVICE, 'CloudSyncService', {
+      account_id: accountId,
+      service_name: serviceName,
+      ...(regions && regions.length > 0 ? { regions } : {}),
+    });
+    const errors = response?.data?.errors;
+    if (errors && errors.length > 0) {
+      throw new Error(extractGraphQLErrorMessage(response));
+    }
+    return response?.data?.data?.cloud_sync_service ?? { success: false };
+  },
   getDistinctTagKeys: async function (
     accountId: string,
     serviceName?: string,

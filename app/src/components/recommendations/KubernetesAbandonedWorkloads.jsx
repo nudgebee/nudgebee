@@ -3,7 +3,7 @@ import { Box, Typography } from '@mui/material';
 import { Input } from '@ui/Input';
 
 import recommendationApi, { RECOMMENDATION_STATUS } from '@api1/recommendation';
-import { KubernetesNetwork } from '@components/k8s/common/KubernetesTable2';
+import { KubernetesNetwork } from '@components/k8s/common/KubernetesTable';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import NumberComponent from '@shared/format/Number';
 import Currency from '@shared/format/Currency';
@@ -18,9 +18,9 @@ import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
 import apiUser from '@api1/user';
 import Text from '@shared/format/Text';
-import CustomTicketLink from '@shared/CustomTicketLink';
-import NDialog from '@shared/modal/NDialog';
-import { colors, ds } from 'src/utils/colors';
+import TicketLink from '@shared/links/TicketLink';
+import { Modal } from '@ui/Modal';
+import { ds } from 'src/utils/colors';
 import { toast as snackbar } from '@ui/Toast';
 import apiHome from '@api1/home';
 import { Link as CustomLink } from '@ui/Link';
@@ -36,7 +36,7 @@ import WidgetCard from '@ui/WidgetCard';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Stat } from '@ui/Stat';
 import { CostCallout } from '@ui/CostCallout';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { ScanRefreshButton } from './ScanRefreshButton';
@@ -99,56 +99,67 @@ NetworkTrafficTabComponent.propTypes = {
 export const KubernetesUnusedWorkloadUpdatePopupForm = ({ open, onClose, onSuccess, onFailure, data = {} }) => {
   const [confirmationText, setConfirmationText] = useState('');
   const [errorText, setErrorText] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const submitRecommendation = () => {
     if (confirmationText === (data?.cloud_resourse?.meta?.controller || data?.cloud_resourse?.name)) {
-      recommendationApi.applyRecommendation(data.accountId, data.id, data).then((res) => {
-        if (res?.errors) {
-          onFailure(res?.errors);
-        } else {
-          onSuccess(res?.data);
-        }
-      });
+      setIsSubmitting(true);
+      recommendationApi
+        .applyRecommendation(data.accountId, data.id, data)
+        .then((res) => {
+          if (res?.errors) {
+            onFailure(res?.errors);
+          } else {
+            onSuccess(res?.data);
+          }
+        })
+        .catch((err) => {
+          onFailure(err);
+        })
+        .finally(() => {
+          setIsSubmitting(false);
+        });
     } else {
       setErrorText('Please enter the correct Workload name to confirm scale-down');
     }
   };
 
   const handleClose = () => {
+    if (isSubmitting) return;
     setConfirmationText('');
     setErrorText('');
     onClose();
   };
 
   return (
-    <NDialog
-      buttonText='Scale Down'
+    <Modal
+      confirmText='Scale Down'
       handleClose={handleClose}
-      dialogTitle={''}
-      handleSubmit={() => submitRecommendation()}
+      title=''
+      onConfirm={() => submitRecommendation()}
       open={open}
-      dialogContent={
-        <Box display='flex' flexDirection='column' justifyContent='space-between' alignItems='left'>
-          <Typography component='h2' variant='h5' fontWeight={600} color={colors.text.signinDark} mb='15px'>
-            {`Are you sure you want to scale down ${data?.cloud_resourse?.name} ?`}
-          </Typography>
+      width='md'
+      loader={isSubmitting}
+    >
+      <Box display='flex' flexDirection='column' justifyContent='space-between' alignItems='left'>
+        <Typography component='h2' variant='h5' fontWeight={ds.weight.semibold} color={ds.gray[700]} mb='15px'>
+          {`Are you sure you want to scale down ${data?.cloud_resourse?.name} ?`}
+        </Typography>
 
-          <Box sx={{ mt: 2 }}>
-            <Input
-              label='Enter workload Name'
-              value={confirmationText}
-              onChange={(value) => {
-                setConfirmationText(value);
-                setErrorText('');
-              }}
-              error={errorText || undefined}
-              size='sm'
-            />
-          </Box>
+        <Box sx={{ mt: 2 }}>
+          <Input
+            label='Enter workload Name'
+            value={confirmationText}
+            onChange={(value) => {
+              setConfirmationText(value);
+              setErrorText('');
+            }}
+            error={errorText || undefined}
+            size='sm'
+          />
         </Box>
-      }
-      additionalComponent={undefined}
-    />
+      </Box>
+    </Modal>
   );
 };
 
@@ -362,7 +373,7 @@ const KubernetesAbandonedWorkloads = ({ enabledSummary = true, enabledFilters = 
                     </CustomLink>
                   </Box>
                 )}
-                {item.ticket !== undefined ? <CustomTicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} /> : ''}
+                {item.ticket !== undefined ? <TicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} /> : ''}
               </>
             ),
             drilldownQuery: {
@@ -380,13 +391,13 @@ const KubernetesAbandonedWorkloads = ({ enabledSummary = true, enabledFilters = 
                 <Text value={'Current: '} display={'inline'} />
                 <NumberComponent
                   value={item?.recommendation?.traffic}
-                  sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: colors.text.secondary }}
+                  sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: ds.brand[500] }}
                 />
                 <br />
                 <Text value={'Threshold: '} display={'inline'} />
                 <NumberComponent
                   value={item?.recommendation?.threshold}
-                  sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: colors.text.secondary }}
+                  sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: ds.brand[500] }}
                 />
               </Box>
             ),
@@ -457,7 +468,7 @@ const KubernetesAbandonedWorkloads = ({ enabledSummary = true, enabledFilters = 
                     {
                       id: `aw-action-ticket-${item.id}`,
                       label: item.ticket?.ticket_id ? `Ticket: ${item.ticket.ticket_id}` : 'Create ticket',
-                      icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: 16 }} />,
+                      icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: ds.text.title }} />,
                       disabled: !!item.ticket?.ticket_id,
                       onSelect: () => {
                         onMenuClick({ id: 0 }, item);
@@ -694,7 +705,7 @@ const KubernetesAbandonedWorkloads = ({ enabledSummary = true, enabledFilters = 
         </ListingLayout.Toolbar>
 
         <ListingLayout.Body>
-          <CustomTable2
+          <CustomTable
             id={kubernetesAbandonedWorkloadsTable}
             headers={ABANDONED_WORKLOADS_HEADER}
             tableData={kubernetesAbandonedWorkloads}

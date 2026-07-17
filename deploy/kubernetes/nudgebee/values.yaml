@@ -3,7 +3,8 @@ global:
     registry: 'ghcr.io/nudgebee'
   imagePullSecrets: []
   initImages:
-    postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine'
+    # -nb2 rebuilds gosu on Go 1.26.5 (clears 1C/14H Go-stdlib CVEs); fully clean.
+    postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine-nb2'
     curl: 'ghcr.io/nudgebee/curl:8.10.1'
   existingNudgebeeSecretName: ''
 nudgebee_registry_secret:
@@ -94,13 +95,20 @@ postgresql:
   image:
     registry: 'ghcr.io/nudgebee'
     repository: postgresql
-    tag: '16.1.0-debian-11-r16'
+    tag: '16.1.0-debian-11-r16-nb1'
   metrics:
     enabled: true
+    # Upstream prometheus-community postgres_exporter (distroless), mirrored to
+    # ghcr. Replaces the frozen bitnamilegacy build whose stale Go binary +
+    # debian-11 base carried 2 CRITICAL / 35 HIGH fixable that apt-upgrade could
+    # not clear. Drop-in for the bitnami chart's metrics sidecar (same
+    # DATA_SOURCE_* env, verified pg_up=1). NOTE: v0.20.x renamed two metrics the
+    # alert rules below depend on — updated in PostgresReplicationLag /
+    # PostgresLongRunningQuery.
     image:
       registry: 'ghcr.io/nudgebee'
       repository: postgres-exporter
-      tag: '0.15.0-debian-11-r3'
+      tag: 'v0.20.1'
     serviceMonitor:
       enabled: true
     prometheusRule:
@@ -128,17 +136,24 @@ postgresql:
                     summary: 'PostgreSQL too many connections'
                     description: 'Instance {{ $labels.instance }} has over 100 active connections'
 
+                # prometheus-community v0.20 renamed pg_replication_lag ->
+                # pg_replication_lag_seconds (seconds). The old expr `> 10000000`
+                # with a "> 10MB" byte-oriented description never fired against a
+                # seconds metric (10M s = 115 days); use a 300s (5 min) lag
+                # threshold. TODO(ops): confirm the desired replication-lag SLO.
                 - alert: PostgresReplicationLag
-                  expr: pg_replication_lag{job="postgresql"} > 10000000
+                  expr: pg_replication_lag_seconds{job="postgresql"} > 300
                   for: 5m
                   labels:
                     severity: warning
                   annotations:
                     summary: 'PostgreSQL replication lag detected'
-                    description: 'Replication lag on {{ $labels.instance }} > 10MB'
+                    description: 'Replication lag on {{ $labels.instance }} > 5 minutes'
 
+                # prometheus-community v0.20 renamed pg_stat_activity_max_tx_duration_seconds
+                # -> pg_stat_activity_max_tx_duration (still seconds; 300 = 5 min).
                 - alert: PostgresLongRunningQuery
-                  expr: pg_stat_activity_max_tx_duration_seconds{job="postgresql"} > 300
+                  expr: pg_stat_activity_max_tx_duration{job="postgresql"} > 300
                   for: 5m
                   labels:
                     severity: warning
@@ -163,7 +178,10 @@ redis:
   image:
     registry: 'ghcr.io/nudgebee'
     repository: redis
-    tag: 7.0.12-debian-11-r0
+    # -nb2 rebuilds the bitnami wait-for-port startup helper on Go 1.26.5,
+    # clearing 2 CRITICAL + 19 HIGH + 43 MEDIUM Go-stdlib CVEs a debian apt
+    # upgrade can't touch. Residual is the debian-11 NOFIX OS floor only.
+    tag: 7.0.12-debian-11-r0-nb2
   auth:
     password: 'password'
     existingSecret: 'redis'
@@ -176,7 +194,7 @@ rabbitmq:
   image:
     registry: 'ghcr.io/nudgebee'
     repository: rabbitmq
-    tag: 3.13.7-debian-12-r5-nb-3
+    tag: 3.13.7-debian-12-r5-nb1
   extraConfiguration: |-
     consumer_timeout = 3600000
   auth:
@@ -316,13 +334,21 @@ nudgebee-qdrant-server:
   enabled: true
   fullnameOverride: nudgebee-qdrant-server
   image:
-    repository: qdrant/qdrant
-    tag: 'v1.16.0'
+    # ghcr clone of docker.io/qdrant/qdrant — avoids Docker Hub rate limits.
+    # Copied via deploy/kubernetes/nudgebee-mirrors/clone-third-party.sh (crane).
+    repository: ghcr.io/nudgebee/qdrant
+    tag: 'v1.18.2'
 temporal:
   enabled: true
   fullnameOverride: temporal
   web:
-    enabled: true
+    # Disabled: the Temporal Web UI is a standalone read-only dashboard that no
+    # nudgebee component references (workflow-server talks to temporal-frontend:7233,
+    # not the UI; no ingress or app link points at it). Removing it drops the
+    # temporalio/ui image entirely — and with it 31 HIGH + 18 MEDIUM upstream
+    # Go-dep CVEs that no version bump clears (verified: ui 2.52.1 is unchanged).
+    # Re-enable if operators want the dashboard for debugging.
+    enabled: false
   admintools:
     enabled: true
   server:
@@ -351,48 +377,37 @@ temporal:
         namespace:
           - name: default
             retention: 10d
+      # Temporal helm chart 1.x restructured persistence: stores live under
+      # datastores.<name>.sql (raw server-config format), selected via
+      # defaultStore / visibilityStore. numHistoryShards MUST stay 512 — the value
+      # the existing deployment initialised with; it cannot be changed. createDatabase
+      # is false (the temporal / temporal_visibility DBs already exist); manageSchema
+      # true lets the chart's schema job run update-schema to migrate 1.29 -> 1.31.
       persistence:
-        default:
-          driver: 'sql'
-          sql:
-            driver: 'postgres12'
-            host: 'postgresql'
-            port: 5432
-            database: 'temporal'
-            user: 'postgres'
-            existingSecret: 'nudgebee-temporal'
-            tls:
-              enabled: false
-              enableHostVerification: false
-        visibility:
-          driver: 'sql'
-          sql:
-            driver: 'postgres12'
-            host: 'postgresql'
-            port: 5432
-            database: 'temporal_visibility'
-            user: 'postgres'
-            existingSecret: 'nudgebee-temporal'
-            tls:
-              enabled: false
-              enableHostVerification: false
-  schema:
-    createDatabase:
-      enabled: true
-    setup:
-      enabled: true
-    update:
-      enabled: true
-  cassandra:
-    enabled: false
-  mysql:
-    enabled: false
-  elasticsearch:
-    enabled: false
-  prometheus:
-    enabled: false
-  grafana:
-    enabled: false
+        defaultStore: default
+        visibilityStore: visibility
+        numHistoryShards: 512
+        datastores:
+          default:
+            sql:
+              pluginName: postgres12
+              connectAddr: 'postgresql:5432'
+              connectProtocol: 'tcp'
+              databaseName: temporal
+              user: 'postgres'
+              existingSecret: 'nudgebee-temporal'
+              createDatabase: false
+              manageSchema: true
+          visibility:
+            sql:
+              pluginName: postgres12
+              connectAddr: 'postgresql:5432'
+              connectProtocol: 'tcp'
+              databaseName: temporal_visibility
+              user: 'postgres'
+              existingSecret: 'nudgebee-temporal'
+              createDatabase: false
+              manageSchema: true
 workflow-server:
   enabled: true
   fullnameOverride: workflow-server

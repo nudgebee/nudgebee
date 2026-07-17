@@ -23,10 +23,6 @@
  * inside the Collapse panel, below body, separated by a 1px divider — hides
  * when the card is collapsed).
  *
- * Note: The existing domain-heavy `CollapsableCard` at
- * @common/widgets/CollapsableCard is not a generic primitive — keep that one
- * for highlights/resolve flows; use this for generic 1-row collapsibles
- * (replacing legacy MUI Accordion patterns).
  */
 import * as React from 'react';
 import { Box, Collapse } from '@mui/material';

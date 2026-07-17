@@ -2,6 +2,7 @@ import { Fragment } from 'react';
 import { Box, Typography } from '@mui/material';
 import PropTypes from 'prop-types';
 import { Divider } from '@ui/Divider';
+import { ds } from 'src/utils/colors';
 
 const InfographicList = ({ sequence }) => {
   return (
@@ -11,10 +12,10 @@ const InfographicList = ({ sequence }) => {
         border: '0.5px solid var(--ds-blue-400)',
         borderRadius: 'var(--ds-radius-sm)',
         display: 'flex',
-        height: '36px',
+        height: ds.space.mul(0, 18),
         alignItems: 'center',
         p: '0 var(--ds-space-4)',
-        boxShadow: '0px 4px 6px -1px var(--ds-blue-200)',
+        boxShadow: `0px ${ds.space[1]} ${ds.space.mul(0, 3)} -1px var(--ds-blue-200)`,
       }}
     >
       {sequence &&
@@ -22,7 +23,7 @@ const InfographicList = ({ sequence }) => {
         sequence.map((item) => {
           return (
             <Fragment key={item.text}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', minWidth: '100px' }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', minWidth: ds.space.mul(0, 50) }}>
                 <Typography
                   sx={{
                     fontWeight: 'var(--ds-font-weight-regular)',

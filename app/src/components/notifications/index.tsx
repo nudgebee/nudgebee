@@ -5,7 +5,7 @@ import FilterDropdown from '@ui/FilterDropdown';
 import { Button as DsButton } from '@ui/Button';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import Datetime from '@shared/format/Datetime';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import NotificationRuleModal from './NotificationRuleModal';
 import apiNotifications from '@api1/notification';
 import apiDashboard from '@api1/home';
@@ -19,14 +19,17 @@ import apiUser from '@api1/user';
 import { ds } from 'src/utils/colors';
 import { safeJSONParse, snakeToTitleCase } from 'src/utils/common';
 import { PlatformChannelBadge } from '@shared/icons/IconTextBadge';
-import StatusBadge from '@shared/StatusBadge';
+import { Label } from '@ui/Label';
 
 const Notifications = () => {
   const [rowsPerPage, setRowsPerPage] = useState(apiUser.getUserPreferencesTablePageSize());
   const notificationId = 'Notifications';
 
   const [totalRows, setTotalRows] = useState(0);
-  const [loading, setLoading] = useState(false);
+  // Start in the loading state so the table shows the skeleton immediately on
+  // mount instead of briefly flashing "No Data Available" before the first
+  // rules fetch (which is gated on isFetchCluster) kicks in.
+  const [loading, setLoading] = useState(true);
   const [currentPage, setCurrentPage] = useState<number>(0);
   const [allNameSpaces, setAllNameSpaces] = useState([]);
   const [namespaceOption, setNamespaceOption] = useState([]);
@@ -68,6 +71,9 @@ const Notifications = () => {
       setIsFetchCluster(true);
     } catch (error) {
       console.error(error);
+      // Still release the gate so rules load (clusters show '-') instead of
+      // leaving the table stuck on the loader.
+      setIsFetchCluster(true);
     }
   };
 
@@ -231,9 +237,7 @@ const Notifications = () => {
           })(),
         });
         data.push({
-          component: (
-            <StatusBadge label={item.is_suppressed ? 'Suppressed' : 'Active'} variant={item.is_suppressed ? 'grey' : 'success'} size='medium' />
-          ),
+          component: <Label text={item.is_suppressed ? 'Suppressed' : 'Active'} tone={item.is_suppressed ? 'neutral' : 'success'} size='sm' />,
         });
         data.push({ text: <Text value={item.created_by_display_name || '-'} /> });
         data.push({ component: <Datetime value={item.created_at} baseDate={new Date()} /> });
@@ -355,7 +359,7 @@ const Notifications = () => {
         </ListingLayout.Toolbar>
 
         <ListingLayout.Body>
-          <CustomTable2
+          <CustomTable
             headers={BEST_PRACTICES_HEADER}
             tableData={notificationTableData as any}
             rowsPerPage={rowsPerPage}

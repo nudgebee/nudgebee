@@ -14,6 +14,11 @@ type PromQLValidatorInput struct {
 	PromQl string `json:"promql"`
 }
 
+// promQLParser is a shared, stateless PromQL parser. ParseExpr builds a fresh
+// internal parser per call, so one package-level instance is concurrency-safe
+// and avoids per-call allocations.
+var promQLParser = parser.NewParser(parser.Options{})
+
 func handlePromQL(actionPayload *ActionRequest, c *gin.Context, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
 	promQLValidatorRequest := actionPayload.Input
 
@@ -25,7 +30,7 @@ func handlePromQL(actionPayload *ActionRequest, c *gin.Context, tracer *trace.Tr
 			return
 		}
 		result := true
-		_, err = parser.ParseExpr(promQLRequest.PromQl)
+		_, err = promQLParser.ParseExpr(promQLRequest.PromQl)
 		if err != nil {
 			result = false
 		}

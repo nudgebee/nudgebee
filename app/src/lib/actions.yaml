@@ -847,6 +847,141 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin_readonly
       - role: account_admin
+  # Memory module RPC surface (9 verb-named actions, all dispatched to
+  # /v1/memory_v2). The handler reads `layer` and `scope` from the request
+  # payload to route internally, replacing the 39 per-(layer,scope,verb)
+  # actions that originally shipped with Phases 2–8. Tenant-scope writes
+  # are still gated server-side by requireTenantAdmin — the actions.yaml
+  # permissions list every role that can call any combination, not just
+  # the most privileged.
+  - name: ai_memory_get
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Single-record read — layer one of (soul, consent), scope one of (user, tenant).
+  - name: ai_memory_list
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Collection read — layer one of (prefs, patterns, decisions, collective, session, events). Pass `q` with layer=collective for full-text search.
+  - name: ai_memory_upsert
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: tenant_admin
+      - role: account_admin
+    comment: Insert-or-update — layer one of (soul, prefs, consent, decisions[scope=tenant]). Tenant-scope writes gated server-side on tenant_admin.
+  - name: ai_memory_delete
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: tenant_admin
+      - role: account_admin
+    comment: Remove a row when `id` is set; wipe the (layer, scope) when `id` is omitted. Includes the GDPR full-wipe path (layer=all, scope=user).
+  - name: ai_memory_create_decision
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Click-wired user decisions (AutoPilot Approve/Decline, RCA thumbs). Insert with uniqueness — separate from update_decision.
+  - name: ai_memory_update_decision
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Append-supersede (correct subject/rationale) or promote-to-global (set promote_to_global=true). Tenant-scope edits gated server-side on tenant_admin.
+  - name: ai_memory_update_pattern
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Edit a single pattern row — set `description` to overwrite, or `pinned` to toggle the pin flag.
+  - name: ai_memory_execute_maintenance
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Manually trigger a memory distillation job (ops debugging).
+  - name: ai_memory_generate_export
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: GDPR portability — exports a user's memory bundle as a fresh JSON artifact.
   - name: ai_list_models
     definition:
       kind: "synchronous"
@@ -1660,6 +1795,19 @@ actions:
       - role: tenant_admin
       - role: account_admin
     comment: Trigger a full data sync for a cloud account (usage, events, resources, recommendations)
+  - name: cloud_sync_service
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/cloud'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 300
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: Re-collect the resource inventory for a single cloud service (EC2, RDS, S3, etc.) for an account
   - name: cloud_apply_command
     definition:
       kind: synchronous
@@ -2945,7 +3093,7 @@ actions:
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
     permissions:
       - role: tenant_admin_readonly
       - role: tenant_admin
@@ -2957,7 +3105,7 @@ actions:
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
     permissions:
       - role: k8s_namespace_admin
       - role: k8s_namespace_admin_readonly
@@ -2973,7 +3121,7 @@ actions:
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
     permissions:
       - role: k8s_namespace_admin
       - role: k8s_namespace_admin_readonly
@@ -2989,7 +3137,7 @@ actions:
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
     permissions:
       - role: tenant_admin
       - role: account_admin
@@ -3012,7 +3160,7 @@ actions:
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
     permissions:
       - role: tenant_admin
   - name: observability_list_provider_capabilities
@@ -4341,6 +4489,9 @@ actions:
       kind: "synchronous"
       handler: '{{WORKFLOW_SERVER_URL}}/rpc'
       forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
     permissions:
       - role: tenant_admin_readonly
       - role: tenant_admin

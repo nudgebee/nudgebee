@@ -6,9 +6,8 @@ jest.mock('@assets', () => ({ Loadergif: 'loader.gif' }));
 
 jest.mock('next/image', () => ({
   __esModule: true,
-  default: ({ src, alt, style, unoptimized, ...props }) => (
-    <img src={src} alt={alt} style={style} data-testid='loader-image' data-unoptimized={String(unoptimized)} {...props} />
-  ),
+  default: ({ src, alt, style, unoptimized, ...props }) =>
+    React.createElement('img', { src, alt, style, 'data-testid': 'loader-image', 'data-unoptimized': String(unoptimized), ...props }),
 }));
 
 describe('Loader', () => {
@@ -71,7 +70,7 @@ describe('Loader', () => {
   it('renders image with correct inline styles', () => {
     render(<Loader />);
     const image = screen.getByTestId('loader-image');
-    expect(image).toHaveStyle({ width: '150px' });
+    expect(image).toHaveStyle({ width: 'calc(var(--ds-space-0) * 75)' });
     expect(image).toHaveStyle({ height: 'auto' });
   });
 

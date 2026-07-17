@@ -19,9 +19,7 @@ jest.mock('@api1/notification', () => ({
 
 jest.mock('@api1/home', () => ({
   __esModule: true,
-  default: {
-    getCloudAccounts: jest.fn(),
-  },
+  default: { getCloudAccounts: jest.fn() },
 }));
 
 jest.mock('@api1/account', () => ({
@@ -32,21 +30,29 @@ jest.mock('@api1/account', () => ({
   },
 }));
 
-jest.mock('@shared/snackbarService', () => ({
-  snackbar: { success: jest.fn(), error: jest.fn() },
+jest.mock('@ui/Toast', () => ({
+  toast: { success: jest.fn(), error: jest.fn() },
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000', tertiary: '#999' }, background: { white: '#fff' } },
-}));
+jest.mock('@utils/colors');
 
 jest.mock('src/utils/actionStyles', () => ({
   action: { primary: {} },
 }));
 
-jest.mock('@shared', () => ({
-  Text: ({ value }: any) => <span>{value}</span>,
-  ThreeDotsMenu: ({ menuItems, data, onMenuClick }: any) => (
+jest.mock('@shared/format/Text', () => ({
+  __esModule: true,
+  default: ({ value }: any) => <span>{value}</span>,
+}));
+
+jest.mock('@shared/format/Datetime', () => ({
+  __esModule: true,
+  default: ({ value }: any) => <span data-testid='datetime'>{value || '—'}</span>,
+}));
+
+jest.mock('@ui/ThreeDotsMenu', () => ({
+  __esModule: true,
+  default: ({ menuItems, data, onMenuClick }: any) => (
     <div data-testid='three-dots'>
       {(menuItems || []).map((mi: any) => (
         <button key={mi.id} data-testid={`menu-${mi.label}-${data.id}`} onClick={() => onMenuClick(mi, data)}>
@@ -57,23 +63,10 @@ jest.mock('@shared', () => ({
   ),
 }));
 
-jest.mock('@shared/format/Datetime', () => ({
-  __esModule: true,
-  default: ({ value }: any) => <span data-testid='datetime'>{value || '—'}</span>,
-}));
-
-jest.mock('@shared/CustomDropdown', () => ({
-  __esModule: true,
-  default: ({ label, value, options, onChange, isDisabled, isLoading }: any) => (
-    <select
-      data-testid={`dropdown-${label}`}
-      value={value || ''}
-      disabled={isDisabled || isLoading}
-      onChange={(e) => {
-        const opt = (options || []).find((o: any) => o.value === e.target.value);
-        onChange({ target: { value: e.target.value } }, opt);
-      }}
-    >
+// @ui/Select with onChange(value:string) signature — different from @ui/FilterDropdown.
+jest.mock('@ui/Select', () => ({
+  Select: ({ label, value, options, onChange, disabled }: any) => (
+    <select data-testid={`dropdown-${label}`} value={value || ''} disabled={disabled} onChange={(e) => onChange?.(e.target.value)}>
       <option value=''>--</option>
       {(options || []).map((opt: any) => (
         <option key={opt.value} value={opt.value}>
@@ -84,50 +77,52 @@ jest.mock('@shared/CustomDropdown', () => ({
   ),
 }));
 
-jest.mock('@shared/NewCustomButton', () => ({
-  __esModule: true,
-  default: ({ id, text, onClick, disabled }: any) => (
-    <button data-testid={`btn-${id || text}`} onClick={onClick} disabled={disabled}>
-      {text}
+jest.mock('@ui/Button', () => ({
+  Button: ({ children, onClick, id, disabled, loading }: any) => (
+    <button data-testid={id || `btn-${children}`} onClick={onClick} disabled={disabled || loading}>
+      {children}
     </button>
   ),
 }));
 
-jest.mock('@shared/modal', () => ({
-  Modal: ({ open, title, handleClose, children }: any) =>
-    open ? (
-      <div data-testid='modal'>
+// Title-keyed Modal mock so tests can distinguish Add Mapping vs Delete Mapping
+// (both use the same DS Modal). actionButtons stays available for the buttons.
+jest.mock('@ui/Modal', () => ({
+  Modal: ({ open, title, handleClose, children, actionButtons }: any) => {
+    if (!open) return null;
+    const key = String(title || '')
+      .toLowerCase()
+      .replace(/\s+/g, '-');
+    return (
+      <div data-testid={`modal-${key}`}>
         <div data-testid='modal-title'>{title}</div>
-        <button data-testid='modal-close' onClick={handleClose}>
+        <button data-testid={`modal-close-${key}`} onClick={handleClose}>
           Close
         </button>
         {children}
+        {actionButtons}
       </div>
-    ) : null,
+    );
+  },
 }));
 
-jest.mock('@shared/modal/NDialog', () => ({
-  __esModule: true,
-  default: ({ open, dialogTitle, handleSubmit, handleClose, buttonText }: any) =>
-    open ? (
-      <div data-testid='ndialog'>
-        <div data-testid='ndialog-title'>{dialogTitle}</div>
-        <button data-testid='ndialog-submit' onClick={handleSubmit}>
-          {buttonText}
-        </button>
-        <button data-testid='ndialog-close' onClick={handleClose}>
-          Cancel
-        </button>
-      </div>
-    ) : null,
-}));
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout = ({ children, id }: any) => (
+    <div data-testid='listing-layout' id={id}>
+      {children}
+    </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }: any) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }: any) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout, default: ListingLayout };
+});
 
-jest.mock('@shared/BoxLayout2', () => ({
-  __esModule: true,
-  default: ({ children }: any) => <div data-testid='box-layout'>{children}</div>,
-}));
-
-jest.mock('@shared/tables/CustomTable2', () => ({
+jest.mock('@shared/tables/CustomTable', () => ({
   __esModule: true,
   default: ({ id, tableData, headers, loading }: any) => (
     <div data-testid='custom-table' id={id}>
@@ -151,7 +146,7 @@ import ChannelAccountMapping from '@components/notifications/ChannelAccountMappi
 const apiNotifications = require('@api1/notification').default;
 const apiDashboard = require('@api1/home').default;
 const apiAccount = require('@api1/account').default;
-const { snackbar } = require('@shared/snackbarService');
+const { toast: snackbar } = require('@ui/Toast');
 
 const sampleAccounts = [
   { id: 'acc-1', account_name: 'AWS Prod', cloud_provider: 'aws' },
@@ -261,16 +256,16 @@ describe('ChannelAccountMapping (integration)', () => {
     mockHasWriteAccess.mockReturnValue(false);
     render(<ChannelAccountMapping provider='slack' displayName='Slack' isConfigured={true} />);
     await waitFor(() => expect(apiNotifications.listChannelAccountMappings).toHaveBeenCalled());
-    expect(screen.queryByTestId('btn-add-mapping-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('add-mapping-btn')).not.toBeInTheDocument();
   });
 
   it('opens Add Mapping modal in create mode', async () => {
     render(<ChannelAccountMapping provider='slack' displayName='Slack' isConfigured={true} />);
-    await waitFor(() => expect(screen.getByTestId('btn-add-mapping-btn')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('add-mapping-btn')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId('btn-add-mapping-btn'));
+    fireEvent.click(screen.getByTestId('add-mapping-btn'));
 
-    expect(screen.getByTestId('modal-title')).toHaveTextContent('Add Mapping');
+    expect(screen.getByTestId('modal-add-mapping')).toBeInTheDocument();
     expect(screen.getByTestId('dropdown-Cloud Account')).toBeInTheDocument();
     expect(screen.getByTestId('dropdown-Channel')).toBeInTheDocument();
     expect(screen.queryByTestId('dropdown-Team')).not.toBeInTheDocument();
@@ -279,33 +274,32 @@ describe('ChannelAccountMapping (integration)', () => {
   it('opens Add Mapping modal with Team dropdown for ms_teams', async () => {
     apiAccount.getNotificationChannelList.mockResolvedValue({ data: { data: sampleTeams } });
     render(<ChannelAccountMapping provider='ms_teams' displayName='MS Teams' isConfigured={true} />);
-    await waitFor(() => expect(screen.getByTestId('btn-add-mapping-btn')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('add-mapping-btn')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId('btn-add-mapping-btn'));
+    fireEvent.click(screen.getByTestId('add-mapping-btn'));
 
     expect(screen.getByTestId('dropdown-Team')).toBeInTheDocument();
     expect(screen.getByTestId('dropdown-Channel')).toBeDisabled();
   });
 
-  it('errors when saving without account + channel', async () => {
+  it('Save button disabled when account+channel empty', async () => {
     render(<ChannelAccountMapping provider='slack' displayName='Slack' isConfigured={true} />);
-    await waitFor(() => expect(screen.getByTestId('btn-add-mapping-btn')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('add-mapping-btn')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId('btn-add-mapping-btn'));
-    // Save button is disabled when account+channel empty; assert state
-    expect(screen.getByTestId('btn-save-btn')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('add-mapping-btn'));
+    expect(screen.getByTestId('save-btn')).toBeDisabled();
   });
 
   it('saves a new Slack mapping with platform.team_id', async () => {
     render(<ChannelAccountMapping provider='slack' displayName='Slack' isConfigured={true} />);
-    await waitFor(() => expect(screen.getByTestId('btn-add-mapping-btn')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('add-mapping-btn')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId('btn-add-mapping-btn'));
+    fireEvent.click(screen.getByTestId('add-mapping-btn'));
 
     fireEvent.change(screen.getByTestId('dropdown-Cloud Account'), { target: { value: 'acc-1' } });
     fireEvent.change(screen.getByTestId('dropdown-Channel'), { target: { value: 'ch-1' } });
 
-    fireEvent.click(screen.getByTestId('btn-save-btn'));
+    fireEvent.click(screen.getByTestId('save-btn'));
 
     await waitFor(() =>
       expect(apiNotifications.insertChannelAccountMapping).toHaveBeenCalledWith({
@@ -323,9 +317,9 @@ describe('ChannelAccountMapping (integration)', () => {
     await waitFor(() => expect(screen.getByTestId('menu-Edit-map-1')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTestId('menu-Edit-map-1'));
-    expect(screen.getByTestId('modal-title')).toHaveTextContent('Edit Mapping');
+    expect(screen.getByTestId('modal-edit-mapping')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('btn-save-btn'));
+    fireEvent.click(screen.getByTestId('save-btn'));
 
     await waitFor(() =>
       expect(apiNotifications.updateChannelAccountMapping).toHaveBeenCalledWith({
@@ -338,15 +332,16 @@ describe('ChannelAccountMapping (integration)', () => {
     expect(snackbar.success).toHaveBeenCalledWith('Mapping updated');
   });
 
-  it('confirms delete via NDialog and refetches mappings', async () => {
+  it('confirms delete via confirm dialog and refetches mappings', async () => {
     render(<ChannelAccountMapping provider='slack' displayName='Slack' isConfigured={true} />);
     await waitFor(() => expect(screen.getByTestId('menu-Delete-map-1')).toBeInTheDocument());
     apiNotifications.listChannelAccountMappings.mockClear();
 
     fireEvent.click(screen.getByTestId('menu-Delete-map-1'));
-    expect(screen.getByTestId('ndialog-title')).toHaveTextContent('Delete Mapping');
+    expect(screen.getByTestId('modal-delete-mapping')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('ndialog-submit'));
+    // The Delete confirmation button inside the modal — no id, just children='Delete'
+    fireEvent.click(screen.getByTestId('btn-Delete'));
 
     await waitFor(() => expect(apiNotifications.deleteChannelAccountMapping).toHaveBeenCalledWith('map-1'));
     await waitFor(() => expect(apiNotifications.listChannelAccountMappings).toHaveBeenCalled());
@@ -358,18 +353,23 @@ describe('ChannelAccountMapping (integration)', () => {
     await waitFor(() => expect(screen.getByTestId('menu-Delete-map-1')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTestId('menu-Delete-map-1'));
-    fireEvent.click(screen.getByTestId('ndialog-close'));
+    expect(screen.getByTestId('modal-delete-mapping')).toBeInTheDocument();
 
-    expect(screen.queryByTestId('ndialog')).not.toBeInTheDocument();
+    // Cancel button inside the modal — no id, children='Cancel'
+    fireEvent.click(screen.getByTestId('btn-Cancel'));
+
+    expect(screen.queryByTestId('modal-delete-mapping')).not.toBeInTheDocument();
     expect(apiNotifications.deleteChannelAccountMapping).not.toHaveBeenCalled();
   });
 
   it('shows error snackbar when listChannelAccountMappings fails', async () => {
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     apiNotifications.listChannelAccountMappings.mockRejectedValueOnce(new Error('boom'));
 
     render(<ChannelAccountMapping provider='slack' displayName='Slack' isConfigured={true} />);
 
     await waitFor(() => expect(snackbar.error).toHaveBeenCalledWith('Failed to load mappings'));
+    consoleErrorSpy.mockRestore();
   });
 
   it('does not include menu items without write access', async () => {

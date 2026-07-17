@@ -1,25 +1,24 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Stack, Typography } from '@mui/material';
 import { useRouter } from 'next/router';
 import SummarySkeletonLoader from '@shared/SummarySkeletonLoader';
 import { formatMemory, formatNumber } from '@lib/formatter';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import apiCloudAccount from '@api1/cloud-account';
 import { useCurrencySymbol } from '@hooks/useCurrencySymbol';
-import type { ICustomTable2Row } from './Instances';
+import type { ICustomTableRow } from './Instances';
 import { CustomText } from '@components/cloudaccount/common';
 import Text from '@shared/format/Text';
-import Charts from '@shared/charts/LineCharts';
+import Chart from '@ui/Chart';
 import { formatMetricName } from '@utils/common';
 import { getLast7Days } from '@lib/datetime';
-import DoughnutChart from '@shared/charts/DoughnutChart';
 import TotalCostChart from '@components/cloudaccount/CostChart';
 import { ListingLayout } from '@ui/ListingLayout';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import DSCard from '@ui/Card';
 import { Stat } from '@ui/Stat';
 import Chip from '@ui/Chip';
-import { ds } from '@utils/colors';
+import { ds, resolveColors } from '@utils/colors';
 import { CloudCostSummary } from '@components/cloudaccount/CloudCostSummary';
 import { CloudRecentEvents } from '@components/cloudaccount/CloudRecentEvents';
 
@@ -84,25 +83,29 @@ const getCloudLabels = (serviceName: string) => {
   return labels;
 };
 
-// Tier C: chart palettes are hex literals because DoughnutChart renders to <canvas>,
-// which cannot resolve CSS var() at paint time. Legend StateLabel colors share the
-// same arrays so the legend swatches pair 1:1 with chart slices. Hues are
-// semantically aligned with DS tokens; resync if DS palettes shift.
-const RESERVATION_CHART_COLORS = ['#60A5FA', '#BFDBFE']; // ≈ ds.blue[400], ds.blue[200]
-const INSTANCE_STATE_CHART_COLORS = ['#FBD961', '#4ADE80', 'orange', '#EF4444', '#EBEBEB', 'blue'];
-// ≈ ds.amber[400], ds.green[400], ds.amber[600] (orange), ds.red[500], ds.gray[200], ds.blue[500]
-
 const StateLabel = ({ color, label, value, onClick }: { color: string; label: string; value: number; onClick?: () => void }) => (
   <Box
     display='flex'
     alignItems='center'
     onClick={onClick}
+    role={onClick ? 'button' : undefined}
+    tabIndex={onClick ? 0 : undefined}
+    onKeyDown={
+      onClick
+        ? (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onClick();
+            }
+          }
+        : undefined
+    }
     sx={onClick ? { cursor: 'pointer', '&:hover .state-value': { color: ds.blue[600] } } : undefined}
   >
     {/* Dot + label cluster on the left. `flex: 1` lets it take the row's
         remaining width so the value pin to the right edge. */}
     <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flex: 1 }}>
-      <Box component='span' sx={{ width: '8px', height: '8px', borderRadius: ds.radius.sm, backgroundColor: color, flexShrink: 0 }} />
+      <Box component='span' sx={{ width: ds.space[2], height: ds.space[2], borderRadius: ds.radius.sm, backgroundColor: color, flexShrink: 0 }} />
       <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], lineHeight: 1.3 }}>{label}</Typography>
     </Box>
     {/* Value is right-aligned in a min-24px column. Without `minWidth`, single-
@@ -111,7 +114,7 @@ const StateLabel = ({ color, label, value, onClick }: { color: string; label: st
         digit anchored to the right edge of the reserved column. */}
     <Typography
       className='state-value'
-      sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[700], lineHeight: 1.3, textAlign: 'right', minWidth: '24px' }}
+      sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[700], lineHeight: 1.3, textAlign: 'right', minWidth: ds.space[5] }}
     >
       {value}
     </Typography>
@@ -121,6 +124,15 @@ const StateLabel = ({ color, label, value, onClick }: { color: string; label: st
 const ClusterSummary = ({ accountId, ec2Summary = {}, serviceName = '' }: any) => {
   const labels = getCloudLabels(serviceName);
   const router = useRouter();
+
+  // DoughnutChart renders to <canvas> and cannot resolve CSS var() at paint time.
+  // Resolve at render time (browser context) — not at module load, which would run
+  // during SSR before `document` exists and bake in the unresolved `var(--ds-…)` strings.
+  const RESERVATION_CHART_COLORS = useMemo(() => resolveColors([ds.blue[400], ds.blue[200]]), []);
+  const INSTANCE_STATE_CHART_COLORS = useMemo(
+    () => resolveColors([ds.amber[400], ds.green[400], ds.amber[600], ds.red[500], ds.gray[200], ds.blue[500]]),
+    []
+  );
 
   // Multi-cloud helper: get instance type from different meta structures
   const getInstanceType = (resource: any) => {
@@ -175,7 +187,7 @@ const ClusterSummary = ({ accountId, ec2Summary = {}, serviceName = '' }: any) =
   // shared across cloud-account Summary tabs. Populated post-mount via useEffect
   // to avoid an SSR hydration mismatch: a render-time `window` access would emit
   // `''` on the server but a real URL on the client, breaking React hydration.
-  // Click handlers route through it; CustomTable2's `linkToShowAll` consumes it
+  // Click handlers route through it; CustomTable's `linkToShowAll` consumes it
   // via `window.open(linkToShowAll, '_blank')` (not an <a href>).
   const [instancesUrl, setInstancesUrl] = useState('');
 
@@ -202,7 +214,7 @@ const ClusterSummary = ({ accountId, ec2Summary = {}, serviceName = '' }: any) =
       }, {}) || {};
 
     const ec2ResourceData = Object.entries(instanceGroupedData)?.map((item: any) => {
-      const data: ICustomTable2Row[] = [];
+      const data: ICustomTableRow[] = [];
       const instanceTypeName = item[0];
       const instancesInGroup = item[1];
 
@@ -285,7 +297,7 @@ const ClusterSummary = ({ accountId, ec2Summary = {}, serviceName = '' }: any) =
       {/* Card 2 — Reserved/Spot doughnut + Instance State doughnut */}
       <DSCard size='md' elevation='flat'>
         <Box display='flex' alignItems='center' gap={ds.space[3]} flexWrap='wrap'>
-          <DoughnutChart
+          <Chart.Doughnut
             borderWidth={0}
             borderRadius={0}
             values={[spotInstances, reservedInstances]}
@@ -315,7 +327,7 @@ const ClusterSummary = ({ accountId, ec2Summary = {}, serviceName = '' }: any) =
             />
             <StateLabel color={RESERVATION_CHART_COLORS[1]} label={labels.spotLabel} value={spotInstances} onClick={handleNavigateToInstances} />
           </Box>
-          <DoughnutChart
+          <Chart.Doughnut
             borderWidth={0}
             borderRadius={0}
             values={[
@@ -360,7 +372,7 @@ const ClusterSummary = ({ accountId, ec2Summary = {}, serviceName = '' }: any) =
           Card is hidden entirely when there are no instances at all. */}
       {instanceData.length > 0 && (
         <DSCard size='md' elevation='flat' sx={{ py: 0, px: ds.space[3], overflow: 'hidden' }}>
-          <CustomTable2
+          <CustomTable
             tableHeadingCenter={['Priority']}
             id={_INSTANCE_TABLE_ID}
             headers={_INSTANCE_HEADERS}
@@ -538,12 +550,12 @@ export const OptimizeSummary = ({ accountId = '', serviceName = '', resourceId =
         const { labels, datasets } = buildMetricChartData(g, renderMetricsData[g]);
         return (
           <DSCard size='md' elevation='flat' key={g} sx={{ mb: ds.space[4], padding: ds.space[5] }}>
-            <Charts chartTitle={formatMetricName(g)} dataset={datasets} labels={labels} data={[]} loading={loadingTrend} />
+            <Chart.Line chartTitle={formatMetricName(g)} dataset={datasets} labels={labels} data={[]} loading={loadingTrend} />
           </DSCard>
         );
       });
     }
-    return <Charts dataset={[]} labels={[]} data={[]} loading={loadingTrend} />;
+    return <Chart.Line dataset={[]} labels={[]} data={[]} loading={loadingTrend} />;
   };
 
   return (

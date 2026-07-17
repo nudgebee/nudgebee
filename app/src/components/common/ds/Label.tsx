@@ -1,12 +1,6 @@
 /**
  * Label — DS V2 status-axis pill.
  *
- * This is the feature-complete Label brought over from the redesigned
- * `CustomLabels` on the `new-color-tokens-table-component` branch (commit
- * 1485f3bcc2 — "UI components enhancements with the Design System"). It
- * replaces the earlier from-scratch `ds/Label.tsx`, which lacked the
- * legacy CustomLabels feature set (tone auto-detection from text, legacy
- * `variant` mapping, truncation tooltip, dropdown arrow, style overrides).
  *
  * Spec:        app/design-system/primitives/navigation/label.html
  * Variants:    tone = 'neutral' | 'info' | 'success' | 'warning' | 'critical'  (Status axis only)

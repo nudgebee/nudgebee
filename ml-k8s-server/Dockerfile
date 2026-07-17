@@ -2,7 +2,7 @@
 # Base image. OSS installs use the public GHCR mirror of our internal
 # ML base (conda + Python + ML deps preinstalled). EE deploys override
 # PYTHON_BASE to their internal registry via --build-arg.
-ARG PYTHON_BASE=ghcr.io/nudgebee/nudgebee-ml-base:20250627-141845
+ARG PYTHON_BASE=ghcr.io/nudgebee/nudgebee-ml-base:wolfi
 FROM ${PYTHON_BASE} AS uv-base
 LABEL org.nudgebee.image.authors="dev@nudgebee.com"
 

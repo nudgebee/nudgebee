@@ -41,7 +41,8 @@ func TestGetLlmMaxTokenLength(t *testing.T) {
 		{"gemini-1.5-pro", 2_000_000},
 		{"gemini-1.5-flash", 1_000_000},
 		{"gpt-4-0613", 8192},
-		{"unknown-model", 16000},
+		{"Qwen/Qwen3.6-35B-A3B-FP8", 262_144},
+		{"unknown-model", 32_000},
 	}
 
 	for _, tt := range tests {

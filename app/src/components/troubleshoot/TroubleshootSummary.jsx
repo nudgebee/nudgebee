@@ -28,7 +28,7 @@ const TrendChip = ({ diff, hasBaseline = true, kind = 'up-is-bad' }) => {
   else tone = goingUp ? 'success' : 'critical';
   const Arrow = goingUp ? ArrowUpwardIcon : ArrowDownwardIcon;
   return (
-    <Chip size='xs' tone={tone} icon={<Arrow sx={{ fontSize: 12 }} />} aria-label={`${goingUp ? 'up' : 'down'} ${Math.abs(diff)} percent`}>
+    <Chip size='xs' tone={tone} icon={<Arrow sx={{ fontSize: ds.text.small }} />} aria-label={`${goingUp ? 'up' : 'down'} ${Math.abs(diff)} percent`}>
       {goingUp ? '+' : ''}
       {diff}%
     </Chip>
@@ -119,11 +119,6 @@ TimeSavedValue.propTypes = {
 const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, range }) => {
   const { baseTitle } = useTenantBranding();
   const router = useRouter();
-  // Scope the summary cards to the same account selection the Events list uses
-  // (the shared `accountId` URL query param). Without this the cards rolled up
-  // across ALL accounts while the list was account-scoped, inflating the counts.
-  const accountIdParam = router.query.accountId;
-  const accountIds = useMemo(() => (accountIdParam ? String(accountIdParam).split(',').filter(Boolean) : []), [accountIdParam]);
 
   // The comparison window for every card. The page passes a single frozen 24h
   // `range` so the cards and the Events drill-down query the identical interval;
@@ -134,6 +129,11 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
     const startDate = getLast24Hrs(endDate);
     return { startDate, endDate, previousStartDate: getLast24Hrs(startDate), previousEndDate: startDate };
   }, [range]);
+  // Scope the summary cards to the same account selection the Events list uses
+  // (the shared `accountId` URL query param). Without this the cards rolled up
+  // across ALL accounts while the list was account-scoped, inflating the counts.
+  const accountIdParam = router.query.accountId;
+  const accountIds = useMemo(() => (accountIdParam ? String(accountIdParam).split(',').filter(Boolean) : []), [accountIdParam]);
   const [eventInfographics, setEventInfographics] = useState({
     loading: false,
     current: 0,
@@ -307,7 +307,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
           });
         });
     }
-  }, [type, tab, accountIds, resolvedRange]);
+  }, [type, tab, resolvedRange, accountIdParam]);
 
   const last24hPill = (
     <Typography
@@ -337,7 +337,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
         cursor: 'pointer',
         transition: 'border-color 120ms ease, background-color 120ms ease',
         '&:hover': { borderColor: ds.gray[300] },
-        '&:focus-visible': { outline: `2px solid ${ds.blue[400]}`, outlineOffset: '2px' },
+        '&:focus-visible': { outline: `${ds.space[0]} solid ${ds.blue[400]}`, outlineOffset: ds.space[0] },
       }
     : {};
 
@@ -481,7 +481,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
           label='Total Events'
           info={{
             tooltip:
-              'Total Events tracks the total volume of raw signals ingested from your monitored clusters in the last 24 hours. The percentage indicates the change in event volume compared to the previous 24-hour period.',
+              'Total Events tracks the volume of currently firing events from your monitored clusters in the last 24 hours. The percentage indicates the change in event volume compared to the previous 24-hour period.',
             position: 'right',
           }}
           value={
@@ -532,7 +532,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
           label='New Issues'
           info={{
             tooltip:
-              'Distinct issues first seen in the last 7 days that occurred in the last 24 hours — net-new problems as opposed to recurring noise. The percentage compares against the previous 24-hour period.',
+              'Distinct issues first seen in the last 7 days that are currently firing in the last 24 hours — net-new problems as opposed to recurring noise. The percentage compares against the previous 24-hour period.',
             position: 'right',
           }}
           value={
@@ -556,7 +556,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
           label='High Severity'
           info={{
             tooltip:
-              'Number of High-priority events ingested in the last 24 hours, by the source system’s severity. The percentage compares against the previous 24-hour period.',
+              'Number of High-priority firing events in the last 24 hours, by the source system’s severity. The percentage compares against the previous 24-hour period.',
             position: 'right',
           }}
           value={

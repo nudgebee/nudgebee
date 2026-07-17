@@ -3,13 +3,14 @@ import { Box, Typography, Switch, Dialog, DialogContent, Chip, Tabs, Tab, Autoco
 import { Button } from '@ui/Button';
 import { Modal } from '@ui/Modal';
 import { PlayArrow, Timer, Storage, GridView, ErrorOutline, Close, AltRoute, Check } from '@mui/icons-material';
-import { FormCard, FormField } from '@shared/NewReusabeFormComponents';
-import { colors, ds } from 'src/utils/colors';
+import { FormCard, FormField } from '@shared/forms/FormComponents';
+import { ds } from 'src/utils/colors';
 import JsonTreeView from '@shared/viewers/JsonTreeView';
 import type { Node } from 'reactflow';
 import { DraggableOutputField } from './components/action-modal';
 import { useTaskFormData } from './hooks/data-fetchers/useTaskFormData';
 import { useTicketDynamicFields } from './hooks/data-fetchers/useTicketDynamicFields';
+import { getTicketProjectFieldLabel } from '@components/tickets/ticketProjectLabels';
 import { useOptionsSource } from './hooks/data-fetchers/useOptionsSource';
 import { useSelectedNodeConfig } from './hooks/useSelectedNodeConfig';
 import { validateTaskData } from './hooks/useTaskValidation';
@@ -18,14 +19,12 @@ import PlatformFieldItem from './components/PlatformFieldItem';
 import HybridField from './components/HybridField';
 import AccountField from './components/AccountField';
 import CallWorkflowFields from './components/CallWorkflowFields';
-import FilterDropdownButton from '@shared/FilterDropdownButton';
-import { Select, SelectOptionLike } from '@ui/Select';
-import SafeIcon from '@shared/icons/SafeIcon';
+import FilterDropdown from '@ui/FilterDropdown';
 import { getPreviousTasksForNode, getSwitchChildNodeIds, getSwitchDryRunEligibility } from './utils/templateUtils';
-import { getUpstreamSuggestedValues } from './utils/getUpstreamSuggestedValues';
 import { parseDurationToSeconds, sanitizeTaskId } from './utils/taskUtils';
 import apiWorkflow from '@api1/workflow';
 import apiAccount from '@api1/account';
+import { isTenantAdmin } from '@lib/auth';
 import { DurationField, TemplateExpressionField, FailurePolicyField, HooksField, KeyValueField, MatrixField } from './components/advanced-config';
 import CollapsableCard from '@ui/CollapsableCard';
 import {
@@ -41,6 +40,7 @@ import {
 } from './components/WorkflowFieldComponents';
 import { StableTextField, StableTextarea, StableNumberField } from './components/StableFormFields';
 import { SlackIcon, MSTeamsIcon, GChatIcon, PostgresIcon, MySqlIcon, ClickhouseIcon, ouMssql, ouOracle } from '@assets';
+import SafeIcon from '@shared/icons/SafeIcon';
 
 // Icon mapping for notification providers
 const PROVIDER_ICONS: Record<string, any> = {
@@ -213,13 +213,15 @@ const getDropdownOptionsForField = (
   if (fieldSchema.enum || fieldSchema.options) {
     const options = fieldSchema.enum || fieldSchema.options || [];
     return options.map((value: string) => {
-      const option: { label: string; value: string; icon?: any } = {
+      const option: { label: string; value: string; icon?: React.ReactNode } = {
         label: value.charAt(0).toUpperCase() + value.slice(1).replace(/_/g, ' '),
         value: value,
       };
-      // Add icons for provider fields (notification providers)
-      if (fieldName === 'provider' && PROVIDER_ICONS[value]) {
-        option.icon = PROVIDER_ICONS[value];
+      // Add icons for provider fields (notification providers). Wrap in SafeIcon —
+      // these are webpack asset modules, not React components, and ds/Select renders
+      // option.icon directly as a JSX child (React.ReactNode).
+      if ((fieldName === 'provider' || fieldName === 'im_provider') && PROVIDER_ICONS[value]) {
+        option.icon = <SafeIcon src={PROVIDER_ICONS[value]} alt={value} style={{ width: 16, height: 16, objectFit: 'contain' }} />;
       }
       return option;
     });
@@ -242,7 +244,7 @@ interface ActionDetailsSidebarProps {
   previousNodeOutputSchema?: any;
   accountId?: string;
   onRunPreviousSteps?: (taskId: string) => Promise<Record<string, any>>;
-  onDryRunToTask?: (taskId: string) => Promise<any>;
+  onDryRunToTask?: (taskId: string, unsavedConfig?: any) => Promise<any>;
   onRunTask?: (taskType: string, params: any) => Promise<any>;
   workflowInputs?: Array<{ id: string; type: string; description?: string; default?: any }>;
   workflowTimeout?: string;
@@ -373,16 +375,6 @@ const DEFAULT_FORM_FIELD_PROPS = {
   maxLength: 500,
 };
 
-// Map workflow dropdown options ({label,value,icon?}) to DS Select options.
-// `icon` arrives as an image `src` string, so wrap it in SafeIcon for the
-// node-typed `icon` slot DS Select expects.
-const toDsSelectOptions = (opts: Array<{ label?: string; value: string; icon?: any; type?: string }>): SelectOptionLike[] =>
-  (opts || []).map((o) => ({
-    value: o.value,
-    label: o.label ?? o.value,
-    icon: o.icon ? <SafeIcon src={o.icon} alt={o.type ?? ''} style={{ width: 16, height: 16, flexShrink: 0, objectFit: 'contain' }} /> : undefined,
-  }));
-
 const FIELD_PLACEHOLDERS: Record<string, string> = {
   script: "#!/bin/bash\necho 'Starting script execution...'\ncurl -X GET 'https://api.example.com/data'\necho 'Script completed successfully'",
   env: '{"API_KEY": "your-key", "ENV": "production"}',
@@ -425,12 +417,12 @@ const renderDescriptiveOption = (
       <Box sx={{ py: 0.25 }}>
         <Typography
           component='span'
-          sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: 'var(--ds-text-body)', color: colors.text.primary, fontFamily: 'monospace' }}
+          sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: 'var(--ds-text-body)', color: ds.blue[500], fontFamily: 'monospace' }}
         >
           {option}
         </Typography>
         {found?.description && (
-          <Typography component='p' sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondary, mt: 0.25, lineHeight: 1.3 }}>
+          <Typography component='p' sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[700], mt: 0.25, lineHeight: 1.3 }}>
             {found.description}
           </Typography>
         )}
@@ -465,26 +457,6 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
   onPendingDataConsumed,
 }) => {
   const [localData, setLocalData] = useState(taskData || {});
-  // Snapshot of the last data committed to the parent (via Save or external sync).
-  // Used to detect "is this edit dirty vs. what's persisted in workflow state?" so
-  // the Save button can tick out only when there's something to save and the close
-  // confirmation can ask Keep/Discard only when changes exist.
-  const [committedSnapshot, setCommittedSnapshot] = useState<string>(() => JSON.stringify(taskData || {}));
-
-  // Workflow configs state
-  const [workflowConfigs, setWorkflowConfigs] = useState<Array<{ key: string; value: string; type: string }>>([]);
-  const [showAllConfigs, setShowAllConfigs] = useState(false);
-
-  // Default provider (logs / metrics / traces) for the currently selected
-  // account, shown as a read-only chip below the account dropdown for any
-  // observability task whose schema declares `account_provider_type`. The
-  // resolved kind is driven by the selected action type so the Traces action
-  // shows the trace provider, Metrics shows the metric provider, etc.
-  const [defaultProvider, setDefaultProvider] = useState<string>('');
-
-  // Use ref to track the latest localData for stable callbacks
-  const localDataRef = useRef(localData);
-  localDataRef.current = localData;
 
   // Field-level validation errors shown inline must reflect the in-flight
   // `localData`, not the parent's committed errors. The parent only
@@ -509,6 +481,26 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
     if (!schema?.input_schema) return {} as Record<string, string>;
     return validateTaskData(selectedActionType, localData, taskDefinitions).warnings;
   }, [selectedActionType, localData, taskDefinitions]);
+  // Snapshot of the last data committed to the parent (via Save or external sync).
+  // Used to detect "is this edit dirty vs. what's persisted in workflow state?" so
+  // the Save button can tick out only when there's something to save and the close
+  // confirmation can ask Keep/Discard only when changes exist.
+  const [committedSnapshot, setCommittedSnapshot] = useState<string>(() => JSON.stringify(taskData || {}));
+
+  // Workflow configs state
+  const [workflowConfigs, setWorkflowConfigs] = useState<Array<{ key: string; value: string; type: string }>>([]);
+  const [showAllConfigs, setShowAllConfigs] = useState(false);
+
+  // Default provider (logs / metrics / traces) for the currently selected
+  // account, shown as a read-only chip below the account dropdown for any
+  // observability task whose schema declares `account_provider_type`. The
+  // resolved kind is driven by the selected action type so the Traces action
+  // shows the trace provider, Metrics shows the metric provider, etc.
+  const [defaultProvider, setDefaultProvider] = useState<string>('');
+
+  // Use ref to track the latest localData for stable callbacks
+  const localDataRef = useRef(localData);
+  localDataRef.current = localData;
 
   // Refs for stable access in callbacks without adding to dependency arrays
   const taskDefinitionsRef = useRef(taskDefinitions);
@@ -664,15 +656,6 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
     const { allowed, reason } = getSwitchDryRunEligibility(selectedNode.id, nodes, edges ?? []);
     return { allowed, reason };
   }, [selectedActionType, selectedNode, nodes, edges]);
-
-  const switchUpstreamValues = useMemo(() => {
-    if (selectedActionType !== 'core.switch' || !selectedNode) {
-      return null;
-    }
-    const expression = localData?.expression || '';
-    return getUpstreamSuggestedValues(expression, nodes, edges ?? []);
-  }, [selectedActionType, selectedNode, localData?.expression, nodes, edges]);
-
   const isTaskDisabled = selectedNode?.data?.taskConfig?.disabled === true;
   const supportsDryRun =
     (selectedActionType ? !TASKS_WITHOUT_DRY_RUN.has(selectedActionType) : false) && switchDryRunStatus.allowed && !isTaskDisabled;
@@ -1004,8 +987,13 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       try {
         const response: any = await apiWorkflow.listConfigs(accountId);
         if (response?.data?.config_list) {
+          // Drop tenant-scoped rows for users without tenant access. Defense-in-depth
+          // — backend already filters, but this keeps the sidebar consistent with
+          // what the workflow engine will resolve at execution time.
+          const canUseTenantConfigs = isTenantAdmin();
+          const rows = (response.data.config_list as any[]).filter((c) => (canUseTenantConfigs ? true : !!c.account_id));
           setWorkflowConfigs(
-            response.data.config_list.map((config: any) => ({
+            rows.map((config: any) => ({
               key: config.key,
               value: config.value,
               type: config.type || 'config',
@@ -1415,7 +1403,10 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
     const switchChildTaskIds = isSwitchTask ? getSwitchChildNodeIds(selectedNode.id, edges ?? []).map(sanitizeTaskId) : [];
 
     try {
-      const result = await onDryRunToTask(selectedNode.id);
+      // Pass the sidebar's buffered form state so dry run uses unsaved edits.
+      // When the form is clean this equals the committed config, so it's safe
+      // to pass unconditionally.
+      const result = await onDryRunToTask(selectedNode.id, localDataRef.current);
 
       if (result?.tasks && Array.isArray(result.tasks)) {
         const { current, children, previous } = splitDryRunResult(
@@ -1546,9 +1537,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
   const renderWorkflowInputFields = () => {
     if (!workflowInputs || workflowInputs.length === 0) {
       return (
-        <Typography sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondaryDark, fontStyle: 'italic' }}>
-          No automation inputs defined
-        </Typography>
+        <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], fontStyle: 'italic' }}>No automation inputs defined</Typography>
       );
     }
 
@@ -1574,9 +1563,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
   const renderWorkflowConfigFields = () => {
     if (!workflowConfigs || workflowConfigs.length === 0) {
       return (
-        <Typography sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondaryDark, fontStyle: 'italic' }}>
-          No automation configs defined
-        </Typography>
+        <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], fontStyle: 'italic' }}>No automation configs defined</Typography>
       );
     }
 
@@ -1635,10 +1622,10 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             bgcolor: 'var(--ds-background-100)',
           }}
         >
-          <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary, mb: 0.5 }}>
+          <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700], mb: 0.5 }}>
             Available Data
           </Typography>
-          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondaryDark }}>Drag fields to use in configuration</Typography>
+          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400] }}>Drag fields to use in configuration</Typography>
         </Box>
 
         {/* Dry Run Button */}
@@ -1648,7 +1635,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             tone='secondary'
             size='sm'
             fullWidth
-            icon={<PlayArrow sx={{ fontSize: 16 }} />}
+            icon={<PlayArrow sx={{ fontSize: ds.text.title }} />}
             loading={previousDryRunLoading}
             disabled={previousDryRunLoading || !hasPreviousTasks || viewOnlyMode}
             onClick={handleDryRunPreviousTasks}
@@ -1656,7 +1643,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             {previousDryRunLoading ? 'Running...' : 'Test Previous Actions'}
           </Button>
           {previousDryRunError && (
-            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.errorText, mt: 0.5 }}>{previousDryRunError}</Typography>
+            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.red[500], mt: 0.5 }}>{previousDryRunError}</Typography>
           )}
         </Box>
 
@@ -1678,12 +1665,10 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 p: 1.5,
                 bgcolor: 'var(--ds-background-100)',
                 border: '1px solid var(--ds-blue-200)',
-                borderRadius: 1,
+                borderRadius: ds.radius.sm,
               }}
             >
-              <Typography
-                sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary, mb: 1 }}
-              >
+              <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700], mb: 1 }}>
                 Automation Inputs
               </Typography>
               {renderWorkflowInputFields()}
@@ -1697,12 +1682,10 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 p: 1.5,
                 bgcolor: 'var(--ds-background-100)',
                 border: '1px solid var(--ds-yellow-300)',
-                borderRadius: 1,
+                borderRadius: ds.radius.sm,
               }}
             >
-              <Typography
-                sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary, mb: 1 }}
-              >
+              <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700], mb: 1 }}>
                 Automation Configs
               </Typography>
               {renderWorkflowConfigFields()}
@@ -1723,7 +1706,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                       p: 1.5,
                       bgcolor: 'var(--ds-background-100)',
                       border: '1px solid var(--ds-brand-150)',
-                      borderRadius: 1,
+                      borderRadius: ds.radius.sm,
                     }}
                   >
                     <Box
@@ -1734,9 +1717,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                         mb: 0.75,
                       }}
                     >
-                      <Typography
-                        sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary }}
-                      >
+                      <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700] }}>
                         {task.name || task.id}
                       </Typography>
                       {statusColors && (
@@ -1754,7 +1735,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                         />
                       )}
                     </Box>
-                    <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondaryDark, mb: 1 }}>{task.type}</Typography>
+                    <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400], mb: 1 }}>{task.type}</Typography>
                     {renderTaskOutputFields(task, taskOutput)}
 
                     {/* Show actual output after dry-run */}
@@ -1766,7 +1747,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                           p: 1.5,
                           bgcolor: 'var(--ds-green-100)',
                           border: '1px solid var(--ds-green-200)',
-                          borderRadius: 1,
+                          borderRadius: ds.radius.sm,
                           flex: 1,
                           minHeight: 0,
                           overflow: 'auto',
@@ -1801,7 +1782,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                           p: 1.5,
                           bgcolor: 'var(--ds-red-100)',
                           border: '1px solid var(--ds-red-200)',
-                          borderRadius: 1,
+                          borderRadius: ds.radius.sm,
                         }}
                       >
                         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-red-700)' }}>{taskOutput.error}</Typography>
@@ -1815,7 +1796,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
           {/* Empty state - only show if no inputs, no configs and no previous tasks */}
           {(!workflowInputs || workflowInputs.length === 0) && (!workflowConfigs || workflowConfigs.length === 0) && !hasPreviousTasks && (
-            <Typography sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondaryDark, fontStyle: 'italic' }}>
+            <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], fontStyle: 'italic' }}>
               No workflow inputs, configs or previous actions available
             </Typography>
           )}
@@ -1857,7 +1838,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
           {/* Section Title & Status */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary }}>
+            <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700] }}>
               {title}:
             </Typography>
             {statusColors && (
@@ -1884,7 +1865,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 p: 1.5,
                 bgcolor: 'var(--ds-green-100)',
                 border: '1px solid var(--ds-green-200)',
-                borderRadius: 1,
+                borderRadius: ds.radius.sm,
                 overflow: 'auto',
                 maxHeight: '200px',
               }}
@@ -1913,7 +1894,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 p: 1.5,
                 bgcolor: 'var(--ds-red-100)',
                 border: '1px solid var(--ds-red-200)',
-                borderRadius: 1,
+                borderRadius: ds.radius.sm,
                 overflow: 'auto',
                 maxHeight: '200px',
               }}
@@ -1963,12 +1944,10 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             bgcolor: 'var(--ds-background-100)',
           }}
         >
-          <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary, mb: 0.5 }}>
+          <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700], mb: 0.5 }}>
             Test Action
           </Typography>
-          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondaryDark }}>
-            Test this action with dry run or live execution
-          </Typography>
+          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400] }}>Test this action with dry run or live execution</Typography>
         </Box>
 
         {/* Buttons Section */}
@@ -1989,7 +1968,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               tone='secondary'
               size='md'
               fullWidth
-              icon={<PlayArrow sx={{ fontSize: 16 }} />}
+              icon={<PlayArrow sx={{ fontSize: ds.text.title }} />}
               loading={currentDryRunLoading}
               disabled={currentDryRunLoading || runTaskLoading || viewOnlyMode || !onDryRunToTask || !supportsDryRun}
               onClick={handleDryRunCurrentTask}
@@ -1999,7 +1978,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             <Typography
               sx={{
                 fontSize: 'var(--ds-text-caption)',
-                color: !supportsDryRun ? colors.errorText : colors.text.secondaryDark,
+                color: !supportsDryRun ? ds.red[500] : ds.gray[400],
                 mt: 0.5,
                 textAlign: 'center',
               }}
@@ -2014,7 +1993,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               tone='primary'
               size='md'
               fullWidth
-              icon={<PlayArrow sx={{ fontSize: 16 }} />}
+              icon={<PlayArrow sx={{ fontSize: ds.text.title }} />}
               loading={runTaskLoading}
               disabled={runTaskLoading || currentDryRunLoading || viewOnlyMode || !onRunTask || !supportsIndividualRun}
               onClick={handleRunTask}
@@ -2024,7 +2003,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             <Typography
               sx={{
                 fontSize: 'var(--ds-text-caption)',
-                color: !supportsIndividualRun ? colors.errorText : colors.text.secondaryDark,
+                color: !supportsIndividualRun ? ds.red[500] : ds.gray[400],
                 mt: 0.5,
                 textAlign: 'center',
               }}
@@ -2070,7 +2049,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                color: colors.text.secondaryDark,
+                color: ds.gray[400],
               }}
             >
               <Typography sx={{ fontSize: 'var(--ds-text-small)', fontStyle: 'italic', textAlign: 'center' }}>
@@ -2125,6 +2104,10 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
     const isSwitchTask = selectedActionType === 'core.switch';
 
     const renderField = (fieldName: string, fieldSchema: SchemaProperty) => {
+      // Tool-aware noun for the `project_key` field (GitHub → "Repository",
+      // PagerDuty/ZenDuty → "Service", ServiceNow → "Table", …). Shared with the
+      // create-ticket modal via getTicketProjectFieldLabel so they don't drift.
+      const ticketProjectNoun = getTicketProjectFieldLabel(ticketTool);
       let isRequired = requiredFields.has(fieldName);
       if (!isRequired && fieldSchema.required_when) {
         const { field, value } = fieldSchema.required_when;
@@ -2188,14 +2171,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 minWidth: '120px',
                 maxWidth: '120px',
                 pt: 1,
               }}
             >
               {fieldSchema.title || formatFieldLabel(fieldName)}
-              {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+              {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
               <HybridField
@@ -2247,14 +2230,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
                 {fieldSchema.title || formatFieldLabel(fieldName)}
-                {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
                 <HybridField
@@ -2304,13 +2287,13 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
-                Team<span style={{ color: colors.border.error }}> *</span>
+                Team<span style={{ color: ds.red[500] }}> *</span>
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
                 <HybridField
@@ -2363,14 +2346,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
                 {fieldSchema.title || formatFieldLabel(fieldName)}
-                {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
                 <FormField
@@ -2387,7 +2370,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   placeholder={`Select ${fieldName.replace(/_/g, ' ')}`}
                   disabled={isReadOnly || viewOnlyMode}
                   error={validationErrors[fieldName] || ''}
-                  fieldType='dropdown'
+                  fieldType='select'
                   options={options as any}
                   required={isRequired}
                   minWidth='100%'
@@ -2418,14 +2401,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
                 {fieldSchema.title || formatFieldLabel(fieldName)}
-                {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
                 <HybridField
@@ -2483,14 +2466,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
                 {fieldSchema.title || formatFieldLabel(fieldName)}
-                {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
                 <FormField
@@ -2507,7 +2490,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   placeholder={`Select ${fieldName.replace(/_/g, ' ')}`}
                   disabled={isReadOnly || viewOnlyMode}
                   error={validationErrors[fieldName] || ''}
-                  fieldType='dropdown'
+                  fieldType='select'
                   options={options as any}
                   required={isRequired}
                   minWidth='100%'
@@ -2544,14 +2527,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
                 {fieldSchema.title || formatFieldLabel(fieldName)}
-                {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
                 <HybridField
@@ -2609,14 +2592,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
                 {fieldSchema.title || formatFieldLabel(fieldName)}
-                {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
                 <FormField
@@ -2633,7 +2616,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   placeholder={`Select ${fieldName.replace(/_/g, ' ')}`}
                   disabled={isReadOnly || viewOnlyMode}
                   error={validationErrors[fieldName] || ''}
-                  fieldType='dropdown'
+                  fieldType='select'
                   options={options as any}
                   required={isRequired}
                   minWidth='100%'
@@ -2666,14 +2649,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
                 {fieldSchema.title || formatFieldLabel(fieldName)}
-                {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
                 <HybridField
@@ -2719,14 +2702,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
-                {fieldSchema.title || formatFieldLabel(fieldName)}
-                {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                {ticketProjectNoun}
+                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
                 <HybridField
@@ -2744,7 +2727,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     };
                     setLocalData(updatedData);
                   }}
-                  placeholder={!dependenciesMet ? 'Select an integration first' : 'Select project'}
+                  placeholder={!dependenciesMet ? 'Select an integration first' : `Select ${ticketProjectNoun.toLowerCase()}`}
                   disabled={isReadOnly || viewOnlyMode || !dependenciesMet}
                   error={validationErrors[fieldName] || ''}
                   required={isRequired}
@@ -2772,14 +2755,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
                 {fieldSchema.title || formatFieldLabel(fieldName)}
-                {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
                 <HybridField
@@ -2796,7 +2779,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     };
                     setLocalData(updatedData);
                   }}
-                  placeholder={!dependenciesMet ? 'Select a project first' : 'Select issue type'}
+                  placeholder={!dependenciesMet ? `Select a ${ticketProjectNoun.toLowerCase()} first` : 'Select issue type'}
                   disabled={isReadOnly || viewOnlyMode || !dependenciesMet}
                   error={validationErrors[fieldName] || ''}
                   required={isRequired}
@@ -2835,14 +2818,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
                 {severityLabel}
-                {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
                 <HybridField
@@ -2887,21 +2870,21 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 minWidth: '120px',
                 maxWidth: '120px',
                 pt: 1,
               }}
             >
-              {fieldSchema.title || formatFieldLabel(fieldName)}
-              {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+              {ticketProjectNoun}
+              {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
               <HybridField
                 fieldName={fieldName}
                 value={fieldValue}
                 onChange={(newValue: string) => handleDataChange(fieldName, newValue)}
-                placeholder={!dependenciesMet ? 'Select an integration first' : 'Select project'}
+                placeholder={!dependenciesMet ? 'Select an integration first' : `Select ${ticketProjectNoun.toLowerCase()}`}
                 disabled={isReadOnly || viewOnlyMode || !dependenciesMet}
                 error={validationErrors[fieldName] || ''}
                 required={isRequired}
@@ -2948,17 +2931,17 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
                 {fieldSchema.title || formatFieldLabel(fieldName)}
-                {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }} data-testid={`options-source-${fieldName}`}>
-                <FilterDropdownButton
+                <FilterDropdown
                   id={fieldName}
                   multiple
                   freeSolo
@@ -2994,13 +2977,13 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   sx={{
                     width: '100%',
                     ...(validationErrors[fieldName] && {
-                      border: `1px solid ${colors.border?.error || '#d32f2f'}`,
+                      border: `1px solid ${ds.red[500]}`,
                       boxShadow: 'none',
                     }),
                   }}
                 />
                 {validationErrors[fieldName] && (
-                  <Typography variant='caption' sx={{ color: colors.border.error, mt: 0.5, display: 'block' }}>
+                  <Typography variant='caption' sx={{ color: ds.red[500], mt: 0.5, display: 'block' }}>
                     {validationErrors[fieldName]}
                   </Typography>
                 )}
@@ -3026,17 +3009,17 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
                 {fieldSchema.title || formatFieldLabel(fieldName)}
-                {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }} data-testid={`options-source-${fieldName}`}>
-                <FilterDropdownButton
+                <FilterDropdown
                   id={fieldName}
                   options={sourceData.options}
                   value={(fieldValue as string) || ''}
@@ -3052,13 +3035,13 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   sx={{
                     width: '100%',
                     ...(validationErrors[fieldName] && {
-                      border: `1px solid ${colors.border?.error || '#d32f2f'}`,
+                      border: `1px solid ${ds.red[500]}`,
                       boxShadow: 'none',
                     }),
                   }}
                 />
                 {validationErrors[fieldName] && (
-                  <Typography variant='caption' sx={{ color: colors.border.error, mt: 0.5, display: 'block' }}>
+                  <Typography variant='caption' sx={{ color: ds.red[500], mt: 0.5, display: 'block' }}>
                     {validationErrors[fieldName]}
                   </Typography>
                 )}
@@ -3079,14 +3062,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 minWidth: '120px',
                 maxWidth: '120px',
                 pt: 1,
               }}
             >
               {fieldSchema.title || formatFieldLabel(fieldName)}
-              {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+              {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
               <Autocomplete
@@ -3209,14 +3192,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 minWidth: '120px',
                 maxWidth: '120px',
                 pt: 1,
               }}
             >
               {fieldSchema.title || formatFieldLabel(fieldName)}
-              {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+              {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 400px', minWidth: '300px' }}>
               <HybridField
@@ -3251,14 +3234,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 minWidth: '120px',
                 maxWidth: '120px',
                 pt: 0.5,
               }}
             >
               {fieldSchema.title || formatFieldLabel(fieldName)}
-              {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+              {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 300px', minWidth: '200px', display: 'flex', flexDirection: 'column' }}>
               <Switch
@@ -3272,7 +3255,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 <Typography
                   sx={{
                     fontSize: 'var(--ds-text-caption)',
-                    color: colors.text.secondaryDark,
+                    color: ds.gray[400],
                     fontWeight: 'var(--ds-font-weight-regular)',
                     mt: 0.5,
                   }}
@@ -3293,14 +3276,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 minWidth: '120px',
                 maxWidth: '120px',
                 pt: 1,
               }}
             >
               {fieldSchema.title || formatFieldLabel(fieldName)}
-              {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+              {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
               <PasswordField
@@ -3328,14 +3311,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 minWidth: '120px',
                 maxWidth: '120px',
                 pt: 1,
               }}
             >
               {fieldSchema.title || formatFieldLabel(fieldName)}
-              {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+              {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
               <DurationInput
@@ -3362,14 +3345,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 minWidth: '120px',
                 maxWidth: '120px',
                 pt: 1,
               }}
             >
               {fieldSchema.title || formatFieldLabel(fieldName)}
-              {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+              {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 400px', minWidth: '300px' }}>
               {fieldSchema.description && (
@@ -3400,14 +3383,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 minWidth: '120px',
                 maxWidth: '120px',
                 pt: 1,
               }}
             >
               {fieldSchema.title || formatFieldLabel(fieldName)}
-              {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+              {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 400px', minWidth: '300px' }}>
               {fieldSchema.description && (
@@ -3437,14 +3420,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 minWidth: '120px',
                 maxWidth: '120px',
                 pt: 1,
               }}
             >
               {fieldSchema.title || formatFieldLabel(fieldName)}
-              {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+              {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 400px', minWidth: '300px' }}>
               {fieldSchema.description && (
@@ -3495,14 +3478,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   sx={{
                     fontSize: 'var(--ds-text-body)',
                     fontWeight: 'var(--ds-font-weight-medium)',
-                    color: colors.text.secondary,
+                    color: ds.gray[700],
                     minWidth: '120px',
                     maxWidth: '120px',
                     pt: 1,
                   }}
                 >
                   {fieldSchema.title || formatFieldLabel(fieldName)}
-                  {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                  {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
                 </Typography>
                 <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
                   <HybridField
@@ -3580,14 +3563,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
                 {fieldSchema.title || formatFieldLabel(fieldName)}
-                {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
                 {isAccountField ? (
@@ -3607,25 +3590,48 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     workflowInputs={workflowInputs}
                     workflowConfigs={workflowConfigs}
                   />
-                ) : (
-                  <Select
+                ) : (options as any[]).some((o) => o?.icon) ? (
+                  <FilterDropdown
                     id={fieldName}
-                    options={toDsSelectOptions(options as any[])}
-                    value={renderedValue || null}
-                    onChange={(next) => handleDataChange(fieldName, next)}
-                    placeholder={`Select ${fieldName.replace(/_/g, ' ')}`}
+                    options={options as any[]}
+                    value={(options as any[]).find((o) => o?.value === renderedValue) ?? null}
+                    onSelect={(_e: any, selected: any) => handleDataChange(fieldName, selected?.value ?? '')}
                     disabled={isReadOnly || viewOnlyMode}
                     required={isRequired}
-                    error={validationErrors[fieldName] || undefined}
+                    placeholder={`Select ${fieldName.replace(/_/g, ' ')}`}
+                    searchPlaceholder={`Search ${fieldName.replace(/_/g, ' ')}`}
+                    sx={{
+                      width: '100%',
+                      ...(validationErrors[fieldName] && {
+                        border: `1px solid ${ds.red[500]}`,
+                        boxShadow: 'none',
+                      }),
+                    }}
+                  />
+                ) : (
+                  <FormField
+                    {...DEFAULT_FORM_FIELD_PROPS}
+                    description={fieldSchema.description || ''}
+                    value={renderedValue}
+                    onChange={(e: any) => handleDataChange(fieldName, e.target.value)}
+                    placeholder={`Select ${fieldName.replace(/_/g, ' ')}`}
+                    disabled={isReadOnly || viewOnlyMode}
+                    error={validationErrors[fieldName] || ''}
+                    fieldType='select'
+                    options={options as any}
+                    required={isRequired}
                     minWidth='100%'
                   />
+                )}
+                {!isAccountField && (options as any[]).some((o) => o?.icon) && validationErrors[fieldName] && (
+                  <Typography sx={{ mt: 0.5, fontSize: 'var(--ds-text-small)', color: ds.red[500] }}>{validationErrors[fieldName]}</Typography>
                 )}
                 {showDefaultProviderChip && (
                   <Box sx={{ mt: 0.75 }}>
                     <Chip
                       size='small'
                       label={`${defaultProviderChipLabel}: ${defaultProvider}`}
-                      sx={{ fontSize: 'var(--ds-text-caption)', height: '20px', bgcolor: colors.lowestLight, color: colors.text.secondary }}
+                      sx={{ fontSize: 'var(--ds-text-caption)', height: '20px', bgcolor: ds.green[200], color: ds.gray[700] }}
                     />
                   </Box>
                 )}
@@ -3742,14 +3748,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 minWidth: '120px',
                 maxWidth: '120px',
                 pt: 1,
               }}
             >
               {fieldSchema.title || formatFieldLabel(fieldName)}
-              {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+              {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
               <TimestampPicker
@@ -3777,14 +3783,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 minWidth: '120px',
                 maxWidth: '120px',
                 pt: 1,
               }}
             >
               {fieldSchema.title || formatFieldLabel(fieldName)}
-              {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+              {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 400px', minWidth: '300px' }}>
               {fieldSchema.description && (
@@ -3796,13 +3802,6 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 value={Array.isArray(fieldValue) ? fieldValue : []}
                 onChange={(value) => handleDataChange(fieldName, value)}
                 error={validationErrors[fieldName]}
-                suggestedValues={isSwitchTask && fieldName === 'cases' ? switchUpstreamValues?.values : undefined}
-                upstreamTaskInfo={
-                  isSwitchTask && fieldName === 'cases'
-                    ? { taskId: switchUpstreamValues?.taskId, taskName: switchUpstreamValues?.taskName }
-                    : undefined
-                }
-                isComplexExpression={isSwitchTask && fieldName === 'cases' ? switchUpstreamValues?.isComplexExpression : undefined}
                 itemSchema={(() => {
                   const raw = (fieldSchema.schema?.properties || fieldSchema.schema) as Record<string, any> | undefined;
                   if (!raw) return undefined;
@@ -3826,14 +3825,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 minWidth: '120px',
                 maxWidth: '120px',
                 pt: 1,
               }}
             >
               {fieldSchema.title || formatFieldLabel(fieldName)}
-              {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+              {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 400px', minWidth: '300px' }}>
               {fieldSchema.description && (
@@ -3862,14 +3861,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 minWidth: '120px',
                 maxWidth: '120px',
                 pt: 1,
               }}
             >
               {fieldSchema.title || formatFieldLabel(fieldName)}
-              {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+              {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 400px', minWidth: '300px' }}>
               {fieldSchema.description && (
@@ -3962,7 +3961,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             {...dropHandlers}
             sx={{
               transition: 'all 0.2s ease',
-              borderRadius: 1,
+              borderRadius: ds.radius.sm,
               ...(isDropTarget && {
                 outline: '2px dashed var(--ds-blue-400)',
                 outlineOffset: 2,
@@ -3975,14 +3974,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   minWidth: '120px',
                   maxWidth: '120px',
                   pt: 1,
                 }}
               >
                 {fieldSchema.title || formatFieldLabel(fieldName)}
-                {isRequired && <span style={{ color: colors.border.error }}> *</span>}
+                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 400px', minWidth: '300px' }}>
                 <TemplateTextField
@@ -4051,13 +4050,13 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     gap: 1,
                     p: 'var(--ds-space-2)',
                     border: '1px solid',
-                    borderColor: colors.lowestLight,
+                    borderColor: ds.green[200],
                     borderRadius: 0.5,
                   }}
                 >
                   <Box
                     sx={{
-                      bgcolor: colors.text.secondary,
+                      bgcolor: ds.brand[500],
                       color: 'white',
                       px: 0.75,
                       py: 0.125,
@@ -4079,7 +4078,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                         alignItems: 'center',
                         gap: 0.25,
                         fontWeight: 'var(--ds-font-weight-semibold)',
-                        color: colors.text.secondary,
+                        color: ds.gray[700],
                         fontSize: '0.8rem',
                         lineHeight: 1.2,
                       }}
@@ -4102,7 +4101,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     {fieldSchema.description && (
                       <Box
                         sx={{
-                          color: colors.text.secondary,
+                          color: ds.gray[700],
                           fontSize: '0.675rem',
                           mt: 0.125,
                           lineHeight: 1.2,
@@ -4123,7 +4122,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                           fontSize: '0.625rem',
                           mt: 0.125,
                           fontFamily: 'monospace',
-                          bgcolor: colors.text.secondary,
+                          bgcolor: ds.brand[500],
                           color: 'white',
                           px: 0.375,
                           py: 0.0625,
@@ -4231,7 +4230,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       return (
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {/* Form Description */}
-          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondaryDark, mb: 1 }}>{description}</Typography>
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], mb: 1 }}>{description}</Typography>
 
           {/* Advisory date-format lint warnings (non-blocking) */}
           {Object.keys(validationWarnings).length > 0 && (
@@ -4272,7 +4271,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     sx={{
                       fontSize: 'var(--ds-text-body)',
                       fontWeight: 'var(--ds-font-weight-medium)',
-                      color: colors.text.secondary,
+                      color: ds.gray[700],
                       minWidth: '120px',
                       maxWidth: '120px',
                       pt: 1,
@@ -4281,24 +4280,26 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     Time Range
                   </Typography>
                   <Box sx={{ flex: '1 1 300px', minWidth: '200px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <Select
-                      options={modeOptions}
+                    <FormField
+                      {...DEFAULT_FORM_FIELD_PROPS}
+                      fieldType='select'
                       value={timeMode}
-                      onChange={(next) => handleTimeModeChange(next === 'absolute' ? 'absolute' : 'relative')}
+                      onChange={(e: any) => handleTimeModeChange(e?.target?.value === 'absolute' ? 'absolute' : 'relative')}
+                      options={modeOptions as any}
                       placeholder='Select time range type'
                       disabled={viewOnlyMode}
-                      clearable={false}
                       minWidth='100%'
                     />
                     {timeMode === 'relative' ? (
-                      <Select
-                        options={durationOptions}
+                      <FormField
+                        {...DEFAULT_FORM_FIELD_PROPS}
+                        fieldType='select'
                         value={localData?.['duration'] ?? (durationSchema?.default as string) ?? '1h'}
-                        onChange={(next) => handleDataChange('duration', next)}
+                        onChange={(e: any) => handleDataChange('duration', e?.target?.value)}
+                        options={durationOptions as any}
                         placeholder='Select duration'
-                        help={durationSchema?.description || undefined}
+                        description={durationSchema?.description || ''}
                         disabled={viewOnlyMode}
-                        clearable={false}
                         minWidth='100%'
                       />
                     ) : (
@@ -4343,7 +4344,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     sx={{
                       fontSize: 'var(--ds-text-body)',
                       fontWeight: 'var(--ds-font-weight-medium)',
-                      color: colors.text.secondary,
+                      color: ds.gray[700],
                       minWidth: '120px',
                       maxWidth: '120px',
                       pt: 1,
@@ -4352,13 +4353,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     Resize
                   </Typography>
                   <Box sx={{ flex: '1 1 300px', minWidth: '200px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <Select
-                      options={modeOptions}
+                    <FormField
+                      {...DEFAULT_FORM_FIELD_PROPS}
+                      fieldType='select'
                       value={changeMode}
-                      onChange={(next) => handleChangeModeChange(next === 'to' ? 'to' : 'by')}
+                      onChange={(e: any) => handleChangeModeChange(e?.target?.value === 'to' ? 'to' : 'by')}
+                      options={modeOptions as any}
                       placeholder='Select resize mode'
                       disabled={viewOnlyMode}
-                      clearable={false}
                       minWidth='100%'
                     />
                     <FormField
@@ -4386,7 +4388,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     sx={{
                       fontSize: 'var(--ds-text-body)',
                       fontWeight: 'var(--ds-font-weight-medium)',
-                      color: colors.text.secondary,
+                      color: ds.gray[700],
                       minWidth: '120px',
                       maxWidth: '120px',
                       pt: 1,
@@ -4429,9 +4431,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               if (platformFields.length === 0) return null;
               return (
                 <Box sx={{ mt: 1 }}>
-                  <Typography
-                    sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary, mb: 1 }}
-                  >
+                  <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700], mb: 1 }}>
                     Platform Fields
                   </Typography>
                   {platformFields.map(([fieldKey, fieldMeta]) => (
@@ -4464,8 +4464,8 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       return (
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
-            <AltRoute sx={{ fontSize: 18, color: colors.text.secondary }} />
-            <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary }}>
+            <AltRoute sx={{ fontSize: 18, color: ds.gray[700] }} />
+            <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700] }}>
               {'Conditional Execution'}
             </Typography>
             {hasCondition && (
@@ -4479,7 +4479,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               />
             )}
           </Box>
-          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondary, mb: 1 }}>
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[700], mb: 1 }}>
             {'Define a condition to control whether this task executes. The task runs only when the condition evaluates to true.'}
           </Typography>
           <TemplateExpressionField
@@ -4511,16 +4511,16 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               gap: 1.5,
               px: 1.5,
               py: 1.25,
-              border: `1px solid ${colors.lowestLight}`,
-              borderRadius: 1,
-              bgcolor: taskConfig.disabled ? '#f9fafb' : 'transparent',
+              border: `1px solid ${ds.green[200]}`,
+              borderRadius: ds.radius.sm,
+              bgcolor: taskConfig.disabled ? ds.background[200] : 'transparent',
             }}
           >
             <Box sx={{ flex: 1, minWidth: 0 }}>
-              <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.primary }}>
+              <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.blue[500] }}>
                 Disable task
               </Typography>
-              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondary, mt: 0.25 }}>
+              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[700], mt: 0.25 }}>
                 {taskConfig.disabled
                   ? 'Task is muted. The workflow has been rerouted around it. Toggle off to restore its original connections.'
                   : 'Skip this task without deleting it. The workflow will be rerouted: predecessors connect directly to successors. Re-enable to restore the original chain.'}
@@ -4536,19 +4536,19 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
           </Box>
 
           {/* Execution Control Group */}
-          <Box id='execution-control' sx={{ mb: 2, scrollMarginTop: '16px' }}>
+          <Box id='execution-control' sx={{ mb: 2, scrollMarginTop: ds.space[4] }}>
             <CollapsableCard
               composition='header+meta+body'
               elevation='flat'
               defaultOpen={hasExecutionControl}
               header={
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Timer sx={{ fontSize: 16, color: colors.text.secondary }} />
+                  <Timer sx={{ fontSize: ds.text.title, color: ds.gray[700] }} />
                   <Typography
                     sx={{
                       fontSize: 'var(--ds-text-small)',
                       fontWeight: 'var(--ds-font-weight-semibold)',
-                      color: colors.text.secondary,
+                      color: ds.gray[700],
                       textTransform: 'uppercase',
                       letterSpacing: '0.5px',
                     }}
@@ -4580,19 +4580,19 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
           </Box>
 
           {/* Data Management Group */}
-          <Box id='data-management' sx={{ mb: 2, scrollMarginTop: '16px' }}>
+          <Box id='data-management' sx={{ mb: 2, scrollMarginTop: ds.space[4] }}>
             <CollapsableCard
               composition='header+meta+body'
               elevation='flat'
               defaultOpen={hasDataManagement}
               header={
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Storage sx={{ fontSize: 16, color: colors.text.secondary }} />
+                  <Storage sx={{ fontSize: ds.text.title, color: ds.gray[700] }} />
                   <Typography
                     sx={{
                       fontSize: 'var(--ds-text-small)',
                       fontWeight: 'var(--ds-font-weight-semibold)',
-                      color: colors.text.secondary,
+                      color: ds.gray[700],
                       textTransform: 'uppercase',
                       letterSpacing: '0.5px',
                     }}
@@ -4625,19 +4625,19 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
           </Box>
 
           {/* Parallel Execution Group */}
-          <Box id='parallel-execution' sx={{ mb: 2, scrollMarginTop: '16px' }}>
+          <Box id='parallel-execution' sx={{ mb: 2, scrollMarginTop: ds.space[4] }}>
             <CollapsableCard
               composition='header+meta+body'
               elevation='flat'
               defaultOpen={hasParallelExecution}
               header={
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <GridView sx={{ fontSize: 16, color: colors.text.secondary }} />
+                  <GridView sx={{ fontSize: ds.text.title, color: ds.gray[700] }} />
                   <Typography
                     sx={{
                       fontSize: 'var(--ds-text-small)',
                       fontWeight: 'var(--ds-font-weight-semibold)',
-                      color: colors.text.secondary,
+                      color: ds.gray[700],
                       textTransform: 'uppercase',
                       letterSpacing: '0.5px',
                     }}
@@ -4655,19 +4655,19 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
           </Box>
 
           {/* Error Handling Group */}
-          <Box id='error-handling' sx={{ mb: 2, scrollMarginTop: '16px' }}>
+          <Box id='error-handling' sx={{ mb: 2, scrollMarginTop: ds.space[4] }}>
             <CollapsableCard
               composition='header+meta+body'
               elevation='flat'
               defaultOpen={hasErrorHandling}
               header={
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <ErrorOutline sx={{ fontSize: 16, color: colors.text.secondary }} />
+                  <ErrorOutline sx={{ fontSize: ds.text.title, color: ds.gray[700] }} />
                   <Typography
                     sx={{
                       fontSize: 'var(--ds-text-small)',
                       fontWeight: 'var(--ds-font-weight-semibold)',
-                      color: colors.text.secondary,
+                      color: ds.gray[700],
                       textTransform: 'uppercase',
                       letterSpacing: '0.5px',
                     }}
@@ -4690,10 +4690,10 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
           </Box>
 
           {/* Schema Information */}
-          <Box sx={{ mt: 2, pt: 2, borderTop: `1px solid ${colors.lowestLight}` }}>
+          <Box sx={{ mt: 2, pt: 2, borderTop: `1px solid ${ds.green[200]}` }}>
             <Typography
               variant='subtitle2'
-              sx={{ mb: 1, fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary }}
+              sx={{ mb: 1, fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700] }}
             >
               Schema Information
             </Typography>
@@ -4724,7 +4724,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             sx={{
               minHeight: 40,
               '& .MuiTabs-indicator': {
-                backgroundColor: colors.primary,
+                backgroundColor: ds.blue[500],
                 height: 2,
               },
             }}
@@ -4737,12 +4737,12 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 textTransform: 'none',
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: activeTab === 'parameters' ? 600 : 400,
-                color: activeTab === 'parameters' ? colors.primary : colors.text.secondary,
+                color: activeTab === 'parameters' ? ds.blue[500] : ds.gray[700],
                 minHeight: 40,
                 py: 1,
                 px: 2,
                 '&.Mui-selected': {
-                  color: colors.primary,
+                  color: ds.blue[500],
                 },
               }}
             />
@@ -4758,7 +4758,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                         width: 6,
                         height: 6,
                         borderRadius: '50%',
-                        bgcolor: colors.primary,
+                        bgcolor: ds.blue[500],
                       }}
                     />
                   )}
@@ -4769,12 +4769,12 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 textTransform: 'none',
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: activeTab === 'condition' ? 600 : 400,
-                color: activeTab === 'condition' ? colors.primary : colors.text.secondary,
+                color: activeTab === 'condition' ? ds.blue[500] : ds.gray[700],
                 minHeight: 40,
                 py: 1,
                 px: 2,
                 '&.Mui-selected': {
-                  color: colors.primary,
+                  color: ds.blue[500],
                 },
               }}
             />
@@ -4786,12 +4786,12 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 textTransform: 'none',
                 fontSize: 'var(--ds-text-body)',
                 fontWeight: activeTab === 'settings' ? 600 : 400,
-                color: activeTab === 'settings' ? colors.primary : colors.text.secondary,
+                color: activeTab === 'settings' ? ds.blue[500] : ds.gray[700],
                 minHeight: 40,
                 py: 1,
                 px: 2,
                 '&.Mui-selected': {
-                  color: colors.primary,
+                  color: ds.blue[500],
                 },
               }}
             />
@@ -4862,7 +4862,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           {!viewOnlyMode && isDirty && (
-            <Button id='action-sidebar-save-btn' tone='primary' size='sm' icon={<Check sx={{ fontSize: 16 }} />} onClick={handleSave}>
+            <Button id='action-sidebar-save-btn' tone='primary' size='sm' icon={<Check sx={{ fontSize: ds.text.title }} />} onClick={handleSave}>
               Save
             </Button>
           )}
@@ -4872,7 +4872,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             tone='ghost'
             size='sm'
             aria-label='Close'
-            icon={<Close sx={{ fontSize: 20, color: 'var(--ds-gray-600)' }} />}
+            icon={<Close sx={{ fontSize: ds.text.heading, color: 'var(--ds-gray-600)' }} />}
             onClick={requestClose}
           />
         </Box>
@@ -4918,7 +4918,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
         }
       >
         <Box sx={{ p: 'var(--ds-space-4) 0' }}>
-          <Typography sx={{ fontSize: 'var(--ds-text-body)', color: colors.text.secondary }}>
+          <Typography sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[700] }}>
             {directDependentsCount === 1
               ? '1 task currently depends on this one. Disabling will reroute the workflow to skip this task — its predecessors will connect directly to its successor.'
               : `${directDependentsCount} tasks currently depend on this one. Disabling will reroute the workflow to skip this task — its predecessors will connect directly to its successors.`}

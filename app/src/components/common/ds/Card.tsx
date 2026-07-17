@@ -5,7 +5,7 @@
  *
  * Consolidates WidgetCard + CustomBorderCard into a single primitive with
  * three independent axes: `variant`, `size`, `elevation`. Visual baseline
- * (size="md" + elevation="raised") matches @common-new/WidgetCard exactly —
+ * (size="md" + elevation="raised") matches @common/WidgetCard exactly —
  * same border, radius, padding tokens, and shadow value.
  *
  * Distinct from:

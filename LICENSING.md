@@ -86,7 +86,7 @@ New source files should carry a short SPDX-style header (adapt the comment
 syntax per language):
 
 ```
-// Copyright (c) 2026 Nudgebee, Inc.
+// Copyright (c) 2026 Nudgebee CloudXP Pvt Ltd
 // Use of this source code is governed by the Business Source License 1.1
 // that can be found in the LICENSE file, or at https://mariadb.com/bsl11.
 ```

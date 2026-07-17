@@ -135,6 +135,6 @@ nginx:
     # `registry: registry.nudgebee.com`). Community default is GHCR.
     registry: 'ghcr.io/nudgebee'
     repository: nginx
-    tag: stable-alpine3.20-slim
+    tag: stable-alpine3.20-slim-nb1
     pullPolicy: IfNotPresent
   resources: {}

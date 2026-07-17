@@ -3,6 +3,7 @@ import logging
 import time
 from typing import Optional, Tuple
 
+import httplib2
 import requests
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -15,6 +16,18 @@ LOG = logging.getLogger(__name__)
 
 # Constants
 USER_AGENT = "my-user-agent/1.0"
+
+
+def _build_chat_service(credentials):
+    """Build a Chat API client whose transport carries a hard socket timeout.
+
+    googleapiclient's default httplib2.Http() has timeout=None, so a stalled TLS
+    session hangs the calling thread until the OS TCP timeout (minutes). Bounding it
+    with GOOGLE_CHAT_API_TIMEOUT keeps a slow Google API from pinning a worker.
+    """
+    http = credentials.authorize(httplib2.Http(timeout=settings.google_chat.api_timeout))
+    return build("chat", "v1", http=http, cache_discovery=False)
+
 
 # Google API error statuses that should trigger a retry
 RETRYABLE_STATUSES = {"RESOURCE_EXHAUSTED", "UNAVAILABLE", "DEADLINE_EXCEEDED"}
@@ -148,7 +161,7 @@ class GoogleChatClient:
             "client_id": Configs.GOOGLE_CLIENT_ID,
             "client_secret": Configs.GOOGLE_CLIENT_SECRET,
         }
-        response = requests.post(token_endpoint, data=payload)
+        response = requests.post(token_endpoint, data=payload, timeout=settings.google_chat.api_timeout)
 
         if response.status_code == 200:
             return response.json()
@@ -159,7 +172,7 @@ class GoogleChatClient:
     @staticmethod
     def list_spaces(token):
         credentials = AccessTokenCredentials(token, USER_AGENT)
-        service = build("chat", "v1", credentials=credentials)
+        service = _build_chat_service(credentials)
 
         try:
             space_list = service.spaces().list().execute()
@@ -188,7 +201,7 @@ class GoogleChatClient:
     @staticmethod
     def post_to_google_chat(token, space, message, tenant, thread_name=None):
         credentials = AccessTokenCredentials(token, USER_AGENT)
-        service = build("chat", "v1", credentials=credentials)
+        service = _build_chat_service(credentials)
 
         message_body = message if isinstance(message, dict) else {"text": message}
 
@@ -263,7 +276,7 @@ class GoogleChatClient:
             Dict with success status and details
         """
         credentials = AccessTokenCredentials(token, USER_AGENT)
-        service = build("chat", "v1", credentials=credentials)
+        service = _build_chat_service(credentials)
 
         if not message_id.startswith("spaces/"):
             message_id = f"{space_id}/messages/{message_id}"
@@ -324,7 +337,7 @@ class GoogleChatClient:
             List of member dictionaries with id, name, email, and display_name
         """
         credentials = AccessTokenCredentials(token, USER_AGENT)
-        service = build("chat", "v1", credentials=credentials)
+        service = _build_chat_service(credentials)
 
         members = []
         page_token = None
@@ -380,7 +393,7 @@ class GoogleChatClient:
             List of DM spaces with user info
         """
         credentials = AccessTokenCredentials(token, USER_AGENT)
-        service = build("chat", "v1", credentials=credentials)
+        service = _build_chat_service(credentials)
 
         dm_spaces = []
         page_token = None
@@ -468,7 +481,7 @@ class GoogleChatClient:
             return error_result
 
         credentials = AccessTokenCredentials(token, USER_AGENT)
-        service = build("chat", "v1", credentials=credentials)
+        service = _build_chat_service(credentials)
         message_body = {"text": message}
         max_retries = GoogleChatClient.RATE_LIMIT_RETRIES
         retry_sleep = GoogleChatClient.RATE_LIMIT_SLEEP
@@ -522,7 +535,7 @@ class GoogleChatClient:
             Dict with success status and space_id
         """
         credentials = AccessTokenCredentials(token, USER_AGENT)
-        service = build("chat", "v1", credentials=credentials)
+        service = _build_chat_service(credentials)
 
         try:
             # Create or get DM space using spaces.setup

@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import { Menu, MenuItem } from '@mui/material';
-import { colors } from 'src/utils/colors';
 import { DeleteIconRed } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 
@@ -65,13 +64,13 @@ const BaseNode: React.FC<BaseNodeProps> = ({
   additionalContent,
   selected = false,
   border,
-  borderRadius = '16px',
-  boxShadow = '0 5px 8px rgba(0, 0, 0, 0.2)',
-  hoverShadow = `0px 8px 16px rgba(149, 149, 149, 0.7) `,
+  borderRadius = 'var(--ds-space-4)',
+  boxShadow = '0 5px var(--ds-space-2) color-mix(in srgb, black 20%, transparent)',
+  hoverShadow = '0 var(--ds-space-2) var(--ds-space-4) color-mix(in srgb, #959595 70%, transparent)',
   minWidth = '250px',
   maxWidth = '250px',
   minHeight = '80px',
-  padding = '14px 16px',
+  padding = '14px var(--ds-space-4)',
   background = 'white',
   nodeStyle = {},
   onDelete,
@@ -116,13 +115,13 @@ const BaseNode: React.FC<BaseNodeProps> = ({
   const defaultLabelStyle: React.CSSProperties = {
     fontWeight: 'bold',
     fontSize: 'var(--ds-text-body-lg)',
-    color: colors.text.secondary,
+    color: 'var(--ds-brand-500)',
   };
 
   // Default styles for description
   const defaultDescriptionStyle: React.CSSProperties = {
     fontSize: 'var(--ds-text-small)',
-    color: colors.text.secondary,
+    color: 'var(--ds-brand-500)',
     lineHeight: '1.3',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -134,7 +133,7 @@ const BaseNode: React.FC<BaseNodeProps> = ({
   const containerStyle: React.CSSProperties = {
     padding,
     background,
-    border: border || (selected ? '3px solid #3B82F6' : '1px solid #D0D0D0'),
+    border: border || (selected ? '3px solid var(--ds-blue-500)' : '1px solid var(--ds-gray-300)'),
     borderRadius,
     boxShadow: isHovered ? hoverShadow : boxShadow,
     minWidth,
@@ -193,7 +192,7 @@ const BaseNode: React.FC<BaseNodeProps> = ({
               justifyContent: 'space-between',
               gap: 'var(--ds-space-2)',
               padding: 'var(--ds-space-1) var(--ds-space-2)',
-              border: `1px solid ${colors.border.secondaryLight}`,
+              border: '1px solid var(--ds-gray-200)',
               borderRadius: 'var(--ds-radius-lg)',
               height: '100%',
               overflow: 'hidden',
@@ -221,8 +220,8 @@ const BaseNode: React.FC<BaseNodeProps> = ({
         className='nodrag nopan'
         style={{
           position: 'absolute',
-          top: '-12px',
-          right: '12px',
+          top: 'calc(var(--ds-space-3) * -1)',
+          right: 'var(--ds-space-3)',
           display: 'flex',
           gap: 'var(--ds-space-1)',
           zIndex: 1000,
@@ -258,14 +257,14 @@ const BaseNode: React.FC<BaseNodeProps> = ({
               width: '24px',
               height: '24px',
               borderRadius: 'var(--ds-radius-md)',
-              backgroundColor: deleteButtonHovered ? 'rgb(254, 226, 226)' : 'white',
-              border: deleteButtonHovered ? '1px solid rgb(238, 97, 97)' : '1px solid rgb(229, 229, 229)',
+              backgroundColor: deleteButtonHovered ? 'var(--ds-red-100)' : 'white',
+              border: deleteButtonHovered ? '1px solid var(--ds-red-400)' : '1px solid var(--ds-gray-300)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               cursor: 'pointer',
               transition: 'all 0.2s ease-in-out',
-              boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+              boxShadow: '0 var(--ds-space-0) var(--ds-space-1) var(--ds-gray-alpha-300)',
             }}
             title={deleteButtonConfig.title || 'Delete node'}
           >
@@ -300,13 +299,13 @@ const BaseNode: React.FC<BaseNodeProps> = ({
               height: '24px',
               borderRadius: 'var(--ds-radius-md)',
               backgroundColor: primaryButtonHovered ? primaryButton.hoverBackgroundColor : 'white',
-              border: primaryButtonHovered ? `1px solid ${primaryButton.hoverBorderColor}` : '1px solid rgb(229, 229, 229)',
+              border: primaryButtonHovered ? `1px solid ${primaryButton.hoverBorderColor}` : '1px solid var(--ds-gray-300)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               cursor: 'pointer',
               transition: 'all 0.2s ease-in-out',
-              boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+              boxShadow: '0 var(--ds-space-0) var(--ds-space-1) var(--ds-gray-alpha-300)',
             }}
             title={primaryButton.title}
           >
@@ -336,14 +335,14 @@ const BaseNode: React.FC<BaseNodeProps> = ({
               width: '24px',
               height: '24px',
               borderRadius: 'var(--ds-radius-md)',
-              backgroundColor: moreButtonHovered || moreMenuOpen ? 'rgb(243, 244, 246)' : 'white',
-              border: moreButtonHovered || moreMenuOpen ? '1px solid rgb(209, 213, 219)' : '1px solid rgb(229, 229, 229)',
+              backgroundColor: moreButtonHovered || moreMenuOpen ? 'var(--ds-gray-100)' : 'white',
+              border: moreButtonHovered || moreMenuOpen ? '1px solid var(--ds-gray-400)' : '1px solid var(--ds-gray-300)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               cursor: 'pointer',
               transition: 'all 0.2s ease-in-out',
-              boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+              boxShadow: '0 var(--ds-space-0) var(--ds-space-1) var(--ds-gray-alpha-300)',
             }}
             title='More options'
           >
@@ -363,7 +362,7 @@ const BaseNode: React.FC<BaseNodeProps> = ({
             paper: {
               className: 'nodrag nopan',
               sx: {
-                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                boxShadow: 'var(--ds-overlay-shadow)',
                 borderRadius: 'var(--ds-radius-xl)',
                 minWidth: '72px',
                 mt: 1,

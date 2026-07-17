@@ -14,7 +14,7 @@ import ErrorBoundary from '@shared/ErrorBoundary';
 import { Skeleton } from '@ui/Skeleton';
 import { v4 } from 'uuid';
 import { toast as snackbar } from '@ui/Toast';
-import K8sAccountModal from '@shared/K8sAccountModal';
+import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import { Button as DsButton } from '@ui/Button';
 import { hasWriteAccess } from '@lib/auth';
 import { ds } from '@utils/colors';
@@ -84,10 +84,12 @@ const KubernetesClusterOverview = () => {
       borderRadius: 'var(--ds-radius-xl)',
       background: 'var(--ds-background-100)',
       border: '1px solid var(--ds-gray-200)',
-      boxShadow: '0px 1px 3px rgba(16, 24, 40, 0.06), 0px 1px 2px rgba(16, 24, 40, 0.04)',
+      boxShadow:
+        '0px 1px 3px color-mix(in srgb, var(--ds-gray-700) 6%, transparent), 0px 1px var(--ds-space-0) color-mix(in srgb, var(--ds-gray-700) 4%, transparent)',
       transition: 'box-shadow 0.2s ease',
       '&:hover': {
-        boxShadow: '0px 4px 8px rgba(16, 24, 40, 0.08), 0px 2px 4px rgba(16, 24, 40, 0.04)',
+        boxShadow:
+          '0px var(--ds-space-1) var(--ds-space-2) color-mix(in srgb, var(--ds-gray-700) 8%, transparent), 0px var(--ds-space-0) var(--ds-space-1) color-mix(in srgb, var(--ds-gray-700) 4%, transparent)',
       },
     },
     clusterLayout: {
@@ -211,7 +213,7 @@ const KubernetesClusterOverview = () => {
                 alignItems: 'center',
                 justifyContent: 'center',
                 mb: ds.space[5],
-                boxShadow: '0px 1px 3px rgba(16, 24, 40, 0.06)',
+                boxShadow: '0px 1px 3px color-mix(in srgb, var(--ds-gray-700) 6%, transparent)',
                 '& svg': { filter: 'none', width: 36, height: 36 },
               }}
             >
@@ -275,7 +277,7 @@ const KubernetesClusterOverview = () => {
                       height='16'
                       viewBox='0 0 24 24'
                       fill='none'
-                      stroke='#2563EB'
+                      stroke='var(--ds-blue-600)'
                       strokeWidth='1.5'
                       strokeLinecap='round'
                       strokeLinejoin='round'

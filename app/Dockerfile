@@ -1,5 +1,10 @@
 # syntax=docker/dockerfile:1.7
 FROM node:25-alpine AS base
+# Refresh the base image's Alpine OS packages to the latest patch level. The
+# node:25-alpine tag lags Alpine security releases (e.g. openssl/libssl3), so
+# without this the runtime inherits fixed-upstream OS CVEs. Applied on the shared
+# base so deps/builder/runner all get the patched packages.
+RUN apk upgrade --no-cache
 
 # Install dependencies only when needed
 FROM base AS deps
@@ -58,6 +63,14 @@ RUN chown nextjs:nodejs .next
 # https://nextjs.org/docs/advanced-features/output-file-tracing
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+# Drop the base image's bundled npm from the runtime. A Next.js standalone
+# server runs via `node server.js` and never invokes npm at runtime; npm's
+# vendored node_modules (sigstore, tar, picomatch, ip-address, brace-expansion,
+# @sigstore/*) are the sole source of this image's flagged CVEs, so removing
+# them clears all of them with zero functional impact. Runs as root before the
+# USER switch below.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 USER nextjs
 

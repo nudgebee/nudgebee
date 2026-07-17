@@ -27,6 +27,10 @@ func makeOriginRepo(t *testing.T) string {
 	run("init", "-q", "-b", "main")
 	run("config", "user.email", "test@example.com")
 	run("config", "user.name", "test")
+	// Keep fixtures hermetic: never inherit the host's global commit/tag signing
+	// config, which can route commits to a signing server and fail repo setup.
+	run("config", "commit.gpgsign", "false")
+	run("config", "tag.gpgsign", "false")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.txt"), []byte("main\n"), 0644))
 	run("add", ".")
 	run("commit", "-q", "-m", "main commit")

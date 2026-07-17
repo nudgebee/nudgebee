@@ -58,6 +58,8 @@ export const getTenantKey = (tenantName) => {
  */
 export const useBrandingConfig = () => {
   const defaults = {
+    // Default (Nudgebee) tenant — branding fallbacks use Nudgebee assets (nubi bee, etc.).
+    isWhiteLabel: false,
     logoUrl: DEFAULT_LOGO,
     faviconUrl: DEFAULT_FAVICON,
     title: DEFAULT_TITLE,
@@ -103,6 +105,9 @@ export const getNubiIconLightUrl = () => _configCache?.nubiIconLightUrl || DEFAU
 export const getLoaderUrl = () => _configCache?.loaderUrl || DEFAULT_LOADER_URL;
 export const getAssistantName = () => _configCache?.assistantName || DEFAULT_ASSISTANT_NAME;
 export const getBrandTitle = () => _configCache?.title || DEFAULT_TITLE;
+// True on white-labeled (partner) deployments — driven by TENANT_BRANDING_FILE server-side.
+// Use this (not the session tenant name) to gate Nudgebee-specific assets like the mascots.
+export const getIsWhiteLabel = () => !!_configCache?.isWhiteLabel;
 
 /**
  * Resolve a branding asset URL.

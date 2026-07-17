@@ -6,7 +6,7 @@ import { Input as DsInput } from '@ui/Input';
 import { Button as DsButton } from '@ui/Button';
 import { Banner } from '@ui/Banner';
 import { EmptyState } from '@ui/EmptyState';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import Datetime from '@shared/format/Datetime';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
@@ -140,7 +140,7 @@ const CloudLogs: React.FC<CloudLogsProps> = ({ accountId, resourceId, region, se
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-all',
               m: 0,
-              maxHeight: 200,
+              maxHeight: ds.space.mul(0, 100),
               overflow: 'auto',
             }}
           >
@@ -211,7 +211,7 @@ const CloudLogs: React.FC<CloudLogsProps> = ({ accountId, resourceId, region, se
             description='The selected time range has no matching logs. The resource may not have logging enabled, or no logs match this query.'
           />
         ) : (
-          <CustomTable2
+          <CustomTable
             id={TABLE_ID}
             headers={[
               { name: 'Timestamp', width: '120px' },

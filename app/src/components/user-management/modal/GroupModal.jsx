@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Box, IconButton, Tab, Tabs } from '@mui/material';
+import { Box, IconButton } from '@mui/material';
 import Typography from '@mui/material/Typography';
 import { Input } from '@ui/Input';
 import { useForm } from 'react-hook-form';
 import apiUserManagement from '@api1/user';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { Select } from '@ui/Select';
+import { Tabs } from '@ui/Tabs';
 import { useSession } from 'next-auth/react';
 import SafeIcon from '@shared/icons/SafeIcon';
 import PropTypes from 'prop-types';
@@ -13,7 +14,7 @@ import { Button } from '@ui/Button';
 import { Modal } from '@ui/Modal';
 import { hasWriteAccess } from '@lib/auth';
 import { textValidation } from '@lib/validation';
-import { colors, ds } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import { DeleteIconRed as DeleteIcon, modalerror, AWSIcon, AzureIcon, GCPIcon, ouK8s as KubernetesIcon } from '@assets';
 import { Label } from '@ui/Label';
 
@@ -99,7 +100,7 @@ function SegmentedFilter({ tabs, value, onChange, dataTestId }) {
               borderRadius: 'var(--ds-radius-md)',
               background: selected ? ds.background[100] : 'transparent',
               color: selected ? ds.blue[500] : ds.gray[600],
-              boxShadow: selected ? colors.shadow.softBlack : 'none',
+              boxShadow: selected ? `0px 1px 3px 0px ${ds.gray.alpha[300]}` : 'none',
               border: 'none',
               cursor: 'pointer',
               fontFamily: 'Roboto',
@@ -188,6 +189,9 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
   const [accounts, setAccounts] = useState([]);
   const [showSelectedAccounts, setShowSelectedAccounts] = useState([]);
   const [selectedAccount, setSelectedAccount] = useState('');
+  // Account RBAC tab supports selecting multiple accounts at once (single select
+  // `selectedAccount` above is still used by the K8s Namespace tab).
+  const [selectedAccounts, setSelectedAccounts] = useState([]);
   const [selectedAccountRole, setSelectedAccountRole] = useState('');
   const [accountNamespaceOptions, setAccountNamespaceOptions] = useState([]);
   const [accountNamespaceAdded, setAccountNamespaceAdded] = useState([]);
@@ -221,6 +225,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
     setAccounts([]);
     setShowSelectedAccounts([]);
     setSelectedAccount('');
+    setSelectedAccounts([]);
     setSelectedAccountRole('');
     setAccountNamespaceOptions([]);
     setAccountNamespaceAdded([]);
@@ -393,10 +398,14 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
         const opts = res?.data?.filter((m) => m.username != '').map((u) => ({ label: u.username, value: u.username }));
         setUserOptions(opts);
       });
-      // Fetch accounts only once per modal session. Re-fetching on every tab switch caused
-      // setAccounts to fire, which re-ran the role-population effect, re-adding entries the
-      // user had just deleted from the table.
-      if (isEdit && (rbacType == 'account' || rbacType == 'k8s_namespace') && accounts.length === 0) {
+      // Fetch accounts once per modal session, on open — NOT gated on the active tab. Both the
+      // role-population effect below and the save path need the full account list: if a group has
+      // account/namespace roles but the user saves without ever opening those tabs, an unfetched
+      // list left showSelectedAccounts empty and the replace-all upsert then silently wiped every
+      // existing account/namespace role. The `accounts.length === 0` guard keeps this a single
+      // fetch, so switching tabs never re-runs the population effect (which would re-add rows the
+      // user just deleted); cleanState() resets accounts to [] on close, so each open re-fetches.
+      if (isEdit && accounts.length === 0) {
         apiUserManagement.listAccounts().then((res) => {
           setAccounts(res);
           const allSelectedAccountIds = showSelectedAccounts.map((item) => item[0].drilldownQuery.id);
@@ -420,13 +429,23 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
       setGroupDescValue(groupData?.description);
       if (open && groupData?.group_roles?.length > 0) {
         if (accounts.length > 0) {
+          // Collapse any legacy duplicate account rows (same account saved with multiple roles)
+          // to one per account, preferring admin over read-only — mirrors the most-permissive
+          // resolution the backend applies, so the modal shows a single, unambiguous role.
+          const accountRoleByEntity = new Map();
           for (let gr of groupData?.group_roles ?? []) {
             if (gr.entity_type == 'account') {
-              handleAccountSelection(gr.entity_id, gr.role);
+              const prevRole = accountRoleByEntity.get(gr.entity_id);
+              if (prevRole === undefined || gr.role === 'account_admin') {
+                accountRoleByEntity.set(gr.entity_id, gr.role);
+              }
             } else if (gr.entity_type == 'k8s_namespace') {
               let entitySplits = gr.entity_id.split(':');
               handleAccountNamespaceSelection(entitySplits[0], entitySplits[1], gr.role);
             }
+          }
+          for (const [entityId, role] of accountRoleByEntity) {
+            handleAccountSelection(entityId, role);
           }
         }
         const tenant = groupData?.group_roles.filter((gf) => gf.entity_type == 'tenant') || [];
@@ -535,10 +554,11 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
     const filterAccount = accounts.find((u) => u.id === account);
     if (!filterAccount) return;
     setShowSelectedAccounts((prev) => {
-      // Dedup key is (account, role). Same account with different roles is allowed by design
-      // (admin takes priority server-side). Functional updater avoids stale-state bug during
-      // init useEffect's synchronous loop.
-      if (prev.some((a) => a[0].drilldownQuery.id === account && a[1].text === accountRole)) return prev;
+      // One role per account: assigning a role for an account that already has one REPLACES it
+      // (override), rather than stacking a second row. Functional updater avoids a stale-state
+      // bug during the init useEffect's synchronous loop.
+      const existingIdx = prev.findIndex((a) => a[0].drilldownQuery.id === account);
+      if (existingIdx !== -1 && prev[existingIdx][1].text === accountRole) return prev; // same role already set — no-op
       const newAccount = [
         {
           component: (
@@ -559,6 +579,12 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
           ),
         },
       ];
+      if (existingIdx !== -1) {
+        // Replace the existing row in place so the account keeps its position in the table.
+        const next = [...prev];
+        next[existingIdx] = newAccount;
+        return next;
+      }
       return [...prev, newAccount];
     });
     setSelectedAccount('');
@@ -629,19 +655,20 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
     }
   }
 
-  const activeUsernames = new Set(userOptions?.map((u) => u.value) ?? []);
-  const autocompleteValue = selectedUsers
-    .filter((user) => activeUsernames.has(user[1].drilldownQuery.username))
-    .map((user) => ({ label: user[1].text, value: user[1].drilldownQuery.username }));
+  // Users already added to the group are listed in the members table below (with a
+  // remove action), so filter them out of the picker options to avoid duplication.
+  const selectedUsernames = new Set(selectedUsers.map((user) => user[1].drilldownQuery.username));
+  const availableUserOptions = userOptions?.filter((u) => !selectedUsernames.has(u.value)) ?? [];
 
   const filteredMembers = isEdit ? selectedUsers.filter((u) => u[1].status === userStatusFilter) : selectedUsers;
 
   return (
     <Modal
       open={open}
-      handleClose={() => adjustCloseAction(false)}
+      handleClose={() => (isSubmitting ? undefined : adjustCloseAction(false))}
       title={isEdit ? 'Edit Group' : 'Add Group'}
       width={isEdit ? 'md' : 'sm'}
+      loader={isSubmitting}
       sx={{ '& .MuiDialog-paper': { maxWidth: isEdit ? ds.space.mul(0, 380) : ds.space.mul(0, 360), maxHeight: '90vh' } }}
       contentStyles={{ padding: 'var(--ds-space-4) var(--ds-space-5)', overflowX: 'hidden' }}
       actionButtons={
@@ -654,7 +681,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
             background: ds.background[200],
           }}
         >
-          <Button id='cancel' tone='secondary' size='md' onClick={() => adjustCloseAction(false)}>
+          <Button id='cancel' tone='secondary' size='md' onClick={() => adjustCloseAction(false)} disabled={isSubmitting}>
             Cancel
           </Button>
           <Button id='submit' type='submit' size='md' disabled={isSubmitting} loading={isSubmitting} onClick={handleSubmit(submitForm)}>
@@ -737,31 +764,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
           <>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
               <SectionLabel>Assign Roles</SectionLabel>
-              <Tabs
-                value={rbacType}
-                onChange={(_, val) => setRbacType(val)}
-                indicatorColor='primary'
-                textColor='primary'
-                sx={{
-                  minHeight: 0,
-                  borderBottom: `1px solid ${ds.gray[200]}`,
-                  '& .MuiTab-root': {
-                    minHeight: 0,
-                    padding: 'var(--ds-space-2) var(--ds-space-3)',
-                    textTransform: 'none',
-                    fontSize: 'var(--ds-text-body)',
-                    fontWeight: 'var(--ds-font-weight-medium)',
-                    color: ds.gray[600],
-                    fontFamily: 'Roboto',
-                    '&.Mui-selected': { color: ds.blue[500], fontWeight: 'var(--ds-font-weight-semibold)' },
-                  },
-                  '& .MuiTabs-indicator': { backgroundColor: ds.blue[500], height: '2px' },
-                }}
-              >
-                {RBAC_TABS.map((t) => (
-                  <Tab key={t.id} value={t.id} label={t.label} />
-                ))}
-              </Tabs>
+              <Tabs tabs={RBAC_TABS} value={rbacType} onChange={(next) => setRbacType(next)} size='sm' ariaLabel='Assign roles' />
             </Box>
 
             {rbacType === 'tenant' && (
@@ -785,14 +788,16 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
                 <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 'var(--ds-space-2)' }}>
                   <Box sx={{ flex: 1, minWidth: 0 }}>
-                    {fieldLabel('Account')}
+                    {fieldLabel('Accounts')}
                     <Select
                       id='group-account'
-                      value={selectedAccount || ''}
+                      multiple
+                      value={selectedAccounts}
                       options={accountOptions}
-                      onChange={(next) => setSelectedAccount(next)}
-                      placeholder='Select Account'
+                      onChange={(next) => setSelectedAccounts(next)}
+                      placeholder='Select Accounts'
                       minWidth='100%'
+                      maxChips={2}
                     />
                   </Box>
                   <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -811,19 +816,36 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
                       type='button'
                       size='md'
                       onClick={() => {
-                        const isDup = showSelectedAccounts.some(
-                          (a) => a[0].drilldownQuery.id === selectedAccount && a[1].text === selectedAccountRole
+                        const toAdd = selectedAccounts.filter(
+                          (accountId) => !showSelectedAccounts.some((a) => a[0].drilldownQuery.id === accountId && a[1].text === selectedAccountRole)
                         );
-                        if (isDup) {
+                        if (toAdd.length === 0) {
                           handleSnackBarData({
-                            message: 'This account already has this role assigned.',
+                            message: 'Selected account(s) already have this role assigned.',
                             severity: 'warning',
                           });
                           return;
                         }
-                        handleAccountSelection(selectedAccount, selectedAccountRole);
+                        // Accounts already carrying a different role are overridden (one role per account).
+                        const replacedCount = toAdd.filter((accountId) =>
+                          showSelectedAccounts.some((a) => a[0].drilldownQuery.id === accountId)
+                        ).length;
+                        toAdd.forEach((accountId) => handleAccountSelection(accountId, selectedAccountRole));
+                        if (replacedCount > 0) {
+                          handleSnackBarData({
+                            message: `Replaced the existing role for ${replacedCount} account${replacedCount > 1 ? 's' : ''}.`,
+                            severity: 'info',
+                          });
+                        } else if (toAdd.length < selectedAccounts.length) {
+                          handleSnackBarData({
+                            message: 'Some accounts already had this role and were skipped.',
+                            severity: 'warning',
+                          });
+                        }
+                        setSelectedAccounts([]);
+                        setSelectedAccountRole('');
                       }}
-                      disabled={!selectedAccount || !selectedAccountRole}
+                      disabled={selectedAccounts.length === 0 || !selectedAccountRole}
                     >
                       Add
                     </Button>
@@ -831,7 +853,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
                 </Box>
                 {showSelectedAccounts.length > 0 && (
                   <Box sx={tableWrapperSx}>
-                    <CustomTable2
+                    <CustomTable
                       tableData={showSelectedAccounts}
                       headers={[
                         { name: 'Account', width: '50%' },
@@ -922,7 +944,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
                 </Box>
                 {showSelectedAccountNamespaces.length > 0 && (
                   <Box sx={tableWrapperSx}>
-                    <CustomTable2
+                    <CustomTable
                       tableData={showSelectedAccountNamespaces}
                       headers={[
                         { name: 'Account', width: '35%' },
@@ -956,21 +978,18 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
           <Select
             id='all-users-for-group'
             multiple
-            value={autocompleteValue.map((u) => u.value)}
-            options={userOptions}
+            // Add-only picker: selected users live in the members table below, so the
+            // value stays empty and already-selected users are dropped from the options.
+            value={[]}
+            options={availableUserOptions}
+            clearable={false}
+            hideOptionCheckbox
             maxChips={3}
             placeholder={isEdit ? 'Add user' : 'Select users'}
             searchPlaceholder={isEdit ? 'Add user…' : 'Search users…'}
             minWidth='100%'
-            onChange={(newUsernames) => {
-              const oldActiveUsernames = autocompleteValue.map((u) => u.value);
-              newUsernames.filter((u) => !oldActiveUsernames.includes(u)).forEach((u) => handleUserSelection(u));
-              oldActiveUsernames
-                .filter((u) => !newUsernames.includes(u))
-                .forEach((u) => {
-                  if (isEdit) handleUserDelete(u);
-                  else handleDeleteAdd(u);
-                });
+            onChange={(usernames) => {
+              usernames.forEach((u) => handleUserSelection(u));
             }}
           />
           {!isEdit && (
@@ -981,7 +1000,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
 
           {(isEdit ? true : selectedUsers.length > 0) && (
             <Box sx={tableWrapperSx}>
-              <CustomTable2
+              <CustomTable
                 tableData={filteredMembers}
                 headers={[
                   { name: 'Display Name', width: '32%' },

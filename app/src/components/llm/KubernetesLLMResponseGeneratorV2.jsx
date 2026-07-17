@@ -103,6 +103,7 @@ const KubernetesLLMResponseGenerator = ({
   workflowId = '',
   workflowDefinition = null,
   onWorkflowGenerated = undefined, // callback(workflowJson) when workflow build completes
+  onConversationComplete = undefined, // callback(sessionId) on every terminal turn in workflow mode (fires even when the assistant mutated the workflow server-side without echoing JSON)
 }) => {
   const router = useRouter();
   const { assistantName, baseTitle } = useTenantBranding();
@@ -730,6 +731,26 @@ const KubernetesLLMResponseGenerator = ({
     }
   }, [conversationStatus, messages, apiMode, onWorkflowGenerated, selectedSessionId]);
 
+  // Signal the parent when a workflow-mode turn finishes — independent of whether the
+  // assistant's final message echoed a workflow JSON. The assistant frequently mutates
+  // the workflow server-side (workflow_update tool) without restating the full definition,
+  // so the JSON-gated onWorkflowGenerated path above misses those edits. The parent
+  // reconciles by re-fetching and applying only if the server actually changed.
+  // Fire only on a real IN_PROGRESS -> COMPLETED transition so it doesn't fire on mount
+  // (an already-completed historical conversation) or on a session switch.
+  const prevConversationStatusRef = useRef(conversationStatus);
+  useEffect(() => {
+    if (
+      apiMode === 'workflow' &&
+      conversationStatus === 'COMPLETED' &&
+      prevConversationStatusRef.current === 'IN_PROGRESS' &&
+      onConversationComplete
+    ) {
+      onConversationComplete(selectedSessionId);
+    }
+    prevConversationStatusRef.current = conversationStatus;
+  }, [conversationStatus, apiMode, onConversationComplete, selectedSessionId]);
+
   const handleDropdownChange = useCallback(
     (e) => {
       let cloud_provider = e.cloud_provider.toLowerCase();
@@ -1026,7 +1047,7 @@ const KubernetesLLMResponseGenerator = ({
                         padding: `${ds.space[2]} ${ds.space[3]}`,
                         fontSize: 'var(--ds-text-small)',
                         borderRadius: ds.radius.sm,
-                        boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                        boxShadow: `0 2px 4px ${ds.gray.alpha[300]}`,
                       }}
                     >
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3) }}>

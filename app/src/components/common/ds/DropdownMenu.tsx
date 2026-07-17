@@ -1,5 +1,5 @@
 /**
- * DropdownMenu — DS V2 of legacy CustomDropdown + ThreeDotsMenu + ButtonMenu.
+ * DropdownMenu
  * Spec:        app/design-system/primitives/action/dropdown-menu.html
  * Variants:    align = 'start' | 'end'
  *              side  = 'bottom' | 'top' | 'left' | 'right'
@@ -17,10 +17,6 @@
  * surface and items are byte-identical to Select / MultiSelect /
  * FilterDropdown / Popover.
  *
- * Migration:   `import CustomDropdown from '@shared/CustomDropdown'`
- *              `import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu'`
- *              `import ButtonMenu from '@shared/ButtonMenu'`
- *           →  `import { DropdownMenu } from '@ui/DropdownMenu'`
  *
  *   Per spec, ThreeDotsMenu and ButtonMenu are NOT separate primitives — they're
  *   `<DropdownMenu trigger={<Button ... />}>` with different trigger Buttons:

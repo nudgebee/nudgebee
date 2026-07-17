@@ -21,11 +21,11 @@ import {
 } from '@assets';
 import { Skeleton } from '@ui/Skeleton';
 import apiAskNudgebee from '@api1/ask-nudgebee';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { ds } from '@utils/colors';
 import { toast as snackbar } from '@ui/Toast';
 import { Button } from '@ui/Button';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import ToggleButtons from '@components/workflow/NewToggleButtons';
 import { useRouter } from 'next/router';
 import { getUserSession } from '@lib/auth';
@@ -374,7 +374,7 @@ const ConversationList = ({
 
     // 3. STOP if the user is currently searching (has text in the box).
     // We don't want to poll 'All' or auto-fetch while the user is typing a specific query.
-    // The fetch will be triggered manually by the 'onEnterPress' in CustomSearch.
+    // The fetch will be triggered manually by the 'onEnterPress' in SearchInput.
     if (searchText !== '') {
       return;
     }
@@ -516,7 +516,7 @@ const ConversationList = ({
 
           {/* Search bar */}
           <Box sx={{ px: ds.space[3], pb: ds.space[3] }}>
-            <CustomSearch
+            <SearchInput
               value={searchText}
               onChange={(e) => {
                 setSearchText(e);
@@ -567,7 +567,7 @@ const ConversationList = ({
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  boxShadow: '0px 1px 3px rgba(0,0,0,0.12)',
+                  boxShadow: `0px 1px 3px color-mix(in srgb, ${ds.gray[700]} 12%, transparent)`,
                 }}
               >
                 <ChevronLeftIcon sx={{ fontSize: 16 }} />
@@ -633,7 +633,7 @@ const ConversationList = ({
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  boxShadow: '0px 1px 3px rgba(0,0,0,0.12)',
+                  boxShadow: `0px 1px 3px color-mix(in srgb, ${ds.gray[700]} 12%, transparent)`,
                 }}
               >
                 <ChevronRightIcon sx={{ fontSize: 16 }} />

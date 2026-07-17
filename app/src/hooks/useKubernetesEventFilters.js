@@ -25,7 +25,8 @@ const toNbStatusOptions = (values) => {
  * @param {boolean} [params.enableFilters]
  * @param {string[]} [params.disabledFilters]
  * @param {string[]} [params.resource_ids]
- * @param {string | string[] | null} [params.selectedNamespace] <-- UPDATED: Matches incoming type
+ * @param {string | string[] | null} [params.selectedNamespace] - filters workload options to this namespace
+ * @param {string} [params.selectedWorkload] - filters namespace options to namespaces containing this workload
  * @param {string} [params.startTime] - ISO string for time filter start
  * @param {string} [params.endTime] - ISO string for time filter end
  */
@@ -35,7 +36,8 @@ const useKubernetesEventFilters = ({
   enableFilters,
   disabledFilters = [],
   resource_ids = [],
-  _selectedNamespace = [],
+  selectedNamespace,
+  selectedWorkload,
   startTime,
   endTime,
 }) => {
@@ -149,82 +151,163 @@ const useKubernetesEventFilters = ({
     // FIX: distinct dependency on stringified arrays
   }, [selectedAccountId, enableFilters, disabledFiltersStr, resourceIdsStr]);
 
-  // --- 4. Consolidated Filter Values (namespace, workload, subjectType, aggregationKey, source) ---
-  useEffect(() => {
-    // Skip if resource_ids are provided (handled by workload logic above)
+  // Helper: merge filter values from multiple account responses
+  const mergeFilterResponses = useCallback((responses) => {
+    const valueMap = new Map();
+    responses.forEach((response) => {
+      (response?.data?.filters || []).forEach((f) => {
+        if (!valueMap.has(f.filter_type)) valueMap.set(f.filter_type, new Set());
+        (f.values || []).filter((v) => v.value).forEach((v) => valueMap.get(f.filter_type).add(v.value));
+      });
+    });
+    return Array.from(valueMap.entries()).map(([filter_type, valuesSet]) => ({
+      filter_type,
+      values: [...valuesSet].map((v) => ({ value: v })),
+    }));
+  }, []);
 
+  // Helper: build per-account (or global) filter requests and resolve them
+  const fetchFilterTypes = useCallback(
+    (filterTypes, extraParams = {}) => {
+      const accountIds = Array.isArray(selectedAccountId) ? selectedAccountId : selectedAccountId ? [selectedAccountId] : [];
+      const requests = accountIds.length
+        ? accountIds.map((id) => k8sApi.getEventFilterValues({ accountId: id, filterTypes, startTime, endTime, ...extraParams }))
+        : [k8sApi.getEventFilterValues({ accountId: null, filterTypes, startTime, endTime, ...extraParams })];
+      return Promise.all(requests);
+    },
+    [selectedAccountId, startTime, endTime]
+  );
+
+  // --- 4a. Namespace filter — re-fetches when selectedWorkload changes (cross-filter) ---
+  useEffect(() => {
+    if (!enableFilters || !shouldFetchData || disabledFilters.includes('namespace') || resource_ids.length > 0) {
+      return;
+    }
+    let active = true;
+    setIsOptionsLoading((prev) => ({ ...prev, namespace: true }));
+    fetchFilterTypes(['namespace'], selectedWorkload ? { subjectName: selectedWorkload } : {})
+      .then((responses) => {
+        if (active) {
+          processFilterResponse(mergeFilterResponses(responses));
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setIsOptionsLoading((prev) => ({ ...prev, namespace: false }));
+        }
+      });
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    selectedAccountId,
+    enableFilters,
+    disabledFiltersStr, // serialized dependency to avoid unnecessary re-runs
+    shouldFetchData,
+    resourceIdsStr, // serialized dependency to avoid unnecessary re-runs
+    startTime,
+    endTime,
+    selectedWorkload,
+    fetchFilterTypes,
+    mergeFilterResponses,
+    processFilterResponse,
+  ]);
+
+  // --- 4b. Workload filter — re-fetches when selectedNamespace changes (cross-filter) ---
+  useEffect(() => {
+    if (!enableFilters || !shouldFetchData || disabledFilters.includes('workload') || resource_ids.length > 0) {
+      return;
+    }
+    let active = true;
+    setIsOptionsLoading((prev) => ({ ...prev, workload: true }));
+    fetchFilterTypes(['workload'], selectedNamespace ? { subjectNamespace: selectedNamespace } : {})
+      .then((responses) => {
+        if (active) {
+          processFilterResponse(mergeFilterResponses(responses));
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setIsOptionsLoading((prev) => ({ ...prev, workload: false }));
+        }
+      });
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    selectedAccountId,
+    enableFilters,
+    disabledFiltersStr, // serialized dependency to avoid unnecessary re-runs
+    shouldFetchData,
+    resourceIdsStr, // serialized dependency to avoid unnecessary re-runs
+    startTime,
+    endTime,
+    selectedNamespace,
+    fetchFilterTypes,
+    mergeFilterResponses,
+    processFilterResponse,
+  ]);
+
+  // --- 4c. All other filters (subjectType, aggregationKey, source, nbStatus) ---
+  useEffect(() => {
     if (!enableFilters || !shouldFetchData) {
       return;
     }
+    let active = true;
 
-    // Determine which filters to fetch
     const filterTypes = [];
-    if (!disabledFilters.includes('namespace')) {
-      filterTypes.push('namespace');
-    }
-    if (!disabledFilters.includes('workload')) {
-      filterTypes.push('workload');
-    }
-    if (!disabledFilters.includes('subjectType')) {
-      filterTypes.push('subject_type');
-    }
-    if (!disabledFilters.includes('aggregationKey')) {
-      filterTypes.push('aggregation_key');
-    }
-    if (!disabledFilters.includes('source')) {
-      filterTypes.push('source');
-    }
-    if (!disabledFilters.includes('nbStatus')) {
-      filterTypes.push('nb_status');
-    }
+    if (!disabledFilters.includes('subjectType') && resource_ids.length === 0) filterTypes.push('subject_type');
+    if (!disabledFilters.includes('aggregationKey')) filterTypes.push('aggregation_key');
+    if (!disabledFilters.includes('source')) filterTypes.push('source');
+    if (!disabledFilters.includes('nbStatus')) filterTypes.push('nb_status');
 
     if (filterTypes.length === 0) {
       return;
     }
 
-    // Set loading state for requested filters
     setIsOptionsLoading((prev) => ({
       ...prev,
-      namespace: filterTypes.includes('namespace'),
-      workload: filterTypes.includes('workload'),
       subjectType: filterTypes.includes('subject_type'),
       aggregationKey: filterTypes.includes('aggregation_key'),
       source: filterTypes.includes('source'),
       nbStatus: filterTypes.includes('nb_status'),
     }));
 
-    const accountIds = Array.isArray(selectedAccountId) ? selectedAccountId : selectedAccountId ? [selectedAccountId] : [];
-    const filterRequests = accountIds.length
-      ? accountIds.map((id) => k8sApi.getEventFilterValues({ accountId: id, filterTypes, startTime, endTime }))
-      : [k8sApi.getEventFilterValues({ accountId: null, filterTypes, startTime, endTime })];
-
-    Promise.all(filterRequests)
+    fetchFilterTypes(filterTypes)
       .then((responses) => {
-        const valueMap = new Map();
-        responses.forEach((response) => {
-          (response?.data?.filters || []).forEach((f) => {
-            if (!valueMap.has(f.filter_type)) valueMap.set(f.filter_type, new Set());
-            (f.values || []).filter((v) => v.value).forEach((v) => valueMap.get(f.filter_type).add(v.value));
-          });
-        });
-        const mergedFilters = Array.from(valueMap.entries()).map(([filter_type, valuesSet]) => ({
-          filter_type,
-          values: [...valuesSet].map((v) => ({ value: v })),
-        }));
-        processFilterResponse(mergedFilters);
+        if (active) {
+          processFilterResponse(mergeFilterResponses(responses));
+        }
       })
       .finally(() => {
-        setIsOptionsLoading((prev) => ({
-          ...prev,
-          namespace: false,
-          workload: false,
-          subjectType: false,
-          aggregationKey: false,
-          source: false,
-          nbStatus: false,
-        }));
+        if (active) {
+          setIsOptionsLoading((prev) => ({
+            ...prev,
+            subjectType: false,
+            aggregationKey: false,
+            source: false,
+            nbStatus: false,
+          }));
+        }
       });
-  }, [selectedAccountId, enableFilters, disabledFiltersStr, shouldFetchData, resourceIdsStr, startTime, endTime, processFilterResponse]);
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    selectedAccountId,
+    enableFilters,
+    disabledFiltersStr, // serialized dependency to avoid unnecessary re-runs
+    shouldFetchData,
+    resourceIdsStr, // serialized dependency to avoid unnecessary re-runs
+    startTime,
+    endTime,
+    fetchFilterTypes,
+    mergeFilterResponses,
+    processFilterResponse,
+  ]);
 
   return {
     accounts,

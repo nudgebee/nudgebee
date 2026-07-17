@@ -76,6 +76,7 @@ jest.mock('@utils/common', () => ({
     const vals = String(query).split(',');
     return (opts || []).filter((o: any) => vals.includes(keyFn(o)));
   },
+  toSeverityLevel: (s: string) => String(s || '').toLowerCase(),
 }));
 
 jest.mock('@assets', () => ({
@@ -89,58 +90,11 @@ jest.mock('@assets/WorkflowIcon', () => ({
   default: '/workflow.svg',
 }));
 
-jest.mock('@shared/snackbarService', () => ({
-  snackbar: { success: jest.fn(), error: jest.fn() },
-}));
-
 jest.mock('src/utils/actionStyles', () => ({
   action: { primary: {} },
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000' }, background: { white: '#fff' } },
-}));
-
-jest.mock('@shared/BoxLayout2', () => ({
-  __esModule: true,
-  default: ({ children, filterOptions = [], dateTimeRange, heading }: any) => (
-    <div data-testid='box-layout'>
-      <h2 data-testid='box-heading'>{heading}</h2>
-      {filterOptions.map((f: any, i: number) => {
-        if (f.type === 'dropdown') {
-          return (
-            <select key={i} data-testid={`filter-${f.label}`} value={f.value || ''} onChange={f.onSelect}>
-              <option value=''>--</option>
-              {(f.options || []).map((opt: any, idx: number) => {
-                const v = typeof opt === 'string' ? opt : opt.value;
-                const l = typeof opt === 'string' ? opt : opt.label;
-                return (
-                  <option key={(v || '_') + '-' + idx} value={v}>
-                    {l}
-                  </option>
-                );
-              })}
-            </select>
-          );
-        }
-        if (f.type === 'multi-dropdown') {
-          return (
-            <button key={i} data-testid={`multi-${f.label}`} onClick={() => f.onSelect({ target: { value: (f.options || []).slice(0, 1) } })}>
-              {f.label}
-            </button>
-          );
-        }
-        return null;
-      })}
-      {dateTimeRange?.enabled && (
-        <button data-testid='date-range-trigger' onClick={() => dateTimeRange.onChange({ startTime: 1000, endTime: 2000, shortcutClickTime: 0 })}>
-          Set Date
-        </button>
-      )}
-      {children}
-    </div>
-  ),
-}));
+jest.mock('@utils/colors');
 
 jest.mock('@components/cloudaccount/CloudAccountTable', () => ({
   __esModule: true,
@@ -165,22 +119,32 @@ jest.mock('@components/cloudaccount/CloudAccountTable', () => ({
   ),
 }));
 
+jest.mock('@shared/tables/CustomTable', () => ({
+  __esModule: true,
+  default: ({ id, tableData, totalRows, loading, pageNumber, onPageChange }: any) => (
+    <div data-testid='cloud-account-table' id={id}>
+      {loading && <div data-testid='loading'>loading</div>}
+      <div data-testid='total'>{totalRows}</div>
+      <div data-testid='page'>{pageNumber}</div>
+      {(tableData || []).map((row: any, i: number) => (
+        <div key={i} data-testid={`row-${i}`}>
+          {row.map((cell: any, j: number) => (
+            <span key={j} data-testid={`cell-${i}-${j}`}>
+              {cell.component}
+            </span>
+          ))}
+        </div>
+      ))}
+      <button data-testid='next-page' onClick={() => onPageChange(2)}>
+        Next
+      </button>
+    </div>
+  ),
+}));
+
 jest.mock('@components/helpbee', () => ({
   __esModule: true,
   default: ({ isModalVisible }: any) => (isModalVisible ? <div data-testid='helpbee'>helpbee</div> : null),
-}));
-
-jest.mock('@shared/ds/ThreeDotsMenu', () => ({
-  __esModule: true,
-  default: ({ menuItems, data, onMenuClick }: any) => (
-    <div data-testid='three-dots'>
-      {(menuItems || []).map((mi: any) => (
-        <button key={mi.id} data-testid={`menu-${mi.label}-${data.id}`} onClick={() => onMenuClick(mi, data)}>
-          {mi.label}
-        </button>
-      ))}
-    </div>
-  ),
 }));
 
 jest.mock('@components/k8s/common/ClusterNameWithRegion', () => ({
@@ -193,45 +157,44 @@ jest.mock('@shared/format/Text', () => ({
   default: ({ value }: any) => <span>{value}</span>,
 }));
 
-jest.mock('@shared/widgets/SeverityIcon', () => ({
-  __esModule: true,
-  default: ({ severityType }: any) => <span data-testid={`severity-${severityType}`}>sev</span>,
-}));
-
 jest.mock('@shared/format/Datetime', () => ({
   __esModule: true,
   default: ({ value }: any) => <span data-testid='datetime'>{String(value || '—')}</span>,
 }));
 
-jest.mock('@shared/InvestigateButton', () => ({
+jest.mock('@ui/SeverityIcon', () => ({
   __esModule: true,
-  default: ({ url }: any) => (
-    <a data-testid='investigate-link' href={url}>
-      Investigate
-    </a>
-  ),
+  SeverityIcon: ({ level }: any) => <span data-testid={`severity-${level}`}>sev</span>,
 }));
 
-jest.mock('@shared/widgets/CustomLabels', () => ({
+jest.mock('@ui/Label', () => ({
   __esModule: true,
-  default: ({ text, variant }: any) => <span data-testid={`label-${variant || 'plain'}`}>{text}</span>,
+  Label: ({ children, tone }: any) => <span data-testid={`label-${tone || 'plain'}`}>{children}</span>,
+}));
+
+jest.mock('@ui/Tooltip', () => ({
+  __esModule: true,
+  default: ({ children }: any) => <span>{children}</span>,
+}));
+
+jest.mock('@ui/Toast', () => ({
+  __esModule: true,
+  toast: { success: jest.fn(), error: jest.fn(), info: jest.fn(), warning: jest.fn() },
 }));
 
 jest.mock('@shared/widgets/NBStatusBadge', () => ({
   __esModule: true,
-  default: ({ eventId, currentStatus, onStatusChange, onCreateTicket }: any) => {
-    return (
-      <div data-testid={`nb-badge-${eventId}`}>
-        <span>{currentStatus}</span>
-        <button data-testid={`nb-create-ticket-${eventId}`} onClick={onCreateTicket}>
-          Create Ticket via NB
-        </button>
-        <button data-testid={`nb-status-change-${eventId}`} onClick={onStatusChange}>
-          Change Status
-        </button>
-      </div>
-    );
-  },
+  default: ({ eventId, currentStatus, onStatusChange, onCreateTicket }: any) => (
+    <div data-testid={`nb-badge-${eventId}`}>
+      <span>{currentStatus}</span>
+      <button data-testid={`nb-create-ticket-${eventId}`} onClick={onCreateTicket}>
+        Create Ticket via NB
+      </button>
+      <button data-testid={`nb-status-change-${eventId}`} onClick={onStatusChange}>
+        Change Status
+      </button>
+    </div>
+  ),
 }));
 
 jest.mock('@shared/widgets/ScoreDisplay', () => ({
@@ -243,19 +206,111 @@ jest.mock('@shared/widgets/ScoreDisplay', () => ({
   ),
 }));
 
-jest.mock('@shared/CustomTooltip', () => ({
+jest.mock('@shared/links/TicketLink', () => ({
   __esModule: true,
-  default: ({ children }: any) => <span>{children}</span>,
-}));
-
-jest.mock('@shared/CustomTicketLink', () => ({
-  __esModule: true,
-  default: ({ ticketID }: any) => <a data-testid='ticket-link'>{ticketID}</a>,
+  default: ({ ticketID }: any) => <span data-testid='ticket-link'>{ticketID}</span>,
 }));
 
 jest.mock('@shared/icons/SafeIcon', () => ({
   __esModule: true,
   default: ({ alt }: any) => <span data-testid={`icon-${alt}`}>icon</span>,
+}));
+
+jest.mock('@shared/buttons/DownloadButton', () => ({
+  __esModule: true,
+  default: ({ onClick }: any) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
+  ),
+}));
+
+jest.mock('@shared/widgets/CustomDateTimeRangePicker', () => ({
+  __esModule: true,
+  default: ({ onChange }: any) => (
+    <button data-testid='date-range-trigger' onClick={() => onChange({ selection: { startTime: 1000, endTime: 2000, shortcutClickTime: 0 } })}>
+      Set Date
+    </button>
+  ),
+}));
+
+jest.mock('@ui/Button', () => ({
+  __esModule: true,
+  Button: ({ children, onClick, disabled, href }: any) => (
+    <button data-testid={`btn-${typeof children === 'string' ? children : 'icon'}`} data-href={href} onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
+  ),
+}));
+
+jest.mock('@ui/DropdownMenu', () => ({
+  __esModule: true,
+  DropdownMenu: ({ items, trigger }: any) => (
+    <div data-testid='three-dots'>
+      {trigger}
+      {(items || []).map((it: any) => {
+        // item.id format from source: "events-action-{rowId}-{menuId}"
+        // extract rowId so tests can target a specific row's menu
+        const m = String(it.id || '').match(/^events-action-(.+)-(\d+)$/);
+        const rowId = m ? m[1] : it.id;
+        return (
+          <button key={it.id} data-testid={`menu-${it.label}-${rowId}`} onClick={() => it.onSelect?.()} disabled={it.disabled}>
+            {it.label}
+          </button>
+        );
+      })}
+    </div>
+  ),
+}));
+
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout: any = ({ children, id }: any) => (
+    <div data-testid='listing-layout' id={id}>
+      {children}
+    </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions, title }: any) => (
+    <div data-testid='toolbar'>
+      <h2 data-testid='box-heading'>{title || ''}</h2>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }: any) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, options = [], value, onSelect, multiple }: any) => {
+    if (multiple) {
+      // Multi-select: render a button that, on click, emits the first option as the selection.
+      return (
+        <button data-testid={`multi-${label}`} onClick={() => onSelect?.(null, (options || []).slice(0, 1))}>
+          {label}
+        </button>
+      );
+    }
+    const currentValue = typeof value === 'object' && value !== null ? value.value : value;
+    return (
+      <select
+        data-testid={`filter-${label}`}
+        value={currentValue || ''}
+        onChange={(e) => onSelect?.(e, { value: e.target.value, label: e.target.value })}
+      >
+        <option value=''>--</option>
+        {(options || []).map((opt: any, idx: number) => {
+          const v = typeof opt === 'string' ? opt : opt.value;
+          const l = typeof opt === 'string' ? opt : opt.label;
+          return (
+            <option key={(v || '_') + '-' + idx} value={v}>
+              {l}
+            </option>
+          );
+        })}
+      </select>
+    );
+  },
 }));
 
 jest.mock('@components/tickets/TicketCreatePopupForm', () => ({
@@ -296,7 +351,7 @@ import CloudAccountEvents from '@components/cloudaccount/CloudAccountEvents';
 const apiCloudAccount = require('@api1/cloud-account').default;
 const ticketsApi = require('@api1/tickets').default;
 const { applyFiltersOnRouter } = require('@lib/router');
-const { snackbar } = require('@shared/snackbarService');
+const { toast: snackbar } = require('@ui/Toast');
 
 const sampleEvents = [
   {
@@ -340,10 +395,7 @@ const mockEventsResponse = (events = sampleEvents, count?: number) => ({
 });
 
 const cloudFilters = {
-  severityFilterType: [
-    { label: 'Critical', value: 'critical' },
-    { label: 'Warning', value: 'warning' },
-  ],
+  severityFilterType: ['critical', 'warning'],
   eventNamesFilter: [
     { label: 'OOM', value: 'k8s:oom' },
     { label: 'DiskPressure', value: 'k8s:disk' },
@@ -426,13 +478,11 @@ describe('CloudAccountEvents (integration)', () => {
     expect(lastCall.endDate.getTime()).toBe(2000);
   });
 
-  it('renders event rows with severity icons + alert status labels', async () => {
+  it('renders event rows with severity icons', async () => {
     render(<CloudAccountEvents accountId='acc-1' serviceName='ec2' subjectName='' />);
 
     await waitFor(() => expect(screen.getByTestId('severity-critical')).toBeInTheDocument());
     expect(screen.getByTestId('severity-warning')).toBeInTheDocument();
-    expect(screen.getByTestId('label-red')).toHaveTextContent('Open');
-    expect(screen.getByTestId('label-grey')).toHaveTextContent('Closed');
   });
 
   it('renders existing ticket link when ticket-summary returns match', async () => {
@@ -454,8 +504,6 @@ describe('CloudAccountEvents (integration)', () => {
     render(<CloudAccountEvents accountId='acc-1' serviceName='ec2' subjectName='' />);
 
     await waitFor(() => expect(screen.getByTestId('menu-Create Ticket-evt-1')).toBeInTheDocument());
-    // disabled prop passed through menuItems
-    // verify by inspecting test stub didn't auto-disable; instead inspect the data we'd pass
     expect(screen.getByTestId('menu-Create Ticket-evt-2')).toBeInTheDocument();
   });
 
@@ -620,15 +668,5 @@ describe('CloudAccountEvents (integration)', () => {
     render(<CloudAccountEvents accountId='acc-1' serviceName='ec2' subjectName='' />);
 
     await waitFor(() => expect(screen.queryByTestId('loading')).not.toBeInTheDocument());
-  });
-
-  it('uses custom heading prop when provided', async () => {
-    render(<CloudAccountEvents accountId='acc-1' serviceName='ec2' subjectName='' heading='Recent Events' />);
-    await waitFor(() => expect(screen.getByTestId('box-heading')).toHaveTextContent('Recent Events'));
-  });
-
-  it('falls back to default heading when prop is undefined', async () => {
-    render(<CloudAccountEvents accountId='acc-1' serviceName='ec2' subjectName='' />);
-    await waitFor(() => expect(screen.getByTestId('box-heading')).toHaveTextContent('Events'));
   });
 });

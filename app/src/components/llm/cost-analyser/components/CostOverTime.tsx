@@ -14,12 +14,12 @@ import StackedLineChartIcon from '@mui/icons-material/StackedLineChart';
 import TableRowsOutlinedIcon from '@mui/icons-material/TableRowsOutlined';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { Card } from '@ui/Card';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import Chart from '@ui/Chart';
+import CustomTable2 from '@shared/tables/CustomTable';
 import SectionHeader from './Section';
-import BarSeries from './BarSeries';
-import LineSeries from './LineSeries';
+import { seriesColor } from './palette';
 import { fmtCost } from '../format';
-import { timeSeriesToChart } from '../adapt';
+import { bucketsToSeries, timeSeriesToChart } from '../adapt';
 import type { UsageStackDimension, UsageTimeSeries } from '@api1/ai-cost';
 import type { Granularity, TimeBucket } from '../types';
 
@@ -109,11 +109,13 @@ export function CostOverTime({ timeSeries, granularity, startDate, endDate }: Co
         }
       />
       {view === 'chart' ? (
-        shape === 'area' ? (
-          <LineSeries buckets={buckets} keys={keys} id='cost-over-time' area />
-        ) : (
-          <BarSeries buckets={buckets} keys={keys} id='cost-over-time' />
-        )
+        <Chart.TimeSeries
+          {...bucketsToSeries(buckets, keys)}
+          shape={shape === 'area' ? 'area' : 'bar'}
+          format={fmtCost}
+          colorFor={seriesColor}
+          id='cost-over-time'
+        />
       ) : (
         <NumberTable buckets={buckets} keys={keys} />
       )}

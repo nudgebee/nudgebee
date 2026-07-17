@@ -31,6 +31,11 @@ func init() {
 	playbooks.RegisterAction("metric_anomaly_enricher", &metricAnomalyAction{})
 }
 
+// promQLParser is a shared, stateless PromQL parser. ParseExpr builds a fresh
+// internal parser per call, so one package-level instance is concurrency-safe
+// and avoids per-call allocations.
+var promQLParser = parser.NewParser(parser.Options{})
+
 type PrometheusInstantResult struct {
 	Metric map[string]any `json:"metric"`
 	Value  []any          `json:"value"`
@@ -132,7 +137,7 @@ func (a *prometheusAction) getValidPrometheusExpressionFromEventRules(ctx playbo
 		if err != nil {
 			continue
 		}
-		_, parseErr := parser.ParseExpr(expr)
+		_, parseErr := promQLParser.ParseExpr(expr)
 		if parseErr != nil {
 			ctx.GetLogger().Warn("prometheus auto action: invalid PromQL expression in event_rules",
 				"alert", name, "expr", expr, "error", parseErr)

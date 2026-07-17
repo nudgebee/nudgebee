@@ -18,9 +18,32 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download -x
 
-# Install the Playwright-Go CLI globally using the version from go.mod
-RUN PWGO_VER=$(grep -oE "playwright-go v\S+" /app/go.mod | sed 's/playwright-go //g') && \
-    go install github.com/playwright-community/playwright-go/cmd/playwright@${PWGO_VER}
+# Install the Playwright-Go CLI globally using the version from go.mod.
+# Canonical module path is github.com/mxschmitt/playwright-go (the playwright-community
+# path's newest tags reverted to it). v0.6100.0 also fetches the driver from the npm
+# registry + nodejs.org instead of the retired playwright.azureedge.net CDN, which now
+# 404s and broke this build on the older v0.5700.1 driver zip.
+# Resolve the version with `go list -m` (robust against go.mod formatting) rather
+# than grep/sed; the toolchain is present and `go mod download` has already run.
+RUN PWGO_VER=$(go list -m -f '{{.Version}}' github.com/mxschmitt/playwright-go) && \
+    go install github.com/mxschmitt/playwright-go/cmd/playwright@${PWGO_VER}
+
+# --- Stage 1b: Rebuild the GitHub CLI (gh) on a patched Go toolchain ---
+# GitHub ships `gh` compiled on Go 1.26.4, which carries two Go-stdlib CVEs:
+# CVE-2026-39822 (HIGH, os.Root symlink traversal) and CVE-2026-42505 (MEDIUM,
+# crypto/tls ECH). Both are fixed in Go 1.26.5. `apt install gh` can't clear them
+# (it's a prebuilt Go binary), so rebuild the SAME gh release (v2.96.0) on Go
+# 1.26.5 and copy it in — llm-server shells out to `gh` (tools/tool_github.go),
+# so behaviour is unchanged. Same technique as the redis wait-for-port / postgres
+# gosu mirrors. CGO_ENABLED=0 -> a static binary that runs on the ubuntu runtime.
+FROM golang:1.26.5 AS gh-builder
+ARG TARGETOS
+ARG TARGETARCH
+ENV GOOS=${TARGETOS:-linux}
+ENV GOARCH=${TARGETARCH:-amd64}
+ENV CGO_ENABLED=0
+ENV GOTOOLCHAIN=local
+RUN go install github.com/cli/cli/v2/cmd/gh@v2.96.0
 
 # --- Stage 2: Install Playwright browsers and copy playwright-go CLI ---
 FROM ubuntu:noble AS playwright-installer
@@ -30,23 +53,34 @@ LABEL version="noble-playwright-go-optimized"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install minimal system dependencies, letting playwright install --with-deps handle the rest
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install minimal system dependencies, letting playwright install --with-deps handle the rest.
+# apt-get upgrade patches the ubuntu:noble base packages to the latest security
+# releases — the tag lags upstream, so without it the image (and llm-server, which
+# builds FROM it) inherits ~90 fixable OS CVEs. DEBIAN_FRONTEND=noninteractive is
+# already set above, so upgrade won't prompt.
+# OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's
+# cache key so BuildKit re-runs the apt upgrade/install and pulls current ubuntu
+# security patches — its registry cache (mode=max) otherwise serves a stale
+# package layer forever. Committed (not a build-arg) so each refresh is a
+# reviewable, revertable diff; bump when the Trivy scan flags a stale package
+# (e.g. gzip CVE-2026-41991, tar CVE-2025-45582).
+# W29 pulls the freshly-published Ubuntu fixes for wget (CVE-2026-58469..72) and
+# libasound2 (CVE-2026-56109) — 6 MEDIUMs that moved from NOFIX to fixable.
+ARG OS_PKG_EPOCH=2026-W29
+RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
+    && apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
     wget \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN (type -p wget >/dev/null || (apt update && apt install wget -y)) \
-	&& mkdir -p -m 755 /etc/apt/keyrings \
-	&& out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-	&& cat $out | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
-	&& chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-	&& mkdir -p -m 755 /etc/apt/sources.list.d \
-	&& echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-	&& apt update \
-	&& apt install gh -y
+# gh (GitHub CLI): use the Go-1.26.5 rebuild from the gh-builder stage instead of
+# `apt install gh`. GitHub's apt package is compiled on Go 1.26.4 and carries the
+# stdlib CVEs noted above; the rebuild clears them. This also drops the apt
+# keyring / extra-repo setup the apt install required.
+COPY --from=gh-builder /go/bin/gh /usr/bin/gh
+RUN chmod +x /usr/bin/gh
 
 # Copy the compiled playwright-go CLI from the previous stage
 COPY --from=go-builder /go/bin/playwright /usr/local/bin/playwright

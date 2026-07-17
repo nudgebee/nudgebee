@@ -1,4 +1,4 @@
-import { Box, Stack, Typography } from '@mui/material';
+import { Box, Divider, Stack, Typography } from '@mui/material';
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import apiAccount from '@api1/account';
@@ -6,8 +6,8 @@ import { useRouter } from 'next/router';
 import { getCloudProviderLabel } from 'src/utils/common';
 import { Skeleton } from '@ui/Skeleton';
 import { ds } from 'src/utils/colors';
-import CustomTabs from '@shared/CustomTabs';
-import CustomSearch from '@shared/CustomSearch';
+import Tabs from '@shared/navigation/Tabs';
+import SearchInput from '@ui/SearchInput';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Card } from '@ui/Card';
 import Chip from '@ui/Chip';
@@ -49,7 +49,7 @@ const PROVIDERS = {
   DATABASE: ['POSTGRES', 'MYSQL', 'CLICKHOUSE', 'MSSQL', 'ORACLE'],
   IN_MEMORY: ['REDIS'],
   DOCS: ['CONFLUENCE'],
-  MESSAGING: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT', 'DISCORD'],
+  MESSAGING: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT'],
   OBSERVABITY_PLATFORM: [
     'DATADOG',
     'DYNATRACE',
@@ -57,7 +57,6 @@ const PROVIDERS = {
     'LOGGLY',
     'LOKI',
     'SIGNOZ',
-    'OPENOBSERVE',
     'OBSERVE',
     'AZURE_APP_INSIGHTS',
     'PROMETHEUS',
@@ -84,7 +83,7 @@ const SECTIONS_CONFIG = [
     id: 'messaging',
     label: 'Messaging & Alerting',
     icon: MessageBlueIcon,
-    providers: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT', 'DISCORD'],
+    providers: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT'],
     tab: 2,
   },
   {
@@ -133,7 +132,6 @@ const SECTIONS_CONFIG = [
       'LOGGLY',
       'LOKI',
       'SIGNOZ',
-      'OPENOBSERVE',
       'OBSERVE',
       'AZURE_APP_INSIGHTS',
       'PROMETHEUS',
@@ -201,6 +199,27 @@ const SECTIONS_CONFIG = [
   },
 ];
 
+// URL slug per integration category, surfaced as the `?integration=<slug>` query
+// param so each category tab is deep-linkable
+// (e.g. `/user-management?integration=account#integrations`). Keyed by
+// SECTIONS_CONFIG.id. Slugs are part of shareable URLs — keep them stable.
+// The "All" tab carries no param.
+const INTEGRATION_SLUG_BY_ID = {
+  cloud: 'account',
+  messaging: 'alert',
+  ticket: 'ticket',
+  webhooks: 'webhook',
+  database: 'database',
+  observability: 'observability',
+  repo: 'repo',
+  queue: 'queue',
+  ci_cd: 'cicd',
+  'in-memory': 'in-memory',
+  docs: 'docs',
+  llm: 'llm',
+  server: 'server',
+};
+
 // Optimized Component
 const AccountCard = React.memo(({ cloud_provider = 'AWS', active = 0, disabled = 0, label, activeClouds = [] }) => {
   const router = useRouter();
@@ -210,7 +229,7 @@ const AccountCard = React.memo(({ cloud_provider = 'AWS', active = 0, disabled =
     router.push(`/accounts/account-form?cloudProvider=${cloud_provider}`);
   }, [router, cloud_provider]);
 
-  const isMessagingProvider = ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT', 'DISCORD'].includes(cloud_provider?.toUpperCase());
+  const isMessagingProvider = ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT'].includes(cloud_provider?.toUpperCase());
   const needsChannelMapping =
     isMessagingProvider &&
     active > 0 &&
@@ -271,7 +290,7 @@ const AccountCard = React.memo(({ cloud_provider = 'AWS', active = 0, disabled =
             flexShrink: 0,
           }}
         >
-          <CloudProviderIcon cloud_provider={cloud_provider} width='32px' height='32px' />
+          <CloudProviderIcon cloud_provider={cloud_provider} width={ds.space[6]} height={ds.space[6]} />
         </Box>
 
         {/* Text Section */}
@@ -500,8 +519,6 @@ const accountHelpers = {
         activeClouds = accountHelpers.mapWebhooksToActiveStatus(observabilityAccounts.loki);
       } else if (provider?.toLowerCase() === 'signoz') {
         activeClouds = accountHelpers.mapWebhooksToActiveStatus(observabilityAccounts.signoz);
-      } else if (provider?.toLowerCase() === 'openobserve') {
-        activeClouds = accountHelpers.mapWebhooksToActiveStatus(observabilityAccounts.openobserve);
       } else if (provider?.toLowerCase() === 'azure_app_insights') {
         activeClouds = accountHelpers.mapWebhooksToActiveStatus(observabilityAccounts.azure);
       } else if (provider?.toLowerCase() === 'prometheus') {
@@ -620,9 +637,6 @@ const accountHelpers = {
       } else if (platform.toLowerCase() === 'google_chat') {
         activeClouds = gChatAccData;
         platformKey = 'google_chat';
-      } else if (platform.toLowerCase() === 'discord') {
-        activeClouds = data.filter((d) => d.platform === 'discord');
-        platformKey = 'discord';
       } else {
         activeClouds = [];
       }
@@ -639,6 +653,7 @@ const accountHelpers = {
 };
 
 const Integrations = () => {
+  const router = useRouter();
   const [sectionsData, setSectionsData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedTab, setSelectedTab] = useState(0);
@@ -652,6 +667,57 @@ const Integrations = () => {
       ],
     }),
     []
+  );
+
+  // Two-way lookup between a category tab value and its URL slug. The "All" tab
+  // (value 0) maps to no slug so it renders the clean `#integrations` URL.
+  const { slugByTab, tabBySlug } = useMemo(() => {
+    // Prototype-less maps: `tabBySlug` is looked up with the untrusted
+    // `?integration=` value, so a plain object would resolve crafted keys like
+    // `toString`/`constructor` to inherited members instead of undefined.
+    const byTab = Object.create(null);
+    byTab[0] = null;
+    const bySlug = Object.create(null);
+    SECTIONS_CONFIG.forEach((s) => {
+      const slug = INTEGRATION_SLUG_BY_ID[s.id];
+      if (slug) {
+        byTab[s.tab] = slug;
+        bySlug[slug] = s.tab;
+      }
+    });
+    return { slugByTab: byTab, tabBySlug: bySlug };
+  }, []);
+
+  // The active category is driven by the `integration` query param
+  // (`/user-management?integration=database#integrations`).
+  const selectedSlug = Array.isArray(router.query.integration) ? router.query.integration[0] : router.query.integration;
+
+  // URL is the source of truth: sync the active tab whenever the slug changes
+  // (direct navigation, refresh, back/forward). Unknown/absent slug → "All".
+  useEffect(() => {
+    const nextTab = selectedSlug && tabBySlug[selectedSlug] !== undefined ? tabBySlug[selectedSlug] : 0;
+    setSelectedTab((prev) => (prev === nextTab ? prev : nextTab));
+  }, [selectedSlug, tabBySlug]);
+
+  const handleTabChange = useCallback(
+    (tabValue) => {
+      setSelectedTab(tabValue);
+      const slug = slugByTab[tabValue];
+      const query = { ...router.query };
+      if (slug) {
+        query.integration = slug;
+      } else {
+        delete query.integration;
+      }
+      // Keep the `#integrations` hash so the parent tab stays selected on refresh.
+      // Only push if the slug actually changed to avoid duplicate history entries
+      // when the user clicks the already-active tab.
+      const currentSlug = Array.isArray(router.query.integration) ? router.query.integration[0] : router.query.integration;
+      if ((slug || undefined) !== (currentSlug || undefined)) {
+        router.push({ pathname: router.pathname, query, hash: 'integrations' }, undefined, { shallow: true, scroll: false });
+      }
+    },
+    [router, slugByTab]
   );
 
   // --- DATA PROCESSING HELPERS ---
@@ -683,7 +749,7 @@ const Integrations = () => {
         channels = [acc.team_name]; // simplified based on code analysis
       } else if (acc.platform === 'ms_teams' && acc.channels?.team_name) {
         channels = [acc.channels.team_name];
-      } else if (acc.platform === 'google_chat' || acc.platform === 'discord') {
+      } else if (acc.platform === 'google_chat') {
         try {
           const parsed = typeof acc.channels === 'string' ? JSON.parse(acc.channels) : acc.channels;
           if (parsed?.name) {
@@ -881,6 +947,7 @@ const Integrations = () => {
             gridTemplateColumns: {
               xs: '1fr',
               sm: 'repeat(2, minmax(0, 1fr))',
+              md: 'repeat(3, minmax(0, 1fr))',
               lg: 'repeat(3, minmax(0, 1fr))',
             },
             gap: ds.space[5],
@@ -896,15 +963,13 @@ const Integrations = () => {
 
   return (
     <>
-      {!loading && (
-        <Box sx={{ width: '100%', mb: ds.space[3], overflow: 'auto' }}>
-          <CustomTabs value={selectedTab} onChange={setSelectedTab} options={tabOptions} variant='secondary' behavior='filter' p='0px' />
-        </Box>
-      )}
+      <Box sx={{ width: '100%', mb: ds.space[3], overflow: 'auto' }}>
+        <Tabs value={selectedTab} onChange={handleTabChange} options={tabOptions} variant='secondary' behavior='filter' p='0px' />
+      </Box>
       <ListingLayout>
         <ListingLayout.Toolbar>
           <Box sx={{ display: 'flex', justifyContent: 'flex-start', width: '100%' }}>
-            <CustomSearch
+            <SearchInput
               value={searchQuery}
               onChange={(next) => {
                 setSearchQuery(next);
@@ -920,6 +985,14 @@ const Integrations = () => {
         <ListingLayout.Body padding={`0 ${ds.space[5]} ${ds.space[5]}`}>
           {loading ? (
             <Box width='100%' mt={ds.space[4]}>
+              <Box sx={{ marginBottom: ds.space[4] }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[3], mb: ds.space[2] }}>
+                  <Divider orientation='vertical' flexItem sx={{ borderRightWidth: ds.space[1], my: ds.space[1] }} />
+                  <Skeleton shape='rect' width={ds.space.mul(0, 60)} height={ds.space[5]} />
+                  <Skeleton shape='circle' width={ds.space[5]} />
+                </Box>
+                <Divider />
+              </Box>
               <Box
                 sx={{
                   display: 'grid',
@@ -927,13 +1000,49 @@ const Integrations = () => {
                     xs: '1fr',
                     sm: 'repeat(2, minmax(0, 1fr))',
                     md: 'repeat(3, minmax(0, 1fr))',
-                    lg: 'repeat(4, minmax(0, 1fr))',
+                    lg: 'repeat(3, minmax(0, 1fr))',
                   },
                   gap: ds.space[5],
                 }}
               >
                 {Array.from({ length: 9 }).map((_, idx) => (
-                  <Skeleton.Card key={`integration-skeleton-${idx}`} width='100%' lines={1} />
+                  <Box
+                    key={`integration-skeleton-${idx}`}
+                    sx={{
+                      width: '100%',
+                      height: ds.space.mul(0, 44),
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: ds.space[3],
+                      padding: `0 ${ds.space[0]}`,
+                      border: '1px solid var(--ds-gray-200)',
+                      borderLeft: '3px solid var(--ds-gray-200)',
+                      borderRadius: 'var(--ds-radius-md)',
+                      backgroundColor: 'var(--ds-background-100)',
+                    }}
+                  >
+                    <Box sx={{ marginLeft: ds.space[2] }}>
+                      <Skeleton shape='rect' width={ds.space.mul(0, 18)} height={ds.space.mul(0, 18)} />
+                    </Box>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], flexGrow: 1, minWidth: 0 }}>
+                      <Skeleton shape='text' size='text' width='55%' />
+                      <Skeleton shape='text' size='caption' width='35%' />
+                      <Box sx={{ display: 'flex', gap: ds.space[1], mt: ds.space[1] }}>
+                        <Skeleton
+                          shape='rect'
+                          width={ds.space.mul(0, 32)}
+                          height={ds.space.mul(0, 10)}
+                          sx={{ borderRadius: 'var(--ds-radius-pill)' }}
+                        />
+                        <Skeleton
+                          shape='rect'
+                          width={ds.space.mul(0, 38)}
+                          height={ds.space.mul(0, 10)}
+                          sx={{ borderRadius: 'var(--ds-radius-pill)' }}
+                        />
+                      </Box>
+                    </Box>
+                  </Box>
                 ))}
               </Box>
             </Box>

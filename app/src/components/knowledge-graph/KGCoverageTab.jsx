@@ -11,7 +11,7 @@ import PropTypes from 'prop-types';
 import { Button } from '@ui/Button';
 import { Checkbox } from '@ui/Checkbox';
 import { toast as snackbar } from '@ui/Toast';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import apiKnowledgeGraph from '@api1/knowledge-graph';
 import { ds } from 'src/utils/colors';
 
@@ -152,20 +152,20 @@ const KGCoverageTab = ({ open, onSaved, onClose }) => {
     // naturally wants width), flow sources on the right (small fixed list).
     // Fills the wide parent modal proportionally — no more vertical stacking
     // that left ~30% of the modal as horizontal whitespace.
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, py: 2 }}>
-      <Typography sx={{ fontSize: '12px', color: ds?.text?.secondaryDark ?? '#6b7280' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4], py: ds.space[4] }}>
+      <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>
         Choose which cloud accounts and flow sources feed the Knowledge Graph. Removed items disappear from the graph immediately. Newly enabled items
         appear after the next nightly rebuild.
       </Typography>
 
-      <Box sx={{ display: 'flex', gap: 3, alignItems: 'flex-start' }}>
+      <Box sx={{ display: 'flex', gap: ds.space[5], alignItems: 'flex-start' }}>
         {/* Cloud accounts column — bigger, takes the natural breathing room
             for a checklist with provider metadata on the right of each row. */}
         <Box sx={{ flex: '1 1 0', minWidth: 0 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1, gap: 1 }}>
-            <Typography sx={{ fontSize: '14px', fontWeight: 600, color: ds?.text?.secondary ?? '#374151' }}>Cloud accounts</Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: ds.space[2], gap: ds.space[2] }}>
+            <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.brand[500] }}>Cloud accounts</Typography>
             {cloudAccounts.length > 0 && (
-              <CustomSearch
+              <SearchInput
                 id='kg-coverage-account-search'
                 label='Search accounts'
                 value={searchTerm}
@@ -176,17 +176,17 @@ const KGCoverageTab = ({ open, onSaved, onClose }) => {
             )}
           </Box>
           {loading ? (
-            <Typography sx={{ fontSize: '12px', color: ds?.text?.secondaryDark ?? '#6b7280', fontStyle: 'italic' }}>Loading…</Typography>
+            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontStyle: 'italic' }}>Loading…</Typography>
           ) : cloudAccounts.length === 0 ? (
-            <Typography sx={{ fontSize: '12px', color: ds?.text?.secondaryDark ?? '#6b7280', fontStyle: 'italic' }}>
+            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontStyle: 'italic' }}>
               No active cloud accounts configured for this tenant.
             </Typography>
           ) : filteredAccounts.length === 0 ? (
-            <Typography sx={{ fontSize: '12px', color: ds?.text?.secondaryDark ?? '#6b7280', fontStyle: 'italic' }}>
+            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontStyle: 'italic' }}>
               No accounts match &ldquo;{searchTerm}&rdquo;.
             </Typography>
           ) : (
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, maxHeight: '360px', overflowY: 'auto' }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], maxHeight: '360px', overflowY: 'auto' }}>
               {filteredAccounts.map((acc) => (
                 <Box
                   key={acc.id}
@@ -194,9 +194,9 @@ const KGCoverageTab = ({ open, onSaved, onClose }) => {
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
-                    padding: '6px 8px',
-                    borderRadius: '6px',
-                    '&:hover': { backgroundColor: ds?.background?.tertiaryLightest ?? '#f3f4f6' },
+                    padding: `${ds.space.mul(0, 3)} ${ds.space[2]}`,
+                    borderRadius: ds.radius.md,
+                    '&:hover': { backgroundColor: ds.gray[100] },
                   }}
                 >
                   <Checkbox
@@ -205,7 +205,7 @@ const KGCoverageTab = ({ open, onSaved, onClose }) => {
                     label={acc.account_name || acc.account_number || acc.id}
                     size='sm'
                   />
-                  <Typography sx={{ fontSize: '11px', color: ds?.text?.secondaryDark ?? '#6b7280' }}>
+                  <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>
                     {acc.cloud_provider}
                     {acc.account_number ? ` · ${acc.account_number}` : ''}
                   </Typography>
@@ -224,8 +224,10 @@ const KGCoverageTab = ({ open, onSaved, onClose }) => {
             easy to scan. Fixed-ish width keeps the cloud accounts column
             dominant per visual weight of the two sections. */}
         <Box sx={{ flex: '0 0 240px' }}>
-          <Typography sx={{ fontSize: '14px', fontWeight: 600, color: ds?.text?.secondary ?? '#374151', mb: 1 }}>Flow sources</Typography>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+          <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.brand[500], mb: ds.space[2] }}>
+            Flow sources
+          </Typography>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space.mul(1, 1.5) }}>
             {FLOW_SOURCES.map((fs) => (
               <Checkbox
                 key={fs.id}
@@ -239,7 +241,7 @@ const KGCoverageTab = ({ open, onSaved, onClose }) => {
         </Box>
       </Box>
 
-      <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, pt: 1 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[2], pt: ds.space[2] }}>
         <Button tone='secondary' size='md' onClick={onClose} disabled={saving}>
           Cancel
         </Button>

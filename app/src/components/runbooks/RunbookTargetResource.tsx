@@ -5,7 +5,7 @@
  */
 import apiKubernetes from '@api1/kubernetes';
 import { Select } from '@ui/Select';
-import { Tabs } from '@ui/Tabs';
+import Tabs from '@shared/navigation/Tabs';
 import { ExpandMore } from '@mui/icons-material';
 import { Accordion, AccordionDetails, AccordionSummary, Box, Typography, CircularProgress } from '@mui/material';
 import { Checkbox } from '@ui/Checkbox';
@@ -162,7 +162,15 @@ const RunbookTargetResource: React.FC<RunbookTargetResourceProps> = ({
 
   return (
     <>
-      {!hideTabs && <Tabs tabs={targetResourceTypes} value={targetResourceType} onChange={(next) => setTargetResourceType(next)} size='md' />}
+      {!hideTabs && (
+        <Tabs
+          options={{ tabOptions: targetResourceTypes.map((t) => ({ value: t.id, text: t.label })) }}
+          value={targetResourceType}
+          onChange={(next) => setTargetResourceType(next)}
+          behavior='filter'
+          variant='secondary'
+        />
+      )}
 
       <Box sx={{ mt: 'var(--ds-space-4)' }}>
         <Box sx={{ display: 'flex', gap: 'var(--ds-space-3)', mb: 'var(--ds-space-4)' }}>

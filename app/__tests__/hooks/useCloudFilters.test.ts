@@ -41,7 +41,9 @@ const mockGetResourceServices = apiResources.getResourceServices as jest.Mock;
 describe('useCloudFilter', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockGetResourceServices.mockResolvedValue({ data: [] });
+    // Never-resolving by default — prevents background setServiceNamesFilter
+    // dispatch firing outside act in tests that don't check service names.
+    mockGetResourceServices.mockReturnValue(new Promise(() => {}));
   });
 
   it('returns empty serviceNamesFilter when accountId is falsy', () => {
@@ -63,7 +65,12 @@ describe('useCloudFilter', () => {
 });
 
 describe('useRecommendationCloudFilter', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Never-resolving by default — prevents rule/service filter dispatches from
+    // firing outside act in tests that don't exercise async filter loading.
+    mockListFilter.mockReturnValue(new Promise(() => {}));
+  });
 
   it('returns empty filters when accountId is falsy', () => {
     const { result } = renderHook(() => useRecommendationCloudFilter(''));
@@ -91,8 +98,10 @@ describe('useRecommendationCloudFilter', () => {
 
   it('does not fetch serviceNames when data.serviceName is provided', async () => {
     mockListFilter.mockResolvedValue({ data: { data: { recommendation: [] } } });
-    renderHook(() => useRecommendationCloudFilter('acc-1', { serviceName: 'existing-service' }));
-    await waitFor(() => expect(mockListFilter).toHaveBeenCalled());
+    const { result } = renderHook(() => useRecommendationCloudFilter('acc-1', { serviceName: 'existing-service' }));
+    // Wait for the rule_name fetch to fully settle (loading flag clears) so all
+    // state updates complete inside the waitFor act boundary.
+    await waitFor(() => expect(result.current.isOptionsLoading.ruleName).toBe(false));
     // Should only call once for rule_name, not for resource_cloud_service
     expect(mockListFilter).toHaveBeenCalledTimes(1);
   });

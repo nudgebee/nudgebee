@@ -2,9 +2,7 @@
  * Chip — DS V2.
  * Spec: app/design-system/primitives/action/chip.html
  *
- * Canonical port of @components1/common/Chip (V1) into the DS token system.
- * Every V1 variant, slot, state, and behavior is preserved; the colour source
- * is DS CSS variables (--ds-*) throughout. Categorical `hue` values map to the
+ * The colour source is DS CSS variables (--ds-*) throughout. Categorical `hue` values map to the
  * 8 DS color families (distinct from semantic tones) rather than raw hex.
  *
  * When to use (Chip vs Label/CustomLabels):
@@ -316,7 +314,7 @@ const SIZE_TOKENS: Record<ChipSize, SizeTokens> = {
     pillRadius: 'var(--ds-radius-pill)',
     rectRadius: 'var(--ds-radius-sm)',
   },
-  // sm + md mirror V1's @components1/common/Chip tokens so the redesigned
+  // sm + md mirror V1's @components/common/Chip tokens so the redesigned
   // chip renders at the same proportions as the legacy primitive — same
   // padding, same dot/font ratios. Do not drift from V1 without coordinating.
   sm: {
@@ -668,7 +666,7 @@ export function Chip(props: ChipProps) {
   const hasChildren = children !== undefined && children !== null && children !== '';
   const isIconOnly = !!icon && !hasChildren && count === undefined && !dot && !leadingAvatar;
   const isSelected = selected ?? pressed ?? false;
-  const isInteractive = (behavior.interactive || !!onClick || !!onDismiss) && !disabled && !loading;
+  const isInteractive = (behavior.interactive || !!onClick) && !disabled && !loading;
   const isPressable = behavior.pressable && isInteractive;
   const isToggleable = pressed !== undefined || selected !== undefined;
 

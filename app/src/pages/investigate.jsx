@@ -32,7 +32,7 @@ import { Label } from '@ui/Label';
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import apiRecommendations from '@api1/recommendation';
 import apiTriage from '@api1/triage';
-import { hasWriteAccess, hasFeatureAccess } from '@lib/auth';
+import { hasReadAccess, hasWriteAccess, hasFeatureAccess } from '@lib/auth';
 import InvestigateResolution from '@components/k8s/investigate/InvestigateResolution';
 import CustomBorderCard from '@ui/CustomBorderCard';
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
@@ -2702,6 +2702,7 @@ const Investigate = () => {
                               <RunAutomationMenu
                                 accountId={automationAccountId}
                                 eventId={row.id}
+                                canView={hasReadAccess(automationAccountId)}
                                 canRun={hasWriteAccess(automationAccountId)}
                                 onCreateAutomation={() => setShowTemplatesModal(true)}
                                 onTriggered={handleAutomationTriggered}

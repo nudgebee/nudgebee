@@ -2,16 +2,16 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import ListingLayout from '@ui/ListingLayout';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { Button } from '@ui/Button';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { Label } from '@ui/Label';
 import Text from '@shared/format/Text';
 import CreateFunction from './CreateFunction';
 import { Modal } from '@ui/Modal';
 import { hasWriteAccess } from '@lib/auth';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { PlusIcon, DeleteIconRed as deleteIcon, EditIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { ds } from 'src/utils/colors';
@@ -19,8 +19,16 @@ import { toast as snackbar } from '@ui/Toast';
 import { Box, Typography } from '@mui/material';
 import Chip from '@ui/Chip';
 import DateTime from '@shared/format/Datetime';
+import ScopeChip, { HybridScopeChips } from '@components/llm/ScopeChip';
 
-const ListFunctions = ({ accountId }) => {
+const ListFunctions = ({ accountId, stickyTable = false }) => {
+  // Tenant-wide read-only mode: when the Settings modal is opened from the
+  // global sidebar (no accountId in scope), the listFunctions wrapper omits
+  // the account_id filter and api-server's query service applies the
+  // standard row-level account ACL automatically (tenant/super admins see
+  // all in tenant; account-admins see only their assigned accounts). The
+  // UI adds an Account column and hides Create / Edit / Delete.
+  const isTenantWide = !accountId;
   const [data, setData] = React.useState([]);
   const [originalData, setOriginalData] = React.useState([]);
   const [loading, setLoading] = React.useState(false);
@@ -196,9 +204,23 @@ const ListFunctions = ({ accountId }) => {
                   />
                 ),
               },
-              {
-                component: <ThreeDotsMenu menuItems={getMenuItems()} onMenuClick={handleMenuAction} data={func} sx={{ padding: ds.space[1] }} />,
-              },
+              // Tenant-wide swaps the Actions column for an Account
+              // column. Writes are per-account; hide the three-dots menu.
+              // ScopeChip resolves the raw UUID to the cached
+              // account-name (avoids surfacing a UUID to operators).
+              ...(isTenantWide
+                ? [
+                    {
+                      component: func.account_id ? <ScopeChip accountId={func.account_id} /> : <Text value='—' />,
+                    },
+                  ]
+                : [
+                    {
+                      component: (
+                        <ThreeDotsMenu menuItems={getMenuItems()} onMenuClick={handleMenuAction} data={func} sx={{ padding: ds.space[1] }} />
+                      ),
+                    },
+                  ]),
             ];
           });
           setData(functions);
@@ -336,10 +358,17 @@ const ListFunctions = ({ accountId }) => {
 
       <ListingLayout id='all-functions'>
         <ListingLayout.Toolbar
+          title={
+            <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
+              Functions
+              {/* Hybrid: system catalog + custom functions per account. */}
+              <HybridScopeChips accountId={accountId} />
+            </Box>
+          }
           actions={
             <>
               <DownloadButton onClick={() => ({ tableId: 'functions' })} size='sm' />
-              {hasWriteAccess(accountId) && (
+              {!isTenantWide && hasWriteAccess(accountId) && (
                 <Button tone='primary' size='sm' id='create-function' onClick={() => setCreateFunctionModal(true)}>
                   <Box
                     sx={{
@@ -359,7 +388,7 @@ const ListFunctions = ({ accountId }) => {
             </>
           }
         >
-          <CustomSearch
+          <SearchInput
             id='function-search'
             label='Search Function'
             value={searchFunctionByName}
@@ -369,14 +398,25 @@ const ListFunctions = ({ accountId }) => {
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
           <CustomTable
-            headers={[
-              { name: 'Name', width: '25%' },
-              { name: 'Description', width: '30%' },
-              { name: 'Status', width: '10%' },
-              { name: 'Prompt', width: '25%' },
-              { name: 'Created', width: '5%' },
-              { name: 'Actions', width: '5%' },
-            ]}
+            headers={
+              isTenantWide
+                ? [
+                    { name: 'Name', width: '25%' },
+                    { name: 'Description', width: '30%' },
+                    { name: 'Status', width: '10%' },
+                    { name: 'Prompt', width: '20%' },
+                    { name: 'Created', width: '5%' },
+                    { name: 'Account', width: '10%' },
+                  ]
+                : [
+                    { name: 'Name', width: '25%' },
+                    { name: 'Description', width: '30%' },
+                    { name: 'Status', width: '10%' },
+                    { name: 'Prompt', width: '25%' },
+                    { name: 'Created', width: '5%' },
+                    { name: 'Actions', width: '5%' },
+                  ]
+            }
             rowProps={{
               sx: {
                 '&:hover': {
@@ -390,6 +430,8 @@ const ListFunctions = ({ accountId }) => {
             totalRows={data.length}
             loading={loading}
             id='functions'
+            stickyHeader={stickyTable}
+            sx={stickyTable ? { maxHeight: 'calc(90vh - 300px)', overflowY: 'auto' } : undefined}
           />
         </ListingLayout.Body>
       </ListingLayout>
@@ -399,6 +441,7 @@ const ListFunctions = ({ accountId }) => {
 
 ListFunctions.propTypes = {
   accountId: PropTypes.string,
+  stickyTable: PropTypes.bool,
 };
 
 export default ListFunctions;

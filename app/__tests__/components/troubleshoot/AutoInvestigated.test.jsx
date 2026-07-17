@@ -48,54 +48,119 @@ jest.mock('@api1/home', () => ({
   },
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000' }, background: { white: '#fff' }, border: { secondary: '#ddd' } },
+jest.mock('@utils/colors');
+
+jest.mock('@shared/format/Text', () => ({
+  __esModule: true,
+  default: ({ value }) => <span>{value}</span>,
 }));
 
-jest.mock('@shared', () => ({
-  BoxLayout2: ({ children, filterOptions = [], dateTimeRange }) => (
-    <div data-testid='box-layout'>
-      {filterOptions.map((f, i) => {
-        if (f.type === 'dropdown') {
-          return (
-            <select key={i} data-testid={`filter-${f.label}`} value={f.value || ''} onChange={f.onSelect}>
-              <option value=''>--</option>
-              {(f.options || []).map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          );
-        }
-        if (f.type === 'multi-dropdown') {
-          return (
-            <button
-              key={i}
-              data-testid={`multi-${f.label}`}
-              onClick={() => {
-                const first = (f.options || [])[0];
-                if (first) f.onSelect({}, [first]);
-              }}
-            >
-              {f.label}
-            </button>
-          );
-        }
-        return null;
-      })}
-      {dateTimeRange?.enabled && (
-        <button data-testid='date-range-trigger' onClick={() => dateTimeRange.onChange({ startTime: 1000, endTime: 2000, shortcutClickTime: 1 })}>
-          Set Date
-        </button>
-      )}
+jest.mock('@shared/format/Datetime', () => ({
+  __esModule: true,
+  default: ({ value }) => <span data-testid='datetime'>{value}</span>,
+}));
+
+jest.mock('@ui/Label', () => ({
+  Label: ({ text, children, variant }) => <span data-testid={`label-${variant || 'plain'}`}>{children || text}</span>,
+}));
+
+jest.mock('@ui/SeverityIcon', () => {
+  const SeverityIcon = ({ level }) => <span data-testid={`severity-${level || 'none'}`}>sev</span>;
+  return { __esModule: true, default: SeverityIcon, SeverityIcon };
+});
+
+// DS Button with href renders as anchor with `investigate-link` testid so tests can
+// inspect the URL.
+jest.mock('@ui/Button', () => ({
+  Button: ({ children, onClick, id, disabled, href }) =>
+    href ? (
+      <a data-testid='investigate-link' href={href} onClick={onClick}>
+        {children}
+      </a>
+    ) : (
+      <button data-testid={id || `btn-${children}`} onClick={onClick} disabled={disabled}>
+        {children}
+      </button>
+    ),
+}));
+
+jest.mock('@shared/widgets/CustomDateTimeRangePicker', () => ({
+  __esModule: true,
+  default: ({ onChange }) => (
+    <button data-testid='date-range-trigger' onClick={() => onChange?.({ startTime: 1000, endTime: 2000, shortcutClickTime: 1 })}>
+      Set Date
+    </button>
+  ),
+}));
+
+jest.mock('@shared/buttons/DownloadButton', () => ({
+  __esModule: true,
+  default: ({ onClick }) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
+  ),
+}));
+
+jest.mock('@shared/icons/CloudIcon', () => ({
+  __esModule: true,
+  default: ({ cloud_provider }) => <span data-testid={`cloud-${cloud_provider}`}>cloud</span>,
+}));
+
+jest.mock('@components/k8s/common/ClusterNameWithRegion', () => ({
+  __esModule: true,
+  default: ({ name }) => <span data-testid='cluster-name'>{name}</span>,
+}));
+
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout = ({ children, id }) => (
+    <div data-testid='listing-layout' id={id}>
       {children}
     </div>
-  ),
-  Text: ({ value }) => <span>{value}</span>,
+  );
+  ListingLayout.Toolbar = ({ children, actions }) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, options = [], value, onSelect, multiple }) => {
+    if (multiple) {
+      return (
+        <button data-testid={`multi-${label}`} onClick={() => onSelect?.(null, (options || []).slice(0, 1))}>
+          {label}
+        </button>
+      );
+    }
+    const currentValue = typeof value === 'object' && value !== null ? value.value : value;
+    return (
+      <select
+        data-testid={`filter-${label}`}
+        value={currentValue || ''}
+        onChange={(e) => onSelect?.({ target: { value: e.target.value } }, { value: e.target.value, label: e.target.value })}
+      >
+        <option value=''>--</option>
+        {(options || []).map((opt, idx) => {
+          const v = typeof opt === 'string' ? opt : opt.value;
+          const l = typeof opt === 'string' ? opt : opt.label;
+          return (
+            <option key={(v || '_') + '-' + idx} value={v}>
+              {l}
+            </option>
+          );
+        })}
+      </select>
+    );
+  },
 }));
 
-jest.mock('@shared/tables/CustomTable2', () => ({
+jest.mock('@shared/tables/CustomTable', () => ({
   __esModule: true,
   default: ({ id, tableData, totalRows, loading, onPageChange, pageNumber, emptyStateText }) => (
     <div data-testid='custom-table' id={id}>
@@ -117,40 +182,6 @@ jest.mock('@shared/tables/CustomTable2', () => ({
       </button>
     </div>
   ),
-}));
-
-jest.mock('@shared/widgets/CustomLabels', () => ({
-  __esModule: true,
-  default: ({ text, variant }) => <span data-testid={`label-${variant || 'plain'}`}>{text}</span>,
-}));
-
-jest.mock('@shared/widgets/SeverityIcon', () => ({
-  __esModule: true,
-  default: ({ severityType }) => <span data-testid={`severity-${severityType || 'none'}`}>sev</span>,
-}));
-
-jest.mock('@shared/format/Datetime', () => ({
-  __esModule: true,
-  default: ({ value }) => <span data-testid='datetime'>{value}</span>,
-}));
-
-jest.mock('@shared/InvestigateButton', () => ({
-  __esModule: true,
-  default: ({ url }) => (
-    <a data-testid='investigate-link' href={url}>
-      Investigate
-    </a>
-  ),
-}));
-
-jest.mock('@shared/icons/CloudIcon', () => ({
-  __esModule: true,
-  default: ({ cloud_provider }) => <span data-testid={`cloud-${cloud_provider}`}>cloud</span>,
-}));
-
-jest.mock('@components/k8s/common/ClusterNameWithRegion', () => ({
-  __esModule: true,
-  default: ({ name }) => <span data-testid='cluster-name'>{name}</span>,
 }));
 
 import AutoInvestigated from '@components/troubleshoot/AutoInvestigated';
@@ -305,6 +336,7 @@ describe('AutoInvestigated (integration)', () => {
   });
 
   it('shows empty message when conversations have no extractable UUIDs', async () => {
+    const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     apiAskNudgebee.llmConversationHistoryForInvestigation.mockResolvedValue(mockConvResponse([{ id: 'x', title: 'no uuid here' }]));
 
     render(<AutoInvestigated />);
@@ -312,6 +344,7 @@ describe('AutoInvestigated (integration)', () => {
     await waitFor(() => expect(screen.getByTestId('empty-msg')).toBeInTheDocument());
     expect(screen.getByTestId('empty-msg')).toHaveTextContent(/Could not match any events/);
     expect(k8sApi.getK8sEvents).not.toHaveBeenCalled();
+    consoleWarnSpy.mockRestore();
   });
 
   it('handles empty conversation list without calling getK8sEvents', async () => {

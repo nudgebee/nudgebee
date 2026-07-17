@@ -9,7 +9,7 @@ import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import DownloadButton from '@shared/buttons/DownloadButton';
-import HeadingWithBorder from '@shared/HeadingWithBorder';
+import Heading from '@components/common/Heading';
 import kuberneteApi from '@api1/kubernetes';
 import PropTypes from 'prop-types';
 
@@ -18,14 +18,15 @@ const BorderedBox = ({ children }) => {
     <Box
       sx={{
         border: `0.5px solid ${'var(--ds-gray-200)'}`,
-        padding: '20px 27px',
-        borderRadius: '6px',
+        padding: 'calc(var(--ds-space-1) * 5) 27px',
+        borderRadius: 'var(--ds-radius-md)',
         bgcolor: 'var(--ds-background-100)',
         display: 'grid',
         gridTemplateColumns: '0.6fr 1fr 1fr 0.3fr',
-        gap: '8px',
+        gap: 'var(--ds-space-2)',
         alignItems: 'center',
-        boxShadow: '0px 2px 7px 0px #EFF6FF, 0px 4px 6px -1px #E5E5E599',
+        boxShadow:
+          '0px var(--ds-space-0) 7px 0px var(--ds-blue-100), 0px var(--ds-space-1) calc(var(--ds-space-0) * 3) -1px color-mix(in srgb, var(--ds-gray-200) 60%, transparent)',
       }}
     >
       {children}
@@ -46,7 +47,7 @@ const ValueWithLeftBorder = ({ title, value = 0, unit = 'CPU', borderColor = 'va
         justifyContent: 'center',
         borderLeft: `3px solid ${borderColor}`,
         minHeight: '45px',
-        pl: '20px',
+        pl: 'calc(var(--ds-space-1) * 5)',
       }}
     >
       <Typography color={'var(--ds-gray-600)'} fontSize={'var(--ds-text-small)'} fontWeight={'var(--ds-font-weight-regular)'} mb={'5px'}>
@@ -278,12 +279,7 @@ const GraphSections = ({ accountId, heading = '', id = 'KuberneteUtilizationSumm
           </>
         }
       >
-        <HeadingWithBorder
-          value={heading}
-          borderColor='var(--ds-blue-500)'
-          borderWidth='3px'
-          sx={{ '& p': { fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)' } }}
-        />
+        <Heading value={heading} borderColor='var(--ds-blue-500)' borderWidth='md' />
       </ListingLayout.Toolbar>
       <ListingLayout.Body>
         <Box mt={2} />
@@ -425,7 +421,7 @@ GraphSections.propTypes = {
 
 const KuberneteUtilizationSummary = ({ accountId = null, heading = '', id = 'KuberneteUtilizationSummary' }) => {
   return (
-    <Box sx={{ mb: '4px' }}>
+    <Box sx={{ mb: 'var(--ds-space-1)' }}>
       <GraphSections accountId={accountId} heading={heading} id={id} />
     </Box>
   );

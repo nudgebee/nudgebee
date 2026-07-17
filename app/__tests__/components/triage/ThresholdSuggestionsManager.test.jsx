@@ -44,17 +44,22 @@ jest.mock('@assets', () => ({
   DataNotAvailable: '/no-data.svg',
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: {
-    text: { primary: '#000', secondary: '#666' },
-    background: { white: '#fff' },
-    border: { secondary: '#ddd' },
-  },
+jest.mock('@utils/colors');
+
+jest.mock('@shared/format/Text', () => ({
+  __esModule: true,
+  default: ({ value }) => <span>{value}</span>,
 }));
 
-jest.mock('@shared', () => ({
-  Text: ({ value }) => <span>{value}</span>,
-}));
+jest.mock('@ui/Label', () => {
+  const TONE_TO_COLOR = { success: 'green', critical: 'red', warning: 'yellow', neutral: 'grey' };
+  return {
+    Label: ({ text, children, tone, variant }) => {
+      const color = variant || TONE_TO_COLOR[tone] || 'plain';
+      return <span data-testid={`label-${color}`}>{children || text}</span>;
+    },
+  };
+});
 
 jest.mock('@shared/icons/CloudIcon', () => ({
   __esModule: true,
@@ -66,55 +71,72 @@ jest.mock('@shared/EmptyData', () => ({
   default: ({ heading, id }) => <div data-testid={id || 'empty-data'}>{heading}</div>,
 }));
 
-jest.mock('@shared/BoxLayout2', () => ({
+jest.mock('@shared/buttons/DownloadButton', () => ({
   __esModule: true,
-  default: ({ children, filterOptions = [] }) => (
-    <div data-testid='box-layout'>
-      <div data-testid='filters'>
-        {filterOptions.map((f, i) => {
-          if (f.type === 'dropdown') {
-            return (
-              <select key={i} data-testid={`filter-${f.label}`} value={f.value || ''} onChange={f.onSelect}>
-                <option value=''>--</option>
-                {(f.options || []).map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            );
-          }
-          if (f.type === 'multi-dropdown') {
-            return (
-              <button
-                key={i}
-                data-testid={`multi-${f.label}`}
-                onClick={() => {
-                  const first = (f.options || [])[0];
-                  if (first) f.onSelect({}, [first]);
-                }}
-              >
-                {f.label}: {(f.value || []).length}
-              </button>
-            );
-          }
-          return null;
-        })}
-      </div>
-      {children}
-    </div>
+  default: ({ onClick }) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
   ),
 }));
 
-jest.mock('@components/k8s/common/KubernetesTable2', () => ({
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout = ({ children, id }) => (
+    <div data-testid='listing-layout' id={id}>
+      {children}
+    </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout, default: ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
   __esModule: true,
-  default: ({ id, data, headers, totalRows, loading, pageNumber, onPageChange }) => (
+  default: ({ label, options = [], value, onSelect, multiple }) => {
+    if (multiple) {
+      return (
+        <button data-testid={`multi-${label}`} onClick={() => onSelect?.(null, (options || []).slice(0, 1))}>
+          {label}
+        </button>
+      );
+    }
+    const currentValue = typeof value === 'object' && value !== null ? value.value : value;
+    return (
+      <select
+        data-testid={`filter-${label}`}
+        value={currentValue || ''}
+        onChange={(e) => onSelect?.({ target: { value: e.target.value } }, { value: e.target.value, label: e.target.value })}
+      >
+        <option value=''>--</option>
+        {(options || []).map((opt, idx) => {
+          const v = typeof opt === 'string' ? opt : opt.value;
+          const l = typeof opt === 'string' ? opt : opt.label;
+          return (
+            <option key={(v || '_') + '-' + idx} value={v}>
+              {l}
+            </option>
+          );
+        })}
+      </select>
+    );
+  },
+}));
+
+jest.mock('@shared/tables/CustomTable', () => ({
+  __esModule: true,
+  default: ({ id, tableData, headers, totalRows, loading, pageNumber, onPageChange }) => (
     <div data-testid='k8s-table' id={id}>
       {loading && <div data-testid='loading'>loading</div>}
       <div data-testid='total'>{totalRows}</div>
       <div data-testid='page'>{pageNumber}</div>
       <div data-testid='headers'>{headers.map((h) => h.name).join('|')}</div>
-      {(data || []).map((row, i) => (
+      {(tableData || []).map((row, i) => (
         <div key={i} data-testid={`row-${i}`}>
           {row.map((cell, j) => (
             <span key={j} data-testid={`cell-${i}-${j}`}>
@@ -133,7 +155,7 @@ jest.mock('@components/k8s/common/KubernetesTable2', () => ({
   ),
 }));
 
-jest.mock('./../../../src/components/triage/ThresholdEvidence', () => ({
+jest.mock('@components/triage/ThresholdEvidence', () => ({
   __esModule: true,
   default: () => <div>evidence</div>,
   RecentEventsTab: () => <div>recent</div>,
@@ -145,8 +167,8 @@ const apiTriage = require('@api1/triage').default;
 const { applyFiltersOnRouter } = require('@lib/router');
 
 const sampleAccounts = [
-  { id: 'acc-1', account_name: 'AWS Prod', label: 'AWS Prod', cloud_provider: 'aws' },
-  { id: 'acc-2', account_name: 'GCP Dev', label: 'GCP Dev', cloud_provider: 'gcp' },
+  { id: 'acc-1', account_name: 'AWS Prod', label: 'AWS Prod', value: 'acc-1', cloud_provider: 'aws' },
+  { id: 'acc-2', account_name: 'GCP Dev', label: 'GCP Dev', value: 'acc-2', cloud_provider: 'gcp' },
 ];
 
 const sampleSuggestions = [
@@ -190,9 +212,7 @@ describe('ThresholdSuggestionsManager (integration)', () => {
   it('fetches suggestions on mount with default filters', async () => {
     render(<ThresholdSuggestionsManager />);
 
-    await waitFor(() => {
-      expect(apiTriage.listThresholdSuggestions).toHaveBeenCalled();
-    });
+    await waitFor(() => expect(apiTriage.listThresholdSuggestions).toHaveBeenCalled());
     const call = apiTriage.listThresholdSuggestions.mock.calls[0][0];
     expect(call).toMatchObject({
       cloud_account_id: undefined,
@@ -207,17 +227,13 @@ describe('ThresholdSuggestionsManager (integration)', () => {
   it('renders Account column header in multi-account view', async () => {
     render(<ThresholdSuggestionsManager />);
 
-    await waitFor(() => {
-      expect(screen.getByTestId('headers')).toHaveTextContent('Account|Alert|Recommendation|Threshold|Confidence|Noise Reduction');
-    });
+    await waitFor(() => expect(screen.getByTestId('headers')).toHaveTextContent('Account|Alert|Recommendation|Threshold|Confidence|Noise Reduction'));
   });
 
   it('hides Account column header when accountId prop is provided', async () => {
     render(<ThresholdSuggestionsManager accountId='acc-1' />);
 
-    await waitFor(() => {
-      expect(apiTriage.listThresholdSuggestions).toHaveBeenCalled();
-    });
+    await waitFor(() => expect(apiTriage.listThresholdSuggestions).toHaveBeenCalled());
     const call = apiTriage.listThresholdSuggestions.mock.calls[0][0];
     expect(call.cloud_account_id).toBe('acc-1');
     expect(screen.getByTestId('headers')).toHaveTextContent('Alert|Recommendation|Threshold|Confidence|Noise Reduction');
@@ -227,9 +243,7 @@ describe('ThresholdSuggestionsManager (integration)', () => {
   it('renders suggestion rows with formatted threshold and noise reduction', async () => {
     render(<ThresholdSuggestionsManager />);
 
-    await waitFor(() => {
-      expect(screen.getByText('CPU High')).toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.getByText('CPU High')).toBeInTheDocument());
     expect(screen.getByText('Pod Restart')).toBeInTheDocument();
     expect(screen.getByText('75%')).toBeInTheDocument();
     expect(screen.getByText('Suppresses all')).toBeInTheDocument();
@@ -242,9 +256,7 @@ describe('ThresholdSuggestionsManager (integration)', () => {
     await waitFor(() => expect(apiTriage.listThresholdSuggestions).toHaveBeenCalled());
     apiTriage.listThresholdSuggestions.mockClear();
 
-    fireEvent.change(screen.getByTestId('filter-Source'), {
-      target: { value: 'prometheus' },
-    });
+    fireEvent.change(screen.getByTestId('filter-Source'), { target: { value: 'prometheus' } });
 
     await waitFor(() => expect(apiTriage.listThresholdSuggestions).toHaveBeenCalled());
     expect(apiTriage.listThresholdSuggestions.mock.calls[0][0].source).toBe('prometheus');
@@ -255,9 +267,7 @@ describe('ThresholdSuggestionsManager (integration)', () => {
     await waitFor(() => expect(apiTriage.listThresholdSuggestions).toHaveBeenCalled());
     apiTriage.listThresholdSuggestions.mockClear();
 
-    fireEvent.change(screen.getByTestId('filter-Confidence'), {
-      target: { value: 'medium' },
-    });
+    fireEvent.change(screen.getByTestId('filter-Confidence'), { target: { value: 'medium' } });
 
     await waitFor(() => expect(apiTriage.listThresholdSuggestions).toHaveBeenCalled());
     expect(apiTriage.listThresholdSuggestions.mock.calls[0][0].confidence).toBe('medium');
@@ -270,9 +280,7 @@ describe('ThresholdSuggestionsManager (integration)', () => {
 
     fireEvent.click(screen.getByTestId('multi-Account'));
 
-    await waitFor(() => {
-      expect(applyFiltersOnRouter).toHaveBeenCalledWith(expect.anything(), { accountId: 'acc-1' });
-    });
+    await waitFor(() => expect(applyFiltersOnRouter).toHaveBeenCalledWith(expect.anything(), { accountId: 'acc-1' }));
     await waitFor(() => {
       expect(apiTriage.listThresholdSuggestions).toHaveBeenCalled();
       expect(apiTriage.listThresholdSuggestions.mock.calls[0][0].cloud_account_ids).toEqual(['acc-1']);
@@ -318,9 +326,7 @@ describe('ThresholdSuggestionsManager (integration)', () => {
 
     render(<ThresholdSuggestionsManager />);
 
-    await waitFor(() => {
-      expect(screen.getByTestId('threshold-suggestions-empty')).toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.getByTestId('threshold-suggestions-empty')).toBeInTheDocument());
     expect(screen.queryByTestId('k8s-table')).not.toBeInTheDocument();
   });
 
@@ -330,9 +336,7 @@ describe('ThresholdSuggestionsManager (integration)', () => {
 
     render(<ThresholdSuggestionsManager />);
 
-    await waitFor(() => {
-      expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.queryByTestId('loading')).not.toBeInTheDocument());
     expect(screen.getByTestId('threshold-suggestions-empty')).toBeInTheDocument();
     errorSpy.mockRestore();
   });
@@ -352,8 +356,6 @@ describe('ThresholdSuggestionsManager (integration)', () => {
       resolveFn({ suggestions: sampleSuggestions, total: 2 });
     });
 
-    await waitFor(() => {
-      expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.queryByTestId('loading')).not.toBeInTheDocument());
   });
 });

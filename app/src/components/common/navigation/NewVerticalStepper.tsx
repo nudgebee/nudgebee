@@ -1,8 +1,8 @@
 import React from 'react';
 import { Box, Button, Typography } from '@mui/material';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import SafeIcon from '@shared/icons/SafeIcon';
-import CustomTooltip from '../CustomTooltip';
+import Tooltip from '@ui/Tooltip';
 import { checklistIcon } from '@assets';
 
 interface VerticalStepNavigationProps {
@@ -20,7 +20,7 @@ const VerticalStepNavigation: React.FC<VerticalStepNavigationProps> = ({ steps, 
         height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        backgroundColor: colors.background.white,
+        backgroundColor: ds.background[100],
         position: 'sticky',
         padding: 'var(--ds-space-2) var(--ds-space-3)',
         border: '1px solid var(--ds-gray-200)',
@@ -33,19 +33,19 @@ const VerticalStepNavigation: React.FC<VerticalStepNavigationProps> = ({ steps, 
         sx={{
           marginBottom: 'var(--ds-space-2)',
           padding: 'var(--ds-space-3) 0px var(--ds-space-3) var(--ds-space-2)',
-          borderBottom: `1px solid rgba(188, 188, 188, 0.2)`,
+          borderBottom: `1px solid color-mix(in srgb, ${ds.gray[400]} 20%, transparent)`,
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'left', gap: 'var(--ds-space-2)' }}>
           <Box
             sx={{
-              width: '24px',
-              height: '24px',
+              width: ds.space[5],
+              height: ds.space[5],
               display: 'flex',
               alignItems: 'left',
               justifyContent: 'left',
               borderRadius: 'var(--ds-radius-md)',
-              color: 'white',
+              color: ds.background[100],
             }}
           >
             {icon || <SafeIcon src={checklistIcon} alt='checklist' width={24} height={24} />}
@@ -56,7 +56,7 @@ const VerticalStepNavigation: React.FC<VerticalStepNavigationProps> = ({ steps, 
             sx={{
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-semibold)',
-              color: colors.text.secondary,
+              color: ds.brand[500],
               letterSpacing: '-0.02em',
             }}
           >
@@ -72,7 +72,7 @@ const VerticalStepNavigation: React.FC<VerticalStepNavigationProps> = ({ steps, 
           const isActive = activeStep === stepNumber;
 
           return (
-            <CustomTooltip title={step.description || ''} placement='right' key={index} tooltipClassName='custom-tooltip'>
+            <Tooltip title={step.description || ''} placement='right' key={index} tooltipClassName='custom-tooltip'>
               <Button
                 key={index}
                 onClick={() => onStepChange(stepNumber, step.id)}
@@ -85,14 +85,14 @@ const VerticalStepNavigation: React.FC<VerticalStepNavigationProps> = ({ steps, 
                   p: 'var(--ds-space-3) var(--ds-space-3)',
                   borderRadius: 'var(--ds-radius-lg)',
                   textTransform: 'none',
-                  minHeight: '40px',
-                  backgroundColor: isActive ? colors.background.primaryLightest : 'transparent',
-                  border: isActive ? `1px solid ${colors.border.primaryLightest}` : '1px solid transparent',
-                  borderLeft: isActive ? `4px solid ${colors.border.primaryLightest}` : '1px solid transparent',
-                  boxShadow: isActive ? '0 2px 8px rgba(59, 130, 246, 0.2)' : 'none',
+                  minHeight: ds.space.mul(0, 20),
+                  backgroundColor: isActive ? ds.blue[100] : 'transparent',
+                  border: isActive ? `1px solid ${ds.blue[400]}` : '1px solid transparent',
+                  borderLeft: isActive ? `4px solid ${ds.blue[400]}` : '1px solid transparent',
+                  boxShadow: isActive ? `0 ${ds.space[0]} ${ds.space[2]} color-mix(in srgb, ${ds.blue[500]} 20%, transparent)` : 'none',
                   transition: 'all 0.2s ease-in-out',
                   '&:hover': {
-                    backgroundColor: colors.background.primaryLightest,
+                    backgroundColor: ds.blue[100],
                     transform: 'translateX(2px)',
                   },
                 }}
@@ -100,18 +100,18 @@ const VerticalStepNavigation: React.FC<VerticalStepNavigationProps> = ({ steps, 
                 {/* Step Number Circle */}
                 <Box
                   sx={{
-                    width: 28,
-                    height: 28,
+                    width: ds.space.mul(0, 14),
+                    height: ds.space.mul(0, 14),
                     borderRadius: '50%',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     fontSize: 'var(--ds-text-small)',
                     fontWeight: 'var(--ds-font-weight-semibold)',
-                    backgroundColor: isActive ? colors.background.secondary : 'var(--ds-brand-150)',
-                    color: isActive ? colors.text.white : 'var(--ds-gray-600)',
+                    backgroundColor: isActive ? ds.brand[500] : 'var(--ds-brand-150)',
+                    color: isActive ? ds.background[100] : 'var(--ds-gray-600)',
                     flexShrink: 0,
-                    boxShadow: isActive ? '0 2px 4px rgba(0, 0, 0, 0.1)' : 'none',
+                    boxShadow: isActive ? `0 ${ds.space[0]} ${ds.space[1]} ${ds.gray.alpha[300]}` : 'none',
                   }}
                 >
                   {stepNumber}
@@ -121,17 +121,17 @@ const VerticalStepNavigation: React.FC<VerticalStepNavigationProps> = ({ steps, 
                   sx={{
                     fontSize: 'var(--ds-text-body)',
                     fontWeight: isActive ? 500 : 400,
-                    color: isActive ? colors.text.primary : colors.text.secondary,
+                    color: isActive ? ds.blue[500] : ds.brand[500],
                     textAlign: 'left',
                     lineHeight: 1.4,
                     flex: 1,
-                    pt: 0.5,
+                    pt: ds.space[1],
                   }}
                 >
                   {step.title}
                 </Typography>
               </Button>
-            </CustomTooltip>
+            </Tooltip>
           );
         })}
       </Box>

@@ -2,7 +2,9 @@ package gcloud
 
 import (
 	"fmt"
+	"nudgebee/collector/cloud/config"
 	"nudgebee/collector/cloud/providers"
+	"sync"
 	"time"
 
 	"cloud.google.com/go/bigquery"
@@ -19,6 +21,14 @@ const (
 	// - getQueriedTablesFromJobs (INFORMATION_SCHEMA.JOBS query window)
 	// IMPORTANT: If changed, must be updated in both locations to maintain consistency.
 	bigQueryUnusedTableLookbackDays = 60
+
+	// bqMetadataConcurrency bounds the number of concurrent BigQuery dataset/table
+	// Metadata() RPCs. Discovery makes one Metadata() call per dataset and per table;
+	// a large project (tens of thousands of tables) done serially takes tens of
+	// minutes, which exceeds the RabbitMQ consumer_timeout and gets the post-report
+	// job misclassified as a poison message. The value stays well within BigQuery's
+	// metadata read quota.
+	bqMetadataConcurrency = 20
 )
 
 type bigQueryService struct{}
@@ -48,8 +58,12 @@ func (s *bigQueryService) GetResources(ctx providers.CloudProviderContext, accou
 
 	var resources []providers.Resource
 
-	// List all datasets in the project
-	// BigQuery datasets can be regional or multi-regional, but we fetch them all once
+	// List all datasets in the project. BigQuery datasets can be regional or
+	// multi-regional, but we fetch them all once; the region argument is ignored
+	// (the caller collapses global services to a single pass — see ListResources).
+	// The list iterator only paginates dataset references and issues no per-dataset
+	// RPC; the expensive Metadata() calls happen concurrently below.
+	var datasets []*bigquery.Dataset
 	dit := client.Datasets(ctx.GetContext())
 	for {
 		dataset, err := dit.Next()
@@ -65,31 +79,65 @@ func (s *bigQueryService) GetResources(ctx providers.CloudProviderContext, accou
 			ctx.GetLogger().Error("failed to list datasets", "error", err)
 			break
 		}
-
-		// Get dataset metadata
-		metadata, err := dataset.Metadata(ctx.GetContext())
-		if err != nil {
-			ctx.GetLogger().Error("failed to get dataset metadata", "error", err, "dataset", dataset.DatasetID)
-			RecordGCPPermissionError(ctx, err)
-			continue
-		}
-
-		// No region filtering - return all datasets with their actual location
-		resource := s.datasetToResource(dataset.DatasetID, metadata, session.ProjectId)
-		resources = append(resources, resource)
-
-		// Also list tables within the dataset
-		tableResources := s.getTablesInDataset(ctx, dataset, metadata.Location, session.ProjectId)
-		resources = append(resources, tableResources...)
+		datasets = append(datasets, dataset)
 	}
+
+	// Per-table discovery is gated behind a flag (off by default): enumerating every
+	// table is the dominant cost of GCP discovery and none of those tables carry any
+	// spend. When disabled we still discover datasets, just not their tables.
+	tableDiscovery := config.Config.CloudCollectorGcpBigqueryTableDiscoveryEnabled
+	if !tableDiscovery {
+		ctx.GetLogger().Info("bigquery per-table discovery disabled by flag; enumerating datasets only",
+			"flag", "cloud_collector_gcp_bigquery_table_discovery_enabled")
+	}
+
+	// Fetch dataset and table metadata concurrently, bounded by a shared semaphore
+	// so the total number of in-flight BigQuery API calls stays within quota no
+	// matter how tables are distributed across datasets. Each dataset goroutine
+	// releases its semaphore slot before descending into its tables, so the nested
+	// table fetches cannot deadlock against the outer datasets.
+	sem := make(chan struct{}, bqMetadataConcurrency)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, dataset := range datasets {
+		wg.Add(1)
+		go func(dataset *bigquery.Dataset) {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			metadata, err := dataset.Metadata(ctx.GetContext())
+			<-sem
+			if err != nil {
+				ctx.GetLogger().Error("failed to get dataset metadata", "error", err, "dataset", dataset.DatasetID)
+				RecordGCPPermissionError(ctx, err)
+				return
+			}
+
+			// No region filtering - return all datasets with their actual location
+			datasetResource := s.datasetToResource(dataset.DatasetID, metadata, session.ProjectId)
+			var tableResources []providers.Resource
+			if tableDiscovery {
+				tableResources = s.getTablesInDataset(ctx, dataset, metadata.Location, session.ProjectId, sem)
+			}
+
+			mu.Lock()
+			resources = append(resources, datasetResource)
+			resources = append(resources, tableResources...)
+			mu.Unlock()
+		}(dataset)
+	}
+	wg.Wait()
 
 	ctx.GetLogger().Info("fetched bigquery datasets and tables", "count", len(resources), "region", region)
 	return resources, nil
 }
 
-func (s *bigQueryService) getTablesInDataset(ctx providers.CloudProviderContext, dataset *bigquery.Dataset, location, projectId string) []providers.Resource {
-	var resources []providers.Resource
-
+func (s *bigQueryService) getTablesInDataset(ctx providers.CloudProviderContext, dataset *bigquery.Dataset, location, projectId string, sem chan struct{}) []providers.Resource {
+	// Collect table references first — the list iterator only paginates and issues
+	// no per-table RPC. The Metadata() call for each table is the costly part and is
+	// fetched concurrently below, sharing the caller's semaphore so total in-flight
+	// BigQuery calls across all datasets stay bounded.
+	var tables []*bigquery.Table
 	tit := dataset.Tables(ctx.GetContext())
 	for {
 		table, err := tit.Next()
@@ -105,19 +153,38 @@ func (s *bigQueryService) getTablesInDataset(ctx providers.CloudProviderContext,
 			}
 			break
 		}
-
-		metadata, err := table.Metadata(ctx.GetContext())
-		if err != nil {
-			ctx.GetLogger().Error("failed to get table metadata", "error", err, "table", table.TableID)
-			RecordGCPPermissionError(ctx, err)
-			continue
-		}
-
-		resource := s.tableToResource(dataset.DatasetID, table.TableID, metadata, location, projectId)
-		resources = append(resources, resource)
+		tables = append(tables, table)
 	}
 
-	return resources
+	resources := make([]providers.Resource, len(tables))
+	valid := make([]bool, len(tables))
+	var wg sync.WaitGroup
+	for i, table := range tables {
+		wg.Add(1)
+		go func(i int, table *bigquery.Table) {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			metadata, err := table.Metadata(ctx.GetContext())
+			<-sem
+			if err != nil {
+				ctx.GetLogger().Error("failed to get table metadata", "error", err, "table", table.TableID)
+				RecordGCPPermissionError(ctx, err)
+				return
+			}
+			resources[i] = s.tableToResource(dataset.DatasetID, table.TableID, metadata, location, projectId)
+			valid[i] = true
+		}(i, table)
+	}
+	wg.Wait()
+
+	out := make([]providers.Resource, 0, len(tables))
+	for i := range resources {
+		if valid[i] {
+			out = append(out, resources[i])
+		}
+	}
+	return out
 }
 
 func (s *bigQueryService) datasetToResource(datasetId string, metadata *bigquery.DatasetMetadata, projectId string) providers.Resource {
@@ -144,9 +211,10 @@ func (s *bigQueryService) datasetToResource(datasetId string, metadata *bigquery
 		createdAt = metadata.CreationTime
 	}
 
-	// Convert metadata to map for Meta field
-	meta := structToMap(metadata)
-	meta["selfLink"] = selfLink
+	// Build a compact Meta map (see bqDatasetMeta) instead of structToMap'ing the
+	// whole DatasetMetadata — keeps memory bounded and uses the camelCase keys the
+	// recommendation helpers actually read.
+	meta := bqDatasetMeta(metadata, selfLink)
 
 	return providers.Resource{
 		Id:          resourceId, // Dataset ID (matches GCP Monitoring dataset_id)
@@ -183,20 +251,18 @@ func (s *bigQueryService) tableToResource(datasetId, tableId string, metadata *b
 		createdAt = metadata.CreationTime
 	}
 
-	// Drop the heavyweight table Schema (column definitions) before serialization.
-	// A single wide or deeply-nested table can carry hundreds of KB of column
-	// metadata; structToMap JSON-round-trips it into a map[string]interface{}
-	// (several times larger), and accumulating that across every table of a large
-	// project OOM-killed the collector in production. Nothing downstream reads the
-	// column schema — the recommendation engine keys off size/partitioning/
-	// clustering/expiration, all of which are preserved. ExternalDataConfig can
-	// embed an equally large schema for external tables and is likewise unread, so
-	// drop it too. metadata is a fresh, locally-owned value, so mutating it is safe.
-	metadata.Schema = nil
-	metadata.ExternalDataConfig = nil
-
-	// Convert (trimmed) metadata to map for Meta field
-	meta := structToMap(metadata)
+	// Build a compact Meta map with only the fields consumed downstream (see
+	// bqTableMeta). The previous approach — structToMap (a json.Marshal→Unmarshal
+	// round-trip of the entire TableMetadata) — materialised the full column Schema
+	// and every nested field as a generic map[string]interface{}; accumulating that
+	// across every table of a large project (~26k tables observed in prod)
+	// OOM-killed the collector even after the Schema was nil'd, because the SDK
+	// still fetches/parses the schema and the generic maps stay retained until the
+	// whole slice is stored. Extracting only the needed scalars keeps per-table
+	// footprint tiny and, as a bonus, uses the camelCase keys the recommendation
+	// readers expect (the SDK struct has no json tags, so the old round-trip
+	// produced PascalCase keys the readers never matched).
+	meta := bqTableMeta(metadata)
 
 	// Determine table type
 	var resourceType string
@@ -234,7 +300,92 @@ const (
 	bqClusteringSavingsEstimate      = 0.20 // Conservative 20% scan reduction from clustering
 )
 
-// getTableSizeGB extracts table size from Meta. After structToMap JSON serialization, numBytes is float64.
+// bqTableMeta builds a compact Meta map for a BigQuery table containing only the
+// fields the recommendation engine and resource UI consume. It intentionally
+// avoids structToMap: JSON-round-tripping the full TableMetadata materialised the
+// entire column Schema (and every nested field) as a generic map, and
+// accumulating ~26k of those for a large project OOM-killed the collector.
+//
+// Keys are camelCase to match the getTableSizeGB / hasTimePartitioning / ...
+// readers below. The values mimic what those readers expect from a JSON round
+// trip: int64/uint64 counts become float64, time.Time becomes an RFC3339Nano
+// string, and nested configs become small map[string]any values that are only
+// present when actually set.
+func bqTableMeta(metadata *bigquery.TableMetadata) map[string]any {
+	meta := map[string]any{
+		"numBytes":         float64(metadata.NumBytes),
+		"numLongTermBytes": float64(metadata.NumLongTermBytes),
+		"numRows":          float64(metadata.NumRows),
+		"type":             string(metadata.Type),
+	}
+	// FullID ("project:dataset.table") is consumed by the knowledge-graph BigQuery
+	// hierarchy builder (api-server gcp_source.go reads metaMap["FullID"]) to link a
+	// table to its dataset. Keep this exact PascalCase key — it was previously
+	// emitted by the structToMap round-trip and the KG reader depends on it.
+	if metadata.FullID != "" {
+		meta["FullID"] = metadata.FullID
+	}
+	if metadata.Description != "" {
+		meta["description"] = metadata.Description
+	}
+	if !metadata.CreationTime.IsZero() {
+		meta["creationTime"] = metadata.CreationTime.Format(time.RFC3339Nano)
+	}
+	if !metadata.LastModifiedTime.IsZero() {
+		meta["lastModifiedTime"] = metadata.LastModifiedTime.Format(time.RFC3339Nano)
+	}
+	if !metadata.ExpirationTime.IsZero() {
+		meta["expirationTime"] = metadata.ExpirationTime.Format(time.RFC3339Nano)
+	}
+	if metadata.TimePartitioning != nil {
+		meta["timePartitioning"] = map[string]any{
+			"type":  string(metadata.TimePartitioning.Type),
+			"field": metadata.TimePartitioning.Field,
+		}
+	}
+	if metadata.RangePartitioning != nil {
+		meta["rangePartitioning"] = map[string]any{
+			"field": metadata.RangePartitioning.Field,
+		}
+	}
+	if metadata.Clustering != nil && len(metadata.Clustering.Fields) > 0 {
+		fields := make([]any, len(metadata.Clustering.Fields))
+		for i, f := range metadata.Clustering.Fields {
+			fields[i] = f
+		}
+		meta["clustering"] = map[string]any{"fields": fields}
+	}
+	return meta
+}
+
+// bqDatasetMeta builds a compact Meta map for a BigQuery dataset — same rationale
+// as bqTableMeta. Keys match the hasDefaultTableExpiration / hasCMEK readers.
+func bqDatasetMeta(metadata *bigquery.DatasetMetadata, selfLink string) map[string]any {
+	meta := map[string]any{
+		"selfLink": selfLink,
+		"location": metadata.Location,
+	}
+	if metadata.Name != "" {
+		meta["friendlyName"] = metadata.Name
+	}
+	if metadata.Description != "" {
+		meta["description"] = metadata.Description
+	}
+	if !metadata.CreationTime.IsZero() {
+		meta["creationTime"] = metadata.CreationTime.Format(time.RFC3339Nano)
+	}
+	if metadata.DefaultTableExpiration > 0 {
+		meta["defaultTableExpiration"] = float64(metadata.DefaultTableExpiration.Nanoseconds())
+	}
+	if metadata.DefaultEncryptionConfig != nil && metadata.DefaultEncryptionConfig.KMSKeyName != "" {
+		meta["defaultEncryptionConfiguration"] = map[string]any{
+			"kmsKeyName": metadata.DefaultEncryptionConfig.KMSKeyName,
+		}
+	}
+	return meta
+}
+
+// getTableSizeGB extracts table size from Meta. numBytes is stored as float64.
 func getTableSizeGB(meta map[string]any) (float64, bool) {
 	numBytes, ok := meta["numBytes"].(float64)
 	if !ok || numBytes <= 0 {

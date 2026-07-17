@@ -744,7 +744,7 @@ const KubernetesLLMResponseGenerator = ({ accountId, query = '', popup = false, 
                         px: ds.space[3],
                         fontSize: 'var(--ds-text-small)',
                         borderRadius: ds.radius.sm,
-                        boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                        boxShadow: `0 2px 4px ${ds.gray.alpha[300]}`,
                       }}
                     >
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3) }}>

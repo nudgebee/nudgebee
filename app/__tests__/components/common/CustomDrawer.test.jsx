@@ -1,66 +1,7 @@
-import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
-import CustomDrawer from '@shared/CustomDrawer';
+import { render, screen, fireEvent, act } from '@testing-library/react';
+import CustomDrawer, { SecondaryDrawer } from '@shared/CustomDrawer';
 
-jest.mock('src/utils/colors', () => ({
-  colors: {
-    primary: '#3B82F6',
-    nudgebeeMain: '#3B82F6',
-    text: {
-      primary: '#3B82F6',
-      secondary: '#374151',
-      white: '#fff',
-      black: '#000',
-      tertiary: '#6B7280',
-      title: '#111827',
-      primaryLight: '#60A5FA',
-      success: '#16a34a',
-      disabledInput: '#9CA3AF',
-      secondaryDark: '#1F2937',
-      yellowLabel: '#F59E0B',
-      tertiarymedium: '#6B7280',
-    },
-    background: {
-      primaryLightest: '#EFF6FF',
-      white: '#fff',
-      transparent: 'transparent',
-      switchTrackDark: '#3B82F6',
-      tertiaryLightest: '#F0F9FF',
-      input: '#F9FAFB',
-    },
-    border: {
-      secondary: '#D1D5DB',
-      primary: '#3B82F6',
-      success: '#22C55E',
-      primaryLight: '#60A5FA',
-      secondaryLight: '#E5E7EB',
-      white: '#fff',
-      vertical: '#E5E7EB',
-    },
-    button: {
-      primary: '#3B82F6',
-      primaryText: '#fff',
-      primaryHover: '#2563EB',
-      primaryDisabled: '#93C5FD',
-      primaryDisabledText: '#fff',
-      secondary: '#fff',
-      secondaryBorder: '#D1D5DB',
-      secondaryText: '#374151',
-      secondaryHover: '#F9FAFB',
-      secondaryHoverBorder: '#9CA3AF',
-      secondaryDisabled: '#F3F4F6',
-      secondaryDisabledText: '#9CA3AF',
-      secondaryDisabledBorder: '#E5E7EB',
-      tertiary: '#EFF6FF',
-      tertiaryBorder: '#BFDBFE',
-      tertiaryText: '#3B82F6',
-      tertiaryHover: '#DBEAFE',
-      tertiaryDisabled: '#F9FAFB',
-      tertiaryDisabledText: '#93C5FD',
-      tertiaryDisabledBorder: '#DBEAFE',
-    },
-  },
-}));
+jest.mock('@utils/colors');
 
 describe('CustomDrawer', () => {
   it('renders title when open=true', () => {
@@ -118,5 +59,90 @@ describe('CustomDrawer', () => {
       </CustomDrawer>
     );
     expect(screen.getByTestId('custom-drawer-close')).toBeInTheDocument();
+  });
+
+  it('renders resize handle by default (resizable=true)', () => {
+    render(
+      <CustomDrawer open={true} onClose={() => {}} title='Title'>
+        <div>Content</div>
+      </CustomDrawer>
+    );
+    expect(screen.getByLabelText('Resize drawer')).toBeInTheDocument();
+  });
+
+  it('does not render resize handle when resizable=false', () => {
+    render(
+      <CustomDrawer open={true} onClose={() => {}} title='Title' resizable={false}>
+        <div>Content</div>
+      </CustomDrawer>
+    );
+    expect(screen.queryByLabelText('Resize drawer')).not.toBeInTheDocument();
+  });
+
+  it('calls onWidthChange on mount', () => {
+    const onWidthChange = jest.fn();
+    render(
+      <CustomDrawer open={true} onClose={() => {}} onWidthChange={onWidthChange}>
+        <div>Content</div>
+      </CustomDrawer>
+    );
+    expect(onWidthChange).toHaveBeenCalledTimes(1);
+    expect(typeof onWidthChange.mock.calls[0][0]).toBe('number');
+  });
+
+  it('renders with variant=modern without error', () => {
+    render(
+      <CustomDrawer open={true} onClose={() => {}} title='Modern' variant='modern'>
+        <div>Content</div>
+      </CustomDrawer>
+    );
+    expect(screen.getByText('Modern')).toBeInTheDocument();
+  });
+});
+
+describe('SecondaryDrawer', () => {
+  it('renders title and children when open=true', async () => {
+    await act(async () => {
+      render(
+        <SecondaryDrawer open={true} onClose={() => {}} title='Secondary Title'>
+          <div data-testid='secondary-child'>Child</div>
+        </SecondaryDrawer>
+      );
+    });
+    expect(screen.getByText('Secondary Title')).toBeInTheDocument();
+    expect(screen.getByTestId('secondary-child')).toBeInTheDocument();
+  });
+
+  it('does not render when open=false', () => {
+    render(
+      <SecondaryDrawer open={false} onClose={() => {}} title='Secondary Title'>
+        <div>Child</div>
+      </SecondaryDrawer>
+    );
+    expect(screen.queryByText('Secondary Title')).not.toBeInTheDocument();
+  });
+
+  it('calls onClose when close button clicked', async () => {
+    const onClose = jest.fn();
+    await act(async () => {
+      render(
+        <SecondaryDrawer open={true} onClose={onClose} title='Secondary Title'>
+          <div>Child</div>
+        </SecondaryDrawer>
+      );
+    });
+    fireEvent.click(screen.getByTestId('custom-drawer-close'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders with variant=modern without error', async () => {
+    await act(async () => {
+      render(
+        <SecondaryDrawer open={true} onClose={() => {}} title='Modern Secondary' variant='modern'>
+          <div>Content</div>
+        </SecondaryDrawer>
+      );
+    });
+    expect(screen.getByText('Modern Secondary')).toBeInTheDocument();
   });
 });

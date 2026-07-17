@@ -32,7 +32,7 @@ export type StatusIndicatorSize = 'sm' | 'md';
 
 export interface StatusIndicatorProps {
   tone: StatusTone;
-  label: React.ReactNode;
+  label?: React.ReactNode;
   /** Optional secondary line ("12 nodes · last check 12s ago"). */
   subtext?: React.ReactNode;
   /** Optional left-aligned icon — incompatible with default dot. */

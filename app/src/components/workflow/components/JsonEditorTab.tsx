@@ -3,7 +3,6 @@ import { Box, Typography, Alert, CircularProgress } from '@mui/material';
 import CodeMirror from '@uiw/react-codemirror';
 import { json } from '@codemirror/lang-json';
 import { Button } from '@ui/Button';
-import { colors } from 'src/utils/colors';
 
 interface JsonEditorTabProps {
   jsonText: string;
@@ -50,7 +49,7 @@ const JsonEditorTab: React.FC<JsonEditorTabProps> = ({
             left: 0,
             right: 0,
             bottom: 0,
-            backgroundColor: 'rgba(255, 255, 255, 0.8)',
+            backgroundColor: 'color-mix(in srgb, white 80%, transparent)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -59,8 +58,8 @@ const JsonEditorTab: React.FC<JsonEditorTabProps> = ({
           }}
         >
           <Box sx={{ textAlign: 'center' }}>
-            <CircularProgress size={40} sx={{ color: colors.primary }} />
-            <Typography sx={{ mt: 2, color: colors.text.secondary, fontSize: 'var(--ds-text-body-lg)' }}>Applying automation...</Typography>
+            <CircularProgress size={40} sx={{ color: 'var(--ds-blue-500)' }} />
+            <Typography sx={{ mt: 2, color: 'var(--ds-brand-500)', fontSize: 'var(--ds-text-body-lg)' }}>Applying automation...</Typography>
           </Box>
         </Box>
       )}
@@ -68,7 +67,7 @@ const JsonEditorTab: React.FC<JsonEditorTabProps> = ({
       <Box sx={{ mb: 1 }}>
         <Typography
           variant='h6'
-          sx={{ color: colors.text.secondary, mb: 1, fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-medium)' }}
+          sx={{ color: 'var(--ds-brand-500)', mb: 1, fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-medium)' }}
         >
           Automation JSON Editor
         </Typography>
@@ -133,7 +132,7 @@ const JsonEditorTab: React.FC<JsonEditorTabProps> = ({
       <Box
         sx={{
           flex: 1,
-          border: parseError ? '2px solid #ef4444' : '1px solid #d1d5db',
+          border: parseError ? '2px solid var(--ds-red-500)' : '1px solid var(--ds-gray-300)',
           borderRadius: 'var(--ds-radius-lg)',
           height: 'calc( 100% - 32px )',
           width: '100%',

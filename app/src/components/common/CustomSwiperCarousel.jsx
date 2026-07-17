@@ -3,6 +3,7 @@ import { Swiper, SwiperSlide } from 'swiper/react';
 import { Navigation, Pagination } from 'swiper/modules';
 import PropTypes from 'prop-types';
 import { IoIosArrowBack, IoIosArrowForward } from 'react-icons/io';
+import { ds } from 'src/utils/colors';
 
 const CustomSwiperCarousel = ({
   children,
@@ -15,7 +16,7 @@ const CustomSwiperCarousel = ({
   bulletStyle = {
     activeColor: 'var(--ds-gray-700)',
     inactiveColor: 'var(--ds-brand-200)',
-    size: '10px',
+    size: ds.space.mul(0, 5),
   },
   breakpoints = {},
 }) => {

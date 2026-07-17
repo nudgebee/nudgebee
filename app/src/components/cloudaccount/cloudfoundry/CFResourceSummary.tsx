@@ -15,7 +15,9 @@ const Card = ({ children, sx = {} }: any) => (
     sx={{
       backgroundColor: ds.background[100],
       borderRadius: ds.radius.md,
-      boxShadow: '0px 4px 6px -1px rgba(0, 0, 0, 0.05), 0px 2px 4px -2px rgba(0, 0, 0, 0.05)',
+      boxShadow: `0px ${ds.space[1]} ${ds.space.mul(0, 3)} -1px ${ds.gray.alpha[100]}, 0px ${ds.space[0]} ${ds.space[1]} ${ds.space.mul(0, -1)} ${
+        ds.gray.alpha[100]
+      }`,
       py: ds.space[4],
       px: ds.space[5],
       ...sx,
@@ -26,7 +28,16 @@ const Card = ({ children, sx = {} }: any) => (
 );
 
 const StatCard = ({ label, value, subtext }: { label: string; value: string | number; subtext?: string }) => (
-  <Card sx={{ textAlign: 'center', minHeight: '90px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+  <Card
+    sx={{
+      textAlign: 'center',
+      minHeight: ds.space.mul(0, 45),
+      display: 'flex',
+      flexDirection: 'column',
+      justifyContent: 'center',
+      alignItems: 'center',
+    }}
+  >
     <Typography sx={{ color: ds.gray[500], fontSize: ds.text.small, mb: ds.space[1] }}>{label}</Typography>
     <Typography sx={{ color: ds.gray[700], fontSize: ds.text.heading, fontWeight: ds.weight.semibold }}>{value}</Typography>
     {subtext && <Typography sx={{ color: ds.gray[400], fontSize: ds.text.caption, mt: ds.space[1] }}>{subtext}</Typography>}
@@ -34,7 +45,7 @@ const StatCard = ({ label, value, subtext }: { label: string; value: string | nu
 );
 
 const StatusDot = ({ active }: { active: boolean }) => (
-  <Box sx={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: active ? ds.green[500] : ds.red[500], flexShrink: 0 }} />
+  <Box sx={{ width: ds.space[2], height: ds.space[2], borderRadius: '50%', backgroundColor: active ? ds.green[500] : ds.red[500], flexShrink: 0 }} />
 );
 
 // --- Organizations Summary ---
@@ -85,16 +96,21 @@ const OrgSummaryContent = ({ resources, apps }: { resources: any[]; apps: any[] 
                 <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium, color: ds.gray[700] }}>{org.name}</Typography>
               </Box>
               <Box sx={{ display: 'flex', gap: ds.space[4] }}>
-                <Chip label={`${stats.appCount} apps`} size='small' sx={{ fontSize: ds.text.caption, height: 22 }} />
+                <Chip label={`${stats.appCount} apps`} size='small' sx={{ fontSize: ds.text.caption, height: ds.space.mul(0, 11) }} />
                 <Chip
                   label={`${stats.runningApps} running`}
                   size='small'
                   color='success'
                   variant='outlined'
-                  sx={{ fontSize: ds.text.caption, height: 22 }}
+                  sx={{ fontSize: ds.text.caption, height: ds.space.mul(0, 11) }}
                 />
                 {stats.memoryMB > 0 && (
-                  <Chip label={`${stats.memoryMB} MB`} size='small' variant='outlined' sx={{ fontSize: ds.text.caption, height: 22 }} />
+                  <Chip
+                    label={`${stats.memoryMB} MB`}
+                    size='small'
+                    variant='outlined'
+                    sx={{ fontSize: ds.text.caption, height: ds.space.mul(0, 11) }}
+                  />
                 )}
               </Box>
             </Box>
@@ -156,16 +172,21 @@ const SpaceSummaryContent = ({ resources, apps }: { resources: any[]; apps: any[
                 </Box>
               </Box>
               <Box sx={{ display: 'flex', gap: ds.space[4] }}>
-                <Chip label={`${stats.appCount} apps`} size='small' sx={{ fontSize: ds.text.caption, height: 22 }} />
+                <Chip label={`${stats.appCount} apps`} size='small' sx={{ fontSize: ds.text.caption, height: ds.space.mul(0, 11) }} />
                 <Chip
                   label={`${stats.runningApps} running`}
                   size='small'
                   color='success'
                   variant='outlined'
-                  sx={{ fontSize: ds.text.caption, height: 22 }}
+                  sx={{ fontSize: ds.text.caption, height: ds.space.mul(0, 11) }}
                 />
                 {stats.memoryMB > 0 && (
-                  <Chip label={`${stats.memoryMB} MB`} size='small' variant='outlined' sx={{ fontSize: ds.text.caption, height: 22 }} />
+                  <Chip
+                    label={`${stats.memoryMB} MB`}
+                    size='small'
+                    variant='outlined'
+                    sx={{ fontSize: ds.text.caption, height: ds.space.mul(0, 11) }}
+                  />
                 )}
               </Box>
             </Box>
@@ -250,8 +271,8 @@ const RouteSummaryContent = ({ resources, apps }: { resources: any[]; apps: any[
                           icon={
                             <Box
                               sx={{
-                                width: 6,
-                                height: 6,
+                                width: ds.space.mul(0, 3),
+                                height: ds.space.mul(0, 3),
                                 borderRadius: '50%',
                                 backgroundColor: getAppDotColor(appInfo, isActive),
                                 ml: ds.space[1],
@@ -263,7 +284,7 @@ const RouteSummaryContent = ({ resources, apps }: { resources: any[]; apps: any[
                           variant='outlined'
                           sx={{
                             fontSize: ds.text.caption,
-                            height: 22,
+                            height: ds.space.mul(0, 11),
                             borderColor: getAppBorderColor(appInfo, isActive),
                           }}
                         />

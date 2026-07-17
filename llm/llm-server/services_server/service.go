@@ -576,7 +576,8 @@ func QueryLogLabels(ctx security.RequestContext, accountId string, provider Obse
 }
 
 type ObservabilityProvider struct {
-	IntegrationSource string `json:"integrationSource"`
+	// Wire key must be snake_case to match api-server's DefaultProviderResponse.
+	IntegrationSource string `json:"integration_source"`
 	Provider          string `json:"provider"`
 	// DefaultIndex is the backend's account-default log index/pattern as
 	// returned by the get_default_provider action (empty for backends that

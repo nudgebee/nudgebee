@@ -151,7 +151,9 @@ func getOrCreateAccess(clusterID string) (*costmodel.Accesses, error) {
 	}
 
 	clusterMap := dataSource.ClusterMap()
-	costModel := costmodel.NewCostModel(nbDS, cloudProvider, clusterCache, clusterMap, dataSource.BatchDuration())
+	// opencost 1.120 added clusterUID as the first parameter; our clusterID
+	// (cloud_accounts.id) is the per-cluster identifier used everywhere here.
+	costModel := costmodel.NewCostModel(clusterID, nbDS, cloudProvider, clusterCache, clusterMap, dataSource.BatchDuration())
 	metricsEmitter := costmodel.NewCostModelMetricsEmitter(clusterCache, cloudProvider, clusterInfoProvider, costModel)
 	settingsCache := gocache.New(gocache.NoExpiration, gocache.NoExpiration)
 

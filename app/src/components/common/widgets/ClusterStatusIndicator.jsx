@@ -1,6 +1,6 @@
 import { Box } from '@mui/material';
 import PropTypes from 'prop-types';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 
 const ClusterStatusIndicator = ({ clusterData = {}, showBorder = false }) => {
   const isConnectedUsingDate = (lastConnectedDateStr) => {
@@ -49,22 +49,22 @@ const ClusterStatusIndicator = ({ clusterData = {}, showBorder = false }) => {
   };
 
   if (clusterData?.agent?.status === 'CONNECTED') {
-    const color = checkConnections(clusterData) ? colors.clusterIndicator : colors.yellow;
+    const color = checkConnections(clusterData) ? ds.green[400] : ds.amber[400];
     return (
       <Box
         sx={{
-          minHeight: '36px !important',
-          minWidth: '36px !important',
-          height: '36px !important',
-          width: '36px !important',
+          minHeight: `${ds.space.mul(0, 18)} !important`,
+          minWidth: `${ds.space.mul(0, 18)} !important`,
+          height: `${ds.space.mul(0, 18)} !important`,
+          width: `${ds.space.mul(0, 18)} !important`,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           position: 'relative',
           '&::after': {
             content: showBorder ? `""` : null,
-            background: colors.border.secondary,
-            height: '24px',
+            background: ds.gray[300],
+            height: ds.space[5],
             width: '1px',
             position: 'absolute',
             right: 0,
@@ -93,24 +93,24 @@ const ClusterStatusIndicator = ({ clusterData = {}, showBorder = false }) => {
     );
   }
 
-  const dotColor = clusterData?.agent?.status === 'NOT_CONNECTED' ? colors.error : colors.text.disabled;
-  const bgColor = clusterData?.agent?.status === 'NOT_CONNECTED' ? colors.background.error : colors.text.disabled;
+  const dotColor = clusterData?.agent?.status === 'NOT_CONNECTED' ? ds.red[600] : ds.gray[400];
+  const bgColor = clusterData?.agent?.status === 'NOT_CONNECTED' ? ds.red[500] : ds.gray[400];
 
   return (
     <Box
       sx={{
-        minHeight: '36px !important',
-        minWidth: '36px !important',
-        height: '36px !important',
-        width: '36px !important',
+        minHeight: `${ds.space.mul(0, 18)} !important`,
+        minWidth: `${ds.space.mul(0, 18)} !important`,
+        height: `${ds.space.mul(0, 18)} !important`,
+        width: `${ds.space.mul(0, 18)} !important`,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         position: 'relative',
         '&::after': {
           content: showBorder ? `""` : null,
-          background: colors.border.secondary,
-          height: '24px',
+          background: ds.gray[300],
+          height: ds.space[5],
           width: '1px',
           position: 'absolute',
           right: 0,

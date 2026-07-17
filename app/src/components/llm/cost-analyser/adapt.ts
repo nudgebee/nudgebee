@@ -477,3 +477,11 @@ export function timeSeriesToChart(
   const keys = hasOther ? [...topKeys, 'Other'] : topKeys;
   return { buckets: labels.map((l) => byLabel.get(l)!), keys };
 }
+
+/** Flatten {buckets, keys} into the generic `Chart.TimeSeries` shape ({labels, series}). */
+export function bucketsToSeries(buckets: TimeBucket[], keys: string[]): { labels: string[]; series: { key: string; data: number[] }[] } {
+  return {
+    labels: buckets.map((b) => b.label),
+    series: keys.map((k) => ({ key: k, data: buckets.map((b) => b.series[k] ?? 0) })),
+  };
+}

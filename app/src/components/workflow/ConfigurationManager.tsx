@@ -1,23 +1,23 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Box, Typography } from '@mui/material';
 import { Add as AddIcon } from '@mui/icons-material';
-import CustomTable2 from '@shared/tables/CustomTable2';
-import { Text } from '@shared';
+import CustomTable from '@shared/tables/CustomTable';
+import Text from '@shared/format/Text';
 import Datetime from '@shared/format/Datetime';
-import CustomLabels from '@shared/widgets/CustomLabels';
-import { snackbar } from '@shared/snackbarService';
+import { Label } from '@ui/Label';
+import { toast as snackbar } from '@ui/Toast';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { Banner } from '@ui/Banner';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import apiWorkflow from '@api1/workflow';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, isTenantAdmin } from '@lib/auth';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { DeleteIconRed, EditNewIcon } from '@assets';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 
 type Scope = 'tenant' | 'account';
 
@@ -44,6 +44,8 @@ interface Config {
 
 const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, open, onClose }) => {
   const canEdit = hasWriteAccess(accountId);
+  // Only tenant_admin can view or write tenant-scoped configs.
+  const canAccessTenantScope = isTenantAdmin();
   const [configs, setConfigs] = useState<Config[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [editFormOpen, setEditFormOpen] = useState<boolean>(false);
@@ -83,6 +85,8 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, 
       // {"error":"...","message":"fetch failed"}); surface the error rather
       // than silently rendering an empty list.
       if (response?.data?.config_list) {
+        // Store the raw list; per-view scope filtering happens in `displayedConfigs`
+        // via useMemo so re-toggling does not need to re-render via state writes.
         setConfigs(response.data.config_list);
       } else if (response?.error || response?.message) {
         snackbar.error(response?.message || 'Failed to load configurations');
@@ -323,11 +327,21 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, 
     { name: 'Actions', width: '5%' },
   ];
 
-  const tableData = configs.map((config) => [
+  // Account view shows only account-scoped rows; tenant view shows only
+  // tenant-scoped rows. Backend already filters tenant rows out for
+  // non-tenant-admin callers, but this keeps each view a single scope
+  // regardless of the caller's role (e.g. tenant_admin viewing Account
+  // scope still gets a merged list from the backend).
+  const displayedConfigs = useMemo(
+    () => (viewScope === 'account' ? configs.filter((c) => !!c.account_id) : configs.filter((c) => !c.account_id)),
+    [configs, viewScope]
+  );
+
+  const tableData = displayedConfigs.map((config) => [
     { component: <Text value={config.key} /> },
-    { component: <CustomLabels text={config.account_id ? 'Account' : 'Tenant'} /> },
+    { component: <Label text={config.account_id ? 'Account' : 'Tenant'} /> },
     { component: <Text value={config.value.length > 50 ? config.value.substring(0, 50) + '...' : config.value} /> },
-    { component: <CustomLabels text={config.type} /> },
+    { component: <Label text={config.type} /> },
     {
       component: (() => {
         const labels = config.labels;
@@ -340,7 +354,7 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, 
         return labelArray.length > 0 ? (
           <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
             {labelArray.slice(0, 2).map((label: string, index: number) => (
-              <CustomLabels text={label} key={index} />
+              <Label text={label} key={index} />
             ))}
             {labelArray.length > 2 && <Text value={`+${labelArray.length - 2} more`} />}
           </Box>
@@ -360,10 +374,12 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, 
     },
   ]);
 
-  const scopeOptions: { value: Scope; label: string }[] = [
-    { value: 'account', label: 'This Account' },
-    { value: 'tenant', label: 'Tenant (shared)' },
-  ];
+  const scopeOptions: { value: Scope; label: string }[] = canAccessTenantScope
+    ? [
+        { value: 'account', label: 'This Account' },
+        { value: 'tenant', label: 'Tenant (shared)' },
+      ]
+    : [{ value: 'account', label: 'This Account' }];
 
   const metadataInvalid = !!formData.metadata && !validateJsonString(formData.metadata);
 
@@ -382,10 +398,8 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, 
                 size='md'
                 ariaLabel='Configuration scope'
               />
-              <Typography variant='caption' sx={{ mt: 0.75, color: colors.text.mid, display: 'block' }}>
-                {viewScope === 'account'
-                  ? 'Effective view: tenant-shared configs plus this account’s overrides.'
-                  : 'Tenant-shared configs visible to every account in this tenant.'}
+              <Typography variant='caption' sx={{ mt: 0.75, color: ds.gray[600], display: 'block' }}>
+                {viewScope === 'account' ? 'Configs scoped to this account only.' : 'Tenant-shared configs visible to every account in this tenant.'}
               </Typography>
             </Box>
             {canEdit && (
@@ -394,7 +408,7 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, 
               </Button>
             )}
           </Box>
-          <CustomTable2 tableData={tableData} headers={tableHeaders} loading={loading} rowsPerPage={10} totalRows={configs.length} />
+          <CustomTable tableData={tableData} headers={tableHeaders} loading={loading} rowsPerPage={10} totalRows={displayedConfigs.length} />
         </Box>
       </Modal>
 
@@ -410,15 +424,23 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, 
           <Select
             id='config-scope'
             label='Scope'
-            instructionText='Tenant configs are shared across all accounts; account configs override the tenant value for this account only.'
+            instructionText={
+              canAccessTenantScope
+                ? 'Tenant configs are shared across all accounts; account configs override the tenant value for this account only.'
+                : 'Configs you create are scoped to this account only.'
+            }
             value={formScope}
             onChange={(next) => setFormScope(next as Scope)}
-            options={[
-              { value: 'account', label: 'Account (this account only)' },
-              { value: 'tenant', label: 'Tenant (shared across accounts)' },
-            ]}
+            options={
+              canAccessTenantScope
+                ? [
+                    { value: 'account', label: 'Account (this account only)' },
+                    { value: 'tenant', label: 'Tenant (shared across accounts)' },
+                  ]
+                : [{ value: 'account', label: 'Account (this account only)' }]
+            }
             required
-            disabled={loading || !!selectedConfig}
+            disabled={loading || !!selectedConfig || !canAccessTenantScope}
             size='sm'
           />
 
@@ -532,11 +554,11 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, 
             </Box>
             <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
               <Text value='Scope:' />
-              <CustomLabels text={configToDelete?.account_id ? 'Account' : 'Tenant'} />
+              <Label text={configToDelete?.account_id ? 'Account' : 'Tenant'} />
             </Box>
             <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
               <Text value='Type:' />
-              <CustomLabels text={configToDelete?.type || ''} />
+              <Label text={configToDelete?.type || ''} />
             </Box>
             <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
               <Text value='Value:' />

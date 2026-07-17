@@ -3,8 +3,9 @@ import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js';
 import { Doughnut } from 'react-chartjs-2';
 import { Box, Typography, Button } from '@mui/material';
 import PropTypes from 'prop-types';
-import { colors as color, rawColors as rawColor, resolveColor } from 'src/utils/colors';
+import { ds, resolveColor } from 'src/utils/colors';
 import { withErrorBoundary } from '@shared/ErrorBoundary';
+import { makeExternalTooltip } from './externalTooltip';
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
@@ -41,83 +42,6 @@ function buildTooltipLabel(context, displayOnlyValueOnTooltip, valueToDisplay) {
   return `${percentage}%`;
 }
 
-function getOrCreateChartTooltip(parent) {
-  let el = parent.querySelector('.ds-chart-tooltip');
-  if (el) return el;
-
-  el = document.createElement('div');
-  el.className = 'ds-chart-tooltip';
-  Object.assign(el.style, {
-    position: 'absolute',
-    pointerEvents: 'none',
-    opacity: '0',
-    transition: 'opacity 0.12s ease',
-    zIndex: '10',
-    transform: 'translate(-50%, calc(-100% - 10px))',
-  });
-
-  const body = document.createElement('div');
-  body.className = 'ds-chart-tooltip-body';
-  Object.assign(body.style, {
-    position: 'relative',
-    backgroundColor: 'var(--ds-background-100)',
-    color: 'var(--ds-brand-600)',
-    border: '1px solid var(--ds-brand-300)',
-    boxShadow: '0px 6px 10px var(--ds-gray-alpha-300)',
-    borderRadius: 'var(--ds-radius-lg)',
-    padding: 'var(--ds-space-2  ) var(--ds-space-3)',
-    fontSize: 'var(--ds-text-small)',
-    fontWeight: 'var(--ds-font-weight-medium)',
-    lineHeight: '1.5',
-    fontFamily: 'Roboto, sans-serif',
-    whiteSpace: 'nowrap',
-  });
-
-  const text = document.createElement('span');
-  text.className = 'ds-chart-tooltip-text';
-  body.appendChild(text);
-
-  const arrow = document.createElement('div');
-  arrow.className = 'ds-chart-tooltip-arrow';
-  Object.assign(arrow.style, {
-    position: 'absolute',
-    left: '50%',
-    bottom: '-5px',
-    width: '8px',
-    height: '8px',
-    marginLeft: '-4px',
-    backgroundColor: 'var(--ds-background-100)',
-    borderRight: '1px solid var(--ds-brand-300)',
-    borderBottom: '1px solid var(--ds-brand-300)',
-    transform: 'rotate(45deg)',
-  });
-  body.appendChild(arrow);
-
-  el.appendChild(body);
-  parent.appendChild(el);
-  return el;
-}
-
-function externalTooltipHandler(context) {
-  const { chart, tooltip } = context;
-  const parent = chart?.canvas?.parentNode;
-  if (!parent || !tooltip) return;
-
-  const el = getOrCreateChartTooltip(parent);
-
-  if (tooltip.opacity === 0) {
-    el.style.opacity = '0';
-    return;
-  }
-
-  const lines = (tooltip.body || []).map((b) => b.lines).flat();
-  el.querySelector('.ds-chart-tooltip-text').textContent = lines.join(' ').trim();
-
-  el.style.opacity = '1';
-  el.style.left = chart.canvas.offsetLeft + tooltip.caretX + 'px';
-  el.style.top = chart.canvas.offsetTop + tooltip.caretY + 'px';
-}
-
 function truncateLabel(item) {
   return item.length > 28 ? item.slice(0, 28) + '...' : item;
 }
@@ -128,11 +52,44 @@ function reduceValue(item) {
   return parseFloat(item) !== parseInt(item) ? num.toFixed(1) : num.toFixed(0);
 }
 
+/**
+ * @param {{
+ *   values?: number[],
+ *   labels?: string[],
+ *   size?: number,
+ *   colors?: string[] | string,
+ *   displayLegend?: boolean,
+ *   displayCustomLegend?: boolean,
+ *   displayValue?: boolean | string | number,
+ *   valueUnit?: string,
+ *   cutout?: string,
+ *   borderRadius?: number,
+ *   borderWidth?: number,
+ *   chartRadius?: string | null,
+ *   id?: string | null,
+ *   enableTooltip?: boolean,
+ *   displayOnlyValueOnTooltip?: boolean,
+ *   onItemClick?: (label: string) => void,
+ *   formatValue?: (raw: number, label: string) => string,
+ *   centerLabel?: string,
+ *   centerValue?: string,
+ *   externalTooltip?: boolean,
+ * }} props
+ *
+ * Opt-in extensions (all default off — existing callers are unaffected):
+ *   - `formatValue`      — format slice values with arbitrary units (e.g. currency)
+ *                          instead of the default `%`. Drives both the tooltip and
+ *                          skips the percentage rounding applied to the dataset.
+ *   - `centerLabel` /    — render a 2-line center (small caption + bold figure),
+ *     `centerValue`        e.g. "Total" / "$729". Overrides the `displayValue` center.
+ *   - `externalTooltip`  — use the shared white tabular tooltip (`externalTooltip.ts`)
+ *                          instead of Chart.js' built-in tooltip.
+ */
 function DoughnutChart({
   values,
   labels,
   size = 77,
-  colors = ['#778899'],
+  colors = [String(ds.gray[500])],
   displayLegend = false,
   displayCustomLegend = false,
   displayValue = false,
@@ -145,6 +102,10 @@ function DoughnutChart({
   enableTooltip = false,
   displayOnlyValueOnTooltip = false,
   onItemClick,
+  formatValue,
+  centerLabel,
+  centerValue,
+  externalTooltip = false,
 }) {
   values = values || [];
 
@@ -157,12 +118,12 @@ function DoughnutChart({
     resolvedColors = /^#[0-9A-Fa-f]{6}$/.test(baseColor) ? generateColorShades(baseColor, values.length) : Array(values.length).fill(baseColor);
   }
   const reducedValues = values.map(reduceValue);
+  // With a custom formatter (e.g. currency) keep the true numbers — the default
+  // `%` rounding in reduceValue would otherwise lose precision before formatting.
+  const datasetValues = formatValue ? values : reducedValues;
   const valueToDisplay = computeValueToDisplay(displayValue, values);
-
-  const parsedSize = typeof size === 'string' ? parseInt(size, 10) : size;
-  const baseFont = parsedSize < 50 ? 12 : 16;
-  const valueLength = String(valueToDisplay ?? '').length;
-  const valueFontSize = valueLength > 3 ? Math.max(9, Math.floor((baseFont * 3) / valueLength)) : baseFont;
+  // A 2-line center (caption + figure) takes precedence over the numeric center.
+  const hasCustomCenter = Boolean(centerValue) || Boolean(centerLabel);
 
   const options = {
     maintainAspectRatio: false,
@@ -180,17 +141,39 @@ function DoughnutChart({
         formatter: function (value) {
           return value + '%';
         },
-        color: rawColor.text.white,
+        color: resolveColor(ds.background[100]),
         fontSize: 'var(--ds-text-small)',
         fontWeight: 'var(--ds-font-weight-medium)',
       },
       tooltip: {
-        enabled: false,
-        external: !displayValue || enableTooltip ? externalTooltipHandler : undefined,
+        // External (shared tabular) tooltip takes over rendering when opted in.
+        enabled: externalTooltip ? false : !displayValue || enableTooltip,
+        ...(externalTooltip ? { external: makeExternalTooltip((raw, label) => (formatValue ? formatValue(Number(raw), label) : `${raw}`)) } : {}),
         callbacks: {
           title: () => '',
-          label: (context) => buildTooltipLabel(context, displayOnlyValueOnTooltip, valueToDisplay),
+          label: (context) =>
+            formatValue ? formatValue(Number(context.raw), context.label) : buildTooltipLabel(context, displayOnlyValueOnTooltip, valueToDisplay),
         },
+        titleFont: {
+          size: 12,
+          weight: '500',
+          family: 'Roboto',
+        },
+        bodyFont: {
+          size: 12,
+          weight: '500',
+          family: 'Roboto',
+        },
+        backgroundColor: 'white',
+        bodyColor: resolveColor(ds.brand[500]),
+        cornerRadius: 4,
+        boxHeight: 12,
+        boxWidth: 12,
+        boxShadow: `0px ${ds.space[1]} ${ds.space.mul(0, 5)} 0px color-mix(in srgb, ${ds.gray[500]} 25%, transparent)`,
+        color: resolveColor(ds.brand[500]),
+        showShadow: true,
+        borderWidth: 0.7,
+        borderColor: resolveColor(ds.brand[200]),
       },
       legend: {
         display: displayLegend,
@@ -222,7 +205,7 @@ function DoughnutChart({
     labels: truncatedlabels,
     datasets: [
       {
-        data: reducedValues,
+        data: datasetValues,
         backgroundColor: resolvedColors,
         borderWidth: borderWidth,
         borderRadius: borderRadius,
@@ -241,7 +224,7 @@ function DoughnutChart({
                 display: 'flex',
                 flexDirection: 'row',
                 justifyContent: 'space-between',
-                height: '20px',
+                height: ds.space.mul(0, 10),
                 marginBottom: 'var(--ds-space-1)',
                 textTransform: 'none',
               }}
@@ -251,22 +234,16 @@ function DoughnutChart({
                   sx={{
                     background: resolvedColors[index],
                     borderRadius: 'var(--ds-radius-sm)',
-                    height: '8px',
-                    width: '8px',
+                    height: ds.space[2],
+                    width: ds.space[2],
                     marginRight: 'var(--ds-space-1)',
                   }}
                 />
-                <Typography
-                  id={index}
-                  sx={{ color: color.text.secondary, fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }}
-                >
+                <Typography id={index} sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }}>
                   {item}
                 </Typography>
               </Box>
-              <Typography
-                id={index}
-                sx={{ color: color.text.secondary, fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }}
-              >
+              <Typography id={index} sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }}>
                 {reducedValues[index]}%
               </Typography>
             </Button>
@@ -290,23 +267,22 @@ function DoughnutChart({
         }}
       >
         <Doughnut id={id} data={data} options={options} style={{ zIndex: '1', cursor: 'pointer' }} />
-        {displayValue ? (
-          <Typography
-            fontSize={valueFontSize}
-            fontWeight={600}
-            color={color.text.secondary}
-            sx={{ position: 'absolute', zIndex: 2, whiteSpace: 'nowrap', pointerEvents: 'none' }}
-          >
+        {hasCustomCenter ? (
+          <Box sx={{ position: 'absolute', display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1.15 }}>
+            {centerLabel && <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[500] }}>{centerLabel}</Typography>}
+            {centerValue && (
+              <Typography sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700] }}>
+                {centerValue}
+              </Typography>
+            )}
+          </Box>
+        ) : displayValue ? (
+          <Typography fontSize={size < 50 ? 12 : 16} fontWeight={600} color={ds.brand[500]} sx={{ position: 'absolute' }}>
             {valueToDisplay}
-            {!isNaN(Math.floor(values.reduce((a, b) => a + b, 0))) ? <span style={{ fontSize: parsedSize < 50 ? 8 : 16 }}>{valueUnit}</span> : ''}
+            {!isNaN(Math.floor(values.reduce((a, b) => a + b, 0))) ? <span style={{ fontSize: size < 50 ? 8 : 16 }}>{valueUnit}</span> : ''}
           </Typography>
         ) : (
-          <Typography
-            fontSize={valueFontSize}
-            fontWeight={600}
-            color={color.text.secondary}
-            sx={{ position: 'absolute', zIndex: 2, whiteSpace: 'nowrap', pointerEvents: 'none' }}
-          >
+          <Typography fontSize={size < 50 ? 12 : 16} fontWeight={600} color={ds.brand[500]} sx={{ position: 'absolute' }}>
             {0}
           </Typography>
         )}
@@ -333,6 +309,10 @@ DoughnutChart.propTypes = {
   enableTooltip: PropTypes.bool,
   displayOnlyValueOnTooltip: PropTypes.bool,
   onItemClick: PropTypes.func,
+  formatValue: PropTypes.func,
+  centerLabel: PropTypes.string,
+  centerValue: PropTypes.string,
+  externalTooltip: PropTypes.bool,
 };
 
 export default withErrorBoundary(DoughnutChart);

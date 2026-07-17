@@ -42,33 +42,21 @@ jest.mock('@lib/formatter', () => ({
   titleCase: (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : ''),
 }));
 
-jest.mock('@shared/snackbarService', () => ({
-  snackbar: { success: jest.fn(), error: jest.fn(), info: jest.fn(), warning: jest.fn() },
-}));
-
 jest.mock('src/utils/common', () => ({
   isValidSeverity: (s: string) => ['success', 'error', 'info', 'warning'].includes(s),
   snakeToTitleCase: (s: string) => s,
-}));
-
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000' }, background: { white: '#fff' } },
 }));
 
 jest.mock('src/utils/actionStyles', () => ({
   action: { primary: {} },
 }));
 
-jest.mock('@shared', () => ({
-  Text: ({ value }: any) => <span>{value}</span>,
-}));
-
-jest.mock('@shared/widgets/CustomLabels', () => ({
+jest.mock('@shared/format/Text', () => ({
   __esModule: true,
-  default: ({ text }: any) => <span data-testid='label'>{text}</span>,
+  default: ({ value }: any) => <span>{value}</span>,
 }));
 
-jest.mock('@shared/ds/ThreeDotsMenu', () => ({
+jest.mock('@ui/ThreeDotsMenu', () => ({
   __esModule: true,
   default: ({ menuItems, data, onMenuClick }: any) => (
     <div data-testid='three-dots'>
@@ -81,39 +69,34 @@ jest.mock('@shared/ds/ThreeDotsMenu', () => ({
   ),
 }));
 
-jest.mock('@shared/NewCustomButton', () => ({
+jest.mock('@ui/Button', () => ({
   __esModule: true,
-  default: ({ text, onClick, disabled }: any) => (
-    <button data-testid={`custom-btn-${text}`} onClick={onClick} disabled={disabled}>
-      {text}
+  Button: ({ children, onClick, disabled }: any) => (
+    <button data-testid={`custom-btn-${children}`} onClick={onClick} disabled={disabled}>
+      {children}
     </button>
   ),
 }));
 
-jest.mock('@shared/modal', () => ({
-  Modal: ({ open, title, children }: any) =>
-    open ? (
+jest.mock('@ui/Modal', () => ({
+  __esModule: true,
+  Modal: ({ open, title, children, onConfirm, handleClose, confirmText }: any) =>
+    !open ? null : children ? (
       <div data-testid='create-alert-modal'>
         <div data-testid='create-alert-title'>{title}</div>
         {children}
       </div>
-    ) : null,
-}));
-
-jest.mock('@shared/modal/NDialog', () => ({
-  __esModule: true,
-  default: ({ open, dialogTitle, handleSubmit, handleClose, buttonText }: any) =>
-    open ? (
+    ) : (
       <div data-testid='ndialog'>
-        <div data-testid='ndialog-title'>{dialogTitle}</div>
-        <button data-testid='ndialog-submit' onClick={handleSubmit}>
-          {buttonText}
+        <div data-testid='ndialog-title'>{title}</div>
+        <button data-testid='ndialog-submit' onClick={onConfirm}>
+          {confirmText}
         </button>
         <button data-testid='ndialog-close' onClick={handleClose}>
           Cancel
         </button>
       </div>
-    ) : null,
+    ),
 }));
 
 jest.mock('@components/k8s/details/KubernetesCreateAlert', () => ({
@@ -132,49 +115,79 @@ jest.mock('@components/k8s/details/KubernetesCreateAlert', () => ({
   ),
 }));
 
-jest.mock('@shared/BoxLayout2', () => ({
-  __esModule: true,
-  default: ({ children, filterOptions = [], extraOptions = [] }: any) => (
-    <div data-testid='box-layout'>
-      <div data-testid='extras'>{extraOptions}</div>
-      {filterOptions.map((f: any, i: number) => {
-        if (f.type === 'dropdown') {
-          return (
-            <select key={i} data-testid={`filter-${f.label}`} value={f.value || ''} onChange={f.onSelect}>
-              <option value=''>--</option>
-              {(f.options || []).map((opt: any, idx: number) => {
-                const v = typeof opt === 'string' ? opt : opt.value;
-                const l = typeof opt === 'string' ? opt : opt.label;
-                return (
-                  <option key={(v || '_') + '-' + idx} value={v}>
-                    {l}
-                  </option>
-                );
-              })}
-            </select>
-          );
-        }
-        if (f.type === 'search') {
-          return (
-            <input
-              key={i}
-              data-testid={`search-${f.label}`}
-              value={f.value || ''}
-              onChange={f.onSelect}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && f.onEnter) f.onEnter();
-              }}
-            />
-          );
-        }
-        return null;
-      })}
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout: any = ({ children, id }: any) => (
+    <div data-testid='listing-layout' id={id}>
       {children}
     </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }: any) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }: any) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, options = [], value, onSelect }: any) => (
+    <select data-testid={`filter-${label}`} value={value || ''} onChange={onSelect}>
+      <option value=''>--</option>
+      {(options || []).map((opt: any, idx: number) => {
+        const v = typeof opt === 'string' ? opt : opt.value;
+        const l = typeof opt === 'string' ? opt : opt.label;
+        return (
+          <option key={(v || '_') + '-' + idx} value={v}>
+            {l}
+          </option>
+        );
+      })}
+    </select>
   ),
 }));
 
-jest.mock('@shared/tables/CustomTable2', () => ({
+jest.mock('@ui/SearchInput', () => ({
+  __esModule: true,
+  default: ({ label, value, onChange, onEnterPress }: any) => (
+    <input
+      data-testid={`search-${label}`}
+      value={value || ''}
+      onChange={(e) => onChange?.(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && onEnterPress) onEnterPress();
+      }}
+    />
+  ),
+}));
+
+jest.mock('@ui/Label', () => ({
+  __esModule: true,
+  Label: ({ text }: any) => <span data-testid='label'>{text}</span>,
+}));
+
+jest.mock('@ui/SeverityIcon', () => ({
+  __esModule: true,
+  SeverityIcon: ({ level }: any) => <span data-testid={`severity-${level}`}>sev</span>,
+}));
+
+jest.mock('@ui/Toast', () => ({
+  __esModule: true,
+  toast: { success: jest.fn(), error: jest.fn(), info: jest.fn(), warning: jest.fn() },
+}));
+
+jest.mock('@shared/buttons/DownloadButton', () => ({
+  __esModule: true,
+  default: ({ onClick }: any) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
+  ),
+}));
+
+jest.mock('@shared/tables/CustomTable', () => ({
   __esModule: true,
   default: ({ id, tableData, totalRows, loading, pageNumber, onPageChange }: any) => (
     <div data-testid='custom-table' id={id}>
@@ -200,7 +213,7 @@ jest.mock('@shared/tables/CustomTable2', () => ({
 import CloudAccountAlertManager from '@components/cloudaccount/CloudAccountAlertManager';
 
 const k8sApi = require('@api1/kubernetes1').default;
-const { snackbar } = require('@shared/snackbarService');
+const { toast: snackbar } = require('@ui/Toast');
 
 const sampleDistinct = {
   data: {
