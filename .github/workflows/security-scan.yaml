@@ -180,9 +180,9 @@ jobs:
           - ghcr.io/nudgebee/kubewatch:2.14.1-nb.2
           # --- genuinely third-party (upstream-owned) ---
           # temporal-ui removed: the Web UI is disabled in the chart (not deployed).
-          - ghcr.io/nudgebee/qdrant:v1.18.2
-          - docker.io/temporalio/server:1.31.1
-          - docker.io/temporalio/admin-tools:1.31.1
+          - ghcr.io/nudgebee/qdrant:v1.18.3
+          - docker.io/temporalio/server:1.31.2
+          - docker.io/temporalio/admin-tools:1.31.2
           # --- first-party agents / sidecars built in sibling repos ---
           # Measured here so the daily scan covers the whole deployed surface;
           # fixes land in the k8s-agent / node-agent / forager repos and these
