@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import { FormControlLabel, Box, Typography, Grid } from '@mui/material';
+import { FormControlLabel, Box, Typography, Grid, Collapse } from '@mui/material';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import { Switch } from '@ui/Switch';
 import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
@@ -9,6 +10,7 @@ import apiUser from '@api1/user';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
 import apiIntegrations from '@api1/integrations';
+import observability from '@api1/observability';
 import { ENCRYPTED_MASK } from '@api1/integrations/helpers';
 import { ds } from 'src/utils/colors';
 import CopyButton from '@shared/buttons/CopyButton';
@@ -27,6 +29,10 @@ import { docsUrl } from '@lib/externalUrls';
 // cloud_provider: K8S/AWS/Azure/GCP) to its provider icon. Same pattern as the
 // Account filter on the Troubleshoot/Events page.
 const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='16px' height='16px' />;
+
+// Log/observability integrations that support per-account "Default Log Filters"
+// (always-apply where-clause filters injected into every log query for the account).
+const LOG_FILTER_INTEGRATIONS = new Set(['pinot', 'ES', 'loki', 'signoz', 'openobserve', 'datadog', 'dynatrace', 'chronosphere']);
 
 const COMMON_WEBHOOK_LABEL_KEYS = [
   'alertname',
@@ -92,6 +98,12 @@ const IntegrationDynamicFormModal = ({
   const autogenCacheRef = useRef(new Map());
   const autogenDebounceRef = useRef(null);
   const [rules, setRules] = useState([{ match: [{ key: '', value: '' }], accountId: '' }]);
+  // Per-account "Default Log Filters" (log integrations only): each card is an
+  // account + a list of key=value filters always AND-ed into that account's log queries.
+  const [defaultFilterRules, setDefaultFilterRules] = useState([{ accountId: '', filters: [{ key: '', value: '' }] }]);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // On-demand column validation per card: { [cardIdx]: { loading, done, invalid: [colNames] } }.
+  const [columnValidation, setColumnValidation] = useState({});
   // Per-source subject/namespace/severity label mapping (webhook_label_mapping).
   // Each field is a comma-separated list of label key specs; persisted as arrays.
   const [labelMapping, setLabelMapping] = useState({ subject_name_labels: [], namespace_labels: [], severity_labels: [] });
@@ -435,6 +447,23 @@ const IntegrationDynamicFormModal = ({
     }
   }, [editData]);
 
+  // Hydrate per-account Default Log Filters from the saved default_filters config.
+  useEffect(() => {
+    const raw = editData?.integration_config_values?.default_filters;
+    if (!raw) return;
+    const parsed = safeJSONParse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return;
+    const normalizeAcc = (a) => (typeof a === 'object' && a !== null ? a.value || '' : a || '');
+    const next = parsed.map((e) => ({
+      accountId: normalizeAcc(e.accountId),
+      filters:
+        Array.isArray(e.filters) && e.filters.length > 0
+          ? e.filters.map((f) => ({ key: f.key || '', value: String(f.value ?? '') }))
+          : [{ key: '', value: '' }],
+    }));
+    setDefaultFilterRules(next);
+  }, [editData]);
+
   // Hydrate the per-source label mapping (webhook_label_mapping) from the saved
   // config value. Stored as arrays; rendered as arrays for FilterDropdown multi-select.
   useEffect(() => {
@@ -704,6 +733,60 @@ const IntegrationDynamicFormModal = ({
     );
   };
 
+  // --- Default Log Filters (per-account) handlers ---
+  // Clear a card's stale validation result whenever it is edited.
+  const clearCardValidation = (cardIdx) => setColumnValidation((prev) => ({ ...prev, [cardIdx]: undefined }));
+  const handleAddDefaultFilterCard = () => {
+    setDefaultFilterRules([...defaultFilterRules, { accountId: '', filters: [{ key: '', value: '' }] }]);
+  };
+  const handleRemoveDefaultFilterCard = (cardIdx) => {
+    setDefaultFilterRules(defaultFilterRules.filter((_, i) => i !== cardIdx));
+    setColumnValidation({}); // indices shift on removal — clear all
+  };
+  const handleDefaultFilterAccountChange = (cardIdx, accountId) => {
+    setDefaultFilterRules(defaultFilterRules.map((c, i) => (i === cardIdx ? { ...c, accountId } : c)));
+    clearCardValidation(cardIdx);
+  };
+  const handleAddDefaultFilterRow = (cardIdx) => {
+    setDefaultFilterRules(defaultFilterRules.map((c, i) => (i === cardIdx ? { ...c, filters: [...c.filters, { key: '', value: '' }] } : c)));
+    clearCardValidation(cardIdx);
+  };
+  const handleRemoveDefaultFilterRow = (cardIdx, rowIdx) => {
+    setDefaultFilterRules(
+      defaultFilterRules.map((c, i) => {
+        if (i !== cardIdx) return c;
+        const next = c.filters.filter((_, j) => j !== rowIdx);
+        return { ...c, filters: next.length > 0 ? next : [{ key: '', value: '' }] };
+      })
+    );
+    clearCardValidation(cardIdx);
+  };
+  const handleDefaultFilterRowChange = (cardIdx, rowIdx, field, value) => {
+    setDefaultFilterRules(
+      defaultFilterRules.map((c, i) =>
+        i === cardIdx ? { ...c, filters: c.filters.map((f, j) => (j === rowIdx ? { ...f, [field]: value } : f)) } : c
+      )
+    );
+    clearCardValidation(cardIdx);
+  };
+  // On-demand: fetch the card's account log labels and flag any column that isn't a known label.
+  const handleValidateCard = async (cardIdx) => {
+    const card = defaultFilterRules[cardIdx];
+    const cols = (card.filters || []).map((f) => (f.key || '').trim()).filter(Boolean);
+    if (!card.accountId || cols.length === 0) return;
+    setColumnValidation((prev) => ({ ...prev, [cardIdx]: { loading: true, done: false, invalid: [] } }));
+    try {
+      const res = await observability.fetchLogLabels({ account_id: card.accountId });
+      // logs_list_labels returns [{ label, attributes }] — compare against the label names.
+      const labels = (res?.data?.data?.logs_list_labels || []).map((l) => (typeof l === 'string' ? l : l?.label ?? l?.name)).filter(Boolean);
+      const invalid = labels.length > 0 ? cols.filter((c) => !labels.includes(c)) : [];
+      setColumnValidation((prev) => ({ ...prev, [cardIdx]: { loading: false, done: true, invalid } }));
+    } catch {
+      setColumnValidation((prev) => ({ ...prev, [cardIdx]: { loading: false, done: false, invalid: [] } }));
+      snackbar.error('Could not fetch log labels to validate columns.');
+    }
+  };
+
   const handleCloseModal = (trigger) => {
     setIsSubmitting(false);
     setConfig({});
@@ -711,6 +794,8 @@ const IntegrationDynamicFormModal = ({
     setErrors({});
     setShowModal(false);
     setRules([{ match: [{ key: '', value: '' }], accountId: '' }]);
+    setDefaultFilterRules([{ accountId: '', filters: [{ key: '', value: '' }] }]);
+    setAdvancedOpen(false);
     setLabelMapping({ subject_name_labels: [], namespace_labels: [], severity_labels: [] });
     setAgentAccountProviders([]);
     setProviderFields([]);
@@ -835,6 +920,16 @@ const IntegrationDynamicFormModal = ({
   const submitForm = async () => {
     if (!validateForm()) {
       return;
+    }
+    if (LOG_FILTER_INTEGRATIONS.has(integrationName)) {
+      // Any card that has a filter entered must have an account selected.
+      const cardMissingAccount = defaultFilterRules.some(
+        (c) => !c.accountId && (c.filters || []).some((f) => (f.key || '').trim() || (f.value || '').trim())
+      );
+      if (cardMissingAccount) {
+        snackbar.error('Default Log Filters: please select an account for each filter card.');
+        return;
+      }
     }
     setIsSubmitting(true);
 
@@ -970,6 +1065,29 @@ const IntegrationDynamicFormModal = ({
         transformedValues.push({
           name: 'account_mapping',
           value: JSON.stringify({ rules: cleanedRules }),
+          is_encrypted: false,
+        });
+      }
+    }
+
+    // Per-account Default Log Filters → default_filters. Keep a card only if it has
+    // an account and at least one non-empty (key, value); each row is stored as
+    // { key, op:'_eq', value } (equality only for now). Emit an empty array when a
+    // previously-saved config is cleared so filters can be removed.
+    if (LOG_FILTER_INTEGRATIONS.has(integrationName)) {
+      const cleanedFilters = defaultFilterRules
+        .map((c) => ({
+          accountId: c.accountId || '',
+          filters: (c.filters || [])
+            .map((f) => ({ key: (f.key || '').trim(), op: '_eq', value: (f.value || '').trim() }))
+            .filter((f) => f.key && f.value),
+        }))
+        .filter((c) => c.accountId && c.filters.length > 0);
+      const previouslySet = !!editData?.integration_config_values?.default_filters;
+      if (cleanedFilters.length > 0 || previouslySet) {
+        transformedValues.push({
+          name: 'default_filters',
+          value: JSON.stringify(cleanedFilters),
           is_encrypted: false,
         });
       }
@@ -2032,6 +2150,161 @@ const IntegrationDynamicFormModal = ({
                   />
                 </Box>
               </>
+            )}
+            {LOG_FILTER_INTEGRATIONS.has(integrationName) && editData?.name && (
+              <Box sx={{ mt: ds.space[6] }}>
+                <Box
+                  sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', mb: ds.space[2] }}
+                  onClick={() => setAdvancedOpen((v) => !v)}
+                  data-testid='advanced-settings-toggle'
+                >
+                  <KeyboardArrowDownIcon
+                    sx={{ transform: advancedOpen ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.2s', color: ds.brand[500] }}
+                  />
+                  <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)' }}>
+                    Advanced Settings
+                  </Typography>
+                </Box>
+                <Collapse in={advancedOpen}>
+                  <Typography
+                    sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', mb: ds.space[1] }}
+                  >
+                    Default Log Filters (Optional)
+                  </Typography>
+                  <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', mb: ds.space[4], pl: ds.space[1] }}>
+                    Filters always applied to every log query for the selected account (e.g. a central provider scoped to one cluster:{' '}
+                    <em>cluster_id = nudgebee</em>). Enter the provider-native column name. Conditions in a card are combined with AND.
+                  </Typography>
+                  {defaultFilterRules.map((card, cardIdx) => {
+                    const cardNeedsAccount = !card.accountId && (card.filters || []).some((f) => (f.key || '').trim() || (f.value || '').trim());
+                    const cardVal = columnValidation[cardIdx];
+                    return (
+                      <Box
+                        key={cardIdx}
+                        sx={{
+                          border: `1px solid ${ds.blue[400]}`,
+                          borderRadius: 'var(--ds-radius-lg)',
+                          p: 2,
+                          mb: ds.space[4],
+                          backgroundColor: ds.blue[100],
+                        }}
+                        data-testid={`default-filter-card-${cardIdx}`}
+                      >
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: ds.space[3] }}>
+                          <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.blue[500] }}>
+                            Account {cardIdx + 1}
+                          </Typography>
+                          {defaultFilterRules.length > 1 && (
+                            <Button
+                              tone='secondary'
+                              size='xs'
+                              composition='icon-only'
+                              icon={
+                                <SafeIcon src={NewDelete} alt='Remove account' style={{ width: ds.space.mul(0, 7), height: ds.space.mul(0, 7) }} />
+                              }
+                              aria-label='Remove account'
+                              onClick={() => handleRemoveDefaultFilterCard(cardIdx)}
+                            />
+                          )}
+                        </Box>
+                        <FilterDropdown
+                          label='Account'
+                          grouped
+                          groupIcon={renderAccountGroupIcon}
+                          options={accountOptions}
+                          value={card.accountId}
+                          onSelect={(_event, value) => handleDefaultFilterAccountChange(cardIdx, value?.value ?? value)}
+                          isOptionsLoading={loadingOptions.account_id}
+                          disabled={!accountOptions.length}
+                          sx={{
+                            height: ds.space.mul(0, 22),
+                            mb: cardNeedsAccount ? ds.space[1] : ds.space[3],
+                            ...(cardNeedsAccount ? { borderColor: 'var(--ds-red-500)', boxShadow: '0 0 0 3px var(--ds-red-100)' } : {}),
+                          }}
+                        />
+                        {cardNeedsAccount && (
+                          <Typography sx={{ color: 'var(--ds-red-600)', fontSize: 'var(--ds-text-caption)', mb: ds.space[3], pl: ds.space[1] }}>
+                            Select an account to apply these filters.
+                          </Typography>
+                        )}
+                        <Typography
+                          sx={{
+                            fontSize: 'var(--ds-text-small)',
+                            fontWeight: 'var(--ds-font-weight-semibold)',
+                            color: ds.brand[500],
+                            mb: ds.space[2],
+                          }}
+                        >
+                          ALWAYS APPLY
+                        </Typography>
+                        {card.filters.map((f, rowIdx) => (
+                          <Box key={rowIdx} sx={{ display: 'flex', gap: ds.space[3], alignItems: 'flex-end', mb: ds.space[2] }}>
+                            <Box sx={{ flex: 1 }}>
+                              <Input
+                                label={rowIdx === 0 ? 'Column' : ''}
+                                placeholder='e.g. cluster_id'
+                                value={f.key}
+                                onChange={(value) => handleDefaultFilterRowChange(cardIdx, rowIdx, 'key', value)}
+                                size='sm'
+                                error={
+                                  cardVal?.done && (f.key || '').trim() && cardVal.invalid.includes((f.key || '').trim())
+                                    ? 'Not a known log column for this account.'
+                                    : undefined
+                                }
+                              />
+                            </Box>
+                            <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.brand[500], pb: ds.space[1] }}>=</Typography>
+                            <Box sx={{ flex: 1 }}>
+                              <Input
+                                label={rowIdx === 0 ? 'Value' : ''}
+                                placeholder='e.g. nudgebee'
+                                value={f.value}
+                                onChange={(value) => handleDefaultFilterRowChange(cardIdx, rowIdx, 'value', value)}
+                                size='sm'
+                              />
+                            </Box>
+                            <Box sx={{ paddingBottom: ds.space[1] }}>
+                              <Button
+                                tone='secondary'
+                                size='xs'
+                                composition='icon-only'
+                                icon={<SafeIcon src={NewDelete} alt='Remove' style={{ width: ds.space.mul(0, 7), height: ds.space.mul(0, 7) }} />}
+                                aria-label='Remove filter'
+                                disabled={card.filters.length === 1}
+                                onClick={() => handleRemoveDefaultFilterRow(cardIdx, rowIdx)}
+                              />
+                            </Box>
+                          </Box>
+                        ))}
+                        <Box sx={{ mt: ds.space[2], display: 'flex', alignItems: 'center', gap: ds.space[3], flexWrap: 'wrap' }}>
+                          <Button tone='secondary' size='sm' onClick={() => handleAddDefaultFilterRow(cardIdx)}>
+                            + Add filter
+                          </Button>
+                          <Button
+                            tone='secondary'
+                            size='sm'
+                            onClick={() => handleValidateCard(cardIdx)}
+                            disabled={!card.accountId || cardVal?.loading}
+                          >
+                            {cardVal?.loading ? 'Validating…' : 'Validate columns'}
+                          </Button>
+                          {cardVal?.done &&
+                            (cardVal.invalid.length === 0 ? (
+                              <Typography sx={{ color: 'var(--ds-green-600)', fontSize: 'var(--ds-text-caption)' }}>All columns valid ✓</Typography>
+                            ) : (
+                              <Typography sx={{ color: 'var(--ds-red-600)', fontSize: 'var(--ds-text-caption)' }}>
+                                {cardVal.invalid.length} unknown column{cardVal.invalid.length > 1 ? 's' : ''}
+                              </Typography>
+                            ))}
+                        </Box>
+                      </Box>
+                    );
+                  })}
+                  <Button tone='secondary' size='md' onClick={handleAddDefaultFilterCard}>
+                    + Add account
+                  </Button>
+                </Collapse>
+              </Box>
             )}
             <Box
               sx={{

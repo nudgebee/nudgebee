@@ -549,6 +549,20 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		}
 	}
 
+	// Always-apply per-account default filters (e.g. a central Pinot scoped to
+	// cluster_id) configured on the log integration. AND them into the where clause
+	// here — after label-mapping and key-strip — so the operator-entered
+	// provider-native columns are used verbatim (not renamed, not stripped).
+	if defaults := getDefaultLogFilters(ctx, fetchLogRequest.AccountId); hasWhereData(defaults) {
+		if hasWhereData(fetchLogRequest.QueryRequest.Where) {
+			fetchLogRequest.QueryRequest.Where = query.QueryWhereClause{
+				And: []query.QueryWhereClause{fetchLogRequest.QueryRequest.Where, defaults},
+			}
+		} else {
+			fetchLogRequest.QueryRequest.Where = defaults
+		}
+	}
+
 	// Auto-convert: if no raw query but where clause exists, generate query from where clause.
 	// Some providers (e.g. Signoz, Datadog) handle where clauses natively in QueryLogs
 	// and don't implement GetQuery, so a GetQuery error is logged but not fatal.

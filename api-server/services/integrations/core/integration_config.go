@@ -159,6 +159,26 @@ func CreateIntegrationConfig(
 		}
 	}
 
+	// Auto-allow default_filters (per-account always-apply log filters) on log and
+	// observability-platform integrations. Applied centrally in observability.FetchLogs,
+	// so each ConfigSchema doesn't have to declare it. Clone before injecting so a
+	// shared/static schema map is never mutated in place (see the webhook block above).
+	if integration.Category() == IntegrationCategoryLog || integration.Category() == IntegrationCategoryObservabilityPlatform {
+		cloned := make(map[string]IntegrationSchemaProperty, len(integrationConfigSchema.Properties)+1)
+		for k, v := range integrationConfigSchema.Properties {
+			cloned[k] = v
+		}
+		integrationConfigSchema.Properties = cloned
+		if _, exists := integrationConfigSchema.Properties["default_filters"]; !exists {
+			integrationConfigSchema.Properties["default_filters"] = IntegrationSchemaProperty{
+				Type:        ToolSchemaTypeString,
+				Description: "JSON array of per-account always-apply log filters",
+				Default:     "",
+				Hidden:      true,
+			}
+		}
+	}
+
 	// Inject schema defaults that the frontend doesn't send (e.g. hidden
 	// connection_mode=vm_agent).  Without this, proxy routing breaks for
 	// user-created integrations.
