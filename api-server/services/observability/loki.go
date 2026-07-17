@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+
+	"github.com/nudgebee/logparser"
+
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/query"
@@ -1113,35 +1116,28 @@ func (s *LokiSource) convertLokiResponse(lokiData []byte) ([]OutputLog, error) {
 	return logEntries, nil
 }
 
-// extractSeverity attempts to extract severity level from the log message
+// extractSeverity determines the severity level of a log line.
+//
+// logparser.GuessLevel inspects the leading fields of the line — where a level
+// conventionally appears — and understands glog, `level=` prefixes and the usual
+// abbreviations. Matching on the whole line instead (the previous approach) reads
+// the level off any log that merely mentions one in its text, e.g.
+// `level=info msg="error count: 0"` classifies as error.
 func (s *LokiSource) extractSeverity(message string) string {
-	messageLower := strings.ToLower(message)
-	if strings.Contains(messageLower, "error") || strings.Contains(messageLower, "err") {
+	switch logparser.GuessLevel(message) {
+	case logparser.LevelCritical:
+		return "critical"
+	case logparser.LevelError:
 		return "error"
-	} else if strings.Contains(messageLower, "warn") {
+	case logparser.LevelWarning:
 		return "warning"
-	} else if strings.Contains(messageLower, "info") {
+	case logparser.LevelInfo:
 		return "info"
-	} else if strings.Contains(messageLower, "debug") {
+	case logparser.LevelDebug:
 		return "debug"
-	} else if strings.Contains(messageLower, "fatal") {
-		return "fatal"
-	} else if strings.Contains(messageLower, "trace") {
-		return "trace"
+	default:
+		return "unknown"
 	}
-
-	if strings.Contains(messageLower, "\"levelname\"") {
-		if strings.Contains(messageLower, "\"info\"") {
-			return "info"
-		} else if strings.Contains(messageLower, "\"error\"") {
-			return "error"
-		} else if strings.Contains(messageLower, "\"warning\"") {
-			return "warning"
-		} else if strings.Contains(messageLower, "\"debug\"") {
-			return "debug"
-		}
-	}
-	return "info"
 }
 
 // LokiResponse represents the structure of the Loki logs response
@@ -1185,7 +1181,15 @@ func (s *LokiSource) QueryLogGroup(ctx *security.RequestContext, req FetchLogGro
 	return s.groupLogsByPattern(logs, req.EndTime), nil
 }
 
-// buildLogGroupStreamQuery builds a LogQL stream query that fetches error/critical/fatal logs.
+// buildLogGroupStreamQuery builds a LogQL stream query that fetches candidate
+// error/critical logs.
+//
+// The line filter is deliberately over-inclusive: it only narrows what crosses
+// the wire, and groupLogsByPattern decides the actual level with
+// logparser.GuessLevel. Anything this filter misses can never be grouped, so it
+// errs towards recall — `err` also covers Err/ERROR/errors, `crit` covers
+// critical, and `^E[0-9]{4}` covers glog (`E0301 12:00:00.000000 ...`), which
+// spells errors without ever using the word.
 func (s *LokiSource) buildLogGroupStreamQuery(req FetchLogGroupRequest) string {
 	selector := `namespace=~".+"`
 
@@ -1199,12 +1203,13 @@ func (s *LokiSource) buildLogGroupStreamQuery(req FetchLogGroupRequest) string {
 		selector += fmt.Sprintf(`, pod=~"%s-.*"`, escapeLokiLabelValue(selectedWorkload))
 	}
 
-	return fmt.Sprintf(`{%s} |~ "(?i)(error|critical|fatal)"`, selector)
+	return fmt.Sprintf(`{%s} |~ "(?i)(err|crit|fatal|panic)|^E[0-9]{4}"`, selector)
 }
 
 // groupLogsByPattern groups raw log entries by message pattern hash and returns LogGroupOutput.
 func (s *LokiSource) groupLogsByPattern(logs []OutputLog, endTime int64) LogGroupOutput {
 	type groupEntry struct {
+		hash      string
 		sample    string
 		namespace string
 		workload  string
@@ -1220,12 +1225,19 @@ func (s *LokiSource) groupLogsByPattern(logs []OutputLog, endTime int64) LogGrou
 			continue
 		}
 
+		// The LogQL line filter matches on text, so it also returns lines that
+		// merely mention an error (`level=info msg="error count: 0"`). Keep only
+		// lines whose own level says they are errors.
+		level := log.Severity
+		if level != "error" && level != "critical" {
+			continue
+		}
+
 		hash := generatePatternHash(log.Message)
 		namespace, _ := log.Labels["namespace"].(string)
 		pod, _ := log.Labels["pod"].(string)
 		container, _ := log.Labels["container"].(string)
 		workload := extractWorkloadFromPodName(pod)
-		level := log.Severity
 
 		compositeKey := hash + "|" + namespace + "|" + workload + "|" + level
 
@@ -1238,6 +1250,7 @@ func (s *LokiSource) groupLogsByPattern(logs []OutputLog, endTime int64) LogGrou
 			}
 
 			entry = &groupEntry{
+				hash:      hash,
 				sample:    sample,
 				namespace: namespace,
 				workload:  workload,
@@ -1266,19 +1279,17 @@ func (s *LokiSource) groupLogsByPattern(logs []OutputLog, endTime int64) LogGrou
 			containerID = fmt.Sprintf("/k8s/%s/%s", entry.namespace, entry.workload)
 		}
 
-		level := entry.level
-		if level == "" {
-			level = "error"
-		}
-
 		groups = append(groups, LogGroup{
 			Sample:      entry.sample,
 			Namespace:   entry.namespace,
 			Workload:    entry.workload,
 			Container:   entry.container,
 			ContainerID: containerID,
-			PatternHash: generatePatternHash(entry.sample),
-			Level:       level,
+			// entry.hash, not a re-hash of entry.sample: the sample is truncated
+			// for display, so re-hashing it would emit a pattern_hash that isn't
+			// the key this group was built on.
+			PatternHash: entry.hash,
+			Level:       entry.level,
 			Count:       entry.count,
 			Timestamps:  []int64{endTimeSec},
 			Values:      []float64{float64(entry.count)},

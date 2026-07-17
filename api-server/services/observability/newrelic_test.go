@@ -2926,9 +2926,8 @@ func TestGeneratePatternHash(t *testing.T) {
 		assert.Equal(t, "", hash)
 	})
 
-	t.Run("Non-empty message generates 14-char hash", func(t *testing.T) {
+	t.Run("Non-empty message generates a hash", func(t *testing.T) {
 		hash := generatePatternHash("Error: connection timeout")
-		assert.Len(t, hash, 14)
 		assert.NotEmpty(t, hash)
 	})
 
@@ -2939,16 +2938,98 @@ func TestGeneratePatternHash(t *testing.T) {
 		assert.Equal(t, hash1, hash2)
 	})
 
-	t.Run("Different messages produce different hashes", func(t *testing.T) {
-		hash1 := generatePatternHash("Error message 1")
-		hash2 := generatePatternHash("Error message 2")
+	t.Run("Messages differing only in variable data share a hash", func(t *testing.T) {
+		// The point of pattern extraction: these are one error, not three.
+		// Hashing the raw message put each on its own row in the log-group UI.
+		hash1 := generatePatternHash("failed to connect to db: timeout after 30.1ms")
+		hash2 := generatePatternHash("failed to connect to db: timeout after 29.7ms")
+		hash3 := generatePatternHash("failed to connect to db: timeout after 31.2ms")
+		assert.Equal(t, hash1, hash2)
+		assert.Equal(t, hash1, hash3)
+	})
+
+	t.Run("Variable data of different kinds is normalized away", func(t *testing.T) {
+		assert.Equal(t,
+			generatePatternHash("request 550e8400-e29b-41d4-a716-446655440000 from 10.0.0.1 failed"),
+			generatePatternHash("request 6ba7b810-9dad-11d1-80b4-00c04fd430c8 from 10.0.0.9 failed"),
+		)
+	})
+
+	t.Run("Genuinely different messages produce different hashes", func(t *testing.T) {
+		hash1 := generatePatternHash("failed to connect to database")
+		hash2 := generatePatternHash("user authentication rejected")
 		assert.NotEqual(t, hash1, hash2)
 	})
 
-	t.Run("Hash is alphanumeric (URL-safe)", func(t *testing.T) {
+	t.Run("Distinct logfmt messages do not collapse together", func(t *testing.T) {
+		// logparser normalization treats quoted spans as variable data, and a
+		// logfmt message is quoted — without extractLogMessage every line below
+		// normalizes to the bare word "msg" and shares one hash.
+		hash1 := generatePatternHash(`level=error msg="failed to connect to db"`)
+		hash2 := generatePatternHash(`level=error msg="user authentication rejected"`)
+		assert.NotEqual(t, hash1, hash2)
+	})
+
+	t.Run("logfmt groups by message, ignoring surrounding fields", func(t *testing.T) {
+		assert.Equal(t,
+			generatePatternHash(`ts=2026-07-15T10:00:00Z level=error msg="db timeout after 30.1ms" trace_id=abc123`),
+			generatePatternHash(`ts=2026-07-15T10:00:09Z level=error msg="db timeout after 29.7ms" trace_id=def456`),
+		)
+	})
+
+	t.Run("Empty logfmt message does not fall back to the whole line", func(t *testing.T) {
+		// msg="" is an empty message, not an absent one: the pattern is the empty
+		// message, and must not be scavenged from the surrounding fields.
+		assert.Equal(t,
+			generatePatternHash(`level=error msg="" trace_id=abc123`),
+			generatePatternHash(`level=error msg="" trace_id=def456`),
+		)
+	})
+
+	t.Run("Unquoted logfmt message is extracted", func(t *testing.T) {
+		assert.Equal(t,
+			generatePatternHash(`level=error msg=timeout attempt=1`),
+			generatePatternHash(`level=error msg=timeout attempt=2`),
+		)
+		assert.NotEqual(t,
+			generatePatternHash(`level=error msg=timeout`),
+			generatePatternHash(`level=error msg=refused`),
+		)
+	})
+
+	t.Run("JSON logs group by message", func(t *testing.T) {
+		assert.Equal(t,
+			generatePatternHash(`{"level":"error","msg":"db timeout after 30.1ms"}`),
+			generatePatternHash(`{"level":"error","msg":"db timeout after 29.7ms"}`),
+		)
+		assert.NotEqual(t,
+			generatePatternHash(`{"level":"error","msg":"failed to connect to db"}`),
+			generatePatternHash(`{"level":"error","msg":"user authentication rejected"}`),
+		)
+	})
+
+	t.Run("Hash matches the node-agent format (md5 hex)", func(t *testing.T) {
+		// container_log_messages_total carries the same hash for the same
+		// message, so groups agree across the provider and agent paths.
 		hash := generatePatternHash("Test message with special chars: !@#$%")
-		// Base64 URL encoding uses: A-Z, a-z, 0-9, -, _
-		assert.Regexp(t, "^[A-Za-z0-9_-]+$", hash)
+		assert.Regexp(t, "^[a-f0-9]{32}$", hash)
+	})
+}
+
+func TestGenerateRawHash(t *testing.T) {
+	t.Run("Empty value returns empty string", func(t *testing.T) {
+		assert.Equal(t, "", generateRawHash(""))
+	})
+
+	t.Run("Preserves digits that pattern extraction would strip", func(t *testing.T) {
+		// Signoz hashes workload names, where the digits are the identity.
+		assert.NotEqual(t, generateRawHash("my-app-7d9f"), generateRawHash("my-app-3c2a"))
+	})
+
+	t.Run("Same value produces same 14-char hash", func(t *testing.T) {
+		hash := generateRawHash("my-app-7d9f")
+		assert.Len(t, hash, 14)
+		assert.Equal(t, hash, generateRawHash("my-app-7d9f"))
 	})
 }
 
@@ -2974,7 +3055,6 @@ func TestConvertToLogGroupOutput_LogGroup(t *testing.T) {
 		assert.Equal(t, "api-container", group.Container)
 		assert.Equal(t, "/k8s/production/api-server/api-container", group.ContainerID)
 		assert.NotEmpty(t, group.PatternHash)
-		assert.Len(t, group.PatternHash, 14)
 		assert.Equal(t, []int64{timestamp}, group.Timestamps)
 		assert.Equal(t, []float64{100}, group.Values)
 		assert.Equal(t, int64(100), group.Count)

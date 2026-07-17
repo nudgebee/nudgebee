@@ -8,6 +8,7 @@ import (
 	"nudgebee/services/query"
 	"nudgebee/services/relay"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/agiledragon/gomonkey/v2"
@@ -2602,4 +2603,101 @@ func TestLokiSource_QueryLabelValues_E2E(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLokiExtractSeverity(t *testing.T) {
+	s := &LokiSource{}
+
+	tests := []struct {
+		name    string
+		message string
+		want    string
+	}{
+		{"logfmt error", `level=error msg="connection refused"`, "error"},
+		{"logfmt info", `level=info msg="listening on :8080"`, "info"},
+		{"logfmt warn", `level=warn msg="retrying"`, "warning"},
+		{"logfmt debug", `level=debug msg="cache hit"`, "debug"},
+		{"bracketed error", `[ERROR] failed to start`, "error"},
+		{"glog error", `E0301 12:00:00.000000       1 reflector.go:1 watch failed`, "error"},
+		{"glog info", `I0301 12:00:00.000000       1 server.go:1 serving`, "info"},
+		{"json error", `{"level":"error","msg":"db down"}`, "error"},
+
+		// The reason the UI showed a wall of info-level rows: matching the word
+		// "error" anywhere in the line reads the level off the message text.
+		{"info log that mentions an error is not an error", `level=info msg="error count: 0"`, "info"},
+		{"info log about error handling is not an error", `level=info msg="error handler registered"`, "info"},
+
+		// "critical" was absent from the old chain, so critical lines fell
+		// through to the default and were reported as info.
+		{"critical is not info", `level=critical msg="disk full"`, "critical"},
+		{"fatal maps to critical", `level=fatal msg="cannot bind port"`, "critical"},
+
+		{"unparseable line", `>>>>`, "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, s.extractSeverity(tt.message))
+		})
+	}
+}
+
+func TestLokiGroupLogsByPattern(t *testing.T) {
+	s := &LokiSource{}
+	labels := map[string]any{"namespace": "prod", "pod": "api-7d9f4b6c5d-x2k9p", "container": "api"}
+
+	logLine := func(msg string) OutputLog {
+		return OutputLog{Message: msg, Labels: labels, Severity: s.extractSeverity(msg)}
+	}
+
+	t.Run("Lines differing only in variable data collapse into one group", func(t *testing.T) {
+		out := s.groupLogsByPattern([]OutputLog{
+			logLine(`level=error msg="failed to connect to db: timeout after 30.1ms"`),
+			logLine(`level=error msg="failed to connect to db: timeout after 29.7ms"`),
+			logLine(`level=error msg="failed to connect to db: timeout after 31.2ms"`),
+		}, 1784210110)
+
+		require.Len(t, out.Groups, 1, "one error reported three times is one group")
+		assert.Equal(t, int64(3), out.Groups[0].Count)
+		assert.Equal(t, "error", out.Groups[0].Level)
+		assert.Equal(t, "prod", out.Groups[0].Namespace)
+		assert.Equal(t, "api", out.Groups[0].Workload)
+	})
+
+	t.Run("Non-error lines are dropped", func(t *testing.T) {
+		out := s.groupLogsByPattern([]OutputLog{
+			logLine(`level=info msg="error count: 0"`),
+			logLine(`level=info msg="listening on :8080"`),
+			logLine(`level=debug msg="cache hit"`),
+		}, 1784210110)
+
+		assert.Empty(t, out.Groups, "the line filter matches text; only real errors survive")
+	})
+
+	t.Run("Distinct errors stay in distinct groups", func(t *testing.T) {
+		out := s.groupLogsByPattern([]OutputLog{
+			logLine(`level=error msg="failed to connect to db"`),
+			logLine(`level=error msg="user authentication rejected"`),
+		}, 1784210110)
+
+		assert.Len(t, out.Groups, 2)
+	})
+
+	t.Run("Critical lines are kept and labelled critical", func(t *testing.T) {
+		out := s.groupLogsByPattern([]OutputLog{
+			logLine(`level=critical msg="disk full"`),
+		}, 1784210110)
+
+		require.Len(t, out.Groups, 1)
+		assert.Equal(t, "critical", out.Groups[0].Level)
+	})
+
+	t.Run("pattern_hash is the key the group was built on", func(t *testing.T) {
+		long := `level=error msg="` + strings.Repeat("payload ", 200) + `failed"`
+		out := s.groupLogsByPattern([]OutputLog{logLine(long)}, 1784210110)
+
+		require.Len(t, out.Groups, 1)
+		// Sample is truncated for display; the hash must not be derived from it.
+		assert.Equal(t, generatePatternHash(long), out.Groups[0].PatternHash)
+	})
 }
