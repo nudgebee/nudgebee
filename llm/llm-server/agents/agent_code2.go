@@ -1454,6 +1454,15 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 		latency := time.Since(startTime).Seconds()
 		if err != nil {
 			ctx.GetLogger().Error("code: failed to execute via workspace", "error", err.Error())
+			// Write the message-scoped guard on failure too. A poll timeout here
+			// usually means the analysis is STILL RUNNING server-side (the workspace
+			// pod does not cancel it when polling stops) — without the guard, the
+			// planner's natural "tool errored, retry" reaction dispatches a second
+			// /analyze and two full analyses run for one message.
+			if guardKey, ok := codeAgentGuardKey(query.ConversationId, query.MessageId); ok {
+				_ = common.CacheSet(codeAgentFailuresCacheNS, guardKey,
+					[]byte(fmt.Sprintf("previous attempt failed and may still be running server-side: %v", err)))
+			}
 			return core.NBAgentResponse{}, err
 		}
 		ctx.GetLogger().Info("Workspace /analyze Output", "output_length", len(wsResult.AgentResponse))

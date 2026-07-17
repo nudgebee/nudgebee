@@ -317,9 +317,14 @@ type appConfig struct {
 	LlmServerCodeAgentMode            string `mapstructure:"llm_server_agent_codeagent_mode"`
 	LlmServerCodeAgentLocalExecPath   string `mapstructure:"llm_server_agent_codeagent_local_exec_path"`
 	LlmServerCodeAgentImagePullSecret string `mapstructure:"llm_server_agent_codeagent_image_pull_secret"`
-	LlmServerSearchAgentProvider      string `mapstructure:"llm_server_agent_search_provider"`
-	LlmServerSerperApiKey             string `mapstructure:"serper_api_key"`
-	LlmServerJinaApiKey               string `mapstructure:"jina_api_key"`
+	// LlmServerCodeAgentExtraEnv is a comma-separated KEY=VALUE list appended to
+	// workspace pod env — the operator-facing knob for code-analysis flags (e.g.
+	// "AGENT_HARNESS_VERIFY=true,AGENT_INLOOP_VERIFY=true") without an image or
+	// code change. Workspace pods only pick it up when (re)created.
+	LlmServerCodeAgentExtraEnv   string `mapstructure:"llm_server_agent_codeagent_extra_env"`
+	LlmServerSearchAgentProvider string `mapstructure:"llm_server_agent_search_provider"`
+	LlmServerSerperApiKey        string `mapstructure:"serper_api_key"`
+	LlmServerJinaApiKey          string `mapstructure:"jina_api_key"`
 
 	LlmServerWorkspaceEnabled bool `mapstructure:"llm_server_workspace_enabled"`
 	// LlmServerWorkspaceKubeconfigPath optionally overrides the kubeconfig file used
@@ -889,6 +894,7 @@ func init() {
 	viper.SetDefault("llm_server_agent_codeagent_secret", "nudgebee")
 	viper.SetDefault("llm_server_agent_codeagent_mode", "remote-cli") // remote-cli, remote-http, "local"
 	viper.SetDefault("llm_server_agent_codeagent_image", "ghcr.io/nudgebee/code-analysis-agent:latest")
+	viper.SetDefault("llm_server_agent_codeagent_extra_env", "")
 	viper.SetDefault("llm_server_agent_codeagent_local_exec_path", "")
 	viper.SetDefault("llm_server_agent_codeagent_image_pull_secret", "")
 	viper.SetDefault("llm_server_agent_search_provider", "")
