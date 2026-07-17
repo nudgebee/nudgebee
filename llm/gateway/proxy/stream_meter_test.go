@@ -39,8 +39,8 @@ func TestStream_MetersOnPreHeaderFailure(t *testing.T) {
 		Method:   "POST",
 		Path:     "/v1/messages",
 	}
-	rm := &reqMeta{provider: req.Provider, req: req, streaming: true, start: time.Now()}
-	h.stream(c, bctx, cancel, rm)
+	rm := &reqMeta{provider: req.Provider, model: req.Model, method: req.Method, path: req.Path, streaming: true, start: time.Now()}
+	h.stream(c, bctx, cancel, req, rm)
 
 	events := sink.Events()
 	require.Len(t, events, 1, "pre-header failure must still emit exactly one metering row")

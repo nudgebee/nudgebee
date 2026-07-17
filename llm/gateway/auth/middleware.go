@@ -82,6 +82,8 @@ func providerFromPath(p string) string {
 		return edgeerr.OpenAI
 	case "genai":
 		return edgeerr.Gemini
+	case "v1": // the generic /v1 endpoint is OpenAI-compatible
+		return edgeerr.OpenAI
 	default:
 		return ""
 	}

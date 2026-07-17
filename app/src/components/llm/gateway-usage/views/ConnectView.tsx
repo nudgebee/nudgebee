@@ -36,9 +36,10 @@ const ENDPOINTS = [
   { label: 'Anthropic', path: '/anthropic' },
   { label: 'OpenAI', path: '/openai' },
   { label: 'Gemini', path: '/genai' },
+  { label: 'Generic (OpenAI-compatible)', path: '/v1' },
 ];
 
-type SnippetId = 'claude' | 'openai' | 'gemini' | 'curl';
+type SnippetId = 'claude' | 'openai' | 'gemini' | 'generic' | 'curl';
 
 function buildSnippets(base: string): { id: SnippetId; text: string; language: string; code: string }[] {
   return [
@@ -59,6 +60,18 @@ function buildSnippets(base: string): { id: SnippetId; text: string; language: s
       text: 'Gemini',
       language: 'python',
       code: `from google import genai\n\nclient = genai.Client(\n    api_key="${TOKEN}",\n    http_options={"base_url": "${base}/genai"},\n)`,
+    },
+    {
+      id: 'generic',
+      text: 'Any model (/v1)',
+      language: 'python',
+      code:
+        `from openai import OpenAI\n\n` +
+        `# One endpoint, any provider — address the model as "provider/model".\n` +
+        `client = OpenAI(\n    base_url="${base}/v1",\n    api_key="${TOKEN}",\n)\n\n` +
+        `client.chat.completions.create(\n` +
+        `    model="anthropic/claude-opus-4-8",  # or "openai/gpt-5", "gemini/gemini-3.1-flash"\n` +
+        `    messages=[{"role": "user", "content": "ping"}],\n)`,
     },
     {
       id: 'curl',

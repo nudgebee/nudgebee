@@ -98,10 +98,14 @@ func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, 
 	}
 	// Auth runs first (the pipeline keys off the resolved identity), then the handler
 	// runs the pipeline and forwards.
-	chain := []gin.HandlerFunc{auth.Middleware(validator), h.handle}
+	authmw := auth.Middleware(validator)
 	for prefix := range prefixProvider {
-		r.Any(prefix+"/*path", chain...)
+		r.Any(prefix+"/*path", authmw, h.handle)
 	}
+	// Generic provider-agnostic endpoint: OpenAI-compatible, with the provider chosen
+	// from the model name. Same auth + control pipeline as the native mounts.
+	r.POST("/v1/chat/completions", authmw, h.handleChat)
+	r.GET("/v1/models", authmw, h.handleModels)
 }
 
 type handler struct {
@@ -198,8 +202,12 @@ func (h *handler) handle(c *gin.Context) {
 	rm := &reqMeta{
 		reqID:         uuid.NewString(),
 		provider:      provider,
-		req:           req,
+		model:         rc.Model,
+		method:        c.Request.Method,
+		path:          rc.Path,
+		body:          rc.Body,
 		streaming:     streaming,
+		surface:       surfaceNative,
 		start:         start,
 		sessionID:     sessionID,
 		sessionSource: sessionSource,
@@ -209,20 +217,26 @@ func (h *handler) handle(c *gin.Context) {
 	}
 
 	if streaming {
-		h.stream(c, bctx, cancel, rm)
+		h.stream(c, bctx, cancel, req, rm)
 		return
 	}
 	defer cancel()
-	h.unary(c, bctx, rm)
+	h.unary(c, bctx, req, rm)
 }
 
 // reqMeta carries everything the metering step needs about a request, so it can
-// be recorded on any exit path without threading many params.
+// be recorded on any exit path without threading many params. It holds the
+// metering-relevant request fields directly (not a specific Bifrost request type),
+// so both the passthrough path and the generic /v1 path can populate it.
 type reqMeta struct {
 	reqID         string
 	provider      schemas.ModelProvider
-	req           *schemas.BifrostPassthroughRequest
+	model         string
+	method        string
+	path          string
+	body          []byte
 	streaming     bool
+	surface       string // how the request arrived: "native" mount | "generic" /v1
 	start         time.Time
 	sessionID     string
 	sessionSource string
@@ -231,8 +245,16 @@ type reqMeta struct {
 	decision      routing.Decision
 }
 
-func (h *handler) unary(c *gin.Context, bctx *schemas.BifrostContext, rm *reqMeta) {
-	resp, bErr := h.client.Passthrough(bctx, rm.provider, rm.req)
+// Surface values — the entrypoint a request arrived on, captured on every usage row
+// so traffic can be grouped by how it reached the gateway (independent of whether a
+// routing rule then translated it).
+const (
+	surfaceNative  = "native"  // provider-native mount (/anthropic, /openai, /genai)
+	surfaceGeneric = "generic" // provider-agnostic OpenAI-compatible endpoint (/v1)
+)
+
+func (h *handler) unary(c *gin.Context, bctx *schemas.BifrostContext, req *schemas.BifrostPassthroughRequest, rm *reqMeta) {
+	resp, bErr := h.client.Passthrough(bctx, rm.provider, req)
 	if bErr != nil {
 		status := writeBifrostError(c, bErr)
 		h.meter(context.WithoutCancel(c.Request.Context()), rm, status, nil, nil, nil)
@@ -254,7 +276,7 @@ func (h *handler) unary(c *gin.Context, bctx *schemas.BifrostContext, rm *reqMet
 	h.meter(context.WithoutCancel(c.Request.Context()), rm, resp.StatusCode, resp.Headers, resp.PassthroughUsage, resp.Body)
 }
 
-func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel func(), rm *reqMeta) {
+func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel func(), req *schemas.BifrostPassthroughRequest, rm *reqMeta) {
 	defer cancel()
 
 	// Meter exactly once, on every exit path (including pre-header failures), so
@@ -271,7 +293,7 @@ func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel fu
 		h.meter(context.WithoutCancel(c.Request.Context()), rm, status, meterHeaders, lastUsage, respBuf)
 	}()
 
-	stream, bErr := h.client.PassthroughStream(bctx, rm.provider, rm.req)
+	stream, bErr := h.client.PassthroughStream(bctx, rm.provider, req)
 	if bErr != nil {
 		status = writeBifrostError(c, bErr)
 		return
@@ -373,24 +395,28 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	if len(respBody) > 0 {
 		respAttrs = extractResponseAttributes(respBody)
 	}
-	attrs := buildAttributes(rm.provider, rm.req.Model, rm.sessionSource, rm.reqAttrs, respAttrs, usage)
-	// The routing decision is the canonical DERIVED signal (see attributes design).
+	attrs := buildAttributes(rm.provider, rm.model, rm.sessionSource, rm.reqAttrs, respAttrs, usage)
+	// Derived signals (see attributes design). "surface" records the entrypoint the
+	// request arrived on; "routing" is the decision record when a rule changed it.
+	if attrs == nil {
+		attrs = &metering.Attributes{}
+	}
+	if attrs.Derived == nil {
+		attrs.Derived = map[string]any{}
+	}
+	if rm.surface != "" {
+		attrs.Derived["surface"] = rm.surface
+	}
 	if rm.decision.Reason != routing.ReasonPassthrough {
-		if attrs == nil {
-			attrs = &metering.Attributes{Derived: map[string]any{}}
-		}
-		if attrs.Derived == nil {
-			attrs.Derived = map[string]any{}
-		}
 		attrs.Derived["routing"] = routingAttr(rm.decision)
 	}
 
 	ev := metering.NewEvent(metering.EventInput{
 		ID:         rm.reqID,
 		Provider:   rm.provider,
-		Model:      rm.req.Model,
-		Method:     rm.req.Method,
-		Path:       rm.req.Path,
+		Model:      rm.model,
+		Method:     rm.method,
+		Path:       rm.path,
 		Streaming:  rm.streaming,
 		StatusCode: status,
 		LatencyMS:  time.Since(rm.start).Milliseconds(),
@@ -417,7 +443,7 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	// Skip recording non-inference admin calls (cache/list/countTokens) unless enabled
 	// — they have no model and 0 tokens, so they'd only clutter the dashboard. The
 	// quota reconcile below still runs (those calls do consume provider quota).
-	record := config.Config.CaptureAdminCalls || !isAdminCall(rm.req.Path)
+	record := config.Config.CaptureAdminCalls || !isAdminCall(rm.path)
 	if record {
 		h.sink.Record(ev)
 	}
@@ -439,11 +465,11 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 			UserID:       rm.identity.UserID,
 			SessionID:    rm.sessionID,
 			Provider:     string(rm.provider),
-			Model:        rm.req.Model,
-			Method:       rm.req.Method,
-			Path:         rm.req.Path,
+			Model:        rm.model,
+			Method:       rm.method,
+			Path:         rm.path,
 			StatusCode:   status,
-			RequestBody:  metering.CapBody(rm.req.Body),
+			RequestBody:  metering.CapBody(rm.body),
 			ResponseBody: metering.CapBody(respBody),
 		})
 	}
