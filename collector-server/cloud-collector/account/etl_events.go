@@ -119,13 +119,13 @@ func ConsumeCloudAccountEventsJobs(ctx *security.RequestContext, concurrency int
 			return nil // Return nil to ACK and drop the message
 		}
 
-		logger := ctx.GetLogger().With("accountId", job.AccountId, "job_id", job.JobId)
-		logger.Info("events: processing events job")
-
 		// Create a new request context for this specific account. msgCtx carries
 		// the trace context extracted from the consumed message's headers, so the
-		// trace continues from the publisher into event ETL.
-		jobCtx := security.NewRequestContext(msgCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
+		// trace continues from the publisher into event ETL. Build it before any
+		// job-level logging so those lines carry the stamped trace_id too.
+		jobCtx := security.NewRequestContext(msgCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), ctx.GetLogger().With("accountId", job.AccountId, "job_id", job.JobId), ctx.GetTracer(), ctx.GetMeter())
+		logger := jobCtx.GetLogger()
+		logger.Info("events: processing events job")
 
 		// Execute StoreEvents logic
 		_, err = StoreEvents(jobCtx, job.AccountId)

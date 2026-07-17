@@ -728,6 +728,15 @@ func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(ct
 	ctx, span := otel.Tracer("mq").Start(ctx, "rabbitmq.consume", trace.WithSpanKind(trace.SpanKindConsumer))
 	defer span.End()
 
+	// Stamp the trace onto the logger so retry/discard decisions correlate with
+	// the job's own log lines in Loki. Only when a real span is present — an
+	// unpropagated message leaves the logger untouched rather than emitting an
+	// all-zero trace_id.
+	logger := slog.Default()
+	if sc := span.SpanContext(); sc.IsValid() {
+		logger = logger.With("trace_id", sc.TraceID().String(), "span_id", sc.SpanID().String())
+	}
+
 	if err := processorFunc(ctx, d.Body); err != nil {
 		// No-op under the default noop tracer; marks the consumer span failed
 		// when a real exporter is configured.
@@ -737,17 +746,17 @@ func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(ct
 		// Check if this is a permanent error that should not be retried
 		var permErr *PermanentError
 		if errors.As(err, &permErr) {
-			slog.Warn("mq: permanent error processing message, discarding", "error", err, "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag)
+			logger.Warn("mq: permanent error processing message, discarding", "error", err, "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag)
 			return rabbitmq.NackDiscard
 		}
 
 		// Check if we've exceeded max retries
 		if retryCount >= int64(maxRetryCount) {
-			slog.Error("mq: max retries exceeded, discarding message", "error", err, "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag, "retry_count", retryCount)
+			logger.Error("mq: max retries exceeded, discarding message", "error", err, "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag, "retry_count", retryCount)
 			return rabbitmq.NackDiscard
 		}
 
-		slog.Error("mq: error processing message, will retry", "error", err, "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag, "retry_count", retryCount)
+		logger.Error("mq: error processing message, will retry", "error", err, "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag, "retry_count", retryCount)
 
 		// Republish with incremented retry count, then discard the original
 		newHeaders := make(map[string]any)
@@ -758,12 +767,12 @@ func processMessageAndDetermineAction(d rabbitmq.Delivery, processorFunc func(ct
 
 		err = republishWithDelay(exchangeName, queueName, d.Body, newHeaders)
 		if err != nil {
-			slog.Error("mq: failed to republish message for retry, requeueing", "error", err, "queue", queueName, "exchange", exchangeName)
+			logger.Error("mq: failed to republish message for retry, requeueing", "error", err, "queue", queueName, "exchange", exchangeName)
 			return rabbitmq.NackRequeue
 		}
 		return rabbitmq.NackDiscard
 	}
-	slog.Debug("mq: message processed successfully, acking", "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag)
+	logger.Debug("mq: message processed successfully, acking", "queue", queueName, "exchange", exchangeName, "delivery_tag", d.DeliveryTag)
 	// Acknowledge the message
 	return rabbitmq.Ack
 }

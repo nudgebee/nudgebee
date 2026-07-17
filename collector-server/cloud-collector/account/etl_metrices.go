@@ -226,13 +226,13 @@ func ConsumeCloudAccountMetricsJobs(ctx *security.RequestContext, concurrency in
 			return nil // Return nil to ACK and drop the message
 		}
 
-		logger := ctx.GetLogger().With("accountId", job.AccountId, "service", job.ServiceName, "job_id", job.JobId)
-		logger.Info("metrics: processing metrics job")
-
 		// Create a new request context for this specific account. msgCtx carries
 		// the trace context extracted from the consumed message's headers, so the
-		// trace continues from the publisher into metrics ETL.
-		jobCtx := security.NewRequestContext(msgCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
+		// trace continues from the publisher into metrics ETL. Build it before any
+		// job-level logging so those lines carry the stamped trace_id too.
+		jobCtx := security.NewRequestContext(msgCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), ctx.GetLogger().With("accountId", job.AccountId, "service", job.ServiceName, "job_id", job.JobId), ctx.GetTracer(), ctx.GetMeter())
+		logger := jobCtx.GetLogger()
+		logger.Info("metrics: processing metrics job")
 
 		// Execute StoreMetrices logic
 		_, err = StoreMetrices(jobCtx, job.AccountId, StoreMetricesRequest{

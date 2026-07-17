@@ -164,13 +164,13 @@ func ConsumeCloudAccountCostReportJobs(ctx *security.RequestContext, concurrency
 			return nil // Return nil to ACK and remove from main queue
 		}
 
-		logger := ctx.GetLogger().With("accountId", job.AccountId, "month", job.Month, "year", job.Year, "job_id", job.JobId)
-		logger.Info("usagereport: processing cost report job")
-
 		// Create a new request context for this specific account. msgCtx carries
 		// the trace context extracted from the consumed message's headers, so the
-		// trace continues from the publisher into cost-report ETL.
-		jobCtx := security.NewRequestContext(msgCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
+		// trace continues from the publisher into cost-report ETL. Build it before
+		// any job-level logging so those lines carry the stamped trace_id too.
+		jobCtx := security.NewRequestContext(msgCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), ctx.GetLogger().With("accountId", job.AccountId, "month", job.Month, "year", job.Year, "job_id", job.JobId), ctx.GetTracer(), ctx.GetMeter())
+		logger := jobCtx.GetLogger()
+		logger.Info("usagereport: processing cost report job")
 
 		// Execute StoreUsage logic
 		_, err = StoreUsage(jobCtx, job.AccountId, time.Month(job.Month), job.Year)
@@ -1182,8 +1182,6 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 			return nil // ACK to prevent poison message loop
 		}
 
-		logger := ctx.GetLogger().With("accountId", job.AccountId, "job_id", job.JobId)
-
 		// Bound the whole job (lock wait + all steps) safely under the RabbitMQ
 		// consumer_timeout. The steps below are I/O-bound and honour this context, so
 		// a slow account is cut off and the job returns a retriable error instead of
@@ -1195,6 +1193,13 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 		// ETL (and, as before, the job survives consumer shutdown).
 		procCtx, cancel := context.WithTimeout(context.WithoutCancel(msgCtx), postReportProcessingTimeout)
 		defer cancel()
+
+		// procCtx is derived from msgCtx (above), so the trace extracted from the
+		// consumed message's headers continues from the publisher into post-report
+		// ETL. Build the job context before any job-level logging so those lines
+		// carry the stamped trace_id too.
+		jobCtx := security.NewRequestContext(procCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), ctx.GetLogger().With("accountId", job.AccountId, "job_id", job.JobId), ctx.GetTracer(), ctx.GetMeter())
+		logger := jobCtx.GetLogger()
 
 		// Acquire the per-account sync lock before doing any DB writes. This serializes
 		// post-report (cloud_resourses UPSERT) against StoreUsage (spends INSERT, which
@@ -1223,10 +1228,6 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 		}
 
 		logger.Info("postreport: processing post-report job")
-
-		// procCtx is derived from msgCtx (above), so the trace extracted from the
-		// consumed message's headers continues from the publisher into post-report ETL.
-		jobCtx := security.NewRequestContext(procCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
 
 		// Step 1: Discover and store resources from cloud provider APIs
 		_, err = discoverAndStoreAccountResources(jobCtx, job.AccountId)
