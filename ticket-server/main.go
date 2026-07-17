@@ -89,11 +89,16 @@ func main() {
 	router := gin.New()
 	pprof.Register(router)
 	router.Use(gin.Recovery())
-	router.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/health")))
 	// Extract the inbound W3C traceparent into the request context (server span)
 	// and echo it back on the response, so ticket-server continues the caller's
-	// distributed trace instead of dropping it.
+	// distributed trace instead of dropping it. Runs before sloggin so the span
+	// is on the request context when the access log line is emitted.
 	router.Use(otelgin.Middleware(common.SERVICE_NAME))
+	slogginConfig := sloggin.DefaultConfig()
+	slogginConfig.WithTraceID = true
+	slogginConfig.WithSpanID = true
+	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/health")}
+	router.Use(sloggin.NewWithConfig(logger, slogginConfig))
 	router.Use(traceResponseHeaderMiddleware())
 
 	routes.InitializeRoutes(router)

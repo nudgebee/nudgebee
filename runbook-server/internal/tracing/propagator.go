@@ -16,6 +16,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/workflow"
 )
@@ -85,6 +86,23 @@ func (p *Propagator) writeCarrier(m map[string]string, hw workflow.HeaderWriter)
 	}
 	hw.Set(headerKey, payload)
 	return nil
+}
+
+// TraceLoggingAttrs returns "trace_id", <id>, "span_id", <id> key-values
+// parsed from the carrier stashed by ExtractToWorkflow, for stamping onto
+// workflow loggers. Nil when the workflow was started without a propagated
+// trace. Deterministic — a pure function of the workflow header — so it is
+// safe to call from workflow code under replay.
+func TraceLoggingAttrs(ctx workflow.Context) []any {
+	m, _ := ctx.Value(carrierCtxKey{}).(map[string]string)
+	if len(m) == 0 {
+		return nil
+	}
+	sc := trace.SpanContextFromContext(otel.GetTextMapPropagator().Extract(context.Background(), propagation.MapCarrier(m)))
+	if !sc.IsValid() {
+		return nil
+	}
+	return []any{"trace_id", sc.TraceID().String(), "span_id", sc.SpanID().String()}
 }
 
 func (p *Propagator) readCarrier(hr workflow.HeaderReader) map[string]string {

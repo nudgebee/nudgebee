@@ -27,6 +27,7 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/interceptor"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/worker"
 	temporalworkflow "go.temporal.io/sdk/workflow"
@@ -194,7 +195,11 @@ func main() {
 	defer executor.Stop()
 
 	// --- System Worker Setup ---
-	systemWorker := worker.New(temporalClient, system.SystemTaskQueue, worker.Options{})
+	systemWorker := worker.New(temporalClient, system.SystemTaskQueue, worker.Options{
+		// Stamp trace_id/span_id (carried by tracing.Propagator) onto every
+		// workflow/activity logger so their lines correlate in Loki.
+		Interceptors: []interceptor.WorkerInterceptor{tracing.NewLogInterceptor()},
+	})
 	systemActivities := system.NewSystemActivities(dbStore)
 	systemWorker.RegisterActivityWithOptions(systemActivities.CleanupExpiredStateActivity, activity.RegisterOptions{
 		Name: system.CleanupExpiredStateActivityName,
@@ -225,7 +230,11 @@ func main() {
 	// --- Optimizer Worker Setup ---
 	if config.Config.OptimizationEnabled {
 		optimizerActivities := optimizer.NewActivities(optimizerService, optimizerDao)
-		optimizerWorker := worker.New(temporalClient, workflow.OptimizerTaskQueue, worker.Options{})
+		optimizerWorker := worker.New(temporalClient, workflow.OptimizerTaskQueue, worker.Options{
+			// Stamp trace_id/span_id (carried by tracing.Propagator) onto every
+			// workflow/activity logger so their lines correlate in Loki.
+			Interceptors: []interceptor.WorkerInterceptor{tracing.NewLogInterceptor()},
+		})
 		optimizerWorker.RegisterWorkflow(workflow.OptimizerWorkflow)
 		optimizerWorker.RegisterActivityWithOptions(optimizerActivities.GenerateTasksActivity, activity.RegisterOptions{Name: workflow.GenerateTasksActivityName})
 		optimizerWorker.RegisterActivityWithOptions(optimizerActivities.ExecuteTaskActivity, activity.RegisterOptions{Name: workflow.ExecuteTaskActivityName})

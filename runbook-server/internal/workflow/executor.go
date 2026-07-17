@@ -8,6 +8,7 @@ import (
 	"nudgebee/runbook/internal/model"
 	"nudgebee/runbook/internal/tasks"
 	"nudgebee/runbook/internal/tasks/types"
+	"nudgebee/runbook/internal/tracing"
 	configSvc "nudgebee/runbook/services/config"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/interceptor"
 	temporalLog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
@@ -108,6 +110,9 @@ const (
 func NewWorkflowExecutor(store model.WorkflowStore, configService *configSvc.Service, c client.Client, dc converter.DataConverter) (*WorkflowExecutor, error) {
 	workerOpts := worker.Options{
 		DisableRegistrationAliasing: true,
+		// Stamp trace_id/span_id (carried by tracing.Propagator) onto every
+		// workflow/activity logger so their lines correlate in Loki.
+		Interceptors: []interceptor.WorkerInterceptor{tracing.NewLogInterceptor()},
 	}
 	// Give the workflow goroutine more headroom before Temporal's deadlock
 	// detector (TMPRL1101) fires. Inline template rendering and matrix expansion

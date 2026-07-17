@@ -30,8 +30,14 @@ func SetupRouter(cfg *config.Config, tracer *trace.Tracer, meter *metric.Meter, 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/status")))
+	// The otel middleware must run before sloggin so the server span is on the
+	// request context when the access log line is emitted with trace_id/span_id.
 	r.Use(OtelMiddlewareWithIgnorePaths(config.SERVICE_NAME, []string{"/status"}))
+	slogginConfig := sloggin.DefaultConfig()
+	slogginConfig.WithTraceID = true
+	slogginConfig.WithSpanID = true
+	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/status")}
+	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
 	r.Use(traceResponseHeaderMiddleware())
 	corsOpts := cors.New(cors.Config{
 		AllowOrigins: []string{"*"},

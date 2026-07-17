@@ -1863,7 +1863,12 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 	if result.MaxContext > 0 {
 		contextSource = "db-config"
 	}
-	slog.Info("LLM config resolution complete",
+	// ctx.GetLogger() carries trace_id/span_id; ctx is nil for a few callers.
+	resolutionLogger := slog.Default()
+	if ctx != nil {
+		resolutionLogger = ctx.GetLogger()
+	}
+	resolutionLogger.Info("LLM config resolution complete",
 		"duration", time.Since(t0).String(),
 		"provider", result.Provider,
 		"model", result.Model,

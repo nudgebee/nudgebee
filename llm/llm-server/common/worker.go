@@ -130,12 +130,15 @@ func (p *WorkerPool) Submit(ctx context.Context, task func()) error {
 		return nil
 	}
 
+	// Stamp trace_id/span_id from the submitter's context so these lines
+	// correlate with the request that queued the task.
+	logger := TraceLogger(ctx)
 	select {
 	case p.tasks <- task:
-		slog.Info("worker: pending task", "task", len(p.tasks), "pool", p.name)
+		logger.Info("worker: pending task", "task", len(p.tasks), "pool", p.name)
 		return nil
 	case <-ctx.Done():
-		slog.Warn("worker: task submission timed out", "pool", p.name, "error", ctx.Err())
+		logger.Warn("worker: task submission timed out", "pool", p.name, "error", ctx.Err())
 		return ErrWorkerPoolTimeout
 	}
 }
