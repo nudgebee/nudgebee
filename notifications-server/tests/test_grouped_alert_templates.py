@@ -20,7 +20,7 @@ from notifications_server.message_templates.slack.grouped_anomaly_notification i
 from notifications_server.message_templates.slack.grouped_slo_notification import (
     get_grouped_slo_alerts_template,
 )
-from notifications_server.message_templates.slack.slo import SLOAlertParams
+from notifications_server.message_templates.slack.slo import SLOAlertParams, get_slo_alert_message_template
 
 
 def _attachments(msg) -> List[Dict[str, Any]]:
@@ -216,6 +216,7 @@ class TestGroupedSlo:
         details = [b for b in buttons if b["text"] == "Details"]
         assert len(details) == 1
         assert "/kubernetes/details/acc-1" in details[0]["url"]
+        assert details[0]["url"].endswith("#monitoring/slo")
         assert details[0]["style"] == "primary"
 
     def test_missing_burn_fields_drop_the_line(self):
@@ -230,6 +231,16 @@ class TestGroupedSlo:
 
     def test_no_blocks_in_attachments(self):
         assert_no_blocks_in_attachments(get_grouped_slo_alerts_template([_slo("s")]))
+
+
+class TestSingleSlo:
+    def test_view_slo_button_links_to_slo_monitoring(self):
+        buttons = _buttons(get_slo_alert_message_template(_slo("s")))
+        view = [b for b in buttons if b["text"] == "View SLO"]
+        assert len(view) == 1
+        assert "/kubernetes/details/acc-1" in view[0]["url"]
+        assert view[0]["url"].endswith("#monitoring/slo")
+        assert view[0]["style"] == "primary"
 
 
 def _anomaly(i: int, description: str = None) -> AnomalyAlertParams:

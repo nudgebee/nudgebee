@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Union
 from pydantic import BaseModel, field_validator
 
-from notifications_server.configs.settings import public_ip
+from notifications_server.configs.settings import URLRoutes, public_ip, settings
 import logging
 
 LOG = logging.getLogger(__name__)
@@ -101,7 +101,24 @@ def get_slo_alert_message_template(params: SLOAlertParams):
         ]
     )
 
-    blocks.extend([*title_blocks, {"type": "divider"}])
+    slo_monitoring_url = settings.urls.cluster_details_url(
+        params.account_id,
+        utm_source=URLRoutes.UTMSource.SLACK,
+        anchor=URLRoutes.Anchors.MONITORING_SLO,
+    )
+    view_slo_button = {
+        "type": "actions",
+        "elements": [
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "View SLO"},
+                "url": slo_monitoring_url,
+                "style": "primary",
+            }
+        ],
+    }
+
+    blocks.extend([*title_blocks, view_slo_button, {"type": "divider"}])
 
     return {"text": "SLO Alert", "blocks": blocks, "unfurl_links": False}
 

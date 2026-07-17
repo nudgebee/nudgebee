@@ -59,6 +59,9 @@ class URLRoutes:
         SECURITY_IMAGE_SCAN = "security/image-scan"
         SECURITY_CLUSTER_UPGRADE = "security/cluster-upgrade"
 
+        # Monitoring
+        MONITORING_SLO = "monitoring/slo"
+
     # ==================== UTM Source Parameters ====================
     class UTMSource:
         SLACK = "slack"

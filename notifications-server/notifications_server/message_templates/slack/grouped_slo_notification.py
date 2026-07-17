@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Optional, Union
 from datetime import datetime, timezone
 from pydantic import BaseModel
 
-from notifications_server.configs.settings import public_ip
+from notifications_server.configs.settings import URLRoutes, settings
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
     STRIPE_CRITICAL,
     header_block,
@@ -100,7 +100,15 @@ def get_grouped_slo_alerts_template(input_data: List[SLOAlertParams]) -> Dict[st
                 alert.slo_name,
                 text="\n".join(lines),
                 actions=[
-                    link_button("Details", f"{public_ip()}/kubernetes/details/{alert.account_id}", style="primary")
+                    link_button(
+                        "Details",
+                        settings.urls.cluster_details_url(
+                            alert.account_id,
+                            utm_source=URLRoutes.UTMSource.SLACK,
+                            anchor=URLRoutes.Anchors.MONITORING_SLO,
+                        ),
+                        style="primary",
+                    )
                 ],
             )
         )
