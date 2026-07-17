@@ -7,6 +7,22 @@ import apiTickets from '@api1/tickets';
 import { toast as snackbar } from '@ui/Toast';
 import { ds } from '@utils/colors';
 
+// When ticket creation fails upstream, the gateway returns tickets_create: null
+// plus a GraphQL error whose message is a JSON-encoded copy of the handler
+// payload; the human-readable reason lives at data.insert_tickets_one.error
+// (e.g. "403 Repository was archived so is read-only" from GitHub).
+export const extractCreateErrorMessage = (res) => {
+  const gqlMessage = res?.data?.data?.errors?.[0]?.message;
+  if (!gqlMessage) {
+    return null;
+  }
+  try {
+    return JSON.parse(gqlMessage)?.data?.insert_tickets_one?.error || null;
+  } catch {
+    return gqlMessage;
+  }
+};
+
 const AddModalForm = ({
   ticketUrl = {},
   open,
@@ -107,7 +123,7 @@ const AddModalForm = ({
             snackbar.warning(responseData?.message);
           }
         } else {
-          onFailure(responseData?.message || 'Failed to create ticket');
+          onFailure(responseData?.message || extractCreateErrorMessage(res) || 'Failed to create ticket');
         }
       })
       .catch(() => {
