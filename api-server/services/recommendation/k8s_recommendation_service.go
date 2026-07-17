@@ -66,6 +66,34 @@ func clearRecommendationData(ctx *security.RequestContext, dbms *database.Databa
 	return nil
 }
 
+// archiveRecommendationsForInactiveResources archives Open recommendations whose
+// target resource has been marked inactive (deleted from the cluster/cloud). The
+// per-producer clear-then-upsert cycle normally retires stale rows, but it only
+// runs for accounts whose agent connected within the last day — an account whose
+// agent goes away keeps its last batch of recommendations Open forever. This sweep
+// runs across all accounts, outside that gate, so recommendations for dead
+// resources are retired regardless of agent connectivity. InProgress rows are
+// deliberately left alone: they may have an in-flight resolution attached.
+func archiveRecommendationsForInactiveResources(ctx *security.RequestContext, dbms *database.DatabaseManager) error {
+	res, err := dbms.Db.Exec(`update recommendation r
+	set
+		status = $1
+	from cloud_resourses cr
+	where
+		cr.id = r.resource_id
+		and cr.is_active = false
+		and r.status = $2`, models.RecommendationStatusArchive, models.RecommendationStatusOpen)
+	if err != nil {
+		ctx.GetLogger().Error("error archiving recommendations for inactive resources", "error", err)
+		return err
+	}
+	if count, err := res.RowsAffected(); err == nil && count > 0 {
+		ctx.GetLogger().Info("archived recommendations for inactive resources", "count", count)
+	}
+
+	return nil
+}
+
 func upsertRecommendationData(ctx *security.RequestContext, dbms *database.DatabaseManager, accountId string, data []map[string]any) error {
 	if len(data) == 0 {
 		return nil
@@ -762,6 +790,17 @@ func GenerateRecommendation(ctx *security.RequestContext, request GenerateRecomm
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return GenerateRecommendationResponse{}, err
+	}
+
+	// Runs before the per-account loop on purpose: the loop skips accounts with
+	// no recently-connected agent, and those are exactly the accounts whose
+	// stale recommendations nothing else will ever retire. Restricted to the
+	// global (cron) invocation so a tenant-scoped single-account refresh never
+	// writes outside its own scope.
+	if len(request.AccountId) == 0 {
+		if err := archiveRecommendationsForInactiveResources(ctx, dbms); err != nil {
+			ctx.GetLogger().Error("error archiving recommendations for inactive resources", "error", err)
+		}
 	}
 
 	type accountInfo struct {
