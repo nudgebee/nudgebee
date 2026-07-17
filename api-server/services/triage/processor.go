@@ -111,10 +111,29 @@ func ProcessEvent(ctx context.Context, db *sqlx.DB, event *models.Event) error {
 // detectAndRecordDuplicate checks if this event is a duplicate and records it
 // Creates chains per fingerprint. If the chain's first event is RESOLVED, starts a new chain
 // while keeping a reference to the previous chain via previous_event_id.
-func detectAndRecordDuplicate(ctx context.Context, db *sqlx.DB, event *models.Event) (int, error) {
+// db is sqlx.ExtContext (satisfied by both *sqlx.DB and *sqlx.Tx) so the full
+// path can run inside a rolled-back transaction in integration tests.
+func detectAndRecordDuplicate(ctx context.Context, db sqlx.ExtContext, event *models.Event) (int, error) {
 	// Check for required fields
 	if event.Fingerprint == nil || event.CloudAccountId == nil || event.StartsAt == nil || event.Tenant == nil || *event.Tenant == "" {
 		return 0, fmt.Errorf("event missing required fields (fingerprint, cloud_account_id, starts_at, or tenant)")
+	}
+
+	// Idempotency guard: if this event already has a chain row, it was processed
+	// before (rescore-on-mint, redelivered post-process message) — return its stored
+	// occurrence. Without this, the chain query below sees the chain members added
+	// AFTER this event, computes latest+1 for an event that is actually the chain's
+	// first, and the occurrence>1 auto-duplicate rule then marks the chain's ORIGINAL
+	// as a duplicate of itself, leaving the whole chain DUPLICATE with no open event.
+	var storedOccurrence int
+	err := sqlx.GetContext(ctx, db, &storedOccurrence,
+		`SELECT occurrence_number FROM event_duplicates WHERE event_id = $1 AND cloud_account_id = $2`,
+		event.Id, *event.CloudAccountId)
+	if err == nil {
+		return storedOccurrence, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("failed to query existing occurrence: %w", err)
 	}
 
 	// Query event_duplicates to find existing chain for this fingerprint
@@ -148,7 +167,7 @@ func detectAndRecordDuplicate(ctx context.Context, db *sqlx.DB, event *models.Ev
 		FirstEventNBStatus  string     `db:"first_event_nb_status"`
 	}
 
-	err := db.GetContext(ctx, &chainInfo, chainQuery,
+	err = sqlx.GetContext(ctx, db, &chainInfo, chainQuery,
 		*event.Fingerprint,
 		*event.CloudAccountId,
 		event.Id,

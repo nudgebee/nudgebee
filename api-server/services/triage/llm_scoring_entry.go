@@ -239,7 +239,11 @@ const rescoreMaxOnMint = 30
 // forever (the cause of "the same alert shows P3 then P1 then P0"). It re-runs the normal
 // ProcessEvent path, which re-reads the now-cached verdict — so the re-scored events are consistent
 // with freshly-ingested ones (same additive rules, same band clamp). It does NOT emit lifecycle /
-// notification events, so it only corrects the stored score and never re-pages. Bounded + async
+// notification events, so it only corrects the stored score and never re-pages. Safe to re-run:
+// detectAndRecordDuplicate returns the STORED occurrence for an already-recorded event, so this
+// re-run cannot inflate the occurrence number and trip the occurrence>1 auto-duplicate rule on
+// the chain's first event (the bug that used to mark an original as a duplicate of itself).
+// Bounded + async
 // (called from the mint goroutine on a fresh context); matches the class by the class_key stored in
 // score_factors (exact, no re-derivation).
 func rescoreFreshlyMintedClass(ctx context.Context, db *sqlx.DB, tenantID, classKey string) {
