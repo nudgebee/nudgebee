@@ -165,11 +165,14 @@ func currentPriceByService(ctx *security.RequestContext, serviceType string, reg
 		if err != nil {
 			ctx.GetLogger().Info("Error getting spot pricing", "error", err)
 		} else {
+			// O(1) lookup by instance type instead of O(n*m) nested scan
+			spotPriceByType := make(map[string][]AZPriceInfo, len(spotPricing))
+			for _, sp := range spotPricing {
+				spotPriceByType[sp.InstanceType] = sp.AZPrices
+			}
 			for _, info := range infoList {
-				for _, spotPrice := range spotPricing {
-					if spotPrice.InstanceType == info.ResourceType {
-						info.SpotPricing = spotPrice.AZPrices
-					}
+				if azPrices, ok := spotPriceByType[info.ResourceType]; ok {
+					info.SpotPricing = azPrices
 				}
 			}
 		}
