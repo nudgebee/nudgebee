@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -201,7 +202,7 @@ func (t *CLITool) Execute(ctx context.Context, input map[string]any) core.NBTool
 	if t.isDangerousCommand(commandToExecute) {
 		return core.CreateErrorResponse(
 			"Command blocked for security reasons",
-			"Potentially dangerous command detected",
+			"Potentially dangerous command detected."+envPivotHint,
 		)
 	}
 
@@ -350,6 +351,14 @@ func (t *CLITool) Execute(ctx context.Context, input map[string]any) core.NBTool
 			errorMsg = result.Stderr
 		}
 
+		// Environment-capability failures deserve a pivot, not a retry: the tool
+		// doesn't exist here and installs are blocked. Without this hint the model
+		// burns its failure budget on variants of the same unavailable tooling
+		// (observed live: atlas → docker → install, all absent from the pod).
+		if isEnvUnavailable(errorMsg, result.Stderr, result.Stdout) {
+			observation += envPivotHint
+		}
+
 		return core.CreateErrorResponseWithData(errorMsg, observation, response)
 	}
 }
@@ -392,6 +401,27 @@ func isSearchNoMatch(cmd string) bool {
 		return isGrepFamily(filepath.Base(fields[cmdIdx])) // last real stage decides
 	}
 	return false
+}
+
+// envPivotHint teaches the recovery class for environment-capability failures:
+// the answer is the repository's own tooling, not another external tool.
+const envPivotHint = "\n[environment] That tool is not available in this environment and installing software is blocked. " +
+	"Pivot to the repository's own tooling: check CLAUDE.md / AGENTS.md / README, Makefiles, and scripts/ directories " +
+	"for the documented workflow instead of retrying or installing external tools."
+
+// shellNotFoundRe matches the shell's own missing-binary report ("sh: docker:
+// not found") without catching application-level messages that merely contain
+// ": not found" (e.g. "database: not found"), which are real command errors.
+var shellNotFoundRe = regexp.MustCompile(`(?i)\b(?:sh|bash|dash|zsh|env|exec)\b[^:\n]*: *[^:\n]+: +not found`)
+
+// isEnvUnavailable reports whether a command failure is an environment-capability
+// problem (missing binary, blocked install) rather than a real command error.
+func isEnvUnavailable(parts ...string) bool {
+	s := strings.ToLower(strings.Join(parts, " "))
+	return strings.Contains(s, "executable file not found") ||
+		strings.Contains(s, "command not found") ||
+		strings.Contains(s, "blocked for security reasons") ||
+		shellNotFoundRe.MatchString(s)
 }
 
 // isGrepFamily reports whether the binary is a search tool for which exit code 1

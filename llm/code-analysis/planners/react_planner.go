@@ -83,6 +83,15 @@ type ReActPlanner struct {
 	// Circuit breaker for repeated tool failures
 	consecutiveToolFailures map[string]int // tool_name -> consecutive failure count
 	maxConsecutiveFailures  int            // Maximum consecutive failures before forcing different approach
+	// failureStrategyResetUsed marks the one-time pivot granted when the run
+	// exhausts its consecutive-failure budget: instead of terminating, the model
+	// is told once to abandon the failing approach (typically external tooling
+	// absent from this environment) and use the repository's own workflows.
+	// A second exhaustion terminates via forced submit — honest, structured.
+	failureStrategyResetUsed bool
+	// failureForgivenessIndex marks the step index at which the strategy reset
+	// was granted; consecutive-failure counting restarts from there.
+	failureForgivenessIndex int
 
 	// repoAccessFailures counts steps that failed with an unrecoverable repo
 	// access error (repo not found / dead credentials), across ALL tools. The
@@ -1088,9 +1097,41 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 				p.logger.ToolFailure(lastStep.Action, fmt.Errorf("%s", lastStep.Error))
 			}
 			if p.countConsecutiveFailures() >= 3 {
-				result.Status = "max_failures"
-				result.Error = "Too many consecutive tool failures"
-				break
+				if !p.failureStrategyResetUsed {
+					// One-time strategy reset instead of dying: consecutive failures
+					// usually mean variants of ONE wrong approach (observed live:
+					// atlas → docker → install, all absent from the pod), not a task
+					// that cannot be done. Tell the model to pivot to the repo's own
+					// workflows and restart the failure budget once.
+					p.failureStrategyResetUsed = true
+					p.failureForgivenessIndex = len(p.currentSteps)
+					llmConversation = append(llmConversation, llms.MessageContent{
+						Role: llms.ChatMessageTypeHuman,
+						Parts: []llms.ContentPart{llms.TextPart(
+							"[SYSTEM] Several consecutive tool calls have failed. STOP retrying the current approach and its variants. " +
+								"Re-read the repository's instruction files (CLAUDE.md / AGENTS.md / README) and use the repository's own documented workflows and scripts — " +
+								"external tools may not exist in this environment and cannot be installed. " +
+								"If no viable approach remains, call submit_analysis honestly describing exactly what is blocked and why.")},
+					})
+					if p.logger != nil {
+						p.logger.Log(common.EventPlanningProgress, "Strategy reset after consecutive failures — one pivot granted", map[string]any{
+							"failed_tool": lastStep.Action,
+							"iteration":   result.Iterations,
+						})
+					}
+				} else {
+					// Second exhaustion: terminate through the forced-submit path so
+					// the run ends with an honest structured answer that names what
+					// was blocked — never a raw max_failures that downstream renders
+					// as "Analysis Response Parse Error".
+					if p.logger != nil {
+						p.logger.Log(common.EventPlanningComplete, "Terminating: consecutive tool failures after strategy reset — forcing honest submit", map[string]any{
+							"iteration": result.Iterations,
+						})
+					}
+					p.runForcedSubmit(ctx, result, stepNumber+len(steps), query, systemPrompt)
+					break
+				}
 			}
 		}
 
@@ -2942,7 +2983,7 @@ func (p *ReActPlanner) countConsecutiveFailures() int {
 		return 0
 	}
 	count := 0
-	for i := len(p.currentSteps) - 1; i >= 0; i-- {
+	for i := len(p.currentSteps) - 1; i >= p.failureForgivenessIndex; i-- {
 		// Only count hard failures, not retriable ones
 		if p.currentSteps[i].Status == "failed" {
 			count++
