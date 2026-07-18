@@ -37,6 +37,20 @@ import (
 
 const AgentCode2 = "agent_code_2"
 
+// sanitizeWorkspacePathID maps an ID to the workspace's safe path charset
+// ([A-Za-z0-9_-]; everything else becomes '_') — the SAME mapping the workspace
+// analyze handler applies when naming its temp directories. Slack session IDs
+// contain a '.', so passing them raw both fails the workspace's conversation-id
+// validation and misses the sanitized directory names.
+func sanitizeWorkspacePathID(id string) string {
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return '_'
+	}, id)
+}
+
 // Mode constants mirror llm/code-analysis. Kept inline (not imported) because
 // llm-server doesn't take a Go-module dependency on llm/code-analysis.
 // agent_code_2 only translates the upstream RaisePr flag into the mode field
@@ -798,11 +812,22 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 					ctx.GetTracer(),
 					ctx.GetMeter(),
 				)
-				cleanupCmd := fmt.Sprintf("rm -rf /tmp/code-analysis-%s-*", agentRequest.SessionId)
-				// SessionId is passed as the conversation_id arg: the workspace
-				// pod rejects empty conversation_id (validates non-empty + safe
-				// path charset) and would silently no-op the cleanup otherwise.
-				if _, cleanupErr := wm.ExecuteCommand(cleanupCtx, agentRequest.AccountId, agentRequest.SessionId, cleanupCmd, nil); cleanupErr != nil {
+				// Sanitize with the SAME character mapping the workspace analyze
+				// handler uses for its temp dirs (anything outside [A-Za-z0-9_-]
+				// becomes '_'). Slack session IDs contain a '.', so the raw ID both
+				// failed the workspace's conversation-id validation AND wouldn't
+				// have matched the sanitized directory names — every Slack-origin
+				// analysis leaked its clone until the pod was replaced.
+				cleanID := sanitizeWorkspacePathID(agentRequest.SessionId)
+				if cleanID == "" {
+					logger.Warn("code: workspace cleanup skipped — empty session id")
+					return
+				}
+				cleanupCmd := fmt.Sprintf("rm -rf /tmp/code-analysis-%s-*", cleanID)
+				// The sanitized ID is passed as the conversation_id arg: the
+				// workspace pod rejects empty conversation_id (validates non-empty
+				// + safe path charset) and would silently no-op the cleanup otherwise.
+				if _, cleanupErr := wm.ExecuteCommand(cleanupCtx, agentRequest.AccountId, cleanID, cleanupCmd, nil); cleanupErr != nil {
 					logger.Warn("code: workspace cleanup failed", "error", cleanupErr)
 				}
 			}()
