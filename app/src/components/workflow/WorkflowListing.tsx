@@ -186,11 +186,11 @@ const LastExecutionCell: React.FC<LastExecutionCellProps> = ({ workflow }) => {
       <Label text={status.toLowerCase()} tone={getStatusTone(status)} textTransform='capitalize' />
       {version !== undefined && version !== null && (
         <>
-          <Text value='·' sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.tertiary, mx: 'var(--ds-space-0)' }} />
-          <Text value={`v${version}`} sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondary, fontFamily: 'var(--ds-font-mono)' }} />
+          <Text value='·' sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', mx: 'var(--ds-space-0)' }} />
+          <Text value={`v${version}`} sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', fontFamily: 'var(--ds-font-mono)' }} />
         </>
       )}
-      <Text value='·' sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.tertiary, mx: 'var(--ds-space-0)' }} />
+      <Text value='·' sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', mx: 'var(--ds-space-0)' }} />
       <Datetime
         baseDate={new Date()}
         value={time}
