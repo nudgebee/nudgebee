@@ -216,6 +216,14 @@ func (h *handler) handle(c *gin.Context) {
 		decision:      rc.Decision,
 	}
 
+	// Cross-provider substitution (P2): a rule resolved a different provider. Translate
+	// the client-native request to the target and the response back to the client shape,
+	// instead of passing bytes through unchanged. Owns cancel (like the stream path).
+	if rc.Decision.Reason == routing.ReasonSubstitute {
+		h.substitute(c, bctx, cancel, rc, rm)
+		return
+	}
+
 	if streaming {
 		h.stream(c, bctx, cancel, req, rm)
 		return
@@ -236,7 +244,8 @@ type reqMeta struct {
 	path          string
 	body          []byte
 	streaming     bool
-	surface       string // how the request arrived: "native" mount | "generic" /v1
+	surface       string   // how the request arrived: "native" mount | "generic" /v1
+	degraded      []string // features dropped by a cross-provider substitution (if any)
 	start         time.Time
 	sessionID     string
 	sessionSource string
@@ -406,6 +415,9 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	}
 	if rm.surface != "" {
 		attrs.Derived["surface"] = rm.surface
+	}
+	if len(rm.degraded) > 0 {
+		attrs.Derived["degraded"] = rm.degraded
 	}
 	if rm.decision.Reason != routing.ReasonPassthrough {
 		attrs.Derived["routing"] = routingAttr(rm.decision)

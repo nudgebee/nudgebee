@@ -73,8 +73,9 @@ things worth noting:
 
 ## Not in scope here
 
-- **Cross-provider substitution on native mounts** (Phase 2b) — keeping a native SDK
-  but running the request on a different provider and translating the response *back*
-  to the client's native shape. That needs the client-shape re-encoder matrix; the
-  generic endpoint sidesteps it by always emitting the canonical shape.
+- **Cross-provider substitution on native mounts** (Phase 2b, now built — see
+  [substitution.md](substitution.md)) — keeping a native SDK but running the request
+  on a different provider and translating the response *back* to the client's native
+  shape. The generic endpoint sidesteps that re-encoding by always emitting the
+  canonical shape.
 - **`/v1/responses`** (OpenAI Responses API surface) — future.

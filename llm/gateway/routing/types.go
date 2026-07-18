@@ -15,6 +15,7 @@ const (
 	ReasonFallback    Reason = "fallback"     // primary failed, a fallback was used
 	ReasonLoadBalance Reason = "load_balance" // selected from a weighted pool
 	ReasonBlocked     Reason = "blocked"      // a deny rule rejected the request (403)
+	ReasonSubstitute  Reason = "substitute"   // resolved to a DIFFERENT provider (P2 translation)
 )
 
 // Affinity controls cache-safety when a target is a pool. "single" keeps one target
@@ -32,8 +33,9 @@ type Match struct {
 	UserID   string `json:"user_id,omitempty"`
 }
 
-// Endpoint is a concrete routing destination. In P1, Provider must be the same
-// family as the addressed provider (fidelity); cross-family is P2.
+// Endpoint is a concrete routing destination. Provider may differ from the
+// addressed provider (P2 cross-provider substitution): the proxy then translates the
+// request into the target's schema and the response back to the client's shape.
 type Endpoint struct {
 	Provider string `json:"provider,omitempty"` // resolved provider ("" = keep addressed)
 	Model    string `json:"model,omitempty"`    // resolved model ("" = keep requested)

@@ -37,6 +37,13 @@ func (s routeStage) Handle(rc *RequestContext) (bool, error) {
 		edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusForbidden, "model_not_allowed", msg)
 		return true, nil
 	}
+	// Cross-provider substitution: the translate path (in the handler) parses the
+	// original client body and builds a fresh request for the resolved provider, so
+	// the body/path must be left untouched here — rewriting the model in an
+	// Anthropic body to a Gemini id would corrupt it before the parser runs.
+	if rc.Decision.Reason == routing.ReasonSubstitute {
+		return false, nil
+	}
 	if rc.Decision.ResolvedModel != rc.Decision.RequestedModel {
 		rc.Body, rc.Path = rewriteModel(rc.Provider, rc.Body, rc.Path, rc.Decision.ResolvedModel)
 		rc.Model = rc.Decision.ResolvedModel

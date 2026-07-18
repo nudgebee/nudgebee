@@ -82,13 +82,20 @@ func (e *Engine) Resolve(in Input) Decision {
 		if r.Target.Model != "" {
 			d.ResolvedModel = r.Target.Model
 		}
-		// P1: target.Provider is validated same-family, so resolved provider stays
-		// the addressed one; cross-provider is P2.
+		// P2: a rule may resolve a DIFFERENT provider (cross-provider substitution).
+		// The proxy then takes the translate path (parse client-native → unified →
+		// dispatch to the resolved provider → re-encode to the client's native shape).
+		if r.Target.Provider != "" {
+			d.ResolvedProvider = r.Target.Provider
+		}
 		d.Fallbacks = r.Target.Fallbacks
 		d.Strategy = r.Target.Affinity
-		if d.ResolvedModel != d.RequestedModel {
+		switch {
+		case d.ResolvedProvider != d.RequestedProvider:
+			d.Reason = ReasonSubstitute // cross-provider — needs translation
+		case d.ResolvedModel != d.RequestedModel:
 			d.Reason = ReasonAlias // tier is a labelled alias; rule id disambiguates
-		} else {
+		default:
 			d.Reason = ReasonLoadBalance // same model, but a rule selected a key/pool/fallback set
 		}
 		return d

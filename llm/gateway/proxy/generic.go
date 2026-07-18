@@ -114,16 +114,14 @@ func (h *handler) handleChat(c *gin.Context) {
 }
 
 // unaryChat parses the OpenAI body into the unified chat request, pins the routed
-// provider/model, dispatches through the unified engine, and returns the response
-// in the canonical OpenAI shape. Metering runs on every exit path.
+// provider/model, and dispatches through the shared chat core. Metering runs on
+// every exit path.
 func (h *handler) unaryChat(c *gin.Context, bctx *schemas.BifrostContext, rc *RequestContext, rm *reqMeta) {
-	meterCtx := context.WithoutCancel(c.Request.Context())
-
 	var oaiReq openai.OpenAIChatRequest
 	if err := json.Unmarshal(rc.Body, &oaiReq); err != nil {
 		edgeerr.Write(c, string(rc.Provider), http.StatusBadRequest, "invalid_request",
 			"could not parse request body as an OpenAI chat completion request")
-		h.meter(meterCtx, rm, http.StatusBadRequest, nil, nil, nil)
+		h.meter(context.WithoutCancel(c.Request.Context()), rm, http.StatusBadRequest, nil, nil, nil)
 		return
 	}
 	breq := oaiReq.ToBifrostChatRequest(bctx)
@@ -131,6 +129,14 @@ func (h *handler) unaryChat(c *gin.Context, bctx *schemas.BifrostContext, rc *Re
 	// re-mapped it, and the provider is derived from that name, not the request body.
 	breq.Provider = rc.Provider
 	breq.Model = rc.Model
+	h.unaryChatWith(c, bctx, rc, rm, breq)
+}
+
+// unaryChatWith dispatches a prebuilt chat request through the unified engine and
+// returns the canonical OpenAI response. Shared by the generic endpoint and
+// OpenAI-client cross-provider substitution.
+func (h *handler) unaryChatWith(c *gin.Context, bctx *schemas.BifrostContext, rc *RequestContext, rm *reqMeta, breq *schemas.BifrostChatRequest) {
+	meterCtx := context.WithoutCancel(c.Request.Context())
 
 	resp, bErr := h.client.ChatCompletionRequest(bctx, breq)
 	if bErr != nil {
@@ -196,10 +202,27 @@ func (h *handler) handleModels(c *gin.Context) {
 // the `data: [DONE]` sentinel. Usage arrives on the final chunk (include_usage is
 // on by default) and is metered once on every exit path.
 func (h *handler) streamChat(c *gin.Context, bctx *schemas.BifrostContext, cancel func(), rc *RequestContext, rm *reqMeta) {
+	var oaiReq openai.OpenAIChatRequest
+	if err := json.Unmarshal(rc.Body, &oaiReq); err != nil {
+		cancel()
+		edgeerr.Write(c, string(rc.Provider), http.StatusBadRequest, "invalid_request",
+			"could not parse request body as an OpenAI chat completion request")
+		h.meter(context.WithoutCancel(c.Request.Context()), rm, http.StatusBadRequest, nil, nil, nil)
+		return
+	}
+	breq := oaiReq.ToBifrostChatRequest(bctx)
+	breq.Provider = rc.Provider
+	breq.Model = rc.Model
+	h.streamChatWith(c, bctx, cancel, rc, rm, breq)
+}
+
+// streamChatWith streams a prebuilt chat request as OpenAI `chat.completion.chunk`
+// SSE, ending with `data: [DONE]`. Usage arrives on the final chunk and is metered
+// once on every exit path. Shared by the generic endpoint and OpenAI-client
+// substitution. Owns cancel.
+func (h *handler) streamChatWith(c *gin.Context, bctx *schemas.BifrostContext, cancel func(), rc *RequestContext, rm *reqMeta, breq *schemas.BifrostChatRequest) {
 	defer cancel()
 
-	// Meter exactly once, on every exit path (including pre-header failures), so all
-	// traffic is recorded. usageResp holds the last chunk that carried usage totals.
 	status := http.StatusBadGateway
 	var usageResp *schemas.BifrostChatResponse
 	captureBody := metering.BodyLoggingEnabled()
@@ -207,17 +230,6 @@ func (h *handler) streamChat(c *gin.Context, bctx *schemas.BifrostContext, cance
 	defer func() {
 		h.meter(context.WithoutCancel(c.Request.Context()), rm, status, nil, chatUsage(usageResp), respBuf)
 	}()
-
-	var oaiReq openai.OpenAIChatRequest
-	if err := json.Unmarshal(rc.Body, &oaiReq); err != nil {
-		status = http.StatusBadRequest
-		edgeerr.Write(c, string(rc.Provider), http.StatusBadRequest, "invalid_request",
-			"could not parse request body as an OpenAI chat completion request")
-		return
-	}
-	breq := oaiReq.ToBifrostChatRequest(bctx)
-	breq.Provider = rc.Provider
-	breq.Model = rc.Model
 
 	stream, bErr := h.client.ChatCompletionStreamRequest(bctx, breq)
 	if bErr != nil {
