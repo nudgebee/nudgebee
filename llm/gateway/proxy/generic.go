@@ -109,6 +109,7 @@ func (h *handler) handleChat(c *gin.Context) {
 		body:          rc.Body,
 		streaming:     streaming,
 		surface:       surfaceGeneric,
+		dlp:           rc.DLP,
 		start:         start,
 		sessionID:     sessionID,
 		sessionSource: sessionSource,

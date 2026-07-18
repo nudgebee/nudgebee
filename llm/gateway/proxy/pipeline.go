@@ -38,6 +38,10 @@ type RequestContext struct {
 	// RejectReason is set by whichever stage stops the request (rate_limited,
 	// no_credentials, blocked, …); the handler records it on the rejection usage row.
 	RejectReason string
+
+	// DLP is set by the egress-filter stage when a secret is detected: the mode taken
+	// and the rule ids that fired. Recorded on the usage row and signalled to the client.
+	DLP map[string]any
 }
 
 // Stage is one step in the request pipeline. Handle may mutate rc in place.

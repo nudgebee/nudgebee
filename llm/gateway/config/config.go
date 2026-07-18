@@ -126,6 +126,13 @@ type Configuration struct {
 	// provider); this flag only controls whether they appear in the usage dashboard.
 	CaptureAdminCalls bool `mapstructure:"gateway_capture_admin_calls"`
 
+	// EgressFilterMode enables outbound secret scanning of request bodies before they
+	// leave to the provider: "" (off) | "detect" (record only, safe rollout default) |
+	// "enforce" (block a request carrying a secret) | "redact" (replace the secret span
+	// and forward). Off by default. The comprehensive rule corpus is EE (folder-removed
+	// in OSS, which keeps only the baseline patterns).
+	EgressFilterMode string `mapstructure:"gateway_egress_filter_mode"`
+
 	// Default guardrail: a per-user cost cap (USD) applied as a backstop when a user
 	// has no explicit user-scoped cost limit configured, so a runaway client can't
 	// drain the org budget before an admin sets a limit. 0 = disabled (opt-in). Period
@@ -198,6 +205,7 @@ var keyDefaults = map[string]any{
 	"gateway_routing_refresh_seconds":       30,
 	"gateway_default_user_cost_limit":       0.0,   // per-user cost guardrail; 0 = disabled
 	"gateway_default_user_cost_period":      "day", // minute|hour|day|month
+	"gateway_egress_filter_mode":            "",    // off|detect|enforce|redact (outbound secret scan)
 	"gateway_capture_body":                  false,
 	"gateway_body_max_bytes":                1048576, // 1 MiB per body
 	"gateway_body_ttl_hours":                168,     // 7 days

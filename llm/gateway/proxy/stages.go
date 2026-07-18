@@ -5,14 +5,17 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"nudgebee/llm-gateway/auth"
+	"nudgebee/llm-gateway/config"
 	"nudgebee/llm-gateway/edgeerr"
 	"nudgebee/llm-gateway/ratelimit"
 	"nudgebee/llm-gateway/routing"
+	"nudgebee/llm-gateway/security/egressfilter"
 )
 
 // routeStage resolves the requested (provider, model) to a target via the routing
@@ -149,8 +152,37 @@ func (s resolverStage) Handle(rc *RequestContext) (bool, error) {
 	return false, nil
 }
 
-// filterStage is an outbound-body filter seam; no-op by default.
+// filterStage scans the outbound request body for secrets before it leaves to the
+// provider (egress DLP). Behavior is set by gateway_egress_filter_mode: off (no scan),
+// detect (record only), enforce (block), redact (replace the secret + forward). A hit
+// is signalled via x-nb-llm-dlp and recorded in the usage row either way.
 type filterStage struct{}
 
-func (filterStage) Name() string                         { return "filter" }
-func (filterStage) Handle(*RequestContext) (bool, error) { return false, nil }
+func (filterStage) Name() string { return "filter" }
+
+func (s filterStage) Handle(rc *RequestContext) (bool, error) {
+	mode := egressfilter.ParseMode(config.Config.EgressFilterMode)
+	if mode == egressfilter.ModeOff || len(rc.Body) == 0 {
+		return false, nil
+	}
+	res := egressfilter.Scan(string(rc.Body))
+	if !res.HasHits() {
+		return false, nil
+	}
+	rules := res.RuleIDs()
+	rc.Gin.Header("x-nb-llm-dlp", string(mode)+":"+strings.Join(rules, ","))
+	rc.DLP = map[string]any{"mode": string(mode), "rules": rules}
+
+	switch mode {
+	case egressfilter.ModeEnforce:
+		rc.RejectReason = "secret_blocked"
+		edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusForbidden, "secret_detected",
+			"request blocked: it contains a credential/secret ("+strings.Join(rules, ", ")+"). Remove it or ask an administrator about the egress policy.")
+		return true, nil
+	case egressfilter.ModeRedact:
+		rc.Body = []byte(egressfilter.Redact(string(rc.Body), res.Hits))
+		rc.DLP["redacted"] = true
+	}
+	// detect (and redact) fall through — the request proceeds.
+	return false, nil
+}

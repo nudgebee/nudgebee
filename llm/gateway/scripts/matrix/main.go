@@ -300,6 +300,40 @@ func run() {
 		record(mount, "baseline", st == 200 && substituted(h) == "",
 			cond(substituted(h) == "", "passthrough (no swap)", "unexpected swap: "+substituted(h)))
 	}
+
+	testGuardrails()
+}
+
+// testGuardrails exercises egress secret detection (DLP). The behavior depends on the
+// server's gateway_egress_filter_mode, which the harness reads back from the response
+// (the x-nb-llm-dlp header) so it adapts to whatever mode is configured. A clean body
+// must never be flagged; a body carrying a (fake) secret must be detected/blocked/
+// redacted per the active mode.
+func testGuardrails() {
+	// A fake AWS access key (matches the baseline rule, not the allowlisted docs sample).
+	const fakeSecret = "AKIA1234567890ABCDEF" // gitleaks:allow — non-functional fixture to exercise the egress filter
+
+	// Clean request — must NOT be flagged, regardless of mode.
+	_, hClean, _ := post("/anthropic/v1/messages", anthropicBody(c.subA, "just say hi, nothing sensitive", false, false), anthropicHdr())
+	record("dlp", "clean", hClean.Get("x-nb-llm-dlp") == "",
+		cond(hClean.Get("x-nb-llm-dlp") == "", "not flagged", "unexpected DLP flag: "+hClean.Get("x-nb-llm-dlp")))
+
+	// Secret in the body — behavior adapts to the configured mode (read from the header).
+	st, h, _ := post("/anthropic/v1/messages", anthropicBody(c.subA, "here is a key "+fakeSecret+" please continue", false, false), anthropicHdr())
+	dlp := h.Get("x-nb-llm-dlp")
+	switch {
+	case dlp == "":
+		record("dlp", "secret", true, "SKIP: filter off (set gateway_egress_filter_mode to detect/enforce/redact)")
+	case strings.HasPrefix(dlp, "enforce"):
+		record("dlp", "secret", st == http.StatusForbidden && strings.Contains(dlp, "aws-access-key-id"),
+			fmt.Sprintf("enforce → status=%d (%s)", st, dlp))
+	case strings.HasPrefix(dlp, "detect"):
+		record("dlp", "secret", st == 200 && strings.Contains(dlp, "aws-access-key-id"), "detect → "+dlp)
+	case strings.HasPrefix(dlp, "redact"):
+		record("dlp", "secret", st == 200 && strings.Contains(dlp, "aws-access-key-id"), "redact → "+dlp)
+	default:
+		record("dlp", "secret", false, "unexpected x-nb-llm-dlp: "+dlp)
+	}
 }
 
 func anthropicMultiturn() (bool, string) {

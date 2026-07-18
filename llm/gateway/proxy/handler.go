@@ -207,6 +207,7 @@ func (h *handler) handle(c *gin.Context) {
 		body:          rc.Body,
 		streaming:     streaming,
 		surface:       surfaceNative,
+		dlp:           rc.DLP,
 		start:         start,
 		sessionID:     sessionID,
 		sessionSource: sessionSource,
@@ -246,6 +247,7 @@ type reqMeta struct {
 	surface       string         // how the request arrived: "native" mount | "generic" /v1
 	degraded      []string       // features dropped by a cross-provider substitution (if any)
 	failover      map[string]any // set when a transient primary failure fell over to a fallback
+	dlp           map[string]any // set when the egress filter detected/redacted a secret
 	start         time.Time
 	sessionID     string
 	sessionSource string
@@ -447,6 +449,9 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	if rm.failover != nil {
 		attrs.Derived["failover"] = rm.failover
 	}
+	if rm.dlp != nil {
+		attrs.Derived["dlp"] = rm.dlp
+	}
 	if rm.decision.Reason != routing.ReasonPassthrough {
 		attrs.Derived["routing"] = routingAttr(rm.decision)
 	}
@@ -532,13 +537,17 @@ func (h *handler) recordReject(id auth.Identity, provider schemas.ModelProvider,
 // credential, block), carrying the routing decision plus the stage's reject reason.
 func (h *handler) recordRejectPipeline(rc *RequestContext, status int, start time.Time) {
 	d := rc.Decision
+	derived := map[string]any{"reject_reason": rc.RejectReason}
+	if rc.DLP != nil {
+		derived["dlp"] = rc.DLP // an enforce-mode secret block carries the rule ids
+	}
 	h.sink.Record(metering.NewEvent(metering.EventInput{
 		Provider: rc.Provider, Model: rc.Model,
 		Method: rc.Gin.Request.Method, Path: rc.Path,
 		StatusCode: status, LatencyMS: time.Since(start).Milliseconds(),
 		RequestedProvider: string(rc.Provider), RequestedModel: d.RequestedModel,
 		RoutingReason: string(d.Reason), RoutingRule: d.RuleID,
-		Attributes: &metering.Attributes{Derived: map[string]any{"reject_reason": rc.RejectReason}},
+		Attributes: &metering.Attributes{Derived: derived},
 		TenantID:   rc.Identity.TenantID, AccountID: rc.Identity.AccountID,
 		UserID: rc.Identity.UserID, TokenID: rc.Identity.TokenID,
 	}))
