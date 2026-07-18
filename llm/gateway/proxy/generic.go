@@ -92,6 +92,12 @@ func (h *handler) handleChat(c *gin.Context) {
 		rc.Provider = schemas.ModelProvider(rc.Decision.ResolvedProvider)
 		rc.Model = rc.Decision.ResolvedModel
 	}
+	// Deprecation shield: the retired model was rewritten to its replacement (route
+	// stage) — signal it. Metering carries reason=deprecated via the decision.
+	if rc.Decision.Reason == routing.ReasonDeprecated {
+		c.Writer.Header().Set("x-nb-llm-deprecated",
+			fmt.Sprintf("%s->%s", rc.Decision.RequestedModel, rc.Decision.ResolvedModel))
+	}
 
 	sessionID, sessionSource := resolveSession(c, rc.Body)
 	rm := &reqMeta{

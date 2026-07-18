@@ -93,6 +93,8 @@ func (e *Engine) Resolve(in Input) Decision {
 		switch {
 		case d.ResolvedProvider != d.RequestedProvider:
 			d.Reason = ReasonSubstitute // cross-provider — needs translation
+		case r.Target.Deprecated && d.ResolvedModel != d.RequestedModel:
+			d.Reason = ReasonDeprecated // retired model rewritten to its replacement
 		case d.ResolvedModel != d.RequestedModel:
 			d.Reason = ReasonAlias // tier is a labelled alias; rule id disambiguates
 		default:

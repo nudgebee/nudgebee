@@ -180,6 +180,13 @@ func (h *handler) handle(c *gin.Context) {
 		return
 	}
 
+	// Deprecation shield: the retired model was rewritten to its replacement (by the
+	// route stage) — signal the rewrite so clients/operators see it. Metering already
+	// carries reason=deprecated via the decision.
+	if rc.Decision.Reason == routing.ReasonDeprecated {
+		c.Writer.Header().Set("x-nb-llm-deprecated", rc.Decision.RequestedModel+"->"+rc.Decision.ResolvedModel)
+	}
+
 	req := &schemas.BifrostPassthroughRequest{
 		Provider:    provider,
 		Model:       rc.Model,

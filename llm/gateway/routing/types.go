@@ -16,6 +16,7 @@ const (
 	ReasonLoadBalance Reason = "load_balance" // selected from a weighted pool
 	ReasonBlocked     Reason = "blocked"      // a deny rule rejected the request (403)
 	ReasonSubstitute  Reason = "substitute"   // resolved to a DIFFERENT provider (P2 translation)
+	ReasonDeprecated  Reason = "deprecated"   // requested model is retired → rewritten to a replacement
 )
 
 // Affinity controls cache-safety when a target is a pool. "single" keeps one target
@@ -53,6 +54,12 @@ type Target struct {
 	// the error. A deny wins over a redirect rule at the same priority (see the engine
 	// sort), so an admin can block a model regardless of other rules' ordering.
 	Deny bool `json:"deny,omitempty"`
+	// Deprecated turns the rule into a DEPRECATION SHIELD: a request for a retired model
+	// is rewritten to Endpoint.Model (the replacement) and forwarded, so clients keep
+	// working when a provider retires a model. It's a same-provider rewrite (like an
+	// alias) but marked distinctly for observability (reason=deprecated) and signalled
+	// to the client via an x-nb-llm-deprecated response header.
+	Deprecated bool `json:"deprecated,omitempty"`
 }
 
 // Rule is one routing rule. Rules are ordered by (tenant-specific first, then

@@ -73,6 +73,36 @@ func TestValidate_AllowsCrossProvider(t *testing.T) {
 	}}))
 }
 
+func TestResolve_Deprecation(t *testing.T) {
+	e := NewEngine([]Rule{{
+		ID: "dep", Enabled: true,
+		Match:  Match{Provider: "anthropic", Model: "claude-2"},
+		Target: Target{Endpoint: Endpoint{Model: "claude-haiku-4-5"}, Deprecated: true},
+	}})
+	d := e.Resolve(Input{Provider: "anthropic", Model: "claude-2"})
+	assert.Equal(t, ReasonDeprecated, d.Reason)
+	assert.Equal(t, "claude-haiku-4-5", d.ResolvedModel)
+	assert.Equal(t, "anthropic", d.ResolvedProvider) // same-provider rewrite
+}
+
+func TestValidate_RejectsDeprecationWithoutModel(t *testing.T) {
+	err := Validate([]Rule{{
+		ID:     "dep",
+		Match:  Match{Provider: "anthropic", Model: "claude-2"},
+		Target: Target{Deprecated: true},
+	}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deprecation needs target.model")
+
+	// A deny rule doesn't route, so it's exempt from the replacement-model requirement
+	// even if deprecated is also set.
+	assert.NoError(t, Validate([]Rule{{
+		ID:     "dep-deny",
+		Match:  Match{Provider: "anthropic", Model: "claude-2"},
+		Target: Target{Deny: true, Deprecated: true},
+	}}))
+}
+
 func TestValidate_RejectsCrossProviderWithoutModel(t *testing.T) {
 	// A cross-provider target with no model would forward the client's native model
 	// name to the wrong provider — require an explicit target model.

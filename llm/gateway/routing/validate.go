@@ -44,6 +44,12 @@ func Validate(rules []Rule) error {
 		if !r.Target.Deny && r.Target.Provider != "" && r.Target.Provider != r.Match.Provider && r.Target.Model == "" {
 			return fmt.Errorf("routing rule %q: cross-provider target %q requires target.model (the requested model won't exist on the target provider)", r.ID, r.Target.Provider)
 		}
+
+		// A deprecation shield rewrites a retired model to a replacement — that
+		// replacement model is required. A block (deny) doesn't route, so it's exempt.
+		if !r.Target.Deny && r.Target.Deprecated && r.Target.Model == "" {
+			return fmt.Errorf("routing rule %q: a deprecation needs target.model (the replacement to rewrite to)", r.ID)
+		}
 	}
 	return nil
 }
