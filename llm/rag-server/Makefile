@@ -1,6 +1,7 @@
 install:
 	pip install -e ".[dev,test]"
 
+
 fmt:
 	black .
 
