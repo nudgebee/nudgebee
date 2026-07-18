@@ -266,3 +266,45 @@ func TestK8sOrchestrator2_BloatAB(t *testing.T) {
 		t.Logf("  %-14s v1 in_tok=%d calls=%d | v2 in_tok=%d calls=%d", k, a.v1In, a.v1Calls, a.v2In, a.v2Calls)
 	}
 }
+
+// investigationQueries2 drives the v2-vs-lean A/B. Distinct archetypes (not just
+// OOM/Helm) so one run tests whether the lean loop generalizes: an OOM crash-loop
+// on a Helm-managed resource (mechanism depth + durable-fix), a deployment-unhealthy
+// question (may be healthy → tests correct-healthy vs premature give-up), and a
+// generic crash-loop RCA. Each kind is unique so subtests stay distinct.
+var investigationQueries2 = []labeledQuery{
+	// {"crashloop-oom", "investigate why kube-system pod is in crashloop."},
+	// {"deploy-unhealthy", "Why is the rag-server deployment in the nudgebee namespace unhealthy? Check pod status, recent events, and logs."},
+	{"crashloop-generic", "Investigate any crash-looping pods in the nudgebee-oss namespace and find the root cause."},
+}
+
+func TestK8sOrchestrator2_BloatABV1(t *testing.T) {
+	accountId, userId, tenant := requireE2EEnv(t)
+	sc := security.NewRequestContextForTenantAccountAdmin(tenant, userId, []string{accountId})
+
+	// A/B: v2 (direct kubectl, heavy domain prompt + critique) vs lean
+	// (@k8s_orchestrator_lean — minimal principle-level prompt, no critique).
+	// Tools are identical (shell on by default → both can run helm directly), so
+	// the only variables are the prompt and the critique.
+	// v2 := newK8sOrchestrator2Agent(accountId)
+	lean := newK8sLeanAgentNamed(accountId, AgentK8sOrchestratorLeanName)
+
+	for i, lq := range investigationQueries2 {
+		t.Run(lq.kind, func(t *testing.T) {
+			t.Logf("QUERY [%s]: %s", lq.kind, lq.query)
+
+			// t.Log("--- v2 (direct; heavy prompt + critique) ---")
+			// m2 := runAgentQuery(t, sc, v2, userId, accountId, sessionSlug("ut-v2-inv-", v2.GetName(), i), lq.query)
+			// logMetrics(t, m2)
+			// assert.Truef(t, m2.ok(), "v2 did not execute (status=%s llm_calls=%d err=%v)", m2.status, m2.llmCalls, m2.err)
+
+			t.Log("--- lean (minimal prompt; no critique) ----")
+			mLean := runAgentQuery(t, sc, lean, userId, accountId, sessionSlug("ut-lean-inv-", lean.GetName(), i), lq.query)
+			logMetrics(t, mLean)
+			assert.Truef(t, mLean.ok(), "lean did not execute (status=%s llm_calls=%d err=%v)", mLean.status, mLean.llmCalls, mLean.err)
+
+			// t.Logf("=== A/B [%s]  v2: calls=%d in_tok=%d tools=%s  |  lean: calls=%d in_tok=%d tools=%s",
+			// 	lq.kind, m2.llmCalls, m2.inputTokens, m2.tools(), mLean.llmCalls, mLean.inputTokens, mLean.tools())
+		})
+	}
+}

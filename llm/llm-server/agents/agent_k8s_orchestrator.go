@@ -22,7 +22,7 @@ import (
 const AgentK8sOrchestratorName = "k8s_orchestrator"
 
 // AgentK8sOrchestrator2Name is an explicit, @-invocable handle that always runs the
-// direct-kubectl (v2) behavior regardless of the K8sOrchestratorV2Enabled flag. The
+// direct-kubectl (v2) behavior regardless of the configured K8sOrchestratorMode. The
 // router never selects it; it exists so v1 (the flag-gated default) and v2 can be
 // invoked side by side — `@k8s_orchestrator` vs `@k8s_orchestrator_2` — for live eval
 // on the same deployment without a config flip. Both names share ONE implementation;
@@ -65,10 +65,28 @@ func init() {
 	})
 }
 
-// newK8sOrchestratorAgent is the primary, router-selected agent: its kubectl mode
-// follows the K8sOrchestratorV2Enabled global flag (the rollout knob).
+// K8sOrchestratorMode* are the values of config llm_server_k8s_orchestrator_mode,
+// the single boot-time knob for what the router-selected k8s_orchestrator runs.
+const (
+	K8sOrchestratorModeDelegating = "delegating" // v1: delegate kubectl to the sub-agent (default)
+	K8sOrchestratorModeDirect     = "direct"     // v2: hold kubectl_execute, run kubectl directly
+	K8sOrchestratorModeLean       = "lean"       // experimental: minimal prompt + critique off
+)
+
+// newK8sOrchestratorAgent is the primary, router-selected agent. Its behavior is
+// chosen by config.K8sOrchestratorMode (boot-time; rollback = change + redeploy).
+// Running lean/direct under the primary name keeps routing, stored history, and
+// the @k8s_debug aliases unchanged — only prompt/critique/kubectl behavior differ.
+// Unknown/empty mode falls back to delegating (v1), the safe default.
 func newK8sOrchestratorAgent(accountId string) core.NBAgent {
-	return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestratorName, config.Config.K8sOrchestratorV2Enabled)
+	switch strings.ToLower(strings.TrimSpace(config.Config.K8sOrchestratorMode)) {
+	case K8sOrchestratorModeLean:
+		return newK8sLeanAgentNamed(accountId, AgentK8sOrchestratorName)
+	case K8sOrchestratorModeDirect:
+		return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestratorName, true)
+	default:
+		return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestratorName, false)
+	}
 }
 
 // newK8sOrchestrator2Agent is the always-direct eval handle (see AgentK8sOrchestrator2Name):

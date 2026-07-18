@@ -344,10 +344,16 @@ type appConfig struct {
 	// LogAgentV2Enabled gates the canonical, provider-independent fetch_logs
 	// agent (FetchLogsAgentV2). Global per-deploy toggle; default false.
 	LogAgentV2Enabled bool `mapstructure:"llm_server_log_agent_v2_enabled"`
-	// K8sOrchestratorV2Enabled makes the k8s_orchestrator run kubectl directly
-	// (kubectl_execute) instead of delegating to the kubectl sub-agent. Global
-	// per-deploy toggle; default false.
-	K8sOrchestratorV2Enabled               bool   `mapstructure:"llm_server_k8s_orchestrator_v2_enabled"`
+	// K8sOrchestratorMode selects what the router-selected k8s_orchestrator runs.
+	// Boot-time, per-deploy (rollback = change + redeploy). One of:
+	//   "delegating" (default) — v1: route kubectl work through the `kubectl` sub-agent
+	//   "direct"               — v2: hold `kubectl_execute` and run kubectl directly
+	//   "lean"                 — EXPERIMENTAL: minimal principle-level prompt + critique off
+	// Unknown/empty falls back to "delegating". Replaces the former
+	// llm_server_k8s_orchestrator_{v2,lean}_enabled booleans. The @k8s_orchestrator_2
+	// (always direct) and @k8s_orchestrator_lean (always lean) eval handles are
+	// unaffected by this — they exist for side-by-side A/B regardless of mode.
+	K8sOrchestratorMode                    string `mapstructure:"llm_server_k8s_orchestrator_mode"`
 	LlmServerWorkspacePort                 int    `mapstructure:"llm_server_workspace_port"`
 	LlmServerWorkspaceLocalUrl             string `mapstructure:"llm_server_workspace_local_url"`
 	LlmServerWorkspaceFileMaxDownloadBytes int    `mapstructure:"llm_server_workspace_file_max_download_bytes"`
@@ -912,7 +918,8 @@ func init() {
 	viper.SetDefault("llm_server_workspace_resource_request_memory", "256Mi")
 	viper.SetDefault("llm_server_shell_tool_enabled", true)
 	viper.SetDefault("llm_server_log_agent_v2_enabled", false)
-	viper.SetDefault("llm_server_k8s_orchestrator_v2_enabled", false)
+	// k8s_orchestrator mode: delegating (v1, default) | direct (v2) | lean (experimental).
+	viper.SetDefault("llm_server_k8s_orchestrator_mode", "delegating")
 	viper.SetDefault("llm_server_workspace_port", 8080)
 	viper.SetDefault("llm_server_workspace_local_url", "") // e.g. http://localhost:8080 for local dev
 	viper.SetDefault("llm_server_workspace_file_max_download_bytes", 5*1024*1024)
