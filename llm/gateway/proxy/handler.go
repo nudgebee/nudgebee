@@ -244,8 +244,9 @@ type reqMeta struct {
 	path          string
 	body          []byte
 	streaming     bool
-	surface       string   // how the request arrived: "native" mount | "generic" /v1
-	degraded      []string // features dropped by a cross-provider substitution (if any)
+	surface       string         // how the request arrived: "native" mount | "generic" /v1
+	degraded      []string       // features dropped by a cross-provider substitution (if any)
+	failover      map[string]any // set when a transient primary failure fell over to a fallback
 	start         time.Time
 	sessionID     string
 	sessionSource string
@@ -265,8 +266,19 @@ const (
 func (h *handler) unary(c *gin.Context, bctx *schemas.BifrostContext, req *schemas.BifrostPassthroughRequest, rm *reqMeta) {
 	resp, bErr := h.client.Passthrough(bctx, rm.provider, req)
 	if bErr != nil {
-		status := writeBifrostError(c, bErr)
+		status := statusOf(bErr)
+		// A transient failure with fallbacks configured tries the fallback(s) before
+		// surfacing the error (the primary attempt stays byte-perfect passthrough).
+		if h.tryFailoverUnary(c, bctx, rm, status) {
+			return
+		}
+		writeBifrostError(c, bErr)
 		h.meter(context.WithoutCancel(c.Request.Context()), rm, status, nil, nil, nil)
+		return
+	}
+	// A provider may return a transient status in the response itself (not a bErr) —
+	// fail over before forwarding it to the client.
+	if isRetryable(resp.StatusCode) && h.tryFailoverUnary(c, bctx, rm, resp.StatusCode) {
 		return
 	}
 	for k, v := range resp.Headers {
@@ -298,12 +310,22 @@ func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel fu
 	// be stored; nil otherwise (streaming response-side attributes come later).
 	captureBody := metering.BodyLoggingEnabled()
 	var respBuf []byte
+	// handled=true means a fallback path took over and metered itself; skip our meter.
+	handled := false
 	defer func() {
+		if handled {
+			return
+		}
 		h.meter(context.WithoutCancel(c.Request.Context()), rm, status, meterHeaders, lastUsage, respBuf)
 	}()
 
 	stream, bErr := h.client.PassthroughStream(bctx, rm.provider, req)
 	if bErr != nil {
+		// Pre-header failure: nothing sent yet, so a fallback can take over the stream.
+		if h.tryFailoverStream(c, bctx, cancel, rm, statusOf(bErr)) {
+			handled = true
+			return
+		}
 		status = writeBifrostError(c, bErr)
 		return
 	}
@@ -314,6 +336,10 @@ func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel fu
 		return
 	}
 	if first.BifrostError != nil {
+		if h.tryFailoverStream(c, bctx, cancel, rm, statusOf(first.BifrostError)) {
+			handled = true
+			return
+		}
 		status = writeBifrostError(c, first.BifrostError)
 		return
 	}
@@ -418,6 +444,9 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	}
 	if len(rm.degraded) > 0 {
 		attrs.Derived["degraded"] = rm.degraded
+	}
+	if rm.failover != nil {
+		attrs.Derived["failover"] = rm.failover
 	}
 	if rm.decision.Reason != routing.ReasonPassthrough {
 		attrs.Derived["routing"] = routingAttr(rm.decision)
@@ -574,12 +603,17 @@ func safeHeaders(h http.Header) map[string]string {
 	return out
 }
 
+// statusOf extracts the HTTP status from a Bifrost error (default 502 Bad Gateway).
+func statusOf(bErr *schemas.BifrostError) int {
+	if bErr != nil && bErr.StatusCode != nil {
+		return *bErr.StatusCode
+	}
+	return http.StatusBadGateway
+}
+
 // writeBifrostError writes a JSON error and returns the HTTP status used (for metering).
 func writeBifrostError(c *gin.Context, bErr *schemas.BifrostError) int {
-	status := http.StatusBadGateway
-	if bErr.StatusCode != nil {
-		status = *bErr.StatusCode
-	}
+	status := statusOf(bErr)
 	msg := "provider engine error"
 	if bErr.Error != nil && bErr.Error.Message != "" {
 		msg = bErr.Error.Message

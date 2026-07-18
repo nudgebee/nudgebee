@@ -1,6 +1,6 @@
 # Cross-provider substitution (P2b) — transparent translation
 
-Status: ✅ built (all client×target pairs, unary + streaming) · 🟡 failover on fallbacks is a follow-on
+Status: ✅ built (all client×target pairs, unary + streaming) · failover on fallbacks: see [failover.md](failover.md)
 
 Substitution lets a caller keep its **native SDK** unchanged while an admin rule runs
 the request on a **different provider**, with the response translated **back** to the
