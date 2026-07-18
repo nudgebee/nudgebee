@@ -34,6 +34,7 @@ func (s routeStage) Handle(rc *RequestContext) (bool, error) {
 		if alt := rc.Decision.ResolvedModel; alt != "" {
 			msg = fmt.Sprintf("%s Use %q instead.", msg, alt)
 		}
+		rc.RejectReason = "blocked"
 		edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusForbidden, "model_not_allowed", msg)
 		return true, nil
 	}
@@ -70,6 +71,7 @@ func (s ratelimitStage) Handle(rc *RequestContext) (bool, error) {
 	if secs := int(time.Until(reset).Seconds()) + 1; secs > 0 {
 		rc.Gin.Header("Retry-After", strconv.Itoa(secs))
 	}
+	rc.RejectReason = "rate_limited"
 	edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusTooManyRequests, "rate_limit_exceeded",
 		fmt.Sprintf("%s limit exceeded for %s (%s window); resets at %s UTC",
 			ex.Metric, ex.Scope, ex.Period, reset.Format("2006-01-02 15:04")))
@@ -138,6 +140,7 @@ func (s resolverStage) Handle(rc *RequestContext) (bool, error) {
 	// fail fast with a clear 403 rather than letting core call the provider keyless
 	// (which surfaces to the client as a confusing upstream auth error).
 	if operatorCredsHook != nil && !operatorCredsHook(rc.Provider) {
+		rc.RejectReason = "no_credentials"
 		edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusForbidden, "provider_not_configured",
 			fmt.Sprintf("No %s credential is configured for your organization. Ask an administrator to add a %s key in NudgeBee integrations.",
 				rc.Provider, rc.Provider))

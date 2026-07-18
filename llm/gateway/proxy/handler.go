@@ -123,18 +123,22 @@ func (h *handler) handle(c *gin.Context) {
 	provider, ok := prefixProvider[prefix]
 	if !ok {
 		writeJSONError(c, http.StatusNotFound, "unknown_provider", "no provider mounted at "+prefix)
+		h.recordReject(auth.FromContext(c), "", "", c.Request.Method, c.Request.URL.Path, http.StatusNotFound, "unknown_provider", start)
 		return
 	}
 
 	body, err := readBody(c)
 	if err != nil {
+		id := auth.FromContext(c)
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			edgeerr.Write(c, string(provider), http.StatusRequestEntityTooLarge, "request_too_large",
 				"request body exceeds the gateway limit")
+			h.recordReject(id, provider, "", c.Request.Method, c.Request.URL.Path, http.StatusRequestEntityTooLarge, "too_large", start)
 			return
 		}
 		edgeerr.Write(c, string(provider), http.StatusBadRequest, "invalid_request", "could not read request body")
+		h.recordReject(id, provider, "", c.Request.Method, c.Request.URL.Path, http.StatusBadRequest, "bad_request", start)
 		return
 	}
 
@@ -166,25 +170,13 @@ func (h *handler) handle(c *gin.Context) {
 		cancel()
 		slog.Error("proxy: request pipeline error", "error", err, "provider", provider, "path", path)
 		edgeerr.Write(c, string(provider), http.StatusInternalServerError, "gateway_error", "request pipeline error")
+		h.recordReject(identity, provider, rc.Model, c.Request.Method, path, http.StatusInternalServerError, "gateway_error", start)
 		return
 	} else if stop {
-		cancel() // a stage already wrote the rejection (e.g. 429, or a block 403)
-		// Record a blocked attempt so it's visible in the dashboard (status 403,
-		// routing_reason "blocked") — governance needs to see who hit a blocked model.
-		if rc.Decision.Denied {
-			h.sink.Record(metering.NewEvent(metering.EventInput{
-				Provider: provider, Model: rc.Decision.RequestedModel,
-				Method: c.Request.Method, Path: path,
-				StatusCode:        http.StatusForbidden,
-				LatencyMS:         time.Since(start).Milliseconds(),
-				RequestedProvider: string(provider),
-				RequestedModel:    rc.Decision.RequestedModel,
-				RoutingReason:     string(rc.Decision.Reason),
-				RoutingRule:       rc.Decision.RuleID,
-				TenantID:          identity.TenantID, AccountID: identity.AccountID,
-				UserID: identity.UserID, TokenID: identity.TokenID,
-			}))
-		}
+		cancel() // a stage already wrote the rejection (429, no-creds 403, or a block 403)
+		// Every edge rejection is recorded (status + reject_reason) so the audit trail
+		// is complete — who hit a limit, lacks credentials, or a blocked model.
+		h.recordRejectPipeline(rc, c.Writer.Status(), start)
 		return
 	}
 
@@ -514,6 +506,35 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 			ResponseBody: metering.CapBody(respBody),
 		})
 	}
+}
+
+// recordReject writes one usage row for a request rejected at the edge before the
+// pipeline runs (unknown mount, oversized/bad body). Cost is 0 (no provider tokens
+// spent); the row carries the status + reject reason so the audit trail is complete.
+func (h *handler) recordReject(id auth.Identity, provider schemas.ModelProvider, model, method, path string, status int, reason string, start time.Time) {
+	h.sink.Record(metering.NewEvent(metering.EventInput{
+		Provider: provider, Model: model, Method: method, Path: path,
+		StatusCode: status, LatencyMS: time.Since(start).Milliseconds(),
+		RequestedProvider: string(provider), RequestedModel: model,
+		Attributes: &metering.Attributes{Derived: map[string]any{"reject_reason": reason}},
+		TenantID:   id.TenantID, AccountID: id.AccountID, UserID: id.UserID, TokenID: id.TokenID,
+	}))
+}
+
+// recordRejectPipeline records a rejection from a control stage (rate limit, missing
+// credential, block), carrying the routing decision plus the stage's reject reason.
+func (h *handler) recordRejectPipeline(rc *RequestContext, status int, start time.Time) {
+	d := rc.Decision
+	h.sink.Record(metering.NewEvent(metering.EventInput{
+		Provider: rc.Provider, Model: rc.Model,
+		Method: rc.Gin.Request.Method, Path: rc.Path,
+		StatusCode: status, LatencyMS: time.Since(start).Milliseconds(),
+		RequestedProvider: string(rc.Provider), RequestedModel: d.RequestedModel,
+		RoutingReason: string(d.Reason), RoutingRule: d.RuleID,
+		Attributes: &metering.Attributes{Derived: map[string]any{"reject_reason": rc.RejectReason}},
+		TenantID:   rc.Identity.TenantID, AccountID: rc.Identity.AccountID,
+		UserID: rc.Identity.UserID, TokenID: rc.Identity.TokenID,
+	}))
 }
 
 // readBody reads and returns the raw request body, bounded by the configured

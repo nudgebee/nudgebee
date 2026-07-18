@@ -65,11 +65,11 @@ func (h *handler) substituteChat(c *gin.Context, bctx *schemas.BifrostContext, c
 	// The Chat engine + OpenAI response shape is exactly the generic-endpoint path.
 	rc.Model = rm.model
 	if rc.Streaming {
-		h.streamChatWith(c, bctx, cancel, rc, rm, breq)
+		h.streamChatWith(c, bctx, cancel, rm, breq)
 		return
 	}
 	defer cancel()
-	h.unaryChatWith(c, bctx, rc, rm, breq)
+	h.unaryChatWith(c, bctx, rm, breq)
 }
 
 // substituteResponses handles an Anthropic or Gemini client: parse the native request

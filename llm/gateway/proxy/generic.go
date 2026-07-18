@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"nudgebee/llm-gateway/auth"
 	"nudgebee/llm-gateway/edgeerr"
 	"nudgebee/llm-gateway/metering"
+	"nudgebee/llm-gateway/routing"
 )
 
 // chatCompletionsPath is the canonical path recorded for generic-endpoint requests.
@@ -34,13 +36,16 @@ func (h *handler) handleChat(c *gin.Context) {
 
 	body, err := readBody(c)
 	if err != nil {
+		id := auth.FromContext(c)
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			edgeerr.Write(c, edgeerr.OpenAI, http.StatusRequestEntityTooLarge, "request_too_large",
 				"request body exceeds the gateway limit")
+			h.recordReject(id, schemas.OpenAI, "", c.Request.Method, chatCompletionsPath, http.StatusRequestEntityTooLarge, "too_large", start)
 			return
 		}
 		edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request", "could not read request body")
+		h.recordReject(id, schemas.OpenAI, "", c.Request.Method, chatCompletionsPath, http.StatusBadRequest, "bad_request", start)
 		return
 	}
 
@@ -51,6 +56,7 @@ func (h *handler) handleChat(c *gin.Context) {
 	if !ok {
 		edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request",
 			`unknown or missing model; address it as "provider/model" (e.g. "anthropic/claude-opus-4-8") or a known model name`)
+		h.recordReject(auth.FromContext(c), schemas.OpenAI, requestedModel, c.Request.Method, chatCompletionsPath, http.StatusBadRequest, "unknown_model", start)
 		return
 	}
 
@@ -67,25 +73,24 @@ func (h *handler) handleChat(c *gin.Context) {
 	if stop, err := h.pipeline.Run(rc); err != nil {
 		cancel()
 		slog.Error("proxy: chat pipeline error", "error", err, "provider", provider, "model", model)
-		edgeerr.Write(c, string(provider), http.StatusInternalServerError, "gateway_error", "request pipeline error")
+		edgeerr.Write(c, edgeerr.OpenAI, http.StatusInternalServerError, "gateway_error", "request pipeline error")
+		h.recordReject(identity, provider, model, c.Request.Method, chatCompletionsPath, http.StatusInternalServerError, "gateway_error", start)
 		return
 	} else if stop {
-		cancel() // a stage already wrote the rejection (429, or a block 403)
-		if rc.Decision.Denied {
-			h.sink.Record(metering.NewEvent(metering.EventInput{
-				Provider: rc.Provider, Model: rc.Decision.RequestedModel,
-				Method: c.Request.Method, Path: chatCompletionsPath,
-				StatusCode:        http.StatusForbidden,
-				LatencyMS:         time.Since(start).Milliseconds(),
-				RequestedProvider: string(rc.Provider),
-				RequestedModel:    rc.Decision.RequestedModel,
-				RoutingReason:     string(rc.Decision.Reason),
-				RoutingRule:       rc.Decision.RuleID,
-				TenantID:          identity.TenantID, AccountID: identity.AccountID,
-				UserID: identity.UserID, TokenID: identity.TokenID,
-			}))
-		}
+		cancel() // a stage already wrote the rejection (429, no-creds 403, or a block 403)
+		h.recordRejectPipeline(rc, c.Writer.Status(), start)
 		return
+	}
+
+	// Honor a cross-provider substitution rule on /v1 too, so org routing policy applies
+	// regardless of which endpoint a client uses. The response is canonical OpenAI
+	// regardless of the target, so no re-encoding is needed — just dispatch to the
+	// resolved provider/model (metering then attributes the row to the target).
+	if rc.Decision.Reason == routing.ReasonSubstitute {
+		c.Writer.Header().Set("x-nb-llm-substituted",
+			fmt.Sprintf("%s->%s", rc.Decision.RequestedProvider, rc.Decision.ResolvedProvider))
+		rc.Provider = schemas.ModelProvider(rc.Decision.ResolvedProvider)
+		rc.Model = rc.Decision.ResolvedModel
 	}
 
 	sessionID, sessionSource := resolveSession(c, rc.Body)
@@ -119,7 +124,7 @@ func (h *handler) handleChat(c *gin.Context) {
 func (h *handler) unaryChat(c *gin.Context, bctx *schemas.BifrostContext, rc *RequestContext, rm *reqMeta) {
 	var oaiReq openai.OpenAIChatRequest
 	if err := json.Unmarshal(rc.Body, &oaiReq); err != nil {
-		edgeerr.Write(c, string(rc.Provider), http.StatusBadRequest, "invalid_request",
+		edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request",
 			"could not parse request body as an OpenAI chat completion request")
 		h.meter(context.WithoutCancel(c.Request.Context()), rm, http.StatusBadRequest, nil, nil, nil)
 		return
@@ -129,13 +134,13 @@ func (h *handler) unaryChat(c *gin.Context, bctx *schemas.BifrostContext, rc *Re
 	// re-mapped it, and the provider is derived from that name, not the request body.
 	breq.Provider = rc.Provider
 	breq.Model = rc.Model
-	h.unaryChatWith(c, bctx, rc, rm, breq)
+	h.unaryChatWith(c, bctx, rm, breq)
 }
 
 // unaryChatWith dispatches a prebuilt chat request through the unified engine and
 // returns the canonical OpenAI response. Shared by the generic endpoint and
 // OpenAI-client cross-provider substitution.
-func (h *handler) unaryChatWith(c *gin.Context, bctx *schemas.BifrostContext, rc *RequestContext, rm *reqMeta, breq *schemas.BifrostChatRequest) {
+func (h *handler) unaryChatWith(c *gin.Context, bctx *schemas.BifrostContext, rm *reqMeta, breq *schemas.BifrostChatRequest) {
 	meterCtx := context.WithoutCancel(c.Request.Context())
 
 	resp, bErr := h.client.ChatCompletionRequest(bctx, breq)
@@ -146,7 +151,7 @@ func (h *handler) unaryChatWith(c *gin.Context, bctx *schemas.BifrostContext, rc
 	}
 	if resp == nil {
 		// Defensive: no error but no response — never return a "200 null" to the client.
-		edgeerr.Write(c, string(rc.Provider), http.StatusBadGateway, "upstream_error",
+		edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadGateway, "upstream_error",
 			"empty response from the provider engine")
 		h.meter(meterCtx, rm, http.StatusBadGateway, nil, nil, nil)
 		return
@@ -154,7 +159,7 @@ func (h *handler) unaryChatWith(c *gin.Context, bctx *schemas.BifrostContext, rc
 
 	out, err := marshalOpenAIChat(resp)
 	if err != nil {
-		edgeerr.Write(c, string(rc.Provider), http.StatusInternalServerError, "gateway_error", "could not encode response")
+		edgeerr.Write(c, edgeerr.OpenAI, http.StatusInternalServerError, "gateway_error", "could not encode response")
 		h.meter(meterCtx, rm, http.StatusInternalServerError, nil, chatUsage(resp), nil)
 		return
 	}
@@ -205,7 +210,7 @@ func (h *handler) streamChat(c *gin.Context, bctx *schemas.BifrostContext, cance
 	var oaiReq openai.OpenAIChatRequest
 	if err := json.Unmarshal(rc.Body, &oaiReq); err != nil {
 		cancel()
-		edgeerr.Write(c, string(rc.Provider), http.StatusBadRequest, "invalid_request",
+		edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request",
 			"could not parse request body as an OpenAI chat completion request")
 		h.meter(context.WithoutCancel(c.Request.Context()), rm, http.StatusBadRequest, nil, nil, nil)
 		return
@@ -213,14 +218,14 @@ func (h *handler) streamChat(c *gin.Context, bctx *schemas.BifrostContext, cance
 	breq := oaiReq.ToBifrostChatRequest(bctx)
 	breq.Provider = rc.Provider
 	breq.Model = rc.Model
-	h.streamChatWith(c, bctx, cancel, rc, rm, breq)
+	h.streamChatWith(c, bctx, cancel, rm, breq)
 }
 
 // streamChatWith streams a prebuilt chat request as OpenAI `chat.completion.chunk`
 // SSE, ending with `data: [DONE]`. Usage arrives on the final chunk and is metered
 // once on every exit path. Shared by the generic endpoint and OpenAI-client
 // substitution. Owns cancel.
-func (h *handler) streamChatWith(c *gin.Context, bctx *schemas.BifrostContext, cancel func(), rc *RequestContext, rm *reqMeta, breq *schemas.BifrostChatRequest) {
+func (h *handler) streamChatWith(c *gin.Context, bctx *schemas.BifrostContext, cancel func(), rm *reqMeta, breq *schemas.BifrostChatRequest) {
 	defer cancel()
 
 	status := http.StatusBadGateway

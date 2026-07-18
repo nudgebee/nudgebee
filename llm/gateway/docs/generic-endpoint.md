@@ -43,8 +43,11 @@ auth → route → ratelimit → resolver → filter → dispatch → meter
 The only differences from passthrough:
 
 1. **Provider is derived from the model name** (native mounts derive it from the URL
-   prefix). The resolved provider/model feed the routing rules, so aliases/tiers and
-   block rules apply exactly as on the native mounts.
+   prefix). The resolved provider/model feed the routing rules, so aliases/tiers,
+   block, **and cross-provider substitution** rules apply exactly as on the native
+   mounts. Substitution here needs no re-encoder — the endpoint already emits the
+   canonical OpenAI shape, so it simply dispatches to the resolved provider (the row
+   is still attributed to the target, `reason=substitute`, on the `generic` surface).
 2. **Dispatch is through the unified engine** (`ChatCompletionRequest` /
    `ChatCompletionStreamRequest`), which builds the target-native call, invokes it,
    and returns a unified `BifrostChatResponse`. This is what lets one endpoint reach
@@ -73,9 +76,8 @@ things worth noting:
 
 ## Not in scope here
 
-- **Cross-provider substitution on native mounts** (Phase 2b, now built — see
-  [substitution.md](substitution.md)) — keeping a native SDK but running the request
-  on a different provider and translating the response *back* to the client's native
-  shape. The generic endpoint sidesteps that re-encoding by always emitting the
-  canonical shape.
 - **`/v1/responses`** (OpenAI Responses API surface) — future.
+
+See [substitution.md](substitution.md) for the native-mount case, where the response
+must be translated *back* to the client's native shape (the harder re-encoder path the
+generic endpoint sidesteps by always emitting the canonical shape).

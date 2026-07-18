@@ -10,6 +10,7 @@ import (
 	"nudgebee/llm-gateway/config"
 	"nudgebee/llm-gateway/engine"
 	"nudgebee/llm-gateway/metering"
+	"nudgebee/llm-gateway/routing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -25,7 +26,8 @@ func TestHandleChat_UnresolvableModelIs400(t *testing.T) {
 	config.Config.MaxRequestBodyBytes = 1 << 20
 	defer func() { config.Config.MaxRequestBodyBytes = prev }()
 
-	h := &handler{} // resolution fails before the pipeline/engine are touched
+	sink := &metering.CapturingSink{}
+	h := &handler{sink: sink} // resolution fails before the pipeline/engine are touched
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -35,6 +37,10 @@ func TestHandleChat_UnresolvableModelIs400(t *testing.T) {
 
 	require.Equal(t, 400, rec.Code)
 	assert.Contains(t, rec.Body.String(), "invalid_request")
+	// The rejection is recorded for the audit trail (status + reason).
+	require.Len(t, sink.Events(), 1)
+	assert.Equal(t, 400, sink.Events()[0].StatusCode)
+	assert.Contains(t, sink.Events()[0].Attributes, "unknown_model")
 }
 
 // TestMarshalOpenAIChat_StripsExtraFields locks that Bifrost's internal extra_fields
@@ -55,6 +61,46 @@ func TestMarshalOpenAIChat_StripsExtraFields(t *testing.T) {
 	assert.NotContains(t, string(out), "extra_fields")
 	assert.NotContains(t, string(out), "resolved_model_used")
 	assert.Contains(t, string(out), `"object":"chat.completion"`)
+}
+
+// TestHandleChat_HonorsSubstitution locks that a cross-provider substitution rule
+// takes effect on the /v1 generic endpoint too (not just native mounts): the request
+// dispatches to the resolved target, the swap is signalled, and the usage row is
+// attributed to the target with reason=substitute on the generic surface.
+func TestHandleChat_HonorsSubstitution(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	prev := config.Config.MaxRequestBodyBytes
+	config.Config.MaxRequestBodyBytes = 1 << 20
+	defer func() { config.Config.MaxRequestBodyBytes = prev }()
+
+	eng, err := engine.New(context.Background(), nil)
+	require.NoError(t, err)
+	defer eng.Shutdown()
+
+	// A rule substituting openai/gpt-5 → an unconfigured provider (so dispatch fails
+	// fast, but only AFTER the substitution has been applied and metered).
+	router := routing.NewEngine([]routing.Rule{{
+		ID: "sub", Enabled: true,
+		Match:  routing.Match{Provider: "openai", Model: "gpt-5"},
+		Target: routing.Target{Endpoint: routing.Endpoint{Provider: "bogus-unconfigured", Model: "x"}},
+	}})
+	sink := &metering.CapturingSink{}
+	h := &handler{client: eng.Client, sink: sink, pipeline: NewPipeline(routeStage{router: router})}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest("POST", chatCompletionsPath, strings.NewReader(`{"model":"gpt-5","messages":[{"role":"user","content":"hi"}]}`))
+
+	h.handleChat(c)
+
+	assert.Equal(t, "openai->bogus-unconfigured", rec.Header().Get("x-nb-llm-substituted"))
+	events := sink.Events()
+	require.Len(t, events, 1)
+	ev := events[0]
+	assert.Equal(t, "bogus-unconfigured", ev.Provider, "dispatched + metered against the substitution target")
+	assert.Equal(t, "openai", ev.RequestedProvider)
+	assert.Equal(t, "substitute", ev.RoutingReason)
+	assert.Contains(t, ev.Attributes, `"surface":"generic"`) // arrived on /v1, still substituted
 }
 
 // TestStreamChat_MetersOnPreHeaderFailure locks that a streaming chat request which

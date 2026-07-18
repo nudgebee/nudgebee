@@ -148,7 +148,7 @@ func (h *handler) tryFailoverStream(c *gin.Context, bctx *schemas.BifrostContext
 			breq := oaiReq.ToBifrostChatRequest(bctx)
 			breq.Provider, breq.Model = target, model
 			markFailover(c, rm, target, model, primaryStatus)
-			h.streamChatWith(c, bctx, cancel, rc, rm, breq)
+			h.streamChatWith(c, bctx, cancel, rm, breq)
 			return true
 		}
 		breq, ok := parseToResponses(client, rm.body, bctx)
