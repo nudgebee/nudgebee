@@ -236,7 +236,7 @@ const SwitchNode = ({ id, data, isConnectable, selected, onAddFromHandle }: any)
             gap: 4,
             padding: 'var(--ds-space-1) var(--ds-space-2)',
             borderRadius: 999,
-            background: '#dc2626',
+            background: 'var(--ds-red-600)',
             color: 'white',
             fontSize: 10,
             fontWeight: 'var(--ds-font-weight-semibold)',
