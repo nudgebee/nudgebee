@@ -18,7 +18,18 @@ export interface GatewayRequestsData {
 
 export function useGatewayRequests(
   filters: { startDate: string; endDate: string },
-  opts: { userId?: string; providers?: string[]; models?: string[]; status?: string; tool?: string; limit: number; offset: number }
+  opts: {
+    userId?: string;
+    providers?: string[];
+    models?: string[];
+    status?: string;
+    tool?: string;
+    routingReason?: string;
+    rejectReason?: string;
+    dlp?: boolean;
+    limit: number;
+    offset: number;
+  }
 ): GatewayRequestsData {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -33,6 +44,9 @@ export function useGatewayRequests(
     models: opts.models ?? [],
     status: opts.status ?? '',
     tool: opts.tool ?? '',
+    routingReason: opts.routingReason ?? '',
+    rejectReason: opts.rejectReason ?? '',
+    dlp: opts.dlp ?? false,
     limit: opts.limit,
     offset: opts.offset,
   });
@@ -54,6 +68,9 @@ export function useGatewayRequests(
             models: opts.models,
             status: opts.status,
             tool: opts.tool,
+            routingReason: opts.routingReason,
+            rejectReason: opts.rejectReason,
+            dlp: opts.dlp,
             limit: opts.limit,
             offset: opts.offset,
           },

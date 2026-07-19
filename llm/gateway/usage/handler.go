@@ -30,8 +30,12 @@ type apiListRequest struct {
 	Models    []string `json:"models"`    // optional; empty = all (routed) models
 	Status    string   `json:"status"`    // optional; "success" (2xx) | "error" (everything else)
 	Tool      string   `json:"tool"`      // optional drill-down from the Tools tab
-	Limit     int      `json:"limit"`
-	Offset    int      `json:"offset"`
+	// Governance-tab drill-ins (each maps a Governance count to the rows behind it).
+	RoutingReason string `json:"routing_reason"` // optional; e.g. substitute | fallback | deprecated
+	RejectReason  string `json:"reject_reason"`  // optional; e.g. rate_limited | secret_blocked
+	Dlp           bool   `json:"dlp"`            // optional; requests that tripped the egress filter
+	Limit         int    `json:"limit"`
+	Offset        int    `json:"offset"`
 }
 
 // RegisterRoutes mounts the read-only usage query API under /rpc/usage, guarded by
@@ -92,8 +96,9 @@ func RegisterRoutes(r *gin.Engine, token string) {
 		res, err := ListRequests(c.Request.Context(), db, ListRequest{
 			TenantID: tenantID, StartDate: start, EndDate: end,
 			UserID: req.UserID, Providers: req.Providers, Models: req.Models, Status: req.Status,
-			Tool: req.Tool, CallerUserID: c.GetHeader("x-user-id"),
-			Limit: req.Limit, Offset: req.Offset,
+			Tool: req.Tool, RoutingReason: req.RoutingReason, RejectReason: req.RejectReason, Dlp: req.Dlp,
+			CallerUserID: c.GetHeader("x-user-id"),
+			Limit:        req.Limit, Offset: req.Offset,
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "request list failed"})

@@ -71,9 +71,79 @@ type TimeSeries struct {
 // tools, so attributing its cost/tokens to one would double-count. Which tools
 // were actually CALLED (+ failures) is a later phase.
 type ToolRow struct {
-	Tool              string  `json:"tool"`
-	Requests          int64   `json:"requests"` // requests that offered this tool
-	AvgLatencySeconds float64 `json:"avg_latency_seconds"`
+	Tool              string   `json:"tool"`
+	Requests          int64    `json:"requests"` // requests that offered this tool
+	AvgLatencySeconds float64  `json:"avg_latency_seconds"`
+	Models            []string `json:"models"` // distinct models that offered this tool
+}
+
+// LabelCount is one (label, count) pair for a governance breakdown (a reject
+// reason, a routing reason, …).
+type LabelCount struct {
+	Key      string `json:"key"`
+	Requests int64  `json:"requests"`
+}
+
+// Outcomes partitions every request by HTTP status class. The four classes are
+// exhaustive (a row with no recorded status falls in "other"), so they sum to
+// total_requests. ErrorRatePct is the non-success share.
+type Outcomes struct {
+	Success      int64   `json:"success"`        // 2xx
+	ClientError  int64   `json:"client_error"`   // 4xx (incl. rate-limit/blocked rejections)
+	ServerError  int64   `json:"server_error"`   // 5xx (provider/gateway faults)
+	Other        int64   `json:"other"`          // 1xx/3xx or unrecorded (e.g. aborted stream)
+	ErrorRatePct float64 `json:"error_rate_pct"` // 100 * (total - success) / total
+}
+
+// ProviderOutcome is one upstream provider's request count + error share — the
+// reliability lens split by provider (which upstream is actually failing).
+type ProviderOutcome struct {
+	Provider     string  `json:"provider"`
+	Requests     int64   `json:"requests"`
+	Errors       int64   `json:"errors"` // non-2xx
+	ErrorRatePct float64 `json:"error_rate_pct"`
+}
+
+// OutcomeBucket is one time bucket's outcome mix, for the reliability trend chart.
+type OutcomeBucket struct {
+	Bucket      time.Time `json:"bucket"`
+	Success     int64     `json:"success"`
+	ClientError int64     `json:"client_error"`
+	ServerError int64     `json:"server_error"`
+	Other       int64     `json:"other"`
+}
+
+// LatencyPct is the tail-latency profile (seconds) — avg alone hides the slow tail.
+type LatencyPct struct {
+	P50Seconds float64 `json:"p50_seconds"`
+	P95Seconds float64 `json:"p95_seconds"`
+	P99Seconds float64 `json:"p99_seconds"`
+}
+
+// RouteCount is one from→to substitution pair and how often it fired — where the
+// gateway's cross-provider substitution actually sends traffic.
+type RouteCount struct {
+	FromProvider string `json:"from_provider"`
+	FromModel    string `json:"from_model"`
+	ToProvider   string `json:"to_provider"`
+	ToModel      string `json:"to_model"`
+	Requests     int64  `json:"requests"`
+}
+
+// Governance is the reliability + intelligence rollup powering the Governance tab.
+// Reliability: request Outcomes (overall · per provider · over time), tail Latency,
+// and why requests were Rejected. Intelligence: the P2 routing decisions
+// (substitute/fallback/deprecated/…), the from→to SubstitutionRoutes, and DLP hits.
+// All derived from the same rows the cost/token aggregates use.
+type Governance struct {
+	Outcomes           Outcomes          `json:"outcomes"`
+	OutcomesByProvider []ProviderOutcome `json:"outcomes_by_provider"`
+	OutcomeSeries      []OutcomeBucket   `json:"outcome_series"`
+	Latency            LatencyPct        `json:"latency"`
+	Rejects            []LabelCount      `json:"rejects"`             // by derived.reject_reason (edge rejections)
+	RoutingReasons     []LabelCount      `json:"routing_reasons"`     // by routing_reason (passthrough/substitute/…)
+	SubstitutionRoutes []RouteCount      `json:"substitution_routes"` // from→to pairs for routing_reason=substitute
+	DLPHits            int64             `json:"dlp_hits"`            // requests that tripped the egress secret filter
 }
 
 // Metrics is the full aggregation result.
@@ -81,6 +151,7 @@ type Metrics struct {
 	Totals     Totals                `json:"totals"`
 	Breakdowns map[string][]GroupRow `json:"breakdowns"` // "provider", "model", "user"
 	Tools      []ToolRow             `json:"tools"`
+	Governance *Governance           `json:"governance,omitempty"`
 	TimeSeries *TimeSeries           `json:"time_series,omitempty"`
 }
 
@@ -214,6 +285,12 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*M
 	}
 	m.Tools = tools
 
+	gov, err := governance(db, req)
+	if err != nil {
+		return nil, err
+	}
+	m.Governance = gov
+
 	ts, err := timeSeries(db, req)
 	if err != nil {
 		return nil, err
@@ -288,20 +365,24 @@ type toolScan struct {
 	Tool       string `db:"tool"`
 	Requests   int64  `db:"requests"`
 	LatencySum int64  `db:"latency_ms_sum"`
+	Models     string `db:"models"` // comma-joined distinct models (split in Go)
 }
 
 // byTool breaks usage down by the tools a request OFFERED (attributes.actual.
 // tool_names), unnesting the array so each offered tool counts once per request.
 // The `attributes LIKE '%tool_names%'` prefilter narrows the jsonb cast to rows
 // that actually carry the array (attributes is JSON text; empty/absent rows are
-// skipped). Phase 1 = offered tools + latency only.
+// skipped). Reports offered tools + latency + the distinct models that offered
+// each (model names carry no comma, so a comma-join round-trips cleanly). Which
+// tools were actually CALLED is a later phase.
 func byTool(db *common.DatabaseManager, req Request) ([]ToolRow, error) {
 	const q = `
-		SELECT tool, count(*) AS requests, COALESCE(sum(latency_ms),0) AS latency_ms_sum
+		SELECT tool, count(*) AS requests, COALESCE(sum(latency_ms),0) AS latency_ms_sum,
+		       COALESCE(string_agg(DISTINCT NULLIF(model,''), ',' ORDER BY NULLIF(model,'')),'') AS models
 		FROM (
-			SELECT jsonb_array_elements_text(a #> '{actual,tool_names}') AS tool, latency_ms
+			SELECT jsonb_array_elements_text(a #> '{actual,tool_names}') AS tool, latency_ms, model
 			FROM (
-				SELECT NULLIF(attributes,'')::jsonb AS a, latency_ms
+				SELECT NULLIF(attributes,'')::jsonb AS a, latency_ms, model
 				FROM llm_gateway_usage
 				WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3
 				  AND attributes LIKE '%tool_names%'
@@ -316,25 +397,201 @@ func byTool(db *common.DatabaseManager, req Request) ([]ToolRow, error) {
 	}
 	out := make([]ToolRow, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, ToolRow{Tool: r.Tool, Requests: r.Requests, AvgLatencySeconds: avgLatencySeconds(r.LatencySum, r.Requests)})
+		var models []string
+		if r.Models != "" {
+			models = strings.Split(r.Models, ",")
+		}
+		out = append(out, ToolRow{Tool: r.Tool, Requests: r.Requests, AvgLatencySeconds: avgLatencySeconds(r.LatencySum, r.Requests), Models: models})
 	}
 	return out, nil
+}
+
+type labelScan struct {
+	Label string `db:"label"`
+	Count int64  `db:"count"`
+}
+
+// governanceStatusFilters is the shared status-class FILTER block — reused by the
+// overall/by-provider outcomes and the outcome time series so all three partition
+// status_code identically.
+const governanceStatusFilters = `count(*) AS total,
+		       count(*) FILTER (WHERE status_code BETWEEN 200 AND 299) AS success,
+		       count(*) FILTER (WHERE status_code BETWEEN 400 AND 499) AS client_error,
+		       count(*) FILTER (WHERE status_code BETWEEN 500 AND 599) AS server_error`
+
+type outcomeScan struct {
+	Provider    string `db:"provider"`
+	Total       int64  `db:"total"`
+	Success     int64  `db:"success"`
+	ClientError int64  `db:"client_error"`
+	ServerError int64  `db:"server_error"`
+}
+
+type seriesScan struct {
+	Bucket      time.Time `db:"bucket"`
+	Total       int64     `db:"total"`
+	Success     int64     `db:"success"`
+	ClientError int64     `db:"client_error"`
+	ServerError int64     `db:"server_error"`
+}
+
+type latencyScan struct {
+	P50 float64 `db:"p50"`
+	P95 float64 `db:"p95"`
+	P99 float64 `db:"p99"`
+}
+
+type routeScan struct {
+	FromProvider string `db:"from_provider"`
+	FromModel    string `db:"from_model"`
+	ToProvider   string `db:"to_provider"`
+	ToModel      string `db:"to_model"`
+	Count        int64  `db:"count"`
+}
+
+func pctOf(n, total int64) float64 {
+	if total == 0 {
+		return 0
+	}
+	return 100 * float64(n) / float64(total)
+}
+
+// governance rolls up request outcomes + the P2 routing/DLP signals for the
+// Governance tab, all over the same (tenant, window) the cost queries use:
+// outcomes (overall · per provider · over time), tail latency, rejections and
+// routing decisions by reason, the from→to substitution routes, and the DLP count.
+// The reject-reason and DLP signals live in attributes.derived (JSON text); the
+// `LIKE` prefilters narrow the jsonb cast to rows that carry them (same pattern as
+// byTool). Postgres-shaped, like the rest of this package.
+func governance(db *common.DatabaseManager, req Request) (*Governance, error) {
+	g := &Governance{
+		Rejects: []LabelCount{}, RoutingReasons: []LabelCount{},
+		OutcomesByProvider: []ProviderOutcome{}, OutcomeSeries: []OutcomeBucket{}, SubstitutionRoutes: []RouteCount{},
+	}
+	args := []any{req.TenantID, req.StartDate, req.EndDate}
+	const win = "tenant_id = $1 AND created_at >= $2 AND created_at < $3"
+
+	// Outcomes per provider — rolled up to the overall Outcomes in one pass (which
+	// upstream is failing, plus the top-line success/error mix).
+	var provRows []outcomeScan
+	if err := db.QueryAndScan(&provRows, `
+		SELECT provider, `+governanceStatusFilters+`
+		FROM llm_gateway_usage WHERE `+win+` GROUP BY provider ORDER BY total DESC`, args...); err != nil {
+		return nil, fmt.Errorf("usage: governance outcomes by provider: %w", err)
+	}
+	for _, r := range provRows {
+		g.Outcomes.Success += r.Success
+		g.Outcomes.ClientError += r.ClientError
+		g.Outcomes.ServerError += r.ServerError
+		g.Outcomes.Other += r.Total - r.Success - r.ClientError - r.ServerError
+		errs := r.Total - r.Success
+		g.OutcomesByProvider = append(g.OutcomesByProvider, ProviderOutcome{
+			Provider: r.Provider, Requests: r.Total, Errors: errs, ErrorRatePct: pctOf(errs, r.Total),
+		})
+	}
+	total := g.Outcomes.Success + g.Outcomes.ClientError + g.Outcomes.ServerError + g.Outcomes.Other
+	g.Outcomes.ErrorRatePct = pctOf(total-g.Outcomes.Success, total)
+
+	// Outcome trend per bucket (reliability chart). trunc is from a fixed allowlist.
+	trunc := "day"
+	if req.Granularity == "hour" {
+		trunc = "hour"
+	}
+	var seriesRows []seriesScan
+	if err := db.QueryAndScan(&seriesRows, fmt.Sprintf(`
+		SELECT date_trunc('%s', created_at) AS bucket, %s
+		FROM llm_gateway_usage WHERE `+win+` GROUP BY bucket ORDER BY bucket`, trunc, governanceStatusFilters), args...); err != nil {
+		return nil, fmt.Errorf("usage: governance outcome series: %w", err)
+	}
+	for _, r := range seriesRows {
+		g.OutcomeSeries = append(g.OutcomeSeries, OutcomeBucket{
+			Bucket: r.Bucket, Success: r.Success, ClientError: r.ClientError,
+			ServerError: r.ServerError, Other: r.Total - r.Success - r.ClientError - r.ServerError,
+		})
+	}
+
+	// Tail latency over recorded latencies (avg hides the slow tail).
+	var latRows []latencyScan
+	if err := db.QueryAndScan(&latRows, `
+		SELECT COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms),0) AS p50,
+		       COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms),0) AS p95,
+		       COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms),0) AS p99
+		FROM llm_gateway_usage WHERE `+win+` AND latency_ms > 0`, args...); err != nil {
+		return nil, fmt.Errorf("usage: governance latency: %w", err)
+	}
+	if len(latRows) > 0 {
+		g.Latency = LatencyPct{P50Seconds: latRows[0].P50 / 1000, P95Seconds: latRows[0].P95 / 1000, P99Seconds: latRows[0].P99 / 1000}
+	}
+
+	// Substitution routes: where cross-provider substitution actually sends traffic.
+	var routeRows []routeScan
+	if err := db.QueryAndScan(&routeRows, `
+		SELECT COALESCE(requested_provider,'') AS from_provider, COALESCE(requested_model,'') AS from_model,
+		       provider AS to_provider, model AS to_model, count(*) AS count
+		FROM llm_gateway_usage
+		WHERE `+win+` AND routing_reason = 'substitute'
+		GROUP BY requested_provider, requested_model, provider, model
+		ORDER BY count DESC LIMIT 50`, args...); err != nil {
+		return nil, fmt.Errorf("usage: governance substitution routes: %w", err)
+	}
+	for _, r := range routeRows {
+		g.SubstitutionRoutes = append(g.SubstitutionRoutes, RouteCount{
+			FromProvider: r.FromProvider, FromModel: r.FromModel, ToProvider: r.ToProvider, ToModel: r.ToModel, Requests: r.Count,
+		})
+	}
+
+	// Routing decisions by reason (empty routing_reason = plain passthrough).
+	var reasonRows []labelScan
+	if err := db.QueryAndScan(&reasonRows, `
+		SELECT COALESCE(NULLIF(routing_reason,''),'passthrough') AS label, count(*) AS count
+		FROM llm_gateway_usage WHERE `+win+` GROUP BY label ORDER BY count DESC`, args...); err != nil {
+		return nil, fmt.Errorf("usage: governance routing reasons: %w", err)
+	}
+	for _, r := range reasonRows {
+		g.RoutingReasons = append(g.RoutingReasons, LabelCount{Key: r.Label, Requests: r.Count})
+	}
+
+	// Rejections by reason (attributes.derived.reject_reason on edge-rejected rows).
+	var rejectRows []labelScan
+	if err := db.QueryAndScan(&rejectRows, `
+		SELECT (NULLIF(attributes,'')::jsonb #>> '{derived,reject_reason}') AS label, count(*) AS count
+		FROM llm_gateway_usage
+		WHERE `+win+` AND attributes LIKE '%reject_reason%'
+		  AND COALESCE(NULLIF(attributes,'')::jsonb #>> '{derived,reject_reason}','') <> ''
+		GROUP BY label ORDER BY count DESC`, args...); err != nil {
+		return nil, fmt.Errorf("usage: governance rejects: %w", err)
+	}
+	for _, r := range rejectRows {
+		g.Rejects = append(g.Rejects, LabelCount{Key: r.Label, Requests: r.Count})
+	}
+
+	// DLP hits (attributes.derived.dlp present — detect/redact rows and enforce blocks).
+	if err := db.QueryRowAndScan(&g.DLPHits, `
+		SELECT count(*) FROM llm_gateway_usage
+		WHERE `+win+` AND attributes LIKE '%"dlp"%'
+		  AND (NULLIF(attributes,'')::jsonb #> '{derived,dlp}') IS NOT NULL`, args...); err != nil {
+		return nil, fmt.Errorf("usage: governance dlp: %w", err)
+	}
+	return g, nil
 }
 
 // ListRequest is the paginated recent-request query for the Requests tab. UserID,
 // when set, scopes to one user (drill-down from the Users tab or the User filter).
 type ListRequest struct {
-	TenantID     string
-	StartDate    time.Time
-	EndDate      time.Time
-	UserID       string
-	Providers    []string // filter to these providers (empty = all)
-	Models       []string // filter to these routed models (empty = all)
-	Status       string   // "" (all) | "success" (2xx) | "error" (everything else)
-	Tool         string   // filter to requests that offered this tool (drill-in from Tools)
-	CallerUserID string   // the requesting user (x-user-id); a row's body is viewable only by its own user
-	Limit        int
-	Offset       int
+	TenantID      string
+	StartDate     time.Time
+	EndDate       time.Time
+	UserID        string
+	Providers     []string // filter to these providers (empty = all)
+	Models        []string // filter to these routed models (empty = all)
+	Status        string   // "" (all) | "success" (2xx) | "error" (everything else)
+	Tool          string   // filter to requests that offered this tool (drill-in from Tools)
+	RoutingReason string   // filter to one routing_reason (drill-in from Governance intelligence)
+	RejectReason  string   // filter to one derived.reject_reason (drill-in from Governance rejects)
+	Dlp           bool     // filter to requests that tripped the egress filter (drill-in from Governance DLP)
+	CallerUserID  string   // the requesting user (x-user-id); a row's body is viewable only by its own user
+	Limit         int
+	Offset        int
 }
 
 // RequestRow is one row of the recent-request list — the gateway analog of the LLM
@@ -347,6 +604,7 @@ type RequestRow struct {
 	Model             string    `json:"model"`
 	RequestedModel    string    `json:"requested_model"`
 	RoutingReason     string    `json:"routing_reason"`
+	Surface           string    `json:"surface"` // "native" (passthrough mount) | "generic" (/v1) | ""
 	StatusCode        int       `json:"status_code"`
 	Streaming         bool      `json:"streaming"`
 	InputTokens       int64     `json:"input_tokens"`
@@ -379,6 +637,7 @@ type reqScan struct {
 	Model          string    `db:"model"`
 	RequestedModel string    `db:"requested_model"`
 	RoutingReason  string    `db:"routing_reason"`
+	Surface        string    `db:"surface"`
 	StatusCode     int       `db:"status_code"`
 	Streaming      bool      `db:"streaming"`
 	Input          int64     `db:"input_tokens"`
@@ -423,6 +682,23 @@ func listRequestsFilter(req ListRequest) (string, []any) {
 		where += fmt.Sprintf(" AND g.attributes LIKE '%%tool_names%%' AND jsonb_exists(NULLIF(g.attributes,'')::jsonb #> '{actual,tool_names}', $%d)", len(args)+1)
 		args = append(args, req.Tool)
 	}
+	if req.RoutingReason != "" {
+		// 'passthrough' is the synthetic label the Governance rollup gives an empty
+		// routing_reason, so match empty rows for it rather than the literal string.
+		if req.RoutingReason == "passthrough" {
+			where += " AND COALESCE(g.routing_reason,'') = ''"
+		} else {
+			where += fmt.Sprintf(" AND g.routing_reason = $%d", len(args)+1)
+			args = append(args, req.RoutingReason)
+		}
+	}
+	if req.RejectReason != "" {
+		where += fmt.Sprintf(" AND g.attributes LIKE '%%reject_reason%%' AND (NULLIF(g.attributes,'')::jsonb #>> '{derived,reject_reason}') = $%d", len(args)+1)
+		args = append(args, req.RejectReason)
+	}
+	if req.Dlp {
+		where += " AND g.attributes LIKE '%\"dlp\"%' AND (NULLIF(g.attributes,'')::jsonb #> '{derived,dlp}') IS NOT NULL"
+	}
 	return where, args
 }
 
@@ -463,6 +739,7 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 		       COALESCE(u.username::text,'') AS username, g.provider, g.model,
 		       COALESCE(g.requested_model,'') AS requested_model,
 		       COALESCE(g.routing_reason,'') AS routing_reason,
+		       COALESCE(NULLIF(g.attributes,'')::jsonb #>> '{derived,surface}','') AS surface,
 		       COALESCE(g.status_code,0) AS status_code, COALESCE(g.streaming,false) AS streaming,
 		       COALESCE(g.input_tokens,0) AS input_tokens, COALESCE(g.output_tokens,0) AS output_tokens,
 		       COALESCE(g.cache_read_tokens,0) AS cache_read_tokens, COALESCE(g.cache_write_tokens,0) AS cache_write_tokens,
@@ -494,7 +771,7 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 		out = append(out, RequestRow{
 			ID:        r.ID,
 			CreatedAt: r.CreatedAt, User: user, Provider: r.Provider, Model: r.Model,
-			RequestedModel: r.RequestedModel, RoutingReason: r.RoutingReason,
+			RequestedModel: r.RequestedModel, RoutingReason: r.RoutingReason, Surface: r.Surface,
 			StatusCode: r.StatusCode, Streaming: r.Streaming,
 			InputTokens: r.Input, OutputTokens: r.Output, CachedInputTokens: r.CacheRead,
 			LatencyMs:   r.LatencyMs,

@@ -96,6 +96,35 @@ func TestListRequestsFilter(t *testing.T) {
 		assert.NotContains(t, whereAll, "status_code")
 	})
 
+	t.Run("routing_reason filter (governance drill-in)", func(t *testing.T) {
+		req := base
+		req.RoutingReason = "substitute"
+		where, args := listRequestsFilter(req)
+		assert.Contains(t, where, "g.routing_reason = $4")
+		assert.Equal(t, []any{"t1", start, end, "substitute"}, args)
+
+		// 'passthrough' is the synthetic label for an empty routing_reason — match
+		// empty rows, add no arg.
+		req.RoutingReason = "passthrough"
+		wherePT, argsPT := listRequestsFilter(req)
+		assert.Contains(t, wherePT, "COALESCE(g.routing_reason,'') = ''")
+		assert.Len(t, argsPT, 3)
+	})
+
+	t.Run("reject_reason and dlp filters", func(t *testing.T) {
+		req := base
+		req.RejectReason = "secret_blocked"
+		where, args := listRequestsFilter(req)
+		assert.Contains(t, where, "{derived,reject_reason}') = $4")
+		assert.Equal(t, []any{"t1", start, end, "secret_blocked"}, args)
+
+		req = base
+		req.Dlp = true
+		whereDlp, argsDlp := listRequestsFilter(req)
+		assert.Contains(t, whereDlp, "{derived,dlp}') IS NOT NULL")
+		assert.Len(t, argsDlp, 3) // dlp adds no arg
+	})
+
 	t.Run("all filters compose with correct placeholder numbering", func(t *testing.T) {
 		req := base
 		req.UserID = "u1"

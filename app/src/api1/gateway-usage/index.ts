@@ -75,12 +75,85 @@ export interface GatewayToolRow {
   tool: string;
   requests: number;
   avg_latency_seconds: number;
+  /** Distinct models that offered this tool. */
+  models: string[];
+}
+
+/** One (label, count) pair in a governance breakdown (a reject/routing reason). */
+export interface GatewayLabelCount {
+  key: string;
+  requests: number;
+}
+
+/** Request outcomes by HTTP status class. Exhaustive → the four sum to total_requests. */
+export interface GatewayOutcomes {
+  success: number; // 2xx
+  client_error: number; // 4xx (incl. rate-limit / blocked rejections)
+  server_error: number; // 5xx
+  other: number; // 1xx/3xx or unrecorded (e.g. aborted stream)
+  error_rate_pct: number; // 100 * (total - success) / total
+}
+
+/** One upstream provider's request count + error share (reliability by provider). */
+export interface GatewayProviderOutcome {
+  provider: string;
+  requests: number;
+  errors: number;
+  error_rate_pct: number;
+}
+
+/** One time bucket's outcome mix, for the reliability trend chart. */
+export interface GatewayOutcomeBucket {
+  bucket: string; // RFC3339 UTC
+  success: number;
+  client_error: number;
+  server_error: number;
+  other: number;
+}
+
+/** Tail-latency profile in seconds (avg alone hides the slow tail). */
+export interface GatewayLatencyPct {
+  p50_seconds: number;
+  p95_seconds: number;
+  p99_seconds: number;
+}
+
+/** One from→to substitution pair and how often it fired. */
+export interface GatewayRoute {
+  from_provider: string;
+  from_model: string;
+  to_provider: string;
+  to_model: string;
+  requests: number;
+}
+
+/** Reliability + intelligence rollup for the Governance tab. `governance` is
+ * omitted on empty windows, so treat it as nullable. */
+export interface GatewayGovernance {
+  outcomes: GatewayOutcomes;
+  /** Edge rejections by reason — supplementary; fills in on fresh traffic. */
+  rejects: GatewayLabelCount[];
+  /** Routing decisions by reason: passthrough / substitute / fallback / deprecated / … */
+  routing_reasons: GatewayLabelCount[];
+  /** Requests that tripped the egress secret filter. */
+  dlp_hits: number;
+  // The fields below were added in a later gateway build — optional so the UI
+  // stays resilient to version skew (an older gateway omits them).
+  /** Outcomes split by upstream provider — which one is failing. */
+  outcomes_by_provider?: GatewayProviderOutcome[];
+  /** Per-bucket outcome mix for the reliability trend chart. */
+  outcome_series?: GatewayOutcomeBucket[];
+  /** p50/p95/p99 end-to-end latency, seconds. */
+  latency?: GatewayLatencyPct;
+  /** from→to pairs for routing_reason=substitute — where substitution reroutes. */
+  substitution_routes?: GatewayRoute[];
 }
 
 export interface GatewayUsageMetrics {
   totals: GatewayTotals;
   breakdowns: GatewayBreakdowns;
   tools: GatewayToolRow[];
+  governance?: GatewayGovernance | null;
   time_series: GatewayTimeSeries;
 }
 
@@ -99,6 +172,8 @@ export interface GatewayRequestRow {
   model: string;
   requested_model: string;
   routing_reason: string;
+  /** 'native' (passthrough mount) | 'generic' (/v1) | ''. */
+  surface: string;
   status_code: number;
   streaming: boolean;
   input_tokens: number;
@@ -139,6 +214,10 @@ export interface ListGatewayRequestsRequest {
   models?: string[]; // optional; empty = all (routed) models
   status?: string; // optional; 'success' (2xx) | 'error' (everything else)
   tool?: string; // optional drill-down from the Tools tab
+  // Governance-tab drill-ins — each maps a Governance count to the rows behind it.
+  routingReason?: string; // e.g. substitute | fallback | deprecated | passthrough
+  rejectReason?: string; // e.g. rate_limited | secret_blocked
+  dlp?: boolean; // requests that tripped the egress filter
   limit?: number;
   offset?: number;
 }
@@ -188,11 +267,11 @@ export async function aggregateGatewayUsage(req: AggregateGatewayUsageRequest, s
  * an upstream body that carries every filter field the Go handler binds. */
 export const LIST_GATEWAY_REQUESTS = `mutation ListGatewayRequests(
     $startDate: String!, $endDate: String!, $userId: String, $providers: [String!], $models: [String!],
-    $status: String, $tool: String, $limit: Int, $offset: Int
+    $status: String, $tool: String, $routingReason: String, $rejectReason: String, $dlp: Boolean, $limit: Int, $offset: Int
   ) {
     llm_gateway_list_requests(request: {
       start_date: $startDate, end_date: $endDate, user_id: $userId, providers: $providers, models: $models,
-      status: $status, tool: $tool, limit: $limit, offset: $offset
+      status: $status, tool: $tool, routing_reason: $routingReason, reject_reason: $rejectReason, dlp: $dlp, limit: $limit, offset: $offset
     }) {
       data
     }
@@ -211,6 +290,9 @@ export async function listGatewayRequests(req: ListGatewayRequestsRequest, signa
       models: arr(req.models),
       status: req.status ?? '',
       tool: req.tool ?? '',
+      routingReason: req.routingReason ?? '',
+      rejectReason: req.rejectReason ?? '',
+      dlp: req.dlp ?? false,
       limit: req.limit ?? 50,
       offset: req.offset ?? 0,
     },

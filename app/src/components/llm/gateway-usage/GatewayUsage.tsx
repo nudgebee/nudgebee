@@ -28,17 +28,19 @@ import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import PeopleAltOutlinedIcon from '@mui/icons-material/PeopleAltOutlined';
 import ReceiptLongOutlinedIcon from '@mui/icons-material/ReceiptLongOutlined';
 import HandymanOutlinedIcon from '@mui/icons-material/HandymanOutlined';
+import ShieldOutlinedIcon from '@mui/icons-material/ShieldOutlined';
 import dayjs from 'dayjs';
 import CustomTabs from '@shared/navigation/Tabs';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
-import { useGatewayData, type GatewayFilters } from './useGatewayData';
+import { useGatewayData, type GatewayFilters, type GovScope } from './useGatewayData';
 import ConnectView from './views/ConnectView';
 import OverviewView from './views/OverviewView';
 import ModelsView from './views/ModelsView';
 import UsersView from './views/UsersView';
 import RequestsView from './views/RequestsView';
 import ToolsView from './views/ToolsView';
+import GovernanceView from './views/GovernanceView';
 import type { GatewayGranularity } from '@api1/gateway-usage';
 
 interface GatewayUsageProps {
@@ -70,7 +72,7 @@ const DATE_RANGE_SHORTCUTS = ['Last 24 Hours', 'Current Week', 'Current Month', 
 // Every sub-tab, and the source of truth for TabId — a new tab added here is
 // automatically deep-linkable, and one added only to `tabOptions` below fails to
 // type-check rather than silently resolving to the default.
-const TAB_IDS = ['connect', 'overview', 'models', 'users', 'requests', 'tools'] as const;
+const TAB_IDS = ['connect', 'overview', 'models', 'users', 'requests', 'tools', 'governance'] as const;
 
 type TabId = (typeof TAB_IDS)[number];
 
@@ -105,6 +107,9 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   const [tab, setTab] = React.useState<TabId>(() => subTabFromHash() ?? DEFAULT_TAB);
   // Users → Requests drill-in: when set, the Requests tab is scoped to this user.
   const [selectedUser, setSelectedUser] = React.useState<{ id: string; name: string } | null>(null);
+  // Governance → Requests drill-in: when set, the Requests tab is scoped to the
+  // rows behind a governance count (a routing/reject reason, DLP, or error class).
+  const [selectedGov, setSelectedGov] = React.useState<GovScope | null>(null);
   // Bumped whenever the date window is set from somewhere other than the picker
   // itself (i.e. the Overview drill-in), to re-key it — see the picker below.
   const [dateResetNonce, setDateResetNonce] = React.useState(0);
@@ -200,6 +205,13 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   }, []);
   const onClearTool = React.useCallback(() => setSelectedTool(null), []);
 
+  // Drill-in from the Governance tab: scope Requests to a governance count and jump.
+  const onDrillGov = React.useCallback((scope: GovScope) => {
+    setSelectedGov(scope);
+    setTab('requests');
+  }, []);
+  const onClearGov = React.useCallback(() => setSelectedGov(null), []);
+
   // Pass MUI icons as component references (not JSX elements) so CustomTabs
   // renders them with its built-in `.tab-icon` styling (idle grey, selected
   // colour change) — matching every other CustomTabs usage.
@@ -212,6 +224,7 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
     { value: 'users', text: 'Users', icon: PeopleAltOutlinedIcon, iconSize: 16 },
     { value: 'requests', text: 'Requests', icon: ReceiptLongOutlinedIcon, iconSize: 16 },
     { value: 'tools', text: 'Tools', icon: HandymanOutlinedIcon, iconSize: 16 },
+    { value: 'governance', text: 'Governance', icon: ShieldOutlinedIcon, iconSize: 16 },
   ];
 
   return (
@@ -269,9 +282,12 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
           onChangeUser={onChangeUser}
           toolFilter={selectedTool}
           onClearTool={onClearTool}
+          govFilter={selectedGov}
+          onClearGov={onClearGov}
         />
       )}
       {tab === 'tools' && <ToolsView metrics={metrics} loading={loading} error={error} onSelectTool={onSelectTool} />}
+      {tab === 'governance' && <GovernanceView metrics={metrics} filters={filters} loading={loading} error={error} onDrill={onDrillGov} />}
     </Box>
   );
 }

@@ -41,16 +41,17 @@ export function ToolsView({ metrics, loading, error, onSelectTool }: ToolsViewPr
   }
 
   const headers = [
-    { name: 'Tool', width: '56%', component: <HeaderLabel label='Tool' info='A tool the caller offered to the model in the request.' /> },
+    { name: 'Tool', width: '38%', component: <HeaderLabel label='Tool' info='A tool the caller offered to the model in the request.' /> },
+    { name: 'Models', width: '30%', component: <HeaderLabel label='Models' info='The distinct models that offered this tool.' /> },
     {
       name: 'Requests',
-      width: '24%',
+      width: '16%',
       align: 'right' as const,
       component: <HeaderLabel label='Requests' info='Number of requests that offered this tool.' />,
     },
     {
       name: 'Avg latency',
-      width: '20%',
+      width: '16%',
       align: 'right' as const,
       component: <HeaderLabel label='Avg latency' info='Average request latency when this tool was offered.' />,
     },
@@ -78,6 +79,13 @@ export function ToolsView({ metrics, loading, error, onSelectTool }: ToolsViewPr
           }}
         >
           {t.tool}
+        </Box>
+      ),
+    },
+    {
+      component: (
+        <Box sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-600)', overflowWrap: 'anywhere' }}>
+          {t.models && t.models.length > 0 ? t.models.join(', ') : '—'}
         </Box>
       ),
     },

@@ -31,7 +31,7 @@ import HeaderLabel from '@components/llm/cost-analyser/components/HeaderLabel';
 import { fmtTokens, fmtDuration } from '@components/llm/cost-analyser/format';
 import { makeSeverity, SeverityCell, type Severity } from '@components/llm/cost-analyser/components/severity';
 import { useGatewayRequests } from '../useGatewayRequests';
-import type { GatewayFilters } from '../useGatewayData';
+import type { GatewayFilters, GovScope } from '../useGatewayData';
 import type { GatewayRequestRow, GatewayUsageMetrics } from '@api1/gateway-usage';
 
 // The per-request "view body" viewer is an ENTERPRISE surface — the EE body
@@ -51,6 +51,10 @@ interface RequestsViewProps {
   /** Set when drilled in from the Tools tab — scopes to requests that offered it. */
   toolFilter: string | null;
   onClearTool: () => void;
+  /** Set when drilled in from the Governance tab — scopes to the rows behind a
+   * governance count (a routing/reject reason, DLP, or the error class). */
+  govFilter: GovScope | null;
+  onClearGov: () => void;
 }
 
 const LIMIT = 50;
@@ -88,6 +92,31 @@ const HEADERS = [
   { name: 'Status', width: '8%', align: 'right' as const, component: H.status },
   { name: 'Body', width: '8%', align: 'right' as const, component: H.body },
 ];
+
+/** Passthrough (native SDK mount) vs the generic /v1 endpoint — a muted tag next
+ * to the provider, matching the local StatusPill's hand-rolled pill style. */
+function SurfaceBadge({ surface }: { surface: string }) {
+  const generic = surface === 'generic';
+  return (
+    <Box
+      component='span'
+      title={generic ? 'Generic /v1 endpoint' : 'Native passthrough mount'}
+      sx={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        padding: '0 5px',
+        borderRadius: 'var(--ds-radius-sm)',
+        fontSize: 'var(--ds-text-small)',
+        color: 'var(--ds-gray-600)',
+        backgroundColor: 'var(--ds-gray-100)',
+        border: '1px solid var(--ds-gray-200)',
+        lineHeight: 1.7,
+      }}
+    >
+      {generic ? 'generic' : 'native'}
+    </Box>
+  );
+}
 
 function StatusPill({ code }: { code: number }) {
   if (!code) {
@@ -143,7 +172,14 @@ function toRow(r: GatewayRequestRow, costSev: (v: number) => Severity, onViewBod
         </Box>
       ),
     },
-    { component: <Box sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)' }}>{r.provider || '—'}</Box> },
+    {
+      component: (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', flexWrap: 'wrap' }}>
+          <Box sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)' }}>{r.provider || '—'}</Box>
+          {r.surface && <SurfaceBadge surface={r.surface} />}
+        </Box>
+      ),
+    },
     {
       align: 'right' as const,
       component: (
@@ -196,7 +232,17 @@ function toRow(r: GatewayRequestRow, costSev: (v: number) => Severity, onViewBod
   ];
 }
 
-export function RequestsView({ filters, metrics, metricsLoading, userFilter, onChangeUser, toolFilter, onClearTool }: RequestsViewProps) {
+export function RequestsView({
+  filters,
+  metrics,
+  metricsLoading,
+  userFilter,
+  onChangeUser,
+  toolFilter,
+  onClearTool,
+  govFilter,
+  onClearGov,
+}: RequestsViewProps) {
   const [offset, setOffset] = React.useState(0);
   const [models, setModels] = React.useState<string[]>([]);
   const [providers, setProviders] = React.useState<string[]>([]);
@@ -204,19 +250,33 @@ export function RequestsView({ filters, metrics, metricsLoading, userFilter, onC
   // The row whose captured body is being viewed (EE). Null = modal closed.
   const [bodyRow, setBodyRow] = React.useState<GatewayRequestRow | null>(null);
 
+  // A Governance drill-in maps to one request filter. Status drives the existing
+  // Status dropdown (so there's one source for it); routing/reject/dlp have no
+  // dropdown, so they show as a removable chip. When a status scope is active it
+  // wins over the local dropdown until the user changes the dropdown (which clears it).
+  const govStatus = govFilter?.kind === 'status' ? govFilter.value : undefined;
+  const effStatus = govStatus ?? status;
+  const govRouting = govFilter?.kind === 'routing' ? govFilter.value : undefined;
+  const govReject = govFilter?.kind === 'reject' ? govFilter.value : undefined;
+  const govDlp = govFilter?.kind === 'dlp' ? true : undefined;
+  const govChip = govFilter && govFilter.kind !== 'status' ? govFilter : null;
+
   // Reset paging whenever the scope (date window or any filter) changes. The
   // array states are safe as deps: useState references are stable and only
   // change via their setters (which always receive a fresh array).
   React.useEffect(() => {
     setOffset(0);
-  }, [filters.startDate, filters.endDate, userFilter?.id, toolFilter, models, providers, status]);
+  }, [filters.startDate, filters.endDate, userFilter?.id, toolFilter, govFilter, models, providers, effStatus]);
 
   const { loading, error, data } = useGatewayRequests(filters, {
     userId: userFilter?.id,
     providers,
     models,
-    status: status || undefined,
+    status: effStatus || undefined,
     tool: toolFilter ?? undefined,
+    routingReason: govRouting,
+    rejectReason: govReject,
+    dlp: govDlp,
     limit: LIMIT,
     offset,
   });
@@ -283,12 +343,21 @@ export function RequestsView({ filters, metrics, metricsLoading, userFilter, onC
             id='gateway-requests-filter-status'
             label='Status'
             options={STATUS_OPTIONS}
-            value={status}
-            onSelect={(e: { target: { value: string | null } }) => setStatus(e?.target?.value ?? '')}
+            value={effStatus}
+            onSelect={(e: { target: { value: string | null } }) => {
+              // Changing the dropdown leaves any Governance status scope behind.
+              if (govStatus) onClearGov();
+              setStatus(e?.target?.value ?? '');
+            }}
           />
           {toolFilter && (
             <Chip tone='info' onDismiss={onClearTool} id='gateway-requests-tool-chip'>
               Tool: {toolFilter}
+            </Chip>
+          )}
+          {govChip && (
+            <Chip tone='info' onDismiss={onClearGov} id='gateway-requests-gov-chip'>
+              {govChip.label}
             </Chip>
           )}
         </Box>
