@@ -261,6 +261,10 @@ type ClassifyEventRequest struct {
 	LinkedEventID     *string `json:"linked_event_id,omitempty"`
 	ApplyToExisting   bool    `json:"apply_to_existing"`
 	Confirmed         bool    `json:"confirmed"`
+	// PreserveStatus keeps the event's nb_status untouched. Set by pure priority
+	// corrections (the priority pin control), where the user is overriding severity,
+	// not asserting a triage-state transition.
+	PreserveStatus bool `json:"preserve_status"`
 }
 
 // ClassifyEventResponse is the response after classification

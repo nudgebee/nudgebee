@@ -845,6 +845,7 @@ type Mutation {
     linked_event_id: String
     apply_to_existing: Boolean
     confirmed: Boolean
+    preserve_status: Boolean
   ): ClassifyEventResponse
 }
 

@@ -211,6 +211,7 @@ const transformTableData = (
                 eventId={item.latest_event_id}
                 accountId={item.account_id}
                 currentPriority={item.latest_computed_priority}
+                currentScore={item.latest_computed_score}
                 canWrite={canWrite}
                 onChanged={onStatusChange}
               />

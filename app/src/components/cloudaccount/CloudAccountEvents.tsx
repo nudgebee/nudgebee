@@ -349,6 +349,13 @@ const CloudAccountEvents = (props: {
     }
   };
 
+  const handlePriorityChange = (eventId: string, newPriority: string | null, newScore?: number | null) => {
+    rawEventsRef.current = rawEventsRef.current.map((e: any) =>
+      e.id === eventId ? { ...e, computed_priority: newPriority, ...(newScore !== undefined ? { computed_score: newScore } : {}) } : e
+    );
+    setEvents(rawEventsRef.current.map((item: any) => mapEventToRow(item, ticketReferenceMapRef.current)));
+  };
+
   const mapEventToRow = (item: any, ticketReferenceMap: Map<string, any>): ICustomTableRow[] => {
     const subjectName = parseSubjectName(item);
     const rowData: ICustomTableRow[] = [];
@@ -414,8 +421,9 @@ const CloudAccountEvents = (props: {
             eventId={item.id}
             accountId={item.account_id || props.accountId}
             currentPriority={item.computed_priority}
+            currentScore={item.computed_score}
             canWrite={hasWriteAccess(item.account_id || props.accountId)}
-            onChanged={listCloudAccountEvents}
+            onChanged={(newPriority, newScore) => handlePriorityChange(item.id, newPriority, newScore)}
           />
         </Box>
       ),

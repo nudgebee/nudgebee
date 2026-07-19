@@ -581,6 +581,9 @@ func handleEventClassify(h *ActionRequest, c *gin.Context, ctx *security.Request
 	if confirmed, ok := h.Input["confirmed"].(bool); ok {
 		req.Confirmed = confirmed
 	}
+	if preserveStatus, ok := h.Input["preserve_status"].(bool); ok {
+		req.PreserveStatus = preserveStatus
+	}
 
 	// Get the event to extract cloud_account_id
 	ev, err := event.GetEvent(ctx, eventID)
