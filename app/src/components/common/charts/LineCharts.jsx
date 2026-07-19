@@ -109,7 +109,8 @@ const Charts = ({
   const pinnedPointRef = useRef(null);
   pinnedPointRef.current = pinnedPoint;
 
-  const options = {
+  // Built fresh each render — no deep clone needed (previously used JSON.parse/stringify).
+  let localOptions = {
     clip: false,
     responsive: true,
     maintainAspectRatio: false,
@@ -159,7 +160,7 @@ const Charts = ({
         },
         ...(integerYlabel && {
           ticks: {
-            precision: 0, // removes decimals
+            precision: 0,
             callback: function (value) {
               return Number.isInteger(value) ? value : '';
             },
@@ -173,8 +174,6 @@ const Charts = ({
       },
     },
   };
-
-  let localOptions = JSON.parse(JSON.stringify(options));
 
   // For scrollable (fixed-width) charts, show one tick per hour instead of auto-skipped ticks.
   if (fixedWidth) {
