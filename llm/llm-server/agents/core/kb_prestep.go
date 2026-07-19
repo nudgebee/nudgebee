@@ -50,11 +50,16 @@ type kbAssemblyResult struct {
 }
 
 // fetchAgentKBs aggregates the active+inactive KB rows mapped to the agent's own
-// name plus any inherited ancestor names, de-duplicated by id. The question-aware
-// selection (selectedIds) filters inherited KBs only — KBs mapped directly to the
-// agent's own name (agentNames[0]) are always retained.
-func fetchAgentKBs(ctx *security.RequestContext, accountId string, agentNames []string, selectedIds []string) []toolcore.Knowledgebase {
-	if accountId == "" || len(agentNames) == 0 {
+// names plus any inherited ancestor names, de-duplicated by id. The question-aware
+// selection (selectedIds) filters inherited KBs only — KBs mapped directly to any of
+// the agent's own names are always retained.
+//
+// ownNames must include the agent's canonical name AND its back-compat aliases: KB
+// mappings are keyed by the name in effect when the mapping was created, so an agent
+// renamed after the fact (e.g. k8s_debug → k8s_orchestrator) would otherwise never
+// see runbooks users mapped under its old name.
+func fetchAgentKBs(ctx *security.RequestContext, accountId string, ownNames []string, inheritedNames []string, selectedIds []string) []toolcore.Knowledgebase {
+	if accountId == "" || len(ownNames) == 0 {
 		return nil
 	}
 
@@ -67,16 +72,17 @@ func fetchAgentKBs(ctx *security.RequestContext, accountId string, agentNames []
 	}
 
 	seen := make(map[string]bool)
+	fetchedAgents := make(map[string]bool)
 	var kbs []toolcore.Knowledgebase
-	for i, name := range agentNames {
-		if name == "" {
-			continue
+	fetch := func(name string, isOwnName bool) {
+		if name == "" || fetchedAgents[name] {
+			return
 		}
-		isOwnName := i == 0
+		fetchedAgents[name] = true
 		fetched, err := toolcore.ListAgentKBs(ctx, accountId, name)
 		if err != nil {
 			ctx.GetLogger().Warn("agentexecutor: unable to fetch agent KBs", "error", err, "agent", name)
-			continue
+			return
 		}
 		for _, kb := range fetched {
 			if seen[kb.Id] {
@@ -90,6 +96,12 @@ func fetchAgentKBs(ctx *security.RequestContext, accountId string, agentNames []
 			seen[kb.Id] = true
 			kbs = append(kbs, kb)
 		}
+	}
+	for _, name := range ownNames {
+		fetch(name, true)
+	}
+	for _, name := range inheritedNames {
+		fetch(name, false)
 	}
 	return kbs
 }
