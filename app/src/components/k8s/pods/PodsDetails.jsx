@@ -1,4 +1,4 @@
-import { Box, Typography } from '@mui/material';
+import { Box, CircularProgress, Typography } from '@mui/material';
 import SafeIcon from '@shared/icons/SafeIcon';
 import podIcon from '../../../assets/kubernetesPod-icon.svg';
 import Tabs from '@shared/navigation/Tabs';
@@ -7,16 +7,29 @@ import PodDetailsBox from './PodDetailsBox';
 import { KubernetesCostCharts, KubernetesSecurityDrilldown, KubernetesUtilizationCharts3 } from '@components/k8s/common/KubernetesTable';
 import KubernetesEventsTable from '@components/events/KubernetesEvents';
 import { getLast30Days, getLast7Days } from '@lib/datetime';
-import KubernetesPodYaml from '@components/k8s/details/KubernetesPodYaml';
 import KubernetesPodLogs from '@components/k8s/details/KubernetesPodLogs';
 import KubernetesPodProfiler from '@components/k8s/details/KubernetesPodProfiler';
 import { ds } from 'src/utils/colors';
 import { useRouter } from 'next/router';
 import PropTypes from 'prop-types';
-import KubernetesServiceMap from '@components/k8s/details/KubernetesServiceMap';
+import dynamic from 'next/dynamic';
 import AppDashboard from '@components/dashboards/AppDashboard';
 import apiKubernetes1 from '@api1/kubernetes1';
 import k8sApi from '@api1/kubernetes';
+
+// Both tabs are click-gated (option 4 / option 7) but their editors are heavy —
+// CodeMirror for the YAML view, reactflow for the service map — so a static
+// import shipped both to everyone who opened a pod on the Pod Details tab.
+// Shared fallback so the tab shows a spinner rather than blank while the chunk
+// downloads, which on a cold cache is the difference between "slow" and "broken".
+const TabChunkFallback = () => (
+  <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 400 }}>
+    <CircularProgress size={28} />
+  </Box>
+);
+
+const KubernetesPodYaml = dynamic(() => import('@components/k8s/details/KubernetesPodYaml'), { ssr: false, loading: TabChunkFallback });
+const KubernetesServiceMap = dynamic(() => import('@components/k8s/details/KubernetesServiceMap'), { ssr: false, loading: TabChunkFallback });
 
 const optionsToDisplay = {
   tabOptions: [

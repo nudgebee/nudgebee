@@ -1,10 +1,10 @@
-import KnowledgeGraphServiceMapWrapper from '@components/KnowledgeGraph';
+import dynamic from 'next/dynamic';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import KubernetesEventsTable, { TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY } from '@components/events/KubernetesEvents';
 import KubernetesGroupedEventsTable from '@components/k8s/details/groupedevents/KubernetesGroupedEventsTable';
 import TroubleshootSummary from '@components/troubleshoot/TroubleshootSummary';
-import { Box } from '@mui/material';
+import { Box, CircularProgress } from '@mui/material';
 import { useState, useEffect } from 'react';
 import AutoInvestigated from '@components/troubleshoot/AutoInvestigated';
 import ManualInvestigated from '@components/troubleshoot/ManualInvestigated';
@@ -26,6 +26,19 @@ import ThresholdSuggestionsManager from '@components/triage/ThresholdSuggestions
 import { useRouter } from 'next/router';
 import { clearPersistedFilters } from '@hooks/usePersistedFilters';
 import { getLast24Hrs } from '@lib/datetime';
+
+// Knowledge Graph pulls in reactflow and only renders under the third tab, so a
+// static import shipped the graph bundle in this page's chunk for every visitor
+// — including the ones who never leave All Events. Load it on demand instead.
+// The chunk is large, so without a fallback the tab paints blank until it lands.
+const KnowledgeGraphServiceMapWrapper = dynamic(() => import('@components/KnowledgeGraph'), {
+  ssr: false,
+  loading: () => (
+    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 400 }}>
+      <CircularProgress size={28} />
+    </Box>
+  ),
+});
 
 // Single source of truth for every tab/sub-tab this page renders, mirroring the
 // tab/sub-tab config in [KubernetesDetails].jsx: each top-level entry carries
