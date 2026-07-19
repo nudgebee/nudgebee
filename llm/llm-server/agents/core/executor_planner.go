@@ -2127,7 +2127,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			err = summaryErr
 		}
 	} else {
-		observation, err = callNbTool(actionCtx, e.agentRequest, tool, action.ToolInput, nil, queryContext, action.ToolID)
+		observation, err = callNbTool(actionCtx, e.agentRequest, e.agent.GetName(), tool, action.ToolInput, nil, queryContext, action.ToolID)
 	}
 
 	toolExecDur := time.Since(toolExecStart)
@@ -3266,7 +3266,25 @@ func validateToolInput(tool toolcore.NBTool, request toolcore.NBToolCallRequest)
 	return &resp
 }
 
-func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentRequest, tool toolcore.NBTool, input string, previousHistory []llms.MessageContent, queryContext string, toolId string) (resp toolcore.NBToolResponse, err error) {
+// delegationSkillScope returns the skill-mapping names a sub-agent should inherit
+// from its delegating parent: the parent's own inherited chain with the parent's name
+// appended. It always returns a fresh slice (never aliases parentInherited) so a
+// caller mutating the result can't write into the parent's backing array. An empty
+// parentAgentName is a no-op that still returns a copy.
+func delegationSkillScope(parentInherited []string, parentAgentName string) []string {
+	if parentAgentName == "" {
+		if len(parentInherited) == 0 {
+			return nil
+		}
+		return append([]string(nil), parentInherited...)
+	}
+	scope := make([]string, 0, len(parentInherited)+1)
+	scope = append(scope, parentInherited...)
+	scope = append(scope, parentAgentName)
+	return scope
+}
+
+func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentRequest, parentAgentName string, tool toolcore.NBTool, input string, previousHistory []llms.MessageContent, queryContext string, toolId string) (resp toolcore.NBToolResponse, err error) {
 	// Recover from panics and convert to proper error responses
 	defer func() {
 		if r := recover(); r != nil {
@@ -3311,13 +3329,30 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	// sub-agents lose all signal of the original investigative intent and fall
 	// back to routine defaults (small tail, no error filter), missing rare-error
 	// clusters in long streams.
-	//
-	// Skill propagation (SelectedSkillIds / InheritSkillsFromAgents) is
-	// intentionally NOT centralized here — agents that need them (e.g.
-	// agent_metrics.go) thread them explicitly. Centralizing changes the
-	// prompt/tool surface visible to every sub-agent and needs its own
-	// evaluation; tracked as a separate follow-up.
 	toolContext.OriginalQuery = agentRequest.OriginalQuery
+
+	// Skill propagation across delegation (flag-gated). Skills are agent-scoped, so a
+	// runbook mapped to an orchestrator never reaches the sub-agent that actually
+	// executes — the orchestrator delegates to logs/prometheus/etc. and they never
+	// inherit its KBs. When enabled, carry the delegating agent's skill scope (its own
+	// name, appended to any names it itself inherited) plus SelectedSkillIds. The
+	// sub-agent's fetchAgentKBs then surfaces those runbooks in its OWN <skill-lists>
+	// menu and its planner decides whether to load_skills (no eager injection).
+	//
+	// Blast-radius note: fetchAgentKBs narrows inherited KBs by SelectedSkillIds only
+	// when a selection exists. Conversation-scoped agents populate it (question-aware),
+	// so their sub-agents see only investigation-relevant runbooks. Account-scoped
+	// orchestrators (k8s/aws/…) skip per-question selection to stay cache-stable, so
+	// SelectedSkillIds is nil and the sub-agent inherits the parent's full active
+	// mapped set — but that is menu-level only (name + description; bodies load lazily
+	// via load_skills at the sub-agent's discretion), so the cost is a few extra menu
+	// lines, not injected content. Custom-planner delegators (agent_metrics.go etc.)
+	// thread InheritSkillsFromAgents explicitly and bypass this path — no double-prop.
+	// toolContext skill fields are only read for agent-type tools (ExecuteAgentToolCall).
+	if config.Config.LlmServerSkillDelegationPropagationEnabled {
+		toolContext.InheritSkillsFromAgents = delegationSkillScope(agentRequest.InheritSkillsFromAgents, parentAgentName)
+		toolContext.SelectedSkillIds = agentRequest.SelectedSkillIds
+	}
 
 	// Check if this tool requires configuration
 	if _, ok := tool.(toolcore.NBToolConfig); ok {

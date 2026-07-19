@@ -214,6 +214,14 @@ type appConfig struct {
 	// skill-lists menu) in the human message instead of the cacheable system
 	// prefix. Off keeps the legacy in-prompt <skill-lists> + lazy load_skills flow.
 	LlmServerKBPrestepEnabled bool `mapstructure:"llm_server_kb_prestep_enabled"`
+	// LlmServerSkillDelegationPropagationEnabled, when on, propagates a delegating
+	// agent's skill scope (its own name + the question-aware SelectedSkillIds) to the
+	// sub-agents it delegates to. Skills are agent-scoped, so a runbook mapped to an
+	// orchestrator otherwise never reaches the sub-agent that executes; with this on,
+	// the sub-agent's own <skill-lists> menu surfaces the parent's selected runbooks
+	// and its planner chooses whether to load_skills (no eager injection). Off keeps
+	// today's behavior (only custom-planner agents thread skills explicitly).
+	LlmServerSkillDelegationPropagationEnabled bool `mapstructure:"llm_server_skill_delegation_propagation_enabled"`
 	// LlmServerToolSchemaValidationTools is a comma-separated allowlist of tool
 	// names for which the framework treats the InputSchema as authoritative.
 	// A tool on this list has BOTH of the following applied by the framework:
@@ -770,6 +778,7 @@ func init() {
 	viper.SetDefault("llm_server_max_skill_content_length", 5000)
 	viper.SetDefault("llm_server_integration_kb_enabled", true)
 	viper.SetDefault("llm_server_kb_prestep_enabled", false)
+	viper.SetDefault("llm_server_skill_delegation_propagation_enabled", false)
 	// Bootstrap: only `think` gets schema-authoritative treatment (renderer +
 	// validator). Other tools stay text-description-only until their schema
 	// is reconciled with their Call() acceptance shape. See
