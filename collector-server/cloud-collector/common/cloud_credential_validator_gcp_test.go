@@ -41,3 +41,33 @@ func TestIsDeterministicGCPError(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateBigQueryIdentifier(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"valid project ID", "my-billing-project-123", false},
+		{"valid domain-scoped project ID", "example.com:my-billing-project-123", false},
+		{"valid dataset", "billing_export_dataset", false},
+		{"valid table with prefix", "gcp_billing_export_v1_01AB23", false},
+		{"backtick injection", "dataset`; DROP TABLE users; --", true},
+		{"empty string", "", true},
+		{"starts with hyphen", "-invalid", true},
+		{"contains spaces", "my dataset", true},
+		{"contains backtick", "data`set", true},
+		{"contains semicolon", "dataset;drop", true},
+		{"valid single char", "a", false},
+		{"dots allowed", "project.id", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateBigQueryIdentifier(tt.value, "test field")
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateBigQueryIdentifier(%q) error = %v, wantErr %v", tt.value, err, tt.wantErr)
+			}
+		})
+	}
+}
