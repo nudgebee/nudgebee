@@ -535,7 +535,18 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// same way it lists tool references.
 	var skillReferences []toolcore.NBToolResponseReference
 	if agent.GetPlannerType() == AgentPlannerTypeCustom {
-		skillsContext, refs, sErr := toolcore.LoadActiveAgentSkillContents(ctx, request.AccountId, skillAgentNames, request.SelectedSkillIds)
+		// Eager-load inherited skills only when a selection exists to narrow them.
+		// Without a selection (e.g. an account-scoped orchestrator propagating its
+		// skills down — SelectedSkillIds is nil there to keep its prompt cache stable)
+		// LoadActiveAgentSkillContents would force EVERY inherited runbook body into
+		// this mechanical sub-agent (a metrics/logs agent loading unrelated runbooks).
+		// Own skills are always loaded; inherited ones stay lazily available to ReAct
+		// sub-agents via their <skill-lists> menu rather than being force-fed here.
+		eagerSkillNames := ownSkillNames
+		if len(request.SelectedSkillIds) > 0 {
+			eagerSkillNames = skillAgentNames
+		}
+		skillsContext, refs, sErr := toolcore.LoadActiveAgentSkillContents(ctx, request.AccountId, eagerSkillNames, request.SelectedSkillIds)
 		if sErr != nil {
 			ctx.GetLogger().Warn("agentexecutor: failed to load active agent skill contents", "error", sErr, "agent", agent.GetName())
 		} else if skillsContext != "" {
