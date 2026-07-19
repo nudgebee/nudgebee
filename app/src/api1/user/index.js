@@ -568,6 +568,20 @@ const apiUser = {
     apiUser.storeUserPreferences(PREFERENCE_LAST_ACCOUNT_ID_BY_PROVIDER, map);
   },
 
+  // Reverse lookup of the per-provider map: the provider (uppercased, as
+  // stored) whose last-selected account id for this tenant is `accountId`,
+  // or null. Lets a page that only has an account id (e.g. /home?accountId=…)
+  // resolve its provider type without waiting for the accounts list to load.
+  getLastAccountProviderById: function (accountId, tenantId) {
+    if (!accountId || !tenantId) {
+      return null;
+    }
+    const prefs = apiUser.getUserPreferences() || {};
+    const map = prefs[PREFERENCE_LAST_ACCOUNT_ID_BY_PROVIDER] || {};
+    const entry = Object.entries(map[tenantId] || {}).find(([, id]) => id === accountId);
+    return entry ? entry[0] : null;
+  },
+
   // Up to RECENT_PAGE_SEARCHES_LIMIT most-recently-selected header search
   // result values (paths) for a tenant, most-recent first.
   getRecentPageSearches: function (tenantId) {

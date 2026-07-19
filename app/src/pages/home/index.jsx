@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { withAccountGuard } from '@shared/AccountGuard';
 import { useRouter } from 'next/router';
 import homeApi from '@api1/home';
+import userApi from '@api1/user';
 import { v4 as uuidv4 } from 'uuid';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import { safeJSONParse } from '@utils/common';
@@ -80,7 +81,7 @@ import { Input } from '@ui/Input';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import ConnectClusterHelp from '@components/onboarding/ConnectClusterHelp';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { getUserSession } from '@lib/auth';
+import { getUserSession, getCurrentTenant } from '@lib/auth';
 import { FiArrowRight } from 'react-icons/fi';
 import useCurrencySymbol from '@hooks/useCurrencySymbol';
 import PendingFollowUps from '@components/home/PendingFollowUps';
@@ -1587,7 +1588,24 @@ const QUICK_LINKS_CONFIG = [
 // reference-stable (wrap inline objects/functions in useMemo/useCallback) or
 // memo here becomes wasted work.
 const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
-  const links = QUICK_LINKS_CONFIG.filter((d) => d.cloudProvider === selectedCluster?.cloud_provider).flatMap((d) => d.links);
+  // `cluster` is the accountId from the URL (?accountId=…). selectedCluster is
+  // authoritative (validated against the real accounts list), but it's empty
+  // just after a redirect — until it resolves, match the URL accountId against
+  // the account last used for each provider (saved per tenant by
+  // ClusterDropDown) so the right provider's quick links render immediately
+  // instead of a skeleton. Resolved in an effect, not during render: the
+  // lookup reads localStorage, which doesn't exist during SSR and would risk
+  // a hydration mismatch (same pattern as CardsBlock's isStale).
+  const [matchedProvider, setMatchedProvider] = useState(null);
+  const tenantId = getCurrentTenant()?.id;
+  useEffect(() => {
+    const savedProvider = userApi.getLastAccountProviderById(cluster, tenantId);
+    // Saved provider keys are uppercased; map back to the config's casing ('K8s', 'AWS', …).
+    setMatchedProvider(savedProvider ? QUICK_LINKS_CONFIG.find((d) => d.cloudProvider.toUpperCase() === savedProvider)?.cloudProvider || null : null);
+  }, [cluster, tenantId]);
+  const cloudProvider = selectedCluster?.cloud_provider || matchedProvider;
+  const linkAccountId = selectedCluster?.value || cluster;
+  const links = QUICK_LINKS_CONFIG.filter((d) => d.cloudProvider === cloudProvider).flatMap((d) => d.links);
 
   const header = (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
@@ -1624,7 +1642,7 @@ const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
   // already-tinted) to gray-700.
   const GRAY_700_FILTER = 'brightness(0) saturate(100%) invert(28%) sepia(3%) saturate(0%) hue-rotate(0deg) brightness(95%) contrast(90%)';
 
-  const isLoading = !selectedCluster?.cloud_provider;
+  const isLoading = !cloudProvider;
 
   const skeletonGrid = (
     <Box
@@ -1659,7 +1677,7 @@ const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
         >
           {links.map((link) => (
             <Link
-              href={buildUrl(selectedCluster, selectedCluster?.value || cluster, link.fragment, 'details', {})}
+              href={buildUrl({ cloud_provider: cloudProvider }, linkAccountId, link.fragment, 'details', {})}
               key={link.name}
               style={{ textDecoration: 'none' }}
             >
