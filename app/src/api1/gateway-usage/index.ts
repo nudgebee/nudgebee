@@ -174,6 +174,8 @@ export interface GatewayRequestRow {
   routing_reason: string;
   /** 'native' (passthrough mount) | 'generic' (/v1) | ''. */
   surface: string;
+  /** Set only when this request tripped the egress secret filter. */
+  dlp?: { mode: string; rules: string[] };
   status_code: number;
   streaming: boolean;
   input_tokens: number;

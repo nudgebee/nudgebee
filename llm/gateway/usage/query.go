@@ -7,6 +7,7 @@ package usage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -613,10 +614,34 @@ type RequestRow struct {
 	LatencyMs         int64     `json:"latency_ms"`
 	CostUsd           float64   `json:"cost_usd"`
 	SessionID         string    `json:"session_id"`
+	// Dlp is set only when this request tripped the egress secret filter — the mode
+	// that was active and which rules fired. nil (omitted) for the vast majority.
+	Dlp *RequestDLP `json:"dlp,omitempty"`
 	// CanViewBody is true only when body-logging is on AND the caller owns this
 	// request — the UI shows the "view body" action on those rows. Server-authoritative;
 	// the body-fetch endpoint re-checks ownership.
 	CanViewBody bool `json:"can_view_body"`
+}
+
+// RequestDLP is the egress-filter outcome for a request that tripped it (mirrors
+// attributes.derived.dlp): the active mode and the rule ids that fired.
+type RequestDLP struct {
+	Mode  string   `json:"mode"`  // detect | enforce | redact
+	Rules []string `json:"rules"` // e.g. ["aws-access-key-id"]
+}
+
+// parseDLP decodes the attributes.derived.dlp object text into a RequestDLP,
+// returning nil for the absent/empty/malformed case (a bad row shouldn't drop the
+// whole request from the list).
+func parseDLP(s string) *RequestDLP {
+	if s == "" {
+		return nil
+	}
+	var d RequestDLP
+	if err := json.Unmarshal([]byte(s), &d); err != nil || d.Mode == "" {
+		return nil
+	}
+	return &d
 }
 
 // RequestList is one page of recent requests plus the unpaged total (for the pager).
@@ -638,6 +663,7 @@ type reqScan struct {
 	RequestedModel string    `db:"requested_model"`
 	RoutingReason  string    `db:"routing_reason"`
 	Surface        string    `db:"surface"`
+	DlpJSON        string    `db:"dlp_json"` // attributes.derived.dlp object as text ("" when absent)
 	StatusCode     int       `db:"status_code"`
 	Streaming      bool      `db:"streaming"`
 	Input          int64     `db:"input_tokens"`
@@ -740,6 +766,7 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 		       COALESCE(g.requested_model,'') AS requested_model,
 		       COALESCE(g.routing_reason,'') AS routing_reason,
 		       COALESCE(NULLIF(g.attributes,'')::jsonb #>> '{derived,surface}','') AS surface,
+		       COALESCE((NULLIF(g.attributes,'')::jsonb #> '{derived,dlp}')::text,'') AS dlp_json,
 		       COALESCE(g.status_code,0) AS status_code, COALESCE(g.streaming,false) AS streaming,
 		       COALESCE(g.input_tokens,0) AS input_tokens, COALESCE(g.output_tokens,0) AS output_tokens,
 		       COALESCE(g.cache_read_tokens,0) AS cache_read_tokens, COALESCE(g.cache_write_tokens,0) AS cache_write_tokens,
@@ -777,6 +804,7 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 			LatencyMs:   r.LatencyMs,
 			CostUsd:     r.Cost,
 			SessionID:   r.SessionID,
+			Dlp:         parseDLP(r.DlpJSON),
 			CanViewBody: bodyEnabled && req.CallerUserID != "" && r.UserID == req.CallerUserID,
 		})
 	}

@@ -215,6 +215,9 @@ const errColor = (pct: number): string => (pct < 1 ? 'var(--ds-green-500)' : pct
 export function GovernanceView({ metrics, filters, loading, error, onDrill }: GovernanceViewProps) {
   const gov = metrics?.governance ?? null;
   const errorRate = gov?.outcomes.error_rate_pct ?? 0;
+  // The denominator for every count on this tab — anchors DLP / substitution /
+  // error figures against total volume.
+  const totalReq = gov ? gov.outcomes.success + gov.outcomes.client_error + gov.outcomes.server_error + gov.outcomes.other : 0;
 
   // Split routing decisions: passthrough is the baseline, the rest are "the gateway
   // did something" (the intelligence story). Backend already sorts by count desc.
@@ -259,7 +262,8 @@ export function GovernanceView({ metrics, filters, loading, error, onDrill }: Go
             <CardHeader icon={<ShieldOutlinedIcon sx={{ fontSize: 18 }} />} title='Reliability' trailing={healthChip(errorRate)} />
 
             <Box sx={{ display: 'flex', gap: 'var(--ds-space-5)', flexWrap: 'wrap' }}>
-              <Stat label='Error rate' value={fmtPct(errorRate)} size='hero' />
+              <Stat label='Total requests' value={fmtCount(totalReq)} size='hero' />
+              <Stat label='Error rate' value={fmtPct(errorRate)} />
               <Stat label='Succeeded' value={fmtCount(gov.outcomes.success)} />
               <Stat
                 label='Errored'

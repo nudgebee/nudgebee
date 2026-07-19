@@ -19,6 +19,7 @@ import * as React from 'react';
 import { Box, CircularProgress } from '@mui/material';
 import dayjs from 'dayjs';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
+import GppMaybeOutlinedIcon from '@mui/icons-material/GppMaybeOutlined';
 import CustomTable2 from '@shared/tables/CustomTable';
 import { Card } from '@ui/Card';
 import { Banner } from '@ui/Banner';
@@ -64,6 +65,8 @@ const STATUS_OPTIONS = [
   { label: 'Error', value: 'error' },
 ];
 
+const DLP_OPTIONS = [{ label: 'Flagged (secret detected)', value: 'flagged' }];
+
 type FDOption = string | { value?: string };
 const toValues = (sel: FDOption[] | undefined): string[] => (sel ?? []).map((o) => (typeof o === 'string' ? o : String(o?.value ?? '')));
 
@@ -74,7 +77,13 @@ const H = {
   user: <HeaderLabel label='User' info='The user whose request was forwarded through the gateway.' />,
   model: <HeaderLabel label='Model' info='The model the request was routed to. The requested model is shown below it when routing changed it.' />,
   provider: <HeaderLabel label='Provider' info='The upstream provider that served the request.' />,
-  tokens: <HeaderLabel label='Tokens' secondary='(in/out)' info='Input / output tokens for this request.' />,
+  tokens: (
+    <HeaderLabel
+      label='Tokens'
+      secondary='(in/out)'
+      info='Input / output tokens. Cached input tokens (prompt-cache reads) are shown below when present.'
+    />
+  ),
   latency: <HeaderLabel label='Latency' info='End-to-end latency for this request.' />,
   cost: <HeaderLabel label='Cost' info='Cost of this request.' />,
   status: <HeaderLabel label='Status' info='HTTP status the gateway returned for this request.' />,
@@ -114,6 +123,45 @@ function SurfaceBadge({ surface }: { surface: string }) {
       }}
     >
       {generic ? 'generic' : 'native'}
+    </Box>
+  );
+}
+
+/** Egress-DLP outcome badge — shown under the model on a request that tripped the
+ * secret filter. Coloured by mode (detect=amber, redact=blue, enforce=red). */
+function DLPBadge({ dlp }: { dlp: { mode: string; rules: string[] } }) {
+  const palette: Record<string, { fg: string; bg: string; bd: string }> = {
+    detect: { fg: 'var(--ds-amber-700)', bg: 'var(--ds-amber-100)', bd: 'var(--ds-amber-300)' },
+    redact: { fg: 'var(--ds-blue-700)', bg: 'var(--ds-blue-100)', bd: 'var(--ds-blue-300)' },
+    enforce: { fg: 'var(--ds-red-700)', bg: 'var(--ds-red-100)', bd: 'var(--ds-red-300)' },
+  };
+  const c = palette[dlp.mode] ?? palette.detect;
+  const rules = dlp.rules && dlp.rules.length > 0 ? dlp.rules.join(', ') : 'secret';
+  const verb = dlp.mode === 'enforce' ? 'blocked' : dlp.mode === 'redact' ? 'redacted' : 'detected';
+  return (
+    <Box
+      component='span'
+      title={`Secret ${verb}: ${rules} (${dlp.mode} mode)`}
+      sx={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '2px',
+        alignSelf: 'flex-start',
+        marginTop: '2px',
+        padding: '0 5px',
+        borderRadius: 'var(--ds-radius-sm)',
+        fontSize: 'var(--ds-text-small)',
+        color: c.fg,
+        backgroundColor: c.bg,
+        border: `1px solid ${c.bd}`,
+        lineHeight: 1.7,
+        maxWidth: '100%',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      <GppMaybeOutlinedIcon sx={{ fontSize: 12 }} /> DLP: {rules}
     </Box>
   );
 }
@@ -169,6 +217,7 @@ function toRow(r: GatewayRequestRow, costSev: (v: number) => Severity, onViewBod
           {routed && (
             <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', overflowWrap: 'anywhere' }}>requested {r.requested_model}</Box>
           )}
+          {r.dlp && <DLPBadge dlp={r.dlp} />}
         </Box>
       ),
     },
@@ -183,8 +232,18 @@ function toRow(r: GatewayRequestRow, costSev: (v: number) => Severity, onViewBod
     {
       align: 'right' as const,
       component: (
-        <Box sx={{ ...numCell, textAlign: 'right' }}>
-          {fmtTokens(r.input_tokens)} / {fmtTokens(r.output_tokens)}
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+          <Box sx={{ ...numCell, textAlign: 'right' }}>
+            {fmtTokens(r.input_tokens)} / {fmtTokens(r.output_tokens)}
+          </Box>
+          {r.cached_input_tokens > 0 && (
+            <Box
+              sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', fontVariantNumeric: 'tabular-nums' }}
+              title='Cached input tokens (prompt-cache read)'
+            >
+              {fmtTokens(r.cached_input_tokens)} cached
+            </Box>
+          )}
         </Box>
       ),
     },
@@ -244,29 +303,32 @@ export function RequestsView({
   onClearGov,
 }: RequestsViewProps) {
   const [offset, setOffset] = React.useState(0);
+  const [limit, setLimit] = React.useState(LIMIT);
   const [models, setModels] = React.useState<string[]>([]);
   const [providers, setProviders] = React.useState<string[]>([]);
   const [status, setStatus] = React.useState('');
+  const [dlpFilter, setDlpFilter] = React.useState(''); // '' (any) | 'flagged'
   // The row whose captured body is being viewed (EE). Null = modal closed.
   const [bodyRow, setBodyRow] = React.useState<GatewayRequestRow | null>(null);
 
-  // A Governance drill-in maps to one request filter. Status drives the existing
-  // Status dropdown (so there's one source for it); routing/reject/dlp have no
-  // dropdown, so they show as a removable chip. When a status scope is active it
-  // wins over the local dropdown until the user changes the dropdown (which clears it).
+  // A Governance drill-in maps to one request filter. Status and DLP each drive
+  // their own dropdown (one source of truth); routing/reject have no dropdown, so
+  // they show as a removable chip. A gov scope wins over the local dropdown until
+  // the user changes the dropdown (which clears it).
   const govStatus = govFilter?.kind === 'status' ? govFilter.value : undefined;
   const effStatus = govStatus ?? status;
   const govRouting = govFilter?.kind === 'routing' ? govFilter.value : undefined;
   const govReject = govFilter?.kind === 'reject' ? govFilter.value : undefined;
   const govDlp = govFilter?.kind === 'dlp' ? true : undefined;
-  const govChip = govFilter && govFilter.kind !== 'status' ? govFilter : null;
+  const effDlp = govDlp || dlpFilter === 'flagged';
+  const govChip = govFilter && (govFilter.kind === 'routing' || govFilter.kind === 'reject') ? govFilter : null;
 
   // Reset paging whenever the scope (date window or any filter) changes. The
   // array states are safe as deps: useState references are stable and only
   // change via their setters (which always receive a fresh array).
   React.useEffect(() => {
     setOffset(0);
-  }, [filters.startDate, filters.endDate, userFilter?.id, toolFilter, govFilter, models, providers, effStatus]);
+  }, [filters.startDate, filters.endDate, userFilter?.id, toolFilter, govFilter, models, providers, effStatus, effDlp]);
 
   const { loading, error, data } = useGatewayRequests(filters, {
     userId: userFilter?.id,
@@ -276,8 +338,8 @@ export function RequestsView({
     tool: toolFilter ?? undefined,
     routingReason: govRouting,
     rejectReason: govReject,
-    dlp: govDlp,
-    limit: LIMIT,
+    dlp: effDlp || undefined,
+    limit,
     offset,
   });
 
@@ -350,6 +412,17 @@ export function RequestsView({
               setStatus(e?.target?.value ?? '');
             }}
           />
+          <FilterDropdown
+            id='gateway-requests-filter-dlp'
+            label='DLP'
+            options={DLP_OPTIONS}
+            value={effDlp ? 'flagged' : ''}
+            onSelect={(e: { target: { value: string | null } }) => {
+              // Changing the dropdown leaves any Governance DLP scope behind.
+              if (govDlp) onClearGov();
+              setDlpFilter(e?.target?.value ?? '');
+            }}
+          />
           {toolFilter && (
             <Chip tone='info' onDismiss={onClearTool} id='gateway-requests-tool-chip'>
               Tool: {toolFilter}
@@ -364,11 +437,7 @@ export function RequestsView({
 
         {error && <Banner tone='critical' title='Could not load gateway requests' message={error} />}
 
-        {!error && !showEmpty && (
-          <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
-            Showing {rows.length} of {total.toLocaleString()} · newest first
-          </Box>
-        )}
+        {!error && !showEmpty && <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>Newest first</Box>}
 
         {showEmpty ? (
           <EmptyState
@@ -378,44 +447,31 @@ export function RequestsView({
             description='Try widening the date range or clearing the filters.'
           />
         ) : (
-          !error && (
-            <>
-              {loading && !rows.length ? (
-                <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 240 }}>
-                  <CircularProgress size={28} />
-                </Box>
-              ) : (
-                <CustomTable2 id='gateway-requests-table' headers={HEADERS} tableData={tableData} loading={loading} />
-              )}
-
-              {/* Server-side pager (50 rows/page). Hidden when everything fits on
-                  one page — two disabled buttons are just noise. `offset > 0`
-                  keeps it visible on later pages even when a shrinking `total`
-                  (filters applied mid-paging) drops below one page. */}
-              {(total > LIMIT || offset > 0) && (
-                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--ds-space-2)' }}>
-                  <Button
-                    id='gateway-requests-prev'
-                    tone='secondary'
-                    size='sm'
-                    disabled={offset === 0 || loading}
-                    onClick={() => setOffset((o) => Math.max(0, o - LIMIT))}
-                  >
-                    Prev
-                  </Button>
-                  <Button
-                    id='gateway-requests-next'
-                    tone='secondary'
-                    size='sm'
-                    disabled={offset + LIMIT >= total || loading}
-                    onClick={() => setOffset((o) => o + LIMIT)}
-                  >
-                    Next
-                  </Button>
-                </Box>
-              )}
-            </>
-          )
+          !error &&
+          (loading && !rows.length ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 240 }}>
+              <CircularProgress size={28} />
+            </Box>
+          ) : (
+            // Server-side pagination is owned by CustomTable2 (its built-in pager):
+            // passing onPageChange + totalRows + pageNumber puts it in server mode,
+            // so its footer reports the true unpaged total. Without onPageChange it
+            // would client-paginate the single 50-row page and mislabel it "1–50 of 50".
+            <CustomTable2
+              id='gateway-requests-table'
+              headers={HEADERS}
+              tableData={tableData}
+              loading={loading}
+              totalRows={total}
+              rowsPerPage={limit}
+              pageNumber={Math.floor(offset / limit) + 1}
+              onPageChange={(page: number, lim: number) => {
+                const nextLimit = lim || limit;
+                setLimit(nextLimit);
+                setOffset((Math.max(1, page) - 1) * nextLimit);
+              }}
+            />
+          ))
         )}
       </Box>
 
