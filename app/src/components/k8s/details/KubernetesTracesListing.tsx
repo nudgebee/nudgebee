@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ListingLayout from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import CustomSearch from '@shared/CustomSearch';
@@ -121,6 +121,36 @@ const SourceDestinationView: React.FC<SourceDestinationViewProps> = ({ namespace
   );
 };
 
+// Stable references — defined outside the component to avoid re-creating on every render.
+// These feed into CustomTable's headers prop; a new reference defeats ExpandableTableRow's
+// React.memo comparator and forces every visible row to re-render needlessly.
+const GCP_LISTING_HEADER = [
+  { name: 'Timestamp', width: '12%' },
+  { name: 'Span', width: '22%' },
+  { name: 'Duration', sortEnabled: true, width: '10%' },
+  { name: 'Service', width: '18%' },
+  { name: 'Resource', width: '30%' },
+  { name: 'Status', width: '8%' },
+];
+const TRACES_SOURCE = ['ebpf', 'otel'];
+
+const getHeaderObject = (headerInput: string, isMaterialized = false) => {
+  let parsedHeader: Record<string, any> = {};
+
+  try {
+    const rawString = isMaterialized ? headerInput : atob(headerInput);
+    parsedHeader = JSON.parse(rawString);
+  } catch {
+    return null;
+  }
+
+  if (parsedHeader && typeof parsedHeader === 'object' && Object.keys(parsedHeader).length > 0) {
+    return Object.entries(parsedHeader).map(([key, value]) => <Typography key={key}>{`${key}: ${value}`}</Typography>);
+  }
+
+  return null;
+};
+
 const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   namespace = '',
   workloadName = '',
@@ -148,31 +178,19 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
 }) => {
   const router = useRouter();
   const { assistantName } = useTenantBranding();
-  const LISTING_HEADER = [
-    { name: 'Timestamp', width: '5%' },
-    !fixedTrace ? { name: 'Source', width: '25%' } : '',
-    { name: 'Status Code', width: '5%' },
-    { name: 'Span', width: '5%' },
-    { name: 'Duration', sortEnabled: true, width: '5%' },
-    { name: 'Resource', width: '15%' },
-    !fixedTrace ? { name: 'Destination', width: '35%' } : '',
-    { name: '', width: '5%' },
-  ];
-  // Cloud Trace (GCP) spans are HTTP-service (Cloud Run / OTel) or database
-  // (Cloud SQL) traces, not K8s service-to-service traces — the
-  // workload/namespace/destination columns are always empty for them. Use a
-  // universal set that reads both span families: Service is service.name / Cloud
-  // Run service / DB instance; Resource is the URL or SQL query; Status is the
-  // HTTP status (blank for DB spans). Full per-span labels stay in the drilldown.
-  const GCP_LISTING_HEADER = [
-    { name: 'Timestamp', width: '12%' },
-    { name: 'Span', width: '22%' },
-    { name: 'Duration', sortEnabled: true, width: '10%' },
-    { name: 'Service', width: '18%' },
-    { name: 'Resource', width: '30%' },
-    { name: 'Status', width: '8%' },
-  ];
-  const tracesSource = ['ebpf', 'otel'];
+  const LISTING_HEADER = useMemo(
+    () => [
+      { name: 'Timestamp', width: '5%' },
+      !fixedTrace ? { name: 'Source', width: '25%' } : '',
+      { name: 'Status Code', width: '5%' },
+      { name: 'Span', width: '5%' },
+      { name: 'Duration', sortEnabled: true, width: '5%' },
+      { name: 'Resource', width: '15%' },
+      !fixedTrace ? { name: 'Destination', width: '35%' } : '',
+      { name: '', width: '5%' },
+    ],
+    [fixedTrace]
+  );
   const selectedK8sAccount = (router.query?.KubernetesDetails as string) || (router.query?.accountId as string) || accountId;
   const { selectedCluster } = useData();
 
@@ -605,10 +623,6 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
       });
   };
 
-  const sortEventChange = (e: any) => {
-    setSortObject(e);
-  };
-
   useEffect(() => {
     if (traceData.length > 0 || !traceProvider) {
       return;
@@ -760,23 +774,6 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
     }
   };
 
-  const getHeaderObject = (headerInput: string, isMaterialized = false) => {
-    let parsedHeader: Record<string, any> = {};
-
-    try {
-      const rawString = isMaterialized ? headerInput : atob(headerInput);
-      parsedHeader = JSON.parse(rawString);
-    } catch {
-      return null;
-    }
-
-    if (parsedHeader && typeof parsedHeader === 'object' && Object.keys(parsedHeader).length > 0) {
-      return Object.entries(parsedHeader).map(([key, value]) => <Typography key={key}>{`${key}: ${value}`}</Typography>);
-    }
-
-    return null;
-  };
-
   const handleClearAll = () => {
     setSelectedNamespace(getInitialNamespace());
     setSelectedWorkload(getInitialWorkload());
@@ -853,6 +850,299 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
           { label: 'Ok', value: 'STATUS_CODE_UNSET' },
           { label: 'Error', value: 'STATUS_CODE_ERROR' },
         ];
+
+  const handlePageChange = useCallback((page: number, limit: number) => {
+    setCurrentPage(page - 1);
+    setRecordsPerPage(limit);
+  }, []);
+
+  const handleSortChange = useCallback((e: any) => {
+    setSortObject(e);
+  }, []);
+
+  // Memoize the expandable config so ExpandableTableRow's React.memo comparator
+  // (strict reference equality) doesn't force every row to re-render on unrelated
+  // state changes (filters, page, sort). The componentFn closures capture only
+  // stable or slowly-changing values — traceData, selectedK8sAccount, selectedCluster.
+  const expandableConfig = useMemo(
+    () => ({
+      tabs: [
+        {
+          key: 'trace-heatmap',
+          value: 0,
+          text: 'Service & Operation',
+          componentFn: function (_opt: any, drilldownQuery: any) {
+            const isCloudTrace = drilldownQuery?.trace_source === 'gcp';
+            const cloudTraceSpans =
+              isCloudTrace && traceData.length > 0 ? traceData.filter((s: any) => s.trace_id === drilldownQuery.trace_id) : undefined;
+            return <KubernetesTraceServiceOperation accountId={selectedK8sAccount} query={drilldownQuery} traceData={cloudTraceSpans} />;
+          },
+        },
+        {
+          componentFn: function (_opt: any, drilldownQuery: any) {
+            let attrsObj: any = drilldownQuery?.span_attributes;
+            if (typeof attrsObj === 'string') {
+              try {
+                attrsObj = JSON.parse(attrsObj);
+              } catch {
+                attrsObj = {};
+              }
+            }
+            if (attrsObj && Object.keys(attrsObj).length > 0) {
+              const { headers, convertedJson2 } = getTableData4([attrsObj]);
+              return (
+                <WidgetCard>
+                  <CustomTable headers={headers} tableData={convertedJson2} rowsPerPage={convertedJson2.length} totalRows={convertedJson2.length} />
+                </WidgetCard>
+              );
+            }
+            return (
+              <WidgetCard>
+                <Typography>No Span Attributes Available</Typography>
+              </WidgetCard>
+            );
+          },
+          text: 'Span Attributes',
+          value: 1,
+          key: 'span_attributes',
+        },
+        {
+          text: 'Logs / Query',
+          value: 2,
+          key: 'trace-logs',
+          componentFn: function (_opt: any, drilldownQuery: any) {
+            if (drilldownQuery?.trace_source === 'gcp') {
+              let gcpAttrs: any = drilldownQuery?.span_attributes;
+              if (typeof gcpAttrs === 'string') {
+                try {
+                  gcpAttrs = JSON.parse(gcpAttrs);
+                } catch {
+                  gcpAttrs = {};
+                }
+              }
+              gcpAttrs = gcpAttrs || {};
+              return (
+                <CloudTraceLogs
+                  accountId={selectedK8sAccount}
+                  project={drilldownQuery.project || gcpAttrs.project}
+                  region={drilldownQuery.region || gcpAttrs.region}
+                  serviceName={drilldownQuery.service_name || drilldownQuery.workload_name || gcpAttrs.service_name}
+                  traceId={drilldownQuery.trace_id}
+                  timestamp={drilldownQuery.timestamp}
+                />
+              );
+            }
+            if (drilldownQuery.span_name == 'query') {
+              return (
+                <WidgetCard>
+                  <Typography
+                    sx={{
+                      fontFamily: 'monospace',
+                      fontSize: 'var(--ds-text-body)',
+                      lineHeight: '1.6',
+                      wordBreak: 'break-word',
+                      overflowWrap: 'anywhere',
+                    }}
+                  >
+                    {drilldownQuery.resource}
+                  </Typography>
+                </WidgetCard>
+              );
+            }
+            const query = `{"namespaceName":"${drilldownQuery.workload_namespace}","workloadName":"${drilldownQuery.workload_name}", "traceId": "${drilldownQuery.trace_id}"}`;
+            const plusMinus5Minutes = formatDateForPlusMinusDuration(new Date(drilldownQuery?.timestamp).getTime(), 5);
+            return (
+              <KubernetesLogs
+                accountId={selectedK8sAccount}
+                showTrend={false}
+                showQueryTextBox={false}
+                dateTime={{
+                  startTime: plusMinus5Minutes.dateMinusMinutes,
+                  endTime: plusMinus5Minutes.datePlusMinutes,
+                }}
+                queryFromProps={query}
+                showPolling={false}
+              />
+            );
+          },
+        },
+        {
+          text: 'CPU & Memory',
+          value: 3,
+          key: 'trace-cpu-memory',
+          componentFn: function (_opt: any, drilldownQuery: any, _row: any) {
+            let src_query: any = {
+              workloadName: drilldownQuery.workload_name,
+              namespaceName: drilldownQuery.workload_namespace,
+            };
+            let dest_query: any = {
+              workloadName: drilldownQuery.destination_workload_name,
+              namespaceName: drilldownQuery.destination_workload_namespace,
+            };
+            if (
+              (drilldownQuery.workload_namespace === 'node' || drilldownQuery.workload_namespace === 'external') &&
+              typeof drilldownQuery.workload_name === 'string'
+            ) {
+              src_query = {
+                internalIp: extractIp(drilldownQuery.workload_name),
+              };
+            }
+            if (
+              (drilldownQuery.destination_workload_namespace === 'node' || drilldownQuery.destination_workload_namespace === 'external') &&
+              typeof drilldownQuery.destination_workload_name === 'string'
+            ) {
+              dest_query = {
+                internalIp: extractIp(drilldownQuery.destination_workload_name),
+              };
+            }
+            const plusMinus10Minutes = formatDateForPlusMinusDuration(new Date(drilldownQuery?.timestamp).getTime(), 10);
+            return (
+              <WidgetCard>
+                <Typography sx={{ fontWeight: 'bold', mb: 'var(--ds-space-2)' }}>
+                  Source: {drilldownQuery.workload_name} | {drilldownQuery.workload_namespace}
+                </Typography>
+                <KubernetesUtilizationCharts
+                  accountId={selectedK8sAccount}
+                  query={src_query}
+                  selectedDateRange={{
+                    startDate: plusMinus10Minutes.dateMinusMinutes,
+                    endDate: plusMinus10Minutes.datePlusMinutes,
+                  }}
+                  memLimit={undefined}
+                  cpuLimit={undefined}
+                />
+                {drilldownQuery.destination_workload_namespace != 'external' && (
+                  <>
+                    <Typography sx={{ fontWeight: 'bold', mt: 'var(--ds-space-4)', mb: 'var(--ds-space-2)' }}>
+                      Destination: {drilldownQuery.destination_workload_name} | {drilldownQuery.destination_workload_namespace}
+                    </Typography>
+                    <KubernetesUtilizationCharts
+                      accountId={selectedK8sAccount}
+                      query={dest_query}
+                      selectedDateRange={{
+                        startDate: plusMinus10Minutes.dateMinusMinutes,
+                        endDate: plusMinus10Minutes.datePlusMinutes,
+                      }}
+                      memLimit={undefined}
+                      cpuLimit={undefined}
+                    />
+                  </>
+                )}
+              </WidgetCard>
+            );
+          },
+        },
+        {
+          componentFn: function (_opt: any, drilldownQuery: any) {
+            if (drilldownQuery?.span_name == 'query') {
+              return (
+                <WidgetCard>
+                  <Typography
+                    sx={{
+                      fontFamily: 'monospace',
+                      fontSize: 'var(--ds-text-body)',
+                      lineHeight: '1.6',
+                      wordBreak: 'break-word',
+                      overflowWrap: 'anywhere',
+                    }}
+                  >
+                    {drilldownQuery.resource || 'No Data Available'}
+                  </Typography>
+                </WidgetCard>
+              );
+            }
+            const parsedHeader = drilldownQuery.headers
+              ? getHeaderObject(
+                  drilldownQuery.headers,
+                  selectedCluster?.agent?.connection_status?.traceProviderConfig?.hasMaterializedColumn || false
+                )
+              : '';
+            return (
+              <WidgetCard>
+                {parsedHeader && (
+                  <>
+                    <Typography sx={{ fontWeight: 'bold', mb: 'var(--ds-space-1)' }}>Headers:</Typography>
+                    <Typography
+                      sx={{
+                        fontFamily: 'monospace',
+                        fontSize: 'var(--ds-text-body)',
+                        lineHeight: '1.6',
+                        wordBreak: 'break-word',
+                        overflowWrap: 'anywhere',
+                      }}
+                    >
+                      {parsedHeader}
+                    </Typography>
+                  </>
+                )}
+                {drilldownQuery?.request_payload && (
+                  <>
+                    <Typography
+                      sx={{
+                        fontWeight: 'bold',
+                        mt: parsedHeader ? 'var(--ds-space-3)' : 0,
+                        mb: 'var(--ds-space-1)',
+                      }}
+                    >
+                      Request Payload:
+                    </Typography>
+                    <Typography
+                      sx={{
+                        fontFamily: 'monospace',
+                        fontSize: 'var(--ds-text-body)',
+                        lineHeight: '1.6',
+                        wordBreak: 'break-word',
+                        overflowWrap: 'anywhere',
+                      }}
+                    >
+                      {safeAtob(drilldownQuery.request_payload)}
+                    </Typography>
+                  </>
+                )}
+                {!drilldownQuery?.headers && !drilldownQuery?.request_payload && <Typography>No Data Available</Typography>}
+              </WidgetCard>
+            );
+          },
+          text: 'Request',
+          value: 4,
+          key: 'request',
+          alphaIcon: true,
+        },
+        {
+          componentFn: function (_opt: any, drilldownQuery: any) {
+            return (
+              <WidgetCard>
+                {drilldownQuery?.http_response ? (
+                  <>
+                    <Typography sx={{ fontWeight: 'bold', mb: 'var(--ds-space-1)' }}>Response:</Typography>
+                    <Typography
+                      sx={{
+                        fontFamily: 'monospace',
+                        fontSize: 'var(--ds-text-body)',
+                        lineHeight: '1.6',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        overflowWrap: 'anywhere',
+                      }}
+                    >
+                      {safeAtob(drilldownQuery.http_response)}
+                    </Typography>
+                  </>
+                ) : (
+                  <Typography>No Data Available</Typography>
+                )}
+              </WidgetCard>
+            );
+          },
+          text: 'Response',
+          value: 5,
+          key: 'response',
+          alphaIcon: true,
+        },
+      ],
+    }),
+    [selectedK8sAccount, traceData, selectedCluster]
+  );
 
   return (
     <>
@@ -1177,7 +1467,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                     />
                     <FilterDropdown
                       label='Trace Source'
-                      options={tracesSource}
+                      options={TRACES_SOURCE}
                       value={selectedTracesSource}
                       onSelect={(e: any) => {
                         setSelectedTracesSource(e?.target?.value);
@@ -1266,305 +1556,16 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
             headers={traceProvider === 'gcp' ? GCP_LISTING_HEADER : LISTING_HEADER}
             rowsPerPage={traceData.length > 0 ? traceData.length : recordsPerPage}
             tableData={data}
-            onPageChange={(page: number, limit: number) => {
-              setCurrentPage(page - 1);
-              setRecordsPerPage(limit);
-            }}
+            onPageChange={handlePageChange}
             totalRows={traceData.length > 0 ? traceData.length : totalCount}
             loading={loading}
-            onSortChange={(e: any) => {
-              sortEventChange(e);
-            }}
+            onSortChange={handleSortChange}
             sort={traceData.length > 0 ? {} : sortObject}
             pageNumber={currentPage + 1}
             errorMessage={errorMsg}
             showExpandable={true}
             timeStampMinWidth={true}
-            expandable={{
-              tabs: [
-                {
-                  key: 'trace-heatmap',
-                  value: 0,
-                  text: 'Service & Operation',
-                  componentFn: function (_opt: any, drilldownQuery: any) {
-                    // Evidence path: the trace's spans are already in this listing (static
-                    // traceData) — pass them so the gantt renders without a re-fetch. Unified
-                    // path (empty traceData): let KubernetesTraceServiceOperation fetch via
-                    // traces_get_heatmap, which resolves to the GCP Cloud Trace source
-                    // (GcpTraceSource.QueryTracesHeatmap → Cloud Trace GetTrace).
-                    const isCloudTrace = drilldownQuery?.trace_source === 'gcp';
-                    const cloudTraceSpans =
-                      isCloudTrace && traceData.length > 0 ? traceData.filter((s: any) => s.trace_id === drilldownQuery.trace_id) : undefined;
-                    return <KubernetesTraceServiceOperation accountId={selectedK8sAccount} query={drilldownQuery} traceData={cloudTraceSpans} />;
-                  },
-                },
-                {
-                  componentFn: function (_opt: any, drilldownQuery: any) {
-                    let attrsObj: any = drilldownQuery?.span_attributes;
-                    if (typeof attrsObj === 'string') {
-                      try {
-                        attrsObj = JSON.parse(attrsObj);
-                      } catch {
-                        attrsObj = {};
-                      }
-                    }
-                    if (attrsObj && Object.keys(attrsObj).length > 0) {
-                      const { headers, convertedJson2 } = getTableData4([attrsObj]);
-                      return (
-                        <WidgetCard>
-                          <CustomTable
-                            headers={headers}
-                            tableData={convertedJson2}
-                            rowsPerPage={convertedJson2.length}
-                            totalRows={convertedJson2.length}
-                          />
-                        </WidgetCard>
-                      );
-                    }
-                    return (
-                      <WidgetCard>
-                        <Typography>No Span Attributes Available</Typography>
-                      </WidgetCard>
-                    );
-                  },
-                  text: 'Span Attributes',
-                  value: 1,
-                  key: 'span_attributes',
-                },
-
-                {
-                  text: 'Logs / Query',
-                  value: 2,
-                  key: 'trace-logs',
-                  componentFn: function (_opt: any, drilldownQuery: any) {
-                    // GCP cloud traces: fetch Cloud Logging entries correlated to this
-                    // trace id (K8s log query below would 404 against a cloud account).
-                    // project/region/service arrive top-level on the evidence path and inside
-                    // span_attributes on the unified traces_list path — read from both.
-                    if (drilldownQuery?.trace_source === 'gcp') {
-                      let gcpAttrs: any = drilldownQuery?.span_attributes;
-                      if (typeof gcpAttrs === 'string') {
-                        try {
-                          gcpAttrs = JSON.parse(gcpAttrs);
-                        } catch {
-                          gcpAttrs = {};
-                        }
-                      }
-                      gcpAttrs = gcpAttrs || {};
-                      return (
-                        <CloudTraceLogs
-                          accountId={selectedK8sAccount}
-                          project={drilldownQuery.project || gcpAttrs.project}
-                          region={drilldownQuery.region || gcpAttrs.region}
-                          serviceName={drilldownQuery.service_name || drilldownQuery.workload_name || gcpAttrs.service_name}
-                          traceId={drilldownQuery.trace_id}
-                          timestamp={drilldownQuery.timestamp}
-                        />
-                      );
-                    }
-                    if (drilldownQuery.span_name == 'query') {
-                      return (
-                        <WidgetCard>
-                          <Typography
-                            sx={{
-                              fontFamily: 'monospace',
-                              fontSize: 'var(--ds-text-body)',
-                              lineHeight: '1.6',
-                              wordBreak: 'break-word',
-                              overflowWrap: 'anywhere',
-                            }}
-                          >
-                            {drilldownQuery.resource}
-                          </Typography>
-                        </WidgetCard>
-                      );
-                    }
-                    const query = `{"namespaceName":"${drilldownQuery.workload_namespace}","workloadName":"${drilldownQuery.workload_name}", "traceId": "${drilldownQuery.trace_id}"}`;
-                    const plusMinus5Minutes = formatDateForPlusMinusDuration(new Date(drilldownQuery?.timestamp).getTime(), 5);
-                    return (
-                      <KubernetesLogs
-                        accountId={selectedK8sAccount}
-                        showTrend={false}
-                        showQueryTextBox={false}
-                        dateTime={{
-                          startTime: plusMinus5Minutes.dateMinusMinutes,
-                          endTime: plusMinus5Minutes.datePlusMinutes,
-                        }}
-                        queryFromProps={query}
-                        showPolling={false}
-                      />
-                    );
-                  },
-                },
-                {
-                  text: 'CPU & Memory',
-                  value: 3,
-                  key: 'trace-cpu-memory',
-                  componentFn: function (_opt: any, drilldownQuery: any, _row: any) {
-                    let src_query: any = {
-                      workloadName: drilldownQuery.workload_name,
-                      namespaceName: drilldownQuery.workload_namespace,
-                    };
-                    let dest_query: any = {
-                      workloadName: drilldownQuery.destination_workload_name,
-                      namespaceName: drilldownQuery.destination_workload_namespace,
-                    };
-                    if (drilldownQuery.workload_namespace == 'node' || drilldownQuery.workload_namespace == 'external') {
-                      src_query = {
-                        internalIp: extractIp(drilldownQuery.workload_name),
-                      };
-                    }
-                    if (drilldownQuery.destination_workload_namespace == 'node' || drilldownQuery.destination_workload_namespace == 'external') {
-                      dest_query = {
-                        internalIp: extractIp(drilldownQuery.destination_workload_name),
-                      };
-                    }
-                    const plusMinus10Minutes = formatDateForPlusMinusDuration(new Date(drilldownQuery?.timestamp).getTime(), 10);
-                    return (
-                      <WidgetCard>
-                        <Typography sx={{ fontWeight: 'bold', mb: 'var(--ds-space-2)' }}>
-                          Source: {drilldownQuery.workload_name} | {drilldownQuery.workload_namespace}
-                        </Typography>
-                        <KubernetesUtilizationCharts
-                          accountId={selectedK8sAccount}
-                          query={src_query}
-                          selectedDateRange={{
-                            startDate: plusMinus10Minutes.dateMinusMinutes,
-                            endDate: plusMinus10Minutes.datePlusMinutes,
-                          }}
-                          memLimit={undefined}
-                          cpuLimit={undefined}
-                        />
-                        {drilldownQuery.destination_workload_namespace != 'external' && (
-                          <>
-                            <Typography sx={{ fontWeight: 'bold', mt: 'var(--ds-space-4)', mb: 'var(--ds-space-2)' }}>
-                              Destination: {drilldownQuery.destination_workload_name} | {drilldownQuery.destination_workload_namespace}
-                            </Typography>
-                            <KubernetesUtilizationCharts
-                              accountId={selectedK8sAccount}
-                              query={dest_query}
-                              selectedDateRange={{
-                                startDate: plusMinus10Minutes.dateMinusMinutes,
-                                endDate: plusMinus10Minutes.datePlusMinutes,
-                              }}
-                              memLimit={undefined}
-                              cpuLimit={undefined}
-                            />
-                          </>
-                        )}
-                      </WidgetCard>
-                    );
-                  },
-                },
-                {
-                  componentFn: function (_opt: any, drilldownQuery: any) {
-                    if (drilldownQuery?.span_name == 'query') {
-                      return (
-                        <WidgetCard>
-                          <Typography
-                            sx={{
-                              fontFamily: 'monospace',
-                              fontSize: 'var(--ds-text-body)',
-                              lineHeight: '1.6',
-                              wordBreak: 'break-word',
-                              overflowWrap: 'anywhere',
-                            }}
-                          >
-                            {drilldownQuery.resource || 'No Data Available'}
-                          </Typography>
-                        </WidgetCard>
-                      );
-                    }
-                    const parsedHeader = drilldownQuery.headers
-                      ? getHeaderObject(
-                          drilldownQuery.headers,
-                          selectedCluster?.agent?.connection_status?.traceProviderConfig?.hasMaterializedColumn || false
-                        )
-                      : '';
-                    return (
-                      <WidgetCard>
-                        {parsedHeader && (
-                          <>
-                            <Typography sx={{ fontWeight: 'bold', mb: 'var(--ds-space-1)' }}>Headers:</Typography>
-                            <Typography
-                              sx={{
-                                fontFamily: 'monospace',
-                                fontSize: 'var(--ds-text-body)',
-                                lineHeight: '1.6',
-                                wordBreak: 'break-word',
-                                overflowWrap: 'anywhere',
-                              }}
-                            >
-                              {parsedHeader}
-                            </Typography>
-                          </>
-                        )}
-                        {drilldownQuery?.request_payload && (
-                          <>
-                            <Typography
-                              sx={{
-                                fontWeight: 'bold',
-                                mt: parsedHeader ? 'var(--ds-space-3)' : 0,
-                                mb: 'var(--ds-space-1)',
-                              }}
-                            >
-                              Request Payload:
-                            </Typography>
-                            <Typography
-                              sx={{
-                                fontFamily: 'monospace',
-                                fontSize: 'var(--ds-text-body)',
-                                lineHeight: '1.6',
-                                wordBreak: 'break-word',
-                                overflowWrap: 'anywhere',
-                              }}
-                            >
-                              {safeAtob(drilldownQuery.request_payload)}
-                            </Typography>
-                          </>
-                        )}
-                        {!drilldownQuery?.headers && !drilldownQuery?.request_payload && <Typography>No Data Available</Typography>}
-                      </WidgetCard>
-                    );
-                  },
-                  text: 'Request',
-                  value: 4,
-                  key: 'request',
-                  alphaIcon: true,
-                },
-                {
-                  componentFn: function (_opt: any, drilldownQuery: any) {
-                    return (
-                      <WidgetCard>
-                        {drilldownQuery?.http_response ? (
-                          <>
-                            <Typography sx={{ fontWeight: 'bold', mb: 'var(--ds-space-1)' }}>Response:</Typography>
-                            <Typography
-                              sx={{
-                                fontFamily: 'monospace',
-                                fontSize: 'var(--ds-text-body)',
-                                lineHeight: '1.6',
-                                whiteSpace: 'pre-wrap',
-                                wordBreak: 'break-word',
-                                overflowWrap: 'anywhere',
-                              }}
-                            >
-                              {safeAtob(drilldownQuery.http_response)}
-                            </Typography>
-                          </>
-                        ) : (
-                          <Typography>No Data Available</Typography>
-                        )}
-                      </WidgetCard>
-                    );
-                  },
-                  text: 'Response',
-                  value: 5,
-                  key: 'response',
-                  alphaIcon: true,
-                },
-              ],
-            }}
+            expandable={expandableConfig}
           />
         </ListingLayout.Body>
       </ListingLayout>
