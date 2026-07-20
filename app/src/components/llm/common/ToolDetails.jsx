@@ -476,6 +476,7 @@ const TRACE_TOOL_NAMES = [
   'queryTraces',
   'traces',
   'traces_execute',
+  'traces_execute_v2',
   'getResourceTraces',
   'recommendations',
   'executeRecommendationSql',
@@ -643,7 +644,11 @@ const FormattedToolResponse = ({ responseText, toolName, toolCall, accountId }) 
       if (Array.isArray(traces) && traces.length > 0) {
         const headers = Object.keys(traces[0]);
         const tableData = traces.map((t) =>
-          headers.map((h) => ({ component: <Text value={t[h]} showAutoEllipsis sx={{ minWidth: ds.space.mul(1, 15) }} /> }))
+          headers.map((h) => {
+            const raw = t[h];
+            const val = typeof raw === 'object' && raw !== null ? JSON.stringify(raw) : raw != null ? String(raw) : raw;
+            return { component: <Text value={val} showAutoEllipsis sx={{ minWidth: ds.space.mul(1, 15) }} /> };
+          })
         );
         const isSingleRow = tableData.length <= 1;
         const startIndex = currentPage * recordsPerPage;
