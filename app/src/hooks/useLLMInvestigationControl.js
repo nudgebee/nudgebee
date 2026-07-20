@@ -200,6 +200,11 @@ const parseConversationMessages = (conversationMessages, accountId) => {
                 response_text: t.response,
                 response_status: t.status,
                 text: t.parameters,
+                // Carry the tool call's own reasoning so the card title and the
+                // Tool Details "Thought" box show the thought — not the parameters
+                // (those live in `toolParameters` and render as the "Query" box).
+                log: (t.thought || '').split('\n\nAction:')[0],
+                thought: t.thought,
                 tool: t.tool_name,
                 tool_id: t.id,
                 type: 'tool_call',
