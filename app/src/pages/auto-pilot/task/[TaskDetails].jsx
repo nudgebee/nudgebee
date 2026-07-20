@@ -87,19 +87,18 @@ PRTicketLink.propTypes = {
 const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
   const router = useRouter();
   const statusFilter = [
+    { label: 'All', value: '' },
     { label: 'Complete', value: 'Complete' },
     { label: 'Scheduled', value: 'Scheduled' },
-    { label: 'Executed', value: 'Executed' },
     { label: 'Failed', value: 'Failed' },
     { label: 'Skipped', value: 'Skipped' },
     { label: 'Dryrun', value: 'Dryrun' },
-    { label: 'In Progress', value: 'In_Progress' },
   ];
 
   const [data, setData] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(0);
-  const [selectedStatus, setSelectedStatus] = useState('Complete');
+  const [selectedStatus, setSelectedStatus] = useState('');
   const [loading, setLoading] = useState(false);
   const [recordsPerPage, setRecordsPerPage] = useState(apiUser.getUserPreferencesTablePageSize());
 
