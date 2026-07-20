@@ -15,7 +15,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"nudgebee/llm-gateway/edgeerr"
-	"nudgebee/llm-gateway/metering"
 )
 
 // substitute runs a cross-provider substitution (P2): the client sent a request in
@@ -135,7 +134,7 @@ func (h *handler) streamResponses(c *gin.Context, bctx *schemas.BifrostContext, 
 
 	status := http.StatusBadGateway
 	var usageResp *schemas.BifrostResponsesResponse
-	captureBody := metering.BodyLoggingEnabled()
+	captureBody := bodyCaptureAllowed(rm.identity.TenantID)
 	var respBuf []byte
 	defer func() {
 		h.meter(context.WithoutCancel(c.Request.Context()), rm, status, nil, responsesUsage(usageResp), respBuf)

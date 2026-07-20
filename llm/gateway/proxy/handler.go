@@ -28,6 +28,7 @@ import (
 	"nudgebee/llm-gateway/metering"
 	"nudgebee/llm-gateway/ratelimit"
 	"nudgebee/llm-gateway/routing"
+	"nudgebee/llm-gateway/settings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -309,7 +310,7 @@ func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel fu
 	var lastUsage *schemas.BifrostPassthroughUsage
 	// When body logging is on, accumulate the streamed response (capped) so it can
 	// be stored; nil otherwise (streaming response-side attributes come later).
-	captureBody := metering.BodyLoggingEnabled()
+	captureBody := bodyCaptureAllowed(rm.identity.TenantID)
 	var respBuf []byte
 	// handled=true means a fallback path took over and metered itself; skip our meter.
 	handled := false
@@ -426,6 +427,14 @@ func appendCappedBody(buf, b []byte) []byte {
 // meter builds and enqueues one usage event for a completed request. respBody is
 // the unary response body for response-side attribute extraction (nil for
 // streaming/error paths).
+// bodyCaptureAllowed reports whether full request/response bodies should be logged
+// for this request: the global gate (env ceiling gateway_capture_body + a registered
+// sink, via BodyLoggingEnabled) AND the tenant's opt-in (settings.CaptureAllowed — EE
+// per-tenant; OSS always true within the ceiling). Off-until-opt-in for PHI safety.
+func bodyCaptureAllowed(tenantID string) bool {
+	return metering.BodyLoggingEnabled() && settings.CaptureAllowed(tenantID)
+}
+
 func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers map[string]string, usage *schemas.BifrostPassthroughUsage, respBody []byte) {
 	var respAttrs map[string]any
 	if len(respBody) > 0 {
@@ -499,7 +508,7 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	}
 
 	// Full-body logging (off by default). Linked to the usage row via reqID.
-	if record && metering.BodyLoggingEnabled() {
+	if record && bodyCaptureAllowed(rm.identity.TenantID) {
 		now := time.Now().UTC()
 		h.bodyLog.Record(metering.BodyLog{
 			ID:           uuid.NewString(),

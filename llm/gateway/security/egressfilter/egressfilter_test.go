@@ -62,6 +62,23 @@ func TestRedact_MergesOverlappingAndAdjacent(t *testing.T) {
 	assert.Equal(t, "a[REDACTED:r1]b[REDACTED:r2]c", out)
 }
 
+func TestEffectiveMode_CapsActiveModesWhenLocked(t *testing.T) {
+	prev := EnforcementEnabled()
+	t.Cleanup(func() { SetEnforcement(prev) })
+
+	// OSS (enforcement locked): enforce/redact degrade to detect; off/detect unchanged.
+	SetEnforcement(false)
+	assert.Equal(t, ModeOff, EffectiveMode(ModeOff))
+	assert.Equal(t, ModeDetect, EffectiveMode(ModeDetect))
+	assert.Equal(t, ModeDetect, EffectiveMode(ModeEnforce))
+	assert.Equal(t, ModeDetect, EffectiveMode(ModeRedact))
+
+	// EE (unlocked): every mode passes through.
+	SetEnforcement(true)
+	assert.Equal(t, ModeEnforce, EffectiveMode(ModeEnforce))
+	assert.Equal(t, ModeRedact, EffectiveMode(ModeRedact))
+}
+
 func TestAllowlist_DropsExactValue(t *testing.T) {
 	// A fake OpenAI-style key that trips the baseline rule.
 	key := "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"

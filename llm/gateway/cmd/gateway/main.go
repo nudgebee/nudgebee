@@ -26,6 +26,8 @@ import (
 	"nudgebee/llm-gateway/ratelimit"
 	"nudgebee/llm-gateway/routing"
 	"nudgebee/llm-gateway/rpc"
+	"nudgebee/llm-gateway/security/egressfilter"
+	"nudgebee/llm-gateway/settings"
 	"nudgebee/llm-gateway/usage"
 
 	"github.com/Cyprinus12138/otelgin"
@@ -185,6 +187,19 @@ func main() {
 	router := routing.NewStore(staticRules, ruleLoader,
 		time.Duration(config.Config.RoutingRefreshSeconds)*time.Second)
 	defer func() { _ = router.Close() }()
+
+	// Per-tenant data-governance settings (body-capture opt-in / DLP mode override).
+	// EE registers the DB loader; OSS has none, so the store is env-only (no override).
+	settingsStore := settings.NewStore(settings.Loader(),
+		time.Duration(config.Config.GatewaySettingsRefreshSeconds)*time.Second)
+	settings.SetActive(settingsStore)
+	defer settingsStore.Close()
+
+	// enforce/redact are EE-only; an OSS build configured for one runs in detect-only.
+	// Warn loudly so a "blocking" expectation isn't silently observe-only.
+	if m := egressfilter.ParseMode(config.Config.EgressFilterMode); (m == egressfilter.ModeEnforce || m == egressfilter.ModeRedact) && !egressfilter.EnforcementEnabled() {
+		slog.Warn("egress filter: enforce/redact require the enterprise build — running in detect-only", "configured_mode", m)
+	}
 
 	// Rate-limit enforcement is active only when a limiter is registered. ratelimit.Build
 	// returns the registered limiter, or nil when none is registered — a nil *Limiter is

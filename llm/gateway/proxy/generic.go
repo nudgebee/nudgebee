@@ -17,7 +17,6 @@ import (
 
 	"nudgebee/llm-gateway/auth"
 	"nudgebee/llm-gateway/edgeerr"
-	"nudgebee/llm-gateway/metering"
 	"nudgebee/llm-gateway/routing"
 )
 
@@ -237,7 +236,7 @@ func (h *handler) streamChatWith(c *gin.Context, bctx *schemas.BifrostContext, c
 
 	status := http.StatusBadGateway
 	var usageResp *schemas.BifrostChatResponse
-	captureBody := metering.BodyLoggingEnabled()
+	captureBody := bodyCaptureAllowed(rm.identity.TenantID)
 	var respBuf []byte
 	defer func() {
 		h.meter(context.WithoutCancel(c.Request.Context()), rm, status, nil, chatUsage(usageResp), respBuf)

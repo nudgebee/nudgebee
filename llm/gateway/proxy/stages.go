@@ -16,6 +16,7 @@ import (
 	"nudgebee/llm-gateway/ratelimit"
 	"nudgebee/llm-gateway/routing"
 	"nudgebee/llm-gateway/security/egressfilter"
+	"nudgebee/llm-gateway/settings"
 )
 
 // routeStage resolves the requested (provider, model) to a target via the routing
@@ -161,7 +162,9 @@ type filterStage struct{}
 func (filterStage) Name() string { return "filter" }
 
 func (s filterStage) Handle(rc *RequestContext) (bool, error) {
-	mode := egressfilter.ParseMode(config.Config.EgressFilterMode)
+	// Per-tenant DLP mode overrides the env default (EE); OSS resolves to the env value.
+	// EffectiveMode caps enforce/redact to detect on the OSS build (detect-only).
+	mode := egressfilter.EffectiveMode(egressfilter.ParseMode(settings.EgressMode(rc.Identity.TenantID, config.Config.EgressFilterMode)))
 	if mode == egressfilter.ModeOff || len(rc.Body) == 0 {
 		return false, nil
 	}

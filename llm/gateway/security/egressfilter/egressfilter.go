@@ -49,6 +49,30 @@ func ParseMode(s string) Mode {
 	}
 }
 
+// --- enforcement capability (OSS = detect-only; EE unlocks enforce/redact) ---
+
+// enforcement gates the ACTIVE modes. The OSS build ships detect-only (observe): it
+// can record a hit but not block or rewrite the request. EE unlocks enforce/redact
+// via EnableEnforcement (from ee/egressfilter init), mirroring the rule-corpus seam.
+var enforcement atomic.Bool
+
+// SetEnforcement unlocks (true) or locks (false) the enforce/redact modes. The EE
+// build calls SetEnforcement(true) at init; the OSS default is false (detect-only).
+func SetEnforcement(enabled bool) { enforcement.Store(enabled) }
+
+// EnforcementEnabled reports whether enforce/redact are permitted (EE build).
+func EnforcementEnabled() bool { return enforcement.Load() }
+
+// EffectiveMode caps a configured mode to what the build permits: enforce/redact
+// require EE, so in OSS they degrade to detect (observe only). off/detect are
+// unchanged. Callers resolve the mode through this so the split lives in one place.
+func EffectiveMode(m Mode) Mode {
+	if !enforcement.Load() && (m == ModeEnforce || m == ModeRedact) {
+		return ModeDetect
+	}
+	return m
+}
+
 // Hit is one detected secret — the rule that fired and the byte range in the scanned
 // text (so redaction can substitute placeholders right-to-left).
 type Hit struct {

@@ -22,12 +22,19 @@ Set by `gateway_egress_filter_mode`. Off by default.
 |------|----------|
 | `` (off) | no scan |
 | `detect` | record the hit, don't modify or block — **the safe rollout default** |
-| `enforce` | block the request (403, `secret_detected`) — a secret must not reach the provider |
-| `redact` | replace the secret span with `[REDACTED:<rule>]` and forward |
+| `enforce` | block the request (403, `secret_detected`) — a secret must not reach the provider · **EE** |
+| `redact` | replace the secret span with `[REDACTED:<rule>]` and forward · **EE** |
+
+**OSS is detect-only.** The active modes (`enforce`/`redact`) block or rewrite the
+request — those are EE. On the OSS build they degrade to `detect` (a boot warning is
+logged if configured otherwise); `off`/`detect` are unchanged. The EE build unlocks
+them via `egressfilter.SetEnforcement(true)` (from `ee/egressfilter` init), mirroring
+the rule-corpus seam. Per-tenant mode overrides live in the EE Data & privacy admin
+surface (so per-tenant `enforce`/`redact` are inherently EE).
 
 Recommended rollout: run `detect` first, watch what fires (usage `attributes.derived.dlp`
-+ the `x-nb-llm-dlp` header), tune the **allowlist** for false positives, then flip to
-`enforce` or `redact`.
++ the `x-nb-llm-dlp` header), tune the **allowlist** for false positives, then (EE) flip
+to `enforce` or `redact`.
 
 ## Signal + metering
 

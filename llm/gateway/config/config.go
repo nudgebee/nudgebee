@@ -69,6 +69,17 @@ type Configuration struct {
 	// gated by the RPC permission layer + network isolation).
 	GatewayActionToken string `mapstructure:"gateway_action_token"`
 
+	// Outbound call to services-server (api-server) for audit ingestion — mirrors
+	// llm-server's SERVICE_API_SERVER_URL + ACTION_API_SERVER_TOKEN. Used to record
+	// admin config changes (e.g. data-capture toggles) into the central audit table
+	// via POST {url}/v1/audit. When either is unset, audit emission is skipped (logged).
+	ServiceApiServerURL  string `mapstructure:"service_api_server_url"`
+	ActionApiServerToken string `mapstructure:"action_api_server_token"`
+
+	// GatewaySettingsRefreshSeconds is the poll interval for the per-tenant settings
+	// store (llm_gateway_tenant_settings), mirroring the routing/ratelimit refresh.
+	GatewaySettingsRefreshSeconds int `mapstructure:"gateway_settings_refresh_seconds"`
+
 	// Metering sink — pluggable: "postgres" (default) or "clickhouse".
 	MeteringSink  string `mapstructure:"gateway_metering_sink"`
 	ClickhouseURL string `mapstructure:"clickhouse_url"`
@@ -183,6 +194,9 @@ var keyDefaults = map[string]any{
 	"gateway_metering_sink":                 SinkPostgres,
 	"nudgebee_encryption_key":               "",
 	"gateway_action_token":                  "",
+	"service_api_server_url":                "",
+	"action_api_server_token":               "",
+	"gateway_settings_refresh_seconds":      30,
 	"clickhouse_url":                        "",
 	"cache_provider":                        "inmemory",
 	"cache_expiration_minutes":              10,

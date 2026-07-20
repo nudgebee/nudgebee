@@ -5,12 +5,21 @@ import (
 	"testing"
 
 	"nudgebee/llm-gateway/config"
+	"nudgebee/llm-gateway/security/egressfilter"
 
 	"github.com/gin-gonic/gin"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// withEnforcement simulates the EE build, where the active enforce/redact modes are
+// unlocked. Without it, the OSS default caps those modes at detect.
+func withEnforcement(t *testing.T) {
+	prev := egressfilter.EnforcementEnabled()
+	egressfilter.SetEnforcement(true)
+	t.Cleanup(func() { egressfilter.SetEnforcement(prev) })
+}
 
 const secretBody = `{"model":"claude-opus-4-8","messages":[{"role":"user","content":"my key is AKIAIOSFODNN7EXAMPLE"}]}`
 
@@ -55,7 +64,24 @@ func TestFilterStage_DetectSignalsButAllows(t *testing.T) {
 	assert.Contains(t, rec.Header().Get("x-nb-llm-dlp"), "aws-access-key-id")
 }
 
+func TestFilterStage_OSSCapsEnforceToDetect(t *testing.T) {
+	// OSS build (enforcement locked): enforce degrades to detect — a secret is
+	// recorded and signalled, but the request is NOT blocked.
+	prev := egressfilter.EnforcementEnabled()
+	egressfilter.SetEnforcement(false)
+	t.Cleanup(func() { egressfilter.SetEnforcement(prev) })
+	withMode(t, "enforce")
+	rc, rec := newFilterRC(secretBody)
+	stop, err := filterStage{}.Handle(rc)
+	require.NoError(t, err)
+	assert.False(t, stop, "OSS caps enforce at detect — must not block")
+	require.NotNil(t, rc.DLP)
+	assert.Equal(t, "detect", rc.DLP["mode"])
+	assert.Equal(t, 200, rec.Code)
+}
+
 func TestFilterStage_EnforceBlocks(t *testing.T) {
+	withEnforcement(t)
 	withMode(t, "enforce")
 	rc, rec := newFilterRC(secretBody)
 	stop, err := filterStage{}.Handle(rc)
@@ -67,6 +93,7 @@ func TestFilterStage_EnforceBlocks(t *testing.T) {
 }
 
 func TestFilterStage_RedactRewritesBody(t *testing.T) {
+	withEnforcement(t)
 	withMode(t, "redact")
 	rc, _ := newFilterRC(secretBody)
 	stop, err := filterStage{}.Handle(rc)
