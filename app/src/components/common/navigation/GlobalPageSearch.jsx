@@ -19,7 +19,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/router';
 import { useSession } from 'next-auth/react';
 import Box from '@mui/material/Box';
-import { Typography, Popover, InputBase } from '@mui/material';
+import { Typography, Popover, InputBase, Fade } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import { ds } from '@utils/colors';
 import Chip from '@ui/Chip';
@@ -549,6 +549,28 @@ function OptionsList({ filteredOptions, highlightedIndex, onSelect }) {
   );
 }
 
+// Popover paper's own enter/exit transition. MUI Popover defaults to Grow,
+// which times its exit off an auto-computed, height-dependent duration and
+// also animates `transform` (scale-down) — fighting the `globalSearchPopoverPopIn`
+// keyframe below, which owns transform on enter and (via `forwards`) holds it
+// at rest afterward. Swapping in a Fade tuned the same way ds/Modal's own
+// ModalTransition is (fixed timeout, slower custom-eased exit) makes closing
+// a clean, opacity-only fade — actually matching the "same as Modal's exit"
+// this file already aimed for, rather than falling back to Grow's defaults.
+const GlobalSearchPopoverTransition = React.forwardRef(function GlobalSearchPopoverTransition(props, ref) {
+  return (
+    <Fade
+      ref={ref}
+      {...props}
+      easing={{
+        enter: 'var(--ds-overlay-enter-easing)',
+        exit: 'cubic-bezier(0.4, 0, 0.2, 1)',
+      }}
+      timeout={{ enter: 250, exit: 220 }}
+    />
+  );
+});
+
 export default function GlobalPageSearch() {
   const { data } = useSession();
   const router = useRouter();
@@ -1058,9 +1080,10 @@ export default function GlobalPageSearch() {
     // pop-in keyframe bakes the centering translate into its own start/end
     // values (rather than a separate static transform) so
     // `animation ... forwards` is the single source of truth for `transform`
-    // post-animation — exit then falls through to Grow's own opacity fade,
-    // same as Modal's exit. Backdrop mirrors Modal's default dim color (MUI
-    // Backdrop's own rgba(0,0,0,0.5)) and its opacity-transition timing.
+    // post-animation — exit then falls through to GlobalSearchPopoverTransition's
+    // own opacity fade (see its definition above), same as Modal's exit.
+    // Backdrop mirrors Modal's default dim color (MUI Backdrop's own
+    // rgba(0,0,0,0.5)) and its opacity-transition timing.
     <Box
       sx={{
         position: 'relative',
@@ -1136,6 +1159,7 @@ export default function GlobalPageSearch() {
         disablePortal
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        TransitionComponent={GlobalSearchPopoverTransition}
         slotProps={{
           paper: {
             sx: {

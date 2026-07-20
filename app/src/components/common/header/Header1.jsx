@@ -39,7 +39,7 @@ import WorkflowIconBlue from '@assets/workflow/workflow-icon-blue.icon.svg';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { useRouter } from 'next/router';
 import { useData } from '@context/DataContext';
-import { hasWriteAccess, hasFeatureAccess } from '@lib/auth';
+import { hasWriteAccess } from '@lib/auth';
 import apiKubernetes from '@api1/kubernetes';
 import IconButton from '@mui/material/IconButton';
 import ClusterDropdown from '@shared/navigation/ClusterDropDown';
@@ -106,13 +106,6 @@ const Header1 = ({ showBorder = false }) => {
       markProductUpdatesSeen();
     }
   }, [updatesDrawerOpen, markProductUpdatesSeen]);
-
-  // Backend feature flag, off by default — enable per-tenant via the
-  // feature_flag table (dev-tenant-only today; not yet rolled out to test/prod).
-  const [globalSearchEnabled, setGlobalSearchEnabled] = useState(false);
-  useEffect(() => {
-    hasFeatureAccess('GLOBAL_PAGE_SEARCH').then(setGlobalSearchEnabled);
-  }, []);
 
   const [anchorActiveTab, setAnchorActiveTab] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
@@ -801,12 +794,8 @@ const Header1 = ({ showBorder = false }) => {
                 </Typography>
               </Box>
             </Box>
-            {/* Always mounted as the grid's 2nd (of 3) column, flag or no flag — the
-                parent grid assigns columns by DOM order, so omitting this Box entirely
-                when the flag is off would shift the right-side icon group (the 3rd
-                child below) into this middle 1fr column instead of the trailing auto one. */}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], justifyContent: 'flex-end', flex: 1 }}>
-              {globalSearchEnabled && <GlobalPageSearch />}
+              <GlobalPageSearch />
             </Box>
             <Box display={'flex'} alignItems={'center'} justifyContent={'flex-end'} gap={ds.space[3]}>
               <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: ds.space[2] }}>
