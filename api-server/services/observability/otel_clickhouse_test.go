@@ -5,11 +5,48 @@ import (
 	"testing"
 
 	"nudgebee/services/internal/testenv"
+	"nudgebee/services/query"
 	"nudgebee/services/security"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestAugmentTraceColumnsForAttributes pins the dynamic attribute-column injection that
+// makes backend-discovered span/resource attributes queryable as flat canonical fields.
+func TestAugmentTraceColumnsForAttributes(t *testing.T) {
+	base := ClickhouseTraceTableDefinition
+
+	t.Run("no-op returns base unchanged when all fields known", func(t *testing.T) {
+		where := query.QueryWhereClause{Binary: query.BinaryWhereClause{
+			"service_name": {query.Eq: "cart"},
+		}}
+		got := augmentTraceColumnsForAttributes(base, where)
+		assert.Len(t, got, len(base))
+	})
+
+	t.Run("adds coalesce WhereDef for a dotted attribute; base not mutated", func(t *testing.T) {
+		where := query.QueryWhereClause{Binary: query.BinaryWhereClause{
+			"db.system": {query.Eq: "redis"},
+		}}
+		got := augmentTraceColumnsForAttributes(base, where)
+		def, ok := got["db.system"]
+		require.True(t, ok)
+		assert.Contains(t, def.WhereDef, "spanattributes['db.system']")
+		assert.Contains(t, def.WhereDef, "resourceattributes['db.system']")
+		_, inBase := base["db.system"]
+		assert.False(t, inBase, "shared base map must not be mutated")
+	})
+
+	t.Run("escapes single quotes in the key", func(t *testing.T) {
+		where := query.QueryWhereClause{Binary: query.BinaryWhereClause{
+			"a'b": {query.Eq: "x"},
+		}}
+		got := augmentTraceColumnsForAttributes(base, where)
+		require.Contains(t, got, "a'b")
+		assert.Contains(t, got["a'b"].WhereDef, "a\\'b")
+	})
+}
 
 // TestNormalizeClickhouseAttrMap pins the three input shapes a ClickHouse Map
 // column can arrive as via the HTTP JSON driver. The previous heatmap mapper

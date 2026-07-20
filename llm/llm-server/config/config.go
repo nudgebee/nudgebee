@@ -197,7 +197,11 @@ type appConfig struct {
 	LLMServerAgentMaxLogLines                   int `mapstructure:"llm_server_agent_max_loglines"`
 	// Dev-only. Set to "k8s" / "loki" / etc. to bypass per-account routing.
 	// Empty (default) preserves the DB-configured provider.
-	LLMServerLogProviderOverride     string `mapstructure:"llm_server_log_provider_override"`
+	LLMServerLogProviderOverride string `mapstructure:"llm_server_log_provider_override"`
+	// Dev-only. Set to "jaeger" / "chronosphere" / etc. to bypass per-account trace
+	// provider routing on the canonical (v2) path. Empty (default) lets services-server
+	// resolve the account's default trace provider.
+	LLMServerTraceProviderOverride   string `mapstructure:"llm_server_trace_provider_override"`
 	LlmServerAgentMaxSqlRows         int    `mapstructure:"llm_server_agent_max_sqlrows"`
 	LlmServerAgentMaxTracesRows      int    `mapstructure:"llm_server_agent_max_tracesrows"`
 	LlmServerAgentMaxScratchpadChars int    `mapstructure:"llm_server_agent_max_scratchpad_chars"`
@@ -361,7 +365,10 @@ type appConfig struct {
 	// llm_server_k8s_orchestrator_{v2,lean}_enabled booleans. The @k8s_orchestrator_2
 	// (always direct) and @k8s_orchestrator_lean (always lean) eval handles are
 	// unaffected by this — they exist for side-by-side A/B regardless of mode.
-	K8sOrchestratorMode                    string `mapstructure:"llm_server_k8s_orchestrator_mode"`
+	K8sOrchestratorMode string `mapstructure:"llm_server_k8s_orchestrator_mode"`
+	// TraceAgentV2Enabled gates the canonical, provider-independent traces agent
+	// (TracesDefaultAgentV2). Global per-deploy toggle; default false.
+	TraceAgentV2Enabled                    bool   `mapstructure:"llm_server_trace_agent_v2_enabled"`
 	LlmServerWorkspacePort                 int    `mapstructure:"llm_server_workspace_port"`
 	LlmServerWorkspaceLocalUrl             string `mapstructure:"llm_server_workspace_local_url"`
 	LlmServerWorkspaceFileMaxDownloadBytes int    `mapstructure:"llm_server_workspace_file_max_download_bytes"`
@@ -772,6 +779,7 @@ func init() {
 
 	viper.SetDefault("llm_server_agent_max_loglines", 100)
 	viper.SetDefault("llm_server_log_provider_override", "")
+	viper.SetDefault("llm_server_trace_provider_override", "")
 	viper.SetDefault("llm_server_agent_max_sqlrows", 10)
 	viper.SetDefault("llm_server_agent_max_tracesrows", 10)
 	viper.SetDefault("llm_server_agent_max_scratchpad_chars", 200000)
@@ -927,6 +935,7 @@ func init() {
 	viper.SetDefault("llm_server_workspace_resource_request_memory", "256Mi")
 	viper.SetDefault("llm_server_shell_tool_enabled", true)
 	viper.SetDefault("llm_server_log_agent_v2_enabled", false)
+	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
 	// k8s_orchestrator mode: delegating (v1, default) | direct (v2) | lean (experimental).
 	viper.SetDefault("llm_server_k8s_orchestrator_mode", "delegating")
 	viper.SetDefault("llm_server_workspace_port", 8080)

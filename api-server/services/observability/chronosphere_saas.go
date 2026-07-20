@@ -425,7 +425,9 @@ func (s *ChronosphereMetricSaasSource) FetchMetricsQuery(
 	return OutputMetricQuery{Results: queryResults}, nil
 }
 func (s *ChronosphereTraceSaasSource) GetLabelMapping() map[string]string {
-	return map[string]string{}
+	// Same canonical→backend trace vocabulary as the agent source (see
+	// chronosphereTraceLabelMapping in chronosphere.go).
+	return chronosphereTraceLabelMapping
 }
 
 func (s *ChronosphereTraceSaasSource) GetSupportedOperators() []string {

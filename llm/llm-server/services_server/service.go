@@ -615,6 +615,89 @@ func QueryLogLabels(ctx security.RequestContext, accountId string, provider Obse
 	return core.ObservabilityLogLabelResponse{Labels: response}, nil
 }
 
+// QueryTraceLabels calls the traces_list_labels action and returns the label names
+// available for the account's trace provider — the authoritative set of canonical
+// fields ∪ merged label mapping ∪ backend-discovered span/resource attribute keys.
+// Mirrors QueryLogLabels; the v2 traces agent uses it for live, per-account field
+// discovery (the trace counterpart of the log agent's get_labels call).
+func QueryTraceLabels(ctx security.RequestContext, accountId string, provider ObservabilityProvider) ([]string, error) {
+	if provider.IntegrationSource == "" {
+		provider.IntegrationSource = "agent"
+	}
+	queryPayload := map[string]any{
+		"action": map[string]any{
+			"name": "traces_list_labels",
+		},
+		"input": map[string]any{
+			"request": map[string]any{
+				"account_id":      accountId,
+				"provider_type":   provider.Provider,
+				"provider_source": provider.IntegrationSource,
+				"start_time":      time.Now().Add(-1 * time.Hour).UnixMilli(),
+				"end_time":        time.Now().UnixMilli(),
+			},
+		},
+	}
+
+	tenant := ctx.GetSecurityContext().GetTenantId()
+	if tenant == "" {
+		tenant1, err := security.GetTenantIdFromAccountId(accountId)
+		if err != nil {
+			return nil, err
+		}
+		tenant = tenant1
+	}
+	if tenant == "" {
+		return nil, errors.New("tenant id is empty")
+	}
+
+	resp, err := common.HttpPost(fmt.Sprintf("%s/rpc/traces", config.Config.ServiceEndpoint), common.HttpWithHeaders(map[string]string{
+		"Content-Type":   contentTypeJson,
+		"Accept":         contentTypeJson,
+		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
+		"x-tenant-id":    tenant,
+		"x-user-id":      ctx.GetSecurityContext().EffectiveUserIdForRPC(),
+	}), common.HttpWithJsonBody(queryPayload))
+	if err != nil {
+		return nil, fmt.Errorf("services: tracelabels, unable to process request: %v", err)
+	}
+	defer func() {
+		if resp.Body != nil {
+			if err := resp.Body.Close(); err != nil {
+				slog.Info("services_server: failed to close response body", "error", err)
+			}
+		}
+	}()
+
+	jsonBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == 401 {
+		return nil, fmt.Errorf("unauthorized: %v", string(jsonBody))
+	}
+	if resp.StatusCode == 500 {
+		return nil, fmt.Errorf("internal Server Error from Services Server, %v", string(jsonBody))
+	}
+
+	// traces_list_labels returns { "labels": [ { "label": "...", "attributes": {...} } ] }.
+	var parsed struct {
+		Labels []struct {
+			Label string `json:"label"`
+		} `json:"labels"`
+	}
+	if err := common.UnmarshalJson(jsonBody, &parsed); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(parsed.Labels))
+	for _, l := range parsed.Labels {
+		if l.Label != "" {
+			names = append(names, l.Label)
+		}
+	}
+	return names, nil
+}
+
 // ProviderCapabilities is the subset of get_default_provider's `capabilities`
 // block the llm-server consumes. The backend returns more fields (service map,
 // heatmap, raw query, etc.); only the operator set is parsed here.

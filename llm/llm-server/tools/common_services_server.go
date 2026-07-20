@@ -250,6 +250,35 @@ func executeFetchLogLabels(accountId string, logProvider services_server.Observa
 	return labels, nil
 }
 
+// executeFetchTraceLabels returns the live label names for the account's trace
+// provider (canonical fields ∪ merged mapping ∪ backend-discovered attribute keys)
+// via the traces_list_labels action. Trace counterpart of executeFetchLogLabels.
+func executeFetchTraceLabels(accountId string, traceProvider services_server.ObservabilityProvider) ([]string, error) {
+	if traceProvider.Provider == "" {
+		return nil, errors.New("trace_provider is required")
+	}
+	tenantId, err := security.GetTenantIdFromAccountId(accountId)
+	if err != nil {
+		return nil, err
+	}
+	ctx := security.NewRequestContextForTenantAccountAdmin(tenantId, "", []string{accountId})
+	return services_server.QueryTraceLabels(*ctx, accountId, traceProvider)
+}
+
+// FetchTraceLabelKeys returns the live trace label names for prompt building,
+// degrading to an empty slice (with a warn) on error so a label-discovery failure
+// never blocks query generation. Exported for the v2 traces agent — mirrors
+// NBLogTool.QueryLabels for the log agent.
+func FetchTraceLabelKeys(accountId string, traceProvider services_server.ObservabilityProvider) []string {
+	labels, err := executeFetchTraceLabels(accountId, traceProvider)
+	if err != nil {
+		slog.Warn("traces: unable to fetch provider labels", "error", err,
+			"provider", traceProvider.Provider, "account_id", accountId)
+		return []string{}
+	}
+	return labels
+}
+
 func getProvider(accountId, providerType string) (services_server.ObservabilityProvider, error) {
 	if accountId == "" || providerType == "" {
 		return services_server.ObservabilityProvider{}, fmt.Errorf("accountId or providerType cannot be empty")
@@ -349,6 +378,24 @@ func executeFetchTrace(ctx core.NbToolContext, traceProvider string, traceProvid
 		return core.ObservabilityTraceResponse{}, err
 	}
 	return traces, nil
+}
+
+// executeFetchTraceCanonical is the integration-agnostic (v2) trace executor: it sends
+// the canonical where-clause with an EMPTY provider so services-server resolves the
+// account's default trace provider and translates the query per its label mapping
+// (mirrors executeFetchLogsCanonical). Query is always empty and IncludeRawResult false
+// — the raw-SQL path stays on the dedicated ClickHouse agent. Reuses executeFetchTrace
+// for time/limit/offset parsing and the QueryTraces round-trip; returns errors verbatim
+// (never a soft-completion "no traces" string).
+func executeFetchTraceCanonical(ctx core.NbToolContext, queryBuilder core.TraceQueryBuilder, configs map[string]any) (core.ObservabilityTraceResponse, error) {
+	providerType := ""
+	providerSource := ""
+	// Dev-only escape hatch for local setups with no integration rows for services-server
+	// to resolve: pin the provider so the query targets that backend.
+	if override := strings.TrimSpace(config.Config.LLMServerTraceProviderOverride); override != "" {
+		providerType = override
+	}
+	return executeFetchTrace(ctx, providerType, providerSource, "", queryBuilder, configs)
 }
 
 func GetTraceProvider(accountId string) (services_server.ObservabilityProvider, error) {
