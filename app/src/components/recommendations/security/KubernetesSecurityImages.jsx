@@ -44,21 +44,38 @@ const KubernetesSecurityImages = (props) => {
       .then((res) => {
         const securityAppsTableData = res?.recommendation_security_groupings_v2?.rows?.map((item) => {
           const data = [];
-          // A scanned-but-clean image (image_scan_summary row, no CVEs) comes back
-          // with every severity count at 0. Flag it so it reads as "Clean" instead
-          // of a blank 0/0/0/0 row. count_severity_info excludes Info/Unknown-only images.
-          const isClean =
+          // An image with no CVEs comes back with every severity count at 0. Such a
+          // row is flagged by its scan outcome (max_scan_status from the
+          // image_scan_summary row) instead of a blank 0/0/0/0 row: "Clean" when it
+          // scanned cleanly, "Unscannable" when the image couldn't be pulled (e.g. a
+          // private registry the scanner has no credentials for), or "Scan failed"
+          // for a genuine scan error. Images with CVEs show their counts as before.
+          const hasCves =
             (Number(item?.count_severity_critical) || 0) +
               (Number(item?.count_severity_high) || 0) +
               (Number(item?.count_severity_medium) || 0) +
               (Number(item?.count_severity_low) || 0) +
-              (Number(item?.count_severity_info) || 0) ===
+              (Number(item?.count_severity_info) || 0) >
             0;
+          let scanStatusLabel = null;
+          if (!hasCves) {
+            if (item?.max_scan_status === 'unscannable') {
+              scanStatusLabel = (
+                <span title='This image could not be pulled for scanning — e.g. a private registry the scanner has no credentials for.'>
+                  <Label tone='warning' text='Unscannable' size='sm' />
+                </span>
+              );
+            } else if (item?.max_scan_status === 'failed') {
+              scanStatusLabel = <Label tone='critical' text='Scan failed' size='sm' />;
+            } else {
+              scanStatusLabel = <Label tone='success' text='Clean' size='sm' />;
+            }
+          }
           data.push({
             component: (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
                 <Text value={item?.image} showAutoEllipsis />
-                {isClean && <Label tone='success' text='Clean' size='sm' />}
+                {scanStatusLabel}
               </Box>
             ),
             drilldownQuery: { image: item?.image, package_id: item?.package_id },

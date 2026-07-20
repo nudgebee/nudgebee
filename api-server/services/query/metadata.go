@@ -3208,6 +3208,7 @@ var table_metadata = map[string]TableDefinition{
 			// pod_container × recommendation join.
 			nonPodColumns := map[string]bool{
 				"id": true, "severity": true, "severity_weight": true, "status": true,
+				"scan_status": true, "max_scan_status": true,
 				"image": true, "vulnerability_id": true, "package_id": true,
 				"created_at": true, "updated_at": true, "recommendation": true,
 				"count": true, "count_severity_critical": true, "count_severity_high": true,
@@ -3326,7 +3327,7 @@ var table_metadata = map[string]TableDefinition{
 				// match on that indexed column directly instead of parsing the JSON.
 				cleanUnion = `
 				UNION ALL
-				SELECT s.id, NULL as severity, s.status, s.created_at, s.updated_at` + cleanVulnCol + cleanPkgCol + cleanRecCol + `
+				SELECT s.id, NULL as severity, s.status, s.created_at, s.updated_at, s.recommendation->>'status' as scan_status` + cleanVulnCol + cleanPkgCol + cleanRecCol + `
 				FROM recommendation s
 				WHERE s.cloud_account_id = pc.cloud_account_id
 					AND s.tenant_id        = pc.tenant_id
@@ -3380,6 +3381,7 @@ var table_metadata = map[string]TableDefinition{
 					ELSE 0
 				END AS severity_weight,
 				r.status,
+				r.scan_status        AS scan_status,
 				pc.image             AS image,
 				r.created_at         AS created_at,
 				r.updated_at         AS updated_at,
@@ -3388,7 +3390,7 @@ var table_metadata = map[string]TableDefinition{
 				pc.namespace` + outerVulnCol + outerPkgCol + outerRecCol + `
 			FROM pod_container pc,
 			LATERAL (
-				SELECT rec2.id, rec2.severity, rec2.status, rec2.created_at, rec2.updated_at` + lateralVulnCol + lateralPkgCol + lateralRecCol + `
+				SELECT rec2.id, rec2.severity, rec2.status, rec2.created_at, rec2.updated_at, NULL::text as scan_status` + lateralVulnCol + lateralPkgCol + lateralRecCol + `
 				FROM recommendation rec2
 				WHERE rec2.cloud_account_id = pc.cloud_account_id
 					AND rec2.tenant_id      = pc.tenant_id
@@ -3425,6 +3427,18 @@ var table_metadata = map[string]TableDefinition{
 			},
 			"status": {
 				Type: ColumnDefinitionTypeString,
+			},
+			// scan_status is the image's scan OUTCOME (clean|vulnerable|failed|
+			// unscannable) from the image_scan_summary row, distinct from `status`
+			// (the Open/Archive lifecycle column). NULL on per-CVE rows. Use the
+			// aggregated max_scan_status in listings — one image = one group.
+			"scan_status": {
+				Type: ColumnDefinitionTypeString,
+			},
+			"max_scan_status": {
+				Type:         ColumnDefinitionTypeString,
+				Def:          "max(scan_status)",
+				IsAggregated: true,
 			},
 			"image": {
 				Type: ColumnDefinitionTypeString,

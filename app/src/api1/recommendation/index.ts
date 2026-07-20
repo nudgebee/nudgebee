@@ -223,6 +223,7 @@ export const GET_SECURITY_RECOMMENDATION_LISTING_IMAGES = `query get_security_re
       image
       package_id
       created_at
+      max_scan_status
     }
   }
 }`;
