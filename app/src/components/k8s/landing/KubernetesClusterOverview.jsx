@@ -207,8 +207,8 @@ const KubernetesClusterOverview = () => {
                 />
               </ErrorBoundary>
             </Box>
-            <Grid container alignItems='stretch' spacing='14px' columns={{ xs: 4, sm: 8, md: 12 }} sx={{ minWidth: 0, overflow: 'hidden' }}>
-              <Grid item md={7} sx={{ overflow: 'hidden' }}>
+            <Grid container alignItems='stretch' spacing='14px' columns={{ xs: 4, sm: 8, md: 12 }} sx={{ minWidth: 0, overflow: 'visible' }}>
+              <Grid item md={7} sx={{ overflow: 'visible' }}>
                 <ErrorBoundary>
                   <KubernetesMemoryCpuOverView
                     key={`cluster-box-${cluster?.account_id ?? ''}`}
