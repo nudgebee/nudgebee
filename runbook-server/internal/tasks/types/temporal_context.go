@@ -23,6 +23,7 @@ type TemporalTaskContext struct {
 	accountID       string
 	workflowID      string
 	workflowRunID   string
+	eventID         string
 	taskID          string
 	userID          string
 	workflowName    string
@@ -52,6 +53,10 @@ func (t *TemporalTaskContext) GetWorkflowID() string {
 
 func (t *TemporalTaskContext) GetWorkflowRunID() string {
 	return t.workflowRunID
+}
+
+func (t *TemporalTaskContext) GetEventID() string {
+	return t.eventID
 }
 
 func (t *TemporalTaskContext) GetTaskID() string {
@@ -94,7 +99,7 @@ func (t *TemporalTaskContext) IsDryRun() bool {
 	return t.dryRun
 }
 
-func NewTemporalTaskContextFromActivity(ctx context.Context, tenantID, accountID, workflowID, userID, workflowName, userDisplayName string, temporalClient client.Client, temporalDataConverter converter.DataConverter, store model.WorkflowStore, isDryRun bool) TaskContext {
+func NewTemporalTaskContextFromActivity(ctx context.Context, tenantID, accountID, workflowID, eventID, userID, workflowName, userDisplayName string, temporalClient client.Client, temporalDataConverter converter.DataConverter, store model.WorkflowStore, isDryRun bool) TaskContext {
 	activityInfo := activity.GetInfo(ctx)
 
 	tc := TemporalTaskContext{
@@ -107,6 +112,7 @@ func NewTemporalTaskContextFromActivity(ctx context.Context, tenantID, accountID
 		accountID:       accountID,
 		workflowID:      workflowID,
 		workflowRunID:   activityInfo.WorkflowExecution.RunID,
+		eventID:         eventID,
 		taskID:          activityInfo.ActivityID,
 		userID:          userID,
 		workflowName:    workflowName,

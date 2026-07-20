@@ -79,6 +79,23 @@ func getUserDisplayName(wf *model.Workflow) string {
 	return ""
 }
 
+// extractEventIDFromInputs returns the triggering event's ID from the "event"
+// workflow input (set by event-triggered runs), checking the same keys as the
+// system search-attribute tagging. Returns "" for manual/scheduled/webhook runs.
+func extractEventIDFromInputs(inputs map[string]any) string {
+	eventMap, ok := inputs["event"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	if id, ok := eventMap["id"].(string); ok && id != "" {
+		return id
+	}
+	if id, ok := eventMap["event_id"].(string); ok && id != "" {
+		return id
+	}
+	return ""
+}
+
 const (
 	Internal_UpdateLastExecutionStatusActivity   = "Internal_UpdateLastExecutionStatusActivity"
 	FetchWorkflowDefinitionActivity              = "FetchWorkflowDefinitionActivity"
@@ -1201,6 +1218,9 @@ func processTaskLoop(
 				paramMap[tasks.ParamTenantID] = wf.TenantID
 				paramMap[tasks.ParamAccountID] = wf.AccountID
 				paramMap[tasks.ParamWorkflowID] = wf.ID
+				if eventID := extractEventIDFromInputs(tplCtx.Inputs); eventID != "" {
+					paramMap[tasks.ParamEventID] = eventID
+				}
 				paramMap[tasks.ParamUserID] = wf.UpdatedBy
 				// Intentionally do NOT attach the full template Vars (tplCtx.Vars) to the
 				// activity input. Params are already rendered above via ProcessValue, and
@@ -1860,6 +1880,9 @@ func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *
 		}
 		if v, ok := tplCtx.Inputs[tasks.ParamWorkflowID]; ok {
 			params[tasks.ParamWorkflowID] = v
+		}
+		if eventID := extractEventIDFromInputs(tplCtx.Inputs); eventID != "" {
+			params[tasks.ParamEventID] = eventID
 		}
 
 		future := workflow.ExecuteActivity(ctx, action.Type, params)
