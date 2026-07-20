@@ -435,7 +435,7 @@ const PageLayout = ({ children }) => {
                   width: `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 42)})`,
                   px: open ? ds.space.mul(1, 16) : pageFlags.isAskNudgebee || pageFlags.isAskNudgebeeV2 ? 0 : ds.space.mul(1, 10),
                   backgroundColor:
-                    pageFlags.isInvestigate || pageFlags.isOptimize || pageFlags.isTroubleshoot || pageFlags.isAgentic
+                    pageFlags.isOptimize || pageFlags.isTroubleshoot || pageFlags.isAgentic
                       ? colors.background.home
                       : pageFlags.isAskNudgebee
                       ? colors.background.askNudgebeePage
