@@ -35,6 +35,11 @@ class AnomalyAlertParams(BaseModel):
     # spend of $208 ... exceeds baseline average of $14"); metric anomalies set
     # it equal to the title and are filtered out at render.
     description: Optional[str] = None
+    # The numeric stats ride here: spend anomalies get a "Spend Anomaly Summary"
+    # table (z-score, change, expected); metric anomalies get the raw anomaly
+    # map (current_value, reference_value baseline) in slot 0. Declared so the
+    # producer's stats survive AnomalyAlertParams(**e) instead of being dropped.
+    evidences: Optional[List[Any]] = None
 
 
 # Dollar amounts, percentages, and Nx multipliers in the producer sentence get
@@ -51,6 +56,56 @@ def _anomaly_value_line(alert: AnomalyAlertParams) -> str:
         return ""
     value_line = desc.split(" (z-score:")[0].strip()
     return _STAT_PATTERN.sub(lambda m: f"*{m.group(0)}*", value_line)
+
+
+def _fmt_num(value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _anomaly_stats_line(alert: AnomalyAlertParams) -> str:
+    """Numeric stats from the event's evidences — dropped by the grouped card
+    until now. Spend anomalies get z-score/change/expected from the summary
+    table; metric anomalies (whose description == title, so the value line is
+    empty) get current-vs-baseline. Parses defensively — any unexpected shape
+    yields no line rather than an error."""
+    evidences = alert.evidences if isinstance(alert.evidences, list) else []
+
+    for ev in evidences:
+        if not isinstance(ev, dict):
+            continue
+        data = ev.get("data")
+        if not isinstance(data, dict):
+            continue
+        if data.get("table_name") != "Spend Anomaly Summary" and data.get("headers") != ["Metric", "Value"]:
+            continue
+        raw_rows = data.get("rows")
+        if not isinstance(raw_rows, (list, tuple)):
+            continue
+        rows = {str(row[0]): str(row[1]) for row in raw_rows if isinstance(row, (list, tuple)) and len(row) >= 2}
+        parts = []
+        if rows.get("Z-Score"):
+            parts.append(f"Z-score *{rows['Z-Score']}*")
+        if rows.get("Change"):
+            parts.append(f"*{rows['Change']}*")
+        if rows.get("Expected Daily Spend"):
+            parts.append(f"expected *{rows['Expected Daily Spend']}*")
+        if parts:
+            return " · ".join(parts)
+
+    for ev in evidences:
+        if not isinstance(ev, dict) or ev.get("current_value") is None:
+            continue
+        current = _fmt_num(ev["current_value"])
+        reference = ev.get("reference_value")
+        if isinstance(reference, dict):
+            for key in ("mean", "value", "baseline", "avg"):
+                if isinstance(reference.get(key), (int, float)):
+                    return f"Current *{current}* vs baseline *{_fmt_num(reference[key])}*"
+        return f"Current value *{current}*"
+
+    return ""
 
 
 class AnomalyAlertSummaryParams(BaseModel):
@@ -92,6 +147,9 @@ def get_grouped_anomaly_alerts_template(input_data: List[AnomalyAlertParams]) ->
         value_line = _anomaly_value_line(alert)
         if value_line:
             lines.append(value_line)
+        stats_line = _anomaly_stats_line(alert)
+        if stats_line:
+            lines.append(stats_line)
 
         subject = f"{alert.subject_name} ({alert.subject_namespace})" if alert.subject_namespace else alert.subject_name
         facts_bits = [

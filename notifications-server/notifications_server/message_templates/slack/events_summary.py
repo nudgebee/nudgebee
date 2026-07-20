@@ -4,6 +4,33 @@ from pydantic import BaseModel
 
 from notifications_server import copy_library
 from notifications_server.configs.settings import settings
+from notifications_server.message_templates.slack.recommendation_nudge_digest import (
+    STRIPE_NEUTRAL,
+    header_block,
+    legacy_attachment,
+)
+
+
+def _flatten_blocks(blocks: List[Dict[str, Any]]) -> List[str]:
+    """Flatten section/context/fields blocks to mrkdwn lines so account content
+    rides a legacy attachment's ``text`` instead of Block Kit ``blocks``
+    (blocks-in-attachment triggers the "Added by {app}" byline)."""
+    lines: List[str] = []
+    for block in blocks:
+        block_type = block.get("type")
+        if block_type == "section":
+            text = block.get("text")
+            if isinstance(text, dict) and text.get("text"):
+                lines.append(text["text"])
+            for field in block.get("fields", []) or []:
+                if isinstance(field, dict) and field.get("text"):
+                    lines.append(field["text"])
+        elif block_type == "context":
+            parts = [el.get("text", "").strip() for el in block.get("elements", []) if isinstance(el, dict)]
+            parts = [p for p in parts if p]
+            if parts:
+                lines.append(" · ".join(parts))
+    return lines
 
 
 class Account(BaseModel):
@@ -224,16 +251,13 @@ def create_account_attachment(
     if top_events_count > 0:
         fallback += f", {top_events_count} event types"
 
-    return {
-        "color": "#2196F3",
-        "fallback": fallback,
-        "blocks": [create_section_block(f"*Account Name:* {account_name}")] + blocks,
-    }
+    lines = [f"*Account Name:* {account_name}"] + _flatten_blocks(blocks)
+    return legacy_attachment(STRIPE_NEUTRAL, fallback, text="\n".join(lines))
 
 
 def get_events_summary_message_template(payload: EventsSummaryPayload):
     blocks = [
-        create_section_block(f"*{settings.urls.branding_name} Events Summary* - {payload.organization_name}"),
+        header_block(f"{settings.urls.branding_name} Events Summary - {payload.organization_name}"),
         create_divider_block(),
     ]
 

@@ -1,6 +1,23 @@
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 
+from notifications_server.message_templates.slack.recommendation_nudge_digest import (
+    STRIPE_SAVINGS,
+    header_block,
+    legacy_attachment,
+)
+
+
+def _section_texts(blocks: List[Dict[str, Any]]) -> List[str]:
+    """Flatten section-text blocks to their mrkdwn strings so account content
+    can ride a legacy attachment's ``text`` instead of Block Kit ``blocks``
+    (blocks-in-attachment triggers the "Added by {app}" byline)."""
+    return [
+        b["text"]["text"]
+        for b in blocks
+        if b.get("type") == "section" and isinstance(b.get("text"), dict) and b["text"].get("text")
+    ]
+
 
 class EventCounts(BaseModel):
     event_count: int
@@ -224,7 +241,7 @@ def create_header_blocks(
     title: str, organization_name: str, total_savings: float, total_opportunity_lost: float = 0
 ) -> List[Dict[str, Any]]:
     """Create header blocks for the message"""
-    blocks = [create_section_block(f"*{title} - {organization_name}*")]
+    blocks = [header_block(f"{title} - {organization_name}")]
 
     if total_savings > 0:
         blocks.append(create_section_block(f"*Potential Savings: ${total_savings:.2f}/month*"))
@@ -328,11 +345,8 @@ def create_account_attachment(
 
     fallback = f"{account_name}: " + (", ".join(fallback_parts) if fallback_parts else "No activity")
 
-    return {
-        "color": "#36a64f",
-        "fallback": fallback,
-        "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": f"*Cluster: {account_name}*"}}] + blocks,
-    }
+    lines = [f"*Cluster: {account_name}*"] + _section_texts(blocks)
+    return legacy_attachment(STRIPE_SAVINGS, fallback, text="\n".join(lines))
 
 
 def process_account_data_as_attachments(params: DailyRecapParams) -> List[Dict[str, Any]]:

@@ -70,6 +70,17 @@ def _burn_line(alert: SLOAlertParams) -> str:
     return " — ".join(parts)
 
 
+def _stats_line(alert: SLOAlertParams) -> str:
+    """Good/bad event counts and threshold — carried on the params but not
+    surfaced by the grouped card until now."""
+    parts = []
+    if alert.bad_event_count is not None and alert.good_event_count is not None:
+        parts.append(f"*{alert.bad_event_count:,}* bad vs *{alert.good_event_count:,}* good events")
+    if alert.threshold not in (None, "", "N/A"):
+        parts.append(f"threshold *{alert.threshold}*")
+    return " · ".join(parts)
+
+
 def get_grouped_slo_alerts_template(input_data: List[SLOAlertParams]) -> Dict[str, Any]:
     if isinstance(input_data, SLOAlertSummaryParams):
         alerts: List[SLOAlertParams] = input_data.events
@@ -90,6 +101,9 @@ def get_grouped_slo_alerts_template(input_data: List[SLOAlertParams]) -> Dict[st
         burn = _burn_line(alert)
         if burn:
             lines.append(burn[0].upper() + burn[1:])
+        stats = _stats_line(alert)
+        if stats:
+            lines.append(stats)
         lines.append(
             f"{alert.namespace}/{alert.workload} · Acct: {alert.account_name} · {_firing_since(alert.firing_since)}"
         )
