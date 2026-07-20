@@ -135,21 +135,26 @@ func buildMemoryIndexFooter(injected []memory.InjectedItem) string {
 	// can distinguish from silent-non-emission when auditing.
 	b.WriteString(`
 For EVERY <action> you emit, include a <memory_used> child that reports
-which [mN] items shaped THIS specific action:
-  * If one or more items influenced the tool choice / input, list them:
+which [mN] items were APPLIED to THIS action's tool_name or tool_input:
+  * If one or more items' values were actually applied, list them:
       <memory_used><ref n="N" note="short reason"/><ref n="M" note="..."/></memory_used>
-  * If NO memory item shaped this action, still declare it explicitly:
+  * If NO memory item was applied to this action, declare it explicitly:
       <memory_used/>
+
+"Applied" means the memory item's value shows up in the tool_name choice
+or the tool_input parameters. Do NOT cite an item that you considered
+but overrode — e.g. if [mN] gives a default_namespace but the user's
+request specifies a different namespace and you use the user's value,
+that memory item was NOT applied and must NOT be cited. Considering,
+comparing, or ruling out a memory item does not count as using it.
 
 Cite by the [mN] marker from <memory_index> above. The value of n must
 be the raw integer index only (e.g. n="1", n="17") — do NOT wrap it as
-"[m1]" or "m1", the parser will drop non-integer citations. Only cite
-items you actually used; hallucinated indices will be dropped at parse
-time.
+"[m1]" or "m1", the parser will drop non-integer citations.
 
-Example. Suppose <memory_index> contains [m2] preferences:
-preferred_log_source=loki and [m5] patterns: orders-api. The action
-fetches loki logs for orders-api:
+Example 1 — memory value IS applied. <memory_index> has
+[m2] preferences: preferred_log_source=loki and [m5] patterns:
+orders-api. The action fetches loki logs for orders-api:
 
   <action>
     <tool_name>loki_query</tool_name>
@@ -159,6 +164,19 @@ fetches loki logs for orders-api:
       <ref n="5" note="recurring OOMKill pattern for orders-api"/>
     </memory_used>
   </action>
+
+Example 2 — memory value is CONSIDERED but OVERRIDDEN. <memory_index>
+has [m6] preferences: default_namespace=payments. User asked for logs
+in the "orders" namespace, so the action uses "orders" not "payments":
+
+  <action>
+    <tool_name>logs</tool_name>
+    <tool_input>{"command":"logs for api in orders namespace"}</tool_input>
+    <memory_used/>
+  </action>
+
+Do NOT cite [m6] here — the memory value was rejected in favor of the
+user's explicit input, so it was not applied.
 `)
 	return b.String()
 }
