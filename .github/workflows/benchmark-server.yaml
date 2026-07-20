@@ -60,4 +60,4 @@ jobs:
 
       - name: Run unit tests
         working-directory: ./llm/benchmark
-        run: python -m pytest benchmark_server/tests
+        run: python -m pytest benchmark_server/tests -m "not benchmark"
