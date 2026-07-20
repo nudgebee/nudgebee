@@ -722,7 +722,25 @@ func extractFilterSQL(request *QueryRequest, filterName string, sqlColumn string
 			sql = " AND " + sqlColumn + " IN (" + strings.Join(quoted, ",") + ")"
 		}
 	}
-	if sql != "" {
+	// Only drop the filter when it came from the top-level Binary map. A filter found
+	// inside an _and clause is left in place so the outer WHERE keeps enforcing it, and
+	// the pushed-down copy acts purely as a planner hint.
+	//
+	// This matters because extractFilterSQL is shared by ~14 DefGenerators, and not all
+	// of them push into a subquery that constrains the same rows the outer filter would.
+	// k8s_workloads_cloud_account_monitoring_v2 pushes account_id into the LEFT JOINed
+	// event_count CTE while workload_list stays unscoped and the outer WHERE carries no
+	// account predicate — so removing an account restriction there widens the result set
+	// across accounts instead of narrowing it. The security layer (service.go) appends
+	// exactly such tenant/account restrictions as _and clauses, which is why _and is the
+	// dangerous case to delete from and the top-level map is not.
+	//
+	// (Deleting a top-level Binary filter is long-standing behaviour and is preserved
+	// as-is. The same widening is possible through that path for a caller-supplied
+	// account_id filter on that table, but it predates this function's _and support and
+	// is left for a separate fix.)
+	_, fromTopLevelBinary := request.Where.Binary[filterName]
+	if sql != "" && fromTopLevelBinary {
 		delete(holder, filterName)
 	}
 	return sql
