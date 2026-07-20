@@ -52,6 +52,32 @@ type MemorySlab struct {
 	Heartbeat   string       `json:"heartbeat"`  // Phase 5
 	Collective  string       `json:"collective"` // Phase 6
 	Trace       ComposeTrace `json:"trace"`
+
+	// Injected lists every memory row that actually made it into the prompt
+	// blocks above, in the order they were rendered. Callers persist this to
+	// llm_conversation_references so the UI can show "which memory rows the
+	// agent saw on this turn" and the audit story (points 6 & 7 of the memory
+	// data-audit baseline) has a concrete trail.
+	Injected []InjectedItem `json:"injected,omitempty"`
+}
+
+// InjectedItem is a single memory row that Compose rendered into the slab.
+// One per layer row — Soul and Session emit one; the RAG-ranked layers emit
+// one per reranked survivor. Reference_id in the persisted row uses .ID.
+type InjectedItem struct {
+	Layer   string  `json:"layer"`             // "soul" | "preferences" | "patterns" | "decisions" | "collective" | "session"
+	ID      string  `json:"id"`                // memory row identifier (UUID for row-keyed layers; composite for soul/session)
+	Subject string  `json:"subject,omitempty"` // short display label (subject/key/session_id)
+	Rank    int     `json:"rank"`              // 0-indexed position within the layer's rendered order
+	Score   float32 `json:"score,omitempty"`   // rag_similarity or decayed_score depending on Source
+	Source  string  `json:"source"`            // "rag" | "static"
+	// Content is the rendered block the UI should show when the row is opened.
+	// Populated for layers without a UUID PK (soul, session) — hydration SQL
+	// can't JOIN them so their real text has to ride in the reference row's
+	// metadata. Layers with a UUID PK (patterns / decisions / collective /
+	// preferences) leave this empty and rely on the SQL JOIN to project their
+	// content at read time, so we don't duplicate large row bodies.
+	Content string `json:"content,omitempty"`
 }
 
 // Render concatenates all non-empty blocks into a single string for prompt injection.

@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import { Tabs, Tab, Box, Typography } from '@mui/material';
 import KubernetesLLMRequestResponse from './KubernetesLLMRequestResponseV2';
 import ConversationCollapsableCard from './common/ConversationCollapsableCard';
+import ReferencesDrawerContent from './common/ReferencesDrawerContent';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { FinalResponseIcon } from '@assets';
 import apiAskNudgebee from '@api1/ask-nudgebee';
@@ -288,28 +289,12 @@ const LLMConversationWithTabs = ({
             </Box>
           )}
 
-          {/* Additional Contexts Tab */}
+          {/* Additional Contexts Tab — shared with MessageStream drawer.
+              Two-level filter (category tabs → subtype pills → filtered
+              table) lives in ReferencesDrawerContent. */}
           {activeTab === 'contexts' && references.length > 0 && (
-            <Box sx={{ width: '100%', height: 'auto', overflowX: 'auto' }}>
-              {(() => {
-                const { headers, tableData } = getTableData(
-                  references.map(({ content, metadata, type, created_at }) => ({
-                    content,
-                    type,
-                    created_at,
-                    ...metadata,
-                  }))
-                );
-                return (
-                  <CustomTable
-                    tableData={tableData}
-                    headers={headers}
-                    totalRows={tableData.length}
-                    rowsPerPage={10}
-                    renderVertical={tableData?.length <= 1}
-                  />
-                );
-              })()}
+            <Box sx={{ width: '100%', height: 'auto' }}>
+              <ReferencesDrawerContent references={references} />
             </Box>
           )}
 

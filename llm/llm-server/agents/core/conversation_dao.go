@@ -323,6 +323,17 @@ const (
 	AgentReferenceTypeMemory       AgentReferenceType = "memory"
 	AgentReferenceTypeKB           AgentReferenceType = "knowledge_base"
 	AgentReferenceTypeContextState AgentReferenceType = "context_state"
+
+	// Memory-v2 injection reference types. Written by the memory bridge for
+	// every item that made it into the composed slab; the hydration SELECT in
+	// GetConversationReferences joins each of these to its owning
+	// llm_memory_<layer> table to surface subject/content for the UI.
+	AgentReferenceTypeMemorySoul        AgentReferenceType = "memory_soul"
+	AgentReferenceTypeMemoryPreferences AgentReferenceType = "memory_preferences"
+	AgentReferenceTypeMemoryPatterns    AgentReferenceType = "memory_patterns"
+	AgentReferenceTypeMemoryDecisions   AgentReferenceType = "memory_decisions"
+	AgentReferenceTypeMemoryCollective  AgentReferenceType = "memory_collective"
+	AgentReferenceTypeMemorySession     AgentReferenceType = "memory_session"
 )
 
 type AgentReference struct {
@@ -390,16 +401,51 @@ type TokenUsageRecord struct {
 }
 
 func (chat *ConversationDao) ListAgentReferences(accountId, conversationId, messageId, agentId string, limit int) ([]ConversationReference, error) {
+	// Memory-v2 hydration notes:
+	//   * patterns/decisions/collective/preferences JOIN their own layer table
+	//     by UUID and project a subject-first display string so the UI's
+	//     Additional Contexts panel shows something meaningful, not just a
+	//     reference_id.
+	//   * soul and session don't have UUID PKs (soul = (tenant,scope,user);
+	//     session = session_id), so their reference_id is a composite string
+	//     and we fall back to r.metadata->>'subject' — populated by the memory
+	//     bridge — for the display value. The (reference_type, content) dedup
+	//     below still applies.
+	//   * The inner subquery pre-computes `reference_uuid` once via a
+	//     regex-guarded cast. Doing this in one place instead of six
+	//     defends against Postgres constant-folding the cast on non-UUID
+	//     reference_ids (which would blow up the whole query with
+	//     "invalid input syntax for type uuid") and keeps the JOIN clauses
+	//     readable. Indexes on the joined tables' `id` columns are still
+	//     used — the planner sees a plain uuid comparison.
 	query := `SELECT r.id, r.account_id, r.conversation_id, r.message_id, r.agent_id, r.reference_id, r.reference_type, r.metadata::text, r.created_at,
 			    CASE
 					WHEN r.reference_type = 'context_state' THEN r.metadata::text
 					WHEN r.reference_type = 'memory' THEN m.content
 					WHEN r.reference_type = 'knowledge_base' THEN k.data
+					-- COALESCE(joined-projection, metadata->>'subject', '') so a
+					-- memory row deleted/decayed between injection and read still
+					-- surfaces its historical subject (from the metadata stamped
+					-- at write time) instead of vanishing from the audit trail.
+					WHEN r.reference_type = 'memory_patterns' THEN COALESCE(mp.subject || CASE WHEN COALESCE(mp.description,'') <> '' THEN ': ' || mp.description ELSE '' END, r.metadata->>'subject', '')
+					WHEN r.reference_type = 'memory_decisions' THEN COALESCE(md.subject || CASE WHEN COALESCE(md.rationale,'') <> '' THEN ': ' || md.rationale ELSE '' END, r.metadata->>'subject', '')
+					WHEN r.reference_type = 'memory_collective' THEN COALESCE(mc.subject || CASE WHEN COALESCE(mc.body,'') <> '' THEN ': ' || mc.body ELSE '' END, r.metadata->>'subject', '')
+					WHEN r.reference_type = 'memory_preferences' THEN COALESCE(mpr.key || CASE WHEN mpr.value IS NOT NULL THEN ': ' || mpr.value::text ELSE '' END, r.metadata->>'subject', '')
+					WHEN r.reference_type IN ('memory_soul','memory_session') THEN COALESCE(NULLIF(r.metadata->>'content',''), r.metadata->>'subject', '')
 				END AS content
-			  FROM llm_conversation_references r
-			  LEFT JOIN llm_conversation_memory m ON (r.reference_id::uuid = m.id AND r.reference_type = 'memory')
-			  LEFT JOIN llm_knowledgebases k ON (r.reference_id::uuid = k.id AND r.reference_type = 'knowledge_base')
-			  WHERE r.account_id = $1::text`
+			  FROM (
+				SELECT *,
+					CASE WHEN reference_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN reference_id::uuid END AS reference_uuid
+				FROM llm_conversation_references
+				WHERE account_id = $1::text
+			  ) r
+			  LEFT JOIN llm_conversation_memory m ON (r.reference_type = 'memory' AND m.id = r.reference_uuid)
+			  LEFT JOIN llm_knowledgebases k ON (r.reference_type = 'knowledge_base' AND k.id = r.reference_uuid)
+			  LEFT JOIN llm_memory_patterns mp ON (r.reference_type = 'memory_patterns' AND mp.id = r.reference_uuid)
+			  LEFT JOIN llm_memory_decisions md ON (r.reference_type = 'memory_decisions' AND md.id = r.reference_uuid)
+			  LEFT JOIN llm_memory_collective mc ON (r.reference_type = 'memory_collective' AND mc.id = r.reference_uuid)
+			  LEFT JOIN llm_memory_preferences mpr ON (r.reference_type = 'memory_preferences' AND mpr.id = r.reference_uuid)
+			  WHERE 1=1`
 	args := []any{accountId}
 	argCounter := 2
 

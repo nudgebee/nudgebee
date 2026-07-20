@@ -2,15 +2,12 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import PropTypes from 'prop-types';
 import { Box } from '@mui/material';
 import MessageItem from './MessageItem';
-import CustomTable from '@shared/tables/CustomTable';
-import { convertToReadableFormat } from 'src/utils/common';
-import Text from '@shared/format/Text';
 import CustomDrawer, { SecondaryDrawer } from '@shared/CustomDrawer';
 import TasksDrawerContent from './common/TasksDrawerContent';
 import MemoriesDrawerContent from './common/MemoriesDrawerContent';
+import ReferencesDrawerContent from './common/ReferencesDrawerContent';
 import ToolDetails from './common/ToolDetails';
 import useMessageAdditionalData from '@hooks/useMessageAdditionalData';
-import { ds } from '@utils/colors';
 import WatchesTab from './WatchesTab';
 import api from '@api1/ask-nudgebee';
 import { useWatchFeatureEnabled } from '@hooks/useTenantBranding';
@@ -21,33 +18,6 @@ const taskKey = (task) => task?.id ?? task?.tool_id ?? task?.originalIndex ?? nu
 // constant-time comparison against a shared array, not a fresh one
 // re-allocated on every parent render.
 const TERMINAL_WATCH_STATUSES = ['COMPLETED', 'EXPIRED', 'FAILED', 'CANCELLED'];
-
-const buildTable = (rows) => {
-  if (!rows?.length) {
-    return { headers: [], tableData: [] };
-  }
-  const headers = Object.keys(rows[0]);
-  for (let i = 1; i < rows.length; i++) {
-    Object.keys(rows[i]).forEach((k) => {
-      if (!headers.includes(k)) {
-        headers.push(k);
-      }
-    });
-  }
-  const tableData = rows.map((row) =>
-    headers.map((h) => {
-      let value = row[h];
-      if (typeof value === 'object' || Array.isArray(value)) {
-        value = JSON.stringify(value);
-      }
-      return { component: <Text value={value} showAutoEllipsis sx={{ minWidth: ds.space.mul(0, 25) }} /> };
-    })
-  );
-  return {
-    headers: headers.map((f) => convertToReadableFormat(f.replaceAll('_', ' '))),
-    tableData,
-  };
-};
 
 const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, showFullText, setShowFullText, itemProps }) => {
   // Primary right drawer — Tasks list, Contexts table, Memories, or (for inline rows) Tool Details.
@@ -546,22 +516,11 @@ const renderDrawerContent = ({ drawer, secondary, itemProps, onOpenToolDetails }
           itemProps={itemProps}
         />
       );
-    case 'contexts': {
-      const { headers, tableData } = buildTable(
-        drawer.data.references.map(({ content, metadata, type, created_at }) => ({ content, type, created_at, ...metadata }))
-      );
-      return (
-        <Box sx={{ overflowX: 'auto' }}>
-          <CustomTable
-            tableData={tableData}
-            headers={headers}
-            totalRows={tableData.length}
-            rowsPerPage={10}
-            renderVertical={tableData?.length <= 1}
-          />
-        </Box>
-      );
-    }
+    case 'contexts':
+      // Two-level filter (category tabs → subtype pills → filtered table)
+      // lives in ReferencesDrawerContent so the same UX renders on both
+      // this drawer and the LLMConversationWithTabs Additional Contexts tab.
+      return <ReferencesDrawerContent references={drawer.data.references} />;
     case 'memories':
       return <MemoriesDrawerContent memories={drawer.data.memories} />;
     case 'tool-details':
