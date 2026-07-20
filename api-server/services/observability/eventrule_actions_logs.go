@@ -1615,8 +1615,8 @@ func (a *observabilityLogAction) AutoExecute(ctx playbooks.PlaybookActionContext
 // namespace. If the configured log source returns no results, falls back to
 // relay kubectl logs.
 func (a *observabilityLogAction) autoExecuteByWorkload(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
-	workloadName := "ticket-server"
-	namespace := "nudgebee"
+	workloadName := getEventWorkload(ctx.GetEvent())
+	namespace := getEventNamespace(ctx.GetEvent())
 
 	endTime := time.Now().UnixMilli()
 	startTime := endTime - int64(7*60*60*1000) // 1 hour default
