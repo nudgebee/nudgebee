@@ -289,7 +289,7 @@ const KubernetesMemoryCpuOverView = ({
 
   // Fetch one metric group's full timeseries (usage/total/request/limit) as a range
   // query for the given window.
-  const fetchTrendSeries = async (metric, range) => {
+  const fetchTrendSeries = async (metric, range, isCancelled = () => false) => {
     const cfg = TREND_CONFIG[metric];
     if (!cfg || !accountId || !range) {
       return;
@@ -303,14 +303,21 @@ const KubernetesMemoryCpuOverView = ({
         endDate: range.endDate,
         instant: false,
       });
+      if (isCancelled()) {
+        return;
+      }
       if (Array.isArray(response)) {
         mergePromQueries(response);
         setTrendChart(buildTrendChart(response, cfg));
       }
     } catch (error) {
-      console.error('Error fetching utilisation trend:', error);
+      if (!isCancelled()) {
+        console.error('Error fetching utilisation trend:', error);
+      }
     } finally {
-      setTrendLoading(false);
+      if (!isCancelled()) {
+        setTrendLoading(false);
+      }
     }
   };
 
@@ -326,9 +333,14 @@ const KubernetesMemoryCpuOverView = ({
   };
 
   useEffect(() => {
-    if (trendMetric && trendRange) {
-      fetchTrendSeries(trendMetric, trendRange);
+    if (!trendMetric || !trendRange) {
+      return;
     }
+    let cancelled = false;
+    fetchTrendSeries(trendMetric, trendRange, () => cancelled);
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trendMetric, trendRange]);
 

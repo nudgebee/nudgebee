@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { Box, Divider } from '@mui/material';
 import { Button as DsButton } from '@ui/Button';
@@ -60,7 +60,13 @@ export default function OwnershipPanel(props) {
   const [assignOpen, setAssignOpen] = useState(false);
   const canEdit = isTenantAdmin();
 
+  // Each fetch claims a token; a response only applies if no newer fetch has
+  // started. Without this, switching resources fast lets a slow earlier
+  // response overwrite the current one.
+  const requestIdRef = useRef(0);
+
   const refetch = () => {
+    const requestId = ++requestIdRef.current;
     const descs = buildLevels(props);
     if (!resourceKey) {
       setLevels([]);
@@ -70,6 +76,9 @@ export default function OwnershipPanel(props) {
     setLoading(true);
     Promise.all(descs.map((d) => apiOwnership.getOwner({ resourceType: d.type, resourceKey: d.key }).catch(() => null)))
       .then((results) => {
+        if (requestId !== requestIdRef.current) {
+          return;
+        }
         setLevels(
           descs.map((d, i) => {
             const res = results[i];
@@ -79,7 +88,11 @@ export default function OwnershipPanel(props) {
           })
         );
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (requestId === requestIdRef.current) {
+          setLoading(false);
+        }
+      });
   };
   useEffect(() => {
     refetch();

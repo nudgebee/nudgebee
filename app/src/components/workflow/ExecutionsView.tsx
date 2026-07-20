@@ -976,8 +976,9 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
   // re-fits once nodes actually appear.
   const prevOverlayCountRef = useRef(0);
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     if (prevOverlayCountRef.current === 0 && executionOverlayNodes.length > 0 && reactFlowInstanceRef.current) {
-      setTimeout(() => {
+      timer = setTimeout(() => {
         reactFlowInstanceRef.current?.fitView({
           padding: 0.15,
           maxZoom: 0.9,
@@ -987,6 +988,11 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
       }, 50);
     }
     prevOverlayCountRef.current = executionOverlayNodes.length;
+    return () => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
   }, [executionOverlayNodes]);
 
   // Re-fit viewport when the canvas container resizes. Selecting a task expands

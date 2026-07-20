@@ -329,7 +329,22 @@ export const KubernetesNodesTrends = ({ accountId, showZoneTrend = false }) => {
     resetState();
     const requestBody = createRequestBody(accountId, dateRange);
 
-    apiKubernetes1.utilisationApi(requestBody).then(handleResponse).finally(updateLoadingState);
+    let cancelled = false;
+    apiKubernetes1
+      .utilisationApi(requestBody)
+      .then((results) => {
+        if (!cancelled) {
+          handleResponse(results);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          updateLoadingState();
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [showZoneTrend, accountId, dateRange.startDate, dateRange.endDate]);
 
   function createRequestBody(accountId, dateRange) {

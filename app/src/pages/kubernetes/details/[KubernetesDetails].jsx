@@ -200,7 +200,7 @@ const KubernetesDetails = () => {
     }
   }, [podTab]);
 
-  const [kubeId, setKubeId] = useState(router.query.KubernetesDetails);
+  const kubeId = router.query.KubernetesDetails;
   const [clusterSummary, setClusterSummary] = useState({});
   const [selectedTab, setSelectedTab] = useState(null);
   const [selectedSubTab, setSelectedSubTab] = useState(0);
@@ -344,12 +344,6 @@ const KubernetesDetails = () => {
     },
   ]);
   const [aggregationKeyCount, setAggregationKeyCount] = useState({});
-
-  useEffect(() => {
-    if (kubeId !== router.query.KubernetesDetails) {
-      setKubeId(router.query.KubernetesDetails);
-    }
-  }, [router.query.KubernetesDetails]);
 
   useEffect(() => {
     const init = async () => {
