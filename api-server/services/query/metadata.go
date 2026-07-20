@@ -676,14 +676,38 @@ func requestReferencesColumns(request QueryRequest, cols map[string]bool) bool {
 	return false
 }
 
-// extractFilterSQL extracts a filter for the given column from request.Where.Binary,
-// generates the SQL fragment (e.g. " AND col = 'val'" or " AND col IN ('a','b')"),
-// and removes the filter from the request to avoid redundant outer WHERE.
-// The sqlColumn parameter is the actual SQL column name to use in the generated fragment.
+// locateBinaryFilter finds filterName as a top-level equality/IN condition: first in
+// where.Binary, then within the And-chain (recursively, since _and clauses can nest).
+// It deliberately does NOT descend into Or or Not clauses — a filter nested under an
+// OR/NOT branch is conditional, and hoisting it into an unconditional pushed-down
+// "AND col = val" would change the query's meaning. Reads of a nil Binary map and a nil
+// And slice are both safe (zero value / zero iterations). It returns the operator map and
+// the Binary map that owns it so the caller can remove the entry only when it actually
+// pushes it down.
+func locateBinaryFilter(where *QueryWhereClause, filterName string) (map[BinaryWhereClauseType]any, BinaryWhereClause) {
+	if filter, ok := where.Binary[filterName]; ok {
+		return filter, where.Binary
+	}
+	for i := range where.And {
+		if filter, holder := locateBinaryFilter(&where.And[i], filterName); holder != nil {
+			return filter, holder
+		}
+	}
+	return nil, nil
+}
+
+// extractFilterSQL extracts an equality/IN filter for the given column from request.Where,
+// generates the SQL fragment (e.g. " AND col = 'val'" or " AND col IN ('a','b')"), and
+// removes the filter from the request to avoid a redundant outer WHERE. It searches both
+// request.Where.Binary and the And-chain: the security layer (service.go) and the frontend
+// both emit filters as _and lists, so a filter this function is meant to push down is
+// frequently found nested under _and rather than in the flat _binary map. Filters under
+// Or/Not are left in place (see locateBinaryFilter). The sqlColumn parameter is the actual
+// SQL column name to use in the generated fragment.
 func extractFilterSQL(request *QueryRequest, filterName string, sqlColumn string) string {
 	dialect := &postgresDialect{}
-	filter, ok := request.Where.Binary[filterName]
-	if !ok {
+	filter, holder := locateBinaryFilter(&request.Where, filterName)
+	if holder == nil {
 		return ""
 	}
 	var sql string
@@ -699,7 +723,7 @@ func extractFilterSQL(request *QueryRequest, filterName string, sqlColumn string
 		}
 	}
 	if sql != "" {
-		delete(request.Where.Binary, filterName)
+		delete(holder, filterName)
 	}
 	return sql
 }
@@ -2719,6 +2743,24 @@ var table_metadata = map[string]TableDefinition{
 			pushdownFilters += extractFilterSQL(&request, "status", "r.status")
 			pushdownFilters += extractFilterSQL(&request, "category", "r.category")
 			pushdownFilters += extractFilterSQL(&request, "rule_name", "r.rule_name")
+			// Push tenant_id into the CTE for the same reason the sibling recommendations_v2
+			// generator does (see its comment): the ROW_NUMBER() window's PARTITION BY does
+			// not include tenant_id, so the planner cannot push an outer tenant filter through
+			// the window fence. Without it the CTE windows every tenant's recommendations
+			// (joined to cloud_resourses, detoasting the meta jsonb) before the outer query
+			// narrows to one tenant. It also completes the leading column of the composite
+			// idx_recommendation_tenant_account_status index. tenant_id is injected by the
+			// security layer as an _and clause, not into _binary, so it is not extracted by
+			// the calls above — take it straight from the security context.
+			sc := ctx.GetSecurityContext()
+			tenantId := sc.GetTenantId()
+			if tenantId == "" && !sc.IsSuperAdmin() {
+				// Fail closed: a non-super-admin must always be tenant-scoped.
+				return "", request, fmt.Errorf("tenant_id is required")
+			}
+			if tenantId != "" {
+				pushdownFilters += " AND r.tenant_id = " + (&postgresDialect{}).QuoteLiteral(tenantId)
+			}
 
 			// Fast path: when no column requiring a JOIN or the dedup window function is
 			// needed (e.g. pure count queries like count_recommendations), skip the CTE
