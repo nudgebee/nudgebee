@@ -416,7 +416,7 @@ func TestRouterAgentCodeAgent(t *testing.T) {
 		chain, ok := getAgent(sc, resp.Response[0], os.Getenv("TEST_ROUTERCHAIN_ACCOUNT"))
 		assert.True(t, ok)
 		assert.NotNil(t, chain)
-		assert.Equal(t, AgentCode2, chain.GetName())
+		assert.Equal(t, AgentCodeAnalyzer, chain.GetName())
 	}
 
 }

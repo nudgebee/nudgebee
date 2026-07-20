@@ -247,8 +247,8 @@ func getAgent(ctx *security.RequestContext, agent string, accountId string) (cor
 		agentName = AgentLogAnalysisName
 	case "automation", "automationmanager", "workflow", "workflowmanager", "automation_builder":
 		agentName = WorkflowAgentName
-	case "code", "code_analyzer", "code_debugger", "code_rca_agent", AgentCode2:
-		agentName = AgentCode2
+	case "code", AgentCodeAnalyzer, "code_debugger", "code_rca_agent", agentCodeAnalyzerLegacyName:
+		agentName = AgentCodeAnalyzer
 	case "nudgebee_docs", "nudgebee", "nubidocs", "product_docs", "nudgebeedocsagent",
 		"knowledge_base", "kb", "knowledgebase",
 		"unifiedsearchagent", "unified_search", "search", WebSearchAgentName:

@@ -35,7 +35,12 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-const AgentCode2 = "agent_code_2"
+// AgentCodeAnalyzer is the canonical registered name for the code-analysis
+// agent. Keep the old name as an agent-only factory for stored history and
+// explicit invocations created before the rename.
+const AgentCodeAnalyzer = "code_analyzer"
+
+const agentCodeAnalyzerLegacyName = "agent_code_2"
 
 // sanitizeWorkspacePathID maps an ID to the workspace's safe path charset
 // ([A-Za-z0-9_-]; everything else becomes '_') — the SAME mapping the workspace
@@ -122,9 +127,11 @@ Plain text format:
 The 'query' field (or plain text) is REQUIRED and describes the analytical task. Use this when simple shell commands are insufficient for diagnosing an issue. Set 'target_branch' to the branch the PR should be opened against (e.g. 'prod', 'main', 'release/1.x'); when omitted, the repository default branch is used.`
 	toolOutput := "Structured JSON containing: 'root_cause' (summary), 'affected_files' (array with paths/line numbers), 'suggested_fixes' (remediation steps), 'analysis_details' (comprehensive explanation), 'source_details' (repo and commit), and optional 'pr_url' if raise_pr was enabled."
 
-	core.RegisterNBAgentFactoryAndTool(AgentCode2, func(accountId string) (core.NBAgent, error) {
+	codeAnalyzerFactory := func(accountId string) (core.NBAgent, error) {
 		return newCodeAgent(accountId), nil
-	}, toolDescription, toolInput, toolOutput)
+	}
+	core.RegisterNBAgentFactoryAndTool(AgentCodeAnalyzer, codeAnalyzerFactory, toolDescription, toolInput, toolOutput)
+	core.RegisterNBAgentFactory(agentCodeAnalyzerLegacyName, codeAnalyzerFactory)
 }
 
 func evaluateCodeUsingCli(ctx *security.RequestContext, request CodeAgent2Request, creds []GitCredentials, provider string) (string, error) {
@@ -486,7 +493,7 @@ func evaluateCodeUsingPod(ctx *security.RequestContext, agentRequest core.NBAgen
 	// Forward the resolved, decrypted LLM config as explicit env vars, appended
 	// after the SecretKeyRef fallback so they win (last duplicate env name wins
 	// in k8s). Degrade gracefully; never log the API key.
-	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, agentRequest.AccountId, AgentCode2, agentRequest.ConversationId); lerr != nil {
+	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, agentRequest.AccountId, AgentCodeAnalyzer, agentRequest.ConversationId); lerr != nil {
 		logger.Warn("code: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
 	} else if llmCfg != nil {
 		envVars = append(envVars, forwardedLLMConfigToEnv(llmCfg)...)
@@ -725,7 +732,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	// analysis must never be blocked on skills.
 	skillsBlock := ""
 	{
-		skillAgentNames := append([]string{AgentCode2}, agentRequest.InheritSkillsFromAgents...)
+		skillAgentNames := append([]string{AgentCodeAnalyzer, agentCodeAnalyzerLegacyName}, agentRequest.InheritSkillsFromAgents...)
 		skillQuery := agentRequest.OriginalQuery
 		if skillQuery == "" {
 			skillQuery = request.Query
@@ -805,7 +812,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	// env happens to name. Degrade gracefully: on any failure, or when no
 	// provider resolves at all, omit the block and let the pod use its
 	// fallback. The API key is plaintext — never log it.
-	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, agentRequest.AccountId, AgentCode2, agentRequest.ConversationId); lerr != nil {
+	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, agentRequest.AccountId, AgentCodeAnalyzer, agentRequest.ConversationId); lerr != nil {
 		logger.Warn("code: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
 	} else if llmCfg != nil {
 		analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
@@ -1322,7 +1329,7 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 		ConversationID:      query.ConversationId,
 		MessageID:           query.MessageId,
 		AgentID:             agentUUID,
-		AgentName:           AgentCode2,
+		AgentName:           AgentCodeAnalyzer,
 		AccountID:           query.AccountId,
 		UserID:              query.UserId,
 		LLMProvider:         provider,
@@ -1367,11 +1374,11 @@ type CodeAgent2 struct {
 }
 
 func (l CodeAgent2) GetName() string {
-	return AgentCode2
+	return AgentCodeAnalyzer
 }
 
 func (l CodeAgent2) GetNameAliases() []string {
-	return []string{"code_analyzer", "code_debugger", "code_error_analyzer", "code_rca_agent"}
+	return []string{agentCodeAnalyzerLegacyName, "code_debugger", "code_error_analyzer", "code_rca_agent"}
 }
 
 func (l CodeAgent2) GetDescription() string {
@@ -3021,7 +3028,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	// followup then fails at client construction before doing any work. Degrade
 	// gracefully: on any failure, or when no provider resolves at all, omit the
 	// block. The API key is plaintext — never log it.
-	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, query.AccountId, AgentCode2, query.ConversationId); lerr != nil {
+	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, query.AccountId, AgentCodeAnalyzer, query.ConversationId); lerr != nil {
 		logger.Warn("code followup: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
 	} else if llmCfg != nil {
 		analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
