@@ -1,0 +1,86 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-60 0 300 245" width="600" height="490" role="img" aria-label="Nubi mascot scanning with binoculars">
+  <title>Nubi scanning 2</title>
+  <defs>
+    <clipPath id="beltClip2">
+      <path d="M172.5,175.4c-.7,1.2-1.3,2.4-2,3.6-.2.4-.4.7-.6,1.1-1.7,2.9-3.5,5.5-5.4,8-.6.8-1.2,1.6-1.8,2.4-1,1.3-2.1,2.5-3.1,3.8-1.4,1.7-2.9,3.2-4.4,4.7-27.8,2.9-55.5,3-83.2,0-1.5-1.4-3-3-4.5-4.6-1.2-1.3-2.3-2.6-3.5-4-.6-.8-1.3-1.6-1.9-2.4-2-2.5-3.9-5.2-5.8-8.1-.2-.3-.5-.7-.7-1.1-.7-1.1-1.4-2.3-2.1-3.5,39.6,5.1,79.2,5.1,119-.1Z"></path>
+    </clipPath>
+  </defs>
+
+  <ellipse id="shadow" cx="116" cy="217" rx="74" ry="12" fill="#1B2D4A" opacity="0.12"></ellipse>
+
+  <g id="backdrop">
+    <g id="search-bar">
+      <rect x="-52" y="44" width="128" height="26" rx="13" fill="#FFFFFF" stroke="#1B2D4A" stroke-width="2"></rect>
+      <circle cx="-36" cy="57" r="6" fill="none" stroke="#1B2D4A" stroke-width="2.2"></circle>
+      <line x1="-32" y1="61" x2="-28" y2="65" stroke="#1B2D4A" stroke-width="2.2" stroke-linecap="round"></line>
+      <rect x="-18" y="54" width="72" height="5" rx="2.5" fill="#D3D9E2"></rect>
+      <rect x="60" y="54" width="10" height="5" rx="2.5" fill="#C4CAD5"></rect>
+    </g>
+    <g id="cloud" transform="translate(39,0)">
+      <path d="M-46,106c-8,0 -8,-11 0,-12c-2,-12 16,-15 21,-6c5,-6 17,-1 14,8c8,1 7,10 -1,10Z" fill="#EEF1F5" stroke="#1B2D4A" stroke-width="2" stroke-linejoin="round"></path>
+      <path d="M-27,93c3,-2 8,-1 10,2" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round"></path>
+    </g>
+  </g>
+
+  <g id="nubi-body">
+    <path fill="#1B2D4A" stroke="#12203A" stroke-width="4" stroke-linejoin="round" d="M185.7,141.2c-2.1,8.1-4.7,15.5-7.5,22.1-.3.7-.6,1.3-.9,2-.2.4-.3.8-.5,1.2-1.4,3.1-2.9,6.1-4.5,8.9h0c-.7,1.2-1.3,2.4-2,3.6-.2.4-.4.7-.6,1.1-1.7,2.9-3.5,5.5-5.4,8-.6.8-1.2,1.6-1.8,2.4-1,1.3-2.1,2.5-3.1,3.8-1.4,1.7-2.9,3.2-4.4,4.7,0,0-.2.1-.2.2-1.8,1.8-3.7,3.5-5.5,5-3.3,2.7-6.6,5-9.9,6.8h0c-9.6,5.5-18.9,7.8-26.7,7.8-6.4,0-15.3-2.3-24.7-7.7-3.4-1.9-6.8-4.2-10.2-6.9-1.9-1.5-3.8-3.1-5.7-4.9,0,0-.2-.2-.3-.2-1.5-1.4-3-3-4.5-4.6-1.2-1.3-2.3-2.6-3.5-4-.6-.8-1.3-1.6-1.9-2.4-2-2.5-3.9-5.2-5.8-8.1-.2-.3-.5-.7-.7-1.1-.7-1.1-1.4-2.3-2.1-3.5,0,0,0,0,0,0-1.6-2.8-3.2-5.8-4.7-9-.2-.4-.4-.8-.6-1.2-.3-.6-.6-1.3-.9-1.9-2.9-6.7-5.5-14-7.5-22.2-10.5-41.7,9.5-91.6,72.7-90.6,63.2.9,84.2,49.1,73.3,90.6Z"></path>
+    <path fill="#294066" opacity="0.6" d="M77,55c-22,4-38,22-42,46-1,6,7,7,9,1,5-19,19-33,37-39,5-2,2-9-4-8Z"></path>
+  </g>
+
+  <g id="nubi-belt">
+    <path fill="#FACF39" d="M172.5,175.4c-.7,1.2-1.3,2.4-2,3.6-.2.4-.4.7-.6,1.1-1.7,2.9-3.5,5.5-5.4,8-.6.8-1.2,1.6-1.8,2.4-1,1.3-2.1,2.5-3.1,3.8-1.4,1.7-2.9,3.2-4.4,4.7-27.8,2.9-55.5,3-83.2,0-1.5-1.4-3-3-4.5-4.6-1.2-1.3-2.3-2.6-3.5-4-.6-.8-1.3-1.6-1.9-2.4-2-2.5-3.9-5.2-5.8-8.1-.2-.3-.5-.7-.7-1.1-.7-1.1-1.4-2.3-2.1-3.5,39.6,5.1,79.2,5.1,119-.1Z"></path>
+    <path fill="#E6B72E" opacity="0.5" clip-path="url(#beltClip2)" d="M166.9,192.1c-1.4,1.7-2.9,3.2-4.4,4.7-27.8,2.9-55.5,3-83.2,0-1.5-1.4-3-3-4.5-4.6,32,3.8,64,3.8,96.1-.1Z"></path>
+  </g>
+
+  <g id="nubi-face">
+    <path fill="#FFFFFF" d="M102.5,72.5h19.9c25.2,0,45.6,20.5,45.6,45.6v1c0,25.2-20.5,45.6-45.6,45.6h-22.9c-23.5,0-42.7-19.1-42.7-42.7v-4c0-25.2,20.5-45.6,45.6-45.6Z"></path>
+  </g>
+
+  <g id="nubi-smile">
+    <path fill="none" stroke="#1B2D4A" stroke-width="3.4" stroke-linecap="round" d="M103.1,145.4c6.5,4.8,13,4.8,19.3,0"></path>
+  </g>
+
+  <g id="nubi-antenna">
+    <rect fill="#1B2D4A" x="155.4" y="35.8" width="5.2" height="32.5" rx="2.6"></rect>
+    <circle fill="#FACF39" cx="157.5" cy="30.6" r="11.5" stroke="#E6B72E" stroke-width="2"></circle>
+    <circle fill="#FFFFFF" cx="153.5" cy="26.5" r="3" opacity="0.85"></circle>
+    <g stroke="#FACF39" stroke-linecap="round" stroke-width="6">
+      <line x1="187.5" y1="50.1" x2="197.3" y2="32.2"></line>
+      <line x1="199.5" y1="60.5" x2="217.9" y2="52.1"></line>
+      <line x1="200" y1="76.9" x2="219.7" y2="81.7"></line>
+    </g>
+  </g>
+
+  <g id="nubi-ear">
+    <rect x="174.3" y="90.4" width="26.2" height="57.7" rx="13.1" fill="#FACF39" stroke="#E6B72E" stroke-width="2"></rect>
+  </g>
+
+  <g id="nubi-binoculars" transform="translate(55 62) scale(0.22)">
+    <path d="M398.077,142.082H113.923v163.496h101.026c4.926,18.056,21.433,31.333,41.051,31.333s36.124-13.277,41.051-31.333h101.026V142.082H398.077z" fill="#1B2D4A" stroke="#12203A" stroke-width="9" stroke-linejoin="round"></path>
+    <circle cx="113.923" cy="256.002" r="113.923" fill="#1B2D4A" stroke="#12203A" stroke-width="9"></circle>
+    <circle cx="113.923" cy="256.002" r="67.905" fill="#AECBF0" stroke="#12203A" stroke-width="7"></circle>
+    <ellipse cx="90" cy="228" rx="22" ry="15" fill="#FFFFFF" opacity="0.9" transform="rotate(-30 90 228)"></ellipse>
+    <circle cx="138" cy="284" r="8" fill="#FFFFFF" opacity="0.6"></circle>
+    <circle cx="398.08" cy="256.002" r="113.923" fill="#1B2D4A" stroke="#12203A" stroke-width="9"></circle>
+    <circle cx="398.08" cy="256.002" r="67.905" fill="#AECBF0" stroke="#12203A" stroke-width="7"></circle>
+    <ellipse cx="374" cy="228" rx="22" ry="15" fill="#FFFFFF" opacity="0.9" transform="rotate(-30 374 228)"></ellipse>
+    <circle cx="422" cy="284" r="8" fill="#FFFFFF" opacity="0.6"></circle>
+  </g>
+
+  <g id="nubi-hands">
+    <path d="M52,182 C45,165 54,157 66,153" fill="none" stroke="#12203A" stroke-width="18" stroke-linecap="round"></path>
+    <path d="M52,182 C45,165 54,157 66,153" fill="none" stroke="#1B2D4A" stroke-width="13" stroke-linecap="round"></path>
+    <path d="M178,184 C185,167 176,159 162,155" fill="none" stroke="#12203A" stroke-width="18" stroke-linecap="round"></path>
+    <path d="M178,184 C185,167 176,159 162,155" fill="none" stroke="#1B2D4A" stroke-width="13" stroke-linecap="round"></path>
+    <g id="hand-left">
+      <ellipse cx="62" cy="152" rx="12" ry="13" fill="#1B2D4A" stroke="#12203A" stroke-width="3"></ellipse>
+
+      <path d="M59,143 L59,154 M66,144 L66,155" stroke="#12203A" stroke-width="1.6" fill="none"></path>
+    </g>
+    <g id="hand-right">
+      <ellipse cx="156" cy="152" rx="12" ry="13" fill="#1B2D4A" stroke="#12203A" stroke-width="3"></ellipse>
+      <path d="M159,143 L159,154 M152,144 L152,155" stroke="#12203A" stroke-width="1.6" fill="none"></path>
+    </g>
+  </g>
+</svg>

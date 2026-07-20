@@ -159,11 +159,11 @@ export const getIsWhiteLabel = () => !!_configCache?.isWhiteLabel;
  */
 const BRANDING_ASSETS = {
   helpbeeIcon: { configKey: 'helpbeeIconUrl', defaultFile: 'helpbee-icon.svg' },
-  troubleshootBee: { configKey: 'troubleshootBeeUrl', defaultFile: 'troubleshoot_empty_state.png' },
-  optimizeBee: { configKey: 'optimizeBeeUrl', defaultFile: 'optimize_empty_state.png' },
+  troubleshootBee: { configKey: 'troubleshootBeeUrl', defaultFile: 'nubi-investigating.svg' },
+  optimizeBee: { configKey: 'optimizeBeeUrl', defaultFile: 'nubi-searching.svg' },
   k8sBee: { configKey: 'k8sBeeUrl', defaultFile: 'k8s-bee.svg' },
-  newUserBee: { configKey: 'newUserBeeUrl', defaultFile: 'troubleshoot_empty_state.png' },
-  securityBee: { configKey: 'securityBeeUrl', defaultFile: 'security_empty_state.png' },
+  newUserBee: { configKey: 'newUserBeeUrl', defaultFile: 'nubi-investigating.svg' },
+  securityBee: { configKey: 'securityBeeUrl', defaultFile: 'nubi-debugging.svg' },
   // Optional onboarding GIF for the "connect a cluster" help popup. No default
   // ships (the popup falls back to the live interactive walkthrough, which is
   // brand-correct everywhere) — a white-label tenant sets connectClusterGifUrl

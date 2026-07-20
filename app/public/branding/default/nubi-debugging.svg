@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-60 0 300 245" width="600" height="490" role="img" aria-label="Nubi mascot holding a bug report document">
+  <title>Nubi bug report</title>
+  <defs>
+    <clipPath id="beltClipBug">
+      <path d="M172.5,175.4c-.7,1.2-1.3,2.4-2,3.6-.2.4-.4.7-.6,1.1-1.7,2.9-3.5,5.5-5.4,8-.6.8-1.2,1.6-1.8,2.4-1,1.3-2.1,2.5-3.1,3.8-1.4,1.7-2.9,3.2-4.4,4.7-27.8,2.9-55.5,3-83.2,0-1.5-1.4-3-3-4.5-4.6-1.2-1.3-2.3-2.6-3.5-4-.6-.8-1.3-1.6-1.9-2.4-2-2.5-3.9-5.2-5.8-8.1-.2-.3-.5-.7-.7-1.1-.7-1.1-1.4-2.3-2.1-3.5,39.6,5.1,79.2,5.1,119-.1Z"></path>
+    </clipPath>
+  </defs>
+
+  <ellipse id="shadow" cx="116" cy="217" rx="74" ry="12" fill="#1B2D4A" opacity="0.12"></ellipse>
+
+  <g id="backdrop">
+    <rect x="-52" y="42" width="94" height="76" rx="7" fill="#EEF1F5" stroke="#1B2D4A" stroke-width="2"></rect>
+    <path d="M-45,42h80a7,7 0 0 1 7,7v6H-52v-6a7,7 0 0 1 7,-7Z" fill="#DEE3EB"></path>
+    <circle cx="-44" cy="49" r="2.2" fill="#C4CAD5"></circle>
+    <circle cx="-37" cy="49" r="2.2" fill="#C4CAD5"></circle>
+    <circle cx="-30" cy="49" r="2.2" fill="#C4CAD5"></circle>
+    <rect x="-44" y="62" width="30" height="6" rx="3" fill="#FACF39"></rect>
+    <rect x="-10" y="62" width="24" height="6" rx="3" fill="#C4CAD5"></rect>
+    <rect x="-44" y="74" width="52" height="5" rx="2.5" fill="#C4CAD5"></rect>
+    <rect x="-44" y="84" width="40" height="5" rx="2.5" fill="#C4CAD5"></rect>
+    <rect x="-44" y="94" width="56" height="5" rx="2.5" fill="#C4CAD5"></rect>
+    <rect x="-44" y="104" width="30" height="5" rx="2.5" fill="#C4CAD5"></rect>
+  </g>
+
+  <g id="nubi-body">
+    <path fill="#1B2D4A" stroke="#12203A" stroke-width="4" stroke-linejoin="round" d="M185.7,141.2c-2.1,8.1-4.7,15.5-7.5,22.1-.3.7-.6,1.3-.9,2-.2.4-.3.8-.5,1.2-1.4,3.1-2.9,6.1-4.5,8.9h0c-.7,1.2-1.3,2.4-2,3.6-.2.4-.4.7-.6,1.1-1.7,2.9-3.5,5.5-5.4,8-.6.8-1.2,1.6-1.8,2.4-1,1.3-2.1,2.5-3.1,3.8-1.4,1.7-2.9,3.2-4.4,4.7,0,0-.2.1-.2.2-1.8,1.8-3.7,3.5-5.5,5-3.3,2.7-6.6,5-9.9,6.8h0c-9.6,5.5-18.9,7.8-26.7,7.8-6.4,0-15.3-2.3-24.7-7.7-3.4-1.9-6.8-4.2-10.2-6.9-1.9-1.5-3.8-3.1-5.7-4.9,0,0-.2-.2-.3-.2-1.5-1.4-3-3-4.5-4.6-1.2-1.3-2.3-2.6-3.5-4-.6-.8-1.3-1.6-1.9-2.4-2-2.5-3.9-5.2-5.8-8.1-.2-.3-.5-.7-.7-1.1-.7-1.1-1.4-2.3-2.1-3.5,0,0,0,0,0,0-1.6-2.8-3.2-5.8-4.7-9-.2-.4-.4-.8-.6-1.2-.3-.6-.6-1.3-.9-1.9-2.9-6.7-5.5-14-7.5-22.2-10.5-41.7,9.5-91.6,72.7-90.6,63.2.9,84.2,49.1,73.3,90.6Z"></path>
+    <path fill="#294066" opacity="0.6" d="M77,55c-22,4-38,22-42,46-1,6,7,7,9,1,5-19,19-33,37-39,5-2,2-9-4-8Z"></path>
+  </g>
+
+  <g id="nubi-belt">
+    <path fill="#FACF39" d="M172.5,175.4c-.7,1.2-1.3,2.4-2,3.6-.2.4-.4.7-.6,1.1-1.7,2.9-3.5,5.5-5.4,8-.6.8-1.2,1.6-1.8,2.4-1,1.3-2.1,2.5-3.1,3.8-1.4,1.7-2.9,3.2-4.4,4.7-27.8,2.9-55.5,3-83.2,0-1.5-1.4-3-3-4.5-4.6-1.2-1.3-2.3-2.6-3.5-4-.6-.8-1.3-1.6-1.9-2.4-2-2.5-3.9-5.2-5.8-8.1-.2-.3-.5-.7-.7-1.1-.7-1.1-1.4-2.3-2.1-3.5,39.6,5.1,79.2,5.1,119-.1Z"></path>
+    <path fill="#E6B72E" opacity="0.5" clip-path="url(#beltClipBug)" d="M166.9,192.1c-1.4,1.7-2.9,3.2-4.4,4.7-27.8,2.9-55.5,3-83.2,0-1.5-1.4-3-3-4.5-4.6,32,3.8,64,3.8,96.1-.1Z"></path>
+  </g>
+
+  <g id="nubi-face">
+    <path fill="#FFFFFF" d="M102.5,72.5h19.9c25.2,0,45.6,20.5,45.6,45.6v1c0,25.2-20.5,45.6-45.6,45.6h-22.9c-23.5,0-42.7-19.1-42.7-42.7v-4c0-25.2,20.5-45.6,45.6-45.6Z"></path>
+  </g>
+
+  <g id="nubi-eyes">
+    <rect fill="#1B2D4A" x="88" y="104" width="13.6" height="22" rx="6.8"></rect>
+    <rect fill="#1B2D4A" x="126" y="104" width="13.6" height="22" rx="6.8"></rect>
+    <circle fill="#FFFFFF" cx="97" cy="110" r="2.6"></circle>
+    <circle fill="#FFFFFF" cx="135" cy="110" r="2.6"></circle>
+    <ellipse fill="#1B2D4A" cx="112" cy="142" rx="4.6" ry="5.6"></ellipse>
+  </g>
+
+  <g id="nubi-antenna">
+    <rect fill="#1B2D4A" x="155.4" y="35.8" width="5.2" height="32.5" rx="2.6"></rect>
+    <circle fill="#FACF39" cx="157.5" cy="30.6" r="11.5" stroke="#E6B72E" stroke-width="2"></circle>
+    <circle fill="#FFFFFF" cx="153.5" cy="26.5" r="3" opacity="0.85"></circle>
+    <g stroke="#FACF39" stroke-linecap="round" stroke-width="6">
+      <line x1="187.5" y1="50.1" x2="197.3" y2="32.2"></line>
+      <line x1="199.5" y1="60.5" x2="217.9" y2="52.1"></line>
+      <line x1="200" y1="76.9" x2="219.7" y2="81.7"></line>
+    </g>
+  </g>
+
+  <g id="nubi-ear">
+    <rect x="174.3" y="90.4" width="26.2" height="57.7" rx="13.1" fill="#FACF39" stroke="#E6B72E" stroke-width="2"></rect>
+  </g>
+
+  <g id="nubi-document" transform="rotate(-13 60 144)">
+    <rect x="34" y="104" width="52" height="80" rx="5" fill="#FFFFFF" stroke="#12203A" stroke-width="2.5"></rect>
+    <g id="bug-icon">
+      <line x1="57" y1="113" x2="54" y2="107" stroke="#12203A" stroke-width="1.6" stroke-linecap="round"></line>
+      <line x1="63" y1="113" x2="66" y2="107" stroke="#12203A" stroke-width="1.6" stroke-linecap="round"></line>
+      <circle cx="60" cy="117" r="5.5" fill="#12203A"></circle>
+      <line x1="47" y1="124" x2="41" y2="120" stroke="#12203A" stroke-width="1.8" stroke-linecap="round"></line>
+      <line x1="46" y1="131" x2="39" y2="131" stroke="#12203A" stroke-width="1.8" stroke-linecap="round"></line>
+      <line x1="47" y1="138" x2="41" y2="142" stroke="#12203A" stroke-width="1.8" stroke-linecap="round"></line>
+      <line x1="73" y1="124" x2="79" y2="120" stroke="#12203A" stroke-width="1.8" stroke-linecap="round"></line>
+      <line x1="74" y1="131" x2="81" y2="131" stroke="#12203A" stroke-width="1.8" stroke-linecap="round"></line>
+      <line x1="73" y1="138" x2="79" y2="142" stroke="#12203A" stroke-width="1.8" stroke-linecap="round"></line>
+      <ellipse cx="60" cy="131" rx="13" ry="11.5" fill="#E5484D" stroke="#12203A" stroke-width="2"></ellipse>
+      <line x1="60" y1="121" x2="60" y2="141.5" stroke="#12203A" stroke-width="1.6"></line>
+      <circle cx="53" cy="128" r="1.9" fill="#12203A"></circle>
+      <circle cx="67" cy="128" r="1.9" fill="#12203A"></circle>
+      <circle cx="55" cy="136" r="1.9" fill="#12203A"></circle>
+      <circle cx="65" cy="136" r="1.9" fill="#12203A"></circle>
+    </g>
+    <g id="warning-icon">
+      <path d="M60,146 L72,168 Q73.5,171 70,171 L50,171 Q46.5,171 48,168 Z" fill="#FACF39" stroke="#12203A" stroke-width="2" stroke-linejoin="round"></path>
+      <line x1="60" y1="155" x2="60" y2="163" stroke="#12203A" stroke-width="2.6" stroke-linecap="round"></line>
+      <circle cx="60" cy="167" r="1.5" fill="#12203A"></circle>
+    </g>
+  </g>
+
+  
+</svg>
