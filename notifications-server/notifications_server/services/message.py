@@ -27,7 +27,10 @@ from notifications_server.services.slack.slack import retriable_slack_api_error,
 from notifications_server.message_templates import template_mapping
 from notifications_server.message_templates.google_chat.finding import get_markdown_message_template
 from notifications_server.message_templates.ms_teams.finding import get_ms_teams_finding_message_template
-from notifications_server.message_templates.slack.finding import get_slack_finding_message
+from notifications_server.message_templates.slack.finding import (
+    get_slack_finding_message,
+    get_slack_resolved_finding_reply,
+)
 from notifications_server.models.db_base import BaseDB
 from notifications_server.models.models import (
     SentNotifications,
@@ -693,6 +696,9 @@ class MessageService:
             if thread:
                 return await self.send_threaded_reply(tenant_id, thread, parameters)
 
+            if type_ == "finding_resolved":
+                return await self.send_finding_resolved_reply(tenant_id, parameters)
+
             group_result = await self._maybe_handle_grouped_message(source, parameters, tenant_id, payload)
             if group_result is not None:
                 return group_result
@@ -978,6 +984,85 @@ class MessageService:
         )
 
         return response_data, sent_notification
+
+    async def send_finding_resolved_reply(self, tenant_id, parameters):
+        """Thread-only closure when a notified finding clears: green reply in
+        the Slack thread(s) recorded in SentNotifications, at the channel the
+        firing message actually went to. Dropped silently when the firing
+        message was never sent; the resolved_notified stamp dedupes repeated
+        resolve webhooks. Slack-only — other platforms keep no thread record
+        usable here."""
+        finding = parameters.get("finding") or {}
+        fingerprint = finding.get("fingerprint")
+        account_id = finding.get("cloud_account_id")
+        if not (tenant_id and fingerprint):
+            return [system_response("dropped", "Resolved finding lacks a fingerprint")]
+
+        async with BaseDB.async_session(self.engine)() as session:
+            query = select(SentNotifications).filter_by(tenant_id=tenant_id, fingerprint=fingerprint)
+            if account_id:
+                query = query.filter_by(account_id=account_id)
+            rows = (await session.execute(query)).scalars().all()
+            rows = [row for row in rows if row.slack_thread_id and row.slack_team_id and row.slack_metadata]
+            if not rows:
+                return [system_response("dropped", "No delivered firing message for this finding")]
+
+            installs = await self.get_installed_platforms(
+                session, tenant_id=tenant_id, platform=PlatformTypes.SLACK.value
+            )
+            installs_by_team = {ip.team_id: ip for ip in installs}
+
+            responses = []
+            stamped = False
+            for row in rows:
+                try:
+                    slack_metadata = json.loads(row.slack_metadata)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(slack_metadata, dict):
+                    continue
+                channel_id = slack_metadata.get("channel")
+                ip = installs_by_team.get(row.slack_team_id)
+                if slack_metadata.get("resolved_notified") or not (channel_id and ip):
+                    continue
+
+                # Isolate per-thread failures (revoked token, deleted channel,
+                # rate limit) so one bad thread doesn't abort the fan-out.
+                _, _, attachments = get_slack_resolved_finding_reply(finding)
+                try:
+                    slack_response = await asyncio.to_thread(
+                        self.slack_app.client.reply_in_thread,
+                        token=ip.token,
+                        channel_id=channel_id,
+                        thread_ts=row.slack_thread_id,
+                        attachments=attachments,
+                        display_as_bot=True,
+                    )
+                except Exception as exc:
+                    LOG.warning("Failed to post resolved reply to thread %s: %s", row.slack_thread_id, exc)
+                    responses.append(failed_response("slack", reason="Failed to post resolved reply"))
+                    continue
+
+                if not (slack_response and slack_response.status_code == 200 and slack_response.data.get("ok")):
+                    responses.append(failed_response("slack", reason="Failed to post resolved reply"))
+                    continue
+
+                row.slack_metadata = json.dumps({**slack_metadata, "resolved_notified": True})
+                session.add(row)
+                stamped = True
+                responses.append(
+                    success_response(
+                        "slack",
+                        team_id=row.slack_team_id,
+                        channel_id=channel_id,
+                        message_ts=slack_response.data.get("ts"),
+                    )
+                )
+
+            if stamped:
+                await session.commit()
+
+        return responses or [system_response("dropped", "Resolved reply already delivered")]
 
     async def _send_finding_to_teams(self, session, tenant_id, ip, finding, _):
         token = await self.teams_sender.acquire_teams_access_token(session, ip)

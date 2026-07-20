@@ -1505,6 +1505,19 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 			common.MqPublishWithBackgroundRetry(),
 			common.MqPublishWithContext(cfg.publishCtx),
 		)
+	} else if !cfg.skipWorkflowRefire && strings.EqualFold(string(event.Status), string(EventStatusResolved)) {
+		// FIRING→RESOLVED arrives as an ON CONFLICT update too. Deliver the
+		// resolved notification only (notify_resolved); the upsert can't see the
+		// prior status, so repeated resolve webhooks re-publish and
+		// notifications-server dedupes per delivered thread.
+		_ = common.MqPublish(
+			config.Config.RabbitMqEventPostProcessExchange,
+			config.Config.RabbitMqEventPostProcessQueue,
+			map[string]any{"event_id": id, "notify_resolved": true},
+			common.MqPublishWithExpiration(1*time.Hour),
+			common.MqPublishWithBackgroundRetry(),
+			common.MqPublishWithContext(cfg.publishCtx),
+		)
 	}
 
 	return id, nil

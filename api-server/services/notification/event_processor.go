@@ -63,6 +63,59 @@ func ProcessEvent(ctx *security.RequestContext, newEvent map[string]any) (err er
 	return nil
 }
 
+// ProcessEventResolved publishes the resolved notification for an event whose
+// upsert flipped it to RESOLVED. Mirrors ProcessEvent's gates (HIGH priority,
+// not suppressed, SLO handled by its own service); delivery is thread-only
+// downstream — notifications-server drops it unless the firing message was
+// actually sent, which also dedupes repeated resolve webhooks.
+func ProcessEventResolved(ctx *security.RequestContext, newEvent map[string]any) (err error) {
+	if priority, _ := newEvent["priority"].(string); priority != "HIGH" {
+		return nil
+	}
+
+	source, _ := newEvent["source"].(string)
+	if source == "slo" {
+		return nil
+	}
+
+	// The queue consumer's event map carries no nb_status (only PostProcessEvent
+	// refreshes it post-triage), so a silenced/suppressed finding needs a lookup
+	// here to stay silent on resolve too.
+	eventID, _ := newEvent["id"].(string)
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		ctx.GetLogger().Error("error getting database manager", "error", err)
+		return err
+	}
+	var nbStatus sql.NullString
+	if scanErr := dbms.Db.QueryRowx(`SELECT nb_status FROM events WHERE id = $1`, eventID).Scan(&nbStatus); scanErr != nil && !errors.Is(scanErr, sql.ErrNoRows) {
+		ctx.GetLogger().Error("error getting event nb_status", "error", scanErr, "event_id", eventID)
+		return scanErr
+	}
+	if nbStatus.Valid && strings.EqualFold(nbStatus.String, "SUPPRESSED") {
+		return nil
+	}
+
+	ctx.GetLogger().Info(fmt.Sprintf("Publishing resolved event to notification - %v", eventID))
+	message := map[string]any{
+		"kind":      "notification",
+		"type":      "finding_resolved",
+		"source":    source,
+		"tenant_id": newEvent["tenant"],
+		"parameters": map[string]any{
+			"finding": newEvent,
+		},
+	}
+
+	err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext()))
+	if err != nil {
+		ctx.GetLogger().Error("Error publishing message to queue", "error", err)
+		return err
+	}
+
+	return nil
+}
+
 func TriggerNotificationForRecommendationResolution(ctx *security.RequestContext, recommendation models.Recommendation, resolution models.RecommendationResolution) (err error) {
 
 	ctx.GetLogger().Info(fmt.Sprintf("Publishing recommendation resolution to notification - %s", recommendation.Id))

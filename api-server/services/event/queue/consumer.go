@@ -9,6 +9,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/event"
+	"nudgebee/services/notification"
 	"nudgebee/services/security"
 )
 
@@ -48,6 +49,15 @@ func processEventPostProcessMessage(msgCtx context.Context, data []byte) error {
 		// Re-fire of an existing event: re-deliver to event-trigger workflows only,
 		// without re-running triage/llm/notification (which ran on first insert).
 		event.ReEmitForWorkflows(ctx, eventMap)
+		return nil
+	}
+
+	if message.NotifyResolved {
+		// FIRING→RESOLVED update: deliver the resolved notification only; the
+		// full pipeline ran on first insert.
+		if err := notification.ProcessEventResolved(ctx, eventMap); err != nil {
+			logger.Error("event_queue: failed to publish resolved notification", "error", err)
+		}
 		return nil
 	}
 

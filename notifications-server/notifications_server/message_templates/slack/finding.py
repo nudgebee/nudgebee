@@ -17,7 +17,11 @@ from notifications_server.message_templates.blocks import (
     CallbackChoice,
     FileBlock,
 )
-from notifications_server.message_templates.slack.recommendation_nudge_digest import STRIPE_CRITICAL, STRIPE_HIGH
+from notifications_server.message_templates.slack.recommendation_nudge_digest import (
+    STRIPE_CRITICAL,
+    STRIPE_HIGH,
+    STRIPE_SAVINGS,
+)
 from notifications_server.services.actions import AskAIParams
 from notifications_server.services.events import Events
 from notifications_server.utils.action_requests import (
@@ -346,4 +350,66 @@ def get_slack_finding_message(slack_app, installation, finding):
     }
 
     LOG.debug(f"--sending to slack--\ntitle:{title}\nattachment: {attachment}")
+    return "", [], [attachment]
+
+
+def _to_utc_datetime(value):
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, str):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        else:
+            return None
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _humanize_duration(delta):
+    total_minutes = max(int(delta.total_seconds() // 60), 0)
+    days, remainder = divmod(total_minutes, 1440)
+    hours, minutes = divmod(remainder, 60)
+    if days:
+        return f"{days}d {hours}h" if hours else f"{days}d"
+    if hours:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    return f"{minutes}m"
+
+
+def _slack_time(moment):
+    ts = int(moment.timestamp())
+    fallback = moment.astimezone(timezone.utc).strftime("%I:%M %p UTC")
+    return f"<!date^{ts}^{{time}}|{fallback}>"
+
+
+def get_slack_resolved_finding_reply(finding):
+    """Green closure reply threaded under the original alert message once the
+    finding clears. Same attachment-only shape as the firing card (top-level
+    text/blocks stay empty, no footer/ts — the byline constraints apply)."""
+    title = finding.get("title")
+    investigate_url = settings.urls.investigate_url(
+        account_id=finding.get("cloud_account_id"),
+        finding_id=finding.get("id"),
+        utm_source=URLRoutes.UTMSource.SLACK,
+    )
+
+    started = _to_utc_datetime(finding.get("starts_at"))
+    ended = _to_utc_datetime(finding.get("ends_at")) or datetime.now(timezone.utc)
+    if started and ended >= started:
+        line = (
+            f"Cleared after {_humanize_duration(ended - started)}"
+            f" (fired {_slack_time(started)} → resolved {_slack_time(ended)})."
+        )
+    else:
+        line = f"Cleared at {_slack_time(ended)}."
+
+    attachment = {
+        "color": STRIPE_SAVINGS,
+        "fallback": f"Resolved: {title}",
+        "mrkdwn_in": ["text"],
+        "title": f"Resolved: {title}",
+        "title_link": investigate_url,
+        "text": line,
+    }
     return "", [], [attachment]
