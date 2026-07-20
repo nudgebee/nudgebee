@@ -435,14 +435,19 @@ const imageScanMaxConcurrent = 2
 // stay bounded by imageScanMaxConcurrent (and the agent's own cap).
 const imageScanBatchLimit = 25
 
-// imageScanFreshDays / imageScanFailedRetryDays define the incremental re-scan
-// windows keyed off the image_scan_summary row's updated_at: a successfully
-// scanned image (clean or vulnerable) is re-scanned after imageScanFreshDays to
-// catch newly-disclosed CVEs; a failed scan retries sooner so a transient
-// failure isn't hidden for a full week, but not so soon it hot-loops.
+// imageScanFreshDays / imageScanFailedRetryDays / imageScanUnscannableRetryDays
+// define the incremental re-scan windows keyed off the image_scan_summary row's
+// updated_at: a successfully scanned image (clean or vulnerable) is re-scanned
+// after imageScanFreshDays to catch newly-disclosed CVEs; a failed scan retries
+// sooner so a transient failure isn't hidden for a full week, but not so soon it
+// hot-loops; an unscannable scan (the image couldn't be pulled — see
+// imageScanStatusUnscannable) backs off to the long window because a missing
+// node-local image or absent registry credential rarely resolves within a day,
+// so retrying daily just re-wedges the same doomed Job every cycle.
 const (
-	imageScanFreshDays       = 7
-	imageScanFailedRetryDays = 1
+	imageScanFreshDays            = 7
+	imageScanFailedRetryDays      = 1
+	imageScanUnscannableRetryDays = 7
 )
 
 // runImageScannerServerOrchestrated picks a prioritized batch of images that are
@@ -511,7 +516,7 @@ func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, 
 		scan_state AS (
 			SELECT account_object_id AS image,
 				updated_at AS last_scanned,
-				(recommendation->>'status' = 'failed') AS last_failed
+				recommendation->>'status' AS last_status
 			FROM recommendation
 			WHERE cloud_account_id = $1
 				AND tenant_id = $2
@@ -523,12 +528,13 @@ func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, 
 		FROM running_images ri
 		LEFT JOIN scan_state s ON s.image = ri.image
 		WHERE s.last_scanned IS NULL
-			OR s.last_scanned < now() - (CASE WHEN s.last_failed
-			                                  THEN make_interval(days => $3)
-			                                  ELSE make_interval(days => $4) END)
+			OR s.last_scanned < now() - (CASE
+			                                  WHEN s.last_status = 'unscannable' THEN make_interval(days => $3)
+			                                  WHEN s.last_status = 'failed'      THEN make_interval(days => $4)
+			                                  ELSE make_interval(days => $5) END)
 		ORDER BY (s.last_scanned IS NULL) DESC, s.last_scanned ASC
-		LIMIT $5
-	`, accountId, tenantId, imageScanFailedRetryDays, imageScanFreshDays, imageScanBatchLimit)
+		LIMIT $6
+	`, accountId, tenantId, imageScanUnscannableRetryDays, imageScanFailedRetryDays, imageScanFreshDays, imageScanBatchLimit)
 	if err != nil {
 		return fmt.Errorf("image_scanner: query pending images: %w", err)
 	}

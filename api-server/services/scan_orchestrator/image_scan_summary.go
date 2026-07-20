@@ -3,6 +3,7 @@ package scan_orchestrator
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"nudgebee/services/internal/database"
@@ -29,11 +30,35 @@ const (
 	imageScanStatusClean      = "clean"
 	imageScanStatusVulnerable = "vulnerable"
 	imageScanStatusFailed     = "failed"
+	// imageScanStatusUnscannable marks a scan that couldn't run because the image
+	// could not be pulled — the node-local copy the fs-scan relies on was gone by
+	// scan time and the registry pull failed (e.g. a private registry the scanner
+	// has no credentials for). Distinct from "failed" (which is a genuine scan
+	// error worth retrying soon) so the discovery loop backs it off to the longer
+	// window instead of retrying daily, and the UI can tell the user the image
+	// couldn't be pulled rather than showing a generic failure.
+	imageScanStatusUnscannable = "unscannable"
 
 	// imageScanSummaryErrCap bounds the stored scan error so a pathological
 	// trivy/relay error can't bloat the recommendation row.
 	imageScanSummaryErrCap = 500
 )
+
+// imagePullFailureMarker is the substring the agent's wait_for_k8s_job embeds in
+// a Job's failure_reason when the scan pod is wedged on an image pull it can't
+// complete (ImagePullBackOff/ErrImagePull). It is a cross-repo contract with
+// k8s-agent's scanners.imagePullFailure; keep the two in sync.
+const imagePullFailureMarker = "image pull failed"
+
+// isImagePullFailure reports whether a RunScan error is an image-pull failure —
+// the scan pod could never start because its image wouldn't pull. Older agents
+// (pre-terminal-fail) time out instead of reporting this, so such scans fall
+// back to the plain "failed" classification, which is the safe default. The
+// match is case-insensitive so a casing change in the agent's message can't
+// silently reclassify these as generic failures.
+func isImagePullFailure(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), imagePullFailureMarker)
+}
 
 // severityRank orders trivySeverity's output vocabulary highest→lowest so the
 // summary row's own severity column reflects the worst CVE found.
@@ -44,7 +69,7 @@ var severityRank = []string{"Critical", "High", "Medium", "Low", "Info"}
 // rule_name, not this flag.
 type imageScanSummaryBody struct {
 	ImageName   string         `json:"image_name"`
-	Status      string         `json:"status"` // clean | vulnerable | failed
+	Status      string         `json:"status"` // clean | vulnerable | failed | unscannable
 	ScannedAt   string         `json:"scanned_at"`
 	Namespace   string         `json:"namespace,omitempty"`
 	Workload    string         `json:"workload,omitempty"`
