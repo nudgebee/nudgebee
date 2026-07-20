@@ -1246,7 +1246,16 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 	for _, resolution := range eventResolutionsToCheck {
 		event := events[resolution.EventId]
 		if event.Id == "" {
-			ctx.GetLogger().Error("error getting event", "error", fmt.Errorf("event not found - %s", resolution.EventId))
+			// The event is gone, so this resolution can never be evaluated. Fail it
+			// instead of leaving it in progress for the cron to retry forever.
+			ctx.GetLogger().Warn("event not found for resolution, marking it failed", "event_id", resolution.EventId, "resolution_id", resolution.Id)
+			_, err = dbms.Db.Exec("UPDATE event_resolution SET status = $2, updated_at = $3, status_message = $4 WHERE id = $1",
+				resolution.Id, models.RecommendationResolutionStatusFailed, time.Now().UTC().Format(time.RFC3339),
+				fmt.Sprintf("event not found - %s", resolution.EventId))
+			if err != nil {
+				ctx.GetLogger().Error("error updating event resolution", "error", err)
+				return err
+			}
 			continue
 		}
 		adptr := adapter.GetAdapterFromResolutionProvider(resolution.Type)

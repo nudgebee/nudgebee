@@ -611,3 +611,30 @@ func TestExtractServiceFromLogAlertQuery(t *testing.T) {
 	_, ok = parseLogAlertQuery(`avg:aws.rds.cpuutilization{dbinstanceidentifier:foo} > 80`)
 	assert.False(t, ok)
 }
+
+// The evaluation prefix has to be stripped before the query reaches /api/v1/query —
+// that endpoint rejects monitor syntax. change()/pct_change() nest a second aggregation
+// inside the prefix, which used to defeat the parser and leak the whole monitor query.
+func TestParseMetricFromMonitorQuery(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{"simple prefix with threshold", "avg(last_5m):avg:system.cpu.user{*} > 90", "avg:system.cpu.user{*}"},
+		{"nested prefix, no threshold", "change(max(last_5m),last_5m):sum:kubernetes.containers.restarts{*} by {kube_cluster_name,pod_name}", "sum:kubernetes.containers.restarts{*} by {kube_cluster_name,pod_name}"},
+		{"nested prefix with threshold", "pct_change(avg(last_5m),last_10m):avg:system.mem.used{*} > 20", "avg:system.mem.used{*}"},
+		{"grouped query", "sum(last_1h):sum:aws.rds.cpuutilization{*} by {dbinstanceidentifier} >= 80", "sum:aws.rds.cpuutilization{*} by {dbinstanceidentifier}"},
+		{"no prefix", "avg:system.cpu.user{*} > 90", "avg:system.cpu.user{*}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseMetricFromMonitorQuery(tt.query)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	_, err := parseMetricFromMonitorQuery("")
+	assert.Error(t, err)
+}

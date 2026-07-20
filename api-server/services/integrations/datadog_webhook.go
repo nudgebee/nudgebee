@@ -713,7 +713,10 @@ func extractLinkByKey(context *security.RequestContext, targetKey string, data a
 }
 
 var (
-	rePrefix        = regexp.MustCompile(`^[a-z_]+\([^)]+\):(.+)`)
+	// The evaluation prefix may nest one level of parens, e.g.
+	// change(max(last_5m),last_5m): — so the inner group has to allow a
+	// balanced (...) pair, not just non-paren runs.
+	rePrefix        = regexp.MustCompile(`^[a-z_]+\((?:[^()]|\([^()]*\))+\):(.+)`)
 	reThreshold     = regexp.MustCompile(`(.+)\s+(?:>|>=|<|<=|==|!=)\s+[0-9\.-]+$`)
 	reLogAlertQuery = regexp.MustCompile(`^logs?\("((?:[^"\\]|\\.)*)"\)`)
 )
