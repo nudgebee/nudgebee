@@ -1131,6 +1131,21 @@ class CommonService:
             LOG.debug(f"Failed to update Slack message: {e}")
             return False
 
+    def update_slack_message_attachments(self, channel_id, team_id, message_ts, attachments):
+        """Update an existing Slack message's attachments in place."""
+        try:
+            bot = self.get_slack_installation(team_id)
+            self.slack_app.client.chat_update(
+                token=bot.token,
+                channel_id=channel_id,
+                ts=message_ts,
+                attachments=attachments,
+            )
+            return True
+        except Exception as e:
+            LOG.debug(f"Failed to update Slack message attachments: {e}")
+            return False
+
     def update_slack_message_with_blocks(self, channel_id, team_id, message_ts, blocks):
         """Update an existing Slack message with new blocks."""
         try:

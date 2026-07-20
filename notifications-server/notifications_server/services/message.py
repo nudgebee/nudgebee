@@ -141,8 +141,8 @@ def _ids_match(rule_id, payload_id):
 
 # Notification rules are keyed by category — the tabs in the UI: "troubleshoot",
 # "optimize", "slo", "cloud" (plus "auto_pilot"). A finding's `source`, however,
-# is the raw *ingestion* source (e.g. "datadog_webhook", "prometheus", "anomaly",
-# "ebpf", "traces", "grafana", "newrelic"). Those never equal "troubleshoot", so
+# is the raw *ingestion* source (e.g. "prometheus", "anomaly", "ebpf", "traces",
+# "grafana", "newrelic"). Those never equal "troubleshoot", so
 # matching them verbatim against rule.source sends every troubleshoot finding to
 # the default channel (#28130). Map any source that is not itself a rule category
 # to "troubleshoot"; "cloud"/"optimize"/"slo" findings keep their category.

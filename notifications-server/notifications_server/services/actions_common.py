@@ -1,8 +1,13 @@
 import json
 import logging
+import re
+from datetime import datetime, timedelta, timezone
 
+import requests
 from botbuilder.schema import Activity, ActivityTypes
 
+from notifications_server.configs.settings import ACCOUNT_SECURITY_CONTEXT, URLRoutes, settings
+from notifications_server.message_templates.slack.finding import FINDING_CALLBACK_ID, SILENCE_ACTION_NAME
 from notifications_server.models.db_base import BaseDB
 from notifications_server.services.actions import (
     Actions,
@@ -13,9 +18,17 @@ from notifications_server.services.actions import (
 from notifications_server.services.common import CommonService
 from notifications_server.services.events import Events
 from notifications_server.services.bot_messages import get_bot_joined_message
+from notifications_server.utils.action_requests import ActionRequestBody, verify_action_request
+from notifications_server.utils.transformer import SLACK_SIGNIN_SECRET
 
 USER_NOT_FOUND_MESSAGE = "Hmm, I couldn't identify your account. Mind checking your setup?"
 UNABLE_TO_PROCESS_REQUEST = "Oops! I ran into a snag with that. Could you try again?"
+SILENCE_NOT_ALLOWED_MESSAGE = "Looks like you don't have permission to silence alerts for this account — ask an admin."
+
+# Mirrors the gateway permissions of event_create_triage_rule in actions.yaml;
+# the internal X-ACTION-TOKEN path bypasses the gateway, so the role gate lives here.
+SILENCE_ALLOWED_ROLES = {"tenant_admin", "account_admin"}
+SILENCE_DURATION_LABELS = {1: "1h", 4: "4h", 24: "24h", 168: "7d"}
 LOG = logging.getLogger(__name__)
 
 
@@ -51,16 +64,21 @@ class SlackActionsBaseService:
 class SlackInteractiveActionsService(SlackActionsBaseService):
     @staticmethod
     def normalize_legacy_payload(data):
-        """Legacy attachment buttons (the hybrid finding card) arrive as
-        ``interactive_message`` payloads: same top-level channel/team/user and
-        the same signed ``value``, but the click context lives in
-        ``original_message``/``message_ts`` instead of ``message``. Normalize
-        so the shared click routing works unchanged."""
-        if data.get("type") == "interactive_message" and not data.get("message"):
-            message = dict(data.get("original_message") or {})
-            if "ts" not in message and data.get("message_ts"):
-                message["ts"] = data["message_ts"]
-            data["message"] = message
+        """Legacy attachment buttons and menus (the hybrid finding card) arrive
+        as ``interactive_message`` payloads: same top-level channel/team/user
+        and the same signed ``value``, but the click context lives in
+        ``original_message``/``message_ts`` instead of ``message`` and menu
+        picks in ``selected_options`` (plural) instead of ``selected_option``.
+        Normalize so the shared routing works unchanged."""
+        if data.get("type") == "interactive_message":
+            if not data.get("message"):
+                message = dict(data.get("original_message") or {})
+                if "ts" not in message and data.get("message_ts"):
+                    message["ts"] = data["message_ts"]
+                data["message"] = message
+            actions = data.get("actions") or []
+            if actions and actions[0].get("selected_options") and not actions[0].get("selected_option"):
+                actions[0]["selected_option"] = actions[0]["selected_options"][0]
         return data
 
     def execute_action(self, data):
@@ -75,7 +93,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
                 return self.reply_with_error(channel_id, team_id, data.get("message", {}).get("ts"), message)
 
             action_type = data["actions"][0]["type"]
-            if action_type == "static_select":
+            if action_type in ("static_select", "select"):
                 self.perform_select_action(channel_id, team_id, user_email, data)
             else:
                 self.perform_click_action(channel_id, team_id, slack_user_id, user_email, data)
@@ -189,10 +207,13 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
 
     def perform_select_action(self, channel_id, team_id, user_email, data):
         action = data.get("actions", [])[0]
-        action_id = action.get("action_id")
+        # Legacy attachment menus have no action_id (only name).
+        action_id = action.get("action_id") or action.get("name") or ""
         slack_user_id = data["user"]["id"]
 
-        if action_id == "select_followup_option_dropdown":
+        if action_id == SILENCE_ACTION_NAME:
+            self.handle_silence_finding(channel_id, team_id, user_email, action, data)
+        elif action_id == "select_followup_option_dropdown":
             self.event_service.update_followup_for_event(
                 action, channel_id, team_id, slack_user_id, data["message"]["thread_ts"]
             )
@@ -287,6 +308,130 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             LOG.exception(f"Error in handle_workflow_approval_selection: {e}")
             message_ts = data.get("message", {}).get("ts")
             return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
+
+    def handle_silence_finding(self, channel_id, team_id, user_email, action, data):
+        message = data.get("message", {})
+        message_ts = message.get("ts")
+        try:
+            selected_value = (action.get("selected_option") or {}).get("value")
+            if not selected_value:
+                return None
+
+            # The value round-trips through Slack; verify our HMAC before trusting
+            # any of the action_params (account/tenant/scope) it carries.
+            payload = json.loads(selected_value)
+            body = ActionRequestBody(**(payload.get("body") or {}))
+            if not verify_action_request(body, payload.get("signature", ""), SLACK_SIGNIN_SECRET):
+                LOG.warning("Rejecting silence action with invalid signature")
+                return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
+
+            params = body.action_params or {}
+            if isinstance(params, str):
+                params = json.loads(params)
+
+            tenant_id = params.get("tenant_id")
+            account_id = params.get("account_id")
+            fingerprint = params.get("fingerprint")
+            alertname = params.get("alertname")
+            scope = params.get("scope")
+            duration_hours = int(params.get("duration_hours") or 0)
+            if not (tenant_id and account_id and scope and duration_hours > 0):
+                return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
+
+            user_id = validate_and_get_user_id(user_email)
+            if not user_id:
+                return self.reply_with_error(channel_id, team_id, message_ts, USER_NOT_FOUND_MESSAGE)
+            if not self._can_manage_triage_rules(user_id, tenant_id, account_id):
+                return self.reply_with_error(channel_id, team_id, message_ts, SILENCE_NOT_ALLOWED_MESSAGE)
+
+            until = datetime.now(timezone.utc) + timedelta(hours=duration_hours)
+            rule_input = {
+                "cloud_account_id": account_id,
+                "rule_type": "suppression",
+                "action": "suppress",
+                "effective_until": until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "apply_to_existing": True,
+                "name": f"Silenced via Slack by {user_email}",
+            }
+            if scope == "alertname" and alertname:
+                # match_alertname is evaluated as a regex against aggregation_key.
+                rule_input["match_alertname"] = f"^{re.escape(alertname)}$"
+            elif fingerprint:
+                rule_input["match_fingerprint"] = fingerprint
+            else:
+                return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
+
+            response = requests.post(
+                settings.services.api_server + "/rpc/triage",
+                json={
+                    "action": {"name": "event_create_triage_rule"},
+                    "input": rule_input,
+                    "session_variables": {"tenant_id": tenant_id, "user_id": user_id},
+                },
+                headers={"X-ACTION-TOKEN": settings.action_api_server_token},
+                timeout=15,
+            )
+            response.raise_for_status()
+            if not (response.json() or {}).get("success"):
+                return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
+
+            slack_user_id = data["user"]["id"]
+            scope_label = "this alert" if scope == "fingerprint" else f'all "{alertname}" alerts'
+            duration_label = SILENCE_DURATION_LABELS.get(duration_hours, f"{duration_hours}h")
+            until_ts = int(until.timestamp())
+            until_fallback = until.strftime("%d %b %Y %I:%M %p UTC")
+            until_text = f"<!date^{until_ts}^{{date_short_pretty}} {{time}}|{until_fallback}>"
+
+            status_line = f"🔕 Silenced ({scope_label} · {duration_label}) by <@{slack_user_id}> · until {until_text}"
+            self._mark_finding_silenced(channel_id, team_id, message, status_line)
+
+            investigate_url = settings.urls.investigate_url(
+                account_id=account_id,
+                finding_id=params.get("event_id"),
+                utm_source=URLRoutes.UTMSource.SLACK,
+            )
+            confirmation = (
+                f"🔕 Silenced {scope_label} for {duration_label} by <@{slack_user_id}> — repeat alerts won't"
+                f" notify until {until_text}. <{investigate_url}|Open in NudgeBee> to undo."
+            )
+            self.common_service.slack_reply_in_thread(channel_id, team_id, message_ts, confirmation)
+            return json.dumps({"status": "silenced"})
+        except Exception as e:
+            LOG.exception(f"Error processing silence action: {e}")
+            return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
+
+    @staticmethod
+    def _can_manage_triage_rules(user_id, tenant_id, account_id):
+        try:
+            response = requests.post(
+                settings.services.api_server + ACCOUNT_SECURITY_CONTEXT,
+                json={"user_id": user_id, "tenant_id": tenant_id},
+                headers={"X-ACTION-TOKEN": settings.action_api_server_token},
+                timeout=10,
+            )
+            response.raise_for_status()
+            context = (response.json() or {}).get("context") or {}
+            if account_id not in (context.get("AccountIds") or []):
+                return False
+            return bool(set(context.get("Roles") or []) & SILENCE_ALLOWED_ROLES)
+        except Exception as e:
+            LOG.warning("Failed to check silence permission for user %s: %s", user_id, e)
+            return False
+
+    def _mark_finding_silenced(self, channel_id, team_id, message, status_line):
+        message_ts = message.get("ts")
+        attachments = message.get("attachments") or []
+        updated = False
+        for attachment in attachments:
+            if attachment.get("callback_id") != FINDING_CALLBACK_ID:
+                continue
+            attachment["actions"] = [
+                a for a in (attachment.get("actions") or []) if a.get("name") != SILENCE_ACTION_NAME
+            ]
+            attachment["text"] = "\n".join(part for part in (attachment.get("text"), status_line) if part)
+            updated = True
+        if updated and message_ts:
+            self.common_service.update_slack_message_attachments(channel_id, team_id, message_ts, attachments)
 
 
 class SlackEventsService(SlackActionsBaseService):

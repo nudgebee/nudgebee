@@ -1,5 +1,6 @@
 import collections
 import logging
+import time
 from datetime import datetime, timezone
 from typing import List
 
@@ -19,6 +20,11 @@ from notifications_server.message_templates.blocks import (
 from notifications_server.message_templates.slack.recommendation_nudge_digest import STRIPE_CRITICAL, STRIPE_HIGH
 from notifications_server.services.actions import AskAIParams
 from notifications_server.services.events import Events
+from notifications_server.utils.action_requests import (
+    ActionRequestBody,
+    ExternalActionRequest,
+    sign_action_request,
+)
 from notifications_server.utils.callbacks import ExternalActionRequestBuilder
 from notifications_server.utils.transformer import SLACK_SIGNIN_SECRET, Transformer
 
@@ -28,6 +34,10 @@ LOG = logging.getLogger(__name__)
 # buttons (Slack sends interactive_message payloads for these, not
 # block_actions; the value contract is identical).
 FINDING_CALLBACK_ID = "nb_finding_actions"
+
+SILENCE_ACTION_NAME = "silence_finding"
+SILENCE_THIS_DURATIONS = (("1h", 1), ("4h", 4), ("24h", 24), ("7d", 168))
+SILENCE_ALL_DURATIONS = (("4h", 4), ("24h", 24), ("7d", 168))
 
 
 def add_evidences(blocks, finding, is_cloud):
@@ -153,13 +163,69 @@ def _blocks_to_mrkdwn(slack_blocks: List[dict]) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _signed_silence_value(action_params):
+    body = ActionRequestBody(
+        timestamp=int(time.time()),
+        action_name=SILENCE_ACTION_NAME,
+        action_params=action_params,
+        origin="callback",
+    )
+    return ExternalActionRequest(body=body, signature=sign_action_request(body, SLACK_SIGNIN_SECRET)).model_dump_json()
+
+
+def _silence_select_action(finding, tenant_id):
+    """Legacy attachment menu offering time-boxed silences. Scope "fingerprint"
+    mutes repeat firings of this exact alert; "alertname" mutes every alert
+    sharing the aggregation key on the account. Each option value is a signed
+    callback payload (same contract as the card buttons)."""
+    fingerprint = str(finding.get("fingerprint") or "").strip()
+    alertname = str(finding.get("aggregation_key") or "").strip()
+    account_id = finding.get("cloud_account_id")
+    if not account_id:
+        return None
+
+    def _options(scope, durations):
+        options = []
+        for label, hours in durations:
+            value = _signed_silence_value(
+                {
+                    "action_name": SILENCE_ACTION_NAME,
+                    "event_id": finding.get("id"),
+                    "fingerprint": fingerprint,
+                    "alertname": alertname,
+                    "account_id": account_id,
+                    "tenant_id": tenant_id,
+                    "scope": scope,
+                    "duration_hours": hours,
+                }
+            )
+            options.append({"text": f"Silence {label}", "value": value})
+        return options
+
+    option_groups = []
+    if fingerprint:
+        option_groups.append({"text": "This alert only", "options": _options("fingerprint", SILENCE_THIS_DURATIONS)})
+    if alertname:
+        shown = alertname if len(alertname) <= 30 else alertname[:27] + "…"
+        option_groups.append({"text": f'All "{shown}" alerts', "options": _options("alertname", SILENCE_ALL_DURATIONS)})
+    if not option_groups:
+        return None
+
+    return {
+        "type": "select",
+        "name": SILENCE_ACTION_NAME,
+        "text": "🔕 Silence…",
+        "option_groups": option_groups,
+    }
+
+
 def get_slack_finding_message(slack_app, installation, finding):
-    """Hybrid finding card (Datadog shape, our content rules): ONE severity-
-    striped legacy attachment — clickable title (title_link), evidence
-    sentences, a trailing facts line, and both actions inside the card. The
-    top-level message text and blocks stay EMPTY: with no blocks, any text
-    renders as a duplicate heading, and blocks-in-attachments or footer/ts
-    fields make Slack stamp the "Added by {app}" byline."""
+    """Hybrid finding card: ONE severity-striped legacy attachment — clickable
+    title (title_link), evidence sentences, compact two-column fields, and all
+    actions inside the card. The top-level message text and blocks stay EMPTY:
+    with no blocks, any text renders as a duplicate heading, and
+    blocks-in-attachments or footer/ts fields make Slack stamp the
+    "Added by {app}" byline."""
     title = finding.get("title")
     finding_id = finding.get("id")
     service_key = finding.get("service_key", "")
@@ -209,13 +275,21 @@ def get_slack_finding_message(slack_app, installation, finding):
             reported = f"reported <!date^{ts}^{{date_short_pretty}} {{time}}|{fallback_time}>"
         except (TypeError, ValueError, OSError, OverflowError):
             reported = ""
-    facts_bits = [
-        f"{priority.title()} priority" if priority else "",
-        f"Acct: {cluster}" if cluster else "",
-        f"{subject_namespace}/{subject_name}" if subject_name else subject_namespace,
-        reported,
+
+    resource = f"{subject_namespace}/{subject_name}" if subject_name else subject_namespace
+    source = str(finding.get("source") or "").strip()
+    fields = [
+        {"title": title_, "value": value, "short": True}
+        for title_, value in (
+            ("Cluster", cluster),
+            ("Resource", resource),
+            ("Priority", priority.title() if priority else ""),
+            ("Source", source.replace("_", " ").title() if source else ""),
+        )
+        if value
     ]
-    lines.append(" · ".join(bit for bit in facts_bits if bit))
+    if reported:
+        fields.append({"title": "", "value": reported, "short": False})
 
     if file_blocks:
         file_links = Transformer.prepare_slack_text(
@@ -251,18 +325,24 @@ def get_slack_finding_message(slack_app, installation, finding):
         SLACK_SIGNIN_SECRET,
     ).model_dump_json()
 
+    actions = [
+        {"type": "button", "text": "View Details", "url": investigate_url, "style": "primary"},
+        {"type": "button", "name": "ask_nubi", "text": "Ask Nubi to Analyse!", "value": ask_nubi_value},
+    ]
+    silence_action = _silence_select_action(finding, tenant_id)
+    if silence_action:
+        actions.append(silence_action)
+
     attachment = {
         "color": STRIPE_CRITICAL if priority.upper() == "HIGH" else STRIPE_HIGH,
         "fallback": title,
-        "mrkdwn_in": ["text"],
+        "mrkdwn_in": ["text", "fields"],
         "title": title,
         "title_link": investigate_url,
         "text": "\n".join(lines),
+        "fields": fields,
         "callback_id": FINDING_CALLBACK_ID,
-        "actions": [
-            {"type": "button", "text": "View Details", "url": investigate_url, "style": "primary"},
-            {"type": "button", "name": "ask_nubi", "text": "Ask Nubi to Analyse!", "value": ask_nubi_value},
-        ],
+        "actions": actions,
     }
 
     LOG.debug(f"--sending to slack--\ntitle:{title}\nattachment: {attachment}")
