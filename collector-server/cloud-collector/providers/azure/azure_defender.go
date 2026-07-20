@@ -100,10 +100,10 @@ func (s *defenderService) QueryMetrices(ctx providers.CloudProviderContext, acco
 func (s *defenderService) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {
 	var recommendations []providers.Recommendation
 
+	// Free-tier recommendations are derived from the stored pricing resources.
 	for _, resource := range existingResources {
 		properties := resource.Meta
 
-		// Check if Defender plan is on Free tier
 		if pricingTier, ok := properties["pricingTier"].(string); ok && strings.ToLower(pricingTier) == "free" {
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName: providers.RecommendationCategorySecurity,
@@ -130,112 +130,175 @@ func (s *defenderService) GetRecommendations(ctx providers.CloudProviderContext,
 				ResourceRegion:      resource.Region,
 			})
 		}
+	}
 
-		// Check for unhealthy security assessments
-		if statusData, ok := properties["status"].(map[string]interface{}); ok {
-			if code, ok := statusData["code"].(string); ok && strings.ToLower(code) == "unhealthy" {
+	// Unhealthy security assessments are fetched live (Phase 2 of #34103) rather
+	// than read from resources — they are no longer persisted as cloud_resourses.
+	// This mirrors aws_securityhub.go, which consumes findings in GetRecommendations.
+	assessmentRecs, err := s.getAssessmentRecommendations(ctx, account)
+	if err != nil {
+		// Don't fail the whole sync on assessment errors; free-tier recs still apply.
+		ctx.GetLogger().Warn("failed to fetch defender assessment recommendations", "error", err)
+	} else {
+		recommendations = append(recommendations, assessmentRecs...)
+	}
+
+	return recommendations, nil
+}
+
+// getAssessmentRecommendations lists Defender for Cloud security assessments
+// across all subscriptions and returns one recommendation per Unhealthy
+// assessment. Recommendations are grouped by assessment definition via RuleName
+// (azure_defender_assessment_<definitionId>) and linked to the assessed resource
+// via ExternalResourceId, mirroring aws_securityhub.go.
+func (s *defenderService) getAssessmentRecommendations(ctx providers.CloudProviderContext, account providers.Account) ([]providers.Recommendation, error) {
+	cred, session, err := getAzureCredsForAccount(ctx, account)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create azure credential: %w", err)
+	}
+
+	assessmentsClient, err := armsecurity.NewAssessmentsClient(cred, getAzureAuditOpts(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create assessments client: %w", err)
+	}
+
+	var recommendations []providers.Recommendation
+
+	for _, subID := range strings.Split(session.SubscriptionID, ",") {
+		subID = strings.TrimSpace(subID)
+		if subID == "" {
+			continue
+		}
+
+		scope := fmt.Sprintf("subscriptions/%s", subID)
+		pager := assessmentsClient.NewListPager(scope, nil)
+
+		for pager.More() {
+			page, err := pager.NextPage(ctx.GetContext())
+			if err != nil {
+				// A transient failure on one subscription must not discard the
+				// assessments already collected from other subscriptions in this
+				// run (the caller drops everything on a returned error, which would
+				// archive all assessment recs). Log and move to the next subscription.
+				ctx.GetLogger().Warn("failed to list defender assessments for subscription",
+					"subscription", subID, "error", err)
+				break
+			}
+
+			for _, assessment := range page.Value {
+				if assessment.ID == nil || assessment.Name == nil ||
+					assessment.Properties == nil || assessment.Properties.Status == nil ||
+					assessment.Properties.Status.Code == nil {
+					continue
+				}
+
+				// Only unhealthy assessments are actionable.
+				if *assessment.Properties.Status.Code != armsecurity.AssessmentStatusCodeUnhealthy {
+					continue
+				}
+
+				props := assessment.Properties
+
+				displayName := *assessment.Name
+				if props.DisplayName != nil && *props.DisplayName != "" {
+					displayName = *props.DisplayName
+				}
+
 				severity := providers.RecommendationSeverityMedium
-
-				// Check severity from assessment
-				if displayName, ok := properties["displayName"].(string); ok {
-					if strings.Contains(strings.ToLower(displayName), "critical") {
-						severity = providers.RecommendationSeverityCritical
-					} else if strings.Contains(strings.ToLower(displayName), "high") {
+				if props.Metadata != nil && props.Metadata.Severity != nil {
+					switch *props.Metadata.Severity {
+					case armsecurity.SeverityHigh:
 						severity = providers.RecommendationSeverityHigh
+					case armsecurity.SeverityLow:
+						severity = providers.RecommendationSeverityLow
+					default:
+						severity = providers.RecommendationSeverityMedium
 					}
 				}
 
+				// Prefer the SDK-provided assessed resource ID; fall back to
+				// stripping the assessment suffix off the assessment ID.
+				assessedID := assessedResourceID(props.ResourceDetails)
+				if assessedID == "" {
+					assessedID = strings.ToLower(stripAssessmentSuffix(*assessment.ID))
+				}
+
+				data := map[string]any{
+					"reason":         "Review and remediate the security assessment in Microsoft Defender for Cloud",
+					"displayName":    displayName,
+					"assessmentId":   strings.ToLower(*assessment.Name),
+					"resourceId":     *assessment.ID,
+					"statusCode":     string(*props.Status.Code),
+					"subscriptionId": subID,
+					"resourcePath":   assessedID,
+				}
+				if props.Status.Cause != nil {
+					data["statusCause"] = *props.Status.Cause
+				}
+				if props.Status.Description != nil {
+					data["statusDescription"] = *props.Status.Description
+				}
+				if props.Metadata != nil && props.Metadata.RemediationDescription != nil {
+					data["remediation"] = *props.Metadata.RemediationDescription
+				}
+
 				recommendations = append(recommendations, providers.Recommendation{
-					CategoryName: providers.RecommendationCategorySecurity,
-					RuleName:     "azure_defender_unhealthy_assessment",
-					Severity:     severity,
-					Savings:      0,
-					Data: map[string]any{
-						"assessmentStatus": statusData,
-						"meta":             properties,
-						"tags":             resource.Tags,
-						"status":           resource.Status,
-						"name":             resource.Name,
-						"id":               resource.Id,
-						"type":             resource.Type,
-						"region":           resource.Region,
-						"serviceName":      resource.ServiceName,
-						"arn":              resource.Arn,
-						"createdAt":        resource.CreatedAt,
-						"reason":           "Review and remediate the security assessment in Azure Security Center",
-					},
+					CategoryName:        providers.RecommendationCategorySecurity,
+					RuleName:            "azure_defender_assessment_" + strings.ToLower(*assessment.Name),
+					Severity:            severity,
+					Savings:             0,
 					Action:              providers.RecommendationActionModify,
-					ResourceServiceName: resource.ServiceName,
-					ResourceId:          resource.Id,
-					ResourceType:        resource.Type,
-					ResourceRegion:      resource.Region,
+					Data:                data,
+					ResourceServiceName: s.Name(),
+					ResourceId:          assessedID,
+					ResourceType:        azureResourceTypeFromID(assessedID),
+					ResourceRegion:      "global",
+					ExternalResourceId:  assessedID,
 				})
 			}
-		}
-
-		// Check for disabled auto-provisioning
-		if autoProvision, ok := properties["autoProvision"].(string); ok && strings.ToLower(autoProvision) != "on" {
-			recommendations = append(recommendations, providers.Recommendation{
-				CategoryName: providers.RecommendationCategorySecurity,
-				RuleName:     "azure_defender_auto_provision_disabled",
-				Severity:     providers.RecommendationSeverityMedium,
-				Savings:      0,
-				Data: map[string]any{
-					"reason":        "Enable auto-provisioning to ensure all resources are protected by Defender for Cloud",
-					"meta":          properties,
-					"tags":          resource.Tags,
-					"status":        resource.Status,
-					"name":          resource.Name,
-					"id":            resource.Id,
-					"type":          resource.Type,
-					"region":        resource.Region,
-					"serviceName":   resource.ServiceName,
-					"arn":           resource.Arn,
-					"createdAt":     resource.CreatedAt,
-					"autoProvision": autoProvision,
-				},
-				Action:              providers.RecommendationActionModify,
-				ResourceServiceName: resource.ServiceName,
-				ResourceId:          resource.Id,
-				ResourceType:        resource.Type,
-				ResourceRegion:      resource.Region,
-			})
-		}
-
-		// Check for missing security contacts
-		if properties["securityContactConfiguration"] == nil {
-			recommendations = append(recommendations, providers.Recommendation{
-				CategoryName: providers.RecommendationCategorySecurity,
-				RuleName:     "azure_defender_no_security_contacts",
-				Severity:     providers.RecommendationSeverityMedium,
-				Savings:      0,
-				Data: map[string]any{
-					"reason":                       "Add security contacts to receive important security notifications",
-					"meta":                         properties,
-					"tags":                         resource.Tags,
-					"status":                       resource.Status,
-					"name":                         resource.Name,
-					"id":                           resource.Id,
-					"type":                         resource.Type,
-					"region":                       resource.Region,
-					"serviceName":                  resource.ServiceName,
-					"arn":                          resource.Arn,
-					"createdAt":                    resource.CreatedAt,
-					"securityContactConfiguration": properties["securityContactConfiguration"],
-					"autoProvision":                properties["autoProvision"],
-					"assessmentStatus":             properties["assessmentStatus"],
-					"displayName":                  properties["displayName"],
-				},
-				Action:              providers.RecommendationActionModify,
-				ResourceServiceName: resource.ServiceName,
-				ResourceId:          resource.Id,
-				ResourceType:        resource.Type,
-				ResourceRegion:      resource.Region,
-			})
 		}
 	}
 
 	return recommendations, nil
+}
+
+// assessedResourceID extracts the assessed resource's Azure ID from the
+// assessment's ResourceDetails (Azure-hosted resources only), lowercased to
+// match the external_resource_id storage convention.
+func assessedResourceID(details armsecurity.ResourceDetailsClassification) string {
+	if azureDetails, ok := details.(*armsecurity.AzureResourceDetails); ok {
+		if azureDetails.ID != nil {
+			return strings.ToLower(*azureDetails.ID)
+		}
+	}
+	return ""
+}
+
+// stripAssessmentSuffix removes the trailing
+// "/providers/microsoft.security/assessments/<name>" segment from an assessment
+// ID, yielding the impacted resource (or subscription) path.
+func stripAssessmentSuffix(assessmentID string) string {
+	idx := strings.Index(strings.ToLower(assessmentID), "/providers/microsoft.security/assessments/")
+	if idx == -1 {
+		return assessmentID
+	}
+	return assessmentID[:idx]
+}
+
+// azureResourceTypeFromID returns the "<provider>/<resourceType>" of an Azure
+// resource ID (e.g. "microsoft.storage/storageaccounts"), or "subscription" for
+// a subscription-scoped ID with no resource provider segment.
+func azureResourceTypeFromID(resourceID string) string {
+	lower := strings.ToLower(resourceID)
+	idx := strings.LastIndex(lower, "/providers/")
+	if idx == -1 {
+		return "subscription"
+	}
+	parts := strings.Split(strings.Trim(lower[idx+len("/providers/"):], "/"), "/")
+	if len(parts) >= 2 {
+		return parts[0] + "/" + parts[1]
+	}
+	return "subscription"
 }
 
 func (s *defenderService) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
@@ -267,6 +330,16 @@ func (s *defenderService) ApplyCommand(ctx providers.CloudProviderContext, accou
 	}
 	if subscriptionID == "" {
 		subscriptionID = session.SubscriptionID
+	}
+
+	// Unhealthy-assessment recommendations use a per-definition rule name
+	// (azure_defender_assessment_<definitionId>) and require manual remediation
+	// in Microsoft Defender for Cloud.
+	if strings.HasPrefix(command.Command, "azure_defender_assessment_") {
+		return providers.ApplyCommandResponse{
+			Success: false,
+			Message: fmt.Sprintf("cannot auto-apply command: %s requires manual remediation in Microsoft Defender for Cloud", command.Command),
+		}, errors.ErrUnsupported
 	}
 
 	switch command.Command {
@@ -317,15 +390,6 @@ func (s *defenderService) ApplyCommand(ctx providers.CloudProviderContext, accou
 			Success: true,
 			Message: fmt.Sprintf("successfully upgraded Defender for Cloud plan '%s' to Standard tier", pricingName),
 		}, nil
-
-	case "azure_defender_unhealthy_assessment",
-		"azure_defender_auto_provision_disabled",
-		"azure_defender_no_security_contacts":
-		// These require manual remediation
-		return providers.ApplyCommandResponse{
-			Success: false,
-			Message: fmt.Sprintf("cannot auto-apply command: %s requires manual remediation in Azure Security Center", command.Command),
-		}, errors.ErrUnsupported
 
 	default:
 		return providers.ApplyCommandResponse{

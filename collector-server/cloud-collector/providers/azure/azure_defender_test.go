@@ -5,8 +5,10 @@ import (
 	"errors"
 	"nudgebee/collector/cloud/providers"
 	"os"
+	"strings"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/security/armsecurity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -63,27 +65,6 @@ func TestDefenderService_GetRecommendations(t *testing.T) {
 			expectedRecommendations: 1,
 			expectedRules:           []string{"azure_defender_free_tier"},
 		},
-		{
-			name: "recommendation for unhealthy assessment",
-			existingResources: []providers.Resource{
-				{
-					Id:          "/subscriptions/sub-123/providers/Microsoft.Security/assessments/assess-1",
-					Name:        "assess-1",
-					Type:        "Microsoft.Security/assessments",
-					Region:      "global",
-					ServiceName: "microsoft.security/pricings",
-					Meta: map[string]interface{}{
-						"displayName": "Critical vulnerability found",
-						"status": map[string]interface{}{
-							"code": "Unhealthy",
-						},
-						"securityContactConfiguration": map[string]interface{}{"email": "secops@example.com"},
-					},
-				},
-			},
-			expectedRecommendations: 1,
-			expectedRules:           []string{"azure_defender_unhealthy_assessment"},
-		},
 	}
 
 	for _, tt := range tests {
@@ -138,8 +119,8 @@ func TestDefenderService_ApplyCommand(t *testing.T) {
 		{
 			name: "unsupported unhealthy assessment command",
 			command: providers.ApplyCommandRequest{
-				ResourceId: "/subscriptions/sub-123/providers/Microsoft.Security/assessments/assess-1",
-				Command:    "azure_defender_unhealthy_assessment",
+				ResourceId: "/subscriptions/sub-123/resourcegroups/rg/providers/microsoft.storage/storageaccounts/acct",
+				Command:    "azure_defender_assessment_1ff0b4c9-ed56-4de6-be9c-d7ab39645926",
 			},
 			expectUnsupported: true,
 		},
@@ -197,4 +178,80 @@ func TestDefenderService_GetLogGroupName(t *testing.T) {
 	_, err := svc.GetLogGroupName(ctx, account, "global", resourceID)
 	// This will fail because we don't have real credentials
 	assert.Error(t, err)
+}
+
+func TestStripAssessmentSuffix(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "resource-scoped assessment",
+			in:   "/subscriptions/sub-123/resourcegroups/rg/providers/microsoft.storage/storageaccounts/acct/providers/microsoft.security/assessments/1c5de8e1",
+			want: "/subscriptions/sub-123/resourcegroups/rg/providers/microsoft.storage/storageaccounts/acct",
+		},
+		{
+			name: "subscription-scoped assessment",
+			in:   "/subscriptions/sub-123/providers/microsoft.security/assessments/1ff0b4c9",
+			want: "/subscriptions/sub-123",
+		},
+		{
+			name: "mixed-case suffix",
+			in:   "/subscriptions/sub-123/providers/Microsoft.Security/assessments/assess-1",
+			want: "/subscriptions/sub-123",
+		},
+		{
+			name: "no assessment suffix returns input unchanged",
+			in:   "/subscriptions/sub-123/resourcegroups/rg",
+			want: "/subscriptions/sub-123/resourcegroups/rg",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, stripAssessmentSuffix(tt.in))
+		})
+	}
+}
+
+func TestAssessedResourceID(t *testing.T) {
+	id := "/subscriptions/Sub-123/resourceGroups/RG/providers/Microsoft.Storage/storageAccounts/Acct"
+	src := armsecurity.SourceAzure
+	details := &armsecurity.AzureResourceDetails{ID: &id, Source: &src}
+	// Lowercased to match the external_resource_id storage convention.
+	assert.Equal(t, strings.ToLower(id), assessedResourceID(details))
+
+	// Nil ID yields empty.
+	assert.Equal(t, "", assessedResourceID(&armsecurity.AzureResourceDetails{Source: &src}))
+}
+
+func TestAzureResourceTypeFromID(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "resource-scoped id yields provider/type",
+			in:   "/subscriptions/sub-123/resourcegroups/rg/providers/microsoft.storage/storageaccounts/acct",
+			want: "microsoft.storage/storageaccounts",
+		},
+		{
+			name: "mixed-case is normalized",
+			in:   "/subscriptions/sub-123/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm1",
+			want: "microsoft.compute/virtualmachines",
+		},
+		{
+			name: "subscription-scoped id",
+			in:   "/subscriptions/sub-123",
+			want: "subscription",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, azureResourceTypeFromID(tt.in))
+		})
+	}
 }
