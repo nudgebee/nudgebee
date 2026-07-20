@@ -3,7 +3,7 @@ import { recommendationDetails } from '@api1/recommendation/data';
 
 // ─── Shared types ───
 
-export type SortField = 'severity' | 'estimated_savings' | 'updated_at';
+export type SortField = 'severity' | 'estimated_savings' | 'updated_at' | 'finops_score' | 'safety_band' | 'category';
 export type SortDirection = 'asc' | 'desc';
 
 // ─── Shared constants ───

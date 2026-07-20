@@ -982,6 +982,7 @@ export const ds = {
   font: {
     sans: 'var(--ds-font-sans)',
     mono: 'var(--ds-font-mono)',
+    display: 'var(--ds-font-display)',
   },
   space: {
     0: 'var(--ds-space-0)',

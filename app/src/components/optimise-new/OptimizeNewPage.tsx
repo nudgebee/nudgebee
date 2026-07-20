@@ -15,6 +15,8 @@ import CustomTable2 from '@shared/tables/CustomTable2';
 import { DropdownMenu } from '@ui/DropdownMenu';
 import ConfirmationNumberOutlinedIcon from '@mui/icons-material/ConfirmationNumberOutlined';
 import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
+import CloseIcon from '@mui/icons-material/Close';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import OptimizeIcon from 'src/assets/images/home/optimize-icon-button.svg';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import SafeIcon from '@shared/icons/SafeIcon';
@@ -22,7 +24,8 @@ import MoreVertIcon from '@mui/icons-material/MoreVert';
 import Currency from '@shared/format/Currency';
 import Datetime from '@shared/format/Datetime';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
-import Tooltip from '@ui/Tooltip';
+import CopyButton from '@shared/buttons/CopyButton';
+import Tooltip, { TooltipBody, OverflowTooltip } from '@ui/Tooltip';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import CustomTicketLink from '@shared/CustomTicketLink';
 import { hasWriteAccess } from '@lib/auth';
@@ -35,6 +38,7 @@ import { Stat } from '@ui/Stat';
 import { CostCallout } from '@ui/CostCallout';
 import { Chip } from '@ui/Chip';
 import CustomSearch from '@shared/CustomSearch';
+import NewToggleButtons from '@components/workflow/NewToggleButtons';
 import { safetyBandTone, safetyBandLabel } from './safetyBand';
 import FilterDropdown from '@ui/FilterDropdown';
 import { Button } from '@ui/Button';
@@ -71,12 +75,72 @@ interface FilterState {
 
 const SEVERITY_ORDER: SeverityLevel[] = ['Critical', 'High', 'Medium', 'Low', 'Info'];
 
+// Severities selected on first load — the two that warrant immediate attention.
+// Also the fallback the Top Issues band and table query use when no severity is chosen.
+const DEFAULT_SEVERITY: SeverityLevel[] = ['Critical', 'High'];
+
 const CATEGORY_FILTER_OPTIONS = [
   { label: 'Right Sizing', value: 'RightSizing' },
   { label: 'Infra Upgrade', value: 'InfraUpgrade' },
   { label: 'Config', value: 'Configuration' },
   { label: 'Spot Instance', value: 'K8sSpotRecommendation' },
 ];
+
+// Leading-dot colour per category, so the category filter chips read as a
+// categorical set alongside the severity chips (which carry their own dots).
+const CATEGORY_DOT_COLOR: Record<string, string> = {
+  RightSizing: 'var(--ds-blue-500)',
+  InfraUpgrade: 'var(--ds-purple-500)',
+  Configuration: 'var(--ds-amber-500)',
+  K8sSpotRecommendation: 'var(--ds-green-500)',
+};
+
+// Track segmentation for the Cost / Reliability control.
+type OptimizeTrack = 'cost' | 'reliability' | 'all';
+
+// Which categories belong to each track. Mirrors the codebase's own cost-vs-
+// reliability notion (see interpretation/buildInterpretation.ts: a recommendation
+// counts as "cost" when it carries dollar savings): the spend-optimization families
+// go under Cost, the policy/best-practice hygiene family under Reliability.
+// Swap this mapping if product wants a different split — it drives the table
+// filter, the category chips, and the toggle counts from one place.
+const TRACK_CATEGORIES: Record<OptimizeTrack, string[]> = {
+  cost: ['RightSizing', 'K8sSpotRecommendation', 'InfraUpgrade'],
+  reliability: ['Configuration'],
+  all: ['RightSizing', 'K8sSpotRecommendation', 'InfraUpgrade', 'Configuration'],
+};
+const trackForCategory = (category: string): OptimizeTrack => (TRACK_CATEGORIES.reliability.includes(category) ? 'reliability' : 'cost');
+
+// Sort presets for the "Sort by" control. Each maps to a real backend sort
+// column so the dropdown and the column-header sort share one source of truth
+// (sortField + sortDirection). Options with no backend column (e.g. a pure
+// "safest first" — there is no numeric safety rank, safety_band is a text band)
+// are intentionally omitted rather than shipped non-functional.
+type OptimizeSortValue = 'severe' | 'savings' | 'recent';
+const SORT_PRESETS: Record<OptimizeSortValue, { field: SortField; direction: SortDirection; label: string }> = {
+  severe: { field: 'severity', direction: 'asc', label: 'Most severe' },
+  savings: { field: 'estimated_savings', direction: 'desc', label: 'Highest savings' },
+  recent: { field: 'updated_at', direction: 'desc', label: 'Last seen' },
+};
+const SORT_ORDER: OptimizeSortValue[] = ['severe', 'savings', 'recent'];
+// Friendly label for the dropdown trigger when the active sort came from a column
+// header that isn't one of the presets above (Category).
+const SORT_FIELD_LABEL: Partial<Record<SortField, string>> = {
+  estimated_savings: 'Highest savings',
+  severity: 'Most severe',
+  updated_at: 'Last seen',
+  category: 'Category',
+};
+
+// Pins the leading-dot to a categorical hue per severity / category row — the DS
+// dot otherwise follows `tone`, and these chips need a specific shade per row.
+// (Font, idle-label colour and selected-border now live in the Chip primitive.)
+const dotSx = (color: string) => ({ '& [data-dot]': { backgroundColor: color, borderColor: color } });
+
+// Shimmer placeholders for a chip filter group (severity / category / top issues)
+// while its counts are loading.
+const chipSkeletons = (count: number, width: number) =>
+  Array.from({ length: count }, (_, i) => <Skeleton key={i} shape='rect' width={width} height={20} />);
 
 const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
@@ -132,25 +196,79 @@ const parseQueryArray = (param: string | string[] | undefined): string[] => {
 // Map between CustomTable2 header labels and backend sort fields.
 const HEADER_TO_SORT_FIELD: Record<string, SortField> = {
   Severity: 'severity',
+  Category: 'category',
   Savings: 'estimated_savings',
   'Last Seen': 'updated_at',
 };
-const SORT_FIELD_TO_HEADER: Record<SortField, string> = {
+// Reverse map, used to highlight the actively-sorted column. Partial because the
+// SortField type allows fields with no matching column; those leave no column
+// highlighted, while the sortable columns still show their idle icon.
+const SORT_FIELD_TO_HEADER: Partial<Record<SortField, string>> = {
   severity: 'Severity',
+  category: 'Category',
   estimated_savings: 'Savings',
   updated_at: 'Last Seen',
 };
 
+// The exact Safety chip used in the table cell, reused inside the header tooltip
+// so the legend reads with the same visual vocabulary as the rows.
+const safetyChip = (band: string) => (
+  <Chip variant='status' size='2xs' tone={safetyBandTone(band)} dot>
+    {safetyBandLabel(band)}
+  </Chip>
+);
+
+// Header tooltip for the Safety column — a lead sentence plus a chip legend for each
+// blast-radius band (computed by the knowledge-graph impact pipeline; see safetyBand.ts).
+const SAFETY_HEADER_TOOLTIP = (
+  <TooltipBody
+    lead='Blast radius from the dependency graph — how many resources depend on this one.'
+    rows={[
+      { term: safetyChip('safe'), description: 'Low blast radius — safe to act now.' },
+      { term: safetyChip('review'), description: 'Check dependents before acting.' },
+      { term: safetyChip('risky'), description: 'High blast radius — proceed with caution.' },
+    ]}
+  />
+);
+
+// A savings value rendered exactly like the table cell — reused as the example in
+// the header tooltip so each scenario reads with the same green/red visual.
+const savingsExample = (value: number) => (
+  <Currency
+    value={Math.abs(value)}
+    precison={0}
+    withTooltip={false}
+    prefix={value < 0 ? '-$' : '$'}
+    suffix='/mo'
+    sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium, color: value > 0 ? ds.green[600] : ds.red[600] }}
+    sxSuffix={{ fontSize: ds.text.caption, fontWeight: ds.weight.regular, color: ds.gray[500] }}
+  />
+);
+
+// Header tooltip for the Savings column — a lead sentence plus a worked example of
+// each scenario (money saved vs. a red −$ cost increase).
+const SAVINGS_HEADER_TOOLTIP = (
+  <TooltipBody
+    lead='Estimated monthly cost change if you apply this recommendation.'
+    rows={[
+      { term: savingsExample(120), description: 'Money saved — the recommendation lowers spend.' },
+      { term: savingsExample(-40), description: 'A red −$ value means it would increase spend (e.g. right-sizing up to meet demand).' },
+    ]}
+  />
+);
+
 // Column headers for the recommendations table. Sortable columns carry
-// `sortEnabled` so CustomTable2 renders the sort affordance.
+// `sortEnabled` so CustomTable2 renders the sort affordance. Safety sits 5th
+// (after Category) so severity → resource → recommendation read first. Safety is
+// not sortable — safety_band is a text band, so an alphabetical sort isn't a
+// meaningful "safest first" ordering.
 const TABLE_HEADERS = [
   { name: 'Severity', width: '6%', sortEnabled: true },
-  { name: 'Safety', width: '7%' },
-  { name: 'Resource', width: '18%' },
-  { name: 'Recommendation', width: '19%' },
-  { name: 'Category', width: '9%' },
-  { name: 'Environment', width: '9%' },
-  { name: 'Savings', width: '8%', sortEnabled: true, align: 'left' as const },
+  { name: 'Resource', width: '24%' },
+  { name: 'Recommendation', width: '24%' },
+  { name: 'Category', width: '9%', sortEnabled: true },
+  { name: 'Safety', width: '9%', info: SAFETY_HEADER_TOOLTIP, infoPlacement: 'top' as const },
+  { name: 'Savings', width: '10%', sortEnabled: true, align: 'left' as const, info: SAVINGS_HEADER_TOOLTIP, infoPlacement: 'top' as const },
   { name: 'Last Seen', width: '12%', sortEnabled: true, align: 'left' as const },
   { name: '', width: '12%', align: 'right' as const },
 ];
@@ -307,17 +425,27 @@ const OptimizeNewPage = () => {
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [tableLoading, setTableLoading] = useState(true);
 
-  // Sort state
+  // Sort state — single source of truth shared by the "Sort by" dropdown and the
+  // column-header sort. Defaults to "Most severe" (severity asc), matching the
+  // default dropdown selection.
   const [sortField, setSortField] = useState<SortField>('severity');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
+  // Cost / Reliability track toggle. Switching the track scopes the table,
+  // category chips and summary counts to that track's categories.
+  const [track, setTrack] = useState<OptimizeTrack>('all');
+
   // Filters state — initialised from URL query params
-  const [filters, setFilters] = useState<FilterState>(() => ({
-    severity: parseQueryArray(router.query.severity) as SeverityLevel[],
-    account: parseQueryArray(router.query.account),
-    category: parseQueryArray(router.query.category),
-    search: (router.query.search as string) || '',
-  }));
+  const [filters, setFilters] = useState<FilterState>(() => {
+    // Default to Critical + High on first load; an explicit ?severity= in the URL wins.
+    const severityFromUrl = parseQueryArray(router.query.severity) as SeverityLevel[];
+    return {
+      severity: severityFromUrl.length > 0 ? severityFromUrl : DEFAULT_SEVERITY,
+      account: parseQueryArray(router.query.account),
+      category: parseQueryArray(router.query.category),
+      search: (router.query.search as string) || '',
+    };
+  });
 
   // Local search input state — typed value, not yet applied. Mirrors ManualInvestigated pattern.
   const [searchInput, setSearchInput] = useState((router.query.search as string) || '');
@@ -387,6 +515,13 @@ const OptimizeNewPage = () => {
     [updateUrl]
   );
 
+  // Reset every filter (severity, category, account, search) and the top-issues
+  // drill-down back to empty. handleFiltersChange already clears top issues + page.
+  const handleClearAll = useCallback(() => {
+    setSearchInput('');
+    handleFiltersChange({ severity: [], account: [], category: [], search: '' });
+  }, [handleFiltersChange]);
+
   // Fetch accounts
   useEffect(() => {
     apiHome
@@ -407,8 +542,8 @@ const OptimizeNewPage = () => {
       const merged = { ...filters, ...extraFilters };
       const query: any = {};
 
-      query.category = merged.category.length > 0 ? merged.category : NON_SECURITY_CATEGORIES;
-      query.excludeRuleName = UPGRADE_PLANNER_RULES;
+      // No explicit category chips → scope to the active track's categories.
+      query.category = merged.category.length > 0 ? merged.category : TRACK_CATEGORIES[track];
       query.status = DEFAULT_STATUS;
 
       if (merged.account.length > 0) {
@@ -425,7 +560,7 @@ const OptimizeNewPage = () => {
 
       return query;
     },
-    [filters]
+    [filters, track]
   );
 
   // Process raw severity results into summary and per-severity rule data
@@ -524,7 +659,7 @@ const OptimizeNewPage = () => {
     setSeverityLoading(true);
 
     const accountId = filters.account.length > 0 ? filters.account : '';
-    const activeCategories = filters.category.length > 0 ? filters.category : NON_SECURITY_CATEGORIES;
+    const activeCategories = filters.category.length > 0 ? filters.category : TRACK_CATEGORIES[track];
 
     const fetchSeverityRows = async () => {
       try {
@@ -557,14 +692,14 @@ const OptimizeNewPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [filters.account, filters.category, filters.search, processSummaryResults]);
+  }, [filters.account, filters.category, filters.search, track, processSummaryResults]);
 
   // Fetch table data — used both by useEffect (with cancellation) and manual refresh calls
   const buildTableQuery = useCallback(() => {
     const apiQuery = buildFilterQuery();
     // When top issues filter is active and no explicit severity selected, default to Critical+High
     if (topIssuesActive && !apiQuery.severity) {
-      apiQuery.severity = ['Critical', 'High'];
+      apiQuery.severity = DEFAULT_SEVERITY;
     }
     return {
       ...apiQuery,
@@ -639,15 +774,15 @@ const OptimizeNewPage = () => {
       const str = v == null ? '' : String(v);
       return `"${str.replace(/"/g, '""').replace(/[\r\n]+/g, ' ')}"`;
     };
-    const headers = ['Severity', 'Safety', 'Resource', 'Recommendation', 'Category', 'Environment', 'Savings ($/mo)', 'Last Seen'];
+    const headers = ['Severity', 'Resource', 'Recommendation', 'Category', 'Safety', 'Environment', 'Savings ($/mo)', 'Last Seen'];
     const rows = recommendations.map((rec: any) => {
       const accountInfo = accounts[rec.account_id];
       return [
         rec.severity || '',
-        safetyBandLabel(rec.safety_band),
         getResourceDisplayName(rec, ''),
         formatRuleName(rec.rule_name || ''),
         rec.category || '',
+        safetyBandLabel(rec.safety_band),
         accountInfo?.name || '',
         rec.estimated_savings || 0,
         rec.updated_at || rec.created_at || '',
@@ -668,7 +803,7 @@ const OptimizeNewPage = () => {
   // ─── Computed: Top issues based on severity selection ───
 
   const topIssueData = useMemo(() => {
-    const targetSeverities: string[] = filters.severity.length > 0 ? filters.severity : ['Critical', 'High'];
+    const targetSeverities: string[] = filters.severity.length > 0 ? filters.severity : DEFAULT_SEVERITY;
 
     const merged: Record<string, number> = {};
     let total = 0;
@@ -684,7 +819,7 @@ const OptimizeNewPage = () => {
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
 
-    const severityLabel = filters.severity.length > 0 ? filters.severity.join(' + ') : 'Critical + High';
+    const severityLabel = (filters.severity.length > 0 ? filters.severity : DEFAULT_SEVERITY).join(' + ');
 
     return { items, total, severityLabel };
   }, [perSeverityRules, filters.severity]);
@@ -704,6 +839,10 @@ const OptimizeNewPage = () => {
     [accounts]
   );
 
+  // Category chips shown under the toolbar are scoped to the active track's
+  // categories, so the chips never disagree with the Cost/Reliability toggle.
+  const trackCategoryOptions = useMemo(() => CATEGORY_FILTER_OPTIONS.filter((opt) => TRACK_CATEGORIES[track].includes(opt.value)), [track]);
+
   // Card totals: derived from cardRows (unfiltered by category/search) so the
   // Total Recommendations card stays a static overview, same as the per-category cards above.
   const cardSummaryData = useMemo(() => processSummaryResults(cardRows).summaryItems, [cardRows, processSummaryResults]);
@@ -711,6 +850,14 @@ const OptimizeNewPage = () => {
   const totalSavings = useMemo(() => cardSummaryData.reduce((sum, s) => sum + s.savings, 0), [cardSummaryData]);
   const criticalCount = useMemo(() => cardSummaryData.find((s) => s.severity === 'Critical')?.count || 0, [cardSummaryData]);
   const highCount = useMemo(() => cardSummaryData.find((s) => s.severity === 'High')?.count || 0, [cardSummaryData]);
+
+  // Per-track totals for the toggle + outcome widgets — summed from the same
+  // unfiltered category counts as the summary cards, so they stay a stable
+  // overview independent of the severity/search filters below.
+  const trackCounts = useMemo(() => {
+    const sumTrack = (t: OptimizeTrack) => TRACK_CATEGORIES[t].reduce((sum, cat) => sum + (categoryCounts?.[cat]?.count || 0), 0);
+    return { cost: sumTrack('cost'), reliability: sumTrack('reliability') };
+  }, [categoryCounts]);
 
   const hasActiveFilter = useMemo(
     () => filters.severity.length > 0 || filters.account.length > 0 || filters.category.length > 0 || filters.search.length > 0 || topIssuesActive,
@@ -749,6 +896,11 @@ const OptimizeNewPage = () => {
 
   const handleWidgetCategoryClick = useCallback(
     (category: string | null) => {
+      // The summary cards span both tracks; selecting a category from the other
+      // track flips the toggle so the toggle and the table never disagree.
+      if (category) {
+        setTrack(trackForCategory(category));
+      }
       const newFilters = {
         ...filters,
         category: category ? [category] : [],
@@ -759,13 +911,26 @@ const OptimizeNewPage = () => {
     [filters, handleFiltersChange]
   );
 
+  // Track toggle — switching tracks clears any category-chip narrowing so the
+  // new track shows its full category set rather than carrying a stale category.
+  const handleTrackChange = useCallback(
+    (next: OptimizeTrack) => {
+      if (next === track) {
+        return;
+      }
+      setTrack(next);
+      handleFiltersChange({ ...filters, category: [] });
+    },
+    [track, filters, handleFiltersChange]
+  );
+
+  // Multi-select: each click toggles that severity in/out of the filter set,
+  // mirroring the category chips. (Multi-select is group state — the Chip itself
+  // just reflects `pressed`, so nothing is needed on the Chip primitive.)
   const handleSeverityClick = useCallback(
-    (severity: SeverityLevel | null) => {
-      const newFilters = {
-        ...filters,
-        severity: severity ? [severity] : [],
-      };
-      handleFiltersChange(newFilters);
+    (severity: SeverityLevel) => {
+      const next = filters.severity.includes(severity) ? filters.severity.filter((s) => s !== severity) : [...filters.severity, severity];
+      handleFiltersChange({ ...filters, severity: next });
     },
     [filters, handleFiltersChange]
   );
@@ -889,6 +1054,20 @@ const OptimizeNewPage = () => {
   // Current sort in CustomTable2 shape.
   const sortBy = useMemo(() => ({ name: SORT_FIELD_TO_HEADER[sortField], order: sortDirection }), [sortField, sortDirection]);
 
+  // The "Sort by" dropdown reflects the shared sort state: highlight the preset
+  // matching the active (field, direction), else fall back to a friendly label.
+  const activeSortValue = useMemo(
+    () => SORT_ORDER.find((v) => SORT_PRESETS[v].field === sortField && SORT_PRESETS[v].direction === sortDirection),
+    [sortField, sortDirection]
+  );
+  const sortTriggerLabel = activeSortValue ? SORT_PRESETS[activeSortValue].label : SORT_FIELD_LABEL[sortField] ?? 'Sort';
+  const handleSortOptionSelect = useCallback((value: OptimizeSortValue) => {
+    const preset = SORT_PRESETS[value];
+    setSortField(preset.field);
+    setSortDirection(preset.direction);
+    setPage(0);
+  }, []);
+
   // Stable ref so askNubiAboutRec has no dep on `accounts` and doesn't invalidate tableData.
   const accountsRef = useRef(accounts);
   useEffect(() => {
@@ -936,36 +1115,21 @@ const OptimizeNewPage = () => {
             drilldownQuery: { rec: row.rec },
             component: <SeverityIcon level={row.severity.toLowerCase() as DsSeverityLevel} size={12} aria-label={row.severity} />,
           },
-          // Safety band (knowledge-graph blast radius)
-          {
-            component: row.safetyBand ? (
-              <Chip variant='status' size='2xs' tone={safetyBandTone(row.safetyBand)} dot>
-                {safetyBandLabel(row.safetyBand)}
-              </Chip>
-            ) : (
-              <Tooltip title='Blast radius not assessed for this recommendation' placement='top'>
-                <Box component='span' sx={{ color: ds.gray[400], cursor: 'default' }}>
-                  —
-                </Box>
-              </Tooltip>
-            ),
-          },
           // Resource
           {
             component: (
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
-                <Box component='span' sx={{ color: ds.gray[700], fontWeight: ds.weight.medium }}>
-                  {row.resourceName}
+                <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1] }}>
+                  <Box component='span' sx={{ color: ds.gray[700] }}>
+                    {row.resourceName}
+                  </Box>
+                  <CopyButton text={row.resourceName} size='xs' tone='ghost' />
                 </Box>
-                {(providerLabel || row.resourceType) && (
+                {(providerLabel || row.accountName || row.resourceType) && (
                   <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1], color: ds.gray[500] }}>
-                    {providerLabel && (
-                      <>
-                        <CloudProviderIcon cloud_provider={providerSlug} height='14px' width='14px' />
-                        <Box component='span'>{providerLabel}</Box>
-                      </>
-                    )}
-                    {providerLabel && row.resourceType && (
+                    {providerLabel && <CloudProviderIcon cloud_provider={providerSlug} height='14px' width='14px' />}
+                    {row.accountName && <Box component='span'>{row.accountName}</Box>}
+                    {row.accountName && row.resourceType && (
                       <Box component='span' sx={{ color: ds.gray[400] }}>
                         |
                       </Box>
@@ -985,26 +1149,20 @@ const OptimizeNewPage = () => {
           {
             component: (
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
-                <Box component='span' sx={{ color: ds.gray[700], fontWeight: ds.weight.medium }}>
+                {row.brief && <OverflowTooltip text={row.brief} sx={{ color: ds.gray[700] }} placement='top' enterDelay={400} />}
+                <Box
+                  component='span'
+                  sx={{
+                    display: 'inline-block',
+                    maxWidth: ds.space.mul(0, 130),
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    color: ds.gray[500],
+                  }}
+                >
                   {row.ruleName}
                 </Box>
-                {row.brief && (
-                  <Tooltip title={row.brief} placement='top' enterDelay={400}>
-                    <Box
-                      component='span'
-                      sx={{
-                        display: 'inline-block',
-                        maxWidth: ds.space.mul(0, 130),
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        color: ds.gray[500],
-                      }}
-                    >
-                      {row.brief}
-                    </Box>
-                  </Tooltip>
-                )}
               </Box>
             ),
           },
@@ -1016,15 +1174,18 @@ const OptimizeNewPage = () => {
               </Chip>
             ) : null,
           },
-          // Environment
+          // Safety band (knowledge-graph blast radius)
           {
-            component: (
-              <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1] }}>
-                {row.accountCloudProvider && <CloudProviderIcon cloud_provider={row.accountCloudProvider} height='16px' width='16px' />}
-                <Box component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[700] }}>
-                  {row.accountName || '—'}
+            component: row.safetyBand ? (
+              <Chip variant='status' size='2xs' tone={safetyBandTone(row.safetyBand)} dot>
+                {safetyBandLabel(row.safetyBand)}
+              </Chip>
+            ) : (
+              <Tooltip title='Blast radius not assessed for this recommendation' placement='top'>
+                <Box component='span' sx={{ color: ds.gray[400], cursor: 'default' }}>
+                  —
                 </Box>
-              </Box>
+              </Tooltip>
             ),
           },
           // Savings
@@ -1038,7 +1199,8 @@ const OptimizeNewPage = () => {
                   prefix={row.savings < 0 ? '-$' : '$'}
                   suffix='/mo'
                   sx={{
-                    fontSize: ds.text.small,
+                    fontSize: ds.text.body,
+                    fontWeight: ds.weight.medium,
                     color: row.savings > 0 ? ds.green[600] : ds.red[600],
                   }}
                   sxSuffix={{
@@ -1082,6 +1244,21 @@ const OptimizeNewPage = () => {
     <Box sx={{ p: '0px' }} data-testid='optimize-new-page'>
       {/* Summary widgets */}
       <Box sx={{ display: 'flex', gap: ds.space[3], mt: ds.space[4] }}>
+        <WidgetCard
+          sx={{
+            flex: 1,
+            minWidth: 0,
+            mt: 0,
+            padding: `${ds.space[3]} ${ds.space[4]}`,
+          }}
+        >
+          <Stat
+            size='md'
+            label='Total Savings'
+            info={{ tooltip: 'Total estimated monthly savings if all recommendations are applied' }}
+            value={cardsLoading ? '…' : <CostCallout size='lg' tone='high-savings' value={totalSavings} period='/ mo' />}
+          />
+        </WidgetCard>
         <WidgetCard
           sx={{
             flex: 1,
@@ -1159,29 +1336,38 @@ const OptimizeNewPage = () => {
             </WidgetCard>
           );
         })}
-
-        <WidgetCard
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            mt: 0,
-            padding: `${ds.space[3]} ${ds.space[4]}`,
-          }}
-        >
-          <Stat
-            size='md'
-            label='Total Savings'
-            info={{ tooltip: 'Total estimated monthly savings if all recommendations are applied' }}
-            value={cardsLoading ? '…' : <CostCallout size='md' tone='high-savings' value={totalSavings} period='/ mo' />}
-          />
-        </WidgetCard>
       </Box>
 
       <ListingLayout id='optimize-recommendations' sx={{ mt: ds.space[4] }}>
         <ListingLayout.Toolbar
-          sx={{ borderBottom: `1px solid ${ds.gray[200]}`, padding: `${ds.space[3]} ${ds.space[4]}` }}
+          sx={{ padding: `${ds.space[3]} ${ds.space[4]}` }}
           actions={
             <>
+              <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
+                <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600], fontWeight: ds.weight.medium }}>Sort by</Typography>
+                <DropdownMenu
+                  align='end'
+                  size='sm'
+                  items={SORT_ORDER.map((value) => ({
+                    id: `optimize-sort-${value}`,
+                    label: SORT_PRESETS[value].label,
+                    active: activeSortValue === value,
+                    onSelect: () => handleSortOptionSelect(value),
+                  }))}
+                  trigger={
+                    <Button
+                      id='optimize-sort-trigger'
+                      tone='secondary'
+                      size='sm'
+                      icon={<KeyboardArrowDownIcon />}
+                      iconPlacement='end'
+                      aria-label='Sort recommendations'
+                    >
+                      {sortTriggerLabel}
+                    </Button>
+                  }
+                />
+              </Box>
               <Button
                 id='optimize-download'
                 tone='secondary'
@@ -1194,6 +1380,48 @@ const OptimizeNewPage = () => {
             </>
           }
         >
+          <NewToggleButtons
+            size='xs'
+            options={[
+              {
+                value: 'all',
+                label: (
+                  <>
+                    All{' '}
+                    <Box component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[400], fontWeight: ds.weight.regular }}>
+                      ({(trackCounts.cost + trackCounts.reliability).toLocaleString()})
+                    </Box>
+                  </>
+                ),
+              },
+              {
+                value: 'cost',
+                label: (
+                  <>
+                    Cost{' '}
+                    <Box component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[400], fontWeight: ds.weight.regular }}>
+                      ({trackCounts.cost.toLocaleString()})
+                    </Box>
+                  </>
+                ),
+              },
+              {
+                value: 'reliability',
+                label: (
+                  <>
+                    Reliability{' '}
+                    <Box component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[400], fontWeight: ds.weight.regular }}>
+                      ({trackCounts.reliability.toLocaleString()})
+                    </Box>
+                  </>
+                ),
+              },
+            ]}
+            activeValue={track}
+            onChange={(value) => handleTrackChange(value as OptimizeTrack)}
+            width='300px'
+            noShadow
+          />
           <CustomSearch
             id='optimize-search'
             value={searchInput}
@@ -1225,17 +1453,6 @@ const OptimizeNewPage = () => {
               handleFiltersChange({ ...filters, account: next });
             }}
           />
-          <FilterDropdown
-            id='optimize-category-filter'
-            label='Category'
-            multiple
-            options={CATEGORY_FILTER_OPTIONS}
-            value={CATEGORY_FILTER_OPTIONS.filter((o) => filters.category.includes(o.value))}
-            onSelect={(_e: any, items: any) => {
-              const next = (Array.isArray(items) ? items : []).map((it: any) => it.value);
-              handleFiltersChange({ ...filters, category: next });
-            }}
-          />
         </ListingLayout.Toolbar>
 
         {/* Severity row */}
@@ -1244,7 +1461,7 @@ const OptimizeNewPage = () => {
             display: 'flex',
             alignItems: 'center',
             gap: ds.space[2],
-            padding: `${ds.space[3]} ${ds.space[4]}`,
+            padding: `${ds.space[3]} ${ds.space[4]} ${ds.space[2]} ${ds.space[4]}`,
             flexWrap: 'wrap',
           }}
           data-testid='severity-summary-bar'
@@ -1262,47 +1479,36 @@ const OptimizeNewPage = () => {
             Severity
           </Typography>
           {severityLoading
-            ? [1, 2, 3, 4, 5].map((i) => <Skeleton key={i} shape='rect' width={88} height={20} />)
+            ? chipSkeletons(5, 88)
             : summaryData.map((item) => {
-                const isActive = (filters.severity.length === 1 ? filters.severity[0] : null) === item.severity;
+                const isActive = filters.severity.includes(item.severity);
                 return (
                   <Chip
                     key={item.severity}
                     size='sm'
                     pressed={isActive}
-                    onClick={() => handleSeverityClick(isActive ? null : item.severity)}
+                    onClick={() => handleSeverityClick(item.severity)}
                     dot
                     tone={SEVERITY_TONE[item.severity]}
                     count={item.count}
+                    highlightCount
                     data-testid={`severity-chip-${item.severity.toLowerCase()}`}
-                    sx={{
-                      '& [data-dot]': {
-                        backgroundColor: SEVERITY_DOT_COLOR[item.severity],
-                        borderColor: SEVERITY_DOT_COLOR[item.severity],
-                      },
-                    }}
+                    sx={dotSx(SEVERITY_DOT_COLOR[item.severity])}
                   >
                     {item.severity}
                   </Chip>
                 );
               })}
-        </Box>
 
-        {/* Top issues row — separate band so the eye reads severity first,
-            then "of those, here are the top rule names". */}
-        {!severityLoading && topIssueData.items.length > 0 && (
-          <Box
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: ds.space[2],
-              padding: `${ds.space[3]} ${ds.space[4]}`,
-              borderBottom: `1px solid ${ds.gray[200]}`,
-              flexWrap: 'wrap',
-            }}
-            data-testid='top-issues-bar'
-          >
-            <Box sx={{ display: 'inline-flex', alignItems: 'baseline', gap: ds.space[1], mr: ds.space[1] }}>
+          {/* Category chips — only when the active track has more than one
+              category to narrow between (the reliability track is a single one). */}
+          {trackCategoryOptions.length > 1 && (
+            <>
+              {/* Divider between the severity and category chip groups */}
+              <Box
+                aria-hidden='true'
+                sx={{ width: '1px', alignSelf: 'stretch', backgroundColor: ds.gray[200], mx: ds.space[1], minHeight: ds.space[4] }}
+              />
               <Typography
                 sx={{
                   fontSize: ds.text.caption,
@@ -1310,23 +1516,107 @@ const OptimizeNewPage = () => {
                   fontWeight: ds.weight.semibold,
                   letterSpacing: '0.5px',
                   textTransform: 'uppercase',
+                  mr: ds.space[1],
                 }}
               >
-                Top Issues
+                Category
               </Typography>
-              <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>({topIssueData.severityLabel})</Typography>
-            </Box>
-            <Chip size='sm' pressed={topIssuesActive && !activeRuleName} onClick={handleToggleTopIssues} count={topIssueData.total}>
-              All
-            </Chip>
-            {topIssueData.items.map((item) => {
-              const isActive = topIssuesActive && activeRuleName === item.rule_name;
-              return (
-                <Chip key={item.rule_name} size='sm' pressed={isActive} onClick={() => handleRuleClick(item.rule_name)} count={item.count}>
-                  {formatRuleName(item.rule_name)}
-                </Chip>
-              );
-            })}
+              {severityLoading
+                ? chipSkeletons(trackCategoryOptions.length, 120)
+                : trackCategoryOptions.map((opt) => {
+                    const isActive = filters.category.includes(opt.value);
+                    const count = categoryCounts[opt.value]?.count || 0;
+                    return (
+                      <Chip
+                        key={opt.value}
+                        size='sm'
+                        pressed={isActive}
+                        dot
+                        onClick={() => {
+                          const next = isActive ? filters.category.filter((c) => c !== opt.value) : [...filters.category, opt.value];
+                          handleFiltersChange({ ...filters, category: next });
+                        }}
+                        count={count}
+                        highlightCount
+                        data-testid={`category-chip-${opt.value.toLowerCase()}`}
+                        sx={dotSx(CATEGORY_DOT_COLOR[opt.value])}
+                      >
+                        {opt.label}
+                      </Chip>
+                    );
+                  })}
+            </>
+          )}
+        </Box>
+
+        {/* Top issues row — separate band so the eye reads severity first,
+            then "of those, here are the top rule names". */}
+        {(severityLoading || topIssueData.items.length > 0 || hasActiveFilter) && (
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: ds.space[2],
+              padding: `${ds.space[1]} ${ds.space[4]}`,
+              flexWrap: 'wrap',
+            }}
+            data-testid='top-issues-bar'
+          >
+            {(severityLoading || topIssueData.items.length > 0) && (
+              <>
+                <Box sx={{ display: 'inline-flex', alignItems: 'baseline', gap: ds.space[1], mr: ds.space[1] }}>
+                  <Typography
+                    sx={{
+                      fontSize: ds.text.caption,
+                      color: ds.gray[500],
+                      fontWeight: ds.weight.semibold,
+                      letterSpacing: '0.5px',
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    Top Issues
+                  </Typography>
+                  <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>({topIssueData.severityLabel})</Typography>
+                </Box>
+                {severityLoading ? (
+                  chipSkeletons(5, 150)
+                ) : (
+                  <>
+                    <Chip
+                      size='sm'
+                      pressed={topIssuesActive && !activeRuleName}
+                      onClick={handleToggleTopIssues}
+                      count={topIssueData.total}
+                      highlightCount
+                    >
+                      All
+                    </Chip>
+                    {topIssueData.items.map((item) => {
+                      const isActive = topIssuesActive && activeRuleName === item.rule_name;
+                      return (
+                        <Chip
+                          key={item.rule_name}
+                          size='sm'
+                          pressed={isActive}
+                          onClick={() => handleRuleClick(item.rule_name)}
+                          count={item.count}
+                          highlightCount
+                        >
+                          {formatRuleName(item.rule_name)}
+                        </Chip>
+                      );
+                    })}
+                  </>
+                )}
+              </>
+            )}
+            {hasActiveFilter && (
+              <Box sx={{ ml: 'auto' }}>
+                <Button id='optimize-clear-filters' tone='link' size='xs' icon={<CloseIcon sx={{ fontSize: 12 }} />} onClick={handleClearAll}>
+                  Clear all
+                </Button>
+              </Box>
+            )}
           </Box>
         )}
 

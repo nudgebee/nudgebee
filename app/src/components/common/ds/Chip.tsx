@@ -39,6 +39,7 @@
  *   - Don't combine `solid` with non-critical / non-warning tones.
  *   - Don't use icon-only at size='md' — that's a button.
  *   - Don't put `hue` on non-tag variants — use `tone`.
+ *   - Don't set `highlightCount` without `count` — it has nothing to style.
  *   - aria-label is required when composition resolves to icon-only.
  */
 import * as React from 'react';
@@ -81,6 +82,10 @@ export interface ChipProps {
   dot?: boolean;
   /** Hollow vs filled dot. Defaults to hollow when tone='neutral' and consumer didn't set explicitly; filled otherwise. */
   dotVariant?: ChipDotVariant;
+  /** Renders `count` as a filled pill badge (subtle neutral fill) rather than dimmed inline
+   *  text — use when the number is a first-class read (filter/summary chips). Trailing-only:
+   *  a highlighted count always follows the label. No effect without `count`. */
+  highlightCount?: boolean;
   /** Trailing icon slot. Mutually exclusive with `trailingChevron` and `onDismiss`. */
   trailingIcon?: React.ReactNode;
   /** Renders a trailing chevron-down (dropdown trigger affordance). */
@@ -199,12 +204,11 @@ const SOLID_PALETTE: Partial<Record<ChipTone, { bg: string; text: string }>> = {
 };
 
 // Filter selection palette — distinct from tones so a tone-tagged filter still
-// selects to a single accent. Mapped to DS blue (V1's indigo equivalent).
 const FILTER_SELECTED = {
   bg: 'var(--ds-blue-100)',
   bgHover: 'var(--ds-blue-200)',
   text: 'var(--ds-blue-700)',
-  border: 'var(--ds-blue-200)',
+  border: 'var(--ds-blue-400)',
 };
 
 const FILTER_DEFAULT = {
@@ -287,7 +291,7 @@ const SIZE_TOKENS: Record<ChipSize, SizeTokens> = {
   // 16px chip still feels heavy. Hardcoded 10px font (no DS token below caption).
   '2xs': {
     height: '14px',
-    padX: '3px',
+    padX: '6px',
     fontSize: '10px',
     gap: '2px',
     iconSize: 8,
@@ -303,7 +307,7 @@ const SIZE_TOKENS: Record<ChipSize, SizeTokens> = {
   // as a tag rather than dominating the cell.
   xs: {
     height: '18px',
-    padX: '6px',
+    padX: '8px',
     fontSize: '10px',
     gap: 'var(--ds-space-1)',
     iconSize: 10,
@@ -400,6 +404,7 @@ const VALIDATION_RULES: ReadonlyArray<{ test: (p: ChipProps & { _variant: ChipVa
     message: `count chips don't accept leading icon/avatar — they're number-first.`,
   },
   { test: (p) => Boolean(p.hue) && p._variant !== 'tag', message: `hue is only valid on tag chips. Other variants use 'tone'.` },
+  { test: (p) => Boolean(p.highlightCount) && p.count === undefined, message: `highlightCount has no effect without count.` },
   {
     test: (p) => Boolean(p.solid) && p.tone !== 'critical' && p.tone !== 'warning',
     message: `solid is reserved for critical/warning tones (per spec).`,
@@ -635,6 +640,7 @@ export function Chip(props: ChipProps) {
     count,
     dot = false,
     dotVariant,
+    highlightCount = false,
     trailingIcon,
     trailingChevron = false,
     solid = false,
@@ -682,8 +688,9 @@ export function Chip(props: ChipProps) {
   // Filter-selected and count chips render bolder.
   const isBoldWeight = (variant === 'filter' && isSelected) || variant === 'count';
 
-  // count-first: count BEFORE children when no icon/avatar/dot.
-  const isCountFirst = count !== undefined && !icon && !leadingAvatar && !dot && hasChildren;
+  // count-first: count BEFORE children when no icon/avatar/dot. A highlighted count is a
+  // trailing pill badge, so it always follows the label.
+  const isCountFirst = count !== undefined && !icon && !leadingAvatar && !dot && hasChildren && !highlightCount;
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
     if (!isInteractive) return;
@@ -705,6 +712,9 @@ export function Chip(props: ChipProps) {
     height: tokens.height,
     paddingLeft: tokens.padX,
     paddingRight: tokens.padX,
+    // Chip labels use the display font (Poppins) — a chip is a label, which is
+    // exactly what --ds-font-display is for (labels / section titles / headings).
+    fontFamily: 'var(--ds-font-display)',
     fontSize: tokens.fontSize,
     fontWeight: isBoldWeight ? 'var(--ds-font-weight-semibold)' : 'var(--ds-font-weight-medium)',
     lineHeight: 1,
@@ -763,18 +773,34 @@ export function Chip(props: ChipProps) {
     count !== undefined ? (
       <Box
         component='span'
-        sx={{
-          fontVariantNumeric: 'tabular-nums',
-          // Counts ride alongside the chip label; rendering them at the
-          // chip's own weight keeps the *label* the loudest token. Bumping
-          // counts to semibold made them dominate (e.g. "Critical 483"
-          // reading as the number first), which is the wrong hierarchy
-          // for filter/top-issues chips.
-          fontWeight: 'var(--ds-font-weight-medium)',
-          opacity: 0.75,
-        }}
+        sx={
+          highlightCount
+            ? {
+                // Highlighted count: a filled pill badge so the number reads as a
+                // first-class token. A translucent-dark fill (gray-alpha) keeps the
+                // badge visible on any chip surface — transparent filter chips as
+                // well as tonal fills — where a translucent-white fill would vanish.
+                display: 'inline-flex',
+                alignItems: 'center',
+                backgroundColor: 'var(--ds-gray-alpha-200)',
+                borderRadius: 'var(--ds-radius-pill)',
+                padding: '1px 6px',
+                fontVariantNumeric: 'tabular-nums',
+                fontWeight: 'var(--ds-font-weight-medium)',
+              }
+            : {
+                fontVariantNumeric: 'tabular-nums',
+                // Counts ride alongside the chip label; rendering them at the
+                // chip's own weight keeps the *label* the loudest token. Bumping
+                // counts to semibold made them dominate (e.g. "Critical 483"
+                // reading as the number first), which is the wrong hierarchy
+                // for filter/top-issues chips.
+                fontWeight: 'var(--ds-font-weight-medium)',
+                opacity: 0.75,
+              }
+        }
       >
-        {count}
+        {count.toLocaleString()}
       </Box>
     ) : null;
 

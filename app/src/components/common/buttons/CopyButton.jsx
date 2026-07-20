@@ -7,7 +7,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import { CopyIcon } from '@assets';
 import { ds } from '@utils/colors';
 
-const ICON_SIZE = { xs: 12, sm: 14, md: 16, lg: 18 };
+const ICON_SIZE = { xs: 10, sm: 12, md: 16, lg: 18 };
 
 // Smooth cross-fade timing: copy shrinks out while the check grows in.
 const SWAP_TRANSITION = 'transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease';
