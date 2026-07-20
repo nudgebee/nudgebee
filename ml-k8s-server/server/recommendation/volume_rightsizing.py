@@ -727,16 +727,26 @@ class VolumeRightsizingService:
         return logging.LoggerAdapter(logger, extra)
 
     async def store_recommendations_to_db(
-        self, result: VolumeRightsizingResult, persist_recommendation: bool = True
+        self,
+        result: VolumeRightsizingResult,
+        persist_recommendation: bool = True,
+        namespace_filter: Optional[str] = None,
+        max_recommendations: Optional[int] = None,
     ) -> bool:
-        """Store volume rightsizing recommendations to database."""
+        """Store volume rightsizing recommendations to database.
+
+        namespace_filter/max_recommendations describe what the scan actually covered; the archive
+        step needs them to know whether a PVC's absence from the results means it was deleted.
+        """
         if not persist_recommendation or not result.recommendations:
             return False
 
         ctx_logger = self._get_contextual_logger()
         with tracer.start_as_current_span("store_volume_recommendations") as span:
             try:
-                await self._archive_existing_recommendations(result.recommendations)
+                await self._archive_existing_recommendations(
+                    result.recommendations, namespace_filter, max_recommendations
+                )
 
                 recommendation_records = []
                 for rec in result.recommendations:
@@ -810,26 +820,80 @@ class VolumeRightsizingService:
                 ctx_logger.error(f"Failed to store recommendations: {e}")
                 raise
 
-    async def _archive_existing_recommendations(self, recommendations: List[VolumeRecommendation]):
-        """Archive existing recommendations for the resources being updated."""
+    async def _archive_existing_recommendations(
+        self,
+        recommendations: List[VolumeRecommendation],
+        namespace_filter: Optional[str] = None,
+        max_recommendations: Optional[int] = None,
+    ):
+        """Archive stale PVC rightsizing recommendations that no longer correspond to a live PVC.
+
+        A scan reports recommendations only for PVCs that still exist in the cluster. A deleted
+        PVC therefore simply disappears from the scan, so the correct way to retire its
+        recommendation is to archive the in-scope Open recs whose account_object_id is NOT in the
+        current scan results. Archiving the *scanned* set instead — the previous behaviour — was a
+        no-op: the upsert immediately re-opened those same rows, leaving deleted PVCs (and rows
+        written by the retired collector-side producer, which keyed on PV name) Open forever.
+
+        Mirrors archive_existing_krr_recommendations in vertical_rightsizing/__init__.py, which
+        fixed this same bug for pod_right_sizing.
+
+        Scope rules ensure we only reconcile what the scan was exhaustive over:
+          - Full account run (no filters): reconcile across the whole account.
+          - Namespace-only run: reconcile within that namespace.
+          - max_recommendations run: the scan is truncated to the top-N by savings, so absence
+            does NOT mean deletion — fall back to refreshing just the returned PVCs.
+        """
+        ctx_logger = self._get_contextual_logger(namespace_filter)
+
+        # Empty scan → skip. An empty result is far more likely a transient metrics/relay failure
+        # (a Prometheus query returning no series does not raise) than "every PVC in scope was
+        # deleted"; a NOT-IN archive with an empty keep-set would mass-archive every Open rec in
+        # scope. The rare genuinely-empty case self-heals on the next non-empty run.
         if not recommendations:
+            ctx_logger.info("No PVC recommendations to process, skipping archiving")
             return
-        account_object_ids = [f"{rec.namespace}/{rec.pvc_name}" for rec in recommendations]
-        if account_object_ids:
-            placeholders = ", ".join([f":id_{i}" for i in range(len(account_object_ids))])
-            query = text(f"""
-                UPDATE recommendation SET status = 'Archive'
-                WHERE tenant_id = :tenant_id AND cloud_account_id = :account_id
-                AND category = 'RightSizing' AND rule_name = 'pv_rightsize'
-                AND status NOT IN ('Closed', 'InProgress') AND account_object_id IN ({placeholders})
-            """)
-            params = {"tenant_id": self.tenant_id, "account_id": self.account_id}
-            for i, object_id in enumerate(account_object_ids):
-                params[f"id_{i}"] = object_id
-            with self.engine.connect() as conn:
-                result = conn.execute(query, params)
-                conn.commit()
-                logger.info(f"Archived {result.rowcount} existing PVC rightsizing recommendations.")
+
+        # Bind as a single array param (= ANY) rather than dynamic :id_N placeholders: keeps the
+        # SQL text static (one cached plan) and avoids the parameter-count ceiling on large
+        # full-account scans.
+        kept_object_ids = list({f"{rec.namespace}/{rec.pvc_name}" for rec in recommendations})
+
+        params = {
+            "tenant_id": self.tenant_id,
+            "account_id": self.account_id,
+            "kept_object_ids": kept_object_ids,
+        }
+
+        if max_recommendations and max_recommendations > 0:
+            # Non-exhaustive scan: the result was capped, so a PVC's absence tells us nothing
+            # about whether it still exists. Restrict to refreshing just the returned PVCs.
+            scope_clause = "AND account_object_id = ANY(:kept_object_ids)"
+            scope_label = "max_recommendations"
+        else:
+            # Exhaustive over its scope → archive anything in scope that vanished.
+            scope_clause = "AND NOT (account_object_id = ANY(:kept_object_ids))"
+            scope_label = "account"
+            if namespace_filter:
+                scope_clause += " AND account_object_id LIKE :ns_prefix"
+                params["ns_prefix"] = f"{namespace_filter}/%"
+                scope_label = "namespace"
+
+        query = text(f"""
+            UPDATE recommendation SET status = 'Archive'
+            WHERE tenant_id = :tenant_id AND cloud_account_id = :account_id
+            AND category = 'RightSizing' AND rule_name = 'pv_rightsize'
+            AND status NOT IN ('Closed', 'InProgress', 'Archive')
+            {scope_clause}
+        """)
+
+        with self.engine.connect() as conn:
+            result = conn.execute(query, params)
+            conn.commit()
+            ctx_logger.info(
+                f"Archived {result.rowcount} stale PVC rightsizing recommendations "
+                f"(scope={scope_label}, kept={len(kept_object_ids)})"
+            )
 
     async def _insert_recommendations(self, recommendations: List[Dict]):
         """Insert recommendation records."""
@@ -889,6 +953,8 @@ async def generate_volume_rightsizing_recommendations(
     )
     result = await service.generate_recommendations(namespace_filter=namespace, max_recommendations=max_recommendations)
     if persist_recommendation:
-        await service.store_recommendations_to_db(result)
+        await service.store_recommendations_to_db(
+            result, namespace_filter=namespace, max_recommendations=max_recommendations
+        )
         result.database_stored = True
     return result
