@@ -3,6 +3,8 @@ package core
 import (
 	"testing"
 
+	"nudgebee/llm/agents/prompts_repo"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/tmc/langchaingo/llms"
 )
@@ -225,4 +227,26 @@ func TestBuildStepReferenceParts_GuideForReAct3ExecutedAgents(t *testing.T) {
 		assert.NotContains(t, supporting, "[E1")
 		assert.Contains(t, supporting, "region us-east-1")
 	})
+}
+
+// TestFormatterTemplate_GatesCausalityOnQuery pins that the formatter prompt's
+// causality-chain instructions are present for investigation turns and absent for
+// query/generation turns — so a query-type response is never even told how to build
+// a Causality Chain.
+func TestFormatterTemplate_GatesCausalityOnQuery(t *testing.T) {
+	raw := prompts_repo.GetPrompt(prompts_repo.PromptExecutor_response_formatter)
+	inv := renderFormatterTemplate(raw, map[string]interface{}{"is_investigation": true})
+	qry := renderFormatterTemplate(raw, map[string]interface{}{"is_investigation": false})
+
+	// Investigation keeps the build spec + preserve-causality directive.
+	assert.Contains(t, inv, "you MUST include a section titled")
+	assert.Contains(t, inv, "PRESERVE CAUSALITY")
+	// Query drops the build spec and forbids a causality chain instead.
+	assert.NotContains(t, qry, "you MUST include a section titled")
+	assert.NotContains(t, qry, "PRESERVE CAUSALITY")
+	assert.Contains(t, qry, "No Causality Chain")
+	assert.Contains(t, qry, "NO CAUSAL EMBELLISHMENT")
+	// Both branches must render with no leftover template tokens.
+	assert.NotContains(t, inv, "{{")
+	assert.NotContains(t, qry, "{{")
 }

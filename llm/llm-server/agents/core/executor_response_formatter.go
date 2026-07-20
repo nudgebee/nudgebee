@@ -1,12 +1,14 @@
 package core
 
 import (
+	"bytes"
 	"fmt"
 	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"regexp"
 	"strings"
+	"text/template"
 
 	"github.com/samber/lo"
 	"github.com/tmc/langchaingo/llms"
@@ -127,14 +129,21 @@ func buildStepReferenceParts(response NBAgentResponse, plannerType AgentPlannerT
 // DisplayIDs (E1, E2, …) to every action, and the guide anchors those IDs for the
 // formatter LLM so it cites real step IDs instead of inventing new ones.
 func FormatAgentResponse(ctx *security.RequestContext, request NBAgentRequest, response NBAgentResponse, plannerType AgentPlannerType) NBAgentResponse {
+	questionType := lo.Ternary(IsInvestigationRequestTask(request.Query), "investigation", "query")
+
+	// Render the formatter prompt as a Go template so the causality-chain instructions
+	// are gated on `is_investigation`. On a query turn the LLM never sees the
+	// "how to build a Causality Chain" spec — removing the instruction is far more
+	// reliable than the prose "if query, do NOT add" it was observed ignoring (a
+	// "generate dashboard" turn came back with a `### Causality Chain (5-Whys)`).
+	tmplData := map[string]interface{}{"is_investigation": questionType == "investigation"}
 	systemPrompt := prompts.GetPrompt(ctx.GetContext(), prompts.PromptResponseFormatter, request.AccountId)
 	if systemPrompt == "" {
 		systemPrompt = prompts_repo.GetPrompt(prompts_repo.PromptExecutor_response_formatter)
 	}
+	systemPrompt = renderFormatterTemplate(systemPrompt, tmplData)
 
 	stepReferenceGuide, supportingDataSteps := buildStepReferenceParts(response, plannerType)
-
-	questionType := lo.Ternary(IsInvestigationRequestTask(request.Query), "investigation", "query")
 
 	userPrompt := fmt.Sprintf(`
 	**Question Type** = %s
@@ -170,4 +179,20 @@ func FormatAgentResponse(ctx *security.RequestContext, request NBAgentRequest, r
 
 	response.Response = []string{completion.Choices[0].Content}
 	return response
+}
+
+// renderFormatterTemplate renders the formatter system prompt as a Go template so its
+// `{{if .is_investigation}}` gates resolve. It returns the input unchanged if the text
+// isn't a valid template or rendering fails (e.g. a DB-overridden prompt with no
+// template actions), so a malformed override never breaks formatting.
+func renderFormatterTemplate(text string, data map[string]interface{}) string {
+	tmpl, err := template.New("formatter").Parse(text)
+	if err != nil {
+		return text
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return text
+	}
+	return buf.String()
 }
