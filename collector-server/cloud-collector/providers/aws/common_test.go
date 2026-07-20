@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"testing"
 
@@ -138,6 +139,50 @@ func TestIsServiceUnavailableInRegionRealSdkChain(t *testing.T) {
 
 	if !isServiceUnavailableInRegion(opErr) {
 		t.Fatalf("isServiceUnavailableInRegion=false for the real SDK SES InvalidAction chain; the region skip would not trigger in prod")
+	}
+}
+
+func TestIsThrottleError(t *testing.T) {
+	resp429 := &smithyhttp.ResponseError{Response: &smithyhttp.Response{Response: &http.Response{StatusCode: 429}}}
+	resp400 := &smithyhttp.ResponseError{Response: &smithyhttp.Response{Response: &http.Response{StatusCode: 400}}}
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"plain string error", errors.New("boom"), false},
+		{"http 429 response error", resp429, true},
+		{"http 400 response error", resp400, false},
+		{"ThrottlingException code", &smithy.GenericAPIError{Code: "ThrottlingException"}, true},
+		{"RequestLimitExceeded code (EC2)", &smithy.GenericAPIError{Code: "RequestLimitExceeded"}, true},
+		{"SlowDown code (S3)", &smithy.GenericAPIError{Code: "SlowDown"}, true},
+		{"ProvisionedThroughputExceededException (DynamoDB)", &smithy.GenericAPIError{Code: "ProvisionedThroughputExceededException"}, true},
+		{"unrelated api error still surfaces", &smithy.GenericAPIError{Code: "AccessDenied"}, false},
+		{"wrapped via fmt.Errorf %w", fmt.Errorf("fetch failed: %w", resp429), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isThrottleError(c.err); got != c.want {
+				t.Fatalf("isThrottleError=%v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestIsThrottleErrorRealSdkChain pins the FULL aws-sdk-go-v2 wrapping that a
+// throttled ListClustersV2 produces in prod after the SDK exhausts its retries:
+// smithy.OperationError -> retry.MaxAttemptsError -> smithyhttp.ResponseError{429}.
+// This is exactly the chain behind the "[Rackspace] Cloud: Feature Sync Errors"
+// MSK alert; guards against an SDK upgrade breaking the errors.As unwrap.
+func TestIsThrottleErrorRealSdkChain(t *testing.T) {
+	respErr := &smithyhttp.ResponseError{Response: &smithyhttp.Response{Response: &http.Response{StatusCode: 429}}, Err: &smithy.GenericAPIError{Code: "ThrottlingException"}}
+	maxAtt := &retry.MaxAttemptsError{Attempt: 3, Err: respErr}
+	opErr := &smithy.OperationError{ServiceID: "Kafka", OperationName: "ListClustersV2", Err: maxAtt}
+
+	if !isThrottleError(opErr) {
+		t.Fatalf("isThrottleError=false for the real SDK 429 max-attempts chain; the region skip would not trigger in prod and the alert would keep firing")
 	}
 }
 
