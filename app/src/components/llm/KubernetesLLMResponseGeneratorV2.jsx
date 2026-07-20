@@ -952,7 +952,7 @@ const KubernetesLLMResponseGenerator = ({
         sx={{
           display: popup ? 'flex' : 'grid',
           transition: 'grid-template-columns 0.3s ease-in-out',
-          gridTemplateColumns: '1fr',
+          gridTemplateColumns: 'minmax(0, 1fr)',
           ...(popup && {
             height: '100%',
             overflow: 'hidden',
