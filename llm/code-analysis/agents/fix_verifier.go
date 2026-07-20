@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -214,8 +216,33 @@ func (v *FixVerifier) Verify(ctx context.Context, workspaceDir string, buildCfg 
 		step := v.runCommand(ctx, workspaceDir, m.Path, m.Build)
 		result.Steps = append(result.Steps, step)
 		ranAny = true
-		if !step.Passed {
-			result.Status = VerificationFailed
+		if step.Passed {
+			continue
+		}
+
+		// The whole-module build failed. `go build ./...` compiles every package in
+		// the module — including packages the fix never touched — so a pre-existing
+		// or environment failure in untouched code (e.g. a cgo-gated dependency that
+		// won't build in this sandbox) is not attributable to the change. Retry the
+		// build scoped to just the changed packages: if they compile, the aggregate
+		// failure was unrelated and the fix is verified; if they fail on an in-repo
+		// file the change is genuinely broken; if they fail only on dependency /
+		// toolchain files the change cannot be verified here (but is not proven
+		// broken). See recoverScopedBuild.
+		attempted, scopedStep, scopedStatus := v.recoverScopedBuild(ctx, workspaceDir, m, changed)
+		if !attempted {
+			result.Status = worseStatus(result.Status, VerificationFailed)
+			continue
+		}
+		result.Steps = append(result.Steps, scopedStep)
+		switch scopedStatus {
+		case VerificationVerified:
+			result.Reason = fmt.Sprintf("full-module build (%s) failed on code the change does not touch; the changed package(s) build in isolation", m.Build)
+		case VerificationUnverified:
+			result.Status = worseStatus(result.Status, VerificationUnverified)
+			result.Reason = "the changed package(s) could not be built in this environment because of an unbuildable dependency or toolchain, not the change itself"
+		default:
+			result.Status = worseStatus(result.Status, VerificationFailed)
 		}
 	}
 	if !ranAny && result.Status == VerificationVerified {
@@ -223,6 +250,116 @@ func (v *FixVerifier) Verify(ctx context.Context, workspaceDir string, buildCfg 
 		result.Reason = "all affected modules were skipped (toolchain or dependencies unavailable in this environment)"
 	}
 	return result
+}
+
+// recoverScopedBuild retries a failed whole-module Go build against only the
+// packages the fix actually changed. It answers the single question the PR gate
+// cares about — does the fix compile? — instead of letting an unrelated failure
+// elsewhere in `go build ./...` block the PR. Mirrors aider's edited-file-scoped
+// linting. Returns attempted=false for non-Go modules or non-standard build
+// commands, leaving the caller's original `failed` verdict intact.
+//
+// Verdicts: verified (changed packages build), failed (they fail on an in-repo
+// file — a real regression), unverified (they fail only on dependency/toolchain
+// files — an environment problem the change cannot be blamed for).
+func (v *FixVerifier) recoverScopedBuild(ctx context.Context, workspaceDir string, m tools.ModuleRoot, changed []string) (bool, VerificationStep, VerificationStatus) {
+	if m.Kind != "go" || !strings.Contains(m.Build, "./...") {
+		return false, VerificationStep{}, ""
+	}
+	patterns := scopedGoPatterns(changed, m.Path)
+	if len(patterns) == 0 {
+		return false, VerificationStep{}, ""
+	}
+	scopedCmd := strings.Replace(m.Build, "./...", strings.Join(patterns, " "), 1)
+	step := v.runCommand(ctx, workspaceDir, m.Path, scopedCmd)
+	if step.Passed {
+		return true, step, VerificationVerified
+	}
+	if scopedFailureImplicatesRepo(step.Output) {
+		return true, step, VerificationFailed
+	}
+	return true, step, VerificationUnverified
+}
+
+// scopedGoPatterns returns the `go build` package patterns for the directories the
+// changed .go files live in, relative to the module root. Non-recursive per
+// directory so sibling or child packages the fix didn't touch aren't dragged back
+// in. Empty when no changed .go file belongs to this module.
+func scopedGoPatterns(changed []string, modulePath string) []string {
+	seen := make(map[string]bool)
+	var patterns []string
+	for _, f := range changed {
+		if !strings.HasSuffix(f, ".go") {
+			continue
+		}
+		rel := filepath.ToSlash(f)
+		if modulePath != "." && modulePath != "" {
+			mp := filepath.ToSlash(modulePath)
+			if rel != mp && !strings.HasPrefix(rel, mp+"/") {
+				continue
+			}
+			rel = strings.TrimPrefix(rel, mp+"/")
+		}
+		pattern := "."
+		if dir := path.Dir(rel); dir != "." && dir != "" {
+			pattern = "./" + dir
+		}
+		if !seen[pattern] {
+			seen[pattern] = true
+			patterns = append(patterns, pattern)
+		}
+	}
+	sort.Strings(patterns)
+	return patterns
+}
+
+var (
+	goErrorFileRe  = regexp.MustCompile(`([^\s:]+\.go):\d+`)
+	goConstraintRe = regexp.MustCompile(`build constraints exclude all Go files in (\S+)`)
+)
+
+// scopedFailureImplicatesRepo reports whether a scoped build failure references a
+// file inside the repository working tree — a real, fix-attributable error —
+// rather than only dependency/toolchain files under the module cache or GOROOT.
+// It is deliberately conservative: any in-repo reference, or output it cannot
+// confidently classify as dependency-only, counts as repo, so a genuine fix
+// regression is never silently downgraded to "unverified".
+func scopedFailureImplicatesRepo(output string) bool {
+	var refs []string
+	for _, m := range goErrorFileRe.FindAllStringSubmatch(output, -1) {
+		refs = append(refs, m[1])
+	}
+	for _, m := range goConstraintRe.FindAllStringSubmatch(output, -1) {
+		refs = append(refs, m[1])
+	}
+	if len(refs) == 0 {
+		return true // unparseable — do not relax the gate on a failure we can't explain
+	}
+	for _, p := range refs {
+		if !isDependencyPath(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDependencyPath reports whether a build-error file path lives outside the repo
+// working tree — in the Go module cache or GOROOT — where a compile failure is a
+// dependency/toolchain problem, not the fix's code.
+func isDependencyPath(p string) bool {
+	p = filepath.ToSlash(p)
+	return strings.Contains(p, "/pkg/mod/") ||
+		strings.Contains(p, "/goroot/") ||
+		strings.Contains(p, "/usr/local/go/src/")
+}
+
+// worseStatus returns the more severe of two verdicts: failed > unverified > verified.
+func worseStatus(a, b VerificationStatus) VerificationStatus {
+	rank := map[VerificationStatus]int{VerificationVerified: 0, VerificationUnverified: 1, VerificationFailed: 2}
+	if rank[b] > rank[a] {
+		return b
+	}
+	return a
 }
 
 // buildConfigCommands flattens an explicit BuildConfig into ordered commands.
