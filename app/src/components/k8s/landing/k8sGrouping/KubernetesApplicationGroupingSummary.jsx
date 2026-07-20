@@ -354,34 +354,40 @@ const KubernetesApplicationGroupingSummary = ({ accountId, applications, setTab,
 
   const fetchSLOObsersavation = async (accountId, namespaces, workloads, timestamp) => {
     try {
-      const response = await apiKubernetes1.getSLOObservation({ accountId, namespaces, workloads, timestamp });
-      const sloResponseData = response?.data?.data?.slo_report_observation_v2?.rows || [];
-      if (sloResponseData.length > 0) {
-        const statusMap = {};
-        sloResponseData.forEach((item) => {
-          const key = `${item.workload_namespace}/${item.workload_name}`;
-          if (!statusMap[key]) {
-            statusMap[key] = item.status;
-          } else if (item.status === 'FIRING') {
-            statusMap[key] = 'FIRING';
-          }
-        });
-        const firingCount = Object.values(statusMap).filter((status) => status === 'FIRING').length;
-        const distinctCount = Object.keys(statusMap).length;
-        const firingArray = Object.entries(statusMap)
-          .filter(([_, _status]) => status === 'FIRING')
-          .map(([key, _status]) => {
-            const [workload_namespace, workload_name] = key.split('/');
-            return { workload_namespace, workload_name };
-          });
-        setSLOData({
-          count: distinctCount,
-          firingCount,
-          firingWorkloads: firingArray.length > 0 ? firingArray.map((f) => `${f.workload_namespace}/${f.workload_name}`) : [],
-        });
-      }
+      const [configResponse, observationResponse] = await Promise.all([
+        apiKubernetes1.listSLOConfigs({ cloud_account_id: accountId, namespace: namespaces, workload_name: workloads }),
+        apiKubernetes1.getSLOObservation({ accountId, namespaces, workloads, timestamp }),
+      ]);
+
+      // Total configured SLOs (distinct workloads) for this group's applications
+      const configuredSLOs = configResponse?.data?.data?.slo_config || [];
+      const configuredWorkloads = new Set();
+      configuredSLOs.forEach((config) => {
+        configuredWorkloads.add(`${config.workload_namespace}/${config.workload_name}`);
+      });
+
+      // Firing SLOs derived from observations
+      const sloResponseData = observationResponse?.data?.data?.slo_report_observation_v2?.rows || [];
+      const statusMap = {};
+      sloResponseData.forEach((item) => {
+        const key = `${item.workload_namespace}/${item.workload_name}`;
+        if (!statusMap[key]) {
+          statusMap[key] = item.status;
+        } else if (item.status === 'FIRING') {
+          statusMap[key] = 'FIRING';
+        }
+      });
+      const firingWorkloads = Object.entries(statusMap)
+        .filter(([, status]) => status === 'FIRING')
+        .map(([key]) => key);
+
+      setSLOData({
+        count: configuredWorkloads.size,
+        firingCount: firingWorkloads.length,
+        firingWorkloads,
+      });
     } catch (error) {
-      console.error('Error fetching SLO observations:', error);
+      console.error('Error fetching SLO data:', error);
     }
   };
 
