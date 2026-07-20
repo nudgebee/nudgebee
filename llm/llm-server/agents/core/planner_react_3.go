@@ -1307,11 +1307,12 @@ func (o *NBReActPlanner3) processToolActions(output string) []NBAgentPlannerTool
 
 		o.stepCount++
 		actions = append(actions, NBAgentPlannerToolAction{
-			Tool:      toolName,
-			ToolInput: toolInput,
-			Log:       thought, // All parallel actions share the same thought
-			ToolID:    generateToolId(toolName, toolInput+fmt.Sprintf("_%d", len(actions))),
-			DisplayID: fmt.Sprintf("E%d", o.stepCount),
+			Tool:       toolName,
+			ToolInput:  toolInput,
+			Log:        thought, // All parallel actions share the same thought
+			ToolID:     generateToolId(toolName, toolInput+fmt.Sprintf("_%d", len(actions))),
+			DisplayID:  fmt.Sprintf("E%d", o.stepCount),
+			MemoryRefs: parseMemoryUsedFromActionContent(actionContent),
 		})
 	}
 
@@ -1386,14 +1387,20 @@ func (o *NBReActPlanner3) processToolAction(output string) []NBAgentPlannerToolA
 		thought = output
 	}
 
+	// Extract the <action> content once so we can pull <memory_used> out of
+	// it — the singular path has already flattened the block; re-extract
+	// here to avoid threading another return through the tool-name lookup
+	// above. Empty when the LLM wrote no <action> wrapper (older shapes).
+	actionContent := common.XmlExtractTagContent(output, "action")
 	o.stepCount++
 	return []NBAgentPlannerToolAction{
 		{
-			Tool:      toolName,
-			ToolInput: toolInput,
-			Log:       thought,
-			ToolID:    generateToolId(toolName, toolInput),
-			DisplayID: fmt.Sprintf("E%d", o.stepCount),
+			Tool:       toolName,
+			ToolInput:  toolInput,
+			Log:        thought,
+			ToolID:     generateToolId(toolName, toolInput),
+			DisplayID:  fmt.Sprintf("E%d", o.stepCount),
+			MemoryRefs: parseMemoryUsedFromActionContent(actionContent),
 		},
 	}
 }
@@ -2068,6 +2075,7 @@ func (o *NBReActPlanner3) saveCritiqueAsToolCall(feedback string) error {
 		nil,
 		nil,
 		nil,
+		nil, // memoryRefs — synthetic critique-feedback tool call
 	)
 }
 

@@ -9174,6 +9174,8 @@ type AIReferenceResponse {
   reference_id: String
   type: String
   content: String
+  used: Boolean
+  used_by_agent: String
   created_at: timestamp
 }
 

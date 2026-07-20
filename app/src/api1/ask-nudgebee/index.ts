@@ -1574,6 +1574,8 @@ const api = {
           reference_id
           type
           content
+          used
+          used_by_agent
           created_at
         }
         errors {

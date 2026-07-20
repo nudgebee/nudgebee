@@ -255,6 +255,7 @@ func SaveCompressionVisibility(
 		nil,
 		nil,
 		nil,
+		nil, // memoryRefs — synthetic visibility card, no LLM attribution
 	)
 	if err != nil {
 		ctx.GetLogger().Warn("scratchpad: failed to save compression visibility", "error", err)

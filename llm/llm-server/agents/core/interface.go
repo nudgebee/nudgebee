@@ -184,6 +184,24 @@ type NBAgentPlannerToolAction struct {
 	DisplayID  string                            `json:"display_id,omitempty"`
 	Dependency []string                          `json:"dependency"`
 	Condition  NBAgentPlannerToolActionCondition `json:"condition"`
+	// MemoryRefs is the LLM's self-attribution: which injected memory
+	// item(s) shaped THIS action. Populated when the model emits
+	//   <action>...<memory_used><ref n="N" note="..."/></memory_used></action>
+	// The N is the 1-based [mN] position from the memory block's
+	// <memory_index> footer. Persisted verbatim on the tool_calls row
+	// (llm_conversation_tool_calls.memory_refs jsonb) so a query-time
+	// JOIN back to llm_conversation_references (via metadata.position)
+	// derives per-row `used=true` for the audit UI.
+	MemoryRefs []NBAgentPlannerToolActionMemoryRef `json:"memory_refs,omitempty"`
+}
+
+// NBAgentPlannerToolActionMemoryRef is one LLM-emitted attribution of a
+// memory row to an action. Position is the [mN] marker from the memory
+// block (1-based). Note is the LLM's short reason. Both come straight
+// from <memory_used><ref n="N" note="..."/> and are stored raw.
+type NBAgentPlannerToolActionMemoryRef struct {
+	Position int    `json:"position"`
+	Note     string `json:"note,omitempty"`
 }
 
 type NBAgentPlannerToolActionStep struct {

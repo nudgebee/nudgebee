@@ -106,13 +106,16 @@ const ReferencesDrawerContent = ({ references = [] }) => {
   const [rowsPerPage, setRowsPerPage] = useState(10);
 
   // Categorised buckets + pill counts. Memoised on `references` so we don't
-  // re-bucket on every unrelated render.
+  // re-bucket on every unrelated render. `usedCount` is the number of rows
+  // in the bucket the LLM actually cited via <memory_used> (point 7 audit
+  // signal); drives the "Used ✓" filter pill's count + visibility.
   const buckets = useMemo(() => {
     const acc = {};
     for (const ref of references) {
       const cat = categorizeRef(ref?.type);
-      if (!acc[cat]) acc[cat] = { total: 0, bySubtype: {}, rows: [] };
+      if (!acc[cat]) acc[cat] = { total: 0, usedCount: 0, bySubtype: {}, rows: [] };
       acc[cat].total += 1;
+      if (ref.used) acc[cat].usedCount += 1;
       acc[cat].bySubtype[ref.type] = (acc[cat].bySubtype[ref.type] || 0) + 1;
       acc[cat].rows.push(ref);
     }
@@ -135,6 +138,17 @@ const ReferencesDrawerContent = ({ references = [] }) => {
   const activeBucket = activeCategory ? buckets[activeCategory] : null;
   const filteredRefs = useMemo(() => {
     if (!activeBucket) return [];
+    if (activeSubtype === 'used') {
+      // Cross-cutting "Used ✓" filter: shows only rows the LLM cited
+      // (used=true), across all subtypes in the active category. Sorted
+      // by subtype first then rank so cited items stay grouped by layer.
+      return activeBucket.rows
+        .filter((r) => r.used)
+        .sort((a, b) => {
+          if (a.type !== b.type) return a.type < b.type ? -1 : 1;
+          return (a?.metadata?.rank ?? 0) - (b?.metadata?.rank ?? 0);
+        });
+    }
     if (activeSubtype !== 'all') {
       // Single-subtype view: scope to the picked subtype, then order by
       // rank so compose's rerank position is preserved.
@@ -228,12 +242,22 @@ const ReferencesDrawerContent = ({ references = [] }) => {
         ))}
       </Tabs>
 
-      {/* Level 2 — subtype pill filters */}
-      {activeBucket && Object.keys(activeBucket.bySubtype).length > 1 && (
+      {/* Level 2 — subtype pill filters. Shown when the category has more
+          than one subtype OR at least one used=true row (so the "Used" cross-
+          cutting pill is reachable even in a single-subtype category). */}
+      {activeBucket && (Object.keys(activeBucket.bySubtype).length > 1 || activeBucket.usedCount > 0) && (
         <Stack direction='row' spacing={1} sx={{ mb: 1.5, flexWrap: 'wrap', rowGap: 1, flexShrink: 0 }}>
           <Chip variant='filter' size='xs' selected={activeSubtype === 'all'} onClick={() => setActiveSubtype('all')}>
             {`All (${activeBucket.total})`}
           </Chip>
+          {/* Cross-cutting "Used ✓" pill — only rendered when the LLM
+              actually cited at least one row in this category. Green hue
+              matches the row-level ✓ chip so the audit signal is uniform. */}
+          {activeBucket.usedCount > 0 && (
+            <Chip variant='filter' size='xs' hue='green' selected={activeSubtype === 'used'} onClick={() => setActiveSubtype('used')}>
+              {`Used ✓ (${activeBucket.usedCount})`}
+            </Chip>
+          )}
           {Object.entries(activeBucket.bySubtype)
             .sort((a, b) => b[1] - a[1])
             .map(([subtype, count]) => (
@@ -284,20 +308,41 @@ const ReferencesDrawerContent = ({ references = [] }) => {
                       </IconButton>
                     </TableCell>
                     <TableCell sx={{ py: 0.5 }}>
-                      <Chip variant='tag' size='xs' hue={SUBTYPE_HUE[ref.type] || 'slate'}>
-                        {SUBTYPE_LABELS[ref.type] || ref.type}
-                      </Chip>
+                      <Stack direction='row' spacing={0.5} sx={{ alignItems: 'center' }}>
+                        <Chip variant='tag' size='xs' hue={SUBTYPE_HUE[ref.type] || 'slate'}>
+                          {SUBTYPE_LABELS[ref.type] || ref.type}
+                        </Chip>
+                        {ref.used && (
+                          <Chip
+                            variant='tag'
+                            size='xs'
+                            hue='green'
+                            title={ref.used_by_agent ? `Cited by ${ref.used_by_agent}` : 'LLM cited this memory in at least one action'}
+                          >
+                            ✓
+                          </Chip>
+                        )}
+                      </Stack>
                     </TableCell>
+                    {/* Subject cell prefixes the citing-agent chip (when used).
+                        Type cell is a fixed 110px — a third chip there
+                        overflowed into Subject; this column is flex so the
+                        agent chip lives here without fighting for space. */}
                     <TableCell
                       sx={{
                         py: 0.5,
                         overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
                         maxWidth: 0,
                       }}
                     >
-                      {subject}
+                      <Stack direction='row' spacing={0.5} sx={{ alignItems: 'center', minWidth: 0 }}>
+                        {ref.used && ref.used_by_agent && (
+                          <Chip variant='tag' size='xs' hue='slate' title={`Cited by ${ref.used_by_agent}`} sx={{ flexShrink: 0 }}>
+                            {ref.used_by_agent}
+                          </Chip>
+                        )}
+                        <Box sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>{subject}</Box>
+                      </Stack>
                     </TableCell>
                   </TableRow>
                   <TableRow>

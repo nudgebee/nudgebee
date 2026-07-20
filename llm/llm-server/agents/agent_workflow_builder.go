@@ -3813,7 +3813,7 @@ func (a *WorkflowBuilderAgent) persistBuildToolCall(ctx *security.RequestContext
 	if err := dao.SaveConversationToolCall(
 		request.ConversationId, request.AccountId, request.UserId, request.MessageId, request.AgentId,
 		uuid.New().String(), toolName, toolInput, thought, "", observation,
-		status, toolcore.NBToolTypeTool, nil, nil, nil,
+		status, toolcore.NBToolTypeTool, nil, nil, nil, nil,
 	); err != nil {
 		ctx.GetLogger().Warn("workflow_builder: failed to persist build tool call", "tool", toolName, "error", err)
 	}

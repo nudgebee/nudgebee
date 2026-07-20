@@ -1,7 +1,10 @@
 package core
 
 import (
+	"fmt"
 	"log/slog"
+	"strings"
+
 	"nudgebee/llm/config"
 	"nudgebee/llm/memory"
 	"nudgebee/llm/security"
@@ -54,6 +57,14 @@ func composeMemoryV2Block(ctx *security.RequestContext, req NBAgentRequest, agen
 		return ""
 	}
 	rendered := slab.Render()
+	// Append the memory-index footer + attribution instruction so the LLM
+	// can cite specific rows in its <action> emissions (see
+	// buildMemoryIndexFooter). The instruction is colocated with the block
+	// so it's only in the prompt when memory itself is — no separate flag
+	// needed, no fleet-wide base-prompt cache invalidation.
+	if rendered != "" && len(slab.Injected) > 0 {
+		rendered = rendered + "\n" + buildMemoryIndexFooter(slab.Injected)
+	}
 	persistMemoryInjectedRefs(ctx, req, slab.Injected)
 	slog.Info("memory.bridge: returning slab",
 		"tenant", tenantID, "user", req.UserId, "agent", agent.GetName(),
@@ -94,6 +105,64 @@ func persistMemoryInjectedRefs(ctx *security.RequestContext, req NBAgentRequest,
 	}
 }
 
+// buildMemoryIndexFooter builds the compact <memory_index> block +
+// attribution-instruction the LLM uses to cite specific memory rows from
+// its <action> emissions. Pure — no I/O — so a unit test can pin the
+// format (positional numbering starts at 1 to match the persisted
+// metadata.position on each reference row; the instruction wording is
+// stable so tests can assert against it).
+//
+// Kept inline in the bridge's return so attribution instructions live only
+// where memory itself lives — no separate config flag, no fleet-wide
+// prompt-cache invalidation from touching the ReAct base prompt.
+func buildMemoryIndexFooter(injected []memory.InjectedItem) string {
+	if len(injected) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<memory_index>\n")
+	for i, item := range injected {
+		// subject is the short display label; layer is what disambiguates
+		// same-subject items across layers. Same shape the UI shows.
+		fmt.Fprintf(&b, "  [m%d] %s: %s\n", i+1, item.Layer, item.Subject)
+	}
+	b.WriteString("</memory_index>\n")
+	// Mandatory-declaration + one-shot. Bumped from the initial "optional
+	// citation" shape after live testing on Gemini 3 Flash Preview showed
+	// 0% adherence — small models default to "unsure → omit" when the tag
+	// is optional. Requiring an explicit empty <memory_used/> when nothing
+	// applies forces the model to at least declare per action, which we
+	// can distinguish from silent-non-emission when auditing.
+	b.WriteString(`
+For EVERY <action> you emit, include a <memory_used> child that reports
+which [mN] items shaped THIS specific action:
+  * If one or more items influenced the tool choice / input, list them:
+      <memory_used><ref n="N" note="short reason"/><ref n="M" note="..."/></memory_used>
+  * If NO memory item shaped this action, still declare it explicitly:
+      <memory_used/>
+
+Cite by the [mN] marker from <memory_index> above. The value of n must
+be the raw integer index only (e.g. n="1", n="17") — do NOT wrap it as
+"[m1]" or "m1", the parser will drop non-integer citations. Only cite
+items you actually used; hallucinated indices will be dropped at parse
+time.
+
+Example. Suppose <memory_index> contains [m2] preferences:
+preferred_log_source=loki and [m5] patterns: orders-api. The action
+fetches loki logs for orders-api:
+
+  <action>
+    <tool_name>loki_query</tool_name>
+    <tool_input>{"pod":"orders-api","level":"error"}</tool_input>
+    <memory_used>
+      <ref n="2" note="preferred_log_source=loki drove log-source choice"/>
+      <ref n="5" note="recurring OOMKill pattern for orders-api"/>
+    </memory_used>
+  </action>
+`)
+	return b.String()
+}
+
 // buildMemoryAgentReferences maps InjectedItems to the AgentReference shape
 // the DAO wants. Pure: no I/O, no side effects — extracted so a unit test can
 // pin the mapping (reference_type per layer, metadata payload) without a DB.
@@ -104,7 +173,7 @@ func buildMemoryAgentReferences(injected []memory.InjectedItem) []AgentReference
 		return nil
 	}
 	refs := make([]AgentReference, 0, len(injected))
-	for _, item := range injected {
+	for i, item := range injected {
 		refType, ok := memoryReferenceType[item.Layer]
 		if !ok {
 			slog.Warn("memory.bridge: unknown injected layer, skipping",
@@ -112,11 +181,12 @@ func buildMemoryAgentReferences(injected []memory.InjectedItem) []AgentReference
 			continue
 		}
 		meta := map[string]any{
-			"layer":   item.Layer,
-			"subject": item.Subject,
-			"rank":    item.Rank,
-			"score":   item.Score,
-			"source":  item.Source,
+			"layer":    item.Layer,
+			"subject":  item.Subject,
+			"rank":     item.Rank,
+			"score":    item.Score,
+			"source":   item.Source,
+			"position": i + 1,
 		}
 		// content only rides in metadata for layers without a UUID PK
 		// (soul, session) — hydration SQL for the others JOINs and projects
