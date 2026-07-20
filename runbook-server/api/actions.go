@@ -50,6 +50,8 @@ func (s *Server) handleAction(c *gin.Context) {
 		s.handleListWorkflows(c, sc, args)
 	case "workflow_get":
 		s.handleGetWorkflow(c, sc, args)
+	case "workflow_get_state":
+		s.handleGetWorkflowState(c, sc, args)
 	case "workflow_update":
 		s.handleUpdateWorkflow(c, sc, args)
 	case "workflow_delete":
@@ -290,6 +292,32 @@ func (s *Server) handleGetWorkflow(c *gin.Context, sc *security.RequestContext, 
 	}
 
 	c.JSON(http.StatusOK, wf)
+}
+
+func (s *Server) handleGetWorkflowState(c *gin.Context, sc *security.RequestContext, args map[string]any) {
+	accountID, ok := args["account_id"].(string)
+	if !ok || accountID == "" {
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("account_id is required")}))
+		return
+	}
+	workflowID, ok := args["id"].(string)
+	if !ok || workflowID == "" {
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("workflow id is required")}))
+		return
+	}
+
+	state, err := s.workflowService.GetWorkflowState(sc, accountID, workflowID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, buildApiResponse(nil, []error{errors.New("workflow not found")}))
+		} else {
+			s.logger.Error("failed to get workflow state via RPC", "workflowID", workflowID, "error", err)
+			c.JSON(http.StatusBadRequest, common.ErrorActionInternal("failed to get workflow state"))
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, state)
 }
 
 func (s *Server) handleUpdateWorkflow(c *gin.Context, sc *security.RequestContext, args map[string]any) {

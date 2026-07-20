@@ -20,6 +20,8 @@ import { ReactFlow, Background, Controls, MiniMap, PanOnScrollMode, type Node, t
 import 'reactflow/dist/style.css';
 import { ds } from 'src/utils/colors';
 import apiWorkflow from '@api1/workflow';
+import CustomTabs from '@shared/CustomTabs';
+import JsonTreeView from '@shared/viewers/JsonTreeView';
 import { hasWriteAccess } from '@lib/auth';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { Label } from '@ui/Label';
@@ -223,6 +225,9 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
   const [highlightedExecutionId, setHighlightedExecutionId] = useState<string | null>(null);
   const [inlineOutputViewMode, setInlineOutputViewMode] = useState<'json' | 'formatted'>('formatted');
   const [inlineInputViewMode, setInlineInputViewMode] = useState<'json' | 'formatted'>('formatted');
+  const [activeRightTab, setActiveRightTab] = useState<'tasks' | 'state'>('tasks');
+  const [workflowState, setWorkflowState] = useState<any[]>([]);
+  const [stateLoading, setStateLoading] = useState(false);
   const [executionData, setExecutionData] = useState<any>(null);
   const [logsExpanded, setLogsExpanded] = useState(false);
   const reactFlowInstanceRef = useRef<ReactFlowInstance | null>(null);
@@ -373,6 +378,54 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
       fetchExecutionTasks(selectedExecution.id);
     }
   }, [selectedExecution?.id, workflowId, accountId]);
+
+  // Reset active tab and clear state when selection changes
+  useEffect(() => {
+    setActiveRightTab('tasks');
+    setWorkflowState([]);
+  }, [selectedExecution?.id]);
+
+  // Fetch workflow state
+  const fetchWorkflowState = useCallback(async () => {
+    if (!selectedExecution || !workflowId || !accountId) return;
+    try {
+      setStateLoading(true);
+      const response = await apiWorkflow.getWorkflowState(accountId, workflowId);
+      const errorMessage = parseHttpResponseBodyMessage(response);
+      if (errorMessage) {
+        console.error('Failed to fetch workflow state:', errorMessage);
+        return;
+      }
+      const stateData = response.data?.workflow_get_state || [];
+      setWorkflowState(stateData);
+    } catch (error) {
+      console.error('Failed to fetch workflow state:', error);
+    } finally {
+      setStateLoading(false);
+    }
+  }, [selectedExecution?.id, workflowId, accountId]);
+
+  // Initial fetch when state tab is activated
+  useEffect(() => {
+    if (selectedExecution && activeRightTab === 'state') {
+      fetchWorkflowState();
+    }
+  }, [selectedExecution?.id, activeRightTab, fetchWorkflowState]);
+
+  // Poll state endpoint every 5 seconds for running executions when State tab is active
+  useEffect(() => {
+    if (!selectedExecution || activeRightTab !== 'state' || isExecutionCompleted(selectedExecution.status)) {
+      return;
+    }
+
+    const intervalId = setInterval(() => {
+      fetchWorkflowState();
+    }, 5000);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [selectedExecution?.id, selectedExecution?.status, activeRightTab, fetchWorkflowState]);
 
   // Poll execution list when any execution is in a running state
   const hasRunningExecution = executions.some((e) => !isExecutionCompleted(e.status));
@@ -1684,408 +1737,483 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
               flexDirection: 'column',
             }}
           >
-            {selectedTaskData ? (
+            {selectedExecution ? (
               <>
-                {/* Node Header - pinned */}
+                {/* Tabs Selection at the top of Right Panel */}
                 <Box
                   sx={{
-                    padding: 'var(--ds-space-3) var(--ds-space-4) var(--ds-space-3) var(--ds-space-2)',
                     borderBottom: '1px solid var(--ds-brand-150)',
+                    padding: 'var(--ds-space-2) var(--ds-space-4) 0 var(--ds-space-4)',
+                    backgroundColor: ds.blue[100],
                     flexShrink: 0,
                   }}
                 >
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
-                    <Box
-                      sx={{
-                        width: '32px',
-                        height: '32px',
-                        borderRadius: 'var(--ds-radius-md)',
-                        backgroundColor: 'var(--ds-blue-500)',
-                        color: 'white',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
-                    >
-                      {(() => {
-                        const icon = getTaskIcon(selectedTaskData.type);
-                        if (typeof icon === 'string' && !icon.includes('/') && !icon.includes('.')) {
-                          return <span style={{ fontSize: 'var(--ds-text-small)' }}>{icon}</span>;
-                        }
-                        const providerLogos = [newAwsLogo, ouAzure, ouGoogle, K8sIcon, RabbitmqIcon, RedisLogoIcon, GithubIcon, ArgocdIcon];
-                        const shouldKeepColors = providerLogos.includes(icon);
-                        return (
-                          <SafeIcon
-                            src={icon}
-                            alt='task-icon'
-                            width={20}
-                            height={20}
-                            style={{ filter: shouldKeepColors ? 'none' : 'brightness(0) invert(1)' }}
-                          />
-                        );
-                      })()}
-                    </Box>
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography
-                        sx={{
-                          fontWeight: 'bold',
-                          fontSize: 'var(--ds-text-body-lg)',
-                          color: ds.gray[700],
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                        title={
-                          selectedTaskContext?.displayId && selectedTaskData.id && selectedTaskContext.displayId !== selectedTaskData.id
-                            ? `Runtime task id: ${selectedTaskData.id}`
-                            : undefined
-                        }
-                      >
-                        {selectedTaskContext?.displayId || selectedTaskData.id || 'Unknown Task'}
-                      </Typography>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', flexWrap: 'wrap' }}>
-                        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400] }}>
-                          {selectedTaskData.type || 'No type specified'}
-                        </Typography>
-                        {selectedTaskContext?.contextLabel && (
-                          <Box
-                            sx={{
-                              fontSize: 'var(--ds-text-caption)',
-                              fontWeight: 'var(--ds-font-weight-medium)',
-                              color: ds.gray[700],
-                              backgroundColor: 'var(--ds-blue-100)',
-                              border: '1px solid var(--ds-blue-300)',
-                              borderRadius: 'var(--ds-radius-lg)',
-                              padding: 'var(--ds-space-1) var(--ds-space-2)',
-                              lineHeight: '16px',
-                              whiteSpace: 'nowrap',
-                            }}
-                          >
-                            {selectedTaskContext.contextLabel}
-                          </Box>
-                        )}
-                      </Box>
-                    </Box>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-3)', flexShrink: 0 }}>
-                      <Box
-                        sx={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 'var(--ds-space-1)',
-                          backgroundColor: ds.background[200],
-                          padding: 'var(--ds-space-1) var(--ds-space-2)',
-                          borderRadius: 'var(--ds-radius-sm)',
-                        }}
-                      >
-                        <AccessTime sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.gray[400] }} />
-                        <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: ds.gray[700] }}>
-                          {getDuration(selectedTaskData.start_time, selectedTaskData.end_time)}
-                        </Typography>
-                      </Box>
-                      {(() => {
-                        const sid = getLlmSessionId(selectedTaskData);
-                        if (!sid) return null;
-                        const href = buildAskNudgebeeHref(accountId, sid);
-                        return (
-                          <Button
-                            size='xs'
-                            tone='secondary'
-                            icon={<SafeIcon alt={`Ask ${assistantName}`} src={nubiIconUrl} height={22} width={22} />}
-                            data-testid='workflow-execution-go-to-chat-btn'
-                            onClick={() => window.open(href, '_blank', 'noopener,noreferrer')}
-                          >
-                            Go to chat
-                          </Button>
-                        );
-                      })()}
-                      <Label text={selectedTaskData.status.toUpperCase()} />
-                    </Box>
-                  </Box>
+                  <CustomTabs
+                    value={activeRightTab}
+                    onChange={(val: any) => setActiveRightTab(val)}
+                    options={[
+                      { id: 'tasks', label: 'Tasks' },
+                      { id: 'state', label: 'State' },
+                    ]}
+                    variant='secondary'
+                    behavior='filter'
+                    p='0px'
+                  />
                 </Box>
 
-                {/* Input & Output side by side with independent scroll */}
-                <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden', marginTop: 'var(--ds-space-3)' }}>
-                  {/* Input column */}
-                  <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                    {/* Pinned header */}
-                    <Box
-                      sx={{
-                        flexShrink: 0,
-                        padding: 'var(--ds-space-2) var(--ds-space-4)',
-                        backgroundColor: 'color-mix(in srgb, var(--ds-amber-100) 60%, transparent)',
-                        borderRadius: 'var(--ds-radius-lg) 0px 0px var(--ds-radius-lg)',
-                      }}
-                    >
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
-                          <InputIcon sx={{ fontSize: 'var(--ds-text-title)', color: ds.gray[700] }} />
-                          <Typography
-                            sx={{
-                              fontSize: 'var(--ds-text-small)',
-                              fontWeight: 'var(--ds-font-weight-semibold)',
-                              color: ds.gray[700],
-                              fontFamily: 'Poppins, sans-serif',
-                            }}
-                          >
-                            Input
-                          </Typography>
-                        </Box>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
-                          <Box
-                            sx={{
-                              display: 'flex',
-                              backgroundColor: ds.background[100],
-                              borderRadius: 'var(--ds-radius-md)',
-                              padding: 'var(--ds-space-1)',
-                            }}
-                          >
-                            <Button
-                              tone={inlineInputViewMode === 'formatted' ? 'secondary' : 'ghost'}
-                              size='xs'
-                              onClick={() => setInlineInputViewMode('formatted')}
-                            >
-                              Formatted
-                            </Button>
-                            <Button
-                              tone={inlineInputViewMode === 'json' ? 'secondary' : 'ghost'}
-                              size='xs'
-                              onClick={() => setInlineInputViewMode('json')}
-                            >
-                              JSON
-                            </Button>
-                          </Box>
-                          <Button
-                            composition='icon-only'
-                            tone='ghost'
-                            size='xs'
-                            aria-label='Copy input'
-                            icon={<ContentCopy sx={{ fontSize: 'var(--ds-text-body-lg)' }} />}
-                            onClick={() =>
-                              copyToClipboard(
-                                typeof selectedTaskData.input === 'string' ? selectedTaskData.input : JSON.stringify(selectedTaskData.input, null, 2),
-                                'Input'
-                              )
-                            }
-                          />
-                        </Box>
-                      </Box>
-                    </Box>
-                    {/* Scrollable content */}
-                    <Box
-                      className='custom-scrollbar'
-                      sx={{
-                        flex: 1,
-                        overflowY: 'auto',
-                        padding: 'var(--ds-space-4) var(--ds-space-2)',
-                        borderRight: '1px solid var(--ds-gray-300)',
-                      }}
-                    >
-                      <Box
-                        sx={{
-                          backgroundColor: ds.background[200],
-                          border: `1px solid ${ds.gray[200]}`,
-                          borderRadius: 'var(--ds-radius-md)',
-                          padding: 'var(--ds-space-3)',
-                          wordBreak: 'break-word',
-                        }}
-                      >
-                        {inlineInputViewMode === 'formatted' ? (
-                          renderFormattedField(selectedTaskData.input, 'input')
-                        ) : (
-                          <Box sx={{ fontFamily: 'monospace', fontSize: 'var(--ds-text-body)', color: ds.gray[700], whiteSpace: 'pre-wrap' }}>
-                            {typeof selectedTaskData.input === 'string' ? selectedTaskData.input : JSON.stringify(selectedTaskData.input, null, 2)}
-                          </Box>
-                        )}
-                      </Box>
-                    </Box>
-                  </Box>
-
-                  {/* Output column */}
-                  <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, marginRight: 'var(--ds-space-3)' }}>
-                    {/* Pinned header */}
-                    <Box
-                      sx={{
-                        flexShrink: 0,
-                        padding: 'var(--ds-space-2) var(--ds-space-4)',
-                        backgroundColor: 'color-mix(in srgb, var(--ds-amber-100) 60%, transparent)',
-                        borderRadius: '0px var(--ds-radius-lg) var(--ds-radius-lg) 0px',
-                      }}
-                    >
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
-                          <OutputIcon sx={{ fontSize: 'var(--ds-text-title)', color: ds.gray[700] }} />
-                          <Typography
-                            sx={{
-                              fontSize: 'var(--ds-text-small)',
-                              fontWeight: 'var(--ds-font-weight-semibold)',
-                              color: ds.gray[700],
-                              fontFamily: 'Poppins, sans-serif',
-                            }}
-                          >
-                            Output
-                          </Typography>
-                        </Box>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
-                          <Box
-                            sx={{
-                              display: 'flex',
-                              backgroundColor: ds.background[100],
-                              borderRadius: 'var(--ds-radius-md)',
-                              padding: 'var(--ds-space-1)',
-                            }}
-                          >
-                            <Button
-                              tone={inlineOutputViewMode === 'formatted' ? 'secondary' : 'ghost'}
-                              size='xs'
-                              onClick={() => setInlineOutputViewMode('formatted')}
-                            >
-                              Formatted
-                            </Button>
-                            <Button
-                              tone={inlineOutputViewMode === 'json' ? 'secondary' : 'ghost'}
-                              size='xs'
-                              onClick={() => setInlineOutputViewMode('json')}
-                            >
-                              JSON
-                            </Button>
-                          </Box>
-                          <Button
-                            composition='icon-only'
-                            tone='ghost'
-                            size='xs'
-                            aria-label='Copy output'
-                            icon={<ContentCopy sx={{ fontSize: 'var(--ds-text-body-lg)' }} />}
-                            onClick={() =>
-                              copyToClipboard(
-                                typeof selectedTaskData.output === 'string'
-                                  ? selectedTaskData.output
-                                  : JSON.stringify(selectedTaskData.output, null, 2),
-                                'Output'
-                              )
-                            }
-                          />
-                        </Box>
-                      </Box>
-                    </Box>
-                    {/* Scrollable content */}
-                    <Box
-                      className='custom-scrollbar'
-                      sx={{
-                        flex: 1,
-                        overflowY: 'auto',
-                        padding: 'var(--ds-space-4) var(--ds-space-2) var(--ds-space-4) var(--ds-space-3)',
-                      }}
-                    >
-                      {selectedTaskData.output ? (
+                {activeRightTab === 'tasks' ? (
+                  <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                    {selectedTaskData ? (
+                      <>
+                        {/* Node Header - pinned */}
                         <Box
                           sx={{
-                            backgroundColor: ds.blue[100],
-                            border: `1px solid ${ds.blue[300]}`,
-                            borderRadius: 'var(--ds-radius-md)',
-                            padding: 'var(--ds-space-3)',
-                            wordBreak: 'break-word',
+                            padding: 'var(--ds-space-3) var(--ds-space-4) var(--ds-space-3) var(--ds-space-2)',
+                            borderBottom: '1px solid var(--ds-brand-150)',
+                            flexShrink: 0,
                           }}
                         >
-                          {inlineOutputViewMode === 'formatted' ? (
-                            renderFormattedField(selectedTaskData.output, 'output')
-                          ) : (
-                            <Box sx={{ fontFamily: 'monospace', fontSize: 'var(--ds-text-body)', color: ds.gray[700], whiteSpace: 'pre-wrap' }}>
-                              {typeof selectedTaskData.output === 'string'
-                                ? selectedTaskData.output
-                                : JSON.stringify(selectedTaskData.output, null, 2)}
-                            </Box>
-                          )}
-                        </Box>
-                      ) : (
-                        <Box sx={{ textAlign: 'center', color: ds.gray[400], py: 4 }}>
-                          <Typography sx={{ fontSize: 'var(--ds-text-small)' }}>No output data</Typography>
-                        </Box>
-                      )}
-
-                      {/* Error section within Output column */}
-                      {selectedTaskData.error && (
-                        <Box sx={{ mt: 2 }}>
-                          <Box
-                            role='button'
-                            tabIndex={0}
-                            onClick={() => setLogsExpanded(!logsExpanded)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                setLogsExpanded(!logsExpanded);
-                              }
-                            }}
-                            sx={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'center',
-                              cursor: 'pointer',
-                              mb: logsExpanded ? 1 : 0,
-                              '&:hover': { opacity: 0.8 },
-                            }}
-                          >
-                            <Typography
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+                            <Box
                               sx={{
-                                fontSize: 'var(--ds-text-small)',
-                                fontWeight: 'var(--ds-font-weight-semibold)',
-                                color: ds.red[600],
-                                fontFamily: 'Poppins, sans-serif',
+                                width: '32px',
+                                height: '32px',
+                                borderRadius: 'var(--ds-radius-md)',
+                                backgroundColor: 'var(--ds-blue-500)',
+                                color: 'white',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
                               }}
                             >
-                              Error
-                            </Typography>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
-                              <Button
-                                composition='icon-only'
-                                tone='ghost'
-                                size='xs'
-                                aria-label='Copy error'
-                                icon={<ContentCopy sx={{ fontSize: 'var(--ds-text-small)', color: ds.red[600] }} />}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  copyToClipboard(selectedTaskData.error || '', 'Error');
+                              {(() => {
+                                const icon = getTaskIcon(selectedTaskData.type);
+                                if (typeof icon === 'string' && !icon.includes('/') && !icon.includes('.')) {
+                                  return <span style={{ fontSize: 'var(--ds-text-small)' }}>{icon}</span>;
+                                }
+                                const providerLogos = [newAwsLogo, ouAzure, ouGoogle, K8sIcon, RabbitmqIcon, RedisLogoIcon, GithubIcon, ArgocdIcon];
+                                const shouldKeepColors = providerLogos.includes(icon);
+                                return (
+                                  <SafeIcon
+                                    src={icon}
+                                    alt='task-icon'
+                                    width={20}
+                                    height={20}
+                                    style={{ filter: shouldKeepColors ? 'none' : 'brightness(0) invert(1)' }}
+                                  />
+                                );
+                              })()}
+                            </Box>
+                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                              <Typography
+                                sx={{
+                                  fontWeight: 'bold',
+                                  fontSize: 'var(--ds-text-body-lg)',
+                                  color: ds.gray[700],
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
                                 }}
-                              />
-                              {logsExpanded ? (
-                                <ExpandLess sx={{ fontSize: 'var(--ds-text-title)', color: ds.red[600] }} />
+                                title={
+                                  selectedTaskContext?.displayId && selectedTaskData.id && selectedTaskContext.displayId !== selectedTaskData.id
+                                    ? `Runtime task id: ${selectedTaskData.id}`
+                                    : undefined
+                                }
+                              >
+                                {selectedTaskContext?.displayId || selectedTaskData.id || 'Unknown Task'}
+                              </Typography>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', flexWrap: 'wrap' }}>
+                                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400] }}>
+                                  {selectedTaskData.type || 'No type specified'}
+                                </Typography>
+                                {selectedTaskContext?.contextLabel && (
+                                  <Box
+                                    sx={{
+                                      fontSize: 'var(--ds-text-caption)',
+                                      fontWeight: 'var(--ds-font-weight-medium)',
+                                      color: ds.gray[700],
+                                      backgroundColor: 'var(--ds-blue-100)',
+                                      border: '1px solid var(--ds-blue-300)',
+                                      borderRadius: 'var(--ds-radius-lg)',
+                                      padding: 'var(--ds-space-1) var(--ds-space-2)',
+                                      lineHeight: '16px',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    {selectedTaskContext.contextLabel}
+                                  </Box>
+                                )}
+                              </Box>
+                            </Box>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-3)', flexShrink: 0 }}>
+                              <Box
+                                sx={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 'var(--ds-space-1)',
+                                  backgroundColor: ds.background[200],
+                                  padding: 'var(--ds-space-1) var(--ds-space-2)',
+                                  borderRadius: 'var(--ds-radius-sm)',
+                                }}
+                              >
+                                <AccessTime sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.gray[400] }} />
+                                <Typography
+                                  sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: ds.gray[700] }}
+                                >
+                                  {getDuration(selectedTaskData.start_time, selectedTaskData.end_time)}
+                                </Typography>
+                              </Box>
+                              {(() => {
+                                const sid = getLlmSessionId(selectedTaskData);
+                                if (!sid) return null;
+                                const href = buildAskNudgebeeHref(accountId, sid);
+                                return (
+                                  <Button
+                                    size='xs'
+                                    tone='secondary'
+                                    icon={<SafeIcon alt={`Ask ${assistantName}`} src={nubiIconUrl} height={22} width={22} />}
+                                    data-testid='workflow-execution-go-to-chat-btn'
+                                    onClick={() => window.open(href, '_blank', 'noopener,noreferrer')}
+                                  >
+                                    Go to chat
+                                  </Button>
+                                );
+                              })()}
+                              <Label text={selectedTaskData.status.toUpperCase()} />
+                            </Box>
+                          </Box>
+                        </Box>
+
+                        {/* Input & Output side by side with independent scroll */}
+                        <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden', marginTop: 'var(--ds-space-3)' }}>
+                          {/* Input column */}
+                          <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                            {/* Pinned header */}
+                            <Box
+                              sx={{
+                                flexShrink: 0,
+                                padding: 'var(--ds-space-2) var(--ds-space-4)',
+                                backgroundColor: 'color-mix(in srgb, var(--ds-amber-100) 60%, transparent)',
+                                borderRadius: 'var(--ds-radius-lg) 0px 0px var(--ds-radius-lg)',
+                              }}
+                            >
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
+                                  <InputIcon sx={{ fontSize: 'var(--ds-text-title)', color: ds.gray[700] }} />
+                                  <Typography
+                                    sx={{
+                                      fontSize: 'var(--ds-text-small)',
+                                      fontWeight: 'var(--ds-font-weight-semibold)',
+                                      color: ds.gray[700],
+                                      fontFamily: 'Poppins, sans-serif',
+                                    }}
+                                  >
+                                    Input
+                                  </Typography>
+                                </Box>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+                                  <Box
+                                    sx={{
+                                      display: 'flex',
+                                      backgroundColor: ds.background[100],
+                                      borderRadius: 'var(--ds-radius-md)',
+                                      padding: 'var(--ds-space-1)',
+                                    }}
+                                  >
+                                    <Button
+                                      tone={inlineInputViewMode === 'formatted' ? 'secondary' : 'ghost'}
+                                      size='xs'
+                                      onClick={() => setInlineInputViewMode('formatted')}
+                                    >
+                                      Formatted
+                                    </Button>
+                                    <Button
+                                      tone={inlineInputViewMode === 'json' ? 'secondary' : 'ghost'}
+                                      size='xs'
+                                      onClick={() => setInlineInputViewMode('json')}
+                                    >
+                                      JSON
+                                    </Button>
+                                  </Box>
+                                  <Button
+                                    composition='icon-only'
+                                    tone='ghost'
+                                    size='xs'
+                                    aria-label='Copy input'
+                                    icon={<ContentCopy sx={{ fontSize: 'var(--ds-text-body-lg)' }} />}
+                                    onClick={() =>
+                                      copyToClipboard(
+                                        typeof selectedTaskData.input === 'string'
+                                          ? selectedTaskData.input
+                                          : JSON.stringify(selectedTaskData.input, null, 2),
+                                        'Input'
+                                      )
+                                    }
+                                  />
+                                </Box>
+                              </Box>
+                            </Box>
+                            {/* Scrollable content */}
+                            <Box
+                              className='custom-scrollbar'
+                              sx={{
+                                flex: 1,
+                                overflowY: 'auto',
+                                padding: 'var(--ds-space-4) var(--ds-space-2)',
+                                borderRight: '1px solid var(--ds-gray-300)',
+                              }}
+                            >
+                              <Box
+                                sx={{
+                                  backgroundColor: ds.background[200],
+                                  border: `1px solid ${ds.gray[200]}`,
+                                  borderRadius: 'var(--ds-radius-md)',
+                                  padding: 'var(--ds-space-3)',
+                                  wordBreak: 'break-word',
+                                }}
+                              >
+                                {inlineInputViewMode === 'formatted' ? (
+                                  renderFormattedField(selectedTaskData.input, 'input')
+                                ) : (
+                                  <Box sx={{ fontFamily: 'monospace', fontSize: 'var(--ds-text-body)', color: ds.gray[700], whiteSpace: 'pre-wrap' }}>
+                                    {typeof selectedTaskData.input === 'string'
+                                      ? selectedTaskData.input
+                                      : JSON.stringify(selectedTaskData.input, null, 2)}
+                                  </Box>
+                                )}
+                              </Box>
+                            </Box>
+                          </Box>
+
+                          {/* Output column */}
+                          <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, marginRight: 'var(--ds-space-3)' }}>
+                            {/* Pinned header */}
+                            <Box
+                              sx={{
+                                flexShrink: 0,
+                                padding: 'var(--ds-space-2) var(--ds-space-4)',
+                                backgroundColor: 'color-mix(in srgb, var(--ds-amber-100) 60%, transparent)',
+                                borderRadius: '0px var(--ds-radius-lg) var(--ds-radius-lg) 0px',
+                              }}
+                            >
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
+                                  <OutputIcon sx={{ fontSize: 'var(--ds-text-title)', color: ds.gray[700] }} />
+                                  <Typography
+                                    sx={{
+                                      fontSize: 'var(--ds-text-small)',
+                                      fontWeight: 'var(--ds-font-weight-semibold)',
+                                      color: ds.gray[700],
+                                      fontFamily: 'Poppins, sans-serif',
+                                    }}
+                                  >
+                                    Output
+                                  </Typography>
+                                </Box>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+                                  <Box
+                                    sx={{
+                                      display: 'flex',
+                                      backgroundColor: ds.background[100],
+                                      borderRadius: 'var(--ds-radius-md)',
+                                      padding: 'var(--ds-space-1)',
+                                    }}
+                                  >
+                                    <Button
+                                      tone={inlineOutputViewMode === 'formatted' ? 'secondary' : 'ghost'}
+                                      size='xs'
+                                      onClick={() => setInlineOutputViewMode('formatted')}
+                                    >
+                                      Formatted
+                                    </Button>
+                                    <Button
+                                      tone={inlineOutputViewMode === 'json' ? 'secondary' : 'ghost'}
+                                      size='xs'
+                                      onClick={() => setInlineOutputViewMode('json')}
+                                    >
+                                      JSON
+                                    </Button>
+                                  </Box>
+                                  <Button
+                                    composition='icon-only'
+                                    tone='ghost'
+                                    size='xs'
+                                    aria-label='Copy output'
+                                    icon={<ContentCopy sx={{ fontSize: 'var(--ds-text-body-lg)' }} />}
+                                    onClick={() =>
+                                      copyToClipboard(
+                                        typeof selectedTaskData.output === 'string'
+                                          ? selectedTaskData.output
+                                          : JSON.stringify(selectedTaskData.output, null, 2),
+                                        'Output'
+                                      )
+                                    }
+                                  />
+                                </Box>
+                              </Box>
+                            </Box>
+                            {/* Scrollable content */}
+                            <Box
+                              className='custom-scrollbar'
+                              sx={{
+                                flex: 1,
+                                overflowY: 'auto',
+                                padding: 'var(--ds-space-4) var(--ds-space-2) var(--ds-space-4) var(--ds-space-3)',
+                              }}
+                            >
+                              {selectedTaskData.output ? (
+                                <Box
+                                  sx={{
+                                    backgroundColor: ds.blue[100],
+                                    border: `1px solid ${ds.blue[300]}`,
+                                    borderRadius: 'var(--ds-radius-md)',
+                                    padding: 'var(--ds-space-3)',
+                                    wordBreak: 'break-word',
+                                  }}
+                                >
+                                  {inlineOutputViewMode === 'formatted' ? (
+                                    renderFormattedField(selectedTaskData.output, 'output')
+                                  ) : (
+                                    <Box
+                                      sx={{ fontFamily: 'monospace', fontSize: 'var(--ds-text-body)', color: ds.gray[700], whiteSpace: 'pre-wrap' }}
+                                    >
+                                      {typeof selectedTaskData.output === 'string'
+                                        ? selectedTaskData.output
+                                        : JSON.stringify(selectedTaskData.output, null, 2)}
+                                    </Box>
+                                  )}
+                                </Box>
                               ) : (
-                                <ExpandMore sx={{ fontSize: 'var(--ds-text-title)', color: ds.red[600] }} />
+                                <Box sx={{ textAlign: 'center', color: ds.gray[400], py: 4 }}>
+                                  <Typography sx={{ fontSize: 'var(--ds-text-small)' }}>No output data</Typography>
+                                </Box>
+                              )}
+
+                              {/* Error section within Output column */}
+                              {selectedTaskData.error && (
+                                <Box sx={{ mt: 2 }}>
+                                  <Box
+                                    role='button'
+                                    tabIndex={0}
+                                    onClick={() => setLogsExpanded(!logsExpanded)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault();
+                                        setLogsExpanded(!logsExpanded);
+                                      }
+                                    }}
+                                    sx={{
+                                      display: 'flex',
+                                      justifyContent: 'space-between',
+                                      alignItems: 'center',
+                                      cursor: 'pointer',
+                                      mb: logsExpanded ? 1 : 0,
+                                      '&:hover': { opacity: 0.8 },
+                                    }}
+                                  >
+                                    <Typography
+                                      sx={{
+                                        fontSize: 'var(--ds-text-small)',
+                                        fontWeight: 'var(--ds-font-weight-semibold)',
+                                        color: ds.red[600],
+                                        fontFamily: 'Poppins, sans-serif',
+                                      }}
+                                    >
+                                      Error
+                                    </Typography>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
+                                      <Button
+                                        composition='icon-only'
+                                        tone='ghost'
+                                        size='xs'
+                                        aria-label='Copy error'
+                                        icon={<ContentCopy sx={{ fontSize: 'var(--ds-text-small)', color: ds.red[600] }} />}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          copyToClipboard(selectedTaskData.error || '', 'Error');
+                                        }}
+                                      />
+                                      {logsExpanded ? (
+                                        <ExpandLess sx={{ fontSize: 'var(--ds-text-title)', color: ds.red[600] }} />
+                                      ) : (
+                                        <ExpandMore sx={{ fontSize: 'var(--ds-text-title)', color: ds.red[600] }} />
+                                      )}
+                                    </Box>
+                                  </Box>
+                                  {logsExpanded && (
+                                    <Box
+                                      sx={{
+                                        backgroundColor: ds.red[100],
+                                        border: `1px solid ${ds.red[200]}`,
+                                        borderRadius: 'var(--ds-radius-md)',
+                                        padding: 'var(--ds-space-3)',
+                                        fontFamily: 'monospace',
+                                        fontSize: 'var(--ds-text-body)',
+                                        wordBreak: 'break-word',
+                                        whiteSpace: 'pre-wrap',
+                                        color: ds.red[600],
+                                      }}
+                                    >
+                                      {selectedTaskData.error}
+                                    </Box>
+                                  )}
+                                </Box>
                               )}
                             </Box>
                           </Box>
-                          {logsExpanded && (
-                            <Box
-                              sx={{
-                                backgroundColor: ds.red[100],
-                                border: `1px solid ${ds.red[200]}`,
-                                borderRadius: 'var(--ds-radius-md)',
-                                padding: 'var(--ds-space-3)',
-                                fontFamily: 'monospace',
-                                fontSize: 'var(--ds-text-body)',
-                                wordBreak: 'break-word',
-                                whiteSpace: 'pre-wrap',
-                                color: ds.red[600],
-                              }}
-                            >
-                              {selectedTaskData.error}
-                            </Box>
-                          )}
                         </Box>
+                        {/* Called Workflow Tasks — surfaces the called workflow's nested tasks
+                            (populated by backend processWorkflowHistory) so users can see each
+                            step's Input/Output without leaving the parent run. */}
+                        {selectedTaskData.type === 'core.call-workflow' &&
+                          Array.isArray(selectedTaskData.children) &&
+                          selectedTaskData.children.length > 0 && (
+                            <CallWorkflowChildren tasks={selectedTaskData.children} copyToClipboard={copyToClipboard} />
+                          )}
+                      </>
+                    ) : (
+                      renderDetailPanelFallback()
+                    )}
+                  </Box>
+                ) : (
+                  // STATE TAB content
+                  <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: 'var(--ds-space-4)' }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 'var(--ds-space-3)', flexShrink: 0 }}>
+                      <Typography sx={{ fontWeight: 'bold', fontSize: 'var(--ds-text-body-lg)', color: ds.gray[700] }}>
+                        Live Workflow State
+                      </Typography>
+                      {!isExecutionCompleted(selectedExecution.status) && (
+                        <Typography
+                          sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-green-600)', display: 'flex', alignItems: 'center', gap: '4px' }}
+                        >
+                          <span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#10B981' }} />
+                          Live Polling
+                        </Typography>
                       )}
                     </Box>
+
+                    {stateLoading && workflowState.length === 0 ? (
+                      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flex: 1 }}>
+                        <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-body)' }}>Loading state...</Typography>
+                      </Box>
+                    ) : workflowState.length === 0 ? (
+                      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flex: 1 }}>
+                        <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-body)' }}>
+                          No state variables have been set for this workflow.
+                        </Typography>
+                      </Box>
+                    ) : (
+                      <Box className='custom-scrollbar' sx={{ flex: 1, overflowY: 'auto' }}>
+                        <JsonTreeView data={workflowState} defaultExpanded={1} maxHeight='100%' fontSize='12px' />
+                      </Box>
+                    )}
                   </Box>
-                </Box>
-                {/* Called Workflow Tasks — surfaces the called workflow's nested tasks
-                    (populated by backend processWorkflowHistory) so users can see each
-                    step's Input/Output without leaving the parent run. */}
-                {selectedTaskData.type === 'core.call-workflow' &&
-                  Array.isArray(selectedTaskData.children) &&
-                  selectedTaskData.children.length > 0 && (
-                    <CallWorkflowChildren tasks={selectedTaskData.children} copyToClipboard={copyToClipboard} />
-                  )}
+                )}
               </>
             ) : (
-              renderDetailPanelFallback()
+              <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', color: ds.gray[600] }}>
+                <Typography sx={{ fontSize: 'var(--ds-text-body-lg)' }}>Select an execution to view details</Typography>
+              </Box>
             )}
           </Box>
         </Box>
