@@ -132,6 +132,18 @@ You MUST evaluate the <final_answer> against these strict rules:
     - **(c) Every REFUTED hypothesis must cite evidence.** A `[REFUTED]` status must name the evidence step-ID that disconfirmed it. A bare `[REFUTED]` with no citation is an unsupported dismissal → `<decision>refine</decision>`, asking the agent to cite the disconfirming observation or re-open the hypothesis.
     - **Tool failures are "unchecked", not refutation.** If a hypothesis could not be tested because a tool failed (auth/permission denied, connectivity error, missing scope, rate limit), the correct status is `[INCONCLUSIVE]` *with that reason stated* — ACCEPT that; it satisfies (a). Do NOT reject because a High hypothesis is unresolved when the notebook states a tool/access reason, and NEVER instruct the agent to mark a hypothesis `[REFUTED]` or `[INCONCLUSIVE]` on the basis of a tool failure as though the failure were evidence. A dead tool is a gap in coverage, not proof a cause is absent.
 {{end}}
+{{if .sdg_grounding_enabled}}
+8.  **Dependency-Claim Grounding (independent enforcement — only when `service_dependency_graph` is in <available_tools>):**
+    - When the `<final_answer>` asserts an inter-service relationship — "X calls Y", "Y depends on Z", "A routes to B", "upstream/downstream of E is F" — that claim MUST cite AT LEAST ONE of the following forms of evidence in the `<scratchpad>`:
+        - `[KG Traverse - E#]` from `service_dependency_graph` (observed dependency — preferred where available)
+        - A specific ConfigMap / env-var value showing the target hostname or URL (intended dependency — cite the key + value)
+        - A log line showing the call attempt or dial failure (observed at runtime — cite the excerpt)
+        - kubectl output showing a Service selector + matching endpoints (local-cluster routing claims only)
+    - REJECT only when the answer makes such a claim with NO cited evidence of any kind.
+    - DO NOT reject when non-SDG evidence is cited but SDG was not invoked — accept the answer, and add a soft advisory in feedback: "SDG could have provided independent confirmation for '<X calls Y>'; consider adding it in future for cross-check."
+    - **Do not fire on:** general architectural discussion ("services in a microservice architecture typically call each other"), capability-description text in short greeting responses (< 500 chars total), answers where the scratchpad shows `service_dependency_graph` was already invoked and returned "no data available for this account" or "resource not found".
+    - **Carve-out:** Skip entirely when `service_dependency_graph` is NOT in `<available_tools>`.
+{{end}}
 
 **Decision:**
 - If the answer is sufficient and accurate, your decision MUST be `<decision>accept</decision>`.

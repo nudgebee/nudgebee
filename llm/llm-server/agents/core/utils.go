@@ -201,6 +201,19 @@ func HasDelegateAgentTool(toolList []toolcore.NBTool) bool {
 	return false
 }
 
+// HasServiceDependencyGraphTool returns true if the service_dependency_graph tool
+// (SDG) is present in the tool list. Used by the critiquer to short-circuit its
+// Rule 8 dependency-grounding contract when the agent doesn't hold SDG — no point
+// asking for SDG evidence from an agent that can't invoke SDG.
+func HasServiceDependencyGraphTool(toolList []toolcore.NBTool) bool {
+	for _, t := range toolList {
+		if strings.EqualFold(t.Name(), "service_dependency_graph") {
+			return true
+		}
+	}
+	return false
+}
+
 // FilterTools applies capability-based deny and allow lists to an agent's tool list.
 //
 //   - `disabled_tools` (denylist): tools listed here are removed.

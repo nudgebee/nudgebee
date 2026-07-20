@@ -1938,7 +1938,7 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 }) (string, string) {
 	critiquePrompt := prompts.NewPromptTemplate(
 		prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactCritiquer),
-		[]string{"input", "scratchpad", "final_answer", "question_type", "tool_names", "tool_descriptions", "shell_tool_enabled", "tools_invoked", "hypothesis_mode_enabled", "notebook", "today"},
+		[]string{"input", "scratchpad", "final_answer", "question_type", "tool_names", "tool_descriptions", "shell_tool_enabled", "tools_invoked", "hypothesis_mode_enabled", "sdg_grounding_enabled", "notebook", "today"},
 	)
 	critiquePromptStr, promptErr := critiquePrompt.Format(map[string]any{
 		"input":                   input,
@@ -1952,6 +1952,7 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 		"shell_tool_enabled":      config.Config.LlmServerShellToolEnabled && HasShellTool(o.tools),
 		"tools_invoked":           extractToolsInvoked(intermediateSteps),
 		"hypothesis_mode_enabled": o.hypothesisModeEnabled,
+		"sdg_grounding_enabled":   config.Config.LlmServerSDGGroundingContractEnabled && HasServiceDependencyGraphTool(o.tools),
 	})
 	if promptErr != nil {
 		logger.Error("reactagent3: failed to format critique prompt, accepting answer", "error", promptErr)

@@ -444,6 +444,14 @@ type appConfig struct {
 	// DistillationRedistillInterval defines how many conversation turns occur between redistillation of context.
 	DistillationRedistillInterval int  `mapstructure:"distillation_redistill_interval"`
 	LlmServerReActCritiqueEnabled bool `mapstructure:"llm_server_react_critique_enabled"`
+	// LlmServerSDGGroundingContractEnabled gates the critiquer's Rule 8
+	// dependency-claim grounding contract. When on, the critiquer rejects
+	// inter-service relationship claims ("X calls Y", "Y depends on Z") that
+	// cite no evidence of any kind (SDG, ConfigMap value, log line, or kubectl
+	// endpoint). Non-SDG evidence is accepted with a soft advisory — the rule
+	// enforces grounding, not tool choice. Default off; enable per env after
+	// monitoring `SDG_no_data_rate` on dev to confirm no over-firing.
+	LlmServerSDGGroundingContractEnabled bool `mapstructure:"llm_server_sdg_grounding_contract_enabled"`
 	// LlmServerThinkToolEnabled gates injection of the `think` tool into the
 	// six orchestrator agents (k8s / aws / azure / gcp / datadog / finops).
 	// Default flipped to false 2026-07-12 after 30d prod data showed the
@@ -985,6 +993,7 @@ func init() {
 	// react_critique defaults to true: the ReWoo→ReAct3 upgrade (now permanent)
 	// used to flip this on at boot; baking it in preserves that behavior.
 	viper.SetDefault("llm_server_react_critique_enabled", true)
+	viper.SetDefault("llm_server_sdg_grounding_contract_enabled", false)
 	viper.SetDefault("llm_server_react3_orchestrator_mode_enabled", true)
 	viper.SetDefault("llm_server_react3_query_lean_prompt_enabled", true)
 	viper.SetDefault("llm_server_react3_orchestrator_thinking_level", "medium")
