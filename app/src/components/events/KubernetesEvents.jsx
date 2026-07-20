@@ -241,6 +241,7 @@ const KubernetesEventsTable = ({
   resource_ids = [],
   showTimeFilter = true,
   isTroubleshootPage = false,
+  showEventTypeColumn = false,
 }) => {
   const router = useRouter();
 
@@ -390,7 +391,18 @@ const KubernetesEventsTable = ({
     ],
     []
   );
-  const [tableColumns, setTableColumns] = useState(() => (isTroubleshootPage ? troubleshootColumns : initialTableColumns));
+  // Aggregate views (Pod Errors "All", Node Errors, All Events) mix several
+  // error types in one table, so the Event Type column has to be on for the
+  // rows to be tellable apart. It is `defaultVisible: false` otherwise because
+  // a single-aggregation-key view repeats the same value on every row.
+  const resolvedInitialColumns = useMemo(
+    () =>
+      showEventTypeColumn
+        ? initialTableColumns.map((col) => (col?.name === 'Event Type' ? { ...col, defaultVisible: true } : col))
+        : initialTableColumns,
+    [initialTableColumns, showEventTypeColumn]
+  );
+  const [tableColumns, setTableColumns] = useState(() => (isTroubleshootPage ? troubleshootColumns : resolvedInitialColumns));
   const [data, setData] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -574,9 +586,9 @@ const KubernetesEventsTable = ({
     if (isTroubleshootPage) {
       setTableColumns(troubleshootColumns);
     } else {
-      setTableColumns(initialTableColumns);
+      setTableColumns(resolvedInitialColumns);
     }
-  }, [isTroubleshootPage, initialTableColumns, troubleshootColumns]);
+  }, [isTroubleshootPage, resolvedInitialColumns, troubleshootColumns]);
 
   const currentHeader = useMemo(() => {
     return tableColumns.map((item) => {
@@ -597,7 +609,6 @@ const KubernetesEventsTable = ({
     });
   }, [tableColumns]);
 
-  const prevDefaultAggregationKeyRef = useRef(defaultQuery?.aggregation_key);
   const rawEventsRef = useRef([]);
   const ticketReferenceMapRef = useRef(new Map());
   const buildRowDataRef = useRef(null);
@@ -605,18 +616,37 @@ const KubernetesEventsTable = ({
   // later, faster one (e.g. rapid filter changes firing overlapping API calls).
   const eventsRequestIdRef = useRef(0);
   const trendRequestIdRef = useRef(0);
-  useEffect(() => {
+
+  // Mirror the parent's defaultQuery.aggregation_key into the filter state while
+  // rendering (React applies the update before running effects) rather than in
+  // an effect. listEvents() overwrites the query key with selectedAggregationKey,
+  // so if this sync landed a commit later — as an effect would — the fetch effect
+  // below would fire once with the previous tab's key. Adjusting state during
+  // render keeps them in the same commit. See react.dev "You Might Not Need an
+  // Effect" → adjusting state when a prop changes.
+  const aggKeyJson = JSON.stringify(defaultQuery?.aggregation_key);
+  const [prevAggKeyJson, setPrevAggKeyJson] = useState(aggKeyJson);
+  if (aggKeyJson !== prevAggKeyJson) {
+    setPrevAggKeyJson(aggKeyJson);
     const next = defaultQuery?.aggregation_key;
-    const prev = prevDefaultAggregationKeyRef.current;
-    prevDefaultAggregationKeyRef.current = next;
-    if (JSON.stringify(prev) === JSON.stringify(next)) return;
     const nextState = next
       ? (Array.isArray(next) ? next : typeof next === 'string' ? next.split(',') : [next])
           .filter((v) => v != null && v !== '')
           .map((v) => ({ value: v }))
       : [];
-    setSelectedAggregationKey((curr) => (JSON.stringify(curr) === JSON.stringify(nextState) ? curr : nextState));
-  }, [JSON.stringify(defaultQuery?.aggregation_key)]);
+    if (JSON.stringify(selectedAggregationKey) !== JSON.stringify(nextState)) {
+      setSelectedAggregationKey(nextState);
+    }
+  }
+
+  // Reset paging whenever the parent swaps the query (e.g. the Pod Errors
+  // error-type toggle). Holding the old offset refetches page N of a different
+  // result set, which usually renders an empty table under a paginator that
+  // still reads page N.
+  useEffect(() => {
+    setCurrentPage(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(defaultQuery)]);
 
   // --- Filter Handlers ---
 
@@ -1702,7 +1732,7 @@ KubernetesEventsTable.propTypes = {
   disabledFilters: PropTypes.arrayOf(PropTypes.string),
   enableTrendChart: PropTypes.bool,
   heading: PropTypes.string,
-  podAllTabRadio: PropTypes.node,
+  showEventTypeColumn: PropTypes.bool,
   tableColumns: PropTypes.arrayOf(
     PropTypes.oneOfType([
       PropTypes.string,
