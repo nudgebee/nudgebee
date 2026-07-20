@@ -115,15 +115,20 @@ def legacy_attachment(
     fallback: str,
     text: str = "",
     actions: Optional[List[Dict[str, Any]]] = None,
+    fields: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """A LEGACY attachment: color stripe + mrkdwn text + URL buttons, and
-    nothing else. Slack stamps an "Added by {app}" byline on attachments that
-    carry Block Kit ``blocks`` (standalone row) or a ``footer``/``ts`` field
-    (appended to the footer row) — verified live — so none of those keys may
-    ever appear here. Identity/facts ride the last line of ``text``."""
+    """A LEGACY attachment: color stripe + mrkdwn text + optional two-column
+    ``fields`` + URL buttons, and nothing else. Slack stamps an "Added by {app}"
+    byline on attachments that carry Block Kit ``blocks`` (standalone row) or a
+    ``footer``/``ts`` field (appended to the footer row) — verified live — so
+    none of those keys may ever appear here. Identity/facts ride the last line
+    of ``text`` (multi-item lists) or ``fields`` (single striped cards)."""
     attachment: Dict[str, Any] = {"color": color, "fallback": fallback, "mrkdwn_in": ["text"]}
     if text:
         attachment["text"] = text
+    if fields:
+        attachment["fields"] = fields
+        attachment["mrkdwn_in"].append("fields")
     if actions:
         # Docs require callback_id on attachments carrying buttons; link
         # buttons never post an interaction payload, so this is inert.

@@ -4,11 +4,21 @@ from typing import List, Dict, Any, Optional
 
 from pydantic import BaseModel
 
-from notifications_server.configs.settings import public_ip, settings
+from notifications_server.configs.settings import public_ip
+from notifications_server.message_templates.slack.recommendation_nudge_digest import (
+    STRIPE_SAVINGS,
+    format_savings,
+    header_block,
+    legacy_attachment,
+    link_button,
+    neutral_footer_attachment,
+)
 
 LOG = logging.getLogger(__name__)
 
 SECURITY_SEVERITY_FILTER = {"high", "critical"}
+
+MAX_RECOMMENDATION_ITEMS = 12
 
 
 class RecommendationResolution(BaseModel):
@@ -65,170 +75,55 @@ def get_recommendation_message_params(**params) -> Optional[RecommendationParams
     return parsed
 
 
-def create_status_text(recommendation: RecommendationSummary) -> str:
-    return recommendation.status
+def _tab_for_category(category: str) -> str:
+    try:
+        return RecommendationTabs.get_value(category.upper())
+    except KeyError:
+        return RecommendationTabs.RIGHTSIZING.value
 
 
-def create_resolution_text(resolution: RecommendationResolution) -> str:
-    return (
-        "\n\t●  *Resolution:*"
-        f"\n\t\t- *Resolver:* {resolution.resolver}"
-        f"\n\t\t- *Type:* {resolution.type}"
-        f"\n\t\t- *Reference:* {resolution.type_reference}"
-        f"\n\t\t- *Status:* {resolution.status}"
-        f"\n\t\t- *Message:* {resolution.status_message}"
-    )
-
-
-def create_summary_block(recommendation: RecommendationSummary, count: int) -> Dict[str, Any]:
-    text = f"{count}. *{recommendation.summary}*"
-    if recommendation.savings and recommendation.savings > 0:
-        text += f"\n\t●  *Savings:* ${recommendation.savings}/month"
-    if recommendation.severity is not None:
-        text += f"\n\t●  *Severity:* {recommendation.severity}"
-    text += f"\n\t●  *Status:* {create_status_text(recommendation)}"
-    if recommendation.resolution:
-        text += create_resolution_text(recommendation.resolution)
-    return {
-        "type": "section",
-        "text": {
-            "type": "mrkdwn",
-            "text": text,
-        },
-    }
-
-
-def _group_by_severity(
-    recommendations: List[RecommendationSummary],
-) -> List[Dict[str, Any]]:
-    severity_order = {"critical": 1, "high": 2}
-    groups: Dict[str, List[RecommendationSummary]] = {}
-    for rec in recommendations:
-        key = rec.severity.capitalize() if rec.severity else "Other"
-        groups.setdefault(key, []).append(rec)
-
-    sorted_keys = sorted(groups.keys(), key=lambda k: severity_order.get(k.lower(), 99))
-
-    blocks: List[Dict[str, Any]] = []
-    counter = 1
-    for key in sorted_keys:
-        blocks.append(
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*{key} Severity:*"},
-            }
-        )
-        for rec in groups[key]:
-            blocks.append(create_summary_block(rec, counter))
-            counter += 1
-    return blocks
-
-
-def get_summary_block(category: str, recommendations: List[RecommendationSummary]) -> List[Dict[str, Any]]:
-    filtered = [rec for rec in recommendations if rec.summary is not None]
-    if not filtered:
-        return []
-
-    if category.lower() == "security":
-        grouped_blocks = _group_by_severity(filtered)
-        return [
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*Top {len(filtered)} Recommendations:*"},
-            },
-            *grouped_blocks,
-        ]
-
-    numbered_blocks = [create_summary_block(rec, idx + 1) for idx, rec in enumerate(filtered)]
-    return [
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Top {len(numbered_blocks)} Recommendations:*"},
-        },
-        *numbered_blocks,
-    ]
-
-
-def get_title_blocks(params: RecommendationParams) -> List[Dict[str, Any]]:
-    title_blocks = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*Kubernetes {params.category} Recommendations*",
-            },
-        },
-        {
-            "type": "section",
-            "fields": [
-                {
-                    "type": "mrkdwn",
-                    "text": (
-                        "*Account:*"
-                        f" <{public_ip()}/kubernetes/details/{params.account_id}?utm=slack|{params.account_name}>"
-                    ),
-                },
-            ],
-        },
-    ]
-
-    if params.total_estimated_savings:
-        title_blocks[1]["fields"].append(
-            {
-                "type": "mrkdwn",
-                "text": f"*Total Estimated Savings:* ${params.total_estimated_savings}/month",
-            }
-        )
-
-    if params.rule_description:
-        return [
-            *title_blocks,
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*Rule Description:* {params.rule_description}"},
-            },
-            {"type": "divider"},
-        ]
-    else:
-        return [*title_blocks, {"type": "divider"}]
-
-
-def get_total_recommendations_block(params: RecommendationParams) -> Dict[str, Any]:
-    tab = RecommendationTabs.get_value(params.category.upper())
-    message_parts = []
+def _intro_line(params: RecommendationParams) -> str:
+    parts = []
     if params.total_new:
-        message_parts.append(f"*{params.total_new} new*")
+        parts.append(f"*{params.total_new} new*")
     if params.total_archived:
-        message_parts.append(f"*{params.total_archived} resolved*")
-    message_summary = " and ".join(message_parts)
-    message = f"We found {message_summary} recommendations."
+        parts.append(f"*{params.total_archived} resolved*")
+    intro = f"We found {' and '.join(parts)} recommendations." if parts else ""
     if params.total_affected_resources:
-        message += f" *{params.total_affected_resources} affected resources.*"
-    text = (
-        f"{message} To see all, click "
-        f"<{public_ip()}/kubernetes/details/{params.account_id}?accountId={params.account_id}&utm=slack#{tab}|here>"
-    )
-    return {
-        "type": "section",
-        "text": {
-            "type": "mrkdwn",
-            "text": text,
-        },
-    }
+        intro += f" *{params.total_affected_resources} affected resources.*"
+    return intro.strip()
+
+
+def _item_line(idx: int, rec: RecommendationSummary) -> str:
+    extras = []
+    if rec.savings and rec.savings > 0:
+        extras.append(f"Save {format_savings(rec.savings)}/mo")
+    if rec.severity:
+        extras.append(rec.severity)
+    if rec.status:
+        extras.append(rec.status)
+    suffix = f" · {' · '.join(extras)}" if extras else ""
+    return f"*{idx}. {rec.summary}*{suffix}"
 
 
 def get_recommendation_message_template(params: RecommendationParams) -> Dict[str, Any]:
-    blocks = [
-        *get_title_blocks(params),
-        get_total_recommendations_block(params),
-        *get_summary_block(params.category, params.recommendations),
-        {"type": "divider"},
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"View more details on {settings.urls.branding_link('slack')}",
-            },
-        },
+    filtered = [rec for rec in params.recommendations if rec.summary]
+    headline = " ".join(f"Kubernetes {params.category} recommendations".split())
+    tab = _tab_for_category(params.category)
+    url = f"{public_ip()}/kubernetes/details/{params.account_id}?accountId={params.account_id}&utm=slack#{tab}"
+
+    lines = []
+    intro = _intro_line(params)
+    if intro:
+        lines.append(intro)
+    for idx, rec in enumerate(filtered[:MAX_RECOMMENDATION_ITEMS], 1):
+        lines.append(_item_line(idx, rec))
+    remaining = len(filtered) - MAX_RECOMMENDATION_ITEMS
+    if remaining > 0:
+        lines.append(f"_+{remaining} more recommendations_")
+
+    attachments = [
+        legacy_attachment(STRIPE_SAVINGS, headline, text="\n".join(lines)),
+        neutral_footer_attachment(actions=[link_button("View recommendations", url, style="primary")]),
     ]
-    return {"text": "Recommendations", "blocks": blocks, "unfurl_links": False}
+    return {"blocks": [header_block(headline)], "attachments": attachments, "unfurl_links": False}
