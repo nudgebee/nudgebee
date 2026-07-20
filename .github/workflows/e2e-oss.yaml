@@ -29,12 +29,17 @@ on:
   workflow_dispatch:
     inputs:
       test_file:
-        description: "Specific test file(s) to run — comma-separated"
+        description: "Specific test file(s) to run — comma-separated (e.g. tests/loginPage/MagicLink.spec.ts)"
+        required: false
+        default: ""
+        type: string
+      test_name:
+        description: "Test case name to run via --grep (e.g. 'API testing Cluster Details ')"
         required: false
         default: ""
         type: string
       run_all:
-        description: "Run complete test suite"
+        description: "Run complete test suite (overrides test_file and test_name)"
         required: false
         default: false
         type: boolean
@@ -54,6 +59,9 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          # Full history so PR runs can diff against the base branch to find changed specs
+          fetch-depth: 0
 
       # ── Install Playwright and browsers ──
       - name: Setup Node.js
@@ -84,7 +92,9 @@ jobs:
         env:
           CI: "true"
           INPUT_TEST_FILE: ${{ inputs.test_file }}
+          INPUT_TEST_NAME: ${{ inputs.test_name }}
           INPUT_RUN_ALL: ${{ inputs.run_all }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           rm -rf playwright-report
           mkdir -p playwright-report
@@ -94,23 +104,52 @@ jobs:
           PW_CMD="node node_modules/.bin/playwright test --project=chromium"
 
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # Manual run: full suite, specific file(s), or a specific test case by name.
+            # Precedence: run_all > test_file > test_name > full suite (default).
             if [ "$INPUT_RUN_ALL" == "true" ]; then
-              echo "Running complete test suite"
+              echo "Manual run — executing complete test suite"
               $PW_CMD
             elif [ -n "$INPUT_TEST_FILE" ]; then
-              echo "Running specific test file(s): $INPUT_TEST_FILE"
+              echo "Manual run — executing specific test file(s): $INPUT_TEST_FILE"
               FILES=$(echo "$INPUT_TEST_FILE" | tr ',' ' ')
               $PW_CMD $FILES
+            elif [ -n "$INPUT_TEST_NAME" ]; then
+              echo "Manual run — executing tests matching name: $INPUT_TEST_NAME"
+              $PW_CMD --grep "$INPUT_TEST_NAME"
             else
-              echo "Running smoke tests (login + basic navigation)"
-              $PW_CMD tests/loginPage/
+              echo "Manual run — no input given, executing complete test suite"
+              $PW_CMD
             fi
           elif [ "${{ github.event_name }}" == "schedule" ]; then
-            echo "Daily run — executing login + core tests"
-            $PW_CMD tests/loginPage/
+            echo "Scheduled run — executing complete test suite"
+            $PW_CMD
+          elif [ "${{ github.event_name }}" == "pull_request" ]; then
+            # PR run: only the spec files changed in this PR. If shared plumbing
+            # (page objects, playwright.config.ts, dt.js) changed, run everything
+            # since a single shared change can affect the whole suite.
+            echo "Base SHA: $PR_BASE_SHA"
+            CHANGED=$(git diff --name-only --diff-filter=ACMR "$PR_BASE_SHA" HEAD -- app-e2e-tests/)
+            echo "Changed e2e files:"
+            echo "$CHANGED"
+
+            if echo "$CHANGED" | grep -qE '^app-e2e-tests/(pages/|playwright\.config\.ts|dt\.js)'; then
+              echo "Shared plumbing changed — executing complete test suite"
+              $PW_CMD
+            else
+              # Spec files only — strip the working-directory prefix for Playwright.
+              SPECS=$(echo "$CHANGED" | grep -E '^app-e2e-tests/tests/.*\.spec\.ts$' | sed 's#^app-e2e-tests/##')
+              if [ -z "$SPECS" ]; then
+                echo "No changed spec files detected — nothing to run"
+                echo '{"stats":{},"suites":[]}' > playwright-report/results.json
+                exit 0
+              fi
+              echo "Running only changed spec files:"
+              echo "$SPECS"
+              $PW_CMD $SPECS
+            fi
           else
-            echo "PR/push — running smoke tests"
-            $PW_CMD tests/loginPage/
+            echo "Push to main — executing complete test suite"
+            $PW_CMD
           fi
 
           PW_EXIT=$?
