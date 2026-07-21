@@ -556,6 +556,12 @@ const InstancesView = (props: {
       const ec2ResourceCount = res.data?.data?.cloud_resourses_aggregate?.aggregate?.count || 0;
       const resources = res.data?.data?.cloud_resourses || [];
 
+      // A request superseded during the first await must not trigger the
+      // expensive live-metrics call below — it would only produce stale rows.
+      if (isStale()) {
+        return;
+      }
+
       // Fetch live CPU and memory metrics directly from cloud provider APIs
       let metricsMap: Record<string, Record<string, { value: number; timestamp: string }>> = {};
       if (resources.length > 0) {

@@ -254,7 +254,7 @@ export const ECSTasks = (props: {
     return () => {
       stale = true;
     };
-  }, [props?.accountId, page, rowsPerPage, selectedTagKey, selectedTagValue, selectedState, appliedSearchFilter]);
+  }, [props?.accountId, props?.serviceName, page, rowsPerPage, selectedTagKey, selectedTagValue, selectedState, appliedSearchFilter]);
 
   return (
     <ListingLayout id='ecs-instances-list'>
@@ -501,7 +501,7 @@ export const ECSServices = (props: {
     return () => {
       stale = true;
     };
-  }, [props?.accountId, page, selectedTagKey, selectedTagValue, selectedState, appliedSearchFilter]);
+  }, [props?.accountId, props?.serviceName, page, selectedTagKey, selectedTagValue, selectedState, appliedSearchFilter]);
 
   const ecsServiceActions = getActionsForService('AmazonECS', 'service');
   const writeAccess = hasWriteAccess(props?.accountId);
