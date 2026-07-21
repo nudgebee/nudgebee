@@ -155,6 +155,10 @@ func (t AzureCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToo
 			Data:   response,
 			Type:   core.NBToolResponseTypeText,
 			Status: core.NBToolResponseStatusSuccess,
+			Metadata: &core.NBToolResponseMetadata{
+				// Store the clean pre-auth-wrap command, never fullCommand.
+				ExecutedCommand: ScrubCredentials(command, auth.Env),
+			},
 		}, nil
 	}
 
@@ -204,6 +208,9 @@ func (t AzureCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToo
 	return core.NBToolResponse{
 		Data: data,
 		Type: core.NBToolResponseTypeText,
+		Metadata: &core.NBToolResponseMetadata{
+			ExecutedCommand: command,
+		},
 	}, nil
 }
 

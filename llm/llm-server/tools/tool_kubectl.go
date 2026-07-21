@@ -524,7 +524,7 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 			// these correctly; we just need to wire them in.
 			if isNoMatchExit(err, command) {
 				nbRequestContext.Ctx.GetLogger().Info("k8s: reclassified pipeline-tail no-match as success", "command", command)
-				return successResponseNoMatches(nbRequestContext, response)
+				return successResponseNoMatches(nbRequestContext, response, command)
 			}
 			nbRequestContext.Ctx.GetLogger().Error("k8s: unable to execute shell script", "error", err.Error(), "command", command)
 			if response == "" {
@@ -560,9 +560,10 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 			Type:       core.NBToolResponseTypeText,
 			Status:     core.NBToolResponseStatusSuccess,
 			References: []core.NBToolResponseReference{kubectlUIRef(nbRequestContext, command)},
+			Metadata:   &core.NBToolResponseMetadata{ExecutedCommand: command},
 		}
 		if stderr != "" {
-			resp.Metadata = &core.NBToolResponseMetadata{Stderr: stderr}
+			resp.Metadata.Stderr = stderr
 		}
 		return resp, nil
 	}
@@ -597,6 +598,7 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 		Type:       core.NBToolResponseTypeText,
 		Status:     core.NBToolResponseStatusSuccess,
 		References: []core.NBToolResponseReference{kubectlUIRef(nbRequestContext, command)},
+		Metadata:   &core.NBToolResponseMetadata{ExecutedCommand: command},
 	}
 
 	return resp, nil

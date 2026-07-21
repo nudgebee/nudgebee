@@ -136,6 +136,9 @@ func (t AwsCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 			Data:   response,
 			Type:   core.NBToolResponseTypeText,
 			Status: core.NBToolResponseStatusSuccess,
+			Metadata: &core.NBToolResponseMetadata{
+				ExecutedCommand: ScrubCredentials(command, auth.Env),
+			},
 		}, nil
 	}
 
@@ -192,6 +195,9 @@ func (t AwsCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 	return core.NBToolResponse{
 		Data: data,
 		Type: core.NBToolResponseTypeText,
+		Metadata: &core.NBToolResponseMetadata{
+			ExecutedCommand: command,
+		},
 	}, nil
 }
 

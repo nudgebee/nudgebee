@@ -82,7 +82,7 @@ func (m HelmExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NB
 			// the helpers from tool_shell.go (PR #32007).
 			if isNoMatchExit(err, command) {
 				nbRequestContext.Ctx.GetLogger().Info("helm: reclassified pipeline-tail no-match as success", "command", command)
-				return successResponseNoMatches(nbRequestContext, response)
+				return successResponseNoMatches(nbRequestContext, response, command)
 			}
 			nbRequestContext.Ctx.GetLogger().Error("helm: unable to execute shell script", "error", err.Error(), "command", command)
 			if response == "" {

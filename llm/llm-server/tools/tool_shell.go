@@ -197,7 +197,7 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 		if isNoMatchExit(err, originalCommand) {
 			nbRequestContext.Ctx.GetLogger().Info("shell: reclassifying exit 1 as no-matches",
 				"command_preview", cmdLog, "first_token", firstShellToken(strings.ToLower(originalCommand)))
-			return successResponseNoMatches(nbRequestContext, response)
+			return successResponseNoMatches(nbRequestContext, response, ScrubCredentials(originalCommand, env))
 		}
 
 		nbRequestContext.Ctx.GetLogger().Error("shell: unable to execute shell command", "error", err.Error(), "command_preview", cmdLog)
@@ -228,6 +228,9 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 		Data:   response,
 		Type:   core.NBToolResponseTypeText,
 		Status: core.NBToolResponseStatusSuccess,
+		Metadata: &core.NBToolResponseMetadata{
+			ExecutedCommand: ScrubCredentials(originalCommand, env),
+		},
 	}, nil
 }
 
@@ -235,7 +238,13 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 // using the same JSON shape as a normal success, with an explicit
 // no_matches flag so the LLM can distinguish "ran, found nothing"
 // from "ran, found content."
-func successResponseNoMatches(nbRequestContext core.NbToolContext, stdout string) (core.NBToolResponse, error) {
+// executedCommand, when non-empty, must already be credential-scrubbed by the
+// caller; it is surfaced via Metadata.ExecutedCommand.
+func successResponseNoMatches(nbRequestContext core.NbToolContext, stdout string, executedCommand string) (core.NBToolResponse, error) {
+	var metadata *core.NBToolResponseMetadata
+	if executedCommand != "" {
+		metadata = &core.NBToolResponseMetadata{ExecutedCommand: executedCommand}
+	}
 	payload := map[string]any{
 		"stdout":     stdout,
 		"no_matches": true,
@@ -244,15 +253,17 @@ func successResponseNoMatches(nbRequestContext core.NbToolContext, stdout string
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("shell: unable to marshal no-matches response", "error", err.Error())
 		return core.NBToolResponse{
-			Data:   stdout,
-			Status: core.NBToolResponseStatusSuccess,
-			Type:   core.NBToolResponseTypeText,
+			Data:     stdout,
+			Status:   core.NBToolResponseStatusSuccess,
+			Type:     core.NBToolResponseTypeText,
+			Metadata: metadata,
 		}, nil
 	}
 	return core.NBToolResponse{
-		Data:   string(body),
-		Type:   core.NBToolResponseTypeText,
-		Status: core.NBToolResponseStatusSuccess,
+		Data:     string(body),
+		Type:     core.NBToolResponseTypeText,
+		Status:   core.NBToolResponseStatusSuccess,
+		Metadata: metadata,
 	}, nil
 }
 

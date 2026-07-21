@@ -1,14 +1,37 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
 
+	"nudgebee/llm/security"
+	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 
 	"github.com/stretchr/testify/assert"
 )
+
+func TestSuccessResponseNoMatches_SurfacesExecutedCommand(t *testing.T) {
+	ctx := security.NewRequestContext(context.Background(), nil, nil, nil, nil)
+	nbCtx := core.NbToolContext{Ctx: ctx}
+
+	t.Run("executed command surfaced in metadata", func(t *testing.T) {
+		resp, err := successResponseNoMatches(nbCtx, "", "kubectl get pods -n nudgebee | grep api")
+		assert.NoError(t, err)
+		if assert.NotNil(t, resp.Metadata) {
+			assert.Equal(t, "kubectl get pods -n nudgebee | grep api", resp.Metadata.ExecutedCommand)
+		}
+		assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
+	})
+
+	t.Run("empty command leaves metadata nil", func(t *testing.T) {
+		resp, err := successResponseNoMatches(nbCtx, "", "")
+		assert.NoError(t, err)
+		assert.Nil(t, resp.Metadata)
+	})
+}
 
 // --- Change 1: grep/find/jq exit 1 reclassified as success-with-no-matches ---
 

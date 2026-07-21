@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1166,12 +1167,59 @@ func TestFormatToolMetadataFooter(t *testing.T) {
 		{"empty result", &toolcore.NBToolResponseMetadata{ExitStatus: 2, ExecutionDurationMs: 8}, "\n[exitStatus: 2 | executionDuration: 8ms]"},
 		{"negative duration clamps to 0", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: -1}, "\n[exitStatus: 0 | executionDuration: 0ms]"},
 		{"multi-second renders as ms", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 3200}, "\n[exitStatus: 0 | executionDuration: 3200ms]"},
+		{
+			"executed command appended",
+			&toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 12, ExecutedCommand: "kubectl get pods -n nudgebee"},
+			"\n[exitStatus: 0 | executionDuration: 12ms | command: kubectl get pods -n nudgebee]",
+		},
+		{
+			"empty executed command omits the command segment",
+			&toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 12, ExecutedCommand: ""},
+			"\n[exitStatus: 0 | executionDuration: 12ms]",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, formatToolMetadataFooter(tc.md))
 		})
 	}
+}
+
+func TestFormatToolMetadataFooter_LongCommandTruncated(t *testing.T) {
+	longCmd := "kubectl get pods -n nudgebee -o json | jq " + strings.Repeat("x", 400)
+	got := formatToolMetadataFooter(&toolcore.NBToolResponseMetadata{
+		ExitStatus:          0,
+		ExecutionDurationMs: 5,
+		ExecutedCommand:     longCmd,
+	})
+	// Full command (>200 chars) must not appear verbatim; head + tail are kept.
+	assert.NotContains(t, got, longCmd)
+	assert.Contains(t, got, "command: kubectl get pods")
+	assert.Less(t, len(got), len(longCmd))
+}
+
+func TestFormatToolMetadataFooter_CommandRuneCounting(t *testing.T) {
+	// 150 multi-byte runes (each 3 bytes) = 450 bytes but only 150 runes, which
+	// is under the 200-rune cap. A byte-length check would wrongly truncate; the
+	// rune-count check must leave it intact.
+	multibyte := strings.Repeat("é", 150) // é
+	got := formatToolMetadataFooter(&toolcore.NBToolResponseMetadata{
+		ExitStatus:          0,
+		ExecutionDurationMs: 5,
+		ExecutedCommand:     multibyte,
+	})
+	assert.Contains(t, got, multibyte, "150-rune command (under cap) must not be truncated")
+	assert.True(t, utf8.ValidString(got), "footer must remain valid UTF-8")
+
+	// 300 multi-byte runes exceeds the 200-rune cap → truncated, still valid UTF-8.
+	longMultibyte := strings.Repeat("\U0001F600", 300) // 4-byte emoji
+	gotLong := formatToolMetadataFooter(&toolcore.NBToolResponseMetadata{
+		ExitStatus:          0,
+		ExecutionDurationMs: 5,
+		ExecutedCommand:     longMultibyte,
+	})
+	assert.NotContains(t, gotLong, longMultibyte, "300-rune command (over cap) must be truncated")
+	assert.True(t, utf8.ValidString(gotLong), "truncated footer must remain valid UTF-8 (no mid-rune cut)")
 }
 
 func TestRenderObservationWithMetadata(t *testing.T) {
