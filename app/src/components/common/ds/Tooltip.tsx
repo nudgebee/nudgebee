@@ -7,8 +7,8 @@
  * non-interactive split, Popover-based promotion) lands later when the V2_GAPS
  * triage decision (Q1) is signed off.
  */
-import React, { type ReactElement, useState } from 'react';
-import { Tooltip, styled, tooltipClasses, type TooltipProps, Box, Typography, ButtonBase } from '@mui/material';
+import React, { type ReactElement, useEffect, useRef, useState } from 'react';
+import { Tooltip, styled, tooltipClasses, type TooltipProps, type SxProps, type Theme, Box, Typography, ButtonBase } from '@mui/material';
 import { InfoOutlined } from '@mui/icons-material';
 import { ds } from '@utils/colors';
 
@@ -365,5 +365,62 @@ const CustomTooltip = React.forwardRef<HTMLDivElement, CustomTooltipProps>(
 );
 
 CustomTooltip.displayName = 'CustomTooltip';
+
+export interface TooltipBodyRow {
+  /** Leading element for the row — typically the exact Chip / Label the row explains. */
+  term: React.ReactNode;
+  /** The explanation shown next to the term. */
+  description: React.ReactNode;
+}
+
+export const TooltipBody: React.FC<{ lead?: React.ReactNode; rows: TooltipBodyRow[] }> = ({ lead, rows }) => (
+  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+    {lead && <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)', lineHeight: 1.5 }}>{lead}</Typography>}
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+      {rows.map((row, i) => (
+        <Box key={i} sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+          <Box sx={{ flexShrink: 0, display: 'inline-flex' }}>{row.term}</Box>
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', lineHeight: 1.4 }}>{row.description}</Typography>
+        </Box>
+      ))}
+    </Box>
+  </Box>
+);
+
+export const OverflowTooltip: React.FC<{
+  /** Rendered (and, unless `title` is given, hovered) content. */
+  text: React.ReactNode;
+  title?: React.ReactNode;
+  sx?: SxProps<Theme>;
+  placement?: TooltipProps['placement'];
+  enterDelay?: number;
+}> = ({ text, title, sx, placement = 'top', enterDelay }) => {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [truncated, setTruncated] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (el) setTruncated(el.scrollWidth > el.clientWidth);
+  }, [text]);
+
+  const content = (
+    <Box ref={ref} component='span' sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', ...sx }}>
+      {text}
+    </Box>
+  );
+
+  return (
+    <CustomTooltip
+      title={title ?? text}
+      placement={placement}
+      enterDelay={enterDelay}
+      disableHoverListener={!truncated}
+      disableFocusListener={!truncated}
+      disableTouchListener={!truncated}
+    >
+      {content}
+    </CustomTooltip>
+  );
+};
 
 export default CustomTooltip;
