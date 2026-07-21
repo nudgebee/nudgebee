@@ -1708,6 +1708,26 @@ func applySchemaDefaults(integration Integration, configValues []IntegrationConf
 	return configValues
 }
 
+// DecryptConfigValues returns a copy of the config values with encrypted fields
+// decrypted in place (is_encrypted cleared). Used by connectivity/index probes that
+// build a client from raw config values before the integration is saved (the edit
+// form sends the stored ciphertext with is_encrypted=true when a secret isn't re-typed).
+func DecryptConfigValues(values []IntegrationConfigValue) ([]IntegrationConfigValue, error) {
+	out := make([]IntegrationConfigValue, len(values))
+	copy(out, values)
+	for i := range out {
+		if out[i].IsEncrypted && out[i].Value != "" {
+			decrypted, err := common.Decrypt(out[i].Value)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decrypt field %s: %w", out[i].Name, err)
+			}
+			out[i].Value = decrypted
+			out[i].IsEncrypted = false
+		}
+	}
+	return out, nil
+}
+
 // TestIntegrationConnectionByConfig tests connectivity using raw config values
 // (before the integration is saved). Used by the "Test Connection" button in the add/edit form.
 func TestIntegrationConnectionByConfig(

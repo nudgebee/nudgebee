@@ -29,6 +29,9 @@ interface TraceV2Params {
   // traces_by_trace_v3 / traces_by_trace_count_v3 actions. Aliased back to
   // traces_list / traces_counts so the response shape is identical to span mode.
   byTrace?: boolean;
+  // ES-only: the trace index chosen in the Traces tab index picker. Sent as
+  // request.index so the backend queries it (else it uses the per-account default).
+  esIndex?: string;
 }
 
 const apiTrace = {
@@ -57,6 +60,7 @@ const apiTrace = {
       traceId,
       fromWorkload = false,
       byTrace = false,
+      esIndex,
       cols = [
         'trace_id',
         'span_id',
@@ -158,6 +162,7 @@ const apiTrace = {
       query: '',
       start_time: startDate ? new Date(startDate).getTime() : 0,
       end_time: endDate ? new Date(endDate).getTime() : 0,
+      ...(esIndex ? { request: { index: esIndex } } : {}),
       query_request: {
         where: {
           _binary: query,
@@ -175,6 +180,7 @@ const apiTrace = {
       query: '',
       start_time: startDate ? new Date(startDate).getTime() : 0,
       end_time: endDate ? new Date(endDate).getTime() : 0,
+      ...(esIndex ? { request: { index: esIndex } } : {}),
       query_request: {
         where: {
           _binary: query,
@@ -224,19 +230,19 @@ const apiTrace = {
   async traceDistinctWorloadAndNamespace(accountId: string, data: any) {
     let TraceListingFiltersV3 = `
     query TraceListingFiltersV3($accountId: String!, $startTime: Float, $endTime: Float) {
-      workload_name: traces_label_values(request: {account_id: $accountId, label: "workload_name", start_time: $startTime, end_time: $endTime, query_request: {where: __WHERE2__}}) {
+      workload_name: traces_label_values(request: {account_id: $accountId, label: "workload_name", start_time: $startTime, end_time: $endTime, query_request: {where: __WHERE2__}__IDXREQ__}) {
         label
         values
       }
-      workload_namespace: traces_label_values(request: {account_id: $accountId, label: "workload_namespace", start_time: $startTime, end_time: $endTime, query_request: {where: __WHERE2__}}) {
+      workload_namespace: traces_label_values(request: {account_id: $accountId, label: "workload_namespace", start_time: $startTime, end_time: $endTime, query_request: {where: __WHERE2__}__IDXREQ__}) {
         label
         values
       }
-      destination_workload_name: traces_label_values(request: {account_id: $accountId, label: "destination_workload_name", start_time: $startTime, end_time: $endTime, query_request: {where: __WHERE2__}}) {
+      destination_workload_name: traces_label_values(request: {account_id: $accountId, label: "destination_workload_name", start_time: $startTime, end_time: $endTime, query_request: {where: __WHERE2__}__IDXREQ__}) {
         label
         values
       }
-      destination_workload_namespace: traces_label_values(request: {account_id: $accountId, label: "destination_workload_namespace", start_time: $startTime, end_time: $endTime, query_request: {where: __WHERE2__}}) {
+      destination_workload_namespace: traces_label_values(request: {account_id: $accountId, label: "destination_workload_namespace", start_time: $startTime, end_time: $endTime, query_request: {where: __WHERE2__}__IDXREQ__}) {
         label
         values
       }
@@ -255,6 +261,10 @@ const apiTrace = {
       where['_binary'] = binary;
     }
     TraceListingFiltersV3 = TraceListingFiltersV3.replaceAll('__WHERE2__', `${gqlStringify(where)}`);
+    // ES-only: scope the facet values to the picked trace index so they match the
+    // trace table. Omitted (falls back to the account default) for other providers.
+    const idxReq = data.esIndex ? `, request: {index: ${JSON.stringify(data.esIndex)}}` : '';
+    TraceListingFiltersV3 = TraceListingFiltersV3.replaceAll('__IDXREQ__', idxReq);
     const response = await queryGraphQL(TraceListingFiltersV3, 'TraceListingFiltersV3', {
       accountId,
       startTime: data.startDate ? new Date(data.startDate).getTime() : 0,
@@ -265,15 +275,15 @@ const apiTrace = {
   async traceDistinctFilters(accountId: string, data: any) {
     let TraceListingFiltersV3 = `
     query TraceListingFiltersV3($accountId: String!, $startTime: Float, $endTime: Float) {
-      span_name: traces_label_values(request: {account_id: $accountId, label: "span_name", start_time: $startTime, end_time: $endTime, query_request: {where: __WHERE__}}) {
+      span_name: traces_label_values(request: {account_id: $accountId, label: "span_name", start_time: $startTime, end_time: $endTime, query_request: {where: __WHERE__}__IDXREQ__}) {
         label
         values
       }
-      http_status_code: traces_label_values(request: {account_id: $accountId, label: "http_status_code", start_time: $startTime, end_time: $endTime, query_request: {where: __WHERE__}}) {
+      http_status_code: traces_label_values(request: {account_id: $accountId, label: "http_status_code", start_time: $startTime, end_time: $endTime, query_request: {where: __WHERE__}__IDXREQ__}) {
         label
         values
       }
-      status_code: traces_label_values(request: {account_id: $accountId, label: "status_code", query_request: {where: __WHERE__}}) {
+      status_code: traces_label_values(request: {account_id: $accountId, label: "status_code", query_request: {where: __WHERE__}__IDXREQ__}) {
         label
         values
       }
@@ -292,6 +302,10 @@ const apiTrace = {
       where['_binary'] = binary;
     }
     TraceListingFiltersV3 = TraceListingFiltersV3.replaceAll('__WHERE__', `${gqlStringify(where)}`);
+    // ES-only: scope the facet values to the picked trace index so they match the
+    // trace table. Omitted (falls back to the account default) for other providers.
+    const idxReq = data.esIndex ? `, request: {index: ${JSON.stringify(data.esIndex)}}` : '';
+    TraceListingFiltersV3 = TraceListingFiltersV3.replaceAll('__IDXREQ__', idxReq);
     const response = await queryGraphQL(TraceListingFiltersV3, 'TraceListingFiltersV3', {
       accountId,
       startTime: data.startDate ? new Date(data.startDate).getTime() : 0,
@@ -314,12 +328,16 @@ const apiTrace = {
     resource: string,
     spanType: string,
     sortCol: string,
-    sortOrder: string
+    sortOrder: string,
+    esIndex?: string
   ) {
     if (accountId === 'demo') {
       const tracesMock = await getMockData('k8s-traces');
       return tracesMock.traceGroupV2.data;
     }
+    // ES-only: pin the grouping/count queries to the picked trace index. Omitted
+    // (falls back to the account default) for other providers.
+    const idxReq = esIndex ? { request: { index: esIndex } } : {};
     const binary: any = {};
     const orderBy: any[] = [];
     const and: any[] = [];
@@ -379,6 +397,7 @@ const apiTrace = {
       query: '',
       start_time: startDate ? new Date(startDate).getTime() : 0,
       end_time: endDate ? new Date(endDate).getTime() : 0,
+      ...idxReq,
       query_request: {
         where: {
           _binary: binary,
@@ -396,6 +415,7 @@ const apiTrace = {
       query: '',
       start_time: startDate ? new Date(startDate).getTime() : 0,
       end_time: endDate ? new Date(endDate).getTime() : 0,
+      ...idxReq,
       query_request: {
         where: {
           _binary: binary,
@@ -538,7 +558,7 @@ const apiTrace = {
     });
     return response?.data?.data;
   },
-  async traceServiceAndOperationV2(accountId: string, traceId: string) {
+  async traceServiceAndOperationV2(accountId: string, traceId: string, esIndex?: string) {
     if (accountId == 'demo') {
       const tracesServiceOperationMock = await getMockData('k8s-traces-service-operation');
       return tracesServiceOperationMock.data;
@@ -547,6 +567,9 @@ const apiTrace = {
     const query: any = {};
     query['account_id'] = accountId;
     query['trace_id'] = traceId;
+    if (esIndex) {
+      query['request'] = { index: esIndex };
+    }
     const TRACE_SERVICE_OPERATION_V2 = `
     query TracesServiceOperations {
       traces_get_heatmap(request: __WHERE__) {

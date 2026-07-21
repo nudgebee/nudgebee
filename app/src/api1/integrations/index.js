@@ -405,6 +405,37 @@ const apiIntegrations = {
     }
   },
 
+  // Lists the Elasticsearch cluster's queryable index targets from the current
+  // (unsaved) config values, for the per-account index picker. Mirrors
+  // testIntegrationConnectionByConfig's request shape; on edit the modal passes
+  // integration_id and the stored ciphertext for untyped secrets.
+  listESIndexes: async function (integrationName, accountIds, configValues, source, integrationId) {
+    const LIST_ES_INDEXES = `
+    mutation ListESIndexes($data: IntegrationListESIndexesRequest!) {
+      integrations_list_es_indexes(request: $data) {
+        indexes
+        error
+      }
+    }
+    `;
+    try {
+      const data = {
+        integration_name: integrationName,
+        account_ids: accountIds,
+        integration_config_values: configValues,
+        source: source || 'user',
+      };
+      if (integrationId) {
+        data.integration_id = integrationId;
+      }
+      const response = await queryGraphQL(LIST_ES_INDEXES, 'ListESIndexes', { data });
+      return response?.data?.data?.integrations_list_es_indexes || { indexes: [] };
+    } catch (err) {
+      console.log('failed to list elasticsearch indices-', err);
+      return { indexes: [], error: 'Failed to load indices' };
+    }
+  },
+
   testIntegrationConnection: async function (integrationId) {
     const TEST_INTEGRATION_CONNECTION = `
     mutation TestIntegrationConnection($data: IntegrationTestConnectionRequest!) {

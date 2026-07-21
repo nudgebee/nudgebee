@@ -721,6 +721,7 @@ const apiAccount = {
           provider
           provider_type
           capabilities {
+            default_index
             supports_log_groups
             supports_auto_query
             supports_raw_query

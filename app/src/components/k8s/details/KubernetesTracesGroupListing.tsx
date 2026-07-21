@@ -15,6 +15,7 @@ import EmptyData from '@shared/EmptyData';
 import noDataImg from '@assets/Icon-no-data-available.svg';
 import { ds } from '@utils/colors';
 import apiUser from '@api1/user';
+import observability from '@api1/observability';
 import { Button as DsButton } from '@ui/Button';
 import ConversationPopup from '@components/llm/ConversationPopup';
 import { DEFAULT_TITLE, getNubiIconUrl } from '@hooks/useTenantBranding';
@@ -79,6 +80,13 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
   const tracesCaps = tracesProvider?.capabilities;
   const tracesProviderName = tracesProvider?.provider;
   const supportsFeature = tracesCaps?.supports_trace_grouping ?? null;
+  // ES-only trace index picker: the chosen index (seeded from the account's
+  // resolved default in provider capabilities), plus the cluster's trace index
+  // options for the dropdown. Trace APIs are gated on esIndex below.
+  const isEsProvider = tracesProviderName === 'ES';
+  const [esIndex, setEsIndex] = useState('');
+  const [esIndexList, setEsIndexList] = useState<string[]>([]);
+  const [isEsIndexLoading, setIsEsIndexLoading] = useState(false);
   const [analysisQuery, setAnalysisQuery] = useState<string>('');
   const [isConversationPopupOpen, setIsConversationPopupOpen] = useState(false);
   const [sessionId, setSessionId] = useState<string>('');
@@ -102,12 +110,42 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
     });
   }, []);
 
+  // ES: seed the index picker with the account's resolved default and load the
+  // cluster's trace index options once the provider resolves to ES.
+  useEffect(() => {
+    if (!isEsProvider) return;
+    setEsIndex((prev) => prev || tracesCaps?.default_index || '');
+    fetchTraceEsIndexes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEsProvider, tracesCaps?.default_index]);
+
+  const fetchTraceEsIndexes = async () => {
+    if (!selectedK8sAccount || selectedK8sAccount === 'demo') {
+      setEsIndexList([]);
+      return;
+    }
+    setIsEsIndexLoading(true);
+    try {
+      // Reuse the shared ES index-list API (logs_list_labels); force the ES
+      // provider so it resolves even when ES isn't the account's default log provider.
+      const res = await observability.fetchLogLabels({ account_id: selectedK8sAccount, log_provider: 'ES' });
+      const indexes = (res?.data?.data?.logs_list_labels || []).map((l: any) => l?.label).filter(Boolean);
+      setEsIndexList(indexes);
+    } catch {
+      setEsIndexList([]);
+    } finally {
+      setIsEsIndexLoading(false);
+    }
+  };
+
   const LISTING_HEADER = [
     { name: 'Total Request', width: '10%' },
     { name: 'Error Count', sortEnabled: true, width: '10%' },
     { name: 'Source', width: '20%' },
     { name: 'Span', width: '10%' },
-    { name: 'Status Code', width: '10%' },
+    // ES groups aggregate all statuses (status isn't a group key), so the per-row
+    // Status Code is not meaningful there — hide the column for ES.
+    ...(isEsProvider ? [] : [{ name: 'Status Code', width: '10%' }]),
     { name: 'Target' },
     { name: 'Resource' },
     { name: 'Duration', sortEnabled: true },
@@ -145,7 +183,8 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
         resource.replaceAll(/'/g, "\\'"),
         spanType,
         sortCol,
-        sortObject.order
+        sortObject.order,
+        isEsProvider ? esIndex : undefined
       )
       .then((res: any) => {
         setLoading(false);
@@ -201,9 +240,7 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
               {
                 component: <Text value={item.span_name} />,
               },
-              {
-                component: <Text value={item.http_status_code} />,
-              },
+              ...(isEsProvider ? [] : [{ component: <Text value={item.http_status_code} /> }]),
               {
                 component: <Text value={(item?.destination_workload_namespace || '-') + '/' + item.destination_workload_name} />,
               },
@@ -271,6 +308,8 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
 
   useEffect(() => {
     if (supportsFeature === false) return;
+    // ES: don't hit any trace API until an index is selected (or resolved as default).
+    if (tracesProviderName === 'ES' && !esIndex) return;
     if (showNamespaceFilter && showWorkloadFilter) {
       apiTrace
         .traceDistinctWorloadAndNamespace(selectedK8sAccount as string, {
@@ -280,6 +319,7 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
           destinationWorkload,
           showNamespaceFilter,
           showWorkloadFilter,
+          esIndex: tracesProviderName === 'ES' ? esIndex : undefined,
         })
         .then((res) => {
           if (res && Object.keys(res).length > 0) {
@@ -290,10 +330,12 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
           }
         });
     }
-  }, [time, router.query?.KubernetesDetails]);
+  }, [time, router.query?.KubernetesDetails, esIndex]);
 
   useEffect(() => {
     if (supportsFeature === false) return;
+    // ES: don't hit any trace API until an index is selected (or resolved as default).
+    if (tracesProviderName === 'ES' && !esIndex) return;
     listTraces();
   }, [
     currentPage,
@@ -305,6 +347,7 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
     router.query?.KubernetesDetails,
     sortObject,
     resource,
+    esIndex,
   ]);
 
   const onDateTimeRangeChange = (selectedDateTime: any) => {
@@ -398,6 +441,21 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
           </>
         }
       >
+        {isEsProvider && (
+          <FilterDropdown
+            label='Index'
+            value={esIndex || null}
+            options={esIndexList ?? []}
+            freeSolo
+            searchPlaceholder='Search or type pattern (use * for wildcard)...'
+            isOptionsLoading={isEsIndexLoading}
+            onSelect={(_e: any, value: any) => {
+              setEsIndex(value || '');
+              setCurrentPage(0);
+            }}
+            size='sm'
+          />
+        )}
         {showNamespaceFilter && (
           <FilterDropdown
             label='Destination Namespace'
@@ -481,6 +539,9 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
                       showTimeFilter={false}
                       apiOrQuery={drilldownQuery.resource}
                       httpStatus={drilldownQuery.httpStatusCode}
+                      // Pin the drilldown (traces + heatmap) to the same index the
+                      // group was built from, so it doesn't fall back to the account default.
+                      passedEsIndex={isEsProvider ? esIndex : undefined}
                     />
                   );
                 },

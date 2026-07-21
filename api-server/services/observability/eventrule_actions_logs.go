@@ -591,7 +591,7 @@ type signozLogsParams struct {
 func (a *signozLogsAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
 	securityCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
 
-	provider, err := GetDefaultProvider(securityCtx, ctx.GetAccountId(), "logs", "")
+	provider, err := GetDefaultProvider(securityCtx, ctx.GetAccountId(), "logs", "", "")
 	if err != nil {
 		securityCtx.GetLogger().Error("signozLogsEnricherAction: unable to get default log provider", "error", err)
 		return false

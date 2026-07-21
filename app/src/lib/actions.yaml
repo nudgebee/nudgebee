@@ -2546,6 +2546,17 @@ actions:
       timeout: 120
     permissions:
       - role: tenant_admin
+  - name: integrations_list_es_indexes
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/integration'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 120
+    permissions:
+      - role: tenant_admin
   - name: k8s_cluster_groupings_v2
     definition:
       kind: "synchronous"

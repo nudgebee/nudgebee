@@ -4346,6 +4346,8 @@ input TraceServiceMapRequest {
 input DefaultProviderRequest {
   account_id: String!
   provider_type: String!
+  provider_source: String
+  provider: String
 }
 
 input FetchMetricsListRequest {

@@ -45,49 +45,25 @@ func catIndices(names ...string) []map[string]any {
 	return out
 }
 
-// TestCollapseConcreteIndexTargets_LogsPicker reproduces the reported bug input:
-// six rolled-over backing-index generations of one logical log stream, a metrics
-// backing index, and system streams. The logs picker must show exactly one stable
-// stream name and never the metrics stream or ".ds-*" rows.
-func TestCollapseConcreteIndexTargets_LogsPicker(t *testing.T) {
+// TestCollapseAllConcreteIndexTargets checks the unfiltered variant backing the
+// per-account index picker: every ".ds-*" backing index collapses to its parent
+// stream regardless of signal type, legacy indices pass through, dot-prefixed
+// system indices drop, and duplicates dedupe.
+func TestCollapseAllConcreteIndexTargets(t *testing.T) {
 	indices := catIndices(
 		".ds-logs-generic.otel-default-2026.06.18-000004",
-		".ds-logs-generic.otel-default-2026.06.19-000006",
-		".ds-logs-generic.otel-default-2026.06.18-000005",
-		".ds-logs-generic.otel-default-2026.06.17-000003",
-		".ds-logs-generic.otel-default-2026.06.15-000001",
-		".ds-logs-generic.otel-default-2026.06.15-000002",
-		".ds-metrics-kubeletstatsreceiver.otel-default-2026.06.17-000001", // other type -> excluded
-		".ds-ilm-history-7-2026.06.10-000001",                             // system stream -> excluded (not logs-)
-		".geoip_databases",                                                // system index -> excluded
+		".ds-logs-generic.otel-default-2026.06.19-000006",                 // same stream -> deduped
+		".ds-metrics-kubeletstatsreceiver.otel-default-2026.06.17-000001", // kept (no type filter)
+		".ds-traces-generic.otel-default-2026.06.17-000001",               // kept
+		"nudgebee-agent",   // legacy passthrough
+		"nudgebee-agent",   // duplicate -> deduped
+		".geoip_databases", // system concrete -> dropped
 	)
-	got := collapseConcreteIndexTargets("logs", indices)
-	assert.Equal(t, []string{"logs-generic.otel-default"}, got)
-}
-
-func TestCollapseConcreteIndexTargets_MetricsPicker(t *testing.T) {
-	indices := catIndices(
-		".ds-metrics-kubeletstatsreceiver.otel-default-2026.06.17-000001",
-		".ds-logs-generic.otel-default-2026.06.18-000004", // other type -> excluded
-	)
-	got := collapseConcreteIndexTargets("metrics", indices)
-	assert.Equal(t, []string{"metrics-kubeletstatsreceiver.otel-default"}, got)
-}
-
-// TestCollapseConcreteIndexTargets_LegacyPassthrough guards that pre-data-stream
-// (e.g. Fluent-Bit) deployments, whose data lives in plain non-".ds" indices,
-// still get their indices listed and system indices are still excluded.
-func TestCollapseConcreteIndexTargets_LegacyPassthrough(t *testing.T) {
-	indices := catIndices(
+	got := collapseAllConcreteIndexTargets(indices)
+	assert.Equal(t, []string{
+		"logs-generic.otel-default",
+		"metrics-kubeletstatsreceiver.otel-default",
+		"traces-generic.otel-default",
 		"nudgebee-agent",
-		"iteration-prod",
-		"nudgebee-agent",       // duplicate -> deduped
-		".kibana_task_manager", // system -> excluded
-	)
-	got := collapseConcreteIndexTargets("logs", indices)
-	assert.Equal(t, []string{"nudgebee-agent", "iteration-prod"}, got)
-}
-
-func TestCollapseConcreteIndexTargets_Empty(t *testing.T) {
-	assert.Empty(t, collapseConcreteIndexTargets("logs", nil))
+	}, got)
 }

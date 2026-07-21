@@ -9,6 +9,7 @@ import (
 	"nudgebee/services/integrations"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/llm"
+	"nudgebee/services/observability"
 	"nudgebee/services/security"
 	"nudgebee/services/user"
 	"strings"
@@ -41,6 +42,13 @@ type ValidationResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
 	Error   string `json:"error,omitempty"`
+}
+
+// ESIndexesResponse is returned by integrations_list_es_indexes: the cluster's
+// queryable index targets (data-stream / index names) for the ES index picker.
+type ESIndexesResponse struct {
+	Indexes []string `json:"indexes"`
+	Error   string   `json:"error,omitempty"`
 }
 
 // notifyGoogleChatBinding asks notifications-server to post a bind/unbind notice
@@ -322,6 +330,39 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			Success: true,
 			Message: "Connection successful",
 		})
+		return
+
+	case "integrations_list_es_indexes":
+		// Lists the Elasticsearch cluster's queryable index targets from raw config
+		// values (add flow: the integration isn't saved yet), for the per-account
+		// index picker. Mirrors integrations_check_connection_config's request shape;
+		// the edit form sends stored ciphertext + is_encrypted for untyped secrets.
+		reqInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		var request IntegrationCreateRequest
+		if err := common.UnmarshalMapToStruct(reqInput, &request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		decrypted, decErr := core.DecryptConfigValues(request.IntegrationConfigValues)
+		if decErr != nil {
+			c.JSON(200, ESIndexesResponse{Error: decErr.Error()})
+			return
+		}
+		cfg := observability.BuildElasticsearchConfigFromValues(decrypted)
+		if cfg.Url == "" {
+			c.JSON(200, ESIndexesResponse{Error: "Elasticsearch URL is required"})
+			return
+		}
+		indexes, listErr := observability.ListAllESIndexTargets(cfg)
+		if listErr != nil {
+			c.JSON(200, ESIndexesResponse{Error: listErr.Error()})
+			return
+		}
+		c.JSON(200, ESIndexesResponse{Indexes: indexes})
 		return
 
 	case "webhook_subject_mappings_sync":

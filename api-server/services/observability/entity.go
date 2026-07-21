@@ -268,6 +268,11 @@ type DefaultProvider struct {
 	AccountId      string `json:"account_id" mapstructure:"account_id" validate:"required"`
 	ProviderType   string `json:"provider_type" mapstructure:"provider_type" validate:"required"`
 	ProviderSource string `json:"provider_source"`
+	// Provider optionally pins resolution to a specific provider (e.g. "ES") instead
+	// of the account's default for this ProviderType. Used by the logs tab's provider
+	// switcher to resolve an overridden provider's per-account/default index. Empty
+	// keeps the existing default-provider behavior.
+	Provider string `json:"provider" mapstructure:"provider"`
 }
 
 // ProviderCapabilities describes the features supported by a resolved provider.
@@ -294,6 +299,11 @@ type ProviderCapabilities struct {
 	// static+tenant+account+dynamic merge. Traces: provider static map. Metrics:
 	// not populated (metric sources have no label mapping). Omitted when empty.
 	LabelMappings map[string]string `json:"label_mappings,omitempty"`
+	// DefaultIndex is the account's resolved default index for this provider+type
+	// (ES per-account Advanced Settings mapping → top-level {trace,log,metrics}_index),
+	// mirroring DefaultProviderResponse.DefaultIndex. Only populated by the
+	// list_provider_capabilities path; empty for providers without an index concept.
+	DefaultIndex string `json:"default_index,omitempty"`
 }
 
 // AvailableProvider is one active observability provider that can serve the
@@ -376,12 +386,13 @@ type TracesQueryResult struct {
 }
 
 type TracesHeatMapRequest struct {
-	AccountId      string `json:"account_id" mapstructure:"account_id" validate:"required"`
-	ProviderType   string `json:"provider_type" mapstructure:"provider_type"`
-	ProviderSource string `json:"provider_source"`
-	TraceId        string `json:"trace_id" validate:"required"`
-	StartTime      int64  `json:"start_time" mapstructure:"start_time"`
-	EndTime        int64  `json:"end_time" mapstructure:"end_time"`
+	AccountId      string         `json:"account_id" mapstructure:"account_id" validate:"required"`
+	ProviderType   string         `json:"provider_type" mapstructure:"provider_type"`
+	ProviderSource string         `json:"provider_source"`
+	TraceId        string         `json:"trace_id" validate:"required"`
+	StartTime      int64          `json:"start_time" mapstructure:"start_time"`
+	EndTime        int64          `json:"end_time" mapstructure:"end_time"`
+	Request        map[string]any `json:"request"` // free-form overrides (e.g. ES index picked in the Traces tab)
 }
 
 type TracesV3LabelValuesRequest struct {
@@ -392,6 +403,7 @@ type TracesV3LabelValuesRequest struct {
 	StartTime      int64                     `json:"start_time" mapstructure:"start_time"`
 	EndTime        int64                     `json:"end_time" mapstructure:"end_time"`
 	QueryRequest   TracesQueryBuilderRequest `json:"query_request" mapstructure:"query_request"`
+	Request        map[string]any            `json:"request"` // free-form overrides (e.g. ES index picked in the Traces tab)
 }
 
 // FetchTraceLabelRequest is the input for the traces_list_labels action — it lists the

@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	neturl "net/url"
@@ -173,6 +174,17 @@ func (m Elasticsearch) ConfigSchema() core.IntegrationSchema {
 				Default:     false,
 				Priority:    15,
 			},
+			// Advanced Settings: per-account log/metrics/trace index overrides for one
+			// shared ES endpoint. Stored as a JSON array of {account_id, log_index,
+			// metrics_index, trace_index}; shape-validated in ValidateConfig. Hidden
+			// because the UI renders it via dedicated Per-Account Index cards, not the
+			// generic dynamic form.
+			"index_account_mapping": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "JSON array of per-account index overrides",
+				Default:     "",
+				Hidden:      true,
+			},
 		},
 	}
 }
@@ -237,6 +249,25 @@ func (m Elasticsearch) ValidateConfig(sc *security.SecurityContext, config []cor
 		}
 	default:
 		errs = append(errs, fmt.Errorf("auth_type must be one of basic, cognito, api_key, bearer_token (got %q)", authType))
+	}
+
+	// Advanced Settings: per-account index mapping (optional). Validate only the
+	// shape — a JSON array whose entries each carry an account_id. Blank index
+	// strings and unknown account ids are tolerated (resolution falls back to the
+	// top-level index), mirroring the lenient webhook account_mapping contract.
+	if raw := strings.TrimSpace(configMap["index_account_mapping"]); raw != "" {
+		var rows []struct {
+			AccountId string `json:"account_id"`
+		}
+		if err := json.Unmarshal([]byte(raw), &rows); err != nil {
+			errs = append(errs, fmt.Errorf("index_account_mapping must be a JSON array: %w", err))
+		} else {
+			for i, r := range rows {
+				if strings.TrimSpace(r.AccountId) == "" {
+					errs = append(errs, fmt.Errorf("index_account_mapping[%d] is missing account_id", i))
+				}
+			}
+		}
 	}
 
 	if len(errs) > 0 {

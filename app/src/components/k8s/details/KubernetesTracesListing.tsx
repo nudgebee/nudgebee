@@ -20,6 +20,7 @@ import {
 import DateTime from '@shared/format/Datetime';
 import { Box, Typography } from '@mui/material';
 import apiTrace from '@api1/kubernetes/trace';
+import observability from '@api1/observability';
 import k8sApi from '@api1/kubernetes';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { RightArrowIcon } from '@assets';
@@ -72,6 +73,11 @@ interface KubernetesTracesListingProps {
   traceData?: any[];
   displaySideFilters?: boolean;
   traceIds?: string[];
+  // ES-only: when a parent (e.g. the Trace Group tab) has already picked a trace
+  // index, it pins this listing to the same index instead of letting it resolve the
+  // account default — so a group's drilldown queries the index the group was built
+  // from. Undefined = this listing owns the index (its own picker).
+  passedEsIndex?: string;
 }
 
 interface SourceDestinationViewProps {
@@ -175,6 +181,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   traceData = [],
   displaySideFilters = true,
   traceIds = [],
+  passedEsIndex,
 }) => {
   const router = useRouter();
   const { assistantName } = useTenantBranding();
@@ -315,6 +322,18 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   const [sessionId, setSessionId] = useState<string>('');
   const [traceProvider, setTraceProvider] = useState('');
   const [services, setServices] = useState<string[]>([]);
+  // ES-only trace index picker: the chosen index (default resolved from the
+  // per-account mapping / top-level trace_index), plus the cluster's trace index
+  // options for the dropdown.
+  // Seed from a parent-pinned index when present; otherwise this listing resolves
+  // its own default (see fetchDefaultProvider).
+  const [esIndex, setEsIndex] = useState(passedEsIndex ?? '');
+  const [esIndexList, setEsIndexList] = useState<string[]>([]);
+  const [isEsIndexLoading, setIsEsIndexLoading] = useState(false);
+  // Keep in sync if a parent later resolves/changes the pinned index.
+  useEffect(() => {
+    if (passedEsIndex !== undefined) setEsIndex(passedEsIndex);
+  }, [passedEsIndex]);
   // 'spans' (default) = one row per span; 'traces' = one row per trace (root span).
   const [traceView, setTraceView] = useState<TraceViewMode>('spans');
 
@@ -346,10 +365,39 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
       if (res?.data?.errors) {
         return '';
       }
-      return res?.data?.data?.observability_get_default_provider?.provider || '';
+      const obs = res?.data?.data?.observability_get_default_provider;
+      const provider = obs?.provider || '';
+      // ES: seed the index picker with the per-account resolved default and load the
+      // cluster's trace index options — unless a parent pinned the index (drilldown),
+      // in which case that index wins and there's no picker to populate.
+      if (provider === 'ES' && passedEsIndex === undefined) {
+        setEsIndex(obs?.default_index || '');
+        fetchTraceEsIndexes();
+      }
+      return provider;
     } catch (error: any) {
       console.error(error);
       return '';
+    }
+  };
+
+  const fetchTraceEsIndexes = async () => {
+    if (!selectedK8sAccount || selectedK8sAccount === 'demo') {
+      setEsIndexList([]);
+      return;
+    }
+    setIsEsIndexLoading(true);
+    try {
+      // Reuse the shared ES index-list API (logs_list_labels). The lister is no
+      // longer type-filtered, so one endpoint serves logs/metrics/traces; force the
+      // ES provider so it resolves even when ES isn't the account's default log provider.
+      const res = await observability.fetchLogLabels({ account_id: selectedK8sAccount, log_provider: 'ES' });
+      const indexes = (res?.data?.data?.logs_list_labels || []).map((l: any) => l?.label).filter(Boolean);
+      setEsIndexList(indexes);
+    } catch {
+      setEsIndexList([]);
+    } finally {
+      setIsEsIndexLoading(false);
     }
   };
 
@@ -577,6 +625,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
         traceId: traceId || traceIds,
         fromWorkload: fromWorkload,
         byTrace: traceView === 'traces',
+        esIndex: traceProvider === 'ES' ? esIndex : '',
         cols: [
           'trace_id',
           'span_id',
@@ -624,7 +673,8 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   };
 
   useEffect(() => {
-    if (traceData.length > 0 || !traceProvider) {
+    // ES: don't hit any trace API until an index is selected (or resolved as default).
+    if (traceData.length > 0 || !traceProvider || (traceProvider === 'ES' && !esIndex)) {
       return;
     }
     if (showNamespaceFilter && showWorkloadFilter && traceProvider === 'otel_clickhouse') {
@@ -663,6 +713,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
         destinationWorkload,
         showNamespaceFilter,
         showWorkloadFilter,
+        esIndex: traceProvider === 'ES' ? esIndex : undefined,
       })
       .then((res) => {
         if (res && Object.keys(res).length > 0) {
@@ -674,17 +725,19 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
           setStatusCodes(status_code.filter((v: string) => v?.trim()));
         }
       });
-  }, [traceProvider, time, router.query?.KubernetesDetails]);
+  }, [traceProvider, time, router.query?.KubernetesDetails, esIndex]);
 
   // Fetch services for Jaeger provider
   useEffect(() => {
-    if (traceData.length > 0 || !traceProvider || traceProvider === 'otel_clickhouse') {
+    // ES: don't hit any trace API until an index is selected (or resolved as default).
+    if (traceData.length > 0 || !traceProvider || traceProvider === 'otel_clickhouse' || (traceProvider === 'ES' && !esIndex)) {
       return;
     }
     apiTrace
       .traceDistinctWorloadAndNamespace(selectedK8sAccount, {
         startDate: formatDateForTrace(time.startTime),
         endDate: formatDateForTrace(time.endTime),
+        esIndex: traceProvider === 'ES' ? esIndex : undefined,
       })
       .then((res) => {
         if (res && Object.keys(res).length > 0) {
@@ -696,7 +749,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
       .catch((err) => {
         console.error('Failed to fetch services for Jaeger:', err);
       });
-  }, [traceProvider, time, selectedK8sAccount]);
+  }, [traceProvider, time, selectedK8sAccount, esIndex]);
 
   useEffect(() => {
     if (traceData.length > 0) {
@@ -705,7 +758,8 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   }, [traceData]);
 
   useEffect(() => {
-    if (traceData.length > 0 || !traceProvider) {
+    // ES: don't hit any trace API until an index is selected (or resolved as default).
+    if (traceData.length > 0 || !traceProvider || (traceProvider === 'ES' && !esIndex)) {
       return;
     }
     listTraces();
@@ -732,6 +786,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
     fromWorkload,
     duration,
     traceIds?.join(','),
+    esIndex,
   ]);
 
   const filterWorkloadOnSelectedNamespace = (value: string | string[]) => {
@@ -875,7 +930,14 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
             const isCloudTrace = drilldownQuery?.trace_source === 'gcp';
             const cloudTraceSpans =
               isCloudTrace && traceData.length > 0 ? traceData.filter((s: any) => s.trace_id === drilldownQuery.trace_id) : undefined;
-            return <KubernetesTraceServiceOperation accountId={selectedK8sAccount} query={drilldownQuery} traceData={cloudTraceSpans} />;
+            return (
+              <KubernetesTraceServiceOperation
+                accountId={selectedK8sAccount}
+                query={drilldownQuery}
+                traceData={cloudTraceSpans}
+                esIndex={traceProvider === 'ES' ? esIndex : undefined}
+              />
+            );
           },
         },
         {
@@ -1258,6 +1320,21 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
           <Box sx={{ flexBasis: '100%', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
             {displaySideFilters && traceData.length === 0 && (
               <>
+                {traceProvider === 'ES' && passedEsIndex === undefined && (
+                  <FilterDropdown
+                    label='Index'
+                    value={esIndex || null}
+                    options={esIndexList ?? []}
+                    freeSolo
+                    searchPlaceholder='Search or type pattern (use * for wildcard)...'
+                    isOptionsLoading={isEsIndexLoading}
+                    onSelect={(_e: any, value: any) => {
+                      setEsIndex(value || '');
+                      setCurrentPage(0);
+                    }}
+                    size='sm'
+                  />
+                )}
                 {traceProvider !== 'otel_clickhouse' ? (
                   <>
                     <FilterDropdown

@@ -217,9 +217,11 @@ func (e *ElasticSaasMetricSource) FetchMetricList(ctx *security.RequestContext, 
 		return nil, err
 	}
 
-	// List stable data-stream names (metrics-*), not the rolled-over ".ds-*"
-	// backing indices that _cat/indices exposes. See listESIndexTargets.
-	indexNames, err := listESIndexTargets("metrics", cfg)
+	// List stable data-stream names, not the rolled-over ".ds-*" backing indices
+	// that _cat/indices exposes. No type-prefix filter: client clusters don't
+	// necessarily name metric streams "metrics-*", so every queryable target is
+	// offered. See ListAllESIndexTargets.
+	indexNames, err := ListAllESIndexTargets(cfg)
 	if err != nil {
 		return nil, err
 	}
