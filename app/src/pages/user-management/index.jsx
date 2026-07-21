@@ -12,6 +12,8 @@ import { AuditIcon, NotificationIcon1, User1, UserGroupIcon, IntegrationsIcon } 
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/router';
 import { userManagementFilters } from '@lib/authHooks';
+import { hasReadAccess } from '@lib/auth';
+import Loader from '@shared/Loader';
 
 // Base filters that ship in OSS. Extensions register additional filters via
 // registerUserManagementFilter — those slot in at the end (e.g. billing on
@@ -49,7 +51,23 @@ export default function UserManagement() {
     setSelectedFilter(option ? option.value : 0);
   }, [filterOptions, router.asPath]);
 
+  // Same gate the sidebar's own "Admin" nav item uses (layout/index.jsx) — a
+  // user who can't see that nav entry shouldn't be able to reach any of its
+  // tabs (Users, Groups, Audits, Notifications, Integrations, Ownership) via
+  // a typed/bookmarked URL either. Depends on `session` itself (not just
+  // `sessionData.status`) so a mid-session role change — status stays
+  // 'authenticated' throughout a refetch — still re-evaluates hasReadAccess().
+  useEffect(() => {
+    if (session && !hasReadAccess()) {
+      router.replace('/home');
+    }
+  }, [session, router]);
+
   const SelectedBody = filterOptions[selectedFilter]?.Body;
+
+  if (!session || !hasReadAccess()) {
+    return <Loader />;
+  }
 
   return (
     <>
