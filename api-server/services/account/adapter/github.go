@@ -786,7 +786,7 @@ func getGitCredentials(ctx AccountAdapterContext, ticketProvider string) (string
 		}
 	}()
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", fmt.Errorf("querying integration_config_values (integration_id=%s): %w", integrationID, err)
 	}
 
 	configs := make(map[string]string)
@@ -794,7 +794,7 @@ func getGitCredentials(ctx AccountAdapterContext, ticketProvider string) (string
 		var configName, value string
 		var isEncrypted bool
 		if err := rows.Scan(&configName, &value, &isEncrypted); err != nil {
-			return "", "", "", "", err
+			return "", "", "", "", fmt.Errorf("scanning integration_config_values (integration_id=%s): %w", integrationID, err)
 		}
 
 		// Decrypt if encrypted
@@ -1103,7 +1103,7 @@ func getGitDetailsFromRecommendation(ctx AccountAdapterContext, request ApplyRec
 	}
 	_, _, username, password, err := getGitCredentials(ctx, request.ProviderConfig["name"].(string))
 	if err != nil {
-		return gitDetailFromDeployment{}, err
+		return gitDetailFromDeployment{}, fmt.Errorf("getGitCredentials: %w", err)
 	}
 
 	metaData, ok := request.Resource.Meta.Object().(map[string]any)
@@ -1129,7 +1129,7 @@ func getGitDetailsFromRecommendation(ctx AccountAdapterContext, request ApplyRec
 	// get deployment
 	rows, err := dbms.Db.Queryx("SELECT meta::varchar FROM k8s_workloads WHERE tenant_id = $1 and cloud_account_id = $2 and kind = $3 and namespace = $4 and name = $5 and is_active = true ", ctx.GetSecurityContext().GetTenantId(), request.Recommendation.CloudAccountId, controllerKind, controllerNamespace, conrtollerName)
 	if err != nil {
-		return gitDetailFromDeployment{}, err
+		return gitDetailFromDeployment{}, fmt.Errorf("querying k8s_workloads for git details (kind=%s namespace=%s name=%s): %w", controllerKind, controllerNamespace, conrtollerName, err)
 	}
 	defer func() {
 		err := rows.Close()
@@ -1139,11 +1139,19 @@ func getGitDetailsFromRecommendation(ctx AccountAdapterContext, request ApplyRec
 	}()
 
 	var meta string
+	found := false
 	for rows.Next() {
 		err := rows.Scan(&meta)
 		if err != nil {
-			return gitDetailFromDeployment{}, err
+			return gitDetailFromDeployment{}, fmt.Errorf("scanning k8s_workloads.meta for git details (kind=%s namespace=%s name=%s): %w", controllerKind, controllerNamespace, conrtollerName, err)
 		}
+		found = true
+	}
+	if err := rows.Err(); err != nil {
+		return gitDetailFromDeployment{}, fmt.Errorf("iterating k8s_workloads rows: %w", err)
+	}
+	if !found {
+		return gitDetailFromDeployment{}, common.ErrorNotFound(fmt.Sprintf("error: no active k8s_workloads row found for kind=%s namespace=%s name=%s; resync the account or check the workload still exists", controllerKind, controllerNamespace, conrtollerName))
 	}
 
 	workloadMetadata := make(map[string]any)

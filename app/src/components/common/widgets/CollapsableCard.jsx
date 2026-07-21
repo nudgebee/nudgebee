@@ -11,6 +11,7 @@ import { hasWriteAccess } from '@lib/auth';
 import { useRouter } from 'next/router';
 import SafeIcon from '@shared/icons/SafeIcon';
 import Label from '@ui/Label';
+import { Link } from '@ui/Link';
 import CustomBorderCard from '@ui/CustomBorderCard';
 import { ds } from '@utils/colors';
 import { safeJSONParse } from '@utils/common';
@@ -243,9 +244,28 @@ function CollapsableCard({
             </Box>
           )}
           <Box display='flex' alignItems='center' justifyContent='flex-end' gap={'var(--ds-space-2)'} textAlign={'end'}>
-            {resolveButton && eventResolution ? (
+            {resolveButton && eventResolution && (
               <Label text={eventResolution.status === 'InProgress' ? 'In Progress' : eventResolution.status} height={ds.space[5]} />
-            ) : resolveButton && hasWriteAccess(accountId) ? (
+            )}
+            {resolveButton &&
+              eventResolution &&
+              eventResolution.type === 'PullRequest' &&
+              typeof eventResolution.type_reference_id === 'string' &&
+              /^https?:\/\//.test(eventResolution.type_reference_id) && (
+                <Link
+                  href={eventResolution.type_reference_id}
+                  openInNew
+                  style={{
+                    fontSize: 'var(--ds-text-small)',
+                    fontWeight: 'var(--ds-font-weight-semibold)',
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0,
+                  }}
+                >
+                  View PR
+                </Link>
+              )}
+            {resolveButton && hasWriteAccess(accountId) && (!eventResolution || eventResolution.status === 'Failed') ? (
               <Box component='span' sx={{ '& button': { width: 'max-content', whiteSpace: 'nowrap' } }}>
                 <Button
                   tone='primary'

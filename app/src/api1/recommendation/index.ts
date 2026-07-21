@@ -1370,7 +1370,7 @@ const apiRecommendations = {
       });
       invalidateOptimisationSummaryRecommendations();
       return {
-        data: response?.data?.data?.recommendations_apply?.data,
+        data: response?.data?.data?.events_update_resolution?.data,
         errors: response?.data?.errors,
       };
     }

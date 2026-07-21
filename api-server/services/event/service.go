@@ -341,7 +341,8 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 
 	// insert resolution
 	statusMessage := "Configuring"
-	found, recommendationResolutionId := hasInProgressRecommendation(existingRecommendations)
+	cardId, _ := queryData["card_id"].(string)
+	found, recommendationResolutionId := hasInProgressRecommendation(existingRecommendations, cardId)
 	resolutionCreatedAt := time.Now().UTC()
 	resolution := models.EventResolution{
 		Id:              recommendationResolutionId,
@@ -822,7 +823,14 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 				ProviderConfig: query.ProviderConfig,
 			}
 		}
-	} else if okRaisePR {
+	} else if okRaisePR && queryData["card_id"] != "MemoryAllocationCard" {
+		// Guarded to exclude MemoryAllocationCard: that card raises a PR for a
+		// CPU/memory rightsizing change (a mechanical values-file edit), not an
+		// AI code fix. It shares the "raisePR" flag with this branch's AskAiCard
+		// flow but must fall through to the generic RightSizing branch below,
+		// which already builds the request shape ApplyRightsizingRecommendationUsingCodeAgent
+		// expects (Category=RightSizing/pod_right_sizing) instead of the
+		// event_log_analysis-derived code-diff path here.
 		if !raisePR {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: raisePR must be true to create a pull request")
 		}
@@ -835,12 +843,27 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 		// root cause are passed as intent, and the agent re-applies or adapts the
 		// fix against the current code before opening the PR. The intent is to fix
 		// the identified issue, not to blindly replay a possibly-stale patch.
-		eventLogAnalysisRow := dbms.Db.QueryRowx("SELECT analysis from event_log_analysis WHERE analysis_type = 'log_analysis' and cloud_account_id = $1 AND event_id = $2 AND status = 'COMPLETED'", query.AccountId, query.EventId)
+		//
+		// event_log_analysis is keyed by (cloud_account_id, event_fingerprint,
+		// event_aggregation_key, analysis_type) — one row per recurring alert, not
+		// per event row — matching how the RCA read path (llm-server's
+		// GetEventAnalysis) looks it up. A duplicate occurrence shares the
+		// fingerprint with the original event that actually completed the
+		// analysis, so filtering by this event's own id here (as the query used
+		// to) never matches for a duplicate and previously surfaced a raw
+		// sql.ErrNoRows.
+		if r.Fingerprint == nil || r.AggregationKey == nil {
+			return EventRecommendationApplyResponse{}, common.ErrorBadRequest("event has no fingerprint or aggregation key; cannot look up its log analysis")
+		}
+		eventLogAnalysisRow := dbms.Db.QueryRowx("SELECT analysis from event_log_analysis WHERE analysis_type = 'log_analysis' and cloud_account_id = $1 AND event_fingerprint = $2 AND event_aggregation_key = $3 AND status = 'COMPLETED'", query.AccountId, *r.Fingerprint, *r.AggregationKey)
 		if eventLogAnalysisRow.Err() != nil {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("invalid event_log_analysis - %s", query.EventId)
 		}
 		eventLogAnalysisDetail := map[string]any{}
 		if err = eventLogAnalysisRow.MapScan(eventLogAnalysisDetail); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return EventRecommendationApplyResponse{}, common.ErrorNotFound("no completed log analysis found for this event; re-run the analysis before raising a PR")
+			}
 			return EventRecommendationApplyResponse{}, err
 		}
 		analysisStr, _ := eventLogAnalysisDetail["analysis"].(string)
@@ -904,6 +927,9 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 			ProviderConfig: query.ProviderConfig,
 		}
 	} else {
+		if raisePR {
+			resolution.Type = models.RecommendationResolutionTypePullRequest
+		}
 		containerName := ""
 		if queryData["container_name"] != nil {
 			containerName = queryData["container_name"].(string)
@@ -983,8 +1009,14 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					containerName: containerValues,
 				}),
 			},
-			Resource:       cr,
-			ProviderConfig: query.ProviderConfig,
+			// The raise-PR path (github/gitlab adapter) dispatches the code agent
+			// asynchronously and writes its outcome back via this flag's table
+			// choice (event_resolution vs recommendation_resolution). This
+			// function only ever inserts into event_resolution (below), so it
+			// must stay true or a PR raised from here never surfaces here.
+			IsEventResolution: true,
+			Resource:          cr,
+			ProviderConfig:    query.ProviderConfig,
 		}
 
 		for _, eventResolution := range existingRecommendations {
@@ -1018,9 +1050,8 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 
 	if err != nil {
 		ctx.GetLogger().Error("error applying recommendation", "error", err)
-		_, err = dbms.Db.Exec("UPDATE event_resolution SET status = $2, updated_at = $3, status_message = $4 WHERE id = $1", resolution.Id, models.RecommendationResolutionStatusFailed, time.Now().UTC().Format(time.RFC3339), err.Error())
-		if err != nil {
-			ctx.GetLogger().Error("error updating status of event resolution", "error", err)
+		if _, updateErr := dbms.Db.Exec("UPDATE event_resolution SET status = $2, updated_at = $3, status_message = $4 WHERE id = $1", resolution.Id, models.RecommendationResolutionStatusFailed, time.Now().UTC().Format(time.RFC3339), err.Error()); updateErr != nil {
+			ctx.GetLogger().Error("error updating status of event resolution", "error", updateErr)
 		}
 		return EventRecommendationApplyResponse{}, err
 	}
@@ -1113,10 +1144,23 @@ func getRevertRecommendationRequest(cr models.Resource, r models.Event) (map[str
 	return map[string]any{}, nil
 }
 
-func hasInProgressRecommendation(existingRecommendations []models.EventResolution) (bool, string) {
+// hasInProgressRecommendation looks for an existing InProgress resolution for
+// the same card (cardId) so a retry reuses its row instead of creating a
+// duplicate. Scoped by card_id — an event can have several cards each with
+// their own in-flight fix (e.g. MemoryAllocationCard's rightsizing PR and
+// AskAiCard's code-fix PR running concurrently); matching on status alone
+// would reuse a different card's row and let this card's dispatch overwrite
+// that card's PR tracking (type_reference_id, status_message) with its own.
+func hasInProgressRecommendation(existingRecommendations []models.EventResolution, cardId string) (bool, string) {
 	recommendationResolutionId := common.GenerateUUID()
 	for _, resolution := range existingRecommendations {
-		if resolution.Status == models.RecommendationResolutionStatusInProgress {
+		if resolution.Status != models.RecommendationResolutionStatusInProgress {
+			continue
+		}
+		obj, _ := resolution.Data.Object().(map[string]any)
+		input, _ := obj["data"].(map[string]any)
+		existingCardId, _ := input["card_id"].(string)
+		if existingCardId == cardId {
 			return true, resolution.Id
 		}
 	}
