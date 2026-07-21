@@ -563,11 +563,22 @@ func (t *CLITool) executeCommand(ctx context.Context, command, workingDir string
 
 	cmd.Dir = workingDir
 
-	// Set environment for GitHub CLI if it's a gh command and we have a token
+	// Build any extra environment the command needs. Both `gh` and raw `git`
+	// operations authenticate off the same injected token, but historically only
+	// `gh` commands received it: a bare `git clone https://github.com/...` ran
+	// unauthenticated and failed with "could not read Username", which the planner
+	// then classified as an unrecoverable repo-access error and abstained on. Wire
+	// the token into git HTTPS operations too so any clone/fetch the agent issues
+	// directly (not just via the repo_clone tool) authenticates the same way.
+	var extraEnv []string
 	if t.isGitHubCommand(command) && githubToken != "" {
-		env := os.Environ()
-		env = append(env, fmt.Sprintf("GITHUB_TOKEN=%s", githubToken))
-		cmd.Env = env
+		extraEnv = append(extraEnv, fmt.Sprintf("GITHUB_TOKEN=%s", githubToken))
+	}
+	if commandInvokesGit(command) {
+		extraEnv = append(extraEnv, gitHTTPSAuthEnv(githubToken)...)
+	}
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
 	}
 
 	// Use CombinedOutput for simpler, more reliable output capture
@@ -911,6 +922,43 @@ func (t *CLITool) SetGitHubToken(token string) {
 func (t *CLITool) isGitCommand(command string) bool {
 	trimmed := strings.TrimSpace(command)
 	return strings.HasPrefix(trimmed, "git ")
+}
+
+// gitInvocationRe matches a `git` invocation at a command position: the start of
+// the command or immediately after a shell separator (`;`, `|`, `&`, `&&`, `||`,
+// `(`), followed by whitespace. This catches chained clones like
+// `cd repo && git clone …` while ignoring prose or other tokens that merely
+// contain the letters "git" (e.g. `gitfoo`, `echo git`, "a note about git").
+var gitInvocationRe = regexp.MustCompile(`(?:^|[;|&(])\s*git\s`)
+
+// commandInvokesGit reports whether the command actually runs `git` (as opposed
+// to a `gh` command or unrelated text). Used to decide when to inject git HTTPS
+// authentication into the command's environment. It is intentionally broader
+// than isGitCommand (which is prefix-only and scoped to output path
+// normalization) so that chained invocations still authenticate.
+func commandInvokesGit(command string) bool {
+	return gitInvocationRe.MatchString(strings.TrimSpace(command))
+}
+
+// gitHTTPSAuthEnv returns environment entries that let raw `git` commands
+// authenticate to GitHub over HTTPS using the injected token, mirroring how the
+// repo_clone tool embeds `x-access-token:<token>@github.com` (works for both PATs
+// and GitHub App installation tokens). Auth is applied via ephemeral GIT_CONFIG_*
+// variables (an insteadOf rewrite) so the token is scoped to this process and is
+// never persisted into the cloned repo's config. GIT_TERMINAL_PROMPT=0 is always
+// set so a missing or invalid token fails fast instead of blocking on an
+// interactive username prompt. github.com only — GitHub Enterprise and GitLab
+// clones continue to route through the provider-aware repo_clone tool.
+func gitHTTPSAuthEnv(token string) []string {
+	env := []string{"GIT_TERMINAL_PROMPT=0"}
+	if token == "" {
+		return env
+	}
+	return append(env,
+		"GIT_CONFIG_COUNT=1",
+		fmt.Sprintf("GIT_CONFIG_KEY_0=url.https://x-access-token:%s@github.com/.insteadOf", token),
+		"GIT_CONFIG_VALUE_0=https://github.com/",
+	)
 }
 
 // normalizeGitPaths normalizes file paths in git command output to be relative to repository root

@@ -186,11 +186,15 @@ func evaluateCodeUsingCli(ctx *security.RequestContext, request CodeAgent2Reques
 			// For GitHub App, get installation token (only applicable for GitHub)
 			if provider == "github" {
 				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err == nil {
+				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
+					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
+				} else {
 					// Use the URL from credentials for GitHub Enterprise support
 					apiUrl := creds[0].Url
 					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), apiUrl, installationID)
-					if err == nil {
+					if err != nil {
+						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
+					} else {
 						gitToken = token
 					}
 				}
@@ -374,11 +378,15 @@ func evaluateCodeUsingPod(ctx *security.RequestContext, agentRequest core.NBAgen
 			// For GitHub App, get installation token (only applicable for GitHub)
 			if provider == "github" {
 				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err == nil {
+				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
+					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
+				} else {
 					// Use the URL from credentials for GitHub Enterprise support
 					apiUrl := creds[0].Url
 					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), apiUrl, installationID)
-					if err == nil {
+					if err != nil {
+						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
+					} else {
 						gitToken = token
 					}
 				}
@@ -532,10 +540,19 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		case "application":
 			if provider == "github" {
 				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err == nil {
+				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
+					// A GitHub App integration stores the installation ID in the
+					// password field; if it is not a plain integer we cannot mint a
+					// token. Swallowing this silently produced an invisible failure:
+					// the workspace clone then ran unauthenticated and the analysis
+					// abstained with "repository inaccessible".
+					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
+				} else {
 					apiUrl := creds[0].Url
 					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), apiUrl, installationID)
-					if err == nil {
+					if err != nil {
+						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
+					} else {
 						gitToken = token
 					}
 				}
@@ -2619,9 +2636,13 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		case "application":
 			if provider == "github" {
 				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err == nil {
+				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
+					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
+				} else {
 					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), creds[0].Url, installationID)
-					if err == nil {
+					if err != nil {
+						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
+					} else {
 						gitToken = token
 					}
 				}

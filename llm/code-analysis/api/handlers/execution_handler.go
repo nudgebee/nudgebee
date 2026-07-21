@@ -79,6 +79,19 @@ var (
 	// filesystem access. Treat references as out-of-scope for the /dev rule
 	// (e.g. `> /dev/null`, `2>&1`, `cat /dev/urandom | head -c N`).
 	devPseudoDeviceRe = regexp.MustCompile(`(?i)/dev/(null|stdout|stderr|stdin|zero|random|urandom|fd/\d+|tty)\b`)
+	// Match a recursive `rm` that targets the root filesystem itself. The command
+	// is `rm` with any flag set that includes a recursive flag (`-r`, `-R`,
+	// `-rf`, `-fr`, `-rfv`, `-r -f`, `--recursive`, in any order), whose target is
+	// the root: one or more leading slashes (`/`, `//`, `///` all resolve to root)
+	// followed by a terminator — end-of-line, a shell separator, whitespace, or a
+	// root glob (`/*`). A plain substring match on "rm -rf /" both over-blocked
+	// legitimate absolute-path cleanups such as `rm -rf /tmp/code-analysis-<id>-*`
+	// (the workspace's own temp cleanup) AND under-matched other flag orders.
+	// Sensitive absolute subpaths (/etc, /var, …) are already covered by the
+	// absolute-path check in validateCommand. Matched against the quote-stripped,
+	// lower-cased command so `rm -rf "/"` / `rm -rf /""` / `rm -R /` cannot slip
+	// through via quote interleaving or case.
+	rmRootFSRe = regexp.MustCompile("\\brm\\s+(?:-[a-z0-9-]+\\s+)*(?:-[a-z0-9]*r[a-z0-9]*|--recursive)(?:\\s+-[a-z0-9-]+)*\\s+/+([;|&<>`(\\s=]|$|\\*)")
 	// quoteStripper removes both double and single quotes so that quote-interleaved
 	// path obfuscation (e.g. /"e"tc → /etc after stripping) is caught by the
 	// sensitive-path scanner. Applied to scanTarget (after regex carve-outs) only.
@@ -326,12 +339,16 @@ func (h *ExecutionHandler) validateCommand(command, workDir string) error {
 		}
 	}
 
-	// 3. Block dangerous system commands
-	dangerousCmds := []string{"sudo ", "su ", "chown ", "chmod 777", "rm -rf /", "mkfs", "fdisk", "apt-get", "apk ", "yum ", "dnf "}
+	// 3. Block dangerous system commands. `rm -rf /` is handled separately below
+	// so it matches the root filesystem only, not any absolute-path cleanup.
+	dangerousCmds := []string{"sudo ", "su ", "chown ", "chmod 777", "mkfs", "fdisk", "apt-get", "apk ", "yum ", "dnf "}
 	for _, cmd := range dangerousCmds {
 		if strings.Contains(commandLower, cmd) {
 			return fmt.Errorf("dangerous command %s is blocked", cmd)
 		}
+	}
+	if rmRootFSRe.MatchString(quotesStrippedLower) {
+		return fmt.Errorf("dangerous command 'rm -rf /' (root filesystem) is blocked")
 	}
 
 	// 4. Block symlink creation to sensitive paths (ln -s /etc/passwd link && cat link)
