@@ -9,8 +9,8 @@ type bigQueryDialect struct {
 }
 
 func (d *bigQueryDialect) QuoteIdentifier(s string) string {
-	// BigQuery uses backticks for identifiers (same as ClickHouse)
-	return "`" + s + "`"
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	return "`" + strings.ReplaceAll(s, "`", "\\`") + "`"
 }
 
 func (d *bigQueryDialect) QuoteLiteral(s any) string {

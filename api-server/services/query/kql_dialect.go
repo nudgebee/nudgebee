@@ -1,6 +1,9 @@
 package query
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 type kqlDialect struct {
 }
@@ -12,8 +15,10 @@ func (d *kqlDialect) QuoteIdentifier(s string) string {
 }
 
 func (d *kqlDialect) QuoteLiteral(s any) string {
-	// KQL string literals are wrapped in single quotes
-	return fmt.Sprintf("'%v'", s)
+	val := fmt.Sprintf("%v", s)
+	val = strings.ReplaceAll(val, "\\", "\\\\")
+	val = strings.ReplaceAll(val, "'", "\\'")
+	return fmt.Sprintf("'%s'", val)
 }
 
 func (d *kqlDialect) FuncDateTruncate(dateUnit string, columnName string) string {

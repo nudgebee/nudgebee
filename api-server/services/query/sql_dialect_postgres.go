@@ -9,7 +9,7 @@ type postgresDialect struct {
 }
 
 func (d *postgresDialect) QuoteIdentifier(s string) string {
-	return `"` + s + `"`
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
 
 func (d *postgresDialect) QuoteLiteral(s any) string {

@@ -201,6 +201,81 @@ func TestGenerateWhereClause_RejectsUnknownOperator(t *testing.T) {
 	assert.Empty(t, sql)
 }
 
+func TestQuoteIdentifier_EscapesQuotingCharacter(t *testing.T) {
+	t.Run("ClickHouse backtick", func(t *testing.T) {
+		d := &clickhouseDialect{}
+		assert.Equal(t, "```test``col```", d.QuoteIdentifier("`test`col`"))
+	})
+	t.Run("ClickHouse backslash literal", func(t *testing.T) {
+		d := &clickhouseDialect{}
+		assert.Equal(t, "`col\\name`", d.QuoteIdentifier("col\\name"))
+	})
+	t.Run("BigQuery backtick", func(t *testing.T) {
+		d := &bigQueryDialect{}
+		assert.Equal(t, "`\\`test\\`col\\``", d.QuoteIdentifier("`test`col`"))
+	})
+	t.Run("BigQuery backslash", func(t *testing.T) {
+		d := &bigQueryDialect{}
+		assert.Equal(t, "`col\\\\name`", d.QuoteIdentifier("col\\name"))
+	})
+	t.Run("Postgres double-quote", func(t *testing.T) {
+		d := &postgresDialect{}
+		assert.Equal(t, `"""test""col"""`, d.QuoteIdentifier(`"test"col"`))
+	})
+}
+
+func TestKqlQuoteLiteral_EscapesSingleQuotesAndBackslashes(t *testing.T) {
+	d := &kqlDialect{}
+	assert.Equal(t, "'safe'", d.QuoteLiteral("safe"))
+	assert.Equal(t, "'it\\'s a test'", d.QuoteLiteral("it's a test"))
+	assert.Equal(t, "'\\'; DROP TABLE users; --'", d.QuoteLiteral("'; DROP TABLE users; --"))
+	assert.Equal(t, "'C:\\\\Users\\\\admin'", d.QuoteLiteral("C:\\Users\\admin"))
+}
+
+func TestKqlWhereClause_SQLInjection(t *testing.T) {
+	tableDef := TableDefinition{
+		Def: "TestTable",
+		Columns: map[string]ColumnDefinition{
+			"name": {Type: "string"},
+		},
+	}
+	gen := KqlGenerator{}
+	where := QueryWhereClause{
+		Binary: BinaryWhereClause{
+			"name": {Eq: "O'Malley"},
+		},
+	}
+	result, err := gen.generateKqlWhereClause(where, tableDef)
+	assert.NoError(t, err)
+	assert.Equal(t, "where name == 'O\\'Malley'", result)
+}
+
+func TestKqlWhereClause_TypeCasting(t *testing.T) {
+	tableDef := TableDefinition{
+		Def: "TestTable",
+		Columns: map[string]ColumnDefinition{
+			"age":     {Type: "integer"},
+			"score":   {Type: "float"},
+			"created": {Type: "datetime"},
+		},
+	}
+	gen := KqlGenerator{}
+	where := QueryWhereClause{
+		Binary: BinaryWhereClause{
+			"age":     {Eq: 42, Between: map[string]any{"_gte": 18, "_lte": 65}},
+			"score":   {Gt: 95.5},
+			"created": {Lt: "2026-01-01"},
+		},
+	}
+	result, err := gen.generateKqlWhereClause(where, tableDef)
+	assert.NoError(t, err)
+	assert.Contains(t, result, "age >= toint('18')")
+	assert.Contains(t, result, "age <= toint('65')")
+	assert.Contains(t, result, "age == toint('42')")
+	assert.Contains(t, result, "created < todatetime('2026-01-01')")
+	assert.Contains(t, result, "score > todouble('95.5')")
+}
+
 func TestGenerateWhereClause_NilDialect(t *testing.T) {
 	// Setup a table definition with an invalid/unknown source
 	tableDef := TableDefinition{

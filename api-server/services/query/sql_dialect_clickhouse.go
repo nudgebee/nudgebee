@@ -9,7 +9,7 @@ type clickhouseDialect struct {
 }
 
 func (d *clickhouseDialect) QuoteIdentifier(s string) string {
-	return "`" + s + "`"
+	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
 }
 
 func (d *clickhouseDialect) QuoteLiteral(s any) string {

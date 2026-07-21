@@ -9,6 +9,19 @@ import (
 type KqlGenerator struct {
 }
 
+func kqlCast(val string, colType ColumnDefinitionType) string {
+	switch colType {
+	case ColumnDefinitionTypeInt:
+		return fmt.Sprintf("toint(%s)", val)
+	case ColumnDefinitionTypeFloat:
+		return fmt.Sprintf("todouble(%s)", val)
+	case ColumnDefinitionTypeDatetime:
+		return fmt.Sprintf("todatetime(%s)", val)
+	default:
+		return val
+	}
+}
+
 func (m KqlGenerator) generateKqlColumnExpression(columnDef ColumnDefinition, column QueryColumn, tableDef TableDefinition, where_col bool) string {
 	var dialect kqlDialect
 	switch columnDef.Type {
@@ -72,6 +85,8 @@ func (m KqlGenerator) generateKqlWhereClause(where QueryWhereClause, tableDef Ta
 	}
 	slices.Sort(binaryCols)
 
+	var dialect kqlDialect
+
 	// handle binary expressions
 	for _, origCol := range binaryCols {
 		binary := where.Binary[origCol]
@@ -93,23 +108,31 @@ func (m KqlGenerator) generateKqlWhereClause(where QueryWhereClause, tableDef Ta
 			val := binary[op]
 			switch op {
 			case Between:
-				vals := val.(map[string]any)
-				parts = append(parts, fmt.Sprintf("%s >= %s(%v)", col, colType, vals["_gte"]))
-				parts = append(parts, fmt.Sprintf("%s <= %s(%v)", col, colType, vals["_lte"]))
+				vals, ok := val.(map[string]any)
+				if !ok {
+					return "", fmt.Errorf("invalid value type for 'between' clause on column '%s'", col)
+				}
+				gte, okGte := vals["_gte"]
+				lte, okLte := vals["_lte"]
+				if !okGte || !okLte || gte == nil || lte == nil {
+					return "", fmt.Errorf("missing '_gte' or '_lte' bounds for 'between' clause on column '%s'", col)
+				}
+				parts = append(parts, fmt.Sprintf("%s >= %s", col, kqlCast(dialect.QuoteLiteral(gte), colType)))
+				parts = append(parts, fmt.Sprintf("%s <= %s", col, kqlCast(dialect.QuoteLiteral(lte), colType)))
 			case Eq:
-				parts = append(parts, fmt.Sprintf("%s == '%v'", col, val))
+				parts = append(parts, fmt.Sprintf("%s == %s", col, kqlCast(dialect.QuoteLiteral(val), colType)))
 			case Nq:
-				parts = append(parts, fmt.Sprintf("%s != '%v'", col, val))
+				parts = append(parts, fmt.Sprintf("%s != %s", col, kqlCast(dialect.QuoteLiteral(val), colType)))
 			case Lte:
-				parts = append(parts, fmt.Sprintf("%s <= %s(%v)", col, colType, val))
+				parts = append(parts, fmt.Sprintf("%s <= %s", col, kqlCast(dialect.QuoteLiteral(val), colType)))
 			case Lt:
-				parts = append(parts, fmt.Sprintf("%s < %s(%v)", col, colType, val))
+				parts = append(parts, fmt.Sprintf("%s < %s", col, kqlCast(dialect.QuoteLiteral(val), colType)))
 			case Gte:
-				parts = append(parts, fmt.Sprintf("%s >= %s(%v)", col, colType, val))
+				parts = append(parts, fmt.Sprintf("%s >= %s", col, kqlCast(dialect.QuoteLiteral(val), colType)))
 			case Gt:
-				parts = append(parts, fmt.Sprintf("%s > %s(%v)", col, colType, val))
+				parts = append(parts, fmt.Sprintf("%s > %s", col, kqlCast(dialect.QuoteLiteral(val), colType)))
 			case Like, ILike:
-				parts = append(parts, fmt.Sprintf("%s contains '%v'", col, val))
+				parts = append(parts, fmt.Sprintf("%s contains %s", col, dialect.QuoteLiteral(val)))
 			case In, NotIn:
 				var strValues []string
 				switch v := val.(type) {
@@ -132,7 +155,11 @@ func (m KqlGenerator) generateKqlWhereClause(where QueryWhereClause, tableDef Ta
 					if op == NotIn {
 						inOp = "!in"
 					}
-					parts = append(parts, fmt.Sprintf("%s %s (%s)", col, inOp, "'"+strings.Join(strValues, "','")+"'"))
+					quoted := make([]string, len(strValues))
+					for i, sv := range strValues {
+						quoted[i] = kqlCast(dialect.QuoteLiteral(sv), colType)
+					}
+					parts = append(parts, fmt.Sprintf("%s %s (%s)", col, inOp, strings.Join(quoted, ",")))
 				}
 			}
 		}
