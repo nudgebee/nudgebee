@@ -125,7 +125,7 @@ export const ECSTasks = (props: {
     }
   }, [props?.accountId, selectedTagKey]);
 
-  const listEcsTasks = () => {
+  const listEcsTasks = (isStale: () => boolean = () => false) => {
     if (!props?.accountId) {
       return;
     }
@@ -145,6 +145,11 @@ export const ECSTasks = (props: {
         page * rowsPerPage
       )
       .then((res: any) => {
+        // Ignore a response whose request was superseded (deps changed / unmount)
+        // so a stale page/filter can't overwrite the current rows.
+        if (isStale()) {
+          return;
+        }
         setLoading(false);
         const cloudResourceCount = res.data?.data?.cloud_resourses_aggregate?.aggregate?.count || 0;
         const cloudResourceData = (res.data?.data?.cloud_resourses || []).map((item: any) => {
@@ -234,6 +239,9 @@ export const ECSTasks = (props: {
         setEcsInstancesCount(cloudResourceCount);
       })
       .catch((error) => {
+        if (isStale()) {
+          return;
+        }
         setLoading(false);
         snackbar.error(`Error fetching ECS instances: ${error.message}`);
         console.error('Error fetching ECS instances:', error);
@@ -241,7 +249,11 @@ export const ECSTasks = (props: {
   };
 
   useEffect(() => {
-    listEcsTasks();
+    let stale = false;
+    listEcsTasks(() => stale);
+    return () => {
+      stale = true;
+    };
   }, [props?.accountId, page, rowsPerPage, selectedTagKey, selectedTagValue, selectedState, appliedSearchFilter]);
 
   return (
@@ -380,7 +392,7 @@ export const ECSServices = (props: {
     setPage(0);
   };
 
-  const listEcsService = () => {
+  const listEcsService = (isStale: () => boolean = () => false) => {
     if (!props?.accountId) {
       return;
     }
@@ -400,6 +412,11 @@ export const ECSServices = (props: {
         page * rowsPerPage
       )
       .then((res: any) => {
+        // Ignore a response whose request was superseded (deps changed / unmount)
+        // so a stale page/filter can't overwrite the current rows.
+        if (isStale()) {
+          return;
+        }
         setLoading(false);
         const cloudResourceCount = res.data?.data?.cloud_resourses_aggregate?.aggregate?.count || 0;
         const cloudResourceData = (res.data?.data?.cloud_resourses || []).map((item: any) => {
@@ -455,6 +472,9 @@ export const ECSServices = (props: {
         setEcsInstancesCount(cloudResourceCount);
       })
       .catch((error) => {
+        if (isStale()) {
+          return;
+        }
         setLoading(false);
         snackbar.error(`Error fetching ECS instances: ${error.message}`);
         console.error('Error fetching ECS instances:', error);
@@ -476,7 +496,11 @@ export const ECSServices = (props: {
   }, [props?.accountId, selectedTagKey]);
 
   useEffect(() => {
-    listEcsService();
+    let stale = false;
+    listEcsService(() => stale);
+    return () => {
+      stale = true;
+    };
   }, [props?.accountId, page, selectedTagKey, selectedTagValue, selectedState, appliedSearchFilter]);
 
   const ecsServiceActions = getActionsForService('AmazonECS', 'service');
