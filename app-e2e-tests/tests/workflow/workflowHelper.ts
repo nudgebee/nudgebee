@@ -95,8 +95,8 @@ export async function pasteAndApplyWorkflowJson(
     await navigator.clipboard.writeText(text);
   }, jsonContent);
   await locators.codeMirrorEditor.click();
-  await page.keyboard.press("Control+A");
-  await page.keyboard.press("Control+V");
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.press("ControlOrMeta+V");
 
   await locators.applyJsonBtn.waitFor({ state: "visible", timeout: 15000 });
   await locators.applyJsonBtn.click();

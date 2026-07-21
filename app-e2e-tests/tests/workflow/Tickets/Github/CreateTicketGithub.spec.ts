@@ -58,11 +58,10 @@ test("Automation workflow Create ticket Github", async ({ page }) => {
   await selectTicketIntegration(locators, process.env.GITHUB_NAME ?? "");
   await selectProjectKey(page, locators, process.env.GITHUB_PROJECT_KEY ?? "");
 
-  await locators.dialogContent.evaluate((el) => (el.scrollTop = el.scrollHeight));
-  await page.waitForTimeout(500);
-
-  await locators.dialog.getByText("Select issue type", { exact: false }).first().waitFor({ state: "visible", timeout: 15000 });
-  await locators.dialog.getByText("Select issue type", { exact: false }).first().click();
+  const issueTypeBtn = locators.dialog.getByRole("button", { name: "Select issue type", exact: true });
+  await issueTypeBtn.waitFor({ state: "visible", timeout: 15000 });
+  await issueTypeBtn.scrollIntoViewIfNeeded();
+  await issueTypeBtn.click();
   await page.getByText("Issue", { exact: true }).waitFor({ state: "visible", timeout: 10000 });
   await page.getByText("Issue", { exact: true }).click();
   console.log("Selected ticket type: Issue");
