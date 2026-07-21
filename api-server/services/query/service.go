@@ -316,20 +316,46 @@ func getAccountIdFromQuery(ctx *security.RequestContext, query QueryRequest, col
 	return ""
 }
 
+// neverMatchClause returns a predicate that is always false, used to fail an
+// authorization scope CLOSED when the caller's set of allowed ids is empty.
+// `column IS NULL AND column IS NOT NULL` can never hold for any row.
+func neverMatchClause(column string) QueryWhereClause {
+	return QueryWhereClause{
+		And: []QueryWhereClause{
+			{Binary: map[string]map[BinaryWhereClauseType]any{column: {IsNull: true}}},
+			{Binary: map[string]map[BinaryWhereClauseType]any{column: {IsNull: false}}},
+		},
+	}
+}
+
+// scopedInClause builds an `column IN (ids)` restriction for authorization
+// scoping. Unlike a raw In clause — which the SQL builder renders as the literal
+// `true` for an empty list (match-all, intentional for user filters) — an empty
+// ids set here yields a never-match, so a scoped user who resolves to zero
+// accounts/namespaces sees nothing rather than everything in the tenant (#34582).
+func scopedInClause(column string, ids []string) QueryWhereClause {
+	if len(ids) == 0 {
+		return neverMatchClause(column)
+	}
+	return QueryWhereClause{
+		Binary: map[string]map[BinaryWhereClauseType]any{
+			column: {
+				In: ids,
+			},
+		},
+	}
+}
+
 // accountScopeClause builds the account-id restriction injected for account-scoped
 // roles. Normally this bounds the query to the caller's own accounts. When the table
 // is TenantWideReadable, tenant-wide rows (account_id IS NULL) are ORed back in so
 // account-scoped users still see tenant-level configuration that has no owning
 // account (e.g. feature flags, #34510). The tenant_id clause appended alongside this
-// still bounds the result to the caller's tenant.
+// still bounds the result to the caller's tenant. An empty accountIds set fails
+// closed via scopedInClause (#34582): non-tenant-wide tables return nothing,
+// tenant-wide tables return only their NULL-account rows.
 func accountScopeClause(accountIdColumnName string, accountIds []string, tenantWideReadable bool) QueryWhereClause {
-	inClause := QueryWhereClause{
-		Binary: map[string]map[BinaryWhereClauseType]any{
-			accountIdColumnName: {
-				In: accountIds,
-			},
-		},
-	}
+	inClause := scopedInClause(accountIdColumnName, accountIds)
 	if !tenantWideReadable {
 		return inClause
 	}
@@ -369,13 +395,7 @@ func updateQueryWithNamespace(ctx *security.RequestContext, tableDef TableDefini
 			namespacesToFilter = append(namespacesToFilter, namespaces...)
 		}
 
-		query.Where.And = append(query.Where.And, QueryWhereClause{
-			Binary: map[string]map[BinaryWhereClauseType]any{
-				namespaceColumn: {
-					In: namespacesToFilter,
-				},
-			},
-		})
+		query.Where.And = append(query.Where.And, scopedInClause(namespaceColumn, namespacesToFilter))
 	}
 	return query, QueryResponse{}, nil
 }

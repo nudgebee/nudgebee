@@ -256,6 +256,24 @@ func TestAccountScopeClause(t *testing.T) {
 	t.Run("FeatureFlagV2OptsIn", func(t *testing.T) {
 		assert.True(t, table_metadata["feature_flag_v2"].TenantWideReadable)
 	})
+
+	// #34582: an empty accountIds set must fail CLOSED, not render `account_id
+	// IN ()` -> `true` (match-all). A scoped user with zero accounts sees nothing.
+	t.Run("EmptyAccountsFailsClosedWhenNotTenantWide", func(t *testing.T) {
+		clause := accountScopeClause("account_id", []string{}, false)
+		query, err := generateWhereClause(clause, table_metadata["feature_flag_v2"])
+		assert.Nil(t, err)
+		assert.Equal(t, "((account_id IS NULL) AND (account_id IS NOT NULL))", query)
+	})
+
+	// With zero accounts on a tenant-wide table the user still sees only the
+	// tenant-wide (NULL-account) rows, never other accounts' rows.
+	t.Run("EmptyAccountsShowsOnlyNullRowsWhenTenantWide", func(t *testing.T) {
+		clause := accountScopeClause("account_id", []string{}, true)
+		query, err := generateWhereClause(clause, table_metadata["feature_flag_v2"])
+		assert.Nil(t, err)
+		assert.Equal(t, "(((account_id IS NULL) AND (account_id IS NOT NULL)) OR (account_id IS NULL))", query)
+	})
 }
 
 func TestSerialization(t *testing.T) {
