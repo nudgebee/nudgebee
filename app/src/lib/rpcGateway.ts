@@ -1,6 +1,14 @@
 import { getToken, type JWT } from 'next-auth/jwt';
 import type { NextApiRequest } from 'next';
-import { parse, type FieldNode, type OperationDefinitionNode, type SelectionSetNode, type TypeNode, type ValueNode } from 'graphql';
+import {
+  parse,
+  type DocumentNode,
+  type FieldNode,
+  type OperationDefinitionNode,
+  type SelectionSetNode,
+  type TypeNode,
+  type ValueNode,
+} from 'graphql';
 import { decodeSessionJWT, decrypt } from '@lib/internal';
 import { isSessionRevoked } from '@lib/sessionRevocation';
 import { loadActionInputSchema, loadRpcRoutes, type SchemaFieldInfo } from '@lib/rpcRoutes';
@@ -15,6 +23,28 @@ import { pickDefaultRole } from '@lib/rolePriority';
 
 const routes = loadRpcRoutes();
 const inputSchema = loadActionInputSchema();
+
+// LRU cache for graphql parse() results. The frontend sends ~260 distinct
+// static query shapes repeatedly; caching avoids re-tokenizing + re-parsing
+// the same string on every request. Sized to 512 to cover all queries with
+// headroom. Eviction is LRU via Map insertion-order (delete + re-insert on hit).
+const PARSE_CACHE_MAX = 512;
+const parseCache = new Map<string, DocumentNode>();
+
+function cachedParse(query: string): DocumentNode {
+  const hit = parseCache.get(query);
+  if (hit) {
+    parseCache.delete(query);
+    parseCache.set(query, hit);
+    return hit;
+  }
+  const doc = parse(query, { noLocation: true });
+  if (parseCache.size >= PARSE_CACHE_MAX) {
+    parseCache.delete(parseCache.keys().next().value!);
+  }
+  parseCache.set(query, doc);
+  return doc;
+}
 
 // Apply RPC/GraphQL list-input coercion recursively. When a field is
 // declared as a list but the caller passed a single value, wrap it in a
@@ -392,7 +422,7 @@ function isNonNullType(t: TypeNode): boolean {
 export function parseOperation(query: string, variables: Record<string, unknown> | undefined): ParsedOperation {
   let doc;
   try {
-    doc = parse(query, { noLocation: true });
+    doc = cachedParse(query);
   } catch (err: unknown) {
     const detail = err instanceof Error ? err.message : String(err);
     return { ok: false, reason: `parse_failed: ${detail}` };
