@@ -247,6 +247,22 @@ class SlackOAuthFlow(OAuthFlow):
                 body=get_installation_aborted_message("missing tenant association for this OAuth state"),
             )
 
+        # Cross-tenant / CSRF guard: the Next.js callback attaches the installer's
+        # authenticated session tenant as x-tenant-id. It must match the tenant this
+        # state was issued to at /install, so a valid state + code cannot be completed
+        # from a session belonging to a different tenant (Slack workspace capture). The
+        # header is absent only for a pre-this-change frontend mid-rollout; those fall
+        # back to the state->tenant binding (unchanged prior behaviour). This internal
+        # route is only reached through that frontend, which always sets the header.
+        session_tenant = request.headers.get("x-tenant-id", [None])[0]
+        if session_tenant and session_tenant != tenant:
+            self.logger.error("Slack OAuth tenant mismatch: session=%s state=%s", session_tenant, tenant)
+            return BoltResponse(
+                status=403,
+                headers={"Content-Type": CHARSET_UTF_},
+                body=get_installation_aborted_message("this installation was started by a different account"),
+            )
+
         installation = self.run_installation(code)
         if installation is None:
             # failed to run installation with the code
