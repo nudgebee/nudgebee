@@ -29,6 +29,7 @@ import CustomTooltip from '@ui/Tooltip';
 import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { useData } from '@context/DataContext';
+import { hasReadAccess } from '@lib/auth';
 import apiUser, { PREFERENCE_LAST_ACCOUNT_ID } from '@api1/user';
 import AdminIconBlue from '@assets/header/AdminIconBlue.icon.svg';
 import OptimiseIconBlue from '@assets/header/OptimiseIconBlue.icon.svg';
@@ -283,6 +284,7 @@ const navSearchStaticItems = navSearchPages.map((page) => {
     path: page.path,
     acronym: pathAcronym(fragmentPath),
     searchText: `${page.group} ${fragmentPath} ${pathAcronym(fragmentPath)}`,
+    group: page.group,
   };
 });
 
@@ -711,9 +713,19 @@ export default function GlobalPageSearch() {
     () => (hasOpenedSearch ? navSearchProviderItems(gcpDetailsSearchFragments, 'GCP', gcpSearchAccountId, '/cloud-account/details') : []),
     [hasOpenedSearch, gcpSearchAccountId]
   );
+  // Same gate the sidebar's own "Admin" nav item uses (layout/index.jsx) — a
+  // user who can't see that nav entry shouldn't find its pages (Users,
+  // Groups, Audits, Notifications, Integrations, Ownership) via search either.
+  const canAccessAdmin = hasReadAccess();
   const navSearchItems = useMemo(
-    () => [...navSearchStaticItems, ...k8sNavItems, ...awsNavItems, ...azureNavItems, ...gcpNavItems],
-    [k8sNavItems, awsNavItems, azureNavItems, gcpNavItems]
+    () => [
+      ...navSearchStaticItems.filter((opt) => opt.group !== 'Admin' || canAccessAdmin),
+      ...k8sNavItems,
+      ...awsNavItems,
+      ...azureNavItems,
+      ...gcpNavItems,
+    ],
+    [k8sNavItems, awsNavItems, azureNavItems, gcpNavItems, canAccessAdmin]
   );
 
   // Re-resolves one recent value into a full display option. A static page's
@@ -730,7 +742,7 @@ export default function GlobalPageSearch() {
     (value) => {
       const staticMatch = navSearchStaticItems.find((opt) => opt.value === value);
       if (staticMatch) {
-        return staticMatch;
+        return staticMatch.group !== 'Admin' || canAccessAdmin ? staticMatch : null;
       }
       const match = ACCOUNT_SCOPED_SEARCH_PATH_RE.exec(value);
       if (!match) {
@@ -747,7 +759,7 @@ export default function GlobalPageSearch() {
       }
       return navSearchProviderItems(config.fragments, config.label, accountId, config.basePath).find((opt) => opt.value === value);
     },
-    [allCluster]
+    [allCluster, canAccessAdmin]
   );
 
   // Two lists under one plain caption each (opt.sectionLabel): recent picks

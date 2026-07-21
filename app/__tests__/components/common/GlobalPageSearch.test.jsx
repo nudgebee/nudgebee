@@ -19,6 +19,11 @@ jest.mock('next-auth/react', () => ({
   useSession: () => ({ data: { tenant: { id: 'tenant-1' } }, status: 'authenticated' }),
 }));
 
+const mockHasReadAccess = jest.fn().mockReturnValue(true);
+jest.mock('@lib/auth', () => ({
+  hasReadAccess: (...args) => mockHasReadAccess(...args),
+}));
+
 const mockSetSelectedCluster = jest.fn();
 // Mutated per-test before render — GlobalPageSearch reads selectedCluster/allCluster
 // once per render via useData(), so tests that need a different fixture set this
@@ -54,6 +59,7 @@ describe('GlobalPageSearch', () => {
     mockGetLastAccountIdForProvider.mockReturnValue(null);
     mockGetRecentPageSearches.mockReturnValue([]);
     mockDataContextValue = { selectedCluster: null, allCluster: [], setSelectedCluster: mockSetSelectedCluster };
+    mockHasReadAccess.mockReturnValue(true);
   });
 
   it('renders the trigger with the Ctrl/Cmd+K hint', () => {
@@ -75,6 +81,14 @@ describe('GlobalPageSearch', () => {
     fireEvent.change(getSearchInput(), { target: { value: 'umu' } });
     expect(screen.getByText('Users')).toBeInTheDocument();
     expect(screen.queryByText('All Events')).not.toBeInTheDocument();
+  });
+
+  it('hides Admin pages from results for a user without admin nav access', () => {
+    mockHasReadAccess.mockReturnValue(false);
+    render(<GlobalPageSearch />);
+    openSearch();
+    fireEvent.change(getSearchInput(), { target: { value: 'umu' } });
+    expect(screen.queryByText('Users')).not.toBeInTheDocument();
   });
 
   it('navigates and records a recent search when a result is clicked', async () => {
