@@ -36,6 +36,16 @@ interface KubernetesAlertManagerProps {
   accountId: string;
 }
 
+const TABLE_HEADERS = [
+  { name: 'Name', width: '25%' },
+  { name: 'Category', width: '15%' },
+  { name: 'Source', width: '10%' },
+  { name: 'Severity', width: '10%' },
+  { name: 'Status', width: '10%' },
+  { name: 'Configured Actions', width: '25%' },
+  { name: '', width: '5%' },
+];
+
 const KubernetesAlertManager: React.FC<KubernetesAlertManagerProps> = ({ accountId }) => {
   const router = useRouter();
   const k8sAlertManager = 'k8sMgr';
@@ -416,7 +426,7 @@ const KubernetesAlertManager: React.FC<KubernetesAlertManagerProps> = ({ account
             id={k8sAlertManager}
             totalRows={totalCount}
             tableData={data}
-            headers={['Name', 'Category', 'Source', 'Severity', 'Status', 'Configured Actions', '']}
+            headers={TABLE_HEADERS}
             rowsPerPage={rowsPerPage}
             showExpandable={false}
             loading={loading}
