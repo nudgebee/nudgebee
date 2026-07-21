@@ -160,8 +160,14 @@ export class NubiLocators {
     this.saveFunctionBtn = page.getByRole('button', { name: 'Save Function' });
     this.updateFunctionBtn = page.getByRole('button', { name: 'Update Function' });
     this.functionMoreActionsBtn = page.getByRole('button', { name: 'More actions' });
-    this.editFunctionMenuItem = page.getByRole('menuitem', { name: 'Edit Function' });
-    this.deleteFunctionMenuItem = page.getByRole('menuitem', { name: 'Delete Function' });
+    this.editFunctionMenuItem = page
+      .locator('[role="menuitem"]#edit:visible')
+      .or(page.locator('[role="menuitem"]:visible', { hasText: 'Edit Function' }))
+      .first();
+    this.deleteFunctionMenuItem = page
+      .locator('[role="menuitem"]#delete:visible')
+      .or(page.locator('[role="menuitem"]:visible', { hasText: 'Delete Function' }))
+      .first();
     this.confirmDeleteFunctionBtn = page.getByRole('button', { name: 'Delete', exact: true });
     this.functionCreatedMessage = page.getByText('Function created successfully');
     this.functionCreationFailureMessage = page.getByText('A function with this name already exists');
@@ -170,8 +176,14 @@ export class NubiLocators {
 
     // Agent CRUD action locators
     this.agentMoreActionsBtn = page.getByRole('button', { name: 'More actions' });
-    this.editAgentMenuItem = page.getByRole('menuitem', { name: 'Edit Agent' });
-    this.deleteAgentMenuItem = page.getByRole('menuitem', { name: 'Delete Agent' });
+    this.editAgentMenuItem = page
+      .locator('[role="menuitem"]#edit:visible')
+      .or(page.locator('[role="menuitem"]:visible', { hasText: 'Edit Agent' }))
+      .first();
+    this.deleteAgentMenuItem = page
+      .locator('[role="menuitem"]#delete:visible')
+      .or(page.locator('[role="menuitem"]:visible', { hasText: 'Delete Agent' }))
+      .first();
     this.updateAgentBtn = page.getByRole('button', { name: 'Update Agent' });
     this.confirmDeleteAgentBtn = page.getByRole('button', { name: 'Delete' });
     this.updateAgentSuccessMessage = page.getByText('Agent updated successfully');
