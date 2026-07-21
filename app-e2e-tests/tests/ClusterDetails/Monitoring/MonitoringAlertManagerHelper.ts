@@ -112,11 +112,15 @@ export async function toggleAlert(
   testInfo: { title: string }
 ): Promise<void> {
   await clickAlertRowMenu(page, alertName);
-  await expect(page.getByRole("menuitem", { name: new RegExp(action, "i") })).toBeVisible();
+  const toggleItem = page
+    .locator("#toggle-enabled:visible")
+    .or(page.locator('[role="menuitem"]:visible', { hasText: new RegExp(action, "i") }))
+    .first();
+  await expect(toggleItem).toBeVisible();
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await page.getByRole("menuitem", { name: new RegExp(action, "i") }).click();
+      await toggleItem.click();
       await clickDialogSubmit(page);
     },
     { testName: testInfo.title, operationNames: [] }
