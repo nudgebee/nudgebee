@@ -11,11 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeLabelSource is a minimal LogSource used to drive validateReferencedLabels.
-// Only QueryLabels is meaningful; the rest satisfy the interface.
+// fakeLabelSource is a minimal LogSource used to drive validateReferencedLabels and
+// validateReferencedLabelValues. QueryLabels and QueryLabelValues are meaningful; the rest
+// satisfy the interface. labelValues maps a label name to the values the backend returns for
+// it; valuesErr forces QueryLabelValues to fail. lastValuesReq records the most recent
+// QueryLabelValues request so tests can assert on the (widened) time window passed in.
 type fakeLabelSource struct {
-	labels []OutputLogLabel
-	err    error
+	labels        []OutputLogLabel
+	err           error
+	labelValues   map[string][]string
+	valuesErr     error
+	lastValuesReq FetchLogLabelValuesRequest
 }
 
 func (f *fakeLabelSource) QueryLogs(*security.RequestContext, FetchLogRequest) ([]OutputLog, error) {
@@ -24,8 +30,16 @@ func (f *fakeLabelSource) QueryLogs(*security.RequestContext, FetchLogRequest) (
 func (f *fakeLabelSource) QueryLabels(*security.RequestContext, FetchLogLabelRequest) ([]OutputLogLabel, error) {
 	return f.labels, f.err
 }
-func (f *fakeLabelSource) QueryLabelValues(*security.RequestContext, FetchLogLabelValuesRequest) ([]OutputLogLabelValue, error) {
-	return nil, nil
+func (f *fakeLabelSource) QueryLabelValues(_ *security.RequestContext, req FetchLogLabelValuesRequest) ([]OutputLogLabelValue, error) {
+	f.lastValuesReq = req
+	if f.valuesErr != nil {
+		return nil, f.valuesErr
+	}
+	out := make([]OutputLogLabelValue, 0, len(f.labelValues[req.LabelName]))
+	for _, v := range f.labelValues[req.LabelName] {
+		out = append(out, OutputLogLabelValue{Value: v, Attributes: map[string]any{}})
+	}
+	return out, nil
 }
 func (f *fakeLabelSource) GetQuery(*security.RequestContext, FetchLogRequest) (string, error) {
 	return "", nil

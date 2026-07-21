@@ -966,11 +966,23 @@ func (s *LokiSource) QueryLabels(ctx *security.RequestContext, fetchLogRequest F
 }
 
 func (s *LokiSource) QueryLabelValues(ctx *security.RequestContext, fetchLogRequest FetchLogLabelValuesRequest) ([]OutputLogLabelValue, error) {
+	// Prefer an explicit query from Request; otherwise, when the caller supplied a time
+	// window, fall back to it (mirrors QueryLabels) so callers that set StartTime/EndTime —
+	// e.g. the empty-result value validator probing a widened window — actually scope the
+	// value lookup. Callers that pass neither keep the prior pass-through (nil) behaviour.
+	var query any
+	if fetchLogRequest.Request != nil {
+		query = fetchLogRequest.Request["query"]
+	}
+	if str, ok := query.(string); (!ok || str == "") && fetchLogRequest.StartTime > 0 && fetchLogRequest.EndTime > 0 {
+		query = fmt.Sprintf("start=%d&end=%d", fetchLogRequest.StartTime*1_000_000, fetchLogRequest.EndTime*1_000_000)
+	}
+
 	lokiRequest := relay.ActionExecuteBody{
 		AccountID:  fetchLogRequest.AccountId,
 		ActionName: "query_grafana_loki_label_values",
 		ActionParams: map[string]any{
-			"query": fetchLogRequest.Request["query"],
+			"query": query,
 			"label": fetchLogRequest.LabelName,
 		},
 		NoSinks: true,

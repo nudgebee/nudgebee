@@ -393,20 +393,24 @@ func QueryLogs(ctx security.RequestContext, request LogQueryRequest) (core.Obser
 		return observabilityResp, fmt.Errorf("services: logs, unexpected response (status %d): %s", resp.StatusCode, string(jsonBody))
 	}
 
-	// Success: the services server returns {logs, query, provider}. Carry the
-	// query/provider it actually executed into the metadata so the agent and UI
-	// can report which query produced these logs (the request query is empty on
-	// the canonical where-clause path).
+	// Success: the services server returns {logs, query, provider, suggestion}. Carry the
+	// query/provider it actually executed into the metadata so the agent and UI can report
+	// which query produced these logs (the request query is empty on the canonical
+	// where-clause path). suggestion is set instead of a 400 when the ValidateRequest
+	// empty-result diagnosis found an actionable fix (unknown label name/value) — see
+	// ObservabilityLogResponse.Suggestion.
 	var body struct {
-		Logs     []core.ObservabilityLog `json:"logs"`
-		Query    string                  `json:"query"`
-		Provider string                  `json:"provider"`
+		Logs       []core.ObservabilityLog `json:"logs"`
+		Query      string                  `json:"query"`
+		Provider   string                  `json:"provider"`
+		Suggestion string                  `json:"suggestion"`
 	}
 	if err = common.UnmarshalJson(jsonBody, &body); err != nil {
 		return observabilityResp, err
 	}
 
 	observabilityResp.Logs = body.Logs
+	observabilityResp.Suggestion = body.Suggestion
 	if body.Query != "" {
 		observabilityResp.Metadata.Query = body.Query
 	}

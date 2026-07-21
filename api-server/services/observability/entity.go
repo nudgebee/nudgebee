@@ -54,6 +54,11 @@ type FetchLogsResult struct {
 	Logs     []OutputLog `json:"logs"`
 	Query    string      `json:"query"`
 	Provider string      `json:"provider"`
+	// Suggestion carries the actionable message from the ValidateRequest empty-result
+	// diagnosis (unknown label name / unknown label value) when it fires. Populated
+	// alongside an empty Logs and a nil error — a 200, not a 400 — so the diagnosis
+	// reads as "successfully determined what to fix" rather than a request failure.
+	Suggestion string `json:"suggestion,omitempty"`
 }
 
 type SearchResponse struct {

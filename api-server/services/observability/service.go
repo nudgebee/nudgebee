@@ -576,30 +576,60 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		}
 	}
 
-	// Snapshot the label names the caller referenced BEFORE the query runs, so a
-	// time range or other filter the backend injects during execution is not
-	// mistaken for a user-supplied label during validation below.
+	// Snapshot the label names AND equality values the caller referenced BEFORE the query
+	// runs, so a time range or other filter the backend injects during execution is not
+	// mistaken for a user-supplied label/value during validation below.
 	var referencedLabels map[string]struct{}
+	var referencedValues map[string][]string
 	if fetchLogRequest.ValidateRequest {
 		referencedLabels = map[string]struct{}{}
 		collectWhereFieldNames(fetchLogRequest.QueryRequest.Where, referencedLabels)
+		referencedValues = map[string][]string{}
+		collectWhereFieldValues(fetchLogRequest.QueryRequest.Where, referencedValues)
 	}
 
 	logs, err := source.QueryLogs(ctx, fetchLogRequest)
 
-	// A query that matched nothing — or that failed with a backend error — is
-	// frequently caused by a mistyped label NAME in the where-clause (e.g.
-	// "service_nam" instead of "service_name"). Some backends silently return
-	// zero rows for an unknown label (Loki); others reject the query (ClickHouse).
-	// Either way the caller — notably an LLM agent — can't tell it should fix the
-	// label name. When the caller opts in via ValidateRequest, cross-check the
-	// referenced label names against the labels the provider exposes and, if any
-	// are unknown, replace the result with an actionable message. Best-effort: if
-	// every referenced label is recognized (or the label set can't be
-	// determined), fall through to the original error / empty result.
+	// A query that matched nothing — or that failed with a backend error — is frequently
+	// caused by a mistyped label NAME (e.g. "service_nam") or a mistyped label VALUE (e.g.
+	// namespace="prodd"). Some backends silently return zero rows for an unknown label/value
+	// (Loki); others reject the query (ClickHouse). Either way the caller — notably an LLM
+	// agent — can't tell what to fix. When the caller opts in via ValidateRequest, run an
+	// ordered diagnosis and, on a hit, return a 200 with empty Logs and the actionable message
+	// in Suggestion — (1) unknown label names, then (2) unknown label values with closest-match
+	// suggestions — rather than an error: the diagnosis successfully determined what to fix, it
+	// didn't fail. Best-effort: each check fails open (returns nil) when it can't establish the
+	// provider's label/value set, so a legitimately-empty query falls through unchanged.
 	if fetchLogRequest.ValidateRequest && (err != nil || len(logs) == 0) {
+		// One structured line per diagnosis run, so the trigger rate and hit rate are
+		// queryable in Loki (filter on msg="log_query_empty_result_diagnosis"). "outcome"
+		// distinguishes which check produced the hint the agent then rewrites against
+		// (unknown_label_name / unknown_label_value) from a genuinely-empty result (none).
+		logger := ctx.GetLogger()
+		outcome := "none"
+		defer func() {
+			logger.Info("log_query_empty_result_diagnosis",
+				"account_id", fetchLogRequest.AccountId,
+				"provider", fetchLogRequest.LogProvider,
+				"had_backend_error", err != nil,
+				"referenced_labels", len(referencedLabels),
+				"referenced_value_fields", len(referencedValues),
+				"outcome", outcome)
+		}()
+
 		if verr := validateReferencedLabels(ctx, source, fetchLogRequest, referencedLabels, filteringMap); verr != nil {
-			return FetchLogsResult{}, verr
+			outcome = "unknown_label_name"
+			return FetchLogsResult{Logs: []OutputLog{}, Provider: fetchLogRequest.LogProvider, Suggestion: verr.Error()}, nil
+		}
+		// Value suggestions only apply to a query that ran cleanly but matched nothing.
+		// On a backend error the empty result isn't a "wrong value" signal — the value-set
+		// fetch would be unreliable and the real error is the more useful thing to surface —
+		// so gate this specifically on an empty (non-errored) result.
+		if err == nil && len(logs) == 0 {
+			if verr := validateReferencedLabelValues(ctx, source, fetchLogRequest, referencedValues); verr != nil {
+				outcome = "unknown_label_value"
+				return FetchLogsResult{Logs: []OutputLog{}, Provider: fetchLogRequest.LogProvider, Suggestion: verr.Error()}, nil
+			}
 		}
 	}
 	if err != nil {
@@ -652,6 +682,36 @@ func collectWhereFieldNames(where query.QueryWhereClause, out map[string]struct{
 	}
 }
 
+// collectWhereFieldValues walks a canonical where-clause and records, per field, the
+// discrete equality values the caller filtered on. Only the equality operators _eq and
+// _in carry a concrete value worth cross-checking against a label's real value set;
+// pattern operators (_regex / _contains / _like / …) match substrings or expressions, so
+// a "value not in the label's value list" check would false-positive on them and they are
+// skipped. Values are coerced to strings, mirroring how the backends render them.
+func collectWhereFieldValues(where query.QueryWhereClause, out map[string][]string) {
+	for field, ops := range where.Binary {
+		for op, val := range ops {
+			switch op {
+			case query.Eq:
+				out[field] = append(out[field], fmt.Sprintf("%v", val))
+			case query.In:
+				if arr, err := toStringArray(val); err == nil {
+					out[field] = append(out[field], arr...)
+				}
+			}
+		}
+	}
+	for _, c := range where.And {
+		collectWhereFieldValues(c, out)
+	}
+	for _, c := range where.Or {
+		collectWhereFieldValues(c, out)
+	}
+	if where.Not != nil {
+		collectWhereFieldValues(*where.Not, out)
+	}
+}
+
 // suggestLabels returns up to a few available labels that look related to an unknown
 // one (case-insensitive substring, either direction), so a typo can be corrected
 // without dumping the provider's full label list — which for trace backends can run to
@@ -675,6 +735,116 @@ func suggestLabels(unknown, available []string) []string {
 			if len(out) >= maxSuggestions {
 				return out
 			}
+		}
+	}
+	return out
+}
+
+// levenshtein returns the edit distance (insertions, deletions, substitutions) between a
+// and b. Standard two-row dynamic-programming implementation; O(len(a)*len(b)) time,
+// O(len(b)) space. Used to rank "did-you-mean" value suggestions for typos.
+func levenshtein(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	if len(ra) == 0 {
+		return len(rb)
+	}
+	if len(rb) == 0 {
+		return len(ra)
+	}
+	prev := make([]int, len(rb)+1)
+	curr := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		curr[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			curr[j] = min(prev[j]+1, min(curr[j-1]+1, prev[j-1]+cost))
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(rb)]
+}
+
+// tokenize splits a value on the delimiters common to observability identifiers
+// (ml-k8s-server, k8s_namespace, foo.bar) into its lowercase parts, as a set. Used by
+// closestValues so hyphenated names match on shared segments, not just whole-string distance.
+func tokenize(s string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, tok := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return strings.ContainsRune("-_./: ", r)
+	}) {
+		out[tok] = struct{}{}
+	}
+	return out
+}
+
+// sharedTokenCount returns how many tokens a and b have in common.
+func sharedTokenCount(a, b map[string]struct{}) int {
+	n := 0
+	for t := range a {
+		if _, ok := b[t]; ok {
+			n++
+		}
+	}
+	return n
+}
+
+// closestValues ranks candidates by closeness to target and returns up to maxValueSuggestions
+// of them. A candidate is a plausible suggestion if it shares a delimiter-separated token with
+// the target (e.g. "ml-server" ~ "ml-k8s-server" share "ml"+"server"), OR is within a typo
+// edit-distance threshold (scaled to length, so "prodd"→"prod" matches but unrelated strings
+// don't), OR is a bidirectional substring ("prod" ~ "production"). Ranking is shared-token
+// count DESC, then edit distance ASC — so for a hyphenated-name typo the semantically closest
+// value (most shared segments) wins over strings that merely share the common "-server" suffix.
+// Comparison is case-insensitive. Empty slice when nothing is plausibly close — callers then
+// point at the label-values listing action instead of dumping the full set.
+func closestValues(target string, candidates []string) []string {
+	const maxValueSuggestions = 5
+	lt := strings.ToLower(target)
+	threshold := len(lt) / 3
+	if threshold < 2 {
+		threshold = 2
+	}
+	targetTokens := tokenize(target)
+
+	type scored struct {
+		value  string
+		shared int
+		dist   int
+	}
+	var ranked []scored
+	seen := map[string]struct{}{}
+	for _, c := range candidates {
+		lc := strings.ToLower(c)
+		if _, ok := seen[lc]; ok {
+			continue
+		}
+		seen[lc] = struct{}{}
+		shared := sharedTokenCount(targetTokens, tokenize(lc))
+		dist := levenshtein(lt, lc)
+		substr := strings.Contains(lc, lt) || strings.Contains(lt, lc)
+		if shared == 0 && dist > threshold && !substr {
+			continue // not plausibly close by any signal
+		}
+		ranked = append(ranked, scored{value: c, shared: shared, dist: dist})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].shared != ranked[j].shared {
+			return ranked[i].shared > ranked[j].shared
+		}
+		return ranked[i].dist < ranked[j].dist
+	})
+
+	out := make([]string, 0, maxValueSuggestions)
+	for _, s := range ranked {
+		out = append(out, s.value)
+		if len(out) >= maxValueSuggestions {
+			break
 		}
 	}
 	return out
@@ -753,6 +923,97 @@ func validateReferencedLabels(ctx *security.RequestContext, source LogSource, fe
 		return nil
 	}
 	return unknownLabelError("logs", "log", "logs_list_labels", unknown, available)
+}
+
+// valueValidationLookback bounds how far back the value validator looks when establishing a
+// label's real value set. Label values are time-bounded, so checking them against the
+// request's (possibly narrow) window would mislabel a value that merely has no data in that
+// window as "wrong". A wider window establishes the true value universe; a value absent from
+// it is genuinely unknown, while a value present in it (but not in the narrow request window)
+// is a time-range problem handled separately.
+const valueValidationLookback = 7 * 24 * 60 * 60 // seconds
+
+// maxLabelValuesToScan caps how many values we pull per label before giving up on value
+// suggestion. High-cardinality labels (pod names, request ids) can have thousands of values;
+// scanning them all wastes latency and tokens, and an equality filter on such a label is
+// rarely a typo. Above the cap we fail open (no diagnosis).
+const maxLabelValuesToScan = 2000
+
+// unknownValueError builds the actionable message returned when a query filters a label to a
+// value the provider has never seen. It names the label and offending value plus the closest
+// valid value(s); when nothing is close it gives action-agnostic guidance (verify or drop the
+// filter) rather than naming a listing tool the caller may not have. Never dumps the full value
+// list (token-conscious, mirroring unknownLabelError).
+func unknownValueError(label, value string, candidates []string) error {
+	if suggestions := closestValues(value, candidates); len(suggestions) > 0 {
+		return fmt.Errorf("no logs matched: value %q for label %q not found; closest valid value(s): %v", value, label, suggestions)
+	}
+	return fmt.Errorf("no logs matched: value %q for label %q was not found for this log provider; verify the value is correct or remove this filter", value, label)
+}
+
+// validateReferencedLabelValues checks, for a query that returned no logs, whether an equality
+// filter targets a value the log provider has never emitted for that label — the classic
+// "namespace=prodd" typo. For each referenced field it fetches the label's real values over a
+// widened window (see valueValidationLookback) and, if the filtered value is absent, returns an
+// actionable error naming the closest valid value(s). Best-effort throughout: unknown/high-
+// cardinality labels, discovery errors, and empty value sets all fail open (return nil) so a
+// legitimately-empty query is never blocked. `referencedValues` is in provider label space
+// (mapping was applied upstream in FetchLogs), matching the space QueryLabelValues expects.
+func validateReferencedLabelValues(ctx *security.RequestContext, source LogSource, fetchLogRequest FetchLogRequest, referencedValues map[string][]string) error {
+	if len(referencedValues) == 0 {
+		return nil
+	}
+
+	lineContent := make(map[string]struct{}, len(lineContentFields))
+	for _, f := range lineContentFields {
+		lineContent[f] = struct{}{}
+	}
+
+	// Widen the window so we probe the label's full value universe, not just the request slice.
+	// StartTime/EndTime are millisecond epoch; valueValidationLookback is in seconds, so scale it.
+	startTime, endTime := fetchLogRequest.StartTime, fetchLogRequest.EndTime
+	if endTime > 0 {
+		if wideStart := endTime - valueValidationLookback*1000; wideStart < startTime {
+			startTime = wideStart
+		}
+	}
+
+	labels := make([]string, 0, len(referencedValues))
+	for label := range referencedValues {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+
+	for _, label := range labels {
+		// Line-body filters (content/message/…) aren't labels — never value-check them.
+		if _, ok := lineContent[label]; ok {
+			continue
+		}
+		labelValues, err := source.QueryLabelValues(ctx, FetchLogLabelValuesRequest{
+			LabelName:         label,
+			AccountId:         fetchLogRequest.AccountId,
+			LogProvider:       fetchLogRequest.LogProvider,
+			LogProviderSource: fetchLogRequest.LogProviderSource,
+			StartTime:         startTime,
+			EndTime:           endTime,
+		})
+		// Unknown label, discovery failure, empty or high-cardinality value set → fail open.
+		if err != nil || len(labelValues) == 0 || len(labelValues) > maxLabelValuesToScan {
+			continue
+		}
+		valueSet := make(map[string]struct{}, len(labelValues))
+		candidates := make([]string, len(labelValues))
+		for i, v := range labelValues {
+			valueSet[v.Value] = struct{}{}
+			candidates[i] = v.Value
+		}
+		for _, want := range referencedValues[label] {
+			if _, ok := valueSet[want]; !ok {
+				return unknownValueError(label, want, candidates)
+			}
+		}
+	}
+	return nil
 }
 
 // validateReferencedTraceLabels is the trace counterpart of validateReferencedLabels.

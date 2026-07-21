@@ -150,13 +150,7 @@ func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToo
 	}
 
 	if len(response.Logs) == 0 {
-		whereJSON, _ := common.MarshalJson(queryBuilder.Where)
-		noLogsMsg := fmt.Sprintf(
-			NoLogsFoundPrefix+" for %s (canonical where: %s; time range: %s to %s, limit: %d). "+
-				"The query executed successfully but returned no results. "+
-				"Suggestions: check if label names/values are correct, try broader filters, or expand the time range.",
-			logProvider.Provider, string(whereJSON), start.Format(time.RFC3339), end.Format(time.RFC3339), queryBuilder.Limit,
-		)
+		noLogsMsg := noLogsFoundMessage(response.Suggestion, logProvider.Provider, queryBuilder.Where, start, end, queryBuilder.Limit)
 		return core.NBToolResponse{
 			Data:   noLogsMsg,
 			Status: core.NBToolResponseStatusSuccess,
@@ -177,4 +171,24 @@ func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToo
 		Status:     core.NBToolResponseStatusSuccess,
 		References: []core.NBToolResponseReference{logsUIRef(nbRequestContext, queryBuilder)},
 	}, nil
+}
+
+// noLogsFoundMessage builds the tool response body for a canonical query that ran
+// successfully but matched zero rows. suggestion is services-server's ValidateRequest
+// diagnosis (unknown label name / unknown label value): it already names the specific
+// offending label/value and the closest valid match(es), so it's strictly more
+// actionable than the generic message and is preferred whenever present. Empty
+// suggestion means the diagnosis found nothing actionable — a genuinely empty result —
+// so fall back to the generic "broaden the query" guidance.
+func noLogsFoundMessage(suggestion, provider string, where core.QueryWhereClause, start, end time.Time, limit int) string {
+	if suggestion != "" {
+		return suggestion
+	}
+	whereJSON, _ := common.MarshalJson(where)
+	return fmt.Sprintf(
+		NoLogsFoundPrefix+" for %s (canonical where: %s; time range: %s to %s, limit: %d). "+
+			"The query executed successfully but returned no results. "+
+			"Suggestions: check if label names/values are correct, try broader filters, or expand the time range.",
+		provider, string(whereJSON), start.Format(time.RFC3339), end.Format(time.RFC3339), limit,
+	)
 }
