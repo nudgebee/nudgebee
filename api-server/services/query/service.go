@@ -81,22 +81,10 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 
 				if slices.Contains(context.GetSecurityContext().GetRoles(), security.AUTH_ACCOUNT_ADMIN_ROLE) || slices.Contains(context.GetSecurityContext().GetRoles(), security.AUTH_ACCOUNT_READ_ADMIN_ROLE) {
 					accountIds := context.GetSecurityContext().ListAccountIds()
-					query.Where.And = append(query.Where.And, QueryWhereClause{
-						Binary: map[string]map[BinaryWhereClauseType]any{
-							accountIdColumnName: {
-								In: accountIds,
-							},
-						},
-					})
+					query.Where.And = append(query.Where.And, accountScopeClause(accountIdColumnName, accountIds, tableDef.TenantWideReadable))
 				} else if slices.Contains(context.GetSecurityContext().GetRoles(), security.AUTH_K8S_NAMESPACE_ADMIN_ROLE) || slices.Contains(context.GetSecurityContext().GetRoles(), security.AUTH_K8S_NAMESPACE_READ_ADMIN_ROLE) {
 					accountIds := context.GetSecurityContext().ListAccountIds()
-					query.Where.And = append(query.Where.And, QueryWhereClause{
-						Binary: map[string]map[BinaryWhereClauseType]any{
-							accountIdColumnName: {
-								In: accountIds,
-							},
-						},
-					})
+					query.Where.And = append(query.Where.And, accountScopeClause(accountIdColumnName, accountIds, tableDef.TenantWideReadable))
 
 					queryWithNamespace, queryResponse, err := updateQueryWithNamespace(context, tableDef, query, context, startTime, accountIdColumnName, accountIds)
 					if err != nil {
@@ -326,6 +314,37 @@ func getAccountIdFromQuery(ctx *security.RequestContext, query QueryRequest, col
 		}
 	}
 	return ""
+}
+
+// accountScopeClause builds the account-id restriction injected for account-scoped
+// roles. Normally this bounds the query to the caller's own accounts. When the table
+// is TenantWideReadable, tenant-wide rows (account_id IS NULL) are ORed back in so
+// account-scoped users still see tenant-level configuration that has no owning
+// account (e.g. feature flags, #34510). The tenant_id clause appended alongside this
+// still bounds the result to the caller's tenant.
+func accountScopeClause(accountIdColumnName string, accountIds []string, tenantWideReadable bool) QueryWhereClause {
+	inClause := QueryWhereClause{
+		Binary: map[string]map[BinaryWhereClauseType]any{
+			accountIdColumnName: {
+				In: accountIds,
+			},
+		},
+	}
+	if !tenantWideReadable {
+		return inClause
+	}
+	return QueryWhereClause{
+		Or: []QueryWhereClause{
+			inClause,
+			{
+				Binary: map[string]map[BinaryWhereClauseType]any{
+					accountIdColumnName: {
+						IsNull: true,
+					},
+				},
+			},
+		},
+	}
 }
 
 func updateQueryWithNamespace(ctx *security.RequestContext, tableDef TableDefinition, query QueryRequest, context *security.RequestContext, startTime time.Time, accountIdColumnName string, accountIds []string) (QueryRequest, QueryResponse, error) {
