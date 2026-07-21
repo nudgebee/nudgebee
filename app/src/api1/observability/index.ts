@@ -314,6 +314,7 @@ const observability = {
           query_request: data.query_request,
           start_time: data.start_time,
           end_time: data.end_time,
+          ...(data.log_provider ? { log_provider: data.log_provider } : {}),
         },
       });
       return response;
@@ -350,6 +351,7 @@ const observability = {
           start_time: data.start_time,
           end_time: data.end_time,
           instant: data.instant || false,
+          ...(data.metric_provider ? { metric_provider: data.metric_provider } : {}),
         },
       });
       return response;

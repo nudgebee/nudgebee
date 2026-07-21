@@ -234,7 +234,10 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
-		if request.MetricProviderSource == "" {
+		// Only default the source to "agent" when no provider override was sent;
+		// with an override, let GetMetricsQuery resolve the real integration
+		// source (matching the metrics_query path) so SaaS providers don't 400.
+		if request.MetricProvider == "" && request.MetricProviderSource == "" {
 			request.MetricProviderSource = "agent"
 		}
 		err = common.ValidateStruct(request)
