@@ -138,30 +138,49 @@ export default function RegisterVerify(): React.ReactElement {
   };
 
   React.useEffect(() => {
-    if (router.query.token) {
-      setVerificationMessage(null);
-      fetch('/api/auth/signup_verify', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ token: router.query.token }),
-      }).then(async (res) => {
+    if (!router.query.token) {
+      setVerificationMessage('invalid token');
+      return;
+    }
+    const controller = new AbortController();
+    let cancelled = false;
+    let redirectTimer: ReturnType<typeof setTimeout> | undefined;
+    setVerificationMessage(null);
+    fetch('/api/auth/signup_verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ token: router.query.token }),
+      signal: controller.signal,
+    })
+      .then(async (res) => {
         const resJson: { message: string } = await res.json();
+        if (cancelled) return;
         if (res.status === 200) {
           snackbar.success('User verified successfully');
           setVerificationMessage('success');
-          setTimeout(() => {
+          redirectTimer = setTimeout(() => {
             router.push('/signin');
           }, 2000);
         } else {
           snackbar.error(resJson.message);
           setVerificationMessage(resJson.message);
         }
+      })
+      .catch((err) => {
+        if (err?.name !== 'AbortError') {
+          console.error('Verification failed:', err);
+          if (!cancelled) {
+            setVerificationMessage('internal error');
+          }
+        }
       });
-    } else {
-      setVerificationMessage('invalid token');
-    }
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (redirectTimer) clearTimeout(redirectTimer);
+    };
   }, [router.query.token]);
 
   return (

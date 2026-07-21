@@ -80,30 +80,39 @@ const ClusterUpgradeFeature = () => {
   }, [JSON.stringify(selectedCluster)]);
 
   useEffect(() => {
+    let cancelled = false;
+    let investigationTimer;
     async function renderEvidenceCardAndRecommendations() {
       const filterAvailableCards = availableCards.filter((card) => {
         const cardInstance = new card();
         return cardInstance.id !== 'EksAddOn' || selectedCluster?.k8s_provider === 'EKS';
       });
       for (let C of filterAvailableCards) {
+        if (cancelled) return;
         let card = new C();
-        setTimeout(() => {
-          setCurrentInvestigation(card);
+        investigationTimer = setTimeout(() => {
+          if (!cancelled) setCurrentInvestigation(card);
         }, 1);
         try {
           if (await card.canRenderContent(router?.query?.KubernetesDetails ?? router?.query?.accountId, selectedVersion)) {
             await new Promise((r) => setTimeout(r, 2000));
+            if (cancelled) return;
             setMatchedOptions((old) => [...old, card]);
           }
+          if (cancelled) return;
           setCurrentInvestigation(null);
         } finally {
-          setCurrentInvestigation(null);
+          if (!cancelled) setCurrentInvestigation(null);
         }
       }
     }
     if (isRenderInvestigationCard) {
       renderEvidenceCardAndRecommendations();
     }
+    return () => {
+      cancelled = true;
+      clearTimeout(investigationTimer);
+    };
   }, [isRenderInvestigationCard]);
 
   const handleVersionChange = (e) => {

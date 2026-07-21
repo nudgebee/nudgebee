@@ -861,10 +861,12 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       return;
     }
 
+    let cancelled = false;
     setImChannelLoading(true);
     apiAccount
       .getNotificationChannelList(provider)
       .then((res: any) => {
+        if (cancelled) return;
         const response = res?.data?.data || [];
 
         if (provider === 'ms_teams') {
@@ -887,13 +889,20 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
         }
       })
       .catch((error) => {
+        if (cancelled) return;
         console.error('Failed to fetch IM channels:', error);
         setImChannelOptions([]);
         setImTeamOptions([]);
       })
       .finally(() => {
+        if (cancelled) return;
         setImChannelLoading(false);
       });
+    // Guard against out-of-order responses: a stale provider's list must not
+    // overwrite the current provider's options when providers switch quickly.
+    return () => {
+      cancelled = true;
+    };
   }, [selectedActionType, localData?.provider, mapMsTeamsChannels]);
 
   // Update channel options when MS Teams team is selected
