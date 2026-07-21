@@ -142,10 +142,17 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
     if (!accountId || workloadName) {
       return;
     }
+    let cancelled = false;
     k8sApi.getK8sNamespaceNames(accountId).then((res) => {
+      if (cancelled) {
+        return;
+      }
       const namespaces = res.data.namespaces as string[];
       setNamespaceFilter(namespaces);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
   useEffect(() => {
@@ -153,17 +160,24 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
     if (!accountId || workloadNamespace) {
       return;
     }
+    let cancelled = false;
     const query = {
       accountId: accountId,
       allow_in_active_pod: allowInActivePod,
     };
     k8sApi.getAllK8sWorkload(query).then((res) => {
+      if (cancelled) {
+        return;
+      }
       const data = res?.data as any[];
       const workloadNames = data.map((e: any) => e.name) as string[];
       setWorkloadFilter([...new Set(workloadNames)]);
       setAllWorkload(data);
       setAllWorkload(res?.data);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, allowInActivePod]);
 
   const handleDateRangeChange = (passedSelectedDateTime: any) => {
