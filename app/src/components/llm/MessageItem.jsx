@@ -19,7 +19,7 @@ import { Modal } from '@ui/Modal';
 
 const QUESTION_PREVIEW_LINES = 6;
 
-const getCardTitle = (data) => {
+const getCardTitle = (data, { indented = false } = {}) => {
   // `thought`/`log` are rewritten by the backend on every LLM completion, so reading
   // them mid-run makes the title flicker between intermediate ReAct steps.
   // Fall back to stable fields (`query`, `agentName`) until status is terminal.
@@ -75,7 +75,10 @@ const getCardTitle = (data) => {
   if (data.agentName?.length > 0) {
     response = data.agentName + ' -> ' + response;
   }
-  if (data?.parentAgents?.length > 0) {
+  // When the row is indented in the Tasks timeline, the indentation itself conveys the
+  // ancestor chain, so the "parentA -> parentB ->" breadcrumb prefix is redundant. Keep
+  // it for the flat main message stream (indented=false), drop it in the nested drawer.
+  if (!indented && data?.parentAgents?.length > 0) {
     response = data.parentAgents.join(' -> ') + ' -> ' + response;
   }
   if (data?.plannerId) {
@@ -112,6 +115,10 @@ const MessageItem = ({
   onNavigateToTask,
   groupIndex,
   responseMeta,
+  // Tasks-timeline nesting: >0 shifts the row right and deepens the dot shade so
+  // child/sub-agent tasks read as nested. Default 0 keeps the main message stream
+  // (which doesn't pass it) rendered flat, unchanged.
+  indentDepth = 0,
 }) => {
   const [referencesAnchorEl, setReferencesAnchorEl] = React.useState(null);
   const [previewedAttachment, setPreviewedAttachment] = React.useState(null);
@@ -162,7 +169,7 @@ const MessageItem = ({
   const messageType = message.tool ?? message.type;
   const isQuestion = messageType === 'question';
   const isResponse = messageType === 'response';
-  const cardTitle = getCardTitle(message);
+  const cardTitle = getCardTitle(message, { indented: indentDepth > 0 });
   // Heuristic for whether the question can plausibly exceed 6 visible lines.
   // CSS line-clamp does the actual visual clipping; this just decides if we offer the toggle.
   const newlineCount = typeof cardTitle === 'string' ? (cardTitle.match(/\n/g) || []).length : 0;
@@ -247,7 +254,10 @@ const MessageItem = ({
       </Box>
     );
   } else if (isTask) {
-    let dotBorderColor = ds.brand[300];
+    // Deepen the dot along the brand spectrum as nesting grows — reinforces the
+    // left-indent so depth is legible even at a glance (the "c1/c2/c3 shades" idea).
+    const depthShades = [ds.brand[300], ds.brand[400], ds.brand[500], ds.brand[600]];
+    let dotBorderColor = depthShades[Math.min(indentDepth, depthShades.length - 1)];
     if (message.response_status === 'in_progress') {
       dotBorderColor = 'var(--ds-blue-600)';
     } else if (message.response_status === 'waiting') {
@@ -286,6 +296,9 @@ const MessageItem = ({
         sx={{
           display: 'flex',
           gap: ds.space[3],
+          // Left-indent nested tasks (12px/level) so sub-agents sit visually under their
+          // parent. Clamp at 4 levels so deep chains don't crowd the narrow Tasks drawer.
+          ml: indentDepth > 0 ? ds.space.mul(3, Math.min(indentDepth, 4)) : 0,
           mb: isQuestion && ds.space.mul(1, 5),
           mt: isQuestion && ds.space.mul(1, 15),
           pb: isLastTaskOfLastGroup ? ds.space[4] : 0,
@@ -637,6 +650,7 @@ MessageItem.propTypes = {
   onOpenToolDetails: PropTypes.func,
   onNavigateToTask: PropTypes.func,
   groupIndex: PropTypes.number,
+  indentDepth: PropTypes.number,
   responseMeta: PropTypes.shape({
     taskCount: PropTypes.number,
     contextCount: PropTypes.number,

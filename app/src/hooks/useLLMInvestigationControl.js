@@ -294,6 +294,7 @@ const parseConversationMessages = (conversationMessages, accountId) => {
             parameters = parsedParameters;
           }
         }
+        const parentAgentsList = getParentAgents(agent);
         toolRequestResponse[agent.id] = {
           // Map Agent to Message
           response_text: agent.response,
@@ -307,7 +308,11 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           agentName: agent.agent_name,
           thought: agent.thought,
           query: agent.query,
-          parentAgents: getParentAgents(agent),
+          parentAgents: parentAgentsList,
+          // Nesting depth for the Tasks timeline — number of ancestor agents in
+          // the display breadcrumb. Drives left-indentation + dot shade in the
+          // Tasks drawer so sub-agents read as nested rather than flat siblings.
+          nestingDepth: parentAgentsList.length,
           plannerId: plannerIdChildMapping[agent.id],
           type: 'tool_call',
           toolParameters: parameters,
