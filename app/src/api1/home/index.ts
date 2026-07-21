@@ -100,11 +100,23 @@ const apiDashboard = {
       const dataWithDemo = [...data, demoAccount].filter((item) => item !== null && item !== undefined);
       cache.set(cacheKeyWithDemo, dataWithDemo, 60 * 60);
       return dataWithDemo;
-    } catch (err) {
+    } catch {
       // Return an empty list (not the Error object) so callers that do accounts.map() don't
       // crash the page on a backend hiccup; the cache is not written here, so the next call
-      // retries fresh.
-      console.log('getCloudAccounts error:', err);
+      // retries fresh. If the caller wants the demo account, still surface it so the UI
+      // isn't left with zero accounts to select from.
+      if (!includeDemoAccount) {
+        return [];
+      }
+      try {
+        const mockData = await getMockData('home');
+        const mockAccount = mockData.GetCloudAccount;
+        if (mockAccount && mockAccount.status === 'active' && (!cloud_provider || mockAccount.cloud_provider === cloud_provider)) {
+          return [mockAccount];
+        }
+      } catch (mockErr) {
+        console.log('Failed to fetch demo account, skipping:', mockErr);
+      }
       return [];
     }
   },
