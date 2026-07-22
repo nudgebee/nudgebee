@@ -967,6 +967,52 @@ type Mutation {
 }
 
 type Mutation {
+  event_get_impact(
+    event_id: String!
+  ): EventGetImpactOutput
+}
+
+type EventGetImpactOutput {
+  event_id: String
+  resolved: Boolean
+  seed: ImpactSeedNode
+  impacted: [ImpactedServiceNode]
+  depends_on: [ImpactedServiceNode]
+  correlated_count: Int
+  dependent_count: Int
+  production_dependents: Int
+  coverage_confidence: String
+  truncated: Boolean
+}
+
+type ImpactSeedNode {
+  node_id: String
+  name: String
+  namespace: String
+  type: String
+}
+
+type ImpactedServiceNode {
+  node_id: String
+  name: String
+  node_type: String
+  namespace: String
+  environment: String
+  hops_away: Int
+  relationship: String
+  alerting: Boolean
+  active_alerts: [ImpactAlertRef]
+}
+
+type ImpactAlertRef {
+  event_id: String
+  title: String
+  priority: String
+  source: String
+  starts_at: String
+}
+
+type Mutation {
   event_get_triage_rule_events(
     rule_id: String!
     account_id: String

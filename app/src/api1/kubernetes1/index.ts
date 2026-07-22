@@ -1686,6 +1686,29 @@ const apiKubernetes1 = {
       return err;
     }
   },
+  getImpactData: async function (eventId: string) {
+    const GET_EVENT_IMPACT = `
+    mutation GetEventImpact($eventId: String!) {
+      event_get_impact(event_id: $eventId) {
+        event_id
+        resolved
+        seed { node_id name namespace type }
+        impacted { name node_type namespace environment hops_away relationship alerting active_alerts { event_id title priority source starts_at } }
+        depends_on { name node_type namespace hops_away relationship }
+        correlated_count
+        dependent_count
+        production_dependents
+        coverage_confidence
+        truncated
+      }
+    }
+    `;
+    try {
+      return await queryGraphQL(GET_EVENT_IMPACT, 'GetEventImpact', { eventId });
+    } catch (err) {
+      return err;
+    }
+  },
   updateEvent: async function (data: any) {
     const UPDATE_EVENT = `
     mutation EventUpdate($eventId: String!, $urgency: String!) {

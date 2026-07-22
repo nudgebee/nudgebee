@@ -2164,6 +2164,22 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: Get chronological timeline of events related to an event
+  - name: event_get_impact
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/triage'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Get topology-inferred blast radius (impacted dependent services) for an event
   - name: event_get_triage_rule_events
     definition:
       kind: synchronous

@@ -88,6 +88,7 @@ import { LuChartLine } from 'react-icons/lu';
 import Chart from '@ui/Chart';
 import { getDateString } from '@lib/datetime';
 import TimelineCard from '@components/k8s/investigate/cards/TimelineCard';
+import ImpactCard from '@components/k8s/investigate/cards/ImpactCard';
 import UpdateEvent from '@components/events/UpdateEvent';
 import EventClassifyModal from '@components/events/EventClassifyModal';
 import { LiaEditSolid } from 'react-icons/lia';
@@ -1092,6 +1093,11 @@ const Investigate = () => {
       const card = new TimelineCard(row);
       if (await card.canRenderContent()) {
         dynamicCards.push(card);
+      }
+
+      const impactCard = new ImpactCard(row);
+      if (await impactCard.canRenderContent()) {
+        dynamicCards.push(impactCard);
       }
 
       // Cloud: severity-based evidence processing
