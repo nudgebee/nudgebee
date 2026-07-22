@@ -340,7 +340,8 @@ func (s *OpenObserveTraceSource) GetLabelValues(ctx *security.RequestContext, re
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("OpenObserve query failed with status %d", resp.StatusCode)
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("OpenObserve query failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
 	var searchResp openObserveSearchResponse
