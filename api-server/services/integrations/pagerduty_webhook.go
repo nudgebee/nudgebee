@@ -661,15 +661,24 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 		parsedPayload.EventDescription = fmt.Sprintf("**Agent URL -** %s \n **Client -** %s \n **Client URL -** %s", htmlURL, name, url)
 	}
 
-	if alert.Fingerprint == "" {
-		alert.Fingerprint = base64.StdEncoding.EncodeToString([]byte(webhookPayloadString))
-	}
+	// A stable fingerprint (last9 alert_hash / Chronosphere signal above, or the
+	// CEF dedup_key applied during enrichment below) is preferred. When none is
+	// available we deliberately leave it empty here and derive a canonical one
+	// from the alert's identity after subject resolution — hashing the raw
+	// per-delivery payload would give every firing of the same alert a new
+	// fingerprint and fragment it into separate occurrence chains.
 
+	// ruleIdFromService records that RuleId was filled from the PagerDuty service
+	// display name (a generic fallback), not a real alert identity. The canonical
+	// fingerprint below uses this so subject-less alerts from one service don't all
+	// collapse into a single occurrence chain via the shared service name.
+	ruleIdFromService := false
 	if alert.RuleId == "" {
 		if payloadData["service"] != nil {
 			if payloadService, ok := payloadData["service"].(map[string]any); ok {
 				if payloadService["summary"] != nil {
 					alert.RuleId = payloadService["summary"].(string)
+					ruleIdFromService = true
 					if alert.RuleName == "" {
 						alert.RuleName = alert.RuleId
 					}
@@ -748,6 +757,7 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 	if alertname, ok := parsedPayload.Investigation.Labels["alertname"]; ok && alertname != "" {
 		parsedPayload.Investigation.RuleId = alertname
 		parsedPayload.Investigation.RuleName = alertname
+		ruleIdFromService = false // now a real alert identity, not the service name
 	}
 
 	// Improve title: Alertmanager default title is a concatenation of all label values.
@@ -764,6 +774,30 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 
 	// Resolve subject name/namespace from enriched labels
 	resolveSubjectFromLabels(&parsedPayload)
+
+	// If no stable fingerprint was set (no last9/Chronosphere/CEF dedup_key),
+	// derive a canonical one from the alert's identity so repeat incidents for
+	// the same alert collapse into one occurrence chain instead of fabricating a
+	// fake correlated incident. Require enough identity (rule-type or subject) to
+	// avoid over-merging distinct alerts; otherwise keep it per-incident (the
+	// incident id) — under-collapsing is safer than merging unrelated alerts.
+	if parsedPayload.Investigation.Fingerprint == "" {
+		// A service-derived RuleId is not a real alert identity, so require a
+		// subject in that case — otherwise every subject-less alert from the same
+		// PagerDuty service would collapse into one chain via the shared service
+		// name, which is the merge-unrelated-alerts failure this guard prevents.
+		hasAlertIdentity := parsedPayload.Investigation.RuleId != "" && !ruleIdFromService
+		if hasAlertIdentity || parsedPayload.EventSubjectName != "" {
+			parsedPayload.Investigation.Fingerprint = core.CanonicalFingerprint(
+				"pagerduty",
+				parsedPayload.Investigation.RuleId,
+				parsedPayload.EventSubjectNamespace,
+				parsedPayload.EventSubjectName,
+			)
+		} else {
+			parsedPayload.Investigation.Fingerprint = parsedPayload.EventId
+		}
+	}
 
 	// Remap account before enrichment so workload lookups target the correct account
 	accountMapping := core.ParseAccountMapping(settings, sc.GetLogger())

@@ -311,13 +311,15 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	// that the webhook does not. Cached per incident; fails soft on any API error.
 	enrichWithZendutyAPI(sc, &alert, incident.UniqueID)
 
-	// Fingerprint: prefer Zenduty's stable IncidentKey (its documented dedup key)
-	// over UniqueID which is per-incident. Today the parser sets neither, so
-	// every webhook delivery becomes a new event. Strict improvement.
+	// Fingerprint: prefer Zenduty's stable IncidentKey (its documented dedup key).
+	// When absent — the norm, since the parser does not populate it — leave it
+	// empty here and derive a canonical fingerprint from the alert's identity
+	// after subject resolution below. Keying on the per-incident UniqueID (the
+	// previous fallback) fragments repeat incidents for the same alert into
+	// separate occurrence chains; finding_id already carries UniqueID, so rows are
+	// unaffected either way.
 	if incident.IncidentKey != "" {
 		alert.Fingerprint = incident.IncidentKey
-	} else {
-		alert.Fingerprint = incident.UniqueID
 	}
 
 	// RuleId / RuleName: derive from the extracted alertname so multiple firings
@@ -415,6 +417,30 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 			resolveZendutySubjectUsingLLM(sc, &parsedPayload, accountId)
 		} else {
 			parsedPayload.Investigation.Labels["nb_llm_match"] = "disabled"
+		}
+	}
+
+	// If Zenduty gave no stable dedup key (IncidentKey), derive a canonical
+	// fingerprint from the alert's identity now that the subject is resolved, so
+	// repeat incidents for the same alert collapse into one occurrence chain
+	// instead of fragmenting on the per-incident UniqueID. Use the stable alert
+	// name (not RuleId, which itself falls back to UniqueID). Require a real
+	// alert-type or subject to avoid over-merging distinct alerts; otherwise keep
+	// the per-incident id.
+	if parsedPayload.Investigation.Fingerprint == "" {
+		alertType := alertname
+		if alertType == "" {
+			alertType = rulename
+		}
+		if alertType != "" || parsedPayload.EventSubjectName != "" {
+			parsedPayload.Investigation.Fingerprint = core.CanonicalFingerprint(
+				"zenduty",
+				alertType,
+				parsedPayload.EventSubjectNamespace,
+				parsedPayload.EventSubjectName,
+			)
+		} else {
+			parsedPayload.Investigation.Fingerprint = incident.UniqueID
 		}
 	}
 
