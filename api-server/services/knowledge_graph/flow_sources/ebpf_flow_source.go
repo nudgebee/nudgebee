@@ -833,6 +833,17 @@ func (s *EbpfFlowSource) matchApplicationToNode(
 	// canonical type) preserves multi-cluster topology resolution for the
 	// common case (same Service object name across clusters) without
 	// inviting Workload/Service-typed collisions.
+	//
+	// Strategies 2 and 4 drop the namespace filter entirely, so they only
+	// run when app.Id.Namespace == "". When the namespace IS known and
+	// strategy 1/3 miss (e.g. k8s_source hasn't re-synced that namespace
+	// yet), name-only matching must not silently land on a same-named node
+	// in a *different* namespace — that's how cross-namespace false CALLS
+	// edges get minted (nudgebee-enterprise#34639). Falling through to
+	// createNodeForApplication instead is safe here: for Workload/K8sService
+	// kinds it builds a unique_key with cloud_provider="k8s", so the
+	// placeholder node it creates shares k8s_source's own UUID for that
+	// resource and merges cleanly once the namespace re-syncs.
 	nodeTypesToTry := s.nodeTypesToTryFor(app.Id.Kind)
 	inferredType := s.inferNodeType(app.Id.Kind)
 
@@ -856,8 +867,11 @@ func (s *EbpfFlowSource) matchApplicationToNode(
 		}
 	}
 
-	// Strategy 2: name (same account, multi-type probe)
-	if workloadName != "" {
+	// Strategy 2: name (same account, multi-type probe). Only when the
+	// observation carries no namespace — if it does, a namespace-qualified
+	// miss must not be papered over by matching a same-named node in a
+	// different namespace (see matchApplicationToNode doc comment).
+	if app.Id.Namespace == "" && workloadName != "" {
 		for _, nt := range nodeTypesToTry {
 			result, err := matcher.FindNode(MatchCriteria{
 				AccountID: K8sAccountId,
@@ -892,8 +906,9 @@ func (s *EbpfFlowSource) matchApplicationToNode(
 		}
 	}
 
-	// Strategy 4: name (any account, inferred type only)
-	if workloadName != "" {
+	// Strategy 4: name (any account, inferred type only). Same namespace
+	// guard as strategy 2 — see rationale there.
+	if app.Id.Namespace == "" && workloadName != "" {
 		result, err := matcher.FindNode(MatchCriteria{
 			NodeType: inferredType,
 			PropertyMatches: []PropertyMatch{
@@ -1168,17 +1183,21 @@ func (s *EbpfFlowSource) matchByApplicationID(
 		}
 	}
 
-	// Strategy 2: name, same account (multi-type probe)
-	for _, nt := range nodeTypesToTry {
-		result, err := matcher.FindNode(MatchCriteria{
-			AccountID: K8sAccountID,
-			NodeType:  nt,
-			PropertyMatches: []PropertyMatch{
-				{PropertyPath: "name", Value: name, MatchType: core.MatchTypeExact, CaseSensitive: false},
-			},
-		})
-		if err == nil && result.Matched {
-			return result.Node, nil
+	// Strategy 2: name, same account (multi-type probe). Only when the
+	// application ID carries no namespace — see matchApplicationToNode's
+	// strategy 2 for the rationale.
+	if id.Namespace == "" {
+		for _, nt := range nodeTypesToTry {
+			result, err := matcher.FindNode(MatchCriteria{
+				AccountID: K8sAccountID,
+				NodeType:  nt,
+				PropertyMatches: []PropertyMatch{
+					{PropertyPath: "name", Value: name, MatchType: core.MatchTypeExact, CaseSensitive: false},
+				},
+			})
+			if err == nil && result.Matched {
+				return result.Node, nil
+			}
 		}
 	}
 
@@ -1196,8 +1215,9 @@ func (s *EbpfFlowSource) matchByApplicationID(
 		}
 	}
 
-	// Strategy 4: name, any account (inferred type only)
-	{
+	// Strategy 4: name, any account (inferred type only). Same namespace
+	// guard as strategy 2.
+	if id.Namespace == "" {
 		result, err := matcher.FindNode(MatchCriteria{
 			NodeType: inferredType,
 			PropertyMatches: []PropertyMatch{
