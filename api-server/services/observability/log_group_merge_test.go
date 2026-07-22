@@ -1,11 +1,30 @@
 package observability
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestESLogGroupErrorQuery(t *testing.T) {
+	b, err := json.Marshal(esLogGroupErrorQuery())
+	require.NoError(t, err)
+	s := string(b)
+
+	// The message-keyword match is scoped to the known message fields, not every
+	// field, so a stray "error" in an unrelated field/URL/index name cannot pull
+	// in non-error logs (and keeps the esInferLogLevel label honest).
+	assert.Contains(t, s, `"simple_query_string"`)
+	assert.Contains(t, s, `"fields":["log","body.text","body","message"]`)
+
+	// Structured level/severity signals still qualify a doc even when its message
+	// text carries no keyword; severity_text covers OTel-native docs.
+	assert.Contains(t, s, `"level":["error","critical","fatal","ERROR","CRITICAL","FATAL"]`)
+	assert.Contains(t, s, `"severity_text"`)
+	assert.Contains(t, s, `"minimum_should_match":1`)
+}
 
 func TestMergeLogGroupsByPattern(t *testing.T) {
 	t.Run("Rows sharing a pattern hash in the same place merge", func(t *testing.T) {
@@ -109,38 +128,67 @@ func TestMergeLogGroupsByPattern(t *testing.T) {
 	})
 }
 
-func TestESBucketLastSeenUnix(t *testing.T) {
-	// req.EndTime is epoch millis (the range filter declares epoch_millis), while a
+func TestGroupESLogsByPattern(t *testing.T) {
+	// endTime is epoch millis (the range filter declares epoch_millis), while a
 	// group's Timestamps are seconds.
 	const windowEndMs = int64(1784210110000)
 	const windowEndSec = windowEndMs / 1000
+	const pod = "api-server-6c9fd8b7c-2xk9p"
 
-	// 1784200000000ms == 2026-07-16T11:06:40Z, inside the window ending 13:55:10Z.
-	const lastSeenMs = float64(1784200000000)
-	const lastSeenSec = int64(1784200000)
+	t.Run("Groups across doc shapes and reports the max last-seen", func(t *testing.T) {
+		logs := []OutputLog{
+			// OTel-native: resource.attributes are flattened onto Labels.
+			{Timestamp: "2026-07-16T11:00:00Z", Message: "db connection error", Labels: map[string]any{
+				"k8s.namespace.name": "prod", "k8s.pod.name": pod, "k8s.container.name": "api",
+			}},
+			// 1784200000000ms == 2026-07-16T11:06:40Z — the newer of the two errors.
+			{Timestamp: "2026-07-16T11:06:40Z", Message: "db connection error", Labels: map[string]any{
+				"k8s.namespace.name": "prod", "k8s.pod.name": pod, "k8s.container.name": "api",
+			}},
+			// Fluent-Bit: nested "kubernetes" object, different message → own group.
+			{Timestamp: "2026-07-16T11:05:00Z", Message: "fatal: disk full", Labels: map[string]any{
+				"kubernetes": map[string]any{"namespace_name": "prod", "pod_name": pod, "container_name": "api"},
+			}},
+		}
 
-	t.Run("Reads the max aggregation as seconds", func(t *testing.T) {
-		got := esBucketLastSeenUnix(map[string]any{
-			"last_seen": map[string]any{"value": lastSeenMs, "value_as_string": "2026-07-16T11:06:40.000Z"},
-		}, windowEndMs)
+		out := groupESLogsByPattern(logs, "", "", windowEndMs)
+		require.Len(t, out.Groups, 2)
 
-		assert.Equal(t, lastSeenSec, got)
+		byLevel := map[string]LogGroup{}
+		for _, g := range out.Groups {
+			byLevel[g.Level] = g
+		}
+
+		errGroup := byLevel["error"]
+		assert.Equal(t, int64(2), errGroup.Count, "identical messages collapse into one group")
+		assert.Equal(t, "prod", errGroup.Namespace)
+		assert.Equal(t, extractWorkloadFromPodName(pod), errGroup.Workload)
+		assert.Equal(t, "api", errGroup.Container)
+		assert.Equal(t, int64(1784200000), errGroup.Timestamps[0], "max of the two error timestamps, in seconds")
+
+		fatalGroup := byLevel["fatal"]
+		assert.Equal(t, int64(1), fatalGroup.Count)
+		assert.Equal(t, "prod", fatalGroup.Namespace, "namespace read from the Fluent-Bit nested shape")
 	})
 
-	t.Run("Falls back to value_as_string when value is null", func(t *testing.T) {
-		got := esBucketLastSeenUnix(map[string]any{
-			"last_seen": map[string]any{"value": nil, "value_as_string": "2026-07-16T11:06:40Z"},
-		}, windowEndMs)
+	t.Run("Namespace scope drops a mismatch but keeps a doc missing the field", func(t *testing.T) {
+		logs := []OutputLog{
+			{Timestamp: "2026-07-16T11:00:00Z", Message: "error one", Labels: map[string]any{"k8s.namespace.name": "dev", "k8s.pod.name": pod}},
+			{Timestamp: "2026-07-16T11:00:00Z", Message: "error two", Labels: map[string]any{}}, // no namespace label
+		}
 
-		assert.Equal(t, lastSeenSec, got)
+		out := groupESLogsByPattern(logs, "prod", "", windowEndMs)
+		require.Len(t, out.Groups, 1)
+		assert.Equal(t, "error two", out.Groups[0].Sample, "the dev doc is dropped; the shapeless doc is kept")
 	})
 
-	t.Run("Falls back to the window end in seconds, not millis", func(t *testing.T) {
-		// The old code emitted req.EndTime verbatim, so the UI (which multiplies by
-		// 1000) rendered a date tens of thousands of years out.
-		assert.Equal(t, windowEndSec, esBucketLastSeenUnix(map[string]any{}, windowEndMs))
-		assert.Equal(t, windowEndSec, esBucketLastSeenUnix(map[string]any{
-			"last_seen": map[string]any{"value": nil},
-		}, windowEndMs))
+	t.Run("Falls back to the window end in seconds when the timestamp is unparseable", func(t *testing.T) {
+		logs := []OutputLog{
+			{Timestamp: "", Message: "error no ts", Labels: map[string]any{"k8s.namespace.name": "prod", "k8s.pod.name": pod}},
+		}
+
+		out := groupESLogsByPattern(logs, "", "", windowEndMs)
+		require.Len(t, out.Groups, 1)
+		assert.Equal(t, windowEndSec, out.Groups[0].Timestamps[0])
 	})
 }

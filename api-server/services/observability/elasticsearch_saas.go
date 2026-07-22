@@ -865,92 +865,49 @@ func extractFieldsFromProperties(properties map[string]any, prefix string) []Out
 
 // QueryLogGroup implements LogGroupSource for Elasticsearch SaaS.
 // Uses ES terms aggregation to group error/critical logs by message, namespace, and workload.
+// QueryLogGroup implements LogGroupSource for Elasticsearch SaaS (Loki-style).
+//
+// Like the agent ElasticSource variant, it fetches raw error/critical/fatal log
+// documents from the selected index via QueryLogs (which parses both Fluent-Bit
+// and OTel-native doc shapes through ParseSourceMap) and groups them in-memory
+// via the shared groupESLogsByPattern, instead of a terms aggregation on
+// hardcoded Fluent-Bit keyword fields that returned nothing for OTel indices.
+// The time range is injected by finalizeESLogQueryBody inside QueryLogs.
 func (e *ElasticSaasSource) QueryLogGroup(ctx *security.RequestContext, req FetchLogGroupRequest) (LogGroupOutput, error) {
-	cfg, err := GetElasticsearchConfig(ctx, req.AccountId)
-	if err != nil {
-		return LogGroupOutput{}, fmt.Errorf("es_saas.QueryLogGroup: failed to get config: %w", err)
-	}
-
-	selectedNamespace := common.GetString(req.Request, "selectedNamespace")
-	selectedWorkload := common.GetString(req.Request, "selectedWorkload")
+	// When the caller doesn't pick an index, prefer the account's configured log
+	// index (per-account index_account_mapping → top-level log_index, both resolved
+	// into cfg.LogIndex) over scanning every index on the cluster. Fall back to "*"
+	// only when nothing is configured, matching the prior behaviour.
 	index := common.GetString(req.Request, "index")
 	if index == "" {
-		index = "*"
+		if cfg, cfgErr := GetElasticsearchConfig(ctx, req.AccountId); cfgErr == nil && cfg.LogIndex != "" {
+			index = cfg.LogIndex
+		} else {
+			index = "*"
+		}
 	}
+	selectedNamespace := common.GetString(req.Request, "selectedNamespace")
+	selectedWorkload := common.GetString(req.Request, "selectedWorkload")
 
-	// Build filter for error/critical logs
-	filters := []any{
-		map[string]any{"bool": map[string]any{
-			"should": []map[string]any{
-				{"terms": map[string]any{"level": []string{"error", "critical", "fatal", "ERROR", "CRITICAL", "FATAL"}}},
-				{"terms": map[string]any{"severity": []string{"error", "critical", "fatal", "ERROR", "CRITICAL", "FATAL"}}},
-			},
-			"minimum_should_match": 1,
-		}},
-		map[string]any{"range": map[string]any{
-			"@timestamp": map[string]any{
-				"gte":    req.StartTime,
-				"lte":    req.EndTime,
-				"format": "epoch_millis",
-			},
-		}},
-	}
-	if selectedNamespace != "" {
-		filters = append(filters, map[string]any{
-			"term": map[string]any{"kubernetes.namespace_name.keyword": selectedNamespace},
-		})
-	}
-	if selectedWorkload != "" {
-		filters = append(filters, map[string]any{
-			"wildcard": map[string]any{"kubernetes.pod_name.keyword": escapeESWildcard(selectedWorkload) + "*"},
-		})
-	}
-
-	queryBody := map[string]any{
-		"size": 0,
-		"query": map[string]any{
-			"bool": map[string]any{"filter": filters},
-		},
-		"aggs": map[string]any{
-			"log_groups": map[string]any{
-				"terms": map[string]any{
-					"field": "log.keyword",
-					"size":  100,
-				},
-				"aggs": map[string]any{
-					"namespaces": map[string]any{
-						"terms": map[string]any{"field": "kubernetes.namespace_name.keyword", "size": 10},
-					},
-					"workloads": map[string]any{
-						"terms": map[string]any{"field": "kubernetes.pod_name.keyword", "size": 10},
-					},
-					"containers": map[string]any{
-						"terms": map[string]any{"field": "kubernetes.container_name.keyword", "size": 10},
-					},
-					"levels": map[string]any{
-						"terms": map[string]any{"field": "level", "size": 10},
-					},
-					// Read back by parseESLogGroupResponse. Without it every group
-					// reports the end of the query window as its last-seen.
-					"last_seen": map[string]any{
-						"max": map[string]any{"field": "@timestamp"},
-					},
-				},
-			},
-		},
-	}
-
-	searchURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
-	resp, err := esRequestJSON("POST", searchURL, queryBody, cfg) //nolint:bodyclose
+	body, err := json.Marshal(map[string]any{
+		"query": esLogGroupErrorQuery(),
+		"sort":  esLogGroupSort(),
+	})
 	if err != nil {
-		return LogGroupOutput{}, fmt.Errorf("es_saas.QueryLogGroup: request failed: %w", err)
+		return LogGroupOutput{}, fmt.Errorf("es_saas.QueryLogGroup: failed to marshal query: %w", err)
 	}
 
-	bodyBytes, err := readResponse(resp, "QueryLogGroup")
+	logs, err := e.QueryLogs(ctx, FetchLogRequest{
+		AccountId: req.AccountId,
+		Query:     string(body),
+		Request:   map[string]any{"index": index, "query_type": "dsl"},
+		StartTime: req.StartTime,
+		EndTime:   req.EndTime,
+		Limit:     esLogGroupFetchLimit,
+	})
 	if err != nil {
-		return LogGroupOutput{}, err
+		return LogGroupOutput{}, fmt.Errorf("es_saas.QueryLogGroup: failed to fetch logs: %w", err)
 	}
 
-	// Reuse the same parsing logic as ElasticSource
-	return parseESLogGroupResponse(string(bodyBytes), req.EndTime)
+	return groupESLogsByPattern(logs, selectedNamespace, selectedWorkload, req.EndTime), nil
 }

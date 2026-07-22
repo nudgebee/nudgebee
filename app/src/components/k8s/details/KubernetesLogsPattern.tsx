@@ -30,6 +30,7 @@ import CopyButton from '@shared/buttons/CopyButton';
 import SafeIcon from '@shared/icons/SafeIcon';
 import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
 import apiKubernetes1 from '@api1/kubernetes1';
+import observability from '@api1/observability';
 import { md5 } from '@lib/encode';
 
 // Parse namespace and workload from container_id, handling both 3-segment (/k8s/ns/workload)
@@ -129,13 +130,55 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
   const [nubiQuery, setNubiQuery] = useState('');
   const [nubiSessionId, setNubiSessionId] = useState('');
   const { providerCapabilities } = useData();
-  const logsCaps = providerCapabilities.find((e: any) => e.provider_type === 'logs')?.capabilities;
+  const logsProviderEntry = providerCapabilities.find((e: any) => e.provider_type === 'logs');
+  const logsCaps = logsProviderEntry?.capabilities;
   const supportsFeature = logsCaps?.supports_log_groups ?? null;
+  // Elasticsearch stores logs in indices; unlike label-based providers there is
+  // no fixed index to query, so expose a freeSolo Index picker (mirrors the ES
+  // index selector in the log-query builder) and thread the chosen index through
+  // the log_group request. Non-ES providers ignore `index`.
+  const isESLogProvider = logsProviderEntry?.provider === 'ES';
+  const [indexFilter, setIndexFilter] = useState<string[]>([]);
+  const [selectedIndex, setSelectedIndex] = useState<string>('');
 
   useEffect(() => {
     if (supportsFeature === false) return;
     handleSubmit();
-  }, [accountId, selectedNamespace, selectedDateRange.startDate, selectedDateRange.endDate, selectedWorkload]);
+  }, [accountId, selectedNamespace, selectedDateRange.startDate, selectedDateRange.endDate, selectedWorkload, selectedIndex]);
+
+  // Load the available Elasticsearch indices for the freeSolo Index picker.
+  // Reuse the shared, provider-agnostic ES index-list API (logs_list_labels),
+  // which resolves indices for both agent and direct/SaaS ES — unlike a raw
+  // query_es_indices relay call, which only works for the agent variant. Mirrors
+  // the traces group listing's index picker.
+  useEffect(() => {
+    // Clear any index carried over from a previous account/provider context so a
+    // stale index isn't queried (or shown) against the new account.
+    setSelectedIndex('');
+    setIndexFilter([]);
+    if (supportsFeature === false || !accountId || !isESLogProvider) {
+      return;
+    }
+    let isMounted = true;
+    observability
+      .fetchLogLabels({ account_id: accountId, log_provider: 'ES' })
+      .then((res: any) => {
+        if (!isMounted) return;
+        const indices = (res?.data?.data?.logs_list_labels || [])
+          .map((l: any) => l?.label)
+          .filter(Boolean)
+          .sort();
+        setIndexFilter(indices);
+      })
+      .catch((err: any) => {
+        if (!isMounted) return;
+        console.error('Failed to load ES indices:', err);
+        setIndexFilter([]);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [accountId, isESLogProvider, supportsFeature]);
 
   useEffect(() => {
     if (supportsFeature === false) return;
@@ -210,6 +253,10 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
     setAllowInActivePod(e);
   };
 
+  const onIndexFilterChange = (value: string) => {
+    setSelectedIndex(value || '');
+  };
+
   const onMenuClick = (menuItems: any, data: any) => {
     const c = data?.values?.reduce((accumulator: number, currentValue: string) => accumulator + parseInt(currentValue), 0);
     setCount(c);
@@ -243,6 +290,7 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
         request: {
           ...(selectedNamespace && { selectedNamespace }),
           ...(selectedWorkload && { selectedWorkload }),
+          ...(isESLogProvider && selectedIndex && { index: selectedIndex }),
         },
       })
       .then((res) => {
@@ -489,6 +537,16 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
               options={workloadFilter.map((o) => ({ value: o, label: o }))}
               value={selectedWorkload}
               onSelect={(e: React.ChangeEvent<HTMLInputElement>) => onWorkloadFilterChange(e as any)}
+            />
+          )}
+          {isESLogProvider && (
+            <FilterDropdown
+              id='log-group-es-index'
+              label='Index'
+              options={indexFilter}
+              value={selectedIndex}
+              onSelect={(e: any) => onIndexFilterChange(e?.target?.value)}
+              freeSolo={true}
             />
           )}
           <Switch

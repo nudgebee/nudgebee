@@ -3,11 +3,11 @@ package observability
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"nudgebee/services/common"
 	"nudgebee/services/query"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -843,232 +843,274 @@ func whereToBool(where query.QueryWhereClause) (map[string]any, error) {
 	return map[string]any{"bool": boolQ}, nil
 }
 
-// QueryLogGroup implements LogGroupSource for Elasticsearch.
-// Uses ES terms aggregation to group error/critical logs by message, namespace, and workload.
+// QueryLogGroup implements LogGroupSource for Elasticsearch (Loki-style).
+//
+// It fetches raw error/critical/fatal log documents from the selected index via
+// QueryLogs — which parses every supported ES doc shape (Fluent-Bit/ECS and
+// OTel-native) through ParseSourceMap — then groups them by message pattern
+// in-memory (see groupESLogsByPattern). This replaces the previous terms
+// aggregation, which grouped on hardcoded Fluent-Bit keyword fields
+// (log.keyword, kubernetes.*_name.keyword) and so returned nothing for
+// OTel-native indices, where the message lives at body.text and the k8s
+// identifiers under resource.attributes.
 func (e *ElasticSource) QueryLogGroup(ctx *security.RequestContext, req FetchLogGroupRequest) (LogGroupOutput, error) {
-	selectedNamespace := common.GetString(req.Request, "selectedNamespace")
-	selectedWorkload := common.GetString(req.Request, "selectedWorkload")
 	index := common.GetString(req.Request, "index")
 	if index == "" {
 		index = "*"
 	}
+	selectedNamespace := common.GetString(req.Request, "selectedNamespace")
+	selectedWorkload := common.GetString(req.Request, "selectedWorkload")
 
-	// Build filter query for error/critical logs
-	filters := []map[string]any{
-		{"bool": map[string]any{
-			"should": []map[string]any{
-				{"terms": map[string]any{"level": []string{"error", "critical", "fatal", "ERROR", "CRITICAL", "FATAL"}}},
-				{"terms": map[string]any{"severity": []string{"error", "critical", "fatal", "ERROR", "CRITICAL", "FATAL"}}},
-			},
-			"minimum_should_match": 1,
-		}},
-		{"range": map[string]any{
-			"@timestamp": map[string]any{
-				"gte":    req.StartTime,
-				"lte":    req.EndTime,
-				"format": "epoch_millis",
-			},
-		}},
+	// The agent's query_es action does not inject the time range, so embed it in
+	// the DSL alongside the error match.
+	q := esLogGroupErrorQuery()
+	if req.StartTime > 0 || req.EndTime > 0 {
+		bq := q["bool"].(map[string]any)
+		bq["filter"] = append(bq["filter"].([]any), esLogTimeRangeClause(req.StartTime, req.EndTime))
 	}
-	if selectedNamespace != "" {
-		filters = append(filters, map[string]any{
-			"term": map[string]any{"kubernetes.namespace_name.keyword": selectedNamespace},
-		})
-	}
-	if selectedWorkload != "" {
-		filters = append(filters, map[string]any{
-			"wildcard": map[string]any{"kubernetes.pod_name.keyword": escapeESWildcard(selectedWorkload) + "*"},
-		})
-	}
-
-	esQuery := map[string]any{
-		"bool": map[string]any{"filter": filters},
-	}
-
-	// Terms aggregation to group by log message, with sub-aggs for namespace/container
-	aggs := map[string]any{
-		"log_groups": map[string]any{
-			"terms": map[string]any{
-				"field": "log.keyword",
-				"size":  100,
-			},
-			"aggs": map[string]any{
-				"namespaces": map[string]any{
-					"terms": map[string]any{"field": "kubernetes.namespace_name.keyword", "size": 10},
-				},
-				"workloads": map[string]any{
-					"terms": map[string]any{"field": "kubernetes.pod_name.keyword", "size": 10},
-				},
-				"containers": map[string]any{
-					"terms": map[string]any{"field": "kubernetes.container_name.keyword", "size": 10},
-				},
-				"levels": map[string]any{
-					"terms": map[string]any{"field": "level", "size": 10},
-				},
-				// When the pattern was last seen. Without it every group reports the
-				// end of the query window and the UI shows one time for every row.
-				"last_seen": map[string]any{
-					"max": map[string]any{"field": "@timestamp"},
-				},
-			},
-		},
-	}
-
-	actionParams := map[string]any{
-		"query":      esQuery,
-		"index":      index,
-		"query_type": "dsl",
-		"aggs":       aggs,
-		"size":       0, // We only need aggregations, not documents
-	}
-
-	resp, err := relay.Execute(relay.RelayExecuteRequest{
-		NoSinks: true,
-		Cache:   false,
-		Body: relay.ActionExecuteBody{
-			AccountID:    req.AccountId,
-			ActionName:   "query_es",
-			ActionParams: actionParams,
-			NoSinks:      true,
-		},
+	body, err := json.Marshal(map[string]any{
+		"query": q,
+		"sort":  esLogGroupSort(),
 	})
 	if err != nil {
-		return LogGroupOutput{}, fmt.Errorf("es.QueryLogGroup: failed to execute query: %w", err)
+		return LogGroupOutput{}, fmt.Errorf("es.QueryLogGroup: failed to marshal query: %w", err)
 	}
 
-	rawJSON, err := e.ExtractRawResponseString(resp)
+	logs, err := e.QueryLogs(ctx, FetchLogRequest{
+		AccountId: req.AccountId,
+		Query:     string(body),
+		Request:   map[string]any{"index": index, "query_type": "dsl"},
+		Limit:     esLogGroupFetchLimit,
+	})
 	if err != nil {
-		return LogGroupOutput{}, fmt.Errorf("es.QueryLogGroup: failed to extract response: %w", err)
+		return LogGroupOutput{}, fmt.Errorf("es.QueryLogGroup: failed to fetch logs: %w", err)
 	}
 
-	return parseESLogGroupResponse(rawJSON, req.EndTime)
+	return groupESLogsByPattern(logs, selectedNamespace, selectedWorkload, req.EndTime), nil
 }
 
-// esBucketLastSeenUnix reads the last_seen sub-aggregation off a log group bucket
-// as unix seconds, falling back to the end of the query window when the bucket has
-// no usable reading.
+// esLogGroupFetchLimit bounds how many raw error documents are pulled back for
+// in-memory grouping (matches the Loki log-group budget).
+const esLogGroupFetchLimit = 1000
+
+// esLogGroupErrorQuery builds the shared bool query matching error/critical/fatal
+// logs. A doc qualifies (minimum_should_match 1) when EITHER its message text
+// mentions an error keyword OR a structured level/severity field carries an error
+// value:
 //
-// Note the unit change: a max over a date field comes back as epoch millis, and the
-// group's Timestamps are seconds (the UI multiplies them by 1000). endTime is
-// millis for the same reason the range filter declares epoch_millis.
-func esBucketLastSeenUnix(bucket map[string]any, endTime int64) int64 {
-	agg, ok := bucket["last_seen"].(map[string]any)
-	if !ok {
-		return logGroupWindowEndUnix(endTime)
+//   - simple_query_string is scoped to the known message fields across doc shapes
+//     (Fluent-Bit "log", OTel "body.text"/"body", generic "message"). Scoping to
+//     the message — rather than every field — keeps a stray "error" in an
+//     unrelated field, URL, or index name from pulling in non-error logs, and
+//     keeps the esInferLogLevel label honest. It stays lenient by design, so a
+//     message field the index does not have is silently ignored.
+//   - terms on level/severity/severity_text catch structured errors whose message
+//     text carries no keyword (e.g. {"level":"ERROR","msg":"connection refused"}),
+//     including the OTel severity_text field. A term only matches a keyword-mapped
+//     field, so it is additive: the message match remains the primary signal.
+//
+// Namespace/workload scoping is applied in Go (see groupESLogsByPattern), not
+// here, because the k8s identifier field names differ across doc shapes and a
+// hardcoded field filter silently excludes the shapes it does not name.
+func esLogGroupErrorQuery() map[string]any {
+	errorValues := []string{"error", "critical", "fatal", "ERROR", "CRITICAL", "FATAL"}
+	return map[string]any{
+		"bool": map[string]any{
+			"filter": []any{
+				map[string]any{
+					"bool": map[string]any{
+						"minimum_should_match": 1,
+						"should": []any{
+							map[string]any{
+								"simple_query_string": map[string]any{
+									"query":            "error critical fatal",
+									"default_operator": "or",
+									"fields":           []string{"log", "body.text", "body", "message"},
+								},
+							},
+							map[string]any{"terms": map[string]any{"level": errorValues}},
+							map[string]any{"terms": map[string]any{"severity": errorValues}},
+							map[string]any{"terms": map[string]any{"severity_text": errorValues}},
+						},
+					},
+				},
+			},
+		},
 	}
-
-	if v, ok := agg["value"].(float64); ok && v > 0 {
-		return int64(v) / 1000
-	}
-
-	// A date field mapped as a string aggregates to value_as_string only.
-	if s, ok := agg["value_as_string"].(string); ok {
-		if ts := logLastSeenUnix(s); ts > 0 {
-			return ts
-		}
-	}
-
-	return logGroupWindowEndUnix(endTime)
 }
 
-// parseESLogGroupResponse parses ES aggregation response into LogGroupOutput.
-func parseESLogGroupResponse(rawJSON string, endTime int64) (LogGroupOutput, error) {
-	var esResp map[string]any
-	if err := json.Unmarshal([]byte(rawJSON), &esResp); err != nil {
-		return LogGroupOutput{}, fmt.Errorf("es.QueryLogGroup: failed to parse response: %w", err)
+// esLogGroupSort orders results newest-first; unmapped_type avoids a sort error
+// when a "*" search spans an index without an @timestamp mapping.
+func esLogGroupSort() []any {
+	return []any{
+		map[string]any{"@timestamp": map[string]any{"order": "desc", "unmapped_type": "date"}},
+	}
+}
+
+// groupESLogsByPattern groups raw ES log entries by message pattern hash
+// in-memory and returns the top error groups, mirroring the Loki/SolarWinds
+// in-memory grouping. Namespace/workload are read via extractESK8sMeta, which
+// understands both the Fluent-Bit ("kubernetes" nested object) and OTel-native
+// (resource.attributes flattened, e.g. k8s.namespace.name) label shapes. The
+// selectedNamespace/selectedWorkload scope filters drop a log only when a
+// mismatching value is positively read, so docs whose shape omits the field are
+// kept rather than silently discarded. Each group's Timestamps carry the max
+// (last-seen) log timestamp, falling back to the query-window end.
+func groupESLogsByPattern(logs []OutputLog, selectedNamespace, selectedWorkload string, endTime int64) LogGroupOutput {
+	type groupEntry struct {
+		sample    string
+		hash      string
+		namespace string
+		workload  string
+		container string
+		level     string
+		count     int64
+		lastSeen  int64 // max log timestamp (unix seconds); 0 until one is parsed
 	}
 
-	aggs, ok := esResp["aggregations"].(map[string]any)
-	if !ok {
-		return LogGroupOutput{}, nil
-	}
+	grouped := make(map[string]*groupEntry)
 
-	logGroups, ok := aggs["log_groups"].(map[string]any)
-	if !ok {
-		return LogGroupOutput{}, nil
-	}
-
-	buckets, ok := logGroups["buckets"].([]any)
-	if !ok {
-		return LogGroupOutput{}, nil
-	}
-
-	groups := make([]LogGroup, 0, len(buckets))
-	for _, b := range buckets {
-		bucket, ok := b.(map[string]any)
-		if !ok {
+	for _, log := range logs {
+		if log.Message == "" {
 			continue
 		}
 
-		message, _ := bucket["key"].(string)
-		count, _ := bucket["doc_count"].(float64)
+		namespace, pod, container := extractESK8sMeta(log.Labels)
+		workload := extractWorkloadFromPodName(pod)
 
-		group := LogGroup{
-			Sample:     message,
-			Timestamps: []int64{esBucketLastSeenUnix(bucket, endTime)},
-			Values:     []float64{count},
-			Count:      int64(math.Round(count)),
+		if selectedNamespace != "" && namespace != "" && namespace != selectedNamespace {
+			continue
+		}
+		if selectedWorkload != "" && workload != "" && workload != selectedWorkload {
+			continue
 		}
 
-		// Extract first namespace from sub-aggregation
-		if nsAgg, ok := bucket["namespaces"].(map[string]any); ok {
-			if nsBuckets, ok := nsAgg["buckets"].([]any); ok && len(nsBuckets) > 0 {
-				if nsBucket, ok := nsBuckets[0].(map[string]any); ok {
-					if ns, ok := nsBucket["key"].(string); ok {
-						group.Namespace = ns
-					}
-				}
+		hash := generatePatternHash(log.Message)
+		level := esInferLogLevel(log.Message)
+		seen := logLastSeenUnix(log.Timestamp)
+
+		compositeKey := hash + "|" + namespace + "|" + workload + "|" + level
+		entry, exists := grouped[compositeKey]
+		if !exists {
+			sample := log.Message
+			if runes := []rune(sample); len(runes) > 500 {
+				sample = string(runes[:500])
 			}
-		}
-
-		// Extract first workload from sub-aggregation (pod name → workload name)
-		if wlAgg, ok := bucket["workloads"].(map[string]any); ok {
-			if wlBuckets, ok := wlAgg["buckets"].([]any); ok && len(wlBuckets) > 0 {
-				if wlBucket, ok := wlBuckets[0].(map[string]any); ok {
-					if wl, ok := wlBucket["key"].(string); ok {
-						group.Workload = extractWorkloadFromPodName(wl)
-					}
-				}
+			entry = &groupEntry{
+				sample:    sample,
+				hash:      hash,
+				namespace: namespace,
+				workload:  workload,
+				container: container,
+				level:     level,
 			}
+			grouped[compositeKey] = entry
 		}
-
-		// Extract first container from sub-aggregation
-		if cAgg, ok := bucket["containers"].(map[string]any); ok {
-			if cBuckets, ok := cAgg["buckets"].([]any); ok && len(cBuckets) > 0 {
-				if cBucket, ok := cBuckets[0].(map[string]any); ok {
-					if c, ok := cBucket["key"].(string); ok {
-						group.Container = c
-					}
-				}
-			}
+		entry.count++
+		if seen > entry.lastSeen {
+			entry.lastSeen = seen
 		}
-
-		// Extract first level from sub-aggregation
-		if lvlAgg, ok := bucket["levels"].(map[string]any); ok {
-			if lvlBuckets, ok := lvlAgg["buckets"].([]any); ok && len(lvlBuckets) > 0 {
-				if lvlBucket, ok := lvlBuckets[0].(map[string]any); ok {
-					if lvl, ok := lvlBucket["key"].(string); ok {
-						group.Level = lvl
-					}
-				}
-			}
-		}
-
-		if group.Namespace != "" && group.Workload != "" {
-			group.ContainerID = fmt.Sprintf("/k8s/%s/%s", group.Namespace, group.Workload)
-			if group.Container != "" {
-				group.ContainerID += "/" + group.Container
-			}
-		}
-
-		if message != "" {
-			group.PatternHash = generatePatternHash(message)
-		}
-
-		groups = append(groups, group)
 	}
 
-	return LogGroupOutput{Groups: groups}, nil
+	windowEnd := logGroupWindowEndUnix(endTime)
+
+	groups := make([]LogGroup, 0, len(grouped))
+	for _, entry := range grouped {
+		containerID := ""
+		if entry.namespace != "" && entry.workload != "" {
+			containerID = fmt.Sprintf("/k8s/%s/%s", entry.namespace, entry.workload)
+			if entry.container != "" {
+				containerID += "/" + entry.container
+			}
+		}
+
+		level := entry.level
+		if level == "" {
+			level = "error"
+		}
+
+		lastSeen := entry.lastSeen
+		if lastSeen <= 0 {
+			lastSeen = windowEnd
+		}
+
+		groups = append(groups, LogGroup{
+			Sample:      entry.sample,
+			Namespace:   entry.namespace,
+			Workload:    entry.workload,
+			Container:   entry.container,
+			ContainerID: containerID,
+			PatternHash: entry.hash,
+			Level:       level,
+			Count:       entry.count,
+			Timestamps:  []int64{lastSeen},
+			Values:      []float64{float64(entry.count)},
+		})
+	}
+
+	sort.Slice(groups, func(i, j int) bool {
+		return groups[i].Count > groups[j].Count
+	})
+
+	if len(groups) > 100 {
+		groups = groups[:100]
+	}
+
+	return LogGroupOutput{Groups: groups}
+}
+
+// extractESK8sMeta reads the Kubernetes namespace, pod, and container from a
+// parsed ES log's labels across the supported doc shapes:
+//   - OTel-native: resource.attributes are flattened by ParseSourceMap, e.g.
+//     "k8s.namespace.name", "k8s.pod.name", "k8s.container.name".
+//   - Fluent-Bit/ECS: the top-level "kubernetes" object is preserved as a nested
+//     map with "namespace_name", "pod_name", "container_name".
+func extractESK8sMeta(labels map[string]any) (namespace, pod, container string) {
+	namespace = esLabelString(labels, "k8s.namespace.name", "kubernetes.namespace_name", "namespace_name", "namespace")
+	pod = esLabelString(labels, "k8s.pod.name", "kubernetes.pod_name", "pod_name", "pod")
+	container = esLabelString(labels, "k8s.container.name", "kubernetes.container_name", "container_name", "container")
+
+	if kube, ok := labels["kubernetes"].(map[string]any); ok {
+		if namespace == "" {
+			namespace, _ = kube["namespace_name"].(string)
+		}
+		if pod == "" {
+			pod, _ = kube["pod_name"].(string)
+		}
+		if container == "" {
+			container, _ = kube["container_name"].(string)
+		}
+	}
+	return namespace, pod, container
+}
+
+// esLabelString returns the first non-empty string value among the given label keys.
+func esLabelString(labels map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := labels[k].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// esInferLogLevel derives a severity level from the message text. Documents
+// reaching the grouper are already filtered to error/critical/fatal, so the
+// default is "error"; the finer levels are surfaced when the keyword is present.
+func esInferLogLevel(message string) string {
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "fatal"):
+		return "fatal"
+	case strings.Contains(lower, "critical"):
+		return "critical"
+	case strings.Contains(lower, "error"):
+		return "error"
+	case strings.Contains(lower, "warn"):
+		return "warning"
+	default:
+		return "error"
+	}
 }
 
 // buildESQueryFromWhere converts a QueryWhereClause into an Elasticsearch DSL JSON string.
