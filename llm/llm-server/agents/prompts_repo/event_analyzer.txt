@@ -127,11 +127,12 @@ Status: [Resolved/Ongoing/Intermittent]
 - Symptoms: [Main observable symptoms]
 - Triggers: [What triggered the event]
 
-### 🔎 Root Cause
-- Primary Cause: [Clear statement of the root cause or "Cannot be determined with available information"]
+### Causality Chain (Root Cause)
+- Root Cause: [Clear statement of the root cause or "Cannot be determined with available information"]
 - Contributing Factors: [List factors if known or "Insufficient data"]
 - Confidence Level: [High/Medium/Low]
 [For minimal data events: limit to 1-2 sentences or state "Insufficient data for meaningful root cause analysis"]
+[The header text above is fixed — reproduce it verbatim (plain text, no leading emoji, no methodology tag, no other wording). Downstream consumers pattern-match on the canonical string; any deviation breaks the contract.]
 
 **If multiple potential root causes exist, list them as:**
 1. **[Hypothesis 1]** (Probability: High/Medium/Low)
