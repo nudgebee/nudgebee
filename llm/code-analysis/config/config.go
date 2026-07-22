@@ -95,6 +95,14 @@ type AgentConfig struct {
 	// output back into the SAME ReAct session instead of starting a fresh fixer
 	// attempt — preserving state, cache prefix, and everything already learned.
 	InloopVerify bool `mapstructure:"inloop_verify"`
+	// Per-role model tiers (empty = the run's resolved model, i.e. no tiering).
+	// The specialist keeps the resolved model for reasoning; router, fixer and
+	// review are mechanical roles that receive exact instructions and don't need
+	// reasoning-tier pricing (the aider architect/editor split). Their spend is
+	// still accumulated into the run's totals via usage sharing.
+	ModelRouter string `mapstructure:"model_router"`
+	ModelFixer  string `mapstructure:"model_fixer"`
+	ModelReview string `mapstructure:"model_review"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -161,6 +169,9 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("agent.build_verify_timeout", "5m")
 	viper.SetDefault("agent.harness_verify", false)
 	viper.SetDefault("agent.inloop_verify", false)
+	viper.SetDefault("agent.model_router", "")
+	viper.SetDefault("agent.model_fixer", "")
+	viper.SetDefault("agent.model_review", "")
 
 	// Load secrets file if it exists (e.g., secrets.yaml or secrets.json)
 	// This file should contain sensitive information and should not be committed to VCS.
@@ -199,6 +210,9 @@ func LoadConfig() (*Config, error) {
 	// Explicitly bind environment variables for LLM config (consistent with llm-server)
 	_ = viper.BindEnv("agent.harness_verify", "AGENT_HARNESS_VERIFY")
 	_ = viper.BindEnv("agent.inloop_verify", "AGENT_INLOOP_VERIFY")
+	_ = viper.BindEnv("agent.model_router", "AGENT_MODEL_ROUTER")
+	_ = viper.BindEnv("agent.model_fixer", "AGENT_MODEL_FIXER")
+	_ = viper.BindEnv("agent.model_review", "AGENT_MODEL_REVIEW")
 	_ = viper.BindEnv("llm_provider", "LLM_PROVIDER")
 	_ = viper.BindEnv("llm_model_name", "LLM_MODEL_NAME")
 	// Also support LLM_MODEL for backward compatibility

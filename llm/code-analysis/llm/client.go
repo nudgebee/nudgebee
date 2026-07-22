@@ -28,6 +28,10 @@ type Client struct {
 	logger      *common.Logger
 	tokenUsage  *TokenUsage
 	tokenMu     sync.Mutex // protects tokenUsage
+	// usageParent, when set, receives a copy of every usage delta so a derived
+	// per-role client's spend still lands in the run client's cumulative totals
+	// (the analysis handler snapshots those for the final response and billing).
+	usageParent *Client
 }
 
 type TokenUsage struct {
@@ -318,10 +322,33 @@ func (c *Client) SnapshotTokenUsage() *TokenUsage {
 	}
 }
 
+// ShareUsageWith makes every future usage delta on this client also accumulate
+// on parent. Used by per-role tier clients so the run's reported totals include
+// their spend. One-way child→parent only; self-parenting is ignored.
+func (c *Client) ShareUsageWith(parent *Client) {
+	if parent == c {
+		return
+	}
+	// Refuse any link that would close a cycle (directly or through the chain):
+	// addTokenUsage recurses through usageParent, and a cycle would overflow the
+	// stack. Locks are taken one node at a time, never nested — no deadlock.
+	for curr := parent; curr != nil; {
+		if curr == c {
+			return
+		}
+		curr.tokenMu.Lock()
+		next := curr.usageParent
+		curr.tokenMu.Unlock()
+		curr = next
+	}
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	c.usageParent = parent
+}
+
 // addTokenUsage adds token counts to the cumulative total under lock.
 func (c *Client) addTokenUsage(promptTokens, completionTokens, totalTokens, cachedTokens int) {
 	c.tokenMu.Lock()
-	defer c.tokenMu.Unlock()
 	if c.tokenUsage == nil {
 		c.tokenUsage = &TokenUsage{}
 	}
@@ -333,6 +360,12 @@ func (c *Client) addTokenUsage(promptTokens, completionTokens, totalTokens, cach
 		c.tokenUsage.TotalTokens += promptTokens + completionTokens
 	}
 	c.tokenUsage.CachedContentTokens += cachedTokens
+	parent := c.usageParent
+	c.tokenMu.Unlock()
+
+	if parent != nil {
+		parent.addTokenUsage(promptTokens, completionTokens, totalTokens, cachedTokens)
+	}
 }
 
 func (c *Client) ResetTokenUsage() {

@@ -227,6 +227,12 @@ type ForwardedLLMConfig struct {
 	ApiVersion  string `json:"api_version,omitempty"`
 	ApiType     string `json:"api_type,omitempty"`
 	Region      string `json:"region,omitempty"`
+	// Tiers carries the ModelTier resolution (reasoning/retrieval/summary) for
+	// this account+agent so the workspace can run its internal roles on
+	// category-appropriate models (fixer/router on retrieval, review on
+	// summary). Only tiers that resolve to a model different from Model, on the
+	// same provider, are included — credentials are shared with the run model.
+	Tiers map[string]string `json:"tiers,omitempty"`
 }
 
 // ResolveLLMConfigForForwarding resolves the full, decrypted LLM config for the
@@ -258,7 +264,7 @@ func ResolveLLMConfigForForwarding(ctx *security.RequestContext, accountId, agen
 	if apiKey == "" {
 		return nil, nil
 	}
-	return &ForwardedLLMConfig{
+	fwd := &ForwardedLLMConfig{
 		Provider:    provider,
 		Model:       res.Model,
 		ApiKey:      apiKey,
@@ -266,7 +272,41 @@ func ResolveLLMConfigForForwarding(ctx *security.RequestContext, accountId, agen
 		ApiVersion:  getLLMApiVersion(accountId, provider, agentName, appendAgentName, res),
 		ApiType:     getLLMApiType(accountId, provider, agentName, appendAgentName, res),
 		Region:      getLLMRegion(accountId, provider, agentName, appendAgentName, res),
-	}, nil
+	}
+
+	// Resolve the model tiers through the same layered config so the workspace
+	// can tier its internal roles with no new config surface. A tier is only
+	// forwarded when it resolves to a different model on the SAME provider —
+	// the forwarded credentials belong to the run model's provider. Best-effort:
+	// without a usable context there is no safe way to tag the tier, so skip.
+	if ctx == nil {
+		return fwd, nil
+	}
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		goCtx = context.Background()
+	}
+	for _, tier := range []ModelTier{ModelTierReasoning, ModelTierRetrieval, ModelTierSummary} {
+		tierCtx := security.NewRequestContext(
+			context.WithValue(goCtx, ContextKeyModelTier, tier),
+			ctx.GetSecurityContext(),
+			ctx.GetLogger(),
+			ctx.GetTracer(),
+			ctx.GetMeter(),
+		)
+		tierRes, terr := ResolveLLMConfig(tierCtx, accountId, agentName, conversationId)
+		if terr != nil || tierRes == nil {
+			continue // tiering is best-effort; the run model always works
+		}
+		if tierRes.Model == "" || tierRes.Model == fwd.Model || tierRes.Provider != provider {
+			continue
+		}
+		if fwd.Tiers == nil {
+			fwd.Tiers = map[string]string{}
+		}
+		fwd.Tiers[string(tier)] = tierRes.Model
+	}
+	return fwd, nil
 }
 
 func InvalidateLLMClientCache(accountId string) {

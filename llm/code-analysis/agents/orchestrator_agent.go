@@ -109,19 +109,54 @@ type OrchestratorAgent struct {
 
 	// fixVerifier runs deterministic harness-owned build verification (agent.harness_verify)
 	fixVerifier *FixVerifier
+
+	// fixerClient is the (possibly tiered) client the CodeFixer must use — kept on
+	// the struct because EnableToolTracking recreates the fixer after construction
+	// and would otherwise silently clobber the tier back to the run client.
+	fixerClient *llm.Client
+}
+
+// tierClient returns a client pinned to the configured per-role model, or the
+// run's client when no tier is configured. Tiering must never break an
+// analysis: on any failure to build the derived client it falls back to the
+// run client. Derived clients share usage with the run client so the analysis
+// totals (final response, billing) still cover every call.
+func tierClient(cfg *config.Config, runClient *llm.Client, model, role string, logger *common.Logger) *llm.Client {
+	if model == "" || model == cfg.LLM.Model {
+		return runClient
+	}
+	derived, err := llm.NewClient(cfg.CloneWithLLMOverride(config.LLMOverride{Model: model}))
+	if err != nil {
+		logger.Log(common.EventStepFailure, "Agent model tier unavailable — falling back to run model", map[string]any{
+			"role": role, "model": model, "error": err.Error(),
+		})
+		return runClient
+	}
+	derived.ShareUsageWith(runClient)
+	logger.Log(common.EventAnalysisStart, "Agent model tier active", map[string]any{
+		"role": role, "model": model, "run_model": cfg.LLM.Model,
+	})
+	return derived
 }
 
 func NewOrchestratorAgent(cfg *config.Config, llmClient *llm.Client, gitClient *git.GitClient, logger *common.Logger) *OrchestratorAgent {
 	workspaceDir := cfg.Analysis.WorkspaceDir
 
+	// Per-role model tiers: the specialist keeps the run's resolved model for
+	// reasoning; router/fixer/review are mechanical roles (exact instructions,
+	// no exploration) that don't need reasoning-tier pricing.
+	routerClient := tierClient(cfg, llmClient, cfg.Agent.ModelRouter, "router", logger)
+	fixerClient := tierClient(cfg, llmClient, cfg.Agent.ModelFixer, "fixer", logger)
+	reviewClient := tierClient(cfg, llmClient, cfg.Agent.ModelReview, "review", logger)
+
 	// Initialize specialist agents - all should work in the same workspace
 	// Note: Security queries are routed to ErrorRCAAgent which has all necessary tools
-	routerAgent := NewRouterAgent(llmClient, logger)
+	routerAgent := NewRouterAgent(routerClient, logger)
 	codeAgent := NewCodeAgent(cfg, llmClient, gitClient, logger, workspaceDir)
 	errorRCAAgent := NewErrorRCAAgent(cfg, llmClient, gitClient, logger, workspaceDir)
 	performanceDebuggerAgent := NewPerformanceDebuggerAgent(cfg, llmClient, gitClient, logger, workspaceDir)
-	codeFixerAgent := NewCodeFixerAgent(llmClient, logger, workspaceDir, cfg)
-	codeReviewAgent := NewCodeReviewAgent(cfg, llmClient, logger, workspaceDir)
+	codeFixerAgent := NewCodeFixerAgent(fixerClient, logger, workspaceDir, cfg)
+	codeReviewAgent := NewCodeReviewAgent(cfg, reviewClient, logger, workspaceDir)
 
 	return &OrchestratorAgent{
 		name:                     "orchestrator_agent",
@@ -138,6 +173,7 @@ func NewOrchestratorAgent(cfg *config.Config, llmClient *llm.Client, gitClient *
 		performanceDebuggerAgent: performanceDebuggerAgent,
 		codeFixerAgent:           codeFixerAgent,
 		codeReviewAgent:          codeReviewAgent,
+		fixerClient:              fixerClient,
 	}
 }
 
@@ -183,7 +219,17 @@ func (a *OrchestratorAgent) SetWorkspaceDir(workspaceDir string) {
 	a.codeAgent = NewCodeAgent(a.config, a.llmClient, a.gitClient, a.logger, a.workspaceDir)
 	a.errorRCAAgent = NewErrorRCAAgent(a.config, a.llmClient, a.gitClient, a.logger, a.workspaceDir)
 	a.performanceDebuggerAgent = NewPerformanceDebuggerAgent(a.config, a.llmClient, a.gitClient, a.logger, a.workspaceDir)
-	a.codeFixerAgent = NewCodeFixerAgent(a.llmClient, a.logger, a.workspaceDir, a.config)
+	a.codeFixerAgent = NewCodeFixerAgent(a.currentFixerClient(), a.logger, a.workspaceDir, a.config)
+}
+
+// currentFixerClient returns the fixer's (possibly tiered) client for the agent
+// recreation sites — every recreation must use this, or the tier silently
+// reverts to the run client.
+func (a *OrchestratorAgent) currentFixerClient() *llm.Client {
+	if a.fixerClient != nil {
+		return a.fixerClient
+	}
+	return a.llmClient
 }
 
 func (a *OrchestratorAgent) GetNameAliases() []string {
@@ -3077,7 +3123,8 @@ func (a *OrchestratorAgent) EnableToolTracking(tracker *common.ToolInvocationTra
 	a.codeAgent = NewCodeAgentWithTracker(a.config, a.llmClient, a.gitClient, a.logger, a.workspaceDir, tracker)
 	a.errorRCAAgent = NewErrorRCAAgentWithTracker(a.config, a.llmClient, a.gitClient, a.logger, a.workspaceDir, tracker)
 	a.performanceDebuggerAgent = NewPerformanceDebuggerAgentWithTracker(a.config, a.llmClient, a.gitClient, a.logger, a.workspaceDir, tracker)
-	a.codeFixerAgent = NewCodeFixerAgentWithTracker(a.llmClient, a.logger, a.workspaceDir, a.config, tracker)
+	// The fixer keeps its tiered client across recreation.
+	a.codeFixerAgent = NewCodeFixerAgentWithTracker(a.currentFixerClient(), a.logger, a.workspaceDir, a.config, tracker)
 
 	// Set tool tracker on CodeAgent
 	if a.codeAgent != nil {
