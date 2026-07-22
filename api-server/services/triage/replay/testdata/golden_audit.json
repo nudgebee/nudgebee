@@ -1,0 +1,30 @@
+{
+  "name": "correlation-audit-2026-07-22",
+  "events": [
+    {"id": "pg-1", "subject_type": "database", "subject_name": "temporal", "subject_namespace": "", "aggregation_key": "PostgreSQLCacheHitRatio", "series": ["nudgebee", "rdsadmin", "temporal", "temporal_visibility"], "incident": "postgres-shared", "tier": "core"},
+    {"id": "pg-2", "subject_type": "database", "subject_name": "temporal_visibility", "subject_namespace": "", "aggregation_key": "PostgreSQLCacheHitRatio", "series": ["nudgebee", "rdsadmin", "temporal", "temporal_visibility"], "incident": "postgres-shared", "tier": "core"},
+    {"id": "pg-3", "subject_type": "database", "subject_name": "nudgebee", "subject_namespace": "", "aggregation_key": "PostgreSQLCacheHitRatio", "series": ["nudgebee", "rdsadmin", "temporal", "temporal_visibility"], "incident": "postgres-shared", "tier": "core"},
+    {"id": "pg-4", "subject_type": "database", "subject_name": "nudgebee", "subject_namespace": "", "aggregation_key": "PostgreSQLSlowQueries", "series": ["nudgebee", "rdsadmin", "temporal", "temporal_visibility"], "incident": "postgres-shared", "tier": "core"},
+    {"id": "pg-5", "subject_type": "database", "subject_name": "temporal", "subject_namespace": "", "aggregation_key": "PostgreSQLCacheHitRatio", "series": ["nudgebee", "rdsadmin", "temporal", "temporal_visibility"], "incident": "postgres-shared", "tier": "core"},
+    {"id": "pg-6", "subject_type": "database", "subject_name": "temporal_visibility", "subject_namespace": "", "aggregation_key": "PostgreSQLCacheHitRatio", "series": ["nudgebee", "rdsadmin", "temporal", "temporal_visibility"], "incident": "postgres-shared", "tier": "core"},
+
+    {"id": "cc-1", "subject_type": "deployment", "subject_name": "cloud-collector-server", "subject_namespace": "nudgebee", "subject_owner": "cloud-collector-server", "aggregation_key": "HighP95Latency", "incident": "cloud-collector-latency", "tier": "chronic"},
+    {"id": "cc-2", "subject_type": "deployment", "subject_name": "cloud-collector-server", "subject_namespace": "nudgebee", "subject_owner": "cloud-collector-server", "aggregation_key": "HighP95Latency", "incident": "cloud-collector-latency", "tier": "chronic"},
+    {"id": "cc-3", "subject_type": "", "subject_name": "cloud-collector-server-5cbd8ddb97", "subject_namespace": "nudgebee", "subject_owner": "", "aggregation_key": "HighP95Latency", "incident": "cloud-collector-latency", "tier": "chronic"},
+    {"id": "cc-4", "subject_type": "", "subject_name": "cloud-collector-server-5cbd8ddb97", "subject_namespace": "nudgebee", "subject_owner": "", "aggregation_key": "HighP95Latency", "incident": "cloud-collector-latency", "tier": "chronic"},
+    {"id": "cc-5", "subject_type": "", "subject_name": "cloud-collector-server-6bfdbc5cf5", "subject_namespace": "nudgebee", "subject_owner": "", "aggregation_key": "HighP95Latency", "incident": "cloud-collector-latency", "tier": "chronic"},
+    {"id": "cc-6", "subject_type": "", "subject_name": "cloud-collector-server-6bfdbc5cf5", "subject_namespace": "nudgebee", "subject_owner": "", "aggregation_key": "HighP95Latency", "incident": "cloud-collector-latency", "tier": "chronic"},
+    {"id": "cc-7", "subject_type": "", "subject_name": "cloud-collector-server-669c487fd8", "subject_namespace": "nudgebee", "subject_owner": "", "aggregation_key": "HighP95Latency", "incident": "cloud-collector-latency", "tier": "chronic"},
+    {"id": "cc-8", "subject_type": "", "subject_name": "cloud-collector-server-669c487fd8", "subject_namespace": "nudgebee", "subject_owner": "", "aggregation_key": "HighP95Latency", "incident": "cloud-collector-latency", "tier": "chronic"},
+    {"id": "cc-9", "subject_type": "", "subject_name": "cloud-collector-server-6b9kfmn4p2", "subject_namespace": "nudgebee", "subject_owner": "", "aggregation_key": "HighP95Latency", "incident": "cloud-collector-latency", "tier": "chronic"},
+
+    {"id": "ss-1", "subject_type": "deployment", "subject_name": "services-server", "subject_namespace": "nudgebee", "subject_owner": "services-server", "aggregation_key": "HighP95Latency", "incident": "services-server-latency", "tier": "chronic"},
+    {"id": "ss-2", "subject_type": "", "subject_name": "services-server-8678c79b", "subject_namespace": "nudgebee", "subject_owner": "", "aggregation_key": "HighP95Latency", "incident": "services-server-latency", "tier": "chronic"},
+    {"id": "ss-3", "subject_type": "", "subject_name": "services-server-8678c79b", "subject_namespace": "nudgebee", "subject_owner": "", "aggregation_key": "HighP95Latency", "incident": "services-server-latency", "tier": "chronic"},
+    {"id": "ss-4", "subject_type": "", "subject_name": "services-server-75c9f8497b", "subject_namespace": "nudgebee", "subject_owner": "", "aggregation_key": "HighP95Latency", "incident": "services-server-latency", "tier": "chronic"},
+    {"id": "ss-5", "subject_type": "", "subject_name": "services-server-75c9f8497b", "subject_namespace": "nudgebee", "subject_owner": "", "aggregation_key": "HighP95Latency", "incident": "services-server-latency", "tier": "chronic"},
+
+    {"id": "llm-1", "subject_type": "deployment", "subject_name": "llm-server", "subject_namespace": "nudgebee", "subject_owner": "llm-server", "aggregation_key": "HighErrorCriticalLogs", "incident": "llm-error-spike", "tier": "core"},
+    {"id": "relay-1", "subject_type": "deployment", "subject_name": "relay-server", "subject_namespace": "nudgebee", "subject_owner": "relay-server", "aggregation_key": "ApplicationAPIFailures", "incident": "relay-failures", "tier": "core"}
+  ]
+}
