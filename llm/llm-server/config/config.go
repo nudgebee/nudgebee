@@ -371,6 +371,15 @@ type appConfig struct {
 	// (always direct) and @k8s_orchestrator_lean (always lean) eval handles are
 	// unaffected by this — they exist for side-by-side A/B regardless of mode.
 	K8sOrchestratorMode string `mapstructure:"llm_server_k8s_orchestrator_mode"`
+	// AwsOrchestratorMode selects what the router-selected aws_orchestrator runs.
+	// Boot-time, per-deploy (rollback = change + redeploy). One of:
+	//   "delegating" (default) — v1: route AWS resource CLI through the `aws` sub-agent
+	//   "direct"               — v2: hold `aws_execute` and run the AWS CLI directly
+	//   "lean"                 — EXPERIMENTAL: minimal principle-level prompt + direct aws_execute
+	// (`aws_observability` stays delegated in all.) Unknown/empty falls back to
+	// "delegating". The @aws_orchestrator_2 (always direct) and @aws_orchestrator_lean
+	// (always lean) eval handles are unaffected — they exist for side-by-side A/B.
+	AwsOrchestratorMode string `mapstructure:"llm_server_aws_orchestrator_mode"`
 	// TraceAgentV2Enabled gates the canonical, provider-independent traces agent
 	// (TracesDefaultAgentV2). Global per-deploy toggle; default false.
 	TraceAgentV2Enabled                    bool   `mapstructure:"llm_server_trace_agent_v2_enabled"`
@@ -960,6 +969,7 @@ func init() {
 	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
 	// k8s_orchestrator mode: delegating (v1, default) | direct (v2) | lean (experimental).
 	viper.SetDefault("llm_server_k8s_orchestrator_mode", "delegating")
+	viper.SetDefault("llm_server_aws_orchestrator_mode", "delegating")
 	viper.SetDefault("llm_server_workspace_port", 8080)
 	viper.SetDefault("llm_server_workspace_local_url", "") // e.g. http://localhost:8080 for local dev
 	viper.SetDefault("llm_server_workspace_file_max_download_bytes", 5*1024*1024)
