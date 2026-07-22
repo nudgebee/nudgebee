@@ -6,6 +6,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import api from '@api1/ask-nudgebee';
 import Loader from '@shared/Loader';
 import { snackbar } from '@shared/snackbarService';
+import { useWatchFeatureEnabled } from '@hooks/useTenantBranding';
 
 // Watches tab — lists every watch_resource row registered against the current
 // conversation. Polls every 5s for live updates (Hasura subscriptions would be
@@ -179,6 +180,10 @@ export default function WatchesTab({ conversationId }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [refreshTick, setRefreshTick] = useState(0);
+  // Per-env feature flag (LLM_SERVER_WATCH_ENABLED via /api/public/app_config).
+  // When off, the /v1/watches route is unmounted on llm-server, so skip fetching
+  // rather than 404.
+  const watchFeatureEnabled = useWatchFeatureEnabled();
 
   const refresh = useCallback(() => setRefreshTick((n) => n + 1), []);
 
@@ -195,7 +200,8 @@ export default function WatchesTab({ conversationId }) {
   const hasNonTerminal = useMemo(() => watches.some((w) => !TERMINAL_STATUSES.has(w.status)), [watches]);
 
   useEffect(() => {
-    if (!conversationId) {
+    if (!conversationId || !watchFeatureEnabled) {
+      setLoading(false);
       return;
     }
     let aborted = false;
@@ -222,7 +228,7 @@ export default function WatchesTab({ conversationId }) {
       aborted = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, refreshTick]);
+  }, [conversationId, refreshTick, watchFeatureEnabled]);
 
   // Auto-refresh ticker. Only runs while we have non-terminal rows; cleared
   // on tab unmount or once everything is terminal. Uses a setTimeout chain

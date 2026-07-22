@@ -13,6 +13,7 @@ import useMessageAdditionalData from '@hooks/useMessageAdditionalData';
 import { ds } from '@utils/colors';
 import WatchesTab from './WatchesTab';
 import api from '@api1/ask-nudgebee';
+import { useWatchFeatureEnabled } from '@hooks/useTenantBranding';
 
 const taskKey = (task) => task?.id ?? task?.tool_id ?? task?.originalIndex ?? null;
 
@@ -103,6 +104,10 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
   // polling — otherwise the network tab fills with `ListWatchesByConversation`
   // calls forever for chats with no live watches at all.
   const [watchCount, setWatchCount] = useState(0);
+  // Gate all watch polling on the per-env feature flag (LLM_SERVER_WATCH_ENABLED,
+  // surfaced via /api/public/app_config). When off, llm-server never mounts the
+  // /v1/watches route, so we skip the poll entirely instead of 404-ing on it.
+  const watchFeatureEnabled = useWatchFeatureEnabled();
   // Per-watch status snapshot from the previous poll, scoped to this
   // conversation's lifetime. Lets us detect non-terminal → terminal
   // transitions so we can trigger ONE conversation-history re-fetch —
@@ -122,7 +127,7 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
   }, [itemProps.onWatchTerminal]);
   useEffect(() => {
     const cid = itemProps.conversationId;
-    if (!cid) {
+    if (!cid || !watchFeatureEnabled) {
       setWatchCount(0);
       prevWatchStatusesRef.current = new Map();
       return undefined;
@@ -213,7 +218,7 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
         clearTimeout(timer);
       }
     };
-  }, [itemProps.conversationId, isProcessing]);
+  }, [itemProps.conversationId, isProcessing, watchFeatureEnabled]);
 
   const handleCardClick = useCallback(
     (index) => {

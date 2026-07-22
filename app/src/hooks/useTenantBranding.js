@@ -96,6 +96,38 @@ export const useBrandingConfig = () => {
 };
 
 /**
+ * Runtime feature flag for background watches. Driven by LLM_SERVER_WATCH_ENABLED
+ * on llm-server and surfaced to the client via /api/public/app_config
+ * (`watchEnabled`). The chat UI polls the watch-list endpoint only when this is
+ * true — llm-server unmounts the /v1/watches route when the flag is off, so
+ * gating here avoids the otherwise-guaranteed 404 per conversation.
+ *
+ * Starts false on both server and client (matching useBrandingConfig) to avoid
+ * a hydration mismatch, then resolves from the eagerly-fetched config cache.
+ */
+export const useWatchFeatureEnabled = () => {
+  const [enabled, setEnabled] = useState(false);
+
+  useEffect(() => {
+    if (_configCache) {
+      setEnabled(!!_configCache.watchEnabled);
+      return undefined;
+    }
+    let mounted = true;
+    fetchBrandingConfig().then((data) => {
+      if (mounted) {
+        setEnabled(!!data?.watchEnabled);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  return enabled;
+};
+
+/**
  * Non-hook getter for nubi icon URLs.
  * Reads from the eagerly-fetched config cache, falling back to defaults.
  * Safe to call from plain functions (e.g. getIcon) after initial page load.
