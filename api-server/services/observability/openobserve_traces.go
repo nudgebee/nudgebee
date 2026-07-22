@@ -20,16 +20,16 @@ type OpenObserveTraceSource struct{}
 
 // openObserveTraceLabelMapping maps standard field names to OpenObserve trace field names
 var openObserveTraceLabelMapping = map[string]string{
-	"workload_namespace":        "k8s.namespace.name",
-	"workload_name":             "service.name",
-	"destination_workload_name": "server.address",
-	"http_status_code":          "http.response.status_code",
-	"span_name":                 "name",
-	"resource":                  "http.url",
-	"status_code":               "otel.status_code",
+	"workload_namespace":        "service_k8s_namespace_name",
+	"workload_name":             "service_name",
+	"destination_workload_name": "service_peer_name",
+	"http_status_code":          "http_response_status_code",
+	"span_name":                 "operation_name",
+	"resource":                  "http_url",
+	"status_code":               "status_code",
 	"trace_id":                  "trace_id",
 	"span_id":                   "span_id",
-	"parent_id":                 "parent_id",
+	"parent_id":                 "reference_parent_span_id",
 }
 
 func (s *OpenObserveTraceSource) GetLabelMapping() map[string]string {
@@ -178,8 +178,12 @@ func (s *OpenObserveTraceSource) QueryTraces(ctx *security.RequestContext, req T
 		return nil, fmt.Errorf("failed to decode OpenObserve response: %w", err)
 	}
 
-	var outputs []common.OpenTelemetryTrace
-	for _, hit := range searchResp.Hits {
+	return parseOpenObserveTraceHits(searchResp.Hits), nil
+}
+
+func parseOpenObserveTraceHits(hits []map[string]any) []common.OpenTelemetryTrace {
+	outputs := make([]common.OpenTelemetryTrace, 0, len(hits))
+	for _, hit := range hits {
 		trace := common.OpenTelemetryTrace{
 			ResourceAttributes: make(map[string]string),
 			SpanAttributes:     make(map[string]string),
@@ -195,17 +199,17 @@ func (s *OpenObserveTraceSource) QueryTraces(ctx *security.RequestContext, req T
 				trace.TraceID = strVal
 			case "span_id":
 				trace.SpanID = strVal
-			case "parent_id", "parent_span_id":
+			case "reference_parent_span_id":
 				trace.ParentSpanID = strVal
-			case "name", "span_name":
+			case "operation_name":
 				trace.SpanName = strVal
-			case "service.name":
+			case "service_name":
 				trace.ServiceName = strVal
 			case "span_kind":
 				trace.SpanKind = strVal
 			case "duration":
 				if dur, ok := v.(float64); ok {
-					trace.DurationNs = int64(dur)
+					trace.DurationNs = int64(dur) * 1000
 				}
 			case "_timestamp":
 				if tVal, ok := v.(float64); ok {
@@ -221,7 +225,7 @@ func (s *OpenObserveTraceSource) QueryTraces(ctx *security.RequestContext, req T
 		outputs = append(outputs, trace)
 	}
 
-	return outputs, nil
+	return outputs
 }
 
 func (s *OpenObserveTraceSource) CountTraces(ctx *security.RequestContext, req TracesV3Request) (common.OpenTelemetryTraceCount, error) {

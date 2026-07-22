@@ -11,6 +11,7 @@ import (
 	"nudgebee/services/integrations"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
+	"sort"
 	"strings"
 	"time"
 )
@@ -21,8 +22,8 @@ type OpenObserveLogSource struct{}
 // openObserveLogLabelMapping maps standard field names to OpenObserve field names
 var openObserveLogLabelMapping = map[string]string{
 	"timestamp": "_timestamp",
-	"body":      "message",
-	"message":   "message",
+	"body":      "body",
+	"message":   "body",
 }
 
 func (s *OpenObserveLogSource) GetSupportedOperators() []string {
@@ -59,7 +60,7 @@ func isSafeIdentifier(s string) bool {
 		return false
 	}
 	for _, r := range s {
-		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != '.' {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' {
 			return false
 		}
 	}
@@ -84,9 +85,9 @@ func buildOpenObserveBinaryClause(binary query.BinaryWhereClause, mapping map[st
 			case query.Nq:
 				parts = append(parts, fmt.Sprintf("%s != '%s'", col, escapeOpenObserveString(strVal)))
 			case query.Contains:
-				parts = append(parts, fmt.Sprintf("str_match(%s, '.*%s.*')", col, escapeOpenObserveString(strVal)))
+				parts = append(parts, fmt.Sprintf("str_match(%s, '%s')", col, escapeOpenObserveString(strVal)))
 			case query.ILike:
-				parts = append(parts, fmt.Sprintf("str_match_ignore_case(%s, '.*%s.*')", col, escapeOpenObserveString(strVal)))
+				parts = append(parts, fmt.Sprintf("str_match_ignore_case(%s, '%s')", col, escapeOpenObserveString(strVal)))
 			default:
 				return "", fmt.Errorf("unsupported binary operator for OpenObserve: %s", op)
 			}
@@ -271,35 +272,53 @@ func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req Fetch
 	return outputs, nil
 }
 
-func (s *OpenObserveLogSource) QueryLabels(ctx *security.RequestContext, req FetchLogLabelRequest) ([]OutputLogLabel, error) {
-	// Simple implementation: fetch a single recent log to infer labels from the default stream
-	fetchReq := FetchLogRequest{
+func buildOpenObserveLabelSampleRequest(req FetchLogLabelRequest, now time.Time) FetchLogRequest {
+	startTime, endTime := req.StartTime, req.EndTime
+	if startTime == 0 && endTime == 0 {
+		endTime = now.UnixMilli()
+		startTime = now.Add(-time.Hour).UnixMilli()
+	}
+
+	return FetchLogRequest{
 		AccountId:         req.AccountId,
 		LogProvider:       req.LogProvider,
 		LogProviderSource: req.LogProviderSource,
-		StartTime:         req.StartTime,
-		EndTime:           req.EndTime,
-		Limit:             1,
+		StartTime:         startTime,
+		EndTime:           endTime,
+		Limit:             100,
 	}
+}
+
+func collectOpenObserveLogLabels(logs []OutputLog) []OutputLogLabel {
+	labelSet := make(map[string]struct{})
+	for _, log := range logs {
+		for name := range log.Labels {
+			labelSet[name] = struct{}{}
+		}
+	}
+
+	labelNames := make([]string, 0, len(labelSet))
+	for name := range labelSet {
+		labelNames = append(labelNames, name)
+	}
+	sort.Strings(labelNames)
+
+	labels := make([]OutputLogLabel, 0, len(labelNames))
+	for _, name := range labelNames {
+		labels = append(labels, OutputLogLabel{Label: name, Attributes: make(map[string]any)})
+	}
+	return labels
+}
+
+func (s *OpenObserveLogSource) QueryLabels(ctx *security.RequestContext, req FetchLogLabelRequest) ([]OutputLogLabel, error) {
+	fetchReq := buildOpenObserveLabelSampleRequest(req, time.Now())
 
 	logs, err := s.QueryLogs(ctx, fetchReq)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(logs) == 0 {
-		return []OutputLogLabel{}, nil
-	}
-
-	var labels []OutputLogLabel
-	for k := range logs[0].Labels {
-		labels = append(labels, OutputLogLabel{
-			Label:      k,
-			Attributes: make(map[string]any),
-		})
-	}
-
-	return labels, nil
+	return collectOpenObserveLogLabels(logs), nil
 }
 
 func (s *OpenObserveLogSource) QueryLabelValues(ctx *security.RequestContext, req FetchLogLabelValuesRequest) ([]OutputLogLabelValue, error) {

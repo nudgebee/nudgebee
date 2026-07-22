@@ -60,3 +60,14 @@ func TestOpenObserveMetricSource_GetSupportedOperators(t *testing.T) {
 	assert.Contains(t, ops, "_neq")
 	assert.Contains(t, ops, "_regex")
 }
+
+func TestOpenObserveMetricQueryRangeParamsConvertsMillisecondsToSeconds(t *testing.T) {
+	start, end, step := openObserveMetricQueryRangeParams(FetchMetricsRequest{
+		StartTime: 1700000000000,
+		EndTime:   1700003600000,
+	})
+
+	assert.Equal(t, "1700000000", start)
+	assert.Equal(t, "1700003600", end)
+	assert.Equal(t, 36, step)
+}

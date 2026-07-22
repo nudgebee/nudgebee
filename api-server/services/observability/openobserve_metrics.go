@@ -18,6 +18,19 @@ import (
 // OpenObserveMetricSource implements MetricSource interface for OpenObserve
 type OpenObserveMetricSource struct{}
 
+func openObserveMetricQueryRangeParams(req FetchMetricsRequest) (start, end string, step int) {
+	durationSecs := (req.EndTime - req.StartTime) / 1000
+	step = req.StepInterval
+	if step <= 0 {
+		step = int(durationSecs / 100)
+		if step < 1 {
+			step = 1
+		}
+	}
+
+	return strconv.FormatInt(req.StartTime/1000, 10), strconv.FormatInt(req.EndTime/1000, 10), step
+}
+
 func (s *OpenObserveMetricSource) GetSupportedOperators() []string {
 	return []string{"_eq", "_neq", "_regex"}
 }
@@ -37,15 +50,7 @@ func (s *OpenObserveMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 
 	results := OutputMetricQuery{Results: []QueryResult{}}
 
-	// Calculate step
-	durationSecs := req.EndTime - req.StartTime
-	step := req.StepInterval
-	if step <= 0 {
-		step = int(durationSecs / 100)
-		if step < 1 {
-			step = 1
-		}
-	}
+	start, end, step := openObserveMetricQueryRangeParams(req)
 
 	for queryKey, rawQuery := range req.Queries {
 		query, err := injectPromQLMatchers(rawQuery, req.LabelMatchers, req.Labels)
@@ -68,8 +73,8 @@ func (s *OpenObserveMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 
 		form := neturl.Values{}
 		form.Add("query", query)
-		form.Add("start", strconv.FormatInt(req.StartTime, 10))
-		form.Add("end", strconv.FormatInt(req.EndTime, 10))
+		form.Add("start", start)
+		form.Add("end", end)
 		form.Add("step", strconv.Itoa(step))
 
 		authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(username+":"+password)))

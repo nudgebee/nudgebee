@@ -8,6 +8,7 @@ import (
 	"nudgebee/services/query"
 	"nudgebee/services/security"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -77,8 +78,9 @@ func TestOpenObserveLogSource_QueryLogs(t *testing.T) {
 	sql, err := s.buildSQL(req)
 	require.NoError(t, err)
 
-	expectedSQL := `SELECT * FROM "default" WHERE str_match_ignore_case(message, '.*error.*') ORDER BY _timestamp DESC LIMIT 50`
+	expectedSQL := `SELECT * FROM "default" WHERE str_match_ignore_case(body, 'error') ORDER BY _timestamp DESC LIMIT 50`
 	assert.Equal(t, expectedSQL, sql)
+	assert.Equal(t, "body", s.GetLabelMapping()["message"])
 }
 
 func TestOpenObserveLogSource_BuildSQLWhere(t *testing.T) {
@@ -104,6 +106,35 @@ func TestOpenObserveLogSource_BuildSQLWhere(t *testing.T) {
 	sql, err := buildOpenObserveSQLWhereClause(where)
 	require.NoError(t, err)
 
-	expected := "(str_match(message, '.*exception.*') AND pod = 'api-server-1')"
+	expected := "(str_match(body, 'exception') AND pod = 'api-server-1')"
 	assert.Equal(t, expected, sql)
+}
+
+func TestOpenObserveLogSource_LabelSampleUsesDefaultWindowAndUnionsLabels(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	fetchReq := buildOpenObserveLabelSampleRequest(FetchLogLabelRequest{AccountId: "account"}, now)
+
+	assert.Equal(t, int64(1784718000000), fetchReq.StartTime)
+	assert.Equal(t, int64(1784721600000), fetchReq.EndTime)
+	assert.Equal(t, 100, fetchReq.Limit)
+
+	labels := collectOpenObserveLogLabels([]OutputLog{
+		{Labels: map[string]any{"_timestamp": 1, "body": "first"}},
+		{Labels: map[string]any{"severity": "ERROR", "service_name": "api"}},
+	})
+
+	assert.ElementsMatch(t, []string{"_timestamp", "body", "severity", "service_name"}, openObserveLogLabelNames(labels))
+}
+
+func TestOpenObserveIdentifierRejectsDottedNames(t *testing.T) {
+	assert.False(t, isSafeIdentifier("service.name"))
+	assert.True(t, isSafeIdentifier("service_name"))
+}
+
+func openObserveLogLabelNames(labels []OutputLogLabel) []string {
+	names := make([]string, 0, len(labels))
+	for _, label := range labels {
+		names = append(names, label.Label)
+	}
+	return names
 }
