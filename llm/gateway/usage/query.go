@@ -604,6 +604,7 @@ type RequestRow struct {
 	Provider          string    `json:"provider"`
 	Model             string    `json:"model"`
 	RequestedModel    string    `json:"requested_model"`
+	RespondedModel    string    `json:"responded_model"` // the id the provider echoed back
 	RoutingReason     string    `json:"routing_reason"`
 	Surface           string    `json:"surface"` // "native" (passthrough mount) | "generic" (/v1) | ""
 	StatusCode        int       `json:"status_code"`
@@ -661,6 +662,7 @@ type reqScan struct {
 	Provider       string    `db:"provider"`
 	Model          string    `db:"model"`
 	RequestedModel string    `db:"requested_model"`
+	RespondedModel string    `db:"responded_model"`
 	RoutingReason  string    `db:"routing_reason"`
 	Surface        string    `db:"surface"`
 	DlpJSON        string    `db:"dlp_json"` // attributes.derived.dlp object as text ("" when absent)
@@ -764,6 +766,7 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 		SELECT g.id, g.created_at, g.user_id, COALESCE(u.display_name,'') AS display_name,
 		       COALESCE(u.username::text,'') AS username, g.provider, g.model,
 		       COALESCE(g.requested_model,'') AS requested_model,
+		       COALESCE(g.responded_model,'') AS responded_model,
 		       COALESCE(g.routing_reason,'') AS routing_reason,
 		       COALESCE(NULLIF(g.attributes,'')::jsonb #>> '{derived,surface}','') AS surface,
 		       COALESCE((NULLIF(g.attributes,'')::jsonb #> '{derived,dlp}')::text,'') AS dlp_json,
@@ -798,7 +801,7 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 		out = append(out, RequestRow{
 			ID:        r.ID,
 			CreatedAt: r.CreatedAt, User: user, Provider: r.Provider, Model: r.Model,
-			RequestedModel: r.RequestedModel, RoutingReason: r.RoutingReason, Surface: r.Surface,
+			RequestedModel: r.RequestedModel, RespondedModel: r.RespondedModel, RoutingReason: r.RoutingReason, Surface: r.Surface,
 			StatusCode: r.StatusCode, Streaming: r.Streaming,
 			InputTokens: r.Input, OutputTokens: r.Output, CachedInputTokens: r.CacheRead,
 			LatencyMs:   r.LatencyMs,

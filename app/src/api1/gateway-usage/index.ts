@@ -171,6 +171,8 @@ export interface GatewayRequestRow {
   provider: string;
   model: string;
   requested_model: string;
+  /** The model id the provider echoed back (e.g. a dated snapshot). '' when unknown. */
+  responded_model: string;
   routing_reason: string;
   /** 'native' (passthrough mount) | 'generic' (/v1) | ''. */
   surface: string;

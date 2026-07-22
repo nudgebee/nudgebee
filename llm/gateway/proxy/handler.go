@@ -238,23 +238,24 @@ func (h *handler) handle(c *gin.Context) {
 // metering-relevant request fields directly (not a specific Bifrost request type),
 // so both the passthrough path and the generic /v1 path can populate it.
 type reqMeta struct {
-	reqID         string
-	provider      schemas.ModelProvider
-	model         string
-	method        string
-	path          string
-	body          []byte
-	streaming     bool
-	surface       string         // how the request arrived: "native" mount | "generic" /v1
-	degraded      []string       // features dropped by a cross-provider substitution (if any)
-	failover      map[string]any // set when a transient primary failure fell over to a fallback
-	dlp           map[string]any // set when the egress filter detected/redacted a secret
-	start         time.Time
-	sessionID     string
-	sessionSource string
-	reqAttrs      map[string]any
-	identity      auth.Identity
-	decision      routing.Decision
+	reqID          string
+	provider       schemas.ModelProvider
+	model          string
+	respondedModel string // the model id the provider echoed back (dated snapshot / alias drift)
+	method         string
+	path           string
+	body           []byte
+	streaming      bool
+	surface        string         // how the request arrived: "native" mount | "generic" /v1
+	degraded       []string       // features dropped by a cross-provider substitution (if any)
+	failover       map[string]any // set when a transient primary failure fell over to a fallback
+	dlp            map[string]any // set when the egress filter detected/redacted a secret
+	start          time.Time
+	sessionID      string
+	sessionSource  string
+	reqAttrs       map[string]any
+	identity       auth.Identity
+	decision       routing.Decision
 }
 
 // Surface values — the entrypoint a request arrived on, captured on every usage row
@@ -355,6 +356,9 @@ func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel fu
 	status = head.StatusCode
 	meterHeaders = head.Headers
 	lastUsage = head.PassthroughUsage
+	// The provider's model id is in the first streamed chunk — capture it here so it's
+	// recorded even when body logging is off (respBuf would otherwise be empty).
+	rm.respondedModel = respondedModel(head.Body)
 
 	// Preserve upstream Content-Type (passthrough streams aren't always SSE); set
 	// streaming invariants explicitly and copy the rest.
@@ -439,6 +443,12 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	var respAttrs map[string]any
 	if len(respBody) > 0 {
 		respAttrs = extractResponseAttributes(respBody)
+		// Fallback for the native passthrough path (respBody is the provider's raw
+		// response); the generic/substitute paths set respondedModel from the parsed
+		// response struct, and native streaming sets it from the first chunk.
+		if rm.respondedModel == "" {
+			rm.respondedModel = respondedModel(respBody)
+		}
 	}
 	attrs := buildAttributes(rm.provider, rm.model, rm.sessionSource, rm.reqAttrs, respAttrs, usage)
 	// Derived signals (see attributes design). "surface" records the entrypoint the
@@ -485,6 +495,7 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 
 		RequestedProvider: rm.decision.RequestedProvider,
 		RequestedModel:    rm.decision.RequestedModel,
+		RespondedModel:    rm.respondedModel,
 		RoutingReason:     string(rm.decision.Reason),
 		RoutingRule:       rm.decision.RuleID,
 	})

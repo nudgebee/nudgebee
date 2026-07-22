@@ -163,6 +163,7 @@ func (h *handler) unaryChatWith(c *gin.Context, bctx *schemas.BifrostContext, rm
 		return
 	}
 
+	rm.respondedModel = resp.Model // provider-echoed model (from the parsed response)
 	out, err := marshalOpenAIChat(resp)
 	if err != nil {
 		edgeerr.Write(c, edgeerr.OpenAI, http.StatusInternalServerError, "gateway_error", "could not encode response")
@@ -289,6 +290,9 @@ func (h *handler) streamChatWith(c *gin.Context, bctx *schemas.BifrostContext, c
 		}
 		if cr.Usage != nil {
 			usageResp = cr
+		}
+		if cr.Model != "" {
+			rm.respondedModel = cr.Model
 		}
 		data, err := marshalOpenAIChat(cr)
 		if err != nil {

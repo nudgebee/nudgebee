@@ -75,7 +75,12 @@ const numCell = { fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', 
 const H = {
   time: <HeaderLabel label='Time' info='When the gateway received the request (UTC).' />,
   user: <HeaderLabel label='User' info='The user whose request was forwarded through the gateway.' />,
-  model: <HeaderLabel label='Model' info='The model the request was routed to. The requested model is shown below it when routing changed it.' />,
+  model: (
+    <HeaderLabel
+      label='Model'
+      info='The model the request was routed to. Below it: the requested model when routing changed it, and the served (provider-responded) model when it differs — e.g. a dated snapshot.'
+    />
+  ),
   provider: <HeaderLabel label='Provider' info='The upstream provider that served the request.' />,
   tokens: (
     <HeaderLabel
@@ -216,6 +221,14 @@ function toRow(r: GatewayRequestRow, costSev: (v: number) => Severity, onViewBod
           </Box>
           {routed && (
             <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', overflowWrap: 'anywhere' }}>requested {r.requested_model}</Box>
+          )}
+          {r.responded_model && r.responded_model !== r.model && (
+            <Box
+              sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', overflowWrap: 'anywhere' }}
+              title='The exact model id the provider served (snapshot/alias the provider swapped in)'
+            >
+              served {r.responded_model}
+            </Box>
           )}
           {r.dlp && <DLPBadge dlp={r.dlp} />}
         </Box>

@@ -115,6 +115,7 @@ func (h *handler) unaryResponses(c *gin.Context, bctx *schemas.BifrostContext, r
 		h.meter(meterCtx, rm, http.StatusBadGateway, nil, nil, nil)
 		return
 	}
+	rm.respondedModel = resp.Model // provider-echoed model (target provider, from the parsed response)
 	out, err := encodeResponsesUnary(rc.Provider, bctx, resp)
 	if err != nil {
 		edgeerr.Write(c, string(rc.Provider), http.StatusInternalServerError, "gateway_error",
@@ -187,6 +188,9 @@ func (h *handler) streamResponses(c *gin.Context, bctx *schemas.BifrostContext, 
 		}
 		if rr.Response != nil && rr.Response.Usage != nil {
 			usageResp = rr.Response
+		}
+		if rr.Response != nil && rr.Response.Model != "" {
+			rm.respondedModel = rr.Response.Model
 		}
 		frame := enc.frame(bctx, rr)
 		if len(frame) == 0 {

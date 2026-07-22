@@ -42,11 +42,14 @@ type UsageEvent struct {
 	Attributes string `db:"attributes"`
 
 	// Request. Provider/Model are what actually RAN (resolved); Requested* are what
-	// the client sent. RoutingReason/Rule explain any change (see routing pkg).
+	// the client sent; RespondedModel is the id the PROVIDER echoed back (e.g. a dated
+	// snapshot) — closes the audit loop + exposes silent snapshot/alias drift.
+	// RoutingReason/Rule explain any change (see routing pkg).
 	Provider          string `db:"provider"`
 	Model             string `db:"model"`
 	RequestedProvider string `db:"requested_provider"`
 	RequestedModel    string `db:"requested_model"`
+	RespondedModel    string `db:"responded_model"`
 	RoutingReason     string `db:"routing_reason"`
 	RoutingRule       string `db:"routing_rule"`
 	Method            string `db:"method"`
@@ -91,6 +94,7 @@ type EventInput struct {
 	// Routing decision (resolved = Provider/Model above).
 	RequestedProvider string
 	RequestedModel    string
+	RespondedModel    string // the model id the provider echoed in its response
 	RoutingReason     string
 	RoutingRule       string
 
@@ -129,6 +133,7 @@ func NewEvent(in EventInput) UsageEvent {
 
 		RequestedProvider: in.RequestedProvider,
 		RequestedModel:    in.RequestedModel,
+		RespondedModel:    in.RespondedModel,
 		RoutingReason:     in.RoutingReason,
 		RoutingRule:       in.RoutingRule,
 	}

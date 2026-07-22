@@ -117,6 +117,28 @@ func TestExtractResponseAttributes(t *testing.T) {
 	assert.Equal(t, "stop", oai["stop_reason"])
 }
 
+func TestRespondedModel(t *testing.T) {
+	cases := map[string]struct{ body, want string }{
+		"openai unary":        {`{"id":"x","model":"gpt-4o-mini-2024-07-18","choices":[]}`, "gpt-4o-mini-2024-07-18"},
+		"anthropic unary":     {`{"type":"message","model":"claude-opus-4-8-20260101","content":[]}`, "claude-opus-4-8-20260101"},
+		"gemini unary":        {`{"candidates":[],"modelVersion":"gemini-2.5-flash"}`, "gemini-2.5-flash"},
+		"openai sse chunk":    {"data: {\"id\":\"x\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"delta\":{}}]}\n\n", "gpt-4o-mini-2024-07-18"},
+		"anthropic sse start": {"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-4-8-20260101\"}}\n\n", "claude-opus-4-8-20260101"},
+		"gemini sse chunk":    {"data: {\"candidates\":[],\"modelVersion\":\"gemini-2.5-flash\"}\n\n", "gemini-2.5-flash"},
+		// A comment line (": ...") or event line that contains "data:" must NOT be
+		// mistaken for the data payload — only a line STARTING with "data:" counts.
+		"sse comment before data": {": ping has data: bait\nevent: message_start\ndata: {\"model\":\"gpt-4o-mini-2024-07-18\"}\n\n", "gpt-4o-mini-2024-07-18"},
+		"empty":                   {"", ""},
+		"no model":                {`{"choices":[]}`, ""},
+		"garbage":                 {"not json", ""},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, c.want, respondedModel([]byte(c.body)))
+		})
+	}
+}
+
 func TestRewriteModel_AnthropicBody(t *testing.T) {
 	body := []byte(`{"model":"nb-reasoning","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
 	nb, path := rewriteModel(schemas.Anthropic, body, "/v1/messages", "claude-opus-4-8")
