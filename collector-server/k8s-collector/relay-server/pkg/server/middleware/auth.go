@@ -32,7 +32,15 @@ func AgentAuthMiddleware(store db.AgentStore) gin.HandlerFunc {
 			return
 		}
 
-		encoded := strings.TrimSpace(strings.TrimPrefix(authHeader, "Basic "))
+		headerParts := strings.SplitN(authHeader, " ", 2)
+		if len(headerParts) != 2 || strings.ToLower(headerParts[0]) != "basic" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized,
+				utils.BuildError(401, "malformed authorization header"),
+			)
+			return
+		}
+
+		encoded := strings.TrimSpace(headerParts[1])
 		decoded, err := base64.StdEncoding.DecodeString(encoded)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized,
