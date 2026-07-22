@@ -44,6 +44,13 @@ export const chipsToBlockLabelMatchers = (block) => {
   return labelMatchers;
 };
 
+// ES Code-tab query languages. 'dsl' sends the raw editor body through as-is;
+// 'kql' tags the request so the backend translates the KQL expression into DSL.
+const ES_QUERY_LANGUAGES = [
+  { label: 'DSL', value: 'dsl' },
+  { label: 'KQL', value: 'kql' },
+];
+
 /**
  * @param {{
  *   accountId?: string,
@@ -100,6 +107,9 @@ const QueryModeSwitcher = ({
   const [metricsList, setMetricsList] = useState([]);
   const [esIndexList, setEsIndexList] = useState([]);
   const [isEsIndexLoading, setIsEsIndexLoading] = useState(false);
+  // ES Code tab exposes a language toggle: 'dsl' (raw Query DSL, default) or 'kql'
+  // (translated to DSL server-side, works on every ES version + OpenSearch).
+  const [esQueryType, setEsQueryType] = useState('dsl');
 
   useEffect(() => {
     setMounted(true);
@@ -163,7 +173,12 @@ const QueryModeSwitcher = ({
     }
   };
 
-  const extensions = [EditorView.lineWrapping, cmPlaceholder(getSampleQuery(logProvider, providerType))];
+  // Show the sample that matches the selected ES Code-tab language.
+  const codeSample =
+    logProvider === 'ES' && esQueryType === 'kql'
+      ? 'Example: status:200 and service.name:"auth" and http.response.status_code >= 400'
+      : getSampleQuery(logProvider, providerType);
+  const extensions = [EditorView.lineWrapping, cmPlaceholder(codeSample)];
 
   const resetStates = () => {
     setQuery('');
@@ -767,24 +782,41 @@ const QueryModeSwitcher = ({
       return (
         <Box sx={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)', marginTop: 'var(--ds-space-4)' }}>
           {logProvider === 'ES' && (
-            <Box sx={{ width: ds.space.mul(0, 130) }}>
-              <FilterDropdown
-                label='Select an Index'
-                value={selectedEsIndex || null}
-                options={esIndexList ?? []}
-                freeSolo
-                // Same affordance as the Build tab's picker: freeSolo alone is
-                // invisible, so the hint is what tells the user a wildcard
-                // pattern outside the listed indices is accepted.
-                searchPlaceholder='Search or type pattern (use * for wildcard)...'
-                onSelect={(_event, value) => {
-                  setPrebuildQueryBlocks((prev) => prev.map((b, i) => (i === 0 ? { ...b, selectedMetric: value || '' } : b)));
-                  if (onQueryChange) {
-                    onQueryChange({ query: codeQueryRef.current || query, queryKeys: [''], index: value || '' });
-                  }
-                }}
-                isOptionsLoading={isEsIndexLoading}
-              />
+            <Box sx={{ display: 'flex', gap: 'var(--ds-space-3)', flexWrap: 'wrap' }}>
+              <Box sx={{ width: ds.space.mul(0, 88) }}>
+                <FilterDropdown
+                  id='es-query-language'
+                  label='Query Language'
+                  value={ES_QUERY_LANGUAGES.find((o) => o.value === esQueryType) ?? ES_QUERY_LANGUAGES[0]}
+                  options={ES_QUERY_LANGUAGES}
+                  onSelect={(_event, item) => {
+                    const next = item?.value || 'dsl';
+                    setEsQueryType(next);
+                    if (onQueryChange) {
+                      onQueryChange({ query: codeQueryRef.current || query, queryKeys: [''], index: selectedEsIndex, queryType: next });
+                    }
+                  }}
+                />
+              </Box>
+              <Box sx={{ width: ds.space.mul(0, 130) }}>
+                <FilterDropdown
+                  label='Select an Index'
+                  value={selectedEsIndex || null}
+                  options={esIndexList ?? []}
+                  freeSolo
+                  // Same affordance as the Build tab's picker: freeSolo alone is
+                  // invisible, so the hint is what tells the user a wildcard
+                  // pattern outside the listed indices is accepted.
+                  searchPlaceholder='Search or type pattern (use * for wildcard)...'
+                  onSelect={(_event, value) => {
+                    setPrebuildQueryBlocks((prev) => prev.map((b, i) => (i === 0 ? { ...b, selectedMetric: value || '' } : b)));
+                    if (onQueryChange) {
+                      onQueryChange({ query: codeQueryRef.current || query, queryKeys: [''], index: value || '', queryType: esQueryType });
+                    }
+                  }}
+                  isOptionsLoading={isEsIndexLoading}
+                />
+              </Box>
             </Box>
           )}
           <CodeMirror
@@ -811,7 +843,7 @@ const QueryModeSwitcher = ({
                 onQueryChange({
                   query: e,
                   queryKeys: [''],
-                  ...(logProvider === 'ES' ? { index: selectedEsIndex } : {}),
+                  ...(logProvider === 'ES' ? { index: selectedEsIndex, queryType: esQueryType } : {}),
                 });
               }
             }}

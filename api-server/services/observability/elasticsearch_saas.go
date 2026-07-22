@@ -151,6 +151,30 @@ func BuildElasticsearchConfigFromValues(values []core.IntegrationConfigValue) *E
 	return cfg
 }
 
+// validateESConfig checks that a resolved config carries the fields its auth
+// method requires. Split out from GetElasticsearchConfig so the per-auth-type
+// requirements are unit-testable without a live integration record.
+func validateESConfig(cfg *ElasticsearchConfig) error {
+	if cfg.Url == "" {
+		return fmt.Errorf("missing required elasticsearch URL")
+	}
+	switch cfg.AuthType {
+	case "api_key":
+		if cfg.ApiKey == "" {
+			return fmt.Errorf("missing api_key for auth_type 'api_key'")
+		}
+	case "bearer_token":
+		if cfg.BearerToken == "" {
+			return fmt.Errorf("missing bearer_token for auth_type 'bearer_token'")
+		}
+	default: // "basic", "cognito"
+		if cfg.Username == "" || cfg.Password == "" {
+			return fmt.Errorf("missing required elasticsearch username/password")
+		}
+	}
+	return nil
+}
+
 func GetElasticsearchConfig(ctx *security.RequestContext, accountId string) (*ElasticsearchConfig, error) {
 	integrationDto, err := core.ListIntegrationConfigs(ctx, accountId, "ES")
 	if err != nil {
@@ -205,22 +229,8 @@ func GetElasticsearchConfig(ctx *security.RequestContext, accountId string) (*El
 		cfg.TraceIndex = override
 	}
 
-	if cfg.Url == "" {
-		return nil, fmt.Errorf("missing required elasticsearch URL")
-	}
-	switch cfg.AuthType {
-	case "api_key":
-		if cfg.ApiKey == "" {
-			return nil, fmt.Errorf("missing api_key for auth_type 'api_key'")
-		}
-	case "bearer_token":
-		if cfg.BearerToken == "" {
-			return nil, fmt.Errorf("missing bearer_token for auth_type 'bearer_token'")
-		}
-	default: // "basic", "cognito"
-		if cfg.Username == "" || cfg.Password == "" {
-			return nil, fmt.Errorf("missing required elasticsearch username/password")
-		}
+	if err := validateESConfig(cfg); err != nil {
+		return nil, err
 	}
 	cfg.Url = strings.TrimRight(cfg.Url, "/")
 
@@ -478,6 +488,49 @@ func finalizeESLogQueryBody(queryJSON string, startMillis, endMillis int64, limi
 	return body, nil
 }
 
+// parseESSearchLogs decodes a standard ES _search response into OutputLogs,
+// dropping hits ParseSourceMap can't interpret. Shared by the dsl and kql
+// query paths, which differ only in how the request body is built.
+func parseESSearchLogs(rawJSON string) ([]OutputLog, error) {
+	var searchResp SearchResponse
+	if err := json.Unmarshal([]byte(rawJSON), &searchResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal DSL response: %w", err)
+	}
+	output := make([]OutputLog, 0, len(searchResp.Hits.Hits))
+	for _, hit := range searchResp.Hits.Hits {
+		if log, ok := ParseSourceMap(hit.Source); ok {
+			output = append(output, log)
+		}
+	}
+	return output, nil
+}
+
+// parseESPPLLogs decodes an OpenSearch PPL response (schema + datarows) into
+// OutputLogs by zipping each row against the column names before ParseSourceMap.
+func parseESPPLLogs(rawJSON string) ([]OutputLog, error) {
+	var pplResp PPLResponse
+	if err := json.Unmarshal([]byte(rawJSON), &pplResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal PPL response: %w", err)
+	}
+	output := make([]OutputLog, 0, len(pplResp.DataRows))
+	colNames := make([]string, len(pplResp.Schema))
+	for i, col := range pplResp.Schema {
+		colNames[i] = col.Name
+	}
+	for _, row := range pplResp.DataRows {
+		src := make(map[string]any)
+		for i, val := range row {
+			if i < len(colNames) {
+				src[colNames[i]] = val
+			}
+		}
+		if log, ok := ParseSourceMap(src); ok {
+			output = append(output, log)
+		}
+	}
+	return output, nil
+}
+
 func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, error) {
 	// A where clause that failed to render must never reach the cluster as an
 	// unfiltered search. FetchLogs treats a GetQuery error as non-fatal — some
@@ -510,10 +563,8 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 		queryType = "dsl"
 	}
 
-	var rawJSON string
-
 	switch queryType {
-	case "dsl":
+	case "dsl", "kql":
 		index, _ := fetchLogRequest.Request["index"].(string)
 		if index == "" {
 			// No explicit index in the request — fall back to the account's default:
@@ -522,10 +573,20 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 			index = cfg.LogIndex
 		}
 		if index == "" {
-			return nil, fmt.Errorf("index is required for DSL query")
+			return nil, fmt.Errorf("index is required for %s query", queryType)
 		}
 
-		body, berr := finalizeESLogQueryBody(fetchLogRequest.Query, fetchLogRequest.StartTime, fetchLogRequest.EndTime, fetchLogRequest.Limit, fetchLogRequest.Offset, fetchLogRequest.SortFields)
+		// dsl passes a raw DSL body straight through; kql translates the typed
+		// KQL expression into standard DSL (see elasticsearch_kql.go). Both then
+		// share the identical time-window / size / offset / sort merge and _search
+		// response parsing, so kql works on every ES version + OpenSearch.
+		var body map[string]any
+		var berr error
+		if queryType == "kql" {
+			body, berr = buildESKQLQueryBody(fetchLogRequest.Query, fetchLogRequest.StartTime, fetchLogRequest.EndTime, fetchLogRequest.Limit, fetchLogRequest.Offset, fetchLogRequest.SortFields)
+		} else {
+			body, berr = finalizeESLogQueryBody(fetchLogRequest.Query, fetchLogRequest.StartTime, fetchLogRequest.EndTime, fetchLogRequest.Limit, fetchLogRequest.Offset, fetchLogRequest.SortFields)
+		}
 		if berr != nil {
 			return nil, berr
 		}
@@ -542,15 +603,15 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 
 		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), body, cfg)
 		if err != nil {
-			return nil, fmt.Errorf("failed to execute elasticsearch DSL query: %w", err)
+			return nil, fmt.Errorf("failed to execute elasticsearch %s query: %w", queryType, err)
 		}
 		defer func() { _ = resp.Body.Close() }()
 
-		bodyBytes, err := readResponse(resp, "elasticsearch DSL query")
+		bodyBytes, err := readResponse(resp, "elasticsearch "+queryType+" query")
 		if err != nil {
 			return nil, err
 		}
-		rawJSON = string(bodyBytes)
+		return parseESSearchLogs(string(bodyBytes))
 
 	case "ppl":
 		pplBody := map[string]any{"query": fetchLogRequest.Query}
@@ -569,75 +630,12 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 		if err != nil {
 			return nil, err
 		}
-		rawJSON = string(bodyBytes)
+		return parseESPPLLogs(string(bodyBytes))
 
 	default:
 		return nil, fmt.Errorf("unsupported query_type: %v", queryType)
 	}
 
-	var output []OutputLog
-
-	if queryType == "ppl" {
-		var pplResp PPLResponse
-		if err := json.Unmarshal([]byte(rawJSON), &pplResp); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal PPL response: %w", err)
-		}
-
-		output = make([]OutputLog, 0, len(pplResp.DataRows))
-		colNames := make([]string, len(pplResp.Schema))
-		for i, col := range pplResp.Schema {
-			colNames[i] = col.Name
-		}
-
-		for _, row := range pplResp.DataRows {
-			src := make(map[string]any)
-			for i, val := range row {
-				if i < len(colNames) {
-					src[colNames[i]] = val
-				}
-			}
-			if log, ok := ParseSourceMap(src); ok {
-				output = append(output, log)
-			}
-		}
-	} else {
-		var searchResp SearchResponse
-		if err := json.Unmarshal([]byte(rawJSON), &searchResp); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal DSL response: %w", err)
-		}
-
-		output = make([]OutputLog, 0, len(searchResp.Hits.Hits))
-		for _, hit := range searchResp.Hits.Hits {
-			if log, ok := ParseSourceMap(hit.Source); ok {
-				output = append(output, log)
-			}
-		}
-
-		// An empty log result carries no error, so the two very different causes —
-		// "the query matched nothing" and "the query matched but every hit was an
-		// unrecognised shape" — look identical at the UI. Separate them here:
-		// matched is the cluster's own hit count, returned is what came back under
-		// `size`, and parsed is what survived ParseSourceMap.
-		matched := esHitsTotal(rawJSON)
-		returned := len(searchResp.Hits.Hits)
-		switch {
-		case returned == 0:
-			slog.Info("ES log query: matched no documents",
-				"matched", matched, "returned", 0,
-				"hint", "index pattern or @timestamp window excludes everything; labels/label-values do not apply a time bound, which is why they still return data")
-		case len(output) == 0:
-			slog.Warn("ES log query: all hits dropped as unparseable",
-				"matched", matched, "returned", returned, "parsed", 0,
-				"sample_source_fields", esSourceFieldNames(searchResp.Hits.Hits[0].Source),
-				"hint", "ParseSourceMap needs a message at log|body|body.text|message and an @timestamp")
-		default:
-			slog.Info("ES log query: parsed hits",
-				"matched", matched, "returned", returned, "parsed", len(output),
-				"dropped", returned-len(output))
-		}
-	}
-
-	return output, nil
 }
 
 // esHitsTotal best-effort reads hits.total from a raw _search response for
@@ -745,6 +743,13 @@ func (e *ElasticSaasSource) QueryLabelValues(ctx *security.RequestContext, fetch
 		}
 	}
 
+	return parseESLabelValuesResponse(bodyBytes)
+}
+
+// parseESLabelValuesResponse pulls the terms-aggregation bucket keys out of an ES
+// aggregation response into label values, skipping empty keys. Split out from
+// QueryLabelValues so the response-shape handling is unit-testable.
+func parseESLabelValuesResponse(bodyBytes []byte) ([]OutputLogLabelValue, error) {
 	var result map[string]any
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal aggregation response: %w", err)
@@ -816,6 +821,14 @@ func (e *ElasticSaasSource) QueryIndexFields(ctx *security.RequestContext, fetch
 		return nil, err
 	}
 
+	return parseESMappingFields(bodyBytes)
+}
+
+// parseESMappingFields flattens an ES _mapping response into the field list
+// (including multi-fields) via extractFieldsFromProperties. Split out from
+// QueryIndexFields so the nested unwrap is unit-testable. Returns nil when the
+// response carries no recognizable {index: {mappings: {properties}}} shape.
+func parseESMappingFields(bodyBytes []byte) ([]OutputLogLabelFields, error) {
 	var mappingResp map[string]any
 	if err := json.Unmarshal(bodyBytes, &mappingResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal mapping response: %w", err)

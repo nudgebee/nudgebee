@@ -99,6 +99,8 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
   const [saasQueryItems, setSaasQueryItems] = useState<any[]>([]);
   const [saasQLEditor, setSaasQLEditor] = useState('code');
   const [saasEsIndex, setSaasEsIndex] = useState('');
+  // ES Code-tab query language ('dsl' | 'kql'), driven by QueryModeSwitcher.
+  const [saasEsQueryType, setSaasEsQueryType] = useState('dsl');
   // The provider-native query the backend actually executed, returned alongside
   // the logs so Builder mode can show what was run.
   const [executedQuery, setExecutedQuery] = useState('');
@@ -192,7 +194,10 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
           requestPayload.query_request = { where: { _and: buildStructuredWhere(saasQueryItems) } };
           requestPayload.query = '';
         }
-        requestPayload.request = { query_type: 'dsl', ...(saasEsIndex ? { index: saasEsIndex } : {}) };
+        // Build mode always emits a where-clause (DSL); Code mode honors the
+        // DSL/KQL language picker.
+        const esQueryType = saasQLEditor === 'code' ? saasEsQueryType || 'dsl' : 'dsl';
+        requestPayload.request = { query_type: esQueryType, ...(saasEsIndex ? { index: saasEsIndex } : {}) };
       } else if (saasQLEditor === 'build') {
         // Non-ES Builder mode emits a JSON where-array via onQueryChange.
         const trimmed = typeof saasQuery === 'string' ? saasQuery.trim() : '';
@@ -260,7 +265,7 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
     } finally {
       setLoading(false);
     }
-  }, [accountId, provider, dateRange, logLimit, isNative, selectedProvider, saasQuery, saasQLEditor, saasQueryItems, saasEsIndex]);
+  }, [accountId, provider, dateRange, logLimit, isNative, selectedProvider, saasQuery, saasQLEditor, saasQueryItems, saasEsIndex, saasEsQueryType]);
 
   const handleDateRangeChange = (passedSelectedDateTime: any) => {
     if (passedSelectedDateTime.shortcutClickTime > 0) {
@@ -409,6 +414,7 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
               onQueryChange={(e: any) => {
                 setSaasQuery(e.query);
                 if (e.index !== undefined) setSaasEsIndex(e.index);
+                if (e.queryType !== undefined) setSaasEsQueryType(e.queryType);
               }}
               qLEditor={saasQLEditor}
               setQLEditor={setSaasQLEditor}
