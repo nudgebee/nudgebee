@@ -307,6 +307,17 @@ actions:
     permissions:
       - role: tenant_admin
       - role: account_admin
+  - name: ai_delete_tool
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/tools'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
   - name: ai_delete_function
     definition:
       kind: synchronous

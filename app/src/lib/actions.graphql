@@ -148,6 +148,12 @@ type Mutation {
 }
 
 type Mutation {
+  ai_delete_tool(
+    request: DeleteToolRequest!
+  ): DeleteToolResponse
+}
+
+type Mutation {
   ai_delete_function(
     request: AiDeleteFunctionRequest!
   ): AiDeleteFunctionResponse
