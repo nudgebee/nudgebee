@@ -427,10 +427,11 @@ func CreateIntegrationConfig(
 
 	// Remove existing account mappings for integrations of the same type
 	// so the new integration can take over those accounts.
-	// Skip for vm_agent, workflow_webhook, mcp, and proxy integrations — multiple per account
-	// are legitimate (each represents a distinct backend), so existing mappings must not be
-	// detached. Reuses isProxy from above.
-	if len(accountIds) > 0 && intgerationType != "vm_agent" && intgerationType != "workflow_webhook" && intgerationType != "mcp" && !isProxy {
+	// Skip for vm_agent, workflow_webhook, mcp, rabbitmq, and proxy integrations — multiple per
+	// account are legitimate (each represents a distinct backend), so existing mappings must not be
+	// detached. rabbitmq is k8s-secret-only (isProxy stays false) yet multiple-per-account like
+	// mcp-direct, so it must be listed explicitly here. Reuses isProxy from above.
+	if len(accountIds) > 0 && intgerationType != "vm_agent" && intgerationType != "workflow_webhook" && intgerationType != "mcp" && intgerationType != "rabbitmq" && !isProxy {
 		effectiveSource := source
 		if effectiveSource == "" {
 			effectiveSource = "user"

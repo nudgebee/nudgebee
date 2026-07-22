@@ -771,6 +771,65 @@ SectionLabel.propTypes = {
 };
 
 /**
+ * Renders a tool call's parameters as a "Query" box. Accepts either the raw JSON
+ * string (per-tool-call task objects) or an already-parsed object so both the
+ * grouped view and the single-call fallback can share it.
+ */
+const ParametersBox = ({ parameters }) => {
+  const isEmpty =
+    !parameters || parameters === '{}' || (typeof parameters === 'object' && !Array.isArray(parameters) && Object.keys(parameters).length === 0);
+  if (isEmpty) {
+    return null;
+  }
+  return (
+    <Box sx={{ mb: ds.space[2] }}>
+      <Typography sx={sectionLabelSx}>Query</Typography>
+      <Box sx={{ ...contentBoxSx, fontFamily: '"Roboto Mono", monospace', fontSize: 'var(--ds-text-small)' }}>
+        {(() => {
+          try {
+            let parsed = null;
+            if (Array.isArray(parameters)) {
+              // An array param has no command/query shape; show it verbatim rather
+              // than spreading it into an object with numeric keys.
+              return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(parameters, null, 2)}</pre>;
+            }
+            if (typeof parameters === 'object') {
+              parsed = parameters;
+            } else if (typeof parameters === 'string' && parameters.trim().startsWith('{')) {
+              parsed = JSON.parse(parameters);
+            }
+            if (parsed && typeof parsed === 'object') {
+              // Executor-style tools (shell, kubectl, ...) put the executable in
+              // `command` and the actual command line in `args`. Showing only
+              // `command` ("shell") hides what actually ran, so prefer `args`.
+              let single = parsed.sql || parsed.query;
+              if (typeof single !== 'string' && typeof parsed.args === 'string' && parsed.args.trim()) {
+                const exe = typeof parsed.command === 'string' && parsed.command && parsed.command !== 'shell' ? parsed.command : '';
+                single = exe ? `${exe} ${parsed.args}` : parsed.args;
+              }
+              if (typeof single !== 'string') {
+                single = parsed.command;
+              }
+              if (typeof single === 'string') {
+                return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{single}</pre>;
+              }
+              return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(parsed, null, 2)}</pre>;
+            }
+          } catch (e) {
+            console.warn('ParametersBox: parameters JSON parse failed', e);
+          }
+          return <Box sx={{ wordBreak: 'break-all' }}>{parameters}</Box>;
+        })()}
+      </Box>
+    </Box>
+  );
+};
+
+ParametersBox.propTypes = {
+  parameters: PropTypes.oneOfType([PropTypes.string, PropTypes.object, PropTypes.array]),
+};
+
+/**
  * Renders a single tool call's thought and response.
  */
 const ToolCallSection = ({ tc, index, accountId }) => {
@@ -817,40 +876,7 @@ const ToolCallSection = ({ tc, index, accountId }) => {
       )}
 
       {/* Parameters / Query */}
-      {tc.parameters && tc.parameters !== '{}' && (
-        <Box sx={{ mb: ds.space[2] }}>
-          <Typography sx={sectionLabelSx}>Query</Typography>
-          <Box sx={{ ...contentBoxSx, fontFamily: '"Roboto Mono", monospace', fontSize: 'var(--ds-text-small)' }}>
-            {(() => {
-              try {
-                if (typeof tc.parameters === 'string' && tc.parameters.trim().startsWith('{')) {
-                  const parsed = JSON.parse(tc.parameters);
-                  if (parsed && typeof parsed === 'object') {
-                    // Executor-style tools (shell, kubectl, ...) put the executable in
-                    // `command` and the actual command line in `args`. Showing only
-                    // `command` ("shell") hides what actually ran, so prefer `args`.
-                    let single = parsed.sql || parsed.query;
-                    if (typeof single !== 'string' && typeof parsed.args === 'string' && parsed.args.trim()) {
-                      const exe = typeof parsed.command === 'string' && parsed.command && parsed.command !== 'shell' ? parsed.command : '';
-                      single = exe ? `${exe} ${parsed.args}` : parsed.args;
-                    }
-                    if (typeof single !== 'string') {
-                      single = parsed.command;
-                    }
-                    if (typeof single === 'string') {
-                      return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{single}</pre>;
-                    }
-                    return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(parsed, null, 2)}</pre>;
-                  }
-                }
-              } catch (e) {
-                console.warn('ToolCallSection: parameters JSON parse failed', e);
-              }
-              return <Box sx={{ wordBreak: 'break-all' }}>{tc.parameters}</Box>;
-            })()}
-          </Box>
-        </Box>
-      )}
+      <ParametersBox parameters={tc.parameters} />
 
       {/* Response */}
       {responseText && (
@@ -914,8 +940,10 @@ const ToolDetails = ({ toolCall, accountId, conversationId }) => {
   const toolCalls = toolCall.toolCalls || [];
   const hasMultipleToolCalls = toolCalls.length > 1;
 
-  // Fallback: single tool call view (agent-level thought + response)
-  const agentThought = toolCall.log || toolCall.text;
+  // Fallback: single tool call view (agent-level thought + response).
+  // Source the thought from `log`/`thought` only — never `text`, which for a
+  // per-tool-call task holds the parameters (the "Query" box renders those).
+  const agentThought = toolCall.log || toolCall.thought;
   const hasAgentResponse = toolCall.response?.text || toolCall.response_text;
   const prettyAgentThought = tryPrettifyJson(agentThought);
 
@@ -1009,6 +1037,9 @@ const ToolDetails = ({ toolCall, accountId, conversationId }) => {
               </Box>
             </Box>
           )}
+          {/* Parameters / Query — kept in the fallback so a single tool call's
+              parameters are shown (they used to leak into the "Thought" box). */}
+          <ParametersBox parameters={toolCall.toolParameters} />
           {hasAgentResponse && (
             <Box>
               <SectionLabel

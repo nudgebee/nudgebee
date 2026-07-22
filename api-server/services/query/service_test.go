@@ -238,6 +238,26 @@ func TestWhereGeneration(t *testing.T) {
 	})
 }
 
+func TestAccountScopeClause(t *testing.T) {
+	t.Run("BareInClauseWhenNotTenantWideReadable", func(t *testing.T) {
+		clause := accountScopeClause("account_id", []string{"account_1", "account_2"}, false)
+		query, err := generateWhereClause(clause, table_metadata["feature_flag_v2"])
+		assert.Nil(t, err)
+		assert.Equal(t, "(account_id IN ('account_1','account_2'))", query)
+	})
+
+	t.Run("OrsNullRowsBackInWhenTenantWideReadable", func(t *testing.T) {
+		clause := accountScopeClause("account_id", []string{"account_1", "account_2"}, true)
+		query, err := generateWhereClause(clause, table_metadata["feature_flag_v2"])
+		assert.Nil(t, err)
+		assert.Equal(t, "((account_id IN ('account_1','account_2')) OR (account_id IS NULL))", query)
+	})
+
+	t.Run("FeatureFlagV2OptsIn", func(t *testing.T) {
+		assert.True(t, table_metadata["feature_flag_v2"].TenantWideReadable)
+	})
+}
+
 func TestSerialization(t *testing.T) {
 
 	t.Run("TestSerialization", func(t *testing.T) {

@@ -82,6 +82,14 @@ type TableDefinition struct {
 	AccountIdColumnName string
 	NamespaceColumnName string
 	UpdateFilters       func(ctx *security.RequestContext, request QueryRequest) (QueryRequest, error)
+	// TenantWideReadable makes tenant-wide rows (account_id IS NULL) visible to
+	// account-scoped roles. When true, the account-id restriction injected for
+	// those roles becomes `account_id IN (...) OR account_id IS NULL` instead of
+	// bare `account_id IN (...)`, so account users can still read tenant-level
+	// configuration that has no owning account (e.g. feature flags). The tenant_id
+	// clause still bounds the result. Leave false for tables whose NULL-account
+	// rows are sensitive or global-only.
+	TenantWideReadable bool
 }
 
 var AzureTraceTableDefinition = map[string]ColumnDefinition{
@@ -8936,6 +8944,10 @@ var table_metadata = map[string]TableDefinition{
 		Def:                 "feature_flag",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
+		// Tenant-wide feature flags (account_id IS NULL) must be readable by
+		// account-scoped users; otherwise b-Cortex tabs show "not enabled for
+		// your tenant" for Account Admin/Readonly roles (#34510).
+		TenantWideReadable: true,
 		Columns: map[string]ColumnDefinition{
 			"id":                {Type: ColumnDefinitionTypeString, Def: "id"},
 			"feature_id":        {Type: ColumnDefinitionTypeString, Def: "feature_id"},

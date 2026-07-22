@@ -32,6 +32,7 @@ var dualModeProxyMapping = map[string]struct {
 	"redis":      {ProxyType: "redis-proxy", DbType: ""},
 	"ssh":        {ProxyType: "ssh-proxy", DbType: ""},
 	"mcp":        {ProxyType: "mcp-proxy", DbType: ""},
+	"rabbitmq":   {ProxyType: "rabbitmq-proxy", DbType: ""},
 }
 
 // IsProxyIntegration returns true if the given integration is a proxy integration,
