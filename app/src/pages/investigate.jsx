@@ -15,7 +15,7 @@ import WorkflowTemplatesModal from '@components/workflow/components/WorkflowTemp
 import AiGenerateWorkflowModal from '@components/workflow/components/AiGenerateWorkflowModal';
 import RunAutomationMenu from '@components/workflow/components/RunAutomationMenu';
 import apiWorkflow from '@api1/workflow';
-import { SparklesIconBG, ExternalLinkIcon } from '@assets';
+import { SparklesIconBG } from '@assets';
 import { getNubiIconUrl, useTenantBranding, DEFAULT_TITLE } from '@hooks/useTenantBranding';
 import { Label } from '@ui/Label';
 import apiRecommendations from '@api1/recommendation';
@@ -1683,25 +1683,6 @@ const Investigate = () => {
               >
                 <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.gray[700] }}>Was this helpful?</Typography>
                 <FeedbackVote onFeedbackSubmit={(feedbackObject) => aiCreateFeedback(feedbackObject)} sentFeedback={sentFeedback} />
-              </Box>
-            )}
-            {!askAiCardObject?.errorMessage && (
-              <Box mt='auto' mb={ds.space[5]} mr={ds.space[6]}>
-                <Button
-                  tone='secondary'
-                  size='xs'
-                  composition='icon+text'
-                  icon={<SafeIcon src={ExternalLinkIcon} alt='external link' height={16} width={16} />}
-                  disabled={!row.fingerprint}
-                  onClick={() => {
-                    if (row.fingerprint) {
-                      let href = `/ask-nudgebee?accountId=${row.cloud_account_id || router.query.accountId}&session_id=event-${row.fingerprint}`;
-                      window.open(href, '_blank');
-                    }
-                  }}
-                >
-                  Continue With Analysis
-                </Button>
               </Box>
             )}
           </Box>
