@@ -82,16 +82,24 @@ func ownerFromLabels(labels map[string]string) (string, string) {
 //     in k8s_workloads recovers the parent without needing a separate
 //     ReplicaSet table.
 //
-// The lookup key $3 matches either the pod's own name or its workload_name, so
-// a subject that is itself a ReplicaSet name (e.g. an alert on
-// cloud-collector-server-5cbd8ddb97 with an empty owner) resolves to its
-// Deployment as well — not just pod-named subjects.
+// The lookup key $3 matches the pod's own name, its workload_name, or — for a
+// subject that is itself a ReplicaSet name (e.g. an alert on
+// cloud-collector-server-5cbd8ddb97 with an empty owner) — the pods that belong
+// to that ReplicaSet, by name prefix: its pods are named "<rs>-<suffix>". The
+// workload_name arm alone cannot cover that case because the k8s collector
+// stores each pod's TOP-LEVEL controller (the Deployment) in workload_name,
+// never the ReplicaSet name (verified live, #34656). $4 is $3 with LIKE
+// wildcards escaped, suffixed "-%".
 //
 // The join doubles as validation — only resolves to workloads currently known
-// to k8s state. ORDER BY length(kw.name) DESC prefers the longest (most
-// specific) deployment match, so a ReplicaSet for "payment-service" doesn't
-// false-positive against a sibling "payment" deployment via prefix-LIKE.
-// last_seen DESC is the secondary tiebreak for cluster-recreate cases.
+// to k8s state. The prefix arm carries its own guard: the subject must itself
+// extend the matched workload's name ($3 LIKE kw.name || '-%'), so a subject
+// that IS a plain workload name can never ride a prefix collision onto a
+// longer sibling (subject "app" must not gain owner "app-prod" via app-prod's
+// pods). ORDER BY prefers exact matches, then length(kw.name) DESC so a
+// ReplicaSet for "payment-service" doesn't false-positive against a sibling
+// "payment" deployment via prefix-LIKE; last_seen DESC is the final tiebreak
+// for cluster-recreate cases.
 const podOwnerLookupSQL = `
 	SELECT kw.name, kw.kind
 	FROM k8s_pods kp
@@ -102,8 +110,12 @@ const podOwnerLookupSQL = `
 	        (kp.workload_name = kw.name AND kp.workload_type = kw.kind)
 	     OR (kp.workload_type = 'ReplicaSet' AND kw.kind = 'Deployment' AND kp.workload_name LIKE kw.name || '-%')
 	     )
-	WHERE kp.tenant_id = $1 AND kp.namespace = $2 AND (kp.name = $3 OR kp.workload_name = $3)
-	ORDER BY length(kw.name) DESC, kp.last_seen DESC
+	WHERE kp.tenant_id = $1 AND kp.namespace = $2
+	  AND (
+	        kp.name = $3 OR kp.workload_name = $3
+	     OR (kp.name LIKE $4 AND $3 LIKE kw.name || '-%')
+	     )
+	ORDER BY (kp.name = $3 OR kp.workload_name = $3) DESC, length(kw.name) DESC, kp.last_seen DESC
 	LIMIT 1
 `
 
@@ -133,6 +145,11 @@ const podCloudResourceSQL = `
 	LIMIT 1
 `
 
+// sqlLikeEscaper escapes SQL LIKE wildcards in a subject name before it is used
+// as a prefix pattern ($4 of podOwnerLookupSQL). Package-level: lookupPodOwner
+// runs on the per-event hot path, so the replacer must not be rebuilt per call.
+var sqlLikeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
 // lookupPodOwner resolves a pod → owning workload via the cached k8s state
 // snapshot (k8s_pods JOIN k8s_workloads). Returns ("", "") when the pod is
 // unknown — caller leaves SubjectOwner empty rather than guess. Errors are
@@ -152,8 +169,13 @@ func lookupPodOwner(sc *security.RequestContext, dbms *database.DatabaseManager,
 		return "", "" // negative-cached
 	}
 
+	// $4: the subject as a pod-name prefix pattern ("<subject>-%"), LIKE wildcards
+	// escaped — webhook subjects are not guaranteed to be clean k8s names (e.g. a
+	// datname like "temporal_visibility" would otherwise wildcard-match on "_").
+	likePrefix := sqlLikeEscaper.Replace(podName) + "-%"
+
 	var ownerName, ownerKind string
-	err := dbms.Db.QueryRowx(podOwnerLookupSQL, tenantId, namespace, podName).Scan(&ownerName, &ownerKind)
+	err := dbms.Db.QueryRowx(podOwnerLookupSQL, tenantId, namespace, podName, likePrefix).Scan(&ownerName, &ownerKind)
 	switch {
 	case err == sql.ErrNoRows:
 		// Negative-cache so we don't keep querying for a pod that isn't in
