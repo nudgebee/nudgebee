@@ -501,7 +501,7 @@ const KubernetesServiceMap = ({ accountId, appName, namespaceName, dateRange, sh
 
       // Populate Filters if needed
       if (!appName && !namespaceName && selectedSourceType !== 'otel') {
-        const distinctNs = [...new Set(cleaned.map((x) => x.Labels?.ns))].filter(Boolean).sort((a, b) => a.localeCompare(b));
+        const distinctNs = [...new Set(cleaned.map((x) => x.Id?.namespace))].filter(Boolean).sort((a, b) => a.localeCompare(b));
         setNamespaces(distinctNs);
       }
 
