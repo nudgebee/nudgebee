@@ -62,7 +62,7 @@ def test_slack_empty_secret_rejects(monkeypatch):
     # would otherwise produce a signature an attacker can reproduce.
     monkeypatch.setattr(wa.settings.slack, "signing_secret", "")
     body = b'{"type":"event_callback"}'
-    headers = _signed_headers("", body, str(int(time.time())))
+    headers = {"x-slack-signature": "v0=deadbeef", "x-slack-request-timestamp": str(int(time.time()))}
     assert wa.slack_signature_valid(body, headers) is False
 
 
