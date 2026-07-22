@@ -94,7 +94,7 @@ func doTriageActionRequest(nbCtx core.NbToolContext, actionName string, input ma
 	userId := ""
 	if nbCtx.Ctx != nil {
 		if sc := nbCtx.Ctx.GetSecurityContext(); sc != nil {
-			userId = sc.GetUserId()
+			userId = sc.EffectiveUserIdForRPC()
 		}
 	}
 

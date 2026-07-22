@@ -262,12 +262,45 @@ func (o *NBReActPlanner3) Unmarshal(data []byte) error {
 // steps before the index are always compressed (truncated), steps after get full context
 // up to the recent-steps window. This ensures the LLM always sees ALL tool observations
 // (even from before critique rejection) while keeping token usage manageable.
+// resolveMaxContextTokens returns the resolved model context window (tokens) for this
+// planner's request, or 0 when it can't be determined. Used to gate scratchpad
+// compression on real window pressure rather than a flat step count.
+func (o *NBReActPlanner3) resolveMaxContextTokens() int {
+	agentName := ""
+	if o.nbAgent != nil {
+		agentName = o.nbAgent.GetName()
+	}
+	return resolveMaxContextTokens(o.ctx, o.request.AccountId, agentName, o.request.ConversationId)
+}
+
 func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerToolActionStep) string {
 	totalSteps := len(intermediateSteps)
 
-	// Parallel prewarm: fire LLM summarizations for non-recent steps concurrently
-	// to avoid a sequential latency spike when compression first kicks in.
-	o.prewarmSummaries(intermediateSteps)
+	// Context-window gating: only compress older observations once the scratchpad
+	// approaches the model's context window. Below that, every step is treated as
+	// "recent" (full observation, subject only to the per-observation hard cap), so we
+	// don't fire LLM summarization / "context_compression" cards without window pressure.
+	totalObsBytes := 0
+	for i := range intermediateSteps {
+		totalObsBytes += len(intermediateSteps[i].Observation)
+	}
+	maxContextTokens := o.resolveMaxContextTokens()
+	activationChars, hardCapChars := scratchpadBudget(maxContextTokens)
+	compressionActive := totalObsBytes > activationChars
+
+	// Stash the gating decision on the tracker so SaveCompressionVisibility
+	// can classify each event's cause (window-pressure vs refinement-focus)
+	// instead of defaulting to the misleading "context window" wording on the
+	// card. postRefinementToolIndex carries the always-on path; without this
+	// plumbing a 4-step / 7-KB conversation that hit the refinement-focused
+	// compression path was reported as "compressed to fit context window".
+	o.compressionTracker.SetCompressionContext(compressionActive, o.postRefinementToolIndex)
+
+	// Parallel prewarm: fire LLM summarizations for non-recent steps concurrently to
+	// avoid a sequential latency spike — but only when compression will actually run.
+	if compressionActive {
+		o.prewarmSummaries(intermediateSteps)
+	}
 
 	var history strings.Builder
 	stepIndex := 0
@@ -276,9 +309,11 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 	for i < len(intermediateSteps) {
 		step := intermediateSteps[i]
 		stepIndex++
-		// Steps before postRefinementToolIndex are always compressed (pre-refinement).
-		// Steps after use the standard recent-window heuristic.
-		isRecent := i >= o.postRefinementToolIndex && (totalSteps-stepIndex) < recentStepsFullContext
+		// Steps before postRefinementToolIndex are ALWAYS compressed (pre-refinement —
+		// keep the refined investigation focused), independent of window pressure.
+		// Post-refinement steps keep full observations while compression is inactive
+		// (scratchpad well under the window), and otherwise use the recent-window heuristic.
+		isRecent := i >= o.postRefinementToolIndex && (!compressionActive || (totalSteps-stepIndex) < recentStepsFullContext)
 
 		// Detect parallel group: consecutive steps with the same Log (thought).
 		// When react_3 emits multiple actions, they all share the same thought.
@@ -358,10 +393,10 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 		scratchpad = fmt.Sprintf("<scratchpad>\n%s</scratchpad>", history.String())
 	}
 
-	// Aggregate budget: cap total scratchpad size.
-	maxChars := config.Config.LlmServerAgentMaxScratchpadChars
-	if maxChars > 0 && len(scratchpad) > maxChars {
-		scratchpad = o.compressScratchpad(scratchpad, maxChars, intermediateSteps)
+	// Aggregate budget: cap total scratchpad size at the window-derived hard ceiling
+	// (falls back to the legacy char budget when the window is unknown).
+	if hardCapChars > 0 && len(scratchpad) > hardCapChars {
+		scratchpad = o.compressScratchpad(scratchpad, hardCapChars, intermediateSteps)
 	}
 	return scratchpad
 }
@@ -537,11 +572,30 @@ func (o *NBReActPlanner3) resolveToolResponse(step NBAgentPlannerToolActionStep)
 	return renderObservationWithMetadata(toolResponse, step.Metadata)
 }
 
+// resolveObservation returns the tool response for a step with any structural
+// prefixes applied. Both getToolResponse and prewarmSummaries must call this
+// instead of resolveToolResponse directly so that the prefixes are present in
+// cached CompressedObservation values as well as in-line recent steps.
+func (o *NBReActPlanner3) resolveObservation(step NBAgentPlannerToolActionStep) string {
+	obs := o.resolveToolResponse(step)
+	// For failed tool calls, prepend an explicit directive to prevent the model
+	// from substituting fabricated evidence when a check could not be completed
+	// ("evidence gap confabulation"). The directive must appear in both the
+	// recent-step path and in the prewarm cache so it survives scratchpad compression.
+	if step.Status == ToolStatusFailure {
+		obs = "[TOOL-FAILED] This check did not complete successfully. " +
+			"Do NOT infer, hypothesize, or speculate about what the result would have shown. " +
+			"In your analysis, explicitly state: 'Unable to verify [what you checked]: tool call failed.'\n" +
+			obs
+	}
+	return obs
+}
+
 // getToolResponse processes the observation for a step and applies semantic
 // compression. When summarization is enabled and the step is not recent, it
 // generates an LLM-backed summary instead of blind byte truncation.
 func (o *NBReActPlanner3) getToolResponse(step *NBAgentPlannerToolActionStep, isRecent bool) string {
-	toolResponse := o.resolveToolResponse(*step)
+	toolResponse := o.resolveObservation(*step)
 
 	if isRecent {
 		if len(toolResponse) > getMaxObservationChars() {
@@ -613,7 +667,7 @@ func (o *NBReActPlanner3) prewarmSummaries(intermediateSteps []NBAgentPlannerToo
 			if s.CompressedObservation != "" {
 				continue
 			}
-			obs := o.resolveToolResponse(*s)
+			obs := o.resolveObservation(*s)
 			if len(obs) < minBytes {
 				continue
 			}
@@ -1929,10 +1983,14 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		messageFormatters = append(messageFormatters, LiteralSystemMessage{Content: priorityInstruction})
 	}
 
-	// AccountPrompt is intentionally NOT added as a system message: it is only
-	// populated by the event-analysis path, so injecting it here would alternate
-	// the cacheable prefix per entry-point and bust the Account-scope cache.
+	// AccountPrompt (account GlobalContext + event-analysis additional
+	// instructions) is intentionally NOT added as a system message: its
+	// event-analysis fragment varies per entry-point, so injecting it here
+	// would alternate the cacheable prefix and bust the Account-scope cache.
 	// It is rendered into the human-message <global_preferences> block below.
+	// This is also why ReAct agents need no per-agent GC wiring — custom-planner
+	// agents that bypass this prompt path (fetch_logs, resource_search) attach
+	// AccountPrompt to their own LLM calls explicitly.
 
 	agentAdditionalPrompt, configuredTools, _ := AgentAdditionalInstructionsAndToolsAndConfigs(ctx, request.AccountId, agent.GetName())
 	if agentAdditionalPrompt != "" {
@@ -1971,7 +2029,9 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	// Move all dynamic context to the final Human message so the system prefix is stable.
 	// today is placed here (not in the system message) so the cached system prefix
 	// does not expire on date rollover.
-	// global_preferences_block carries AccountPrompt (event-analysis path only) so
+	// global_preferences_block carries AccountPrompt (account GlobalContext,
+	// merged with any event-analysis additional instructions — populated on
+	// every entry point by handleDefaultConversation) so
 	// the cacheable system prefix does not flip between entry points.
 	dynamicPrompt := `
 **TODAY's Date:** {{.today}}

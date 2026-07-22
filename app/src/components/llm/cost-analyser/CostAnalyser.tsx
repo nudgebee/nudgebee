@@ -16,6 +16,7 @@ import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import HandymanOutlinedIcon from '@mui/icons-material/HandymanOutlined';
+import PeopleAltOutlinedIcon from '@mui/icons-material/PeopleAltOutlined';
 import CustomTabs from '@shared/CustomTabs';
 import { Banner } from '@ui/Banner';
 import { Chip } from '@ui/Chip';
@@ -27,6 +28,7 @@ import ConversationDetailView from './views/ConversationDetailView';
 import ModelsView from './views/ModelsView';
 import AgentsView from './views/AgentsView';
 import ToolsView from './views/ToolsView';
+import UsersView from './views/UsersView';
 import { rowToRun } from './adapt';
 import { useConversationTree, useCostData } from './useCostData';
 import type { CostFilters } from './types';
@@ -57,6 +59,7 @@ function defaultFilters(): CostFilters {
     models: [],
     providers: [],
     statuses: [],
+    userId: '',
     minCost: null,
     maxCost: null,
     anomaliesOnly: false,
@@ -64,7 +67,7 @@ function defaultFilters(): CostFilters {
   };
 }
 
-type TabId = 'overview' | 'conversations' | 'models' | 'agents' | 'tools';
+type TabId = 'overview' | 'conversations' | 'models' | 'agents' | 'tools' | 'users';
 
 export function CostAnalyser({ accountId }: CostAnalyserProps) {
   const [filters, setFilters] = React.useState<CostFilters>(() => defaultFilters());
@@ -116,6 +119,12 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
   // given, focuses the detail on that specific agent invocation.
   const openRunDirect = (sessionId: string, acct?: string, agentId?: string) => setSelected({ sessionId, accountId: acct, agentId });
   const closeRun = () => setSelected(null);
+  // Drill-in from the Users tab: scope the whole report to this user and jump to
+  // their conversations. The active scope shows as the User pill in the filter bar.
+  const openUser = (userId: string) => {
+    patch({ userId });
+    setTab('conversations');
+  };
 
   // Pass MUI icons as component references (not JSX elements) so SafeIcon
   // renders them with the `.tab-icon` class — this routes them through
@@ -127,6 +136,7 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
     { value: 'models', text: 'Models', icon: AutoAwesomeOutlinedIcon, iconSize: 16 },
     { value: 'agents', text: 'Agents', icon: SmartToyOutlinedIcon, iconSize: 16 },
     { value: 'tools', text: 'Tools', icon: HandymanOutlinedIcon, iconSize: 16 },
+    { value: 'users', text: 'Users', icon: PeopleAltOutlinedIcon, iconSize: 16 },
   ];
 
   return (
@@ -162,6 +172,8 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
         <AgentsView accountId={effectiveAccountId} filters={filters} agentOptions={usageFilters?.agents ?? []} onSelectRun={openRunDirect} />
       ) : tab === 'tools' ? (
         <ToolsView accountId={effectiveAccountId} filters={filters} onSelectRun={openRunDirect} />
+      ) : tab === 'users' ? (
+        <UsersView accountId={effectiveAccountId} filters={filters} userOptions={usageFilters?.users ?? []} onSelectUser={openUser} />
       ) : (
         <>
           {error && <Banner tone='critical' title='Could not load cost data' message={error} />}

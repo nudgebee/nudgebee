@@ -152,7 +152,7 @@ const VerticalAutopPilotForm = ({
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
         {data?.cpu && (
           <Box sx={{ gap: 'var(--ds-space-4)', display: 'flex', flexDirection: 'column' }}>
-            <Box sx={{ marginLeft: 'var(--ds-space-0)', borderLeft: '2px solid var(--ds-yellow-500)', padding: '0px calc(var(--ds-space-0) * 5)' }}>
+            <Box sx={{ borderLeft: '2px solid var(--ds-yellow-500)', padding: '0px var(--ds-space-1)' }}>
               <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-brand-500)', fontWeight: 'var(--ds-font-weight-semibold)' }}>
                 CPU
               </Typography>
@@ -309,7 +309,7 @@ const VerticalAutopPilotForm = ({
 
         {data?.memory && (
           <Box sx={{ gap: 'var(--ds-space-4)', display: 'flex', flexDirection: 'column' }}>
-            <Box sx={{ marginLeft: 'var(--ds-space-0)', borderLeft: '2px solid var(--ds-yellow-500)', padding: '0px calc(var(--ds-space-0) * 5)' }}>
+            <Box sx={{ borderLeft: '2px solid var(--ds-yellow-500)', padding: '0px var(--ds-space-1)' }}>
               <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-brand-500)', fontWeight: 'var(--ds-font-weight-semibold)' }}>
                 Memory
               </Typography>

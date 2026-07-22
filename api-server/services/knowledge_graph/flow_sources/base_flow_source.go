@@ -217,3 +217,11 @@ func (b *BaseFlowSource) TrackBuildTime(start time.Time) {
 func (b *BaseFlowSource) IncrementErrorCount() {
 	b.metrics.ErrorCount++
 }
+
+// AddRelationshipsCreated increments the relationships-created metric by n. Use this
+// for flow sources that emit edges through a shared converter (e.g.
+// ConvertServiceMapToGraph) rather than building each edge via CreateEdge, so
+// LogMetrics still reflects the real count.
+func (b *BaseFlowSource) AddRelationshipsCreated(n int) {
+	b.metrics.RelationshipsCreated += n
+}

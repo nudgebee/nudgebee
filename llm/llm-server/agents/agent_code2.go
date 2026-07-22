@@ -147,6 +147,12 @@ func evaluateCodeUsingCli(ctx *security.RequestContext, request CodeAgent2Reques
 		args = append(args, "--raisepr", "true")
 	}
 
+	// Explicit mode enables propose mode (mode=fix, raisepr=false). When unset the
+	// CLI derives the mode from raisepr, so only forward it when the caller set it.
+	if request.Mode != "" {
+		args = append(args, "--mode", request.Mode)
+	}
+
 	env := os.Environ()
 
 	// Pass large payloads via environment variables to avoid ARG_MAX limits
@@ -318,6 +324,12 @@ func evaluateCodeUsingPod(ctx *security.RequestContext, agentRequest core.NBAgen
 
 	if request.RaisePr {
 		args = append(args, "--raisepr", "true")
+	}
+
+	// Explicit mode enables propose mode (mode=fix, raisepr=false). When unset the
+	// CLI derives the mode from raisepr, so only forward it when the caller set it.
+	if request.Mode != "" {
+		args = append(args, "--mode", request.Mode)
 	}
 
 	args = append(args, "--conversationid", agentRequest.SessionId)
@@ -566,12 +578,23 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	// it through caused `gh pr create --base <SHA>` to fail with "Base ref must be a branch".
 	branch := request.TargetBranch
 
-	// Mode is derived from the entrypoint signal (RaisePr). Callers that want a
-	// fix+PR set raise_pr=true in their query JSON (e.g. recommendation-apply,
-	// event-resolution); chat mentions don't, and stay in explore mode.
+	// Mode selection:
+	//   - An explicit request.Mode wins (mirrors code-analysis' EffectiveMode).
+	//     This lets a caller run "propose" mode — fix without a PR (mode=fix,
+	//     raise_pr=false): the fixer runs and returns a git_diff, but no PR is
+	//     opened and the diff is NOT stripped (unlike explore mode). The event
+	//     log-analysis step uses this to eagerly generate + store a proposed fix.
+	//   - Otherwise fall back to the entrypoint signal (RaisePr): callers that
+	//     want a fix+PR set raise_pr=true (recommendation-apply, event auto-raise);
+	//     chat mentions don't, and stay in explore mode.
 	mode := codeAgentModeExplore
-	if request.RaisePr {
-		mode = codeAgentModeFix
+	switch request.Mode {
+	case codeAgentModeExplore, codeAgentModeFix:
+		mode = request.Mode
+	default:
+		if request.RaisePr {
+			mode = codeAgentModeFix
+		}
 	}
 
 	// Resolve operator-authored skills mapped to the code agent and forward them to
@@ -1020,20 +1043,24 @@ func (l CodeAgent2) GetSystemPrompt(ctx *security.RequestContext, query core.NBA
 }
 
 type CodeAgent2Request struct {
-	Query            string           `json:"query" validate:"required"`
-	Errors           []string         `json:"errors"`
-	Files            []map[string]any `json:"files"`
-	GitRepo          string           `json:"git_repo"`      // Accepts GitHub or GitLab URLs (JSON key kept for backward compatibility)
-	GitCommit        string           `json:"git_commit"`    // Git commit hash (JSON key kept for backward compatibility)
-	TargetBranch     string           `json:"target_branch"` // Base branch for the PR (e.g. "prod", "main"). Empty → repo default branch.
-	Agent            string           `json:"agent"`
-	RaisePr          bool             `json:"raise_pr"`
-	EventId          string           `json:"event_id"`
-	RecommendationId string           `json:"recommendation_id"`
-	WorkflowId       string           `json:"workflow_id"` // Originating workflow definition id; forwarded so a raised PR links back to the workflow.
-	AccountId        string           `json:"account_id"`
-	Namespace        string           `json:"namespace"`
-	Workload         string           `json:"workload"`
+	Query        string           `json:"query" validate:"required"`
+	Errors       []string         `json:"errors"`
+	Files        []map[string]any `json:"files"`
+	GitRepo      string           `json:"git_repo"`      // Accepts GitHub or GitLab URLs (JSON key kept for backward compatibility)
+	GitCommit    string           `json:"git_commit"`    // Git commit hash (JSON key kept for backward compatibility)
+	TargetBranch string           `json:"target_branch"` // Base branch for the PR (e.g. "prod", "main"). Empty → repo default branch.
+	Agent        string           `json:"agent"`
+	RaisePr      bool             `json:"raise_pr"`
+	// Mode explicitly selects "explore" (read-only) or "fix". When set it wins
+	// over RaisePr, enabling "propose" mode (mode=fix, raise_pr=false): generate
+	// and return a diff without opening a PR. Empty → derived from RaisePr.
+	Mode             string `json:"mode"`
+	EventId          string `json:"event_id"`
+	RecommendationId string `json:"recommendation_id"`
+	WorkflowId       string `json:"workflow_id"` // Originating workflow definition id; forwarded so a raised PR links back to the workflow.
+	AccountId        string `json:"account_id"`
+	Namespace        string `json:"namespace"`
+	Workload         string `json:"workload"`
 
 	// PR followup fields — used when re-executing to address CI failures or review comments
 	Followup bool   `json:"followup"`

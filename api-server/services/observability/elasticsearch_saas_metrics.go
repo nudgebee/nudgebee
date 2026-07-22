@@ -217,29 +217,19 @@ func (e *ElasticSaasMetricSource) FetchMetricList(ctx *security.RequestContext, 
 		return nil, err
 	}
 
-	resp, err := esRequest("GET", fmt.Sprintf("%s/_cat/indices?format=json", cfg.Url), "", cfg) //nolint:bodyclose
-	if err != nil {
-		return nil, fmt.Errorf("failed to query metric list: %w", err)
-	}
-
-	bodyBytes, err := readResponse(resp, "metric list")
+	// List stable data-stream names (metrics-*), not the rolled-over ".ds-*"
+	// backing indices that _cat/indices exposes. See listESIndexTargets.
+	indexNames, err := listESIndexTargets("metrics", cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	var indices []map[string]any
-	if err := json.Unmarshal(bodyBytes, &indices); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal metric list response: %w", err)
-	}
-
-	var output []OutputMetrics
-	for _, idx := range indices {
-		if indexName, ok := idx["index"].(string); ok && indexName != "" {
-			output = append(output, OutputMetrics{
-				Metric:     indexName,
-				Attributes: map[string]any{},
-			})
-		}
+	output := make([]OutputMetrics, 0, len(indexNames))
+	for _, indexName := range indexNames {
+		output = append(output, OutputMetrics{
+			Metric:     indexName,
+			Attributes: map[string]any{},
+		})
 	}
 
 	return output, nil

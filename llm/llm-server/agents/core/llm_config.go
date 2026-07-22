@@ -1438,49 +1438,57 @@ func (c *LLMResolutionCache) Set(key string, res *LLMConfigResolution) {
 // llm_model_context_size_<agent> — mirroring the model-name key convention.
 const contextSizeConfigKey = "llm_model_context_size"
 
-// resolveContextSizeFromConfig resolves the user-configured context window
-// (tokens) through the SAME layer order as provider/model in ResolveLLMConfig:
-// ENV (global → tier → agent) then DB (global → tier → agent), with later layers
-// overwriting earlier ones (DB block above ENV, most-specific wins). Returns 0
-// when nothing is configured at any layer.
-func resolveContextSizeFromConfig(dbConfig map[string]string, agentName string, tier ModelTier) int {
-	result := 0
-	agentKey := contextSizeConfigKey + "_" + agentName
-	tierKey := "llm_tier_context_size_" + string(tier)
+// resolveModelContextMap builds a model-name → context-window (tokens) map from
+// every configured (model, context-size) pair across scopes — ENV and DB,
+// global / per-tier / per-agent. The context window is a property of the MODEL,
+// so whichever layer ends up selecting a model (including a conversation or
+// per-request override) can look its window up by name. Returns an empty map
+// when nothing is configured; callers then fall back to GetLlmMaxTokenLength.
+func resolveModelContextMap(dbConfig map[string]string) map[string]int {
+	m := map[string]int{}
 
-	applyEnv := func(key string) {
-		if v := config.Config.GetInt(key, 0); v > 0 {
-			result = v
-		}
-	}
-	applyDB := func(key string) {
+	dbStr := func(key string) string {
 		if dbConfig == nil {
-			return
+			return ""
 		}
-		if v, ok := dbConfig[key]; ok && v != "" {
-			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
-				result = n
+		return dbConfig[key]
+	}
+	dbInt := func(key string) int {
+		if v := dbStr(key); v != "" {
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+				return n
 			}
 		}
+		return 0
+	}
+	// put records a (model, size) pair. Later calls win for the same model, so
+	// DB (invoked after ENV) overrides ENV — mirroring the provider/model layering.
+	put := func(model string, size int) {
+		model = strings.TrimSpace(model)
+		if model != "" && size > 0 {
+			m[model] = size
+		}
 	}
 
-	// ENV block (least specific first)
-	applyEnv(contextSizeConfigKey)
-	if tier != "" {
-		applyEnv(tierKey)
+	// Global (ENV then DB). DB global model name lives under "llm_model_name".
+	put(config.Config.LlmModel, config.Config.GetInt(contextSizeConfigKey, 0))
+	put(dbStr("llm_model_name"), dbInt(contextSizeConfigKey))
+
+	// Per-tier (ENV then DB).
+	for _, t := range []string{"reasoning", "retrieval", "summary"} {
+		put(config.Config.GetString(fmt.Sprintf(llmTierModelFormat, t), ""), config.Config.GetInt("llm_tier_context_size_"+t, 0))
+		put(dbStr(fmt.Sprintf(llmTierModelFormat, t)), dbInt("llm_tier_context_size_"+t))
 	}
-	if agentName != "" {
-		applyEnv(agentKey)
+
+	// Per-agent (DB only — agent overrides live in the tenant integration config).
+	for key := range dbConfig {
+		if strings.HasPrefix(key, "llm_model_name_") && key != "llm_model_name" {
+			agent := strings.TrimPrefix(key, "llm_model_name_")
+			put(dbStr(key), dbInt(contextSizeConfigKey+"_"+agent))
+		}
 	}
-	// DB block sits above ENV (a tenant DB value beats a stale operator ENV value)
-	applyDB(contextSizeConfigKey)
-	if tier != "" {
-		applyDB(tierKey)
-	}
-	if agentName != "" {
-		applyDB(agentKey)
-	}
-	return result
+
+	return m
 }
 
 // ResolveModelMaxContext returns the usable context window (tokens) for a model:
@@ -1551,10 +1559,6 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 		slog.Debug("Fetched LLM integration config from DB", "duration", time.Since(dbFetchStart).String(), "accountId", accountId)
 	}
 	dbConfig = result.dbConfig
-
-	// User-configured context window (agent → tier → global). 0 if unset →
-	// callers fall back to the hardcoded model map.
-	result.MaxContext = resolveContextSizeFromConfig(dbConfig, agentName, tier)
 
 	appendAgentName := agentName != ""
 
@@ -1800,13 +1804,28 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 		return nil, fmt.Errorf("no LLM configuration found for accountId=%s, agentName=%s", accountId, agentName)
 	}
 
+	// Context window is a property of the MODEL, resolved AFTER all override
+	// layers so it tracks the model the request actually uses — including a
+	// conversation / per-request override. Looked up by model name; 0 (no entry)
+	// lets callers fall back to the model's hardcoded window via
+	// GetLlmMaxTokenLength (see ResolveModelMaxContext).
+	result.MaxContext = resolveModelContextMap(dbConfig)[result.Model]
+
+	// contextSource makes it observable whether the window came from a configured
+	// (DB/ENV) value or will fall back to the model's hardcoded map.
+	contextSource := "model-map"
+	if result.MaxContext > 0 {
+		contextSource = "db-config"
+	}
 	slog.Info("LLM config resolution complete",
 		"duration", time.Since(t0).String(),
 		"provider", result.Provider,
 		"model", result.Model,
 		"source", result.Source,
 		"tier", string(tier),
-		"agent", agentName)
+		"agent", agentName,
+		"maxContext", result.MaxContext,
+		"contextSource", contextSource)
 
 	// Save to per-request cache if available
 	if cache != nil {

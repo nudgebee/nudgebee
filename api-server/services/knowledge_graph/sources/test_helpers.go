@@ -40,7 +40,7 @@ func (h *K8sSourceTestHelper) ConvertK8sNodesToGraph(k8sNodes []K8sNodeRow, req 
 
 // ConvertWorkloadsToGraph exposes the internal convertWorkloadsToGraph method for testing
 func (h *K8sSourceTestHelper) ConvertWorkloadsToGraph(workloads []K8sWorkloadRow, k8sNodeMap *map[string]*core.DbNode, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge, map[string]*core.DbNode, map[string]*core.DbNode, map[string]*core.DbNode) {
-	return h.source.convertWorkloadsToGraph(workloads, k8sNodeMap, req)
+	return h.source.convertWorkloadsToGraph(workloads, k8sNodeMap, map[string]string{}, req)
 }
 
 // GCPSourceTestHelper provides test helper methods for GCP source

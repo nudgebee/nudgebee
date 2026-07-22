@@ -4,7 +4,7 @@ fmt:
 	go fmt ./...
 
 run:
-	go run cmd/main.go
+	go run ./cmd
 
 test:
 	go test ./...

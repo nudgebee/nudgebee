@@ -1110,6 +1110,135 @@ func TestBuildWhere(t *testing.T) {
 			},
 			expected: `!~ "test-.*"`,
 		},
+		// === OR over log content → single regex alternation (NOT `(|~ a or |~ b)`) ===
+		{
+			// "ERROR or FATAL" — the canonical agent emits two Contains branches.
+			name: "OR of two Contains becomes one regex alternation",
+			where: query.QueryWhereClause{
+				Or: []query.QueryWhereClause{
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Contains: "ERROR"}}},
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Contains: "FATAL"}}},
+				},
+			},
+			expected: `|~ "ERROR|FATAL"`,
+		},
+		{
+			// "warning or error" via case-insensitive LIKE branches.
+			name: "OR of two ILike branches scopes (?i) per branch",
+			where: query.QueryWhereClause{
+				Or: []query.QueryWhereClause{
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.ILike: "%warning%"}}},
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.ILike: "%error%"}}},
+				},
+			},
+			expected: `|~ "(?i:.*warning.*)|(?i:.*error.*)"`,
+		},
+		{
+			name: "OR of IContains branches escapes regex metacharacters",
+			where: query.QueryWhereClause{
+				Or: []query.QueryWhereClause{
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.IContains: "time.out"}}},
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.IContains: "conn"}}},
+				},
+			},
+			expected: `|~ "(?i:.*time\.out.*)|(?i:.*conn.*)"`,
+		},
+		{
+			// Three branches, exercising > 2 alternation.
+			name: "OR of three Contains branches",
+			where: query.QueryWhereClause{
+				Or: []query.QueryWhereClause{
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Contains: "error"}}},
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Contains: "fatal"}}},
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Contains: "panic"}}},
+				},
+			},
+			expected: `|~ "error|fatal|panic"`,
+		},
+		{
+			name: "OR of Regex branches preserves validated patterns",
+			where: query.QueryWhereClause{
+				Or: []query.QueryWhereClause{
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Regex: "5\\d\\d"}}},
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Regex: "4\\d\\d"}}},
+				},
+			},
+			expected: `|~ "5\d\d|4\d\d"`,
+		},
+		{
+			// OR mixing operators: a literal Contains branch with a case-insensitive
+			// ILike branch — each fragment keeps its own case semantics.
+			name: "OR mixing Contains and ILike branches",
+			where: query.QueryWhereClause{
+				Or: []query.QueryWhereClause{
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Contains: "ERROR"}}},
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.ILike: "%warn%"}}},
+				},
+			},
+			expected: `|~ "ERROR|(?i:.*warn.*)"`,
+		},
+		{
+			// OR mixing a raw Regex branch with a case-insensitive IContains branch.
+			name: "OR mixing Regex and IContains branches",
+			where: query.QueryWhereClause{
+				Or: []query.QueryWhereClause{
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Regex: `5\d\d`}}},
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.IContains: "timeout"}}},
+				},
+			},
+			expected: `|~ "5\d\d|(?i:.*timeout.*)"`,
+		},
+		{
+			// OR mixing a literal Contains branch with a raw Regex branch.
+			name: "OR mixing Contains and Regex branches",
+			where: query.QueryWhereClause{
+				Or: []query.QueryWhereClause{
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Contains: "OOMKilled"}}},
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Regex: `4\d\d`}}},
+				},
+			},
+			expected: `|~ "OOMKilled|4\d\d"`,
+		},
+		{
+			// Pure label-level OR (app=A OR app=B) is handled by the label-selector
+			// extractor (merged into `app=~"A|B"`), so buildWhere emits no line filter.
+			name: "OR of pure label conditions produces no line filter",
+			where: query.QueryWhereClause{
+				Or: []query.QueryWhereClause{
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"app": {query.Eq: "accounting"}}},
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"app": {query.Eq: "billing"}}},
+				},
+			},
+			expected: ``,
+		},
+		{
+			// OR mixing a content branch with a label branch: only the content
+			// branch becomes a line filter; the label branch is left to the
+			// selector extractor (skipped here).
+			name: "OR with a content branch and a label branch keeps only the content filter",
+			where: query.QueryWhereClause{
+				Or: []query.QueryWhereClause{
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Contains: "error"}}},
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"app": {query.Eq: "payment"}}},
+				},
+			},
+			expected: `|~ "error"`,
+		},
+		{
+			// AND of a label-less content filter with an OR alternation — the OR
+			// contributes one line filter, space-joined (implicit AND) with the rest.
+			name: "AND of Contains with an OR alternation",
+			where: query.QueryWhereClause{
+				And: []query.QueryWhereClause{
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.IContains: "timeout"}}},
+					{Or: []query.QueryWhereClause{
+						{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Contains: "warning"}}},
+						{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Contains: "error"}}},
+					}},
+				},
+			},
+			expected: `|~ "(?i).*timeout.*" |~ "warning|error"`,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -1154,6 +1283,41 @@ func TestBuildWhereValidationErrors(t *testing.T) {
 				},
 			},
 			expectedError: "regex pattern cannot be empty",
+		},
+		// === OR branches that cannot be expressed as a line-filter alternation ===
+		{
+			name: "OR branch with a negation operator is rejected",
+			where: query.QueryWhereClause{
+				Or: []query.QueryWhereClause{
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Contains: "error"}}},
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.NIContains: "debug"}}},
+				},
+			},
+			expectedError: "cannot be used inside an _or content filter",
+		},
+		{
+			name: "OR branch combining a log filter with a label condition is rejected",
+			where: query.QueryWhereClause{
+				Or: []query.QueryWhereClause{
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{
+						"log": {query.Contains: "error"},
+						"app": {query.Eq: "payment"},
+					}},
+				},
+			},
+			expectedError: "may not combine a log content filter with a label condition",
+		},
+		{
+			name: "OR branch with nested boolean clause is rejected",
+			where: query.QueryWhereClause{
+				Or: []query.QueryWhereClause{
+					{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Contains: "error"}}},
+					{And: []query.QueryWhereClause{
+						{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.Contains: "fatal"}}},
+					}},
+				},
+			},
+			expectedError: "nested boolean clauses are not supported",
 		},
 	}
 
@@ -1261,6 +1425,27 @@ func TestBuildLokiQuery(t *testing.T) {
 			expected: `{namespace=~".*nudgebee.*"} |= "INFO"`,
 			wantErr:  false,
 		},
+		{
+			// End-to-end real shape: label selectors (app + namespace) plus an OR
+			// over log content → `{app=...,namespace=...} |~ "a|b"`. This is exactly
+			// the "ERROR or FATAL for app services-server in namespace nudgebee"
+			// query that previously emitted invalid `(|~ a or |~ b)` LogQL.
+			name: "Label selectors with OR content alternation",
+			request: LogsQueryBuilderRequest{
+				Where: query.QueryWhereClause{
+					Binary: map[string]map[query.BinaryWhereClauseType]interface{}{
+						"app":       {query.Eq: "services-server"},
+						"namespace": {query.Eq: "nudgebee"},
+					},
+					Or: []query.QueryWhereClause{
+						{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.ILike: "%error%"}}},
+						{Binary: map[string]map[query.BinaryWhereClauseType]interface{}{"log": {query.ILike: "%fatal%"}}},
+					},
+				},
+			},
+			expected: `{app="services-server", namespace="nudgebee"} |~ "(?i:.*error.*)|(?i:.*fatal.*)"`,
+			wantErr:  false,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -1272,6 +1457,125 @@ func TestBuildLokiQuery(t *testing.T) {
 				assert.NoError(t, err)
 				assert.Equal(t, tc.expected, result)
 			}
+		})
+	}
+}
+
+// TestCanonicalToLokiQuery exercises the FULL canonical→provider→LogQL pipeline
+// the services-server runs for a Loki account: the agent emits a provider-
+// independent canonical `where` (fields like `content`), which is field-renamed
+// via the source's label mapping (`convertWhereClauseWithMApping` +
+// LokiSource.GetLabelMapping → content→log) and then turned into LogQL by
+// BuildLokiQuery. The `where` shapes below are exactly what the LOG_AGENT_V2
+// canonical agent generates for the corresponding questions (verified live in
+// TestCanonicalLogQueryGeneration_Live), so this pins that each correct canonical
+// query yields the correct — and Loki-parseable — LogQL.
+func TestCanonicalToLokiQuery(t *testing.T) {
+	s := &LokiSource{}
+	mapping := s.GetLabelMapping() // canonical → loki: {"content": "log"}
+
+	bin := func(m map[string]map[query.BinaryWhereClauseType]interface{}) query.QueryWhereClause {
+		return query.QueryWhereClause{Binary: m}
+	}
+
+	testCases := []struct {
+		name      string
+		question  string                 // the NL question the agent answered
+		canonical query.QueryWhereClause // canonical `where` the agent emitted (pre-resolution)
+		expected  string                 // LogQL after resolution + BuildLokiQuery
+	}{
+		{
+			name:     "app + namespace + content ilike",
+			question: "errors in app relay-server in namespace nudgebee",
+			canonical: bin(map[string]map[query.BinaryWhereClauseType]interface{}{
+				"app":       {query.Eq: "relay-server"},
+				"namespace": {query.Eq: "nudgebee"},
+				"content":   {query.ILike: "%error%"},
+			}),
+			expected: `{app="relay-server", namespace="nudgebee"} |~ "^(?i).*error.*$"`,
+		},
+		{
+			name:     "OR over two error levels (ERROR or FATAL)",
+			question: "ERROR or FATAL logs for app services-server in namespace nudgebee",
+			canonical: query.QueryWhereClause{
+				Binary: map[string]map[query.BinaryWhereClauseType]interface{}{
+					"app":       {query.Eq: "services-server"},
+					"namespace": {query.Eq: "nudgebee"},
+				},
+				Or: []query.QueryWhereClause{
+					bin(map[string]map[query.BinaryWhereClauseType]interface{}{"content": {query.ILike: "%ERROR%"}}),
+					bin(map[string]map[query.BinaryWhereClauseType]interface{}{"content": {query.ILike: "%FATAL%"}}),
+				},
+			},
+			expected: `{app="services-server", namespace="nudgebee"} |~ "(?i:.*ERROR.*)|(?i:.*FATAL.*)"`,
+		},
+		{
+			name:     "namespace-only OR over status codes (401 or 403)",
+			question: "401 or 403 errors in namespace nudgebee",
+			canonical: query.QueryWhereClause{
+				Binary: map[string]map[query.BinaryWhereClauseType]interface{}{
+					"namespace": {query.Eq: "nudgebee"},
+				},
+				Or: []query.QueryWhereClause{
+					bin(map[string]map[query.BinaryWhereClauseType]interface{}{"content": {query.ILike: "%401%"}}),
+					bin(map[string]map[query.BinaryWhereClauseType]interface{}{"content": {query.ILike: "%403%"}}),
+				},
+			},
+			expected: `{namespace="nudgebee"} |~ "(?i:.*401.*)|(?i:.*403.*)"`,
+		},
+		{
+			name:     "content filter AND an OR over severities",
+			question: "ERROR or WARN logs mentioning database for app llm-server in namespace nudgebee",
+			canonical: query.QueryWhereClause{
+				Binary: map[string]map[query.BinaryWhereClauseType]interface{}{
+					"app":       {query.Eq: "llm-server"},
+					"namespace": {query.Eq: "nudgebee"},
+					"content":   {query.ILike: "%database%"},
+				},
+				Or: []query.QueryWhereClause{
+					bin(map[string]map[query.BinaryWhereClauseType]interface{}{"content": {query.ILike: "%ERROR%"}}),
+					bin(map[string]map[query.BinaryWhereClauseType]interface{}{"content": {query.ILike: "%WARN%"}}),
+				},
+			},
+			expected: `{app="llm-server", namespace="nudgebee"} |~ "^(?i).*database.*$" |~ "(?i:.*ERROR.*)|(?i:.*WARN.*)"`,
+		},
+		{
+			name:     "exclusion via _and + _nlike (error but not healthz)",
+			question: "error logs for app services-server in namespace nudgebee excluding any line containing healthz",
+			canonical: query.QueryWhereClause{
+				Binary: map[string]map[query.BinaryWhereClauseType]interface{}{
+					"app":       {query.Eq: "services-server"},
+					"namespace": {query.Eq: "nudgebee"},
+				},
+				And: []query.QueryWhereClause{
+					bin(map[string]map[query.BinaryWhereClauseType]interface{}{"content": {query.ILike: "%error%"}}),
+					bin(map[string]map[query.BinaryWhereClauseType]interface{}{"content": {query.NLike: "%healthz%"}}),
+				},
+			},
+			expected: `{app="services-server", namespace="nudgebee"} |~ "^(?i).*error.*$" !~ "^.*healthz.*$"`,
+		},
+		{
+			name:     "pure label OR (app A or app B) merges into a selector alternation",
+			question: "logs for app accounting or billing in namespace production",
+			canonical: query.QueryWhereClause{
+				Binary: map[string]map[query.BinaryWhereClauseType]interface{}{
+					"namespace": {query.Eq: "production"},
+				},
+				Or: []query.QueryWhereClause{
+					bin(map[string]map[query.BinaryWhereClauseType]interface{}{"app": {query.Eq: "accounting"}}),
+					bin(map[string]map[query.BinaryWhereClauseType]interface{}{"app": {query.Eq: "billing"}}),
+				},
+			},
+			expected: `{app=~"accounting|billing", namespace="production"}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			resolved := convertWhereClauseWithMApping(tc.canonical, mapping)
+			logql, err := s.BuildLokiQuery(LogsQueryBuilderRequest{Where: resolved})
+			assert.NoError(t, err, "question: %s", tc.question)
+			assert.Equal(t, tc.expected, logql, "question: %s", tc.question)
 		})
 	}
 }

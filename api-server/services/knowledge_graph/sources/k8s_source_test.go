@@ -149,7 +149,7 @@ func TestConvertWorkloadsToGraph(t *testing.T) {
 		TenantID:       "test-tenant",
 		CloudAccountID: "test-account",
 	}
-	nodes, edges, _, _, _ := source.convertWorkloadsToGraph(workloads, &k8sNodeMap, req)
+	nodes, edges, _, _, _ := source.convertWorkloadsToGraph(workloads, &k8sNodeMap, map[string]string{}, req)
 
 	// Verify we have workload, namespace, and cluster nodes
 	var workloadCount, namespaceCount, clusterCount int

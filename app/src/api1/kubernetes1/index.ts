@@ -1939,20 +1939,20 @@ const apiKubernetes1 = {
     // Dashboard display filter — keep low-signal config-change records out of every
     // summary KPI. Backend triaging is unaffected. See EXCLUDED_TRIAGE_AGGREGATION_KEYS.
     const excludeKeys = { aggregation_key: { _not_in: EXCLUDED_TRIAGE_AGGREGATION_KEYS } };
-    // Scope the whole-window KPIs (Total Events, New Issues, High Severity) to FIRING so
-    // each card equals the count you land on after drilling in: the Troubleshoot Events
-    // list defaults to status=FIRING (KubernetesEvents, isTroubleshootPage). Without this
-    // the cards counted every status (FIRING + RESOLVED + …) while the list shows only
-    // FIRING — the mismatch reported in issue #32524. The *_attention blocks intentionally
-    // stay all-status: they key off nb_status (triage backlog), mirroring the Triage Inbox.
-    const firingOnly = { status: { _eq: 'FIRING' } };
+    // Whole-window KPIs (Total Events, New Issues, High Severity) count every alert status
+    // (FIRING + RESOLVED + …), matching each card's "total volume" wording — we want all
+    // alerts, not just the currently-firing slice. The summary-widget drill-down passes
+    // status=ALL (see TroubleshootSummary) so the Troubleshoot Events list clears its
+    // default status=FIRING filter and the count you land on still matches the card
+    // (the mismatch guarded against in issue #32524). The *_attention blocks stay keyed
+    // off nb_status (triage backlog), mirroring the Triage Inbox.
     // Scope to the selected account(s) so the cards match the account-scoped
     // Events list. Omit when nothing is selected (all accounts). Mirrors the
     // shape buildEventFilterParams uses for the list.
     const accountIds = Array.isArray(data.accountId) ? data.accountId.filter(Boolean) : data.accountId ? [data.accountId] : [];
     const accountFilter = accountIds.length > 0 ? { account_id: { _in: accountIds } } : {};
-    const request: any = { _and: currentRange, ...firingOnly, ...accountFilter, ...excludeKeys };
-    const request1: any = { _and: previousRange, ...firingOnly, ...accountFilter, ...excludeKeys };
+    const request: any = { _and: currentRange, ...accountFilter, ...excludeKeys };
+    const request1: any = { _and: previousRange, ...accountFilter, ...excludeKeys };
     const requestAttn: any = { _and: currentRange, ...accountFilter, nb_status: { _in: ['OPEN', 'ACTION_REQUIRED'] }, ...excludeKeys };
     const request1Attn: any = { _and: previousRange, ...accountFilter, nb_status: { _in: ['OPEN', 'ACTION_REQUIRED'] }, ...excludeKeys };
     try {

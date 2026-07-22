@@ -93,20 +93,50 @@ func (o *NBReActPlanner2) saveCritique(critiqueType, input, critiquedContent, fe
 	})
 }
 
+// resolveMaxContextTokens returns the resolved model context window (tokens) for this
+// planner's request, or 0 when it can't be determined. Used to gate scratchpad
+// compression on real window pressure rather than a flat step count.
+func (o *NBReActPlanner2) resolveMaxContextTokens() int {
+	agentName := ""
+	if o.nbAgent != nil {
+		agentName = o.nbAgent.GetName()
+	}
+	return resolveMaxContextTokens(o.ctx, o.request.AccountId, agentName, o.request.ConversationId)
+}
+
 // buildScratchpad constructs the XML-formatted history of tool calls and observations
 // for the LLM, applying semantic compression to older steps and strict budget capping.
 func (o *NBReActPlanner2) buildScratchpad(intermediateSteps []NBAgentPlannerToolActionStep) string {
-	// Count effective steps for semantic compression
+	// Count effective steps for semantic compression and measure the uncompressed
+	// observation volume so compression can be gated on real context-window pressure.
 	effectiveSteps := 0
+	totalObsBytes := 0
 	for i := range intermediateSteps {
 		if i >= o.postRefinementToolIndex {
 			effectiveSteps++
+			totalObsBytes += len(intermediateSteps[i].Observation)
 		}
 	}
 
-	// Parallel prewarm: fire LLM summarizations for non-recent steps concurrently
-	// to avoid a sequential latency spike when compression first kicks in.
-	o.prewarmSummaries(intermediateSteps, effectiveSteps)
+	// Context-window gating: only compress older observations once the scratchpad
+	// approaches the model's context window. On small conversations (the common case)
+	// compression stays off entirely — so we don't fire LLM summarization or
+	// "context_compression" cards when there is no window pressure. The per-observation
+	// hard cap (getMaxObservationChars) still applies as a safety net regardless.
+	maxContextTokens := o.resolveMaxContextTokens()
+	activationChars, hardCapChars := scratchpadBudget(maxContextTokens)
+	compressionActive := totalObsBytes > activationChars
+
+	// Stash the gating decision on the tracker so SaveCompressionVisibility
+	// can classify each event's cause (window-pressure vs refinement-focus)
+	// on the card title instead of always claiming context-window pressure.
+	o.compressionTracker.SetCompressionContext(compressionActive, o.postRefinementToolIndex)
+
+	// Parallel prewarm: fire LLM summarizations for non-recent steps concurrently to
+	// avoid a sequential latency spike — but only when compression will actually run.
+	if compressionActive {
+		o.prewarmSummaries(intermediateSteps, effectiveSteps)
+	}
 
 	var history strings.Builder
 	stepIndex := 0
@@ -128,11 +158,11 @@ func (o *NBReActPlanner2) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 
 		toolResponse := o.resolveToolResponse(step)
 
-		// Semantic compression: older steps get preview-only observations,
-		// recent steps keep full observations (capped at maxObservationChars).
-		// When summarization is enabled, older steps get an LLM-generated summary
-		// instead of a blind 100-byte truncation.
-		if isRecent {
+		// Semantic compression: older steps get an LLM-generated summary (or byte
+		// truncation), but only when the scratchpad is under context-window pressure.
+		// Recent steps — and every step while compression is inactive — keep full
+		// observations, subject only to the per-observation hard cap.
+		if isRecent || !compressionActive {
 			if len(toolResponse) > getMaxObservationChars() {
 				toolResponse = TruncateMiddle(toolResponse, 2048, getMaxObservationChars()-2048)
 			}
@@ -169,12 +199,12 @@ func (o *NBReActPlanner2) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 		scratchpad = fmt.Sprintf("<scratchpad>\n%s</scratchpad>", history.String())
 	}
 
-	// Aggregate budget: cap total scratchpad size.
+	// Aggregate budget: cap total scratchpad size at the window-derived hard ceiling
+	// (falls back to the legacy char budget when the window is unknown).
 	// Leaves room for wrapper tags and truncation notes (approx 500 chars).
-	maxChars := config.Config.LlmServerAgentMaxScratchpadChars
-	if maxChars > 0 && len(scratchpad) > maxChars {
+	if hardCapChars > 0 && len(scratchpad) > hardCapChars {
 		const tagOverhead = 500
-		effectiveLimit := maxChars - tagOverhead
+		effectiveLimit := hardCapChars - tagOverhead
 		if effectiveLimit < 0 {
 			effectiveLimit = 0
 		}

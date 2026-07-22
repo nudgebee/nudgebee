@@ -164,7 +164,7 @@ func doRPCQueryRequest(nbCtx core.NbToolContext, tableAction string, queryInput 
 	userId := ""
 	if nbCtx.Ctx != nil {
 		if sc := nbCtx.Ctx.GetSecurityContext(); sc != nil {
-			userId = sc.GetUserId()
+			userId = sc.EffectiveUserIdForRPC()
 		}
 	}
 

@@ -1,7 +1,6 @@
 package services_server
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -359,7 +358,7 @@ func QueryLogs(ctx security.RequestContext, request LogQueryRequest) (core.Obser
 		"Accept":         contentTypeJson,
 		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
 		"x-tenant-id":    tenant,
-		"x-user-id":      ctx.GetSecurityContext().GetUserId(),
+		"x-user-id":      ctx.GetSecurityContext().EffectiveUserIdForRPC(),
 	}), common.HttpWithJsonBody(queryPayload))
 
 	if err != nil {
@@ -382,30 +381,38 @@ func QueryLogs(ctx security.RequestContext, request LogQueryRequest) (core.Obser
 		return observabilityResp, fmt.Errorf("unauthorized: %v", string(jsonBody))
 	}
 
-	if resp.StatusCode == 500 {
-		return observabilityResp, fmt.Errorf("internal Server Error from Services Server, %v", string(jsonBody))
-	}
-
-	// The services server may return an error object (e.g. {"message":"..."}) instead of a log array.
-	// Detect this before attempting slice unmarshalling.
-	trimmed := bytes.TrimLeft(jsonBody, " \t\r\n")
-	if len(trimmed) > 0 && trimmed[0] == '{' {
+	// On any non-200 the services server returns an error object (e.g.
+	// {"message":"..."}); surface its message when present.
+	if resp.StatusCode != 200 {
 		var errResp struct {
 			Message string `json:"message"`
 		}
 		if unmarshalErr := common.UnmarshalJson(jsonBody, &errResp); unmarshalErr == nil && errResp.Message != "" {
 			return observabilityResp, fmt.Errorf("services: logs query error: %s", errResp.Message)
 		}
-		return observabilityResp, fmt.Errorf("services: logs, unexpected object response: %s", string(jsonBody))
+		return observabilityResp, fmt.Errorf("services: logs, unexpected response (status %d): %s", resp.StatusCode, string(jsonBody))
 	}
 
-	response := make([]core.ObservabilityLog, 0, 100)
-	err = common.UnmarshalJson(jsonBody, &response)
-	if err != nil {
+	// Success: the services server returns {logs, query, provider}. Carry the
+	// query/provider it actually executed into the metadata so the agent and UI
+	// can report which query produced these logs (the request query is empty on
+	// the canonical where-clause path).
+	var body struct {
+		Logs     []core.ObservabilityLog `json:"logs"`
+		Query    string                  `json:"query"`
+		Provider string                  `json:"provider"`
+	}
+	if err = common.UnmarshalJson(jsonBody, &body); err != nil {
 		return observabilityResp, err
 	}
 
-	observabilityResp.Logs = response
+	observabilityResp.Logs = body.Logs
+	if body.Query != "" {
+		observabilityResp.Metadata.Query = body.Query
+	}
+	if body.Provider != "" {
+		observabilityResp.Metadata.Provider = body.Provider
+	}
 
 	return observabilityResp, nil
 }
@@ -449,7 +456,7 @@ func QueryTraces(ctx security.RequestContext, request core.ObservabilityTracesV3
 		"Accept":         contentTypeJson,
 		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
 		"x-tenant-id":    tenant,
-		"x-user-id":      ctx.GetSecurityContext().GetUserId(),
+		"x-user-id":      ctx.GetSecurityContext().EffectiveUserIdForRPC(),
 	}), jsonBodyTemp)
 
 	if err != nil {
@@ -482,15 +489,48 @@ func QueryTraces(ctx security.RequestContext, request core.ObservabilityTracesV3
 		return observabilityResp, fmt.Errorf("services: traces query failed (status %d): %s", resp.StatusCode, string(jsonBody))
 	}
 
-	response := make([]core.ObservabilityTrace, 0, 100)
-	err = common.UnmarshalJson(jsonBody, &response)
-	if err != nil {
+	if err := decodeTraceQueryBody(jsonBody, request.IncludeRawResult, &observabilityResp); err != nil {
 		return observabilityResp, err
 	}
 
-	observabilityResp.Traces = response
-
 	return observabilityResp, nil
+}
+
+// decodeTraceQueryBody fills the trace response from the services-server body, tolerating rollout
+// version skew in both directions. On the free-form ClickHouse path (includeRaw) the upgraded
+// services-server returns the object shape {result:{columns,...}}; an older services-server (or a
+// non-clickhouse provider that fell through) returns the bare []ObservabilityTrace array. The body
+// shape is decided by peeking the first non-whitespace byte ('{' → object, else array) so a large
+// payload is unmarshaled exactly once.
+func decodeTraceQueryBody(jsonBody []byte, includeRaw bool, observabilityResp *core.ObservabilityTraceResponse) error {
+	if includeRaw && firstNonSpaceByte(jsonBody) == '{' {
+		var objResp struct {
+			Result *core.ObservabilityTraceRawTable `json:"result"`
+		}
+		if err := common.UnmarshalJson(jsonBody, &objResp); err != nil {
+			return err
+		}
+		observabilityResp.Result = objResp.Result
+		return nil
+	}
+
+	response := make([]core.ObservabilityTrace, 0, 100)
+	if err := common.UnmarshalJson(jsonBody, &response); err != nil {
+		return err
+	}
+	observabilityResp.Traces = response
+	return nil
+}
+
+// firstNonSpaceByte returns the first non-whitespace byte of b, or 0 if b is empty/all whitespace.
+func firstNonSpaceByte(b []byte) byte {
+	for _, c := range b {
+		if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+			continue
+		}
+		return c
+	}
+	return 0
 }
 
 func QueryLogLabels(ctx security.RequestContext, accountId string, provider ObservabilityProvider) (core.ObservabilityLogLabelResponse, error) {
@@ -538,7 +578,7 @@ func QueryLogLabels(ctx security.RequestContext, accountId string, provider Obse
 		"Accept":         contentTypeJson,
 		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
 		"x-tenant-id":    tenant,
-		"x-user-id":      ctx.GetSecurityContext().GetUserId(),
+		"x-user-id":      ctx.GetSecurityContext().EffectiveUserIdForRPC(),
 	}), common.HttpWithJsonBody(queryPayload))
 
 	if err != nil {
@@ -575,14 +615,38 @@ func QueryLogLabels(ctx security.RequestContext, accountId string, provider Obse
 	return core.ObservabilityLogLabelResponse{Labels: response}, nil
 }
 
+// ProviderCapabilities is the subset of get_default_provider's `capabilities`
+// block the llm-server consumes. The backend returns more fields (service map,
+// heatmap, raw query, etc.); only the operator set is parsed here.
+type ProviderCapabilities struct {
+	// SupportedOperators are the backend-authoritative query operators for this
+	// provider+type, runtime-detected per source. Injected into the
+	// log-query-generator prompt so the LLM only emits operators the backend can
+	// actually execute (e.g. Signoz lacks `_ilike`, Pinot lacks `_in`). Empty
+	// when the backend omits the capabilities block — callers fall back to a
+	// static default operator list.
+	SupportedOperators []string `json:"supported_operators"`
+	// LabelMappings is the backend's canonical→provider field map for this
+	// provider+type (e.g. `pod`→`kubernetes.pod_name.keyword`). The canonical
+	// fetch_logs v2 path advertises these canonical entity names to the LLM so it
+	// emits a provider-independent where clause that services-server resolves.
+	// Empty when the backend omits it — callers fall back to provider-native labels.
+	LabelMappings map[string]string `json:"label_mappings"`
+}
+
 type ObservabilityProvider struct {
-	IntegrationSource string `json:"integrationSource"`
+	// Wire key must be snake_case to match api-server's DefaultProviderResponse.
+	IntegrationSource string `json:"integration_source"`
 	Provider          string `json:"provider"`
 	// DefaultIndex is the backend's account-default log index/pattern as
 	// returned by the get_default_provider action (empty for backends that
 	// have no index concept, e.g. Loki). Surfaced into the query-generator
 	// prompt so the LLM knows what omitting the `index` field resolves to.
 	DefaultIndex string `json:"default_index"`
+	// Capabilities carries the backend's per-provider capability block (the
+	// operator set is the only part consumed today). Empty when get_default_provider
+	// omits it.
+	Capabilities ProviderCapabilities `json:"capabilities"`
 }
 
 func GetObservabilityProvider(ctx security.RequestContext, accountId, provider string) (ObservabilityProvider, error) {
@@ -725,7 +789,7 @@ func ListMetricsSeries(ctx security.RequestContext, accountId, provider, filter 
 		"Accept":         contentTypeJson,
 		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
 		"x-tenant-id":    tenant,
-		"x-user-id":      ctx.GetSecurityContext().GetUserId(),
+		"x-user-id":      ctx.GetSecurityContext().EffectiveUserIdForRPC(),
 	}), common.HttpWithJsonBody(queryPayload))
 
 	if err != nil {
@@ -798,7 +862,7 @@ func ListMetricsSeriesLabels(ctx security.RequestContext, accountId, provider, s
 		"Accept":         contentTypeJson,
 		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
 		"x-tenant-id":    tenant,
-		"x-user-id":      ctx.GetSecurityContext().GetUserId(),
+		"x-user-id":      ctx.GetSecurityContext().EffectiveUserIdForRPC(),
 	}), common.HttpWithJsonBody(queryPayload))
 
 	if err != nil {
@@ -887,7 +951,7 @@ func ListMetricsSeriesMatch(ctx security.RequestContext, accountId, provider, na
 		"Accept":         contentTypeJson,
 		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
 		"x-tenant-id":    tenant,
-		"x-user-id":      ctx.GetSecurityContext().GetUserId(),
+		"x-user-id":      ctx.GetSecurityContext().EffectiveUserIdForRPC(),
 	}), common.HttpWithJsonBody(queryPayload))
 
 	if err != nil {
@@ -964,7 +1028,7 @@ func ListMetricsSeriesLabelValues(ctx security.RequestContext, accountId, provid
 		"Accept":         contentTypeJson,
 		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
 		"x-tenant-id":    tenant,
-		"x-user-id":      ctx.GetSecurityContext().GetUserId(),
+		"x-user-id":      ctx.GetSecurityContext().EffectiveUserIdForRPC(),
 	}), common.HttpWithJsonBody(queryPayload))
 
 	if err != nil {
@@ -1041,7 +1105,7 @@ func QueryMetrics(ctx security.RequestContext, req core.ObservabilityMetricsQuer
 		"Accept":         contentTypeJson,
 		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
 		"x-tenant-id":    tenant,
-		"x-user-id":      ctx.GetSecurityContext().GetUserId(),
+		"x-user-id":      ctx.GetSecurityContext().EffectiveUserIdForRPC(),
 	}), common.HttpWithJsonBody(queryPayload))
 
 	if err != nil {

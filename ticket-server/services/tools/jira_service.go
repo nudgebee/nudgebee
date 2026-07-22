@@ -561,7 +561,7 @@ func QueryIssueFieldDetails(ctx *gin.Context, configuration models.TicketConfigu
 	if err != nil {
 		return nil, fmt.Errorf("invalid auto-complete URL: %v", err)
 	}
-	parsedConfigURL, err := url.Parse(configuration.URL)
+	parsedConfigURL, err := url.Parse("https://" + strings.TrimPrefix(configuration.URL, "https://"))
 	if err != nil {
 		return nil, fmt.Errorf("invalid Jira configuration URL: %v", err)
 	}

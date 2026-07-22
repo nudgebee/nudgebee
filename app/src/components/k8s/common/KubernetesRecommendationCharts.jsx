@@ -1,9 +1,10 @@
 import { Box, Typography, Grid } from '@mui/material';
 import PropTypes from 'prop-types';
 import Chart from '@ui/Chart';
+import MetricQueryInfo, { K8S_METRIC_QUERY_LABELS } from '@shared/MetricQueryInfo';
 import { ds, resolveColor } from '@utils/colors';
 
-const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading }) => {
+const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading, cpuQueries, memoryQueries }) => {
   const memoryLabels = Object.values(memoryData.labels);
   const memoryLabelsMid = Math.floor(memoryLabels?.length / 2);
   const memoryReccValue = parseFloat(recc?.memoryRecc?.replaceAll(',', ''));
@@ -157,9 +158,12 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading }) 
             height: '70%',
           }}
         >
-          <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.brand[500]}>
-            CPU(Core)
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+            <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.brand[500]}>
+              CPU(Core)
+            </Typography>
+            <MetricQueryInfo queries={cpuQueries} labelMap={K8S_METRIC_QUERY_LABELS} />
+          </Box>
           <Chart.Line dataset={cpuData1.datasets} labels={cpuData1.labels} scaleOptions={cpuOptions.scales} loading={loading} />
         </Box>
       </Grid>
@@ -176,9 +180,12 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading }) 
             height: '70%',
           }}
         >
-          <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.brand[500]}>
-            Memory(MB)
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+            <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.brand[500]}>
+              Memory(MB)
+            </Typography>
+            <MetricQueryInfo queries={memoryQueries} labelMap={K8S_METRIC_QUERY_LABELS} />
+          </Box>
           <Chart.Line dataset={memoryData1.datasets} labels={memoryData1.labels} scaleOptions={memOptions.scales} loading={loading} />
         </Box>
       </Grid>
@@ -191,6 +198,8 @@ KubernetesRecommendationCharts.propTypes = {
   cpuData: PropTypes.object,
   recc: PropTypes.any,
   loading: PropTypes.bool,
+  cpuQueries: PropTypes.object,
+  memoryQueries: PropTypes.object,
 };
 
 export default KubernetesRecommendationCharts;

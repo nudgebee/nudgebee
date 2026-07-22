@@ -270,10 +270,12 @@ worker        0/1     1
 ```
 
 **Semantic compression**:
-- Recent 10 steps (after `postRefinementToolIndex`): full observation context
-- Older steps: truncated to ~100 bytes + `[output truncated — N chars]`
+- Context-window-gated: compression only activates once the scratchpad approaches the resolved model window (`LlmServerScratchpadCompressionActivationFraction`, default 0.75); below that, observations are kept full
+- Pre-refinement steps (before `postRefinementToolIndex`): always compressed to keep the refined investigation focused, independent of window pressure
+- Within an active pass — recent steps (last `recentStepsFullContext`, 10): full observation context; older steps: LLM summary or byte truncation + `[output truncated — N chars]`
+- Per-observation hard cap `LlmServerScratchpadMaxObservationChars` (default 65536) always applies as a safety net
 - UTF-8 safe truncation at byte boundaries
-- Size budget controlled by `LlmServerAgentMaxScratchpadChars`
+- Hard ceiling/fallback budget: `LlmServerAgentMaxScratchpadChars` (used when the model window can't be resolved)
 
 ### Phase 6: Critique & Refinement
 

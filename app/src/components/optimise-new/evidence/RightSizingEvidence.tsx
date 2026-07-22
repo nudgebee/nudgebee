@@ -12,6 +12,7 @@ import Chart from '@ui/Chart';
 import k8sApi from '@api1/kubernetes';
 import { SavingsFooter, SectionTitle } from '@components/optimise-new/EvidencePanel';
 import { safeParseJSON } from '@components/optimise-new/utils';
+import MetricQueryInfo, { K8S_METRIC_QUERY_LABELS } from '@shared/MetricQueryInfo';
 
 interface RightSizingEvidenceProps {
   recommendation: any;
@@ -120,6 +121,9 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
   // Fetch CPU/Memory trend data
   const [trendData, setTrendData] = useState<any[]>([]);
   const [trendLoading, setTrendLoading] = useState(false);
+  // Executed metric queries that produced the trend (only the prometheus datasource returns them).
+  const [cpuQueries, setCpuQueries] = useState<Record<string, string>>({});
+  const [memoryQueries, setMemoryQueries] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!fullRecommendation) return;
@@ -139,6 +143,8 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
     if (!accountId || !namespaceName || !workloadName) return;
 
     setTrendLoading(true);
+    setCpuQueries({});
+    setMemoryQueries({});
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - 7);
 
@@ -159,12 +165,29 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
     if (workloadName) groupBy.push('workload_name');
     if (effectivePodName) groupBy.push('pod_name');
 
+    // Split the executed queries (keyed by metric, e.g. cpu_usage / memory_limit) into CPU and memory groups.
+    const applyQueries = (res: any) => {
+      const promQueries: Record<string, string> = res?.data?.promQueries || {};
+      const cpuQ: Record<string, string> = {};
+      const memQ: Record<string, string> = {};
+      Object.entries(promQueries).forEach(([key, q]) => {
+        if (key.startsWith('cpu_')) {
+          cpuQ[key] = q;
+        } else if (key.startsWith('memory_')) {
+          memQ[key] = q;
+        }
+      });
+      setCpuQueries(cpuQ);
+      setMemoryQueries(memQ);
+    };
+
     k8sApi
       .getK8sPodGroupings2(500, query, groupBy, 'prometheus')
       .then((res: any) => {
         const rows = res?.data?.k8s_pod_groupings || [];
         if (rows.length > 0) {
           setTrendData(rows);
+          applyQueries(res);
           return;
         }
         // Fallback: try 'nb' (RPC) datasource for historical data
@@ -235,7 +258,11 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
       )}
       {hasTrendData && (
         <>
-          <SectionTitle title='CPU (cores) — 7 day trend' muiIcon={<TimelineIcon sx={{ fontSize: ds.text.title }} />} />
+          <SectionTitle
+            title='CPU (cores) — 7 day trend'
+            muiIcon={<TimelineIcon sx={{ fontSize: ds.text.title }} />}
+            adornment={<MetricQueryInfo queries={cpuQueries} labelMap={K8S_METRIC_QUERY_LABELS} />}
+          />
           <Box
             sx={{
               backgroundColor: ds.gray[100],
@@ -264,7 +291,11 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
               dynamicHeight={false}
             />
           </Box>
-          <SectionTitle title='Memory (MB) — 7 day trend' muiIcon={<TimelineIcon sx={{ fontSize: ds.text.title }} />} />
+          <SectionTitle
+            title='Memory (MB) — 7 day trend'
+            muiIcon={<TimelineIcon sx={{ fontSize: ds.text.title }} />}
+            adornment={<MetricQueryInfo queries={memoryQueries} labelMap={K8S_METRIC_QUERY_LABELS} />}
+          />
           <Box
             sx={{
               backgroundColor: ds.gray[100],

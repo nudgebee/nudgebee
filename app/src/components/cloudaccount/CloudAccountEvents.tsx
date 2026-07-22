@@ -1,5 +1,5 @@
 import { Box } from '@mui/material';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
 import apiCloudAccount from '@api1/cloud-account';
@@ -26,7 +26,7 @@ import { syncFilterFromQuery, toSeverityLevel } from '@utils/common';
 import { FiArrowRight } from 'react-icons/fi';
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import { usePagination } from '@hooks/usePagination';
-import { hasWriteAccess } from '@lib/auth';
+import { hasReadAccess, hasWriteAccess } from '@lib/auth';
 import { TicketsIcon, dashboardIcon1 as ClassifyIcon, infoIcon } from '@assets';
 import ticketsApi from '@api1/tickets';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
@@ -162,7 +162,7 @@ const CloudAccountEvents = (props: {
   heading?: string;
 }) => {
   const router = useRouter();
-  const [events, setEvents] = useState([]);
+  const [events, setEvents] = useState<ICustomTableRow[][]>([]);
   const [eventsCount, setEventsCount] = useState(0);
   const [selectedSeverity, setSelectedSeverity] = useState(() => getValidParam(router?.query?.eventPriority));
   const [selectedEventName, setSelectedEventName] = useState(() => getValidParam(router?.query?.eventAggregationKey));
@@ -196,6 +196,10 @@ const CloudAccountEvents = (props: {
   const [isClassifyModalOpen, setIsClassifyModalOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<any>(null);
 
+  const rawEventsRef = useRef<any[]>([]);
+  const ticketReferenceMapRef = useRef<Map<string, any>>(new Map());
+  const buildRowDataRef = useRef<((evts: any[], map: Map<string, any>) => ICustomTableRow[][]) | null>(null);
+
   const cloudAccountEventsTable = 'cloudaccount-events';
   const _showEllipsis = true;
 
@@ -215,7 +219,7 @@ const CloudAccountEvents = (props: {
   useEffect(() => {
     setSelectedSource((prev) => {
       const next = syncFilterFromQuery(sourceFilter, router?.query?.source, (f) => f.value);
-      if (prev.length === 0 && next.length === 0) return prev;
+      if (prev.length === next.length && prev.every((item, i) => item?.value === next[i]?.value)) return prev;
       return next;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -301,15 +305,22 @@ const CloudAccountEvents = (props: {
   };
 
   const getMenuItems = (item: any, disableTicket: boolean) => {
-    let MENU_ITEMS;
-    if (hasWriteAccess(item.account_id)) {
-      MENU_ITEMS = [
-        {
-          icon: TicketsIcon,
-          label: 'Create Ticket',
-          id: 0,
-          disabled: disableTicket,
-        },
+    const accountId = item.account_id || props.accountId;
+    const MENU_ITEMS: Array<{ icon: any; label: string; id: number; disabled?: boolean }> = [];
+    // Create Ticket is allowed for read-only roles too: the backend `tickets_create`
+    // action authorizes *_readonly roles, so gate this affordance on read access, not
+    // write (mirrors the k8s events table). Classify / Create Automation are genuine
+    // mutations and stay write-gated.
+    if (hasReadAccess(accountId)) {
+      MENU_ITEMS.push({
+        icon: TicketsIcon,
+        label: 'Create Ticket',
+        id: 0,
+        disabled: disableTicket,
+      });
+    }
+    if (hasWriteAccess(accountId)) {
+      MENU_ITEMS.push(
         {
           icon: ClassifyIcon,
           label: 'Classify',
@@ -319,8 +330,8 @@ const CloudAccountEvents = (props: {
           icon: WorkflowIcon,
           label: 'Create Automation',
           id: 2,
-        },
-      ];
+        }
+      );
     }
     return MENU_ITEMS;
   };
@@ -524,6 +535,9 @@ const CloudAccountEvents = (props: {
           const ec2ResourceData = events.map((item: any) => mapEventToRow(item, ticketReferenceMap));
 
           // 5. Update State
+          rawEventsRef.current = events;
+          ticketReferenceMapRef.current = ticketReferenceMap;
+          buildRowDataRef.current = (evts: any[], map: Map<string, any>) => evts.map((item: any) => mapEventToRow(item, map));
           setEvents(ec2ResourceData);
           setEventsCount(totalCount);
         } catch (err) {
@@ -585,8 +599,19 @@ const CloudAccountEvents = (props: {
       `;
   };
 
-  const handleTicketSuccess = () => {
-    listCloudAccountEvents();
+  const handleTicketSuccess = ({ ticketId, url }: { ticketId?: string; url?: string } = {}) => {
+    const fingerprint = ticketData?.fingerprint;
+    if (!fingerprint || !buildRowDataRef.current) return;
+    ticketReferenceMapRef.current.set(fingerprint, { ticket_id: ticketId, url });
+    setEvents((prev) => {
+      const next = [...prev];
+      rawEventsRef.current.forEach((e: any, idx: number) => {
+        if (e.fingerprint === fingerprint) {
+          next[idx] = buildRowDataRef.current!([rawEventsRef.current[idx]], ticketReferenceMapRef.current)[0];
+        }
+      });
+      return next;
+    });
   };
 
   const handleTicketFailure = (res: any) => {

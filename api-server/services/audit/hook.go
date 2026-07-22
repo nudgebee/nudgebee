@@ -43,26 +43,7 @@ func LogChange(ctx *security.RequestContext, input ChangeInput) {
 		return
 	}
 
-	auditReq := &AuditRequest{
-		Audits: []Audit{{
-			UserId:         userId,
-			TenantId:       tenantId,
-			AccountId:      input.AccountID,
-			EventTime:      time.Now(),
-			EventCategory:  input.EventCategory,
-			EventType:      input.EventType,
-			EventTarget:    input.TargetID,
-			EventState:     input.NewData,
-			EventPrevState: input.OldData,
-			EventActor:     EventActorUiService,
-			EventAction:    input.EventAction,
-			EventStatus:    EventStatusSuccess,
-			EventAttr: map[string]any{
-				"table": input.TableName,
-				"op":    string(input.EventAction),
-			},
-		}},
-	}
+	auditReq := &AuditRequest{Audits: []Audit{buildChangeAudit(userId, tenantId, input)}}
 
 	go func() {
 		if err := CreateAudit(ctx, auditReq); err != nil {
@@ -74,4 +55,49 @@ func LogChange(ctx *security.RequestContext, input ChangeInput) {
 			)
 		}
 	}()
+}
+
+// buildChangeAudit assembles the Audit row for a database change.
+//
+// EventState is the row's post-change state and is validate:"required" in
+// CreateAudit. A delete has no post-change state (callers leave NewData nil and
+// carry the removed row in OldData), so without special handling EventState
+// would be nil, fail validation, and the audit would be silently dropped by the
+// fire-and-forget goroutine in LogChange — the systemic form of NB-31417. For
+// deletes we therefore record the removed row (OldData), falling back to the
+// target id, so every delete is auditable. Non-delete callers that pass a nil
+// NewData still fail validation on purpose: that's a caller bug worth surfacing.
+func buildChangeAudit(userId, tenantId string, input ChangeInput) Audit {
+	// Declared as an untyped nil any: assigning a typed nil map (input.NewData)
+	// to an interface yields a non-nil interface, which would defeat downstream
+	// `EventState == nil` checks. Only assign when there is a real value.
+	var eventState any
+	if input.NewData != nil {
+		eventState = input.NewData
+	} else if input.EventAction == EventActionDelete {
+		if input.OldData != nil {
+			eventState = input.OldData
+		} else {
+			eventState = map[string]any{"id": input.TargetID}
+		}
+	}
+
+	return Audit{
+		UserId:         userId,
+		TenantId:       tenantId,
+		AccountId:      input.AccountID,
+		EventTime:      time.Now().UTC(),
+		EventCategory:  input.EventCategory,
+		EventType:      input.EventType,
+		EventTarget:    input.TargetID,
+		EventState:     eventState,
+		EventPrevState: input.OldData,
+		EventActor:     EventActorUiService,
+		EventAction:    input.EventAction,
+		EventStatus:    EventStatusSuccess,
+		EventAttr: map[string]any{
+			"table": input.TableName,
+			"op":    string(input.EventAction),
+		},
+	}
 }

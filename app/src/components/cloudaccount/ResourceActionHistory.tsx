@@ -1,10 +1,9 @@
-import React, { useEffect, useState } from 'react';
-import { Box, Tooltip, Typography, Chip } from '@mui/material';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Chip } from '@ui/Chip';
 import apiCloudAccount from '@api1/cloud-account';
 import apiUser from '@api1/user';
-import Loader from '@shared/Loader';
+import CustomTable from '@shared/tables/CustomTable';
 import Datetime from '@shared/format/Datetime';
-import { ds } from '@utils/colors';
 
 interface ResourceActionHistoryProps {
   accountId: string | undefined;
@@ -26,27 +25,53 @@ interface UserSummary {
   username?: string | null;
 }
 
+const HEADERS = [
+  { name: 'Time', width: '18%' },
+  { name: 'Command', width: '18%', truncate: 'ellipsis' },
+  { name: 'Status', width: '10%' },
+  { name: 'State', width: '12%' },
+  { name: 'User', width: '14%', truncate: 'ellipsis' },
+  { name: 'Message', width: '28%', truncate: 'ellipsis' },
+];
+
+const parseAttr = (attr: any): any => {
+  if (typeof attr === 'string') {
+    try {
+      return JSON.parse(attr);
+    } catch {
+      return {};
+    }
+  }
+  return attr || {};
+};
+
 const ResourceActionHistory: React.FC<ResourceActionHistoryProps> = ({ accountId, resourceId }) => {
   const [audits, setAudits] = useState<AuditEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [count, setCount] = useState(0);
   const [userMap, setUserMap] = useState<Record<string, UserSummary>>({});
+  const [offset, setOffset] = useState(0);
+  const [limit, setLimit] = useState(10);
+
+  const resourceKey = `${accountId ?? ''}|${resourceId}`;
+  const [prevResourceKey, setPrevResourceKey] = useState(resourceKey);
+  if (prevResourceKey !== resourceKey) {
+    setPrevResourceKey(resourceKey);
+    setOffset(0);
+  }
 
   useEffect(() => {
     if (!accountId || !resourceId) return;
     setLoading(true);
     apiCloudAccount
-      .listResourceActionHistory(accountId, resourceId, 20, 0)
+      .listResourceActionHistory(accountId, resourceId, limit, offset)
       .then((result) => {
         setAudits(result.audits);
         setCount(result.count);
       })
       .finally(() => setLoading(false));
-  }, [accountId, resourceId]);
+  }, [accountId, resourceId, limit, offset]);
 
-  // Fetch users once and build an id->user map so the User column shows
-  // a friendly name/email instead of the raw UUID. apiUser.listUsers caches
-  // for an hour, so this is cheap on revisits.
   useEffect(() => {
     apiUser
       .listUsers({ limit: 1000 })
@@ -65,125 +90,70 @@ const ResourceActionHistory: React.FC<ResourceActionHistoryProps> = ({ accountId
       });
   }, []);
 
-  const formatUser = (userId: string | null | undefined): React.ReactNode => {
-    if (!userId) {
-      return '-';
-    }
-    const user = userMap[userId];
-    if (!user) {
-      // Unknown user — show short id rather than the full UUID.
-      const shortId = userId.length > 8 ? `${userId.slice(0, 8)}…` : userId;
-      return (
-        <Tooltip title={userId} placement='top'>
-          <span>{shortId}</span>
-        </Tooltip>
-      );
-    }
-    const display = user.display_name || user.username || userId;
-    const subtitle = user.display_name && user.username ? user.username : userId;
-    return (
-      <Tooltip title={subtitle} placement='top'>
-        <span>{display}</span>
-      </Tooltip>
-    );
-  };
-
-  if (loading) {
-    return (
-      <Box display='flex' justifyContent='center' py={4}>
-        <Loader />
-      </Box>
-    );
-  }
-
-  if (audits.length === 0) {
-    return (
-      <Box py={3} textAlign='center'>
-        <Typography color={ds.gray[600]} fontSize={ds.text.body}>
-          No action history found for this resource.
-        </Typography>
-      </Box>
-    );
-  }
-
-  const parseAttr = (attr: any) => {
-    if (typeof attr === 'string') {
-      try {
-        return JSON.parse(attr);
-      } catch {
-        return {};
+  const formatUser = useCallback(
+    (userId: string | null | undefined): { text: string; tooltip: string } => {
+      if (!userId) {
+        return { text: '-', tooltip: '' };
       }
-    }
-    return attr || {};
-  };
+      const user = userMap[userId];
+      if (!user) {
+        const shortId = userId.length > 8 ? `${userId.slice(0, 8)}…` : userId;
+        return { text: shortId, tooltip: userId };
+      }
+      const display = user.display_name || user.username || userId;
+      const subtitle = user.display_name && user.username ? user.username : userId;
+      return { text: display, tooltip: subtitle };
+    },
+    [userMap]
+  );
+
+  const tableData = useMemo(() => {
+    return audits.map((audit) => {
+      const attr = parseAttr(audit.event_attr);
+      const command = attr.command || '-';
+      const message = attr.error_message || '-';
+      const user = formatUser(audit.user_id);
+      const status = audit.event_status;
+      const state = audit.event_state || '-';
+
+      return [
+        { component: <Datetime value={audit.event_time} />, text: audit.event_time, data: audit.event_time },
+        { text: command, data: command, tooltipText: command },
+        {
+          component: (
+            <Chip variant='status' size='xs' tone={status === 'SUCCESS' ? 'success' : 'critical'}>
+              {status}
+            </Chip>
+          ),
+          text: status,
+          data: status,
+          align: 'center',
+        },
+        { text: state, data: state },
+        { text: user.text, data: user.text, tooltipText: user.tooltip || user.text },
+        { text: message, data: message, tooltipText: message },
+      ];
+    });
+  }, [audits, formatUser]);
 
   return (
-    <Box>
-      <Typography fontSize={ds.text.small} color={ds.gray[600]} mb={ds.space[2]}>
-        {count} action{count !== 1 ? 's' : ''} recorded
-      </Typography>
-      <Box component='table' sx={{ width: '100%', borderCollapse: 'collapse', fontSize: ds.text.body }}>
-        <Box component='thead'>
-          <Box
-            component='tr'
-            sx={{
-              borderBottom: `1px solid ${ds.gray[200]}`,
-              '& th': {
-                py: ds.space[2],
-                px: ds.space[3],
-                textAlign: 'left',
-                fontWeight: ds.weight.semibold,
-                fontSize: ds.text.small,
-                color: ds.gray[600],
-              },
-            }}
-          >
-            <Box component='th'>Time</Box>
-            <Box component='th'>Command</Box>
-            <Box component='th'>Status</Box>
-            <Box component='th'>State</Box>
-            <Box component='th'>User</Box>
-            <Box component='th'>Message</Box>
-          </Box>
-        </Box>
-        <Box component='tbody'>
-          {audits.map((audit, index) => {
-            const attr = parseAttr(audit.event_attr);
-            return (
-              <Box
-                key={index}
-                component='tr'
-                sx={{ borderBottom: `1px solid ${ds.gray[100]}`, '& td': { py: ds.space[2], px: ds.space[3], fontSize: ds.text.body } }}
-              >
-                <Box component='td'>
-                  <Datetime value={audit.event_time} />
-                </Box>
-                <Box component='td'>{attr.command || '-'}</Box>
-                <Box component='td'>
-                  <Chip
-                    label={audit.event_status}
-                    size='small'
-                    sx={{
-                      fontSize: ds.text.caption,
-                      height: '20px',
-                      backgroundColor: audit.event_status === 'SUCCESS' ? ds.green[100] : ds.red[100],
-                      color: audit.event_status === 'SUCCESS' ? ds.green[700] : ds.red[700],
-                    }}
-                  />
-                </Box>
-                <Box component='td'>{audit.event_state || '-'}</Box>
-                <Box component='td' sx={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {formatUser(audit.user_id)}
-                </Box>
-                <Box component='td' sx={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {attr.error_message || '-'}
-                </Box>
-              </Box>
-            );
-          })}
-        </Box>
-      </Box>
-    </Box>
+    <CustomTable
+      id={`resource-action-history-${resourceId}`}
+      headers={HEADERS}
+      tableData={tableData}
+      loading={loading}
+      rowsPerPage={limit}
+      totalRows={count}
+      pageNumber={Math.floor(offset / limit) + 1}
+      onPageChange={(page: number, newLimit: number) => {
+        setOffset((page - 1) * newLimit);
+        setLimit(newLimit);
+      }}
+      showUpdatedTable
+      showEmptyStateText
+      emptyStateText='No action history found for this resource.'
+      tableHeadingCenter={['Status']}
+    />
   );
 };
 

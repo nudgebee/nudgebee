@@ -620,15 +620,13 @@ rules:
       resource_region:
         template: "{{ (index .Event \"region\") }}"
     actions:
-      - name: "get_task_details_on_any_event"
-        type: "aws_get_resource"
-        description: "Fetch details of the ECS task."
-        params:
-          service_name: "ecs"
-          resource_type: "task" # Assuming your aws_get_resource can handle this
-          resource_identifier: "{{ (index .Detail \"taskArn\") }}"
-          identifier_type: "arn"
-          region: "{{ (index .Event \"region\") }}"
+      # NOTE: no aws_get_resource task fetch here. The Task State Change event's
+      # .Detail already carries the full task object (and the description embeds
+      # it), so a per-event DescribeTasks added nothing — and running it on EVERY
+      # task state change throttled the ECS API (ThrottlingException retries) and
+      # backed up the EventBridge SQS queue. Tasks are also frequently gone by the
+      # time the event is processed (CloudTrail delivery lag), so the fetch mostly
+      # produced "target resource gone" noise.
       - name: "get_task_metrics_on_any_event"
         type: "aws_get_metric"
         description: "Fetch CPU and Memory utilization metrics for the task."
@@ -813,15 +811,9 @@ rules:
       resource_region:
         template: "{{ (index .Event \"region\") }}"
     actions:
-      - name: "ecs_pending_task_details"
-        type: "aws_get_resource"
-        params:
-          service_name: "ecs"
-          resource_type: "task"
-          resource_identifier: "{{ (index .Detail \"taskArn\") }}"
-          identifier_type: "arn"
-          region: "{{ (index .Event \"region\") }}"
-        description: "Fetch details of the PENDING ECS task."
+      # NOTE: no aws_get_resource task fetch here — the PENDING event's .Detail
+      # already carries the task object (cpu/memory/taskDefinitionArn are read
+      # from it above). See the same NOTE on ECS_Task_All_Events_EventBridge.
       - name: "ecs_cluster_capacity_check_placeholder" # Placeholder for a more complex action
         type: "aws_get_metric" # Example: Check cluster CPU/Memory reservation
         params:
@@ -1655,9 +1647,23 @@ rules:
           update_last_seen: true
           update_meta: true
           meta_updates:
-            last_status: "{{ (index .Detail \"lastStatus\") }}"
-            desired_status: "{{ (index .Detail \"desiredStatus\") }}"
-            stopped_reason: "{{ (index .Detail \"stoppedReason\") }}"
+            LastStatus: "{{ (index .Detail \"lastStatus\") }}"
+            DesiredStatus: "{{ (index .Detail \"desiredStatus\") }}"
+            StoppedReason: "{{ safeIndex .Detail \"stoppedReason\" }}"
+            StopCode: "{{ safeIndex .Detail \"stopCode\" }}"
+            LaunchType: "{{ safeIndex .Detail \"launchType\" }}"
+            Cpu: "{{ safeIndex .Detail \"cpu\" }}"
+            Memory: "{{ safeIndex .Detail \"memory\" }}"
+            CapacityProviderName: "{{ safeIndex .Detail \"capacityProviderName\" }}"
+            PlatformFamily: "{{ safeIndex .Detail \"platformFamily\" }}"
+            PlatformVersion: "{{ safeIndex .Detail \"platformVersion\" }}"
+            AvailabilityZone: "{{ safeIndex .Detail \"availabilityZone\" }}"
+            Version: "{{ safeIndex .Detail \"version\" }}"
+            Group: "{{ safeIndex .Detail \"group\" }}"
+            TaskArn: "{{ (index .Detail \"taskArn\") }}"
+            ClusterArn: "{{ (index .Detail \"clusterArn\") }}"
+            TaskDefinitionArn: "{{ safeIndex .Detail \"taskDefinitionArn\" }}"
+            last_state_change: "{{ (index .Event \"time\") }}"
         description: "Update cloud_resourses table for ECS task"
 
   - name: "Resource_Sync_ECS_Service_Action"

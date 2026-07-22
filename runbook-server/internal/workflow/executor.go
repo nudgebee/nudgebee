@@ -453,6 +453,17 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	info := workflow.GetInfo(ctx)
 	isChildWorkflow := info.ParentWorkflowExecution != nil
 
+	// Extract version number from memo if present and assign to last execution version
+	if info.Memo != nil {
+		if val, ok := info.Memo.Fields[model.MemoWorkflowVersionNumber]; ok {
+			var vn int64
+			if err := e.dataConverter.FromPayload(val, &vn); err == nil {
+				v := int(vn)
+				wf.LastExecutionVersion = &v
+			}
+		}
+	}
+
 	logger.Info("Starting workflow", "workflowId", wf.ID, "tenantID", wf.TenantID, "accountID", wf.AccountID, "isChild", isChildWorkflow)
 
 	// Explicitly upsert critical system search attributes for visibility

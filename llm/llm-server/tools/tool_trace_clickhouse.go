@@ -68,6 +68,16 @@ type clickhouseTraceResponse struct {
 	Metadata core.ObservabilityTraceMetadata `json:"metadata"`
 }
 
+// clickhouseRawTraceResponse is the agent-facing shape when services-server returns the raw result
+// table (aggregations, scalar counts, custom projections, or plain span listings). It preserves the
+// real columns/values and their order instead of coercing every row into the fixed span schema.
+type clickhouseRawTraceResponse struct {
+	Columns     []string                        `json:"columns"`
+	ColumnTypes []string                        `json:"column_types"`
+	Rows        [][]any                         `json:"rows"`
+	Metadata    core.ObservabilityTraceMetadata `json:"metadata"`
+}
+
 func (m TracesExecuteClickhouseTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
@@ -165,6 +175,43 @@ func (m TracesExecuteClickhouseTool) Call(nbRequestContext core.NbToolContext, i
 		}, err
 	}
 
+	response, err := serializeClickhouseTraceResponse(queryResponse)
+	if err != nil {
+		nbRequestContext.Ctx.GetLogger().Error("traces: unable to serialize on json", "error", err.Error())
+		return core.NBToolResponse{}, err
+	}
+
+	resp := core.NBToolResponse{
+		Data:   string(response),
+		Type:   core.NBToolResponseTypeTable,
+		Status: core.NBToolResponseStatusSuccess,
+	}
+
+	resp.References = []core.NBToolResponseReference{
+		core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"monitoring", "traces"}, "Traces Details", nil, ""),
+	}
+
+	return resp, err
+}
+
+// serializeClickhouseTraceResponse renders the agent-facing JSON for a trace query result.
+//
+// When services-server returned the raw result table (the normal post-upgrade path), it emits the
+// real {columns, column_types, rows} so aggregation / custom-projection / scalar-count / span
+// queries all keep their computed values. When Result is nil (an older services-server returned the
+// typed []OpenTelemetryTrace array), it falls back to the legacy ClickhouseAgentRow span shape so
+// rollout version skew stays safe — that fallback still zeroes aggregation columns, but only runs
+// against a pre-upgrade services-server.
+func serializeClickhouseTraceResponse(queryResponse core.ObservabilityTraceResponse) ([]byte, error) {
+	if queryResponse.Result != nil {
+		return common.MarshalJson(clickhouseRawTraceResponse{
+			Columns:     queryResponse.Result.Columns,
+			ColumnTypes: queryResponse.Result.ColumnTypes,
+			Rows:        queryResponse.Result.Rows,
+			Metadata:    queryResponse.Metadata,
+		})
+	}
+
 	agentTrace := []ClickhouseAgentRow{}
 	for trace := range queryResponse.Traces {
 		traceRow := ClickhouseAgentRow{
@@ -187,26 +234,8 @@ func (m TracesExecuteClickhouseTool) Call(nbRequestContext core.NbToolContext, i
 		}
 		agentTrace = append(agentTrace, traceRow)
 	}
-	clickhouseTraceResponse := clickhouseTraceResponse{
+	return common.MarshalJson(clickhouseTraceResponse{
 		Traces:   agentTrace,
 		Metadata: queryResponse.Metadata,
-	}
-
-	response, err := common.MarshalJson(clickhouseTraceResponse)
-	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("traces: unable to serialize on json", "error", err.Error())
-		return core.NBToolResponse{}, err
-	}
-
-	resp := core.NBToolResponse{
-		Data:   string(response),
-		Type:   core.NBToolResponseTypeTable,
-		Status: core.NBToolResponseStatusSuccess,
-	}
-
-	resp.References = []core.NBToolResponseReference{
-		core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"monitoring", "traces"}, "Traces Details", nil, ""),
-	}
-
-	return resp, err
+	})
 }

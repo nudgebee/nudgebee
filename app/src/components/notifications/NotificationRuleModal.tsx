@@ -355,6 +355,13 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
     } else {
       setExpiresAt(null);
     }
+    if (!newValue || !newValue.isBefore(dayjs())) {
+      setErrors((prev: any) => {
+        const newErrors = { ...prev };
+        delete newErrors.expiresAt;
+        return newErrors;
+      });
+    }
   };
 
   const fetchEventRules = async (clusterId: string) => {
@@ -788,6 +795,10 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
 
     if (emailToggle && !email && selectedExclusionEmails.length === userEmailOptions.length) {
       error.noEmail = 'You must either enter an additional email address or leave at least one email unexcluded.';
+    }
+
+    if (expiresAt && dayjs(expiresAt).isBefore(dayjs())) {
+      error.expiresAt = 'Snooze Until must be a future date and time.';
     }
 
     if (Object.keys(error).length > 0) {
@@ -1919,10 +1930,12 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
               id='snooze-date'
               label='Snooze Until'
               disabled={suppressed}
-              value={expiresAt}
+              value={expiresAt ? dayjs(expiresAt) : null}
               onChange={handleDateChange}
-              minDate={dayjs()}
+              minDate={undefined}
+              minDateTime={dayjs()}
               maxDateTime={dayjs().add(1, 'year')}
+              error={errors.expiresAt}
               preventDirectInput
               componentsProps={{
                 actionBar: {

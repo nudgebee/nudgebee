@@ -68,6 +68,14 @@ func RunScan(ctx *security.RequestContext, account ScanAccount, scannerName stri
 	if err != nil {
 		return nil, fmt.Errorf("logs: %w", err)
 	}
+	// Logs are in hand — the Job has served its purpose. Delete it now (cascades
+	// to its pods) so cleanup doesn't depend on the cluster's TTLAfterFinished
+	// controller, which may be disabled in customer environments. Best-effort:
+	// the agent's background reaper + the Job's TTL are the backstops, so a
+	// delete failure (incl. an older agent without delete_k8s_job) is non-fatal.
+	if delErr := deleteJob(account.AccountID, jobName); delErr != nil {
+		logger.Warn("scan_orchestrator: post-scan job delete failed; relying on agent reaper/TTL", "error", delErr)
+	}
 	if logs.Truncated {
 		logger.Warn("scan_orchestrator: stdout truncated", "bytes_dropped", logs.StdoutBytesDropped)
 	}

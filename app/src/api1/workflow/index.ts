@@ -7,6 +7,7 @@ import type {
   WorkflowRetriggerRequest,
   WorkflowCancelRequest,
   WorkflowCompleteApprovalRequest,
+  WorkflowValidateRequest,
 } from './types';
 
 export const GET_WORKFLOW_BY_ID = `
@@ -158,6 +159,7 @@ query ListWorkflows($accountId:String!, $status:String, $last_execution_status:S
         display_name
       }
       last_execution_time
+      last_execution_version
       definition {
         output
         timeout
@@ -210,6 +212,14 @@ export const CREATE_WORKFLOW = `
 mutation CreateWorkflow($request: WorkflowCreateRequest!) {
   workflow_create(request: $request) {
     id
+  }
+}
+`;
+
+export const VALIDATE_WORKFLOW = `
+mutation ValidateWorkflow($request: WorkflowValidateRequest!) {
+  workflow_validate(request: $request) {
+    message
   }
 }
 `;
@@ -388,6 +398,8 @@ query listWorkflowExecutions($accountId:String!, $id:String!, $limit:Int, $next_
       trigger_type
       triggered_by
       workflow_id
+      version
+      version_number
     }
   }
 }
@@ -405,6 +417,8 @@ query listWorkflowExecutionsForEvent($accountId: String!, $eventId: String!) {
       close_time
       triggered_by
       trigger_type
+      version
+      version_number
     }
   }
 }
@@ -800,6 +814,20 @@ const apiWorkflow = {
       const variables = { request };
 
       const response = await queryGraphQL(query, 'UpdateWorkflow', variables);
+      return {
+        data: response?.data?.data,
+        errors: response?.data?.errors,
+      };
+    } catch (error) {
+      return error;
+    }
+  },
+  async validateWorkflow(request: WorkflowValidateRequest) {
+    try {
+      const query = VALIDATE_WORKFLOW;
+      const variables = { request };
+
+      const response = await queryGraphQL(query, 'ValidateWorkflow', variables);
       return {
         data: response?.data?.data,
         errors: response?.data?.errors,
@@ -1248,7 +1276,8 @@ const apiWorkflow = {
     nextPageToken?: string,
     eventSources?: string[],
     alertNames?: string[],
-    subjectTypes?: string[]
+    subjectTypes?: string[],
+    labels?: string[]
   ) {
     try {
       const request: any = { type: 'system' };
@@ -1259,6 +1288,7 @@ const apiWorkflow = {
       if (eventSources?.length) request.event_sources = eventSources;
       if (alertNames?.length) request.alert_names = alertNames;
       if (subjectTypes?.length) request.subject_types = subjectTypes;
+      if (labels?.length) request.labels = labels;
 
       const response = await queryGraphQL(LIST_WORKFLOW_TEMPLATES, 'ListWorkflowTemplates', { request });
       return {

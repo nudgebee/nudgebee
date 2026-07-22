@@ -15,6 +15,9 @@ interface CommandExecutionHistoryProps {
   accountId: string;
   recommendationId: string;
   resolutionId?: string;
+  // Bump to force a re-fetch after a command executes (so the history updates
+  // in real time without remounting the tab).
+  refreshKey?: number;
 }
 
 interface AuditRow {
@@ -126,7 +129,7 @@ function buildRows(audits: AuditRow[], userMap: Record<string, UserSummary>): an
   });
 }
 
-const CommandExecutionHistory: React.FC<CommandExecutionHistoryProps> = ({ accountId, recommendationId, resolutionId }) => {
+const CommandExecutionHistory: React.FC<CommandExecutionHistoryProps> = ({ accountId, recommendationId, resolutionId, refreshKey }) => {
   const [audits, setAudits] = useState<AuditRow[]>([]);
   const [userMap, setUserMap] = useState<Record<string, UserSummary>>({});
   const [totalRows, setTotalRows] = useState(0);
@@ -171,7 +174,7 @@ const CommandExecutionHistory: React.FC<CommandExecutionHistoryProps> = ({ accou
     return () => {
       active = false;
     };
-  }, [accountId, recommendationId, resolutionId, page, rowsPerPage]);
+  }, [accountId, recommendationId, resolutionId, page, rowsPerPage, refreshKey]);
 
   // Re-derive rows whenever audits or userMap change.
   const tableData = useMemo(() => buildRows(audits, userMap), [audits, userMap]);

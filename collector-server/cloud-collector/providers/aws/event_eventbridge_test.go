@@ -21,6 +21,7 @@ type dummyAwsProvider struct {
 	listResourcesLastArgs  struct {
 		serviceName string
 		regions     []string
+		resourceIds []string
 	}
 	queryLogsCallCount              int
 	queryLogsLastArgs               providers.QueryLogsRequest
@@ -76,6 +77,7 @@ func (d *dummyAwsProvider) ListResources(ctx providers.CloudProviderContext, acc
 	d.listResourcesCallCount++
 	d.listResourcesLastArgs.serviceName = query.ServiceName
 	d.listResourcesLastArgs.regions = query.Regions
+	d.listResourcesLastArgs.resourceIds = query.ResourceIds
 	ctx.GetLogger().Info("dummyAwsProvider: ListResources called", "serviceName", query.ServiceName, "regions", query.Regions)
 
 	if query.ServiceName == "ecs" {
@@ -304,6 +306,16 @@ func TestAwsEvenBridge_Mock_ECS(t *testing.T) {
 	assert.Equal(t, "aws_get_resource", processedEvent.AdditionalContext[0].AdditionalInfo["action_type"])
 	assert.Equal(t, "aws_get_resource", processedEvent.AdditionalContext[1].AdditionalInfo["action_type"])
 	assert.Equal(t, "aws_get_log", processedEvent.AdditionalContext[2].AdditionalInfo["action_type"])
+
+	// Exactly one ListResources call: the stopped rule's task fetch. The generic
+	// ECS_Task_All_Events rule deliberately has no aws_get_resource action (the
+	// event Detail already carries the task object), and the fallback must pass
+	// the task ARN as ResourceIds so ListResources uses the targeted
+	// GetResourcesByIds path instead of a full region-wide ECS scan.
+	assert.Equal(t, 1, dummyAPI.listResourcesCallCount, "Expected a single ListResources call")
+	assert.Equal(t, "ecs", dummyAPI.listResourcesLastArgs.serviceName)
+	assert.Equal(t, []string{"us-east-1"}, dummyAPI.listResourcesLastArgs.regions)
+	assert.Equal(t, []string{"arn:aws:ecs:us-east-1:123456789012:task/my-cluster/abcdef1234567890"}, dummyAPI.listResourcesLastArgs.resourceIds)
 }
 func TestAwsEvenBridge_Mock_ECR(t *testing.T) {
 	seedAccountMetadataForTest(t, "123456789012")

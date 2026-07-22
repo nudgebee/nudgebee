@@ -44,8 +44,23 @@ const KubernetesSecurityImages = (props) => {
       .then((res) => {
         const securityAppsTableData = res?.recommendation_security_groupings_v2?.rows?.map((item) => {
           const data = [];
+          // A scanned-but-clean image (image_scan_summary row, no CVEs) comes back
+          // with every severity count at 0. Flag it so it reads as "Clean" instead
+          // of a blank 0/0/0/0 row. count_severity_info excludes Info/Unknown-only images.
+          const isClean =
+            (Number(item?.count_severity_critical) || 0) +
+              (Number(item?.count_severity_high) || 0) +
+              (Number(item?.count_severity_medium) || 0) +
+              (Number(item?.count_severity_low) || 0) +
+              (Number(item?.count_severity_info) || 0) ===
+            0;
           data.push({
-            component: <Text value={item?.image} showAutoEllipsis />,
+            component: (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+                <Text value={item?.image} showAutoEllipsis />
+                {isClean && <Label tone='success' text='Clean' size='sm' />}
+              </Box>
+            ),
             drilldownQuery: { image: item?.image, package_id: item?.package_id },
           });
           data.push({

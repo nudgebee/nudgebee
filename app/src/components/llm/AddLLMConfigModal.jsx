@@ -103,6 +103,7 @@ const emptyConfig = () => ({
   apiVersion: '',
   apiType: '',
   region: '',
+  contextSize: '',
   accessKey: '',
   secretKey: '',
   providerOverrideOpen: false,
@@ -114,6 +115,13 @@ const emptyConfig = () => ({
 // would never display. State still stores '' for inherit — the sentinel only
 // lives at the Select-binding boundary.
 const INHERIT_SENTINEL = '__inherit__';
+
+// Providers that serve operator-deployed (custom) models, where the context
+// window depends on the deployment rather than a fixed published value. Only
+// these expose the "Context window (tokens)" field — managed providers
+// (openai/anthropic/azure/googleai) have known windows from the model map.
+const CUSTOM_DEPLOY_PROVIDERS = ['huggingface', 'sagemaker', 'vertexai', 'bedrock'];
+const showsContextSize = (p) => CUSTOM_DEPLOY_PROVIDERS.includes(p);
 
 // providerFieldShape returns which credential inputs apply for a given provider.
 // Mirrors the global section's showsApiKey / showsApiEndpoint / ... booleans so
@@ -473,6 +481,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           apiVersion: cfg[`llm_tier_api_version_${t}`] || '',
           apiType: cfg[`llm_tier_api_type_${t}`] || '',
           region: cfg[`llm_tier_region_${t}`] || '',
+          contextSize: cfg[`llm_tier_context_size_${t}`] || '',
           accessKey: '',
           secretKey: '',
           // Auto-open the override pane on load when a non-global provider
@@ -508,6 +517,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
             apiVersion: cfg[`llm_provider_api_version_${agentKey}`] || '',
             apiType: cfg[`llm_provider_api_type_${agentKey}`] || '',
             region: cfg[`llm_provider_region_${agentKey}`] || '',
+            contextSize: cfg[`llm_model_context_size_${agentKey}`] || '',
             accessKey: '',
             secretKey: '',
             collapsed: true, // default to collapsed on load; expand on user click
@@ -547,7 +557,12 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           key.startsWith('llm_tier_') ||
           (key.startsWith('llm_provider_') && key !== 'llm_provider') ||
           (key.startsWith('llm_model_name_') && key !== 'llm_model_name') ||
-          (key.startsWith('llm_model_fallbacks_') && key !== 'llm_model_fallbacks')
+          (key.startsWith('llm_model_fallbacks_') && key !== 'llm_model_fallbacks') ||
+          // per-agent context (llm_model_context_size_<agent>) AND the global
+          // llm_model_context_size — so switching a model to a managed provider
+          // (field hidden, save gated off) clears the now-stale window.
+          key.startsWith('llm_model_context_size_') ||
+          key === 'llm_model_context_size'
         ) {
           seedKeys.add(key);
         }
@@ -1006,7 +1021,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     pushPlain(showsApiEndpoint, 'llm_provider_api_endpoint', apiEndpoint);
     pushPlain(showsApiVersion, 'llm_provider_api_version', apiVersion);
     pushPlain(showsRegion, 'llm_provider_region', region);
-    pushPlain(true, 'llm_model_context_size', contextSize);
+    pushPlain(showsContextSize(provider), 'llm_model_context_size', contextSize);
     pushSecret(showsBedrockKeys, 'llm_provider_access_key', accessKey);
     pushSecret(showsBedrockKeys, 'llm_provider_secret_key', secretKey);
     pushPlain(showsApiType, 'llm_provider_api_type', apiType);
@@ -1028,6 +1043,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       if (t.fallbacks.trim()) {
         out.push({ name: `llm_tier_model_fallbacks_${tier}`, value: t.fallbacks.trim() });
       }
+      // Context window is a property of the tier's model — written regardless of
+      // provider override; empty clears it (backend treats empty as DELETE).
+      pushPlain(showsContextSize(t.provider || provider), `llm_tier_context_size_${tier}`, t.contextSize);
       // Inherited rows (empty t.provider) reuse global creds.
       if (t.provider) {
         const shape = providerFieldShape(t.provider);
@@ -1051,6 +1069,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       if (row.fallbacks.trim()) {
         out.push({ name: `llm_model_fallbacks_${row.agent}`, value: row.fallbacks.trim() });
       }
+      // Context window is a property of the agent's model; empty clears it.
+      pushPlain(showsContextSize(row.provider || provider), `llm_model_context_size_${row.agent}`, row.contextSize);
       if (row.provider) {
         const shape = providerFieldShape(row.provider);
         pushSecret(shape.showsApiKey, `llm_provider_api_key_${row.agent}`, row.apiKey);
@@ -1272,16 +1292,18 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               required
             />
           )}
-          <Input
-            label='Model context window (tokens)'
-            size='sm'
-            type='number'
-            inputMode='numeric'
-            value={contextSize}
-            onChange={setContextSize}
-            onBlur={trimOnBlur(contextSize, setContextSize)}
-            help='Total input + output window. Optional — defaults to 32,000 if blank. For self-hosted / HuggingFace models, set this to your deployment’s max-model-len.'
-          />
+          {showsContextSize(provider) && (
+            <Input
+              label='Model context window (tokens)'
+              size='sm'
+              type='number'
+              inputMode='numeric'
+              value={contextSize}
+              onChange={setContextSize}
+              onBlur={trimOnBlur(contextSize, setContextSize)}
+              help='Total input + output window. Optional — defaults to the model’s built-in window if blank. For self-hosted deployments, set this to your deployment’s max-model-len.'
+            />
+          )}
           {showsBedrockKeys && (
             <>
               <SecretInput
@@ -1368,6 +1390,18 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                     onChange={(value) => updateTier(tierKey, 'fallbacks', value)}
                     error={errors.tierFallbacks[tierKey]}
                   />
+                  {showsContextSize(t.provider || provider) && (
+                    <Input
+                      label='Context window (tokens)'
+                      size='sm'
+                      type='number'
+                      inputMode='numeric'
+                      value={t.contextSize}
+                      placeholder={contextSize || "inherits model's default"}
+                      onChange={(value) => updateTier(tierKey, 'contextSize', value)}
+                      help="This model's total input+output window. Optional — blank uses the model's built-in default."
+                    />
+                  )}
                   {!overridePaneOpen ? (
                     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-2)' }}>
                       <Typography variant='caption' sx={{ color: 'var(--ds-gray-500)' }}>
@@ -1595,6 +1629,18 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                           onChange={(value) => updateAgentRow(idx, 'fallbacks', value)}
                           error={errors.agentRows[idx]?.fallbacks}
                         />
+                        {showsContextSize(row.provider || provider) && (
+                          <Input
+                            label='Context window (tokens)'
+                            size='sm'
+                            type='number'
+                            inputMode='numeric'
+                            value={row.contextSize}
+                            placeholder={contextSize || "inherits model's default"}
+                            onChange={(value) => updateAgentRow(idx, 'contextSize', value)}
+                            help="This model's total input+output window. Optional — blank uses the model's built-in default."
+                          />
+                        )}
                         {!agentOverridePaneOpen ? (
                           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-2)' }}>
                             <Typography variant='caption' sx={{ color: 'var(--ds-gray-500)' }}>

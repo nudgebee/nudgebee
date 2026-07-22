@@ -235,7 +235,7 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 	// Build main query (with all filters + LIMIT/OFFSET)
 	// Join with users table to get user details for created_by and updated_by
 	mainQuery := `
-		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
+		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
 			cu.id::text as created_by_user_id, cu.display_name as created_by_display_name,
 			uu.id::text as updated_by_user_id, uu.display_name as updated_by_display_name,
 			w.live_version_id::text, lv.version_number, lv.name, lv.status,
@@ -285,6 +285,7 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 		var lastExecutionStatus sql.NullString
 		var lastExecutionStatusMessage sql.NullString
 		var lastExecutionTime sql.NullTime
+		var lastExecutionVersion sql.NullInt64
 		var createdBy, updatedBy string
 		var createdAt, updatedAt time.Time
 		var createdFromSessionID sql.NullString
@@ -299,7 +300,7 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 		var draftVersionNumber sql.NullInt64
 		var draftVersionName sql.NullString
 
-		if err := rows.Scan(&wfID, &wfName, &wfBytes, &tagBytes, &status, &lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime, &createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
+		if err := rows.Scan(&wfID, &wfName, &wfBytes, &tagBytes, &status, &lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime, &lastExecutionVersion, &createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
 			&createdByUserID, &createdByDisplayName, &updatedByUserID, &updatedByDisplayName,
 			&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
 			&draftVersionID, &draftVersionNumber, &draftVersionName); err != nil {
@@ -324,6 +325,10 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 		}
 		if lastExecutionTime.Valid {
 			wf.LastExecutionTime = &lastExecutionTime.Time
+		}
+		if lastExecutionVersion.Valid {
+			v := int(lastExecutionVersion.Int64)
+			wf.LastExecutionVersion = &v
 		}
 		wf.AccountID = accountID
 		wf.TenantID = tenantID
@@ -369,6 +374,7 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	var lastExecutionStatus sql.NullString
 	var lastExecutionStatusMessage sql.NullString
 	var lastExecutionTime sql.NullTime
+	var lastExecutionVersion sql.NullInt64
 	var createdBy, updatedBy string
 	var createdAt, updatedAt time.Time
 	var createdFromSessionID sql.NullString
@@ -381,7 +387,7 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	var draftVersionName sql.NullString
 
 	query := `
-		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
+		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
 		       w.live_version_id::text, lv.version_number, lv.name, lv.status,
 		       w.draft_version_id::text, dv.version_number, dv.name
 		FROM workflows w
@@ -391,7 +397,7 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	`
 	err := s.db.QueryRowContext(ctx, query, tenantID, accountID, id).Scan(
 		&wfID, &wfName, &wfBytes, &tagBytes, &status,
-		&lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime,
+		&lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime, &lastExecutionVersion,
 		&createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
 		&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
 		&draftVersionID, &draftVersionNumber, &draftVersionName,
@@ -418,6 +424,10 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	}
 	if lastExecutionTime.Valid {
 		wf.LastExecutionTime = &lastExecutionTime.Time
+	}
+	if lastExecutionVersion.Valid {
+		v := int(lastExecutionVersion.Int64)
+		wf.LastExecutionVersion = &v
 	}
 	wf.AccountID = accountID
 	wf.TenantID = tenantID
@@ -515,6 +525,7 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 	var lastExecutionStatus sql.NullString
 	var lastExecutionStatusMessage sql.NullString
 	var lastExecutionTime sql.NullTime
+	var lastExecutionVersion sql.NullInt64
 	var createdBy, updatedBy string
 	var createdAt, updatedAt time.Time
 	var createdFromSessionID sql.NullString
@@ -527,7 +538,7 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 	var draftVersionName sql.NullString
 
 	query := `
-		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
+		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
 		       w.live_version_id::text, lv.version_number, lv.name, lv.status,
 		       w.draft_version_id::text, dv.version_number, dv.name
 		FROM workflows w
@@ -537,7 +548,7 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 	`
 	err := s.db.QueryRowContext(ctx, query, tenantID, accountID, name).Scan(
 		&id, &wfName, &wfBytes, &tagBytes, &status,
-		&lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime,
+		&lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime, &lastExecutionVersion,
 		&createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
 		&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
 		&draftVersionID, &draftVersionNumber, &draftVersionName,
@@ -564,6 +575,10 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 	}
 	if lastExecutionTime.Valid {
 		wf.LastExecutionTime = &lastExecutionTime.Time
+	}
+	if lastExecutionVersion.Valid {
+		v := int(lastExecutionVersion.Int64)
+		wf.LastExecutionVersion = &v
 	}
 	wf.AccountID = accountID
 	wf.TenantID = tenantID
@@ -1007,7 +1022,7 @@ func (s *WorkflowDao) UpdateWorkflowStatus(ctx context.Context, tenantID, accoun
 	return nil
 }
 
-func (s *WorkflowDao) SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status model.WorkflowExecutionStatus, executionTime time.Time, statusMessage string) error {
+func (s *WorkflowDao) SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status model.WorkflowExecutionStatus, executionTime time.Time, statusMessage string, version *int) error {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -1029,12 +1044,17 @@ func (s *WorkflowDao) SetLastExecutionStatus(ctx context.Context, tenantID, acco
 		Valid:  statusMessage != "",
 	}
 
+	var nullVersion sql.NullInt64
+	if version != nil {
+		nullVersion = sql.NullInt64{Int64: int64(*version), Valid: true}
+	}
+
 	query := `
 		UPDATE workflows
-		SET last_execution_status = $1, last_execution_time = $2, last_execution_status_message = $3
-		WHERE id = $4 AND tenant_id = $5 AND account_id = $6
+		SET last_execution_status = $1, last_execution_time = $2, last_execution_status_message = $3, last_execution_version = $4
+		WHERE id = $5 AND tenant_id = $6 AND account_id = $7
 	`
-	_, err = tx.ExecContext(ctx, query, status, executionTime, nullStatusMessage, id, tenantID, accountID)
+	_, err = tx.ExecContext(ctx, query, status, executionTime, nullStatusMessage, nullVersion, id, tenantID, accountID)
 	if err != nil {
 		return fmt.Errorf("failed to update last execution status: %w", err)
 	}

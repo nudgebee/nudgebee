@@ -879,6 +879,7 @@ func (a *OrchestratorAgent) createSessionContext(request NBAgentRequest) (*sessi
 		BuildConfig:      buildConfig,
 		Mode:             request.EffectiveMode(),
 		SkillsContext:    request.Skills,
+		RunMemory:        planners.NewRunMemory(), // shared across all phases of this run; not persisted
 	}, nil
 }
 
@@ -1287,6 +1288,20 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 			if summary, _ := lastFixerResult["execution_summary"].(string); summary == "" {
 				lastFixerResult["execution_summary"] = "No code changes were produced; the requested change appears to already be present in the repository."
 			}
+			break
+		}
+
+		// Convergence guard: if this attempt reproduced a diff a previous attempt
+		// already produced (and which review then rejected), retrying is futile — the
+		// revert→redo loop is the dominant fix-mode waste (measured ~30% identical
+		// re-applied edits). Stop and surface the best result instead of burning the
+		// remaining attempts on the same rejected change.
+		if prior := sessionCtx.RunMemory.RecordFixAttempt(gitDiff, attempt); prior > 0 {
+			a.logger.Log(common.EventStepComplete, "Fix loop did not converge — attempt reproduced a previously-rejected diff; stopping", map[string]any{
+				"attempt":       attempt,
+				"prior_attempt": prior,
+				"max_attempts":  maxAttempts,
+			})
 			break
 		}
 

@@ -1,0 +1,71 @@
+slug: restart_azure_app_service
+name: "Restart Azure App Service"
+description: "Restart an Azure App Service web app. Useful for HTTP 5xx errors or high response times."
+category: "azure"
+icon: "replay"
+status: ACTIVE
+tags:
+  labels:
+    - "restart"
+    - "disruptive"
+  event_sources:
+    - "azure_monitor"
+    - "azure"
+  alert_names:
+    - "AppServiceUnhealthy"
+    - "Http5xx"
+    - "ResponseTime"
+    - "HealthCheckStatus"
+definition:
+  version: "v1"
+  inputs:
+    - id: "resource_group"
+      type: "string"
+      description: "Azure resource group name"
+      required: true
+    - id: "app_name"
+      type: "string"
+      description: "App Service name"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Approve restarting App Service **{{ Inputs.app_name }}** in resource group **{{ Inputs.resource_group }}**?"
+    - id: "restart"
+      type: "cloud.azure.cli"
+      params:
+        command: "az webapp restart --resource-group {{ Inputs.resource_group }} --name {{ Inputs.app_name }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.azure.cli"
+      params:
+        command: "az webapp show --resource-group {{ Inputs.resource_group }} --name {{ Inputs.app_name }} --query {state:state,availability:availabilityState}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "restart"
+  timeout: "10m"
+template_variables:
+  - id: "resource_group"
+    input_ref: "resource_group"
+    display_name: "Resource Group"
+    required: true
+    type: "string"
+  - id: "app_name"
+    input_ref: "app_name"
+    display_name: "App Service Name"
+    required: true
+    type: "string"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

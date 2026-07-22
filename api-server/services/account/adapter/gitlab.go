@@ -258,208 +258,6 @@ func commitCodeGitLab(ctx AccountAdapterContext, dir string, request ApplyRecomm
 	return branchName, nil
 }
 
-// commitCodeForEventGitLab handles event-based code commits for GitLab
-func commitCodeForEventGitLab(ctx AccountAdapterContext, dir string, request ApplyRecommendationRequest, gitDetails gitLabDetailFromDeployment, updateExistingMR bool) (string, error) {
-	branchName := "nb/" + request.Recommendation.Id
-	if updateExistingMR {
-		cmd := exec.Command("git", "remote", "set-branches", "--add", "origin", branchName)
-		cmd.Dir = dir
-		output, err := cmd.Output()
-		if err != nil {
-			ctx.GetLogger().Error("Error getting remote branch", "error", err, "output", string(output), "branch", branchName)
-			return "", err
-		}
-		cmd1 := exec.Command("git", "fetch")
-		cmd1.Dir = dir
-		output1, err1 := cmd1.Output()
-		if err1 != nil {
-			ctx.GetLogger().Error("Error fetching remote branch", "error", err1, "output", redactGitCredentials(string(output1)), "branch", branchName)
-			return "", err1
-		}
-		cmd2 := exec.Command("git", "checkout", "-b", branchName, "origin/"+branchName)
-		cmd2.Dir = dir
-		output2, err2 := cmd2.Output()
-		if err2 != nil {
-			ctx.GetLogger().Error("Error checking out remote branch", "error", err2, "output", string(output2), "branch", branchName)
-			return "", err2
-		}
-	} else {
-		cmd := exec.Command("git", "checkout", "-b", branchName)
-		cmd.Dir = dir
-		output, err := cmd.Output()
-		if err != nil {
-			ctx.GetLogger().Error("Error checking out branch", "error", err, "output", string(output), "branch", branchName)
-			return "", err
-		}
-	}
-
-	recommendationMap, _ := request.Recommendation.Recommendation.Object().(map[string]any)
-	fileName, _ := recommendationMap["fileName"].(string)
-	lineNumber := recommendationMap["lineNumber"].(int)
-	newLine, _ := recommendationMap["newLine"].(string)
-	oldLine, _ := recommendationMap["oldLine"].(string)
-
-	safeFile, err := safeFilePath(dir, fileName)
-	if err != nil {
-		return "", err
-	}
-	err = readUpdateCodeFile(safeFile, lineNumber, newLine, oldLine)
-	if err != nil {
-		ctx.GetLogger().Error("Error updating code", "error", err)
-		return "", err
-	}
-
-	cmd := exec.Command("git", "status", "-s")
-	cmd.Dir = dir
-	output, err := cmd.Output()
-	if err != nil {
-		ctx.GetLogger().Error("Error getting status of git for files", "error", err, "output", string(output))
-		return "", err
-	}
-
-	if len(string(output)) == 0 {
-		return "", fmt.Errorf("no changes found")
-	}
-
-	// commit file
-	cmd = exec.Command("git", "add", ".")
-	cmd.Dir = dir
-	output, err = cmd.Output()
-	if err != nil {
-		ctx.GetLogger().Error("Error adding files to commit", "error", err, "output", string(output))
-		return "", err
-	}
-
-	// Configure user email
-	cmd = exec.Command("git", "config", "user.email", config.Config.GitCommitNudgebeeEmail)
-	cmd.Dir = dir
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		ctx.GetLogger().Error("Error configuring user email", "error", err, "output", string(output))
-		return "", err
-	}
-
-	// Configure user name
-	cmd = exec.Command("git", "config", "user.name", config.Config.GitCommitNudgebeeUser)
-	cmd.Dir = dir
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		ctx.GetLogger().Error("Error configuring user name", "error", err, "output", string(output))
-		return "", err
-	}
-
-	// Commit files
-	cmd = exec.Command("git", "commit", "-m", fmt.Sprintf("ci: Updated %s %s", request.ResolverType, request.Recommendation.Id))
-	cmd.Dir = dir
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		ctx.GetLogger().Error("Error committing files", "error", err, "output", string(output))
-		return "", err
-	}
-
-	return branchName, nil
-}
-
-// raiseMrForCodeRepo pushes the branch and creates a Merge Request in GitLab
-func raiseMrForCodeRepo(ctx AccountAdapterContext, dir string, branchName string, gitDetail gitLabDetailFromDeployment, updateExistingMR bool, existingMRIID int, mrBody string, resolverType string, mrTitle string) (string, error) {
-	// push branch
-	cmd := exec.Command("git", "push", "origin", branchName, "-f")
-	cmd.Dir = dir
-	output, err := cmd.Output()
-	if err != nil {
-		ctx.GetLogger().Error("Error pushing branch", "error", err, "output", redactGitCredentials(string(output)))
-		return "", err
-	}
-
-	// GitLab API base URL
-	gitLabAPIBase := strings.TrimSuffix(gitDetail.GitLabURL, "/") + "/api/v4"
-
-	// URL-encode the project path for API calls
-	encodedProjectPath := strings.ReplaceAll(gitDetail.ProjectPath, "/", "%2F")
-
-	// Update or create MR
-	if updateExistingMR {
-		resp, err := common.HttpPut(
-			fmt.Sprintf("%s/projects/%s/merge_requests/%d", gitLabAPIBase, encodedProjectPath, existingMRIID),
-			common.HttpWithHeaders(map[string]string{
-				"PRIVATE-TOKEN": gitDetail.Token,
-				"Content-Type":  "application/json",
-			}),
-			common.HttpWithJsonBody(map[string]any{
-				"description": "Automated MR for recommendation update. Please review and merge.\n" + mrBody,
-			}),
-		)
-
-		if err != nil {
-			ctx.GetLogger().Error("Error updating existing MR", "error", err)
-			return "", err
-		}
-
-		defer func() {
-			err := resp.Body.Close()
-			if err != nil {
-				ctx.GetLogger().Error("Error closing response body", "error", err)
-			}
-		}()
-
-		data, err := io.ReadAll(resp.Body)
-		if err != nil {
-			ctx.GetLogger().Error("Error reading existing MR response body", "error", err)
-			return "", err
-		}
-
-		if resp.StatusCode != 200 {
-			ctx.GetLogger().Error("Error updating existing MR", "status", resp.StatusCode, "data", string(data))
-			return "", fmt.Errorf("error updating existing MR: %s", string(data))
-		}
-
-		return string(data), err
-	}
-
-	if mrTitle == "" {
-		mrTitle = fmt.Sprintf("ci: Updated %s %s", resolverType, branchName)
-	}
-
-	resp, err := common.HttpPost(
-		fmt.Sprintf("%s/projects/%s/merge_requests", gitLabAPIBase, encodedProjectPath),
-		common.HttpWithHeaders(map[string]string{
-			"PRIVATE-TOKEN": gitDetail.Token,
-			"Content-Type":  "application/json",
-		}),
-		common.HttpWithJsonBody(map[string]any{
-			"title":         mrTitle,
-			"source_branch": branchName,
-			"target_branch": gitDetail.BaseBranch,
-			"description":   fmt.Sprintf("Automated MR for %s update. Please review and merge.\n", resolverType) + mrBody,
-		}),
-	)
-
-	if err != nil {
-		ctx.GetLogger().Error("Error raising MR", "error", err)
-		return "", err
-	}
-
-	defer func() {
-		err := resp.Body.Close()
-		if err != nil {
-			ctx.GetLogger().Error("Error closing response body", "error", err)
-		}
-	}()
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		ctx.GetLogger().Error("Error reading response body", "error", err)
-		return "", err
-	}
-
-	if resp.StatusCode != 201 {
-		ctx.GetLogger().Error("Error raising MR", "status", resp.StatusCode, "data", string(data))
-		return "", fmt.Errorf("error raising MR: %s", string(data))
-	}
-
-	return string(data), err
-}
-
 // getGitLabDetailsFromRecommendation extracts GitLab repository details from recommendation metadata
 func getGitLabDetailsFromRecommendation(ctx AccountAdapterContext, request ApplyRecommendationRequest) (gitLabDetailFromDeployment, error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
@@ -675,10 +473,6 @@ func (g *gitlabAdapter) ApplyRecommendation(ctx AccountAdapterContext, request A
 		"rule_name", request.Recommendation.RuleName,
 		"recommendation_id", request.Recommendation.Id,
 		"provider_config", request.ProviderConfig)
-	updateExistingMR := false
-	var existingMRIID int
-	mrBody := ""
-	mrTitle := ""
 
 	switch {
 	case request.Recommendation.Category == "RightSizing" && request.Recommendation.RuleName == "pod_right_sizing":
@@ -732,96 +526,33 @@ func (g *gitlabAdapter) ApplyRecommendation(ctx AccountAdapterContext, request A
 		}, nil
 
 	case request.Recommendation.Category == "EventResolutionRaisePr":
-		gitDetail, err := getGitLabDetailsFromRecommendation(ctx, request)
-		if err != nil {
-			return ApplyRecommendationResponse{}, err
+		// The event log-analysis already mapped the source repo; hand the fix intent
+		// to the code agent, which clones, re-derives the fix against the current
+		// code, and raises the MR (resolving git credentials itself). No git
+		// operations happen in the adapter.
+		recMap, _ := request.Recommendation.Recommendation.Object().(map[string]any)
+		repoURL := recMapString(recMap, "git_repo")
+		if strings.TrimSpace(repoURL) == "" {
+			return ApplyRecommendationResponse{}, common.ErrorBadRequest("no source code repository is mapped for this event; cannot raise a code fix MR")
 		}
 
-		ReferenceLink := ""
-		ReferenceLink = fmt.Sprintf("%s/investigate?id=%s&accountId=%s", os.Getenv("BASE_URL"), request.Recommendation.Id, request.Recommendation.CloudAccountId)
+		referenceLink := fmt.Sprintf("%s/investigate?id=%s&accountId=%s", os.Getenv("BASE_URL"), request.Recommendation.Id, request.Recommendation.CloudAccountId)
 		if request.ReferenceLink != nil {
-			ReferenceLink = *request.ReferenceLink
+			referenceLink = *request.ReferenceLink
 		}
 
-		mrBody = mrBody + fmt.Sprintf("\nFor more details. Please visit [Nudgebee](%s)", ReferenceLink)
-		go func() {
-			dbms, err := database.GetDatabaseManager(database.Metastore)
-			if err != nil {
-				ctx.GetLogger().Error("failed recommendation resolution db connection", "error", err)
-				return
-			}
-
-			// checkout code repo
-			dir, err := checkoutCodeRepoGitLab(ctx, request, gitDetail)
-			if err != nil {
-				ctx.GetLogger().Error("Error doing checkout", "error", err)
-				_, err = dbms.Db.Exec(`UPDATE event_resolution SET status = $1, updated_at = $2, status_message = $4 WHERE id = $3`,
-					models.RecommendationResolutionStatusFailed, time.Now(), recommendResolutionId, "Failed at checkout the Code")
-				if err != nil {
-					ctx.GetLogger().Error("error updating recommendation resolution at checkout", "error", err)
-				}
-				return
-			}
-			defer func() {
-				err := os.RemoveAll(dir)
-				if err != nil {
-					ctx.GetLogger().Error("Error removing temp dir", "error", err)
-					_, err = dbms.Db.Exec(`UPDATE event_resolution SET status = $1, updated_at = $2, status_message = $4 WHERE id = $3`,
-						models.RecommendationResolutionStatusFailed, time.Now(), recommendResolutionId, "Failed at Remove temp dir")
-					if err != nil {
-						ctx.GetLogger().Error("error updating recommendation resolution at remove dir", "error", err)
-					}
-				}
-			}()
-
-			// update code
-			branchName, err := commitCodeForEventGitLab(ctx, dir, request, gitDetail, updateExistingMR)
-			if err != nil {
-				message := "Failed at committing the Code"
-				status := models.RecommendationResolutionStatusFailed
-				if err.Error() == "No Changes Found" {
-					message = "No Changes Found"
-					status = models.RecommendationResolutionStatusSuccess
-				}
-				ctx.GetLogger().Error("Error committing the code", "error", err)
-				_, err = dbms.Db.Exec(`UPDATE event_resolution SET status = $1, updated_at = $2, status_message = $4 WHERE id = $3`,
-					status, time.Now(), recommendResolutionId, message)
-				if err != nil {
-					ctx.GetLogger().Error("error updating recommendation resolution at commit code", "error", err)
-				}
-				return
-			}
-
-			// raise MR
-			resp, err := raiseMrForCodeRepo(ctx, dir, branchName, gitDetail, updateExistingMR, existingMRIID, mrBody, request.ResolverType, mrTitle)
-			if err != nil {
-				ctx.GetLogger().Error("Error raising Merge Request", "error", err)
-				_, err = dbms.Db.Exec(`UPDATE event_resolution SET status = $1, updated_at = $2, status_message = $4 WHERE id = $3`,
-					models.RecommendationResolutionStatusFailed, time.Now(), recommendResolutionId, "Failed at raising MR")
-				if err != nil {
-					ctx.GetLogger().Error("error updating recommendation resolution at raise mr", "error", err)
-				}
-				return
-			}
-
-			mrResponse := map[string]any{}
-			err = common.UnmarshalJson([]byte(resp), &mrResponse)
-			if err != nil {
-				ctx.GetLogger().Error("Error unmarshalling MR response", "error", err)
-				_, err = dbms.Db.Exec(`UPDATE event_resolution SET status = $1, updated_at = $2, status_message = $4 WHERE id = $3`,
-					models.RecommendationResolutionStatusFailed, time.Now(), recommendResolutionId, "Failed at unmarshalling MR Response")
-				if err != nil {
-					ctx.GetLogger().Error("error updating recommendation resolution", "error", err)
-				}
-				return
-			}
-
-			_, err = dbms.Db.Exec(`UPDATE event_resolution SET status = $1, updated_at = $2, type_reference_id = $5, status_message = $4 WHERE id = $3`,
-				models.RecommendationStatusInProgress, time.Now(), recommendResolutionId, "MR raised successfully", mrResponse["web_url"].(string))
-			if err != nil {
-				ctx.GetLogger().Error("error updating recommendation resolution", "error", err)
-			}
-		}()
+		dispatchCodeAgentPR(ctx, codeAgentPRParams{
+			AccountID:         request.Recommendation.CloudAccountId,
+			RecommendationID:  request.Recommendation.Id,
+			ResolutionID:      recommendResolutionId,
+			IsEventResolution: true,
+			RepoURL:           repoURL,
+			Provider:          "gitlab",
+			Label:             "event code fix",
+			SuccessMessage:    "MR raised successfully",
+		}, func() (string, error) {
+			return buildEventFixPrompt(recMap, referenceLink), nil
+		})
 
 		return ApplyRecommendationResponse{
 			Data:                     map[string]any{},

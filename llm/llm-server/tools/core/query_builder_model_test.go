@@ -120,3 +120,60 @@ func TestBuildLogQueryBuilder_IndexField(t *testing.T) {
 		assert.Empty(t, qb.Index)
 	})
 }
+
+// TestBuildLogQueryBuilder_ProseWrappedJSON reproduces the production failure
+// where the query-generator LLM emits a fenced JSON object followed by trailing
+// prose ("Wait, let me reconsider...") and sometimes a second fenced block. The
+// strict parse previously failed with "there are bytes left after unmarshal";
+// the builder must extract the JSON and build the query.
+func TestBuildLogQueryBuilder_ProseWrappedJSON(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	secCtx := security.NewSecurityContextForSuperAdmin()
+	reqCtx := security.NewRequestContext(context.Background(), secCtx, logger, nil, nil)
+	toolCtx := NbToolContext{Ctx: reqCtx}
+
+	t.Run("fenced JSON with trailing prose", func(t *testing.T) {
+		input := "```json\n{\"where\": {\"service.name\": {\"_eq\": \"tracking-service\"}}, \"time_range\": \"5m\", \"limit\": 500}\n```\n\nWait, let me reconsider. The `deployment.environment` field may not exist."
+		qb, err := BuildLogQueryBuilder(toolCtx, input)
+		assert.NoError(t, err)
+		assert.NotNil(t, qb.Where)
+		assert.Equal(t, "5m", qb.TimeRange)
+		assert.Equal(t, 500, qb.Limit)
+	})
+
+	t.Run("two fenced blocks with reconsideration between", func(t *testing.T) {
+		input := "```json\n{\"where\": {\"k8s.namespace.name\": {\"_eq\": \"tracking-service-internal\"}}, \"time_range\": \"5m\", \"limit\": 500}\n```\n\nWait, let me reconsider the available fields.\n\n```json\n{\"where\": {\"k8s.pod.name\": {\"_eq\": \"tracking-service-internal-abc\"}}, \"time_range\": \"5m\", \"limit\": 500}\n```"
+		qb, err := BuildLogQueryBuilder(toolCtx, input)
+		assert.NoError(t, err)
+		assert.NotNil(t, qb.Where)
+		assert.Equal(t, "5m", qb.TimeRange)
+	})
+
+	t.Run("prose before bare JSON", func(t *testing.T) {
+		input := "Here is the query you asked for:\n{\"where\": {\"body\": {\"_contains\": \"status=500\"}}, \"time_range\": \"1h\", \"limit\": 1000}"
+		qb, err := BuildLogQueryBuilder(toolCtx, input)
+		assert.NoError(t, err)
+		assert.Equal(t, "1h", qb.TimeRange)
+	})
+
+	t.Run("clean JSON still parses", func(t *testing.T) {
+		input := `{"where": {"pod": {"_eq": "api-server"}}, "time_range": "1h", "limit": 100}`
+		qb, err := BuildLogQueryBuilder(toolCtx, input)
+		assert.NoError(t, err)
+		assert.Equal(t, 100, qb.Limit)
+	})
+}
+
+// TestBuildTraceQueryBuilder_ProseWrappedJSON covers the same prose-tolerance
+// on the trace query path.
+func TestBuildTraceQueryBuilder_ProseWrappedJSON(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	secCtx := security.NewSecurityContextForSuperAdmin()
+	reqCtx := security.NewRequestContext(context.Background(), secCtx, logger, nil, nil)
+	toolCtx := NbToolContext{Ctx: reqCtx}
+
+	input := "```json\n{\"where\": {\"service.name\": {\"_eq\": \"shipment-master-service\"}}, \"time_range\": \"1h\"}\n```\nWait, let me double-check the tag names."
+	qb, _, _, err := BuildTraceQueryBuilder(toolCtx, input)
+	assert.NoError(t, err)
+	assert.NotNil(t, qb.Where)
+}

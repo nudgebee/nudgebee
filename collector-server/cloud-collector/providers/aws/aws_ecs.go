@@ -381,6 +381,82 @@ func (a *amazonEcs) GetResources(ctx providers.CloudProviderContext, account pro
 	return resources, nil
 }
 
+// GetResourcesByIds fetches specific ECS tasks by ARN without a full service scan.
+// Task ARNs must follow the format: arn:aws:ecs:{region}:{account}:task/{cluster}/{task-id}
+func (a *amazonEcs) GetResourcesByIds(ctx providers.CloudProviderContext, account providers.Account, region string, resourceIds []string) ([]providers.Resource, error) {
+	resourceIds = lo.Uniq(resourceIds)
+	// Group task ARNs by cluster name (extracted from the ARN)
+	clusterToTasks := map[string][]string{}
+	for _, id := range resourceIds {
+		parts := strings.SplitN(id, ":task/", 2)
+		if len(parts) != 2 {
+			return nil, errors.ErrUnsupported
+		}
+		segments := strings.SplitN(parts[1], "/", 2)
+		if len(segments) != 2 {
+			ctx.GetLogger().Warn("GetResourcesByIds: skipping malformed task ARN", "arn", id)
+			continue
+		}
+		clusterToTasks[segments[0]] = append(clusterToTasks[segments[0]], id)
+	}
+
+	cfg, err := getAwsConfigFromAccount(ctx.GetContext(), account)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Region = region
+	svc := ecs.NewFromConfig(cfg)
+
+	var resources []providers.Resource
+	for clusterName, taskArns := range clusterToTasks {
+		clusterName := clusterName
+		for _, chunk := range lo.Chunk(taskArns, 100) {
+			output, err := svc.DescribeTasks(ctx.GetContext(), &ecs.DescribeTasksInput{
+				Cluster: &clusterName,
+				Tasks:   chunk,
+				Include: []types.TaskField{types.TaskFieldTags},
+			})
+			if err != nil {
+				ctx.GetLogger().Error("GetResourcesByIds: failed to describe ECS tasks", "error", err, "cluster", clusterName)
+				continue
+			}
+			for _, task := range output.Tasks {
+				if task.TaskArn == nil || task.LastStatus == nil || task.CreatedAt == nil {
+					continue
+				}
+				taskArnSplits := strings.Split(*task.TaskArn, "/")
+				taskID := taskArnSplits[len(taskArnSplits)-1]
+				taskTags := make(map[string][]string)
+				for _, tag := range task.Tags {
+					if tag.Key != nil && tag.Value != nil {
+						taskTags[*tag.Key] = append(taskTags[*tag.Key], *tag.Value)
+					}
+				}
+				taskMeta := structToMap(task)
+				// ClusterArn is already populated by DescribeTasks in the task struct;
+				// only fall back to the parsed cluster name if the API didn't return it.
+				if task.ClusterArn == nil {
+					taskMeta["ClusterArn"] = clusterName
+				}
+
+				resources = append(resources, providers.Resource{
+					Id:          taskID,
+					ServiceName: ServiceNameECS,
+					Name:        taskID,
+					Status:      ecsTaskStatusToNbStatus(task.LastStatus),
+					Region:      region,
+					Tags:        taskTags,
+					Meta:        taskMeta,
+					Arn:         *task.TaskArn,
+					CreatedAt:   *task.CreatedAt,
+					Type:        getAwsServiceResourceType(ServiceNameECS, "task"),
+				})
+			}
+		}
+	}
+	return resources, nil
+}
+
 // Helper function to get task definition details
 func getTaskDefinitionDetails(ctx context.Context, taskDefArn string, svc *ecs.Client) (*types.TaskDefinition, error) {
 	input := &ecs.DescribeTaskDefinitionInput{

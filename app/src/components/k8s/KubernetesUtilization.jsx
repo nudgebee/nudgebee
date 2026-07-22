@@ -9,6 +9,8 @@ import { Box } from '@mui/material';
 const KubernetesUtilizationCharts = ({ accountId, podName, workloadName, namespaceName, recc, containerName, datasource }) => {
   const [cpuData, setCpuData] = useState({ data: [], labels: [] });
   const [memData, setMemData] = useState({ data: [], labels: [] });
+  const [cpuQueries, setCpuQueries] = useState({});
+  const [memoryQueries, setMemoryQueries] = useState({});
   const [isDataLoading, setIsDataLoading] = useState(false);
   const [selectedDateTime, setSelectedDateTime] = useState({
     startTime: new Date().getTime() - 7 * 24 * 60 * 60 * 1000,
@@ -80,6 +82,20 @@ const KubernetesUtilizationCharts = ({ accountId, podName, workloadName, namespa
         });
         setCpuData(cpuDataL);
         setMemData(memDataL);
+
+        // Surface the executed metric queries (only the prometheus datasource returns them).
+        const promQueries = res?.data?.promQueries || {};
+        const cpuQ = {};
+        const memQ = {};
+        Object.entries(promQueries).forEach(([key, q]) => {
+          if (key.startsWith('cpu_')) {
+            cpuQ[key] = q;
+          } else if (key.startsWith('memory_')) {
+            memQ[key] = q;
+          }
+        });
+        setCpuQueries(cpuQ);
+        setMemoryQueries(memQ);
       })
       .finally(() => {
         setIsDataLoading(false);
@@ -95,7 +111,14 @@ const KubernetesUtilizationCharts = ({ accountId, podName, workloadName, namespa
       <Box style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
         <CustomDateTimeRangePicker passedSelectedDateTime={selectedDateTime} onChange={handleDateTimeChange} width='200px' />
       </Box>
-      <KubernetesRecommendationCharts memoryData={memData} cpuData={cpuData} recc={recc} loading={isDataLoading} />
+      <KubernetesRecommendationCharts
+        memoryData={memData}
+        cpuData={cpuData}
+        recc={recc}
+        loading={isDataLoading}
+        cpuQueries={cpuQueries}
+        memoryQueries={memoryQueries}
+      />
       <KubernetesStartupCharts
         accountId={accountId}
         workloadName={workloadName}

@@ -190,12 +190,16 @@ query ListIntegrationAccounts($user_id: String!) {
     account_id
     account_name
     integration_type
+    integration_id
+    integration_name
     external_user_id
     username
     email
     display_name
     mapped_user_id
     mapped_via
+    mapped_by_name
+    last_synced_at
   }
 }
 `;
@@ -207,6 +211,8 @@ query ListUnmappedAccounts($integration_type: String) {
     account_id
     account_name
     integration_type
+    integration_id
+    integration_name
     external_user_id
     username
     email

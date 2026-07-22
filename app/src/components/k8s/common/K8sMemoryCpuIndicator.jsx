@@ -4,6 +4,7 @@ import dynamic from 'next/dynamic';
 import PropTypes from 'prop-types';
 import ClusterCustomTooltip from './ClusterCustomTooltip';
 import Text from '@shared/format/Text';
+import MetricQueryInfo from '@shared/MetricQueryInfo';
 import { formatValueWithUnit } from 'src/utils/common';
 import { ds } from '@utils/colors';
 
@@ -21,6 +22,7 @@ const K8sMemoryCpuIndicator = ({
   updatedOverview = false,
   showUsage = false,
   hideLabels = false,
+  queries = undefined,
 }) => {
   const [showTooltip, setShowTooltip] = useState(false);
 
@@ -62,8 +64,13 @@ const K8sMemoryCpuIndicator = ({
   };
   return (
     <Box sx={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Text value={title} sx={{ fontWeight: 'var(--ds-font-weight-medium)' }} />
+      {/* zIndex keeps the title row (and its query info icon) above the gauge, whose negative
+          top/left offsets otherwise paint over this row and swallow the icon's hover events. */}
+      <Box sx={{ position: 'relative', zIndex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+          <Text value={title} sx={{ fontWeight: 'var(--ds-font-weight-medium)' }} />
+          <MetricQueryInfo queries={queries} />
+        </Box>
       </Box>
       {updatedOverview ? (
         <>
@@ -542,4 +549,5 @@ K8sMemoryCpuIndicator.propTypes = {
   updatedOverview: PropTypes.bool,
   showUsage: PropTypes.bool,
   hideLabels: PropTypes,
+  queries: PropTypes.object,
 };

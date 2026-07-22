@@ -3,6 +3,7 @@ package gcloud
 import (
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"regexp"
 	"strings"
 
 	run "cloud.google.com/go/run/apiv2"
@@ -11,6 +12,11 @@ import (
 )
 
 const ServiceNameRun = "Cloud Run"
+
+// redisHostPattern validates a normalized Redis endpoint host (IPv4 or DNS name),
+// filtering out non-host env values (booleans, numbers) that happen to sit on a
+// REDIS/CACHE-named variable.
+var redisHostPattern = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9.\-]*[a-zA-Z0-9])?$`)
 
 type cloudRunService struct{}
 
@@ -138,10 +144,27 @@ func runServiceToResource(service *runpb.Service, projectId string) providers.Re
 		tags[key] = []string{value}
 	}
 
+	// Runtime service account (the identity the service runs as)
+	serviceAccount := ""
+	if service.Template != nil {
+		serviceAccount = service.Template.ServiceAccount
+	}
+
+	// Secret Manager secrets referenced by the service (env secretKeyRef + volume secrets)
+	secretRefs := extractRunSecretRefs(service)
+
+	// Plain-value Redis/Memorystore endpoints from env (host of REDIS/CACHE-named
+	// or :6379 env vars). Lets the KG link this service to the Memorystore Cache
+	// node with the matching host. Secret-bound endpoints are unavailable here.
+	redisEndpoints := extractRunRedisEndpoints(service)
+
 	// Meta information
 	meta := map[string]interface{}{
 		"url":              serviceUrl,
 		"container_image":  containerImage,
+		"service_account":  serviceAccount,
+		"secrets":          secretRefs,
+		"redis_endpoints":  redisEndpoints,
 		"cpu_limit":        cpuLimit,
 		"memory_limit":     memoryLimit,
 		"min_instances":    minInstances,
@@ -374,4 +397,100 @@ func (s *cloudRunService) GetLogFilter(_ providers.CloudProviderContext, _ provi
 		return `resource.type="cloud_run_revision"`
 	}
 	return fmt.Sprintf(`resource.type="cloud_run_revision" resource.labels.service_name="%s"`, resourceId)
+}
+
+// extractRunSecretRefs returns the short names of Secret Manager secrets a Cloud Run
+// service references — via env vars (valueSource.secretKeyRef) and secret volumes.
+func extractRunSecretRefs(service *runpb.Service) []string {
+	if service.GetTemplate() == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []string
+	add := func(secret string) {
+		if secret == "" {
+			return
+		}
+		parts := strings.Split(secret, "/")
+		name := parts[len(parts)-1] // full path "projects/p/secrets/NAME" → NAME
+		if name != "" && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	for _, c := range service.GetTemplate().GetContainers() {
+		for _, e := range c.GetEnv() {
+			if skr := e.GetValueSource().GetSecretKeyRef(); skr != nil {
+				add(skr.GetSecret())
+			}
+		}
+	}
+	for _, v := range service.GetTemplate().GetVolumes() {
+		if sv := v.GetSecret(); sv != nil {
+			add(sv.GetSecret())
+		}
+	}
+	return out
+}
+
+// extractRunRedisEndpoints returns the unique host(s) of Redis/Memorystore
+// endpoints configured as *plain* env values on a Cloud Run service (e.g.
+// "10.40.243.4:6379" on CBP_RESPONSE_CACHE_REDIS_URL). Only env vars whose name
+// mentions REDIS/CACHE or whose value carries the default Redis port are
+// considered, and only plain values — secret-bound endpoints (secretKeyRef) are
+// unreadable and skipped. Hosts are normalized (scheme/creds/port/path stripped)
+// so they match the Memorystore instance host captured by the memorystore lister.
+func extractRunRedisEndpoints(service *runpb.Service) []string {
+	if service.GetTemplate() == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, c := range service.GetTemplate().GetContainers() {
+		for _, e := range c.GetEnv() {
+			host := redisHostFromEnv(e.GetName(), e.GetValue())
+			if host != "" && !seen[host] {
+				seen[host] = true
+				out = append(out, host)
+			}
+		}
+	}
+	return out
+}
+
+// redisHostFromEnv returns the normalized Redis host for a single env var, or ""
+// when it is not a plain Redis/Memorystore endpoint we can use.
+func redisHostFromEnv(name, val string) string {
+	if val == "" {
+		return "" // empty or secretKeyRef-backed → host unavailable
+	}
+	upper := strings.ToUpper(name)
+	if !strings.Contains(upper, "REDIS") && !strings.Contains(upper, "CACHE") && !strings.Contains(val, ":6379") {
+		return ""
+	}
+	host := normalizeRedisHost(val)
+	if host == "" || !redisHostPattern.MatchString(host) || !strings.Contains(host, ".") {
+		return "" // reject non-host values (booleans, bare numbers)
+	}
+	return host
+}
+
+// normalizeRedisHost reduces a Redis connection string to its bare host by
+// stripping any scheme, credentials, port and path. Assumes IPv4/DNS hosts
+// (Memorystore endpoints), not bracketed IPv6.
+func normalizeRedisHost(val string) string {
+	v := strings.TrimSpace(val)
+	if i := strings.Index(v, "://"); i >= 0 {
+		v = v[i+3:]
+	}
+	if at := strings.LastIndex(v, "@"); at >= 0 {
+		v = v[at+1:]
+	}
+	if i := strings.IndexAny(v, "/?"); i >= 0 {
+		v = v[:i]
+	}
+	if i := strings.LastIndex(v, ":"); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v)
 }

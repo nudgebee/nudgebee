@@ -100,8 +100,9 @@ func (m SignozExecuteTool) executeSignozLogs(ctx core.NbToolContext, query strin
 	if _, ok := configs["limit"]; !ok {
 		configs["limit"] = 100
 	}
+	// Leave source empty so api-server re-resolves it (user vs agent) per the
+	// account's SigNoz integration.
 	return executeFetchLogs(ctx, services_server.ObservabilityProvider{
-		IntegrationSource: "agent",
-		Provider:          "signoz",
+		Provider: "signoz",
 	}, query, configs)
 }

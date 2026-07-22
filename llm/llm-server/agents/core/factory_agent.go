@@ -166,6 +166,13 @@ func (m *nbAgentTool) ConfigSchema(ctx *security.RequestContext) toolcore.ToolCo
 }
 
 func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
+	if strings.TrimSpace(input.Command) == "" && len(input.Arguments) == 0 {
+		return toolcore.NBToolResponse{
+			Status: toolcore.NBToolResponseStatusError,
+			Data:   fmt.Sprintf("%s requires a non-empty query describing what to investigate. Provide a plain-text description of the problem or question.", m.name),
+		}, nil
+	}
+
 	agent := m.GetAgent(nbRequestContext.Ctx)
 	if agent == nil {
 		return toolcore.NBToolResponse{}, errAgentNotFound

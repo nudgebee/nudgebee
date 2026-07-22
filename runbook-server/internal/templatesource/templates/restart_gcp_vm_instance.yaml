@@ -1,0 +1,80 @@
+slug: restart_gcp_vm_instance
+name: "Restart GCP VM Instance"
+description: "Reset a GCP Compute Engine VM instance. Useful for unresponsive VMs or uptime check failures."
+category: "gcp"
+icon: "power_settings_new"
+status: ACTIVE
+tags:
+  labels:
+    - "restart"
+    - "disruptive"
+  event_sources:
+    - "gcp_monitoring"
+    - "gcp"
+  alert_names:
+    - "VMInstanceUnresponsive"
+    - "UptimeCheckFailed"
+    - "InstanceCPUUtilization"
+definition:
+  version: "v1"
+  inputs:
+    - id: "project"
+      type: "string"
+      description: "GCP project ID"
+      required: true
+    - id: "zone"
+      type: "string"
+      description: "GCP zone (e.g. us-central1-a)"
+      required: true
+    - id: "instance_name"
+      type: "string"
+      description: "VM instance name"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Approve resetting GCP VM **{{ Inputs.instance_name }}** in zone **{{ Inputs.zone }}** (project: {{ Inputs.project }})?"
+    - id: "reset"
+      type: "cloud.gcp.cli"
+      params:
+        command: "gcloud compute instances reset {{ Inputs.instance_name }} --zone={{ Inputs.zone }} --project={{ Inputs.project }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.gcp.cli"
+      params:
+        command: "gcloud compute instances describe {{ Inputs.instance_name }} --zone={{ Inputs.zone }} --project={{ Inputs.project }} --format=json(status,name)"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "reset"
+  timeout: "10m"
+template_variables:
+  - id: "project"
+    input_ref: "project"
+    display_name: "GCP Project"
+    required: true
+    type: "string"
+  - id: "zone"
+    input_ref: "zone"
+    display_name: "Zone"
+    required: true
+    type: "string"
+    placeholder: "us-central1-a"
+  - id: "instance_name"
+    input_ref: "instance_name"
+    display_name: "Instance Name"
+    required: true
+    type: "string"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

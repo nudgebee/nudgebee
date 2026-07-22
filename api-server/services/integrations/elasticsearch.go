@@ -137,7 +137,7 @@ func (m Elasticsearch) ConfigSchema() core.IntegrationSchema {
 			},
 			"log_index": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Log Index",
+				Description: "Index pattern or exact name, e.g. logs-* or logs-generic.otel-default.",
 				ShowWhen:    map[string]any{core.DefaultLogProvider: true},
 				Priority:    29,
 			},
@@ -150,7 +150,7 @@ func (m Elasticsearch) ConfigSchema() core.IntegrationSchema {
 			},
 			"metrics_index": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Metrics Index",
+				Description: "Index pattern or exact name, e.g. metrics-* or metrics-kubeletstatsreceiver.otel-default. Leave blank to use metrics-*.",
 				ShowWhen:    map[string]any{core.DefaultMetricsProvider: true},
 				Priority:    24,
 			},
@@ -163,7 +163,7 @@ func (m Elasticsearch) ConfigSchema() core.IntegrationSchema {
 			},
 			"trace_index": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Trace Index",
+				Description: "Index pattern or exact name for Data Prepper spans, e.g. otel-v1-apm-span-*. Leave blank to use otel-v1-apm-span-*.",
 				ShowWhen:    map[string]any{core.DefaultTraceProvider: true},
 				Priority:    19,
 			},

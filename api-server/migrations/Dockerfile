@@ -4,7 +4,11 @@
 # otel, go-jose. trivy's image scan happened to miss them on the old ubuntu
 # base, but they were always present. Building from source with a current Go
 # toolchain and freshened module deps produces a clean, static binary.
-FROM golang:1.26.4-alpine AS migrate-build
+FROM golang:1.26.5-alpine AS migrate-build
+# Use the builder image's bundled Go toolchain, never an auto-downloaded one, so
+# the source-built migrate binary is compiled with the base's Go (1.26.5) and
+# picks up stdlib fixes like CVE-2026-42505 instead of a stale toolchain.
+ENV GOTOOLCHAIN=local
 RUN apk add --no-cache git
 WORKDIR /build
 ARG GOLANG_MIGRATE_VERSION=v4.19.1
@@ -40,8 +44,16 @@ ENV TZ=Etc/UTC
 # schema before golang-migrate writes its tracker there — golang-migrate does
 # NOT auto-create the schema its tracker lives in). bash runs the script; curl
 # does the services-server / RabbitMQ health probes; ca-certificates/tzdata
-# cover TLS + timezone. apk upgrade keeps the base fresh on every rebuild.
-RUN apk upgrade --no-cache && \
+# cover TLS + timezone.
+# OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's
+# cache key so BuildKit re-runs the apk upgrade and pulls current Alpine security
+# patches — its registry cache (mode=max) otherwise serves a stale package layer
+# forever (the reason curl lingered at 8.14.1-r2). Committed (not a build-arg) so
+# each refresh is a reviewable, revertable diff; bump when the Trivy scan flags a
+# stale package. W29 pulls curl 8.14.1-r3 (CVE-2026-5545).
+ARG OS_PKG_EPOCH=2026-W29
+RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" && \
+    apk upgrade --no-cache && \
     apk add --no-cache bash postgresql-client curl ca-certificates tzdata
 
 COPY --from=migrate-build /usr/local/bin/migrate /usr/local/bin/migrate

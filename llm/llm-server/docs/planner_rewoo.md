@@ -235,8 +235,10 @@ worker-def456           0/1     CrashLoopBackOff   5  10m
 
 ### Semantic Compression
 
-- **Recent 10 steps**: Keep full observation context
-- **Older steps**: Truncate to 100 bytes + `[output truncated — N chars]` marker
+- **Context-window-gated**: compression of older observations only activates once the scratchpad approaches the resolved model window (`LlmServerScratchpadCompressionActivationFraction`, default 0.75). Below that, observations are kept in full. When the window can't be resolved it falls back to the legacy `LlmServerAgentMaxScratchpadChars` char budget.
+- **Within an active pass — recent steps**: the last `recentStepsFullContext` (10) keep full observation context
+- **Within an active pass — older steps**: LLM summary (or `compressObservation` byte truncation) + `[output truncated — N chars]` marker
+- **Per-observation hard cap**: `LlmServerScratchpadMaxObservationChars` (default 65536, min 4096) always applies as a safety net, independent of the gate
 - **UTF-8 safe**: Truncation walks byte boundaries
 - **Failed/skipped** results prefixed with `[FAILED]` / `[SKIPPED]`
 
@@ -295,7 +297,8 @@ Sent to lite model with dependency outputs; expects one of the allowed responses
 | `PlannerRewooParallelExecEnabled` | Enable parallel tool execution |
 | `LLMServerAgentReWooMaxParallel` | Max concurrent tool executions (semaphore size) |
 | `LLMServerAgentRewooMaxIterations` | Max plan execution iterations |
-| `LlmConfigAutoSelectionMaxObservationLen` | Max observation chars before truncation (default 65536) |
+| `LlmServerScratchpadMaxObservationChars` | Per-observation hard cap before truncation (default 65536, min 4096) |
+| `LlmServerScratchpadCompressionActivationFraction` | Fraction of the model context window at which compression activates (default 0.75) |
 | `EnableCritique` | Enable/disable answer critique |
 | `QueryConfig.ToolConfigs` | Pre-resolved tool configurations |
 | `QueryConfig.ToolConfirmations` | User-approved write actions |

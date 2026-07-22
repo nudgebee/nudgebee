@@ -145,11 +145,23 @@ var ScannerCatalog = map[string]Scanner{
 		BuildSpec: func(_ ScanAccount, _ map[string]any) JobSpec {
 			// Nova "find" lists installed Helm releases and reports upgrade
 			// candidates. Mirrors playbooks/nudgebee_playbooks/helm_chart_upgrade.py.
+			//
+			// Nova has no --force-exit-zero (unlike popeye above): it calls
+			// klog.Exit on ANY error, including transient K8s
+			// "list: failed to list: stream error ... closed connection"
+			// failures while listing helm-release Secrets across all namespaces.
+			// With the agent-enforced BackoffLimit=0, that non-zero exit marks
+			// the Job Failed, which fires a customer-facing job_failure event for
+			// what is a retryable, internal scan (each run gets a fresh random
+			// name, so the events never dedup). Wrap in a shell that always exits
+			// 0 so a transient nova failure surfaces as an empty-stdout "no
+			// output" scan (logged, no recommendations) instead of a Failed Job.
+			// Successful runs still print the JSON report to stdout unchanged.
 			return JobSpec{
 				NamePrefix:         "helm-chart-upgrade",
 				Image:              NovaImage(),
-				Command:            []string{"./nova"},
-				Args:               []string{"find"},
+				Command:            []string{"/bin/sh", "-c"},
+				Args:               []string{"./nova find; exit 0"},
 				ServiceAccount:     "{{SCANNER_SA}}",
 				TimeoutHintSeconds: 3000, // Robusta uses 50 minutes
 			}
@@ -195,9 +207,31 @@ func buildImageScanSpec(account ScanAccount, _ map[string]any) JobSpec {
 		// or coreutils. trivy is a static Go binary so it runs anywhere, and the
 		// emptyDir mounted at /tmp gives it a writable cache dir without `mkdir`.
 		Command: []string{imageScanVolumePath + "/trivy"},
+		// `--scanners vuln` restricts the scan to CVEs — NOT trivy's default set
+		// (vuln + secret + misconfig). This is the fix for image_scanner Jobs
+		// dying with "reached backoff limit" on large images: the secret scanner
+		// reads every file's *content* looking for tokens, which OOMs / times out
+		// on multi-GB rootfs images (elasticsearch, clickhouse, pinot, postgres,
+		// dind). It also stops leaking the runtime-injected serviceaccount token
+		// (found under /run/secrets) into recommendation rows — that's pod runtime
+		// state, not image content. `--skip-dirs` keeps trivy inside the image's
+		// own rootfs by excluding the two scan emptyDirs plus the kernel/runtime
+		// pseudo-filesystems; these hold no image packages and only add walk cost.
+		// Measured on dev: elasticsearch:8.19.11 (public) and clickhouse (private
+		// ghcr) went from backoff-limit failures to ~5s exit-0 scans (154 / 357
+		// CVEs) under a 2Gi ceiling with this scoping.
 		Args: []string{
-			"fs", "--cache-dir", "/tmp/trivy-cache",
-			"--format", "json", "--quiet", "--skip-java-db-update", "/",
+			"fs",
+			"--scanners", "vuln",
+			"--cache-dir", "/tmp/trivy-cache",
+			"--format", "json", "--quiet", "--skip-java-db-update",
+			"--skip-dirs", imageScanVolumePath,
+			"--skip-dirs", "/tmp",
+			"--skip-dirs", "/proc",
+			"--skip-dirs", "/sys",
+			"--skip-dirs", "/dev",
+			"--skip-dirs", "/run",
+			"/",
 		},
 		// Root so trivy can read every file in the scanned rootfs. Pointer literal
 		// so the explicit 0 survives JSON omitempty.

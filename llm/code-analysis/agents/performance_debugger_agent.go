@@ -74,6 +74,7 @@ func (a *PerformanceDebuggerAgent) SetLogger(logger *common.Logger) {
 
 func (a *PerformanceDebuggerAgent) Execute(ctx context.Context, sessionCtx *session.SessionContext) (string, error) {
 	a.planner.SetRepositoryContext(sessionCtx.RepoContext)
+	a.planner.SetRunMemory(sessionCtx.RunMemory)
 
 	// Set credentials for repository operations
 	if sessionCtx.Credentials != nil {
@@ -87,7 +88,7 @@ func (a *PerformanceDebuggerAgent) Execute(ctx context.Context, sessionCtx *sess
 		a.planner.SetSecureContext("credentials", modelCreds)
 	}
 
-	enhancedQuery := a.buildEnhancedQuery(sessionCtx)
+	enhancedQuery := a.buildEnhancedQuery(ctx, sessionCtx)
 	systemPrompt, err := a.buildPerformanceDebuggerPrompt(sessionCtx)
 	if err != nil {
 		return "", fmt.Errorf("failed to build performance debugger prompt: %w", err)
@@ -101,17 +102,13 @@ func (a *PerformanceDebuggerAgent) Execute(ctx context.Context, sessionCtx *sess
 	return result.FinalAnswer, nil
 }
 
-func (a *PerformanceDebuggerAgent) buildEnhancedQuery(sessionCtx *session.SessionContext) string {
+func (a *PerformanceDebuggerAgent) buildEnhancedQuery(ctx context.Context, sessionCtx *session.SessionContext) string {
 	var data strings.Builder
 	data.WriteString("=== USER QUERY ===\n")
 	data.WriteString(sessionCtx.OriginalQuery)
 	data.WriteString("\n\n")
 
-	if sessionCtx.InitialLogs != "" {
-		data.WriteString("=== RELEVANT LOGS ===\n")
-		data.WriteString(sessionCtx.InitialLogs)
-		data.WriteString("\n\n")
-	}
+	data.WriteString(buildEvidenceBlock(ctx, a.llmClient, a.logger, "RELEVANT LOGS", sessionCtx.InitialLogs))
 
 	return data.String()
 }

@@ -36,7 +36,18 @@ type RepoIndex struct {
 	BuildCommands   map[string]string `json:"build_commands"`
 	EntryPoints     []string          `json:"entry_points"`
 	ConfigFiles     []string          `json:"config_files"`
+	ModuleRoots     []ModuleRoot      `json:"module_roots"`
 	TotalFiles      int               `json:"total_files"`
+}
+
+// ModuleRoot is a discovered build unit (a directory containing a package manifest).
+// In a monorepo the manifest is usually NOT at the repo root, so verifying a fix
+// requires building/testing from the right module directory. Discovered by walking
+// the tree — nothing about a specific repo's layout is hardcoded.
+type ModuleRoot struct {
+	Path  string `json:"path"`  // dir (relative to repo root) containing the manifest; "." for root
+	Kind  string `json:"kind"`  // go | node | python | rust | java
+	Build string `json:"build"` // suggested verification command, run from Path
 }
 
 type dirEntry struct {
@@ -123,9 +134,74 @@ func IndexRepository(repoDir string) (*RepoIndex, error) {
 	idx.BuildSystem, idx.BuildCommands = detectBuildSystem(repoDir)
 	idx.EntryPoints = findEntryPoints(repoDir)
 	idx.ConfigFiles = findConfigFiles(repoDir)
+	idx.ModuleRoots = findModuleRoots(repoDir)
 	idx.FileTree = buildTree(topEntries)
 
 	return idx, nil
+}
+
+// moduleManifests maps a package-manifest filename to (kind, suggested build cmd).
+// Discovery is data-driven from these manifests — no per-repo paths are hardcoded.
+var moduleManifests = []struct {
+	file  string
+	kind  string
+	build string
+}{
+	{"go.mod", "go", "go build ./..."},
+	{"package.json", "node", "npm run build"},
+	{"pyproject.toml", "python", "python -m build"},
+	{"setup.py", "python", "python -m build"},
+	{"Cargo.toml", "rust", "cargo build"},
+	{"pom.xml", "java", "mvn -q compile"},
+}
+
+// findModuleRoots walks the repo (bounded depth, skipping vendor/deps dirs) and
+// returns every directory that contains a package manifest, with the correct
+// working directory + build command. In a monorepo the manifest is rarely at the
+// repo root, so this is what lets the agent verify a fix from the right directory
+// instead of guessing (e.g. `cd api-server && go build ./...` against a module
+// rooted at api-server/services).
+func findModuleRoots(repoDir string) []ModuleRoot {
+	const maxDepth = 4
+	const maxRoots = 25
+	var roots []ModuleRoot
+	skip := map[string]bool{"vendor": true, "node_modules": true, ".git": true, "dist": true, "build": true, "target": true, ".venv": true}
+	seenDirs := make(map[string]bool)
+
+	// WalkDir avoids an lstat per entry, and matching manifests by name during the
+	// walk avoids up to len(moduleManifests) os.Stat calls per directory.
+	_ = filepath.WalkDir(repoDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(repoDir, path)
+		if d.IsDir() {
+			if rel != "." {
+				if skip[d.Name()] {
+					return filepath.SkipDir
+				}
+				if strings.Count(rel, string(filepath.Separator))+1 > maxDepth {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if len(roots) >= maxRoots {
+			return filepath.SkipDir
+		}
+		for _, m := range moduleManifests {
+			if d.Name() == m.file {
+				dir := filepath.Dir(rel)
+				if !seenDirs[dir] {
+					seenDirs[dir] = true
+					roots = append(roots, ModuleRoot{Path: dir, Kind: m.kind, Build: m.build})
+				}
+				break // one kind per dir is enough
+			}
+		}
+		return nil
+	})
+	return roots
 }
 
 // FormatAsContext returns compact text for injection into LLM context.
@@ -156,6 +232,17 @@ func (idx *RepoIndex) FormatAsContext() string {
 		}
 	}
 	b.WriteString("\n")
+
+	if len(idx.ModuleRoots) > 0 {
+		b.WriteString("Modules (build/verify a fix from the module's directory, not the repo root):\n")
+		for _, m := range idx.ModuleRoots {
+			loc := m.Path
+			if loc == "." {
+				loc = "<repo root>"
+			}
+			fmt.Fprintf(&b, "  - %s (%s) — verify: cd %s && %s\n", loc, m.Kind, m.Path, m.Build)
+		}
+	}
 
 	if len(idx.EntryPoints) > 0 {
 		fmt.Fprintf(&b, "Entry: %s\n", strings.Join(idx.EntryPoints, ", "))

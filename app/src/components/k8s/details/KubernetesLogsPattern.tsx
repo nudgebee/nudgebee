@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import k8sApi from '@api1/kubernetes';
 import ticketsApi from '@api1/tickets';
 import KubernetesTable2 from '@components/k8s/common/KubernetesTable2';
@@ -97,7 +97,11 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({ accountId
 
   const [groupingLogLoading, setGroupingLogLoading] = useState(false);
   const [groupingLogErrorMsg, setGroupingLogErrorMsg] = useState('');
-  const [groupingLogData, setGroupingLogData] = useState([]);
+  const [groupingLogData, setGroupingLogData] = useState<any[][]>([]);
+
+  const rawGroupDataRef = useRef<any[]>([]);
+  const ticketReferenceMapRef = useRef<Map<string, any>>(new Map());
+  const buildRowDataRef = useRef<((items: any[], map: Map<string, any>) => any[][]) | null>(null);
   const [selectedDateRange, setSelectedDateRange] = useState<any>({
     startDate: new Date().getTime() - 3600 * 12 * 1000,
     endDate: new Date().getTime(),
@@ -245,85 +249,84 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({ accountId
               filteredData = filteredData.slice(0, 500);
               isFiltered = true;
             }
-            const groupData = filteredData.map((item: any) => {
-              const logReferenceId = item.pattern_hash;
-              const MENU_ITEMS: any = [
-                {
-                  icon: TicketsIcon,
-                  label: 'Create Ticket',
-                  id: 0,
-                  disabled: ticketReferenceMap.has(logReferenceId),
-                },
-              ];
-              const { namespace: namespaceName, workload: app } = parseLogGroupItem(item);
-              const logQuery = `{"namespaceName": "${namespaceName}", "workloadName": "${app}"}`;
-              return [
-                {
-                  component: (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', minWidth: 0 }}>
-                      <Box sx={{ flexShrink: 0 }}>
-                        <CopyButton text={item?.sample ?? ''} size='sm' />
+            const buildRowData = (items: any[], ticketMap: Map<string, any>): any[][] =>
+              items.map((item: any) => {
+                const logReferenceId = item.pattern_hash;
+                const existingTicket = ticketMap.get(logReferenceId);
+                const MENU_ITEMS: any = [{ icon: TicketsIcon, label: 'Create Ticket', id: 0, disabled: !!existingTicket }];
+                const { namespace: namespaceName, workload: app } = parseLogGroupItem(item);
+                const logQuery = `{"namespaceName": "${namespaceName}", "workloadName": "${app}"}`;
+                return [
+                  {
+                    component: (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', minWidth: 0 }}>
+                        <Box sx={{ flexShrink: 0 }}>
+                          <CopyButton text={item?.sample ?? ''} size='sm' />
+                        </Box>
+                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                          <Text value={item?.sample ?? ''} showAutoEllipsis />
+                        </Box>
                       </Box>
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Text value={item?.sample ?? ''} showAutoEllipsis />
+                    ),
+                    drilldownQuery: { ...item, logQuery, data: { timestamp: Math.max(...(item?.timestamps ?? [])) * 1000 } },
+                  },
+                  {
+                    component: (
+                      <Box>
+                        <Text showAutoEllipsis value={app || ''} />
+                        <Text secondaryText value={`ns: ${namespaceName}`} />
                       </Box>
-                    </Box>
-                  ),
-                  drilldownQuery: { ...item, logQuery, data: { timestamp: Math.max(...(item?.timestamps ?? [])) * 1000 } },
-                },
-                {
-                  component: (
-                    <Box>
-                      <Text showAutoEllipsis value={app || ''} />
-                      <Text secondaryText value={`ns: ${namespaceName}`} />
-                    </Box>
-                  ),
-                },
-                {
-                  component: item?.timestamps ? <Datetime value={Math.max(...(item?.timestamps ?? [])) * 1000} /> : '-',
-                },
-                {
-                  component: (
-                    <Text
-                      value={
-                        Array.isArray(item?.values) && item?.values.length > 0
-                          ? item.values.reduce((accumulator: number, currentValue: number) => accumulator + (currentValue || 0), 0).toFixed()
-                          : '-'
-                      }
-                    />
-                  ),
-                },
-                {
-                  component: ticketReferenceMap.has(logReferenceId) ? (
-                    <Link target='_blank' href={`${ticketReferenceMap.get(logReferenceId)?.url}`}>
-                      {ticketReferenceMap.get(logReferenceId)?.ticket_id}
-                    </Link>
-                  ) : (
-                    '-'
-                  ),
-                },
-                {
-                  component: (
-                    <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--ds-space-1)' }}>
-                      <DsButton
-                        tone='secondary'
-                        size='xs'
-                        composition='icon-only'
-                        aria-label={`Ask ${DEFAULT_TITLE}`}
-                        tooltip={`Ask ${DEFAULT_TITLE}`}
-                        icon={<SafeIcon src={getNubiIconUrl()} width={20} height={20} alt={`Ask ${DEFAULT_TITLE}`} />}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleGenerateLogAnalysis(item);
-                        }}
+                    ),
+                  },
+                  {
+                    component: item?.timestamps ? <Datetime value={Math.max(...(item?.timestamps ?? [])) * 1000} /> : '-',
+                  },
+                  {
+                    component: (
+                      <Text
+                        value={
+                          Array.isArray(item?.values) && item?.values.length > 0
+                            ? item.values.reduce((accumulator: number, currentValue: number) => accumulator + (currentValue || 0), 0).toFixed()
+                            : '-'
+                        }
                       />
-                      <ThreeDotsMenu sx={{ ...action.primary }} menuItems={MENU_ITEMS} data={item} onMenuClick={onMenuClick} />
-                    </Box>
-                  ),
-                },
-              ];
-            });
-            setGroupingLogData(groupData);
+                    ),
+                  },
+                  {
+                    component: existingTicket ? (
+                      <Link target='_blank' href={`${existingTicket?.url}`}>
+                        {existingTicket?.ticket_id}
+                      </Link>
+                    ) : (
+                      '-'
+                    ),
+                  },
+                  {
+                    component: (
+                      <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--ds-space-1)' }}>
+                        <DsButton
+                          tone='secondary'
+                          size='xs'
+                          composition='icon-only'
+                          aria-label={`Ask ${DEFAULT_TITLE}`}
+                          tooltip={`Ask ${DEFAULT_TITLE}`}
+                          icon={<SafeIcon src={getNubiIconUrl()} width={20} height={20} alt={`Ask ${DEFAULT_TITLE}`} />}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleGenerateLogAnalysis(item);
+                          }}
+                        />
+                        <ThreeDotsMenu sx={{ ...action.primary }} menuItems={MENU_ITEMS} data={item} onMenuClick={onMenuClick} />
+                      </Box>
+                    ),
+                  },
+                ];
+              });
+
+            rawGroupDataRef.current = filteredData;
+            ticketReferenceMapRef.current = ticketReferenceMap;
+            buildRowDataRef.current = buildRowData;
+            setGroupingLogData(buildRowData(filteredData, ticketReferenceMap));
             if (isFiltered) {
               snackbar.info('Showing first 500 records. Use filters to view specific data.');
             }
@@ -361,8 +364,17 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({ accountId
     setIsTicketCreateFormOpen(false);
   };
 
-  const handleTicketSuccess = () => {
-    handleSubmit();
+  const handleTicketSuccess = ({ ticketId, url }: { ticketId?: string; url?: string } = {}) => {
+    const referenceId = (ticketData as any)?.pattern_hash;
+    if (!referenceId || !buildRowDataRef.current) return;
+    ticketReferenceMapRef.current.set(referenceId, { ticket_id: ticketId, url });
+    const idx = rawGroupDataRef.current.findIndex((item: any) => item.pattern_hash === referenceId);
+    if (idx === -1) return;
+    setGroupingLogData((prev) => {
+      const next = [...prev];
+      next[idx] = buildRowDataRef.current!([rawGroupDataRef.current[idx]], ticketReferenceMapRef.current)[0];
+      return next;
+    });
   };
 
   const handleTicketFailure = (res: string) => {

@@ -17,10 +17,16 @@ import { getAccountCreationSuccessMsg, parseHttpResponseBodyMessage, safeJSONPar
 import { toast as snackbar } from '@ui/Toast';
 import { DeleteIconRed as NewDelete, infoIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import apiTicketIntegrations from '@api1/tickets';
 import cache from '@lib/cache';
 import VmAgentCredentialsDialog from './VmAgentCredentialsDialog';
 import { docsUrl } from '@lib/externalUrls';
+
+// Group-header icon for the account dropdown — maps a group (the account's
+// cloud_provider: K8S/AWS/Azure/GCP) to its provider icon. Same pattern as the
+// Account filter on the Troubleshoot/Events page.
+const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='16px' height='16px' />;
 
 const COMMON_WEBHOOK_LABEL_KEYS = [
   'alertname',
@@ -137,14 +143,18 @@ const IntegrationDynamicFormModal = ({
       setIsLoadingSchema(true);
       const fetchData = async (configs) => {
         const updatedConfig = { ...configs };
-        // Webhook integrations route incoming alerts to any account (a cloud
-        // account is a valid target), so they list every account. Relay/agent
-        // integrations target a K8s cluster — cloud accounts have no relay
-        // agent and fail at save time — so they exclude cloud accounts.
-        // Prefer the backend-provided category; fall back to the integration
-        // name (every webhook integration is named *_webhook) so this works
-        // even before the backend that surfaces `category` is deployed.
-        const showAllAccounts = configs.category === 'incident_webhook' || (integrationName || '').toLowerCase().includes('webhook');
+        // Which integrations may bind to CLOUD accounts (AWS/Azure/GCP/CloudFoundry)?
+        // - Webhooks route incoming alerts to any account, so they list everything.
+        // - Otherwise only providers whose log source serves arbitrary cloud-account
+        //   logs (a raw-query pass-through against a generic logs backend) are allowed.
+        //   K8s-only sources whose query is keyed on proprietary k8s columns/paths
+        //   (loggly, pinot, hive, azure_app_insights, signoz) stay K8s-only, as does
+        //   New Relic by product decision (issue #29403) even though it is technically
+        //   capable. Agent-sourced providers (loki, prometheus, otel, ES-agent) are
+        //   never cloud-eligible, hence !isAgentSource.
+        const CLOUD_CAPABLE_INTEGRATIONS = ['datadog', 'observe', 'dynatrace', 'splunk_observability_platform', 'solarwinds', 'elasticsearch'];
+        const isWebhook = configs.category === 'incident_webhook' || (integrationName || '').toLowerCase().includes('webhook');
+        const showAllAccounts = isWebhook || (!isAgentSource && CLOUD_CAPABLE_INTEGRATIONS.includes((integrationName || '').toLowerCase()));
         for (const key in updatedConfig.properties) {
           const field = updatedConfig.properties[key];
           if (field.auto_generate_func && field.auto_generate_func === 'listAccounts') {
@@ -152,15 +162,26 @@ const IntegrationDynamicFormModal = ({
               setLoadingOptions((prev) => ({ ...prev, [key]: true }));
               const res = await apiUser.listAccounts();
               if (res.length > 0) {
-                // For relay/agent integrations drop cloud accounts (no relay
-                // agent → fails at save time); mirrors the relay-eligibility
-                // rule in the backend's agent_service. Webhook integrations keep
-                // the full list (see showAllAccounts above).
+                // Drop cloud accounts for integrations that only support K8s
+                // clusters (they'd have no relay agent / no cloud data path and
+                // fail at save). Allow-listed providers and webhooks keep the
+                // full list (see showAllAccounts above).
                 const accounts = showAllAccounts
                   ? res
                   : res.filter((account) => !['AWS', 'Azure', 'GCP', 'CloudFoundry'].includes(account.cloud_provider));
-                const cloudAccounts = accounts.map((account) => ({ label: account.account_name, value: account.id }));
+                // Group each option by its cloud_provider (K8S/AWS/Azure/GCP) so the
+                // dropdown separates cloud accounts from K8s clusters — same grouping
+                // the Account filter on the Troubleshoot page uses.
+                const cloudAccounts = accounts.map((account) => ({
+                  label: account.account_name,
+                  value: account.id,
+                  group: account.cloud_provider || 'Other',
+                }));
                 updatedConfig.properties[key].possible_values = cloudAccounts;
+                // Group only when there's more than one account type to separate
+                // (e.g. K8S + AWS for Datadog); a single-type list stays flat so it
+                // doesn't hide every option behind a collapsed group header.
+                updatedConfig.properties[key].grouped = new Set(cloudAccounts.map((a) => a.group)).size > 1;
                 // Forcing default=[] makes the renderer pick the multi-select
                 // branch. Skip when the schema marks the field single_select.
                 if (!field.single_select) {
@@ -1480,6 +1501,8 @@ const IntegrationDynamicFormModal = ({
                                       label={field.display_name || snakeToTitleCase(key)}
                                       value={value || []}
                                       options={field.possible_values ?? []}
+                                      grouped={field.grouped}
+                                      groupIcon={field.grouped ? renderAccountGroupIcon : undefined}
                                       disabled={field.possible_values?.length === 0}
                                       onSelect={(_, value) => handleChange(key, value)}
                                       isOptionsLoading={loadingOptions[key]}
@@ -1518,6 +1541,8 @@ const IntegrationDynamicFormModal = ({
                                       label={field.display_name || snakeToTitleCase(key)}
                                       value={value}
                                       options={field.possible_values || []}
+                                      grouped={field.grouped}
+                                      groupIcon={field.grouped ? renderAccountGroupIcon : undefined}
                                       disabled={
                                         field.possible_values?.length == 0 ||
                                         (editData?.integration_config_values?.account_id && key == 'account_id') ||

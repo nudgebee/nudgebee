@@ -11,6 +11,8 @@ import (
 	"nudgebee/services/internal/testenv"
 	"nudgebee/services/security"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -220,17 +222,36 @@ func TestUpdateYamlPath(t *testing.T) {
 	fmt.Println(string(data))
 }
 
+// TestUpdateCodeCommit exercises the real checkout→commit→raise-PR path with no
+// live repo, no token, and no network. A recording GitProvider seeds a local
+// git repo with a helm values file; the production Commit logic then edits and
+// commits it for real, and we assert on the resulting commit and on the pull
+// request the provider would have raised. The original real-clone version lives
+// behind `//go:build live` in github_live_test.go.
 func TestUpdateCodeCommit(t *testing.T) {
-	m := testenv.RequireEnv(t, "GITHUB_TOKEN", "TEST_GITHUB_ORG", "TEST_GITHUB_REPO")
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("skipping: git binary not available")
+	}
+
+	// commitCode reads the committer identity from config; pin it so the run is
+	// self-contained (the config-globals technique, Class C in #31114).
+	origEmail, origUser := config.Config.GitCommitNudgebeeEmail, config.Config.GitCommitNudgebeeUser
+	config.Config.GitCommitNudgebeeEmail = "ci@nudgebee.test"
+	config.Config.GitCommitNudgebeeUser = "nudgebee-ci"
+	defer func() {
+		config.Config.GitCommitNudgebeeEmail = origEmail
+		config.Config.GitCommitNudgebeeUser = origUser
+	}()
+
+	const valuesPath = "deploy/kubernetes/app/values-dev.yaml"
 	details := gitDetailFromDeployment{
-		Org:        m["TEST_GITHUB_ORG"],
-		Repo:       m["TEST_GITHUB_REPO"],
+		Org:        "seed-org",
+		Repo:       "seed-repo",
 		BaseBranch: "main",
-		FilePath:   "deploy/kubernetes/app/values-dev.yaml",
+		FilePath:   valuesPath,
 		Annotations: map[string]string{
 			"ci.nudgebee.com/helm.values.memoryRequestJsonPath": "resources.requests.memory",
 		},
-		Token: os.Getenv("GITHUB_TOKEN"),
 	}
 	recommendation := ApplyRecommendationRequest{
 		Recommendation: models.Recommendation{
@@ -238,34 +259,52 @@ func TestUpdateCodeCommit(t *testing.T) {
 			Category: "RightSizing",
 			RuleName: "pod_right_sizing",
 		},
+		ResolverType: "recommendation",
 		Data: map[string]any{
-			"app": map[string]any{ // Container name
+			"app": map[string]any{ // container name
 				"memory": map[string]any{
 					"request": "200Mi",
 				},
 			},
 		},
 	}
-	dir, err := checkoutCodeRepo(security.NewRequestContextForSuperAdmin(nil, nil, nil), recommendation, details)
+
+	git := newRecordingGitProvider(map[string]string{valuesPath: sampleYamlData})
+	ctx := &testAccountAdapterContext{}
+
+	dir, err := git.Checkout(ctx, recommendation, details)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, dir)
 	defer func() {
 		if dir != "" {
-			err := os.RemoveAll(dir)
-			assert.Nil(t, err)
+			assert.NoError(t, os.RemoveAll(dir))
 		}
 	}()
-	fmt.Println(dir)
-	assert.Nil(t, err)
-	assert.NotNil(t, dir)
-	assert.NotEmptyf(t, dir, "")
 
-	branchName, err := commitCode(security.NewRequestContextForSuperAdmin(nil, nil, nil), dir, recommendation, details, false)
-	assert.Nil(t, err)
-	assert.NotEmpty(t, branchName)
+	branchName, err := git.Commit(ctx, dir, recommendation, details, false)
+	assert.NoError(t, err)
+	assert.Equal(t, "nb/1", branchName)
 
-	// response, err := raisePrForCodeRepo(security.NewRequestContextForSuperAdmin(), dir, branchName, details)
-	// assert.Nil(t, err)
-	// assert.NotNil(t, response)
+	// The real commit logic edited the seeded values file in place (250Mi→200Mi).
+	updated, err := os.ReadFile(filepath.Join(dir, valuesPath))
+	assert.NoError(t, err)
+	assert.Contains(t, string(updated), "200Mi")
+	assert.NotContains(t, string(updated), "250Mi")
 
+	// And a real commit was created on the new branch by the production path.
+	logLine, err := gitOutput(dir, "log", "--oneline", "-1")
+	assert.NoError(t, err)
+	assert.Contains(t, logLine, "ci: Updated recommendation 1")
+
+	// Finally, assert on the PR the provider would have raised — recorded, not sent.
+	prURL, err := git.RaisePR(ctx, dir, branchName, details, false, 0, "memory rightsizing", recommendation.ResolverType, "Rightsize app")
+	assert.NoError(t, err)
+	assert.NotEmpty(t, prURL)
+	if assert.Len(t, git.raised, 1) {
+		assert.Equal(t, "nb/1", git.raised[0].branchName)
+		assert.Equal(t, "Rightsize app", git.raised[0].title)
+		assert.False(t, git.raised[0].updateExistingPR)
+	}
 }
 
 func TestApplyRecommendationUsingCodeAgent(t *testing.T) {

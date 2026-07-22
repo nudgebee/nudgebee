@@ -730,3 +730,27 @@ func TestSetNodeProperty(t *testing.T) {
 		t.Errorf("SetNodeProperty() port = %v, want %v", node.Properties["port"], 8080)
 	}
 }
+
+func TestExtractNodeLocation(t *testing.T) {
+	tests := []struct {
+		name       string
+		properties map[string]interface{}
+		want       string
+	}{
+		{"GCP compute prefers zone", map[string]interface{}{"zone": "us-central1-a", "region": "us-central1"}, "us-central1-a"},
+		{"AWS uses availability_zone over region", map[string]interface{}{"availability_zone": "us-east-1b", "region": "us-east-1"}, "us-east-1b"},
+		{"Subnet falls back to region", map[string]interface{}{"region": "europe-west1"}, "europe-west1"},
+		{"Azure falls back to location", map[string]interface{}{"location": "eastus"}, "eastus"},
+		{"No location fields", map[string]interface{}{"name": "default"}, ""},
+		{"Nil properties", nil, ""},
+		{"Empty string zone falls through to region", map[string]interface{}{"zone": "", "region": "us-west2"}, "us-west2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractNodeLocation(tt.properties); got != tt.want {
+				t.Errorf("extractNodeLocation() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

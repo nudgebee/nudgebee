@@ -227,6 +227,81 @@ func fetchIntegrationWithConfigValues(dbManager *database.DatabaseManager, integ
 	return config, nil
 }
 
+// ListTicketConfigsForTenant returns the enabled ticketing integrations for a
+// tenant with only the fields the create-ticket form needs to pick a config
+// and project (id, name, tool, status, projects). It never returns URLs or
+// credentials, so it is safe to expose at read level to roles that can create
+// tickets but not manage integrations (see ListTicketConfigs / NB-32822).
+func ListTicketConfigsForTenant(tenantId string) ([]models.TicketConfigOption, error) {
+	dbManager, err := database.GetDatabaseManager()
+	if err != nil {
+		slog.Error("Failed to get database manager:", "error", err)
+		return nil, err
+	}
+
+	type configRow struct {
+		ID                string  `db:"id"`
+		Name              string  `db:"name"`
+		Tool              string  `db:"tool"`
+		Status            string  `db:"status"`
+		Projects          *string `db:"projects"`
+		ProjectsEncrypted bool    `db:"projects_encrypted"`
+	}
+
+	var rows []configRow
+	// LEFT JOIN the single 'projects' config value so configs without projects
+	// still appear in the dropdown. Only metadata is selected — no secrets.
+	err = dbManager.Select(&rows, `
+		SELECT i.id, i.name, i.type AS tool, i.status,
+		       cv.value AS projects,
+		       COALESCE(cv.is_encrypted, false) AS projects_encrypted
+		FROM integrations i
+		LEFT JOIN integration_config_values cv
+		  ON cv.integration_id = i.id AND cv.name = 'projects'
+		WHERE i.tenant_id = $1
+		  AND i.status = 'enabled'
+		  AND i.type IN ('jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty')
+		ORDER BY i.name ASC`,
+		tenantId)
+	if err != nil {
+		slog.Error("Error listing ticket configurations:", "tenant", tenantId, "error", slog.AnyValue(err))
+		return nil, err
+	}
+
+	options := make([]models.TicketConfigOption, 0, len(rows))
+	for _, r := range rows {
+		opt := models.TicketConfigOption{
+			ID:       r.ID,
+			Name:     r.Name,
+			Tool:     r.Tool,
+			Status:   r.Status,
+			Projects: []models.Project{},
+		}
+		if r.Projects != nil && *r.Projects != "" {
+			value := *r.Projects
+			// projects is plain metadata in practice, but honour the flag so a
+			// future encrypted value doesn't render as garbage.
+			if r.ProjectsEncrypted {
+				decrypted, derr := common.Decrypt(value)
+				if derr != nil {
+					slog.Warn("Failed to decrypt projects config value", "integration_id", r.ID, "error", derr)
+					value = ""
+				} else {
+					value = decrypted
+				}
+			}
+			if value != "" {
+				if jerr := json.Unmarshal([]byte(value), &opt.Projects); jerr != nil {
+					slog.Warn("Failed to unmarshal projects config value", "integration_id", r.ID, "error", jerr)
+				}
+			}
+		}
+		options = append(options, opt)
+	}
+
+	return options, nil
+}
+
 func CreateIssue(ctx *gin.Context, ticket models.Ticket) (models.TicketInsertResponse, error) {
 	slog.Info("New ticket create request received for:", "ticket", ticket)
 

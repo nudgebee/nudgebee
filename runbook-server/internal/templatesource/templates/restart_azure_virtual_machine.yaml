@@ -1,0 +1,70 @@
+slug: restart_azure_virtual_machine
+name: "Restart Azure Virtual Machine"
+description: "Restart an Azure VM. Useful for unresponsive VMs or after applying configuration changes."
+category: "azure"
+icon: "power_settings_new"
+status: ACTIVE
+tags:
+  labels:
+    - "restart"
+    - "disruptive"
+  event_sources:
+    - "azure_monitor"
+    - "azure"
+  alert_names:
+    - "VirtualMachineNotResponding"
+    - "VMAvailabilityIssue"
+    - "Percentage CPU"
+definition:
+  version: "v1"
+  inputs:
+    - id: "resource_group"
+      type: "string"
+      description: "Azure resource group name"
+      required: true
+    - id: "vm_name"
+      type: "string"
+      description: "VM name to restart"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Approve restarting Azure VM **{{ Inputs.vm_name }}** in resource group **{{ Inputs.resource_group }}**?"
+    - id: "restart"
+      type: "cloud.azure.cli"
+      params:
+        command: "az vm restart --resource-group {{ Inputs.resource_group }} --name {{ Inputs.vm_name }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.azure.cli"
+      params:
+        command: "az vm show --resource-group {{ Inputs.resource_group }} --name {{ Inputs.vm_name }} --show-details --query {powerState:powerState,provisioningState:provisioningState}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "restart"
+  timeout: "10m"
+template_variables:
+  - id: "resource_group"
+    input_ref: "resource_group"
+    display_name: "Resource Group"
+    required: true
+    type: "string"
+  - id: "vm_name"
+    input_ref: "vm_name"
+    display_name: "VM Name"
+    required: true
+    type: "string"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

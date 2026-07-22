@@ -890,10 +890,6 @@ func (p *TemplatedEventBridgeProcessor) executeAction(
 			case "task-definition":
 				// Assuming resource_identifier is the task definition ARN or family:revision
 				resource, getErr = p.awsAPI.GetECSTaskDefinitionDetails(pCtx, awsAccount, region, params.ResourceIdentifier)
-			// Add other specific ECS resource types if needed (e.g., "task")
-			// case "task":
-			// 	// Requires cluster and task identifier. Need to parse from ARN or separate params.
-			// 	// resource, getErr = p.awsAPI.GetECSTaskDetails(...)
 			default:
 				// Fallback to ListResources for other ECS resource types or if type is missing
 				logger.Debug("eventprocessor: falling back to ListResources for ECS resource type", "resourceType", params.ResourceType)
@@ -915,10 +911,15 @@ func (p *TemplatedEventBridgeProcessor) executeAction(
 		return resource, nil
 
 	fallbackToListResources:
-		// Fallback to the old ListResources and filter logic
+		// Fallback to the old ListResources and filter logic. ResourceIds routes
+		// services that support it (ECS task ARNs, EC2 instance ids) through the
+		// targeted GetResourcesByIds path instead of a full region-wide inventory
+		// scan per event; unsupported services fall back to the full scan inside
+		// ListResources exactly as before.
 		res, listErr := p.awsAPI.ListResources(pCtx, awsAccount, providers.ListResourceRequest{
 			ServiceName: params.ServiceName,
 			Regions:     []string{region},
+			ResourceIds: []string{params.ResourceIdentifier},
 		})
 		if listErr != nil {
 			return nil, fmt.Errorf("eventprocessor: calling ListResources fallback for action '%s' (service: %s, region: %s): %w", actionDef.Name, params.ServiceName, region, listErr)

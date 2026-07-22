@@ -15,14 +15,19 @@ import (
 	"github.com/lib/pq"
 )
 
-// identityKeyExpr is the logical identity of an external account, independent of
-// which integration instance produced it: the email if present, else the lowered
-// external user id. A person who appears across N integrations of the same type
-// (e.g. 9 PagerDuty connections) within one cloud account shares one identity key,
-// so the read queries collapse them to one row per account and map/unmap act on
-// all of that account's instances at once. Qualified to the `iua` alias, which
-// every query in this file uses for integration_user_accounts.
+// identityKeyExpr is the logical identity of an external account within one
+// integration instance: the email if present, else the lowered external user id.
+// Combined with integration_id, it dedupes duplicate rows of the same person
+// inside a single instance (e.g. an email row and an id-only row). Each
+// (account, type, integration_id, identity) is its own mappable row, so two
+// instances of the same type (e.g. two ServiceNow connections) are independent —
+// read queries show each instance separately and map/unmap act on one instance.
+// Qualified to the `iua` alias, which every query in this file uses for
+// integration_user_accounts.
 const identityKeyExpr = `COALESCE(NULLIF(lower(iua.external_email), ''), lower(iua.external_user_id))`
+
+// errTenantIDRequired is the bad-request message used by the tenant-scoped write paths.
+const errTenantIDRequired = "tenant_id is required"
 
 // syncedAccount is one (account scope, external user) tuple to upsert.
 type syncedAccount struct {
@@ -160,6 +165,50 @@ func sweepDisabledIntegrations(db *sqlx.DB, tenantId string, types, enabledInteg
 	return err
 }
 
+// PurgeDisabledIntegrationAccounts immediately clears the integration_user_accounts
+// rows of one just-disabled integration instance, so the Integration Profiles UI
+// reflects the disable without waiting for the next identity-sync run. It applies the
+// same rule as sweepDisabledIntegrations — manual mappings are tombstoned
+// (is_active=false, preserved so they reactivate if the integration is re-enabled);
+// everything else is hard-deleted — scoped to the single instance identified by
+// (type, config name), resolved the same way as core.ListLinkedCloudAccountIDs.
+// Best-effort: the sync's sweepDisabledIntegrations remains the backstop. Lives in
+// the user package (which owns the table); the disable action handler calls it,
+// since integrations/core can't import user (import cycle).
+func PurgeDisabledIntegrationAccounts(ctx *security.RequestContext, integrationType, integrationConfigName string) error {
+	tenantId := ctx.GetSecurityContext().GetTenantId()
+	if tenantId == "" {
+		return common.ErrorBadRequest(errTenantIDRequired)
+	}
+	manager, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return err
+	}
+
+	// Tombstone manual mappings for the instance (preserved for reactivation).
+	if _, err := manager.Db.Exec(`
+		UPDATE integration_user_accounts iua
+		SET is_active = false, updated_at = now()
+		FROM integrations i
+		WHERE i.id = iua.integration_id
+		  AND iua.tenant_id = $1::uuid AND i.tenant_id = $1::uuid
+		  AND lower(i.type) = lower($2) AND lower(i.name) = lower($3)
+		  AND iua.mapped_via = $4 AND iua.is_active = true`,
+		tenantId, integrationType, integrationConfigName, MappedViaManual); err != nil {
+		return err
+	}
+	// Hard-delete everything else (unmapped / auto-mapped) for the instance.
+	_, err = manager.Db.Exec(`
+		DELETE FROM integration_user_accounts iua
+		USING integrations i
+		WHERE i.id = iua.integration_id
+		  AND iua.tenant_id = $1::uuid AND i.tenant_id = $1::uuid
+		  AND lower(i.type) = lower($2) AND lower(i.name) = lower($3)
+		  AND iua.mapped_via IS DISTINCT FROM $4`,
+		tenantId, integrationType, integrationConfigName, MappedViaManual)
+	return err
+}
+
 // autoMatchByEmail links still-unmapped (or previously auto-mapped) accounts to
 // the internal user whose username (= email) matches the account email,
 // case-insensitively. Manual mappings (mapped_via = 'manual') are never touched.
@@ -225,21 +274,24 @@ func ListIntegrationAccountsForUser(ctx *security.RequestContext, userId string)
 		return nil, err
 	}
 
-	// DISTINCT ON collapses the same person across multiple integration instances
-	// of one type within an account into a single representative row (newest sync
-	// wins). Rows are grouped per account, so an identity scoped to N accounts
-	// shows once per account.
+	// DISTINCT ON collapses duplicate rows of the same person within one integration
+	// instance into a single representative row (newest sync wins). Including
+	// integration_id keeps instances separate, so a person present in N instances of
+	// one type shows once per instance. (NULLs group together for legacy rows.)
 	var rows []IntegrationUserAccount
 	err = manager.Db.Select(&rows, `
-		SELECT DISTINCT ON (iua.account_id, iua.integration_type, `+identityKeyExpr+`)
+		SELECT DISTINCT ON (iua.account_id, iua.integration_type, iua.integration_id, `+identityKeyExpr+`)
 		       iua.id, iua.tenant_id, iua.account_id, ca.account_name AS account_name,
-		       iua.integration_type, iua.integration_id, iua.external_user_id,
+		       iua.integration_type, iua.integration_id, intg.name AS integration_name, iua.external_user_id,
 		       iua.external_username, iua.external_email, iua.external_display_name,
-		       iua.mapped_user_id, iua.mapped_via, iua.mapped_by, iua.last_synced_at, iua.created_at, iua.updated_at
+		       iua.mapped_user_id, iua.mapped_via, iua.mapped_by, COALESCE(NULLIF(mb.display_name::text, ''), mb.username::text) AS mapped_by_name,
+		       iua.last_synced_at, iua.created_at, iua.updated_at
 		FROM integration_user_accounts iua
 		LEFT JOIN cloud_accounts ca ON ca.id = iua.account_id
+		LEFT JOIN integrations intg ON intg.id = iua.integration_id
+		LEFT JOIN users mb ON mb.id = iua.mapped_by
 		WHERE iua.tenant_id = $1::uuid AND iua.mapped_user_id = $2::uuid AND iua.is_active = true
-		ORDER BY iua.account_id, iua.integration_type, `+identityKeyExpr+`, iua.last_synced_at DESC NULLS LAST`, tenantId, userId)
+		ORDER BY iua.account_id, iua.integration_type, iua.integration_id, `+identityKeyExpr+`, iua.last_synced_at DESC NULLS LAST`, tenantId, userId)
 	if err != nil {
 		return nil, err
 	}
@@ -264,23 +316,25 @@ func ListUnmappedAccounts(ctx *security.RequestContext, integrationType string) 
 		return nil, err
 	}
 
-	// DISTINCT ON dedupes the same unmatched person across integration instances
-	// per account, so the manual-map picker shows each (account, identity) once.
+	// DISTINCT ON dedupes the same unmatched person within one integration instance,
+	// so the manual-map picker shows each (account, instance, identity) once — the
+	// same person in two instances of a type appears as two pickable rows.
 	query := `
-		SELECT DISTINCT ON (iua.account_id, iua.integration_type, ` + identityKeyExpr + `)
+		SELECT DISTINCT ON (iua.account_id, iua.integration_type, iua.integration_id, ` + identityKeyExpr + `)
 		       iua.id, iua.tenant_id, iua.account_id, ca.account_name AS account_name,
-		       iua.integration_type, iua.integration_id, iua.external_user_id,
+		       iua.integration_type, iua.integration_id, intg.name AS integration_name, iua.external_user_id,
 		       iua.external_username, iua.external_email, iua.external_display_name,
 		       iua.mapped_user_id, iua.mapped_via, iua.mapped_by, iua.last_synced_at, iua.created_at, iua.updated_at
 		FROM integration_user_accounts iua
 		LEFT JOIN cloud_accounts ca ON ca.id = iua.account_id
+		LEFT JOIN integrations intg ON intg.id = iua.integration_id
 		WHERE iua.tenant_id = $1::uuid AND iua.mapped_user_id IS NULL AND iua.is_active = true`
 	args := []any{tenantId}
 	if integrationType != "" {
 		query += ` AND iua.integration_type = $2`
 		args = append(args, integrationType)
 	}
-	query += ` ORDER BY iua.account_id, iua.integration_type, ` + identityKeyExpr + `, iua.last_synced_at DESC NULLS LAST`
+	query += ` ORDER BY iua.account_id, iua.integration_type, iua.integration_id, ` + identityKeyExpr + `, iua.last_synced_at DESC NULLS LAST`
 
 	var rows []IntegrationUserAccount
 	if err := manager.Db.Select(&rows, query, args...); err != nil {
@@ -305,7 +359,7 @@ func CreateAccountMapping(ctx *security.RequestContext, request CreateAccountMap
 	}
 	tenantId := ctx.GetSecurityContext().GetTenantId()
 	if tenantId == "" {
-		return AccountMappingResponse{}, common.ErrorBadRequest("tenant_id is required")
+		return AccountMappingResponse{}, common.ErrorBadRequest(errTenantIDRequired)
 	}
 
 	manager, err := database.GetDatabaseManager(database.Metastore)
@@ -313,14 +367,14 @@ func CreateAccountMapping(ctx *security.RequestContext, request CreateAccountMap
 		return AccountMappingResponse{}, err
 	}
 
-	// Map every instance sharing the selected row's (account, identity) — e.g. all
-	// PagerDuty rows for the same person in that cloud account — not just the
-	// representative row. A different cloud account's row for the same person is a
-	// separate mapping and is untouched.
+	// Map the selected instance's rows for this person — every row sharing the
+	// (account, type, integration_id, identity) of the picked row, so duplicate rows
+	// of the same person within that one instance map together. Other instances of
+	// the same type (and other accounts) are separate mappings, untouched.
 	mappedBy := ctx.GetSecurityContext().GetUserId()
 	res, err := manager.Db.Exec(`
 		WITH target AS (
-			SELECT account_id, integration_type, `+identityKeyExpr+` AS ikey
+			SELECT account_id, integration_type, integration_id, `+identityKeyExpr+` AS ikey
 			FROM integration_user_accounts iua
 			WHERE iua.id = $1::uuid AND iua.tenant_id = $2::uuid
 		)
@@ -330,6 +384,7 @@ func CreateAccountMapping(ctx *security.RequestContext, request CreateAccountMap
 		WHERE iua.tenant_id = $2::uuid
 		  AND iua.account_id IS NOT DISTINCT FROM target.account_id
 		  AND iua.integration_type = target.integration_type
+		  AND iua.integration_id IS NOT DISTINCT FROM target.integration_id
 		  AND `+identityKeyExpr+` = target.ikey`,
 		request.MappingId, tenantId, request.UserId, MappedViaManual, mappedBy)
 	if err != nil {
@@ -352,7 +407,7 @@ func DeleteAccountMapping(ctx *security.RequestContext, request DeleteAccountMap
 	}
 	tenantId := ctx.GetSecurityContext().GetTenantId()
 	if tenantId == "" {
-		return AccountMappingResponse{}, common.ErrorBadRequest("tenant_id is required")
+		return AccountMappingResponse{}, common.ErrorBadRequest(errTenantIDRequired)
 	}
 
 	manager, err := database.GetDatabaseManager(database.Metastore)
@@ -360,12 +415,13 @@ func DeleteAccountMapping(ctx *security.RequestContext, request DeleteAccountMap
 		return AccountMappingResponse{}, err
 	}
 
-	// Clear the link on every instance sharing this row's (account, identity) so an
-	// unmapped person can't reappear via a sibling integration's row in the same
-	// account. Other accounts' mappings for the same person are left intact.
+	// Clear the link on the selected instance's rows for this person (account, type,
+	// integration_id, identity). Sibling instances of the same type keep their own
+	// mappings — under the per-instance model they are independent; an unmapped
+	// person can legitimately still be mapped via another instance.
 	res, err := manager.Db.Exec(`
 		WITH target AS (
-			SELECT account_id, integration_type, `+identityKeyExpr+` AS ikey
+			SELECT account_id, integration_type, integration_id, `+identityKeyExpr+` AS ikey
 			FROM integration_user_accounts iua
 			WHERE iua.id = $1::uuid AND iua.tenant_id = $2::uuid
 		)
@@ -375,6 +431,7 @@ func DeleteAccountMapping(ctx *security.RequestContext, request DeleteAccountMap
 		WHERE iua.tenant_id = $2::uuid
 		  AND iua.account_id IS NOT DISTINCT FROM target.account_id
 		  AND iua.integration_type = target.integration_type
+		  AND iua.integration_id IS NOT DISTINCT FROM target.integration_id
 		  AND `+identityKeyExpr+` = target.ikey`,
 		request.MappingId, tenantId)
 	if err != nil {

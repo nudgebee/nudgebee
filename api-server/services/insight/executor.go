@@ -20,6 +20,10 @@ import (
 
 const insightQueryTimeout = 5 * time.Minute
 
+// insightInventoryQueryTimeout bounds the Postgres k8s_pods lookup used to
+// validate trace workloads, so a slow/stuck query can't hang the insight job.
+const insightInventoryQueryTimeout = 30 * time.Second
+
 // maxChronosphereTraceDuration is the maximum lookback window Chronosphere
 // accepts for trace queries. Requests beyond this are rejected upstream.
 const maxChronosphereTraceDuration = 120 * time.Minute
@@ -1041,6 +1045,66 @@ func processTraceAggregationRule(ctx *security.RequestContext, rule InsightRule,
 	return insights, nil
 }
 
+// workloadKey is the lookup key used to match a trace's (workload_name,
+// workload_namespace) against the account's real K8s workload inventory.
+func workloadKey(name, namespace string) string {
+	return name + "\x1f" + namespace
+}
+
+// knownWorkloadKeys returns the set of real K8s workloads (keyed by
+// workloadKey) for an account, sourced from the k8s_pods inventory.
+//
+// The trace-aggregation rules group by the materialized `workload_name`
+// column, which is a best-effort fallback (source.workload_name →
+// k8s.deployment.name → service.name). For eBPF spans the agent could not
+// attribute to a Deployment, that value is the raw node name (namespace
+// "node"), an ephemeral pod name (e.g. action-runner pods), or an
+// uncollapsed ReplicaSet name — none of which are real workloads but all of
+// which would otherwise surface as "applications" in the insight. Matching
+// against the k8s_pods inventory keeps genuine workloads (including
+// eBPF-only ones such as temporal-*) and drops the rest.
+func knownWorkloadKeys(ctx *security.RequestContext, accountId string) (map[string]struct{}, error) {
+	if accountId == "" {
+		return nil, fmt.Errorf("knownWorkloadKeys: empty accountId")
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return nil, err
+	}
+
+	const q = `
+		SELECT DISTINCT workload_name, COALESCE("namespace", '') AS "namespace"
+		FROM k8s_pods
+		WHERE cloud_account_id = $1
+			AND is_active IS NOT FALSE
+			AND workload_name IS NOT NULL
+			AND workload_name != ''`
+
+	dbCtx, cancel := context.WithTimeout(context.Background(), insightInventoryQueryTimeout)
+	defer cancel()
+
+	rows, err := dbms.Db.QueryxContext(dbCtx, dbms.Db.Rebind(q), accountId)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			ctx.GetLogger().Error("insight: failed to close workload inventory rows", "error", err)
+		}
+	}()
+
+	known := map[string]struct{}{}
+	for rows.Next() {
+		var name, namespace string
+		if err := rows.Scan(&name, &namespace); err != nil {
+			return nil, err
+		}
+		known[workloadKey(name, namespace)] = struct{}{}
+	}
+	return known, rows.Err()
+}
+
 func processTraceAggregationRuleForAccount(ctx *security.RequestContext, rule InsightRule, accountId string) (Insight, error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1102,12 +1166,55 @@ func processTraceAggregationRuleForAccount(ctx *security.RequestContext, rule In
 		return Insight{}, fmt.Errorf("trace query errors: %v", resp.Errors)
 	}
 
+	// Restrict to genuine K8s workloads. The trace `workload_name` is a
+	// best-effort fallback that, for unattributed eBPF spans, can be a node
+	// name, an ephemeral pod name, or an uncollapsed ReplicaSet name. Matching
+	// against the account's k8s_pods inventory drops those while keeping real
+	// workloads (including eBPF-only ones). On error or empty inventory we fall
+	// back to no filtering so a transient inventory gap never silently blanks
+	// the insight.
+	known, err := knownWorkloadKeys(ctx, accountId)
+	if err != nil {
+		ctx.GetLogger().Warn("insight: could not load k8s workload inventory for trace filtering; including all workloads", "accountId", accountId, "error", err)
+		known = nil
+	}
+
+	relevantApplications := selectRelevantTraceApplications(resp.Rows, rule, known)
+
+	if len(relevantApplications) == 0 {
+		return Insight{}, nil
+	}
+
+	return Insight{
+		Title:        rule.InsightFormat,
+		Type:         rule.InsightCategory,
+		Source:       rule.Source,
+		AccountID:    accountId,
+		Tenant:       "",
+		UniqueID:     rule.UniqueID,
+		Status:       InsightStatusOpen,
+		Severity:     rule.Severity,
+		Rule:         rule,
+		Applications: relevantApplications,
+	}, nil
+}
+
+// selectRelevantTraceApplications evaluates each grouped trace row against the
+// rule's threshold and returns the workloads that breach it. When `known` is
+// non-empty, rows whose (workload_name, workload_namespace) is not a real K8s
+// workload are dropped; a nil/empty `known` disables that filtering.
+func selectRelevantTraceApplications(rows []query.QueryRow, rule InsightRule, known map[string]struct{}) []RelevantApplications {
 	var relevantApplications []RelevantApplications
-	for _, row := range resp.Rows {
+	for _, row := range rows {
 		name := toStringValue(row["workload_name"])
 		namespace := toStringValue(row["workload_namespace"])
 		if name == "" {
 			continue
+		}
+		if len(known) > 0 {
+			if _, ok := known[workloadKey(name, namespace)]; !ok {
+				continue
+			}
 		}
 
 		matched := false
@@ -1130,23 +1237,7 @@ func processTraceAggregationRuleForAccount(ctx *security.RequestContext, rule In
 			})
 		}
 	}
-
-	if len(relevantApplications) == 0 {
-		return Insight{}, nil
-	}
-
-	return Insight{
-		Title:        rule.InsightFormat,
-		Type:         rule.InsightCategory,
-		Source:       rule.Source,
-		AccountID:    accountId,
-		Tenant:       "",
-		UniqueID:     rule.UniqueID,
-		Status:       InsightStatusOpen,
-		Severity:     rule.Severity,
-		Rule:         rule,
-		Applications: relevantApplications,
-	}, nil
+	return relevantApplications
 }
 
 func toStringValue(v any) string {

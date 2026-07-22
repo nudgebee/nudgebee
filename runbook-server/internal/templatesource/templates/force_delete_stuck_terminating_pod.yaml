@@ -1,0 +1,71 @@
+slug: force_delete_stuck_terminating_pod
+name: "Force Delete Stuck Terminating Pod"
+description: "Force-delete a pod stuck in Terminating state by skipping graceful shutdown. Useful when a pod cannot be drained or its finalizers are blocked."
+category: "kubernetes"
+icon: "delete_forever"
+status: ACTIVE
+tags:
+  labels:
+    - "delete"
+    - "destructive"
+  event_sources:
+    - "prometheus"
+    - "kubernetes_api_server"
+    - "alertmanager"
+  alert_names:
+    - "KubePodStuckTerminating"
+  subject_types:
+    - "pod"
+definition:
+  version: "v1"
+  inputs:
+    - id: "namespace"
+      type: "string"
+      description: "Kubernetes namespace"
+      required: true
+    - id: "pod_name"
+      type: "string"
+      description: "Name of the stuck pod"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Force delete pod **{{ Inputs.pod_name }}** in namespace **{{ Inputs.namespace }}**? This will skip graceful shutdown."
+    - id: "force_delete"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl delete pod {{ Inputs.pod_name }} -n {{ Inputs.namespace }} --grace-period=0 --force"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.k8s.cli"
+      params:
+        command: "if kubectl get pods -n {{ Inputs.namespace }} | grep -qw {{ Inputs.pod_name }}; then echo 'Error: Pod still exists'; exit 1; else echo 'Pod deleted successfully'; fi"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "force_delete"
+  timeout: "5m"
+template_variables:
+  - id: "namespace"
+    input_ref: "namespace"
+    display_name: "Namespace"
+    required: true
+    type: "string"
+  - id: "pod_name"
+    input_ref: "pod_name"
+    display_name: "Pod Name"
+    required: true
+    type: "string"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

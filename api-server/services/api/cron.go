@@ -258,6 +258,46 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 				nb.CleanupData(ctx)
 			}()
 			c.JSON(200, gin.H{"status": "ok"})
+		case "LLM Token Usage Short Cleanup":
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						ctx.GetLogger().Error("cron: panic in llm token usage short cleanup goroutine", "recovered", r)
+					}
+				}()
+				t0 := time.Now()
+				ctx.GetLogger().Info("cron: cleaning up standard llm token usage prompt/response bodies (short term)")
+				// Detached cron context never cancels on its own; bound the run so a
+				// hung DB statement can't leak this goroutine indefinitely.
+				tctx, cancel := context.WithTimeout(ctx.GetContext(), 10*time.Minute)
+				defer cancel()
+				runCtx := security.NewRequestContext(tctx, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+				if err := nb.CleanupLLMTokenUsageShortTerm(runCtx); err != nil {
+					ctx.GetLogger().Error("cron: error cleaning up llm token usage (short term)", "error", err)
+				}
+				ctx.GetLogger().Info("cron: llm token usage short cleanup done", "duration", time.Since(t0))
+			}()
+			c.JSON(200, gin.H{"status": "ok"})
+		case "LLM Token Usage Daily Cleanup":
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						ctx.GetLogger().Error("cron: panic in llm token usage daily cleanup goroutine", "recovered", r)
+					}
+				}()
+				t0 := time.Now()
+				ctx.GetLogger().Info("cron: cleaning up all aged llm token usage prompt/response bodies (catch-all)")
+				// Detached cron context never cancels on its own; bound the run so a
+				// hung DB statement can't leak this goroutine indefinitely.
+				tctx, cancel := context.WithTimeout(ctx.GetContext(), 15*time.Minute)
+				defer cancel()
+				runCtx := security.NewRequestContext(tctx, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+				if err := nb.CleanupLLMTokenUsageCatchAll(runCtx); err != nil {
+					ctx.GetLogger().Error("cron: error cleaning up llm token usage (catch-all)", "error", err)
+				}
+				ctx.GetLogger().Info("cron: llm token usage daily cleanup done", "duration", time.Since(t0))
+			}()
+			c.JSON(200, gin.H{"status": "ok"})
 		case "Recommendation Resolution Update":
 			go func() {
 				err = recommendation.UpdateResolutionStatus(ctx)

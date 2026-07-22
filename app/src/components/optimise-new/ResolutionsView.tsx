@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import apiRecommendations from '@api1/recommendation';
 import apiHome from '@api1/home';
 import apiUser from '@api1/user';
@@ -39,23 +39,40 @@ const statusToTone = (status: string): LabelTone => {
   }
 };
 
+// Guard against unexpectedly deep payloads — beyond this nesting level we dump
+// the remaining subtree as raw JSON rather than risk unbounded recursion.
+const KEY_VALUE_MAX_DEPTH = 10;
+
 /**
- * Render a flat object as a 2-column key/value list. Snake_case keys are
- * title-cased; non-scalar values fall back to JSON.stringify. Returns null for
- * non-object / empty input so the caller can decide the empty state.
+ * Render an object as a structured key/value tree. Top-level keys (entity
+ * identifiers such as container / workload names) are rendered verbatim;
+ * nested field names are snake_case → Title Cased. Nested objects recurse into
+ * an indented sub-list (rather than dumping raw JSON), so resource specs like
+ * `{ cpu: { request }, memory: { limit, request } }` read as a labelled tree.
+ * Arrays and remaining scalars render inline. Recursion is capped at
+ * KEY_VALUE_MAX_DEPTH (deeper subtrees fall back to a raw JSON dump). Returns
+ * null for non-object / empty input so the caller can decide the empty state.
  */
-const KeyValueList = ({ data }: { data: any }) => {
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+const KeyValueList = ({ data, depth = 0 }: { data: unknown; depth?: number }) => {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
     return null;
+  }
+  if (depth >= KEY_VALUE_MAX_DEPTH) {
+    return <Typography sx={{ fontSize: ds.text.body, color: ds.gray[700], wordBreak: 'break-word' }}>{JSON.stringify(data)}</Typography>;
   }
   const entries = Object.entries(data);
   if (entries.length === 0) {
     return null;
   }
 
-  const formatValue = (value: any) => {
+  const isNestedObject = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0;
+
+  const formatScalar = (value: unknown) => {
     if (value === null || value === undefined || value === '') return '—';
     if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+    if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '—';
+    if (Array.isArray(value)) return value.map((v) => (v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v))).join(', ');
     if (typeof value === 'object') return JSON.stringify(value);
     return String(value);
   };
@@ -63,18 +80,32 @@ const KeyValueList = ({ data }: { data: any }) => {
   return (
     <Box
       sx={{
-        display: 'grid',
-        gridTemplateColumns: 'minmax(140px, max-content) 1fr',
-        columnGap: ds.space[4],
+        display: 'flex',
+        flexDirection: 'column',
         rowGap: ds.space[3],
+        ...(depth > 0 && { pl: ds.space[4], borderLeft: `1px solid ${ds.gray[200]}` }),
       }}
     >
-      {entries.map(([key, value]) => (
-        <React.Fragment key={key}>
-          <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium, color: ds.gray[600] }}>{snakeToTitleCase(key)}</Typography>
-          <Typography sx={{ fontSize: ds.text.body, color: ds.gray[700], wordBreak: 'break-word' }}>{formatValue(value)}</Typography>
-        </React.Fragment>
-      ))}
+      {entries.map(([key, value]) => {
+        // Top-level keys are entity identifiers (e.g. container / workload names) —
+        // render them verbatim. Only the structured field names nested below
+        // (cpu, memory, request, limit, …) get snake_case → Title Case.
+        const label = depth === 0 ? key : snakeToTitleCase(key);
+        return isNestedObject(value) ? (
+          <Box key={key} sx={{ display: 'flex', flexDirection: 'column', rowGap: ds.space[2] }}>
+            <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium, color: ds.gray[600] }}>{label}</Typography>
+            <KeyValueList data={value} depth={depth + 1} />
+          </Box>
+        ) : (
+          <Box
+            key={key}
+            sx={{ display: 'grid', gridTemplateColumns: 'minmax(140px, max-content) 1fr', columnGap: ds.space[4], alignItems: 'baseline' }}
+          >
+            <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium, color: ds.gray[600] }}>{label}</Typography>
+            <Typography sx={{ fontSize: ds.text.body, color: ds.gray[700], wordBreak: 'break-word' }}>{formatScalar(value)}</Typography>
+          </Box>
+        );
+      })}
     </Box>
   );
 };

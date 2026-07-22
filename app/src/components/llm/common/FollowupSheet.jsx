@@ -6,6 +6,8 @@ import CloseIcon from '@mui/icons-material/Close';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import SearchIcon from '@mui/icons-material/Search';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
 import Tooltip from '@ui/Tooltip';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import MarkDowns from '@shared/viewers/MarkDowns';
@@ -168,6 +170,10 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
   // are 6+ options so long lists are easy to narrow down.
   const [filter, setFilter] = useState('');
   const [cursor, setCursor] = useState(0);
+  // Collapsed = sheet shrinks to just its head bar (question stays visible) so it stops
+  // covering the conversation. The body/footer are hidden via CSS (not unmounted), so the
+  // user's in-progress selections / draft text survive a collapse→expand round-trip.
+  const [isCollapsed, setIsCollapsed] = useState(false);
   const textareaRef = useRef(null);
   const optionsContainerRef = useRef(null);
 
@@ -198,6 +204,8 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
     setPendingAnswer(null);
     setFilter('');
     setCursor(0);
+    // A freshly arrived question must be visible — never start a new followup collapsed.
+    setIsCollapsed(false);
   }, [followupResetKey]);
 
   // Keep cursor inside visibleOptions bounds whenever the filter changes the list.
@@ -332,7 +340,9 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
   // intentionally not bound — backend has no "skip followup" semantic, so binding it
   // would silently do nothing and feel broken.
   useEffect(() => {
-    if (!followup || pendingAnswer) {
+    // Don't bind shortcuts while collapsed — the sheet is hidden, so Y/N/arrows/Enter would
+    // mutate or submit a selection the user can't see.
+    if (!followup || pendingAnswer || isCollapsed) {
       return;
     }
     if (sheetType !== 'single' && sheetType !== 'multi' && sheetType !== 'yn') {
@@ -384,7 +394,7 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [followup, sheetType, options, visibleOptions, cursor, pendingAnswer, selectedMulti, submitSingle, submitMulti, toggleMulti]);
+  }, [followup, sheetType, options, visibleOptions, cursor, pendingAnswer, isCollapsed, selectedMulti, submitSingle, submitMulti, toggleMulti]);
 
   // Scroll the cursor option into view when it changes via keyboard.
   useEffect(() => {
@@ -491,6 +501,37 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
       ) : (
         <Box sx={{ flex: 1 }} />
       )}
+      <Tooltip title={isCollapsed ? 'Expand' : 'Collapse'} placement='top'>
+        <Box
+          component='button'
+          type='button'
+          onClick={() => setIsCollapsed((prev) => !prev)}
+          aria-label={isCollapsed ? 'Expand follow-up panel' : 'Collapse follow-up panel'}
+          aria-expanded={!isCollapsed}
+          data-testid='followup-collapse-toggle'
+          sx={{
+            flexShrink: 0,
+            width: ds.space.mul(0, 11),
+            height: ds.space.mul(0, 11),
+            borderRadius: ds.radius.sm,
+            border: 'none',
+            background: 'transparent',
+            color: 'var(--ds-gray-500)',
+            cursor: 'pointer',
+            display: 'grid',
+            placeItems: 'center',
+            padding: 0,
+            transition: 'all 0.12s',
+            '&:hover': { color: 'var(--ds-brand-600)', background: 'color-mix(in srgb, var(--ds-brand-600) 8%, transparent)' },
+          }}
+        >
+          {isCollapsed ? (
+            <KeyboardArrowUpIcon sx={{ fontSize: 'var(--ds-text-body-lg)' }} />
+          ) : (
+            <KeyboardArrowDownIcon sx={{ fontSize: 'var(--ds-text-body-lg)' }} />
+          )}
+        </Box>
+      </Tooltip>
       {onStop && (
         <Tooltip title='Stop conversation' placement='top'>
           <Box
@@ -1188,64 +1229,69 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
       }}
     >
       {renderHead()}
-      {(isLongQuestion || sheetType === 'single' || sheetType === 'multi') && (
-        <Box
-          sx={{
-            padding: `${ds.space[3]} ${ds.space.mul(0, 7)} ${ds.space[1]}`,
-            flex: '1 1 auto',
-            minHeight: 0,
-            overflowY: 'auto',
-            // Hide the inner scrollbar entirely so it doesn't visually clash with the page
-            // scrollbar; mouse-wheel and trackpad scroll still work for navigating long prompts.
-            '&::-webkit-scrollbar': { display: 'none', width: 0, height: 0 },
-            '&::-webkit-scrollbar-track': { display: 'none' },
-            '&::-webkit-scrollbar-thumb': { display: 'none' },
-            scrollbarWidth: 'none',
-            msOverflowStyle: 'none',
-            // Soft fade at the bottom of the scrollable area as a visual cue that there's
-            // more content to scroll to.
-            maskImage: 'linear-gradient(to bottom, black calc(100% - 12px), transparent 100%)',
-            WebkitMaskImage: 'linear-gradient(to bottom, black calc(100% - 12px), transparent 100%)',
-          }}
-        >
-          {isLongQuestion && (
-            <Box
-              sx={{
-                fontSize: 'var(--ds-text-body-lg)',
-                fontWeight: 'var(--ds-font-weight-medium)',
-                lineHeight: 1.6,
-                color: 'var(--ds-brand-600)',
-                wordBreak: 'break-word',
-                marginBottom: sheetType === 'single' || sheetType === 'multi' ? ds.space.mul(0, 7) : '0px',
-                paddingBottom: sheetType === 'single' || sheetType === 'multi' ? ds.space[3] : '0px',
-                borderBottom: sheetType === 'single' || sheetType === 'multi' ? '1px solid var(--ds-gray-200)' : 'none',
-                '& p': { margin: `0 0 ${ds.space[2]}` },
-                '& p:last-child': { margin: 0 },
-                '& code': {
-                  fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
-                  fontSize: 'var(--ds-text-body)',
-                  background: 'var(--ds-background-200)',
-                  padding: `${ds.space[0]} ${ds.space.mul(0, 3)}`,
-                  borderRadius: ds.radius.sm,
-                  border: `1px solid ${'var(--ds-gray-200)'}`,
-                },
-                '& ul, & ol': { paddingLeft: ds.space.mul(1, 5), margin: `0 0 ${ds.space[2]}` },
-                '& li': { marginBottom: ds.space[0] },
-                '& strong': { fontWeight: 'var(--ds-font-weight-semibold)' },
-              }}
-            >
-              <MarkDowns data={question} />
-            </Box>
-          )}
-          {showFilter && renderFilter()}
-          {sheetType === 'single' && renderSingle()}
-          {sheetType === 'multi' && renderMulti()}
-          {(sheetType === 'single' || sheetType === 'multi') && renderFreetextRow()}
-        </Box>
-      )}
-      {sheetType === 'multi' && renderMultiFooter()}
-      {sheetType === 'input' && renderInput()}
-      {sheetType === 'yn' && renderYn()}
+      {/* Wrapper toggles visibility on collapse. `display: contents` when expanded keeps the
+          child flex layout (body `flex: 1` + footer) identical to the un-wrapped tree; `none`
+          when collapsed hides without unmounting so draft text / selections are preserved. */}
+      <Box sx={{ display: isCollapsed ? 'none' : 'contents' }}>
+        {(isLongQuestion || sheetType === 'single' || sheetType === 'multi') && (
+          <Box
+            sx={{
+              padding: `${ds.space[3]} ${ds.space.mul(0, 7)} ${ds.space[1]}`,
+              flex: '1 1 auto',
+              minHeight: 0,
+              overflowY: 'auto',
+              // Hide the inner scrollbar entirely so it doesn't visually clash with the page
+              // scrollbar; mouse-wheel and trackpad scroll still work for navigating long prompts.
+              '&::-webkit-scrollbar': { display: 'none', width: 0, height: 0 },
+              '&::-webkit-scrollbar-track': { display: 'none' },
+              '&::-webkit-scrollbar-thumb': { display: 'none' },
+              scrollbarWidth: 'none',
+              msOverflowStyle: 'none',
+              // Soft fade at the bottom of the scrollable area as a visual cue that there's
+              // more content to scroll to.
+              maskImage: 'linear-gradient(to bottom, black calc(100% - 12px), transparent 100%)',
+              WebkitMaskImage: 'linear-gradient(to bottom, black calc(100% - 12px), transparent 100%)',
+            }}
+          >
+            {isLongQuestion && (
+              <Box
+                sx={{
+                  fontSize: 'var(--ds-text-body-lg)',
+                  fontWeight: 'var(--ds-font-weight-medium)',
+                  lineHeight: 1.6,
+                  color: 'var(--ds-brand-600)',
+                  wordBreak: 'break-word',
+                  marginBottom: sheetType === 'single' || sheetType === 'multi' ? ds.space.mul(0, 7) : '0px',
+                  paddingBottom: sheetType === 'single' || sheetType === 'multi' ? ds.space[3] : '0px',
+                  borderBottom: sheetType === 'single' || sheetType === 'multi' ? '1px solid var(--ds-gray-200)' : 'none',
+                  '& p': { margin: `0 0 ${ds.space[2]}` },
+                  '& p:last-child': { margin: 0 },
+                  '& code': {
+                    fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+                    fontSize: 'var(--ds-text-body)',
+                    background: 'var(--ds-background-200)',
+                    padding: `${ds.space[0]} ${ds.space.mul(0, 3)}`,
+                    borderRadius: ds.radius.sm,
+                    border: `1px solid ${'var(--ds-gray-200)'}`,
+                  },
+                  '& ul, & ol': { paddingLeft: ds.space.mul(1, 5), margin: `0 0 ${ds.space[2]}` },
+                  '& li': { marginBottom: ds.space[0] },
+                  '& strong': { fontWeight: 'var(--ds-font-weight-semibold)' },
+                }}
+              >
+                <MarkDowns data={question} />
+              </Box>
+            )}
+            {showFilter && renderFilter()}
+            {sheetType === 'single' && renderSingle()}
+            {sheetType === 'multi' && renderMulti()}
+            {(sheetType === 'single' || sheetType === 'multi') && renderFreetextRow()}
+          </Box>
+        )}
+        {sheetType === 'multi' && renderMultiFooter()}
+        {sheetType === 'input' && renderInput()}
+        {sheetType === 'yn' && renderYn()}
+      </Box>
     </Box>
   );
 };

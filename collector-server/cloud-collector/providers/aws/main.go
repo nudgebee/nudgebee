@@ -626,6 +626,10 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 					ctx.GetLogger().Debug("skipping region without service endpoint", "service", query.ServiceName, "region", regionName)
 					return
 				}
+				if isServiceUnavailableInRegion(err) {
+					ctx.GetLogger().Info("skipping region where service rejects the request as unavailable", "service", query.ServiceName, "region", regionName, "error", err)
+					return
+				}
 				if isRegionUnreachable(err) {
 					ctx.GetLogger().Warn("skipping unreachable region endpoint", "error", err, "service", query.ServiceName, "region", regionName)
 					mu.Lock()

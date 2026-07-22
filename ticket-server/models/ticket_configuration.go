@@ -34,6 +34,24 @@ type Project struct {
 	Key  string `json:"key"`
 }
 
+// TicketConfigOption is the non-secret subset of a ticketing integration the
+// create-ticket form needs to populate its config/project pickers. It
+// deliberately omits url/username/password/auth_type so the read-level
+// list endpoint never exposes credentials (see ListTicketConfigs / NB-32822).
+type TicketConfigOption struct {
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	Tool     string    `json:"tool"`
+	Status   string    `json:"status"`
+	Projects []Project `json:"projects"`
+}
+
+// ListTicketConfigsResponse mirrors the Hasura-style `{rows: [...]}` envelope
+// the gateway's selection-set pruning expects.
+type ListTicketConfigsResponse struct {
+	Rows []TicketConfigOption `json:"rows"`
+}
+
 type Priority struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`

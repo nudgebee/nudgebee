@@ -137,9 +137,14 @@ func TestParseMode(t *testing.T) {
 	assert.Equal(t, ModeEnforce, ParseMode("enforce"))
 	assert.Equal(t, ModeEnforce, ParseMode("ENFORCE"))
 	assert.Equal(t, ModeEnforce, ParseMode("  enforce  "))
-	assert.Equal(t, ModeAudit, ParseMode("audit"))
-	assert.Equal(t, ModeAudit, ParseMode(""))
-	assert.Equal(t, ModeAudit, ParseMode("garbage"))
+	// Canonical "detect" + legacy "audit" alias both resolve to ModeDetect
+	// — the rename in the OSS/EE split rolls forward without breaking old
+	// configs that say "audit".
+	assert.Equal(t, ModeDetect, ParseMode("detect"))
+	assert.Equal(t, ModeDetect, ParseMode("DETECT"))
+	assert.Equal(t, ModeDetect, ParseMode("audit"))
+	assert.Equal(t, ModeDetect, ParseMode(""))
+	assert.Equal(t, ModeDetect, ParseMode("garbage"))
 }
 
 func TestWrapModel_DisabledIsNoOp(t *testing.T) {
@@ -150,6 +155,7 @@ func TestWrapModel_DisabledIsNoOp(t *testing.T) {
 }
 
 func TestWrapModel_EnforcePassesCleanThrough(t *testing.T) {
+	installTestActionGate(t)
 	inner := &fakeModel{respText: "ok"}
 	wrapped := WrapModel(inner, "openai", "gpt-4o", true, ModeEnforce)
 
@@ -163,6 +169,7 @@ func TestWrapModel_EnforcePassesCleanThrough(t *testing.T) {
 }
 
 func TestWrapModel_EnforceBlocksSecret(t *testing.T) {
+	installTestActionGate(t)
 	inner := &fakeModel{respText: "should not be reached"}
 	wrapped := WrapModel(inner, "openai", "gpt-4o", true, ModeEnforce)
 
@@ -191,9 +198,10 @@ func TestWrapModel_EnforceBlocksSecret(t *testing.T) {
 	}
 }
 
-func TestWrapModel_AuditDoesNotBlock(t *testing.T) {
+func TestWrapModel_DetectDoesNotBlock(t *testing.T) {
+	// ModeDetect never blocks regardless of whether a gate is registered.
 	inner := &fakeModel{respText: "passed through"}
-	wrapped := WrapModel(inner, "openai", "gpt-4o", true, ModeAudit)
+	wrapped := WrapModel(inner, "openai", "gpt-4o", true, ModeDetect)
 
 	_, err := wrapped.GenerateContent(context.Background(),
 		[]llms.MessageContent{
@@ -204,6 +212,7 @@ func TestWrapModel_AuditDoesNotBlock(t *testing.T) {
 }
 
 func TestWrapModel_CallPathAlsoScrubbed(t *testing.T) {
+	installTestActionGate(t)
 	inner := &fakeModel{respText: "ok"}
 	wrapped := WrapModel(inner, "openai", "gpt-4o", true, ModeEnforce)
 
@@ -231,6 +240,7 @@ func TestSerializeMessages_FlattensTextAndToolParts(t *testing.T) {
 // are still scanned. Without these cases, secrets would silently bypass the
 // egressfilter. Regression test for the Gemini high-priority finding.
 func TestSerializeMessages_HandlesPointerToolParts(t *testing.T) {
+	installTestActionGate(t)
 	msgs := []llms.MessageContent{
 		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{
 			&llms.ToolCall{
@@ -264,6 +274,7 @@ func TestSerializeMessages_HandlesPointerToolParts(t *testing.T) {
 // params and would otherwise slip past the egressfilter. Regression test for the
 // Gemini high-priority finding on the second review round.
 func TestSerializeMessages_ScansImageURLContent(t *testing.T) {
+	installTestActionGate(t)
 	// A fabricated S3-signed-style URL carrying an AWS access key id in a
 	// query param. The aws-access-key-id rule should fire on it.
 	sasURL := "https://example-bucket.s3.amazonaws.com/img.png?X-Amz-Credential=AKIAIOSFODNN7EXAMPLE/20260101/us-east-1/s3/aws4_request"

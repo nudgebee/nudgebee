@@ -245,6 +245,7 @@ const KubernetesAlertSilencer: React.FC<KubernetesAlertSilencerProps> = ({
           onChange={(date: Dayjs | null) => handleStartDateEndDate('start', date)}
           views={['day', 'hours', 'minutes']}
           minDate={dayjs()}
+          minDateTime={null}
           maxDateTime={null}
           componentsProps={undefined}
         />
@@ -255,6 +256,7 @@ const KubernetesAlertSilencer: React.FC<KubernetesAlertSilencerProps> = ({
           onChange={(date: Dayjs | null) => handleStartDateEndDate('end', date)}
           views={['day', 'hours', 'minutes']}
           minDate={dayjs()}
+          minDateTime={null}
           maxDateTime={null}
           componentsProps={undefined}
         />

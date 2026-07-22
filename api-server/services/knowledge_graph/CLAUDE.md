@@ -40,7 +40,7 @@ knowledge_graph/
 
 **Outside this tree (related):**
 - [api-server/services/api/actions_knowledge_graph.go](../api/actions_knowledge_graph.go) — HTTP entry points (`kg_*` actions)
-- [api-server/services/api/cron.go](../api/cron.go) — daily 23:30 UTC cron, fans out via queue
+- [api-server/services/api/cron.go](../api/cron.go) — hourly cron (`30 * * * *`), fans out via queue
 - [api-server/services/traces/knowledge_graph_service.go](../traces/knowledge_graph_service.go) — trace→KG bridge
 - [collector-server/cloud-collector/account/kg_update.go](../../../collector-server/cloud-collector/account/kg_update.go) — publishes update on cloud-resource change
 - [llm/llm-server/agents/agent_service_dependency_V2.go](../../../llm/llm-server/agents/agent_service_dependency_V2.go) — KG-only SDG V2 agent
@@ -84,7 +84,7 @@ Built in [core/unique_key_builder.go](core/unique_key_builder.go). Same key from
 **Batch sizes** are sized to PostgreSQL's parameter limit (65535). Don't change without recomputing.
 
 **Triggers (build entry points):**
-1. **Cron** — daily 23:30 UTC (`build_knowledge_graphs_with_db_filters`) → [cron.go](../api/cron.go) reads enabled `knowledge_graph_tenant_filters` rows → publishes one RabbitMQ message per tenant.
+1. **Cron** — hourly at `:30` UTC (`30 * * * *`, `build_knowledge_graphs_with_db_filters`) → [cron.go](../api/cron.go) reads enabled `knowledge_graph_tenant_filters` rows → publishes one RabbitMQ message per tenant.
 2. **Queue consumer** — [queue/consumer.go](queue/consumer.go) holds a **1-hour per-tenant lock**, runs full BuildGraphs → save → markInactive cycle. Multiple listeners are safe.
 3. **Manual / cloud-event** — RPC action `build_knowledge_graph` (synchronous) or cloud-collector publishing on resource change.
 

@@ -1010,6 +1010,14 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 	unifiedGraph.Nodes, unifiedGraph.Edges, _ = CollapseEnrichedExternalServices(
 		unifiedGraph.Nodes, unifiedGraph.Edges, s.logger,
 	)
+
+	// Phase 3.6: Resolve GCP managed-service ExternalService leaves the DNS
+	// enricher can't match ("GCP Datastore", "Redis", …) by repointing each CALLS
+	// edge to the collected node of that service type in the *caller's* GCP
+	// account. Runs after collapse so it only handles the leaves that survived it.
+	unifiedGraph.Nodes, unifiedGraph.Edges, _ = ResolveGCPManagedServiceCalls(
+		unifiedGraph.Nodes, unifiedGraph.Edges, s.logger,
+	)
 	unifiedGraph.Edges = DeduplicateEdgesWithPriority(unifiedGraph.Edges)
 
 	// Calculate metadata for unified graph
@@ -1326,11 +1334,13 @@ func (s *Service) SaveEdges(edges []*DbEdge, nodes []*DbNode, syncVersion int64)
 		edge.SourceNodeID = sourceID
 		edge.DestinationNodeID = destID
 
-		// Create composite key for deduplication
-		compositeKey := fmt.Sprintf("%s:%s:%s",
-			edge.SourceNodeID,
-			edge.DestinationNodeID,
-			edge.TenantID)
+		// Create composite key for deduplication. RelationshipType must be part
+		// of the key — the canonical edge dedup constraint is
+		// (source, destination, relationship_type, account, tenant). Two edges
+		// between the same nodes with different relationship types are distinct;
+		// omitting the type here merged them and silently dropped one before the
+		// upsert. (account is already encoded in the source/dest node UUIDs.)
+		compositeKey := edge.SourceNodeID + ":" + edge.DestinationNodeID + ":" + string(edge.RelationshipType) + ":" + edge.TenantID
 
 		if existing, exists := edgeMap[compositeKey]; exists {
 			// Merge properties if the edge already exists

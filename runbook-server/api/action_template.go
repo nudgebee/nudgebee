@@ -56,6 +56,13 @@ func (s *Server) handleListTemplates(c *gin.Context, sc *security.RequestContext
 			}
 		}
 	}
+	if labels, ok := args["labels"].([]interface{}); ok {
+		for _, v := range labels {
+			if s, ok := v.(string); ok {
+				request.Labels = append(request.Labels, s)
+			}
+		}
+	}
 
 	response, err := s.workflowService.ListTemplates(sc, request)
 	if err != nil {
@@ -92,4 +99,30 @@ func (s *Server) handleGetTemplate(c *gin.Context, sc *security.RequestContext, 
 	}
 
 	c.JSON(http.StatusOK, tmpl)
+}
+
+// handleSyncTemplates forces an immediate system-template reconcile from the
+// configured source. Tenant-admin only; system templates are tenant-wide.
+func (s *Server) handleSyncTemplates(c *gin.Context, sc *security.RequestContext, _ map[string]any) {
+	if !sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeUpdate) {
+		c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{errors.New("unauthorized: tenant admin required to sync templates")}))
+		return
+	}
+	if s.templateSyncer == nil {
+		c.JSON(http.StatusServiceUnavailable, buildApiResponse(nil, []error{errors.New("template sync is not configured")}))
+		return
+	}
+
+	res, err := s.templateSyncer.SyncOnce(c.Request.Context())
+	if err != nil {
+		s.logger.Error("failed to sync templates via RPC", "error", err)
+		c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{errors.New("failed to sync templates")}))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":     "templates synced",
+		"upserted":    res.Upserted,
+		"deactivated": res.Deactivated,
+	})
 }

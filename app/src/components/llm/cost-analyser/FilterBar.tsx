@@ -14,6 +14,7 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import CloseIcon from '@mui/icons-material/Close';
 import RestartAltOutlinedIcon from '@mui/icons-material/RestartAltOutlined';
 import FilterDropdown from '@ui/FilterDropdown';
+import Tooltip from '@ui/Tooltip';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { Input } from '@ui/Input';
 import { Button } from '@ui/Button';
@@ -150,6 +151,9 @@ export function FilterBar({ filters, onChange, onReset, options, accountId = '',
   const providerOptions = options?.providers ?? [];
   const sourceOptions = options?.sources ?? [];
   const statusOptions = options?.statuses ?? ['success', 'failure'];
+  // User scope is single-select: pill shows the chosen user's name, clear-X resets
+  // to "all users". Keyed on user_id (the value the API filters on).
+  const userOptions = (options?.users ?? []).map((u) => ({ label: u.name, value: u.id }));
 
   const advancedCount =
     filters.statuses.length +
@@ -238,6 +242,17 @@ export function FilterBar({ filters, onChange, onReset, options, accountId = '',
           value={filters.sources}
           onSelect={(_e: unknown, sel: FDOption[]) => onChange({ sources: toValues(sel) })}
         />
+        <Tooltip title='User filter applies to Conversations, Agents, and Tools — not to the Users leaderboard' placement='top'>
+          <span>
+            <FilterDropdown
+              id='cost-filter-user'
+              label='User'
+              options={userOptions}
+              value={filters.userId}
+              onSelect={(e: { target: { value: string | null } }) => onChange({ userId: e?.target?.value ?? '' })}
+            />
+          </span>
+        </Tooltip>
 
         <Box sx={{ flex: 1 }} />
 

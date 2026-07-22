@@ -1,0 +1,81 @@
+slug: scale_kubernetes_replicas
+name: "Scale Kubernetes Replicas"
+description: "Scale a deployment to a specified replica count. Useful for handling high load or HPA issues."
+category: "kubernetes"
+icon: "straighten"
+status: ACTIVE
+tags:
+  labels:
+    - "scale"
+  event_sources:
+    - "prometheus"
+    - "alertmanager"
+    - "kubernetes"
+  alert_names:
+    - "KubeHpaMaxedOut"
+    - "KubeHpaReplicasMismatch"
+    - "CPUThrottlingHigh"
+    - "KubeDeploymentReplicasMismatch"
+definition:
+  version: "v1"
+  inputs:
+    - id: "namespace"
+      type: "string"
+      description: "Kubernetes namespace"
+      required: true
+    - id: "deployment"
+      type: "string"
+      description: "Deployment name to scale"
+      required: true
+    - id: "replicas"
+      type: "string"
+      description: "Target replica count"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Approve scaling **{{ Inputs.deployment }}** in **{{ Inputs.namespace }}** to **{{ Inputs.replicas }}** replicas?"
+    - id: "scale"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl scale deployment/{{ Inputs.deployment }} --replicas={{ Inputs.replicas }} -n {{ Inputs.namespace }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl get deployment {{ Inputs.deployment }} -n {{ Inputs.namespace }} -o wide"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "scale"
+  timeout: "10m"
+template_variables:
+  - id: "namespace"
+    input_ref: "namespace"
+    display_name: "Namespace"
+    required: true
+    type: "string"
+  - id: "deployment"
+    input_ref: "deployment"
+    display_name: "Deployment Name"
+    required: true
+    type: "string"
+  - id: "replicas"
+    input_ref: "replicas"
+    display_name: "Replica Count"
+    required: true
+    type: "string"
+    placeholder: "3"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

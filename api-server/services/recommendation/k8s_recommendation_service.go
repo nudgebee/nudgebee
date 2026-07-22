@@ -400,36 +400,67 @@ func processHpaRecommendations(ctx *security.RequestContext, accountId string, d
 // other in-cluster scanner concurrency profile.
 const imageScanMaxConcurrent = 2
 
-// runImageScannerServerOrchestrated picks the top-5 unscanned images for the
-// account and schedules a Trivy `image` Job per image via scan_orchestrator.
+// imageScanBatchLimit caps how many pending images one discovery pass schedules.
+// Raised from the original 5: because scanned images now leave the candidate
+// pool (they get an image_scan_summary row), the backlog actually drains, so a
+// larger batch just drains it faster across cron passes. Actual in-flight Jobs
+// stay bounded by imageScanMaxConcurrent (and the agent's own cap).
+const imageScanBatchLimit = 25
+
+// imageScanFreshDays / imageScanFailedRetryDays define the incremental re-scan
+// windows keyed off the image_scan_summary row's updated_at: a successfully
+// scanned image (clean or vulnerable) is re-scanned after imageScanFreshDays to
+// catch newly-disclosed CVEs; a failed scan retries sooner so a transient
+// failure isn't hidden for a full week, but not so soon it hot-loops.
+const (
+	imageScanFreshDays       = 7
+	imageScanFailedRetryDays = 1
+)
+
+// runImageScannerServerOrchestrated picks a prioritized batch of images that are
+// due for a scan and schedules a Trivy fs Job per image via scan_orchestrator.
 // Each RunOne call: schedule → poll → fetch logs → ParseImageScan → UPSERT
-// recommendation rows. Errors per-image are logged and don't block the rest.
+// recommendation rows (+ an image_scan_summary bookkeeping row). Errors per-image
+// are logged and don't block the rest.
 //
-// Mirrors processImageScanner's pickPendingImages query (same exclusions,
-// same LIMIT 5, same dedupe against existing recommendations + agent_task)
-// so flipping the tenant flag flips paths cleanly. Adds explicit tenant
-// scoping on every subquery — cloud_account_id is already globally unique,
-// but defense-in-depth: per the repo's multi-tenant rule, every query that
-// crosses tenant boundaries must filter on tenant_id (or `tenant` for the
-// legacy agent_task table).
+// "Due for a scan" is driven by the per-image image_scan_summary row's
+// updated_at, NOT by whether the image currently has an open CVE row. That is
+// the fix for the starvation the CVE-only anti-join caused: a clean OR failed
+// scan used to write no non-Archive row, so the image was re-selected every
+// cycle forever and recycled through the tiny per-cycle budget, starving the
+// backlog. Now an image is a candidate only if it has never been scanned or its
+// last scan is older than the staleness window (imageScanFreshDays for a
+// success, imageScanFailedRetryDays for a failure) — which also gives us
+// incremental re-scans so newly-disclosed CVEs on already-scanned images get
+// picked up. Never-scanned images sort first, then oldest-scanned.
+//
+// tenant_id is an explicit parameter on every clause — per the repo's
+// multi-tenant rule, every cross-tenant query filters on tenant_id even though
+// cloud_account_id is already globally unique.
 func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, tenantId string, dbms *database.DatabaseManager) error {
 	if tenantId == "" || accountId == "" {
 		return fmt.Errorf("image_scanner: tenantId and accountId are required for scoping")
 	}
-	// Same anti-join rewrite as processImageScanner (see the comment there):
-	// MATERIALIZED running_images collapses candidates to a small distinct set so
-	// the per-image NOT EXISTS rides idx_recommendation_security_account_image_name
-	// as a nested-loop 3-column index probe instead of seq scanning the whole
-	// recommendation table. Here tenant_id is an explicit parameter on every clause.
-	// The fs-scan path needs the node each image is pulled on (it pins the scan
-	// Job there to reuse the node-local image — see buildImageScanSpec), so we
-	// carry cr.meta->>'node' alongside the image.
-	//
-	// No agent_task exclusion here. The legacy `scanned_tasks` anti-join skipped
-	// any image that already had an image_scanner agent_task row — but the legacy
-	// agent no longer registers that action, so those rows are all permanent
-	// FAILEDs ("action not registered"), which silently starved this path of every
-	// image. Dispatch is server-orchestrated now; agent_task is irrelevant.
+	// Overlap guard: image scan rides both the daily "K8s Recommendation refresh"
+	// and the 2-hourly "Security recommendation refresh" crons — both fire-and-forget
+	// goroutines. Without this, two passes for the same account can run concurrently
+	// and double-dispatch the same images before their summary rows land, wasting the
+	// agent's bounded Job slots. If a pass is already in flight, skip; the next cron
+	// picks up where it left off (the freshness anti-join makes it resumable).
+	jobKey := fmt.Sprintf("imagescan:%s", accountId)
+	if !tryStartAccountJob(jobKey, "image_scanner") {
+		ctx.GetLogger().Info("image_scanner: scan already running for account, skipping", "account_id", accountId)
+		return nil
+	}
+	defer finishAccountJob(jobKey)
+
+	// MATERIALIZED running_images collapses candidates to a small distinct set;
+	// scan_state maps each image_scan_summary row to its last scan time. There is
+	// at most one summary row per image (account_object_id holds the image name and
+	// is unique per account), so no aggregation is needed. The fs-scan path needs
+	// the node each image is pulled on (it pins the Job there to reuse the
+	// node-local image — see buildImageScanSpec), so we carry cr.meta->>'node'.
+	// Staleness windows (days) and the batch size are passed as bind parameters.
 	rows, err := dbms.Db.Queryx(`
 		WITH running_images AS MATERIALIZED (
 			SELECT DISTINCT ON (container->>'image')
@@ -448,20 +479,28 @@ func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, 
 				AND cr.status = 'Running'
 				AND cr.meta->>'namespace' NOT IN ('kube-system', 'nudgebee-agent')
 				AND cr.workload_type != 'Job'
+		),
+		scan_state AS (
+			SELECT account_object_id AS image,
+				updated_at AS last_scanned,
+				(recommendation->>'status' = 'failed') AS last_failed
+			FROM recommendation
+			WHERE cloud_account_id = $1
+				AND tenant_id = $2
+				AND category = 'Security'
+				AND rule_name = 'image_scan_summary'
+				AND status != 'Archive'
 		)
 		SELECT ri.image, ri.cloud_account_id, ri.tenant_id, ri.name, ri.namespace, ri.node, ri.kind
 		FROM running_images ri
-		WHERE NOT EXISTS (
-				SELECT 1 FROM recommendation r
-				WHERE r.cloud_account_id = $1
-				  AND r.tenant_id = $2
-				  AND r.category = 'Security' AND r.rule_name = 'image_scan'
-				  AND r.account_object_id IS NOT NULL
-				  AND r.status != 'Archive'
-				  AND r.recommendation->>'image_name' = ri.image
-			)
-		LIMIT 5
-	`, accountId, tenantId)
+		LEFT JOIN scan_state s ON s.image = ri.image
+		WHERE s.last_scanned IS NULL
+			OR s.last_scanned < now() - (CASE WHEN s.last_failed
+			                                  THEN make_interval(days => $3)
+			                                  ELSE make_interval(days => $4) END)
+		ORDER BY (s.last_scanned IS NULL) DESC, s.last_scanned ASC
+		LIMIT $5
+	`, accountId, tenantId, imageScanFailedRetryDays, imageScanFreshDays, imageScanBatchLimit)
 	if err != nil {
 		return fmt.Errorf("image_scanner: query pending images: %w", err)
 	}

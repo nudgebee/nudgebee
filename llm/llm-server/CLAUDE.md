@@ -271,8 +271,9 @@ Controlled by `PlannerRewooParallelExecEnabled` + `LLMServerAgentReWooMaxParalle
 
 ### Memory Thresholds
 
-- Max observation chars: `LlmConfigAutoSelectionMaxObservationLen` (default 65536, min 4096)
-- Semantic compression: last 10 steps keep full context; older steps truncated to 100 bytes with `[output truncated — N chars]` marker
+- Per-observation hard cap: `LlmServerScratchpadMaxObservationChars` (default 65536, min 4096). This is a dedicated knob — do **not** confuse it with `LlmConfigAutoSelectionMaxObservationLen` (default 500), which governs the unrelated config auto-selection heuristic and previously double-served as the scratchpad cap (clamping it to the 4096 floor).
+- **Compression activation is context-window-gated**, not step-count-gated. Older observations are only compressed once the scratchpad approaches the resolved model window: compression activates at `LlmServerScratchpadCompressionActivationFraction` (default 0.75) of the window, and the scratchpad is hard-capped at 0.90 of the window (`scratchpadBudget` in `scratchpad.go`). When the window can't be resolved, both fall back to the legacy `LlmServerAgentMaxScratchpadChars` char budget.
+- Within an active compression pass: the last `recentStepsFullContext` (10) steps keep full observations; older steps get an LLM summary (or `compressObservation` byte truncation with an `[output truncated — N chars]` marker).
 - UTF-8 safe truncation: `TruncateHead`, `TruncateMiddle` walk byte boundaries
 
 ## Debugging

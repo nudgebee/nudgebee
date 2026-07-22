@@ -56,6 +56,14 @@ func convertWhereClauseWithMApping(whereClause query.QueryWhereClause, mapping m
 		converted.Or = append(converted.Or, convertWhereClauseWithMApping(orClause, mapping))
 	}
 
+	// Recursively convert the NOT condition. Without this the Not branch is silently
+	// dropped here, so a `_not` clause loses its negation before any provider's query
+	// builder runs (wrong results, no error) — provider-independent.
+	if whereClause.Not != nil {
+		notConverted := convertWhereClauseWithMApping(*whereClause.Not, mapping)
+		converted.Not = &notConverted
+	}
+
 	return converted
 }
 

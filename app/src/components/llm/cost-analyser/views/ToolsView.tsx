@@ -250,6 +250,7 @@ export function ToolsView({ accountId, filters, onSelectRun }: ToolsViewProps) {
         startDate: `${filters.startDate}T00:00:00Z`,
         endDate: `${filters.endDate}T23:59:59Z`,
         sources: filters.sources ?? [],
+        userId: filters.userId || undefined,
         sortBy,
         limit: 100,
       },
@@ -266,7 +267,7 @@ export function ToolsView({ accountId, filters, onSelectRun }: ToolsViewProps) {
       controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId, filters.startDate, filters.endDate, sourcesKey, sortBy]);
+  }, [accountId, filters.startDate, filters.endDate, sourcesKey, filters.userId, sortBy]);
 
   // Client-side reorder of the loaded rows. Empty sort.name = keep server order.
   const sortedRows = React.useMemo(() => {

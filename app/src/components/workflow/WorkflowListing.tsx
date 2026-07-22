@@ -167,13 +167,29 @@ const LastExecutionCell: React.FC<LastExecutionCellProps> = ({ workflow }) => {
   // start time (seeded locally on trigger, refined by polling), then the
   // server's last_execution_time from the listing.
   const time = override?.closeTime || override?.startTime || workflow.last_execution_time;
+  const version = workflow.last_execution_version;
   if (!status) {
     return <Text value='No Executions yet' sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.tertiarymedium, fontStyle: 'italic' }} />;
   }
+
+  const getStatusTone = (statusStr: string) => {
+    const s = statusStr.toUpperCase();
+    if (s === 'COMPLETED' || s === 'SUCCEEDED') return 'success';
+    if (s === 'FAILED' || s === 'TERMINATED' || s === 'TIMED_OUT') return 'critical';
+    if (s === 'RUNNING' || s === 'IN_PROGRESS' || s === 'IN PROGRESS') return 'warning';
+    return 'neutral';
+  };
+
   return (
-    <Box sx={{ display: 'flex', gap: 1, flexDirection: 'row', alignItems: 'center' }}>
-      <Label text={status.toLowerCase()} textTransform='capitalize' />
-      <Text value='|' secondaryText sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)', opacity: 0.7 }} />
+    <Box sx={{ display: 'flex', gap: 'var(--ds-space-1)', flexDirection: 'row', alignItems: 'center' }}>
+      <Label text={status.toLowerCase()} tone={getStatusTone(status)} textTransform='capitalize' />
+      {version !== undefined && version !== null && (
+        <>
+          <Text value='·' sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.tertiary, mx: 'var(--ds-space-0)' }} />
+          <Text value={`v${version}`} sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondary, fontFamily: 'var(--ds-font-mono)' }} />
+        </>
+      )}
+      <Text value='·' sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.tertiary, mx: 'var(--ds-space-0)' }} />
       <Datetime
         baseDate={new Date()}
         value={time}
@@ -979,10 +995,23 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
           workflowJson = lastGenMsg?.response || '';
         }
       }
+      // Automation / post-approval builds keep JSON out of `response` (that holds a human-readable
+      // summary, and the last followup `response` is just the user's "Approve and Build" click).
+      // The built workflow lives in the finalize tool call — use it as the success signal.
       if (!workflowJson) {
-        workflowJson = lastGenMsg?.response || '';
+        const finalizeCall = reversedMessages
+          .flatMap((m: any) => m.llm_conversation_agents || [])
+          .flatMap((a: any) => a.llm_conversation_tool_calls || [])
+          .find((tc: any) => tc.tool_name === 'finalize' && tc.status === 'success');
+        if (finalizeCall?.response) {
+          workflowJson = finalizeCall.response;
+        }
       }
-      return { status: 'COMPLETED', workflowJson, conversationId: conversation.id };
+      // Don't fall back to non-JSON responses — they're text answers, not workflows.
+      // The polling loop handles COMPLETED without workflowJson separately.
+      // `summaryText` is the human-readable build summary (markdown) shown on the success screen.
+      const summaryText = lastGenMsg?.response || '';
+      return { status: 'COMPLETED', workflowJson, summaryText, conversationId: conversation.id };
     }
 
     if (status === 'FAILED') {

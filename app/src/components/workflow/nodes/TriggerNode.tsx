@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Box, Typography } from '@mui/material';
 import { Modal } from '@ui/Modal';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { manualTriggerIcon, workflowUserIcon, workflowWebhookIcon, workflowCalendarIcon, alertYellowIcon } from '@assets';
+import { manualTriggerIcon, workflowUserIcon, workflowWebhookIcon, workflowCalendarIcon, alertYellowIcon, ErrorIcon } from '@assets';
 import BaseNode from './BaseNode';
 import HalfEdgeAddButton from '@components/workflow/components/HalfEdgeAddButton';
 import { spliceEdgesOnNodeDelete } from '../utils/spliceNode';
@@ -36,8 +36,11 @@ const TriggerNode = ({ id, data, isConnectable, selected, onTriggerRun, onAddFro
   // renders its own Handle so the existing edge stays anchored to the node.
   const showHalfEdgeAddButton = !hasOutgoingEdge && isEditorMode && !!onAddFromHandle;
 
-  // Get validation icon - shows yellow alert when trigger is invalid
+  // Get validation icon - shows yellow alert when trigger is invalid, red when server error is present
   const getValidationIcon = () => {
+    if (data.serverError) {
+      return <SafeIcon src={ErrorIcon} alt='server-error-icon' width={24} height={24} />;
+    }
     if (!data.trigger) {
       return null;
     }
@@ -100,6 +103,9 @@ const TriggerNode = ({ id, data, isConnectable, selected, onTriggerRun, onAddFro
     if (data.connectionRejected) {
       return '3px solid var(--ds-red-500)'; // Red for connection errors
     }
+    if (data.serverError) {
+      return '2px solid #dc2626'; // Solid red for server errors
+    }
     if (data.trigger?.valid === false) {
       return '2px solid var(--ds-amber-400)'; // Yellow for validation errors
     }
@@ -137,6 +143,33 @@ const TriggerNode = ({ id, data, isConnectable, selected, onTriggerRun, onAddFro
 
   return (
     <div style={{ position: 'relative' }}>
+      {data.serverError && (
+        <div
+          data-testid='trigger-node-server-error-badge'
+          title={data.serverError}
+          style={{
+            position: 'absolute',
+            top: -10,
+            right: 12,
+            zIndex: 10,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            padding: 'var(--ds-space-1) var(--ds-space-2)',
+            borderRadius: 999,
+            background: '#dc2626',
+            color: 'white',
+            fontSize: 10,
+            fontWeight: 'var(--ds-font-weight-semibold)',
+            letterSpacing: 0.3,
+            textTransform: 'uppercase',
+            boxShadow: '0 1px 2px rgba(0,0,0,0.15)',
+            cursor: 'help',
+          }}
+        >
+          Server Error
+        </div>
+      )}
       <BaseNode
         selected={selected}
         border={getBorderStyle()}

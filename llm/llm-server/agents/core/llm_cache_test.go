@@ -93,22 +93,42 @@ func TestGoogleAICacheProvider_ReadSharedCacheInfo(t *testing.T) {
 }
 
 // TestGoogleAICacheProvider_WaitForSharedCacheInfo verifies a non-holder waits
-// for the lock holder to publish (then reuses) and times out cleanly otherwise.
+// for the lock holder to publish a USABLE entry (then reuses), skips a stale
+// pointer left behind in the shared cache, and times out cleanly otherwise.
 func TestGoogleAICacheProvider_WaitForSharedCacheInfo(t *testing.T) {
 	p := NewGoogleAICacheProvider()
+	const hash = "hash-abc"
 
 	// Never published -> times out -> nil (no panic, no hang).
-	assert.Nil(t, p.waitForSharedCacheInfo("never-key", 200*time.Millisecond))
+	assert.Nil(t, p.waitForSharedCacheInfo("never-key", hash, 200*time.Millisecond))
 
-	// Published shortly after the wait starts -> returned.
-	data, err := json.Marshal(&CacheInfo{CacheName: "cachedContents/xyz"})
+	// A stale pointer (expired + different content) is already present. It must
+	// be skipped, not returned, so the waiter times out instead of handing back a
+	// CachedContentName that would 403 at GenerateContent time.
+	stale, err := json.Marshal(&CacheInfo{
+		CacheName:   "cachedContents/stale",
+		ContentHash: "hash-OLD",
+		ExpiresAt:   time.Now().Add(-time.Hour),
+	})
+	assert.NoError(t, err)
+	assert.NoError(t, common.CacheSet(p.namespace, "stale-key", stale))
+	assert.Nil(t, p.waitForSharedCacheInfo("stale-key", hash, 200*time.Millisecond),
+		"a stale (expired/mismatched) pointer must be skipped, not returned")
+
+	// Published shortly after the wait starts, matching content and unexpired
+	// -> returned.
+	data, err := json.Marshal(&CacheInfo{
+		CacheName:   "cachedContents/xyz",
+		ContentHash: hash,
+		ExpiresAt:   time.Now().Add(time.Hour),
+	})
 	assert.NoError(t, err)
 	go func() {
 		time.Sleep(150 * time.Millisecond)
 		_ = common.CacheSet(p.namespace, "late-key", data)
 	}()
-	got := p.waitForSharedCacheInfo("late-key", 3*time.Second)
-	if assert.NotNil(t, got, "must return the entry published during the wait") {
+	got := p.waitForSharedCacheInfo("late-key", hash, 3*time.Second)
+	if assert.NotNil(t, got, "must return the usable entry published during the wait") {
 		assert.Equal(t, "cachedContents/xyz", got.CacheName)
 	}
 }

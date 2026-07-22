@@ -1,0 +1,88 @@
+slug: scale_rabbitmq_consumers
+name: "Scale RabbitMQ Consumers"
+description: "Scale a consumer deployment to handle RabbitMQ queue backlog. Useful when queue depth grows due to insufficient consumer capacity."
+category: "kubernetes"
+icon: "tune"
+status: ACTIVE
+tags:
+  labels:
+    - "scale"
+  event_sources:
+    - "prometheus"
+    - "kubernetes_api_server"
+    - "alertmanager"
+  alert_names:
+    - "RabbitmqTooManyReadyMessages"
+    - "RabbitmqNoQueueConsumer"
+  subject_types:
+    - "deployment"
+    - "pod"
+definition:
+  version: "v1"
+  inputs:
+    - id: "namespace"
+      type: "string"
+      description: "Kubernetes namespace of the consumer deployment"
+      required: true
+    - id: "deployment"
+      type: "string"
+      description: "Consumer deployment name"
+      required: true
+    - id: "target_replicas"
+      type: "string"
+      description: "Target replica count"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "current_state"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl get deployment {{ Inputs.deployment }} -n {{ Inputs.namespace }} -o jsonpath='{.spec.replicas} replicas, {.status.readyReplicas} ready'"
+        account_id: "{{ Inputs.account_id }}"
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Scale **{{ Inputs.deployment }}** in **{{ Inputs.namespace }}** to **{{ Inputs.target_replicas }}** replicas?"
+      depends_on:
+        - "current_state"
+    - id: "scale"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl scale deployment {{ Inputs.deployment }} -n {{ Inputs.namespace }} --replicas={{ Inputs.target_replicas }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl rollout status deployment/{{ Inputs.deployment }} -n {{ Inputs.namespace }} --timeout=120s"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "scale"
+  timeout: "5m"
+template_variables:
+  - id: "namespace"
+    input_ref: "namespace"
+    display_name: "Namespace"
+    required: true
+    type: "string"
+  - id: "deployment"
+    input_ref: "deployment"
+    display_name: "Consumer Deployment"
+    required: true
+    type: "string"
+  - id: "target_replicas"
+    input_ref: "target_replicas"
+    display_name: "Target Replicas"
+    required: true
+    type: "string"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

@@ -31,9 +31,13 @@ type scheduleJobRecordState struct {
 }
 
 const (
-	// scheduleJobStatusDone is the legacy JobStatus.DONE int value Robusta wrote.
-	// We always write DONE — we only update state after a run finishes.
-	scheduleJobStatusDone = 2
+	// scheduleJobStatus* mirror the legacy Robusta JobStatus int enum. We stamp
+	// DONE after a run finishes successfully and FAILED after a run errors — in
+	// both cases last_exec_time_sec is set to "now" so the heartbeat's missed-scan
+	// detector treats the scanner as attempted and waits for the next cron tick,
+	// rather than re-dispatching it on every heartbeat.
+	scheduleJobStatusDone   = 2
+	scheduleJobStatusFailed = 3
 
 	// scheduleJobRunnableName is the constant action wrapper Robusta used.
 	scheduleJobRunnableName = "scheduled_integration_task"
@@ -61,16 +65,33 @@ func deterministicJobID(scannerName string) string {
 	return hex.EncodeToString(h[:16])
 }
 
-// UpsertScheduleJobState records that `scannerName` just ran for `account`.
+// UpsertScheduleJobState records that `scannerName` completed successfully for
+// `account`, stamping the schedule entry DONE. Called from the scan persist path.
+func UpsertScheduleJobState(ctx *security.RequestContext, account ScanAccount, scannerName string) {
+	upsertScheduleJobState(ctx, account, scannerName, scheduleJobStatusDone)
+}
+
+// UpsertScheduleJobFailure records that `scannerName` FAILED for `account`. It
+// still stamps last_exec_time_sec (with a FAILED status), so the heartbeat's
+// missed-scan detector treats the scanner as attempted and waits for the next
+// cron tick instead of re-dispatching it on every heartbeat (~1min). Without
+// this a failing scan never advances last_exec_time_sec and hot-loops. Mirrors
+// the per-image back-off image_scanner already does via upsertImageScanSummary.
+func UpsertScheduleJobFailure(ctx *security.RequestContext, account ScanAccount, scannerName string) {
+	upsertScheduleJobState(ctx, account, scannerName, scheduleJobStatusFailed)
+}
+
+// upsertScheduleJobState records that `scannerName` just ran for `account` with
+// the given schedule job `status` (DONE or FAILED).
 // Inside a single transaction it does SELECT ... FOR UPDATE on the agent row,
 // mutates the schedule_jobs array (replacing the entry for this scanner,
 // incrementing exec_count), and UPDATEs the same row by id. The row lock
 // serializes concurrent writers across api-server replicas as well as
 // within a single worker pool — no in-process mutex needed.
 //
-// Best-effort — errors are logged, not propagated, so a successful scan
-// persist isn't undone by a schedule-state hiccup.
-func UpsertScheduleJobState(ctx *security.RequestContext, account ScanAccount, scannerName string) {
+// Best-effort — errors are logged, not propagated, so a scan persist isn't
+// undone by a schedule-state hiccup.
+func upsertScheduleJobState(ctx *security.RequestContext, account ScanAccount, scannerName string, status int) {
 	logger := ctx.GetLogger().With("scanner", scannerName, "account_id", account.AccountID)
 
 	cron := cronExpressionForScanner(scannerName)
@@ -138,7 +159,7 @@ func UpsertScheduleJobState(ctx *security.RequestContext, account ScanAccount, s
 	}
 
 	existing, _ := connStatus["schedule_jobs"].([]any)
-	updated, prevExec := upsertScheduleJobsArray(existing, scannerName, cron, time.Now())
+	updated, prevExec := upsertScheduleJobsArray(existing, scannerName, cron, status, time.Now())
 
 	newJSON, err := json.Marshal(updated)
 	if err != nil {
@@ -167,13 +188,15 @@ func UpsertScheduleJobState(ctx *security.RequestContext, account ScanAccount, s
 		return
 	}
 	committed = true
-	logger.Info("scan_orchestrator: schedule-job state updated", "exec_count", prevExec+1, "cron", cron)
+	logger.Info("scan_orchestrator: schedule-job state updated", "exec_count", prevExec+1, "cron", cron, "status", status)
 }
 
 // upsertScheduleJobsArray returns a new schedule_jobs slice with the entry for
 // `scannerName` replaced (or inserted if absent), and the prior exec_count.
 // The exec_count from the old entry is incremented; new entries start at 1.
-func upsertScheduleJobsArray(existing []any, scannerName, cron string, now time.Time) (updated []any, prevExec int) {
+// `status` is the JobStatus stamped on the entry (DONE on success, FAILED on
+// failure); `last_exec_time_sec` is set to `now` regardless so the cron advances.
+func upsertScheduleJobsArray(existing []any, scannerName, cron string, status int, now time.Time) (updated []any, prevExec int) {
 	rec := scheduleJobRecord{
 		JobID:            deterministicJobID(scannerName),
 		RunnableName:     scheduleJobRunnableName,
@@ -181,7 +204,7 @@ func upsertScheduleJobsArray(existing []any, scannerName, cron string, now time.
 		SchedulingParams: map[string]string{"cron_expression": cron},
 		State: scheduleJobRecordState{
 			ExecCount:       1,
-			JobStatus:       scheduleJobStatusDone,
+			JobStatus:       status,
 			LastExecTimeSec: now.Unix(),
 		},
 	}

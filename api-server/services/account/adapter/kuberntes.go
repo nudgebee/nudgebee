@@ -26,12 +26,74 @@ const (
 type kuberntesAdapter struct {
 }
 
+// memoryQuantitySuffixes maps Kubernetes memory quantity suffixes to their byte
+// multiplier. Binary (Ki/Mi/...) always end in "i", so they never collide with
+// the SI single-letter forms; the milli suffix "m" is intentionally absent so a
+// CPU quantity like "91m" is not mistaken for a memory value.
+var memoryQuantitySuffixes = []struct {
+	suffix string
+	mult   float64
+}{
+	{"Ei", float64(TiB) * 1024 * 1024}, {"Pi", float64(TiB) * 1024}, {"Ti", TiB}, {"Gi", GiB}, {"Mi", MiB}, {"Ki", KiB},
+	{"E", 1e18}, {"P", 1e15}, {"T", 1e12}, {"G", 1e9}, {"M", 1e6}, {"k", 1e3},
+}
+
+// parseMemoryQuantityToBytes parses a Kubernetes memory quantity string
+// (e.g. "338077Ki", "500Mi", "1.5Gi", "346190848") into a byte count. It
+// returns ok=false for CPU-style quantities (e.g. "91m") and any input that is
+// not a recognizable memory quantity, so callers can leave those untouched.
+func parseMemoryQuantityToBytes(s string) (float64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	for _, u := range memoryQuantitySuffixes {
+		if strings.HasSuffix(s, u.suffix) {
+			n, err := strconv.ParseFloat(strings.TrimSpace(s[:len(s)-len(u.suffix)]), 64)
+			if err != nil {
+				return 0, false
+			}
+			return n * u.mult, true
+		}
+	}
+	// No suffix: a plain byte count.
+	n, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// applyMemoryUnit renders a memory value as a compact Kubernetes quantity string
+// (e.g. "331Mi", "1.5Gi"). It accepts a raw byte count (float64/int, as carried
+// by the recommendation pipeline and the UI "Create PR" path) or an already
+// unit-suffixed quantity string (e.g. "338077Ki", as produced by the
+// AutoOptimize path). Unrecognized inputs are returned unchanged so non-memory
+// quantities (e.g. CPU "91m") pass through.
 func applyMemoryUnit(unit any) any {
 	if unit == nil {
 		return nil
 	}
 
-	unitInt := int(unit.(float64))
+	var bytes float64
+	switch v := unit.(type) {
+	case float64:
+		bytes = v
+	case int:
+		bytes = float64(v)
+	case int64:
+		bytes = float64(v)
+	case string:
+		b, ok := parseMemoryQuantityToBytes(v)
+		if !ok {
+			return unit
+		}
+		bytes = b
+	default:
+		return unit
+	}
+
+	unitInt := int(bytes)
 	switch {
 	case unitInt >= TiB:
 		// Round to 1 decimal place for values equal to or greater than Ti
@@ -44,6 +106,88 @@ func applyMemoryUnit(unit any) any {
 	default:
 		return fmt.Sprintf("%dKi", unitInt/KiB)
 	}
+}
+
+// Resource sanity bounds. They catch unit-scale mistakes (a MiB value applied as
+// bytes, or millicores applied as whole cores) before they reach the cluster and
+// brick the workload — e.g. the "160.79 MiB sent unitless -> 160790m (~160
+// bytes)" apply that OOM-killed a pod. They are deliberately wide: nothing
+// legitimate in this product runs below 1Mi of memory or above 128 CPU cores per
+// container, so a violation is a bug, not a real resource decision.
+const (
+	minMemoryBytes = float64(MiB)     // 1Mi floor
+	maxMemoryBytes = float64(TiB) * 2 // 2Ti ceiling
+	maxCPUCores    = 128.0
+)
+
+// cpuQuantityToCores parses a Kubernetes CPU quantity ("500m", "0.5", "2") into a
+// core count. ok=false for empty or unparseable input.
+func cpuQuantityToCores(v any) (float64, bool) {
+	s := strings.TrimSpace(asString(v))
+	if s == "" {
+		return 0, false
+	}
+	if strings.HasSuffix(s, "m") {
+		n, err := strconv.ParseFloat(strings.TrimSuffix(s, "m"), 64)
+		if err != nil {
+			return 0, false
+		}
+		return n / 1000.0, true
+	}
+	n, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// validateContainerResources rejects physically implausible cpu/memory
+// quantities in the agent_task payload. Empty (unset) fields are skipped; a
+// non-empty field that is unparseable or outside its bounds is an error. This is
+// the last line of defense against a unit bug in any upstream caller — it runs on
+// the exact normalized values the agent will patch, so it holds even if a future
+// path bypasses the UI/applyMemoryUnit normalization.
+func validateContainerResources(containers []any) error {
+	for _, c := range containers {
+		cm, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := asString(cm["container_name"])
+		for _, field := range []string{"memory_request", "memory_limit"} {
+			raw := asString(cm[field])
+			if raw == "" {
+				continue
+			}
+			bytes, ok := parseMemoryQuantityToBytes(raw)
+			if !ok {
+				return fmt.Errorf("container %q: %s %q is not a valid memory quantity", name, field, raw)
+			}
+			if bytes < minMemoryBytes {
+				return fmt.Errorf("container %q: %s %q is below the 1Mi floor — likely a unit error", name, field, raw)
+			}
+			if bytes > maxMemoryBytes {
+				return fmt.Errorf("container %q: %s %q exceeds the 2Ti ceiling — likely a unit error", name, field, raw)
+			}
+		}
+		for _, field := range []string{"cpu_request", "cpu_limit"} {
+			raw := asString(cm[field])
+			if raw == "" {
+				continue
+			}
+			cores, ok := cpuQuantityToCores(raw)
+			if !ok {
+				return fmt.Errorf("container %q: %s %q is not a valid cpu quantity", name, field, raw)
+			}
+			if cores <= 0 {
+				return fmt.Errorf("container %q: %s %q must be greater than 0", name, field, raw)
+			}
+			if cores > maxCPUCores {
+				return fmt.Errorf("container %q: %s %q exceeds %.0f cores — likely a unit error", name, field, raw, maxCPUCores)
+			}
+		}
+	}
+	return nil
 }
 
 func generateAgentTask(ctx AccountAdapterContext, recommendation models.Recommendation, action string, actionParams map[string]any, source string) (string, error) {
@@ -167,6 +311,15 @@ func (k *kuberntesAdapter) ApplyRecommendation(ctx AccountAdapterContext, reques
 					}
 				}
 			}
+			// Normalize the requested memory to a compact Kubernetes quantity
+			// (e.g. "161Mi") before it reaches the agent. The UI sends memory as a
+			// unit-suffixed string ("160.79Mi") and the server-side pipeline sends a
+			// raw byte count; applyMemoryUnit renders both to a valid quantity. Sent
+			// verbatim, a bare number is read by Kubernetes as *bytes* — 160.79 lands
+			// as "160790m" (~160 bytes) and OOM-kills the pod. CPU is a valid quantity
+			// as bare cores, so it passes through untouched.
+			memRequest := applyMemoryUnit(memData["request"])
+			memLimit := applyMemoryUnit(memData["limit"])
 			allocatedMemRequest := applyMemoryUnit(memAllocated["request"])
 			allocatedMemLimit := applyMemoryUnit(memAllocated["limit"])
 			allocatedCpuRequest := applyMemoryUnit(cpuAllocated["request"])
@@ -176,8 +329,8 @@ func (k *kuberntesAdapter) ApplyRecommendation(ctx AccountAdapterContext, reques
 				"cpu_limit":           cpuData["limit"],
 				"prev_cpu_request":    allocatedCpuRequest,
 				"prev_cpu_limit":      allocatedCpuLimit,
-				"memory_request":      memData["request"],
-				"memory_limit":        memData["limit"],
+				"memory_request":      memRequest,
+				"memory_limit":        memLimit,
 				"prev_memory_request": allocatedMemRequest,
 				"prev_memory_limit":   allocatedMemLimit,
 			}
@@ -186,10 +339,17 @@ func (k *kuberntesAdapter) ApplyRecommendation(ctx AccountAdapterContext, reques
 			containers = append(containers, map[string]any{
 				"cpu_limit":      cpuData["limit"],
 				"cpu_request":    cpuData["request"],
-				"memory_limit":   memData["limit"],
+				"memory_limit":   memLimit,
 				"container_name": key,
-				"memory_request": memData["request"],
+				"memory_request": memRequest,
 			})
+		}
+		// Reject a physically implausible apply (e.g. a value mangled by a unit
+		// bug) before it reaches the agent, instead of silently bricking the
+		// workload. Runs on the normalized quantities the agent will actually patch,
+		// so it guards both the in-place and legacy rollout paths below.
+		if err := validateContainerResources(containers); err != nil {
+			return ApplyRecommendationResponse{}, fmt.Errorf("recommendation apply rejected: %w", err)
 		}
 		containerChanges := map[string]any{
 			"container_changes": containerAnnotations,

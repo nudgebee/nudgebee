@@ -135,6 +135,8 @@ interface ExecutionData {
   triggered_by?: string;
   workflow_id?: string;
   error?: string;
+  version?: number;
+  version_number?: number;
 }
 
 interface ExecutionsViewProps {
@@ -505,7 +507,32 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
     });
   };
 
-  const filteredExecutions = executions;
+  const [selectedVersion, setSelectedVersion] = useState<string>('All');
+
+  const distinctVersions = useMemo(() => {
+    const versions = new Set<string>();
+    executions.forEach((execution: any) => {
+      const v = execution.version_number ?? execution.version;
+      if (v != null) {
+        versions.add(v.toString());
+      }
+    });
+    return Array.from(versions).sort((a, b) => Number(b) - Number(a));
+  }, [executions]);
+
+  useEffect(() => {
+    if (selectedVersion !== 'All' && !distinctVersions.includes(selectedVersion)) {
+      setSelectedVersion('All');
+    }
+  }, [distinctVersions, selectedVersion]);
+
+  const filteredExecutions = useMemo(() => {
+    return executions.filter((execution: any) => {
+      if (selectedVersion === 'All') return true;
+      const v = execution.version_number ?? execution.version;
+      return v?.toString() === selectedVersion;
+    });
+  }, [executions, selectedVersion]);
 
   const handleRefresh = () => {
     pendingSelectionRef.current = null;
@@ -1066,31 +1093,56 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
               />
             </Box>
             {onStatusChange && (
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
-                <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600], fontWeight: 'var(--ds-font-weight-medium)' }}>
-                  Status:
-                </Typography>
-                <FormControl size='small' sx={{ minWidth: 120 }}>
-                  <Select
-                    value={selectedStatus}
-                    onChange={(e) => onStatusChange(e.target.value)}
-                    sx={{
-                      fontSize: 'var(--ds-text-caption)',
-                      height: '30px',
-                      '& .MuiSelect-select': { padding: 'var(--ds-space-1) var(--ds-space-2)' },
-                    }}
-                  >
-                    <MenuItem value='All'>All</MenuItem>
-                    <MenuItem value='Running'>Running</MenuItem>
-                    <MenuItem value='Completed'>Completed</MenuItem>
-                    <MenuItem value='Failed'>Failed</MenuItem>
-                    <MenuItem value='Canceled'>Canceled</MenuItem>
-                    <MenuItem value='Terminated'>Terminated</MenuItem>
-                    <MenuItem value='Timed Out'>Timed Out</MenuItem>
-                    <MenuItem value='Continued As New'>Continued As New</MenuItem>
-                    <MenuItem value='Unspecified'>Unspecified</MenuItem>
-                  </Select>
-                </FormControl>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--ds-space-3)', alignItems: 'center' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
+                  <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600], fontWeight: 'var(--ds-font-weight-medium)' }}>
+                    Status:
+                  </Typography>
+                  <FormControl size='small' sx={{ minWidth: 90 }}>
+                    <Select
+                      value={selectedStatus}
+                      onChange={(e) => onStatusChange(e.target.value)}
+                      sx={{
+                        fontSize: 'var(--ds-text-caption)',
+                        height: '30px',
+                        '& .MuiSelect-select': { padding: 'var(--ds-space-1) var(--ds-space-2)' },
+                      }}
+                    >
+                      <MenuItem value='All'>All</MenuItem>
+                      <MenuItem value='Running'>Running</MenuItem>
+                      <MenuItem value='Completed'>Completed</MenuItem>
+                      <MenuItem value='Failed'>Failed</MenuItem>
+                      <MenuItem value='Canceled'>Canceled</MenuItem>
+                      <MenuItem value='Terminated'>Terminated</MenuItem>
+                      <MenuItem value='Timed Out'>Timed Out</MenuItem>
+                      <MenuItem value='Continued As New'>Continued As New</MenuItem>
+                      <MenuItem value='Unspecified'>Unspecified</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
+                  <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600], fontWeight: 'var(--ds-font-weight-medium)' }}>
+                    Ver:
+                  </Typography>
+                  <FormControl size='small' sx={{ minWidth: 80 }}>
+                    <Select
+                      value={selectedVersion}
+                      onChange={(e) => setSelectedVersion(e.target.value)}
+                      sx={{
+                        fontSize: 'var(--ds-text-caption)',
+                        height: '30px',
+                        '& .MuiSelect-select': { padding: 'var(--ds-space-1) var(--ds-space-2)' },
+                      }}
+                    >
+                      <MenuItem value='All'>All</MenuItem>
+                      {distinctVersions.map((v) => (
+                        <MenuItem key={v} value={v}>
+                          v{v}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Box>
               </Box>
             )}
           </Box>
@@ -1108,6 +1160,7 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: '0px' }}>
                 {filteredExecutions.map((execution: any) => {
                   const isSelected = selectedExecution?.id === execution.id;
+                  const executionVer = execution.version_number ?? execution.version;
 
                   return (
                     <Box
@@ -1193,6 +1246,26 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                             {getDuration(execution?.start_time as string, execution.close_time)}
                           </Typography>
                         </Box>
+                        {executionVer != null && (
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
+                            <Typography
+                              sx={{
+                                fontSize: 'var(--ds-text-caption)',
+                                color: ds.gray[600],
+                                fontFamily: 'monospace',
+                                backgroundColor: 'var(--ds-gray-100)',
+                                border: '1px solid var(--ds-gray-200)',
+                                borderRadius: 'var(--ds-radius-sm)',
+                                px: 0.6,
+                                py: 0.1,
+                                fontWeight: 'var(--ds-font-weight-medium)',
+                                lineHeight: 1,
+                              }}
+                            >
+                              v{executionVer}
+                            </Typography>
+                          </Box>
+                        )}
                       </Box>
                     </Box>
                   );

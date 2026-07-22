@@ -55,7 +55,7 @@ func init() {
 	}, "AWS cloud resources source (RDS, ElastiCache, S3, EC2, etc.)")
 
 	// Cache CloudFormation stack resources for 2 hours (stacks rarely change,
-	// and the KG cron runs daily at 23:30 UTC)
+	// and the KG cron runs hourly at :30 UTC)
 	common.CacheCreateNamespace("cfn_stack_resources",
 		common.CacheNamespaceWithExpiration(2*time.Hour),
 		common.CacheNamespaceWithMaxEntries(500),

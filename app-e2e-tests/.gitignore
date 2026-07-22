@@ -22,6 +22,8 @@ user.json
 .env
 .env.local
 .env.*
+# .env.oss holds real hosted secrets for local OSS runs — must NOT be committed
+.env.oss
 users.ts
 
 # --- OS & IDE Settings ---

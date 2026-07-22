@@ -261,6 +261,69 @@ func parseStatistic(stat string) (types.Statistic, error) {
 	}
 }
 
+// UpdateCloudWatchAlarmThreshold changes only the threshold (and optionally the evaluation
+// window) of an existing alarm. CloudWatch's PutMetricAlarm replaces the whole alarm, so we
+// first DescribeAlarms to capture the current definition, override the threshold/period, and
+// re-put — preserving every other field (metric, dimensions, actions, statistic, etc.).
+// newDurationMin <= 0 leaves the evaluation window unchanged.
+func UpdateCloudWatchAlarmThreshold(ctx context.Context, account providers.Account, alarmName, region string, newThreshold float64, newDurationMin int) error {
+	existing, err := DescribeCloudWatchAlarm(ctx, account, alarmName, region)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := getAwsConfigFromAccount(ctx, account)
+	if err != nil {
+		return fmt.Errorf("failed to create AWS config: %w", err)
+	}
+	cfg.Region = region
+	cwClient := cloudwatch.NewFromConfig(cfg)
+
+	input := &cloudwatch.PutMetricAlarmInput{
+		AlarmName:                        existing.AlarmName,
+		AlarmDescription:                 existing.AlarmDescription,
+		ActionsEnabled:                   existing.ActionsEnabled,
+		OKActions:                        existing.OKActions,
+		AlarmActions:                     existing.AlarmActions,
+		InsufficientDataActions:          existing.InsufficientDataActions,
+		MetricName:                       existing.MetricName,
+		Namespace:                        existing.Namespace,
+		Statistic:                        existing.Statistic,
+		ExtendedStatistic:                existing.ExtendedStatistic,
+		Dimensions:                       existing.Dimensions,
+		Period:                           existing.Period,
+		Unit:                             existing.Unit,
+		EvaluationPeriods:                existing.EvaluationPeriods,
+		DatapointsToAlarm:                existing.DatapointsToAlarm,
+		ComparisonOperator:               existing.ComparisonOperator,
+		TreatMissingData:                 existing.TreatMissingData,
+		EvaluateLowSampleCountPercentile: existing.EvaluateLowSampleCountPercentile,
+		Metrics:                          existing.Metrics,
+		ThresholdMetricId:                existing.ThresholdMetricId,
+		Threshold:                        aws.Float64(newThreshold),
+	}
+
+	// Optionally widen the evaluation window. For a single-datapoint alarm with a known
+	// period, map the requested minutes to EvaluationPeriods.
+	if newDurationMin > 0 && existing.Period != nil && *existing.Period > 0 {
+		periodSec := int(*existing.Period)
+		evalPeriods := (newDurationMin * 60) / periodSec
+		if evalPeriods < 1 {
+			evalPeriods = 1
+		}
+		input.EvaluationPeriods = aws.Int32(int32(evalPeriods))
+		// Keep DatapointsToAlarm consistent (cannot exceed EvaluationPeriods).
+		if input.DatapointsToAlarm == nil || int(*input.DatapointsToAlarm) > evalPeriods {
+			input.DatapointsToAlarm = aws.Int32(int32(evalPeriods))
+		}
+	}
+
+	if _, err := cwClient.PutMetricAlarm(ctx, input); err != nil {
+		return fmt.Errorf("failed to update CloudWatch alarm threshold: %w", err)
+	}
+	return nil
+}
+
 // UpdateCloudWatchAlarm updates an existing CloudWatch alarm
 func UpdateCloudWatchAlarm(ctx context.Context, account providers.Account, config providers.AlarmCreationConfig, region string) error {
 	// PutMetricAlarm creates or updates, so we can use the same function

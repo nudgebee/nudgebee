@@ -250,7 +250,7 @@ const EventResolutions = () => {
                   item.status === 'Success' ? 'success' : item.status === 'Failed' ? 'critical' : item.status === 'InProgress' ? 'warning' : 'neutral'
                 }
               />
-              {item.status === 'Failed' && item.status_message && (
+              {item.status_message && (item.status === 'Failed' || (item.status === 'Success' && !containsLink(item.type_reference_id))) && (
                 <Text value={item.status_message} secondaryText showAutoEllipsis sx={{ fontSize: 'var(--ds-text-small)' }} />
               )}
             </Box>

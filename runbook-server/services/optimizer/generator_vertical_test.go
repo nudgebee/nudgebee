@@ -59,4 +59,13 @@ func TestVerticalRightsizeGenerator_GenerateTasks(t *testing.T) {
 	assert.Contains(t, task.Meta, "recommendation")
 	assert.Equal(t, recData, task.Meta["recommendation"])
 	assert.Contains(t, task.Meta, "ticket_config")
+
+	// Per-execution resource snapshot so history survives target-resource edits (#34245).
+	rf := task.ResourceFilter
+	assert.NotNil(t, rf.Namespace)
+	assert.Equal(t, "default", *rf.Namespace)
+	assert.NotNil(t, rf.Name)
+	assert.Equal(t, "nginx", *rf.Name)
+	assert.NotNil(t, rf.Type)
+	assert.Equal(t, "Deployment", *rf.Type)
 }

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ListingLayout } from '@ui/ListingLayout';
+import { withAccountGuard } from '@shared/AccountGuard';
 import { Button as DsButton } from '@ui/Button';
 import { ds } from 'src/utils/colors';
 import k8sApi from '@api1/kubernetes';
@@ -764,4 +765,4 @@ const AgentHealth = () => {
   );
 };
 
-export default AgentHealth;
+export default withAccountGuard(AgentHealth, { hideContent: true });

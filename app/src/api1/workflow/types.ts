@@ -295,3 +295,8 @@ export interface WorkflowTemplateListResponse {
   templates: WorkflowTemplate[];
   next_page_token?: string;
 }
+
+export interface WorkflowValidateRequest {
+  account_id: string;
+  workflow: WorkflowRequest;
+}

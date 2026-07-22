@@ -226,6 +226,15 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 
 	s.logger.Info("fetched K8s workloads", "count", len(workloads))
 
+	// Load runtime datastore classification (the same framework signal the DBMS view
+	// uses) so in-cluster databases/caches/queues can be tagged with their engine+role.
+	// Non-fatal: on error we proceed with image-name fallback only.
+	frameworks, err := GetWorkloadFrameworks(req.CloudAccountID)
+	if err != nil {
+		s.logger.Warn("failed to load workload frameworks, continuing with image-name classification only", "error", err)
+		frameworks = map[string]string{}
+	}
+
 	// Fetch K8s nodes from database
 	k8sNodes, err := s.fetchK8sNodes(ctx, req)
 	if err != nil {
@@ -255,7 +264,7 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 	}
 
 	// Convert workloads to nodes and edges (passing k8sNodeMap to avoid duplicates)
-	nodes, edges, k8sClusterMap, k8sNAmespaceMap, workloadNodesMap := s.convertWorkloadsToGraph(workloads, &k8sNodeMap, req)
+	nodes, edges, k8sClusterMap, k8sNAmespaceMap, workloadNodesMap := s.convertWorkloadsToGraph(workloads, &k8sNodeMap, frameworks, req)
 
 	// Convert services to nodes and edges
 	serviceNodes, serviceEdges, _, _ := s.convertK8sServicesToGraph(k8sServices, workloads, k8sClusterMap, k8sNAmespaceMap, workloadNodesMap, req)
@@ -3575,7 +3584,7 @@ func (s *K8sSource) createNodeFromK8sNode(k8sNode *K8sNodeRow, req *core.SourceB
 }
 
 // convertWorkloadsToGraph converts K8s workloads to knowledge graph nodes and edges
-func (s *K8sSource) convertWorkloadsToGraph(workloads []K8sWorkloadRow, k8sNodeMap *map[string]*core.DbNode, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge, map[string]*core.DbNode, map[string]*core.DbNode, map[string]*core.DbNode) {
+func (s *K8sSource) convertWorkloadsToGraph(workloads []K8sWorkloadRow, k8sNodeMap *map[string]*core.DbNode, frameworks map[string]string, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge, map[string]*core.DbNode, map[string]*core.DbNode, map[string]*core.DbNode) {
 	nodes := make([]*core.DbNode, 0)
 	edges := make([]*core.DbEdge, 0)
 
@@ -3596,7 +3605,7 @@ func (s *K8sSource) convertWorkloadsToGraph(workloads []K8sWorkloadRow, k8sNodeM
 
 	// First pass: Create all workload nodes
 	for _, workload := range workloads {
-		workloadNode := s.createNodeFromWorkload(&workload, req)
+		workloadNode := s.createNodeFromWorkload(&workload, frameworks, req)
 		nodes = append(nodes, workloadNode)
 
 		// Track workload node - include cluster to avoid collisions
@@ -3753,7 +3762,7 @@ func (s *K8sSource) convertWorkloadsToGraph(workloads []K8sWorkloadRow, k8sNodeM
 }
 
 // createNodeFromWorkload creates a knowledge graph node from a K8s workload
-func (s *K8sSource) createNodeFromWorkload(workload *K8sWorkloadRow, req *core.SourceBuildRequest) *core.DbNode {
+func (s *K8sSource) createNodeFromWorkload(workload *K8sWorkloadRow, frameworks map[string]string, req *core.SourceBuildRequest) *core.DbNode {
 	// Determine node type based on workload kind
 	var nodeType core.NodeType
 	kind := strings.ToLower(workload.Kind)
@@ -3803,6 +3812,17 @@ func (s *K8sSource) createNodeFromWorkload(workload *K8sWorkloadRow, req *core.S
 
 	// Add subtype property for K8s workload
 	properties["subtype"] = workload.Kind
+
+	// Datastore facet: if the runtime framework signal marks this workload as an
+	// in-cluster database/cache/queue, tag the engine + role it plays. node_type stays
+	// Workload (it keeps all its k8s topology); the facet drives the DB icon + UI badge.
+	// See db_classifier.go.
+	if nodeType == core.NodeTypeWorkload {
+		if engine, role, ok := classifyDatastore(frameworks[workload.ID]); ok {
+			properties["engine"] = engine
+			properties["role"] = role
+		}
+	}
 
 	// Build unique key using GenerateUniqueKey
 	tempNode := &core.DbNode{

@@ -1,0 +1,70 @@
+slug: scale_auto_scaling_group
+name: "Scale Auto Scaling Group"
+description: "Set the desired capacity of an Auto Scaling Group. Useful for handling capacity-related alerts."
+category: "aws"
+icon: "unfold_more"
+status: ACTIVE
+tags:
+  labels:
+    - "scale"
+  event_sources:
+    - "cloudwatch"
+    - "aws"
+  alert_names:
+    - "GroupInServiceInstances"
+    - "CPUUtilization"
+    - "ASGCapacityInsufficient"
+definition:
+  version: "v1"
+  inputs:
+    - id: "asg_name"
+      type: "string"
+      description: "Auto Scaling Group name"
+      required: true
+    - id: "desired_capacity"
+      type: "string"
+      description: "Desired instance count"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Approve scaling ASG **{{ Inputs.asg_name }}** to **{{ Inputs.desired_capacity }}** instances?"
+    - id: "scale"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws autoscaling set-desired-capacity --auto-scaling-group-name {{ Inputs.asg_name }} --desired-capacity {{ Inputs.desired_capacity }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names {{ Inputs.asg_name }} --query AutoScalingGroups[0].{Desired:DesiredCapacity,Min:MinSize,Max:MaxSize,InService:length(Instances[?LifecycleState==`InService`])}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "scale"
+  timeout: "10m"
+template_variables:
+  - id: "asg_name"
+    input_ref: "asg_name"
+    display_name: "ASG Name"
+    required: true
+    type: "string"
+  - id: "desired_capacity"
+    input_ref: "desired_capacity"
+    display_name: "Desired Capacity"
+    required: true
+    type: "string"
+    placeholder: "3"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

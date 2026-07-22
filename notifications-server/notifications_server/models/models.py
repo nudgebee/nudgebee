@@ -43,6 +43,7 @@ class BaseModel:
 
 class MessagingPlatform(Base):
     __tablename__ = "messaging_platforms"
+    __table_args__ = (UniqueConstraint("tenant_id", "platform", name="uq_messaging_platforms_tenant_platform"),)
 
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=gen_id)
     created_at = Column(DateTime, default=utc_now)

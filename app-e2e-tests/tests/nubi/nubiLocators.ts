@@ -81,7 +81,7 @@ export class NubiLocators {
     this.agenRole = page.getByRole('textbox', { name: 'You are a [role], responsible' })
     this.agentInstructionsInput = page.getByRole('textbox', { name: 'Key responsibilities: 1. [' })
     this.ageentToolsOrAgentselectionButton = page.getByText('Tool/Agent Selection').first()   //3
-    this.selectAgentOrTool = page.locator('[id="auto-complete-field-for-tool/agent"]');
+    this.selectAgentOrTool = page.getByRole("button", { name: "Select Tool/Agent" });
     this.listOfAgentsOrTools = page.getByText('anomaly_execute - system')
     
     this.agentToolUsage = page.getByRole('textbox', { name: 'Tool: [Tool Name] Purpose: [' })

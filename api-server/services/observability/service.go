@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -493,10 +494,10 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 	return defaultProvider, defaultSource, matchedIntegration, nil
 }
 
-func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, error) {
+func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (FetchLogsResult, error) {
 	source, err := getLogSourceForAccount(ctx, fetchLogRequest.AccountId, fetchLogRequest.LogProvider, fetchLogRequest.LogProviderSource)
 	if err != nil {
-		return nil, err
+		return FetchLogsResult{}, err
 	}
 	filteringMap := getMergedLabelMapping(ctx, fetchLogRequest.AccountId, source)
 	fetchLogRequest.SortFields = convertOrderByWithMapping(fetchLogRequest.SortFields, filteringMap)
@@ -525,10 +526,31 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([
 
 	logs, err := source.QueryLogs(ctx, fetchLogRequest)
 	if err != nil {
-		return nil, err
+		return FetchLogsResult{}, err
 	}
 	normalizeOutputLogLabels(logs, filteringMap)
-	return logs, nil
+
+	// Resolve the query that was actually used so callers (UI, LLM, runbooks)
+	// can show it. fetchLogRequest.Query holds the raw query or the GetQuery
+	// result set above. Providers that consume the where-clause natively emit
+	// no query string, so fall back to the canonical where JSON.
+	usedQuery := fetchLogRequest.Query
+	if usedQuery == "" && hasWhereData(fetchLogRequest.QueryRequest.Where) {
+		if b, mErr := json.Marshal(fetchLogRequest.QueryRequest.Where); mErr == nil {
+			usedQuery = string(b)
+		}
+	}
+
+	// Resolve the provider for the result. The canonical (v2) path sends an empty
+	// LogProvider and lets us resolve the account default, so fall back to the
+	// resolved default provider when the request didn't name one.
+	provider := fetchLogRequest.LogProvider
+	if provider == "" {
+		if resolved, _, _, perr := getLogsMetricsTracesProviderWithIntegration(ctx, fetchLogRequest.AccountId, "", "logs", fetchLogRequest.LogProviderSource); perr == nil {
+			provider = resolved
+		}
+	}
+	return FetchLogsResult{Logs: logs, Query: usedQuery, Provider: provider}, nil
 }
 
 // normalizeOutputLogLabels adds canonical label names as aliases for provider-specific
@@ -721,7 +743,7 @@ var allProviderCaps = map[string]providerStaticCaps{
 	},
 }
 
-func getProviderCapabilities(provider, integrationSource, providerType string) ProviderCapabilities {
+func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, integrationSource, providerType string) ProviderCapabilities {
 	if provider == "" {
 		return ProviderCapabilities{}
 	}
@@ -743,13 +765,19 @@ func getProviderCapabilities(provider, integrationSource, providerType string) P
 		caps.SupportsLogGroups = true
 	}
 
-	// Interface-derived capabilities: operator list and optional interfaces.
+	// Interface-derived capabilities: operator list, label mapping, optional interfaces.
 	switch providerType {
 	case "logs":
 		source, err := getLogSource(provider, integrationSource)
 		if err == nil {
 			caps.SupportedOperators = source.GetSupportedOperators()
 			_, caps.SupportsAutoQuery = source.(PlaybookQueryGenerator)
+			// Full canonical→provider merge (static ∪ tenant ∪ account ∪ dynamic).
+			// Skip the merge when accountId is empty: with no account the lookup
+			// can only return the static defaults, so there's nothing to merge.
+			if accountId != "" {
+				caps.LabelMappings = getMergedLabelMapping(ctx, accountId, source)
+			}
 		} else {
 			slog.Warn("getProviderCapabilities: failed to get log source", "provider", provider, "error", err)
 		}
@@ -757,6 +785,8 @@ func getProviderCapabilities(provider, integrationSource, providerType string) P
 		source, err := getTraceSource(provider, integrationSource)
 		if err == nil {
 			caps.SupportedOperators = source.GetSupportedOperators()
+			// Static map only — no trace-merge helper exists yet.
+			caps.LabelMappings = source.GetLabelMapping()
 		} else {
 			slog.Warn("getProviderCapabilities: failed to get trace source", "provider", provider, "error", err)
 		}
@@ -764,6 +794,8 @@ func getProviderCapabilities(provider, integrationSource, providerType string) P
 		source, err := getMetricsSource(provider, integrationSource)
 		if err == nil {
 			caps.SupportedOperators = source.GetSupportedOperators()
+			// No metric label mapping today — metric sources don't implement
+			// GetLabelMapping; LabelMappings stays empty for metrics.
 		} else {
 			slog.Warn("getProviderCapabilities: failed to get metrics source", "provider", provider, "error", err)
 		}
@@ -778,7 +810,7 @@ func GetDefaultProvider(context *security.RequestContext, accountId, providerTyp
 	if err != nil {
 		return nil, err
 	}
-	caps := getProviderCapabilities(defaultProvider, integrationSource, providerType)
+	caps := getProviderCapabilities(context, accountId, defaultProvider, integrationSource, providerType)
 	return &DefaultProviderResponse{
 		Provider:           defaultProvider,
 		IntegrationSource:  integrationSource,
@@ -821,7 +853,7 @@ func listAvailableProviders(context *security.RequestContext, accountId, provide
 			return
 		}
 		seen[provider] = true
-		caps := getProviderCapabilities(provider, source, providerType)
+		caps := getProviderCapabilities(context, accountId, provider, source, providerType)
 		available = append(available, AvailableProvider{
 			Provider:                     provider,
 			SupportedOperators:           caps.SupportedOperators,
@@ -919,7 +951,7 @@ func ListProviderCapabilities(ctx *security.RequestContext, accountId string) ([
 		if err != nil || provider == "" {
 			continue
 		}
-		caps := getProviderCapabilities(provider, source, providerType)
+		caps := getProviderCapabilities(ctx, accountId, provider, source, providerType)
 		result = append(result, ProviderCapabilityEntry{
 			Provider:     provider,
 			ProviderType: providerType,
@@ -1082,6 +1114,46 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
 	return source.QueryTraces(context, fetchTracesRequest)
+}
+
+// GetTracesWithRawResult resolves the trace source and, when it is the otel ClickHouse source,
+// returns the raw {columns, column_types, rows} result set instead of the typed span array. This
+// backs the free-form agent trace path (IncludeRawResult) so aggregation / custom-projection
+// queries return their real values rather than being zeroed by MapRowToOpenTelemetryTrace's
+// fixed-schema coercion. A nil Result tells the caller to fall back to the typed GetTraces array
+// (e.g. for a non-clickhouse provider). The underlying query executes exactly once.
+func GetTracesWithRawResult(context *security.RequestContext, fetchTracesRequest TracesV3Request) (TracesQueryResult, error) {
+	if fetchTracesRequest.AccountId == "" {
+		return TracesQueryResult{}, fmt.Errorf("account_id is required")
+	}
+
+	traceProvider, integrationSource, err := GetLogsMetricsTracesProvider(context, fetchTracesRequest.AccountId, fetchTracesRequest.ProviderType, "traces", fetchTracesRequest.ProviderSource)
+	if err != nil {
+		return TracesQueryResult{}, err
+	}
+	if traceProvider == "" {
+		return TracesQueryResult{}, fmt.Errorf("GetTracesWithRawResult trace provider (trace_provider) is required")
+	}
+	source, err := getTraceSource(traceProvider, integrationSource)
+	if err != nil {
+		return TracesQueryResult{}, err
+	}
+
+	// Only the otel ClickHouse source supports raw passthrough. Any other provider → nil Result,
+	// caller falls back to the typed array.
+	clickhouseSource, ok := source.(*OtelClickhouseTraceSource)
+	if !ok {
+		return TracesQueryResult{}, nil
+	}
+
+	filteringMap := source.GetLabelMapping()
+	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
+
+	raw, err := clickhouseSource.QueryTracesRaw(context, fetchTracesRequest)
+	if err != nil {
+		return TracesQueryResult{}, err
+	}
+	return TracesQueryResult{Result: &raw}, nil
 }
 
 // Sorting option

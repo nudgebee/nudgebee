@@ -51,6 +51,21 @@ func TestBuildImageScanSpec_FsScanShape(t *testing.T) {
 		t.Errorf("Command/Args = %q; must not pull from the registry via `trivy image`", cmd)
 	}
 
+	// The scan must be scoped to `--scanners vuln`. The default scanner set adds
+	// secret + misconfig scanning; the secret scanner reads every file's content,
+	// which OOMs / times out on large images (the image_scanner backoff-limit bug)
+	// and leaks the runtime serviceaccount token into recommendation rows.
+	if !argPairPresent(spec.Args, "--scanners", "vuln") {
+		t.Errorf("Args = %v; want `--scanners vuln` to avoid the heavy secret/misconfig scanners", spec.Args)
+	}
+	// Keep trivy inside the image rootfs: the two scan emptyDirs and the kernel /
+	// runtime pseudo-filesystems must be skipped.
+	for _, dir := range []string{imageScanVolumePath, "/tmp", "/proc", "/sys", "/dev", "/run"} {
+		if !argPairPresent(spec.Args, "--skip-dirs", dir) {
+			t.Errorf("Args = %v; want `--skip-dirs %s`", spec.Args, dir)
+		}
+	}
+
 	// Init container stages the trivy binary into the shared volume.
 	if len(spec.InitContainers) != 1 {
 		t.Fatalf("InitContainers = %d; want 1 (stage trivy binary)", len(spec.InitContainers))
@@ -63,6 +78,17 @@ func TestBuildImageScanSpec_FsScanShape(t *testing.T) {
 		t.Errorf("want shared binary + /tmp emptyDir volumes; got %d volumes, %d mounts",
 			len(spec.Volumes), len(spec.VolumeMounts))
 	}
+}
+
+// argPairPresent reports whether args contains flag immediately followed by
+// value (e.g. "--scanners" "vuln"), the shape trivy's repeatable flags take.
+func argPairPresent(args []string, flag, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 // Missing image must surface a visible placeholder rather than scanning "/".

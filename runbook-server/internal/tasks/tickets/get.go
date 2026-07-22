@@ -30,7 +30,7 @@ func (t *TicketsGetTask) Execute(taskCtx types.TaskContext, params map[string]an
 		return nil, err
 	}
 
-	integrationId, err := extractOptionalString(params, "integration_id")
+	integrationId, err := extractRequiredString(params, "integration_id")
 	if err != nil {
 		return nil, err
 	}
@@ -92,24 +92,44 @@ func (t *TicketsGetTask) InputSchema() *types.Schema {
 				Required:    false,
 				Order:       1,
 			},
-			"ticket_id": {
-				Type:        types.PropertyTypeString,
-				Description: "Ticket ID to retrieve",
+			"integration_id": {
+				Type:        types.PropertyTypeTicket,
+				Description: "Ticket integration to use",
 				Required:    true,
 				Order:       2,
 			},
-			"integration_id": {
-				Type:        types.PropertyTypeTicket,
-				Description: "Ticket integration (required if ticket was not created via Nudgebee)",
+			// Synthetic field. The frontend (ActionDetailsSidebar
+			// applyIntegrationFieldChange) derives this from the selected
+			// ticket integration's `tool` (jira/github/gitlab/servicenow/
+			// pagerduty/zenduty) and uses it to drive VisibleWhen/RequiredWhen
+			// on project_key below. Hidden from the rendered form.
+			"ticket_tool": {
+				Type:        types.PropertyTypeString,
+				Description: "Internal: derived ticket tool type for the selected integration.",
 				Required:    false,
+				Hidden:      true,
 				Order:       3,
+			},
+			"ticket_id": {
+				Type:        types.PropertyTypeString,
+				Description: "Ticket ID to retrieve (e.g. PROJ-123 for Jira, issue number for GitHub/GitLab)",
+				Required:    true,
+				Order:       4,
 			},
 			"project_key": {
 				Type:        types.PropertyTypeString,
-				Description: "Project key (required for GitHub/GitLab in owner/repo format)",
+				Description: "Project key (owner/repo for GitHub/GitLab)",
 				Required:    false,
-				Order:       4,
-				DependsOn:   []string{"integration_id"},
+				Order:       5,
+				DependsOn:   []string{"integration_id", "ticket_tool"},
+				VisibleWhen: &types.VisibleWhen{
+					Field: "ticket_tool",
+					Value: []string{"github", "gitlab"},
+				},
+				RequiredWhen: &types.RequiredWhen{
+					Field: "ticket_tool",
+					Value: []string{"github", "gitlab"},
+				},
 				OptionsSource: &types.OptionsSource{
 					Type:              "ticket_projects",
 					DependencyMapping: map[string]string{"integration_id": "integration_id"},

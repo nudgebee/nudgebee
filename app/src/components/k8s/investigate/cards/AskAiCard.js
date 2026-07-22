@@ -14,6 +14,7 @@ import { ds } from 'src/utils/colors';
 import { ANNOTATIONS } from '@lib/annotationKeys';
 import { getNubiIconUrl } from '@hooks/useTenantBranding';
 import SimpleDiffViewer from '@shared/viewers/SimpleDiffViewer';
+import EventRaisePrPanel from './EventRaisePrPanel';
 import { FiArrowRight } from 'react-icons/fi';
 import { useConversationSuggestions } from '@hooks/useConversationSuggestions';
 import { safeJSONParse } from '@utils/common';
@@ -74,9 +75,11 @@ class AskAiCard {
       if (this.aiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO]) {
         let githubRepoUrl = this.aiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO];
         let githubRepo = githubRepoUrl.replace('https://github.com/', '').split('/');
-        if (this?.aiData?.source_updates?.gitDiff) {
-          this.resolveButton = true;
-        }
+        // Offer "Raise PR" only when the log-analysis step already generated and
+        // stored a fix diff (propose mode) for a mapped source repo. Raising the
+        // PR replays that exact, user-reviewed diff — so with no stored diff
+        // (config root cause / no fix needed) there is nothing to raise.
+        this.resolveButton = !!this.aiData?.source_updates?.gitDiff;
         component = (
           <>
             {text && (
@@ -101,11 +104,6 @@ class AskAiCard {
                   {text}
                 </Link>
               </div>
-            )}
-            {this?.aiData?.source_updates?.gitDiff && (
-              <Typography color={ds.red[500]} fontSize={ds.text.bodyLg}>
-                {'Code Suggestion Available.'}
-              </Typography>
             )}
           </>
         );
@@ -666,12 +664,6 @@ class AskAiCard {
           });
         }
 
-        const Insights = cardInstance.insightData.map((insight) => (
-          <Box key={insight.message} sx={{ marginBottom: 'var(--ds-space-2)' }}>
-            {insight.component && <Box sx={{ marginTop: 'var(--ds-space-1)', fontSize: 'var(--ds-text-small)' }}>{insight.component}</Box>}
-          </Box>
-        ));
-
         const fileName = localAiData?.file_details?.files?.[0]?.file_path?.split('/').pop() || 'code';
 
         return (
@@ -710,24 +702,22 @@ class AskAiCard {
                     color: 'var(--ds-blue-700)',
                   }}
                 >
-                  {source_updates?.gitDiff ? 'Reasoning behind the proposed code changes' : 'No Code Changes Required'}
+                  {source_updates?.gitDiff
+                    ? 'Reasoning behind the proposed code changes'
+                    : localAiData?.file_details?.files?.[0]?.file_path
+                    ? 'Code-level root cause identified'
+                    : 'No Code Changes Required'}
                 </Typography>
                 <MarkDowns data={source_updates.explanation} sx={{ fontSize: 'var(--ds-text-body)', lineHeight: 1.6 }} />
               </Box>
             )}
 
-            {Insights.length > 0 && (
-              <Box
-                sx={{
-                  marginTop: 'var(--ds-space-4)',
-                  padding: 'var(--ds-space-2) var(--ds-space-4)',
-                  backgroundColor: 'var(--ds-background-200)',
-                  borderRadius: 'var(--ds-radius-sm)',
-                  fontSize: 'var(--ds-text-small)',
-                }}
-              >
-                {Insights}
-              </Box>
+            {code_analysis_enabled !== false && source_updates?.gitDiff && localAiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO] && (
+              <EventRaisePrPanel
+                data={cardInstance.buildResolveData()}
+                repoUrl={localAiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO]}
+                filePath={source_updates?.file_path || localAiData?.file_details?.files?.[0]?.file_path}
+              />
             )}
           </Box>
         );
@@ -1044,8 +1034,10 @@ class AskAiCard {
     return <>{cardInstance.errorMessage ? <Typography>{cardInstance.errorMessage}</Typography> : <AskAICardComponent noPadding={true} />}</>;
   };
 
-  ResolveComponent = (props) => {
-    let data = {};
+  // buildResolveData resolves the event's workload identity and packs the
+  // request payload the Raise-PR apply path expects (shared by the inline
+  // EventRaisePrPanel and the legacy ResolveComponent modal).
+  buildResolveData = () => {
     let namespace = this.event?.subject_namespace,
       workload,
       workloadType,
@@ -1058,10 +1050,17 @@ class AskAiCard {
     }
 
     if (!workload) {
-      for (let e of this.event.evidences) {
+      for (let e of this.event.evidences || []) {
         if (e.type === 'json') {
-          let jsonData = JSON.parse(e.data);
-          if (jsonData.name === 'noisy_neighbours') {
+          // e.data may arrive already parsed (object) or as a JSON string; guard
+          // both, and never let a malformed evidence blob crash the resolve form.
+          let jsonData;
+          try {
+            jsonData = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+          } catch {
+            continue;
+          }
+          if (jsonData?.name === 'noisy_neighbours') {
             for (let n of jsonData.data.neighbours) {
               if (n.pod_name === this.event.subject_name && n.namespace === this.event.subject_namespace) {
                 let kind = n.kind[0];
@@ -1083,7 +1082,7 @@ class AskAiCard {
       workloadType = 'Deployment';
     }
 
-    data = {
+    return {
       id: this.event.id,
       accountId: this.event?.cloud_account_id,
       card_id: this.id,
@@ -1099,6 +1098,10 @@ class AskAiCard {
       },
       aiData: this.aiData,
     };
+  };
+
+  ResolveComponent = (props) => {
+    const data = this.buildResolveData();
     return (
       <KubernetesRightSizingUpdateForm
         open={props.open}

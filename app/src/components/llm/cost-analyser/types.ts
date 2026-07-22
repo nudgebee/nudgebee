@@ -247,6 +247,8 @@ export interface CostFilters {
   providers: string[];
   /** Status values — free strings once sourced from the API (e.g. "success"). */
   statuses: string[];
+  /** Scope the whole report to one user (their user_id). '' = all users. */
+  userId: string;
   minCost: number | null;
   maxCost: number | null;
   anomaliesOnly: boolean;

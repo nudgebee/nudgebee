@@ -11,16 +11,20 @@ import (
 	"github.com/google/uuid"
 )
 
-// ConvertServiceMapToGraph converts a traces.ServiceMap to knowledge graph nodes and edges
-// This directly converts traces.ServiceMap → core.DbNode/DbEdge without intermediate types
-// Based on traces.ConvertServiceMapToKnowledgeGraph but creates core types directly
-// Now supports matching against existing nodes before creating new ones
+// ConvertServiceMapToGraph converts a traces.ServiceMap to knowledge graph nodes and edges.
+// This directly converts traces.ServiceMap → core.DbNode/DbEdge without intermediate types.
+// Now supports matching against existing nodes before creating new ones.
+//
+// `source` is stamped on every node/edge (e.g. "traces", "gcp-cloud-traces") so dedup and the
+// edge-priority tables attribute them to the right flow source — callers other than the K8s
+// path must pass their own source string.
 func ConvertServiceMapToGraph(
 	serviceMap *traces.ServiceMap,
 	cloudAccountID string,
 	tenantID string,
 	baseFlowSource *BaseFlowSource,
 	logger *slog.Logger,
+	source string,
 ) ([]*core.DbNode, []*core.DbEdge, error) {
 
 	if serviceMap == nil {
@@ -201,7 +205,10 @@ func ConvertServiceMapToGraph(
 				properties["cluster"] = cluster
 			}
 		}
-		nodeID := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(uniqueKey)).String() // UUIDv5 style
+		// Scope the node ID by account + tenant (matching core.SaveNodes' compositeKey
+		// scheme) so the same logical name across tenants/accounts never collides on a
+		// single deterministic UUID. UniqueKey alone (NodeType:name:env) is not tenant-safe.
+		nodeID := core.GenerateNodeID(fmt.Sprintf("%s:%s:%s", uniqueKey, cloudAccountID, tenantID))
 		properties["node_id"] = nodeID
 
 		node := &core.DbNode{
@@ -214,7 +221,7 @@ func ConvertServiceMapToGraph(
 			CloudAccountID:  cloudAccountID,
 			TenantID:        tenantID,
 			Level:           "Account",
-			Source:          "traces",
+			Source:          source,
 			CreatedAt:       now,
 			UpdatedAt:       now,
 		}
@@ -296,7 +303,7 @@ func ConvertServiceMapToGraph(
 				CloudAccountID: cloudAccountID,
 				TenantID:       tenantID,
 				Level:          "Account",
-				Source:         "traces",
+				Source:         source,
 				CreatedAt:      now,
 				UpdatedAt:      now,
 			}
@@ -358,7 +365,7 @@ func ConvertServiceMapToGraph(
 				CloudAccountID: cloudAccountID,
 				TenantID:       tenantID,
 				Level:          "Account",
-				Source:         "traces",
+				Source:         source,
 				CreatedAt:      now,
 				UpdatedAt:      now,
 			}
@@ -375,7 +382,7 @@ func ConvertServiceMapToGraph(
 
 	// Add K8s infrastructure nodes and edges if available
 	if serviceMap.K8sMetadata != nil {
-		k8sNodes, k8sEdges := convertK8sMetadataToGraph(serviceMap.K8sMetadata, cloudAccountID, tenantID)
+		k8sNodes, k8sEdges := convertK8sMetadataToGraph(serviceMap.K8sMetadata, cloudAccountID, tenantID, source)
 		nodes = append(nodes, k8sNodes...)
 		edges = append(edges, k8sEdges...)
 
@@ -426,6 +433,7 @@ func convertK8sMetadataToGraph(
 	metadata *traces.K8sInfrastructureMetadata,
 	cloudAccountID string,
 	tenantID string,
+	source string,
 ) ([]*core.DbNode, []*core.DbEdge) {
 
 	nodes := make([]*core.DbNode, 0)
@@ -447,7 +455,7 @@ func convertK8sMetadataToGraph(
 			CloudAccountID:  cloudAccountID,
 			TenantID:        tenantID,
 			Level:           "Account",
-			Source:          "traces",
+			Source:          source,
 			CreatedAt:       timestamp,
 			UpdatedAt:       timestamp,
 		}
@@ -470,7 +478,7 @@ func convertK8sMetadataToGraph(
 			CloudAccountID:  cloudAccountID,
 			TenantID:        tenantID,
 			Level:           "Account",
-			Source:          "traces",
+			Source:          source,
 			CreatedAt:       timestamp,
 			UpdatedAt:       timestamp,
 		}
@@ -489,7 +497,7 @@ func convertK8sMetadataToGraph(
 				CloudAccountID: cloudAccountID,
 				TenantID:       tenantID,
 				Level:          "Account",
-				Source:         "traces",
+				Source:         source,
 				CreatedAt:      timestamp,
 				UpdatedAt:      timestamp,
 			}
@@ -513,7 +521,7 @@ func convertK8sMetadataToGraph(
 			CloudAccountID:  cloudAccountID,
 			TenantID:        tenantID,
 			Level:           "Account",
-			Source:          "traces",
+			Source:          source,
 			CreatedAt:       timestamp,
 			UpdatedAt:       timestamp,
 		}
@@ -532,7 +540,7 @@ func convertK8sMetadataToGraph(
 				CloudAccountID: cloudAccountID,
 				TenantID:       tenantID,
 				Level:          "Account",
-				Source:         "traces",
+				Source:         source,
 				CreatedAt:      timestamp,
 				UpdatedAt:      timestamp,
 			}
@@ -710,6 +718,10 @@ func inferNodeTypeFromKind(kind string) core.NodeType {
 		"Runner":          core.NodeTypeWorkload,
 		"Database":        core.NodeTypeDatabase,
 		"ExternalService": core.NodeTypeExternalService,
+		// GCP Cloud Run services are stored as ServerlessFunction nodes by the GCP
+		// static source — let trace-derived service apps match them.
+		"ServerlessFunction": core.NodeTypeServerlessFunction,
+		"CloudRun":           core.NodeTypeServerlessFunction,
 	}
 
 	if nodeType, ok := kindMap[kind]; ok {

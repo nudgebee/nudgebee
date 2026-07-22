@@ -20,7 +20,9 @@ func TestMetricsSeriesMatchTool_Metadata(t *testing.T) {
 
 func TestMetricsSeriesMatchTool_RequiresWorkload(t *testing.T) {
 	tool := MetricsSeriesMatchTool{Provider: "prometheus"}
-	// No workload arg and no bare command → error before any network/context use.
+	// Completely empty request (no command, no arguments) → tool validates required 'workload' field.
+	// Note: when called via callNbTool, validateToolInput fires first with a schema-aware message.
+	// Direct Call() goes straight to the tool's own validation.
 	resp, err := tool.Call(core.NbToolContext{}, core.NBToolCallRequest{})
 	assert.NoError(t, err)
 	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)

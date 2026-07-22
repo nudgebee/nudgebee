@@ -1,0 +1,71 @@
+slug: cordon_and_drain_kubernetes_node
+name: "Cordon and Drain Kubernetes Node"
+description: "Cordon a node to prevent new pods, then drain existing pods. Useful for problematic or unresponsive nodes."
+category: "kubernetes"
+icon: "block"
+status: ACTIVE
+tags:
+  labels:
+    - "drain"
+    - "disruptive"
+  event_sources:
+    - "prometheus"
+    - "alertmanager"
+    - "kubernetes"
+  alert_names:
+    - "KubeNodeNotReady"
+    - "KubeNodeUnreachable"
+    - "NodeFilesystemSpaceFillingUp"
+    - "NodeFilesystemAlmostOutOfSpace"
+definition:
+  version: "v1"
+  inputs:
+    - id: "node_name"
+      type: "string"
+      description: "Node name to cordon and drain"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Approve cordoning and draining node **{{ Inputs.node_name }}**? This will evict all pods from the node."
+    - id: "cordon"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl cordon {{ Inputs.node_name }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "drain"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl drain {{ Inputs.node_name }} --ignore-daemonsets --delete-emptydir-data --timeout=300s"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "cordon"
+      timeout: "6m"
+    - id: "verify"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl get node {{ Inputs.node_name }} -o wide"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "drain"
+  timeout: "15m"
+template_variables:
+  - id: "node_name"
+    input_ref: "node_name"
+    display_name: "Node Name"
+    required: true
+    type: "string"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

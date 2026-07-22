@@ -125,6 +125,15 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 		req.Branch = resolved
 	}
 
+	// Make origin/<base> resolvable before the agent runs. The system prompt
+	// directs it to run `git log origin/<base>..HEAD` (the non-bot-author guard)
+	// and base-relative diffs, but a single-branch followup clone usually lacks
+	// the base ref — without this the agent burns iterations on "unknown
+	// revision" errors. Best-effort; resolveBaseBranch falls back to nothing.
+	if base := a.resolveBaseBranch(repoInfo, prNumber); base != "" {
+		a.ensureBaseRefFetched(base)
+	}
+
 	// --- Step 1: Gather PR/MR context ---
 	a.logger.Log(common.EventStepStart, fmt.Sprintf("Gathering %s context", mrTerm), map[string]any{"repo": repoInfo.FullPath, "pr_number": req.PRNumber, "branch": req.Branch})
 
@@ -178,13 +187,24 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	replaceTool := tools.NewReplaceToolWithWorkspace(a.workspaceDir)
 	replaceTool.SetEditCorrectionService(tools.NewEditCorrectionService(a.llmClient))
 
+	// The generic CLI tool is the agent's fallback for `gh` commands (e.g. when
+	// it shells out `gh pr edit ...` directly instead of using the dedicated gh
+	// tool). Without the token it runs unauthenticated and fails with
+	// "gh auth login / populate GH_TOKEN". Inject the GitHub token so that
+	// fallback path works. (GitLab uses glab via the provider tool below; the
+	// CLI tool only injects GITHUB_TOKEN, so this is GitHub-only.)
+	cliTool := tools.NewCLITool(a.workspaceDir)
+	if a.provider != gitprovider.GitProviderGitLab {
+		cliTool.SetGitHubToken(a.gitToken)
+	}
+
 	rawTools := []core.NBTool{
 		tools.NewFileViewTool(a.workspaceDir),
 		tools.NewFileFindTool(a.workspaceDir),
 		replaceTool,
 		tools.NewGrepTool(a.workspaceDir),
 		tools.NewRipgrepTool(a.workspaceDir),
-		tools.NewCLITool(a.workspaceDir),
+		cliTool,
 		tools.NewGitTool(a.workspaceDir),
 		a.newProviderCLITool(),
 		tools.NewSubmitAnalysisTool(),
@@ -396,6 +416,27 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 		result.CommentPosted = repliedCount > 0
 	}
 
+	// --- Step 6.5: Don't leave a human reviewer in silence ---
+	// If there were open comments but the agent produced NO structured
+	// comment_responses at all (the force-submit / ran-out-of-steps path — it
+	// never got to triage), and it changed nothing, the reviewer otherwise gets
+	// zero signal that the bot even looked. Post ONE honest status notice.
+	//
+	// This is deliberately NOT a fabricated per-comment "fixed" reply (we never
+	// claim a change we didn't make — see extractCommentResponses): it's a
+	// truthful top-level "couldn't auto-resolve this run". It does NOT set
+	// CommentPosted, so the run still counts as a no_op and the cron keeps
+	// retrying; an idempotency marker stops that retry loop from re-posting.
+	if len(pendingComments) > 0 && len(responses) == 0 && !agentChangedSomething {
+		if a.hasExistingFollowupNotice(repoInfo, prNumber) {
+			a.logger.Log(common.EventStepComplete, "Non-convergence notice already present — skipping", nil)
+		} else if err := a.postIssueComment(repoInfo, prNumber, a.buildNonConvergenceNotice(result.Summary)); err != nil {
+			a.logger.Error(common.EventStepFailure, "Failed to post non-convergence notice", err, nil)
+		} else {
+			a.logger.Log(common.EventStepComplete, "Posted non-convergence notice", nil)
+		}
+	}
+
 	// --- Step 7: Post summary comment (only when code was changed) ---
 	if result.CommitHash != "" {
 		summaryBody := a.buildSummaryComment(result, responses)
@@ -543,6 +584,42 @@ func (a *PRFollowupAgent) providerJQQuery(repoInfo *gitprovider.RepoInfo, prNumb
 // value it has.
 func (a *PRFollowupAgent) resolveHeadBranch(repoInfo *gitprovider.RepoInfo, prNumber string) string {
 	return a.providerJQQuery(repoInfo, prNumber, "headRefName", ".headRefName", ".source_branch", "resolve head branch")
+}
+
+// resolveBaseBranch returns the PR/MR's base (target) ref name from the
+// provider. Returns "" if the lookup fails.
+func (a *PRFollowupAgent) resolveBaseBranch(repoInfo *gitprovider.RepoInfo, prNumber string) string {
+	return a.providerJQQuery(repoInfo, prNumber, "baseRefName", ".baseRefName", ".target_branch", "resolve base branch")
+}
+
+// ensureBaseRefFetched makes `origin/<base>` resolvable in the workspace clone.
+// The followup workspace is often a single-branch / shallow clone of the head
+// branch, so `origin/<base>` does not exist — yet the system prompt directs the
+// agent to run `git log origin/<base>..HEAD` (the non-bot-author safety check)
+// before rewriting history, and base-relative diffs. Without the ref those
+// commands fail with "unknown revision", and the agent burns iterations on the
+// error instead of doing the work. Fetching the base ref up front is cheap and
+// best-effort: a failure here just leaves the agent where it was.
+func (a *PRFollowupAgent) ensureBaseRefFetched(base string) {
+	if base == "" {
+		return
+	}
+	// Reject anything that isn't a plain branch name so the value can't be
+	// coerced into a flag or extra refspec argument.
+	if strings.HasPrefix(base, "-") || strings.ContainsAny(base, " \t:?*[\\^~") || strings.Contains(base, "..") {
+		a.logger.Log(common.EventStepFailure, "Skipping base-ref fetch: unsafe branch name", map[string]any{"base": base})
+		return
+	}
+	refspec := fmt.Sprintf("%s:refs/remotes/origin/%s", base, base)
+	if _, err := a.runCommandInDir("git", "fetch", "--no-tags", "--depth", "50", "origin", refspec); err != nil {
+		// Retry without --depth in case the clone is already complete (a shallow
+		// fetch onto a full clone can error on some git versions).
+		if _, err2 := a.runCommandInDir("git", "fetch", "--no-tags", "origin", refspec); err2 != nil {
+			a.logger.Log(common.EventStepFailure, "Failed to fetch base ref (non-fatal)", map[string]any{"base": base, "error": err2.Error()})
+			return
+		}
+	}
+	a.logger.Log(common.EventStepComplete, "Fetched base ref for safety checks", map[string]any{"base": base})
 }
 
 // fetchPRMetaSnapshot returns a string fingerprint of the PR's title and body,
@@ -999,6 +1076,51 @@ func truncateIfNeeded(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "\n... [truncated]"
+}
+
+// nonConvergenceNoticeMarker is a hidden HTML comment embedded in the honest
+// "couldn't auto-resolve" notice. It lets a later run detect that the notice
+// was already posted (so the periodic followup cron can't spam the PR with the
+// same message every cycle) without matching on the human-visible text.
+const nonConvergenceNoticeMarker = "<!-- nb-followup-notice -->"
+
+// buildNonConvergenceNotice composes the one-time honest status comment posted
+// when the agent reviewed open comments but applied no change and produced no
+// per-comment responses. It states plainly that nothing was changed — it never
+// claims a fix.
+func (a *PRFollowupAgent) buildNonConvergenceNotice(summary string) string {
+	var sb strings.Builder
+	sb.WriteString(nonConvergenceNoticeMarker + "\n")
+	sb.WriteString("### Nudgebee Automated Followup\n\n")
+	sb.WriteString("I reviewed the open comment(s) on this PR but couldn't automatically apply a change in this run.\n\n")
+	if s := strings.TrimSpace(summary); s != "" {
+		fmt.Fprintf(&sb, "**What I looked at:** %s\n\n", truncateIfNeeded(s, 1500))
+	}
+	sb.WriteString("No code was changed. If this needs a manual edit, please apply it directly.\n")
+	return sb.String()
+}
+
+// hasExistingFollowupNotice reports whether a non-convergence notice has already
+// been posted on this PR/MR. Fails closed (returns true) on lookup error so a
+// transient API failure can never cause repeated notices.
+func (a *PRFollowupAgent) hasExistingFollowupNotice(repoInfo *gitprovider.RepoInfo, prNumber string) bool {
+	var out string
+	var err error
+	// per_page=100 (the API max): the idempotency marker may sit anywhere in the
+	// comment history, so the default page of 30 could miss it on a busy PR and
+	// let the cron post a duplicate notice. 100 covers the realistic case; PRs
+	// with >100 comments are not a concern this guard needs to handle.
+	if a.provider == gitprovider.GitProviderGitLab {
+		encodedPath := url.PathEscape(repoInfo.FullPath)
+		out, err = a.runCommandInDir("glab", "api", fmt.Sprintf("projects/%s/merge_requests/%s/notes?per_page=100", encodedPath, prNumber))
+	} else {
+		out, err = a.runCommandInDir("gh", "api", fmt.Sprintf("repos/%s/issues/%s/comments?per_page=100", repoInfo.FullPath, prNumber))
+	}
+	if err != nil {
+		a.logger.Log(common.EventStepFailure, "Failed to check for existing followup notice — assuming present", map[string]any{"error": err.Error()})
+		return true
+	}
+	return strings.Contains(out, nonConvergenceNoticeMarker)
 }
 
 // buildSummaryComment creates a branded, bullet-point summary of what the followup did.

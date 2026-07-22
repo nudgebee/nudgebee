@@ -168,14 +168,20 @@ func (m PostgresExecuteTool) Call(nbRequestContext core.NbToolContext, input cor
 	}, false)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("postgres: unable to execute postgres query", "error", err.Error())
-		responseData := ""
+		// Mirror tool_kubectl's wrapKubectlError: ExecuteContainerJob returns
+		// (nil, err) on every failure path, so the actual signal — including
+		// the relay's "Error: Server returned NNN: ..." wrapper — lives in
+		// err.Error(). Use it as the raw input. The `response` assertion below
+		// is defensive in case a future path returns a non-nil response alongside
+		// an error.
+		rawError := err.Error()
 		if response != nil {
-			if responseData1, ok := response.(string); ok {
-				responseData = responseData1
+			if responseData1, ok := response.(string); ok && responseData1 != "" {
+				rawError = responseData1
 			}
 		}
 		return core.NBToolResponse{
-			Data:   responseData,
+			Data:   wrapPostgresError(rawError),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
@@ -318,6 +324,59 @@ func (m PostgresExecuteTool) IdentifyConfig(ctx core.NbToolContext, input core.N
 
 	ctx.Ctx.GetLogger().Debug("postgres: could not identify config automatically", "query", userQuery, "instance", instanceName, "available_configs", len(availableConfigs))
 	return core.ToolConfig{}, nil
+}
+
+// wrapPostgresError mirrors tool_kubectl's wrapKubectlError for postgres-side
+// failures. When the raw response matches a known opaque-failure pattern (the
+// relay's `Error: Server returned NNN: ...` wrapper that the LLM otherwise
+// reads as an unactionable "infrastructure broken" signal), we emit a
+// structured {"error_hint": ..., "original_error": ...} envelope so the LLM
+// gets something to act on. Raw error is preserved verbatim under
+// original_error. Pass-through unchanged when no pattern matches.
+//
+// Pattern coverage today (driven by 30-day error distribution sampled
+// 2026-06-22): 148 of 193 errors (~77%) were
+// `Error: Server returned 500: {"error":"proxy agent db_query failed: status:
+// 400 Bad Request"}` — same 400-wrap-as-500 shape that issue #32240 tackled
+// for kubectl_execute, but the relay error_hint envelope didn't extend to the
+// postgres path. This closes that gap.
+func wrapPostgresError(rawError string) string {
+	if rawError == "" {
+		return rawError
+	}
+	hint := postgresErrorHint(rawError)
+	if hint == "" {
+		return rawError
+	}
+	envelope := map[string]string{
+		"error_hint":     hint,
+		"original_error": rawError,
+	}
+	body, err := common.MarshalJson(envelope)
+	if err != nil {
+		// Marshal failure is exceptionally unlikely with two string fields;
+		// fall back to raw so the LLM still sees the underlying signal.
+		return rawError
+	}
+	return string(body)
+}
+
+// postgresErrorHint maps a raw postgres error string to an actionable hint
+// for the LLM. Returns "" when no pattern matches — the caller then passes
+// the raw error through unchanged.
+func postgresErrorHint(rawError string) string {
+	lower := strings.ToLower(rawError)
+	switch {
+	case strings.Contains(lower, "status: 400 bad request"):
+		return "The relay rejected this postgres query (HTTP 400 wrapped in a 500 envelope). Common causes: bad SQL syntax (unbalanced quotes, missing semicolon-after-EXPLAIN, mistyped keyword), an unknown table/column reference, a query that violates the read-only contract (this tool blocks INSERT/UPDATE/DELETE/DDL), or RLS denying access. Try a minimal `SELECT 1` to confirm connectivity, `\\d <table>` (or `SELECT * FROM information_schema.columns WHERE table_name = ...`) to verify the schema, and rewrite the query against confirmed identifiers."
+	case strings.Contains(lower, "findings field not found"):
+		// Defensive: same parser-bail pattern that the
+		// getRelayCommandResponseData fix in #32240 removes upstream. Kept here
+		// so the LLM still sees an actionable signal if another code path produces
+		// it.
+		return "The relay-server returned a response shape the parser didn't recognize. This was the dominant failure mode pre-#32240; if you are seeing it post-fix the relay or upstream is returning an unexpected payload — retry once, then fall back to a different query to confirm the table or schema exists."
+	}
+	return ""
 }
 
 func (m PostgresExecuteTool) ConfigSchema(ctx *security.RequestContext) core.ToolConfigSchema {

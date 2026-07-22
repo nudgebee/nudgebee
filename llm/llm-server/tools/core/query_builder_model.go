@@ -90,7 +90,9 @@ func BuildLogQueryBuilder(nbRequestContext NbToolContext, input string) (QueryBu
 
 	//rewrite query
 	serializedData := map[string]any{}
-	err := common.UnmarshalJson([]byte(input), &serializedData)
+	// The input is LLM-generated and may carry markdown fences or trailing
+	// prose around the JSON object; a strict parse rejects the whole query.
+	err := common.ExtractAndUnmarshalJSON([]byte(input), &serializedData)
 	if err != nil {
 		return queryObject, err
 	}
@@ -209,7 +211,8 @@ func BuildTraceQueryBuilder(nbRequestContext NbToolContext, input string) (Trace
 
 	//rewrite query
 	serializedData := map[string]any{}
-	err := common.UnmarshalJson([]byte(input), &serializedData)
+	// Same as BuildLogQueryBuilder: tolerate fenced/prose-wrapped LLM JSON.
+	err := common.ExtractAndUnmarshalJSON([]byte(input), &serializedData)
 	if err != nil {
 		return queryObject, startTime, endTime, err
 	}

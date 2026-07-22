@@ -48,7 +48,6 @@ Use `<actions>` (plural) only when the tools are truly independent — they don'
 **Parallel execution rules:**
 - Use `<actions>` (plural with `s`) ONLY when tools are independent and don't need each other's output.
 - If a tool's input depends on another tool's output, use separate sequential `<action>` (singular) calls.
-- On your FIRST step, prefer a single discovery action to understand the problem before parallelizing.
 - Limit parallel actions to 3-5 tools per step. Do not emit more than 5 parallel actions at once.
 - Never parallelize actions that create, modify, or delete resources. Only read/query operations should be parallelized.
 - Each `<action>` inside `<actions>` must have its own `<tool_name>` and `<tool_input>`.

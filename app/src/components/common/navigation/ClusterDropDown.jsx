@@ -7,6 +7,7 @@ import apiAccount from '@api1/account';
 import { useData } from '@context/DataContext';
 import { transformClusters } from '@shared/layout/UpdateDataContext';
 import CustomDropdown from '@shared/CustomDropdown';
+import { isAccountGuardActive } from '@lib/accountGuard';
 
 /**
  * Custom Hook: Handles fetching and Context synchronization.
@@ -76,6 +77,15 @@ const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = 
         dataLoadedRef.current = true;
       }
       if (!clusterValue) {
+        // Cross-tenant deep link (ENTERPRISE only): the URL points at an account
+        // that isn't one of the user's clusters. Leave the URL untouched so the
+        // EE AccountGuard can show the "not in your tenant" banner, instead of
+        // silently reverting it to a valid cluster. In OSS (single-tenant) the
+        // guard isn't registered, so we keep the original self-heal behavior of
+        // reverting a stale/invalid id to a valid cluster.
+        if (isAccountGuardActive() && urlAccountId && currentClusters?.length > 0 && !currentClusters.some((c) => c?.value === urlAccountId)) {
+          return;
+        }
         if (selectedCluster?.value) {
           setClusterValue(selectedCluster.value);
           if (!disableRouteChanges && router.pathname !== '/kubernetes/details/[KubernetesDetails]') {

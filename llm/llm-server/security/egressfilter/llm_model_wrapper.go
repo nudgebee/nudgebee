@@ -75,7 +75,11 @@ func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string) error 
 	// returned typed Error share these fields.
 	event := newFilterEvent(auditID, w.mode, len(payload), result)
 
-	if w.mode == ModeEnforce {
+	// Mode is operator config; Action is what we actually do. The gate
+	// indirection lets a deployment plug in its own post-detection policy
+	// — see action_gate.go.
+	switch resolveAction(w.mode, result) {
+	case ActionBlock:
 		recordScan(ctx, w.provider, w.model, w.mode, "blocked", len(payload), latency, result.Hits)
 		err := &Error{AuditID: auditID, RuleIDs: ruleIDs}
 		slog.Warn("egressfilter: outbound LLM call blocked",
@@ -91,23 +95,25 @@ func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string) error 
 			fn(event)
 		}
 		return fmt.Errorf("egressfilter: %w", err)
-	}
 
-	// Audit mode: record + log, do not block.
-	recordScan(ctx, w.provider, w.model, w.mode, "audit", len(payload), latency, result.Hits)
-	slog.Warn("egressfilter: outbound LLM payload contains potential secret (audit mode, not blocking)",
-		"audit_id", auditID,
-		"provider", w.provider,
-		"model", w.model,
-		"rule_ids", ruleIDs,
-		"hits", len(result.Hits),
-		"payload_bytes", len(payload),
-		"latency_seconds", latency,
-	)
-	if fn := reporterFromContext(ctx); fn != nil {
-		fn(event)
+	default:
+		// ActionAudit (and any future non-blocking action): record + log,
+		// forward unchanged.
+		recordScan(ctx, w.provider, w.model, w.mode, "detect", len(payload), latency, result.Hits)
+		slog.Warn("egressfilter: outbound LLM payload contains potential secret (detect mode, not blocking)",
+			"audit_id", auditID,
+			"provider", w.provider,
+			"model", w.model,
+			"rule_ids", ruleIDs,
+			"hits", len(result.Hits),
+			"payload_bytes", len(payload),
+			"latency_seconds", latency,
+		)
+		if fn := reporterFromContext(ctx); fn != nil {
+			fn(event)
+		}
+		return nil
 	}
-	return nil
 }
 
 // serializeMessages flattens a langchaingo message slice into the smallest text

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import AnchorComponent from '@shared/navigation/AnchorComponent';
+import { withAccountGuard } from '@shared/AccountGuard';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import { Box, Alert } from '@mui/material';
 import { ToggleGroup } from '@ui/ToggleGroup';
@@ -856,4 +857,7 @@ const CloudAccounts = () => {
   );
 };
 
-export default CloudAccounts;
+export default withAccountGuard(CloudAccounts, {
+  hideContent: true,
+  getAccountId: (query) => query.accountId || query.CloudAccountDetails,
+});

@@ -1349,7 +1349,7 @@ func (a *observabilityLogAction) autoExecuteByWorkload(ctx playbooks.PlaybookAct
 
 	// Try configured log source with workload-based query
 	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
-	logoutput, err := FetchLogs(requestCtx, FetchLogRequest{
+	logResult, err := FetchLogs(requestCtx, FetchLogRequest{
 		AccountId: ctx.GetAccountId(),
 		StartTime: startTime,
 		EndTime:   endTime,
@@ -1362,6 +1362,7 @@ func (a *observabilityLogAction) autoExecuteByWorkload(ctx playbooks.PlaybookAct
 	if err != nil {
 		ctx.GetLogger().Info("observability: log source query failed, falling back to relay", "error", err)
 	}
+	logoutput := logResult.Logs
 
 	if len(logoutput) > 0 {
 		ctx.GetLogger().Info("observability: logs auto action found results via configured source",
@@ -1655,7 +1656,7 @@ func (a *observabilityLogAction) Execute(ctx playbooks.PlaybookActionContext, ra
 		startTime = endTime - int64(params.Duration*60*1000)
 	}
 
-	logoutput, err := FetchLogs(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), FetchLogRequest{
+	logResult, err := FetchLogs(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), FetchLogRequest{
 		AccountId: params.AccountId,
 		Query:     params.Query,
 		Request:   params.QueryOptions,
@@ -1668,6 +1669,7 @@ func (a *observabilityLogAction) Execute(ctx playbooks.PlaybookActionContext, ra
 	if err != nil {
 		return nil, err
 	}
+	logoutput := logResult.Logs
 
 	metadata := map[string]any{
 		"query-result-version": "1.0",

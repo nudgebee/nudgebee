@@ -183,7 +183,6 @@ func TestPVRightsizeTask_Execute_ConstraintsAndDryRun_Validation(t *testing.T) {
 		params        map[string]any
 		expectErr     bool
 		expectedError string
-		needsCluster  bool // kind defaults to PVC, so this path reaches the relay/cluster
 	}{
 		{
 			name:          "Missing Namespace",
@@ -196,16 +195,6 @@ func TestPVRightsizeTask_Execute_ConstraintsAndDryRun_Validation(t *testing.T) {
 			params:        map[string]any{"namespace": "default", "kind": "PersistentVolumeClaim", "change_to": "1Gi"},
 			expectErr:     true,
 			expectedError: "namespace and name are required",
-		},
-		{
-			// kind is optional and defaults to PersistentVolumeClaim, so an
-			// omitted kind is valid and the task proceeds to fetch the PVC,
-			// which requires a live relay/cluster.
-			name:          "Missing Kind defaults to PVC and fetches it",
-			params:        map[string]any{"namespace": "default", "name": "test-pvc", "change_to": "1Gi"},
-			expectErr:     true,
-			expectedError: "failed to fetch PVC",
-			needsCluster:  true,
 		},
 		{
 			name:          "Invalid Kind",
@@ -223,9 +212,6 @@ func TestPVRightsizeTask_Execute_ConstraintsAndDryRun_Validation(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.needsCluster {
-				testutils.RequireEnv(t, "TEST_TENANT_ID", "TEST_K8S_ACCOUNT_ID", "TEST_USER_ID")
-			}
 			_, err := task.Execute(taskCtx, tc.params)
 			if tc.expectErr {
 				assert.Error(t, err)

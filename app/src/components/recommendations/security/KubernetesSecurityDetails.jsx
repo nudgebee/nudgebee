@@ -30,7 +30,7 @@ const SEVERITY_TO_DS_LEVEL = {
 const toDsSeverityLevel = (s) => SEVERITY_TO_DS_LEVEL[String(s || '').toLowerCase()] || 'info';
 import CustomPRLink from '@shared/CustomPRLink';
 import LinearLoader from '@components/k8s/common/LinearLoader';
-import apiIntegrations from '@api1/integrations';
+import apiTickets from '@api1/tickets';
 import k8sApi from '@api1/kubernetes';
 import { PrOpenIcon } from '@assets';
 import { hasWriteAccess } from '@lib/auth';
@@ -132,10 +132,14 @@ const KubernetesSecurityDetails = (props) => {
 
   const listGitConfigurations = () => {
     setIsGitReposLoading(true);
-    Promise.all([
-      apiIntegrations.listTicketConfigurationsByTool({ status: 'enabled', tool: 'github' }),
-      apiIntegrations.listTicketConfigurationsByTool({ status: 'enabled', tool: 'gitlab' }),
-    ])
+    // Single fetch: listTicketConfigsForCreate returns all tenant configs and filters
+    // client-side, so fetch once and split by tool to avoid a redundant request.
+    apiTickets
+      .listTicketConfigsForCreate({ status: 'enabled' })
+      .then((res) => {
+        const configs = res?.data || [];
+        return [{ data: configs.filter((c) => c?.tool === 'github') }, { data: configs.filter((c) => c?.tool === 'gitlab') }];
+      })
       .then(([githubRes, gitlabRes]) => {
         const githubData =
           githubRes?.data?.length > 0

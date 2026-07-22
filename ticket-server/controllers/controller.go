@@ -217,6 +217,31 @@ func QueryIssueFieldDetails(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, templates)
 }
 
+// ListTicketConfigs returns the enabled ticketing integrations (id, name, tool,
+// projects) for the caller's tenant so the create-ticket form can populate its
+// config/project pickers. It is read-level on purpose: any role allowed to
+// create a ticket (including readonly roles) may list configs, but the response
+// carries no URLs or credentials. The gateway allow-list (actions.yaml:
+// tickets_list_configs) is the role gate; tenant scoping comes from the
+// authenticated x-tenant-id header. See NB-32822.
+func ListTicketConfigs(ctx *gin.Context) {
+	tenant := headerTenantID(ctx)
+	if tenant == "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id is required"})
+		return
+	}
+
+	configs, err := services.ListTicketConfigsForTenant(tenant)
+	if err != nil {
+		// A failure here is a DB/service-level problem, not a malformed request.
+		slog.Error("Failed to list ticket configurations:", "tenant", tenant, "error", slog.AnyValue(err))
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list ticket configurations"})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, models.ListTicketConfigsResponse{Rows: configs})
+}
+
 func GetTicketComments(ctx *gin.Context) {
 	ticket, ok := bindAndAuthoriseTicketRequest(ctx, "read")
 	if !ok {
@@ -233,7 +258,9 @@ func GetTicketComments(ctx *gin.Context) {
 }
 
 func AddTicketComment(ctx *gin.Context) {
-	ticket, ok := bindAndAuthoriseTicketRequest(ctx, "write")
+	// Commenting is a read-level capability: anyone who can view the ticket
+	// (including readonly roles) may add a comment. See NB-32932.
+	ticket, ok := bindAndAuthoriseTicketRequest(ctx, "read")
 	if !ok {
 		return
 	}

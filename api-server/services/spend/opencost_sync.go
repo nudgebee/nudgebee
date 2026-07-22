@@ -164,6 +164,9 @@ const activeK8sAccountsByIdQuery = `
 // The IS DISTINCT FROM guard makes a steady-state run a no-op (no dead tuples) once
 // the marker matches the desired value.
 func setOpenCostServerSide(ctx *security.RequestContext, accountId string, enabled bool) error {
+	if accountId == "" {
+		return fmt.Errorf("setOpenCostServerSide: empty account id")
+	}
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return err

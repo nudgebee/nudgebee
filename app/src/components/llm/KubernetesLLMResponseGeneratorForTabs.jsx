@@ -1,4 +1,4 @@
-import apiAskNudgebee, { createConversationFetcher } from '@api1/ask-nudgebee';
+import apiAskNudgebee, { createConversationFetcher, isFailedCachedConversation } from '@api1/ask-nudgebee';
 import {
   AgentIcon,
   ApplicationsIcon,
@@ -564,7 +564,8 @@ const KubernetesLLMResponseGenerator = ({ accountId, query = '', popup = false, 
             return;
           }
           const conversationResponses = res?.data?.data?.llm_conversations ?? [];
-          if (conversationResponses.length === 0) {
+          // Regenerate when absent or a stale failure; served from cache otherwise.
+          if (conversationResponses.length === 0 || isFailedCachedConversation(conversationResponses)) {
             handleGenerateInvestigation(query);
           }
         } catch (error) {

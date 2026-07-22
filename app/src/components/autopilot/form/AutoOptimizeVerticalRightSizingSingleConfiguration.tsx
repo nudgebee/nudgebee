@@ -1347,6 +1347,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
                   onChange={(next: Dayjs | null) => handleStartDateEndDate('start', next)}
                   views={['day', 'hours', 'minutes']}
                   minDate={dayjs(new Date())}
+                  minDateTime={undefined}
                   maxDateTime={undefined}
                   componentsProps={undefined}
                   disabled
@@ -1361,6 +1362,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
                   onChange={(next: Dayjs | null) => handleStartDateEndDate('end', next)}
                   views={['day', 'hours', 'minutes']}
                   minDate={dayjs(new Date())}
+                  minDateTime={undefined}
                   maxDateTime={undefined}
                   componentsProps={undefined}
                   disabled={reviewAutoOptimize}

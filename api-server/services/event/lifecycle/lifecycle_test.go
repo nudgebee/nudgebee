@@ -70,6 +70,34 @@ func TestEmitMergesExtraAndStampsPhase(t *testing.T) {
 	assert.Equal(t, string(PhaseInvestigationEnqueued), seen[LifecyclePhaseKey], "phase stamped on event")
 }
 
+func TestPublishToWorkflowsNilEventNoPanic(t *testing.T) {
+	// A nil event map must be a logged no-op, never a panic.
+	assert.NotPanics(t, func() {
+		PublishToWorkflows(testCtx(), PhaseEventCreated, nil)
+	})
+}
+
+func TestPublishToWorkflowsStampsPhase(t *testing.T) {
+	// Workflow-eligible phase: PublishToWorkflows stamps lifecycle_phase before
+	// the publish. The empty cloud_account_id makes publishToWorkflows' own guard
+	// short-circuit before any MQ call, so the test needs no broker.
+	ev := map[string]any{"id": "e1"}
+	PublishToWorkflows(testCtx(), PhaseEventCreated, ev)
+	assert.Equal(t, string(PhaseEventCreated), ev[LifecyclePhaseKey], "phase stamped on event")
+}
+
+func TestPublishToWorkflowsNonEligiblePhaseDoesNotPublish(t *testing.T) {
+	// PhaseInvestigationEnqueued is not workflow-eligible, so even a fully-formed
+	// event (cloud_account_id + id, which would otherwise pass the publish guards)
+	// must not reach the publish path. The phase is still stamped. No broker is
+	// contacted, proving the eligibility gate.
+	ev := map[string]any{"id": "e1", "cloud_account_id": "a1"}
+	assert.NotPanics(t, func() {
+		PublishToWorkflows(testCtx(), PhaseInvestigationEnqueued, ev)
+	})
+	assert.Equal(t, string(PhaseInvestigationEnqueued), ev[LifecyclePhaseKey], "phase stamped even when not published")
+}
+
 func TestEmitHookErrorDoesNotStopOthers(t *testing.T) {
 	resetHooks()
 	var ran []string

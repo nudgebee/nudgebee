@@ -12,9 +12,7 @@ import (
 )
 
 func TestFollowupFollowupOnMultipleResources(t *testing.T) {
-	if os.Getenv("TEST_ACCOUNT") == "" {
-		t.Skip("Skipping test: TEST_ACCOUNT not set")
-	}
+	RequireEnv(t, "TEST_ACCOUNT", "TEST_USER")
 	sc := security.NewRequestContextForSuperAdmin()
 
 	testCases :=

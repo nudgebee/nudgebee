@@ -420,6 +420,18 @@ func (s *IntegrationTestSuite) TestApprovalWorkflow() {
 	s.Assert().NotNil(step2Task, "Task 'step-2' should be present in the execution details")
 	s.Assert().Equal(model.TaskStatusCompleted, step2Task.Status)
 
+	// The approval task itself must drop out of the SCHEDULED state once approved,
+	// otherwise the UI keeps showing it as a pending approval forever (#32891).
+	var approvalTask model.TaskExecutionDetails
+	for _, task := range executionDetails.Tasks {
+		if task.ID == "wait-for-approval" {
+			approvalTask = task
+			break
+		}
+	}
+	s.Assert().Equal("wait-for-approval", approvalTask.ID, "Approval task should be present in the execution details")
+	s.Assert().NotEqual(model.TaskStatusScheduled, approvalTask.Status, "Approved approval task must not remain SCHEDULED")
+
 	// --- Part 2: Test Rejection Flow ---
 	s.T().Log("Testing Rejection Flow...")
 

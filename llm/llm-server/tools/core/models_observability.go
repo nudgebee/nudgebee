@@ -31,6 +31,19 @@ type ObservabilityLogResponse struct {
 type ObservabilityTraceResponse struct {
 	Traces   []ObservabilityTrace       `json:"traces"`
 	Metadata ObservabilityTraceMetadata `json:"metadata"`
+	// Result is populated only on the free-form ClickHouse agent path (IncludeRawResult). When
+	// non-nil it carries the raw query result with column order + types preserved, so aggregation /
+	// custom-projection queries render their real values instead of zeroed span structs. Nil means
+	// the services-server returned the legacy typed array (Traces).
+	Result *ObservabilityTraceRawTable `json:"result,omitempty"`
+}
+
+// ObservabilityTraceRawTable mirrors observability.RawTraceResult: an arbitrary ClickHouse result
+// set with column order and types preserved.
+type ObservabilityTraceRawTable struct {
+	Columns     []string `json:"columns"`
+	ColumnTypes []string `json:"column_types"`
+	Rows        [][]any  `json:"rows"`
 }
 
 type ObservabilityLogLabel struct {
@@ -177,6 +190,11 @@ type ObservabilityTracesV3Request struct {
 	Offset         int               `json:"offset" mapstructure:"offset"`
 	SortFields     []SortField       `json:"sort_fields"`
 	QueryRequest   TraceQueryBuilder `json:"query_request" mapstructure:"query_request"`
+	// IncludeRawResult asks the services-server traces action to return the raw
+	// {columns, column_types, rows} table (ObservabilityTraceRawTable) instead of the typed span
+	// array. Set only by the free-form ClickHouse agent tool so aggregation / custom-projection
+	// queries keep their real values. Mirrors observability.TracesV3Request.IncludeRawResult.
+	IncludeRawResult bool `json:"include_raw_result" mapstructure:"include_raw_result"`
 }
 
 type SortField struct {

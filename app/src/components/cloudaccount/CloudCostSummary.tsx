@@ -12,7 +12,8 @@
  * instead of the figure (mirrors CloudAccountSummary's parity behaviour).
  */
 import React from 'react';
-import { Box, Stack, Typography, useMediaQuery } from '@mui/material';
+import { Box, Stack, Typography } from '@mui/material';
+import { useZoomFloorBelow } from '@hooks/useZoomMagnifyFloor';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import DSCard from '@ui/Card';
 import DsTooltip from '@ui/Tooltip';
@@ -65,7 +66,9 @@ const SubCaption = ({ label, currency, value }: { label: string; currency: strin
   );
 
 export function CloudCostSummary({ clusterSummary = {}, currencySymbol = '$' }: CloudCostSummaryProps) {
-  const smallScreen = useMediaQuery('(max-width:1440px)');
+  // Frozen-floor check (not useMediaQuery): keeps the small-screen card layout on real ≤1440px
+  // screens but doesn't restyle while the user zooms, so the cards magnify uniformly with the page.
+  const smallScreen = useZoomFloorBelow(1440);
 
   // Prefer gross-spend aggregates; fall back to net-spend aggregates for accounts
   // without the gross-spend column.

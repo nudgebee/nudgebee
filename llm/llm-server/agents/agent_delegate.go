@@ -3,6 +3,7 @@ package agents
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"nudgebee/llm/agents/core"
@@ -24,6 +25,23 @@ const maxDelegateMaxIterations = 15
 // every max_iterations=1 call we observed was misuse: pre-finish narration or text formatting
 // that should have been a plain LLM call.
 const minDelegateMaxIterations = 2
+
+// notebookMisusePromptRe rejects prompts that ask the sub-agent to update
+// the parent's notebook. The description has forbidden this since PR #32246
+// ("DO NOT use to record findings — write to your own notebook with
+// <update_notebook>"), but the 2026-06-27 recheck showed 28.6% of post-#32246
+// calls still match this shape (8 of 28 — essentially unchanged from the 32%
+// pre-rewrite baseline). Same lesson as the think-tool tighten arc:
+// description-only doesn't move misuse share; programmatic enforcement does.
+//
+// Pattern is intentionally narrow: matches when the prompt STARTS with
+// "update the notebook" or "updating the notebook" (with the customary
+// possessive forms). Every observed misuse case began with this exact
+// stem; legitimate investigation prompts open with "Investigate",
+// "Check", "Fetch", "Find", "Verify", etc. — clearly different verbs.
+// Mid-prompt mentions of "notebook" (e.g., "investigate why the notebook
+// update is failing") are not matched.
+var notebookMisusePromptRe = regexp.MustCompile(`(?i)^\s*(update|updating)\s+(the\s+|my\s+|our\s+|your\s+)?notebook\b`)
 
 func init() {
 	toolcore.RegisterNBToolFactory(DelegateAgentToolName, func(accountId string) (toolcore.NBTool, error) {
@@ -51,7 +69,7 @@ func (t *delegateAgentTool) Description() string {
 Input: {"prompt": <brief>, "tools": [<tool names>], "max_iterations": <int>} — "tools" is required; omitting it leaves the sub-agent LLM-only, which is almost always misuse. max_iterations defaults to 5, minimum 2, maximum 15.
 USE when a specific sub-question needs 3+ tool calls to answer and would otherwise pollute your own scratchpad with serial discovery (e.g. "investigate DNS for service X", "check egress firewall for namespace Y").
 DO NOT use when 1-2 tool calls suffice — call the tool directly.
-DO NOT use to record findings — write to your own notebook with <update_notebook>.
+DO NOT use to record findings — write to your own notebook with <update_notebook>. Prompts that start with "update the notebook" / "updating the notebook" are rejected at the tool boundary with an error pointing here.
 DO NOT use to format, summarize, or rewrite text — call the LLM tool directly.
 DO NOT use as a final-answer preamble.`
 }
@@ -280,6 +298,12 @@ func parseDelegateInput(input toolcore.NBToolCallRequest) (prompt string, toolNa
 
 	if prompt == "" {
 		return "", nil, 0, fmt.Errorf("'prompt' is required and must be a non-empty string")
+	}
+
+	// Reject notebook-update misuse at the tool boundary. See
+	// notebookMisusePromptRe for the why and the rejection rationale.
+	if notebookMisusePromptRe.MatchString(prompt) {
+		return "", nil, 0, fmt.Errorf("delegate_agent rejected: prompt starts with 'update the notebook' — the sub-agent's job is to investigate a focused sub-question, not to record findings on your behalf. Write to your own notebook with the <update_notebook> XML tag in your next thought; do not delegate the notebook update")
 	}
 
 	// Reject degenerate single-iteration delegations (see minDelegateMaxIterations).

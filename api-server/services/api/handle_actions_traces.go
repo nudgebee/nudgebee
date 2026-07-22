@@ -39,6 +39,24 @@ func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
+
+		// Free-form agent path (llm-server sets include_raw_result): return the raw
+		// {columns, column_types, rows} table so aggregation / custom-projection queries keep their
+		// real values instead of being zeroed by the fixed span-schema mapping. Every other caller
+		// (UI traces_list, etc.) does not set the flag and keeps the bare []OpenTelemetryTrace array.
+		// A nil Result (e.g. non-clickhouse provider) falls through to the typed array.
+		if request.IncludeRawResult {
+			rawResp, err := observability.GetTracesWithRawResult(ctx, request)
+			if err != nil {
+				c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+				return
+			}
+			if rawResp.Result != nil {
+				c.JSON(200, rawResp)
+				return
+			}
+		}
+
 		resp, err := observability.GetTraces(ctx, request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))

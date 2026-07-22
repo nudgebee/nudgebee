@@ -22,6 +22,7 @@ import k8sApi from '@api1/kubernetes';
 import { getDateString } from '@lib/datetime';
 import KubernetesEventsTable from '@components/events/KubernetesEvents';
 import { type ThresholdSuggestionItem } from '@api1/triage';
+import ThresholdApplyPanel from './ThresholdApplyPanel';
 import WidgetCard from '@ui/WidgetCard';
 import { ds, resolveColor, resolveColors, withAlpha } from 'src/utils/colors';
 
@@ -703,6 +704,9 @@ const ThresholdEvidence: React.FC<ThresholdEvidenceProps> = ({ data }) => {
             )}
           </Box>
         </Box>
+
+        {/* ─── Apply controls ─── */}
+        <ThresholdApplyPanel data={data} />
 
         {/* ─── Guidance + Technical reason ─── */}
         {(guidance || reason || metric_stats?.duration_reason) && (

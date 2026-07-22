@@ -2,7 +2,7 @@ module nudgebee/tickets-server
 
 go 1.26.1
 
-toolchain go1.26.4
+toolchain go1.26.5
 
 require (
 	github.com/PagerDuty/go-pagerduty v1.8.0

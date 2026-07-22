@@ -19,6 +19,7 @@ function ConversationCollapsableCard({
   showFullTextHandler = () => {
     // No-op default; consumers pass the handler when textLength is true.
   },
+  showFullText = false,
   textLength = false,
   headerActions = null,
 }) {
@@ -150,7 +151,33 @@ function ConversationCollapsableCard({
                 }}
                 key={toolData.messageId}
               >
-                <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+                  {(toolData.tool || toolData.type) === 'question' && textLength && (
+                    <Box
+                      component='button'
+                      type='button'
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        showFullTextHandler();
+                      }}
+                      sx={{
+                        all: 'unset',
+                        cursor: 'pointer',
+                        fontFamily: ds.font.sans,
+                        fontSize: 'var(--ds-text-small)',
+                        fontWeight: 'var(--ds-font-weight-medium)',
+                        color: 'var(--ds-gray-500)',
+                        '&:hover': { color: 'var(--ds-gray-700)', textDecoration: 'underline' },
+                        '&:focus-visible': {
+                          outline: `${ds.space[0]} solid var(--ds-gray-300)`,
+                          outlineOffset: ds.space[0],
+                          borderRadius: ds.space[0],
+                        },
+                      }}
+                    >
+                      {showFullText ? 'Show less' : 'Show more'}
+                    </Box>
+                  )}
                   {(toolData.tool || toolData.type) === 'question' && (
                     <Box sx={{ flexShrink: 0 }}>
                       <CopyButton text={toolData.text} size='xs' />
@@ -220,6 +247,7 @@ ConversationCollapsableCard.propTypes = {
   conversationCreatedAt: PropTypes.string,
   conversationUpdatedAt: PropTypes.string,
   showFullTextHandler: PropTypes.func,
+  showFullText: PropTypes.bool,
   textLength: PropTypes.bool,
   headerActions: PropTypes.node,
 };

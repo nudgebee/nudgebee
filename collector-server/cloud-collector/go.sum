@@ -13,6 +13,8 @@ cloud.google.com/go/bigquery v1.77.0 h1:L5AW3jhzEKpFVg4i0mVHxKpxogrqT7dczWBSr4m9
 cloud.google.com/go/bigquery v1.77.0/go.mod h1:J4wuqka/1hEpdJxH2oBrUR0vjTD+r7drGkpcA3yqERM=
 cloud.google.com/go/cloudsqlconn v1.21.0 h1:tXXKrKLsUwG+cTxpO2kehC6l8l8urHoNtDXtCv3iOpY=
 cloud.google.com/go/cloudsqlconn v1.21.0/go.mod h1:p4ts4hqj4CtBCwETUSzq05HV4XTRPzTsi+Cd1RQ5WWg=
+cloud.google.com/go/cloudtasks v1.18.0 h1:KzT7hfix/9/xAf20tNPIxwX59XGpRF0Lun2t8LHOj9E=
+cloud.google.com/go/cloudtasks v1.18.0/go.mod h1:3KeCxwtGEyaySL7CR3lMmEa2I4mq1ynXdgmfNiO4RYE=
 cloud.google.com/go/compute v1.62.0 h1:tJ7lKJ8YEVa6vZX03Jc8o1YePbjKDOQhDw1BscMZ1bs=
 cloud.google.com/go/compute v1.62.0/go.mod h1:Xm6PbsLgBpAg4va77ljbBdpMjzuU+uPp5Ze2dnZq7lw=
 cloud.google.com/go/compute/metadata v0.9.0 h1:pDUj4QMoPejqq20dK0Pg2N4yG9zIkYGdBtwLoEkH9Zs=
@@ -21,6 +23,8 @@ cloud.google.com/go/container v1.46.0 h1:xX94Lo3xrS5OkdMWKvpEVAbBwjN9uleVv6vOi02
 cloud.google.com/go/container v1.46.0/go.mod h1:A7gMqdQduTk46+zssWDTKbGS2z46UsJNXfKqvMI1ZO4=
 cloud.google.com/go/datacatalog v1.27.0 h1:AnghhtHKCqYIe62gTPHcn9nJr5jtxjZHV4D/Fob23gg=
 cloud.google.com/go/datacatalog v1.27.0/go.mod h1:YTI11pFlC5HCj4CphEf+qWCy/z9udd7o0HVN6c2Povg=
+cloud.google.com/go/firestore v1.22.0 h1:avooeboIq37vKXobrbPUFhFBxS/c3FqmWoX0xs8dO6E=
+cloud.google.com/go/firestore v1.22.0/go.mod h1:PaM4i7i7ruALSKmlpHXXZaPObcZw0W7ie5UOPr72iTU=
 cloud.google.com/go/functions v1.19.7 h1:7LcOD18euIVGRUPaeCmgO6vfWSLNIsi6STWRQcdANG8=
 cloud.google.com/go/functions v1.19.7/go.mod h1:xbcKfS7GoIcaXr2FSwmtn9NXal1JR4TV6iYZlgXffwA=
 cloud.google.com/go/iam v1.7.0 h1:JD3zh0C6LHl16aCn5Akff0+GELdp1+4hmh6ndoFLl8U=
@@ -35,8 +39,14 @@ cloud.google.com/go/pubsub/v2 v2.6.0 h1:8pjR0id+GTB+krKx5G6AGJoYrHog58w2Q89PCOrf
 cloud.google.com/go/pubsub/v2 v2.6.0/go.mod h1:4anqvV/w8Pcgu2tO0qr2XgsF3GXHowzryfQ5gOnVmWY=
 cloud.google.com/go/recommender v1.18.0 h1:NgL7zkQ4lSUQIe+aS5dMmDcOO6+DltH6E8bFD7wMjwk=
 cloud.google.com/go/recommender v1.18.0/go.mod h1:INRBLfBQJCrgPqjBVFht4OjaFq/WhB/c5V1sqBOdX8g=
+cloud.google.com/go/redis v1.23.0 h1:y/NCxLQR46TQufJNjgINfWsRjCxkgClU37mMf/D1EE4=
+cloud.google.com/go/redis v1.23.0/go.mod h1:EUlUT24BAL6LsE1f/N9Bg3LhRCfH+LzwLGbst3KuZRw=
 cloud.google.com/go/run v1.21.0 h1:gQJUy0//XNXXpiZs42KlbLPhbycxbpS2QymGRFlPXv4=
 cloud.google.com/go/run v1.21.0/go.mod h1:Z5wHbyFirI8XU48EPs5XJf/qmVm1SXZEhuS8EvZOuQU=
+cloud.google.com/go/scheduler v1.16.0 h1:EPdChptxnvCasdMixuu58247qhKMO1iAlrVaQhvuRyE=
+cloud.google.com/go/scheduler v1.16.0/go.mod h1:0hsZg0MZJADyke1lutI0FHAYJR8Dtm8oIivXkmpACkA=
+cloud.google.com/go/secretmanager v1.20.0 h1:GjE3NoyFXo7ipRPy26PMmg4oRX1Ra8fswH45r16rWV0=
+cloud.google.com/go/secretmanager v1.20.0/go.mod h1:9OmSuOeiiUicANglrbdKWSnT3gYkRcXuUQDk7dDW0zU=
 cloud.google.com/go/storage v1.62.0 h1:w2pQJhpUqVerMON45vatE2FpCYsNTf7OHjkn6ux5mMU=
 cloud.google.com/go/storage v1.62.0/go.mod h1:T5hz3qzcpnxZ5LdKc7y8Tw7lh4v9zeeVyrD/cLJAzZU=
 cloud.google.com/go/trace v1.11.7 h1:kDNDX8JkaAG3R2nq1lIdkb7FCSi1rCmsEtKVsty7p+U=
@@ -251,8 +261,8 @@ github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.29 h1:DRebniUG
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.29/go.mod h1:LfRkPCD8YHDM2E5eTkos2UpwYeZnBcVarTa8L59bJHA=
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.23 h1:03xatSQO4+AM1lTAbnRg5OK528EUg744nW7F73U8DKw=
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.23/go.mod h1:M8l3mwgx5ToK7wot2sBBce/ojzgnPzZXUV445gTSyE8=
-github.com/aws/aws-sdk-go-v2/service/kafka v1.53.0 h1:IXx9dh6meIMRUAxLy/Kd+1oGuN2dig7WGCa+0vMtNnA=
-github.com/aws/aws-sdk-go-v2/service/kafka v1.53.0/go.mod h1:5SCWP3gW59x0gRYHuwzXoj/ZuxEoa+j9/OeynrJd/sk=
+github.com/aws/aws-sdk-go-v2/service/kafka v1.54.0 h1:xFujB8XMwqBYMx5sNLCOF6pwjHaRwEtDi+b/P2kJ9Kk=
+github.com/aws/aws-sdk-go-v2/service/kafka v1.54.0/go.mod h1:5SCWP3gW59x0gRYHuwzXoj/ZuxEoa+j9/OeynrJd/sk=
 github.com/aws/aws-sdk-go-v2/service/kms v1.53.4 h1:PEgVSsWtR8NNxsDxFL2Ywisi7R+1EFQARGsT4q3mWwI=
 github.com/aws/aws-sdk-go-v2/service/kms v1.53.4/go.mod h1:3EeKyDGPGSCEphG2OolwNGNF45RvQIfm27AYYpfEWrw=
 github.com/aws/aws-sdk-go-v2/service/lambda v1.89.0 h1:e4NAllPs/ygQ7W4dTlAuP5N7QpCT+rTij3S8UOv2DD4=

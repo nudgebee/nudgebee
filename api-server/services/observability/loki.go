@@ -597,17 +597,31 @@ func buildWhere(where query.QueryWhereClause) (string, error) {
 		parts = append(parts, andPart)
 	}
 
-	// OR
+	// OR — render log-content branches as a single regex alternation line filter.
+	//
+	// LogQL has NO `(|~ "a" or |~ "b")` syntax; chaining line filters is always
+	// an implicit AND. An OR over log content must therefore collapse into one
+	// regex with `|`-separated branches: `|~ "a|b"`. Label-level OR branches
+	// (e.g. app=A OR app=B) are NOT line filters — they are merged into a
+	// `field=~"A|B"` label selector by extractLabelSelectors — so here we skip
+	// pure-label branches and only emit a line filter when content branches
+	// exist. Negations and nested boolean clauses cannot be expressed inside a
+	// single line-filter regex and are rejected rather than mis-rendered.
 	if len(where.Or) > 0 {
-		var orParts []string
+		frags := make([]string, 0, len(where.Or))
 		for _, orClause := range where.Or {
-			orPart, err := buildWhere(orClause)
+			frag, skip, err := lokiOrContentFragment(orClause)
 			if err != nil {
 				return "", err
 			}
-			orParts = append(orParts, orPart)
+			if skip {
+				continue
+			}
+			frags = append(frags, frag)
 		}
-		parts = append(parts, "("+strings.Join(orParts, " or ")+")")
+		if len(frags) > 0 {
+			parts = append(parts, fmt.Sprintf(`|~ "%s"`, strings.Join(frags, "|")))
+		}
 	}
 
 	// NOT
@@ -620,6 +634,67 @@ func buildWhere(where query.QueryWhereClause) (string, error) {
 	}
 
 	return strings.Join(parts, " "), nil
+}
+
+// lokiOrContentFragment turns one branch of an `_or` clause into a bare regex
+// fragment suitable for embedding in a `|~ "frag1|frag2"` alternation (see the
+// OR branch of buildWhere). Each fragment carries its own case-sensitivity via a
+// scoped `(?i:...)` group where the operator is case-insensitive, so mixed-case
+// branches compose correctly under RE2. Quote-escaping is applied per fragment
+// (mirroring the single-filter path) so the caller must NOT re-escape the join.
+//
+// It returns skip=true for a branch that carries no log-content filter — a
+// pure-label branch (e.g. app=A) or an empty branch — because those are handled
+// by extractLabelSelectors, not by a line filter. Negations (which need `!~`)
+// and nested boolean clauses cannot be expressed inside a single line-filter
+// regex and return an error rather than silently producing invalid LogQL.
+func lokiOrContentFragment(where query.QueryWhereClause) (frag string, skip bool, err error) {
+	if len(where.And) > 0 || len(where.Or) > 0 || where.Not != nil {
+		return "", false, fmt.Errorf("loki: nested boolean clauses are not supported inside an _or content filter")
+	}
+	// No conditions, or only label (non-"log") conditions → no line filter.
+	logOps, ok := where.Binary["log"]
+	if !ok {
+		return "", true, nil
+	}
+	if len(where.Binary) != 1 {
+		return "", false, fmt.Errorf("loki: an _or branch may not combine a log content filter with a label condition")
+	}
+	if len(logOps) != 1 {
+		return "", false, fmt.Errorf("loki: each _or content branch must have exactly one operator, got %d", len(logOps))
+	}
+	for op, val := range logOps {
+		sval := fmt.Sprintf("%v", val)
+		if sval == "" {
+			return "", false, fmt.Errorf("loki: empty value in _or branch for operator %v", op)
+		}
+		switch op {
+		case query.Contains, query.Eq:
+			// Literal substring → regex-escaped so |~ matches it verbatim.
+			return escapeLabelValue(regexp.QuoteMeta(sval)), false, nil
+		case query.ILike:
+			// Case-insensitive SQL LIKE: strip the full-line anchors and
+			// scope the (?i) flag to this branch only.
+			pattern := convertSQLLikeToRegex(sval)
+			inner := strings.TrimPrefix(strings.TrimSuffix(pattern, "$"), "^")
+			return fmt.Sprintf("(?i:%s)", inner), false, nil
+		case query.Like:
+			// Case-sensitive SQL LIKE: keep anchors as-is.
+			return convertSQLLikeToRegex(sval), false, nil
+		case query.IContains:
+			escaped := escapeRegexValue(sval)
+			escaped = escapeLabelValue(escaped)
+			return fmt.Sprintf("(?i:.*%s.*)", escaped), false, nil
+		case query.Regex:
+			if err := validateUserRegex(sval); err != nil {
+				return "", false, fmt.Errorf("invalid regex pattern in _or branch: %w", err)
+			}
+			return escapeLabelValue(sval), false, nil
+		default:
+			return "", false, fmt.Errorf("loki: operator %v cannot be used inside an _or content filter (negations and non-content operators are not expressible in a line-filter alternation)", op)
+		}
+	}
+	return "", false, fmt.Errorf("loki: empty _or branch")
 }
 
 func (s *LokiSource) BuildLokiAPIRequest(req FetchLogRequest) (string, error) {

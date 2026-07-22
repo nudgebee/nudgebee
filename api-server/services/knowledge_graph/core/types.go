@@ -270,8 +270,9 @@ const (
 	RelationshipBuiltFrom RelationshipType = "BUILT_FROM"
 
 	// Identity relationships
-	RelationshipRunsAs  RelationshipType = "RUNS_AS" // Compute resource (Lambda/EC2/ECS) uses this IAM identity
-	RelationshipAssumes RelationshipType = "ASSUMES" // ServiceIdentity can assume another ServiceIdentity (trust policy)
+	RelationshipRunsAs      RelationshipType = "RUNS_AS"       // Compute resource (Lambda/EC2/ECS) uses this IAM identity
+	RelationshipAssumes     RelationshipType = "ASSUMES"       // ServiceIdentity can assume another ServiceIdentity (trust policy)
+	RelationshipHasAccessTo RelationshipType = "HAS_ACCESS_TO" // ServiceIdentity is IAM-granted access to a data resource (BigQuery/Storage/SecretVault/…)
 
 	// Deprecated - kept for reference (removed in favor of IS_ENCRYPTED_BY)
 	// RelationshipEncryptedBy RelationshipType = "ENCRYPTED_BY"
@@ -384,7 +385,10 @@ type KgNodeSlim struct {
 	AccountID string   `json:"account_id"` // maps to cloud_account_id
 	TenantID  string   `json:"tenant_id"`
 	UniqueKey string   `json:"unique_key"`
-	LogoID    string   `json:"logo_id,omitempty"` // Icon identifier resolved by the backend for UI rendering
+	LogoID    string   `json:"logo_id,omitempty"`  // Icon identifier resolved by the backend for UI rendering
+	Role      string   `json:"role,omitempty"`     // Datastore facet: "database"/"cache"/"messagequeue" for in-cluster datastores
+	Engine    string   `json:"engine,omitempty"`   // Canonical engine for datastore nodes (e.g. "postgres", "redis")
+	Location  string   `json:"location,omitempty"` // Region/zone/AZ for cloud resources — disambiguates identically-named nodes (e.g. many "default" subnets) in the UI
 }
 
 // KgEdgeSlim is a lightweight edge for graph traversal API responses
@@ -835,6 +839,7 @@ var QueryablePropertiesMap = map[NodeType][]string{
 		"name", "environment", "namespace", "cluster", "kind",
 		"replica_count", "image", "version", "service_account_name",
 		"last_deployed_time",
+		"role", "engine", // datastore facet for in-cluster databases/caches/queues
 	},
 	NodeTypeJob: {
 		"name", "environment", "namespace", "cluster",

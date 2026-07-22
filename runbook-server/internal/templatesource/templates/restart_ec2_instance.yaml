@@ -1,0 +1,62 @@
+slug: restart_ec2_instance
+name: "Restart EC2 Instance"
+description: "Reboot an EC2 instance. Useful for instance status check failures or unresponsive instances."
+category: "aws"
+icon: "power_settings_new"
+status: ACTIVE
+tags:
+  labels:
+    - "restart"
+    - "disruptive"
+  event_sources:
+    - "cloudwatch"
+    - "aws"
+  alert_names:
+    - "StatusCheckFailed"
+    - "StatusCheckFailed_Instance"
+    - "StatusCheckFailed_System"
+definition:
+  version: "v1"
+  inputs:
+    - id: "instance_id"
+      type: "string"
+      description: "EC2 instance ID (e.g. i-0abc123)"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Approve rebooting EC2 instance **{{ Inputs.instance_id }}**?"
+    - id: "reboot"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws ec2 reboot-instances --instance-ids {{ Inputs.instance_id }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws ec2 describe-instance-status --instance-ids {{ Inputs.instance_id }} --query InstanceStatuses[0].{State:InstanceState.Name,SystemStatus:SystemStatus.Status,InstanceStatus:InstanceStatus.Status}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "reboot"
+  timeout: "10m"
+template_variables:
+  - id: "instance_id"
+    input_ref: "instance_id"
+    display_name: "Instance ID"
+    required: true
+    type: "string"
+    placeholder: "i-0abc123def456"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

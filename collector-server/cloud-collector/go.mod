@@ -2,7 +2,7 @@ module nudgebee/collector/cloud
 
 go 1.26.1
 
-toolchain go1.26.4
+toolchain go1.26.5
 
 require (
 	cloud.google.com/go/aiplatform v1.124.0
@@ -10,14 +10,19 @@ require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.8
 	cloud.google.com/go/bigquery v1.77.0
 	cloud.google.com/go/cloudsqlconn v1.21.0
+	cloud.google.com/go/cloudtasks v1.18.0
 	cloud.google.com/go/compute v1.62.0
 	cloud.google.com/go/container v1.46.0
+	cloud.google.com/go/firestore v1.22.0
 	cloud.google.com/go/functions v1.19.7
 	cloud.google.com/go/logging v1.13.2
 	cloud.google.com/go/monitoring v1.24.3
 	cloud.google.com/go/pubsub/v2 v2.6.0
 	cloud.google.com/go/recommender v1.18.0
+	cloud.google.com/go/redis v1.23.0
 	cloud.google.com/go/run v1.21.0
+	cloud.google.com/go/scheduler v1.16.0
+	cloud.google.com/go/secretmanager v1.20.0
 	cloud.google.com/go/storage v1.62.0
 	cloud.google.com/go/trace v1.11.7
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.21.1
@@ -96,7 +101,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/guardduty v1.65.2
 	github.com/aws/aws-sdk-go-v2/service/iam v1.54.4
 	github.com/aws/aws-sdk-go-v2/service/inspector2 v1.45.2
-	github.com/aws/aws-sdk-go-v2/service/kafka v1.53.0
+	github.com/aws/aws-sdk-go-v2/service/kafka v1.54.0
 	github.com/aws/aws-sdk-go-v2/service/kms v1.53.4
 	github.com/aws/aws-sdk-go-v2/service/lambda v1.89.0
 	github.com/aws/aws-sdk-go-v2/service/pi v1.37.3

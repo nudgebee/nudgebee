@@ -32,10 +32,16 @@ postgresql:
     repository: postgres
     tag: '16.1.0-debian-11-r16'
   metrics:
+    # Upstream prometheus-community postgres_exporter (see values.yaml). The EE
+    # infra pipeline (nudgebee-infra) must mirror
+    # quay.io/prometheuscommunity/postgres-exporter:v0.20.1 ->
+    # registry.nudgebee.com/postgres-exporter:v0.20.1 before this reaches an EE
+    # deploy. The shared alert rules in values.yaml already track the v0.20 metric
+    # renames, so EE and OSS stay consistent.
     image:
       registry: registry.nudgebee.com
       repository: postgres-exporter
-      tag: '0.15.0-debian-11-r3'
+      tag: 'v0.20.1'
 
 redis:
   image:

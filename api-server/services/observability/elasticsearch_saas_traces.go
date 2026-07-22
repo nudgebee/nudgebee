@@ -16,6 +16,18 @@ type ElasticSaasTraceSource struct{}
 
 const esTraceIndex = "otel-v1-apm-span-*"
 
+// esTraceIndexFor resolves the search target for trace queries: the integration's
+// trace_index when set, otherwise Data Prepper's default. The field mappings in
+// elasticTraceLabelMapping are Data Prepper's, so an override must point at an
+// index carrying that schema (e.g. a renamed otel-v1-apm-span-*); an OTel trace
+// data stream would resolve but match nothing.
+func esTraceIndexFor(cfg *ElasticsearchConfig) string {
+	if cfg.TraceIndex != "" {
+		return cfg.TraceIndex
+	}
+	return esTraceIndex
+}
+
 // elasticTraceLabelMapping maps frontend field names to Data Prepper OpenSearch field names.
 var elasticTraceLabelMapping = map[string]string{
 	"service_name":                   "serviceName",
@@ -492,7 +504,7 @@ func (e *ElasticSaasTraceSource) QueryTraces(ctx *security.RequestContext, req T
 
 	dsl := buildTraceQuery(req, elasticTraceLabelMapping)
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndex), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg)), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query traces: %w", err)
 	}
@@ -536,7 +548,7 @@ func (e *ElasticSaasTraceSource) CountTraces(ctx *security.RequestContext, req T
 	delete(dsl, "sort")
 	delete(dsl, "from")
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndex), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg)), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, fmt.Errorf("failed to count traces: %w", err)
 	}
@@ -600,7 +612,7 @@ func (e *ElasticSaasTraceSource) GetLabelValues(ctx *security.RequestContext, re
 		}
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndex), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg)), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("failed to query label values: %w", err)
 	}
@@ -725,7 +737,7 @@ func (e *ElasticSaasTraceSource) QueryGroupedTraces(ctx *security.RequestContext
 		},
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndex), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg)), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query grouped traces: %w", err)
 	}
@@ -926,7 +938,7 @@ func (e *ElasticSaasTraceSource) QueryGroupedTracesCount(ctx *security.RequestCo
 		},
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndex), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg)), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return common.OpenTelemetryTraceGroupCount{}, fmt.Errorf("failed to query grouped traces count: %w", err)
 	}
@@ -972,7 +984,7 @@ func (e *ElasticSaasTraceSource) QueryTracesHeatmap(ctx *security.RequestContext
 		},
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndex), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg)), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query traces heatmap: %w", err)
 	}

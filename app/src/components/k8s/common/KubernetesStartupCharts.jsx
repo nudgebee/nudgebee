@@ -3,6 +3,7 @@ import k8sApi from '@api1/kubernetes';
 import { Box, Typography, Grid, Alert } from '@mui/material';
 import Chart from '@ui/Chart';
 import { ds, resolveColor, resolveColors } from 'src/utils/colors';
+import MetricQueryInfo, { K8S_METRIC_QUERY_LABELS } from '@shared/MetricQueryInfo';
 import PropTypes from 'prop-types';
 
 const STARTUP_WINDOW_MINUTES = 30;
@@ -16,10 +17,10 @@ function fetchPodMetrics(pod, query, groupBy, datasource) {
   const createdMs = new Date(pod.timestamp).getTime();
   return k8sApi
     .getK8sPodGroupings2(10, query, groupBy, datasource || 'prometheus')
-    .then((res) => ({ pod, data: res?.data?.k8s_pod_groupings || [], createdMs }))
+    .then((res) => ({ pod, data: res?.data?.k8s_pod_groupings || [], promQueries: res?.data?.promQueries || {}, createdMs }))
     .catch((err) => {
       console.error(`Failed to fetch startup metrics for pod ${pod.name}:`, err);
-      return { pod, data: [], createdMs };
+      return { pod, data: [], promQueries: {}, createdMs };
     });
 }
 
@@ -42,6 +43,8 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
   const [infoMessage, setInfoMessage] = useState(null);
   const [podCount, setPodCount] = useState(0);
   const [podDetailsSummary, setPodDetailsSummary] = useState('');
+  const [cpuQueries, setCpuQueries] = useState({});
+  const [memoryQueries, setMemoryQueries] = useState({});
 
   useEffect(() => {
     if (!accountId || !namespaceName || !workloadName) {
@@ -102,6 +105,21 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
         }
 
         setPodCount(podsWithData.length);
+
+        // Surface the executed queries from the first pod that returned them (same PromQL per metric across pods).
+        const promQueries = podsWithData.find((r) => Object.keys(r.promQueries || {}).length > 0)?.promQueries || {};
+        const cpuQ = {};
+        const memQ = {};
+        Object.entries(promQueries).forEach(([key, q]) => {
+          if (key.startsWith('cpu_')) {
+            cpuQ[key] = q;
+          } else if (key.startsWith('memory_')) {
+            memQ[key] = q;
+          }
+        });
+        setCpuQueries(cpuQ);
+        setMemoryQueries(memQ);
+
         const creationTimes = podsWithData.map((r) => r.createdMs).sort((a, b) => a - b);
         const earliest = new Date(creationTimes[0]);
         const latest = new Date(creationTimes[creationTimes.length - 1]);
@@ -326,9 +344,12 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
               background: ds.background[200],
             }}
           >
-            <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.brand[500]}>
-              Startup CPU (Core)
-            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+              <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.brand[500]}>
+                Startup CPU (Core)
+              </Typography>
+              <MetricQueryInfo queries={cpuQueries} labelMap={K8S_METRIC_QUERY_LABELS} />
+            </Box>
             <Chart.Line dataset={cpuDatasets} labels={labels} scaleOptions={scaleOptions} loading={isLoading} />
           </Box>
         </Grid>
@@ -344,9 +365,12 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
               background: ds.background[200],
             }}
           >
-            <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.brand[500]}>
-              Startup Memory (MB)
-            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+              <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.brand[500]}>
+                Startup Memory (MB)
+              </Typography>
+              <MetricQueryInfo queries={memoryQueries} labelMap={K8S_METRIC_QUERY_LABELS} />
+            </Box>
             <Chart.Line dataset={memDatasets} labels={labels} scaleOptions={scaleOptions} loading={isLoading} />
           </Box>
         </Grid>

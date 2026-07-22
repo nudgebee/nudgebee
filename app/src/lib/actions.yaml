@@ -1961,6 +1961,44 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: List all cached threshold suggestions for a tenant
+  - name: event_get_threshold_apply_options
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/triage'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: Get available apply methods, risk, and rule preview for a threshold suggestion
+  - name: event_apply_threshold_suggestion
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/triage'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: Apply a threshold suggestion to the source alert rule (direct or via PR)
+  - name: event_revert_threshold_suggestion
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/triage'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: Revert a previously applied direct threshold change
   - name: event_get_timeline
     definition:
       kind: synchronous
@@ -3600,7 +3638,9 @@ actions:
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
       - role: account_admin
+      - role: account_admin_readonly
       - role: tenant_admin
+      - role: tenant_admin_readonly
   - name: ticket_get_comments
     definition:
       kind: "synchronous"
@@ -3613,6 +3653,7 @@ actions:
       - role: account_admin
       - role: account_admin_readonly
       - role: tenant_admin
+      - role: tenant_admin_readonly
   - name: ticket_groupings_v2
     definition:
       kind: "synchronous"
@@ -3681,6 +3722,21 @@ actions:
       - role: account_admin_readonly
       - role: tenant_admin
       - role: account_admin
+  - name: tickets_list_configs
+    definition:
+      kind: synchronous
+      handler: '{{TICKET_SERVICE_URL}}/tickets/rpc/list-configs'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin
   - name: tickets_create
     definition:
       kind: synchronous
@@ -4574,6 +4630,16 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin_readonly
       - role: account_admin
+  - name: workflow_sync_templates
+    definition:
+      kind: "synchronous"
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
   - name: workflow_list
     definition:
       kind: "synchronous"
@@ -4770,6 +4836,17 @@ actions:
       - role: account_admin
       - role: tenant_admin
   - name: workflow_check
+    definition:
+      kind: synchronous
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+  - name: workflow_validate
     definition:
       kind: synchronous
       handler: '{{WORKFLOW_SERVER_URL}}/rpc'

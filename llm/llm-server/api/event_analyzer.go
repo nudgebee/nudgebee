@@ -1648,8 +1648,23 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		}
 	}
 
-	// Step 4: Synthesize detailed response combining initial summary + investigation + log analysis.
-	// This is a soft step — failure falls back to initialSummary without failing the whole analysis.
+	// Note: auto-raise is folded into the log-analysis step above — when
+	// EVENT_AUTO_RAISE_PR_ENABLED is on, analyzeLogsAndUpdateResponse runs the
+	// code agent with raise_pr=true so the fix is generated and the PR opened in
+	// a single pass (no separate re-run). Nothing to do here.
+
+	// Step 4: synthesize. Skip when COMPLETED unless Regenerate — without
+	// this gate every re-dispatch inserts a duplicate user message (#31422).
+	existingDR, _ := eventAnalysisRepo.GetEventAnalysis(ctx, eventFingerprint, eventAggregationKey, request.AccountId, events.AnalysisTypeDetailedResponse)
+	if existingDR != nil && existingDR.Status == string(events.AnalysisStatusCompleted) && existingDR.Summary != "" && !request.Regenerate {
+		ctx.GetLogger().Info("analyzer: detailed response already completed, skipping synth", "event_id", request.EventId)
+		response.DetailedResponse = existingDR.Summary
+		if response.Investigation == "" {
+			response.Investigation = investigationText
+		}
+		return response, nil
+	}
+
 	ctx.GetLogger().Info("analyzer: synthesizing detailed response", "event_id", request.EventId)
 	detailedResponse, synthErr := synthesizeDetailedResponse(ctx, request, parentConversationId, initialSummary, investigationText, logAnalysisText)
 	if synthErr != nil {
@@ -1812,10 +1827,28 @@ func analyzeLogsAndUpdateResponse(ctx *security.RequestContext, request EventAna
 	}
 	fmt.Fprintf(&queryBuilder, "\n## Logs\n%s", truncatedLogs)
 
-	llmParams := map[string]string{"query": queryBuilder.String()}
+	// Run the code agent in propose mode (mode=fix): it localizes the code-level
+	// root cause and, when a fix is warranted, generates the full git diff — which
+	// we store (source_updates.gitDiff) so the UI can show it and a user can
+	// confirm the PR later with no runtime regeneration. When the tenant opted
+	// into EVENT_AUTO_RAISE_PR_ENABLED we also pass raise_pr=true so this same run
+	// opens the PR automatically (agent_code_2's trackPRInResolution records the
+	// event_resolution row the UI polls). The code-analysis fixer only runs when
+	// the specialist marks requires_fix=true, so config-root-cause events still
+	// complete without a spurious diff.
+	autoRaise, ffErr := common.IsFeatureEnabled("EVENT_AUTO_RAISE_PR_ENABLED", ctx.GetSecurityContext().GetTenantId())
+	if ffErr != nil {
+		ctx.GetLogger().Warn("analyzer: failed to read EVENT_AUTO_RAISE_PR_ENABLED, defaulting to propose-only", "error", ffErr, "event_id", request.EventId)
+		autoRaise = false
+	}
+	llmParams := map[string]any{
+		"query":    queryBuilder.String(),
+		"mode":     "fix",
+		"raise_pr": autoRaise,
+	}
 	llmParamsJSON, err := json.Marshal(llmParams)
 	if err != nil {
-		ctx.GetLogger().Warn("analyzer: failed to marshal labels to JSON", "error", err, "event_id", request.EventId)
+		ctx.GetLogger().Warn("analyzer: failed to marshal code agent params to JSON", "error", err, "event_id", request.EventId)
 	}
 
 	var llmResponse core.NBAgentResponse

@@ -1631,6 +1631,7 @@ func init() {
 		&sshPublicKeyService{},
 		&userAssignedIdentityService{},
 		&advisorService{},
+		&privateEndpointService{},
 	}
 	servicesMap := make(map[string]azureService)
 	for _, service := range allServices {

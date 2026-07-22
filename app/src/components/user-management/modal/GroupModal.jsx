@@ -677,8 +677,6 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
             display: 'flex',
             justifyContent: 'flex-end',
             gap: 'var(--ds-space-2)',
-            padding: 'var(--ds-space-3) var(--ds-space-5)',
-            background: ds.background[200],
           }}
         >
           <Button id='cancel' tone='secondary' size='md' onClick={() => adjustCloseAction(false)} disabled={isSubmitting}>

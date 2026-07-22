@@ -1,5 +1,5 @@
 import CustomTable from '@shared/tables/CustomTable2';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ListingLayout } from '@ui/ListingLayout';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import Text from '@shared/format/Text';
@@ -25,6 +25,10 @@ const KubernetesLogSensitiveInfo = ({ accountId }) => {
   const [isTicketCreateFormOpen, setIsTicketCreateFormOpen] = useState(false);
   const [ticketData, setTicketData] = useState({});
 
+  const rawSeriesRef = useRef([]);
+  const ticketReferenceMapRef = useRef(new Map());
+  const buildRowDataRef = useRef(null);
+
   const errorMessage = 'Failed to fetch the sensitive log information';
 
   const onMenuClick = (menuItems, data) => {
@@ -40,6 +44,70 @@ const KubernetesLogSensitiveInfo = ({ accountId }) => {
     description += '**Application**: ' + extractNamespaceAndApplication(data?.container_id, 'application') + '\n';
     return description;
   };
+
+  const buildRowData = (seriesList, ticketMap) =>
+    seriesList.map((item) => {
+      const result = buildContainerLabel(item.metric.container_id);
+      const referenceId = item.metric.pattern_hash;
+      const existingTicket = ticketMap.get(referenceId);
+      return [
+        {
+          component: (
+            <Box>
+              <Text value={result?.podname ? 'Pod: ' + result?.podname || '-' : result} showAutoEllipsis />
+              {result.namespace && <Text secondaryText value={`NS: ${result.namespace}`} showAutoEllipsis />}
+              {result.container && <Text secondaryText value={`Container: ${result.container}`} showAutoEllipsis />}
+            </Box>
+          ),
+        },
+        {
+          component: (
+            <Box sx={{ overflowWrap: 'anywhere' }}>
+              <Text value={item.metric.name} showAutoEllipsis sx={{ whiteSpace: 'pre-line' }} />{' '}
+            </Box>
+          ),
+        },
+        {
+          component: (
+            <Box sx={{ overflowWrap: 'anywhere' }}>
+              <Text value={item.metric.pattern} showAutoEllipsis sx={{ whiteSpace: 'pre-line' }} />
+            </Box>
+          ),
+        },
+        {
+          component: (
+            <Box sx={{ overflowWrap: 'anywhere' }}>
+              <Text value={item.metric.regex} showAutoEllipsis sx={{ whiteSpace: 'pre-line' }} />{' '}
+            </Box>
+          ),
+        },
+        {
+          component: existingTicket?.ticket_id ? (
+            <Text
+              value={
+                <Link openInNew href={`${existingTicket?.url}`}>
+                  {existingTicket?.ticket_id}
+                </Link>
+              }
+            />
+          ) : (
+            '--'
+          ),
+        },
+        {
+          component: (
+            <Box display={'flex'} justifyContent={'flex-end'}>
+              <ThreeDotsMenu
+                sx={{ ...action.primary }}
+                menuItems={[{ icon: TicketsIcon, label: 'Create Ticket', id: 0, disabled: !!existingTicket }]}
+                data={item}
+                onMenuClick={onMenuClick}
+              />
+            </Box>
+          ),
+        },
+      ];
+    });
 
   const handleDataFetch = () => {
     const fetchData = async () => {
@@ -62,84 +130,16 @@ const KubernetesLogSensitiveInfo = ({ accountId }) => {
         if (relayResponse?.[0]?.payload?.length) {
           const seriesListResult = relayResponse[0].payload;
           const uniqueReferenceIds = Array.from(new Set(seriesListResult.map((item) => item.metric.pattern_hash)));
-          const ticketResponse = await ticketsApi.listTicketsSummary({
-            reference_id: uniqueReferenceIds,
-          });
-          const ticketReferenceMap = {};
+          const ticketResponse = await ticketsApi.listTicketsSummary({ reference_id: uniqueReferenceIds });
+          const ticketMap = new Map();
           ticketResponse?.data?.tickets?.forEach((ticket) => {
-            ticketReferenceMap[ticket.reference_id] = ticket;
+            ticketMap.set(ticket.reference_id, ticket);
           });
-          const groupData = seriesListResult.map((item) => {
-            const result = buildContainerLabel(item.metric.container_id);
-            const referenceId = item.metric.pattern_hash;
-            return [
-              {
-                component: (
-                  <Box>
-                    <Text value={result?.podname ? 'Pod: ' + result?.podname || '-' : result} showAutoEllipsis />
-                    {result.namespace && <Text secondaryText value={`NS: ${result.namespace}`} showAutoEllipsis />}
-                    {result.container && <Text secondaryText value={`Container: ${result.container}`} showAutoEllipsis />}
-                  </Box>
-                ),
-              },
-              {
-                component: (
-                  <Box sx={{ overflowWrap: 'anywhere' }}>
-                    <Text value={item.metric.name} showAutoEllipsis sx={{ whiteSpace: 'pre-line' }} />{' '}
-                  </Box>
-                ),
-              },
-              {
-                component: (
-                  <Box sx={{ overflowWrap: 'anywhere' }}>
-                    <Text value={item.metric.pattern} showAutoEllipsis sx={{ whiteSpace: 'pre-line' }} />
-                  </Box>
-                ),
-              },
-              {
-                component: (
-                  <Box sx={{ overflowWrap: 'anywhere' }}>
-                    <Text value={item.metric.regex} showAutoEllipsis sx={{ whiteSpace: 'pre-line' }} />{' '}
-                  </Box>
-                ),
-              },
-              {
-                component: ticketReferenceMap[referenceId]?.ticket_id ? (
-                  <Text
-                    value={
-                      <Link openInNew href={`${ticketReferenceMap[referenceId]?.url}`}>
-                        {ticketReferenceMap[referenceId]?.ticket_id}
-                      </Link>
-                    }
-                  />
-                ) : (
-                  '--'
-                ),
-              },
-              {
-                component: (
-                  <Box display={'flex'} justifyContent={'flex-end'}>
-                    <ThreeDotsMenu
-                      sx={{ ...action.primary }}
-                      menuItems={[
-                        {
-                          icon: TicketsIcon,
-                          label: 'Create Ticket',
-                          id: 0,
-                          disabled: referenceId in ticketReferenceMap,
-                        },
-                      ]}
-                      data={item}
-                      onMenuClick={onMenuClick}
-                    />
-                  </Box>
-                ),
-              },
-            ];
-          });
-          setData(groupData);
+          rawSeriesRef.current = seriesListResult;
+          ticketReferenceMapRef.current = ticketMap;
+          buildRowDataRef.current = buildRowData;
+          setData(buildRowData(seriesListResult, ticketMap));
         }
-
         setLoading(false);
       } catch {
         snackbar.error(errorMessage);
@@ -170,14 +170,22 @@ const KubernetesLogSensitiveInfo = ({ accountId }) => {
         onClose={() => {
           setIsTicketCreateFormOpen(false);
         }}
-        onSuccess={() => {
-          handleDataFetch();
+        onSuccess={({ ticketId, url } = {}) => {
           setIsTicketCreateFormOpen(false);
           snackbar.success('Ticket Created Successfully');
+          const referenceId = ticketData?.pattern_hash;
+          if (!referenceId || !buildRowDataRef.current) return;
+          ticketReferenceMapRef.current.set(referenceId, { ticket_id: ticketId, url });
+          const idx = rawSeriesRef.current.findIndex((item) => item.metric.pattern_hash === referenceId);
+          if (idx === -1) return;
+          setData((prev) => {
+            const next = [...prev];
+            next[idx] = buildRowDataRef.current([rawSeriesRef.current[idx]], ticketReferenceMapRef.current)[0];
+            return next;
+          });
         }}
-        onFailure={() => {
-          setIsTicketCreateFormOpen(false);
-          snackbar.error('Failed to Create');
+        onFailure={(res) => {
+          snackbar.error(`Failed! ${res}`);
         }}
         ticketData={{
           subject: 'Sensitive Message in Log',

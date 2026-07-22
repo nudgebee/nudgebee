@@ -278,6 +278,26 @@ func (s *AzureSource) shouldIncludeResource(resource *CloudResourceRow) bool {
 	return false
 }
 
+// shouldSuppressAzureResource drops rows that are cost/billing constructs rather
+// than deployed infrastructure. It is deliberately narrow: Azure billing-export
+// rows (meta.nb_source="billing") include *real* resources that have no ARM
+// counterpart (e.g. Private Endpoints), so we must NOT blanket-suppress by source.
+// Reservation orders (Microsoft.Capacity/reservationOrders, type "reservationorders")
+// are purchase commitments — they were surfacing as orphaned CloudResource phantoms.
+func shouldSuppressAzureResource(r *CloudResourceRow) bool {
+	if r == nil {
+		return true
+	}
+	if strings.EqualFold(r.Type, "reservationorders") {
+		return true
+	}
+	if strings.Contains(strings.ToLower(r.ServiceName), "reservationorders") ||
+		strings.Contains(strings.ToLower(r.ServiceName), "microsoft.capacity") {
+		return true
+	}
+	return false
+}
+
 // convertResourcesToGraph converts Azure resources to knowledge graph nodes and edges
 func (s *AzureSource) convertResourcesToGraph(reqCtx *security.RequestContext, resources []CloudResourceRow, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge) {
 	// Step 1: Create all nodes
@@ -288,6 +308,11 @@ func (s *AzureSource) convertResourcesToGraph(reqCtx *security.RequestContext, r
 				"service_name", resource.ServiceName,
 				"type", resource.Type,
 				"name", resource.Name)
+			continue
+		}
+		if shouldSuppressAzureResource(&resource) {
+			s.logger.Debug("suppressing Azure billing/reservation row",
+				"service_name", resource.ServiceName, "type", resource.Type, "name", resource.Name)
 			continue
 		}
 		node := s.createNodeFromResource(&resource, req)
@@ -345,6 +370,15 @@ func (s *AzureSource) convertResourcesToGraph(reqCtx *security.RequestContext, r
 	// resource's ARG meta (LoadBalancer frontend/backend, etc.) — connects
 	// resource types the networking-only builders above leave orphaned.
 	edges = append(edges, s.createReferenceEdges(resources, lookup, req)...)
+
+	// ServiceIdentity → resource (HAS_ACCESS_TO) from RBAC role assignments —
+	// connects the data tier (Key Vault / Storage / ACR / Cognitive Services) to
+	// the managed identities granted access, which traces/ARM metadata don't show.
+	edges = append(edges, s.createRoleAssignmentEdges(resources, lookup, req)...)
+
+	// App Service / Function → data resource (CALLS) from app-settings references
+	// the collector extracted secret-free into meta.referenced_resources.
+	edges = append(edges, s.createAppReferenceEdges(resources, lookup, req)...)
 
 	// Private DNS zone → VNet links are resolved by the azure_private_dns
 	// cross-account enricher (Phase 2.1), since a zone and its linked VNet are
@@ -455,6 +489,7 @@ var azureTypeToNodeType = map[string]core.NodeType{
 	"servers":          core.NodeTypeDatabase, // microsoft.sql/servers type=servers
 	"cosmosdbaccount":  core.NodeTypeDatabase,
 	"databaseaccounts": core.NodeTypeDatabase,
+	"flexibleservers":  core.NodeTypeDatabase, // microsoft.dbforpostgresql|dbformysql|dbformariadb/flexibleServers
 
 	// Cache
 	"rediscache": core.NodeTypeCache,
@@ -520,6 +555,21 @@ var azureServicePrefixToNodeType = map[string]core.NodeType{
 	"microsoft.keyvault":          core.NodeTypeSecretVault,
 	"microsoft.containerregistry": core.NodeTypeContainerRegistry,
 	"microsoft.cdn":               core.NodeTypeCDN,
+	// Managed databases (flexible-server PaaS) — also caught by the "flexibleservers"
+	// type entry, but the prefix keeps classification correct if the type segment shifts.
+	"microsoft.dbforpostgresql": core.NodeTypeDatabase,
+	"microsoft.dbformysql":      core.NodeTypeDatabase,
+	"microsoft.dbformariadb":    core.NodeTypeDatabase,
+	// AI / ML / analytics compute
+	"microsoft.cognitiveservices":       core.NodeTypeAIService,
+	"microsoft.machinelearningservices": core.NodeTypeAIService,
+	"microsoft.databricks":              core.NodeTypeAIService,
+	// Arc-enabled (hybrid) servers are compute hosts
+	"microsoft.hybridcompute": core.NodeTypeComputeInstance,
+	// Logic Apps are serverless workflow executions
+	"microsoft.logic": core.NodeTypeServerlessFunction,
+	// Communication Services (email/SMS/chat delivery)
+	"microsoft.communication": core.NodeTypeEmailService,
 }
 
 // extractServicePrefix extracts the provider prefix from a full service_name path.

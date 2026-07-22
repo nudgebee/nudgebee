@@ -1,21 +1,24 @@
 import React, { useEffect } from 'react';
 import { Box } from '@mui/material';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
+import { withAccountGuard } from '@shared/AccountGuard';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import { useRouter } from 'next/router';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, getUserSession } from '@lib/auth';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { Button as DsButton } from '@ui/Button';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
-import { BetaIcon, WorkflowIconBlue, AutomateBlue } from '@assets';
+import { BetaIcon, WorkflowIconBlue, AutomateBlue, PlayCircleIcon } from '@assets';
 import { ds } from '@utils/colors';
-
 import AutoOptimizeTabs from '@components/autopilot/tables/AutoOptimizeTabs';
 import WorkflowListing from '@components/workflow/WorkflowListing';
+import TaskRunner from '@components/workflow/TaskRunner';
 import SafeIcon from '@shared/icons/SafeIcon';
 
 const AutoPilot = () => {
   const router = useRouter();
+  const session = getUserSession();
+  const isAdmin = session?.roles?.includes('tenant_admin') || session?.roles?.includes('account_admin');
 
   // 1. Initialize state with defaults (0) instead of router.query
   const [selectedFilter, setSelectedFilter] = React.useState(0);
@@ -42,13 +45,20 @@ const AutoPilot = () => {
         { id: 'approvals', text: 'Approvals', value: 1, fragment: 'approvals' },
       ],
     },
+    {
+      name: 'Task Runner',
+      value: 2,
+      fragment: 'task-runner',
+      disabled: !isAdmin,
+      icon: PlayCircleIcon,
+    },
   ];
 
   useEffect(() => {
     const hash = router.asPath.split('#')[1];
     if (!hash || !filterOptions.length) return;
     const [fragment, subFragment] = hash.split('/');
-    const filter = filterOptions.find((option) => option.fragment === fragment);
+    const filter = filterOptions.find((option) => option.fragment === fragment && !option.disabled);
     if (filter) {
       setSelectedFilter(filter.value);
       if (!subFragment) return;
@@ -110,7 +120,7 @@ const AutoPilot = () => {
       <AnchorComponent
         manageRoute={true}
         options={filterOptions[selectedFilter]?.options || []}
-        filterOptions={filterOptions}
+        filterOptions={filterOptions.filter((opt) => !opt.disabled)}
         // Updated Handler: Pushes new Hash URL instead of setting state directly
         onChangeFilter={(val, subVal) => {
           setSelectedFilter(val);
@@ -125,6 +135,7 @@ const AutoPilot = () => {
   return (
     <>
       {getAnchorComponent()}
+
       <ErrorBoundary key={`${selectedFilter}-${subTab}`}>
         <Box>
           <Box>{selectedFilter === 0 && <WorkflowListing accountId={router?.query?.accountId} />}</Box>
@@ -143,10 +154,12 @@ const AutoPilot = () => {
               />
             )}
           </Box>
+
+          <Box>{selectedFilter === 2 && isAdmin && <TaskRunner accountId={router?.query?.accountId} />}</Box>
         </Box>
       </ErrorBoundary>
     </>
   );
 };
 
-export default AutoPilot;
+export default withAccountGuard(AutoPilot, { hideContent: true });

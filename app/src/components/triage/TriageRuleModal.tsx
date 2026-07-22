@@ -567,7 +567,8 @@ const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, ac
             label='Expires At'
             value={effectiveUntil ? dayjs(effectiveUntil) : null}
             onChange={(newValue: import('dayjs').Dayjs | null) => setEffectiveUntil(newValue ? newValue.toDate() : null)}
-            minDate={dayjs()}
+            minDate={undefined}
+            minDateTime={dayjs()}
             maxDateTime={undefined}
             componentsProps={undefined}
           />

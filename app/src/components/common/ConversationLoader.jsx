@@ -3,6 +3,13 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { ds } from '@utils/colors';
 
 const NUDGEBEE_WORDS = [
+  'Bee with you in a moment…',
+  'Bee right back with this…',
+  'Hmm, let me think on this…',
+  'Just connecting a few dots…',
+  'Let me consult my hive notes…',
+  'Buzzing around for the answer…',
+  'Flying off to grab the answer…',
   'Nubing',
   'Buzzifying',
   'Hive-syncing',
@@ -65,14 +72,61 @@ const NUDGEBEE_WORDS = [
   'Analyzing',
 ];
 
+const CATEGORY_MESSAGES = {
+  small_talk: ['Bee with you in a moment…', 'Bee right back with this…', 'Hmm, let me think on this…', 'On it…', 'One sec…'],
+  kubernetes: [
+    'Scanning your cluster…',
+    'Checking your pods…',
+    'Reading the workload state…',
+    'Talking to the cluster…',
+    'Inspecting your namespaces…',
+    'Pulling node metrics…',
+  ],
+  cloud: [
+    'Pulling your cloud data…',
+    'Checking your cloud spend…',
+    'Scanning your cloud resources…',
+    'Reading your account details…',
+    'Fetching resource inventory…',
+  ],
+  logs: ['Digging through the logs…', 'Tracing that error…', 'Scanning recent events…', 'Following the trail…', 'Combing through the stack…'],
+  workflow: ['Loading the runbook…', 'Checking the automation…', 'Spinning up the workflow…', 'Queuing that up…', 'Prepping the pipeline…'],
+};
+
+function classifyQuery(query) {
+  if (!query) return null;
+  const q = query.toLowerCase();
+  if (/\b(hi|hello|hey|thanks|thank you|how are you|good morning|good afternoon|good evening|bye|goodbye)\b/.test(q)) return 'small_talk';
+  if (
+    /\b(pod|pods|deployment|deployments|node|nodes|namespace|namespaces|cluster|ingress|k8s|kubernetes|container|containers|statefulset|daemonset|helm|kubectl|crashloop|oomkill|workload|hpa|replica)\b/.test(
+      q
+    )
+  )
+    return 'kubernetes';
+  if (/\b(aws|gcp|azure|cloud|cost|spend|bill|billing|budget|ec2|s3|rds|lambda|fargate|eks|gke|aks|cloudwatch|vpc)\b/.test(q)) return 'cloud';
+  if (
+    /\b(log|logs|error|errors|crash|exception|trace|debug|stacktrace|stdout|stderr|warning|alert|panic|fatal|datadog|grafana|prometheus|loki|metrics)\b/.test(
+      q
+    )
+  )
+    return 'logs';
+  if (/\b(workflow|runbook|automation|trigger|automate|autopilot|pipeline|schedule)\b/.test(q)) return 'workflow';
+  return null;
+}
+
 const getRandomDelay = () => Math.floor(Math.random() * (10000 - 4000 + 1)) + 4000;
 
-const ConversationLoader = () => {
+const ConversationLoader = ({ query }) => {
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
   const [dotCount, setDotCount] = useState(1);
   const timeoutRef = useRef(null);
 
-  const shuffledWords = useMemo(() => [...NUDGEBEE_WORDS].sort(() => Math.random() - 0.5), []);
+  const pool = useMemo(() => {
+    const category = classifyQuery(query);
+    return category ? CATEGORY_MESSAGES[category] : NUDGEBEE_WORDS;
+  }, [query]);
+
+  const shuffledWords = useMemo(() => [...pool].sort(() => Math.random() - 0.5), [pool]);
 
   const advanceWord = useCallback(() => {
     setCurrentWordIndex((prev) => (prev + 1) % shuffledWords.length);

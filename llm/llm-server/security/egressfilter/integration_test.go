@@ -108,10 +108,10 @@ func TestIntegration_SecretInSystemPromptIsBlocked(t *testing.T) {
 	assert.Contains(t, se.RuleIDs, "github-pat")
 }
 
-func TestIntegration_AuditModeNeverBlocksButRecords(t *testing.T) {
+func TestIntegration_DetectModeNeverBlocksButRecords(t *testing.T) {
 	leakySystem := `GH token: ghp_Abcdefghijklmnopqrstuvwxyz0123456789`
 	inner := &fakeModel{respText: "ok"}
-	wrapped := WrapModel(inner, "openai", "gpt-4o", true, ModeAudit)
+	wrapped := WrapModel(inner, "openai", "gpt-4o", true, ModeDetect)
 
 	msgs := []llms.MessageContent{
 		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: leakySystem}}},
@@ -162,8 +162,8 @@ func TestIntegration_ModeFlipTakesEffectOnNewWrapper(t *testing.T) {
 	msgs := []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, leaky)}
 
 	inner := &fakeModel{respText: "ok"}
-	auditWrapped := WrapModel(inner, "openai", "gpt-4o", true, ModeAudit)
-	_, err := auditWrapped.GenerateContent(context.Background(), msgs)
+	detectWrapped := WrapModel(inner, "openai", "gpt-4o", true, ModeDetect)
+	_, err := detectWrapped.GenerateContent(context.Background(), msgs)
 	require.NoError(t, err)
 	assert.Equal(t, 1, inner.callCount())
 

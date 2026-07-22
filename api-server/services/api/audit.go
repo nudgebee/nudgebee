@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"nudgebee/services/audit"
 	"nudgebee/services/common"
+	"nudgebee/services/recommendation"
 	"nudgebee/services/security"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -56,6 +59,15 @@ func handleAuditApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, l
 			actorCtx := buildContextForAuditActor(c, a.TenantId, a.UserId, tracer, meter, logger)
 			if err := audit.CreateAudit(actorCtx, &audit.AuditRequest{Audits: []audit.Audit{a}}); err != nil {
 				errs = append(errs, err)
+				continue
+			}
+			// On a K8s agent's first connect, kick off the server-side
+			// recommendation scans so a freshly onboarded cluster populates
+			// without waiting for the daily refresh crons. Relay emits this
+			// event only on the NOT_CONNECTED->CONNECTED transition, and
+			// TriggerInitialScans is idempotent, so reconnects don't re-run it.
+			if a.EventType == audit.EventTypeK8sRelayAgentConnected && a.AccountId != "" {
+				triggerInitialScansAsync(c, a.AccountId, a.TenantId, tracer, meter, logger)
 			}
 		}
 		if len(errs) > 0 {
@@ -68,4 +80,31 @@ func handleAuditApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, l
 
 		c.JSON(200, gin.H{"status": "ok"})
 	})
+}
+
+// triggerInitialScansAsync fires the first-connect recommendation scans for an
+// account in a detached goroutine so the /v1/audit ingest response stays fast
+// and is unaffected if scan dispatch errors. Work is bounded by an absolute
+// timeout and recovers from panics.
+func triggerInitialScansAsync(c *gin.Context, accountId, tenantId string, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
+	secCtx := security.NewSecurityContextForTenantAdmin(tenantId)
+	if secCtx == nil {
+		logger.Error("audit: nil tenant-admin context for initial scans", "account_id", accountId, "tenant_id", tenantId)
+		return
+	}
+	// Detach from the request context (cancelled when the handler returns) but
+	// bound the work so a hung run can't leak the goroutine.
+	detachedCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 15*time.Minute)
+	go func() {
+		defer cancel()
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("audit: panic triggering initial scans", "panic", r, "account_id", accountId)
+			}
+		}()
+		taskCtx := security.NewRequestContext(detachedCtx, secCtx, logger, tracer, meter)
+		if err := recommendation.TriggerInitialScans(taskCtx, accountId, tenantId); err != nil {
+			logger.Error("audit: error triggering initial scans", "error", err, "account_id", accountId)
+		}
+	}()
 }

@@ -1,5 +1,5 @@
 import { Box, Typography, Divider, CircularProgress, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import { useEffectiveRecommendation } from '@hooks/useEffectiveRecommendation';
 import { Select as DsSelect } from '@ui/Select';
 import { ds } from 'src/utils/colors';
@@ -13,6 +13,7 @@ import { Label } from '@ui/Label';
 import recommendationApi from '@api1/recommendation';
 import { interpolateMitigations } from '@api1/recommendation/data';
 import { formatRuleName } from './utils';
+import { safetyBandTone, safetyBandLabel, getImpactSummary } from './safetyBand';
 import ApplyMitigationModal from '@components/cloudaccount/ApplyMitigationModal';
 import { hasWriteAccess } from '@lib/auth';
 import InterpretationPanel from './interpretation/InterpretationPanel';
@@ -26,6 +27,74 @@ interface DetailsPanelProps {
 }
 
 const RESOLVED_STATUSES = new Set(['Closed', 'Dismissed', 'Archive']);
+
+// SafetyRow — a label + value/chip pair for the Blast Radius & Safety section.
+const SafetyRow = ({ label, children }: { label: string; children: ReactNode }) => (
+  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[2] }}>
+    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium }}>{label}</Typography>
+    {children}
+  </Box>
+);
+
+// BlastRadiusSection surfaces the knowledge-graph safety band + impact rollup.
+// Renders nothing until a recommendation carries the data (k8s recs once impact
+// scoring is enabled), so it's a no-op for everything else.
+const BlastRadiusSection = ({ rec }: { rec: any }) => {
+  const band = rec?.safety_band as string | undefined;
+  const impact = getImpactSummary(rec);
+  const hasImpactData = !!(
+    impact &&
+    (impact.dependent_count != null || impact.production_dependents != null || impact.coverage_confidence || impact.safety_reason)
+  );
+  if (!band && !hasImpactData) return null;
+  return (
+    <>
+      <Divider />
+      <Box>
+        <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
+          Blast Radius &amp; Safety
+        </Typography>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
+          {band && (
+            <SafetyRow label='Safety'>
+              <Label size='sm' tone={safetyBandTone(band)} dot>
+                {safetyBandLabel(band)}
+              </Label>
+            </SafetyRow>
+          )}
+          {impact?.dependent_count != null && (
+            <SafetyRow label='Dependent services'>
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.semibold }}>
+                {impact.dependent_count}
+                {impact.truncated ? '+' : ''}
+              </Typography>
+            </SafetyRow>
+          )}
+          {impact?.production_dependents != null && impact.production_dependents > 0 && (
+            <SafetyRow label='Production dependents'>
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.semibold }}>
+                {impact.production_dependents}
+              </Typography>
+            </SafetyRow>
+          )}
+          {impact?.coverage_confidence && (
+            <SafetyRow label='Graph coverage'>
+              <Label
+                size='sm'
+                tone={impact.coverage_confidence === 'high' ? 'success' : impact.coverage_confidence === 'low' ? 'warning' : 'neutral'}
+              >
+                {safetyBandLabel(impact.coverage_confidence)}
+              </Label>
+            </SafetyRow>
+          )}
+          {impact?.safety_reason && (
+            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], lineHeight: 1.6, mt: ds.space[1] }}>{impact.safety_reason}</Typography>
+          )}
+        </Box>
+      </Box>
+    </>
+  );
+};
 
 const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelProps) => {
   const [details, setDetails] = useState<any>(null);
@@ -96,6 +165,9 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
           recommendations: details?.recommendations,
         })}
       />
+
+      {/* Blast Radius & Safety — knowledge-graph impact + safety band */}
+      <BlastRadiusSection rec={rec} />
 
       {/* Recommendation Summary — key "what changes" data from JSONB */}
       <RecommendationSummary recData={recData} category={category} ruleName={ruleName} />

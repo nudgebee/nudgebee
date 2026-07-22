@@ -1,0 +1,69 @@
+slug: force_ecs_service_deployment
+name: "Force ECS Service Deployment"
+description: "Force a new deployment of an ECS service. Pulls fresh task definitions and replaces running tasks."
+category: "aws"
+icon: "replay"
+status: ACTIVE
+tags:
+  labels:
+    - "deploy"
+  event_sources:
+    - "cloudwatch"
+    - "aws"
+  alert_names:
+    - "ECSServiceUnhealthy"
+    - "ECSTaskFailure"
+    - "ECSServiceCPUUtilization"
+definition:
+  version: "v1"
+  inputs:
+    - id: "cluster"
+      type: "string"
+      description: "ECS cluster name"
+      required: true
+    - id: "service_name"
+      type: "string"
+      description: "ECS service name"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Approve forcing new deployment for ECS service **{{ Inputs.service_name }}** in cluster **{{ Inputs.cluster }}**?"
+    - id: "deploy"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws ecs update-service --cluster {{ Inputs.cluster }} --service {{ Inputs.service_name }} --force-new-deployment"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws ecs describe-services --cluster {{ Inputs.cluster }} --services {{ Inputs.service_name }} --query services[0].{Status:status,Running:runningCount,Desired:desiredCount,Deployments:deployments[*].status}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "deploy"
+  timeout: "10m"
+template_variables:
+  - id: "cluster"
+    input_ref: "cluster"
+    display_name: "ECS Cluster"
+    required: true
+    type: "string"
+  - id: "service_name"
+    input_ref: "service_name"
+    display_name: "Service Name"
+    required: true
+    type: "string"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

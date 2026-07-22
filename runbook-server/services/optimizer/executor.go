@@ -214,7 +214,7 @@ func (s *optimizerService) GenerateTasks(ctx context.Context, autoOptimizeID uui
 		ao.ExecutionStatus = string(model.AutopilotExecutionStatusIdle)
 	}
 
-	if err := s.updateExecutionState(ctx, ao); err != nil {
+	if err := s.updateExecutionState(ctx, ao, len(tasks) > 0); err != nil {
 		return nil, fmt.Errorf("failed to update execution state: %w", err)
 	}
 
@@ -357,7 +357,7 @@ func (s *optimizerService) checkPreFlight(ctx context.Context, ao *model.AutoOpt
 	return false, nil
 }
 
-func (s *optimizerService) updateExecutionState(ctx context.Context, ao *model.AutoOptimize) error {
+func (s *optimizerService) updateExecutionState(ctx context.Context, ao *model.AutoOptimize, tasksCreated bool) error {
 	now := time.Now().UTC()
 
 	if ao.NextScheduleTime != nil {
@@ -375,7 +375,12 @@ func (s *optimizerService) updateExecutionState(ctx context.Context, ao *model.A
 		slog.Error("Error parsing cron", "schedule_time", ao.ScheduleTime, "auto_optimize_id", ao.ID, "error", err)
 	}
 
-	ao.LastExecutedTime = &now
+	// Only advance LastExecutedTime when the run actually produced execution rows.
+	// A run that generates zero tasks would otherwise show "Last Executed just now"
+	// with no matching execution in the history (phantom run, issue #34245).
+	if tasksCreated {
+		ao.LastExecutedTime = &now
+	}
 
 	return s.dao.SaveAutoOptimize(ctx, *ao)
 }

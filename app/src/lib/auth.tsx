@@ -118,6 +118,38 @@ export function getUserSession() {
   return userData;
 }
 
+export function getCurrentTenant(): { id?: string; name?: string } {
+  return userData?.tenant ?? {};
+}
+
+// True for users whose access spans the whole tenant (tenant admins, super
+// admins). For these users the per-account session lists below are NOT
+// authoritative — `accountIds`/`readOnlyAccountIds` are empty even though they
+// can reach every account in the tenant. Callers that need to know whether an
+// account belongs to the current tenant must consult the live accounts list
+// (see useAccountGuard), not the session, for these roles.
+export function isTenantWideRole(): boolean {
+  return !!(
+    userData?.roles?.includes('tenant_admin') ||
+    userData?.roles?.includes('tenant_admin_readonly') ||
+    userData?.isSuperAdmin ||
+    userData?.isSuperAdminReadonly
+  );
+}
+
+// Union of every account id the session explicitly grants the user (in the
+// current tenant). Authoritative ONLY for non-tenant-wide users — see
+// isTenantWideRole. Useful as an instant hint before the live accounts list
+// resolves.
+export function getSessionAccountIds(): string[] {
+  return [
+    ...(userData?.accountIds ?? []),
+    ...(userData?.readOnlyAccountIds ?? []),
+    ...(userData?.namespacedAccountIds ?? []),
+    ...(userData?.namespacedReadOnlyAccountIds ?? []),
+  ];
+}
+
 // returns null if user has access to all namespaces
 export function getAllowedNamespaces(accountId: string): string[] | null {
   if (userData?.roles?.includes('tenant_admin') || userData?.roles?.includes('tenant_admin_readonly')) {

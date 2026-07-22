@@ -32,6 +32,15 @@ func TestHorizontalRightsizeGenerator_MLParsing(t *testing.T) {
 		tasks, _ := generator.GenerateTasks(ctx, ao, recs)
 		assert.Len(t, tasks, 1)
 		assert.Equal(t, 5.0, tasks[0].Meta["change_to"])
+
+		// Per-execution resource snapshot so history survives target-resource edits (#34245).
+		rf := tasks[0].ResourceFilter
+		assert.NotNil(t, rf.Namespace)
+		assert.Equal(t, "ns", *rf.Namespace)
+		assert.NotNil(t, rf.Name)
+		assert.Equal(t, "app", *rf.Name)
+		assert.NotNil(t, rf.Type)
+		assert.Equal(t, "Deployment", *rf.Type)
 	})
 
 	// 2. ML-Based Parsing

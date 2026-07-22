@@ -10,6 +10,8 @@ import (
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/llm"
 	"nudgebee/services/security"
+	"nudgebee/services/user"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -217,6 +219,20 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
+		}
+
+		// Disabling an integration: immediately clear its discovered identity accounts
+		// so the Integration Profiles UI reflects the change now rather than after the
+		// next identity-sync run. Best-effort — sweepDisabledIntegrations is the
+		// backstop, so a failure here only delays cleanup, never loses a manual mapping.
+		if strings.EqualFold(request.IntegrationConfigStatus, string(core.IntegrationStatusDisabled)) {
+			if perr := user.PurgeDisabledIntegrationAccounts(ctx, request.IntegrationName, request.IntegrationConfigName); perr != nil {
+				ctx.GetLogger().Error("integrations: failed to purge identity accounts after disable (best-effort, next sync will reconcile)",
+					"error", perr,
+					"tenant_id", ctx.GetSecurityContext().GetTenantId(),
+					"integration_name", request.IntegrationName,
+					"integration_config_name", request.IntegrationConfigName)
+			}
 		}
 
 		c.JSON(200, map[string]string{"status": "success"})

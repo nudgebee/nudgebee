@@ -41,7 +41,22 @@
 - "manual" - No params required (params must be empty or omitted). User-supplied inputs available as {{ Inputs.<key> }} in tasks.
 - "schedule" - Requires params: {"cron": "0 * * * *" (5-field UTC), "overlap_policy": "Skip|BufferOne|BufferAll|AllowAll|CancelOther|TerminateOther" (optional, default "Skip"), "catchup_window": Go time.ParseDuration string using units ns|us|ms|s|m|h ONLY — day/week units ("7d", "1w") are NOT supported; use hours instead ("168h" = 7 days). Compound durations are allowed ("1h30m", "90m15s"). Examples: "60s", "10m", "1h", "1h30m", "168h"; default "60s"}. Auto-injected: {{ Inputs.workflow_scheduled_time }}, {{ Inputs.workflow_execution_time }}.
 - "webhook" - Requires params: {"integration_name": "string (a workflow_webhook integration name)", "secret": "string (optional)", "filter": "jinja2 (optional, must render to literal \"true\" or \"1\")"}. Filter sees {{ webhook_payload }} at root. Tasks read request body via {{ Inputs.webhook_payload }}.
-- "event" - Requires AT LEAST ONE of: event_type OR filter (both is fine; rejecting both empty). Params: {"event_type": "string or [string,...]", "filter": "jinja2"}. Filter sees {{ event.<field> }} at root — fields: event_type, source, cluster, subject_namespace, subject_name, priority (HIGH|MEDIUM|LOW|INFO|DEBUG), status, labels. Tasks read the event via {{ Inputs.event.<field> }}.
+- "event" - Requires AT LEAST ONE of: event_type OR filter (both is fine; rejecting both empty). Params: {"event_type": "string or [string,...]", "filter": "jinja2", "on": "lifecycle phase (optional, default event.created)"}.
+    - The filter sees the event at ROOT: {{ event.<field> }}. Tasks read the same event via {{ Inputs.event.<field> }}. NEVER use {{ Inputs.event }} inside the filter — the filter context has no "Inputs".
+    - AVAILABLE event.<field> (these are the ONLY top-level fields; do NOT invent others — there is no event.reason and no event.message):
+        event_type, source, title, description, failure, finding_type, category,
+        priority (HIGH|MEDIUM|LOW|INFO|DEBUG — coarse, MOST events are HIGH; a poor severity gate on its own),
+        status (FIRING|RESOLVED|CLOSED), nb_status (OPEN|DUPLICATE|SUPPRESSED|RESOLVED|ACTION_REQUIRED|DROPPED),
+        computed_priority (P0|P1|P2|P3 — the real triage tier; may be ABSENT for un-scored events),
+        computed_score (integer 0-100 — P0>=80, P1 60-79, P2 40-59, P3<40; may be ABSENT),
+        subject_type, subject_name, subject_namespace, subject_node, subject_owner, subject_owner_kind,
+        service_key, cluster (a cluster NAME like "prod-cluster" — NEVER an account/cluster UUID),
+        fingerprint, cloud_resource_id, principal, aggregation_key,
+        labels (a free-form map of alert labels — keys are source-specific, e.g. labels.alertname, labels.severity, labels.summary, labels.namespace; call get_event_trigger_schema to see the REAL keys for this account — do NOT guess label keys).
+    - SEVERITY: to fire on high-severity incidents use computed_priority/computed_score (e.g. {{ event.computed_priority in ['P0','P1'] }} or {{ (event.computed_score | default(0) | int) >= 80 }}), NOT a guessed label. Add {{ event.nb_status == 'OPEN' }} to skip duplicates/suppressed (most events are DUPLICATE).
+    - LLM ANALYSIS / RCA is NOT a field on the event. To include AI analysis, add an "llm.event_investigate" task and reference ITS output — do not read event.labels for a "reason"/"analysis".
+    - "on" (lifecycle phase) selects WHEN the workflow fires: event.created (default), event.triaged, event.updated, investigation.completed (use this when the task needs the LLM RCA, which is only ready by then), event.resolved, event.closed.
+    - BEFORE building an event trigger, call get_event_trigger_schema to confirm the live fields, the real label keys for this account, and a sample event.
 - "optimization" - All params optional (empty = match every recommendation). Params: {"categories": ["PodRightSizing"|"RightSizing"|"K8sInstanceRecommendation"|"K8sSpotRecommendation"|"Configuration"|"Security"|"K8sMissingAttribute"], "rule_names": ["vertical_rightsize"|"horizontal_rightsize"|"pvc_rightsize"|"continuous_rightsize"|"replica_right_sizing"|"Spot instance recommendation"|"Abandoned resource"], "clusters": ["string",...], "filter": "jinja2 (optional)"}. Filter and tasks see the recommendation event — fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id. Tasks read it via {{ Inputs.event.<field> }}.
 
 ## INPUT STRUCTURE:

@@ -516,6 +516,27 @@ func TestExtractStartEndtimeFromLabels_MergePriority(t *testing.T) {
 		// Returns the raw 29s window — expansion is done by ExpandNarrowTimeWindow in log tools
 		assert.InDelta(t, 29.844, end.Sub(start).Seconds(), 1.0, "should return raw event window")
 	})
+
+	// Regression: an explicit LLM-provided range (e.g. {"time_range":"1h"} in the
+	// query JSON) must win over the event's narrow start/end window. Before the
+	// caller-first resolution this lost, because the event's start/end pair was
+	// checked before the range branch within the merged label set.
+	t.Run("LLM range overrides event label start/end epoch", func(t *testing.T) {
+		toolCtxWithLabels := core.NbToolContext{
+			Ctx: reqCtx,
+			QueryConfig: core.NBQueryConfig{
+				Labels: map[string]any{
+					"start": float64(1774333837000), // event epoch (29s window)
+					"end":   float64(1774333866844),
+				},
+			},
+		}
+		labels := map[string]any{"range": "1h"} // LLM asked for the last hour
+		start, end, err := ExtractStartEndtimeFromLabels(toolCtxWithLabels, labels)
+		assert.NoError(t, err)
+		assert.InDelta(t, time.Hour.Seconds(), end.Sub(start).Seconds(), 1.0,
+			"explicit LLM range should win over the narrow event window")
+	})
 }
 
 // TestExpandNarrowTimeWindow tests the log-specific time window expansion helper.

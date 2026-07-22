@@ -97,6 +97,7 @@ func (a *ErrorRCAAgent) SetLogger(logger *common.Logger) {
 func (a *ErrorRCAAgent) Execute(ctx context.Context, sessionCtx *session.SessionContext) (string, error) {
 	// Set repository context in the planner
 	a.planner.SetRepositoryContext(sessionCtx.RepoContext)
+	a.planner.SetRunMemory(sessionCtx.RunMemory)
 
 	// Seed repo_clone's default branch from the request's target/base branch so the
 	// clone (and any fix branch cut from it) starts on the branch the PR targets.
@@ -115,7 +116,7 @@ func (a *ErrorRCAAgent) Execute(ctx context.Context, sessionCtx *session.Session
 	}
 
 	// Build the enhanced query and the specific prompt for this agent
-	enhancedQuery := a.buildEnhancedQuery(sessionCtx)
+	enhancedQuery := a.buildEnhancedQuery(ctx, sessionCtx)
 	systemPrompt, err := a.buildAuditorPrompt(sessionCtx)
 	if err != nil {
 		return "", fmt.Errorf("failed to build auditor prompt: %w", err)
@@ -185,7 +186,7 @@ func (a *ErrorRCAAgent) Execute(ctx context.Context, sessionCtx *session.Session
 	return result.FinalAnswer, nil
 }
 
-func (a *ErrorRCAAgent) buildEnhancedQuery(sessionCtx *session.SessionContext) string {
+func (a *ErrorRCAAgent) buildEnhancedQuery(ctx context.Context, sessionCtx *session.SessionContext) string {
 	var data strings.Builder
 	data.WriteString("=== USER QUERY ===\n")
 	data.WriteString(sessionCtx.OriginalQuery)
@@ -202,11 +203,7 @@ func (a *ErrorRCAAgent) buildEnhancedQuery(sessionCtx *session.SessionContext) s
 		data.WriteString("\n\n")
 	}
 
-	if sessionCtx.InitialLogs != "" {
-		data.WriteString("=== ERROR LOGS (COMPLETE) ===\n")
-		data.WriteString(sessionCtx.InitialLogs)
-		data.WriteString("\n\n")
-	}
+	data.WriteString(buildEvidenceBlock(ctx, a.llmClient, a.logger, "ERROR LOGS (COMPLETE)", sessionCtx.InitialLogs))
 
 	return data.String()
 }

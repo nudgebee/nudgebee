@@ -400,10 +400,74 @@ func TestConstructScratchPad_BudgetCompressionSetsCompressedObservation(t *testi
 	assert.Greater(t, compressedCount, 0, "Budget compression should have set CompressedObservation on at least one step")
 
 	// Verify collectCompressionEvents can now see them (this is what SaveCompressionVisibility uses).
-	events := collectCompressionEvents(steps)
+	// Pass windowPressureActive=true since this scenario IS the window-pressure path.
+	events := collectCompressionEvents(steps, true, 0)
 	assert.Equal(t, compressedCount, len(events), "collectCompressionEvents should find all compressed steps")
 	for _, e := range events {
 		assert.Equal(t, "truncated", e.method)
 		assert.Greater(t, e.originalLen, e.compressedLen, "Original should be larger than compressed")
 	}
+}
+
+func TestScratchpadBudget(t *testing.T) {
+	origLegacy := config.Config.LlmServerAgentMaxScratchpadChars
+	origFrac := config.Config.LlmServerScratchpadCompressionActivationFraction
+	defer func() {
+		config.Config.LlmServerAgentMaxScratchpadChars = origLegacy
+		config.Config.LlmServerScratchpadCompressionActivationFraction = origFrac
+	}()
+	config.Config.LlmServerAgentMaxScratchpadChars = 200000
+	config.Config.LlmServerScratchpadCompressionActivationFraction = 0.75
+
+	// Window unknown (0) → both budgets fall back to the legacy char budget.
+	act, hard := scratchpadBudget(0)
+	assert.Equal(t, 200000, act, "unknown window should fall back to legacy budget for activation")
+	assert.Equal(t, 200000, hard, "unknown window should fall back to legacy budget for hard cap")
+
+	// 200K-token window → activation at 75% of window-in-chars, hard cap at 90%.
+	// windowChars = 200000 * scratchpadCharsPerToken (3) = 600000.
+	act, hard = scratchpadBudget(200_000)
+	assert.Equal(t, 450000, act, "activation should be 0.75 * window chars")
+	assert.Equal(t, 540000, hard, "hard cap should be 0.90 * window chars")
+	assert.Greater(t, hard, act, "hard cap must exceed activation")
+
+	// A large window should push activation far above the legacy 200K-char budget,
+	// which is the whole point: don't compress small conversations on big models.
+	act, _ = scratchpadBudget(1_000_000)
+	assert.Greater(t, act, 200000, "large window should not compress at the legacy budget")
+}
+
+func TestCompressionActivationFraction(t *testing.T) {
+	orig := config.Config.LlmServerScratchpadCompressionActivationFraction
+	defer func() { config.Config.LlmServerScratchpadCompressionActivationFraction = orig }()
+
+	config.Config.LlmServerScratchpadCompressionActivationFraction = 0
+	assert.Equal(t, 0.75, compressionActivationFraction(), "0 should fall back to default")
+
+	config.Config.LlmServerScratchpadCompressionActivationFraction = 1.5
+	assert.Equal(t, 0.75, compressionActivationFraction(), ">=1 should fall back to default")
+
+	config.Config.LlmServerScratchpadCompressionActivationFraction = 0.6
+	assert.Equal(t, 0.6, compressionActivationFraction(), "valid in-range value should be used")
+}
+
+func TestGetMaxObservationChars_UsesDedicatedConfig(t *testing.T) {
+	orig := config.Config.LlmServerScratchpadMaxObservationChars
+	defer func() { config.Config.LlmServerScratchpadMaxObservationChars = orig }()
+
+	config.Config.LlmServerScratchpadMaxObservationChars = 0
+	assert.Equal(t, 65536, getMaxObservationChars(), "0 should fall back to 64KB default, not the auto-selection 500")
+
+	config.Config.LlmServerScratchpadMaxObservationChars = 100 // below the 4096 floor
+	assert.Equal(t, 4096, getMaxObservationChars(), "sub-floor values should clamp to 4096")
+
+	config.Config.LlmServerScratchpadMaxObservationChars = 32768
+	assert.Equal(t, 32768, getMaxObservationChars(), "valid values pass through")
+}
+
+func TestResolveMaxContextTokens_NilContext(t *testing.T) {
+	// No request context / account → cannot resolve a window, returns 0 so callers
+	// fall back to the legacy char budget.
+	assert.Equal(t, 0, resolveMaxContextTokens(nil, "acct", "agent", "conv"))
+	assert.Equal(t, 0, resolveMaxContextTokens(nil, "", "", ""))
 }

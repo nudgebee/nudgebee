@@ -1,0 +1,106 @@
+slug: patch_container_resource_limits
+name: "Patch Container Resource Limits"
+description: "Update CPU and memory limits on a deployment. Useful for OOMKilled or CPU-throttled containers."
+category: "kubernetes"
+icon: "tune"
+status: ACTIVE
+tags:
+  labels:
+    - "patch"
+    - "disruptive"
+  event_sources:
+    - "prometheus"
+    - "alertmanager"
+    - "kubernetes"
+  alert_names:
+    - "KubeContainerOOMKilled"
+    - "CPUThrottlingHigh"
+    - "KubeMemoryOvercommit"
+    - "KubeCPUOvercommit"
+definition:
+  version: "v1"
+  inputs:
+    - id: "namespace"
+      type: "string"
+      description: "Kubernetes namespace"
+      required: true
+    - id: "deployment"
+      type: "string"
+      description: "Deployment name"
+      required: true
+    - id: "container"
+      type: "string"
+      description: "Container name"
+      required: true
+    - id: "cpu_limit"
+      type: "string"
+      description: "CPU limit (e.g. 500m, 1)"
+      required: true
+    - id: "memory_limit"
+      type: "string"
+      description: "Memory limit (e.g. 512Mi, 1Gi)"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: |-
+          Approve updating resource limits for container **{{ Inputs.container }}** in **{{ Inputs.deployment }}** ({{ Inputs.namespace }})?
+
+          CPU: {{ Inputs.cpu_limit }}
+          Memory: {{ Inputs.memory_limit }}
+    - id: "patch"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl set resources deployment/{{ Inputs.deployment }} -c {{ Inputs.container }} --limits=cpu={{ Inputs.cpu_limit }},memory={{ Inputs.memory_limit }} -n {{ Inputs.namespace }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl rollout status deployment/{{ Inputs.deployment }} -n {{ Inputs.namespace }} --timeout=300s"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "patch"
+      timeout: "6m"
+  timeout: "15m"
+template_variables:
+  - id: "namespace"
+    input_ref: "namespace"
+    display_name: "Namespace"
+    required: true
+    type: "string"
+  - id: "deployment"
+    input_ref: "deployment"
+    display_name: "Deployment Name"
+    required: true
+    type: "string"
+  - id: "container"
+    input_ref: "container"
+    display_name: "Container Name"
+    required: true
+    type: "string"
+  - id: "cpu_limit"
+    input_ref: "cpu_limit"
+    display_name: "CPU Limit"
+    required: true
+    type: "string"
+    placeholder: "500m"
+  - id: "memory_limit"
+    input_ref: "memory_limit"
+    display_name: "Memory Limit"
+    required: true
+    type: "string"
+    placeholder: "512Mi"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

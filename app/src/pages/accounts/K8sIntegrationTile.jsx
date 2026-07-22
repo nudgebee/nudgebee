@@ -9,7 +9,7 @@ import { Label } from '@ui/Label';
 import { hasWriteAccess, fetchFeatureFlagsForAccount } from '@lib/auth';
 import { Box, Grid, Stack, TextField, Typography } from '@mui/material';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal } from '@ui/Modal';
 import TextWithBorder from '@shared/TextWithBorder';
 import { Divider } from '@ui/Divider';
@@ -26,6 +26,11 @@ import { Checkbox } from '@ui/Checkbox';
 import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
 import apiUser from '@api1/user';
 import CopyableText from '@shared/CopyableText';
+
+// Agents connect asynchronously minutes after an account is created, so the
+// health columns are still empty on the fetch that follows install. Poll to
+// pick them up instead of making the user reload the page (#34174).
+const AGENT_POLL_MS = 30000;
 
 const K8sIntegrationTile = () => {
   const router = useRouter();
@@ -78,9 +83,29 @@ const K8sIntegrationTile = () => {
 
   const updateAllClusters = useUpdateAllClusterOption();
 
+  // Last-known agent health per cloud_account_id. A silent poll re-renders rows
+  // from this cache so the health columns don't blink back to '-' on every tick
+  // while the second (health) request is in flight.
+  const agentHealthRef = useRef({});
+
+  // Bumped per request so a slow response from a superseded fetch can't clobber
+  // newer data — polls and filter changes overlap. Same guard as #34351.
+  const listSeqRef = useRef(0);
+  const healthSeqRef = useRef(0);
+
   useEffect(() => {
     listK8sCloudAccount();
   }, [selectedNameFilter, selectedStatusFilter, recordsPerPage, currentPage, refreshKey]);
+
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      // Hidden tabs don't need the traffic; the next visible tick refreshes.
+      if (document.visibilityState === 'visible') {
+        listK8sCloudAccount(true);
+      }
+    }, AGENT_POLL_MS);
+    return () => clearInterval(intervalId);
+  }, [selectedNameFilter, selectedStatusFilter, recordsPerPage, currentPage]);
 
   const handleStatusFilterChange = (e) => {
     setSelectedStatusFilter(e.target.value);
@@ -129,11 +154,16 @@ const K8sIntegrationTile = () => {
     }
   };
 
-  const listK8sCloudAccount = () => {
-    setLoading(true);
-    setTableData([]);
+  const listK8sCloudAccount = (silent = false) => {
+    const seq = ++listSeqRef.current;
+    // A silent poll leaves the rendered table alone until its data lands —
+    // clearing here would blank the table and flash the spinner every tick.
+    if (!silent) {
+      setLoading(true);
+      setTableData([]);
+      setCloudAccountAttributes({});
+    }
     const accountAttr = {};
-    setCloudAccountAttributes({});
     apiKubernetes1
       .listAcc({
         nameSearch: selectedNameFilter || undefined,
@@ -142,10 +172,14 @@ const K8sIntegrationTile = () => {
         offset: currentPage * recordsPerPage,
       })
       .then((res) => {
+        if (seq !== listSeqRef.current) {
+          return; // a newer fetch superseded this one
+        }
         const cloudAccounts = res?.data?.data?.accounts_list?.rows || [];
         if (cloudAccounts && cloudAccounts.length > 0) {
           const data = cloudAccounts.map((item) => {
             accountAttr[item.id] = safeJSONParse(item.cloud_account_attrs) || [];
+            const health = agentHealthRef.current[item.id];
             return [
               {
                 drilldownQuery: { id: item.id },
@@ -172,17 +206,15 @@ const K8sIntegrationTile = () => {
               {
                 component: <Datetime value={item.created_at} />,
               },
-              {
-                text: '-',
-              },
+              health?.last_connected_at ? { component: <Datetime value={health.last_connected_at} /> } : { text: '-' },
               {
                 text: item?.created_by_name || '-',
               },
               {
-                text: '-',
+                text: health?.k8s_version || '-',
               },
               {
-                text: '-',
+                text: health?.version || '-',
               },
               {
                 component: <ThreeDotsMenu sx={{ ...action.primary }} menuItems={getMenuItems(item)} data={item} onMenuClick={onMenuClick} />,
@@ -190,12 +222,18 @@ const K8sIntegrationTile = () => {
             ];
           });
           setTableData(data);
+        } else {
+          setTableData([]);
         }
         setTotalCount(res?.data?.data?.accounts_aggregate?.rows?.[0]?.count || 0);
         setCloudAccountAttributes(accountAttr);
       })
       .finally(() => {
-        setLoading(false);
+        // Only the newest request owns the spinner, otherwise a superseded
+        // response could clear a spinner the live request still needs.
+        if (seq === listSeqRef.current) {
+          setLoading(false);
+        }
       });
   };
 
@@ -204,23 +242,36 @@ const K8sIntegrationTile = () => {
       return;
     }
     const cloudAccountIds = Object.keys(cloudAccountAttributes);
+    const seq = ++healthSeqRef.current;
     apiKubernetes1.listK8sAccAgentHealth(cloudAccountIds).then((res) => {
-      if (res && res?.data?.data?.agent.length > 0) {
-        setTableData((prevData) =>
-          prevData.map((itemData) => {
-            const item = res?.data?.data?.agent.find((i) => i.cloud_account_id === itemData[0].drilldownQuery.id);
-            if (!item) {
-              return itemData;
-            }
-
-            const updatedItemData = [...itemData];
-            updatedItemData[3] = { component: <Datetime value={item.last_connected_at} /> };
-            updatedItemData[5] = { text: item.k8s_version || '-' };
-            updatedItemData[6] = { text: item.version || '-' };
-            return updatedItemData;
-          })
-        );
+      if (seq !== healthSeqRef.current) {
+        return; // a newer health fetch superseded this one
       }
+      const agents = res?.data?.data?.agent || [];
+      const healthByAccountId = new Map(agents.map((item) => [item.cloud_account_id, item]));
+
+      // Reconcile the cache against this response rather than merging into it:
+      // an account whose agent is gone must drop back to '-', not keep serving
+      // the last value we happened to see.
+      cloudAccountIds.forEach((id) => {
+        const health = healthByAccountId.get(id);
+        if (health) {
+          agentHealthRef.current[id] = health;
+        } else {
+          delete agentHealthRef.current[id];
+        }
+      });
+
+      setTableData((prevData) =>
+        prevData.map((itemData) => {
+          const item = healthByAccountId.get(itemData[0].drilldownQuery.id);
+          const updatedItemData = [...itemData];
+          updatedItemData[3] = item?.last_connected_at ? { component: <Datetime value={item.last_connected_at} /> } : { text: '-' };
+          updatedItemData[5] = { text: item?.k8s_version || '-' };
+          updatedItemData[6] = { text: item?.version || '-' };
+          return updatedItemData;
+        })
+      );
     });
   }, [cloudAccountAttributes]);
 

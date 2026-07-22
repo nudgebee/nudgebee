@@ -56,13 +56,21 @@ func (s *appServiceService) GetResources(ctx providers.CloudProviderContext, acc
 					}
 				}
 
+				meta := structToMap(app)
+				// Enrich with secret-free references to the data resources the app
+				// uses (from app settings / connection strings), so the KG can wire
+				// app -> Storage/KeyVault/Database/… edges.
+				if refs := fetchAppResourceRefs(ctx, client, app); len(refs) > 0 {
+					meta["referenced_resources"] = refs
+				}
+
 				allResources = append(allResources, providers.Resource{
 					Id:          *app.ID,
 					Name:        *app.Name,
 					Type:        *app.Type,
 					Region:      *app.Location,
 					Tags:        toAzureTags(app.Tags),
-					Meta:        structToMap(app),
+					Meta:        meta,
 					Status:      status,
 					CreatedAt:   time.Time{},
 					Arn:         *app.ID,
@@ -72,6 +80,39 @@ func (s *appServiceService) GetResources(ctx providers.CloudProviderContext, acc
 		}
 	}
 	return allResources, nil
+}
+
+// fetchAppResourceRefs fetches an app's application settings + connection strings
+// and returns secret-free {kind, name} references to the resources they mention.
+// Failures are logged and yield no refs — enrichment is best-effort.
+func fetchAppResourceRefs(ctx providers.CloudProviderContext, client *armappservice.WebAppsClient, app *armappservice.Site) []map[string]string {
+	if app == nil || app.ID == nil || app.Name == nil {
+		return nil
+	}
+	rg, err := extractResourceGroup(*app.ID)
+	if err != nil || rg == "" {
+		return nil
+	}
+	var values []string
+	if resp, err := client.ListApplicationSettings(ctx.GetContext(), rg, *app.Name, nil); err == nil {
+		for _, v := range resp.Properties {
+			if v != nil {
+				values = append(values, *v)
+			}
+		}
+	} else {
+		// Expected without elevated perms (config/list is privileged since settings
+		// hold secrets); enrichment is best-effort, so this is Debug not Warn.
+		ctx.GetLogger().Debug("skipping app settings enrichment", "error", err, "app", *app.Name)
+	}
+	if resp, err := client.ListConnectionStrings(ctx.GetContext(), rg, *app.Name, nil); err == nil {
+		for _, v := range resp.Properties {
+			if v != nil && v.Value != nil {
+				values = append(values, *v.Value)
+			}
+		}
+	}
+	return azureExtractResourceRefs(values)
 }
 
 func (s *appServiceService) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {

@@ -98,6 +98,28 @@ func (t GetEventEvidenceTool) Call(nbRequestContext core.NbToolContext, input co
 		}, nil
 	}
 
+	// Tolerant: the planner often passes the entire JSON tool-input envelope
+	// ({"event_id":"<uuid>","evidence_type":"...","query_mode":"...","pattern":"...","offset":N,"limit":N})
+	// as the event_id string. The dedicated UUID-validation error printed
+	// below names that shape and instructs the planner to fix it, but a
+	// 30-day production sample (2026-06-22) showed 146/159 errors on this
+	// tool still matched the envelope-as-event_id shape — same misuse family
+	// as shell_execute's JSON-envelope detector. The cleanest move is to
+	// absorb the misuse at the tool boundary: if the event_id looks like a
+	// JSON object, unwrap it and lift sibling fields into the input as if
+	// they had been passed as Arguments. Backwards-compatible — a bare
+	// UUID string still flows through unchanged.
+	envelopeFields := map[string]any{}
+	if strings.HasPrefix(eventId, "{") {
+		var envelope map[string]any
+		if err := common.UnmarshalJson([]byte(eventId), &envelope); err == nil {
+			if id, ok := envelope["event_id"].(string); ok && id != "" {
+				eventId = strings.TrimSpace(id)
+				envelopeFields = envelope
+			}
+		}
+	}
+
 	// Validate UUID format before querying to fail fast on stale or malformed IDs
 	if _, err := uuid.Parse(eventId); err != nil {
 		return core.NBToolResponse{
@@ -106,10 +128,43 @@ func (t GetEventEvidenceTool) Call(nbRequestContext core.NbToolContext, input co
 		}, nil
 	}
 
-	evidenceType := ""
-	if et, ok := input.Arguments["evidence_type"].(string); ok {
-		evidenceType = et
+	// argString reads a string arg first from input.Arguments and falls back
+	// to the JSON envelope when the planner packed every field into the
+	// event_id string. Arguments wins when both are set so an explicit caller
+	// can override the envelope.
+	argString := func(name string) string {
+		if input.Arguments != nil {
+			if v, ok := input.Arguments[name].(string); ok && v != "" {
+				return v
+			}
+		}
+		if v, ok := envelopeFields[name].(string); ok {
+			return v
+		}
+		return ""
 	}
+	// argFloat handles numeric fields. Uses the toFloat64 helper (same one
+	// the summarisers use) so callers that pass int/int64/string instead of
+	// float64 — common in tests and any programmatic invocation — still work.
+	// Strict `.(float64)` was the original Gemini-flagged issue: it failed
+	// silently on non-float64 numeric types and the field would be ignored.
+	argFloat := func(name string) (float64, bool) {
+		if input.Arguments != nil {
+			if v, ok := input.Arguments[name]; ok {
+				if fv := toFloat64(v); !math.IsNaN(fv) {
+					return fv, true
+				}
+			}
+		}
+		if v, ok := envelopeFields[name]; ok {
+			if fv := toFloat64(v); !math.IsNaN(fv) {
+				return fv, true
+			}
+		}
+		return 0, false
+	}
+
+	evidenceType := argString("evidence_type")
 
 	// Fetch the event using the same pattern as EvidenceInsightsTool.getEventData()
 	eventTool := EventsExecuteTool{}
@@ -172,24 +227,20 @@ func (t GetEventEvidenceTool) Call(nbRequestContext core.NbToolContext, input co
 		}, nil
 	}
 
-	// Check for query mode
-	queryMode := ""
-	if qm, ok := input.Arguments["query_mode"].(string); ok {
-		queryMode = qm
-	}
+	// Check for query mode. Like evidence_type, these read from Arguments first
+	// and fall back to the unwrapped event_id envelope so planners that pack
+	// every field into the event_id string still work.
+	queryMode := argString("query_mode")
 	if queryMode != "" && queryMode != "raw" {
 		offset := 0
-		if o, ok := input.Arguments["offset"].(float64); ok && int(o) > 0 {
+		if o, ok := argFloat("offset"); ok && int(o) > 0 {
 			offset = int(o)
 		}
 		limit := defaultPaginationLimit
-		if l, ok := input.Arguments["limit"].(float64); ok && int(l) > 0 {
+		if l, ok := argFloat("limit"); ok && int(l) > 0 {
 			limit = int(l)
 		}
-		pattern := ""
-		if p, ok := input.Arguments["pattern"].(string); ok {
-			pattern = p
-		}
+		pattern := argString("pattern")
 
 		switch queryMode {
 		case "summary":

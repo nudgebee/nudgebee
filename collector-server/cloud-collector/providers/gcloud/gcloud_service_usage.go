@@ -35,6 +35,12 @@ var gcpServiceAPIMap = map[string]string{
 	"compute.googleapis.com/networkinterface": "compute.googleapis.com",
 	"artifact registry":                       "artifactregistry.googleapis.com",
 	"iam":                                     "iam.googleapis.com",
+	"iam policy":                              "cloudresourcemanager.googleapis.com",
+	"secret manager":                          "secretmanager.googleapis.com",
+	"cloud tasks":                             "cloudtasks.googleapis.com",
+	"memorystore":                             "redis.googleapis.com",
+	"firestore":                               "firestore.googleapis.com",
+	"cloud scheduler":                         "cloudscheduler.googleapis.com",
 }
 
 type enabledAPIsCacheEntry struct {

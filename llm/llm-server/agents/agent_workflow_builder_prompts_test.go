@@ -27,11 +27,12 @@ var updateGolden = flag.Bool("update-golden", false, "regenerate prompt golden s
 func goldenPromptCases() map[string]string {
 	schema := getWorkflowSchema()
 	return map[string]string{
-		"workflow_schema":      schema,
-		"build_prompt":         getBuildSystemPrompt("INTENT_PLACEHOLDER", "PLAN_PLACEHOLDER", schema),
-		"edit_prompt":          getEditSystemPrompt("ERROR_PLACEHOLDER", "EXEC_ID_PLACEHOLDER", schema),
-		"planning_context":     getWorkflowPlanningContext(),
-		"clarification_prompt": getClarificationSystemPrompt("ENV_PLACEHOLDER", "CONFIGS_PLACEHOLDER", "INTENT_PLACEHOLDER"),
+		"workflow_schema":           schema,
+		"build_prompt":              getBuildSystemPrompt("INTENT_PLACEHOLDER", "PLAN_PLACEHOLDER", schema),
+		"edit_prompt":               getEditSystemPrompt("ERROR_PLACEHOLDER", "EXEC_ID_PLACEHOLDER", schema),
+		"planning_context":          getWorkflowPlanningContext(),
+		"clarification_prompt":      getClarificationSystemPrompt("ENV_PLACEHOLDER", "CONFIGS_PLACEHOLDER", "INTENT_PLACEHOLDER"),
+		"edit_clarification_prompt": getEditClarificationSystemPrompt("ENV_PLACEHOLDER", "CONFIGS_PLACEHOLDER", "DEFINITION_PLACEHOLDER"),
 	}
 }
 

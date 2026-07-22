@@ -6,10 +6,12 @@
 // other service and adds <5ms p50 to the LLM call path. It is wired by wrapping
 // each constructed llms.Model with WrapModel at the GetLLMModel chokepoint.
 //
-// Two modes:
+// Two configured modes; the Action actually taken is resolved via
+// ActionGate (see action_gate.go), so deployments can plug in their own
+// post-detection policy without changing the wrapper:
 //
-//	ModeAudit   — detect + record metrics/logs, do not block (safe rollout)
-//	ModeEnforce — block the call and return a *Error to the caller
+//	ModeDetect  — record metrics/logs/events, do not block
+//	ModeEnforce — request a block; only takes effect when an ActionGate is registered
 //
 // PII detection (Phase 2/3) and ingress prompt-injection sanitization (Phase 5)
 // live in sibling files added later; they are out of scope here.
@@ -20,23 +22,33 @@ import (
 	"strings"
 )
 
-// Mode controls the action taken when a hit is detected.
+// Mode controls the action requested when a hit is detected. Whether that
+// request is honoured is decided by ActionGate; when no gate is
+// registered, every Mode collapses to ActionAudit.
 type Mode string
 
 const (
-	// ModeAudit detects but does not block. Use during rollout.
-	ModeAudit Mode = "audit"
-	// ModeEnforce blocks the LLM call and returns *Error to the caller.
+	// ModeDetect emits log + metric + FilterEvent on a hit but does NOT
+	// block the LLM call. The safe rollout default before flipping to
+	// ModeEnforce.
+	ModeDetect Mode = "detect"
+	// ModeEnforce requests that the LLM call be blocked on a hit. Only
+	// honoured when an ActionGate is registered; otherwise the wrapper
+	// falls back to ActionAudit and logs the gap once.
 	ModeEnforce Mode = "enforce"
 )
 
-// ParseMode normalizes a config string into a Mode. Anything other than
-// "enforce" falls back to "audit" — fail-safe for rollout.
+// ParseMode normalises a config string into a Mode. Accepts the canonical
+// "detect" and the legacy "audit" synonym — old configs keep working
+// without operator changes. Anything else falls back to ModeDetect —
+// fail-safe for rollout.
 func ParseMode(s string) Mode {
-	if Mode(strings.ToLower(strings.TrimSpace(s))) == ModeEnforce {
+	norm := strings.ToLower(strings.TrimSpace(s))
+	if Mode(norm) == ModeEnforce {
 		return ModeEnforce
 	}
-	return ModeAudit
+	// Both "detect" (canonical) and "audit" (legacy) → ModeDetect.
+	return ModeDetect
 }
 
 // Hit describes a single detection — what fired and where, nothing about

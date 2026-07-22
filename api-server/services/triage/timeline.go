@@ -534,6 +534,13 @@ func getSameResourceEventEntries(ctx context.Context, db *sqlx.DB, event *models
 		return nil
 	}
 
+	// Fail fast on empty tenant/account identifiers: an empty value would widen
+	// the query past the intended tenant/account boundary (cross-tenant leak risk
+	// and a full-table scan), so refuse to run rather than scope incorrectly.
+	if tenantID == "" || *event.CloudAccountId == "" {
+		return nil
+	}
+
 	// Need at least a resource identifier to match on
 	hasResourceId := event.CloudResourceId != nil && *event.CloudResourceId != ""
 	hasSubjectName := event.SubjectName != nil && *event.SubjectName != ""
@@ -547,19 +554,6 @@ func getSameResourceEventEntries(ctx context.Context, db *sqlx.DB, event *models
 
 	// Build query based on available identifiers
 	// Match by cloud_resource_id (exact resource match) or subject_name + cloud_account_id
-	query := `
-		SELECT e.id, e.title, e.finding_type, e.source, e.starts_at, e.subject_name
-		FROM events e
-		WHERE e.tenant = $1
-		  AND e.cloud_account_id = $2
-		  AND e.id != $3
-		  AND e.starts_at >= $4
-		  AND e.starts_at <= $5
-		  AND NOT EXISTS (
-			SELECT 1 FROM event_duplicates ed
-			WHERE ed.event_id = e.id AND ed.tenant_id = $1 AND ed.occurrence_number > 1
-		  )
-		  AND (`
 	args := []any{tenantID, *event.CloudAccountId, event.Id, startWindow, endWindow}
 
 	var conditions []string
@@ -571,10 +565,31 @@ func getSameResourceEventEntries(ctx context.Context, db *sqlx.DB, event *models
 		args = append(args, *event.SubjectName)
 		conditions = append(conditions, fmt.Sprintf("e.subject_name = $%d", len(args)))
 	}
-	query += strings.Join(conditions, " OR ")
-	query += `)
-		ORDER BY e.starts_at ASC
-		LIMIT 20`
+
+	// Collapse each recurring alert (same fingerprint) to its MOST RECENT
+	// occurrence inside the window via DISTINCT ON, instead of keeping only
+	// occurrence #1. A recurring infra alert's first occurrence is frequently
+	// days or weeks old and falls outside the ±60m window — the previous
+	// `occurrence_number = 1`-only filter therefore dropped every in-window
+	// recurrence, leaving the timeline blank of the related alert (e.g. an
+	// OOMKill that immediately precedes a CrashLoopBackOff). Events without a
+	// fingerprint fall back to their id so each one stays distinct.
+	query := fmt.Sprintf(`
+		SELECT id, title, finding_type, source, starts_at, subject_name
+		FROM (
+			SELECT DISTINCT ON (COALESCE(NULLIF(e.fingerprint, ''), e.id::text))
+				e.id, e.title, e.finding_type, e.source, e.starts_at, e.subject_name
+			FROM events e
+			WHERE e.tenant = $1
+			  AND e.cloud_account_id = $2
+			  AND e.id != $3
+			  AND e.starts_at >= $4
+			  AND e.starts_at <= $5
+			  AND (%s)
+			ORDER BY COALESCE(NULLIF(e.fingerprint, ''), e.id::text), e.starts_at DESC
+		) sub
+		ORDER BY sub.starts_at ASC
+		LIMIT 20`, strings.Join(conditions, " OR "))
 
 	var relatedEvents []struct {
 		ID          string    `db:"id"`

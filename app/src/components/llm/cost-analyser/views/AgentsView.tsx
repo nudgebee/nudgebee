@@ -251,6 +251,7 @@ export function AgentsView({ accountId, filters, agentOptions = [], onSelectRun 
 
   const includeKey = includeAgents.join(',');
   const excludeKey = excludeAgents.join(',');
+  const sourcesKey = (filters.sources ?? []).join(',');
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -265,6 +266,7 @@ export function AgentsView({ accountId, filters, agentOptions = [], onSelectRun 
         models: filters.models,
         providers: filters.providers,
         statuses: filters.statuses,
+        userId: filters.userId || undefined,
         agents: includeAgents,
         agentsExclude: excludeAgents,
         sortBy,
@@ -304,10 +306,11 @@ export function AgentsView({ accountId, filters, agentOptions = [], onSelectRun 
     accountId,
     filters.startDate,
     filters.endDate,
-    filters.sources,
+    sourcesKey,
     filters.models,
     filters.providers,
     filters.statuses,
+    filters.userId,
     sortBy,
     includeKey,
     excludeKey,

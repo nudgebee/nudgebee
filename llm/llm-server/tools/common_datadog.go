@@ -44,6 +44,100 @@ func stripCLITimeFlags(query string, args map[string]any) string {
 	return strings.TrimSpace(cliTimeFlagRE.ReplaceAllString(query, ""))
 }
 
+// ddFacetTimeRE matches Datadog facet-style time tokens (`from:<t>` / `to:<t>`) that the log
+// prompt emits inline in the query string (e.g. `service:api status:error from:now-24h to:now`).
+// Unlike CLI flags these have no `--` prefix and use a `:` separator, so cliTimeFlagRE never
+// matches them — left unhandled they (a) pollute the query Datadog receives and (b) let the time
+// window silently fall back to the default 1h. The leading (^|\s) anchor avoids matching
+// attribute facets like `@from:...`; only values that parse as a Datadog time are treated as one.
+var ddFacetTimeRE = regexp.MustCompile(`(?i)(^|\s)(from|to):("[^"]*"|'[^']*'|\S+)`)
+
+// parseDatadogRelativeTime resolves a Datadog time token to an absolute time. Supports `now`,
+// `now-<dur>` / `now+<dur>` (Datadog units via ParseDuration: s/m/h/d/w/mo/y), and absolute
+// epoch/RFC3339 values (via parseTimeValue). `now` is supplied so every token in one query
+// shares a single reference. Returns ok=false for tokens that are not time values (e.g. a real
+// facet such as `to:someuser`), so the caller can leave them untouched.
+func parseDatadogRelativeTime(token string, now time.Time) (time.Time, bool) {
+	token = strings.Trim(strings.TrimSpace(token), `"'`)
+	if token == "" {
+		return time.Time{}, false
+	}
+	lower := strings.ToLower(token)
+	switch {
+	case lower == "now":
+		return now, true
+	case strings.HasPrefix(lower, "now-"), strings.HasPrefix(lower, "now+"):
+		d, err := ParseDuration(lower[4:])
+		if err != nil {
+			return time.Time{}, false
+		}
+		if lower[3] == '-' {
+			return now.Add(-d), true
+		}
+		return now.Add(d), true
+	default:
+		if t, err := parseTimeValue(token); err == nil {
+			return t, true
+		}
+		return time.Time{}, false
+	}
+}
+
+// extractDatadogFacetTime hoists Datadog facet-style time tokens (from:/to:) out of a query
+// string into args as epoch-millis start_time/end_time and strips them from the query, so the
+// requested window is honored and the cleaned query is valid Datadog facet syntax. Sibling to
+// stripCLITimeFlags (which handles `--`-prefixed flags). Pre-existing args keys win (explicit
+// Arguments override); a lone `from:` defaults the end to now. Tokens whose value is not a
+// Datadog time are left in place. Returns the cleaned query.
+func extractDatadogFacetTime(query string, args map[string]any, now time.Time) string {
+	matches := ddFacetTimeRE.FindAllStringSubmatch(query, -1)
+	if len(matches) == 0 {
+		return query
+	}
+	var startT, endT time.Time
+	var hasFrom, hasTo bool
+	for _, m := range matches {
+		t, ok := parseDatadogRelativeTime(m[3], now)
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(m[2]) {
+		case "from":
+			startT, hasFrom = t, true
+		case "to":
+			endT, hasTo = t, true
+		}
+	}
+	if !hasFrom && !hasTo {
+		return query
+	}
+	if hasFrom && !hasTo {
+		endT, hasTo = now, true
+	}
+	if args != nil {
+		if hasFrom {
+			if _, exists := args["start_time"]; !exists {
+				args["start_time"] = startT.UnixMilli()
+			}
+		}
+		if hasTo {
+			if _, exists := args["end_time"]; !exists {
+				args["end_time"] = endT.UnixMilli()
+			}
+		}
+	}
+	// Strip only the tokens we actually consumed as time; preserve real from:/to: facets.
+	cleaned := ddFacetTimeRE.ReplaceAllStringFunc(query, func(tok string) string {
+		if sub := ddFacetTimeRE.FindStringSubmatch(tok); sub != nil {
+			if _, ok := parseDatadogRelativeTime(sub[3], now); ok {
+				return ""
+			}
+		}
+		return tok
+	})
+	return strings.TrimSpace(cleaned)
+}
+
 // normalizeDatadogSite cleans up common site URL formatting issues coming from integration
 // configuration. Strips protocol prefixes, trailing slashes, and auto-corrects bare Datadog
 // domains (e.g. "datadoghq.com") to their app-prefixed API-serving equivalents — bare

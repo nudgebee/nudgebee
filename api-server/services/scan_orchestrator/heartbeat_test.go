@@ -57,7 +57,7 @@ func TestMissedScanners_StaleWeeklyScannerOnly(t *testing.T) {
 
 func TestUpsertScheduleJobsArray_NewEntry(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	out, prev := upsertScheduleJobsArray(nil, "popeye_scan", "0 12 * * 1", now)
+	out, prev := upsertScheduleJobsArray(nil, "popeye_scan", "0 12 * * 1", scheduleJobStatusDone, now)
 	if prev != 0 {
 		t.Fatalf("prevExec = %d; want 0 (no prior entry)", prev)
 	}
@@ -88,6 +88,40 @@ func TestUpsertScheduleJobsArray_NewEntry(t *testing.T) {
 	}
 }
 
+func TestUpsertScheduleJobsArray_FailedStatusStillStampsLastExec(t *testing.T) {
+	// A FAILED run must still stamp last_exec_time_sec so the heartbeat's
+	// missed-scan detector waits for the next cron tick instead of re-firing
+	// every heartbeat. Only job_status differs from a successful run.
+	now := time.Unix(1700000000, 0)
+	out, _ := upsertScheduleJobsArray(nil, "popeye_scan", "0 12 * * 1", scheduleJobStatusFailed, now)
+	state := out[0].(map[string]any)["state"].(map[string]any)
+	if state["job_status"].(int) != scheduleJobStatusFailed {
+		t.Errorf("job_status = %v; want %d (FAILED)", state["job_status"], scheduleJobStatusFailed)
+	}
+	if state["last_exec_time_sec"].(int64) != now.Unix() {
+		t.Errorf("last_exec_time_sec = %v; want %d (stamped even on failure)", state["last_exec_time_sec"], now.Unix())
+	}
+}
+
+func TestMissedScanners_AfterFailure_NotReDispatchedNextHeartbeat(t *testing.T) {
+	// Regression: before the fix a failed scan left last_exec at 0, so the
+	// scanner was "missed" on every heartbeat (~1min) and re-dispatched forever.
+	// Now a failure stamps last_exec (with FAILED status), so it is not missed
+	// again until its next cron tick.
+	failAt := time.Now()
+	entries, _ := upsertScheduleJobsArray(nil, "popeye_scan", "0 12 * * 1", scheduleJobStatusFailed, failAt)
+	// Fresh state for the other scanners so only popeye's back-off is exercised.
+	for _, name := range scheduledScanners() {
+		if name == "popeye_scan" {
+			continue
+		}
+		entries = append(entries, jobEntry(name, failAt.Unix()))
+	}
+	if got := missedScanners(entries, failAt.Add(time.Minute)); len(got) != 0 {
+		t.Fatalf("popeye_scan must not be re-dispatched one minute after a failure, got missed=%v", got)
+	}
+}
+
 func TestUpsertScheduleJobsArray_ReplaceIncrementsExecCount(t *testing.T) {
 	existing := []any{
 		map[string]any{
@@ -96,7 +130,7 @@ func TestUpsertScheduleJobsArray_ReplaceIncrementsExecCount(t *testing.T) {
 		},
 	}
 	now := time.Unix(200, 0)
-	out, prev := upsertScheduleJobsArray(existing, "popeye_scan", "0 12 * * 1", now)
+	out, prev := upsertScheduleJobsArray(existing, "popeye_scan", "0 12 * * 1", scheduleJobStatusDone, now)
 	if prev != 5 {
 		t.Errorf("prevExec = %d; want 5", prev)
 	}
@@ -116,7 +150,7 @@ func TestUpsertScheduleJobsArray_PreservesOtherScanners(t *testing.T) {
 			"state":           map[string]any{"exec_count": float64(3), "last_exec_time_sec": float64(50)},
 		},
 	}
-	out, prev := upsertScheduleJobsArray(existing, "popeye_scan", "0 12 * * 1", time.Unix(200, 0))
+	out, prev := upsertScheduleJobsArray(existing, "popeye_scan", "0 12 * * 1", scheduleJobStatusDone, time.Unix(200, 0))
 	if prev != 0 {
 		t.Errorf("prevExec = %d; want 0 (popeye is new)", prev)
 	}

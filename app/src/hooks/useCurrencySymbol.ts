@@ -24,23 +24,24 @@ export const useCurrencySymbol = (accountId: string | undefined): string | undef
       return;
     }
 
-    // Reset to undefined when account changes - will show loading state
+    let active = true;
     setCurrencySymbol(undefined);
-
     apiCloudAccount
-      .listCloudAccountTrend({ accountId: accountId }, new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), new Date(), 'Day')
-      .then((res: any) => {
-        const firstRecord = res?.data?.spend_groupings?.[0];
-        if (firstRecord?.currency_type) {
-          setCurrencySymbol(CURRENCY_MAP[firstRecord.currency_type] || DEFAULT_CURRENCY);
-        } else {
-          setCurrencySymbol(DEFAULT_CURRENCY);
+      .getAccountCurrency(accountId)
+      .then((currencyType: string | null) => {
+        if (active) {
+          setCurrencySymbol(currencyType ? CURRENCY_MAP[currencyType] ?? DEFAULT_CURRENCY : DEFAULT_CURRENCY);
         }
       })
-      .catch((error) => {
-        console.error('Failed to fetch currency type:', error);
-        setCurrencySymbol(DEFAULT_CURRENCY);
+      .catch(() => {
+        if (active) {
+          setCurrencySymbol(DEFAULT_CURRENCY);
+        }
       });
+
+    return () => {
+      active = false;
+    };
   }, [accountId]);
 
   return currencySymbol;

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -44,7 +45,11 @@ func init() {
 	toolOutput := "JSON envelope: {\"query\": \"<rendered backend query>\", \"logs\": \"<raw lines or preview>\", \"file_ref\": \"<workspace file path or empty>\"}"
 
 	core.RegisterNBAgentFactoryAsTool(FetchLogsAgentName, func(accountId string) (core.NBAgent, error) {
-		return newFetchLogsAgent(accountId), nil
+		// Always construct v2. It embeds v1 and gates the canonical path on the
+		// LLM_SERVER_LOG_AGENT_V2_ENABLED env var (FetchLogsAgentV2.Execute); when
+		// the gate is off it delegates to the embedded v1 agent, so behaviour is
+		// identical to v1.
+		return newFetchLogsAgentV2(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }
 
@@ -395,6 +400,7 @@ func makeFetchResponse(agentName, query, logs, fileRef string, refs []toolcore.N
 		"query":    query,
 		"logs":     inlineLogs,
 		"file_ref": fileRef,
+		"provider": providerFromLogs(logs),
 	}
 	body, err := common.MarshalJson(envelope)
 	if err != nil {
@@ -644,7 +650,46 @@ func truncateForLog(s string, n int) string {
 // (OriginalQuery, ConversationContext, the per-step query) lives in a single
 // human message so the upstream provider's prompt cache can hit on the static
 // system prefix across calls and conversations.
+// defaultCustomAgentAccountPromptBytes is the fallback cap for the account
+// GlobalContext fragment attached to custom-planner LLM calls when the
+// llm_server_agent_account_prompt_max_bytes config is unset/invalid.
+const defaultCustomAgentAccountPromptBytes = 8192
+
+// customAgentAccountPromptCap returns the byte cap for the account
+// GlobalContext fragment attached to custom-planner LLM calls (log/trace/
+// kubectl intent generators, resource search), so a large curated context
+// can't bloat every call. Configurable via
+// llm_server_agent_account_prompt_max_bytes (default 8192). ReAct agents
+// don't need this — the planner renders the GlobalContext into its human
+// message already. The cap makes no assumption about the document's layout —
+// content beyond it is simply dropped from the end.
+func customAgentAccountPromptCap() int {
+	if v := config.Config.LlmServerAgentAccountPromptMaxBytes; v > 0 {
+		return v
+	}
+	return defaultCustomAgentAccountPromptBytes
+}
+
 func buildLogIntentMessages(systemPrompt string, request core.NBAgentRequest) []llms.MessageContent {
+	// Propagate the account-wide GlobalContext (operator-curated deployment
+	// facts: real backend field names, id formats, naming conventions) into the
+	// query-generator call. Without this the generator only ever sees the
+	// discovered/fallback field list — when discovery fails, account-curated
+	// field guidance is the only correct signal available.
+	//
+	// Placed in the SYSTEM message deliberately: it is account-stable, not
+	// per-call (the system prompt is already account-scoped via the discovered
+	// fields list), so the cacheable prefix guarded by
+	// TestBuildLogIntentMessages_SystemPromptIsStable is preserved — only
+	// per-call inputs (Query/OriginalQuery/ConversationContext) must stay out
+	// of the system message.
+	if ap := strings.TrimSpace(request.AccountPrompt); ap != "" {
+		ap = core.TruncateHead(ap, customAgentAccountPromptCap())
+		systemPrompt += "\n\n**Account preferences (operator-curated for THIS deployment):**\n" +
+			"The notes below may state this backend's real log field names, id formats, and query conventions. " +
+			"When they name log fields for this backend, treat those names as part of the available Fields list.\n" +
+			ap + "\n"
+	}
 	var human strings.Builder
 	hasHints := false
 	if orig := strings.TrimSpace(request.OriginalQuery); orig != "" && orig != strings.TrimSpace(request.Query) {
@@ -728,6 +773,29 @@ tail SHOULD be 10000 so the grep has a meaningful window to scan.
 	return intent, nil
 }
 
+// defaultProviderLogFields is the field list advertised to the query-generator
+// LLM when the backend's label discovery (QueryLabels) fails or returns empty.
+// The where-clause keys are passed to the backend verbatim (no canonical
+// mapping), so the fallback must use each backend's REAL field names: Signoz
+// stores logs under OTel attribute names — the generic `_body`/`namespace`/
+// `pod` set matches no Signoz attribute and every query silently returns zero
+// rows.
+//
+// Signoz is special-cased because it has ONE fixed schema (OTel), so a
+// universally-correct fallback exists. Do NOT add hardcoded fallbacks for
+// schema-less backends like Elasticsearch: their field names depend entirely
+// on the customer's log shipper (filebeat `message`/`kubernetes.*`, OTel
+// `body`/`k8s.*`, custom pipelines), and any guessed list silently returns
+// zero rows for the setups it doesn't match — the exact failure mode this
+// function exists to fix. Those backends must rely on label/index discovery
+// and the account GlobalContext (propagated by buildLogIntentMessages).
+func defaultProviderLogFields(provider string) []string {
+	if strings.EqualFold(provider, "signoz") {
+		return []string{"body", "service.name", "k8s.cluster.name", "k8s.namespace.name", "k8s.pod.name", "trace_id"}
+	}
+	return []string{"_body", "namespace", "pod"}
+}
+
 // generateLogQuery returns the JSON-where envelope logs_execute consumes.
 // defaultIndex is the backend's account-default index (from get_default_provider);
 // empty for backends with no index concept (e.g. Loki).
@@ -736,7 +804,7 @@ func generateLogQuery(ctx *security.RequestContext, request core.NBAgentRequest,
 
 	fieldsProvided := len(fields) > 0
 	if !fieldsProvided {
-		fields = []string{"_body", "namespace", "pod"}
+		fields = defaultProviderLogFields(provider)
 	}
 
 	var b strings.Builder

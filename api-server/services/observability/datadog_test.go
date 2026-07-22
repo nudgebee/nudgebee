@@ -72,18 +72,18 @@ func TestBuildBinaryClause(t *testing.T) {
 			expectedResult: `status_code:<=500`,
 		},
 		{
-			name: "Like operator",
+			name: "Like operator converts SQL wildcards to Datadog wildcards",
 			binary: query.BinaryWhereClause{
 				"message": {Like: "%error%"},
 			},
-			expectedResult: `message:"%error%"`,
+			expectedResult: `message:*error*`,
 		},
 		{
-			name: "ILike operator",
+			name: "ILike operator converts SQL wildcards to Datadog wildcards",
 			binary: query.BinaryWhereClause{
 				"message": {ILike: "%Error%"},
 			},
-			expectedResult: `message:"%Error%"`,
+			expectedResult: `message:*Error*`,
 		},
 		{
 			name: "In operator with array",
@@ -146,6 +146,43 @@ func TestBuildBinaryClause(t *testing.T) {
 			},
 			// Parts are sorted for deterministic output: "<" (0x3C) sorts before ">" (0x3E).
 			expectedResult: `status_code:<300 AND status_code:>=200`,
+		},
+		{
+			// The v2 canonical model emits the wire string "_nin" (not the Go constant
+			// NotIn="_not_in"). This is the case the old suite never exercised.
+			name: "NotIn via canonical wire string _nin",
+			binary: query.BinaryWhereClause{
+				"env": {query.BinaryWhereClauseType("_nin"): []any{"dev", "test"}},
+			},
+			expectedResult: `-env:"dev" AND -env:"test"`,
+		},
+		{
+			name: "Eq on empty field is a bare full-text phrase",
+			binary: query.BinaryWhereClause{
+				"": {Eq: "connection refused"},
+			},
+			expectedResult: `"connection refused"`,
+		},
+		{
+			name: "ILike on empty field is a bare wildcard term",
+			binary: query.BinaryWhereClause{
+				"": {ILike: "%error%"},
+			},
+			expectedResult: `*error*`,
+		},
+		{
+			name: "Contains on empty field is a bare wildcard term",
+			binary: query.BinaryWhereClause{
+				"": {Contains: "timeout"},
+			},
+			expectedResult: `*timeout*`,
+		},
+		{
+			name: "ILike with no wildcard is quoted",
+			binary: query.BinaryWhereClause{
+				"pod": {ILike: "nginx"},
+			},
+			expectedResult: `pod:"nginx"`,
 		},
 	}
 
@@ -243,7 +280,7 @@ func TestBuildWhereClause(t *testing.T) {
 			expectError:    false,
 		},
 		{
-			name: "NOT clause should return error",
+			name: "NOT clause renders Datadog negation",
 			whereClause: query.QueryWhereClause{
 				Not: &query.QueryWhereClause{
 					Binary: query.BinaryWhereClause{
@@ -251,8 +288,21 @@ func TestBuildWhereClause(t *testing.T) {
 					},
 				},
 			},
-			expectedResult: "",
-			expectError:    true,
+			expectedResult: `-service:"api"`,
+			expectError:    false,
+		},
+		{
+			name: "NOT clause around a multi-term group is parenthesized",
+			whereClause: query.QueryWhereClause{
+				Not: &query.QueryWhereClause{
+					And: []query.QueryWhereClause{
+						{Binary: query.BinaryWhereClause{"service": {Eq: "api"}}},
+						{Binary: query.BinaryWhereClause{"env": {Eq: "prod"}}},
+					},
+				},
+			},
+			expectedResult: `-(service:"api" AND env:"prod")`,
+			expectError:    false,
 		},
 		{
 			name:           "Empty where clause",
@@ -404,6 +454,71 @@ func TestConvertToDatadogLogQuery(t *testing.T) {
 	}
 }
 
+// TestConvertToDatadogLogQuery_CanonicalFewShotFidelity is the parity gate for routing
+// Datadog onto the canonical path: it runs the canonical few-shot where-clauses (mirrored
+// from llm-server agent_log_fetch_v2.go canonicalQueryExamples) through the same pipeline
+// FetchLogs uses — convertWhereClauseWithMApping(DatadogSource label map) then
+// ConvertToDatadogLogQuery — and asserts valid Datadog facets: free-text renders as a bare
+// wildcard term (no phantom `message:`/`body:` facet), `%` becomes `*`, and the mapped
+// label names are used. Term order is map-iteration-dependent, so it asserts containment.
+func TestConvertToDatadogLogQuery_CanonicalFewShotFidelity(t *testing.T) {
+	mapping := (&DatadogSource{}).GetLabelMapping()
+
+	cases := []struct {
+		name           string
+		where          query.QueryWhereClause
+		mustContain    []string
+		mustNotContain []string
+	}{
+		{
+			name:        "service exact match",
+			where:       query.QueryWhereClause{Binary: query.BinaryWhereClause{"service": {Eq: "web-api"}}},
+			mustContain: []string{`service:"web-api"`},
+		},
+		{
+			name: "service + namespace + free-text error filter",
+			where: query.QueryWhereClause{Binary: query.BinaryWhereClause{
+				"service":   {Eq: "web-api"},
+				"namespace": {Eq: "prod"},
+				"message":   {ILike: "%error%"},
+			}},
+			mustContain:    []string{`service:"web-api"`, `kube_namespace:"prod"`, `*error*`},
+			mustNotContain: []string{"message:", "%"},
+		},
+		{
+			name:           "pod contains match",
+			where:          query.QueryWhereClause{Binary: query.BinaryWhereClause{"pod": {ILike: "%api-server-abc123%"}}},
+			mustContain:    []string{`pod_name:*api-server-abc123*`},
+			mustNotContain: []string{"%"},
+		},
+		{
+			name:        "container exact match",
+			where:       query.QueryWhereClause{Binary: query.BinaryWhereClause{"container": {Eq: "nginx"}}},
+			mustContain: []string{`container_name:"nginx"`},
+		},
+		{
+			name:           "body free-text search",
+			where:          query.QueryWhereClause{Binary: query.BinaryWhereClause{"body": {ILike: "%OOMKilled%"}}},
+			mustContain:    []string{`*OOMKilled*`},
+			mustNotContain: []string{"body:", "%"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mapped := convertWhereClauseWithMApping(tc.where, mapping)
+			result, err := ConvertToDatadogLogQuery(LogsQueryBuilderRequest{Where: mapped})
+			assert.NoError(t, err)
+			for _, sub := range tc.mustContain {
+				assert.Contains(t, result, sub, "result query: %q", result)
+			}
+			for _, sub := range tc.mustNotContain {
+				assert.NotContains(t, result, sub, "result query: %q", result)
+			}
+		})
+	}
+}
+
 // Test DatadogSource.GetLabelMapping
 func TestDatadogSource_GetLabelMapping(t *testing.T) {
 	s := &DatadogSource{}
@@ -412,11 +527,13 @@ func TestDatadogSource_GetLabelMapping(t *testing.T) {
 	expectedMapping := map[string]string{
 		"timestamp": "@timestamp",
 		"body":      "",
+		"message":   "",
 		"namespace": "kube_namespace",
 		"container": "container_name",
 		"pod":       "pod_name",
 		"node":      "kube_node",
 		"app":       "service",
+		"service":   "service",
 	}
 
 	assert.Equal(t, expectedMapping, mapping)

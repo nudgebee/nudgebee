@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { Box } from '@mui/material';
 import { ds } from '@utils/colors';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
@@ -14,6 +14,9 @@ interface ApplyMitigationModalProps {
   accountId?: string;
   recommendationId?: string;
   canExecute?: boolean;
+  // Fired after a command run completes so the sibling execution-history tab
+  // can refresh in real time.
+  onExecuted?: () => void;
 }
 
 function extractCommandsFromMarkdown(markdown: string | null): string[] {
@@ -32,8 +35,10 @@ function extractCommandsFromMarkdown(markdown: string | null): string[] {
   return commands;
 }
 
-const ApplyMitigationModal: React.FC<ApplyMitigationModalProps> = ({ markdowns, accountId, recommendationId, canExecute = false }) => {
-  const cliCommands = extractCommandsFromMarkdown(markdowns);
+const ApplyMitigationModal: React.FC<ApplyMitigationModalProps> = ({ markdowns, accountId, recommendationId, canExecute = false, onExecuted }) => {
+  // Memoize so the reference is stable across renders; otherwise handleConfirm's
+  // useCallback would be recreated every render.
+  const cliCommands = useMemo(() => extractCommandsFromMarkdown(markdowns), [markdowns]);
 
   const [showModal, setShowModal] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
@@ -50,7 +55,12 @@ const ApplyMitigationModal: React.FC<ApplyMitigationModalProps> = ({ markdowns, 
     const res = await apiCloudAccount.executeCommand({ account_id: accountId, commands: cliCommands, recommendation_id: recommendationId });
     setExecutionResults(res.data?.results ?? []);
     setIsExecuting(false);
-  }, [cliCommands, accountId, recommendationId]);
+    // Only refresh history when a run actually produced results — a failed
+    // execution writes no CLI_EXECUTE audit row, so a re-fetch would be wasted.
+    if (res.data?.results) {
+      onExecuted?.();
+    }
+  }, [cliCommands, accountId, recommendationId, onExecuted]);
 
   const handleModalClose = useCallback(() => {
     if (isExecuting) return;

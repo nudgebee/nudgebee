@@ -10,6 +10,7 @@ import (
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
 	"os"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -17,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 )
 
 // isRegionEndpointMissing reports whether err is a DNS NXDOMAIN from the AWS
@@ -47,6 +49,29 @@ func isRegionUnreachable(err error) bool {
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
 		return opErr.Op == "dial"
+	}
+	return false
+}
+
+// isServiceUnavailableInRegion reports whether err is an API-level rejection that
+// means the service has no functional endpoint in the target region, even though
+// DNS resolved and the TCP connection succeeded. DescribeRegions returns every
+// opted-in region, including ones where a service ships only a stub endpoint that
+// rejects the operation — e.g. SES ListIdentities returns HTTP 400 "InvalidAction"
+// in far opt-in regions like eu-south-2 where SES isn't offered. Like
+// isRegionEndpointMissing, such a region should be skipped rather than poisoning
+// the whole feature sync: the account cannot own resources for a service the
+// region doesn't serve. Scoped tightly to the "service not here" error codes so a
+// genuine malformed request (which fails in every region, primaries included) is
+// still surfaced.
+func isServiceUnavailableInRegion(err error) bool {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "InvalidAction", "UnknownOperationException", "UnknownOperation":
+			return true
+		}
+		return strings.Contains(strings.ToLower(apiErr.ErrorMessage()), "is not supported in this region")
 	}
 	return false
 }

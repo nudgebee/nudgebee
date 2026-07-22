@@ -163,6 +163,7 @@ const LogQueryBuilderAutocomplete = ({
   onQueryChange,
   queryItems,
   logProvider,
+  providerOverride,
   operatorDescriptors,
   params,
   queryOperations = [],
@@ -397,6 +398,7 @@ const LogQueryBuilderAutocomplete = ({
             setMetricsList([]);
             const res = await observability.fetchLogLabels({
               account_id: accountId,
+              ...(providerOverride ? { log_provider: providerOverride } : {}),
             });
             if (res?.errors) {
               snackbar.error(`failed to fetch labels- ${parseHttpResponseBodyMessage(res?.data)}`);
@@ -508,6 +510,7 @@ const LogQueryBuilderAutocomplete = ({
       observability
         .fetchLogLabels({
           account_id: accountId,
+          ...(providerOverride ? { log_provider: providerOverride } : {}),
         })
         .then((res) => {
           const responseAttributes = res?.data?.data?.logs_list_labels || [];
@@ -523,6 +526,7 @@ const LogQueryBuilderAutocomplete = ({
       observability
         .fetchLogLabels({
           account_id: accountId,
+          ...(providerOverride ? { log_provider: providerOverride } : {}),
           request: {
             query: `start=${params.startTime * 1000000}&end=${params.endTime * 1000000}`,
           },
@@ -589,6 +593,7 @@ const LogQueryBuilderAutocomplete = ({
           response = await observability.fetchLogLabelValues({
             account_id: accountId,
             label_name: findLabel.label,
+            ...(providerOverride ? { log_provider: providerOverride } : {}),
             request: {
               filterAttributeKeyDataType: findLabel?.attributes?.dataType || 'string',
               searchText: '',
@@ -599,6 +604,7 @@ const LogQueryBuilderAutocomplete = ({
           response = await observability.fetchLogLabelValues({
             account_id: accountId,
             label_name: findLabel.label,
+            ...(providerOverride ? { log_provider: providerOverride } : {}),
             request: {
               query: `start=${params.startTime * 1000000}&end=${params.endTime * 1000000}`,
             },
@@ -616,6 +622,7 @@ const LogQueryBuilderAutocomplete = ({
           response = await observability.fetchLogLabelValues({
             account_id: accountId,
             label_name: findLabel.label,
+            ...(providerOverride ? { log_provider: providerOverride } : {}),
             request: {},
           });
         } else if (
@@ -640,6 +647,7 @@ const LogQueryBuilderAutocomplete = ({
           response = await observability.fetchLogLabelValues({
             account_id: accountId,
             label_name: findLabel.label,
+            ...(providerOverride ? { log_provider: providerOverride } : {}),
             request: {
               index: activeBlock.selectedMetric,
             },

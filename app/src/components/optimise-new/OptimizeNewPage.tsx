@@ -1,5 +1,5 @@
 import { Box, Typography } from '@mui/material';
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo, memo } from 'react';
 import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { useRouter } from 'next/router';
@@ -8,7 +8,6 @@ import { useData } from '@context/DataContext';
 import apiHome from '@api1/home';
 import { transformClusters } from '@shared/layout/UpdateDataContext';
 import recommendationApi from '@api1/recommendation';
-import Loader from '@shared/Loader';
 import { toast as snackbar } from '@ui/Toast';
 import { SeverityIcon, type SeverityLevel as DsSeverityLevel } from '@ui/SeverityIcon';
 import { Skeleton } from '@ui/Skeleton';
@@ -36,6 +35,7 @@ import { Stat } from '@ui/Stat';
 import { CostCallout } from '@ui/CostCallout';
 import { Chip } from '@ui/Chip';
 import CustomSearch from '@shared/CustomSearch';
+import { safetyBandTone, safetyBandLabel } from './safetyBand';
 import FilterDropdown from '@ui/FilterDropdown';
 import { Button } from '@ui/Button';
 import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
@@ -76,6 +76,24 @@ const CATEGORY_FILTER_OPTIONS = [
   { label: 'Config', value: 'Configuration' },
   { label: 'Spot Instance', value: 'K8sSpotRecommendation' },
 ];
+
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
+// Hover affordance for clickable summary widgets: the whole card lifts and
+// tints blue on hover so it reads as interactive, not just the cursor.
+const WIDGET_HOVER_SX = {
+  cursor: 'pointer',
+  // Stat paints `cursor: default` over its own content; doubling the card class
+  // (`&&`) wins specificity so the pointer covers the entire card, not just the edge.
+  '&& *': { cursor: 'pointer' },
+  transition: `border-color ${ds.motion.micro} ${ds.motion.ease}, box-shadow ${ds.motion.micro} ${ds.motion.ease}, background-color ${ds.motion.micro} ${ds.motion.ease}, transform ${ds.motion.micro} ${ds.motion.ease}`,
+  '&:hover': {
+    borderColor: ds.blue[300],
+    backgroundColor: ds.blue[100],
+    boxShadow: `0px 6px 16px -2px ${ds.gray.alpha[300]}`,
+    transform: 'translateY(-1px)',
+  },
+};
 
 const WIDGET_CATEGORIES = ['RightSizing', 'InfraUpgrade', 'Configuration', 'K8sSpotRecommendation'] as const;
 
@@ -126,12 +144,13 @@ const SORT_FIELD_TO_HEADER: Record<SortField, string> = {
 // `sortEnabled` so CustomTable2 renders the sort affordance.
 const TABLE_HEADERS = [
   { name: 'Severity', width: '6%', sortEnabled: true },
-  { name: 'Resource', width: '20%' },
-  { name: 'Recommendation', width: '22%' },
+  { name: 'Safety', width: '7%' },
+  { name: 'Resource', width: '18%' },
+  { name: 'Recommendation', width: '19%' },
   { name: 'Category', width: '9%' },
-  { name: 'Environment', width: '10%' },
+  { name: 'Environment', width: '9%' },
   { name: 'Savings', width: '8%', sortEnabled: true, align: 'left' as const },
-  { name: 'Last Seen', width: '14%', sortEnabled: true, align: 'left' as const },
+  { name: 'Last Seen', width: '12%', sortEnabled: true, align: 'left' as const },
   { name: '', width: '12%', align: 'right' as const },
 ];
 
@@ -179,6 +198,85 @@ const getTicketSourceFromCloudProvider = (cloudProvider: string | undefined): st
   }
 };
 
+interface RowActionsProps {
+  rowId: string;
+  rec: any;
+  category: string;
+  ticketId: string;
+  assistantName: string | undefined;
+  onAskNubi: (rec: any) => void;
+  onResolve: (rec: any) => void;
+  onCreateTicket: (rec: any) => void;
+  onCopyCli: (rec: any) => void;
+}
+
+const RowActions = memo(({ rowId, rec, category, ticketId, assistantName, onAskNubi, onResolve, onCreateTicket, onCopyCli }: RowActionsProps) => {
+  const showResolve = category === 'RightSizing' && rec.rule_name === 'pod_right_sizing' && hasWriteAccess(rec.account_id);
+  const showCopyCli = category === 'RightSizing' && rec.rule_name === 'pod_right_sizing';
+
+  const menuItems: Array<{ label: string; icon: React.ReactNode; onSelect: () => void; disabled?: boolean; id?: string }> = [
+    {
+      id: `action-ticket-${rowId}`,
+      label: ticketId ? `Ticket: ${ticketId}` : 'Create ticket',
+      icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: 16 }} />,
+      onSelect: () => onCreateTicket(rec),
+      disabled: !!ticketId,
+    },
+    ...(showCopyCli
+      ? [
+          {
+            id: `action-copy-cli-${rowId}`,
+            label: 'Copy CLI command',
+            icon: <ContentCopyOutlinedIcon sx={{ fontSize: 16 }} />,
+            onSelect: () => onCopyCli(rec),
+          },
+        ]
+      : []),
+  ];
+
+  return (
+    <Box onClick={(e) => e.stopPropagation()} sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1], justifyContent: 'flex-end' }}>
+      {showResolve && (
+        <Tooltip title='Optimize' placement='top'>
+          <span>
+            <Button
+              tone='ghost'
+              size='xs'
+              composition='icon-only'
+              icon={<SafeIcon src={OptimizeIcon} alt='' width={16} height={16} />}
+              aria-label='Optimize'
+              id={`action-resolve-${rowId}`}
+              onClick={() => onResolve(rec)}
+            />
+          </span>
+        </Tooltip>
+      )}
+      <Tooltip title={`Ask ${assistantName || 'Nubi'}`} placement='top'>
+        <span>
+          <Button
+            tone='ghost'
+            size='xs'
+            composition='icon-only'
+            icon={<SafeIcon src={getNubiIconUrl()} alt='' width={16} height={16} />}
+            aria-label={`Ask ${assistantName || 'Nubi'}`}
+            id={`action-ask-nubi-${rowId}`}
+            onClick={() => onAskNubi(rec)}
+          />
+        </span>
+      </Tooltip>
+      <DropdownMenu
+        align='end'
+        size='sm'
+        items={menuItems}
+        trigger={
+          <Button tone='ghost' size='xs' composition='icon-only' icon={<MoreVertIcon />} aria-label='More actions' id={`action-menu-${rowId}`} />
+        }
+      />
+    </Box>
+  );
+});
+RowActions.displayName = 'RowActions';
+
 const OptimizeNewPage = () => {
   const router = useRouter();
   const routerRef = useRef(router);
@@ -199,7 +297,7 @@ const OptimizeNewPage = () => {
   const [recommendations, setRecommendations] = useState<any[]>([]);
   const [tableTotal, setTableTotal] = useState(0);
   const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(20);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
   const [tableLoading, setTableLoading] = useState(true);
 
   // Sort state
@@ -236,9 +334,6 @@ const OptimizeNewPage = () => {
   const [nubiQuery, setNubiQuery] = useState('');
   const [nubiAccountId, setNubiAccountId] = useState('');
   const [nubiConversationId, setNubiConversationId] = useState('');
-
-  // Page-level loading
-  const [pageLoading, setPageLoading] = useState(true);
 
   // Sync filters to URL
   const updateUrl = useCallback((newFilters: FilterState) => {
@@ -284,7 +379,9 @@ const OptimizeNewPage = () => {
         const clusters = transformClusters(res);
         setAllCluster(clusters);
       })
-      .finally(() => setPageLoading(false));
+      .catch(() => {
+        /* accounts are non-blocking; widgets degrade gracefully */
+      });
   }, []);
 
   // Build filter query for the API
@@ -460,13 +557,16 @@ const OptimizeNewPage = () => {
     }
   }, [buildTableQuery, applyTableResult]);
 
+  // O(1) lookup for keeping the detail panel in sync after table refreshes.
+  const recById = useMemo(() => new Map(recommendations.map((r: any) => [r.id, r])), [recommendations]);
+
   // Keep the detail drawer in sync when table data refreshes
   useEffect(() => {
     setSelectedRec((prev: any) => {
       if (!prev || !detailOpen) return prev;
-      return recommendations.find((r: any) => r.id === prev.id) ?? prev;
+      return recById.get(prev.id) ?? prev;
     });
-  }, [recommendations, detailOpen]);
+  }, [recById, detailOpen]);
 
   // CSV export — replaces the legacy DownloadButton DOM-scraping path.
   // Built directly from the in-memory recommendation rows so it stays decoupled
@@ -476,11 +576,12 @@ const OptimizeNewPage = () => {
       const str = v == null ? '' : String(v);
       return `"${str.replace(/"/g, '""').replace(/[\r\n]+/g, ' ')}"`;
     };
-    const headers = ['Severity', 'Resource', 'Recommendation', 'Category', 'Environment', 'Savings ($/mo)', 'Last Seen'];
+    const headers = ['Severity', 'Safety', 'Resource', 'Recommendation', 'Category', 'Environment', 'Savings ($/mo)', 'Last Seen'];
     const rows = recommendations.map((rec: any) => {
       const accountInfo = accounts[rec.account_id];
       return [
         rec.severity || '',
+        safetyBandLabel(rec.safety_band),
         getResourceDisplayName(rec, ''),
         formatRuleName(rec.rule_name || ''),
         rec.category || '',
@@ -528,15 +629,15 @@ const OptimizeNewPage = () => {
   // ─── Computed: Summary widget totals ───
 
   // Computed: Account filter options from loaded accounts.
-  // FilterDropdown supports grouped options, but we surface the cloud
-  // provider as a label prefix so the trigger summary stays one-line.
+  // Grouped by cloud provider (AWS / K8S / AZURE / GCP …) so the dropdown
+  // surfaces a collapsible header per provider with the account name underneath.
   const accountFilterOptions = useMemo(
     () =>
-      Object.entries(accounts).map(([id, info]) => {
-        const provider = (info.cloud_provider || '').toUpperCase();
-        const name = info.name || id;
-        return { label: provider ? `${provider} · ${name}` : name, value: id };
-      }),
+      Object.entries(accounts).map(([id, info]) => ({
+        label: info.name || id,
+        value: id,
+        group: (info.cloud_provider || '').toUpperCase() || 'Other',
+      })),
     [accounts]
   );
 
@@ -569,6 +670,7 @@ const OptimizeNewPage = () => {
           accountName: accountInfo?.name || '',
           accountCloudProvider: accountInfo?.cloud_provider || '',
           savings: rec.estimated_savings || 0,
+          safetyBand: rec.safety_band || '',
           updatedAt: rec.updated_at || rec.created_at || '',
           ticketId: rec.ticket?.ticket_id || '',
           ticketUrl: rec.ticket?.url || '',
@@ -688,10 +790,16 @@ const OptimizeNewPage = () => {
   // Current sort in CustomTable2 shape.
   const sortBy = useMemo(() => ({ name: SORT_FIELD_TO_HEADER[sortField], order: sortDirection }), [sortField, sortDirection]);
 
+  // Stable ref so askNubiAboutRec has no dep on `accounts` and doesn't invalidate tableData.
+  const accountsRef = useRef(accounts);
+  useEffect(() => {
+    accountsRef.current = accounts;
+  }, [accounts]);
+
   // Reused by both the row action menu and the detail panel.
   const askNubiAboutRec = useCallback(
     (rec: any) => {
-      const accountInfo = accounts[rec.account_id];
+      const accountInfo = accountsRef.current[rec.account_id];
       const prompt = buildNubiOptimizePrompt({
         ruleName: formatRuleName(rec.rule_name || ''),
         category: rec.category || '',
@@ -708,7 +816,7 @@ const OptimizeNewPage = () => {
       setNubiConversationId(`recom_${rec.id}`);
       setNubiSidebarVisible(true);
     },
-    [accounts]
+    [] // reads accounts via accountsRef — stable across account reloads
   );
 
   const { assistantName } = useTenantBranding();
@@ -723,32 +831,25 @@ const OptimizeNewPage = () => {
         const providerLabel = row.cloudService === 'kubernetes' ? 'K8s' : row.cloudService ? row.cloudService.toUpperCase() : '';
         const providerSlug = row.accountCloudProvider || (row.cloudService === 'kubernetes' ? 'K8S' : row.cloudService.toUpperCase());
 
-        const showResolve = row.category === 'RightSizing' && row.rec.rule_name === 'pod_right_sizing' && hasWriteAccess(row.rec.account_id);
-        const showCopyCli = row.category === 'RightSizing' && row.rec.rule_name === 'pod_right_sizing';
-
-        // Items behind the kebab — everything that isn't surfaced inline.
-        const menuItems: Array<{ label: string; icon: React.ReactNode; onSelect: () => void; disabled?: boolean; id?: string }> = [];
-        menuItems.push({
-          id: `action-ticket-${row.id}`,
-          label: row.ticketId ? `Ticket: ${row.ticketId}` : 'Create ticket',
-          icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: 16 }} />,
-          onSelect: () => setTicketModalRec(row.rec),
-          disabled: !!row.ticketId,
-        });
-        if (showCopyCli) {
-          menuItems.push({
-            id: `action-copy-cli-${row.id}`,
-            label: 'Copy CLI command',
-            icon: <ContentCopyOutlinedIcon sx={{ fontSize: 16 }} />,
-            onSelect: () => setCliModalRec(row.rec),
-          });
-        }
-
         return [
           // Severity
           {
             drilldownQuery: { rec: row.rec },
             component: <SeverityIcon level={row.severity.toLowerCase() as DsSeverityLevel} size={12} aria-label={row.severity} />,
+          },
+          // Safety band (knowledge-graph blast radius)
+          {
+            component: row.safetyBand ? (
+              <Chip variant='status' size='2xs' tone={safetyBandTone(row.safetyBand)} dot>
+                {safetyBandLabel(row.safetyBand)}
+              </Chip>
+            ) : (
+              <Tooltip title='Blast radius not assessed for this recommendation' placement='top'>
+                <Box component='span' sx={{ color: ds.gray[400], cursor: 'default' }}>
+                  —
+                </Box>
+              </Tooltip>
+            ),
           },
           // Resource
           {
@@ -860,69 +961,23 @@ const OptimizeNewPage = () => {
           // Actions
           {
             component: (
-              <Box
-                onClick={(e) => e.stopPropagation()}
-                sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1], justifyContent: 'flex-end' }}
-              >
-                {showResolve && (
-                  <Tooltip title='Optimize' placement='top'>
-                    <span>
-                      <Button
-                        tone='ghost'
-                        size='xs'
-                        composition='icon-only'
-                        icon={<SafeIcon src={OptimizeIcon} alt='' width={16} height={16} />}
-                        aria-label='Optimize'
-                        id={`action-resolve-${row.id}`}
-                        onClick={() => setResolveModalRec(row.rec)}
-                      />
-                    </span>
-                  </Tooltip>
-                )}
-                <Tooltip title={`Ask ${assistantName || 'Nubi'}`} placement='top'>
-                  <span>
-                    <Button
-                      tone='ghost'
-                      size='xs'
-                      composition='icon-only'
-                      icon={<SafeIcon src={getNubiIconUrl()} alt='' width={16} height={16} />}
-                      aria-label={`Ask ${assistantName || 'Nubi'}`}
-                      id={`action-ask-nubi-${row.id}`}
-                      onClick={() => askNubiAboutRec(row.rec)}
-                    />
-                  </span>
-                </Tooltip>
-                <DropdownMenu
-                  align='end'
-                  size='sm'
-                  items={menuItems}
-                  trigger={
-                    <Button
-                      tone='ghost'
-                      size='xs'
-                      composition='icon-only'
-                      icon={<MoreVertIcon />}
-                      aria-label='More actions'
-                      id={`action-menu-${row.id}`}
-                    />
-                  }
-                />
-              </Box>
+              <RowActions
+                rowId={row.id}
+                rec={row.rec}
+                category={row.category}
+                ticketId={row.ticketId}
+                assistantName={assistantName}
+                onAskNubi={askNubiAboutRec}
+                onResolve={setResolveModalRec}
+                onCreateTicket={setTicketModalRec}
+                onCopyCli={setCliModalRec}
+              />
             ),
           },
         ];
       }),
-    [tableRows, assistantName, askNubiAboutRec]
+    [tableRows, assistantName, askNubiAboutRec, setResolveModalRec, setTicketModalRec, setCliModalRec]
   );
-
-  // Show page-level loader on initial load
-  if (pageLoading && summaryLoading) {
-    return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
-        <Loader style={{ height: '400px', width: 'auto' }} />
-      </Box>
-    );
-  }
 
   return (
     <Box sx={{ p: '0px' }} data-testid='optimize-new-page'>
@@ -934,7 +989,7 @@ const OptimizeNewPage = () => {
             minWidth: 0,
             mt: 0,
             padding: `${ds.space[3]} ${ds.space[4]}`,
-            cursor: 'pointer',
+            ...WIDGET_HOVER_SX,
           }}
           onClick={() => handleWidgetCategoryClick(null)}
         >
@@ -980,9 +1035,10 @@ const OptimizeNewPage = () => {
                 minWidth: 0,
                 mt: 0,
                 padding: `${ds.space[3]} ${ds.space[4]}`,
-                cursor: 'pointer',
+                ...WIDGET_HOVER_SX,
                 borderColor: isActive ? ds.blue[600] : undefined,
-                transition: `border-color ${ds.motion.micro} ${ds.motion.ease}`,
+                // Keep the strong selected border on hover for the active card.
+                '&:hover': { ...WIDGET_HOVER_SX['&:hover'], ...(isActive ? { borderColor: ds.blue[600] } : {}) },
               }}
               onClick={() => handleWidgetCategoryClick(isActive ? null : cat)}
             >
@@ -1061,6 +1117,8 @@ const OptimizeNewPage = () => {
             id='optimize-account-filter'
             label='Account'
             multiple
+            grouped
+            groupIcon={renderAccountGroupIcon}
             options={accountFilterOptions}
             value={accountFilterOptions.filter((o) => filters.account.includes(o.value))}
             onSelect={(_e: any, items: any) => {
@@ -1233,10 +1291,12 @@ const OptimizeNewPage = () => {
           open={!!ticketModalRec}
           handleClose={() => setTicketModalRec(null)}
           onClose={() => setTicketModalRec(null)}
-          onSuccess={() => {
-            // TicketCreatePopupForm already shows the success toast (with the ticket link); don't fire a second one here.
+          onSuccess={({ ticketId, url }: { ticketId?: string; url?: string } = {}) => {
+            const recId = ticketModalRec?.id;
             setTicketModalRec(null);
-            fetchTableData();
+            if (recId) {
+              setRecommendations((prev) => prev.map((rec: any) => (rec.id === recId ? { ...rec, ticket: { ticket_id: ticketId, url } } : rec)));
+            }
           }}
           onFailure={(error: string) => {
             snackbar.error(error || 'Failed to create ticket');

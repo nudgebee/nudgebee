@@ -2,9 +2,12 @@ package api
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"nudgebee/services/audit"
@@ -109,6 +112,12 @@ func handleTriageAction(h *ActionRequest, c *gin.Context, tracer *trace.Tracer, 
 		handleEventGetThresholdSuggestion(h, c, ctx)
 	case "event_list_threshold_suggestions":
 		handleEventListThresholdSuggestions(h, c, ctx)
+	case "event_get_threshold_apply_options":
+		handleEventGetThresholdApplyOptions(h, c, ctx)
+	case "event_apply_threshold_suggestion":
+		handleEventApplyThresholdSuggestion(h, c, ctx)
+	case "event_revert_threshold_suggestion":
+		handleEventRevertThresholdSuggestion(h, c, ctx)
 	case "event_get_recurrence_info":
 		handleEventGetRecurrenceInfo(h, c, ctx)
 	default:
@@ -1462,6 +1471,157 @@ func handleEventListThresholdSuggestions(h *ActionRequest, c *gin.Context, ctx *
 		return
 	}
 
+	c.JSON(http.StatusOK, result)
+}
+
+// handleEventGetThresholdApplyOptions returns the available apply methods (direct/PR), the
+// risk level, and a dry-run preview of the rewritten rule for a cached suggestion.
+func handleEventGetThresholdApplyOptions(h *ActionRequest, c *gin.Context, ctx *security.RequestContext) {
+	alertRuleKey, _ := h.Input["alert_rule_key"].(string)
+	cloudAccountID, _ := h.Input["cloud_account_id"].(string)
+	if alertRuleKey == "" || cloudAccountID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "alert_rule_key and cloud_account_id are required"})
+		return
+	}
+
+	result, err := triage.GetThresholdApplyOptions(ctx, alertRuleKey, cloudAccountID)
+	if err != nil {
+		// A missing suggestion (no rows) is an expected empty result, not a server error.
+		if !errors.Is(err, sql.ErrNoRows) {
+			ctx.GetLogger().Error("failed to get threshold apply options", "error", err)
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// handleEventApplyThresholdSuggestion applies a cached threshold suggestion to the source rule
+// (direct write-back or GitOps PR), records apply state, and audits the change.
+// humanizeAlertApplyError maps low-level provider/git errors from the apply/revert path to a
+// concise, user-facing message. The raw error is still recorded in apply_error, the audit row,
+// and the server logs for debugging — this only changes what the UI shows.
+func humanizeAlertApplyError(raw string) string {
+	l := strings.ToLower(raw)
+	switch {
+	case strings.Contains(l, "accessdenied"),
+		strings.Contains(l, "not authorized"),
+		strings.Contains(l, "permissiondenied"),
+		strings.Contains(l, "permission denied"),
+		strings.Contains(l, "forbidden"),
+		strings.Contains(l, "status 403"),
+		strings.Contains(l, "statuscode: 403"),
+		strings.Contains(l, "assumerole"):
+		return "Nudgebee doesn't have permission to update this alert rule in the cloud provider. Check the integration's credentials/role and try again."
+	case strings.Contains(l, "aadsts"),
+		strings.Contains(l, "invalid_client"),
+		strings.Contains(l, "expired"),
+		strings.Contains(l, "invalid username or token"),
+		strings.Contains(l, "authentication failed"),
+		strings.Contains(l, "password authentication is not supported"),
+		strings.Contains(l, "unauthorized"),
+		strings.Contains(l, "statuscode: 401"),
+		strings.Contains(l, "status 401"):
+		return "The integration credentials are invalid or expired. Reconnect the integration and try again."
+	case strings.Contains(l, "could not find the current rule expression"):
+		return "The rule file no longer contains the expected expression — it may have changed, or the file path is wrong."
+	case strings.Contains(l, "not found"):
+		return "The alert rule could not be found in the cloud provider. It may have been deleted or renamed."
+	default:
+		return raw
+	}
+}
+
+func handleEventApplyThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx *security.RequestContext) {
+	var req triage.ApplyThresholdRequest
+	if err := common.UnmarshalMapToStruct(h.Input, &req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
+		return
+	}
+	if req.AlertRuleKey == "" || req.CloudAccountID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "alert_rule_key and cloud_account_id are required"})
+		return
+	}
+
+	auditEvent := audit.Audit{
+		UserId:        ctx.GetSecurityContext().GetUserId(),
+		TenantId:      ctx.GetSecurityContext().GetTenantId(),
+		AccountId:     req.CloudAccountID,
+		EventCategory: audit.EventAlertManagerRelay,
+		EventType:     audit.EventTypeAlertManagerCreate,
+		EventActor:    audit.EventActorUiService,
+		EventStatus:   audit.EventStatusSuccess,
+		EventAction:   audit.EventActionUpdate,
+		EventTarget:   req.AlertRuleKey,
+		EventAttr:     map[string]any{},
+	}
+
+	result, err := triage.ApplyThresholdSuggestion(ctx, req)
+	defer func() {
+		auditEvent.EventTime = time.Now()
+		auditEvent.EventState = req
+		if aerr := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{auditEvent}}); aerr != nil {
+			ctx.GetLogger().Error("failed to create audit event for threshold apply", "error", aerr)
+		}
+	}()
+	if err != nil {
+		auditEvent.EventStatus = audit.EventStatusFailure
+		ctx.GetLogger().Error("failed to apply threshold suggestion", "error", err)
+		// Return 200 with a failed result carrying a user-friendly message so the UI can show
+		// it directly. The raw error is preserved in apply_error, the audit row, and the logs.
+		result.Status = "failed"
+		result.Error = humanizeAlertApplyError(err.Error())
+		c.JSON(http.StatusOK, result)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// handleEventRevertThresholdSuggestion reverts a previously-applied direct threshold change.
+func handleEventRevertThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx *security.RequestContext) {
+	alertRuleKey, _ := h.Input["alert_rule_key"].(string)
+	cloudAccountID, _ := h.Input["cloud_account_id"].(string)
+	if alertRuleKey == "" || cloudAccountID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "alert_rule_key and cloud_account_id are required"})
+		return
+	}
+
+	auditEvent := audit.Audit{
+		UserId:        ctx.GetSecurityContext().GetUserId(),
+		TenantId:      ctx.GetSecurityContext().GetTenantId(),
+		AccountId:     cloudAccountID,
+		EventCategory: audit.EventAlertManagerRelay,
+		EventType:     audit.EventTypeAlertManagerCreate,
+		EventActor:    audit.EventActorUiService,
+		EventStatus:   audit.EventStatusSuccess,
+		EventAction:   audit.EventActionUpdate,
+		EventTarget:   alertRuleKey,
+		EventAttr:     map[string]any{"operation": "revert"},
+	}
+
+	result, err := triage.RevertThresholdSuggestion(ctx, alertRuleKey, cloudAccountID)
+	defer func() {
+		auditEvent.EventTime = time.Now()
+		// EventState is required by the audit validator; record the revert details (and
+		// result when available) so the audit row is persisted instead of rejected.
+		auditEvent.EventState = map[string]any{
+			"alert_rule_key":   alertRuleKey,
+			"cloud_account_id": cloudAccountID,
+			"operation":        "revert",
+			"result":           result,
+		}
+		if aerr := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{auditEvent}}); aerr != nil {
+			ctx.GetLogger().Error("failed to create audit event for threshold revert", "error", aerr)
+		}
+	}()
+	if err != nil {
+		auditEvent.EventStatus = audit.EventStatusFailure
+		ctx.GetLogger().Error("failed to revert threshold suggestion", "error", err)
+		result.Status = "failed"
+		result.Error = humanizeAlertApplyError(err.Error())
+		c.JSON(http.StatusOK, result)
+		return
+	}
 	c.JSON(http.StatusOK, result)
 }
 

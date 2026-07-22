@@ -477,11 +477,20 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 				"conversationId", req.ConversationId,
 				"oldCacheName", cacheInfo.CacheName,
 				"reason", reason)
-			// Explicitly delete the old Google AI cache. The Redis pointer is about
-			// to be overwritten by createCache below, so this cacheName becomes
-			// unreachable. Without this delete, it sits orphaned for the remainder
-			// of its TTL paying full storage cost — historically the dominant cause
-			// of Gemini cache spend on this service.
+			// Drop the stale shared pointer immediately. createCache below normally
+			// overwrites it, but the singleflight early-return (readSharedCacheInfo)
+			// can short-circuit before createCache runs and hand this just-deleted
+			// cacheName back to the caller → 403 "CachedContent not found" on the
+			// next GenerateContent. Deleting here makes readSharedCacheInfo miss and
+			// forces a real recreate. (#387 introduced the early-return; the original
+			// "overwritten by createCache below" assumption no longer always holds.)
+			if delErr := common.CacheDelete(p.namespace, cacheKey); delErr != nil {
+				slog.Warn("Google AI cache: failed to delete stale pointer on content_changed",
+					"error", delErr, "cacheKey", cacheKey, "conversationId", req.ConversationId)
+			}
+			// Explicitly delete the old Google AI cache. Without this delete, it sits
+			// orphaned for the remainder of its TTL paying full storage cost —
+			// historically the dominant cause of Gemini cache spend on this service.
 			if helper, helperErr := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(req.ApiKey)); helperErr == nil {
 				if delErr := helper.DeleteCachedContent(ctx, cacheInfo.CacheName); delErr != nil {
 					slog.Warn("Google AI cache: failed to delete orphaned content_changed cache",
@@ -531,7 +540,11 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	created, errCreate, _ := p.createGroup.Do(cacheKey, func() (interface{}, error) {
 		// Re-check the shared cache first: another goroutine (Tier 1) or replica
 		// (Tier 2) may have published the entry between our miss and this flight.
-		if info := p.readSharedCacheInfo(cacheKey); info != nil {
+		// Only reuse a pointer that is actually usable for THIS request: same
+		// content and not expired. A pointer left over from a content_changed /
+		// expired path (or published by a sibling caching different content) would
+		// otherwise be returned verbatim and 403 at GenerateContent time.
+		if info := p.readSharedCacheInfo(cacheKey); cacheInfoUsable(info, contentHash) {
 			return info, nil
 		}
 		// Tier 2 (cross-replica): singleflight only collapses creations within one
@@ -544,7 +557,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 			defer common.CacheUnlock(detachedCtx, cacheKey, token)
 		} else {
 			// Another replica owns creation; wait briefly for it to publish, then reuse.
-			if info := p.waitForSharedCacheInfo(cacheKey, googleAICacheCreateLockWait); info != nil {
+			if info := p.waitForSharedCacheInfo(cacheKey, contentHash, googleAICacheCreateLockWait); info != nil {
 				return info, nil
 			}
 			// Holder didn't publish in time — fall through and create (best-effort,
@@ -595,6 +608,19 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	}
 }
 
+// cacheInfoUsable reports whether a shared-cache pointer can be safely reused
+// for a request with the given contentHash. It must reference the SAME content
+// (Google prepends the cached block verbatim, so a mismatch would send the wrong
+// context) and still be within its TTL. Reusing a mismatched or expired pointer
+// hands the caller a CachedContentName that no longer exists in Google → 403
+// "CachedContent not found" at GenerateContent time. Both shared-pointer read
+// sites (the singleflight early-return and waitForSharedCacheInfo) must gate on
+// this: the expired / content_changed paths don't always delete the pointer, so
+// a stale one can still be sitting in the shared cache.
+func cacheInfoUsable(info *CacheInfo, contentHash string) bool {
+	return info != nil && info.ContentHash == contentHash && info.ExpiresAt.After(time.Now())
+}
+
 // readSharedCacheInfo returns the published CacheInfo for cacheKey from the
 // shared cache, or nil if absent/corrupt. Used to reuse a cache another
 // goroutine or replica just created instead of creating a duplicate.
@@ -610,9 +636,14 @@ func (p *GoogleAICacheProvider) readSharedCacheInfo(cacheKey string) *CacheInfo 
 	return &info
 }
 
-// waitForSharedCacheInfo polls the shared cache for up to `within` for an entry
-// published by the replica that holds the creation lock.
-func (p *GoogleAICacheProvider) waitForSharedCacheInfo(cacheKey string, within time.Duration) *CacheInfo {
+// waitForSharedCacheInfo polls the shared cache for up to `within` for a usable
+// entry published by the replica that holds the creation lock. A pre-existing
+// stale pointer (e.g. left behind by the expired path, which doesn't delete it)
+// is skipped, not returned — otherwise the waiter would immediately reuse an
+// expired/mismatched CachedContentName and 403 at GenerateContent time. Keeps
+// polling until the holder publishes a fresh one matching contentHash, or the
+// timeout elapses (caller then falls through to create its own).
+func (p *GoogleAICacheProvider) waitForSharedCacheInfo(cacheKey, contentHash string, within time.Duration) *CacheInfo {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	timeout := time.After(within)
@@ -621,7 +652,7 @@ func (p *GoogleAICacheProvider) waitForSharedCacheInfo(cacheKey string, within t
 		case <-timeout:
 			return nil
 		case <-ticker.C:
-			if info := p.readSharedCacheInfo(cacheKey); info != nil {
+			if info := p.readSharedCacheInfo(cacheKey); cacheInfoUsable(info, contentHash) {
 				return info
 			}
 		}

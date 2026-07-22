@@ -9,6 +9,7 @@ import { getSpecificTime } from '@lib/datetime';
 import { Skeleton } from '@ui/Skeleton';
 import FilterDropdown from '@ui/FilterDropdown';
 import TextWithBorder from '@shared/TextWithBorder';
+import MetricQueryInfo, { buildPromQueries } from '@shared/MetricQueryInfo';
 import LazyLoadComponent from '@shared/LazyLoadComponent';
 import apiKubernetes1 from '@api1/kubernetes1';
 import { ds } from '@utils/colors';
@@ -44,6 +45,8 @@ const KubernetesApplicationGroupingSummaryDashboard = ({ accountId, applications
   //   latency: null,
   //   services: null,
   // });
+  const [promQueries, setPromQueries] = useState({});
+  const mergePromQueries = (response) => setPromQueries((prev) => ({ ...prev, ...buildPromQueries(response) }));
   const [selectedServiceMetric, setSelectedServiceMetric] = useState('http');
   const [selectedDateRange, setSelectedDateRange] = useState({
     startDate: getSpecificTime(60),
@@ -246,6 +249,7 @@ const KubernetesApplicationGroupingSummaryDashboard = ({ accountId, applications
             latencyResults.forEach((result, index) => {
               if (result.status === 'fulfilled') {
                 const { response, labelName } = result.value;
+                mergePromQueries(response);
                 const processedData = processLatencyResponse(response, labelName);
                 processedLatencyData.push(processedData);
               } else {
@@ -307,6 +311,7 @@ const KubernetesApplicationGroupingSummaryDashboard = ({ accountId, applications
         apiCalls.forEach(({ key, labelName, promise }) => {
           promise
             .then((response) => {
+              mergePromQueries(response);
               const seriesList = response?.[0]?.payload || [];
               let seriesData = {
                 labels: [],
@@ -408,6 +413,8 @@ const KubernetesApplicationGroupingSummaryDashboard = ({ accountId, applications
           ...params,
         });
 
+        mergePromQueries(response);
+
         const seriesList = response?.[0]?.payload || [];
         let parsed = { data: [], labels: [] };
 
@@ -455,6 +462,9 @@ const KubernetesApplicationGroupingSummaryDashboard = ({ accountId, applications
     });
   };
 
+  // Subset of the executed queries relevant to a given chart (keys are metric names like container_http_*).
+  const pickQueries = (pred) => Object.fromEntries(Object.entries(promQueries).filter(([k]) => pred(k)));
+
   return (
     <ListingLayout>
       <ListingLayout.Toolbar
@@ -472,17 +482,20 @@ const KubernetesApplicationGroupingSummaryDashboard = ({ accountId, applications
         {/* Row 1 */}
         <Box sx={{ display: 'flex', gap: ds.space.mul(0, 40), mb: ds.space[6] }}>
           <Box sx={{ flex: 1 }}>
-            <TextWithBorder
-              value='HTTP Status'
-              borderColor={ds.blue[500]}
-              borderWidth='3px'
-              sx={{
-                minWidth: 'auto',
-                height: ds.space.mul(0, 11),
-                padding: 'var(--ds-space-1) var(--ds-space-2)',
-                '& p': { fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' },
-              }}
-            />
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+              <TextWithBorder
+                value='HTTP Status'
+                borderColor={ds.blue[500]}
+                borderWidth='3px'
+                sx={{
+                  minWidth: 'auto',
+                  height: ds.space.mul(0, 11),
+                  padding: 'var(--ds-space-1) var(--ds-space-2)',
+                  '& p': { fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' },
+                }}
+              />
+              <MetricQueryInfo queries={pickQueries((k) => k.includes('error_status_count'))} />
+            </Box>
             {loading.status ? (
               <Skeleton shape='rect' height={ds.space.mul(0, 140)} />
             ) : (
@@ -495,17 +508,20 @@ const KubernetesApplicationGroupingSummaryDashboard = ({ accountId, applications
             )}
           </Box>
           <Box sx={{ flex: 1 }}>
-            <TextWithBorder
-              value='HTTP Request'
-              borderColor={ds.blue[500]}
-              borderWidth='3px'
-              sx={{
-                minWidth: 'auto',
-                height: ds.space.mul(0, 11),
-                padding: 'var(--ds-space-1) var(--ds-space-2)',
-                '& p': { fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' },
-              }}
-            />
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+              <TextWithBorder
+                value='HTTP Request'
+                borderColor={ds.blue[500]}
+                borderWidth='3px'
+                sx={{
+                  minWidth: 'auto',
+                  height: ds.space.mul(0, 11),
+                  padding: 'var(--ds-space-1) var(--ds-space-2)',
+                  '& p': { fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' },
+                }}
+              />
+              <MetricQueryInfo queries={pickQueries((k) => k.includes('http_request_count'))} />
+            </Box>
             {loading.request ? (
               <Skeleton shape='rect' height={ds.space.mul(0, 140)} />
             ) : (
@@ -522,17 +538,20 @@ const KubernetesApplicationGroupingSummaryDashboard = ({ accountId, applications
         {/* Row 2 */}
         <Box sx={{ display: 'flex', gap: ds.space.mul(0, 40), mb: ds.space[4] }}>
           <Box sx={{ flex: 1 }}>
-            <TextWithBorder
-              value='HTTP Latency'
-              borderColor={ds.blue[500]}
-              borderWidth='3px'
-              sx={{
-                minWidth: 'auto',
-                height: ds.space.mul(0, 11),
-                padding: 'var(--ds-space-1) var(--ds-space-2)',
-                '& p': { fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' },
-              }}
-            />
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+              <TextWithBorder
+                value='HTTP Latency'
+                borderColor={ds.blue[500]}
+                borderWidth='3px'
+                sx={{
+                  minWidth: 'auto',
+                  height: ds.space.mul(0, 11),
+                  padding: 'var(--ds-space-1) var(--ds-space-2)',
+                  '& p': { fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' },
+                }}
+              />
+              <MetricQueryInfo queries={pickQueries((k) => k.includes('http_latency'))} />
+            </Box>
             {loading.latency ? (
               <Skeleton shape='rect' height={ds.space.mul(0, 140)} />
             ) : (
@@ -546,17 +565,20 @@ const KubernetesApplicationGroupingSummaryDashboard = ({ accountId, applications
           </Box>
           <Box sx={{ flex: 1 }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: ds.space[2], height: ds.space.mul(0, 14) }}>
-              <TextWithBorder
-                value='Top 5 Services'
-                borderColor={ds.blue[500]}
-                borderWidth='3px'
-                sx={{
-                  minWidth: 'auto',
-                  height: ds.space.mul(0, 11),
-                  padding: 'var(--ds-space-1) var(--ds-space-2)',
-                  '& p': { fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' },
-                }}
-              />
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+                <TextWithBorder
+                  value='Top 5 Services'
+                  borderColor={ds.blue[500]}
+                  borderWidth='3px'
+                  sx={{
+                    minWidth: 'auto',
+                    height: ds.space.mul(0, 11),
+                    padding: 'var(--ds-space-1) var(--ds-space-2)',
+                    '& p': { fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' },
+                  }}
+                />
+                <MetricQueryInfo queries={pickQueries((k) => k.startsWith('container_top'))} />
+              </Box>
               <FilterDropdown
                 value={selectedServiceMetric}
                 onSelect={(e) => {

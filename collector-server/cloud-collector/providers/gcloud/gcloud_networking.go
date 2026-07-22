@@ -143,6 +143,21 @@ func (s *networkingService) listSubnets(ctx providers.CloudProviderContext, proj
 			return resources, fmt.Errorf("failed to list subnets: %w", err)
 		}
 
+		// Capture the parent VPC network self-link so the knowledge graph can link
+		// the subnet to its VPC. Without this the subnet's network is unrecoverable
+		// from the resource row (the ARN only encodes project/region/subnet), leaving
+		// every subnet orphaned in the graph.
+		meta := map[string]any{}
+		if network := subnet.GetNetwork(); network != "" {
+			meta["network"] = network
+		}
+		if cidr := subnet.GetIpCidrRange(); cidr != "" {
+			meta["ip_cidr_range"] = cidr
+		}
+		if gateway := subnet.GetGatewayAddress(); gateway != "" {
+			meta["gateway_address"] = gateway
+		}
+
 		resources = append(resources, providers.Resource{
 			Id:          fmt.Sprintf("%s/regions/%s/subnetworks/%s", projectID, region, subnet.GetName()),
 			Name:        subnet.GetName(),
@@ -152,7 +167,7 @@ func (s *networkingService) listSubnets(ctx providers.CloudProviderContext, proj
 			ServiceName: ServiceNameNetworking,
 			Status:      providers.ResourceStatusActive,
 			Tags:        map[string][]string{},
-			Meta:        map[string]any{},
+			Meta:        meta,
 			CreatedAt:   time.Now(),
 		})
 	}

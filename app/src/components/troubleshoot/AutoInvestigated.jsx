@@ -23,10 +23,18 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 
 const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
-const statusFilter = [
-  { value: 'FIRING', label: 'Open' },
-  { value: 'CLOSED', label: 'Closed' },
+// Event statuses come from the backend `event_status` reference table — the FK
+// source of truth for `events.status`. The complete set is fixed by that FK
+// (FIRING/RESOLVED/CLOSED, per migrations V175 + V209) and has not changed since
+// CLOSED was added, so it's kept here as a static list with display label/color.
+const STATUS_OPTIONS = [
+  { value: 'FIRING', label: 'Open', variant: 'red' },
+  { value: 'RESOLVED', label: 'Resolved', variant: 'green' },
+  { value: 'CLOSED', label: 'Closed', variant: 'grey' },
 ];
+
+const statusFilter = STATUS_OPTIONS.map(({ value, label }) => ({ value, label }));
+const STATUS_BY_VALUE = Object.fromEntries(STATUS_OPTIONS.map((s) => [s.value, s]));
 
 const SEVERITY_LEVEL_MAP = {
   critical: 'critical',
@@ -168,8 +176,8 @@ const AutoInvestigated = () => {
             >
               <Label
                 margin='0'
-                text={item.status === 'FIRING' ? 'Open' : item.status === 'CLOSED' ? 'Closed' : item.status}
-                variant={item.status === 'FIRING' ? 'red' : item.status === 'CLOSED' ? 'grey' : ''}
+                text={STATUS_BY_VALUE[item.status]?.label ?? item.status}
+                variant={STATUS_BY_VALUE[item.status]?.variant ?? ''}
                 customLabelStyle={{ height: ds.space[3] }}
               />
               <Datetime value={item.updated_at} sx={{ fontSize: ds.text.caption }} />

@@ -1,0 +1,73 @@
+slug: investigate_rds_performance
+name: "Investigate RDS Performance"
+description: "Gather RDS instance details, recent events, CPU utilization, and connection metrics. Provides a quick diagnostic snapshot for database performance issues."
+category: "aws"
+icon: "analytics"
+status: ACTIVE
+tags:
+  labels:
+    - "diagnostic"
+    - "read-only"
+  event_sources:
+    - "AWS_CloudWatch_Alarm"
+    - "AWS_EventBridge"
+  alert_names: []
+  subject_types:
+    - "db"
+    - "db-instance"
+definition:
+  version: "v1"
+  inputs:
+    - id: "db_instance_id"
+      type: "string"
+      description: "RDS DB instance identifier"
+      required: true
+    - id: "region"
+      type: "string"
+      description: "AWS region (e.g. us-east-1)"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "describe_instance"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws rds describe-db-instances --db-instance-identifier {{ Inputs.db_instance_id }} --region {{ Inputs.region }} --query 'DBInstances[0].{Status:DBInstanceStatus,Class:DBInstanceClass,Engine:Engine,Storage:AllocatedStorage,MultiAZ:MultiAZ}'"
+        account_id: "{{ Inputs.account_id }}"
+    - id: "check_events"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws rds describe-events --source-identifier {{ Inputs.db_instance_id }} --source-type db-instance --duration 60 --region {{ Inputs.region }}"
+        account_id: "{{ Inputs.account_id }}"
+    - id: "check_cpu"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization --dimensions Name=DBInstanceIdentifier,Value={{ Inputs.db_instance_id }} --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%S) --end-time $(date -u +%Y-%m-%dT%H:%M:%S) --period 300 --statistics Average Maximum --region {{ Inputs.region }}"
+        account_id: "{{ Inputs.account_id }}"
+    - id: "check_connections"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections --dimensions Name=DBInstanceIdentifier,Value={{ Inputs.db_instance_id }} --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%S) --end-time $(date -u +%Y-%m-%dT%H:%M:%S) --period 300 --statistics Average Maximum --region {{ Inputs.region }}"
+        account_id: "{{ Inputs.account_id }}"
+  timeout: "5m"
+template_variables:
+  - id: "db_instance_id"
+    input_ref: "db_instance_id"
+    display_name: "DB Instance ID"
+    required: true
+    type: "string"
+  - id: "region"
+    input_ref: "region"
+    display_name: "AWS Region"
+    required: true
+    type: "string"
+    placeholder: "us-east-1"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

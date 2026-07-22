@@ -2,6 +2,7 @@ package clients
 
 import (
 	jira "github.com/andygrunwald/go-jira"
+	"strings"
 	"time"
 )
 
@@ -15,7 +16,7 @@ func CreateJiraClient(username, password, url string) (*jira.Client, error) {
 	}
 	ct := tp.Client()
 	ct.Timeout = jiraHTTPTimeout
-	client, err := jira.NewClient(ct, "https://"+url)
+	client, err := jira.NewClient(ct, "https://"+strings.TrimPrefix(url, "https://"))
 	if err != nil {
 		return nil, err
 	}

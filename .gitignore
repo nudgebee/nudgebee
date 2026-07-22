@@ -185,5 +185,7 @@ llm/rag-server/poetry.lock
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 
-# Playwright report output (generated at repo root when tests run from root)
+# Playwright output (generated at repo root when tests run from root)
 playwright-report/
+test-results/
+blob-report/

@@ -153,9 +153,19 @@ type appConfig struct {
 
 	NBRetentionDaysRecommendationsArchive int `mapstructure:"nb_retention_days_recommendations_archive"`
 
-	KGEdgeStaleAfterDays           int    `mapstructure:"kg_edge_stale_after_days"`
-	NBRetentionDaysKGInactiveEdges int    `mapstructure:"nb_retention_days_kg_inactive_edges"`
-	KGBehavioralEdgeTypes          string `mapstructure:"kg_behavioral_edge_types"` // comma-separated; empty falls back to DefaultBehavioralEdgeTypes
+	KGEdgeStaleAfterDays           int `mapstructure:"kg_edge_stale_after_days"`
+	NBRetentionDaysKGInactiveEdges int `mapstructure:"nb_retention_days_kg_inactive_edges"`
+
+	// LLM token-usage prompt/response cleanup (PII/storage retention). Two passes:
+	// a frequent short-term pass that only cleans up "standard" successful calls, and a
+	// daily catch-all that cleans up every successful call past the longer window.
+	LLMTokenUsageCleanupShortTermHours    int     `mapstructure:"llm_token_usage_cleanup_short_term_hours"`
+	LLMTokenUsageCleanupCatchAllDays      int     `mapstructure:"llm_token_usage_cleanup_catch_all_days"`
+	LLMTokenUsageCleanupMaxLatencySeconds float64 `mapstructure:"llm_token_usage_cleanup_max_latency_seconds"`
+	LLMTokenUsageCleanupMaxInputTokens    int     `mapstructure:"llm_token_usage_cleanup_max_input_tokens"`
+	LLMTokenUsageCleanupMaxOutputTokens   int     `mapstructure:"llm_token_usage_cleanup_max_output_tokens"`
+
+	KGBehavioralEdgeTypes string `mapstructure:"kg_behavioral_edge_types"` // comma-separated; empty falls back to DefaultBehavioralEdgeTypes
 
 	NBAnomalyTrainingDays    int `mapstructure:"nb_anomaly_training_days"`
 	NBAnomalyEvaluationHours int `mapstructure:"nb_anomaly_evaluation_hours"`
@@ -354,6 +364,11 @@ func init() {
 	viper.SetDefault("nb_retention_days_recommendations_archive", 30)
 	viper.SetDefault("kg_edge_stale_after_days", 7)
 	viper.SetDefault("nb_retention_days_kg_inactive_edges", 14)
+	viper.SetDefault("llm_token_usage_cleanup_short_term_hours", 3)
+	viper.SetDefault("llm_token_usage_cleanup_catch_all_days", 7)
+	viper.SetDefault("llm_token_usage_cleanup_max_latency_seconds", 20.0)
+	viper.SetDefault("llm_token_usage_cleanup_max_input_tokens", 50000)
+	viper.SetDefault("llm_token_usage_cleanup_max_output_tokens", 500)
 	viper.SetDefault("kg_behavioral_edge_types", "") // empty → use DefaultBehavioralEdgeTypes
 
 	viper.SetDefault("cache_provider", "in_memory")

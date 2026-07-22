@@ -48,6 +48,12 @@ func (m Signoz) ValidateConfig(ctx *security.SecurityContext, values []core.Inte
 		errs = append(errs, fmt.Errorf("signoz_url must start with http:// or https:// (got %q)", url))
 	} else if hasURLPath(rawURL) {
 		errs = append(errs, fmt.Errorf("signoz_url must be the base URL only — remove the path after the host (use %q, not %q)", url, rawURL))
+	} else if strings.HasSuffix(rawURL, "/") {
+		// A trailing slash produces "<url>//api/v2/..." at query time, which
+		// SigNoz Cloud answers with a 301; the Go client replays it as a GET and
+		// the login endpoint returns HTML, breaking JSON decode. Reject it here
+		// so the user stores a clean base URL rather than silently normalizing.
+		errs = append(errs, fmt.Errorf("signoz_url must not end with a trailing slash — remove it (use %q, not %q)", strings.TrimRight(rawURL, "/"), rawURL))
 	}
 	if username == "" {
 		errs = append(errs, fmt.Errorf("signoz_username is required"))

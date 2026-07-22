@@ -276,3 +276,104 @@ func TestMapRowToOpenTelemetryHeatmapTrace_DurationParsesQuotedUInt64(t *testing
 	require.NoError(t, err)
 	assert.Equal(t, int64(1234567), trace.DurationNs)
 }
+
+// TestQueryTracesRaw_Live exercises the raw-table capability against a live relay +
+// ClickHouse. It runs an aggregation (GROUP BY service with count + p95 latency) and
+// asserts QueryTracesRaw returns the real computed columns/values, while the typed
+// QueryTraces path coerces the same result into the fixed span schema and drops the
+// aggregation — every span's DurationNs comes back 0 (the reported "0 duration ns" bug).
+//
+// Run: TEST_LIVE_TRACES_RAW=1 TEST_ACCOUNT=<id> \
+//
+//	RELAY_SERVER_ENDPOINT=http://127.0.0.1:8088 RELAY_SERVER_SECRET_KEY=<key> \
+//	go test -run TestQueryTracesRaw_Live ./observability/
+func TestQueryTracesRaw_Live(t *testing.T) {
+	if os.Getenv("TEST_LIVE_TRACES_RAW") != "1" {
+		t.Skip("set TEST_LIVE_TRACES_RAW=1 to run (requires relay-server reachable via RELAY_SERVER_ENDPOINT/RELAY_SERVER_SECRET_KEY and TEST_ACCOUNT)")
+	}
+	env := testenv.RequireEnv(t, testenv.Account)
+	// Server-internal (super-admin) context: passes CheckAccess without a Metastore DB
+	// lookup, so the test depends only on the relay-server reaching ClickHouse.
+	ctx := security.NewRequestContextForSuperAdmin(nil, nil, nil)
+	src := &OtelClickhouseTraceSource{}
+
+	// Aggregation over real otel_traces columns: GROUP BY service with count + p95.
+	aggSQL := `SELECT ServiceName AS service, count(*) AS request_count, ` +
+		`round(quantile(0.95)(Duration)) AS p95_ns ` +
+		`FROM otel_traces WHERE Timestamp >= now() - toIntervalHour(48) ` +
+		`GROUP BY ServiceName ORDER BY request_count DESC LIMIT 10`
+	req := TracesV3Request{
+		AccountId:      env[testenv.Account],
+		ProviderType:   "otel_clickhouse",
+		ProviderSource: "agent",
+		Query:          aggSQL,
+	}
+
+	// New capability: the raw table preserves the aggregation columns + values.
+	raw, err := src.QueryTracesRaw(ctx, req)
+	require.NoError(t, err)
+	require.NotEmpty(t, raw.Rows, "aggregation should return at least one group")
+	assert.Equal(t, []string{"service", "request_count", "p95_ns"}, raw.Columns,
+		"raw table must preserve the aggregation column names and order")
+
+	// At least one group must carry a real, non-zero p95 — the value the typed
+	// span-coercion path drops to 0.
+	const p95Idx = 2
+	sawNonZeroP95 := false
+	for _, row := range raw.Rows {
+		if len(row) > p95Idx && clickhouseInt64(row[p95Idx]) > 0 {
+			sawNonZeroP95 = true
+			break
+		}
+	}
+	assert.True(t, sawNonZeroP95, "raw table must carry real (non-zero) p95 values")
+	t.Logf("raw aggregation: %d groups, columns=%v, first row=%v", len(raw.Rows), raw.Columns, raw.Rows[0])
+
+	// Contrast: the typed path maps by fixed span-column name, so the aggregation
+	// columns have no home — every returned span has DurationNs == 0 (the bug).
+	typed, err := src.QueryTraces(ctx, req)
+	require.NoError(t, err)
+	require.NotEmpty(t, typed, "typed path still returns one row per group")
+	for _, tr := range typed {
+		assert.EqualValues(t, 0, tr.DurationNs,
+			"typed span coercion drops aggregation columns → DurationNs is always 0 (the bug the raw table fixes)")
+	}
+	t.Logf("typed path returned %d zeroed span rows for the same aggregation", len(typed))
+}
+
+// TestParseRawTraceResult_PreservesColumnOrderAndRows guards the raw-table path that backs
+// IncludeRawResult: an aggregation result (columns that are NOT span columns) must come back with
+// its real column order, types, and values — the exact data MapRowToOpenTelemetryTrace would have
+// zeroed by coercing into the fixed span schema.
+func TestParseRawTraceResult_PreservesColumnOrderAndRows(t *testing.T) {
+	// Mirrors the relay query_data inner `data` map.
+	inner := map[string]any{
+		"columns":      []any{"service", "request_count", "p95_latency_ns"},
+		"column_types": []any{"String", "UInt64", "Float64"},
+		"data": []any{
+			[]any{"notifications", float64(1200), float64(84213000)},
+			[]any{"checkout", float64(950), float64(41020000)},
+		},
+	}
+
+	got, err := parseRawTraceResult(inner)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"service", "request_count", "p95_latency_ns"}, got.Columns,
+		"aggregation column names and order must be preserved")
+	assert.Equal(t, []string{"String", "UInt64", "Float64"}, got.ColumnTypes)
+	require.Len(t, got.Rows, 2)
+	assert.Equal(t, "notifications", got.Rows[0][0])
+	assert.EqualValues(t, 84213000, got.Rows[0][2], "p95 value must survive, not be zeroed")
+}
+
+// TestParseRawTraceResult_SurfacesClickhouseError ensures a ClickHouse-level error reported inside a
+// 200 envelope (non-empty string `error`) is returned as an error, not silently dropped to empty.
+func TestParseRawTraceResult_SurfacesClickhouseError(t *testing.T) {
+	inner := map[string]any{
+		"error": "Code: 47. DB::Exception: Unknown identifier: foo",
+	}
+	_, err := parseRawTraceResult(inner)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Unknown identifier")
+}

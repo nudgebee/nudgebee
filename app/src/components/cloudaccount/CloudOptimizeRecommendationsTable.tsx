@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { useRouter } from 'next/router';
@@ -142,7 +142,7 @@ const CloudOptimizeRecommendationsTable = (props: {
   const router = useRouter();
   const { assistantName } = useTenantBranding();
 
-  const [recommendations, setRecommendations] = useState([]);
+  const [recommendations, setRecommendations] = useState<ICustomTableRow[][]>([]);
   const [recommendationsCount, setRecommendationsCount] = useState(0);
   const [totalRecommendationsCount, setTotalRecommendationsCount] = useState(0);
   const [totalEstimatedSavings, setTotalEstimatedSavings] = useState(0);
@@ -163,12 +163,20 @@ const CloudOptimizeRecommendationsTable = (props: {
   const [loading, setLoading] = useState(false);
   const [loadingTotal, setLoadingTotal] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Bumped after a command executes so the per-row "Audit History" tab
+  // (CommandExecutionHistory) re-fetches in real time instead of staying stale
+  // until the row is collapsed and re-expanded.
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
   const [nubiQuery, setNubiQuery] = useState('');
   const [nubiAccountId, setNubiAccountId] = useState('');
   const [nubiConversationId, setNubiConversationId] = useState('');
   const { page, rowsPerPage, changePage, setPage } = usePagination(10);
   const { allCluster, selectedCluster } = useData();
+
+  const rawRecommendationsRef = useRef<any[]>([]);
+  const ticketReferenceMapRef = useRef<Map<string, any>>(new Map());
+  const buildRowDataRef = useRef<((items: any[], map: Map<string, any>) => ICustomTableRow[][]) | null>(null);
   const currencySymbol = useCurrencySymbol(selectedAccountId);
   const [serviceNamesFilterWithRuleName, setServiceNamesFilterWithRuleName] = useState([] as { label: string; value: string }[]);
 
@@ -212,7 +220,7 @@ const CloudOptimizeRecommendationsTable = (props: {
   useEffect(() => {
     setSelectedRuleName((prev) => {
       const next = syncFilterFromQuery(ruleNamesFilter as { label: string; value: string }[], router?.query?.ruleName, (f) => f.value);
-      if (prev.length === 0 && next.length === 0) return prev;
+      if (prev.length === next.length && prev.every((item, i) => item?.value === next[i]?.value)) return prev;
       return next;
     });
     setPage(0);
@@ -221,7 +229,7 @@ const CloudOptimizeRecommendationsTable = (props: {
   useEffect(() => {
     setSelectedSeverity((prev) => {
       const next = syncFilterFromQuery(severityFilter, router?.query?.severity);
-      if (prev.length === 0 && next.length === 0) return prev;
+      if (prev.length === next.length && prev.every((item, i) => item === next[i])) return prev;
       return next;
     });
     setPage(0);
@@ -311,9 +319,18 @@ const CloudOptimizeRecommendationsTable = (props: {
     setIsTicketCreateFormOpen(false);
   };
 
-  const handleTicketSuccess = () => {
+  const handleTicketSuccess = ({ ticketId, url }: { ticketId?: string; url?: string } = {}) => {
     setIsTicketCreateFormOpen(false);
-    setRefreshKey((prev) => prev + 1);
+    const referenceId = ticketData?.id;
+    if (!referenceId || !buildRowDataRef.current) return;
+    ticketReferenceMapRef.current.set(referenceId, { ticket_id: ticketId, url });
+    const idx = rawRecommendationsRef.current.findIndex((item: any) => item.id === referenceId);
+    if (idx === -1) return;
+    setRecommendations((prev) => {
+      const next = [...prev];
+      next[idx] = buildRowDataRef.current!([rawRecommendationsRef.current[idx]], ticketReferenceMapRef.current)[0];
+      return next;
+    });
   };
 
   const handleAlarmCreationSuccess = () => {
@@ -598,6 +615,9 @@ const CloudOptimizeRecommendationsTable = (props: {
 
         const tableData = recommendations.map((item: any) => buildRecommendationRow(item, ticketReferenceMap));
 
+        rawRecommendationsRef.current = recommendations;
+        ticketReferenceMapRef.current = ticketReferenceMap;
+        buildRowDataRef.current = (items: any[], map: Map<string, any>) => items.map((item: any) => buildRecommendationRow(item, map));
         setRecommendations(tableData);
         setRecommendationsCount(res.data?.recommendation_aggregate?.aggregate?.count ?? 0);
         setLoading(false);
@@ -833,6 +853,7 @@ const CloudOptimizeRecommendationsTable = (props: {
                         canExecuteCommand={canExecuteCommand}
                         accountId={row?.account_id ?? selectedAccountId}
                         recommendationId={row?.id}
+                        onExecuted={() => setHistoryRefreshKey((k) => k + 1)}
                       />
                     );
                   },
@@ -842,7 +863,13 @@ const CloudOptimizeRecommendationsTable = (props: {
                   text: 'Audit History',
                   componentFn: function (_opt: any, drilldownQuery: any) {
                     const row = drilldownQuery?.recommendation;
-                    return <CommandExecutionHistory accountId={row?.account_id ?? props?.accountId ?? ''} recommendationId={row?.id ?? ''} />;
+                    return (
+                      <CommandExecutionHistory
+                        accountId={row?.account_id ?? props?.accountId ?? ''}
+                        recommendationId={row?.id ?? ''}
+                        refreshKey={historyRefreshKey}
+                      />
+                    );
                   },
                 },
               ],
@@ -869,7 +896,7 @@ const CloudOptimizeRecommendationsTable = (props: {
           ...(config.getTicketSeverity ? { severity: config.getTicketSeverity(ticketData) } : {}),
         }}
         ticketUrl={{}}
-        reference={{ id: ticketData?.id, type: 'aws' }}
+        reference={{ id: ticketData?.id, type: (props.provider || (selectedCluster as any)?.cloud_provider || 'aws').toLowerCase() }}
       />
 
       <NubiChatSidebar
@@ -961,12 +988,14 @@ function OptimizeMitigation({
   canExecuteCommand = false,
   accountId,
   recommendationId,
+  onExecuted,
 }: {
   drilldownQuery: any;
   sideActions?: MitigationSideAction[];
   canExecuteCommand?: boolean;
   accountId?: string;
   recommendationId?: string;
+  onExecuted?: () => void;
 }) {
   const { alternateOptions, selectedAlternateType, setSelectedAlternateType, effectiveRecommendation } = useEffectiveRecommendation(
     drilldownQuery?.recommendation
@@ -993,7 +1022,13 @@ function OptimizeMitigation({
           </Box>
         )}
         <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 'var(--ds-space-2)' }}>
-          <ApplyMitigationModal markdowns={markdowns} accountId={accountId} recommendationId={recommendationId} canExecute={canExecuteCommand} />
+          <ApplyMitigationModal
+            markdowns={markdowns}
+            accountId={accountId}
+            recommendationId={recommendationId}
+            canExecute={canExecuteCommand}
+            onExecuted={onExecuted}
+          />
         </Box>
         {markdowns ? (
           <MarkDowns

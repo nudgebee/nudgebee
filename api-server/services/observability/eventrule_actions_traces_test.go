@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/internal/testenv"
@@ -1033,6 +1034,75 @@ func TestAggregateErrors_LeafOwnMessageWins(t *testing.T) {
 // TestTruncate_RuneSafe locks in rune-based slicing: a multi-byte UTF-8 string
 // truncated at a rune boundary must stay valid UTF-8 (no split runes). Byte
 // slicing would cut a 3-byte rune and yield invalid UTF-8.
+func TestCapTraceEvidence_CountCeiling(t *testing.T) {
+	// Small spans: byte ceiling is irrelevant, the span-count cap binds.
+	spans := make([]common.OpenTelemetryTrace, maxEvidenceSpans+500)
+	for i := range spans {
+		spans[i] = common.OpenTelemetryTrace{TraceID: fmt.Sprintf("t%d", i), SpanID: fmt.Sprintf("s%d", i)}
+	}
+	capped, dropped := capTraceEvidence(spans)
+	assert.Len(t, capped, maxEvidenceSpans, "must cap to maxEvidenceSpans")
+	assert.Equal(t, 500, dropped)
+	// Prefix is preserved (error/representative spans lead the slice).
+	assert.Equal(t, "t0", capped[0].TraceID)
+}
+
+func TestCapTraceEvidence_ByteCeiling(t *testing.T) {
+	// Few spans, but each carries a large attribute so the byte ceiling binds
+	// well before the count cap.
+	big := strings.Repeat("x", 1024*1024) // ~1 MB per span
+	spans := make([]common.OpenTelemetryTrace, 20)
+	for i := range spans {
+		spans[i] = common.OpenTelemetryTrace{
+			TraceID:        fmt.Sprintf("t%d", i),
+			SpanAttributes: map[string]string{"blob": big},
+		}
+	}
+	capped, dropped := capTraceEvidence(spans)
+	assert.Greater(t, dropped, 0, "byte ceiling must drop spans")
+	assert.Less(t, len(capped), len(spans))
+	// Serialized payload stays under the byte ceiling.
+	b, err := json.Marshal(capped)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(b), maxEvidenceBytes)
+}
+
+func TestCapTraceEvidence_NoCapNeeded(t *testing.T) {
+	spans := []common.OpenTelemetryTrace{{TraceID: "a"}, {TraceID: "b"}}
+	capped, dropped := capTraceEvidence(spans)
+	assert.Equal(t, 0, dropped)
+	assert.Len(t, capped, 2)
+}
+
+func TestCapTraceEvidence_DropsUnmarshalable(t *testing.T) {
+	// An unmarshalable item (json can't encode +Inf) must be dropped entirely,
+	// not merely skipped in place — otherwise marshaling the returned slice as a
+	// whole would fail again downstream.
+	items := []any{
+		map[string]any{"ok": "a"},
+		math.Inf(1),
+		map[string]any{"ok": "b"},
+	}
+	capped, dropped := capTraceEvidence(items)
+	assert.Equal(t, 1, dropped)
+	assert.Len(t, capped, 2)
+	_, err := json.Marshal(capped)
+	require.NoError(t, err, "capped slice must serialize cleanly")
+}
+
+func TestCapTraceEvidence_KeepsAtLeastOne(t *testing.T) {
+	// A single span larger than the byte ceiling is still retained — evidence
+	// must never be empty.
+	spans := []common.OpenTelemetryTrace{
+		{TraceID: "huge", SpanAttributes: map[string]string{"blob": strings.Repeat("x", maxEvidenceBytes+1024)}},
+		{TraceID: "next"},
+	}
+	capped, dropped := capTraceEvidence(spans)
+	assert.Len(t, capped, 1, "keeps the first span even when it alone exceeds the ceiling")
+	assert.Equal(t, 1, dropped)
+	assert.Equal(t, "huge", capped[0].TraceID)
+}
+
 func TestTruncate_RuneSafe(t *testing.T) {
 	s := strings.Repeat("世", 200) // 3 bytes per rune
 	got := truncate(s, maxExceptionMessageLen)

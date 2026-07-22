@@ -344,3 +344,116 @@ func TestDatadog_ReTriggeredSynthetics(t *testing.T) {
 	monitorID := p.Alert.AlertID
 	assert.Equal(t, "166187407", monitorID)
 }
+
+// TestParseDatadogK8sSubject reproduces the subject-resolution issue: the IDE
+// screenshot showed monitor_groups = ["kube_cluster_name:example-cluster",
+// "pod_name:app-dev-bf96c4549-9wnpn"] and the old code either took group[0]
+// (the cluster) or dumped a key-prefixed string into the subject. It also
+// documents which k8s subject kinds Datadog exposes and how each resolves —
+// the controller (resolvable against k8s_workloads) is preferred over the pod.
+func TestParseDatadogK8sSubject(t *testing.T) {
+	tests := []struct {
+		name          string
+		facets        []string
+		wantName      string
+		wantKind      string
+		wantNamespace string
+		wantPod       string
+		wantOwner     string
+		wantContainer string
+	}{
+		{
+			name:     "screenshot: cluster + pod, no controller -> pod is subject",
+			facets:   []string{"kube_cluster_name:example-cluster", "pod_name:app-dev-bf96c4549-9wnpn"},
+			wantName: "app-dev-bf96c4549-9wnpn",
+			wantKind: "pod",
+			wantPod:  "app-dev-bf96c4549-9wnpn",
+		},
+		{
+			name:          "deployment preferred over pod (resolvable subject)",
+			facets:        []string{"kube_namespace:default", "kube_deployment:app-dev", "pod_name:app-dev-bf96c4549-9wnpn"},
+			wantName:      "app-dev",
+			wantKind:      "deployment",
+			wantNamespace: "default",
+			wantPod:       "app-dev-bf96c4549-9wnpn",
+			wantOwner:     "app-dev",
+		},
+		{
+			name:          "statefulset",
+			facets:        []string{"kube_namespace:db", "kube_stateful_set:postgres", "pod_name:postgres-0"},
+			wantName:      "postgres",
+			wantKind:      "statefulset",
+			wantNamespace: "db",
+			wantPod:       "postgres-0",
+			wantOwner:     "postgres",
+		},
+		{
+			name:      "daemonset",
+			facets:    []string{"kube_daemon_set:fluent-bit", "pod_name:fluent-bit-abcde"},
+			wantName:  "fluent-bit",
+			wantKind:  "daemonset",
+			wantPod:   "fluent-bit-abcde",
+			wantOwner: "fluent-bit",
+		},
+		{
+			name:      "generic ownerref fallback when no specific controller tag",
+			facets:    []string{"kube_ownerref_kind:StatefulSet", "kube_ownerref_name:kafka", "pod_name:kafka-2"},
+			wantName:  "kafka",
+			wantKind:  "statefulset",
+			wantPod:   "kafka-2",
+			wantOwner: "kafka",
+		},
+		{
+			name:     "node/host alert has no workload",
+			facets:   []string{"host:k3s-example-node-pool-a6e3h"},
+			wantName: "k3s-example-node-pool-a6e3h",
+			wantKind: "node",
+		},
+		{
+			name:          "result.group comma-separated string",
+			facets:        []string{"kube_namespace:prod,kube_deployment:web,pod_name:web-xyz"},
+			wantName:      "web",
+			wantKind:      "deployment",
+			wantNamespace: "prod",
+			wantPod:       "web-xyz",
+			wantOwner:     "web",
+		},
+		{
+			name:          "log query space-separated tokens with container",
+			facets:        []string{"kube_namespace:default pod_name:app-dev-bf96c4549-9wnpn kube_deployment:app-dev kube_container_name:app"},
+			wantName:      "app-dev",
+			wantKind:      "deployment",
+			wantNamespace: "default",
+			wantPod:       "app-dev-bf96c4549-9wnpn",
+			wantOwner:     "app-dev",
+			wantContainer: "app",
+		},
+		{
+			name:          "quoted values are stripped",
+			facets:        []string{`kube_namespace:"prod" kube_deployment:"web-app" pod_name:"web-app-1234"`},
+			wantName:      "web-app",
+			wantKind:      "deployment",
+			wantNamespace: "prod",
+			wantPod:       "web-app-1234",
+			wantOwner:     "web-app",
+		},
+		{
+			name:     "wildcard and prefix-only entries ignored",
+			facets:   []string{"pod_name:*", "kube_namespace:"},
+			wantName: "",
+			wantKind: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseDatadogK8sSubject(tt.facets)
+			assert.Equal(t, tt.wantName, got.Name, "Name")
+			assert.Equal(t, tt.wantKind, got.Kind, "Kind")
+			assert.Equal(t, tt.wantNamespace, got.Namespace, "Namespace")
+			assert.Equal(t, tt.wantPod, got.Pod, "Pod")
+			assert.Equal(t, tt.wantOwner, got.Owner, "Owner")
+			assert.Equal(t, tt.wantContainer, got.Container, "Container")
+		})
+	}
+}

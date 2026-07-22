@@ -134,6 +134,20 @@ func TestAzureDetermineNodeType(t *testing.T) {
 		{"Legacy service format", "SomeNewType", "Microsoft.Compute", core.NodeTypeComputeInstance},
 		// Full fallback
 		{"Completely unknown", "UnknownType", "UnknownService", core.NodeTypeCloudResource},
+
+		// Newly-mapped services (previously fell to CloudResource)
+		{"PG flexible server", "flexibleServers", "microsoft.dbforpostgresql/flexibleServers", core.NodeTypeDatabase},
+		{"MySQL flexible server", "flexibleservers", "microsoft.dbformysql/flexibleservers", core.NodeTypeDatabase},
+		{"MariaDB flexible server", "flexibleservers", "microsoft.dbformariadb/flexibleservers", core.NodeTypeDatabase},
+		{"Cognitive Services", "accounts", "microsoft.cognitiveservices/accounts", core.NodeTypeAIService},
+		{"ML workspace", "workspaces", "microsoft.machinelearningservices/workspaces", core.NodeTypeAIService},
+		{"Databricks workspace", "workspaces", "microsoft.databricks/workspaces", core.NodeTypeAIService},
+		{"Arc machine", "machines", "microsoft.hybridcompute/machines", core.NodeTypeComputeInstance},
+		{"Logic App", "workflows", "microsoft.logic/workflows", core.NodeTypeServerlessFunction},
+		{"Communication Services", "communicationservices", "microsoft.communication/communicationservices", core.NodeTypeEmailService},
+		// Deliberately left as CloudResource (no clean existing node type)
+		{"Data Factory stays generic", "factories", "microsoft.datafactory/factories", core.NodeTypeCloudResource},
+		{"Automation stays generic", "automationaccounts", "microsoft.automation/automationaccounts", core.NodeTypeCloudResource},
 	}
 
 	for _, tt := range tests {
@@ -1307,4 +1321,28 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+func TestAzureShouldSuppressResource(t *testing.T) {
+	cases := []struct {
+		name     string
+		row      *CloudResourceRow
+		suppress bool
+	}{
+		{"reservation order by type", &CloudResourceRow{Type: "reservationorders", ServiceName: "virtual machines"}, true},
+		{"reservation order by service", &CloudResourceRow{Type: "x", ServiceName: "microsoft.capacity/reservationorders"}, true},
+		{"capacity service", &CloudResourceRow{Type: "x", ServiceName: "microsoft.capacity/somethingelse"}, true},
+		{"nil row", nil, true},
+		// Must NOT suppress real resources, incl. billing-sourced ones (e.g. Private Endpoints)
+		{"private endpoint (billing-only)", &CloudResourceRow{Type: "privateendpoints", ServiceName: "microsoft.network/privateendpoints"}, false},
+		{"flexible server", &CloudResourceRow{Type: "flexibleservers", ServiceName: "microsoft.dbforpostgresql/flexibleservers"}, false},
+		{"vm", &CloudResourceRow{Type: "virtualmachines", ServiceName: "microsoft.compute/virtualmachines"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := shouldSuppressAzureResource(c.row); got != c.suppress {
+				t.Errorf("shouldSuppressAzureResource(%+v) = %v, want %v", c.row, got, c.suppress)
+			}
+		})
+	}
 }

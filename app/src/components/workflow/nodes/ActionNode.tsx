@@ -159,6 +159,9 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
   const showHalfEdgeAddButton = !hasOutgoingEdge && isEditorMode && !!onAddFromHandle;
 
   const getValidationIcon = () => {
+    if (data.serverError) {
+      return <SafeIcon src={ErrorIcon} alt='server-error-icon' width={24} height={24} />;
+    }
     if (!data.taskConfig) {
       return null;
     }
@@ -446,7 +449,7 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
             width: '28px',
             backgroundColor: 'white',
             padding: 'var(--ds-space-1)',
-            color: data.taskConfig?.valid === false ? 'var(--ds-red-600)' : 'var(--ds-green-500)',
+            color: data.serverError || data.taskConfig?.valid === false ? 'var(--ds-red-600)' : 'var(--ds-green-500)',
           }}
         >
           {getValidationIcon()}
@@ -461,6 +464,7 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
     if (data.isDeleted) return '2px dashed var(--ds-gray-500)';
     if (isDisabled) return '2px dashed var(--ds-gray-500)';
     if (data.connectionRejected) return '3px solid var(--ds-red-500)';
+    if (data.serverError) return '2px solid var(--ds-red-600)';
     if (data.taskConfig?.valid === false) return '2px solid var(--ds-amber-400)';
     if (selected) return '2px solid var(--ds-blue-600)';
     return '1px solid var(--ds-brand-200)';
@@ -474,6 +478,33 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
 
   return (
     <div style={{ position: 'relative' }}>
+      {data.serverError && (
+        <div
+          data-testid='action-node-server-error-badge'
+          title={data.serverError}
+          style={{
+            position: 'absolute',
+            top: -10,
+            right: 12,
+            zIndex: 10,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            padding: 'var(--ds-space-1) var(--ds-space-2)',
+            borderRadius: 999,
+            background: '#dc2626',
+            color: 'white',
+            fontSize: 10,
+            fontWeight: 'var(--ds-font-weight-semibold)',
+            letterSpacing: 0.3,
+            textTransform: 'uppercase',
+            boxShadow: '0 1px 2px rgba(0,0,0,0.15)',
+            cursor: 'help',
+          }}
+        >
+          Server Error
+        </div>
+      )}
       {isDisabled && (
         <div
           data-testid='action-node-disabled-badge'

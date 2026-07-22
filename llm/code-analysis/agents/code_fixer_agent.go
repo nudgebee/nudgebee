@@ -123,6 +123,7 @@ func (a *CodeFixerAgent) executeWithOptions(ctx context.Context, sessionCtx *ses
 
 	// Set repository context and credentials in the planner
 	a.Planner.SetRepositoryContext(sessionCtx.RepoContext)
+	a.Planner.SetRunMemory(sessionCtx.RunMemory)
 	if sessionCtx.Credentials != nil {
 		// Convert ResolvedCredentials to models.Credentials format expected by repo_clone tool
 		modelCreds := &models.Credentials{
@@ -205,11 +206,12 @@ func (a *CodeFixerAgent) executeWithOptions(ctx context.Context, sessionCtx *ses
 			}
 			a.logger.Log(common.EventStepComplete, "Staged specific modified files", map[string]any{"files": modifiedFiles})
 		} else {
-			// Fallback: no files_modified reported, stage everything
-			if _, stageErr := a.runCommandWithOutput(repoDir, "git", "add", "-A"); stageErr != nil {
-				a.logger.Log(common.EventStepFailure, "Failed to stage changes", map[string]any{"error": stageErr.Error()})
-			}
-			a.logger.Log(common.EventStepComplete, "No files_modified list available, staged all changes", nil)
+			// No tracked edits → the fix produced no agent-authored changes. Do NOT
+			// `git add -A`: that would sweep in unrelated dirty files (e.g. a verify
+			// step's `poetry add` touching pyproject.toml/poetry.lock, build
+			// artifacts), polluting the PR. Stage nothing; an empty diff is handled
+			// downstream as a no-op.
+			a.logger.Log(common.EventStepComplete, "No tracked agent edits — staging nothing (avoiding git add -A collateral)", nil)
 		}
 
 		// Generate diff of staged changes against HEAD
@@ -302,31 +304,39 @@ func (a *CodeFixerAgent) getModifiedFiles() []string {
 	if a.Planner == nil {
 		return nil
 	}
-	submitData := a.Planner.GetSubmitAnalysisData()
-	if submitData == nil {
-		return nil
+	set := map[string]bool{}
+	// Authoritative: files the agent actually changed through its mutation tools
+	// (replace/write_file), tracked deterministically in run memory. This excludes
+	// anything a verify step (e.g. `poetry add`) dirtied that the agent didn't edit.
+	for _, f := range a.Planner.EditedFiles() {
+		if f != "" {
+			set[f] = true
+		}
 	}
-	data, ok := submitData.(map[string]any)
-	if !ok {
-		return nil
-	}
-	fm, ok := data["files_modified"]
-	if !ok {
-		return nil
-	}
-	switch v := fm.(type) {
-	case []any:
-		files := make([]string, 0, len(v))
-		for _, item := range v {
-			if s, ok := item.(string); ok && s != "" {
-				files = append(files, s)
+	// Secondary (belt-and-suspenders): the LLM's self-reported files_modified.
+	if submitData := a.Planner.GetSubmitAnalysisData(); submitData != nil {
+		if data, ok := submitData.(map[string]any); ok {
+			switch v := data["files_modified"].(type) {
+			case []any:
+				for _, item := range v {
+					if s, ok := item.(string); ok && s != "" {
+						set[s] = true
+					}
+				}
+			case []string:
+				for _, s := range v {
+					if s != "" {
+						set[s] = true
+					}
+				}
 			}
 		}
-		return files
-	case []string:
-		return v
 	}
-	return nil
+	files := make([]string, 0, len(set))
+	for f := range set {
+		files = append(files, f)
+	}
+	return files
 }
 
 // Git operations removed - all git functionality moved to orchestrator

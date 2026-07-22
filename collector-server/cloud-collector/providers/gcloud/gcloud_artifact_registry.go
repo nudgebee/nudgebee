@@ -70,24 +70,68 @@ func (s *artifactRegistryService) GetResources(ctx providers.CloudProviderContex
 		return nil, fmt.Errorf("failed to create artifactregistry client: %w", err)
 	}
 
-	parent := fmt.Sprintf("projects/%s/locations/-", session.ProjectId)
-	var resources []providers.Resource
-	err = svc.Projects.Locations.Repositories.List(parent).Pages(ctx.GetContext(), func(resp *artifactregistry.ListRepositoriesResponse) error {
-		for _, repo := range resp.Repositories {
-			resources = append(resources, repositoryToResource(repo, session.ProjectId))
-		}
-		return nil
-	})
+	// repositories.list does not accept a "-" location wildcard, so enumerate the
+	// project's Artifact Registry locations first, then list repositories in each.
+	// The per-project TTL guard above keeps this to one enumeration per refresh.
+	locations, err := listARLocations(ctx, svc, session.ProjectId)
 	if err != nil {
-		RecordGCPPermissionError(ctx, err)
-		if isGCPPermissionOrNotFoundError(err) {
-			ctx.GetLogger().Warn("skipping Artifact Registry — API disabled or permission denied", "error", err, "project", session.ProjectId)
-			return nil, nil
+		return nil, err
+	}
+
+	var resources []providers.Resource
+	for _, loc := range locations {
+		repos, lerr := listARRepositoriesInLocation(ctx, svc, session.ProjectId, loc)
+		if lerr != nil {
+			return resources, lerr
 		}
-		return nil, fmt.Errorf("failed to list artifact registry repositories: %w", err)
+		resources = append(resources, repos...)
 	}
 
 	ctx.GetLogger().Info("retrieved Artifact Registry repositories", "count", len(resources), "projectId", session.ProjectId)
+	return resources, nil
+}
+
+// listARLocations enumerates the Artifact Registry locations available to a project,
+// returning nil (no error) when the API is disabled / access is denied.
+func listARLocations(ctx providers.CloudProviderContext, svc *artifactregistry.Service, projectID string) ([]string, error) {
+	var locations []string
+	err := svc.Projects.Locations.List(fmt.Sprintf("projects/%s", projectID)).
+		Pages(ctx.GetContext(), func(resp *artifactregistry.ListLocationsResponse) error {
+			for _, loc := range resp.Locations {
+				if loc.LocationId != "" {
+					locations = append(locations, loc.LocationId)
+				}
+			}
+			return nil
+		})
+	if err != nil {
+		RecordGCPPermissionError(ctx, err)
+		if isGCPPermissionOrNotFoundError(err) {
+			ctx.GetLogger().Warn("skipping Artifact Registry — API disabled or permission denied", "error", err, "project", projectID)
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to list artifact registry locations: %w", err)
+	}
+	return locations, nil
+}
+
+// listARRepositoriesInLocation lists Artifact Registry repositories in one location,
+// returning nil (no error) when the location is inaccessible / API-disabled.
+func listARRepositoriesInLocation(ctx providers.CloudProviderContext, svc *artifactregistry.Service, projectID, location string) ([]providers.Resource, error) {
+	var resources []providers.Resource
+	err := svc.Projects.Locations.Repositories.List(fmt.Sprintf("projects/%s/locations/%s", projectID, location)).
+		Pages(ctx.GetContext(), func(resp *artifactregistry.ListRepositoriesResponse) error {
+			for _, repo := range resp.Repositories {
+				resources = append(resources, repositoryToResource(repo, projectID))
+			}
+			return nil
+		})
+	if err != nil {
+		if isGCPPermissionOrNotFoundError(err) {
+			return nil, nil
+		}
+		return resources, fmt.Errorf("failed to list artifact registry repositories in %s: %w", location, err)
+	}
 	return resources, nil
 }
 

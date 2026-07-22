@@ -92,10 +92,26 @@ func upsertEventRule(dbms *database.DatabaseManager, annotations any, labels any
 		INSERT INTO event_rules (id, account_id, tenant_id, alert, annotations, expr, duration, labels, source, category, severity, enabled, alert_type, metric_provider, metric_provider_source, external_rule_id, provider_config, created_at, updated_at)
 		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now(), now())
 		ON CONFLICT (account_id, tenant_id, alert)
-		DO UPDATE SET updated_at = now(), annotations = EXCLUDED.annotations, expr = EXCLUDED.expr, duration = EXCLUDED.duration,
-			labels = EXCLUDED.labels, severity = EXCLUDED.severity, category = EXCLUDED.category, source = EXCLUDED.source, enabled = EXCLUDED.enabled,
-			alert_type = EXCLUDED.alert_type, metric_provider = EXCLUDED.metric_provider, metric_provider_source = EXCLUDED.metric_provider_source,
-			external_rule_id = EXCLUDED.external_rule_id, provider_config = EXCLUDED.provider_config
+		-- A firing-alert webhook (Alertmanager/PagerDuty, datadog_webhook, grafana_webhook, …) upserts on the
+		-- same (account, tenant, alert) key as the authoritative rule definition (agent PrometheusRule sync,
+		-- UI, or external-provider create), but carries only the firing instance's labels/annotations — no
+		-- PromQL and no integration linkage. Updating definition/integration fields unconditionally let a
+		-- firing blank the agent-synced expr (so prometheus_enricher skipped the alert's real query) and would
+		-- likewise NULL external_rule_id/metric_provider/provider_config (breaking external rule management).
+		-- So: volatile fields always update; definition + integration fields are overwritten only by a
+		-- non-webhook write (EXCLUDED.source NOT LIKE '%_webhook', matching isWebhookSource), or when the
+		-- existing row is itself webhook-sourced / unset so a pure-webhook alert can still populate them.
+		DO UPDATE SET updated_at = now(), annotations = EXCLUDED.annotations,
+			labels = EXCLUDED.labels, severity = EXCLUDED.severity, enabled = EXCLUDED.enabled,
+			expr = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' THEN EXCLUDED.expr ELSE event_rules.expr END,
+			duration = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' THEN EXCLUDED.duration ELSE event_rules.duration END,
+			alert_type = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' THEN EXCLUDED.alert_type ELSE event_rules.alert_type END,
+			source = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN EXCLUDED.source ELSE event_rules.source END,
+			category = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN EXCLUDED.category ELSE event_rules.category END,
+			metric_provider = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN EXCLUDED.metric_provider ELSE event_rules.metric_provider END,
+			metric_provider_source = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN EXCLUDED.metric_provider_source ELSE event_rules.metric_provider_source END,
+			external_rule_id = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN EXCLUDED.external_rule_id ELSE event_rules.external_rule_id END,
+			provider_config = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN EXCLUDED.provider_config ELSE event_rules.provider_config END
 		RETURNING id`,
 		accountId, tenantId, alert, annotationsJSON, expr, duration, labelsJSON, source, category, severity, enabled,
 		alertType, nilIfEmpty(metricProvider), nilIfEmpty(metricProviderSource), nilIfEmpty(externalRuleId), providerConfigJSON,
@@ -708,6 +724,13 @@ func isK8sAgentConnected(accountId string) bool {
 		return false
 	}
 	return true
+}
+
+// IsK8sAgentConnected reports whether the account has a connected (non-proxy) k8s agent.
+// Exported wrapper around isK8sAgentConnected so other packages (e.g. triage's threshold
+// apply capability check) can gate agent-dependent writes without duplicating the query.
+func IsK8sAgentConnected(accountId string) bool {
+	return isK8sAgentConnected(accountId)
 }
 
 // Action defines the interface that all playbook actions must implement.

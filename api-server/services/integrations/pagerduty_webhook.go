@@ -3347,6 +3347,31 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 		}
 	}
 
+	// Specific k8s resource labels (PVC / HPA / Job). These name the resource
+	// the alert is actually about and must win over the generic monitoring/job
+	// fallbacks below. E.g. KubePersistentVolumeFillingUp carries
+	// persistentvolumeclaim=<pvc> alongside job=kubelet (the scrape target) —
+	// the PVC is the subject, not the kubelet scraper. `job_name` (not the
+	// prometheus `job`) is the real K8s Job; kube-state-metrics emits it on
+	// kube_job_* series. Mirrors robusta's ResourceMapping precedence.
+	if parsedPayload.EventSubjectName == "" {
+		resourceKeys := []struct{ key, kind string }{
+			{"persistentvolumeclaim", "persistentvolumeclaim"},
+			{"horizontalpodautoscaler", "horizontalpodautoscaler"},
+			{"hpa", "horizontalpodautoscaler"},
+			{"job_name", "job"},
+		}
+		for _, rk := range resourceKeys {
+			val := labels[rk.key]
+			if val == "" {
+				continue
+			}
+			parsedPayload.EventSubjectName = val
+			parsedPayload.EventSubjectKind = rk.kind
+			break
+		}
+	}
+
 	if parsedPayload.EventSubjectName == "" {
 		// Lower-priority: monitoring and generic labels
 		lowerPriorityKeys := []string{
@@ -3365,6 +3390,13 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 				continue
 			}
 			if strings.Contains(val, "kube-state-metrics") {
+				continue
+			}
+			// `job`/`nb_alert_job` carry the prometheus scrape target on every
+			// series (kubelet, node-exporter, …). Never let an exporter become
+			// the subject — that's how KubePersistentVolumeFillingUp resolved
+			// to subject=kubelet instead of the persistentvolumeclaim.
+			if (key == "job" || key == "nb_alert_job") && isPrometheusScrapeJob(val) {
 				continue
 			}
 			parsedPayload.EventSubjectName = val
@@ -3439,7 +3471,13 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 
 	// Populate pod/namespace labels for auto-action triggers (pod metrics, deployment history)
 	if parsedPayload.EventSubjectName != "" {
-		if labels["pod"] == "" {
+		// Only fabricate a `pod` label when the subject is pod-like. For
+		// resource subjects that aren't pods (PVC, HPA, Job, node), a
+		// pod=<subject> label would make the pod metric/log enrichers query a
+		// non-existent pod (e.g. pod=<pvc-name>) and return empty.
+		kind := strings.ToLower(parsedPayload.EventSubjectKind)
+		isPodLike := kind == "" || kind == "pod"
+		if isPodLike && labels["pod"] == "" {
 			labels["pod"] = parsedPayload.EventSubjectName
 		}
 		if parsedPayload.EventSubjectNamespace != "" && labels["namespace"] == "" {
@@ -3453,6 +3491,20 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 	if parsedPayload.EventSubjectName == "" {
 		labels["nb_subject_resolution"] = "unresolved"
 	}
+}
+
+// isPrometheusScrapeJob reports whether a `job`/`nb_alert_job` label value names
+// an infrastructure scrape target (exporter) rather than a workload. These jobs
+// scrape OTHER resources' metrics — kubelet exposes PVC/volume stats,
+// kube-state-metrics exposes every object's state — so their name must never
+// become a finding subject. Without this, KubePersistentVolumeFillingUp
+// (job=kubelet) resolved to subject=kubelet instead of the persistentvolumeclaim.
+func isPrometheusScrapeJob(val string) bool {
+	switch strings.ToLower(val) {
+	case "kubelet", "kube-state-metrics", "node-exporter", "cadvisor":
+		return true
+	}
+	return strings.Contains(val, "kube-state-metrics") || strings.Contains(val, "node-exporter")
 }
 
 // matchWorkloadAndEnrich validates the resolved EventSubjectName against the k8s_workloads

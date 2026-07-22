@@ -1,0 +1,85 @@
+slug: restart_cloud_sql_instance
+name: "Restart Cloud SQL Instance"
+description: "Restart a GCP Cloud SQL instance. Useful for applying configuration changes, recovering from connection exhaustion, or clearing transient issues."
+category: "gcp"
+icon: "restart_alt"
+status: ACTIVE
+tags:
+  labels:
+    - "restart"
+    - "disruptive"
+  event_sources:
+    - "GCP_Metric_Alert"
+    - "gcp_monitoring_webhook"
+  alert_names: []
+  subject_types:
+    - "cloudsql_database"
+definition:
+  version: "v1"
+  inputs:
+    - id: "instance_name"
+      type: "string"
+      description: "Cloud SQL instance name"
+      required: true
+    - id: "project"
+      type: "string"
+      description: "GCP project ID"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "check_status"
+      type: "cloud.gcp.cli"
+      params:
+        command: "gcloud sql instances describe {{ Inputs.instance_name }} --project={{ Inputs.project }} --format='table(state,settings.tier,databaseVersion,settings.dataDiskSizeGb)'"
+        account_id: "{{ Inputs.account_id }}"
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: |-
+          Approve restart of Cloud SQL instance **{{ Inputs.instance_name }}** in project **{{ Inputs.project }}**?
+
+          This will cause brief downtime.
+      depends_on:
+        - "check_status"
+    - id: "restart"
+      type: "cloud.gcp.cli"
+      params:
+        command: "gcloud sql instances restart {{ Inputs.instance_name }} --project={{ Inputs.project }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "wait"
+      type: "core.wait"
+      params:
+        duration: "30s"
+      depends_on:
+        - "restart"
+    - id: "verify"
+      type: "cloud.gcp.cli"
+      params:
+        command: "gcloud sql instances describe {{ Inputs.instance_name }} --project={{ Inputs.project }} --format='value(state)'"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "wait"
+  timeout: "10m"
+template_variables:
+  - id: "instance_name"
+    input_ref: "instance_name"
+    display_name: "Instance Name"
+    required: true
+    type: "string"
+  - id: "project"
+    input_ref: "project"
+    display_name: "GCP Project ID"
+    required: true
+    type: "string"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

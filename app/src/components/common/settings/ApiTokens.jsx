@@ -20,6 +20,7 @@ const ApiTokens = ({ open, title, onClose }) => {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [tokenName, setTokenName] = useState('');
   const [createdToken, setCreatedToken] = useState(null);
+  const [createdTokenName, setCreatedTokenName] = useState(null);
   const [showInstructions, setShowInstructions] = useState(false);
   const [deleteDialog, setDeleteDialog] = useState({ open: false, token: null });
 
@@ -62,6 +63,7 @@ const ApiTokens = ({ open, title, onClose }) => {
         snackbar.error(`Failed to create API token - ${parseHttpResponseBodyMessage(response)}`);
       } else if (response.data && response.data.token) {
         setCreatedToken(response.data.token);
+        setCreatedTokenName(tokenName.trim());
         setTokenName('');
         setShowCreateForm(false);
         fetchTokens();
@@ -92,6 +94,11 @@ const ApiTokens = ({ open, title, onClose }) => {
       if (response.errors && response.errors.length > 0) {
         snackbar.error(`Failed to delete API token - ${parseHttpResponseBodyMessage(response)}`);
       } else {
+        // Hide the "Token Created Successfully" banner if it refers to the token just deleted.
+        if (createdTokenName && token.name === createdTokenName) {
+          setCreatedToken(null);
+          setCreatedTokenName(null);
+        }
         fetchTokens();
         snackbar.success('API Token deleted successfully');
       }
@@ -111,6 +118,7 @@ const ApiTokens = ({ open, title, onClose }) => {
     setShowCreateForm(false);
     setTokenName('');
     setCreatedToken(null);
+    setCreatedTokenName(null);
     setDeleteDialog({ open: false, token: null });
     onClose();
   };
@@ -228,6 +236,7 @@ const ApiTokens = ({ open, title, onClose }) => {
                   onClick={() => {
                     setShowCreateForm(true);
                     setCreatedToken(null);
+                    setCreatedTokenName(null);
                   }}
                 >
                   Create New Token

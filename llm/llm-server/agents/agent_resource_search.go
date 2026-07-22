@@ -165,6 +165,16 @@ Strategy:
 	if strings.TrimSpace(request.SkillsContext) != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeSystem, request.SkillsContext))
 	}
+	// Same custom-planner gap as SkillsContext above: this LLM call never sees
+	// the planner's <global_preferences> block, so the operator-curated account
+	// GlobalContext (naming conventions like "users say the base service name,
+	// deployments carry -internal/-rr variants") must be attached here for the
+	// generated search calls to use the deployment's real vocabulary.
+	if ap := strings.TrimSpace(request.AccountPrompt); ap != "" {
+		ap = core.TruncateHead(ap, customAgentAccountPromptCap())
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeSystem,
+			"Account preferences (operator-curated for THIS deployment):\n"+ap))
+	}
 	if request.ConversationContext != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeSystem, fmt.Sprintf("Conversation Context:\n%s", request.ConversationContext)))
 	}
@@ -182,6 +192,7 @@ Strategy:
 		Tool       string          `json:"tool"`
 		ToolCode   string          `json:"tool_code"`
 		ToolName   string          `json:"tool_name"`
+		Name       string          `json:"name"`
 		Input      json.RawMessage `json:"input"`
 		Args       json.RawMessage `json:"args"`
 		Parameters json.RawMessage `json:"parameters"`
@@ -216,6 +227,13 @@ Strategy:
 			}
 			if tc.Tool == "" && tc.ToolName != "" {
 				tc.Tool = tc.ToolName
+			}
+			// Function-calling-style output ({"name": ..., "arguments": ...})
+			// is what Gemini and OpenAI models emit by habit even when asked
+			// for tool/input keys; without this alias every call is dropped
+			// and the keyword fallback runs instead.
+			if tc.Tool == "" && tc.Name != "" {
+				tc.Tool = tc.Name
 			}
 
 			// Priority order for input payload

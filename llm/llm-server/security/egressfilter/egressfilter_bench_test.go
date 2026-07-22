@@ -63,7 +63,7 @@ func BenchmarkScan_WithSecret_Runbook(b *testing.B) {
 
 func BenchmarkWrapper_GenerateContent_Clean(b *testing.B) {
 	inner := &fakeModel{respText: "ok"}
-	wrapped := WrapModel(inner, "openai", "gpt-4o", true, ModeAudit)
+	wrapped := WrapModel(inner, "openai", "gpt-4o", true, ModeDetect)
 	msgs := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, representativeRunbook[:512]),
 		llms.TextParts(llms.ChatMessageTypeHuman, "Diagnose the issue."),

@@ -12,7 +12,7 @@ import (
 	"nudgebee/code-analysis-agent/tools/core"
 )
 
-const maxLinesDefault = 1000 // Max lines to read in one chunk
+const maxLinesDefault = 500 // Max lines returned in one chunk (bounded; page with start_line/end_line)
 
 type FileViewTool struct {
 	workspaceDir string
@@ -218,20 +218,18 @@ func (t *FileViewTool) Execute(ctx context.Context, input map[string]any) core.N
 		}
 	}
 
-	// If no range is specified, check if the file is too large to display fully
+	// Bound the read instead of rejecting it. Erroring on a too-large request forces
+	// the agent to spend another step re-requesting a smaller chunk; clamping to the
+	// cap and telling it how to page returns useful content immediately.
+	truncatedNote := ""
 	if startLine == 0 && endLine == 0 && lineCount > maxLinesDefault {
-		return core.NBToolResponse{
-			Status: "error",
-			Error:  fmt.Sprintf("File '%s' is too large (%d lines). Please specify a smaller chunk using 'start_line' and 'end_line' (e.g., a 200-line chunk).", filePath, lineCount),
-		}
-	}
-
-	// If a range is specified, check if it's too large
-	if endLine > 0 && startLine > 0 && (endLine-startLine+1) > maxLinesDefault {
-		return core.NBToolResponse{
-			Status: "error",
-			Error:  fmt.Sprintf("The requested line range (%d lines) is too large. Please request a smaller chunk (max %d lines).", (endLine - startLine + 1), maxLinesDefault),
-		}
+		startLine = 1
+		endLine = maxLinesDefault
+		truncatedNote = fmt.Sprintf("\n\n[TRUNCATED: file has %d lines; showing 1-%d. Request the next chunk with start_line=%d, end_line=...]", lineCount, maxLinesDefault, maxLinesDefault+1)
+	} else if endLine > 0 && startLine > 0 && (endLine-startLine+1) > maxLinesDefault {
+		requested := endLine - startLine + 1
+		endLine = startLine + maxLinesDefault - 1
+		truncatedNote = fmt.Sprintf("\n\n[TRUNCATED: requested %d lines; showing %d-%d (max %d per call). Request the next chunk with start_line=%d.]", requested, startLine, endLine, maxLinesDefault, endLine+1)
 	}
 
 	// Read the specified lines
@@ -261,7 +259,7 @@ func (t *FileViewTool) Execute(ctx context.Context, input map[string]any) core.N
 	}
 
 	// Include actual file path in observation when it differs from requested path
-	observation := content
+	observation := content + truncatedNote
 	originalPath := input["file_path"].(string)
 
 	// Get the relative path from working directory

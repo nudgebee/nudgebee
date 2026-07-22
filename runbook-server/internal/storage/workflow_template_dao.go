@@ -46,6 +46,15 @@ func (s *WorkflowTemplateDao) ListGlobal(ctx context.Context, request model.List
 		argID++
 	}
 
+	// Label facet filtering: narrow to templates carrying ANY of the requested
+	// browse labels (tags.labels). ANDed with the other filters; independent of
+	// the event-matching OR logic below.
+	if len(request.Labels) > 0 {
+		whereClauses = append(whereClauses, fmt.Sprintf("(t.tags->'labels') ?| $%d", argID))
+		args = append(args, pq.Array(request.Labels))
+		argID++
+	}
+
 	// Tag-based filtering: match templates by event sources, alert names, and/or subject types.
 	// Match if ANY of:
 	//   1. alert_name matches (precise hit)

@@ -217,12 +217,9 @@ const TicketFormSection = ({
    */
   const fetchConfigList = () => {
     apiTickets
-      .listTicketConfigurations(
-        {
-          tool: toolName,
-        },
-        true
-      )
+      .listTicketConfigsForCreate({
+        tool: toolName,
+      })
       .then((res) => {
         setConfigList(res?.data);
         if (res?.data && res?.data.length > 0) {

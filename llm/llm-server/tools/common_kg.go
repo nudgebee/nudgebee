@@ -196,7 +196,7 @@ func doKGActionRequest(ctx security.RequestContext, actionName, accountId string
 			"Accept":         "application/json",
 			"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
 			"x-tenant-id":    tenant,
-			"x-user-id":      ctx.GetSecurityContext().GetUserId(),
+			"x-user-id":      ctx.GetSecurityContext().EffectiveUserIdForRPC(),
 		}),
 		common.HttpWithJsonBody(queryPayload),
 	)

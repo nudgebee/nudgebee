@@ -94,6 +94,12 @@ type ReActPlanner struct {
 	executedCallHashes map[string]int // hash -> execution count
 	mu                 sync.Mutex     // Guards executedCallHashes and other shared state
 
+	// runMemory is the per-run working memory shared across all phases of one
+	// /analyze run. When set, identical read-only tool calls are served from its
+	// cache instead of being re-executed and re-appended. nil for legacy callers
+	// (falls back to per-planner behavior). See run_memory.go.
+	runMemory *RunMemory
+
 	// Metacognition state (Goal / Ledger / Reflection). Built per Plan() call,
 	// nil for callers that bypass mode-aware planning (e.g. legacy specialists
 	// invoked without a context-mode). See goal.go, ledger.go, reflection.go.
@@ -101,6 +107,17 @@ type ReActPlanner struct {
 	ledger               *Ledger
 	reflectionEvery      int // run reflection every N completed tool calls
 	stepsSinceReflection int // counter against reflectionEvery
+
+	// Stall detection. Snapshot of the ledger at the previous reflection plus a
+	// run of consecutive reflections with no measurable progress. When the run
+	// reaches maxStallReflections the planner terminates deterministically (see
+	// the reflection block in Plan) instead of grinding to the iteration cap.
+	prevFindings          int
+	prevCitations         int
+	prevOpenQ             int
+	prevEdits             bool
+	hasReflectedOnce      bool
+	noProgressReflections int
 }
 
 // RepositoryContext provides comprehensive repository and troubleshooting information
@@ -340,6 +357,19 @@ func (p *ReActPlanner) SetMaxIterations(n int) {
 	}
 }
 
+// SetRunMemory attaches the per-run working memory shared across phases. When set,
+// identical read-only tool calls are served from its cache instead of re-executing.
+func (p *ReActPlanner) SetRunMemory(rm *RunMemory) {
+	p.runMemory = rm
+}
+
+// EditedFiles returns the authoritative set of files the agent changed through its
+// mutation tools this run (from run memory). Used to stage a PR off exactly the
+// agent's edits rather than whatever is dirty in the tree.
+func (p *ReActPlanner) EditedFiles() []string {
+	return p.runMemory.EditedFiles()
+}
+
 // ResetCallHashes clears the dedup tracker (useful between agent phases).
 func (p *ReActPlanner) ResetCallHashes() {
 	p.mu.Lock()
@@ -496,6 +526,12 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 	p.goal = BuildGoal(query, tools.ModeFromContext(ctx))
 	p.ledger = NewLedger(nil)
 	p.stepsSinceReflection = 0
+	// Reset stall-detection state so a reused planner (e.g. the commit-
+	// enforcement second pass) starts each Plan() with a clean progress history.
+	p.prevFindings, p.prevCitations, p.prevOpenQ = 0, 0, 0
+	p.prevEdits = false
+	p.hasReflectedOnce = false
+	p.noProgressReflections = 0
 
 	// Create temporary workspace
 	if _, hasLocalPath := p.secureContext["repository_path"]; !hasLocalPath {
@@ -539,7 +575,7 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 		// Token-aware compaction: compact when estimated tokens exceed 70% of budget
 		// or message count exceeds 40 (fallback for models without token counting).
 		if estimateMessageTokens(llmConversation) > p.maxContextTokens*70/100 || len(llmConversation) > 40 {
-			llmConversation = p.compactConversationWindow(llmConversation)
+			llmConversation = p.compactConversationWindow(ctx, llmConversation)
 		}
 
 		// Step budget awareness: inform the agent when running low on steps
@@ -567,35 +603,7 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 		// rounds left to retry, so the loop must always terminate here regardless of
 		// whether submit_analysis returns success or error.
 		if iteration >= p.maxIterations-1 && !p.hasCalledSubmitAnalysis() {
-			if p.logger != nil {
-				p.logger.Log(common.EventPlanningComplete, "Forcing submit_analysis...", map[string]any{"iteration": iteration + 1})
-			}
-			forcedStep := p.createForcedSubmitAnalysisStep(ctx, stepNumber, query, systemPrompt)
-			result.Steps = append(result.Steps, forcedStep)
-			p.currentSteps = append(p.currentSteps, forcedStep)
-			p.executeStep(ctx, &forcedStep) // This execution calls injectToolOutputs
-			if forcedStep.Status == "completed" {
-				result.Status = "completed"
-			} else {
-				// Salvage the planner-constructed input (already guarded to have non-empty
-				// title/description) so the orchestrator gets structured data instead of
-				// an empty FinalAnswer / parse-error envelope.
-				p.salvageForcedSubmitInput(&forcedStep)
-				result.Status = "max_iterations"
-				result.Error = fmt.Sprintf("forced submit_analysis tool errored: %s", forcedStep.Error)
-			}
-			// When the forced submit had to rely on the hardcoded fallback
-			// (generateLLMSummary errored), the structured data contains a
-			// fabricated requires_fix=false. Surface that as an explicit marker
-			// in lastSubmitAnalysisData so the orchestrator can distinguish a
-			// real "no fix needed" answer from a planner failure and react
-			// accordingly (e.g., return an error when raise_pr=true was set).
-			//
-			// Both salvage and annotate mutate lastSubmitAnalysisData and must
-			// run before extractFinalAnswer so result.FinalAnswer reflects the
-			// final state — extractFinalAnswer marshals lastSubmitAnalysisData.
-			p.annotateForcedFallbackMarker()
-			result.FinalAnswer = p.extractFinalAnswer(&forcedStep)
+			p.runForcedSubmit(ctx, result, stepNumber, query, systemPrompt)
 			break
 		}
 
@@ -740,6 +748,23 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 				}
 			} else if updated != nil {
 				p.ledger.MergeUpdate(updated)
+
+				// Stall accounting: did the ledger advance since the previous
+				// reflection? A run that neither converges (ready_to_submit) nor
+				// progresses is spinning. We measure this off the agent's own
+				// ledger state, not a step counter.
+				f, c, q := len(p.ledger.Findings), len(p.ledger.Citations), len(p.ledger.OpenSubQuestions)
+				edits := p.hasMadeEdits()
+				if p.hasReflectedOnce {
+					if ledgerMadeProgress(p.prevFindings, p.prevCitations, p.prevOpenQ, p.prevEdits, f, c, q, edits) {
+						p.noProgressReflections = 0
+					} else {
+						p.noProgressReflections++
+					}
+				}
+				p.prevFindings, p.prevCitations, p.prevOpenQ, p.prevEdits = f, c, q, edits
+				p.hasReflectedOnce = true
+
 				if p.ledger.ReadyToSubmit && p.canTerminateFromLedger() {
 					termStep, ok := p.terminateFromLedger(ctx, stepNumber+len(steps))
 					if ok {
@@ -764,6 +789,26 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 					}
 				} else {
 					llmConversation = p.appendLedgerHint(llmConversation)
+
+					// Structural anti-stall termination. The agent has made no
+					// measurable ledger progress across maxStallReflections
+					// consecutive reflections AND has edited nothing — it is
+					// spinning read-only, not converging. End now via the same
+					// forced-submit path the iteration ceiling uses, so the run
+					// produces its honest terminal outcome promptly instead of
+					// burning the rest of the budget. Gated on !hasMadeEdits so a
+					// run that is mid-edit/commit (where the ledger legitimately
+					// goes quiet) is never aborted.
+					if p.noProgressReflections >= maxStallReflections && !p.hasMadeEdits() && !p.hasCalledSubmitAnalysis() {
+						if p.logger != nil {
+							p.logger.Log(common.EventPlanningComplete, "Terminating: agent stalled (no ledger progress across reflections)", map[string]any{
+								"no_progress_reflections": p.noProgressReflections,
+								"iteration":               result.Iterations,
+							})
+						}
+						p.runForcedSubmit(ctx, result, stepNumber+len(steps), query, systemPrompt)
+						break
+					}
 				}
 			}
 		}
@@ -1145,8 +1190,33 @@ func (p *ReActPlanner) executeStep(ctx context.Context, step *Step) {
 		return
 	}
 
-	// Dedup check: warn on 2nd identical call, block on 3rd+
+	// Read-only capability (capability-driven; no tool-name hardcoding).
+	isReadOnly := false
+	if ro, ok := tool.(core.ReadOnlyTool); ok {
+		isReadOnly = ro.IsReadOnly()
+	}
+
 	hash := p.hashToolCall(step.Action, step.ActionInput)
+
+	// Run-scoped read cache: an identical read-only call already executed earlier in
+	// this run (and not invalidated by a later mutation) is served from memory rather
+	// than re-executed and re-appended. The per-planner dedup below never spans phases
+	// (each phase builds a fresh planner), so this is what actually eliminates the
+	// cross-phase re-reads.
+	if isReadOnly {
+		if obs, firstStep, ok := p.runMemory.LookupRead(hash); ok {
+			step.Status = "completed"
+			step.Observation = fmt.Sprintf("[cached: identical %s call already executed at step %d this run; result unchanged]\n%s", step.Action, firstStep, obs)
+			if p.logger != nil {
+				p.logger.Log(common.EventStepComplete, "Served read-only result from run cache", map[string]any{
+					"tool_name": step.Action, "first_step": firstStep,
+				})
+			}
+			return
+		}
+	}
+
+	// Dedup check: warn on 2nd identical call, block on 3rd+
 	p.mu.Lock()
 	p.executedCallHashes[hash]++
 	cnt := p.executedCallHashes[hash]
@@ -1252,6 +1322,21 @@ func (p *ReActPlanner) executeStep(ctx context.Context, step *Step) {
 	} else {
 		step.Status = "completed"
 		step.Observation = p.formatObservation(tool, result)
+
+		// Run-scoped memory: cache read-only results so an identical later call (in
+		// any phase) is served from memory; a mutating tool invalidates cached reads
+		// so a subsequent identical read re-executes against the changed tree.
+		if isReadOnly {
+			p.runMemory.StoreRead(hash, step.Number, step.Observation)
+		} else {
+			p.runMemory.Invalidate()
+			// Deterministically record files the agent edits (replace/write_file carry
+			// a file_path) so the PR can be staged off this authoritative set instead
+			// of `git add -A` — keeping verify-step side effects out of the commit.
+			if fp, ok := step.ActionInput["file_path"].(string); ok && fp != "" {
+				p.runMemory.RecordEditedFile(fp)
+			}
+		}
 
 		// Append dedup warning if this was 2nd identical call
 		if cnt == 2 {
@@ -1560,13 +1645,58 @@ func (p *ReActPlanner) generateHelpfulGuidance(step Step) string {
 	return "\nAn error occurred. Please analyze the error and try again."
 }
 
+// summarizeMiddle condenses a span of older conversation messages into a compact
+// findings recap via one best-effort LLM call. Returns ("", false) on any failure so
+// the caller falls back to structural truncation — behavior is never worse than before.
+func (p *ReActPlanner) summarizeMiddle(ctx context.Context, middle []llms.MessageContent) (string, bool) {
+	if p.llmClient == nil || len(middle) < 4 {
+		return "", false
+	}
+	var b strings.Builder
+	for _, m := range middle {
+		for _, part := range m.Parts {
+			switch v := part.(type) {
+			case llms.TextContent:
+				fmt.Fprintf(&b, "%s: %s\n", m.Role, v.Text)
+			case llms.ToolCall:
+				if v.FunctionCall != nil {
+					fmt.Fprintf(&b, "tool_call: %s %s\n", v.FunctionCall.Name, v.FunctionCall.Arguments)
+				}
+			case llms.ToolCallResponse:
+				fmt.Fprintf(&b, "tool_result(%s): %s\n", v.Name, v.Content)
+			}
+		}
+	}
+	transcript := strings.TrimSpace(b.String())
+	if transcript == "" {
+		return "", false
+	}
+	const instr = "You are compacting an in-progress code investigation to save context. " +
+		"Summarize the steps below into a terse recap that PRESERVES specifics: files examined (paths), " +
+		"key facts and code locations (file:line), errors seen (verbatim signatures), edits attempted and their outcomes, " +
+		"the current root-cause hypothesis, and what still needs checking. Omit narration; output only the recap.\n\n"
+	msgs := []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart(instr + transcript)},
+	}}
+	resp, err := p.llmClient.GenerateContent(ctx, msgs)
+	if err != nil || resp == nil || len(resp.Choices) == 0 {
+		return "", false
+	}
+	out := strings.TrimSpace(resp.Choices[0].Content)
+	if out == "" {
+		return "", false
+	}
+	return out, true
+}
+
 // compactConversationWindow applies a sliding window to prevent unbounded conversation growth.
 // It keeps: system prompt (index 0) + initial user query (index 1) + last 12 messages (~6 tool call rounds).
 // Older messages (between index 2 and len-12) are compacted:
 //   - AI messages: keep text (thought) + tool call name only (drop arguments JSON)
 //   - Tool messages: truncate ToolCallResponse content to 1000 chars
 //   - Human nudge messages: drop entirely (these are only used for text-only responses)
-func (p *ReActPlanner) compactConversationWindow(messages []llms.MessageContent) []llms.MessageContent {
+func (p *ReActPlanner) compactConversationWindow(ctx context.Context, messages []llms.MessageContent) []llms.MessageContent {
 	if len(messages) <= 16 {
 		return messages // Nothing to compact
 	}
@@ -1590,6 +1720,26 @@ func (p *ReActPlanner) compactConversationWindow(messages []llms.MessageContent)
 	// (and its preceding AI message) into the recent section to keep them adjacent.
 	for middleEnd > 2 && middleEnd < len(messages) && messages[middleEnd].Role == llms.ChatMessageTypeTool {
 		middleEnd--
+	}
+
+	// Semantic compaction (M4): replace the middle "compress zone" with a single
+	// LLM-generated findings summary so the agent retains what it learned instead of
+	// reading 1000-char fragments and re-investigating. Falls back to the structural
+	// per-message truncation below on any summarizer failure, so behavior is never
+	// worse than before.
+	if summary, ok := p.summarizeMiddle(ctx, messages[2:middleEnd]); ok {
+		compacted = append(compacted, llms.MessageContent{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart("[Earlier investigation summarized to save context]\n<investigation_summary>\n" + summary + "\n</investigation_summary>")},
+		})
+		compacted = append(compacted, messages[middleEnd:]...)
+		if p.logger != nil {
+			p.logger.Log(common.EventPlanningProgress, "Semantically compacted conversation window", map[string]any{
+				"original_messages":  len(messages),
+				"compacted_messages": len(compacted),
+			})
+		}
+		return compacted
 	}
 
 	for i := 2; i < middleEnd; i++ {
@@ -1857,6 +2007,72 @@ func (p *ReActPlanner) hasCalledSubmitAnalysis() bool {
 	return false
 }
 
+// hasMadeEdits reports whether the agent has successfully edited a file this
+// run (via the write tools available to it). It is the deterministic signal
+// the stall detector uses to distinguish "spinning read-only" (the failure
+// mode where a followup agent investigates to the iteration ceiling without
+// ever touching the code) from a run that is genuinely making changes.
+func (p *ReActPlanner) hasMadeEdits() bool {
+	for _, step := range p.currentSteps {
+		if step.Status != "completed" {
+			continue
+		}
+		switch step.Action {
+		case "replace", "write_file":
+			return true
+		}
+	}
+	return false
+}
+
+// ledgerMadeProgress reports whether the ledger advanced between two reflection
+// snapshots: a new finding, a new citation, a closed sub-question, or the first
+// edit appearing. Kept as a pure function so the stall-detection rule is
+// unit-testable in isolation, with no dependence on a step counter or magic
+// threshold.
+func ledgerMadeProgress(prevFindings, prevCitations, prevOpenQ int, prevEdits bool, findings, citations, openQ int, edits bool) bool {
+	return findings > prevFindings ||
+		citations > prevCitations ||
+		openQ < prevOpenQ ||
+		(edits && !prevEdits)
+}
+
+// runForcedSubmit synthesises a submit_analysis from the work done so far and
+// records the terminal result. It is the single deterministic exit used both
+// when the iteration ceiling is hit and when the stall detector fires — the
+// agent gets one final, structured answer instead of an empty envelope.
+func (p *ReActPlanner) runForcedSubmit(ctx context.Context, result *PlannerResult, stepNumber int, query, systemPrompt string) {
+	if p.logger != nil {
+		p.logger.Log(common.EventPlanningComplete, "Forcing submit_analysis...", map[string]any{"iteration": result.Iterations})
+	}
+	forcedStep := p.createForcedSubmitAnalysisStep(ctx, stepNumber, query, systemPrompt)
+	result.Steps = append(result.Steps, forcedStep)
+	p.currentSteps = append(p.currentSteps, forcedStep)
+	p.executeStep(ctx, &forcedStep) // This execution calls injectToolOutputs
+	if forcedStep.Status == "completed" {
+		result.Status = "completed"
+	} else {
+		// Salvage the planner-constructed input (already guarded to have non-empty
+		// title/description) so the orchestrator gets structured data instead of
+		// an empty FinalAnswer / parse-error envelope.
+		p.salvageForcedSubmitInput(&forcedStep)
+		result.Status = "max_iterations"
+		result.Error = fmt.Sprintf("forced submit_analysis tool errored: %s", forcedStep.Error)
+	}
+	// When the forced submit had to rely on the hardcoded fallback
+	// (generateLLMSummary errored), the structured data contains a fabricated
+	// requires_fix=false. Surface that as an explicit marker in
+	// lastSubmitAnalysisData so the orchestrator can distinguish a real "no fix
+	// needed" answer from a planner failure and react accordingly (e.g., return
+	// an error when raise_pr=true was set).
+	//
+	// Both salvage and annotate mutate lastSubmitAnalysisData and must run
+	// before extractFinalAnswer so result.FinalAnswer reflects the final state —
+	// extractFinalAnswer marshals lastSubmitAnalysisData.
+	p.annotateForcedFallbackMarker()
+	result.FinalAnswer = p.extractFinalAnswer(&forcedStep)
+}
+
 // recentStepsForReflection returns the last n completed steps for the
 // reflection prompt. Reflection reasons over fresh evidence; older steps
 // are already condensed into the prior ledger.
@@ -1926,7 +2142,11 @@ func (p *ReActPlanner) appendLedgerHint(conv []llms.MessageContent) []llms.Messa
 	if p.ledger == nil || p.ledger.IsEmpty() {
 		return conv
 	}
-	hint := "[REFLECTION] " + summariseLedgerForHint(p.ledger)
+	mode := ""
+	if p.goal != nil {
+		mode = p.goal.Mode
+	}
+	hint := "[REFLECTION] " + summariseLedgerForHint(p.ledger, mode)
 	return append(conv, llms.MessageContent{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart(hint)},
@@ -1936,7 +2156,7 @@ func (p *ReActPlanner) appendLedgerHint(conv []llms.MessageContent) []llms.Messa
 // summariseLedgerForHint produces a single compact paragraph from the ledger
 // suitable for inlining as a human-message nudge between tool turns. Kept as
 // a free function for unit-testability.
-func summariseLedgerForHint(l *Ledger) string {
+func summariseLedgerForHint(l *Ledger, mode string) string {
 	var parts []string
 	if len(l.Citations) > 0 {
 		parts = append(parts, fmt.Sprintf("%d citations gathered", len(l.Citations)))
@@ -1955,7 +2175,15 @@ func summariseLedgerForHint(l *Ledger) string {
 	if len(parts) == 0 {
 		parts = append(parts, "ledger still empty")
 	}
-	return strings.Join(parts, "; ") + ". If you can write the final answer with current citations, call submit_analysis now; otherwise pick the highest-leverage next tool call to close an open sub-question."
+	// The trailing guidance must match the mode's actual goal. In "followup"
+	// mode the agent APPLIES changes — steering it to "write the final answer"
+	// (an explore/read-only frame) is what lets it investigate to the ceiling
+	// without ever editing. Point it at the edit-and-commit path instead.
+	guidance := " If you can write the final answer with current citations, call submit_analysis now; otherwise pick the highest-leverage next tool call to close an open sub-question."
+	if mode == "followup" {
+		guidance = " You have enough to act once you know the change to make: make the edit, then commit and push it, and call submit_analysis. Don't keep investigating read-only — open sub-questions that don't block the edit are not worth more tool calls."
+	}
+	return strings.Join(parts, "; ") + "." + guidance
 }
 
 // createForcedSubmitAnalysisStep remains unchanged (using our previous regex fix)

@@ -39,6 +39,7 @@ const (
 	ElasticsearchApiKey         = "api_key"
 	ElasticsearchBearerToken    = "bearer_token"
 	ElasticsearchMetricsIndex   = "metrics_index"
+	ElasticsearchTraceIndex     = "trace_index"
 	ElasticsearchTLSSkipVerify  = "es_tls_skip_verify"
 )
 
@@ -54,6 +55,7 @@ type ElasticsearchConfig struct {
 	ApiKey         string // Base64-encoded id:api_key for ES API Key auth
 	BearerToken    string // OAuth2 / service-account bearer token
 	MetricsIndex   string // index pattern for utilisation queries; defaults to "*"
+	TraceIndex     string // index pattern for trace queries; defaults to esTraceIndex
 	TLSSkipVerify  bool   // user-configured opt-in for self-signed certs
 }
 
@@ -110,6 +112,8 @@ func GetElasticsearchConfig(ctx *security.RequestContext, accountId string) (*El
 			cfg.BearerToken = value
 		case ElasticsearchMetricsIndex:
 			cfg.MetricsIndex = value
+		case ElasticsearchTraceIndex:
+			cfg.TraceIndex = value
 		case ElasticsearchTLSSkipVerify:
 			cfg.TLSSkipVerify = strings.EqualFold(strings.TrimSpace(value), "true")
 		}
@@ -499,29 +503,19 @@ func (e *ElasticSaasSource) QueryLabels(ctx *security.RequestContext, fetchLogRe
 		return nil, err
 	}
 
-	resp, err := esRequest("GET", fmt.Sprintf("%s/_cat/indices?format=json", cfg.Url), "", cfg) //nolint:bodyclose
-	if err != nil {
-		return nil, fmt.Errorf("failed to query elasticsearch indices: %w", err)
-	}
-
-	bodyBytes, err := readResponse(resp, "elasticsearch indices query")
+	// List stable data-stream names (logs-*), not the rolled-over ".ds-*" backing
+	// indices that _cat/indices exposes. See listESIndexTargets.
+	indexNames, err := listESIndexTargets("logs", cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	var indices []map[string]any
-	if err := json.Unmarshal(bodyBytes, &indices); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal indices response: %w", err)
-	}
-
-	var output []OutputLogLabel
-	for _, idx := range indices {
-		if indexName, ok := idx["index"].(string); ok && indexName != "" {
-			output = append(output, OutputLogLabel{
-				Label:      indexName,
-				Attributes: map[string]any{},
-			})
-		}
+	output := make([]OutputLogLabel, 0, len(indexNames))
+	for _, indexName := range indexNames {
+		output = append(output, OutputLogLabel{
+			Label:      indexName,
+			Attributes: map[string]any{},
+		})
 	}
 
 	return output, nil

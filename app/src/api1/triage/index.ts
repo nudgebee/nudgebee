@@ -533,8 +533,88 @@ mutation EventListThresholdSuggestions(
       alert_quality
       metric_stats
       query_metadata
+      apply_status
+      apply_method
+      applied_at
+      applied_by
+      applied_threshold
+      previous_threshold
     }
     total
+  }
+}
+`;
+
+export const EVENT_GET_THRESHOLD_APPLY_OPTIONS = `
+mutation EventGetThresholdApplyOptions($alert_rule_key: String!, $cloud_account_id: String!) {
+  event_get_threshold_apply_options(alert_rule_key: $alert_rule_key, cloud_account_id: $cloud_account_id) {
+    options {
+      method
+      available
+      reason
+    }
+    risk_level
+    requires_override
+    preview_expr
+    preview_error
+    current_threshold
+    new_threshold
+    operator
+  }
+}
+`;
+
+export const EVENT_APPLY_THRESHOLD_SUGGESTION = `
+mutation EventApplyThresholdSuggestion(
+  $alert_rule_key: String!
+  $cloud_account_id: String!
+  $method: String!
+  $override_risk: Boolean
+  $accept_value: Float
+  $accept_duration: Int
+  $git_provider: String
+  $git_integration: String
+  $git_file_path: String
+  $git_org: String
+  $git_repo: String
+  $git_branch: String
+  $reference_link: String
+) {
+  event_apply_threshold_suggestion(
+    alert_rule_key: $alert_rule_key
+    cloud_account_id: $cloud_account_id
+    method: $method
+    override_risk: $override_risk
+    accept_value: $accept_value
+    accept_duration: $accept_duration
+    git_provider: $git_provider
+    git_integration: $git_integration
+    git_file_path: $git_file_path
+    git_org: $git_org
+    git_repo: $git_repo
+    git_branch: $git_branch
+    reference_link: $reference_link
+  ) {
+    status
+    method
+    applied_expr
+    previous_threshold
+    applied_threshold
+    resolution_id
+    error
+  }
+}
+`;
+
+export const EVENT_REVERT_THRESHOLD_SUGGESTION = `
+mutation EventRevertThresholdSuggestion($alert_rule_key: String!, $cloud_account_id: String!) {
+  event_revert_threshold_suggestion(alert_rule_key: $alert_rule_key, cloud_account_id: $cloud_account_id) {
+    status
+    method
+    applied_expr
+    previous_threshold
+    applied_threshold
+    error
   }
 }
 `;
@@ -1192,6 +1272,65 @@ const apiTriage = {
       return null;
     }
   },
+
+  /**
+   * Get the available apply methods (direct / PR), risk, and a dry-run preview of the
+   * rewritten rule for a cached threshold suggestion.
+   */
+  async getThresholdApplyOptions(data: { alert_rule_key: string; cloud_account_id: string }): Promise<ThresholdApplyOptions | null> {
+    try {
+      if (data.cloud_account_id === 'demo') {
+        return null;
+      }
+      const response = await queryGraphQL(EVENT_GET_THRESHOLD_APPLY_OPTIONS, 'EventGetThresholdApplyOptions', {
+        alert_rule_key: data.alert_rule_key,
+        cloud_account_id: data.cloud_account_id,
+      });
+      return response?.data?.data?.event_get_threshold_apply_options ?? null;
+    } catch (error) {
+      console.error('Failed to get threshold apply options:', error);
+      return null;
+    }
+  },
+
+  /**
+   * Apply a threshold suggestion to the source alert rule (direct write-back or GitOps PR).
+   */
+  async applyThresholdSuggestion(data: ApplyThresholdInput): Promise<ThresholdApplyResult | null> {
+    if (data.cloud_account_id === 'demo') {
+      return null;
+    }
+    const response = await queryGraphQL(EVENT_APPLY_THRESHOLD_SUGGESTION, 'EventApplyThresholdSuggestion', {
+      alert_rule_key: data.alert_rule_key,
+      cloud_account_id: data.cloud_account_id,
+      method: data.method,
+      override_risk: data.override_risk,
+      accept_value: data.accept_value,
+      accept_duration: data.accept_duration,
+      git_provider: data.git_provider,
+      git_integration: data.git_integration,
+      git_file_path: data.git_file_path,
+      git_org: data.git_org,
+      git_repo: data.git_repo,
+      git_branch: data.git_branch,
+      reference_link: data.reference_link,
+    });
+    return response?.data?.data?.event_apply_threshold_suggestion ?? null;
+  },
+
+  /**
+   * Revert a previously applied direct threshold change.
+   */
+  async revertThresholdSuggestion(data: { alert_rule_key: string; cloud_account_id: string }): Promise<ThresholdApplyResult | null> {
+    if (data.cloud_account_id === 'demo') {
+      return null;
+    }
+    const response = await queryGraphQL(EVENT_REVERT_THRESHOLD_SUGGESTION, 'EventRevertThresholdSuggestion', {
+      alert_rule_key: data.alert_rule_key,
+      cloud_account_id: data.cloud_account_id,
+    });
+    return response?.data?.data?.event_revert_threshold_suggestion ?? null;
+  },
 };
 
 // -------------------- Threshold Suggestion Types --------------------
@@ -1302,6 +1441,55 @@ export interface ThresholdSuggestionItem {
     resource_ids?: string[];
     promql?: string;
   };
+  apply_status?: string;
+  apply_method?: string;
+  applied_at?: string;
+  applied_by?: string;
+  applied_threshold?: number;
+  previous_threshold?: number;
+}
+
+export interface ThresholdApplyOption {
+  method: string;
+  available: boolean;
+  reason?: string;
+}
+
+export interface ThresholdApplyOptions {
+  options: ThresholdApplyOption[];
+  risk_level?: string;
+  requires_override?: boolean;
+  preview_expr?: string;
+  preview_error?: string;
+  current_threshold?: number;
+  new_threshold?: number;
+  operator?: string;
+}
+
+export interface ApplyThresholdInput {
+  alert_rule_key: string;
+  cloud_account_id: string;
+  method: 'direct' | 'pr';
+  override_risk?: boolean;
+  accept_value?: number;
+  accept_duration?: number;
+  git_provider?: string;
+  git_integration?: string;
+  git_file_path?: string;
+  git_org?: string;
+  git_repo?: string;
+  git_branch?: string;
+  reference_link?: string;
+}
+
+export interface ThresholdApplyResult {
+  status: string;
+  method?: string;
+  applied_expr?: string;
+  previous_threshold?: number;
+  applied_threshold?: number;
+  resolution_id?: string;
+  error?: string;
 }
 
 export interface ListThresholdSuggestionsInput {

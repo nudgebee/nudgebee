@@ -192,7 +192,7 @@
   comment: Trigger vertical rightsizing for K8s workloads daily at 8 AM UTC
 - name: build_knowledge_graph
   webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
-  schedule: '30 23 * * *'
+  schedule: '30 * * * *'
   payload:
     action:
       name: build_knowledge_graphs_with_db_filters
@@ -412,3 +412,30 @@
     timeout_seconds: 600
     tolerance_seconds: 21600
   comment: Sync K8s spend from central OpenCost into spends + cloud_resource_metrics
+- name: LLM Token Usage Short Cleanup
+  webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
+  # Every 3 hours: NULL out prompt/response bodies on standard successful LLM
+  # calls (within latency/token thresholds) older than the short-term window.
+  # Rows breaking a threshold are preserved and collected by the daily catch-all.
+  schedule: '0 */3 * * *' # every 3 hours
+  payload: {}
+  headers:
+    - name: X-ACTION-TOKEN
+      value_from_env: ACTION_API_SERVER_TOKEN
+  retry_conf:
+    num_retries: 0
+    timeout_seconds: 600
+  comment: Cleanup prompt/response bodies on standard aged LLM token-usage rows
+- name: LLM Token Usage Daily Cleanup
+  webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
+  # Daily off-peak: NULL out prompt/response bodies on every successful LLM call
+  # past the longer window, including heavy/complex calls the short pass skips.
+  schedule: '0 2 * * *' # daily at 02:00
+  payload: {}
+  headers:
+    - name: X-ACTION-TOKEN
+      value_from_env: ACTION_API_SERVER_TOKEN
+  retry_conf:
+    num_retries: 0
+    timeout_seconds: 900
+  comment: Daily catch-all cleanup of prompt/response bodies on aged LLM token-usage rows

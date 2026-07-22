@@ -140,6 +140,28 @@ func getJobLogs(accountID, jobName string) (jobLogs, error) {
 	return l, nil
 }
 
+// deleteJob asks the agent to delete the Job (and cascade-delete its pods) now
+// that its logs have been fetched. Best-effort: cleanup also happens via the
+// agent's background reaper and the Job's TTLSecondsAfterFinished, so a failure
+// here is logged by the caller, not fatal to the scan. Older agents that don't
+// register delete_k8s_job return a relay error, which the caller likewise
+// tolerates (the reaper still reaps).
+func deleteJob(accountID, jobName string) error {
+	_, err := relay.Execute(relay.RelayExecuteRequest{
+		Body: relay.ActionExecuteBody{
+			AccountID:    accountID,
+			ActionName:   "delete_k8s_job",
+			ActionParams: map[string]any{"job_name": jobName},
+			Origin:       "scan_orchestrator",
+		},
+		NoSinks:        true,
+		Cache:          false,
+		TimeoutSeconds: 30,
+		AgentType:      "k8s",
+	})
+	return err
+}
+
 // resolveServiceAccountPlaceholder lets a Scanner's BuildSpec leave
 // `{{SCANNER_SA}}` as a placeholder; the orchestrator resolves it from the
 // account's preferred SA before sending to the agent. (The agent itself

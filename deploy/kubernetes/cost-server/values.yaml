@@ -35,6 +35,13 @@ service:
 
 secretName: 'nudgebee'
 
+# When true, cost-server routes OpenCost's Prometheus queries through
+# services-server's observability metrics_query API (via an in-process
+# Prometheus-API shim) instead of relay-server's /prometheus facade. Requires
+# SERVICE_API_SERVER_URL and ACTION_API_SERVER_TOKEN (both already provided by
+# the shared `nudgebee` secret).
+useObservabilityMetrics: false
+
 # Per cluster, the engine caches one upstream costmodel.Accesses and holds the
 # PromQL allocation result (~1.5k pod rows) in memory; memory grows with the number
 # of clusters served. Tune limits.memory after the multi-cluster memory check.

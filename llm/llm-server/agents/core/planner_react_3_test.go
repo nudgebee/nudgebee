@@ -1,9 +1,12 @@
 package core
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"nudgebee/llm/agents/prompts_repo"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
@@ -716,6 +719,84 @@ func TestReAct3BuildScratchpadSingleAction(t *testing.T) {
 	assert.Contains(t, scratchpad, "<![CDATA[pod-abc Running")
 	// Should use singular <action>, not <actions>
 	assert.NotContains(t, scratchpad, "<actions>")
+}
+
+// TestReAct3BuildScratchpad_CompressionGatedByWindow verifies the core fix: with
+// many steps (>recentStepsFullContext) but a scratchpad well under the budget, NO
+// older observation is compressed; once the scratchpad exceeds the budget, older
+// observations are compressed. With a nil ctx the resolved window is 0, so
+// scratchpadBudget falls back to LlmServerAgentMaxScratchpadChars — which the test
+// drives directly.
+func TestReAct3BuildScratchpad_CompressionGatedByWindow(t *testing.T) {
+	orig := config.Config.LlmServerAgentMaxScratchpadChars
+	defer func() { config.Config.LlmServerAgentMaxScratchpadChars = orig }()
+
+	makeSteps := func() []NBAgentPlannerToolActionStep {
+		steps := make([]NBAgentPlannerToolActionStep, 0, 12)
+		for i := 0; i < 12; i++ {
+			steps = append(steps, NBAgentPlannerToolActionStep{
+				Action: NBAgentPlannerToolAction{
+					Tool:      "kubectl",
+					ToolInput: fmt.Sprintf("get pods step-%d", i),
+					Log:       fmt.Sprintf("Step %d thought.", i),
+					ToolID:    fmt.Sprintf("kubectl-%03d", i),
+				},
+				// ~700 bytes each, well above compressedObservationPreview (500).
+				Observation: fmt.Sprintf("OBS-MARKER-%02d ", i) + strings.Repeat("x", 700),
+				Status:      ToolStatusSuccess,
+			})
+		}
+		return steps
+	}
+
+	t.Run("under budget keeps all observations full", func(t *testing.T) {
+		config.Config.LlmServerAgentMaxScratchpadChars = 5_000_000 // far above total obs volume
+		steps := makeSteps()
+		planner := &NBReActPlanner3{}
+		scratchpad := planner.buildScratchpad(steps)
+
+		// The oldest step's full observation must survive even though there are >10 steps.
+		assert.Contains(t, scratchpad, "OBS-MARKER-00")
+		assert.Contains(t, scratchpad, strings.Repeat("x", 700))
+		// And nothing should have been marked compressed.
+		assert.Empty(t, collectCompressionEvents(steps, false, 0), "no compression should occur under budget")
+	})
+
+	t.Run("over budget compresses older observations", func(t *testing.T) {
+		config.Config.LlmServerAgentMaxScratchpadChars = 200 // tiny budget forces compression
+		steps := makeSteps()
+		planner := &NBReActPlanner3{}
+		_ = planner.buildScratchpad(steps)
+
+		events := collectCompressionEvents(steps, true /*windowPressureActive*/, 0)
+		assert.NotEmpty(t, events, "older observations should be compressed when over budget")
+		// Every event in this scenario is window-pressure (no refinement set).
+		for _, e := range events {
+			assert.Equal(t, compressionCauseWindowPressure, e.cause,
+				"all events should classify as window pressure when no refinement index is set")
+		}
+	})
+
+	t.Run("pre-refinement steps compress even under budget", func(t *testing.T) {
+		// Pre-refinement steps must always be compressed to keep a refined
+		// investigation focused — independent of window pressure. Post-refinement
+		// steps stay full while under budget.
+		config.Config.LlmServerAgentMaxScratchpadChars = 5_000_000 // under budget → compression inactive
+		steps := makeSteps()
+		planner := &NBReActPlanner3{postRefinementToolIndex: 6}
+		_ = planner.buildScratchpad(steps)
+
+		events := collectCompressionEvents(steps, false /*no window pressure*/, 6)
+		assert.NotEmpty(t, events, "pre-refinement steps must compress regardless of window pressure")
+		// Every event in this scenario classifies as refinement-focus.
+		for _, e := range events {
+			assert.Equal(t, compressionCauseRefinementFocus, e.cause,
+				"compression under budget but with refinement index set should classify as refinement-focus")
+		}
+		for i := 6; i < len(steps); i++ {
+			assert.Empty(t, steps[i].CompressedObservation, "post-refinement step %d should stay full under budget", i)
+		}
+	})
 }
 
 func TestReAct3BuildScratchpadParallelActions(t *testing.T) {

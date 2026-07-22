@@ -267,6 +267,16 @@ query cloudAccountCostTrend($dateUnit:String!){
 }
 `;
 
+const ACC_CURRENCY = `
+query accountCurrency {
+  spend_groupings: spend_groupings_v2(where: __WHERE__, limit: 1) {
+    rows {
+      currency_type
+    }
+  }
+}
+`;
+
 // Batched per-account spend rollup: spend_groupings_v2 groups by the dimension
 // columns requested in rows, so one query returns (account_id, currency) sums for
 // every account at once — replacing a 2-calls-per-account fan-out.
@@ -1448,6 +1458,23 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
       return error;
     }
   },
+  getAccountCurrency: async function (accountId: string): Promise<string | null> {
+    if (!accountId || accountId === 'demo') {
+      return null;
+    }
+    try {
+      const filterParams = {
+        account_id: { _eq: accountId },
+        exclude_aggregate: { _eq: false },
+      };
+      const finalQuery = ACC_CURRENCY.replaceAll('__WHERE__', gqlStringify(filterParams));
+      const response = await queryGraphQL(finalQuery, 'accountCurrency', {});
+      return response?.data?.data?.spend_groupings?.rows?.[0]?.currency_type ?? null;
+    } catch {
+      return null;
+    }
+  },
+
   // One-shot MTD / previous-month / YTD spend per account (with currency), for all
   // accounts in a single query. Used by the Optimise summary right rail instead of
   // calling cloudAccountSummary + listCloudAccountTrend once per account.

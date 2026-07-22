@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { Box } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { ListingLayout } from '@ui/ListingLayout';
+import MetricQueryInfo from '@shared/MetricQueryInfo';
 import WidgetCard from '@ui/WidgetCard';
 import { Banner } from '@ui/Banner';
 import { EmptyState } from '@ui/EmptyState';
@@ -23,6 +24,14 @@ interface MetricChartData {
   labels: string[];
   dataset: { label: string; data: number[] }[];
   unit: string;
+  /** The executed provider query that produced this chart, when the backend returns one. */
+  query?: string;
+}
+
+interface ChartMapEntry {
+  timestamps: Map<number, number>;
+  datasets: Record<string, Map<number, number>>;
+  query?: string;
 }
 
 const METRIC_UNITS: Record<string, string> = {
@@ -162,11 +171,8 @@ function buildScaleOptions(unit: string) {
   };
 }
 
-function parseMetricResults(
-  results: any[],
-  setError: (msg: string | null) => void
-): Record<string, { timestamps: Map<number, number>; datasets: Record<string, Map<number, number>> }> {
-  const chartMap: Record<string, { timestamps: Map<number, number>; datasets: Record<string, Map<number, number>> }> = {};
+function parseMetricResults(results: any[], setError: (msg: string | null) => void): Record<string, ChartMapEntry> {
+  const chartMap: Record<string, ChartMapEntry> = {};
 
   for (const result of results) {
     if (result.error) {
@@ -180,6 +186,9 @@ function parseMetricResults(
 
       if (!chartMap[metricName]) {
         chartMap[metricName] = { timestamps: new Map(), datasets: {} };
+      }
+      if (result.query) {
+        chartMap[metricName].query = result.query;
       }
 
       if (!chartMap[metricName].datasets[resourceId]) {
@@ -199,9 +208,7 @@ function parseMetricResults(
   return chartMap;
 }
 
-function buildChartData(
-  chartMap: Record<string, { timestamps: Map<number, number>; datasets: Record<string, Map<number, number>> }>
-): MetricChartData[] {
+function buildChartData(chartMap: Record<string, ChartMapEntry>): MetricChartData[] {
   return Object.entries(chartMap).map(([metricName, data]) => {
     const sortedTimestamps = [...data.timestamps.keys()].sort((a, b) => a - b);
     const labels = sortedTimestamps.map((ts) => new Date(ts).toLocaleString());
@@ -212,7 +219,7 @@ function buildChartData(
     }));
 
     const unit = inferMetricUnit(metricName);
-    return { metricName, labels, dataset, unit };
+    return { metricName, labels, dataset, unit, query: data.query };
   });
 }
 
@@ -231,7 +238,21 @@ function renderCharts(charts: MetricChartData[]): React.ReactNode {
         const scaleOptions = buildScaleOptions(chart.unit);
         return (
           <WidgetCard key={chart.metricName}>
-            <Chart.Line chartTitle={chartTitle} dataset={chart.dataset} labels={chart.labels} data={[]} loading={false} scaleOptions={scaleOptions} />
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
+              <Typography
+                sx={{
+                  fontSize: ds.text.small,
+                  fontWeight: ds.weight.medium,
+                  color: ds.brand[500],
+                  wordBreak: 'break-all',
+                  lineHeight: '1.3',
+                }}
+              >
+                {chartTitle}
+              </Typography>
+              <MetricQueryInfo queries={chart.query ? { Query: chart.query } : null} />
+            </Box>
+            <Chart.Line dataset={chart.dataset} labels={chart.labels} data={[]} loading={false} scaleOptions={scaleOptions} />
           </WidgetCard>
         );
       })}

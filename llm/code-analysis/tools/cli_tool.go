@@ -262,6 +262,17 @@ func (t *CLITool) Execute(ctx context.Context, input map[string]any) core.NBTool
 			observation,
 			response,
 		)
+	} else if result.ExitCode == 1 && strings.TrimSpace(result.Stdout) == "" &&
+		strings.TrimSpace(result.Stderr) == "" && isSearchNoMatch(result.Command) {
+		// grep/rg and friends exit with code 1 to mean "no lines matched" — a normal
+		// empty result, not a failure (a real error is exit >= 2). Reporting it as an
+		// error inflates failure metrics and nudges the agent into needless retries.
+		observation += "\nCommand succeeded (no matches found)"
+		return core.CreateSuccessResponse(
+			fmt.Sprintf("Command executed: %s", commandToExecute),
+			observation,
+			response,
+		)
 	} else {
 		observation += "\nCommand failed"
 		if result.Stderr != "" {
@@ -278,6 +289,44 @@ func (t *CLITool) Execute(ctx context.Context, input map[string]any) core.NBTool
 
 		return core.CreateErrorResponse(errorMsg, observation)
 	}
+}
+
+// isSearchNoMatch reports whether the command's final pipeline stage is a
+// grep-family search tool, for which an exit code of 1 means "no matches" rather
+// than an error. The exit code propagates from the last command in the pipeline,
+// so only that stage is checked.
+func isSearchNoMatch(cmd string) bool {
+	// Split into pipeline stages on shell control operators only (NOT space/=, which
+	// would shatter a stage into individual words). Per-word env-prefix and path
+	// handling happens below within the final stage.
+	segs := strings.FieldsFunc(cmd, func(r rune) bool {
+		switch r {
+		case ';', '|', '&', '<', '>', '`', '(':
+			return true
+		}
+		return false
+	})
+	for i := len(segs) - 1; i >= 0; i-- {
+		fields := strings.Fields(segs[i])
+		if len(fields) == 0 {
+			continue
+		}
+		// Skip leading env-var assignments (e.g. `FOO=bar grep ...`).
+		cmdIdx := 0
+		for cmdIdx < len(fields) && strings.Contains(fields[cmdIdx], "=") {
+			cmdIdx++
+		}
+		if cmdIdx >= len(fields) {
+			continue
+		}
+		// Match on the binary's base name so `/usr/bin/grep` / `./bin/rg` also count.
+		switch filepath.Base(fields[cmdIdx]) {
+		case "rg", "ripgrep", "grep", "egrep", "fgrep", "ag":
+			return true
+		}
+		return false // last real stage isn't a search tool
+	}
+	return false
 }
 
 func (t *CLITool) executeCommand(ctx context.Context, command, workingDir string, timeout time.Duration, githubToken string) *CLIOutput {

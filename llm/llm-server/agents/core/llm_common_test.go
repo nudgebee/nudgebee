@@ -224,3 +224,62 @@ func TestUserFacingLLMErrors_CarryHTTPCodes(t *testing.T) {
 	// Message must be user-safe (the Error() value is what reaches the UI).
 	assert.Contains(t, ErrLLMRateLimited.Error(), "capacity")
 }
+
+// Pins the provider-conditional handling of cache-read tokens inside
+// getDetailedTokenInfo. Anthropic and Google AI disagree on whether
+// "input_tokens" already includes cached tokens; the addition on the
+// non-cached-includes-cache branch is correct only for the Anthropic
+// convention. Without this test a well-meaning refactor could re-introduce
+// the ~2× Gemini double-count that inflated cost + cache-hit metrics.
+func TestGetDetailedTokenInfo_CacheReadHandling_ProviderConventions(t *testing.T) {
+	tests := []struct {
+		name            string
+		generationInfo  map[string]any
+		wantInputTokens int
+		wantCacheRead   int
+	}{
+		{
+			name: "anthropic: InputTokens is fresh-only, must add cache_read",
+			generationInfo: map[string]any{
+				"input_tokens":         1500, // fresh only per Anthropic
+				"output_tokens":        100,
+				"CacheReadInputTokens": 20000,
+			},
+			wantInputTokens: 21500, // fresh(1500) + cache(20000)
+			wantCacheRead:   20000,
+		},
+		{
+			name: "google ai: PromptTokenCount already includes cache, must NOT add",
+			generationInfo: map[string]any{
+				"input_tokens":         21709, // total incl. cache per Gemini docs
+				"output_tokens":        68,
+				"CachedTokens":         20416,
+				"CacheReadInputTokens": 20416,
+				"NonCachedInputTokens": 1293, // marker: presence means "already includes cache"
+			},
+			wantInputTokens: 21709, // stays as-is; NOT 42125
+			wantCacheRead:   20416,
+		},
+		{
+			name: "no cache active: additive path is a no-op",
+			generationInfo: map[string]any{
+				"input_tokens":  5000,
+				"output_tokens": 200,
+			},
+			wantInputTokens: 5000,
+			wantCacheRead:   0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &llms.ContentResponse{
+				Choices: []*llms.ContentChoice{{GenerationInfo: tc.generationInfo}},
+			}
+			info := getDetailedTokenInfo(resp, nil)
+			assert.Equal(t, tc.wantInputTokens, info.InputTokens,
+				"InputTokens must equal fresh+cache; check the provider-conditional add in getDetailedTokenInfo")
+			assert.Equal(t, tc.wantCacheRead, info.CacheReadTokens)
+		})
+	}
+}

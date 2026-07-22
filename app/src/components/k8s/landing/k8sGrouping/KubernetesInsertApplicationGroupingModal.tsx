@@ -529,10 +529,8 @@ const KubernetesInsertApplicationGroupingModal: React.FC<KubernetesInsertApplica
                     padding: 'var(--ds-space-2) var(--ds-space-4)',
                     display: 'flex',
                     alignItems: 'center',
+                    gap: 'var(--ds-space-2)',
                     height: ds.space.mul(0, 18),
-                    '& .MuiCheckbox-root': {
-                      padding: '0px var(--ds-space-2) 0px 0px !important',
-                    },
                   }}
                 >
                   <Checkbox size='sm' checked={selectAllChecked} onChange={() => handleSelectAllCheckbox()} aria-label='Select all applications' />
@@ -561,25 +559,24 @@ const KubernetesInsertApplicationGroupingModal: React.FC<KubernetesInsertApplica
                         key={''}
                         display={'flex'}
                         alignItems={'flex-start'}
+                        gap={ds.space[2]}
                         sx={{
                           padding: 'var(--ds-space-1) var(--ds-space-4)',
                           '&:hover': {
                             bgcolor: 'var(--ds-background-200)',
                             cursor: 'pointer',
                           },
-                          '& .MuiCheckbox-root': {
-                            padding: 'var(--ds-space-1) var(--ds-space-2) 0px 0px !important',
-                            borderRadius: 'var(--ds-radius-lg)',
-                          },
                         }}
                         onClick={() => handleCheckboxChange(workload)}
                       >
-                        <Checkbox
-                          size='sm'
-                          checked={checkWorkloadSelected(workload)}
-                          onChange={() => handleCheckboxChange(workload)}
-                          aria-label={workload.label}
-                        />
+                        <Box sx={{ pt: '2px' }} onClick={(e) => e.stopPropagation()}>
+                          <Checkbox
+                            size='sm'
+                            checked={checkWorkloadSelected(workload)}
+                            onChange={() => handleCheckboxChange(workload)}
+                            aria-label={workload.label}
+                          />
+                        </Box>
                         <Box>
                           <Typography
                             sx={{ color: 'var(--ds-brand-500)', fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-regular)' }}

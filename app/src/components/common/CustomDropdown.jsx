@@ -239,18 +239,22 @@ const CustomDropdown = ({
         return Object.values(servicesStatus).every((status) => status === true);
       }
 
+      const connectionStatus = clusterData.agent?.connection_status;
+      if (!connectionStatus) {
+        return false;
+      }
+
       const requiredProps = ['logsConnection', 'nodeAgentConnection', 'prometheusConnection', 'relayConnection'];
 
       for (const prop of requiredProps) {
-        if (!clusterData.agent?.connection_status[prop]) {
+        if (!connectionStatus[prop]) {
           return false;
         }
       }
 
       // OpenCost is healthy when cost is collected either in-cluster (legacy opencostConnection)
       // or server-side (opencostServerSide, stamped by the backend spend sync post-migration).
-      const connectionStatus = clusterData.agent?.connection_status;
-      if (!connectionStatus?.opencostConnection && !connectionStatus?.opencostServerSide) {
+      if (!connectionStatus.opencostConnection && !connectionStatus.opencostServerSide) {
         return false;
       }
 

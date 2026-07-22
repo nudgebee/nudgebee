@@ -142,6 +142,23 @@ func Emit(ctx *security.RequestContext, phase Phase, event map[string]any, extra
 	}
 }
 
+// PublishToWorkflows delivers an event to the runbook workflow exchange for the
+// given phase WITHOUT running in-process lifecycle hooks. It is the workflow-only
+// half of Emit, used for event RE-FIRES: the full post-process pipeline (triage/
+// llm/notification) already ran on first insert and must not re-run, but
+// event-trigger workflows still need to match every occurrence. No-op for phases
+// that aren't workflow-eligible. Best-effort, like Emit.
+func PublishToWorkflows(ctx *security.RequestContext, phase Phase, event map[string]any) {
+	if event == nil {
+		ctx.GetLogger().Error("lifecycle: cannot publish nil event map", "phase", string(phase))
+		return
+	}
+	event[LifecyclePhaseKey] = string(phase)
+	if workflowEligiblePhases[phase] {
+		publishToWorkflows(ctx, phase, event)
+	}
+}
+
 // publishToWorkflows mirrors the legacy workflow.ProcessEvent publish: it skips
 // SUPPRESSED events and strips evidences (multi-MB, not needed for matching;
 // runbook-server refetches the full event from DB if a workflow needs them),

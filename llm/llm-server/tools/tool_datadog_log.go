@@ -42,7 +42,11 @@ func (m DatadogLogExecuteTool) cleanupQuery(query string, args map[string]any) s
 	finalQuery = strings.TrimPrefix(finalQuery, "`")
 	finalQuery = strings.TrimSuffix(finalQuery, "`")
 	finalQuery = unwrapJSONQuery(finalQuery)
-	return stripCLITimeFlags(finalQuery, args)
+	finalQuery = stripCLITimeFlags(finalQuery, args)
+	// Also hoist Datadog facet-style time tokens (`from:now-24h to:now`) the log prompt
+	// emits inline — stripCLITimeFlags only handles `--`-prefixed flags, so without this
+	// the requested window is dropped and the tokens pollute the query.
+	return extractDatadogFacetTime(finalQuery, args, time.Now())
 }
 
 func (m DatadogLogExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {

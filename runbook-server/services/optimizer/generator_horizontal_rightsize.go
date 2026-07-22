@@ -53,6 +53,9 @@ func (g *HorizontalRightsizeGenerator) GenerateTasks(ctx context.Context, ao mod
 		task := g.CreateBaseTask(ao, rec.Recommendation)
 		task.Name = fmt.Sprintf("Horizontal Rightsize %s %s/%s", kind, namespace, name)
 		task.Meta = params
+		// Snapshot the resource this run targeted so history stays accurate even after
+		// the task's target resources are later edited (issue #34245).
+		task.ResourceFilter = model.AutoOptimizeResourceFilter{Namespace: &namespace, Name: &name, Type: &kind}
 
 		if ao.NextScheduleTime != nil {
 			task.ScheduledTime = *ao.NextScheduleTime

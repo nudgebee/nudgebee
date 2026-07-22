@@ -21,6 +21,8 @@ import TicketsIcon from '@assets/sidebar-icon/tickets-icon.svg';
 import Tabs from '@shared/navigation/TabsForDrilldown';
 import CustomTable from '@shared/tables/CustomTable';
 import { toast as snackbar } from '@ui/Toast';
+import ticketsApi from '@api1/tickets';
+import TicketLink from '@shared/links/TicketLink';
 
 interface KubernetesTableProps {
   id: string;
@@ -45,6 +47,9 @@ const KubernetesDashboardIssues: React.FC<KubernetesTableProps> = ({ id, allClus
   startDate.setDate(currentDate.getDate() - 1);
   const router = useRouter();
   const tableRef = useRef<HTMLDivElement>(null);
+  const rawEventsRef = useRef<any[]>([]);
+  const ticketReferenceMapRef = useRef<Map<string, any>>(new Map());
+  const buildRowDataRef = useRef<((evts: any[], map: Map<string, any>) => any[][]) | null>(null);
 
   const [filterOptions, setFilterOptions] = useState([
     {
@@ -57,7 +62,7 @@ const KubernetesDashboardIssues: React.FC<KubernetesTableProps> = ({ id, allClus
       ],
     },
   ]);
-  const [allIssuesData, setAllIssuesData] = useState([]);
+  const [allIssuesData, setAllIssuesData] = useState<any[][]>([]);
   const [issueSubTab, setIssueSubTab] = useState(0);
   const [findingType, setFindingType] = useState('');
   const [issueSubType, setIssueSubType] = useState(['pod']);
@@ -115,9 +120,7 @@ const KubernetesDashboardIssues: React.FC<KubernetesTableProps> = ({ id, allClus
 
   const getKubernetesIssuesData = useCallback(
     (filters: any) => {
-      if (!shouldFetch) {
-        return;
-      }
+      if (!shouldFetch) return;
       setLoading(true);
       setAllIssuesData([]);
       const limit = 5;
@@ -126,103 +129,120 @@ const KubernetesDashboardIssues: React.FC<KubernetesTableProps> = ({ id, allClus
       const start_date = selectedDates[0].startDate;
       const end_date = selectedDates[0].endDate;
       apiKubernetes
-        .getK8sEvents(limit, 0, {
-          finding_type,
-          subject_type,
-          start_date,
-          end_date,
-          ...filters,
-        })
-        .then((response: any) => {
+        .getK8sEvents(limit, 0, { finding_type, subject_type, start_date, end_date, ...filters })
+        .then(async (response: any) => {
           const clusterIdNameMap: { [accountId: string]: string } = {};
-          allClusters.forEach((e) => {
-            clusterIdNameMap[e.account_id] = e.account_name;
+          allClusters.forEach((c) => {
+            clusterIdNameMap[c.account_id] = c.account_name;
           });
-          response?.data?.events?.forEach((e: any) => {
+          const events: any[] = response?.data?.events || [];
+          events.forEach((e: any) => {
             e.cluster = clusterIdNameMap[e.account_id];
           });
 
-          const allIssuesData = response?.data?.events?.map((e: any) => {
-            const data = [];
-            data.push({
-              component: (
-                <ClusterNameWithRegion
-                  name={e?.subject_name}
-                  nameOnClick={(event: any) => {
-                    event.stopPropagation();
-                    handlePodClick(e?.resource_id, e?.account_id);
-                  }}
-                  additionalCohandlePodClntent={makeAccountClicklable(e?.account_id, e?.cluster)}
-                  hideIcon={true}
-                  cursorPointer
-                  font={undefined}
-                  region={undefined}
-                  namespace={undefined}
-                  namespaceFont={undefined}
-                />
-              ),
-              drilldownQuery: { workloadName: e?.workload_name, namespaceName: e?.namespace_name },
-            });
-            data.push({ component: <Label margin='auto' text={e?.status} /> });
-            data.push({
-              component: (
-                <ClusterNameWithRegion
-                  name={e?.title}
-                  nameOnClick={undefined}
-                  additionalContent={undefined}
-                  hideIcon={true}
-                  cursorPointer={false}
-                  font={undefined}
-                  region={undefined}
-                  namespace={undefined}
-                  namespaceFont={undefined}
-                />
-              ),
-            });
-            data.push({ text: e?.subject_namespace });
-            data.push({ text: e?.finding_type });
-            data.push({ component: <Datetime baseDate={new Date()} value={e?.starts_at} /> });
-            data.push({ component: <SeverityIcon level={e?.priority} />, data: e?.priority });
-            data.push({
-              component: (
-                <Box
-                  display={'flex'}
-                  flexDirection={'row'}
-                  alignItems={'center'}
-                  justifyContent={'flex-end'}
-                  gap={'calc(var(--ds-space-0) * 3)'}
-                  position={'sticky'}
-                  right={'0px'}
-                >
-                  <Button
-                    tone='secondary'
-                    size='xs'
-                    trailingAccent={<FiArrowRight />}
-                    href={`/investigate?id=${e?.id}&accountId=${e?.account_id}`}
-                    data-testid='investigate-btn'
-                  >
-                    Investigate
-                  </Button>
+          const ticketReferenceMap = new Map<string, any>();
+          const eventIds = events.map((e: any) => e.id).filter(Boolean);
+          if (eventIds.length > 0) {
+            try {
+              const ticketRes: any = await ticketsApi.listTicketsSummary({ reference_id: eventIds });
+              ticketRes?.data?.tickets?.forEach((t: any) => {
+                ticketReferenceMap.set(t.reference_id, t);
+              });
+            } catch (err) {
+              console.error('Error fetching ticket summaries', err);
+            }
+          }
 
-                  <Button
-                    tone='ghost'
-                    size='sm'
-                    composition='icon-only'
-                    icon={<SafeIcon priority src={TicketsIcon} alt='Create Ticket' />}
-                    tooltip='Create Ticket'
-                    aria-label='Create Ticket'
-                    id='create-ticket'
-                    onClick={(event: React.MouseEvent) => {
+          const buildRowData = (evts: any[], ticketMap: Map<string, any>): any[][] =>
+            evts.map((e: any) => {
+              const data: any[] = [];
+              data.push({
+                component: (
+                  <ClusterNameWithRegion
+                    name={e?.subject_name}
+                    nameOnClick={(event: any) => {
                       event.stopPropagation();
-                      openTicketModal(e);
+                      handlePodClick(e?.resource_id, e?.account_id);
                     }}
+                    additionalContent={makeAccountClicklable(e?.account_id, e?.cluster)}
+                    hideIcon={true}
+                    cursorPointer
+                    font={undefined}
+                    region={undefined}
+                    namespace={undefined}
+                    namespaceFont={undefined}
                   />
-                </Box>
-              ),
+                ),
+                drilldownQuery: { workloadName: e?.workload_name, namespaceName: e?.namespace_name },
+              });
+              data.push({ component: <Label margin='auto' text={e?.status} /> });
+              const existingTicket = ticketMap.get(e.id);
+              data.push({
+                component: (
+                  <Box>
+                    <ClusterNameWithRegion
+                      name={e?.title}
+                      nameOnClick={undefined}
+                      additionalContent={undefined}
+                      hideIcon={true}
+                      cursorPointer={false}
+                      font={undefined}
+                      region={undefined}
+                      namespace={undefined}
+                      namespaceFont={undefined}
+                    />
+                    {existingTicket && <TicketLink ticketURL={existingTicket.url} ticketID={existingTicket.ticket_id} />}
+                  </Box>
+                ),
+              });
+              data.push({ text: e?.subject_namespace });
+              data.push({ text: e?.finding_type });
+              data.push({ component: <Datetime baseDate={new Date()} value={e?.starts_at} /> });
+              data.push({ component: <SeverityIcon level={e?.priority} />, data: e?.priority });
+              data.push({
+                component: (
+                  <Box
+                    display='flex'
+                    flexDirection='row'
+                    alignItems='center'
+                    justifyContent='flex-end'
+                    gap='calc(var(--ds-space-0) * 3)'
+                    position='sticky'
+                    right='0px'
+                  >
+                    <Button
+                      tone='secondary'
+                      size='xs'
+                      trailingAccent={<FiArrowRight />}
+                      href={`/investigate?id=${e?.id}&accountId=${e?.account_id}`}
+                      data-testid='investigate-btn'
+                    >
+                      Investigate
+                    </Button>
+                    <Button
+                      tone='ghost'
+                      size='sm'
+                      composition='icon-only'
+                      icon={<SafeIcon priority src={TicketsIcon} alt='Create Ticket' />}
+                      tooltip={existingTicket ? 'Ticket already exists' : 'Create Ticket'}
+                      aria-label='Create Ticket'
+                      id='create-ticket'
+                      disabled={!!existingTicket}
+                      onClick={(event: React.MouseEvent) => {
+                        event.stopPropagation();
+                        openTicketModal(e);
+                      }}
+                    />
+                  </Box>
+                ),
+              });
+              return data;
             });
-            return data;
-          });
-          setAllIssuesData(allIssuesData);
+
+          rawEventsRef.current = events;
+          ticketReferenceMapRef.current = ticketReferenceMap;
+          buildRowDataRef.current = buildRowData;
+          setAllIssuesData(buildRowData(events, ticketReferenceMap));
         })
         .finally(() => {
           setLoading(false);
@@ -416,8 +436,17 @@ const KubernetesDashboardIssues: React.FC<KubernetesTableProps> = ({ id, allClus
     setSelectedDates(updatedDates);
   };
 
-  const handleTicketSuccess = () => {
-    getKubernetesIssuesData(filterObj);
+  const handleTicketSuccess = ({ ticketId, url }: { ticketId?: string; url?: string } = {}) => {
+    const referenceId = ticketData?.id;
+    if (!referenceId || !buildRowDataRef.current) return;
+    ticketReferenceMapRef.current.set(referenceId, { ticket_id: ticketId, url });
+    const idx = rawEventsRef.current.findIndex((e: any) => e.id === referenceId);
+    if (idx === -1) return;
+    setAllIssuesData((prev: any[]) => {
+      const next = [...prev];
+      next[idx] = buildRowDataRef.current!([rawEventsRef.current[idx]], ticketReferenceMapRef.current)[0];
+      return next;
+    });
   };
 
   const handleTicketFailure = (res: string) => {

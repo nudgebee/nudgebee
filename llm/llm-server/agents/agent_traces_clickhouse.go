@@ -62,6 +62,7 @@ func (l TracesClickhouseAgent) GetSystemPrompt(ctx *security.RequestContext, que
 		"**When in doubt about resource names:** Always use resource_search tool to find exact matches",
 		"**Never guess resource names:** Use resource_search tool to get accurate suggestions",
 		"**NO SQL LEAKAGE:** You are strictly forbidden from including any SQL queries, database names, or view names (like 'traces_view') in your final user-facing response.",
+		"**Aggregations are fully supported:** GROUP BY queries and aggregate functions (count(*), avg(duration_ns), quantile(0.95)(duration_ns), max/min, etc.) return their computed columns with real values. Use them directly for latency ranking, percentiles, request counts, and error-rate summaries — you do not need to fetch raw spans and aggregate them yourself.",
 	}
 
 	toolUsage := map[string][]string{

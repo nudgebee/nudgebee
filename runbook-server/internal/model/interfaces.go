@@ -50,7 +50,7 @@ type WorkflowStore interface {
 	GetState(ctx context.Context, workflowID string) ([]WorkflowStateItem, error)
 	SetState(ctx context.Context, workflowID string, updates []WorkflowStateUpdate) error
 	DeleteExpiredState(ctx context.Context, limit int) (int64, error)
-	SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status WorkflowExecutionStatus, executionTime time.Time, statusMessage string) error
+	SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status WorkflowExecutionStatus, executionTime time.Time, statusMessage string, version *int) error
 	CountWorkflows(ctx context.Context, tenantID, accountID string, status WorkflowStatus, triggerType string) (int64, error)
 	GetWorkflowNames(ctx context.Context, tenantID, accountID string, ids []string) (map[string]string, error)
 	ListWorkflowVersions(ctx context.Context, workflowID string, limit int) ([]WorkflowVersion, error)

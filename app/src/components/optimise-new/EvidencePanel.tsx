@@ -49,10 +49,21 @@ export const MetricRow = ({ label, value, unit = '', highlight = false }: { labe
   </Box>
 );
 
-export const SectionTitle = ({ title, icon: _icon, muiIcon }: { title: string; icon?: string; muiIcon?: React.ReactNode }) => (
+export const SectionTitle = ({
+  title,
+  icon: _icon,
+  muiIcon,
+  adornment,
+}: {
+  title: string;
+  icon?: string;
+  muiIcon?: React.ReactNode;
+  adornment?: React.ReactNode;
+}) => (
   <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3), mt: ds.space[4], mb: ds.space[2] }}>
     {muiIcon && <Box sx={{ display: 'flex', color: ds.gray[500], fontSize: ds.text.title }}>{muiIcon}</Box>}
     <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>{title}</Typography>
+    {adornment}
   </Box>
 );
 

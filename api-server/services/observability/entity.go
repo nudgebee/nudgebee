@@ -37,6 +37,19 @@ type OutputLog struct {
 	Severity  string         `json:"severity"`
 }
 
+// FetchLogsResult is the result of FetchLogs: the matched logs plus the query
+// that actually produced them. Query is the provider-native query string when
+// the provider exposes one (e.g. LogQL, ES DSL); for providers that consume the
+// where-clause natively and emit no query string (e.g. Signoz, Datadog), it
+// falls back to the canonical where-clause JSON so callers always see what was
+// run. Surfacing the query end-to-end lets the UI and LLM report exactly which
+// query produced a given set of logs.
+type FetchLogsResult struct {
+	Logs     []OutputLog `json:"logs"`
+	Query    string      `json:"query"`
+	Provider string      `json:"provider"`
+}
+
 type SearchResponse struct {
 	Hits struct {
 		Hits []struct {
@@ -263,6 +276,13 @@ type ProviderCapabilities struct {
 	// raw-token field is removed in a later PR.
 	SupportedOperators           []string                   `json:"supported_operators"`
 	SupportedOperatorDescriptors []query.OperatorDescriptor `json:"supported_operator_descriptors"`
+	// LabelMappings is the canonical→provider field map for this provider+account
+	// (e.g. `pod`→`kubernetes.pod_name.keyword`). Lets clients (LLM fetch_logs v2,
+	// future query builders) build a provider-independent where clause using
+	// canonical entity names that FetchLogs resolves server-side. Logs: full
+	// static+tenant+account+dynamic merge. Traces: provider static map. Metrics:
+	// not populated (metric sources have no label mapping). Omitted when empty.
+	LabelMappings map[string]string `json:"label_mappings,omitempty"`
 }
 
 // AvailableProvider is one active observability provider that can serve the
@@ -313,6 +333,30 @@ type TracesV3Request struct {
 	EndTime        int64                     `json:"end_time" mapstructure:"end_time"`
 	Request        map[string]any            `json:"request"`
 	QueryRequest   TracesQueryBuilderRequest `json:"query_request" mapstructure:"query_request"`
+	// IncludeRawResult, when true on a free-form ClickHouse query (Query != ""), makes the
+	// traces_query/traces_list action return the raw {columns, column_types, rows} table
+	// (TracesQueryResult) instead of the typed []OpenTelemetryTrace array. Only the llm-server
+	// agent path sets this; every other caller keeps the bare-array response. The fixed-schema
+	// coercion in MapRowToOpenTelemetryTrace silently zeroes aggregation / custom-projection
+	// columns (e.g. avg(duration_ns), quantile(...)) — the raw table preserves them.
+	IncludeRawResult bool `json:"include_raw_result" mapstructure:"include_raw_result"`
+}
+
+// RawTraceResult carries an arbitrary ClickHouse result set with column order and types preserved.
+// It is the response shape for the free-form agent trace query path (IncludeRawResult) so that
+// aggregations, scalar counts, and custom projections return their real values instead of being
+// coerced into the fixed OpenTelemetryTrace span schema.
+type RawTraceResult struct {
+	Columns     []string `json:"columns"`
+	ColumnTypes []string `json:"column_types"`
+	Rows        [][]any  `json:"rows"`
+}
+
+// TracesQueryResult is the object response returned by traces_query/traces_list ONLY when
+// IncludeRawResult is set. A nil Result signals the caller should fall back to the typed array
+// (e.g. a non-clickhouse provider, or a structured query).
+type TracesQueryResult struct {
+	Result *RawTraceResult `json:"result,omitempty"`
 }
 
 type TracesHeatMapRequest struct {

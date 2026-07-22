@@ -189,7 +189,7 @@ func TestSummariseLedgerForHint_BasicCounts(t *testing.T) {
 		OpenSubQuestions: []string{"why?"},
 		Findings:         []LedgerFinding{{Claim: "c"}},
 	}
-	out := summariseLedgerForHint(l)
+	out := summariseLedgerForHint(l, "")
 	for _, want := range []string{"1 citations gathered", "1 open sub-questions", "1 findings"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("hint missing %q: %s", want, out)
@@ -198,9 +198,22 @@ func TestSummariseLedgerForHint_BasicCounts(t *testing.T) {
 }
 
 func TestSummariseLedgerForHint_EmptyLedger(t *testing.T) {
-	out := summariseLedgerForHint(&Ledger{})
+	out := summariseLedgerForHint(&Ledger{}, "")
 	if !strings.Contains(out, "ledger still empty") {
 		t.Errorf("expected empty-ledger language, got: %s", out)
+	}
+}
+
+func TestSummariseLedgerForHint_FollowupModeSteersToAct(t *testing.T) {
+	l := &Ledger{OpenSubQuestions: []string{"is this consistent?"}}
+	out := summariseLedgerForHint(l, "followup")
+	// Followup mode must point the agent at edit-and-commit, not at writing a
+	// read-only "final answer" (the explore frame that lets it loop forever).
+	if !strings.Contains(out, "commit and push") {
+		t.Errorf("followup hint should steer toward commit, got: %s", out)
+	}
+	if strings.Contains(out, "write the final answer") {
+		t.Errorf("followup hint should not use the explore 'final answer' frame, got: %s", out)
 	}
 }
 

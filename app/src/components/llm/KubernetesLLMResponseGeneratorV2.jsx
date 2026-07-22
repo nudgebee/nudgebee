@@ -26,6 +26,7 @@ import { useEffect, useRef, useReducer, useMemo, useCallback } from 'react';
 import { ds } from '@utils/colors';
 import AutoSuggestTextarea from '@components/k8s/common/TextAreaV2';
 import { SummaryBlock } from '@components/k8s/KubernetesClusterSummary';
+import { isFailedCachedConversation } from '@api1/ask-nudgebee';
 import { isCompleteWorkflowDefinition } from './utils/isCompleteWorkflowDefinition';
 import ConversationShimmer from './common/ConversationShimmer';
 import { ConversationTokenUsage } from './common/TokenUsageDisplay';
@@ -271,7 +272,11 @@ const KubernetesLLMResponseGenerator = ({
     ? `${activeWaitingFollowup.response?.message_id || ''}:${activeWaitingFollowup.response?.agent_id || ''}`
     : null;
 
-  const showFollowupSheet = Boolean(activeWaitingFollowup);
+  // Only surface the followup prompt while the conversation itself is still open. The
+  // per-message terminal check above can lag the conversation (a stale followup message can
+  // still read IN_PROGRESS after the run finished), so gate on conversationStatus too —
+  // a COMPLETED conversation must never render an answerable followup sheet.
+  const showFollowupSheet = Boolean(activeWaitingFollowup) && conversationStatus !== 'COMPLETED';
 
   const currentSessionId = router.query.session_id || sessionId;
   const notifyNavigateTo = currentSessionId ? `/ask-nudgebee?accountId=${accountId}&session_id=${currentSessionId}` : '';
@@ -599,7 +604,8 @@ const KubernetesLLMResponseGenerator = ({
           }
           return;
         }
-        if (!result.exists) {
+        // Regenerate when absent or a stale failure; served from cache otherwise.
+        if (!result.exists || isFailedCachedConversation(result.data)) {
           handleGenerateInvestigation(query);
         }
       }
@@ -1490,7 +1496,7 @@ const KubernetesLLMResponseGenerator = ({
             {/* Show ConversationLoader for first query in popup/workflow builder only */}
             {isConversationInProgress && messages.length === 0 && popup && (
               <Box sx={{ mt: ds.space.mul(0, 5), width: '100%', minWidth: ds.space.mul(1, 100) }}>
-                <ConversationLoader />
+                <ConversationLoader query={currentlyProcessingQuestion} />
               </Box>
             )}
 
@@ -1643,7 +1649,7 @@ const KubernetesLLMResponseGenerator = ({
                   mb={popup ? ds.space.mul(1, 5) : ds.space.mul(0, 35)}
                   sx={{ width: '100%', minWidth: popup ? ds.space.mul(1, 100) : 0, boxSizing: 'border-box' }}
                 >
-                  <ConversationLoader />
+                  <ConversationLoader query={currentlyProcessingQuestion} />
                 </Box>
               );
             })()}

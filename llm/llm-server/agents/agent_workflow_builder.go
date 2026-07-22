@@ -105,6 +105,48 @@ func sanitizeQuestionOptions(options []string) []string {
 	return out
 }
 
+const readOnlyToolStreakThreshold = 6
+
+// isRawWorkflowJSON checks whether content is valid JSON with both "name" and "definition"
+// top-level keys — the two required fields for a workflow definition. This is stricter than
+// the previous HasPrefix("{") && Contains("definition") check which could match garbage.
+func isRawWorkflowJSON(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if !json.Valid([]byte(trimmed)) {
+		return false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &obj); err != nil {
+		return false
+	}
+	_, hasName := obj["name"]
+	_, hasDef := obj["definition"]
+	return hasName && hasDef
+}
+
+// parseAgentId safely parses an agent ID string into a uuid.UUID, returning
+// uuid.Nil on empty or invalid input instead of panicking.
+func parseAgentId(agentId string) uuid.UUID {
+	if agentId == "" {
+		return uuid.Nil
+	}
+	parsed, err := uuid.Parse(agentId)
+	if err != nil {
+		return uuid.Nil
+	}
+	return parsed
+}
+
+// safeChoiceContent returns the trimmed text of the first choice, or an error
+// if the completion is nil or has no choices. Guards against panics from LLM
+// providers that return empty responses on transient failures.
+func safeChoiceContent(completion *llms.ContentResponse) (string, error) {
+	if completion == nil || len(completion.Choices) == 0 || completion.Choices[0] == nil {
+		return "", errors.New("empty LLM response: no choices returned")
+	}
+	return strings.TrimSpace(completion.Choices[0].Content), nil
+}
+
 // ClarifyingQuestion represents a single question to ask the user before planning.
 type ClarifyingQuestion struct {
 	Question string   `json:"question"`
@@ -152,6 +194,12 @@ type WorkflowBuilderAgent struct {
 	// of asking which account/cluster to target (#30162).
 	currentCluster   string
 	currentClusterId string
+
+	// changeSummary is the agent-authored explanation of WHAT it changed and WHY, captured from the
+	// finalize tool call and surfaced in the build/edit summary so the user sees the reasoning/approach
+	// behind a change — not just "has been updated". Transient per-request (set during runToolLoop, read
+	// in finalizeWithAutoSave); the agent is built fresh per turn so it never leaks across turns.
+	changeSummary string
 }
 
 func newWorkflowBuilderAgent(accountId string) *WorkflowBuilderAgent {
@@ -252,7 +300,22 @@ func getWorkflowSchema() string {
 - "manual" - No params required (params must be empty or omitted). User-supplied inputs available as {{ Inputs.<key> }} in tasks.
 - "schedule" - Requires params: {"cron": "0 * * * *" (5-field UTC), "overlap_policy": "Skip|BufferOne|BufferAll|AllowAll|CancelOther|TerminateOther" (optional, default "Skip"), "catchup_window": Go time.ParseDuration string using units ns|us|ms|s|m|h ONLY — day/week units ("7d", "1w") are NOT supported; use hours instead ("168h" = 7 days). Compound durations are allowed ("1h30m", "90m15s"). Examples: "60s", "10m", "1h", "1h30m", "168h"; default "60s"}. Auto-injected: {{ Inputs.workflow_scheduled_time }}, {{ Inputs.workflow_execution_time }}.
 - "webhook" - Requires params: {"integration_name": "string (a workflow_webhook integration name)", "secret": "string (optional)", "filter": "jinja2 (optional, must render to literal \"true\" or \"1\")"}. Filter sees {{ webhook_payload }} at root. Tasks read request body via {{ Inputs.webhook_payload }}.
-- "event" - Requires AT LEAST ONE of: event_type OR filter (both is fine; rejecting both empty). Params: {"event_type": "string or [string,...]", "filter": "jinja2"}. Filter sees {{ event.<field> }} at root — fields: event_type, source, cluster, subject_namespace, subject_name, priority (HIGH|MEDIUM|LOW|INFO|DEBUG), status, labels. Tasks read the event via {{ Inputs.event.<field> }}.
+- "event" - Requires AT LEAST ONE of: event_type OR filter (both is fine; rejecting both empty). Params: {"event_type": "string or [string,...]", "filter": "jinja2", "on": "lifecycle phase (optional, default event.created)"}.
+    - The filter sees the event at ROOT: {{ event.<field> }}. Tasks read the same event via {{ Inputs.event.<field> }}. NEVER use {{ Inputs.event }} inside the filter — the filter context has no "Inputs".
+    - AVAILABLE event.<field> (these are the ONLY top-level fields; do NOT invent others — there is no event.reason and no event.message):
+        event_type, source, title, description, failure, finding_type, category,
+        priority (HIGH|MEDIUM|LOW|INFO|DEBUG — coarse, MOST events are HIGH; a poor severity gate on its own),
+        status (FIRING|RESOLVED|CLOSED), nb_status (OPEN|DUPLICATE|SUPPRESSED|RESOLVED|ACTION_REQUIRED|DROPPED),
+        computed_priority (P0|P1|P2|P3 — the real triage tier; may be ABSENT for un-scored events),
+        computed_score (integer 0-100 — P0>=80, P1 60-79, P2 40-59, P3<40; may be ABSENT),
+        subject_type, subject_name, subject_namespace, subject_node, subject_owner, subject_owner_kind,
+        service_key, cluster (a cluster NAME like "prod-cluster" — NEVER an account/cluster UUID),
+        fingerprint, cloud_resource_id, principal, aggregation_key,
+        labels (a free-form map of alert labels — keys are source-specific, e.g. labels.alertname, labels.severity, labels.summary, labels.namespace; call get_event_trigger_schema to see the REAL keys for this account — do NOT guess label keys).
+    - SEVERITY: to fire on high-severity incidents use computed_priority/computed_score (e.g. {{ event.computed_priority in ['P0','P1'] }} or {{ (event.computed_score | default(0) | int) >= 80 }}), NOT a guessed label. Add {{ event.nb_status == 'OPEN' }} to skip duplicates/suppressed (most events are DUPLICATE).
+    - LLM ANALYSIS / RCA is NOT a field on the event. To include AI analysis, add an "llm.event_investigate" task and reference ITS output — do not read event.labels for a "reason"/"analysis".
+    - "on" (lifecycle phase) selects WHEN the workflow fires: event.created (default), event.triaged, event.updated, investigation.completed (use this when the task needs the LLM RCA, which is only ready by then), event.resolved, event.closed.
+    - BEFORE building an event trigger, call get_event_trigger_schema to confirm the live fields, the real label keys for this account, and a sample event.
 - "optimization" - All params optional (empty = match every recommendation). Params: {"categories": ["PodRightSizing"|"RightSizing"|"K8sInstanceRecommendation"|"K8sSpotRecommendation"|"Configuration"|"Security"|"K8sMissingAttribute"], "rule_names": ["vertical_rightsize"|"horizontal_rightsize"|"pvc_rightsize"|"continuous_rightsize"|"replica_right_sizing"|"Spot instance recommendation"|"Abandoned resource"], "clusters": ["string",...], "filter": "jinja2 (optional)"}. Filter and tasks see the recommendation event — fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id. Tasks read it via {{ Inputs.event.<field> }}.
 
 ## INPUT STRUCTURE:
@@ -440,7 +503,7 @@ Respond with ONLY one word: ANSWER, EDIT, or CREATE.`, map[bool]string{true: "IS
 		ctx.GetLogger().Warn("workflow_builder: turn intent classification failed, using fallback", "error", err, "fallback", fallback)
 		return fallback
 	}
-	if completion == nil || len(completion.Choices) == 0 {
+	if completion == nil || len(completion.Choices) == 0 || completion.Choices[0] == nil {
 		return fallback
 	}
 	return parseTurnIntent(completion.Choices[0].Content, hasWorkflow)
@@ -655,10 +718,7 @@ func (a *WorkflowBuilderAgent) generatePlanAndAskApproval(ctx *security.RequestC
 	a.state.Plan = plan
 	a.state.PlanAttempts = 1
 
-	agentId := uuid.Nil
-	if request.AgentId != "" {
-		agentId = uuid.MustParse(request.AgentId)
-	}
+	agentId := parseAgentId(request.AgentId)
 
 	planQuestion := fmt.Sprintf("Here's my plan for building your automation:\n\n%s\n\nWould you like to approve this plan or request changes?", plan)
 	resp := core.NBAgentResponse{
@@ -717,11 +777,18 @@ func (a *WorkflowBuilderAgent) handleFeedback(ctx *security.RequestContext, requ
 	a.state.Feedback = feedback
 	a.state.PlanAttempts++
 
-	// If we've exceeded max plan attempts, auto-build with current plan
+	// If we've exceeded max plan attempts, incorporate latest feedback then auto-build.
 	if a.state.PlanAttempts > maxPlanAttempts {
-		ctx.GetLogger().Info("workflow_builder: max plan attempts reached, auto-building", "attempts", a.state.PlanAttempts)
+		ctx.GetLogger().Info("workflow_builder: max plan attempts reached, auto-building with latest feedback", "attempts", a.state.PlanAttempts)
 		originalRequest := request
 		originalRequest.Query = a.state.OriginalQuery
+		// Regenerate plan with the latest feedback so the auto-build uses an up-to-date plan.
+		plan, err := a.regeneratePlan(ctx, originalRequest, a.state.Intent, a.state.Plan, feedback)
+		if err != nil {
+			ctx.GetLogger().Warn("workflow_builder: plan regeneration failed on auto-build, using previous plan", "error", err)
+			plan = a.state.Plan
+		}
+		a.state.Plan = plan
 		return a.buildAndValidate(ctx, originalRequest, a.state.Intent, a.state.Plan)
 	}
 
@@ -736,10 +803,7 @@ func (a *WorkflowBuilderAgent) handleFeedback(ctx *security.RequestContext, requ
 	a.state.Plan = plan
 	a.state.Stage = "plan_approval"
 
-	agentId := uuid.Nil
-	if request.AgentId != "" {
-		agentId = uuid.MustParse(request.AgentId)
-	}
+	agentId := parseAgentId(request.AgentId)
 
 	updatedPlanQuestion := fmt.Sprintf("Here's my updated plan:\n\n%s\n\nWould you like to approve this updated plan or request changes?", plan)
 	resp := core.NBAgentResponse{
@@ -820,6 +884,96 @@ Return {"questions": []} ONLY when the request is specific and detailed enough t
 Maximum 3 questions.`, envContext, configsContext, intent)
 }
 
+// getEditClarificationSystemPrompt builds the LLM prompt that decides whether a CHANGE request to an
+// EXISTING automation is ambiguous enough to ask the user which approach to take. Unlike the create
+// clarification, it sees the current workflow definition and is biased hard toward asking NOTHING —
+// most edits are clear and should be applied directly. When it does ask, every question must lead
+// with a recommended approach and offer the materially-different alternatives as options, so the
+// user picks an approach in one click instead of getting a silently-guessed change.
+func getEditClarificationSystemPrompt(envContext, configsContext, workflowDefinition string) string {
+	return fmt.Sprintf(`You are about to modify an EXISTING Nudgebee automation. Before changing it, decide whether the user's change request is clear enough to implement directly, or whether there is GENUINE ambiguity in HOW to implement it that a wrong guess would get materially wrong.
+
+%s
+%s
+
+CURRENT AUTOMATION DEFINITION (the user wants to change this):
+%s
+
+YOUR JOB:
+1. Read the user's change request (the human message) against the automation above.
+2. Default STRONGLY to NO questions. Most edits are clear and must be applied directly — e.g. "change the timeout to 5m", "add a Slack alert on failure", "remove the email task", "rename task X". For anything like these, return {"questions": []}.
+3. Ask ONLY when the APPROACH is genuinely undecidable and picking the wrong one would produce an automation the user likely did not intend. Typical cases:
+   - The request names a behavior that can be built more than one materially different way (e.g. "dedup" could mean skip-if-already-exists, reuse-the-existing-resource, or merge-into-one).
+   - The request needs an integration/account/data source that maps to more than one configured option and the right one is not inferable from context.
+   - A new step needs a trigger field or input the request leaves open and a default would change the outcome.
+4. When you ask, FIRST decide on a recommended approach and lead with it; offer the alternative(s) as options so the user can accept your recommendation in one click. Never ask an open-ended "how should I do this?" — always propose.
+
+QUESTION STYLE:
+- Lead with your recommendation and a one-line description of the approach, then list concrete approaches as options. Example: question "To dedup, I'll add an 'if' guard on create-incident-channel that skips creation when an open channel already matches the event's fingerprint, subject_name, and subject_namespace. Use that approach?", options ["Skip if a matching channel exists (recommended)", "Reuse the existing channel and post there instead"].
+- Each option is a concrete, actionable approach — never a generic label like "Option A".
+- Draw integration/account/resource values ONLY from the context above. Never invent resource names (Slack channels, namespaces, buckets, tables). Defer those to {{ Configs.<key> }} — do NOT ask about them.
+- If a CURRENT CONTEXT account/cluster is given above, never ask which account, cluster, or workspace to target.
+- Option labels are the plain display name only — never a UUID, an "id=..." value, or a provider annotation like "(AWS ...)". The only allowed parenthetical is "(recommended)".
+
+OUTPUT FORMAT (JSON only, no other text):
+{
+  "questions": [
+    {
+      "question": "To dedup, I'll add an 'if' guard that skips channel creation when one already matches. Use that approach?",
+      "options": ["Skip if a matching channel exists (recommended)", "Reuse the existing channel and post there instead"]
+    }
+  ]
+}
+
+Return {"questions": []} whenever the change is clear enough to implement directly.
+Maximum 2 questions.`, envContext, configsContext, workflowDefinition)
+}
+
+// parseClarifyingQuestionsJSON parses the LLM clarification response ({"questions":[...]}) and
+// post-processes it: strips markdown fences, caps the list at maxQuestions, sanitizes option labels
+// (stripping internal identifiers — provider annotations, id=<uuid>, bare UUIDs), and guarantees a
+// trailing "Skip" option on every question. Shared by the create- and edit-mode clarification paths.
+func parseClarifyingQuestionsJSON(content string, maxQuestions int) ([]ClarifyingQuestion, error) {
+	content = strings.TrimSpace(content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
+
+	var result struct {
+		Questions []ClarifyingQuestion `json:"questions"`
+	}
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		return nil, err
+	}
+
+	if len(result.Questions) > maxQuestions {
+		result.Questions = result.Questions[:maxQuestions]
+	}
+
+	// Strip internal identifiers (provider annotations, id=<uuid>, bare UUIDs) that the LLM copies
+	// from the ACCOUNT ENVIRONMENT context into user-facing option labels (#30885, #31141).
+	for i := range result.Questions {
+		result.Questions[i].Options = sanitizeQuestionOptions(result.Questions[i].Options)
+	}
+
+	// Ensure every question has "Skip" as its last option.
+	for i := range result.Questions {
+		hasSkip := false
+		for _, opt := range result.Questions[i].Options {
+			if strings.EqualFold(opt, "Skip") {
+				hasSkip = true
+				break
+			}
+		}
+		if !hasSkip {
+			result.Questions[i].Options = append(result.Questions[i].Options, "Skip")
+		}
+	}
+
+	return result.Questions, nil
+}
+
 func (a *WorkflowBuilderAgent) generateClarifyingQuestions(ctx *security.RequestContext, request core.NBAgentRequest, intent string) ([]ClarifyingQuestion, error) {
 	// includeAccountIDs=false: clarification options are user-facing, so the id= UUID
 	// must never enter this context (#31141). The account_id→UUID mapping happens later
@@ -852,49 +1006,55 @@ func (a *WorkflowBuilderAgent) generateClarifyingQuestions(ctx *security.Request
 		return nil, nil
 	}
 
-	content := strings.TrimSpace(completion.Choices[0].Content)
-	// Strip markdown code fences if present
-	content = strings.TrimPrefix(content, "```json")
-	content = strings.TrimPrefix(content, "```")
-	content = strings.TrimSuffix(content, "```")
-	content = strings.TrimSpace(content)
-
-	var result struct {
-		Questions []ClarifyingQuestion `json:"questions"`
+	questions, err := parseClarifyingQuestionsJSON(completion.Choices[0].Content, 3)
+	if err != nil {
+		ctx.GetLogger().Warn("workflow_builder: failed to parse clarification response", "error", err, "content", completion.Choices[0].Content)
+		return nil, nil
 	}
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		ctx.GetLogger().Warn("workflow_builder: failed to parse clarification response", "error", err, "content", content)
+	return questions, nil
+}
+
+// generateEditClarifyingQuestions asks the LLM whether a CHANGE request to an existing automation is
+// ambiguous enough that the user should pick the approach. It mirrors generateClarifyingQuestions but
+// is edit-specific: it includes the current workflow definition and is biased to return ZERO
+// questions (most edits are clear). When it does ask, each question leads with a recommended approach
+// and offers the materially-different alternatives as options. Returns nil (apply directly) when the
+// change is clear or on any non-fatal classifier error.
+func (a *WorkflowBuilderAgent) generateEditClarifyingQuestions(ctx *security.RequestContext, request core.NBAgentRequest, workflowDefinition string) ([]ClarifyingQuestion, error) {
+	// includeAccountIDs=false: option labels are user-facing, so the id= UUID must never enter this
+	// context (#31141) — the account_id→UUID mapping happens later in resolveCloudAccountIds.
+	envContext := a.buildEnvironmentContext(ctx, false)
+	configsContext := fetchConfigsContext(ctx, a.accountId)
+	systemPrompt := getEditClarificationSystemPrompt(envContext, configsContext, workflowDefinition)
+
+	messageContent := []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
+	}
+
+	// Lite/fast model — this is a yes/ask classification, same as the create-mode clarification.
+	clarifyCtx := security.NewRequestContext(
+		context.WithValue(ctx.GetContext(), core.ContextKeyModelTier, core.ModelTierRetrieval),
+		ctx.GetSecurityContext(),
+		ctx.GetLogger(),
+		ctx.GetTracer(),
+		ctx.GetMeter(),
+	)
+
+	completion, err := core.GenerateAndTrackLLMContent(clarifyCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
+	if err != nil {
+		return nil, fmt.Errorf("edit clarification LLM call failed: %w", err)
+	}
+	if len(completion.Choices) == 0 || completion.Choices[0].Content == "" {
 		return nil, nil
 	}
 
-	// Cap at 3 questions
-	if len(result.Questions) > 3 {
-		result.Questions = result.Questions[:3]
+	questions, err := parseClarifyingQuestionsJSON(completion.Choices[0].Content, 2)
+	if err != nil {
+		ctx.GetLogger().Warn("workflow_builder: failed to parse edit clarification response", "error", err, "content", completion.Choices[0].Content)
+		return nil, nil
 	}
-
-	// Strip internal identifiers (provider annotations, id=<uuid>, bare UUIDs) that the
-	// LLM copies from the ACCOUNT ENVIRONMENT context into user-facing option labels
-	// (#30885, #31141). The id is needed by the LLM for account_id mapping but must
-	// never be shown to the user.
-	for i := range result.Questions {
-		result.Questions[i].Options = sanitizeQuestionOptions(result.Questions[i].Options)
-	}
-
-	// Ensure every question has "Skip" as last option
-	for i := range result.Questions {
-		hasSkip := false
-		for _, opt := range result.Questions[i].Options {
-			if strings.EqualFold(opt, "Skip") {
-				hasSkip = true
-				break
-			}
-		}
-		if !hasSkip {
-			result.Questions[i].Options = append(result.Questions[i].Options, "Skip")
-		}
-	}
-
-	return result.Questions, nil
+	return questions, nil
 }
 
 // handleClarificationResponse processes the user's answer to a clarifying question.
@@ -917,20 +1077,22 @@ func (a *WorkflowBuilderAgent) handleClarificationResponse(ctx *security.Request
 		return a.buildClarificationResponse(request, nextQ)
 	}
 
-	// All questions answered — build clarification context and proceed to plan
+	// All questions answered — build the clarification context and route back to the flow that
+	// asked. An EDIT (fix mode with a target workflow) resumes the edit loop with the chosen
+	// approach; otherwise this is a CREATE clarification, which proceeds to plan generation.
 	clarificationContext := a.buildClarificationContext()
 
 	originalRequest := request
 	originalRequest.Query = a.state.OriginalQuery
+	if a.state.Mode == "fix" && a.state.WorkflowId != "" {
+		return a.runEditToolLoop(ctx, originalRequest, clarificationContext)
+	}
 	return a.generatePlanAndAskApproval(ctx, originalRequest, a.state.Intent, clarificationContext)
 }
 
 // buildClarificationResponse formats a clarifying question as a FollowupRequest with structured option data.
 func (a *WorkflowBuilderAgent) buildClarificationResponse(request core.NBAgentRequest, question ClarifyingQuestion) (core.NBAgentResponse, error) {
-	agentId := uuid.Nil
-	if request.AgentId != "" {
-		agentId = uuid.MustParse(request.AgentId)
-	}
+	agentId := parseAgentId(request.AgentId)
 
 	// Build structured option data for the frontend
 	structuredOptions := make([]map[string]any, 0, len(question.Options))
@@ -1007,7 +1169,7 @@ INSTRUCTIONS:
    c. Call get_task_schema for that task type to verify the correct parameter format.
    d. Call modify_task to fix the specific issue.
    e. Call validate again. If the same error recurs, try a different approach entirely.
-5. Once validation passes, call finalize to return the completed automation JSON.
+5. Once validation passes, call finalize to return the completed automation JSON. In the finalize call, ALWAYS set change_summary to 1-3 plain-language sentences describing the approach you took (the key tasks/flow and why), so the user understands how the automation works.
 
 CRITICAL RULES:
 - Jinja2 references: {{ Tasks['task-id'].output.<field> }} (capital T, bracket notation)
@@ -1019,7 +1181,13 @@ CRITICAL RULES:
 - Manual trigger: NO params (or empty object)
 - Schedule trigger: MUST have "cron" param. catchup_window (if set) uses Go time.ParseDuration syntax — valid units ns|us|ms|s|m|h ONLY; "7d"/"1w" are NOT supported (use "168h" for 7 days); compound values like "1h30m" ARE valid
 - Webhook trigger: MUST have "integration_name". Filter (if any) MUST render to literal "true" or "1" — use {{ <expr> }}, never a raw boolean
-- Event trigger: MUST have AT LEAST ONE of "event_type" OR "filter". event_type may be a string or an array
+- Event trigger: MUST have AT LEAST ONE of "event_type" OR "filter". event_type may be a string or an array. Before authoring an event trigger, CALL get_event_trigger_schema to get the real fields, the live label keys, and a sample event — never guess. Hard rules that cause silently-dead triggers if broken:
+  - Use ONLY documented event.<field> names. There is NO event.reason and NO event.message — for k8s reasons (OOMKilled, CrashLoopBackOff) match event.title / event.description / labels.alertname instead.
+  - The filter references event.<field> at ROOT, NOT {{ Inputs.event.<field> }} (Inputs is task-scope only; using it in a filter never matches).
+  - event.cluster is a cluster NAME (e.g. "prod-cluster"), NEVER an account/cluster UUID — do not compare it to a UUID.
+  - For severity use event.computed_priority (P0|P1|P2|P3) or event.computed_score (0-100), NOT a guessed label like event.labels.nb_triage. Add {{ event.nb_status == 'OPEN' }} to skip duplicates.
+  - For AI analysis/RCA, add an llm.event_investigate task and reference its output — there is no event.labels analysis/reason field.
+  - event_type must be a REAL registered type (confirm via get_event_trigger_schema); do not invent values like "incident.resolved" or "db.connection.spike".
 - Optimization trigger: all params optional (categories[], rule_names[], clusters[], filter). Empty = match every recommendation
 - TRIGGER PAYLOAD ACCESS IN TASKS:
   - Manual/Schedule: user inputs → {{ Inputs.<key> }}
@@ -1131,10 +1299,11 @@ IF CHANGING/EXTENDING:
 
 THEN, ALWAYS:
 - Call validate. If it fails, read the error, fix the specific task, and validate again (try a different approach if the same error recurs).
-- Once validation passes, call finalize to return the complete updated automation JSON.
+- Once validation passes, call finalize to return the complete updated automation JSON. In the finalize call, ALWAYS set change_summary to 1-3 plain-language sentences stating WHAT you changed and WHY (the approach/reasoning) — e.g. which tasks/conditions you added, removed, or modified and the problem it solves — so the user sees more than "updated".
 
 RULES:
 - Change only what is NECESSARY. Preserve existing task IDs, dependencies, and logic that the request does not touch.
+- EVENT TRIGGERS: if the change touches an event trigger or its filter, CALL get_event_trigger_schema first. The filter sees event.<field> at ROOT (never Inputs.event). There is NO event.reason / event.message (use title/description/labels.alertname); event.cluster is a NAME not a UUID; for severity use event.computed_priority/computed_score (+ {{ event.nb_status == 'OPEN' }} to skip duplicates), not a guessed label; for AI analysis add an llm.event_investigate task; never invent event_type or label keys.
 - Jinja2 references: {{ Tasks['task-id'].output.<field> }} — check get_task_schema output_schema for the correct field name.
 - TEMPLATES ARE JINJA2 ONLY: a parse error like invalid expression ... near "*" means a JMESPath/JSONPath construct ([*], [?...], .., @) was used inside {{ }}. Jinja2 has NO list projection. Add an upstream scripting.run_script (python) task that produces the derived scalar, then reference {{ Tasks['<that-task>'].output.data }}.
 - Integration IDs: {{ Configs.<type>_integration_id }}. Integer values: use 5, NOT 5.0.
@@ -1455,7 +1624,7 @@ func (a *WorkflowBuilderAgent) finalizeWithAutoSave(ctx *security.RequestContext
 	saved := workflowId != ""
 
 	// Build a human-readable summary instead of returning raw JSON
-	summary, summaryErr := buildWorkflowSummary(workflowJSON, a.state.Mode, saved)
+	summary, summaryErr := buildWorkflowSummary(workflowJSON, a.state.Mode, saved, a.changeSummary)
 	if summaryErr != nil {
 		ctx.GetLogger().Warn("workflow_builder: failed to build summary, returning raw JSON", "error", summaryErr)
 		return core.NBAgentResponse{Response: []string{workflowJSON}, IsTerminal: true}
@@ -1568,7 +1737,13 @@ func summaryHeadline(name, mode string, saved bool) string {
 // buildWorkflowSummary parses the workflow JSON and returns a markdown summary
 // with the workflow name, trigger type, and a numbered list of tasks. The headline
 // reflects whether the workflow was persisted to the automation server.
-func buildWorkflowSummary(workflowJSON string, mode string, saved bool) (string, error) {
+//
+// changeSummary is the agent-authored explanation of the approach/reasoning behind the
+// change (captured from the finalize tool call). When present it is rendered as a labeled
+// paragraph right after the headline so the user sees WHY the automation looks the way it
+// does, not just the resulting task list. When empty the summary degrades to the prior
+// headline + trigger + tasks shape.
+func buildWorkflowSummary(workflowJSON string, mode string, saved bool, changeSummary string) (string, error) {
 	var wf map[string]interface{}
 	if err := json.Unmarshal([]byte(workflowJSON), &wf); err != nil {
 		return "", fmt.Errorf("buildWorkflowSummary: failed to parse workflow JSON: %w", err)
@@ -1613,6 +1788,15 @@ func buildWorkflowSummary(workflowJSON string, mode string, saved bool) (string,
 	var sb strings.Builder
 	sb.WriteString(headline)
 	sb.WriteString("\n\n")
+	if cs := strings.TrimSpace(changeSummary); cs != "" {
+		// "What changed" for an edit (mode "fix"), "Approach" for a fresh build — the agent's
+		// reasoning reads correctly under either framing.
+		label := "Approach"
+		if mode == "fix" {
+			label = "What changed"
+		}
+		fmt.Fprintf(&sb, "**%s:** %s\n\n", label, cs)
+	}
 	fmt.Fprintf(&sb, "**Trigger:** %s\n\n", triggerType)
 
 	if len(tasks) > 0 {
@@ -1836,7 +2020,7 @@ Return ONLY the JSON object.`, taskTypeNames, envContext)
 		return "", err
 	}
 
-	return strings.TrimSpace(completion.Choices[0].Content), nil
+	return safeChoiceContent(completion)
 }
 
 // buildEnvironmentContext fetches the account's configured integrations, cloud accounts,
@@ -1961,12 +2145,33 @@ func (a *WorkflowBuilderAgent) fetchTaskTypeNames(ctx *security.RequestContext) 
 	if len(tasksResp) == 0 {
 		return ""
 	}
-	var tasks []struct {
-		Type string `json:"type"`
+	// Peek at first non-whitespace byte to determine response shape without double-unmarshaling.
+	var wrapped struct {
+		Tasks []struct {
+			Type string `json:"name"`
+		} `json:"tasks"`
 	}
-	if err := json.Unmarshal(tasksResp, &tasks); err != nil {
-		ctx.GetLogger().Warn("workflow_builder: failed to parse task types response", "error", err)
-		return ""
+	var tasks []struct {
+		Type string `json:"name"`
+	}
+	var firstChar byte
+	for _, b := range tasksResp {
+		if b != ' ' && b != '\t' && b != '\n' && b != '\r' {
+			firstChar = b
+			break
+		}
+	}
+	if firstChar == '{' {
+		if err := json.Unmarshal(tasksResp, &wrapped); err != nil {
+			ctx.GetLogger().Warn("workflow_builder: failed to parse wrapped task types response", "error", err)
+			return ""
+		}
+		tasks = wrapped.Tasks
+	} else {
+		if err := json.Unmarshal(tasksResp, &tasks); err != nil {
+			ctx.GetLogger().Warn("workflow_builder: failed to parse bare task types response", "error", err)
+			return ""
+		}
 	}
 	types := make([]string, 0, len(tasks))
 	for _, t := range tasks {
@@ -1987,7 +2192,7 @@ TRIGGER TYPES AND THEIR REQUIRED PARAMETERS:
 - "manual" → No params allowed. User runs the automation from the UI on demand. User-supplied inputs are read in tasks via {{ Inputs.<key> }}.
 - "schedule" → Requires: cron (5-field UTC string, e.g. "0 9 * * MON-FRI"). Optional: overlap_policy ("Skip"|"BufferOne"|"BufferAll"|"AllowAll"|"CancelOther"|"TerminateOther"; default "Skip"), catchup_window (Go time.ParseDuration syntax; valid units ns|us|ms|s|m|h ONLY; day/week units like "7d" are NOT supported — use hours: "168h" = 7 days; compound durations like "1h30m" ARE valid; default "60s"). IMPORTANT: Always set overlap_policy: "Skip" for monitoring automations to prevent overlapping runs.
 - "webhook" → Requires: integration_name (string — must reference a workflow_webhook integration configured on the account). Optional: secret (string), filter (Jinja2 expression on payload, must render to literal "true" or "1"). Filter context: {{ webhook_payload }} at root. Tasks read the request body via {{ Inputs.webhook_payload }}.
-- "event" → Requires AT LEAST ONE of: event_type (string or [string,...]) OR filter (Jinja2). Filter context: {{ event.<field> }} at root — known fields: event_type, source, cluster, subject_namespace, subject_name, priority (HIGH|MEDIUM|LOW|INFO|DEBUG), status, labels. Tasks read the event via {{ Inputs.event.<field> }}.
+- "event" → Requires AT LEAST ONE of: event_type (string or [string,...]) OR filter (Jinja2); optional "on" lifecycle phase (default event.created). Filter context: {{ event.<field> }} at root (NOT Inputs.event). Real fields: event_type, source, title, description, category, priority (HIGH|MEDIUM|LOW|INFO|DEBUG), status, nb_status (OPEN|DUPLICATE|SUPPRESSED|...), computed_priority (P0-P3, may be absent), computed_score (0-100, may be absent), subject_type/name/namespace/node, cluster (a NAME, not a UUID), fingerprint, cloud_resource_id, labels (free-form alert labels — keys are source-specific, get them from get_event_trigger_schema). NO event.reason/event.message. For severity use computed_priority/computed_score (+ nb_status=='OPEN'); for AI analysis add an llm.event_investigate task. Tasks read the event via {{ Inputs.event.<field> }}.
 - "optimization" → Fires on new K8s/cost optimization recommendations. All params optional (empty = match every recommendation). Optional: categories ([string,...] from: PodRightSizing, RightSizing, K8sInstanceRecommendation, K8sSpotRecommendation, Configuration, Security, K8sMissingAttribute), rule_names ([string,...] from: vertical_rightsize, horizontal_rightsize, pvc_rightsize, continuous_rightsize, replica_right_sizing, "Spot instance recommendation", "Abandoned resource"), clusters ([string,...]), filter (Jinja2). Tasks read the recommendation via {{ Inputs.event.<field> }} — known fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id.
 
 COMMON TASK TYPES — WHEN TO USE EACH:
@@ -2291,7 +2496,7 @@ NOTE: In all user-facing text, refer to these as "automations" (not "workflows")
 		return "", err
 	}
 
-	return strings.TrimSpace(completion.Choices[0].Content), nil
+	return safeChoiceContent(completion)
 }
 
 // regeneratePlan creates an updated plan incorporating user feedback.
@@ -2357,7 +2562,7 @@ RULES:
 		return "", err
 	}
 
-	return strings.TrimSpace(completion.Choices[0].Content), nil
+	return safeChoiceContent(completion)
 }
 
 // coerceWorkflowTypes walks the workflow JSON map and converts float64 values
@@ -2437,14 +2642,19 @@ func getWorkflowToolDescriptions() string {
 			Params:      `{"task_type": "notifications.im"}`,
 		},
 		{
+			Name:        "get_event_trigger_schema",
+			Description: "Get the real event-trigger field reference for THIS account: the available event.<field> names, lifecycle phases for params.on, severity fields, AND the actual label keys + a sample event observed on recent events. ALWAYS call this BEFORE writing an event trigger or its filter, so you reference real fields/labels instead of guessing (guessed fields make the trigger silently never fire).",
+			Params:      `{}`,
+		},
+		{
 			Name:        "validate",
 			Description: "Validate the current automation against the server's validation API. Returns 'OK' or error details. Call this after adding all tasks.",
 			Params:      `{}`,
 		},
 		{
 			Name:        "finalize",
-			Description: "Finalize and return the complete automation JSON. Call this only after validate returns OK.",
-			Params:      `{}`,
+			Description: "Finalize and return the complete automation JSON. Call this only after validate returns OK. ALWAYS pass change_summary: 1-3 plain-language sentences explaining WHAT you changed/built and WHY (the approach and reasoning), so the user understands the change instead of only seeing that it happened.",
+			Params:      `{"change_summary": "Added a dedup guard so a repeat event with the same fingerprint, subject name, and namespace reuses the existing incident channel instead of creating a new one."}`,
 		},
 		{
 			Name:        "list_executions",
@@ -2466,10 +2676,20 @@ func getWorkflowToolDescriptions() string {
 }
 
 // toolInitWorkflow initializes the working workflow with name, triggers, and inputs.
+// If a workflow is already loaded with tasks, it refuses to silently overwrite them.
 func (a *WorkflowBuilderAgent) toolInitWorkflow(args map[string]interface{}) string {
 	name, _ := args["name"].(string)
 	if name == "" {
 		return "Error: 'name' is required"
+	}
+
+	// Guard: refuse re-init when tasks already exist to prevent silent data loss.
+	if a.state.WorkingWorkflow != nil {
+		if def, ok := a.state.WorkingWorkflow["definition"].(map[string]interface{}); ok {
+			if tasks, ok := def["tasks"].([]interface{}); ok && len(tasks) > 0 {
+				return fmt.Sprintf("Warning: automation already has %d task(s). Use modify_task/add_task/delete_task to change it, or call finalize to complete it. Re-initializing would discard all existing tasks.", len(tasks))
+			}
+		}
 	}
 
 	definition := map[string]interface{}{
@@ -3002,6 +3222,206 @@ func (a *WorkflowBuilderAgent) toolGetTaskSchema(args map[string]interface{}, ca
 	return fmt.Sprintf("Task type '%s' not found in available types. Check the type name and try again.", taskType)
 }
 
+// getEventTriggerSchemaReference returns the authoritative, hand-maintained reference for what an
+// event-trigger filter and its tasks can read. It is the single source of truth the builder lacked —
+// the event payload published to the runbook engine is a flat map, so the fields below are exactly
+// the keys an author may reference as event.<field> (filter) / Inputs.event.<field> (tasks). Kept in
+// one place so the tool and tests share it; the get_event_trigger_schema tool appends live, per-account
+// label keys + a sample event on top of this.
+func getEventTriggerSchemaReference() string {
+	return `EVENT TRIGGER FIELD REFERENCE
+
+The filter reads the event at ROOT: {{ event.<field> }}. Tasks read the same event via {{ Inputs.event.<field> }}.
+NEVER use {{ Inputs.event }} inside the FILTER — the filter context has no "Inputs" and will never match.
+
+Top-level event.<field> (these are the ONLY top-level fields — do NOT invent others; there is NO event.reason and NO event.message):
+- event_type            string  — the registered event/aggregation type (match with the trigger's event_type param)
+- source                string  — origin (e.g. prometheus, pagerduty_webhook, github_webhook)
+- title, description, failure, finding_type, category   string — human-readable text; match k8s reasons (OOMKilled, CrashLoopBackOff) here, NOT in a non-existent event.reason
+- priority              HIGH|MEDIUM|LOW|INFO|DEBUG — COARSE; most events are HIGH, so a weak severity gate on its own
+- status                FIRING|RESOLVED|CLOSED
+- nb_status             OPEN|DUPLICATE|SUPPRESSED|RESOLVED|ACTION_REQUIRED|DROPPED — add {{ event.nb_status == 'OPEN' }} to skip duplicates/suppressed
+- computed_priority     P0|P1|P2|P3 — the REAL triage tier (may be ABSENT for un-scored events)
+- computed_score        integer 0-100 — P0>=80, P1 60-79, P2 40-59, P3<40 (may be ABSENT)
+- subject_type, subject_name, subject_namespace, subject_node, subject_owner, subject_owner_kind, service_key  string
+- cluster               string — a cluster NAME (e.g. "prod-cluster"), NEVER an account/cluster UUID
+- fingerprint, cloud_resource_id, principal, aggregation_key  string
+- labels                map — free-form alert labels; keys are source-specific (see LIVE LABELS below). Reference as event.labels.<key>. Do NOT guess keys.
+
+SEVERITY: to fire on high-severity incidents use computed_priority/computed_score, e.g.
+  {{ event.computed_priority in ['P0','P1'] }}   or   {{ (event.computed_score | default(0) | int) >= 80 }}
+NOT a guessed label. There is no numeric triage label.
+
+LLM ANALYSIS / RCA is NOT an event field. To include AI analysis, add an "llm.event_investigate" task and reference its output.
+If the analysis must already be ready, set the trigger's "on" to investigation.completed.
+
+params.on (lifecycle phase — WHEN the workflow fires; default event.created):
+  event.created, event.triaged, event.updated, investigation.completed, event.resolved, event.closed
+
+event_type must be a REAL registered type — confirm it appears in LIVE below; never invent values.`
+}
+
+// toolGetEventTriggerSchema returns the authoritative event-trigger reference plus, best-effort, the
+// real label keys and a sample event observed on recent events for THIS account — so the agent grounds
+// event.<field>/event.labels.<key> references in reality instead of guessing. The live augmentation is
+// best-effort: if the events store is unreachable it degrades to the static reference and never errors.
+func (a *WorkflowBuilderAgent) toolGetEventTriggerSchema(ctx *security.RequestContext) string {
+	var sb strings.Builder
+	sb.WriteString(getEventTriggerSchemaReference())
+
+	if live := a.fetchLiveEventTriggerHints(ctx); live != "" {
+		sb.WriteString("\n\nLIVE — observed on recent events for THIS account (use these real values; do not invent others):\n")
+		sb.WriteString(live)
+	} else {
+		sb.WriteString("\n\nLIVE: (no recent-event sample available — reference only the documented fields above and do not invent label keys.)")
+	}
+	return sb.String()
+}
+
+// fetchLiveEventTriggerHints queries the events store for the real label-key vocabulary, the observed
+// event_type / source / computed_priority values, and one sample event for the current account. The
+// scan is bounded (most-recent 500 events) and account-scoped. Best-effort: any failure returns ""
+// so the build is never blocked.
+func (a *WorkflowBuilderAgent) fetchLiveEventTriggerHints(ctx *security.RequestContext) string {
+	if a.accountId == "" {
+		return ""
+	}
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil || dbManager == nil || dbManager.Db == nil {
+		if ctx != nil {
+			ctx.GetLogger().Warn("workflow_builder: get_event_trigger_schema live hints unavailable (no metastore)", "error", err)
+		}
+		return ""
+	}
+
+	var sb strings.Builder
+
+	// Top label keys across the most-recent object-typed labels for this account.
+	const labelKeysQuery = `
+SELECT k AS label_key, count(*) AS n
+FROM (
+  SELECT labels FROM events
+  WHERE cloud_account_id = $1 AND jsonb_typeof(labels) = 'object'
+  ORDER BY created_at DESC LIMIT 500
+) e, jsonb_object_keys(e.labels) AS k
+GROUP BY k ORDER BY n DESC LIMIT 40`
+	if rows, qErr := dbManager.Db.Queryx(labelKeysQuery, a.accountId); qErr == nil {
+		var keys []string
+		for rows.Next() {
+			var k string
+			var n int
+			if rows.Scan(&k, &n) == nil {
+				keys = append(keys, k)
+			}
+		}
+		_ = rows.Close()
+		if len(keys) > 0 {
+			fmt.Fprintf(&sb, "Real label keys (reference as event.labels.<key>): %s\n", strings.Join(keys, ", "))
+		}
+	} else if ctx != nil {
+		ctx.GetLogger().Warn("workflow_builder: live label-key query failed", "error", qErr)
+	}
+
+	// Observed event_type / source / computed_priority values (so the agent matches real ones).
+	const distinctValsQuery = `
+SELECT 'event_type' AS field, event_type AS val FROM events WHERE cloud_account_id = $1 AND event_type <> '' GROUP BY event_type ORDER BY count(*) DESC LIMIT 15`
+	if rows, qErr := dbManager.Db.Queryx(distinctValsQuery, a.accountId); qErr == nil {
+		var vals []string
+		for rows.Next() {
+			var field, val string
+			if rows.Scan(&field, &val) == nil && val != "" {
+				vals = append(vals, val)
+			}
+		}
+		_ = rows.Close()
+		if len(vals) > 0 {
+			fmt.Fprintf(&sb, "Real event_type values: %s\n", strings.Join(vals, ", "))
+		}
+	}
+
+	return strings.TrimSpace(sb.String())
+}
+
+// knownEventTriggerFields is the set of top-level event.<field> names an event-trigger filter (and
+// its tasks) may reference — mirrors getEventTriggerSchemaReference and the flat event payload the
+// runbook engine publishes. Used to lint filters for references to fields that do not exist, which is
+// the dominant cause of silently-dead event triggers in real builder output.
+var knownEventTriggerFields = map[string]bool{
+	"event_type": true, "source": true, "title": true, "description": true, "failure": true,
+	"finding_type": true, "category": true, "priority": true, "status": true, "nb_status": true,
+	"computed_priority": true, "computed_score": true, "subject_type": true, "subject_name": true,
+	"subject_namespace": true, "subject_node": true, "subject_owner": true, "subject_owner_kind": true,
+	"service_key": true, "cluster": true, "fingerprint": true, "cloud_resource_id": true,
+	"principal": true, "aggregation_key": true, "labels": true, "finding_id": true, "evidences": true,
+	// triage/score columns that may also be carried on the payload map:
+	"urgency": true, "score_factors": true, "score_confidence": true,
+	// identifiers carried on the payload map though not headline filter fields:
+	"id": true, "account_id": true, "cloud_account_id": true, "tenant": true, "lifecycle_phase": true,
+	"created_at": true, "starts_at": true, "ends_at": true,
+}
+
+// eventFieldRefRegex captures the top-level field in an `event.<field>` reference (the first segment
+// only — for `event.labels.alertname` it captures `labels`, which is correct since label keys are
+// free-form and cannot be linted statically).
+var eventFieldRefRegex = regexp.MustCompile(`\bevent\.([a-zA-Z_][a-zA-Z0-9_]*)`)
+
+// lintEventTriggers inspects each event-trigger filter for the mistakes that make a trigger silently
+// never fire — patterns observed across real builder output: `Inputs.event` used in a filter (filters
+// read `event.*` at root), references to non-existent top-level fields (e.g. event.reason /
+// event.message), and comparing event.cluster (a name) to a UUID. Returns human-readable issues;
+// empty when the event triggers look sound. Non-event triggers are ignored. Label KEYS are not linted
+// (they are free-form; get_event_trigger_schema surfaces the real ones).
+func lintEventTriggers(workflow map[string]interface{}) []string {
+	var triggers []interface{}
+	if def, ok := workflow["definition"].(map[string]interface{}); ok {
+		triggers, _ = def["triggers"].([]interface{})
+	}
+	if triggers == nil {
+		triggers, _ = workflow["triggers"].([]interface{})
+	}
+
+	var issues []string
+	for _, rt := range triggers {
+		t, ok := rt.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if tt, _ := t["type"].(string); tt != "event" {
+			continue
+		}
+		params, _ := t["params"].(map[string]interface{})
+		filter, _ := params["filter"].(string)
+		if strings.TrimSpace(filter) == "" {
+			continue
+		}
+
+		if strings.Contains(filter, "Inputs.event") {
+			issues = append(issues, "trigger filter uses `Inputs.event` — a filter reads the event at root as `event.<field>` (Inputs is task-scope only, so the filter never matches).")
+		}
+		seen := map[string]bool{}
+		for _, m := range eventFieldRefRegex.FindAllStringSubmatch(filter, -1) {
+			field := m[1]
+			if knownEventTriggerFields[field] || seen[field] {
+				continue
+			}
+			seen[field] = true
+			issues = append(issues, fmt.Sprintf("trigger filter references `event.%s`, which is not a real event field — the trigger will never fire. Call get_event_trigger_schema for the available fields (for k8s reasons use event.title / event.description / event.labels.alertname).", field))
+		}
+		if strings.Contains(filter, "event.cluster") && uuidRegex.MatchString(filter) {
+			issues = append(issues, "trigger filter compares `event.cluster` to a UUID — cluster is a NAME (e.g. \"prod-cluster\"), never an account/cluster UUID.")
+		}
+	}
+	return issues
+}
+
+// eventTriggerLintMessage formats lint issues into a validation-style failure the agent must fix
+// before finalizing, so a structurally-valid-but-dead trigger is not saved as ACTIVE.
+func eventTriggerLintMessage(issues []string) string {
+	return "Validation FAILED (event trigger): the structure is valid but the event trigger would never fire as written:\n- " +
+		strings.Join(issues, "\n- ") +
+		"\n\nFix the trigger filter (call get_event_trigger_schema for the real fields and label keys), then call validate again."
+}
+
 // toolValidate validates the current working workflow via the runbook-server API.
 func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string {
 	if a.state.WorkingWorkflow == nil {
@@ -3010,6 +3430,10 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 
 	// Apply type coercion before validation
 	coerceWorkflowTypes(a.state.WorkingWorkflow)
+
+	// Local event-trigger lint: the server validates structure but accepts filters that reference
+	// non-existent fields (which save as ACTIVE-but-dead). Surface those so the agent fixes them.
+	triggerIssues := lintEventTriggers(a.state.WorkingWorkflow)
 
 	_, err := tools.DoRunbookRequest("POST", "workflows/validate", a.state.WorkingWorkflow, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
 	if err != nil {
@@ -3049,11 +3473,17 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 			if isRealTemplateSyntaxError(errMsg) || !referencesRuntimeValue(errMsg) {
 				return fmt.Sprintf("Validation FAILED: %s\n\nThis template expression could not be evaluated and does not clearly reference a runtime value, so it is treated as a real error. Fix the template (check filters, expression syntax, and that any Tasks/Configs/Inputs reference is correct), then call validate again.", errMsg)
 			}
+			if len(triggerIssues) > 0 {
+				return eventTriggerLintMessage(triggerIssues)
+			}
 			return "Validation OK (with template warnings). Some template expressions cannot be evaluated during validation because they reference runtime values (task outputs, configs, inputs). They will resolve correctly at execution time. The automation structure is valid. Proceed to finalize."
 		}
 		return fmt.Sprintf("Validation FAILED: %s", errMsg)
 	}
 
+	if len(triggerIssues) > 0 {
+		return eventTriggerLintMessage(triggerIssues)
+	}
 	return "Validation OK. The automation is valid."
 }
 
@@ -3265,18 +3695,25 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 		return a.toolListTasks(args)
 	case "get_task_schema":
 		return a.toolGetTaskSchema(args, cachedTaskTypes)
+	case "get_event_trigger_schema":
+		return a.toolGetEventTriggerSchema(ctx)
 	case "validate":
 		return a.toolValidate(ctx)
 	case "dry_run":
 		return a.toolDryRun(ctx)
 	case "finalize":
+		// Capture the agent's plain-language explanation of the change so finalizeWithAutoSave can
+		// surface the reasoning/approach in the summary instead of just "has been updated".
+		if cs, ok := args["change_summary"].(string); ok {
+			a.changeSummary = strings.TrimSpace(cs)
+		}
 		return a.toolFinalize()
 	case "list_executions":
 		return a.toolListExecutions(ctx, args)
 	case "get_execution":
 		return a.toolGetExecution(ctx, args)
 	default:
-		return fmt.Sprintf("Unknown tool: '%s'. Available tools: init_workflow, add_task, get_task, modify_task, delete_task, list_tasks, get_task_schema, validate, dry_run, finalize, list_executions, get_execution", toolName)
+		return fmt.Sprintf("Unknown tool: '%s'. Available tools: init_workflow, add_task, get_task, modify_task, delete_task, list_tasks, get_task_schema, get_event_trigger_schema, validate, dry_run, finalize, list_executions, get_execution", toolName)
 	}
 }
 
@@ -3345,6 +3782,7 @@ RULES:
 - Do NOT generate <observation> tags — I will provide them.
 - Do NOT output both <thought_action> and <final_answer> in the same response.
 - Call validate before finalize.
+- When you call finalize, pass change_summary: a short plain-language explanation of what you changed/built and why.
 - Call finalize to return the completed workflow — put the JSON inside <content>.`, systemPrompt, toolDescriptions)
 
 	messages := []llms.MessageContent{
@@ -3412,10 +3850,10 @@ RULES:
 		toolInput := common.XmlExtractTagContent(content, "tool_input")
 
 		if toolName == "" {
-			// No tool call and no final answer — check if content looks like raw JSON (workflow)
-			trimmed := strings.TrimSpace(content)
-			if strings.HasPrefix(trimmed, "{") && strings.Contains(trimmed, "\"definition\"") {
-				return trimmed, nil
+			// No tool call and no final answer — check if content looks like raw JSON (workflow).
+			// Validate strictly: must be valid JSON with both "name" and "definition" keys.
+			if isRawWorkflowJSON(content) {
+				return strings.TrimSpace(content), nil
 			}
 
 			// Nudge the LLM to use a tool or finish
@@ -3447,7 +3885,7 @@ RULES:
 		switch {
 		case toolCallSeen[sig] >= 2:
 			nudge = "\nNOTE: you already ran this exact tool call — the result is unchanged. Do NOT repeat it. Take the next concrete step now: apply the requested change (add_task / modify_task / delete_task), then validate, then finalize. If no change is needed, emit your <final_answer>."
-		case readOnlyToolStreak >= 4:
+		case readOnlyToolStreak >= readOnlyToolStreakThreshold:
 			nudge = "\nNOTE: you have gathered enough information. Stop inspecting and act now: apply the requested change (add_task / modify_task / delete_task), then validate, then finalize. If no change is needed, emit your <final_answer>."
 		}
 
@@ -3517,14 +3955,65 @@ func (a *WorkflowBuilderAgent) handleEditEntry(ctx *security.RequestContext, req
 	a.state.OriginalQuery = request.Query
 
 	// errorContext (from the UI) and a targeted execution id let the agent jump straight to the
-	// relevant run when the user is debugging a specific failure; both are optional.
-	errorContext := request.QueryContext
-	targetExecutionId := request.QueryConfig.ExecutionId
-	a.state.ExecutionId = targetExecutionId
+	// relevant run when the user is debugging a specific failure; both are optional. They are
+	// persisted on state so a resume after a clarification round still reaches the right run.
+	a.state.ExecutionError = request.QueryContext
+	a.state.ExecutionId = request.QueryConfig.ExecutionId
+
+	// Ambiguity gate: when the requested CHANGE could be implemented more than one materially
+	// different way, ask the user which approach to take (with a recommended option) instead of
+	// silently guessing — then resume the edit with their answer as context. Skipped for failure
+	// debugging (an error context or a target execution id means "fix this specific failure", which
+	// is already a concrete intent). Non-fatal: on any classifier error we proceed straight to the
+	// edit, so an ambiguity check can never dead-end the request.
+	if a.state.ExecutionError == "" && a.state.ExecutionId == "" {
+		questions, qErr := a.generateEditClarifyingQuestions(ctx, request, string(workflowResp))
+		if qErr != nil {
+			ctx.GetLogger().Warn("workflow_builder: edit clarification generation failed, proceeding directly", "error", qErr)
+		} else if len(questions) > 0 {
+			a.state.Stage = "clarification"
+			a.state.ClarifyingQuestions = questions
+			a.state.ClarifyingAnswers = make([]string, len(questions))
+			a.state.ClarifyingIndex = 0
+			return a.buildClarificationResponse(request, questions[0])
+		}
+	}
+
+	return a.runEditToolLoop(ctx, request, "")
+}
+
+// runEditToolLoop applies the (now-disambiguated) change to the loaded automation and persists it.
+// It is reached either directly from handleEditEntry when no clarification was needed, or from
+// handleClarificationResponse after the user chose an approach — in which case clarificationContext
+// carries their answers for the edit prompt. The working workflow is expected to be loaded on state;
+// it is re-fetched defensively if a state round-trip dropped it. The agent decides from the request
+// whether to gather execution evidence (debug) or design a feature change (enhance) — there is no
+// hardcoded "find the failed run" gate, so an enhancement request is never dead-ended with "No
+// failed runs found". The edited definition funnels through the same checkMissingConfigs →
+// finalizeWithAutoSave path as a build, so it auto-saves and the canvas refreshes.
+func (a *WorkflowBuilderAgent) runEditToolLoop(ctx *security.RequestContext, request core.NBAgentRequest, clarificationContext string) (core.NBAgentResponse, error) {
+	// Defensive reload: handleEditEntry loads WorkingWorkflow before this runs, but a clarification
+	// round-trips through persisted state — re-fetch if that dropped the in-memory definition.
+	if a.state.WorkingWorkflow == nil && a.state.WorkflowId != "" {
+		workflowResp, err := tools.DoRunbookRequest("GET", fmt.Sprintf("workflows/%s", a.state.WorkflowId), nil, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
+		if err != nil {
+			return core.NBAgentResponse{}, fmt.Errorf("runEditToolLoop: failed to reload workflow %s: %w", a.state.WorkflowId, err)
+		}
+		var workflow map[string]interface{}
+		if err := json.Unmarshal(workflowResp, &workflow); err != nil {
+			return core.NBAgentResponse{}, fmt.Errorf("runEditToolLoop: failed to parse workflow JSON: %w", err)
+		}
+		a.state.WorkingWorkflow = workflow
+	}
 
 	schema := getWorkflowSchema()
-	systemPrompt := getEditSystemPrompt(errorContext, targetExecutionId, schema)
-	userMessage := fmt.Sprintf("Apply the user's request to the existing automation: %s", request.Query)
+	systemPrompt := getEditSystemPrompt(a.state.ExecutionError, a.state.ExecutionId, schema)
+	// Use OriginalQuery (the change request), not request.Query — on a clarification resume the latter
+	// is the user's option answer, not the original instruction.
+	userMessage := fmt.Sprintf("Apply the user's request to the existing automation: %s", a.state.OriginalQuery)
+	if cc := strings.TrimSpace(clarificationContext); cc != "" {
+		userMessage += "\n" + cc
+	}
 
 	workflowJSON, err := a.runToolLoop(ctx, request, systemPrompt, userMessage)
 	if err != nil {

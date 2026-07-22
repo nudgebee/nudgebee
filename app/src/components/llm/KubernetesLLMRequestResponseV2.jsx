@@ -157,7 +157,10 @@ const KubernetesLLMRequestResponse = (props) => {
       { name: 'Message', width: '90%' },
     ];
     let tableData = [];
-    if (results?.logs?.length > 0) {
+    // logs is an array for the logs_execute_v2/logs tool result, but a string
+    // preview for the fetch_logs agent envelope ({query, provider, logs, file_ref});
+    // only map when it is actually an array.
+    if (Array.isArray(results?.logs) && results.logs.length > 0) {
       let logsData = results?.logs;
       tableData = logsData.map((m) => {
         let dateTimestamp = Date.parse(m.timestamp);
@@ -179,13 +182,13 @@ const KubernetesLLMRequestResponse = (props) => {
           <b>Provider -</b>
         </Grid>
         <Grid item md={11}>
-          <Text value={results?.metadata?.provider} />
+          <Text value={results?.metadata?.provider || results?.provider} />
         </Grid>
         <Grid item md={1}>
           <b>Query -</b>
         </Grid>
         <Grid item md={11}>
-          <Text value={results?.metadata?.query} />
+          <Text value={results?.metadata?.query || results?.query} />
         </Grid>
         <CustomTable tableData={tableData} headers={headers} renderVertical={tableData?.length <= 1} />
       </Grid>

@@ -1,0 +1,79 @@
+slug: expand_persistent_volume_claim
+name: "Expand Persistent Volume Claim"
+description: "Increase the size of a PersistentVolumeClaim. Requires the storage class to support volume expansion."
+category: "kubernetes"
+icon: "sd_storage"
+status: ACTIVE
+tags:
+  labels:
+    - "expand"
+  event_sources:
+    - "prometheus"
+    - "alertmanager"
+    - "kubernetes"
+  alert_names:
+    - "KubePersistentVolumeFillingUp"
+    - "KubePersistentVolumeInodesFillingUp"
+definition:
+  version: "v1"
+  inputs:
+    - id: "namespace"
+      type: "string"
+      description: "Kubernetes namespace"
+      required: true
+    - id: "pvc_name"
+      type: "string"
+      description: "PVC name to expand"
+      required: true
+    - id: "new_size"
+      type: "string"
+      description: "New size (e.g. 50Gi)"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Approve expanding PVC **{{ Inputs.pvc_name }}** in **{{ Inputs.namespace }}** to **{{ Inputs.new_size }}**?"
+    - id: "expand"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl patch pvc {{ Inputs.pvc_name }} -n {{ Inputs.namespace }} -p {\"spec\":{\"resources\":{\"requests\":{\"storage\":\"{{ Inputs.new_size }}\"}}}}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl get pvc {{ Inputs.pvc_name }} -n {{ Inputs.namespace }} -o wide"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "expand"
+  timeout: "10m"
+template_variables:
+  - id: "namespace"
+    input_ref: "namespace"
+    display_name: "Namespace"
+    required: true
+    type: "string"
+  - id: "pvc_name"
+    input_ref: "pvc_name"
+    display_name: "PVC Name"
+    required: true
+    type: "string"
+  - id: "new_size"
+    input_ref: "new_size"
+    display_name: "New Size"
+    required: true
+    type: "string"
+    placeholder: "50Gi"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

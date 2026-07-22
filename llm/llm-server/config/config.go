@@ -182,8 +182,13 @@ type appConfig struct {
 	LlmServerAgentMaxTracesRows      int    `mapstructure:"llm_server_agent_max_tracesrows"`
 	LlmServerAgentMaxScratchpadChars int    `mapstructure:"llm_server_agent_max_scratchpad_chars"`
 	LlmServerMaxGCBytes              int    `mapstructure:"llm_server_max_gc_bytes"`
-	LlmServerMaxSkillContentLength   int    `mapstructure:"llm_server_max_skill_content_length"`
-	LlmServerIntegrationKBEnabled    bool   `mapstructure:"llm_server_integration_kb_enabled"`
+	// LlmServerAgentAccountPromptMaxBytes caps the account GlobalContext
+	// fragment attached to custom-planner agent LLM calls (log/trace/kubectl
+	// intent generators, resource search). Distinct from
+	// llm_server_max_gc_bytes, which limits the stored GC size at upload.
+	LlmServerAgentAccountPromptMaxBytes int  `mapstructure:"llm_server_agent_account_prompt_max_bytes"`
+	LlmServerMaxSkillContentLength      int  `mapstructure:"llm_server_max_skill_content_length"`
+	LlmServerIntegrationKBEnabled       bool `mapstructure:"llm_server_integration_kb_enabled"`
 	// LlmServerKBPrestepEnabled gates the KB pre-step: when on, the executor
 	// retrieves relevant KB content before planning and places it (plus the
 	// skill-lists menu) in the human message instead of the cacheable system
@@ -277,7 +282,10 @@ type appConfig struct {
 	LlmServerWorkspaceResourceRequestCpu    string `mapstructure:"llm_server_workspace_resource_request_cpu"`
 	LlmServerWorkspaceResourceRequestMemory string `mapstructure:"llm_server_workspace_resource_request_memory"`
 
-	LlmServerShellToolEnabled              bool   `mapstructure:"llm_server_shell_tool_enabled"`
+	LlmServerShellToolEnabled bool `mapstructure:"llm_server_shell_tool_enabled"`
+	// LogAgentV2Enabled gates the canonical, provider-independent fetch_logs
+	// agent (FetchLogsAgentV2). Global per-deploy toggle; default false.
+	LogAgentV2Enabled                      bool   `mapstructure:"llm_server_log_agent_v2_enabled"`
 	LlmServerWorkspacePort                 int    `mapstructure:"llm_server_workspace_port"`
 	LlmServerWorkspaceLocalUrl             string `mapstructure:"llm_server_workspace_local_url"`
 	LlmServerWorkspaceFileMaxDownloadBytes int    `mapstructure:"llm_server_workspace_file_max_download_bytes"`
@@ -392,9 +400,22 @@ type appConfig struct {
 	LlmServerScratchpadSummaryMinBytes int `mapstructure:"llm_server_scratchpad_summary_min_bytes"`
 	// LlmServerScratchpadSummaryTimeoutMs caps the time allowed for a single observation
 	// summarization call. On timeout, falls back to byte truncation.
-	LlmServerScratchpadSummaryTimeoutMs int  `mapstructure:"llm_server_scratchpad_summary_timeout_ms"`
-	EvaluationEnabled                   bool `mapstructure:"llm_server_evaluation_enabled"`
-	AutoIdentifyAccountEnabled          bool `mapstructure:"llm_server_auto_identify_account_enabled"`
+	LlmServerScratchpadSummaryTimeoutMs int `mapstructure:"llm_server_scratchpad_summary_timeout_ms"`
+	// LlmServerScratchpadMaxObservationChars is the per-observation byte cap applied in the
+	// scratchpad as a hard safety net (single huge tool outputs are middle-truncated to this).
+	// This is intentionally separate from llm_config_auto_selection_max_observation_length,
+	// which governs the lightweight config auto-selection heuristic (default 500) and must not
+	// double as the scratchpad cap. Default 65536; clamped to a 4096 minimum.
+	LlmServerScratchpadMaxObservationChars int `mapstructure:"llm_server_scratchpad_max_observation_chars"`
+	// LlmServerScratchpadCompressionActivationFraction is the fraction of the resolved model
+	// context window at which scratchpad compression activates. Below this the scratchpad is
+	// left uncompressed (subject only to the per-observation hard cap); compression of older
+	// observations only kicks in as the scratchpad approaches the window. Gating on the real
+	// window — instead of a flat step count — stops compression from firing on small
+	// conversations. Default 0.75; values <=0 or >=1 fall back to the default.
+	LlmServerScratchpadCompressionActivationFraction float64 `mapstructure:"llm_server_scratchpad_compression_activation_fraction"`
+	EvaluationEnabled                                bool    `mapstructure:"llm_server_evaluation_enabled"`
+	AutoIdentifyAccountEnabled                       bool    `mapstructure:"llm_server_auto_identify_account_enabled"`
 
 	// Termination cache configs
 	LlmServerMessageTerminationCacheTTLSeconds int `mapstructure:"llm_server_message_termination_cache_ttl_seconds"`
@@ -632,16 +653,18 @@ func init() {
 	viper.SetDefault("llm_cache_ttl_minutes", 10)
 	viper.SetDefault("llm_enable_caching", true)
 
-	// Outbound egressfilter — entire subsystem disabled by default. The master
-	// switch (llm_server_egressfilter_enabled) gates whether the LLM factory
-	// installs the wrapper at all; per-detector flags (e.g.
-	// llm_server_egressfilter_secrets_enabled) only apply when master is on.
-	// Default mode for any enabled detector is "audit" so a rollout never
-	// causes outage. Flip to "enforce" only after metrics confirm a clean
-	// false-positive baseline.
-	viper.SetDefault("llm_server_egressfilter_enabled", false)
-	viper.SetDefault("llm_server_egressfilter_secrets_enabled", false)
-	viper.SetDefault("llm_server_egressfilter_secrets_mode", "audit")
+	// Outbound egressfilter — wrapper installed and secrets detector on by
+	// default, so `metadata.egressfilter` is populated, the UI chip appears,
+	// and metrics fire out of the box. Mode defaults to "detect" so nothing
+	// is ever blocked; operators flip mode to "enforce" once their audit
+	// metrics show a clean FP baseline. When no ActionGate is registered,
+	// "enforce" silently degrades to "detect" (see
+	// security/egressfilter/action_gate.go). Master switch can still be
+	// flipped off explicitly if an operator doesn't want the wrapper
+	// installed at all.
+	viper.SetDefault("llm_server_egressfilter_enabled", true)
+	viper.SetDefault("llm_server_egressfilter_secrets_enabled", true)
+	viper.SetDefault("llm_server_egressfilter_secrets_mode", "detect")
 	// Required even though "" is the natural zero — viper.Unmarshal skips
 	// fields with no default set, so without this line the env var
 	// LLM_SERVER_EGRESSFILTER_ALLOWLIST is silently ignored in any
@@ -679,6 +702,7 @@ func init() {
 	viper.SetDefault("otel_grpc_timeout_seconds", 5)
 	viper.SetDefault("otel_grpc_max_msg_size", 8*1024*1024)
 	viper.SetDefault("llm_server_max_gc_bytes", 10240)
+	viper.SetDefault("llm_server_agent_account_prompt_max_bytes", 8192)
 
 	viper.SetDefault("server_heartbeat_frequency_second", 15)
 	viper.SetDefault("server_heartbeat_timeout_second", 30)
@@ -737,6 +761,7 @@ func init() {
 	viper.SetDefault("llm_server_workspace_resource_request_cpu", "250m")
 	viper.SetDefault("llm_server_workspace_resource_request_memory", "256Mi")
 	viper.SetDefault("llm_server_shell_tool_enabled", true)
+	viper.SetDefault("llm_server_log_agent_v2_enabled", false)
 	viper.SetDefault("llm_server_workspace_port", 8080)
 	viper.SetDefault("llm_server_workspace_local_url", "") // e.g. http://localhost:8080 for local dev
 	viper.SetDefault("llm_server_workspace_file_max_download_bytes", 5*1024*1024)
@@ -899,6 +924,8 @@ func init() {
 	viper.SetDefault("llm_productivity_engineer_hourly_rate_usd", 5.0)
 
 	viper.SetDefault("llm_server_scratchpad_summarization_enabled", true)
+	viper.SetDefault("llm_server_scratchpad_max_observation_chars", 65536)
+	viper.SetDefault("llm_server_scratchpad_compression_activation_fraction", 0.75)
 
 	hostName, err := os.Hostname()
 	if err != nil {

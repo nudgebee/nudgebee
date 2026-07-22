@@ -10,6 +10,7 @@ import { determineAndFormatTime, getLast7Days, isWithinTimeFrame } from '@lib/da
 import ChartComponent from '@shared/charts/ChartComponent';
 import observability from '@api1/observability';
 import apiKubernetes1 from '@api1/kubernetes1';
+import { buildPromQueries } from '@shared/MetricQueryInfo';
 
 export const KubernetesNodesTrends = ({ accountId, showZoneTrend = false }) => {
   const [dateRange, setDateRange] = useState({
@@ -56,6 +57,7 @@ export const KubernetesNodesTrends = ({ accountId, showZoneTrend = false }) => {
     data: [],
     label: [],
   });
+  const [promQueries, setPromQueries] = useState({});
   const [nodesEligibleDisruptionReason, setNodesEligibleDisruptionReason] = useState({
     data: [],
     label: [],
@@ -355,6 +357,8 @@ export const KubernetesNodesTrends = ({ accountId, showZoneTrend = false }) => {
       return;
     }
 
+    setPromQueries(buildPromQueries(results));
+
     const pieChart = createPieCharts(results);
     setPieCharts(pieChart);
 
@@ -504,38 +508,50 @@ export const KubernetesNodesTrends = ({ accountId, showZoneTrend = false }) => {
               loading={loadingTrend.nodePoolPodTrend}
               labels={nodePoolPodTrend.label}
               chartTitle='Node Pool Pod Trend'
+              queryInfo={{ node_pool_pod_trend: promQueries.node_pool_pod_trend }}
             />
 
-            <LineChart data={podsTrend.data} labels={podsTrend.label} chartTitle='Number Of Pods' loading={loadingTrend.podsTrend} />
+            <LineChart
+              data={podsTrend.data}
+              labels={podsTrend.label}
+              chartTitle='Number Of Pods'
+              loading={loadingTrend.podsTrend}
+              queryInfo={{ no_of_pods: promQueries.no_of_pods }}
+            />
             <LineChart
               dataset={nodeClaimsDisruptedTrend.data}
               labels={nodeClaimsDisruptedTrend.label}
               chartTitle='Node Claims Disrupted By Node Pool'
               loading={loadingTrend.nodeClaimsDisruptedTrend}
+              queryInfo={{ nodeclaims_disrupted: promQueries.nodeclaims_disrupted }}
             />
             <LineChart
               dataset={nodeTerminatedNodePool.data}
               labels={nodeTerminatedNodePool.label}
               chartTitle='Nodes Terminated by Node Pool'
               loading={loadingTrend.nodeTerminatedNodePool}
+              queryInfo={{ nodes_terminated_node_pool: promQueries.nodes_terminated_node_pool }}
             />
             <LineChart
               dataset={nodeDisruptionDecisionsReasonDecision.data}
               labels={nodeDisruptionDecisionsReasonDecision.label}
               chartTitle='Node Disruption Decisions by Reason and Decision'
               loading={loadingTrend.nodeDisruptionDecisionsReasonDecision}
+              queryInfo={{ node_disruption_decisions_reason_decision: promQueries.node_disruption_decisions_reason_decision }}
             />
             <LineChart
               dataset={nodesEligibleDisruptionReason.data}
               labels={nodesEligibleDisruptionReason.label}
               chartTitle='Nodes Eligible for Disruption by Reason'
               loading={loadingTrend.nodesEligibleDisruptionReason}
+              queryInfo={{ nodes_eligible_disruption_reason: promQueries.nodes_eligible_disruption_reason }}
             />
             <LineChart
               dataset={nodeCreatedNodePool.data}
               labels={nodeCreatedNodePool.label}
               chartTitle='Nodes Created by Node Pool'
               loading={loadingTrend.nodeCreatedNodePool}
+              queryInfo={{ node_created_node_pool: promQueries.node_created_node_pool }}
             />
           </div>
         ) : null}

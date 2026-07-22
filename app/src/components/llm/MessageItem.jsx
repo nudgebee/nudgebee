@@ -300,11 +300,29 @@ const MessageItem = ({
         <ConversationCollapsableCard
           id={`task-card-${index}`}
           showFullTextHandler={onShowFullText}
+          showFullText={showFullText}
           textLength={isTruncatable}
           toolData={message}
           text={
             <Box sx={{ display: 'flex', alignItems: 'start', flexDirection: 'column', gap: ds.space[0] }}>
-              <Tooltip title={!isQuestion && cardTitle ? <MarkDowns data={cardTitle} /> : ''} placement='top'>
+              <Tooltip
+                title={
+                  !isQuestion && cardTitle ? (
+                    <MarkDowns
+                      data={cardTitle}
+                      sx={{
+                        padding: 0,
+                        maxHeight: 'unset',
+                        overflowY: 'visible',
+                        '& p': { margin: 0, lineHeight: 1.5 },
+                      }}
+                    />
+                  ) : (
+                    ''
+                  )
+                }
+                placement='top'
+              >
                 <Box sx={{ width: '100%' }}>
                   <Box
                     sx={{
@@ -328,7 +346,7 @@ const MessageItem = ({
                               right: 0,
                               bottom: 0,
                               height: ds.space.mul(1, 10),
-                              background: `linear-gradient(to bottom, transparent, ${'var(--ds-background-200)'})`,
+                              background: `linear-gradient(to bottom, transparent, ${'var(--ds-gray-100)'})`,
                               pointerEvents: 'none',
                             },
                           }
@@ -351,33 +369,6 @@ const MessageItem = ({
                       showAutoEllipsis={!isQuestion}
                     />
                   </Box>
-                  {isQuestion && isTruncatable && (
-                    <Box
-                      component='button'
-                      type='button'
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onShowFullText();
-                      }}
-                      sx={{
-                        all: 'unset',
-                        mt: ds.space.mul(0, 3),
-                        cursor: 'pointer',
-                        fontFamily: ds.font.sans,
-                        fontSize: 'var(--ds-text-small)',
-                        fontWeight: 'var(--ds-font-weight-medium)',
-                        color: 'var(--ds-gray-500)',
-                        '&:hover': { color: 'var(--ds-gray-700)', textDecoration: 'underline' },
-                        '&:focus-visible': {
-                          outline: `${ds.space[0]} solid var(--ds-gray-300)`,
-                          outlineOffset: ds.space[0],
-                          borderRadius: ds.space[0],
-                        },
-                      }}
-                    >
-                      {showFullText ? 'Show less' : 'Show more'}
-                    </Box>
-                  )}
                 </Box>
               </Tooltip>
               {isQuestion && Array.isArray(message.attachments) && message.attachments.length > 0 && (

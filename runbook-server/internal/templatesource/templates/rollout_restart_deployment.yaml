@@ -1,0 +1,73 @@
+slug: rollout_restart_deployment
+name: "Rollout Restart Deployment"
+description: "Restart a Kubernetes deployment via rolling update. Useful for crash-looping pods, OOMKilled containers, or stale state."
+category: "kubernetes"
+icon: "restart_alt"
+status: ACTIVE
+tags:
+  labels:
+    - "restart"
+    - "disruptive"
+  event_sources:
+    - "prometheus"
+    - "alertmanager"
+    - "kubernetes"
+  alert_names:
+    - "KubePodCrashLooping"
+    - "KubePodNotReady"
+    - "KubeContainerOOMKilled"
+    - "KubeDeploymentReplicasMismatch"
+definition:
+  version: "v1"
+  inputs:
+    - id: "namespace"
+      type: "string"
+      description: "Kubernetes namespace"
+      required: true
+    - id: "deployment"
+      type: "string"
+      description: "Deployment name to restart"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Approve rolling restart of deployment **{{ Inputs.deployment }}** in namespace **{{ Inputs.namespace }}**?"
+    - id: "restart"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl rollout restart deployment/{{ Inputs.deployment }} -n {{ Inputs.namespace }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl rollout status deployment/{{ Inputs.deployment }} -n {{ Inputs.namespace }} --timeout=300s"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "restart"
+      timeout: "6m"
+  timeout: "15m"
+template_variables:
+  - id: "namespace"
+    input_ref: "namespace"
+    display_name: "Namespace"
+    required: true
+    type: "string"
+  - id: "deployment"
+    input_ref: "deployment"
+    display_name: "Deployment Name"
+    required: true
+    type: "string"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

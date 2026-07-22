@@ -1,6 +1,7 @@
 import * as React from 'react';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useTenantBranding, DEFAULT_LOGO, DEFAULT_FAVICON } from '@hooks/useTenantBranding';
+import { useZoomMagnifyFloor } from '@hooks/useZoomMagnifyFloor';
 import Box from '@mui/material/Box';
 import { Button, Collapse, Container, Typography, Menu, IconButton } from '@mui/material';
 import { useRouter } from 'next/router';
@@ -31,8 +32,9 @@ import Tooltip from '@ui/Tooltip';
 import TenantSettings from '@shared/settings/TenantSettings';
 import ApiTokens from '@shared/settings/ApiTokens';
 import { snackbar } from '@shared/snackbarService';
+import { tenantSwitcher } from '@lib/tenantSwitcherService';
 import { createGetMenuItem, generateMenuItems } from './UserMenuItems';
-import { colors } from 'src/utils/colors';
+import { colors, ds } from 'src/utils/colors';
 import { isRenderedInIframe } from 'src/utils/common';
 
 const COLLAPSED_WIDTH = 76;
@@ -92,7 +94,7 @@ const getDynamicPath = (path, router) => {
   return path;
 };
 
-const SideDrawerButton = ({ open = false, item = {}, onClick, handleDrawerOpen }) => {
+const SideDrawerButton = ({ open = false, item = {}, onClick, handleDrawerOpen, compact = false }) => {
   const router = useRouter();
   const haveSubItems = !!item?.subItems?.length;
 
@@ -151,7 +153,7 @@ const SideDrawerButton = ({ open = false, item = {}, onClick, handleDrawerOpen }
         {isActive && <Box sx={styles.activeIndicator} />}
 
         <Box sx={styles.iconContainer}>
-          <Box sx={styles.iconWrapper}>
+          <Box sx={compact ? { ...styles.iconWrapper, width: ds.space.mul(0, 9), height: ds.space.mul(0, 9) } : styles.iconWrapper}>
             <SafeIcon src={item.icon} alt={item.text} fill style={{ objectFit: 'contain' }} />
           </Box>
 
@@ -199,6 +201,21 @@ const PageLayout = ({ children }) => {
   const [openSwitchAccount, setOpenSwitchAccount] = useState(false);
   const [openSettings, setOpenSettings] = useState(false);
   const [openApiTokens, setOpenApiTokens] = useState(false);
+
+  // Pins the app shell to the viewport width so browser zoom magnifies instead of reflowing.
+  const canvasMinWidth = useZoomMagnifyFloor();
+
+  // Real small screens (~1366/1440px laptops) still get the compact sidebar so the nav fits
+  // vertically. canvasMinWidth is frozen at load, so this does NOT toggle mid-zoom — the rail
+  // magnifies uniformly instead of restyling on the first zoom step (the old @media behavior).
+  const isCompactSidebar = canvasMinWidth != null && canvasMinWidth <= 1535;
+
+  // Let any component (e.g. the cross-tenant AccountGuard) request the tenant
+  // switcher open without prop-drilling. subscribe() returns its unsubscribe
+  // fn, which becomes the effect cleanup.
+  useEffect(() => {
+    return tenantSwitcher.subscribe(() => setOpenSwitchAccount(true));
+  }, []);
 
   // Derived Values
   const session = getUserSession();
@@ -306,6 +323,9 @@ const PageLayout = ({ children }) => {
             {!brandingLoading && <link rel='icon' href={favicon} />}
             <title>{baseTitle}</title>
           </Head>
+          {/* Mounted here too so the AccountGuard "Switch Tenant" CTA works
+              on plain-layout pages (e.g. ask-nudgebee). */}
+          <LayoutHeaderActionSlot open={openSwitchAccount} title={'Switch Tenant'} onClose={handleSwitchAccountClose} />
           {children}
         </>
       ) : (
@@ -333,9 +353,22 @@ const PageLayout = ({ children }) => {
           <ApiTokens open={openApiTokens} title={'API Tokens'} onClose={() => setOpenApiTokens(false)} />
           <LayoutHeaderActionSlot open={openSwitchAccount} title={'Switch Tenant'} onClose={handleSwitchAccountClose} />
 
-          <Box sx={{ display: 'flex', alignItems: 'stretch', justifyContent: 'center' }}>
+          {/* minWidth pins the shell to the viewport so zoom-in magnifies (see useZoomMagnifyFloor).
+              justifyContent is flex-start (not center): once content exceeds the viewport under zoom,
+              centering would push the left edge into unscrollable negative space. */}
+          <Box sx={{ display: 'flex', alignItems: 'stretch', justifyContent: 'flex-start', minWidth: canvasMinWidth }}>
             {!isRenderedInIframe() && !pageFlags.isWorkflow && (
-              <Box sx={{ width: COLLAPSED_WIDTH, ...styles.sideDrawer }}>
+              <Box
+                sx={{
+                  width: COLLAPSED_WIDTH,
+                  ...styles.sideDrawer,
+                  // Compact button metrics for real small screens; spread the base '& button' first
+                  // so its nested hover/menu-item/svg rules survive the override.
+                  ...(isCompactSidebar
+                    ? { '& button': { ...styles.sideDrawer['& button'], py: 'var(--ds-space-2)', height: ds.space.mul(1, 13) } }
+                    : {}),
+                }}
+              >
                 <Box className='inner-side-drawer'>
                   <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', marginTop: 'var(--ds-space-3)' }}>
                     <Link href={homeUrl} passHref>
@@ -357,7 +390,13 @@ const PageLayout = ({ children }) => {
                   {menuItems.map((item, idx) => (
                     <React.Fragment key={item.id || `${item.text}-${idx}`}>
                       {['Troubleshoot', 'Clusters', 'Tickets'].includes(item.text) && <Box sx={styles.subSeparator} />}
-                      <SideDrawerButton open={open} item={item} onClick={onMenuClick} handleDrawerOpen={handleDrawerOpen} />
+                      <SideDrawerButton
+                        open={open}
+                        item={item}
+                        onClick={onMenuClick}
+                        handleDrawerOpen={handleDrawerOpen}
+                        compact={isCompactSidebar}
+                      />
                     </React.Fragment>
                   ))}
 
@@ -414,8 +453,11 @@ const PageLayout = ({ children }) => {
               )}
               <Box
                 sx={{
-                  maxWidth: `calc(100vw - ${COLLAPSED_WIDTH}px - 90px)`,
-                  width: `calc(100vw - ${COLLAPSED_WIDTH}px - 84px)`,
+                  // Derived from the parent column (which already excludes the sidebar via flex),
+                  // NOT 100vw — so it fills the floored canvas and magnifies on zoom instead of
+                  // tracking the shrinking viewport. Pixel-identical to 100vw-minus-sidebar at 100%.
+                  maxWidth: `calc(100% - 90px)`,
+                  width: `calc(100% - 84px)`,
                   px: open ? '64px' : pageFlags.isAskNudgebee || pageFlags.isAskNudgebeeV2 ? '0px' : '40px',
                   backgroundColor:
                     pageFlags.isInvestigate || pageFlags.isOptimize || pageFlags.isTroubleshoot || pageFlags.isAgentic
@@ -483,10 +525,8 @@ const styles = {
       justifyContent: 'center',
       textAlign: 'left',
       borderRadius: '0px',
-      '@media (max-width:1535px)': {
-        py: 'var(--ds-space-2)',
-        height: '52px',
-      },
+      // No max-width:1535px shrink: the sidebar is part of the zoom canvas, so it magnifies
+      // uniformly under zoom rather than restyling on the first zoom step. Frozen to desktop values.
       '&:hover': {
         backgroundColor: colors.secondary.default,
       },
@@ -547,10 +587,7 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
-    '@media (max-width:1535px)': {
-      width: '18px',
-      height: '18px',
-    },
+    // Frozen to desktop size — icons magnify with browser zoom, not shrink via a breakpoint.
   },
   iconLabel: {
     paddingTop: 'var(--ds-space-3)',
@@ -560,9 +597,6 @@ const styles = {
     fontWeight: 'var(--ds-font-weight-regular)',
     fontSize: 'var(--ds-text-caption)',
     color: colors.text.white,
-    '@media (max-width:1535px)': {
-      fontSize: 'var(--ds-text-caption)',
-    },
   },
   openTextContainer: {
     flexGrow: 1,

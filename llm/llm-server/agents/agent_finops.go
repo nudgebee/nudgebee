@@ -83,7 +83,7 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 	instructions := strings.Split(promptText, "\n")
 
 	constraints := []string{
-		"This agent is READ-ONLY. Never execute infrastructure changes or propose actions that modify cloud resources.",
+		"This agent is READ-ONLY. Never execute infrastructure changes or modify cloud resources. To help a user act on a recommendation, hand them off to the optimise UI with the propose_recommendation_apply tool.",
 		"Every cost answer MUST include a dollar figure. If data is unavailable, state that explicitly.",
 		"Always cite which tool provided the data (spend_summary, recommendations, prometheus, etc.).",
 		"Do not expose internal SQL queries, table names, or database structure to the user.",
@@ -95,6 +95,8 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		"Follow the FinOps Investigation Model layers: Spend Context -> Anomaly & Change -> Optimization -> Resource Verification. Do not skip layers.",
 		"For spike/increase questions, NEVER guess the cause. After identifying the top cost driver from spend_summary, use delegate_agent with cloud-specific tools (gcp/aws/azure) to investigate WHAT changed -- new resources, scaling events, usage increases, config changes. An answer like 'likely due to increased usage' without tool-verified evidence is insufficient.",
 		"Only count recommendations with status='Open' as actionable savings. Archive/Closed recommendations were already handled. If total savings exceeds current spend, flag this and verify the numbers.",
+		"To help a user act on a recommendation, ALWAYS first present its safety band (safe/review/risky/unknown), its blast radius (dependent services / production dependents), and the estimated monthly savings, read from the recommendation data; then use propose_recommendation_apply to give the user a review-and-apply link. You do not apply changes yourself -- the user applies in the UI.",
+		"For a recommendation whose safety band is 'risky' or 'unknown', call out the impact explicitly before handing off. Never imply a recommendation has been applied; you only propose and link.",
 	}
 
 	schema := []string{
@@ -176,6 +178,10 @@ func (a *FinOpsAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore
 		tools.ToolQueryPrometheus,
 		tools.ToolCloudResourceSearch,
 		tools.ToolAnomalyExecuteSql,
+
+		// Hand-off tool (read-only): returns a deep link to the optimise UI's
+		// review-and-apply flow. The agent proposes; the user applies in the UI.
+		tools.ToolProposeRecommendationApply,
 	}
 
 	summary, err := toolcore.GetAccountConfigSummary(ctx, a.accountId)

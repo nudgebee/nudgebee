@@ -246,6 +246,7 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 		title             string
 		expectedSubject   string
 		expectedNamespace string
+		expectedKind      string
 	}{
 		{
 			name:            "Already has subject - skip",
@@ -298,6 +299,42 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 			title:           "[FIRING:1] HighAPIFailureRate",
 			expectedSubject: "cloud-collector-server",
 		},
+		{
+			// KubePersistentVolumeFillingUp: PVC is the subject, not the
+			// kubelet scrape job. Regression test for subject=kubelet.
+			name:              "persistentvolumeclaim wins over kubelet scrape job",
+			initialSubject:    "",
+			labels:            map[string]string{"job": "kubelet", "namespace": "hive", "persistentvolumeclaim": "dfs-hive-metastore-hdfs-datanode-0"},
+			title:             "PersistentVolume is filling up.",
+			expectedSubject:   "dfs-hive-metastore-hdfs-datanode-0",
+			expectedNamespace: "hive",
+			expectedKind:      "persistentvolumeclaim",
+		},
+		{
+			// Real K8s Job alert: job_name is the subject; job is the scraper.
+			name:            "job_name resolves the Job, not the scrape job",
+			initialSubject:  "",
+			labels:          map[string]string{"job": "kube-state-metrics", "job_name": "backup-1234", "namespace": "ops"},
+			title:           "KubeJobFailed",
+			expectedSubject: "backup-1234",
+			expectedKind:    "job",
+		},
+		{
+			// A bare exporter job must not become the subject.
+			name:            "kubelet scrape job is not a subject",
+			initialSubject:  "",
+			labels:          map[string]string{"job": "kubelet"},
+			title:           "KubeletTooManyPods",
+			expectedSubject: "",
+		},
+		{
+			// nb_alert_job that is an exporter is also rejected.
+			name:            "nb_alert_job exporter is not a subject",
+			initialSubject:  "",
+			labels:          map[string]string{"nb_alert_job": "kubelet", "job": "kubelet"},
+			title:           "KubePersistentVolumeFillingUp",
+			expectedSubject: "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -313,6 +350,14 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 			assert.Equal(t, tt.expectedSubject, payload.EventSubjectName)
 			if tt.expectedNamespace != "" {
 				assert.Equal(t, tt.expectedNamespace, payload.EventSubjectNamespace)
+			}
+			if tt.expectedKind != "" {
+				assert.Equal(t, tt.expectedKind, payload.EventSubjectKind)
+			}
+			// A non-pod resource subject must not get a fabricated pod label.
+			if tt.expectedKind != "" && tt.expectedKind != "pod" {
+				assert.Empty(t, payload.Investigation.Labels["pod"],
+					"non-pod subject should not fabricate a pod label")
 			}
 		})
 	}

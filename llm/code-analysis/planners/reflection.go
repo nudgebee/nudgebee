@@ -23,6 +23,15 @@ const defaultReflectionEvery = 5
 // goal and wastes a call.
 const minStepsBeforeReflection = 3
 
+// maxStallReflections is how many consecutive reflections may show no ledger
+// progress (no new finding/citation, no closed sub-question, no edit) before
+// the planner concludes the agent is spinning and terminates it via the forced
+// submit. Two reflections at the default cadence (~10 tool calls of zero
+// progress) is an unambiguous stall while still tolerating one exploratory
+// reflection that turns up nothing. This reacts to the agent's own ledger
+// state rather than a raw step-count threshold.
+const maxStallReflections = 2
+
 // reflectionTimeout caps the cheap-model call. Reflection is best-effort —
 // if it times out, the loop continues with the existing ledger. We use the
 // no-retry path on the LLM client (see GenerateContentNoRetry) so the timeout

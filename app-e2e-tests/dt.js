@@ -6,13 +6,14 @@ const path = require('path');
 
 const args = process.argv.slice(2);
 
-// dt dev [args]  → dev env  → loads .env.dev
+// dt oss  [args] → oss env  → loads .env.oss  (hosted OSS deployment)
+// dt dev  [args] → dev env  → loads .env.dev
 // dt test [args] → test env → loads .env
-// dt [args]      → dev env  (default)
-let envName = 'dev';
+// dt [args]      → oss env  (default)
+let envName = 'oss';
 let playwrightArgs = args;
 
-if (args[0] === 'dev' || args[0] === 'test') {
+if (args[0] === 'oss' || args[0] === 'dev' || args[0] === 'test') {
   envName = args[0];
   playwrightArgs = args.slice(1);
 }

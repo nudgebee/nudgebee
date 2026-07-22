@@ -1,12 +1,24 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Grid } from '@mui/material';
+import { Grid, Box } from '@mui/material';
 import K8sMemoryCpuIndicator from './K8sMemoryCpuIndicator';
 import PropTypes from 'prop-types';
 import apiKubernetes1 from '@api1/kubernetes1';
+import { buildPromQueries } from '@shared/MetricQueryInfo';
 import { getSpecificTime } from '@lib/datetime';
 import { Skeleton } from '@ui/Skeleton';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import { ds } from '@utils/colors';
+
+export const CpuMemorySkeleton = ({ sx = {} }) => (
+  <Box sx={{ display: 'flex', gap: 'var(--ds-space-4)', ...sx }}>
+    <Box sx={{ flex: 1 }}>
+      <Skeleton shape='rect' width='100%' height={ds.space.mul(0, 65)} />
+    </Box>
+    <Box sx={{ flex: 1 }}>
+      <Skeleton shape='rect' width='100%' height={ds.space.mul(0, 65)} />
+    </Box>
+  </Box>
+);
 
 const KubernetesMemoryCpuOverView = ({
   showUpdatedUi = false,
@@ -32,11 +44,11 @@ const KubernetesMemoryCpuOverView = ({
       { name: 'Request', request: 0 },
     ],
   });
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(!!accountId);
   const [loadingStates, setLoadingStates] = useState({
-    cpu: false,
-    memory: false,
-    percentile: false,
+    cpu: !!accountId,
+    memory: !!accountId,
+    percentile: !!accountId,
   });
   // Track which data sections have been loaded
   const [dataLoaded, setDataLoaded] = useState({
@@ -50,6 +62,9 @@ const KubernetesMemoryCpuOverView = ({
     memory: {},
     percentile: {},
   });
+  // Executed metric queries (keyed by metric, e.g. cpu_real / mem_total) accumulated across the API calls.
+  const [promQueries, setPromQueries] = useState({});
+  const mergePromQueries = (response) => setPromQueries((prev) => ({ ...prev, ...buildPromQueries(response) }));
 
   const [selectedDateRange, setSelectedDateRange] = useState({
     startDate: getSpecificTime(60),
@@ -208,6 +223,7 @@ const KubernetesMemoryCpuOverView = ({
         instant: true,
       });
 
+      mergePromQueries(response);
       const data = extractDataFromResponse(response);
 
       // Update individual data section immediately when available
@@ -246,6 +262,7 @@ const KubernetesMemoryCpuOverView = ({
       memory: {},
       percentile: {},
     });
+    setPromQueries({});
     // Reset memoryCpuData to initial state to prevent stale data
     setMemoryCpuData({
       memory: [
@@ -273,6 +290,7 @@ const KubernetesMemoryCpuOverView = ({
           endDate: selectedDateRange.endDate,
           instant: true,
         });
+        mergePromQueries(response);
         const data = extractDataFromResponse(response);
         if (Object.keys(data).length > 0) {
           const metricsParser = createMetricsParser(data);
@@ -307,6 +325,17 @@ const KubernetesMemoryCpuOverView = ({
     });
   };
 
+  // Split the executed queries per gauge (keys like cpu_real / mem_total / memory_limit).
+  const cpuQueries = {};
+  const memoryQueries = {};
+  Object.entries(promQueries).forEach(([key, q]) => {
+    if (key.startsWith('cpu')) {
+      cpuQueries[key] = q;
+    } else if (key.startsWith('mem')) {
+      memoryQueries[key] = q;
+    }
+  });
+
   return (
     <>
       {updatedOverview ? (
@@ -323,6 +352,7 @@ const KubernetesMemoryCpuOverView = ({
                   key='CPU'
                   unit=''
                   title='CPU'
+                  queries={cpuQueries}
                   data={memoryCpuData?.cpu ?? []}
                   updatedOverview={updatedOverview}
                   showUsage={showUsage}
@@ -361,6 +391,7 @@ const KubernetesMemoryCpuOverView = ({
                   key='Memory'
                   unit=''
                   title='Memory'
+                  queries={memoryQueries}
                   data={memoryCpuData?.memory ?? []}
                   updatedOverview={updatedOverview}
                   showUsage={showUsage}
@@ -413,7 +444,7 @@ const KubernetesMemoryCpuOverView = ({
           />
         </Grid>
       ) : loading ? (
-        <Skeleton width={'100%'} height={ds.space.mul(0, 100)} />
+        <CpuMemorySkeleton sx={{ mt: ds.space.mul(0, 5) }} />
       ) : (
         <>
           <Grid
@@ -446,6 +477,7 @@ const KubernetesMemoryCpuOverView = ({
                 key='CPU'
                 unit=''
                 title='CPU'
+                queries={cpuQueries}
                 data={memoryCpuData?.cpu ?? []}
                 updatedOverview={updatedOverview}
                 hideLabels={hideLabels}
@@ -459,6 +491,7 @@ const KubernetesMemoryCpuOverView = ({
                 key='Memory'
                 unit=''
                 title='Memory'
+                queries={memoryQueries}
                 data={memoryCpuData?.memory ?? []}
                 updatedOverview={updatedOverview}
                 hideLabels={hideLabels}

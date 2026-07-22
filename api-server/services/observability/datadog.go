@@ -418,14 +418,20 @@ func (s *DatadogSource) QueryLabelValues(ctx *security.RequestContext, fetchLogR
 }
 
 func (s *DatadogSource) GetLabelMapping() map[string]string {
+	// Empty string ("") means "no facet" → a Datadog free-text term over the whole log
+	// line (see datadogTerm). `body`/`message` are aliases for full-text search; `app`/
+	// `service` both resolve to Datadog's `service` facet. The canonical few-shots use
+	// `service` and `message`, so both must be present or those queries hit a phantom facet.
 	return map[string]string{
 		"timestamp": "@timestamp",
 		"body":      "",
+		"message":   "",
 		"namespace": "kube_namespace",
 		"container": "container_name",
 		"pod":       "pod_name",
 		"node":      "kube_node",
 		"app":       "service",
+		"service":   "service",
 	}
 }
 
@@ -595,38 +601,100 @@ func (s *DatadogTraceSource) GetSupportedOperators() []string {
 }
 
 func buildWhereClause(where query.QueryWhereClause) (string, error) {
+	// Combine every present part with AND. The old form returned on the first non-empty
+	// branch, so a clause carrying both a binary map and a composite (e.g. `{service:...,
+	// _not:...}`) silently dropped the composite. Empty sub-results are skipped.
+	var parts []string
+
 	if len(where.Binary) > 0 {
-		return buildBinaryClause(where.Binary)
+		s, err := buildBinaryClause(where.Binary)
+		if err != nil {
+			return "", err
+		}
+		if s != "" {
+			parts = append(parts, s)
+		}
 	}
 
 	if len(where.And) > 0 {
-		var parts []string
-		for _, c := range where.And {
-			whereStr, err := buildWhereClause(c)
-			if err != nil {
-				return "", err
-			}
-			parts = append(parts, whereStr)
+		s, err := joinDatadogSubClauses(where.And, " AND ")
+		if err != nil {
+			return "", err
 		}
-		return "(" + strings.Join(parts, " AND ") + ")", nil
+		if s != "" {
+			parts = append(parts, s)
+		}
 	}
 
 	if len(where.Or) > 0 {
-		var parts []string
-		for _, c := range where.Or {
-			whereStr, err := buildWhereClause(c)
-			if err != nil {
-				return "", err
-			}
-			parts = append(parts, whereStr)
+		s, err := joinDatadogSubClauses(where.Or, " OR ")
+		if err != nil {
+			return "", err
 		}
-		return "(" + strings.Join(parts, " OR ") + ")", nil
+		if s != "" {
+			parts = append(parts, s)
+		}
 	}
 
 	if where.Not != nil {
-		return "", fmt.Errorf("NOT clauses are not supported in Datadog trace queries")
+		inner, err := buildWhereClause(*where.Not)
+		if err != nil {
+			return "", err
+		}
+		if inner != "" {
+			// Datadog negation is a leading `-`. Parenthesize a multi-term inner clause
+			// so the `-` covers all of it: `-(a AND b)`.
+			if (!strings.HasPrefix(inner, "(") || !strings.HasSuffix(inner, ")")) &&
+				(strings.Contains(inner, " AND ") || strings.Contains(inner, " OR ")) {
+				inner = "(" + inner + ")"
+			}
+			parts = append(parts, "-"+inner)
+		}
 	}
-	return "", nil
+
+	return strings.Join(parts, " AND "), nil
+}
+
+// joinDatadogSubClauses builds each sub-clause, drops empty results, and wraps the
+// non-empty ones in a parenthesized group joined by sep (" AND " / " OR ").
+func joinDatadogSubClauses(clauses []query.QueryWhereClause, sep string) (string, error) {
+	var sub []string
+	for _, c := range clauses {
+		s, err := buildWhereClause(c)
+		if err != nil {
+			return "", err
+		}
+		if s != "" {
+			sub = append(sub, s)
+		}
+	}
+	if len(sub) == 0 {
+		return "", nil
+	}
+	return "(" + strings.Join(sub, sep) + ")", nil
+}
+
+// datadogMatchValue converts a value with optional SQL-LIKE `%` wildcards into a Datadog
+// match token: `%` → `*` (Datadog wildcards must be UNQUOTED to be treated as wildcards),
+// and a value with no wildcard is double-quoted as an exact phrase. So `%error%` → `*error*`
+// and `error` → `"error"`.
+func datadogMatchValue(val any) string {
+	s := strings.ReplaceAll(fmt.Sprintf("%v", val), "%", "*")
+	if strings.Contains(s, "*") {
+		return s
+	}
+	return fmt.Sprintf("%q", s)
+}
+
+// datadogTerm renders `field:token`, or a bare full-text `token` when field is empty. The
+// canonical `body`/`message` entity maps to "" (DatadogSource.GetLabelMapping), so an
+// empty field becomes a Datadog free-text search over the whole log line instead of an
+// invalid leading-colon term.
+func datadogTerm(field, token string) string {
+	if field == "" {
+		return token
+	}
+	return field + ":" + token
 }
 
 func buildBinaryClause(binary query.BinaryWhereClause) (string, error) {
@@ -635,9 +703,9 @@ func buildBinaryClause(binary query.BinaryWhereClause) (string, error) {
 		for op, val := range ops {
 			switch op {
 			case Eq:
-				parts = append(parts, fmt.Sprintf("%s:\"%v\"", field, val))
+				parts = append(parts, datadogTerm(field, fmt.Sprintf("%q", fmt.Sprintf("%v", val))))
 			case Nq:
-				parts = append(parts, fmt.Sprintf("-%s:\"%v\"", field, val))
+				parts = append(parts, "-"+datadogTerm(field, fmt.Sprintf("%q", fmt.Sprintf("%v", val))))
 			case Gt:
 				switch val.(type) {
 				case int, int8, int16, int32, int64,
@@ -680,7 +748,7 @@ func buildBinaryClause(binary query.BinaryWhereClause) (string, error) {
 				}
 
 			case Like, ILike:
-				parts = append(parts, fmt.Sprintf("%s:\"%v\"", field, val))
+				parts = append(parts, datadogTerm(field, datadogMatchValue(val)))
 			case In:
 				arr, ok := val.([]any)
 				if ok {
@@ -690,7 +758,11 @@ func buildBinaryClause(binary query.BinaryWhereClause) (string, error) {
 					}
 					parts = append(parts, fmt.Sprintf("(%s:%s)", field, strings.Join(strVals, " OR "+field+":")))
 				}
-			case NotIn:
+			// NotIn matches both the observability constant ("_not_in") and the v2
+			// canonical wire string "_nin" (query_builder_model.go) that arrives
+			// verbatim from llm-server — without the alias a real `_nin` exclusion
+			// silently falls to the default branch and emits garbage.
+			case NotIn, "_nin":
 				arr, ok := val.([]any)
 				if ok {
 					for _, v := range arr {
@@ -698,7 +770,7 @@ func buildBinaryClause(binary query.BinaryWhereClause) (string, error) {
 					}
 				}
 			case Contains:
-				parts = append(parts, fmt.Sprintf("%s:*%v*", field, val))
+				parts = append(parts, datadogTerm(field, fmt.Sprintf("*%v*", val)))
 			case HasKey:
 				parts = append(parts, fmt.Sprintf("has:%s", field))
 			case IsNull:

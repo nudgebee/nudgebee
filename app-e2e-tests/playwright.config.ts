@@ -2,10 +2,13 @@ import { defineConfig, devices } from "@playwright/test";
 import * as dotenv from "dotenv";
 import * as path from "path";
 
-if (!process.env.CI) {
-  const envFile = process.env.E2E_ENVIRONMENT === "dev" ? ".env.dev" : ".env";
-  dotenv.config({ path: path.resolve(__dirname, envFile) });
-}
+// Load the env file for the selected environment. dotenv never overrides a
+// variable already present in process.env, so anything set by the CI runner
+// still wins — this just fills in values from the file (e.g. the .env.oss that
+// CI materializes from the E2E_OSS_ENV secret).
+const env = process.env.E2E_ENVIRONMENT;
+const envFile = env === "dev" ? ".env.dev" : env === "oss" ? ".env.oss" : ".env";
+dotenv.config({ path: path.resolve(__dirname, envFile) });
 
 const isDevEnv = process.env.E2E_ENVIRONMENT === "dev";
 
@@ -34,7 +37,7 @@ export default defineConfig({
   ],
 
   use: {
-    headless: !!process.env.CI,
+    headless: process.env.E2E_HEADLESS === "1" || !!process.env.CI,
     actionTimeout: isDevEnv ? 10000 : 20000,
     navigationTimeout: isDevEnv ? 30000 : 60000,
     trace: "retain-on-failure",

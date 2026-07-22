@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"nudgebee/llm/common"
+	"nudgebee/llm/tools/core"
 	"strconv"
 	"strings"
 	"time"
@@ -103,6 +104,19 @@ type LogQueryRequest struct {
 	StepInterval      int            `json:"step_interval"`
 	Request           map[string]any `json:"request"`
 	Index             string         `json:"index,omitempty"`
+	// QueryRequest carries a structured, provider-independent where clause that
+	// services-server's FetchLogs resolves (canonical→provider label mapping +
+	// native query build) when Query is empty. Used by the canonical fetch_logs
+	// v2 path; nil (omitted) for the legacy path that sends a pre-built Query,
+	// keeping that payload byte-identical.
+	QueryRequest *LogsQueryBuilderRequest `json:"query_request,omitempty"`
+}
+
+// LogsQueryBuilderRequest mirrors services-server's observability.LogsQueryBuilderRequest
+// wire shape. core.QueryWhereClause's `_binary`/`_and`/`_or`/`_not` tags match
+// services-server's query.QueryWhereClause, so it serializes verbatim.
+type LogsQueryBuilderRequest struct {
+	Where core.QueryWhereClause `json:"where,omitempty"`
 }
 
 type RecommendationApplyResponse struct {

@@ -78,59 +78,16 @@ func (s *defenderService) GetResources(ctx providers.CloudProviderContext, accou
 			}
 		}
 
-		// Get security assessments
-		assessmentsClient, err := armsecurity.NewAssessmentsClient(cred, getAzureAuditOpts(ctx))
-		if err != nil {
-			return nil, fmt.Errorf("failed to create assessments client: %w", err)
-		}
-
-		assessmentsPager := assessmentsClient.NewListPager(scope, nil)
-
-		for assessmentsPager.More() {
-			page, err := assessmentsPager.NextPage(ctx.GetContext())
-			if err != nil {
-				return nil, fmt.Errorf("failed to get next page of assessments: %w", err)
-			}
-
-			for _, assessment := range page.Value {
-				if assessment.ID == nil || assessment.Name == nil || assessment.Type == nil {
-					continue
-				}
-
-				status := providers.ResourceStatusUnknown
-				if assessment.Properties != nil &&
-					assessment.Properties.Status != nil &&
-					assessment.Properties.Status.Code != nil {
-
-					switch *assessment.Properties.Status.Code {
-					case armsecurity.AssessmentStatusCodeHealthy:
-						status = providers.ResourceStatusActive
-
-					case armsecurity.AssessmentStatusCodeUnhealthy:
-						status = providers.ResourceStatusInactive
-
-					case armsecurity.AssessmentStatusCodeNotApplicable:
-						status = providers.ResourceStatusUnknown
-
-					default:
-						status = providers.ResourceStatusUnknown
-					}
-				}
-
-				allResources = append(allResources, providers.Resource{
-					Id:          *assessment.ID,
-					Name:        *assessment.Name,
-					Type:        *assessment.Type,
-					Region:      "global",
-					Tags:        map[string][]string{},
-					Meta:        structToMap(assessment.Properties),
-					Status:      status,
-					CreatedAt:   time.Now(),
-					Arn:         *assessment.ID,
-					ServiceName: s.Name(),
-				})
-			}
-		}
+		// Security assessments are intentionally NOT persisted as cloud_resourses.
+		// Defender-for-Containers emits one assessment per (image SHA, vulnerable
+		// package), which for image-heavy subscriptions explodes to tens of thousands
+		// of rows carrying hundreds of MB of meta (observed: one subscription at 23k
+		// rows / 752MB). The metrics ETL later loads every row's meta into memory,
+		// OOM-killing the collector. Assessments are findings, not infrastructure —
+		// Phase 2 will surface the unhealthy ones as aggregated security
+		// recommendations (mirroring aws_securityhub.go, which consumes GetFindings in
+		// GetRecommendations rather than storing per-finding resources). Only Defender
+		// pricing tiers are stored here.
 	}
 
 	return allResources, nil

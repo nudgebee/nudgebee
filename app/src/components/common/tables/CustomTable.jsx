@@ -474,6 +474,8 @@ const CustomTable = ({
   showUpdatedEmptyData = false,
   showEmptyStateText = false,
   emptyStateText = 'No Data Available',
+  emptyHeading = 'No Data Available',
+  emptySubHeading = 'Please check back later or try refreshing the page',
   showUpdatedTable = false,
   onRowClick,
   tabPadding,
@@ -849,9 +851,7 @@ const CustomTable = ({
     } else if (showUpdatedEmptyData) {
       content = <EmptyData img={ThumbsUp} heading='All good here!' subHeading='No recommendations available' />;
     } else {
-      content = (
-        <EmptyData id={id} img={DataNotAvailable} heading='No Data Available' subHeading='Please check back later or try refreshing the page' />
-      );
+      content = <EmptyData id={id} img={DataNotAvailable} heading={emptyHeading} subHeading={emptySubHeading} />;
     }
 
     return (
@@ -1304,6 +1304,8 @@ CustomTable.propTypes = {
   stickyColumnIndex: PropTypes.string,
   showEmptyStateText: PropTypes.bool,
   emptyStateText: PropTypes.string,
+  emptyHeading: PropTypes.string,
+  emptySubHeading: PropTypes.string,
   showUpdatedEmptyData: PropTypes.bool,
   showUpdatedTable: PropTypes.bool,
   onRowClick: PropTypes.func,

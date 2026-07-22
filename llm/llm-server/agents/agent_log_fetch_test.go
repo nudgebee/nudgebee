@@ -659,3 +659,67 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 		assert.Equal(t, small, env["logs"])
 	})
 }
+
+// TestBuildLogIntentMessages_AccountPromptPropagation pins the contract for
+// account GlobalContext propagation into the query-generator call:
+//   - present  → appended to the SYSTEM message (account-stable, cache-safe)
+//   - absent   → system message is exactly the raw prompt (no empty block)
+//   - stable   → same AccountPrompt across calls yields byte-identical system
+//     messages, preserving the provider prompt-cache prefix
+//   - oversized → truncated via TruncateMiddle so a huge curated context
+//     cannot bloat every intent call
+func TestBuildLogIntentMessages_AccountPromptPropagation(t *testing.T) {
+	const sysPrompt = "Static system prompt. Extract log retrieval parameters."
+	const gc = "Log fields for this deployment: service.name, body, k8s.pod.name."
+
+	textOf := func(m llms.MessageContent) string {
+		var b strings.Builder
+		for _, p := range m.Parts {
+			if tp, ok := p.(llms.TextContent); ok {
+				b.WriteString(tp.Text)
+			}
+		}
+		return b.String()
+	}
+
+	t.Run("account prompt lands in system message only", func(t *testing.T) {
+		msgs := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "logs for svc", AccountPrompt: gc})
+		assert.Len(t, msgs, 2)
+		sys, human := textOf(msgs[0]), textOf(msgs[1])
+		assert.Contains(t, sys, gc)
+		assert.Contains(t, sys, "Account preferences")
+		assert.NotContains(t, human, gc)
+	})
+
+	t.Run("no account prompt leaves system prompt untouched", func(t *testing.T) {
+		msgs := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "logs for svc"})
+		assert.Equal(t, sysPrompt, textOf(msgs[0]))
+	})
+
+	t.Run("same account prompt is byte-stable across calls", func(t *testing.T) {
+		a := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "logs for svc A", AccountPrompt: gc})
+		b := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "errors in svc B last 1h", OriginalQuery: "why is B failing?", AccountPrompt: gc})
+		assert.Equal(t, textOf(a[0]), textOf(b[0]), "system message must not vary with per-call inputs")
+	})
+
+	t.Run("oversized account prompt is truncated", func(t *testing.T) {
+		huge := strings.Repeat("x", defaultCustomAgentAccountPromptBytes+50_000)
+		msgs := buildLogIntentMessages(sysPrompt, core.NBAgentRequest{Query: "logs", AccountPrompt: huge})
+		sys := textOf(msgs[0])
+		assert.Less(t, len(sys), len(sysPrompt)+defaultCustomAgentAccountPromptBytes+1024)
+	})
+}
+
+// TestDefaultProviderLogFields pins the fallback field vocabulary advertised
+// to the query-generator when backend label discovery fails: Signoz stores
+// logs under OTel attribute names — the generic `_body`/`namespace`/`pod` set
+// matches no Signoz attribute and every query silently returns zero rows.
+func TestDefaultProviderLogFields(t *testing.T) {
+	signozFields := defaultProviderLogFields("signoz")
+	assert.ElementsMatch(t,
+		[]string{"body", "service.name", "k8s.cluster.name", "k8s.namespace.name", "k8s.pod.name", "trace_id"},
+		signozFields)
+	assert.Equal(t, signozFields, defaultProviderLogFields("SigNoz"), "provider match must be case-insensitive")
+	assert.Equal(t, []string{"_body", "namespace", "pod"}, defaultProviderLogFields("loki"))
+	assert.Equal(t, []string{"_body", "namespace", "pod"}, defaultProviderLogFields(""))
+}

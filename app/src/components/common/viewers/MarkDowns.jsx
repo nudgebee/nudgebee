@@ -16,33 +16,52 @@
 import { Box } from '@mui/material';
 import { useRef, useEffect, useState, useMemo } from 'react';
 import PropTypes from 'prop-types';
+import dynamic from 'next/dynamic';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { withErrorBoundary, reportHandledError } from '@shared/ErrorBoundary';
-import mermaid from 'mermaid';
 import DownloadIcon from '@assets/download-f.svg';
 import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
-import { toPng } from 'html-to-image';
 import { snackbar } from '../snackbarService';
-import { MermaidChartJS } from '@shared/viewers/MermaidChartJS';
 import { createRoot } from 'react-dom/client';
 import { ds } from '@utils/colors';
 
-mermaid.initialize({
-  startOnLoad: false,
-  theme: 'default',
-  securityLevel: 'antiscript',
-  flowchart: {
-    htmlLabels: true,
-    curve: 'basis',
-  },
-  themeVariables: {
-    fontFamily: 'Roboto, Arial, sans-serif',
-    fontSize: 'var(--ds-text-small)',
-    nodePadding: 16,
-  },
-});
+// Diagram rendering needs heavy, diagram-only libraries: `mermaid`, `chart.js` /
+// `react-chartjs-2` (via MermaidChartJS) and `html-to-image`. MarkDowns is reached
+// on nearly every route (e.g. the header's cluster dropdown pulls it in through
+// @shared/format/Text), but markdown that actually contains a mermaid/xychart block
+// is rare. Importing these statically shipped all of them in the shared layout chunk
+// on every page. They are now loaded on demand — only when a diagram is actually
+// present (a `.mermaid` div, an xychart segment, or a PNG export click). See
+// enterprise#25990.
+const MermaidChartJS = dynamic(() => import('@shared/viewers/MermaidChartJS').then((m) => m.MermaidChartJS), { ssr: false });
+
+// Lazily import + initialize mermaid the first time a diagram needs rendering.
+// Memoized so the import happens once and initialize() runs exactly once.
+let mermaidPromise = null;
+const loadMermaid = () => {
+  if (!mermaidPromise) {
+    mermaidPromise = import('mermaid').then(({ default: mermaid }) => {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: 'default',
+        securityLevel: 'antiscript',
+        flowchart: {
+          htmlLabels: true,
+          curve: 'basis',
+        },
+        themeVariables: {
+          fontFamily: 'Roboto, Arial, sans-serif',
+          fontSize: 'var(--ds-text-small)',
+          nodePadding: 16,
+        },
+      });
+      return mermaid;
+    });
+  }
+  return mermaidPromise;
+};
 
 // Build a marked renderer whose mermaid code blocks register their source into
 // the supplied `chartCodes` map. This map (and the chart-id counter) MUST be
@@ -291,7 +310,7 @@ const defaultStyles = {
       fontWeight: 'var(--ds-font-weight-medium)',
       textAlign: 'left',
       fontSize: 'var(--ds-text-body)',
-      overflowWrap: 'break-word',
+      whiteSpace: 'nowrap',
     },
     '& td': {
       padding: 'var(--ds-space-2) var(--ds-space-4)',
@@ -299,7 +318,8 @@ const defaultStyles = {
       color: 'var(--ds-gray-700)',
       fontSize: 'var(--ds-text-body)',
       transition: 'background-color 0.2s ease',
-      overflowWrap: 'break-word',
+      overflowWrap: 'anywhere',
+      wordBreak: 'break-word',
     },
     '& tr:hover td': {
       backgroundColor: 'var(--ds-gray-100)',
@@ -409,23 +429,6 @@ function MarkDowns({ data, sx, allowExecutable, canRunCode = true, onLinkClick }
     return { sanitizedData: sanitized, chartCodes: codes, segments: segs };
   }, [data]);
 
-  // Unmount the imperatively-created mermaid download-button roots when this
-  // component unmounts. Deferred so unmount never runs inside React's commit.
-  useEffect(() => {
-    return () => {
-      chartRootsRef.current.forEach((root) => {
-        setTimeout(() => {
-          try {
-            root.unmount();
-          } catch (e) {
-            console.error(e);
-          }
-        }, 0);
-      });
-      chartRootsRef.current = [];
-    };
-  }, []);
-
   const downloadMermaidAsSVG = (svgElement, fileName = 'diagram.svg') => {
     let url;
     const link = document.createElement('a');
@@ -468,6 +471,7 @@ function MarkDowns({ data, sx, allowExecutable, canRunCode = true, onLinkClick }
       wrapper.appendChild(svgClone);
       document.body.appendChild(wrapper);
 
+      const { toPng } = await import('html-to-image');
       const dataUrl = await toPng(wrapper, {
         backgroundColor: '#ffffff',
         pixelRatio: scale,
@@ -591,6 +595,14 @@ function MarkDowns({ data, sx, allowExecutable, canRunCode = true, onLinkClick }
       return;
     }
 
+    const mermaidDivs = containerRef.current.querySelectorAll('.mermaid');
+    if (mermaidDivs.length === 0) {
+      // No flowchart diagrams in this markdown — never load the mermaid bundle.
+      return;
+    }
+
+    let cancelled = false;
+
     // Mermaid v11 requires labels with spaces/special chars to be quoted.
     // AI-generated mermaid code often has unquoted labels like A[Step 1].
     // This sanitizer quotes them: A[Step 1] → A["Step 1"]
@@ -613,64 +625,103 @@ function MarkDowns({ data, sx, allowExecutable, canRunCode = true, onLinkClick }
       });
     };
 
-    const tryRenderMermaid = async (renderId, code) => {
-      const { svg } = await mermaid.render(renderId, code);
-      return svg;
-    };
-
-    const mermaidDivs = containerRef.current.querySelectorAll('.mermaid');
-
-    mermaidDivs.forEach(async (div, index) => {
-      if (div.hasAttribute('data-mermaid-processed')) {
+    const renderMermaidDiagrams = async () => {
+      const mermaid = await loadMermaid();
+      // Bail if the component unmounted / data changed while the bundle loaded.
+      if (cancelled) {
         return;
       }
-      div.setAttribute('data-mermaid-processed', 'true');
 
-      const chartId = div.getAttribute('data-chart-id');
-      const originalCode = chartCodes.get(chartId) || '';
-      const ts = Date.now();
+      const tryRenderMermaid = async (renderId, code) => {
+        const { svg } = await mermaid.render(renderId, code);
+        return svg;
+      };
 
-      // Try original code first, then retry with sanitized (quoted labels), then fallback
-      let svg = null;
-      const renderId1 = `mermaid-svg-${ts}-${index}`;
-      try {
-        svg = await tryRenderMermaid(renderId1, originalCode);
-      } catch (err) {
-        cleanupMermaidArtifacts(renderId1);
-        const renderId2 = `mermaid-svg-${ts}-${index}-retry`;
+      mermaidDivs.forEach(async (div, index) => {
+        if (div.hasAttribute('data-mermaid-processed')) {
+          return;
+        }
+        div.setAttribute('data-mermaid-processed', 'true');
+
+        const chartId = div.getAttribute('data-chart-id');
+        const originalCode = chartCodes.get(chartId) || '';
+        const ts = Date.now();
+
+        // Try original code first, then retry with sanitized (quoted labels), then fallback
+        let svg = null;
+        const renderId1 = `mermaid-svg-${ts}-${index}`;
         try {
-          svg = await tryRenderMermaid(renderId2, sanitizeMermaidSyntax(originalCode));
-        } catch (retryErr) {
-          cleanupMermaidArtifacts(renderId2);
-          reportHandledError(retryErr instanceof Error ? retryErr : new Error(String(retryErr)), 'MarkDowns/Mermaid', {
-            chartId,
-            originalError: err instanceof Error ? err.message : String(err),
-          });
+          svg = await tryRenderMermaid(renderId1, originalCode);
+        } catch (err) {
+          if (cancelled) {
+            return;
+          }
+          cleanupMermaidArtifacts(renderId1);
+          const renderId2 = `mermaid-svg-${ts}-${index}-retry`;
+          try {
+            svg = await tryRenderMermaid(renderId2, sanitizeMermaidSyntax(originalCode));
+          } catch (retryErr) {
+            if (cancelled) {
+              return;
+            }
+            cleanupMermaidArtifacts(renderId2);
+            reportHandledError(retryErr instanceof Error ? retryErr : new Error(String(retryErr)), 'MarkDowns/Mermaid', {
+              chartId,
+              originalError: err instanceof Error ? err.message : String(err),
+            });
+          }
         }
-      }
 
-      if (svg) {
-        div.innerHTML = DOMPurify.sanitize(svg, {
-          USE_PROFILES: { svg: true, svgFilters: true },
-          ADD_TAGS: ['foreignObject'],
-          ADD_ATTR: ['dominant-baseline', 'text-anchor', 'marker-end', 'marker-start'],
-        });
-        const svgEl = div.querySelector('svg');
-        if (svgEl && !div.querySelector('.download-mermaid-btn')) {
-          div.style.position = 'relative';
-          const btn = createDownloadButton(svgEl, index);
-          div.prepend(btn);
+        // Bail before mutating the DOM if the effect was cleaned up while mermaid
+        // was rendering (component unmounted or `data` changed) — otherwise a stale
+        // render could overwrite newer content or touch a detached node.
+        if (cancelled) {
+          return;
         }
-      } else {
-        // Both attempts failed — fall back to code block
-        const pre = document.createElement('pre');
-        const code = document.createElement('code');
-        code.className = 'language-mermaid';
-        code.textContent = originalCode;
-        pre.appendChild(code);
-        div.replaceWith(pre);
-      }
-    });
+
+        if (svg) {
+          div.innerHTML = DOMPurify.sanitize(svg, {
+            USE_PROFILES: { svg: true, svgFilters: true },
+            ADD_TAGS: ['foreignObject'],
+            ADD_ATTR: ['dominant-baseline', 'text-anchor', 'marker-end', 'marker-start'],
+          });
+          const svgEl = div.querySelector('svg');
+          if (svgEl && !div.querySelector('.download-mermaid-btn')) {
+            div.style.position = 'relative';
+            const btn = createDownloadButton(svgEl, index);
+            div.prepend(btn);
+          }
+        } else {
+          // Both attempts failed — fall back to code block
+          const pre = document.createElement('pre');
+          const code = document.createElement('code');
+          code.className = 'language-mermaid';
+          code.textContent = originalCode;
+          pre.appendChild(code);
+          div.replaceWith(pre);
+        }
+      });
+    };
+
+    renderMermaidDiagrams();
+
+    return () => {
+      cancelled = true;
+      // Unmount the download-button roots created during this render pass so they
+      // don't leak when `data` / `chartCodes` change — this effect re-runs on every
+      // such change, and also fires on final unmount. Deferred via setTimeout so the
+      // unmount never runs inside React's commit phase.
+      chartRootsRef.current.forEach((root) => {
+        setTimeout(() => {
+          try {
+            root.unmount();
+          } catch (e) {
+            console.error(e);
+          }
+        }, 0);
+      });
+      chartRootsRef.current = [];
+    };
   }, [sanitizedData, chartCodes]);
 
   const handleCopy = async (text, index) => {

@@ -107,7 +107,7 @@ const CloudLogs: React.FC<CloudLogsProps> = ({ accountId, resourceId, region, se
         },
       });
 
-      const logs = response?.data?.data?.logs_list || [];
+      const logs = response?.data?.data?.logs_list?.logs || [];
       setData(logs);
     } catch (err: any) {
       setError(err.message || 'Failed to fetch logs');

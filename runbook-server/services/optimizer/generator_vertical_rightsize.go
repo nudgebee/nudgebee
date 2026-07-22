@@ -90,6 +90,9 @@ func (g *VerticalRightsizeGenerator) GenerateTasks(ctx context.Context, ao model
 		task.Name = fmt.Sprintf("Vertical Rightsize %s %s/%s", kind, namespace, name)
 
 		task.Meta = params
+		// Snapshot the resource this run targeted so history stays accurate even after
+		// the task's target resources are later edited (issue #34245).
+		task.ResourceFilter = model.AutoOptimizeResourceFilter{Namespace: &namespace, Name: &name, Type: &kind}
 
 		if ao.NextScheduleTime != nil {
 			task.ScheduledTime = *ao.NextScheduleTime

@@ -22,20 +22,12 @@ import (
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
 	"nudgebee/services/triage"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v2"
-)
-
-// Compiled once at package init instead of on every extractDiffInfo call.
-var (
-	diffLineNumberRegex = regexp.MustCompile(`@@ -(\d+),`)
-	diffOldChangeRegex  = regexp.MustCompile(`(?m)^-(.*)`)
-	diffNewChangeRegex  = regexp.MustCompile(`(?m)^\+(.*)`)
 )
 
 func init() {
@@ -248,61 +240,6 @@ func updateContainerImage(pod map[any]any, containerName string, newImage string
 		}
 	}
 	return pod, fmt.Errorf("container %s not found", containerName)
-}
-
-func extractDiffInfo(diff string) (lineNumber int, oldChange, newChange string, err error) {
-	diff = replaceTabs(diff)
-	lineNumberMatches := diffLineNumberRegex.FindStringSubmatch(diff)
-	if len(lineNumberMatches) < 2 {
-		return 0, "", "", fmt.Errorf("could not find line number in diff")
-	}
-
-	if _, err1 := fmt.Sscanf(lineNumberMatches[1], "%d", &lineNumber); err1 != nil {
-		return 0, "", "", fmt.Errorf("error parsing line number in diff: %w", err1)
-	}
-
-	oldChangeMatches := diffOldChangeRegex.FindAllStringSubmatch(diff, -1)
-	newChangeMatches := diffNewChangeRegex.FindAllStringSubmatch(diff, -1)
-
-	filterOutFilenames := func(matches [][]string) string {
-		for _, match := range matches {
-			if !strings.HasPrefix(strings.TrimSpace(match[1]), "-- a/") &&
-				!strings.HasPrefix(strings.TrimSpace(match[1]), "++ b/") &&
-				!strings.HasPrefix(strings.TrimSpace(match[0]), "--- a/") &&
-				!strings.HasPrefix(strings.TrimSpace(match[0]), "+++ b/") {
-				return strings.TrimSpace(match[1])
-			}
-		}
-		return ""
-	}
-
-	oldChange = filterOutFilenames(oldChangeMatches)
-	newChange = filterOutFilenames(newChangeMatches)
-	if oldChange == "" && newChange == "" {
-		lines := strings.Split(diff, "\n")
-		inChanges := false
-
-		for _, line := range lines {
-			if strings.HasPrefix(line, "@@") {
-				inChanges = true
-				continue
-			}
-
-			if inChanges {
-				if strings.HasPrefix(line, "-") {
-					oldChange = strings.TrimPrefix(line, "-")
-				} else if strings.HasPrefix(line, "+") {
-					newChange = strings.TrimPrefix(line, "+")
-				}
-			}
-		}
-	}
-
-	return lineNumber, oldChange, newChange, nil
-}
-
-func replaceTabs(str string) string {
-	return strings.ReplaceAll(str, "\t", "    ") // Replacing tab '\t' with 4 spaces
 }
 
 func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendationApplyRequest) (EventRecommendationApplyResponse, error) {
@@ -886,70 +823,85 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 			}
 		}
 	} else if okRaisePR {
-		if raisePR {
-			resolution.Type = models.RecommendationResolutionTypePullRequest
-			eventLogAnalysisRow := dbms.Db.QueryRowx("SELECT analysis from event_log_analysis WHERE analysis_type = 'log_analysis' and cloud_account_id = $1 AND event_id = $2 AND status = 'COMPLETED'", query.AccountId, query.EventId)
-			if eventLogAnalysisRow.Err() != nil {
-				return EventRecommendationApplyResponse{}, fmt.Errorf("invalid event_log_analysis - %s", query.EventId)
-			}
-			eventLogAnalysisDetail := map[string]any{}
-			err = eventLogAnalysisRow.MapScan(eventLogAnalysisDetail)
-			if err != nil {
-				return EventRecommendationApplyResponse{}, err
-			}
-			var result map[string]any
-			err := common.UnmarshalJson([]byte(eventLogAnalysisDetail["analysis"].(string)), &result)
-			if err != nil {
-				return EventRecommendationApplyResponse{}, err
-			}
-			sourceUpdates, ok := result["source_updates"].(map[string]any)
-			if !ok {
-				return EventRecommendationApplyResponse{}, fmt.Errorf("failed to parse 'source_updates' from result")
-			}
-			filepath, ok := sourceUpdates["file_path"].(string)
-			if !ok {
-				return EventRecommendationApplyResponse{}, fmt.Errorf("'file_path' not found or not a string in 'source_updates'")
-			}
-			gitDiff, ok := sourceUpdates["gitDiff"].(string)
-			if !ok {
-				return EventRecommendationApplyResponse{}, fmt.Errorf("'gitDiff' not found or not a string in 'source_updates'")
-			}
-			lineNumber, oldLine, newLine, err1 := extractDiffInfo(gitDiff)
-			if err1 != nil {
-				return EventRecommendationApplyResponse{}, fmt.Errorf("failed to extract diff info from 'gitDiff': %w", err1)
-			}
-			sourceDetails, ok := result["source_details"].(map[string]any)
-			if !ok {
-				return EventRecommendationApplyResponse{}, fmt.Errorf("failed to parse 'source_details' from result")
-			}
-			sha1, ok := sourceDetails[annotations.WorkloadGitHash].(string)
-			if !ok {
-				return EventRecommendationApplyResponse{}, fmt.Errorf("'%s' not found or not a string in 'source_details'", annotations.WorkloadGitHash)
-			}
-			recommendationRequest = adapter.ApplyRecommendationRequest{
-				Data: query.Data.(map[string]any),
-				Recommendation: models.Recommendation{
-					Category:       "EventResolutionRaisePr",
-					RuleName:       *r.AggregationKey,
-					Id:             r.Id,
-					CloudAccountId: *r.CloudAccountId,
-					TenantId:       *r.Tenant,
-					Recommendation: models.NewJsonObject(map[string]any{
-						"account_id": *r.CloudAccountId,
-						"old_change": gitDiff,
-						"fileName":   filepath,
-						"lineNumber": lineNumber + 1,
-						"oldLine":    oldLine,
-						"newLine":    newLine,
-						"sha1":       sha1,
-					}),
-					AccountObjectId: &query.EventId,
-				},
-				Resource:       cr,
-				ProviderConfig: query.ProviderConfig,
-			}
-		} else {
+		if !raisePR {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: raisePR must be true to create a pull request")
+		}
+		resolution.Type = models.RecommendationResolutionTypePullRequest
+
+		// Re-derive the fix through the code agent. The log-analysis step already
+		// ran agent_code_2 in propose mode (fix, no PR) and stored the drafted
+		// diff under source_updates.gitDiff. Raising the PR dispatches agent_code_2
+		// again (mode=fix, raise_pr=true): the stored diff and the analysis's
+		// root cause are passed as intent, and the agent re-applies or adapts the
+		// fix against the current code before opening the PR. The intent is to fix
+		// the identified issue, not to blindly replay a possibly-stale patch.
+		eventLogAnalysisRow := dbms.Db.QueryRowx("SELECT analysis from event_log_analysis WHERE analysis_type = 'log_analysis' and cloud_account_id = $1 AND event_id = $2 AND status = 'COMPLETED'", query.AccountId, query.EventId)
+		if eventLogAnalysisRow.Err() != nil {
+			return EventRecommendationApplyResponse{}, fmt.Errorf("invalid event_log_analysis - %s", query.EventId)
+		}
+		eventLogAnalysisDetail := map[string]any{}
+		if err = eventLogAnalysisRow.MapScan(eventLogAnalysisDetail); err != nil {
+			return EventRecommendationApplyResponse{}, err
+		}
+		analysisStr, _ := eventLogAnalysisDetail["analysis"].(string)
+		var result map[string]any
+		if err := common.UnmarshalJson([]byte(analysisStr), &result); err != nil {
+			return EventRecommendationApplyResponse{}, err
+		}
+		sourceUpdates, ok := result["source_updates"].(map[string]any)
+		if !ok {
+			return EventRecommendationApplyResponse{}, fmt.Errorf("failed to parse 'source_updates' from result")
+		}
+		gitDiff, _ := sourceUpdates["gitDiff"].(string)
+		if strings.TrimSpace(gitDiff) == "" {
+			return EventRecommendationApplyResponse{}, fmt.Errorf("no proposed code fix is stored for this event; re-run the analysis before raising a PR")
+		}
+		filePath, _ := sourceUpdates["file_path"].(string)
+		// The repo the log-analysis already resolved. The adapter parses the
+		// org/repo from it and passes it straight to the code agent, which
+		// resolves its own git credentials.
+		sourceDetails, _ := result["source_details"].(map[string]any)
+		gitRepo, _ := sourceDetails[annotations.WorkloadGitRepo].(string)
+		// Optional free-text the user added in the Raise-PR panel; threaded into
+		// the agent prompt as guidance that steers how the fix is implemented.
+		guidance, _ := queryData["guidance"].(string)
+		// The identified root cause the agent should fix. Combine the analysis's
+		// title, root-cause narrative, and fix explanation so the agent works from
+		// the issue we identified rather than the (possibly stale) diff alone.
+		var fixContextParts []string
+		for _, v := range []any{
+			result["title"],
+			result["root_cause_analysis"],
+			result["description"],
+			sourceUpdates["explanation"],
+		} {
+			if s, _ := v.(string); strings.TrimSpace(s) != "" {
+				fixContextParts = append(fixContextParts, strings.TrimSpace(s))
+			}
+		}
+		fixContext := strings.Join(fixContextParts, "\n\n")
+
+		recommendationRequest = adapter.ApplyRecommendationRequest{
+			Data: queryData,
+			Recommendation: models.Recommendation{
+				Category:       "EventResolutionRaisePr",
+				RuleName:       *r.AggregationKey,
+				Id:             r.Id,
+				CloudAccountId: *r.CloudAccountId,
+				TenantId:       *r.Tenant,
+				Recommendation: models.NewJsonObject(map[string]any{
+					"account_id":  *r.CloudAccountId,
+					"git_repo":    gitRepo,
+					"fileName":    filePath,
+					"fix_context": fixContext,
+					"gitDiff":     gitDiff,
+					"guidance":    guidance,
+				}),
+				AccountObjectId: &query.EventId,
+			},
+			ResolverType:   "code fix",
+			Resource:       cr,
+			ProviderConfig: query.ProviderConfig,
 		}
 	} else {
 		containerName := ""
@@ -1329,7 +1281,31 @@ func truncateStringToMaxBytes(s string, maxBytes int) string {
 	return s[:i-1]
 }
 
-func InsertEvent(event Event, id string) (string, error) {
+// insertConfig holds optional InsertEvent behavior toggles.
+type insertConfig struct {
+	skipWorkflowRefire bool
+}
+
+// InsertOption configures InsertEvent.
+type InsertOption func(*insertConfig)
+
+// WithoutWorkflowRefire disables the event-trigger workflow re-fire that
+// InsertEvent otherwise enqueues when it UPDATES an existing FIRING event.
+// Use it for callers that re-persist an event for a reason OTHER than a fresh
+// occurrence — e.g. UpdateEvent's user-facing metadata edits (urgency/subject) —
+// where re-running matched event-trigger workflows would be spurious. Genuine
+// occurrence/ingestion paths (alert webhooks, anomaly/SLO detection) must NOT
+// pass this, so repeat firings keep matching workflows (issue #25251).
+func WithoutWorkflowRefire() InsertOption {
+	return func(c *insertConfig) { c.skipWorkflowRefire = true }
+}
+
+func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
+	var cfg insertConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	// Validate required UUID fields to prevent DB errors from invalid values
 	if event.Tenant == "" {
 		return "", fmt.Errorf("event: tenant is required")
@@ -1430,7 +1406,24 @@ func InsertEvent(event Event, id string) (string, error) {
 		_ = common.MqPublish(
 			config.Config.RabbitMqEventPostProcessExchange,
 			config.Config.RabbitMqEventPostProcessQueue,
-			map[string]string{"event_id": id},
+			map[string]any{"event_id": id},
+			common.MqPublishWithExpiration(1*time.Hour),
+			common.MqPublishWithBackgroundRetry(),
+		)
+	} else if !cfg.skipWorkflowRefire && strings.EqualFold(string(event.Status), string(EventStatusFiring)) {
+		// Re-fire of an existing event: ON CONFLICT updated an already-present row.
+		// The post-process pipeline (triage/llm/notification) only runs on first
+		// insert, so without this an event-trigger workflow would never see repeat
+		// occurrences — and a workflow created AFTER the event first appeared would
+		// never fire at all. Re-deliver to the runbook workflow exchange ONLY
+		// (workflow_only), so workflows match each FIRING occurrence with no
+		// duplicate notifications or investigations. Gated to FIRING so resolve/
+		// close updates don't spuriously trigger, and skipped for non-occurrence
+		// re-persists (WithoutWorkflowRefire, e.g. UpdateEvent metadata edits).
+		_ = common.MqPublish(
+			config.Config.RabbitMqEventPostProcessExchange,
+			config.Config.RabbitMqEventPostProcessQueue,
+			map[string]any{"event_id": id, "workflow_only": true},
 			common.MqPublishWithExpiration(1*time.Hour),
 			common.MqPublishWithBackgroundRetry(),
 		)
@@ -2377,19 +2370,39 @@ func processTriage(ctx *security.RequestContext, newEvent map[string]any) error 
 		return nil // Don't fail the entire pipeline
 	}
 
-	// Propagate post-triage nb_status back into newEvent so downstream
-	// processors (notably llm.ProcessEvent's suppressed-skip gate) see the
-	// classification triage just applied. triage.ProcessEvent issues a SQL
-	// UPDATE for nb_status without mutating the in-memory event struct, so
-	// we re-read here. Combined with PostProcessEvent running triage before
-	// other processors, this closes the same-batch race where llm could
-	// publish before triage flipped nb_status to SUPPRESSED/DROPPED.
-	var nbStatus sql.NullString
-	if err := dbms.Db.GetContext(ctx.GetContext(), &nbStatus,
-		`SELECT nb_status FROM events WHERE id = $1`, eventId); err != nil {
-		ctx.GetLogger().Warn("triage: failed to refresh post-triage nb_status", "error", err, "event_id", eventId)
-	} else if nbStatus.Valid {
-		newEvent["nb_status"] = nbStatus.String
+	// Propagate post-triage classification back into newEvent so downstream
+	// processors (notably llm.ProcessEvent's suppressed-skip gate) AND event-trigger
+	// workflows see what triage just applied. triage.ProcessEvent issues SQL UPDATEs
+	// without mutating the in-memory event struct, so we re-read here. Combined with
+	// PostProcessEvent running triage before other processors, this closes the
+	// same-batch race where llm could publish before triage flipped nb_status to
+	// SUPPRESSED/DROPPED.
+	//
+	// computed_score / computed_priority are carried so event-trigger workflows can
+	// filter on the triage severity (e.g. {{ event.computed_priority in ['P0','P1'] }}
+	// or {{ event.computed_score | int >= 80 }}). They are the ONLY triage-severity
+	// signal a workflow filter can reach — the event payload published to the runbook
+	// exchange is exactly this map, and these keys were previously absent, which forced
+	// authors to invent non-existent labels like event.labels.nb_triage. They may be
+	// null for un-scored / legacy events, so the keys are set only when present.
+	var triageClassification struct {
+		NbStatus         sql.NullString `db:"nb_status"`
+		ComputedScore    sql.NullInt64  `db:"computed_score"`
+		ComputedPriority sql.NullString `db:"computed_priority"`
+	}
+	if err := dbms.Db.GetContext(ctx.GetContext(), &triageClassification,
+		`SELECT nb_status, computed_score, computed_priority FROM events WHERE id = $1`, eventId); err != nil {
+		ctx.GetLogger().Warn("triage: failed to refresh post-triage classification", "error", err, "event_id", eventId)
+	} else {
+		if triageClassification.NbStatus.Valid {
+			newEvent["nb_status"] = triageClassification.NbStatus.String
+		}
+		if triageClassification.ComputedScore.Valid {
+			newEvent["computed_score"] = triageClassification.ComputedScore.Int64
+		}
+		if triageClassification.ComputedPriority.Valid {
+			newEvent["computed_priority"] = triageClassification.ComputedPriority.String
+		}
 	}
 
 	return nil
@@ -2510,9 +2523,10 @@ func pagerdutyCommentIfNotInvestigated(ctx *security.RequestContext, newEvent ma
 // orchestration (triage → llm → event.created) is unit-testable without a live
 // DB / MQ. Overridden in tests.
 var (
-	triageStep    = processTriage
-	llmStep       = llm.ProcessEvent
-	emitLifecycle = lifecycle.Emit
+	triageStep       = processTriage
+	llmStep          = llm.ProcessEvent
+	emitLifecycle    = lifecycle.Emit
+	emitWorkflowOnly = lifecycle.PublishToWorkflows
 )
 
 func PostProcessEvent(ctx *security.RequestContext, newEvent map[string]any) {
@@ -2546,6 +2560,16 @@ func PostProcessEvent(ctx *security.RequestContext, newEvent map[string]any) {
 	// created-phase hooks (notification, pagerduty-if-not-investigated) and
 	// publishes to the runbook exchange for on=event.created workflows.
 	emitLifecycle(ctx, lifecycle.PhaseEventCreated, newEvent, nil)
+}
+
+// ReEmitForWorkflows re-delivers an already-post-processed event to the runbook
+// workflow exchange so event-trigger workflows fire on repeat occurrences. Unlike
+// PostProcessEvent it deliberately skips triage/llm/notification — those ran on
+// first insert and must not re-run on every re-fire — and only publishes for
+// workflow matching (event.created phase). Invoked by the post-process consumer
+// for workflow_only messages enqueued by InsertEvent on a FIRING re-fire.
+func ReEmitForWorkflows(ctx *security.RequestContext, newEvent map[string]any) {
+	emitWorkflowOnly(ctx, lifecycle.PhaseEventCreated, newEvent)
 }
 
 // runStep runs a single pipeline step (triage / llm), logging any error and
@@ -2617,7 +2641,10 @@ func UpdateEvent(ctx *security.RequestContext, request models.UpdateEventRequest
 		UpdatedAt:        &now,
 		SubjectOwner:     common.StrVal(r.SubjectOwner),
 		SubjectOwnerKind: common.StrVal(r.SubjectOwnerKind),
-	}, request.EventId)
+		// A user metadata edit (urgency/subject) re-persists the row carrying its
+		// existing FIRING status; that is NOT a fresh alert occurrence, so suppress
+		// the event-trigger workflow re-fire to avoid spuriously running workflows.
+	}, request.EventId, WithoutWorkflowRefire())
 
 	if err1 != nil {
 		return models.Event{}, fmt.Errorf("event: failed to insert event: %w", err1)

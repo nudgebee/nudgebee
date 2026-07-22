@@ -16,12 +16,18 @@ type WorkflowTemplate struct {
 	Tags              map[string]any     `json:"tags,omitempty"`
 	IsSystem          bool               `json:"is_system"`
 	Status            string             `json:"status,omitempty"`
-	CreatedBy         string             `json:"created_by,omitempty"`
-	CreatedByUser     *WorkflowUser      `json:"created_by_user,omitempty"`
-	UpdatedBy         string             `json:"updated_by,omitempty"`
-	UpdatedByUser     *WorkflowUser      `json:"updated_by_user,omitempty"`
-	CreatedAt         time.Time          `json:"created_at,omitempty"`
-	UpdatedAt         time.Time          `json:"updated_at,omitempty"`
+	// Provenance for multi-source system templates (see internal/templatesource).
+	// Empty for tenant/account templates and legacy hand-made rows.
+	Source        string        `json:"source,omitempty"`
+	ExternalKey   string        `json:"external_key,omitempty"`
+	Checksum      string        `json:"checksum,omitempty"`
+	SourceRef     string        `json:"source_ref,omitempty"`
+	CreatedBy     string        `json:"created_by,omitempty"`
+	CreatedByUser *WorkflowUser `json:"created_by_user,omitempty"`
+	UpdatedBy     string        `json:"updated_by,omitempty"`
+	UpdatedByUser *WorkflowUser `json:"updated_by_user,omitempty"`
+	CreatedAt     time.Time     `json:"created_at,omitempty"`
+	UpdatedAt     time.Time     `json:"updated_at,omitempty"`
 }
 
 // TemplateVariable provides UX metadata for a configurable field in a workflow template.
@@ -49,6 +55,7 @@ type ListWorkflowTemplateRequest struct {
 	EventSources  []string `json:"event_sources,omitempty"`
 	AlertNames    []string `json:"alert_names,omitempty"`
 	SubjectTypes  []string `json:"subject_types,omitempty"`
+	Labels        []string `json:"labels,omitempty"`
 }
 
 // ListWorkflowTemplateResponse contains the list of templates with pagination info.

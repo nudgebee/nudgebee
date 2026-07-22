@@ -127,18 +127,46 @@ func RunOne(ctx *security.RequestContext, account ScanAccount, scannerName strin
 	recs, err := RunScan(ctx, account, scannerName, params)
 	if err != nil {
 		logger.Error("scan_orchestrator: RunScan failed", "error", err)
+		// Record the failure per-image so the discovery loop backs it off (short
+		// retry window) instead of re-selecting it every cycle, and so the failure
+		// is visible rather than silent. Only image_scanner is per-image.
+		if scannerName == "image_scanner" {
+			if sErr := upsertImageScanSummary(ctx, account, imageScanStatusFailed, nil, err); sErr != nil {
+				logger.Error("scan_orchestrator: image scan summary (failed) persist error", "image", account.TargetImage, "error", sErr)
+			}
+		}
 		return err
 	}
-	return Persist(ctx, account, scannerName, recs)
+	if err := Persist(ctx, account, scannerName, recs); err != nil {
+		return err
+	}
+	// Record the successful scan per-image (clean or vulnerable). This is what
+	// lets a freshly-scanned image leave the candidate pool and what makes a
+	// clean image durable/visible. Only image_scanner is per-image.
+	if scannerName == "image_scanner" {
+		status := imageScanStatusClean
+		if len(recs) > 0 {
+			status = imageScanStatusVulnerable
+		}
+		if sErr := upsertImageScanSummary(ctx, account, status, recs, nil); sErr != nil {
+			logger.Error("scan_orchestrator: image scan summary persist error", "image", account.TargetImage, "error", sErr)
+		}
+	}
+	return nil
 }
 
-// runOne is the unexported worker-pool body used by RunAllForAccount. It
-// swallows errors (logs them) so one bad scanner doesn't kill the loop.
+// runOne is the unexported worker-pool body used by RunAllForAccount and the
+// heartbeat missed-scan path. It swallows errors (logs them) so one bad scanner
+// doesn't kill the loop. On a scan failure it records a FAILED schedule-job
+// state so the scanner backs off to its next cron tick instead of the heartbeat
+// re-dispatching it every ~1min. A Persist failure is not stamped — the scan
+// itself succeeded, so the next heartbeat should retry the (cheap) persist.
 func runOne(ctx *security.RequestContext, account ScanAccount, scannerName string) {
 	logger := ctx.GetLogger().With("scanner", scannerName, "account_id", account.AccountID, "tenant_id", account.TenantID)
 	recs, err := RunScan(ctx, account, scannerName, nil)
 	if err != nil {
 		logger.Error("scan_orchestrator: RunScan failed", "error", err)
+		UpsertScheduleJobFailure(ctx, account, scannerName)
 		return
 	}
 	if err := Persist(ctx, account, scannerName, recs); err != nil {

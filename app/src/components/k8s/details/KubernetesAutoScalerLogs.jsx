@@ -42,10 +42,23 @@ const KubernetesAutoScalerLogs = ({ accountId, namespace, autoscalerType }) => {
   };
 
   useEffect(() => {
-    if (!accountId || !namespace) {
+    // autoscalerType resolves asynchronously from the cluster connection_status.
+    // Gate on it too: without it none of the branches below match, so starting
+    // the spinner here would leave an indefinite loading state.
+    if (!accountId || !namespace || !autoscalerType) {
       setLoading(false);
+      setPodOptions([]);
+      setSelectedPod('');
+      setPodData({});
+      setGkeAutoscalerLogData([]);
       return;
     }
+    // Clear the previous cluster/type's data before the new fetch so stale rows
+    // don't flash while the request is in flight.
+    setPodOptions([]);
+    setSelectedPod('');
+    setPodData({});
+    setGkeAutoscalerLogData([]);
     setLoading(true);
     if (autoscalerType == 'cluster-autoscaler' || autoscalerType == 'karpenter') {
       apiKubernetes
@@ -99,7 +112,7 @@ const KubernetesAutoScalerLogs = ({ accountId, namespace, autoscalerType }) => {
           setLoading(false);
         });
     }
-  }, [accountId, namespace]);
+  }, [accountId, namespace, autoscalerType]);
 
   const pageData = useMemo(() => {
     return gkeAutoscalerLogData.slice(currentPage * recordsPerPage, currentPage * recordsPerPage + recordsPerPage).map((f) => [

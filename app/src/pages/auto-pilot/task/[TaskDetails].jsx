@@ -130,16 +130,19 @@ const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
         let data = tasks.map((item) => {
           let resourceFilter = item.resource_filter && Object.keys(item.resource_filter).length > 0 ? item.resource_filter : {};
 
-          if (Object.keys(resourceFilter).length === 0) {
-            resourceFilter = item?.auto_pilot?.auto_optimize_resource_maps?.[0]?.resource_identifier ?? {};
-          }
-
-          if (Object.keys(resourceFilter).length === 0 && item?.meta) {
+          // Prefer the per-execution meta snapshot over the parent's live resource map: the live map
+          // is rebuilt whenever the task's target resources are edited, which would relabel historical
+          // rows with the new config (issue #34245). meta is stored immutably per execution.
+          if (Object.keys(resourceFilter).length === 0 && item?.meta?.name) {
             resourceFilter = {
               namespace: item?.meta?.namespace,
               name: item?.meta?.name,
               type: item?.meta?.kind,
             };
+          }
+
+          if (Object.keys(resourceFilter).length === 0) {
+            resourceFilter = item?.auto_pilot?.auto_optimize_resource_maps?.[0]?.resource_identifier ?? {};
           }
 
           return [

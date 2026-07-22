@@ -34,6 +34,12 @@ var gcloudServiceMap = map[string]gcloudService{
 	"compute.googleapis.com/networkinterface": &networkInterfaceService{},
 	"artifact registry":                       &artifactRegistryService{},
 	"iam":                                     &iamService{},
+	"iam policy":                              &iamPolicyService{},
+	"secret manager":                          &secretManagerService{},
+	"cloud tasks":                             &cloudTasksService{},
+	"memorystore":                             &memorystoreService{},
+	"firestore":                               &firestoreService{},
+	"cloud scheduler":                         &schedulerService{},
 }
 
 func GetGcloudService(serviceName string) (gcloudService, bool) {

@@ -2,6 +2,7 @@ import { Page, Locator } from "@playwright/test";
 import { writeFileSync, mkdirSync } from "fs";
 import { PLAYWRIGHT_REPORT_DIR, TENANT_FILE_PATH } from "../tests/utils/paths";
 import { doDevLogin } from "./devLogin";
+import { doCredentialsLogin } from "./ossLoginHelper";
 
 export class LoginPage {
   readonly page: Page;
@@ -232,6 +233,17 @@ export class LoginPage {
   }
 
   async doFullLogin() {
+    if (process.env.E2E_ENVIRONMENT === "oss") {
+      await doCredentialsLogin(this.page);
+      await this.waitForLoaderToDisappear();
+      const explicitCluster = process.env.CLUSTER_NAME || process.env.CLUSTER;
+      if (explicitCluster) {
+        await this.selectCluster(explicitCluster);
+        await this.waitForLoaderToDisappear();
+      }
+      return;
+    }
+
     if (process.env.E2E_ENVIRONMENT === "dev") {
       await doDevLogin(this.page);
       return;

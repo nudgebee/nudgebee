@@ -336,8 +336,9 @@ const EventClassifyModal: React.FC<EventClassifyModalProps> = ({ open, handleClo
                   label='Expires At'
                   value={applyUntilDate ? dayjs(applyUntilDate) : null}
                   onChange={(newValue: import('dayjs').Dayjs | null) => setApplyUntilDate(newValue ? newValue.toDate() : null)}
-                  minDate={dayjs()}
+                  minDate={undefined}
                   width={ds.space.mul(0, 140)}
+                  minDateTime={dayjs()}
                   maxDateTime={undefined}
                   componentsProps={undefined}
                 />

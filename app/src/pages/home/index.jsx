@@ -1,5 +1,6 @@
 import { Box, Grid, Typography } from '@mui/material';
 import React, { useEffect, useState } from 'react';
+import { withAccountGuard } from '@shared/AccountGuard';
 import { useRouter } from 'next/router';
 import homeApi from '@api1/home';
 import { v4 as uuidv4 } from 'uuid';
@@ -1147,11 +1148,410 @@ const buildUrl = (selectedCluster, id, fragment, navigate, additionalQuery = {})
   return route;
 };
 
-const HomeWidgets = ({ quickLinksData, selectedCluster, cluster }) => {
-  const links = quickLinksData
-    .filter((d) => d.cloudProvider === selectedCluster?.cloud_provider)
-    .map((data) => data.links.map((link) => ({ ...link })))
-    .flat();
+const QUICK_LINKS_CONFIG = [
+  {
+    links: [
+      {
+        name: 'Query Logs',
+        fragment: 'monitoring/logs', // Tab 4, Subtab 0
+        icon: LogsIcon,
+      },
+      {
+        name: 'Recent Errors',
+        fragment: 'monitoring/groups', // Tab 4, Subtab 1
+        icon: RecentErrorIcon,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'K8s',
+  },
+  {
+    links: [
+      {
+        name: 'Query Metrics',
+        // Note: In your config, both Logs and Metrics had fragment 'query'.
+        // Ensure your Router config distinguishes them, or this will open Logs.
+        fragment: 'monitoring/query', // Tab 4, Subtab 2
+        icon: MatricsIcon,
+      },
+    ],
+    insights: [],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'K8s',
+  },
+  {
+    links: [
+      {
+        name: 'View Traces',
+        fragment: 'monitoring/traces', // Tab 4, Subtab 5
+        icon: TraceIcon,
+      },
+      {
+        name: 'Service Maps',
+        fragment: 'monitoring/service-map', // Tab 4, Subtab 6
+        icon: ServiceMapsIcon,
+      },
+    ],
+    insights: [],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'K8s',
+  },
+  {
+    links: [
+      {
+        name: 'View Applications',
+        fragment: 'kubernetes/applications', // Tab 3, Subtab 1
+        icon: NamespacesIcon,
+      },
+      {
+        name: 'View Pods',
+        fragment: 'kubernetes/pods', // Tab 3, Subtab 3
+        icon: PodsIcon,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'K8s',
+  },
+  {
+    links: [
+      {
+        name: 'Security',
+        fragment: 'security/image-scan', // Tab 5, Subtab 0
+        icon: SecurityIcon,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'K8s',
+  },
+  {
+    links: [
+      {
+        name: 'Troubleshoot',
+        fragment: 'events/summary', // Tab 2, Subtab 0
+        icon: TroubleshootIconBlue,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'K8s',
+  },
+  {
+    links: [
+      {
+        name: 'Optimize',
+        fragment: 'optimize/summary', // Tab 1, Subtab 7
+        icon: OptimizeIconBlue,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'K8s',
+  },
+  // --- Non-K8s Providers (Assumed Fragments) ---
+  {
+    links: [
+      {
+        name: 'Cloud Logs',
+        fragment: 'monitoring/cloud-logs',
+        icon: LogsIcon,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'AWS',
+  },
+  {
+    links: [
+      {
+        name: 'Troubleshoot',
+        fragment: 'events/events',
+        icon: TroubleshootIconBlue,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'AWS',
+  },
+  {
+    links: [
+      {
+        name: 'Optimize',
+        fragment: 'optimize/right-sizing',
+        icon: OptimizeIconBlue,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'AWS',
+  },
+  {
+    links: [
+      {
+        name: 'Services',
+        fragment: 'services',
+        icon: PvcSightSizing,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'AWS',
+  },
+  {
+    links: [
+      {
+        name: 'EC2',
+        fragment: 'ec2/summary',
+        icon: AWSEC2Icon,
+        base: 'black-dominant',
+      },
+      {
+        name: 'RDS',
+        fragment: 'rds/summary',
+        icon: AWSRDSIcon,
+        base: 'black-dominant',
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'AWS',
+  },
+  {
+    links: [
+      {
+        name: 'S3',
+        fragment: 's3/summary',
+        icon: AWSS3Icon,
+        base: 'black-dominant',
+      },
+      {
+        name: 'ECS',
+        fragment: 'ecs/summary',
+        icon: AWSECSIcon,
+        base: 'black-dominant',
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'AWS',
+  },
+  {
+    links: [
+      {
+        name: 'Cloud Logs',
+        fragment: 'monitoring/cloud-logs',
+        icon: LogsIcon,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'Azure',
+  },
+  {
+    links: [
+      {
+        name: 'Troubleshoot',
+        fragment: 'events/events',
+        icon: TroubleshootIconBlue,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'Azure',
+  },
+  {
+    links: [
+      {
+        name: 'Optimize',
+        fragment: 'optimize/right-sizing',
+        icon: OptimizeIconBlue,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'Azure',
+  },
+  {
+    links: [
+      {
+        name: 'Services',
+        fragment: 'services',
+        icon: PvcSightSizing,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'Azure',
+  },
+  {
+    links: [
+      {
+        name: 'VM',
+        fragment: 'vm/summary',
+        icon: AzureVMIcon,
+        base: 'white-dominant',
+      },
+      {
+        name: 'SQL',
+        fragment: 'sql/summary',
+        icon: AzureSqlIcon,
+        base: 'white-dominant',
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'Azure',
+  },
+  {
+    links: [
+      {
+        name: 'Blob Container',
+        fragment: 'blob/summary',
+        icon: AzureBlobIcon,
+        base: 'white-dominant',
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'Azure',
+  },
+  {
+    links: [
+      {
+        name: 'Cloud Logs',
+        fragment: 'monitoring/cloud-logs',
+        icon: LogsIcon,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'GCP',
+  },
+  {
+    links: [
+      {
+        name: 'Troubleshoot',
+        fragment: 'events/events',
+        icon: TroubleshootIconBlue,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'GCP',
+  },
+  {
+    links: [
+      {
+        name: 'Optimize',
+        fragment: 'optimize/right-sizing',
+        icon: OptimizeIconBlue,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'GCP',
+  },
+  {
+    links: [
+      {
+        name: 'Services',
+        fragment: 'services',
+        icon: PvcSightSizing,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'GCP',
+  },
+  {
+    links: [
+      {
+        name: 'Compute Engine',
+        fragment: 'compute-engine/summary',
+        icon: GCPComputeEngineIcon,
+      },
+      {
+        name: 'Cloud SQL',
+        fragment: 'cloud-sql/summary',
+        icon: GCPCloudSQLIcon,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'GCP',
+  },
+  {
+    links: [
+      {
+        name: 'Cloud Storage',
+        fragment: 'cloud-storage/summary',
+        icon: GCPCloudStorageIcon,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'GCP',
+  },
+  // --- CloudFoundry ---
+  {
+    links: [
+      {
+        name: 'Troubleshoot',
+        fragment: 'events/events',
+        icon: TroubleshootIconBlue,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'CloudFoundry',
+  },
+  {
+    links: [
+      {
+        name: 'Apps',
+        fragment: 'cf-apps/instances',
+        icon: NamespacesIcon,
+      },
+      {
+        name: 'Organizations',
+        fragment: 'cf-organizations/instances',
+        icon: PvcSightSizing,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'CloudFoundry',
+  },
+  {
+    links: [
+      {
+        name: 'Spaces',
+        fragment: 'cf-spaces/instances',
+        icon: PvcSightSizing,
+      },
+      {
+        name: 'Routes',
+        fragment: 'cf-routes/instances',
+        icon: PvcSightSizing,
+      },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'CloudFoundry',
+  },
+];
+
+// React.memo: HomeWidgets receives only reference-stable props (selectedCluster
+// comes from a useMemo'd context; cluster is a primitive). QUICK_LINKS_CONFIG is
+// read directly from module scope. If you add new props, ensure they're
+// reference-stable (wrap inline objects/functions in useMemo/useCallback) or
+// memo here becomes wasted work.
+const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
+  const links = QUICK_LINKS_CONFIG.filter((d) => d.cloudProvider === selectedCluster?.cloud_provider).flatMap((d) => d.links);
 
   const header = (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
@@ -1270,14 +1670,8 @@ const HomeWidgets = ({ quickLinksData, selectedCluster, cluster }) => {
       )}
     </DSCard>
   );
-};
+});
 HomeWidgets.propTypes = {
-  quickLinksData: PropTypes.any,
-  selectedCluster: PropTypes.any,
-  cluster: PropTypes.any,
-};
-HomeWidgets.propTypes = {
-  quickLinksData: PropTypes.any,
   selectedCluster: PropTypes.any,
   cluster: PropTypes.any,
 };
@@ -1299,430 +1693,6 @@ const Home = () => {
   const { selectedCluster, allCluster } = useData();
   const currencySymbol = useCurrencySymbol(cluster);
   // Map integers to fragments based on KubernetesDetails config
-  const QuickLinksData = [
-    {
-      links: [
-        {
-          name: 'Query Logs',
-          fragment: 'monitoring/logs', // Tab 4, Subtab 0
-          icon: LogsIcon,
-        },
-        {
-          name: 'Recent Errors',
-          fragment: 'monitoring/groups', // Tab 4, Subtab 1
-          icon: RecentErrorIcon,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'K8s',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Query Metrics',
-          // Note: In your config, both Logs and Metrics had fragment 'query'.
-          // Ensure your Router config distinguishes them, or this will open Logs.
-          fragment: 'monitoring/query', // Tab 4, Subtab 2
-          icon: MatricsIcon,
-        },
-      ],
-      insights: [],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'K8s',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'View Traces',
-          fragment: 'monitoring/traces', // Tab 4, Subtab 5
-          icon: TraceIcon,
-        },
-        {
-          name: 'Service Maps',
-          fragment: 'monitoring/service-map', // Tab 4, Subtab 6
-          icon: ServiceMapsIcon,
-        },
-      ],
-      insights: [],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'K8s',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'View Applications',
-          fragment: 'kubernetes/applications', // Tab 3, Subtab 1
-          icon: NamespacesIcon,
-        },
-        {
-          name: 'View Pods',
-          fragment: 'kubernetes/pods', // Tab 3, Subtab 3
-          icon: PodsIcon,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'K8s',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Security',
-          fragment: 'security/image-scan', // Tab 5, Subtab 0
-          icon: SecurityIcon,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'K8s',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Troubleshoot',
-          fragment: 'events/summary', // Tab 2, Subtab 0
-          icon: TroubleshootIconBlue,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'K8s',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Optimize',
-          fragment: 'optimize/summary', // Tab 1, Subtab 7
-          icon: OptimizeIconBlue,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'K8s',
-      accountId: cluster,
-    },
-    // --- Non-K8s Providers (Assumed Fragments) ---
-    {
-      links: [
-        {
-          name: 'Cloud Logs',
-          fragment: 'monitoring/cloud-logs',
-          icon: LogsIcon,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'AWS',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Troubleshoot',
-          fragment: 'events/events',
-          icon: TroubleshootIconBlue,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'AWS',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Optimize',
-          fragment: 'optimize/right-sizing',
-          icon: OptimizeIconBlue,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'AWS',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Services',
-          fragment: 'services',
-          icon: PvcSightSizing,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'AWS',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'EC2',
-          fragment: 'ec2/summary',
-          icon: AWSEC2Icon,
-          base: 'black-dominant',
-        },
-        {
-          name: 'RDS',
-          fragment: 'rds/summary',
-          icon: AWSRDSIcon,
-          base: 'black-dominant',
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'AWS',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'S3',
-          fragment: 's3/summary',
-          icon: AWSS3Icon,
-          base: 'black-dominant',
-        },
-        {
-          name: 'ECS',
-          fragment: 'ecs/summary',
-          icon: AWSECSIcon,
-          base: 'black-dominant',
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'AWS',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Cloud Logs',
-          fragment: 'monitoring/cloud-logs',
-          icon: LogsIcon,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'Azure',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Troubleshoot',
-          fragment: 'events/events',
-          icon: TroubleshootIconBlue,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'Azure',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Optimize',
-          fragment: 'optimize/right-sizing',
-          icon: OptimizeIconBlue,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'Azure',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Services',
-          fragment: 'services',
-          icon: PvcSightSizing,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'Azure',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'VM',
-          fragment: 'vm/summary',
-          icon: AzureVMIcon,
-          base: 'white-dominant',
-        },
-        {
-          name: 'SQL',
-          fragment: 'sql/summary',
-          icon: AzureSqlIcon,
-          base: 'white-dominant',
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'Azure',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Blob Container',
-          fragment: 'blob/summary',
-          icon: AzureBlobIcon,
-          base: 'white-dominant',
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'Azure',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Cloud Logs',
-          fragment: 'monitoring/cloud-logs',
-          icon: LogsIcon,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'GCP',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Troubleshoot',
-          fragment: 'events/events',
-          icon: TroubleshootIconBlue,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'GCP',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Optimize',
-          fragment: 'optimize/right-sizing',
-          icon: OptimizeIconBlue,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'GCP',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Services',
-          fragment: 'services',
-          icon: PvcSightSizing,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'GCP',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Compute Engine',
-          fragment: 'compute-engine/summary',
-          icon: GCPComputeEngineIcon,
-        },
-        {
-          name: 'Cloud SQL',
-          fragment: 'cloud-sql/summary',
-          icon: GCPCloudSQLIcon,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'GCP',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Cloud Storage',
-          fragment: 'cloud-storage/summary',
-          icon: GCPCloudStorageIcon,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'GCP',
-      accountId: cluster,
-    },
-    // --- CloudFoundry ---
-    {
-      links: [
-        {
-          name: 'Troubleshoot',
-          fragment: 'events/events',
-          icon: TroubleshootIconBlue,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'CloudFoundry',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Apps',
-          fragment: 'cf-apps/instances',
-          icon: NamespacesIcon,
-        },
-        {
-          name: 'Organizations',
-          fragment: 'cf-organizations/instances',
-          icon: PvcSightSizing,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'CloudFoundry',
-      accountId: cluster,
-    },
-    {
-      links: [
-        {
-          name: 'Spaces',
-          fragment: 'cf-spaces/instances',
-          icon: PvcSightSizing,
-        },
-        {
-          name: 'Routes',
-          fragment: 'cf-routes/instances',
-          icon: PvcSightSizing,
-        },
-      ],
-      navigate: 'details',
-      loading: false,
-      cloudProvider: 'CloudFoundry',
-      accountId: cluster,
-    },
-  ];
 
   const integrationData = [
     {
@@ -2409,10 +2379,10 @@ const Home = () => {
           onManage={(id) => window.open(`/auto-pilot?accountId=${id}&status=Active`, '_blank')}
         />
         <PendingFollowUps accountId={cluster} />
-        <HomeWidgets quickLinksData={QuickLinksData} selectedCluster={selectedCluster} cluster={cluster} />
+        <HomeWidgets selectedCluster={selectedCluster} cluster={cluster} />
       </Grid>
     </Grid>
   );
 };
 
-export default Home;
+export default withAccountGuard(Home, { hideContent: true });

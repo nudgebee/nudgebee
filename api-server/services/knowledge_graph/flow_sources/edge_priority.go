@@ -46,13 +46,14 @@ const (
 // user-declarable in Phase 1.
 var EdgeTypePriorities = map[core.RelationshipType]map[string]EdgeSourcePriority{
 	core.RelationshipCalls: {
-		"k8s":          EdgePriority1, // K8s has authoritative service-to-service data
-		"manual":       EdgePriority2, // User-declared dependency (intent)
-		"aws":          EdgePriority3, // AWS has authoritative cloud resource data
-		"ebpf":         EdgePriority4, // eBPF has accurate network-level data
-		"traces":       EdgePriority5, // Traces has rich application-level data
-		"datadog-apm":  EdgePriority6, // External APM source (instrumentation-derived)
-		"newrelic-apm": EdgePriority7, // External APM source (NRQL Span aggregation)
+		"k8s":              EdgePriority1, // K8s has authoritative service-to-service data
+		"manual":           EdgePriority2, // User-declared dependency (intent)
+		"aws":              EdgePriority3, // AWS has authoritative cloud resource data
+		"ebpf":             EdgePriority4, // eBPF has accurate network-level data
+		"traces":           EdgePriority5, // Traces has rich application-level data
+		"gcp-cloud-traces": EdgePriority5, // GCP Cloud Trace (disjoint from K8s "traces" accounts)
+		"datadog-apm":      EdgePriority6, // External APM source (instrumentation-derived)
+		"newrelic-apm":     EdgePriority7, // External APM source (NRQL Span aggregation)
 	},
 	core.RelationshipResolvesTo: {
 		"k8s":              EdgePriority1, // K8s DNS resolution

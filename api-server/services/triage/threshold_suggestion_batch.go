@@ -642,6 +642,12 @@ type ThresholdSuggestionListItem struct {
 	RecommendationType  *string         `json:"recommendation_type" db:"-"`
 	ComputedAt          *string         `json:"computed_at" db:"computed_at"`
 	EventAggregationKey *string         `json:"event_aggregation_key" db:"event_aggregation_key"`
+	ApplyStatus         *string         `json:"apply_status" db:"apply_status"`
+	ApplyMethod         *string         `json:"apply_method" db:"apply_method"`
+	AppliedAt           *string         `json:"applied_at" db:"applied_at"`
+	AppliedBy           *string         `json:"applied_by" db:"applied_by"`
+	AppliedThreshold    *float64        `json:"applied_threshold" db:"applied_threshold"`
+	PreviousThreshold   *float64        `json:"previous_threshold" db:"previous_threshold"`
 	FiringAnalysis      json.RawMessage `json:"firing_analysis,omitempty" db:"firing_analysis"`
 	AlertQuality        json.RawMessage `json:"alert_quality,omitempty" db:"alert_quality"`
 	MetricStats         json.RawMessage `json:"metric_stats,omitempty" db:"metric_stats"`
@@ -700,6 +706,8 @@ func ListThresholdSuggestions(ctx context.Context, db *sqlx.DB, tenantID string,
 		       alert_name, metric_name, metric_namespace, current_threshold,
 		       operator, suggested_threshold, reason, confidence,
 		       estimated_reduction, method, computed_at, event_aggregation_key,
+		       apply_status, apply_method, applied_at, applied_by,
+		       applied_threshold, previous_threshold,
 		       COALESCE(firing_analysis, 'null') AS firing_analysis,
 		       COALESCE(alert_quality, 'null') AS alert_quality,
 		       COALESCE(metric_stats, 'null') AS metric_stats,

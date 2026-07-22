@@ -61,6 +61,7 @@ const QueryModeSwitcher = ({
   accountId,
   params,
   logProvider,
+  providerOverride,
   operatorDescriptors,
   onQueryChange,
   queryItems = [],
@@ -419,6 +420,7 @@ const QueryModeSwitcher = ({
             setEsIndexList([]);
             const res = await observability.fetchLogLabels({
               account_id: accountId,
+              ...(providerOverride ? { log_provider: providerOverride } : {}),
             });
             if (res?.errors) {
               snackbar.error(`failed to fetch indexes - ${parseHttpResponseBodyMessage(res)}`);
@@ -723,6 +725,7 @@ const QueryModeSwitcher = ({
         <LogQueryBuilderAutocomplete
           accountId={accountId}
           logProvider={logProvider}
+          providerOverride={providerOverride}
           operatorDescriptors={operatorDescriptors}
           queryItems={queryItems}
           params={params}
@@ -750,7 +753,11 @@ const QueryModeSwitcher = ({
                 label='Select an Index'
                 value={selectedEsIndex || null}
                 options={esIndexList ?? []}
-                disabled={esIndexList?.length === 0}
+                freeSolo
+                // Same affordance as the Build tab's picker: freeSolo alone is
+                // invisible, so the hint is what tells the user a wildcard
+                // pattern outside the listed indices is accepted.
+                searchPlaceholder='Search or type pattern (use * for wildcard)...'
                 onSelect={(_event, value) => {
                   setPrebuildQueryBlocks((prev) => prev.map((b, i) => (i === 0 ? { ...b, selectedMetric: value || '' } : b)));
                   if (onQueryChange) {
@@ -933,6 +940,7 @@ QueryModeSwitcher.propTypes = {
   accountId: PropTypes.string,
   params: PropTypes.object,
   logProvider: PropTypes.any,
+  providerOverride: PropTypes.string,
   operatorDescriptors: PropTypes.arrayOf(
     PropTypes.shape({
       token: PropTypes.string.isRequired,

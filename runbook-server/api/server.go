@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"nudgebee/runbook/config"
+	"nudgebee/runbook/internal/templatesource"
 	"nudgebee/runbook/internal/workflow"
 	configSvc "nudgebee/runbook/services/config"
 	"nudgebee/runbook/services/optimizer"
@@ -31,6 +32,12 @@ type Server struct {
 	meter                  *metric.Meter
 	logger                 *slog.Logger
 	securityContextBuilder SecurityContextBuilder
+	templateSyncer         *templatesource.Syncer
+}
+
+// SetTemplateSyncer wires the system-template syncer used by the admin force-sync RPC.
+func (s *Server) SetTemplateSyncer(syncer *templatesource.Syncer) {
+	s.templateSyncer = syncer
 }
 
 func getLogLevel() slog.Level {

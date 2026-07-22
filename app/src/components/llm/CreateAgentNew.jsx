@@ -634,7 +634,7 @@ const CreateAgentNew = ({ accountId, handleClose, allAgents, editMode, agentData
                 fieldType='textarea'
                 minRows={7}
                 maxRows={16}
-                maxLength={10000}
+                maxLength={500000}
                 disabled={loading}
                 error={hasSubmitted ? errors.instructions : ''}
               />
@@ -654,7 +654,7 @@ const CreateAgentNew = ({ accountId, handleClose, allAgents, editMode, agentData
                 fieldType='textarea'
                 minRows={6}
                 maxRows={16}
-                maxLength={5000}
+                maxLength={500000}
                 disabled={loading}
                 error={hasSubmitted ? errors.constraints : ''}
               />
@@ -714,7 +714,7 @@ Example usage:
                 fieldType='textarea'
                 minRows={7}
                 maxRows={16}
-                maxLength={5000}
+                maxLength={500000}
                 disabled={loading}
                 error={hasSubmitted ? errors.toolUsage : ''}
               />
@@ -747,7 +747,7 @@ Explanation: [Reasoning behind the answer]`}
                 fieldType='textarea'
                 minRows={7}
                 maxRows={12}
-                maxLength={5000}
+                maxLength={500000}
                 disabled={loading}
               />
 

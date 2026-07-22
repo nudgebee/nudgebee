@@ -55,6 +55,57 @@ func (m TracesActionResponse) GetInsights() []playbooks.PlaybookActionResponseIn
 	return m.Insight
 }
 
+const (
+	// maxEvidenceSpans hard-caps how many trace spans we persist in a single
+	// event evidence, independent of how many the source returned. Some trace
+	// sources (notably chronosphere) do not honour the per-query row limit set
+	// by the caller, so a single workload query can return tens of thousands of
+	// spans (observed in prod: 69,982 spans → 195 MB stored in one event). Spans
+	// reach here ordered error/representative-first, so the retained prefix is
+	// the most RCA-relevant slice.
+	maxEvidenceSpans = 2000
+	// maxEvidenceBytes bounds the serialized span payload. The count cap alone is
+	// insufficient: a span carrying large span_attributes or an exception
+	// stacktrace can be tens of KB, so 2000 of them can still be tens of MB. We
+	// drop whole spans (never split one) so the stored JSON stays valid.
+	maxEvidenceBytes = 5 * 1024 * 1024
+)
+
+// capTraceEvidence bounds a trace-evidence payload by BOTH span count and
+// serialized byte size. Items must be ordered by relevance (error /
+// representative spans first); the leading items that fit within both ceilings
+// are kept and the rest dropped. The first surviving item is always retained —
+// even if it alone exceeds the byte ceiling — so valid evidence is never reduced
+// to empty. Items that fail to marshal are dropped entirely (not merely skipped
+// in place) so the caller's subsequent serialization of the whole slice cannot
+// fail on them. Returns the capped slice and the number of items dropped.
+func capTraceEvidence[T any](items []T) ([]T, int) {
+	if len(items) == 0 {
+		return items, 0
+	}
+	kept := make([]T, 0, min(len(items), maxEvidenceSpans))
+	total := 0
+	for _, item := range items {
+		if len(kept) >= maxEvidenceSpans {
+			break
+		}
+		b, err := json.Marshal(item)
+		if err != nil {
+			// Drop an unmarshalable span: keeping it would just fail again when
+			// the caller serializes the whole payload.
+			continue
+		}
+		// The first surviving span is always kept, even if it alone exceeds the
+		// byte ceiling, so valid evidence is never dropped to empty.
+		if len(kept) > 0 && total+len(b) > maxEvidenceBytes {
+			break
+		}
+		total += len(b)
+		kept = append(kept, item)
+	}
+	return kept, len(items) - len(kept)
+}
+
 func NewTracesActionResponse(data *database.AgentWarehouseRows, metadata map[string]any, additionalInfo map[string]any) TracesActionResponse {
 	if data == nil {
 		return TracesActionResponse{
@@ -81,6 +132,19 @@ func NewTracesActionResponse(data *database.AgentWarehouseRows, metadata map[str
 			rowMap[col] = rowArr[i]
 		}
 		rows = append(rows, rowMap)
+	}
+
+	// Defensive cap: chronosphere (and other SaaS sources) ignore the per-query
+	// row limit, so a single enricher response can carry tens of thousands of
+	// spans (>100 MB). Bound count + serialized size before persisting. Insights
+	// and labels below are intentionally computed on the capped set.
+	rows, droppedSpans := capTraceEvidence(rows)
+	if droppedSpans > 0 {
+		if additionalInfo == nil {
+			additionalInfo = map[string]any{}
+		}
+		additionalInfo["kept_span_count"] = len(rows)
+		additionalInfo["dropped_span_count"] = droppedSpans
 	}
 
 	insight := []playbooks.PlaybookActionResponseInsight{}
@@ -1380,16 +1444,31 @@ func (a *observabilityTracesAction) autoExecuteByWorkload(ctx playbooks.Playbook
 		return nil, nil
 	}
 
+	// Defensive cap: queryErrorSpansForWorkload / queryTraceTrees pass a row limit,
+	// but some trace sources (notably chronosphere) ignore it, so finalSpans can
+	// carry tens of thousands of spans and produce >100 MB of evidence. Bound by
+	// span count and serialized size before persisting. Error spans lead
+	// finalSpans (mergeSpansDedup keeps them first), so the retained prefix keeps
+	// the RCA-relevant signal.
+	finalSpans, droppedSpans := capTraceEvidence(finalSpans)
+	if droppedSpans > 0 {
+		ctx.GetLogger().Warn("traces auto action: capped oversized trace evidence",
+			"workload", workloadName, "namespace", namespace,
+			"kept_spans", len(finalSpans), "dropped_spans", droppedSpans)
+	}
+
 	traceRows := convertOTelTracesToMapRows(finalSpans)
 	insights := traceHandleTracesInsight(traceRows)
 
 	metadata := map[string]any{
 		"query-result-version": "1.0",
 		"query": map[string]any{
-			"workload_name":    workloadName,
-			"namespace":        namespace,
-			"mode":             queryMode,
-			"error_span_count": len(errorSpans),
+			"workload_name":      workloadName,
+			"namespace":          namespace,
+			"mode":               queryMode,
+			"error_span_count":   len(errorSpans),
+			"kept_span_count":    len(finalSpans),
+			"dropped_span_count": droppedSpans,
 		},
 	}
 	return playbooks.NewPlaybookActionResponseJson(map[string]any{"data": finalSpans}, map[string]any{}, insights, metadata), nil
@@ -1664,6 +1743,14 @@ func (a *observabilityTracesAction) Execute(ctx playbooks.PlaybookActionContext,
 		return nil, nil
 	}
 
+	// Defensive cap: the trace source may ignore the query limit (e.g.
+	// chronosphere), so bound count + serialized size before persisting.
+	traceoutput, droppedSpans := capTraceEvidence(traceoutput)
+	if droppedSpans > 0 {
+		ctx.GetLogger().Warn("traces action: capped oversized trace evidence",
+			"account", params.AccountId, "kept_spans", len(traceoutput), "dropped_spans", droppedSpans)
+	}
+
 	// Convert traces to map format for insight analysis
 	traceRows := convertOTelTracesToMapRows(traceoutput)
 
@@ -1673,6 +1760,7 @@ func (a *observabilityTracesAction) Execute(ctx playbooks.PlaybookActionContext,
 	metadata := map[string]any{
 		"query-result-version": "1.0",
 		"query":                rawParams,
+		"dropped_span_count":   droppedSpans,
 	}
 	return playbooks.NewPlaybookActionResponseJson(map[string]any{"data": traceoutput}, map[string]any{}, insights, metadata), err
 }

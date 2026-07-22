@@ -62,6 +62,13 @@ const RECOMMENDATION_LABELS: Record<string, { label: string; variant: string }> 
   not_eligible: { label: 'Not Eligible', variant: 'grey' },
 };
 
+const APPLY_STATUS_LABELS: Record<string, { label: string; variant: string }> = {
+  applied: { label: 'Applied', variant: 'green' },
+  pending: { label: 'PR pending', variant: 'yellow' },
+  failed: { label: 'Apply failed', variant: 'red' },
+  reverted: { label: 'Reverted', variant: 'grey' },
+};
+
 const RISK_COLORS: Record<string, { bg: string; text: string; icon: string }> = {
   dangerous: { bg: ds.red[100], text: ds.red[700], icon: '' },
   review: { bg: ds.amber[100], text: ds.amber[700], icon: '' },
@@ -182,7 +189,13 @@ const ThresholdSuggestionsManager: React.FC<ThresholdSuggestionsManagerProps> = 
           component: (
             <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               <Label text={recStyle.label} variant={recStyle.variant} dot />
-              {riskLevel !== 'safe' && (
+              {item.apply_status && (
+                <Label
+                  text={APPLY_STATUS_LABELS[item.apply_status]?.label || item.apply_status}
+                  variant={APPLY_STATUS_LABELS[item.apply_status]?.variant || 'grey'}
+                />
+              )}
+              {!item.apply_status && riskLevel !== 'safe' && (
                 <Text
                   value='Needs review'
                   sx={{ fontSize: ds.text.small, color: riskStyle.text, mt: 'var(--ds-space-1)', fontWeight: ds.weight.medium }}

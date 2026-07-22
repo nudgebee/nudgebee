@@ -4,6 +4,7 @@ import { Line, getElementAtEvent } from 'react-chartjs-2';
 import PropTypes from 'prop-types';
 import { v4 as uuidv4 } from 'uuid';
 import { withErrorBoundary } from '@shared/ErrorBoundary';
+import MetricQueryInfo from '@shared/MetricQueryInfo';
 import { ds, resolveColor } from 'src/utils/colors';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Colors);
@@ -80,6 +81,8 @@ const Charts = ({
   dataset = [],
   id = '',
   chartTitle = '',
+  queryInfo = null,
+  queryLabelMap = undefined,
   loading = false,
   minHeight = 230,
   legendOptions = {},
@@ -914,6 +917,9 @@ const Charts = ({
           {chartTitle && (
             <div
               style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--ds-space-2)',
                 fontSize: 'var(--ds-text-small)',
                 fontWeight: 'var(--ds-font-weight-medium)',
                 color: 'var(--ds-brand-500)',
@@ -923,7 +929,8 @@ const Charts = ({
                 lineHeight: '1.3',
               }}
             >
-              {chartTitle}
+              <span>{chartTitle}</span>
+              {queryInfo && <MetricQueryInfo queries={queryInfo} labelMap={queryLabelMap} />}
             </div>
           )}
           <div
@@ -994,6 +1001,8 @@ Charts.propTypes = {
   dataset: PropTypes.array,
   id: PropTypes.string,
   chartTitle: PropTypes.string,
+  queryInfo: PropTypes.object,
+  queryLabelMap: PropTypes.object,
   loading: PropTypes.bool,
   minHeight: PropTypes.number,
   legendOptions: PropTypes.any,

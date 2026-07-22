@@ -1,5 +1,6 @@
 import { Box, Typography, Tooltip, Tabs, Tab, Avatar, CircularProgress } from '@mui/material';
 import { useRouter } from 'next/router';
+import { withAccountGuard } from '@shared/AccountGuard';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ds } from 'src/utils/colors';
 import apiKubernetes from '@api1/kubernetes';
@@ -37,7 +38,6 @@ import InvestigateResolution from '@components/k8s/investigate/InvestigateResolu
 import CustomBorderCard from '@ui/CustomBorderCard';
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import WorkflowIcon from '@assets/WorkflowIcon';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import PropTypes from 'prop-types';
 import { Divider } from '@ui/Divider';
@@ -72,6 +72,7 @@ import SLOConfigReport from '@components/k8s/investigate/cards/SLOConfigReport';
 import apiIntegrations from '@api1/integrations';
 import PVCDetails from '@components/k8s/investigate/cards/PVCDetails';
 import { Button } from '@ui/Button';
+import { Chip } from '@ui/Chip';
 import TextEnricherDynamicCard from '@components/k8s/investigate/cards/TextEnricherDynamicCard';
 import ShowingTableCard from '@components/k8s/investigate/cards/ShowingTableCard';
 import LLMResponseCard from '@components/k8s/investigate/cards/LLMResponseCard';
@@ -963,6 +964,26 @@ const Investigate = () => {
     if (hasInProgressWorkflowResolution(eventResolutions)) startResolutionsPoll();
   }, [eventResolutions, startResolutionsPoll]);
 
+  // The Raise-PR panel dispatches this after a successful apply. The PR
+  // event_resolution row is inserted server-side asynchronously, so open the
+  // grace window and poll so the "PR raised" banner surfaces without a reload.
+  useEffect(() => {
+    const onChanged = () => handleAutomationTriggered();
+    window.addEventListener('nb:event-resolution-changed', onChanged);
+    return () => window.removeEventListener('nb:event-resolution-changed', onChanged);
+  }, [handleAutomationTriggered]);
+
+  // The code-fix pull request to surface as a banner at the top of the analysis.
+  // Prefer a PR that was actually raised (has a link) so a later failed retry
+  // (e.g. "PR already exists") never hides a working PR; only fall back to the
+  // most recent attempt (a failure) when nothing was ever raised. Rows are
+  // ordered updated_at desc, so the first match is the newest.
+  const raisedPrResolution = useMemo(() => {
+    const prs = eventResolutions.filter((r) => r?.type === 'PullRequest');
+    const raised = prs.find((r) => typeof r?.type_reference_id === 'string' && /^https?:\/\//.test(r.type_reference_id));
+    return raised || prs[0] || null;
+  }, [eventResolutions]);
+
   // Pause polling when the tab is hidden; resume on return if a run is still live.
   useEffect(() => {
     const onVisibility = () => {
@@ -1659,11 +1680,10 @@ const Investigate = () => {
   const toggleShow = () => setShowAll((prev) => !prev);
 
   const shouldShowResolveButton = (option) => {
-    return (
-      ((option?.id === 'AskAiCard' && !!option?.aiData?.source_updates?.gitDiff) ||
-        (option?.id !== 'AskAiCard' && (option.resolveButton || option.ResolveComponent))) &&
-      hasWriteAccess(router.query.accountId)
-    );
+    // AskAiCard's event code-fix "Raise PR" is rendered inline under the diff
+    // (EventRaisePrPanel), so it is intentionally excluded from the bottom
+    // "Take action to fix it" bar here.
+    return option?.id !== 'AskAiCard' && (option.resolveButton || option.ResolveComponent) && hasWriteAccess(router.query.accountId);
   };
 
   const aiAnalysisFeedback = () => {
@@ -2652,48 +2672,77 @@ const Investigate = () => {
                           </Tabs>
                         </Box>
                         <Box sx={{ display: 'flex', alignItems: 'center', pb: 'var(--ds-space-2)' }}>
-                          {/* Continue With Analysis */}
-                          {row?.id &&
-                            matchedOptions.some((option) => option?.id === 'AskAiCard') &&
-                            !matchedOptions.find((option) => option?.id === 'AskAiCard')?.errorMessage && (
-                              <Box sx={{ pr: 'var(--ds-space-2)', display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
-                                <Button
-                                  tone='secondary'
-                                  size='sm'
-                                  composition='icon+text'
-                                  icon={<SafeIcon src={ExternalLinkIcon} alt='external link' height={14} width={14} />}
-                                  iconPlacement='start'
-                                  disabled={!row.fingerprint}
+                          {/* ── Status chips (informational state, shown first) ── */}
+                          {/* Grouped + spaced apart, and separated from the action buttons via mr. */}
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-3)', mr: 'var(--ds-space-4)' }}>
+                            {/* Workflow Resolution Status */}
+                            {(() => {
+                              const res = eventResolutions.find((r) => r.type === 'WorkflowExecution');
+                              if (!res) return null;
+                              const tone = res.status === 'Success' ? 'success' : res.status === 'InProgress' ? 'warning' : 'critical';
+                              const statusLabel =
+                                res.status === 'Success'
+                                  ? 'Resolved via Workflow'
+                                  : res.status === 'InProgress'
+                                  ? 'Workflow Running...'
+                                  : 'Workflow Failed';
+                              return (
+                                <Box
+                                  component='button'
+                                  type='button'
+                                  data-testid='workflow-resolution-btn'
+                                  sx={{
+                                    display: 'inline-flex',
+                                    cursor: 'pointer',
+                                    appearance: 'none',
+                                    border: 'none',
+                                    background: 'transparent',
+                                    padding: 0,
+                                    transition: 'opacity 120ms ease',
+                                    '&:hover': { opacity: 0.8 },
+                                  }}
                                   onClick={() => {
-                                    if (row.fingerprint) {
-                                      let href = `/ask-nudgebee?accountId=${row.cloud_account_id || router.query.accountId}&session_id=event-${
-                                        row.fingerprint
-                                      }`;
-                                      window.open(href, '_blank');
+                                    const parts = (res.type_reference_id || '').split(':');
+                                    if (parts.length === 2) {
+                                      router.push(`/workflow/${parts[0]}?tab=executions&executionId=${parts[1]}&accountId=${router.query.accountId}`);
                                     }
                                   }}
-                                  data-testid='continue-with-analysis-btn'
                                 >
-                                  Continue With Analysis
-                                </Button>
-                                {hasWriteAccess(router.query.accountId) && (
-                                  <Button
-                                    tone='secondary'
-                                    size='sm'
-                                    composition='icon-only'
-                                    icon={<RefreshIcon fontSize='small' />}
-                                    aria-label='Refresh investigation'
-                                    tooltip='Refresh investigation'
-                                    data-testid='refresh-investigation-btn'
-                                    disabled={!matchedOptions.find((o) => o.id === 'AskAiCard')?.isCompleted()}
-                                    onClick={() => {
-                                      const askAiCard = matchedOptions.find((o) => o.id === 'AskAiCard');
-                                      askAiCard?.refreshInvestigation?.();
-                                    }}
-                                  />
-                                )}
+                                  <Chip variant='status' size='xs' tone={tone} dot>
+                                    {statusLabel}
+                                  </Chip>
+                                </Box>
+                              );
+                            })()}
+                            {/* Linked Ticket */}
+                            {hasReadAccess(router.query.accountId) && ticketData?.ticket_id ? (
+                              <Box
+                                component='button'
+                                type='button'
+                                data-testid='linked-ticket-btn'
+                                sx={{
+                                  display: 'inline-flex',
+                                  cursor: 'pointer',
+                                  appearance: 'none',
+                                  border: 'none',
+                                  background: 'transparent',
+                                  padding: 0,
+                                  transition: 'opacity 120ms ease',
+                                  '&:hover': { opacity: 0.8 },
+                                }}
+                                onClick={() => ticketData?.url && window.open(ticketData.url, '_blank', 'noopener,noreferrer')}
+                              >
+                                <Chip
+                                  variant='status'
+                                  size='xs'
+                                  tone='info'
+                                  icon={<TicketIcon iconColor='var(--ds-blue-700)' iconStyle={{ width: '12px', height: '12px' }} />}
+                                >
+                                  {ticketData?.ticket_id}
+                                </Chip>
                               </Box>
-                            )}
+                            ) : null}
+                          </Box>
                           {/* Run Automation */}
                           {(() => {
                             const automationAccountId = row?.cloud_account_id || router.query.accountId;
@@ -2737,60 +2786,25 @@ const Investigate = () => {
                               </Button>
                             </Box>
                           ) : null}
-                          {/* Workflow Resolution Status (shown when a workflow has been linked to this event) */}
-                          {(() => {
-                            const res = eventResolutions.find((r) => r.type === 'WorkflowExecution');
-                            if (!res) return null;
-                            const statusColor = res.status === 'Success' ? ds.green[600] : res.status === 'InProgress' ? ds.amber[500] : ds.red[500];
-                            const statusLabel =
-                              res.status === 'Success'
-                                ? 'Resolved via Workflow'
-                                : res.status === 'InProgress'
-                                ? 'Workflow Running...'
-                                : 'Workflow Failed';
-                            return (
-                              <Box sx={{ pr: 'var(--ds-space-2)' }}>
-                                <Button
-                                  tone='secondary'
-                                  size='xs'
-                                  composition='icon+text'
-                                  icon={<WorkflowIcon iconColor={statusColor} iconStyle={{ cursor: 'pointer', width: '14px', height: '14px' }} />}
-                                  data-testid='workflow-resolution-btn'
-                                  onClick={() => {
-                                    const parts = (res.type_reference_id || '').split(':');
-                                    if (parts.length === 2) {
-                                      router.push(`/workflow/${parts[0]}?tab=executions&executionId=${parts[1]}&accountId=${router.query.accountId}`);
-                                    }
-                                  }}
-                                >
-                                  <Typography
-                                    sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: statusColor }}
-                                  >
-                                    {statusLabel}
-                                  </Typography>
-                                </Button>
-                              </Box>
-                            );
-                          })()}
-                          {/* Linked Ticket (shown inline when ticket exists) */}
-                          {hasWriteAccess(router.query.accountId) && ticketData?.ticket_id ? (
-                            <Box sx={{ pr: 'var(--ds-space-2)' }}>
+                          {/* Refresh Investigation (placed immediately left of the More Actions menu) */}
+                          {hasWriteAccess(router.query.accountId) && matchedOptions.some((option) => option?.id === 'AskAiCard') && (
+                            <Box sx={{ pr: 'var(--ds-space-1)' }}>
                               <Button
                                 tone='secondary'
                                 size='xs'
-                                composition='icon+text'
-                                icon={<TicketIcon iconColor={ds.blue[600]} iconStyle={{ cursor: 'pointer', width: '14px', height: '14px' }} />}
-                                data-testid='linked-ticket-btn'
-                                onClick={() => window.open(ticketData?.url, '_blank', 'noopener,noreferrer')}
-                              >
-                                <Typography
-                                  sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: ds.blue[600] }}
-                                >
-                                  {ticketData?.ticket_id}
-                                </Typography>
-                              </Button>
+                                composition='icon-only'
+                                icon={<RefreshIcon fontSize='small' />}
+                                aria-label='Refresh investigation'
+                                tooltip='Refresh investigation'
+                                data-testid='refresh-investigation-btn'
+                                disabled={!matchedOptions.find((o) => o.id === 'AskAiCard')?.isCompleted()}
+                                onClick={() => {
+                                  const askAiCard = matchedOptions.find((o) => o.id === 'AskAiCard');
+                                  askAiCard?.refreshInvestigation?.();
+                                }}
+                              />
                             </Box>
-                          ) : null}
+                          )}
                           {/* More Actions Menu */}
                           <ThreeDotsMenu
                             data-testid='more-actions-btn'
@@ -2810,7 +2824,7 @@ const Investigate = () => {
                                     },
                                   ]
                                 : []),
-                              ...(hasWriteAccess(router.query.accountId) && !ticketData?.ticket_id
+                              ...(hasReadAccess(router.query.accountId) && !ticketData?.ticket_id
                                 ? [
                                     {
                                       label: 'Create Ticket',
@@ -2880,6 +2894,52 @@ const Investigate = () => {
                         }}
                       >
                         <TabPanel value={tabValue} index={0} className='ai-custom-panel'>
+                          {raisedPrResolution &&
+                            (() => {
+                              const url = raisedPrResolution.type_reference_id;
+                              const hasLink = url && /^https?:\/\//.test(url);
+                              const failed = String(raisedPrResolution.status).toLowerCase() === 'failed';
+                              return (
+                                <Box
+                                  sx={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    flexWrap: 'wrap',
+                                    gap: 'var(--ds-space-2)',
+                                    p: 'var(--ds-space-3) var(--ds-space-4)',
+                                    mb: 'var(--ds-space-4)',
+                                    borderRadius: 'var(--ds-radius-md)',
+                                    backgroundColor: failed ? ds.red[100] : ds.green[100],
+                                    border: `0.5px solid ${failed ? ds.red[300] : ds.green[300]}`,
+                                  }}
+                                >
+                                  <Typography
+                                    sx={{
+                                      fontSize: 'var(--ds-text-body-lg)',
+                                      color: failed ? ds.red[700] : ds.green[700],
+                                      fontWeight: 'var(--ds-font-weight-medium)',
+                                    }}
+                                  >
+                                    {failed
+                                      ? `Raising a pull request for the proposed fix failed${
+                                          raisedPrResolution.status_message ? `: ${raisedPrResolution.status_message}` : '.'
+                                        }`
+                                      : hasLink
+                                      ? 'A pull request has been raised for the proposed code fix.'
+                                      : 'Raising a pull request for the proposed code fix — it will appear here shortly.'}
+                                  </Typography>
+                                  {!failed && hasLink && (
+                                    <Link
+                                      href={url}
+                                      openInNew
+                                      style={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-semibold)' }}
+                                    >
+                                      View PR
+                                    </Link>
+                                  )}
+                                </Box>
+                              );
+                            })()}
                           {loading ? (
                             <ConversationLoader />
                           ) : (
@@ -2955,7 +3015,7 @@ const Investigate = () => {
                                       setOpenResolveComponentId(resolvableOption.id);
                                     }}
                                   >
-                                    {`Fix ${resolvableOption.text}`}
+                                    {resolvableOption.id === 'AskAiCard' ? 'Raise PR' : `Fix ${resolvableOption.text}`}
                                   </Button>
                                 ))}
                               </Box>
@@ -3015,6 +3075,44 @@ const Investigate = () => {
                         </TabPanel>
                       </Box>
                     </Box>
+                    {row?.id &&
+                      matchedOptions.some((option) => option?.id === 'AskAiCard') &&
+                      !matchedOptions.find((option) => option?.id === 'AskAiCard')?.errorMessage && (
+                        <Box
+                          sx={{
+                            position: 'sticky',
+                            bottom: 'var(--ds-space-4)',
+                            alignSelf: 'flex-end',
+                            mt: 'auto',
+                            pr: 'var(--ds-space-2)',
+                            zIndex: 9,
+                          }}
+                        >
+                          <Button
+                            tone='primary'
+                            size='md'
+                            composition='icon+text'
+                            icon={<SafeIcon src={getNubiIconUrl()} alt={assistantName} width={20} height={20} />}
+                            iconPlacement='start'
+                            disabled={!row.fingerprint}
+                            onClick={() => {
+                              if (row.fingerprint) {
+                                let href = `/ask-nudgebee?accountId=${row.cloud_account_id || router.query.accountId}&session_id=event-${
+                                  row.fingerprint
+                                }`;
+                                window.open(href, '_blank');
+                              }
+                            }}
+                            data-testid='continue-with-analysis-btn'
+                            sx={{
+                              borderRadius: 'var(--ds-radius-pill)',
+                              boxShadow: '0 6px 16px rgba(15, 23, 42, 0.24)',
+                            }}
+                          >
+                            Ask a follow up
+                          </Button>
+                        </Box>
+                      )}
                   </>
                 ) : (
                   showDemoMessage && (
@@ -3072,4 +3170,4 @@ const Investigate = () => {
 
 Investigate.propTypes = {};
 
-export default Investigate;
+export default withAccountGuard(Investigate, { hideContent: true });

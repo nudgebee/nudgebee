@@ -25,6 +25,7 @@ const CustomDateTimePicker = ({
   required = false,
   disabled = false,
   minDate,
+  minDateTime,
   maxDateTime,
   componentsProps,
   size = 'md',
@@ -65,6 +66,7 @@ const CustomDateTimePicker = ({
           inputFormat={format}
           disabled={disabled}
           minDate={minDate}
+          minDateTime={minDateTime}
           maxDateTime={maxDateTime}
           componentsProps={componentsProps}
           renderInput={({ inputRef, inputProps, InputProps }) => (

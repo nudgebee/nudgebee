@@ -46,6 +46,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.serviceAccountName
+            - name: USE_OBSERVABILITY_METRICS
+              value: {{ .Values.useObservabilityMetrics | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

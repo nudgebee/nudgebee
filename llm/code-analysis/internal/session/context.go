@@ -31,6 +31,7 @@ type SessionContext struct {
 	BuildConfig      *BuildConfig                     // Optional custom build/lint/test commands for verification
 	Mode             string                           // "explore" (read-only) or "fix"; templates render mode-specific instructions
 	SkillsContext    string                           // Operator-authored skills (rendered <skills> block) forwarded by llm-server; injected into agent prompts
+	RunMemory        *planners.RunMemory              // Per-run working memory shared across phases (read cache; lifetime = one /analyze run, not persisted across runs)
 }
 
 // AddToScratchpad appends investigation notes to the shared context

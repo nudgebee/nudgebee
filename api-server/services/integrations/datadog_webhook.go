@@ -743,6 +743,111 @@ func parseLogQueryFromResultURL(logsURL string) (query string, fromTs, toTs int6
 	return query, fromTs, toTs, true
 }
 
+// datadogK8sSubject is the Kubernetes subject extracted from a set of Datadog
+// facets (monitor_groups, result.group, tags, or a log-query string).
+//
+// Name/Kind is the *resolvable* subject: the owning workload (Deployment,
+// StatefulSet, …) is preferred over the pod because the k8s_workloads inventory
+// MatchWorkloadAndEnrich validates against holds controllers, not the ephemeral
+// pods whose names carry a random ReplicaSet hash suffix. Pod and Container are
+// kept as supporting identifiers so the specific instance isn't lost.
+type datadogK8sSubject struct {
+	Name      string // resolvable subject name (controller, else pod, else node)
+	Kind      string // deployment|statefulset|daemonset|replicaset|job|cronjob|pod|node
+	Namespace string
+	Pod       string
+	Container string
+	Owner     string // owning controller name (empty when subject already is one / a node)
+	OwnerKind string
+}
+
+// controllerFacets lists the Datadog workload tags in resolution priority. Datadog
+// resolves a pod's ReplicaSet up to its Deployment, so kube_deployment carries the
+// clean controller name and is preferred over kube_replica_set.
+var controllerFacets = []struct{ tag, kind string }{
+	{"kube_deployment", "deployment"},
+	{"kube_stateful_set", "statefulset"},
+	{"kube_daemon_set", "daemonset"},
+	{"kube_replica_set", "replicaset"},
+	{"kube_replication_controller", "replicationcontroller"},
+	{"kube_job", "job"},
+	{"kube_cronjob", "cronjob"},
+}
+
+// parseDatadogK8sSubject parses a list of "key:value" Datadog facets into a
+// Kubernetes subject. Facets may be space- or comma-separated within a single
+// entry (monitor_groups list items, result.group "a:b,c:d", or log-query tokens),
+// so each entry is split on both before the key:value cut.
+func parseDatadogK8sSubject(facets []string) datadogK8sSubject {
+	vals := map[string]string{}
+	for _, entry := range facets {
+		for _, token := range strings.FieldsFunc(entry, func(r rune) bool { return r == ' ' || r == ',' }) {
+			key, value, ok := strings.Cut(token, ":")
+			if !ok {
+				continue
+			}
+			key = strings.ToLower(strings.TrimSpace(key))
+			// Datadog log queries and facets often quote values, e.g.
+			// kube_deployment:"app-dev" or host:"node-1"; strip the quotes so the
+			// parsed name matches the unquoted workload/host in the inventory.
+			value = strings.Trim(strings.TrimSpace(value), `"'`)
+			if key == "" || value == "" || value == "*" {
+				continue
+			}
+			if _, seen := vals[key]; !seen {
+				vals[key] = value
+			}
+		}
+	}
+
+	firstOf := func(keys ...string) string {
+		for _, k := range keys {
+			if v := vals[k]; v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+
+	s := datadogK8sSubject{
+		Namespace: firstOf("kube_namespace", "namespace"),
+		Pod:       firstOf("pod_name", "pod"),
+		Container: firstOf("kube_container_name", "container_name"),
+	}
+
+	// Resolve the owning controller from the specific workload tags first, then
+	// fall back to the generic owner reference Datadog stamps on every pod.
+	for _, cf := range controllerFacets {
+		if v := vals[cf.tag]; v != "" {
+			s.Owner = v
+			s.OwnerKind = cf.kind
+			break
+		}
+	}
+	if s.Owner == "" {
+		if name := vals["kube_ownerref_name"]; name != "" {
+			s.Owner = name
+			s.OwnerKind = strings.ToLower(vals["kube_ownerref_kind"])
+		}
+	}
+
+	// Pick the subject: a resolvable controller, else the pod, else the node.
+	switch {
+	case s.Owner != "":
+		s.Name = s.Owner
+		s.Kind = s.OwnerKind
+	case s.Pod != "":
+		s.Name = s.Pod
+		s.Kind = "pod"
+	default:
+		if node := firstOf("kube_node", "node", "host"); node != "" {
+			s.Name = node
+			s.Kind = "node"
+		}
+	}
+	return s
+}
+
 // parseLogAlertQuery extracts the inner search query from a log alert monitor query
 // e.g. logs("service:sqlserver \"Login failed\"").index("*").rollup("count").by("host").last("5m") > 0
 // returns: service:sqlserver "Login failed"
@@ -1023,6 +1128,34 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	var eventPayload map[string]any
 	var alertName string
 	var subjectName string
+	var subjectNamespace string
+	var subjectKind string
+	var deploymentName string
+
+	// applyK8sSubject merges a parsed Datadog k8s subject into the running subject
+	// vars. First non-empty wins so an earlier, more authoritative source (the
+	// monitor's group-by) isn't clobbered by a later one (the log URL), which
+	// instead fills any gaps. Pod/container are kept as labels, never as the
+	// subject, so the resolvable controller stays the subject.
+	applyK8sSubject := func(s datadogK8sSubject) {
+		if subjectNamespace == "" && s.Namespace != "" {
+			subjectNamespace = s.Namespace
+		}
+		if deploymentName == "" && s.Owner != "" {
+			deploymentName = s.Owner
+		}
+		if subjectName == "" && s.Name != "" {
+			subjectName = s.Name
+			subjectKind = s.Kind
+		}
+		if s.Pod != "" && labels["pod_name"] == "" {
+			labels["pod_name"] = s.Pod
+		}
+		if s.Container != "" && labels["container_name"] == "" {
+			labels["container_name"] = s.Container
+		}
+	}
+
 	issueId := ""
 	if len(eventDetails) > 0 {
 		if event, ok := eventDetails["event"].(map[string]any); ok {
@@ -1058,16 +1191,24 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 						}
 					}
 				}
+				// monitor_groups is the monitor's group-by, a list of "key:value" tags
+				// e.g. ["kube_cluster_name:example-cluster", "pod_name:app-dev-bf96c4549-9wnpn"].
+				// It's the most authoritative subject source, so it runs first.
 				if monitorGroups, ok := event["monitor_groups"].([]interface{}); ok {
-					if len(monitorGroups) > 0 {
-						if group, ok := monitorGroups[0].(string); ok && group != "" {
-							subjectName = group
+					facets := make([]string, 0, len(monitorGroups))
+					for _, mg := range monitorGroups {
+						if group, ok := mg.(string); ok {
+							facets = append(facets, group)
 						}
 					}
+					applyK8sSubject(parseDatadogK8sSubject(facets))
 				}
+				// result.group is a comma-separated facet string ("a:b,c:d"); parse it
+				// the same way instead of dumping the raw, key-prefixed string into the
+				// subject. Fills any gap the monitor groups left.
 				if result, ok := eventPayload["result"].(map[string]interface{}); ok {
 					if group, ok := result["group"].(string); ok && group != "" {
-						subjectName = group
+						applyK8sSubject(parseDatadogK8sSubject([]string{group}))
 					}
 				}
 
@@ -1108,6 +1249,13 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 				}
 			}
 		}
+	}
+
+	// Event tags carry the same kube_* facets and are a reliable subject source
+	// when the monitor wasn't grouped by a k8s tag. Lowest priority — only fills
+	// gaps the monitor_groups/result.group left.
+	if len(allTags) > 0 {
+		applyK8sSubject(parseDatadogK8sSubject(allTags))
 	}
 
 	if p.Incident.IncidentUUID != "" {
@@ -1362,8 +1510,18 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		} else {
 			logQueryParams := log.Query()
 			qp := DatadogQueryParams{}
-			if query := logQueryParams.Get("query"); query != "" {
-				qp.LogQuery = query
+			logQuery := logQueryParams.Get("query")
+			if logQuery != "" {
+				qp.LogQuery = logQuery
+			}
+
+			// Extract the K8s subject from the log query facets. Fills any gap the
+			// monitor groups / result.group left; first-non-empty wins so a subject
+			// already resolved upstream isn't clobbered.
+			if logQuery != "" {
+				applyK8sSubject(parseDatadogK8sSubject([]string{logQuery}))
+				sc.GetLogger().Info("k8s subject after datadog log url",
+					"namespace", subjectNamespace, "kind", subjectKind, "owner", deploymentName, "subject", subjectName)
 			}
 
 			if fromTs := logQueryParams.Get("from_ts"); fromTs != "" {
@@ -1641,8 +1799,6 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	accountMapping := core.ParseAccountMapping(settings, sc.GetLogger())
 	accountId = core.ApplyAccountMapping(accountId, labels, accountMapping)
 
-	subjectNamespace := ""
-	subjectKind := ""
 	cloudResourceId := ""
 	if subjectName == "" && tenant.IsFeatureEnabled(sc, sc.GetSecurityContext().GetTenantId(), tenant.FEATURE_WEBHOOK_LLM_RESOLUTION) {
 		databaseManager, err := database.GetDatabaseManager(database.Metastore)
@@ -1753,6 +1909,12 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		LearnSubjectMapping(sc, sc.GetSecurityContext().GetTenantId(), TenantAttrHistoricalIncidentsKey, cleanTitle, subjectName)
 	}
 
+	// The deployment owns the pod, so prefer it as the subject owner when known.
+	subjectOwner := subjectName
+	if deploymentName != "" {
+		subjectOwner = deploymentName
+	}
+
 	event := core.EventIncomingWebhook{
 		WebhookId:             p.ID,
 		EventType:             p.EventType,
@@ -1771,7 +1933,7 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		EventSubjectKind:      subjectKind,
 		CloudResourceId:       cloudResourceId,
 		AccountId:             accountId,
-		EventSubjectOwner:     subjectName,
+		EventSubjectOwner:     subjectOwner,
 	}
 	return []core.EventIncomingWebhook{event}, nil
 }

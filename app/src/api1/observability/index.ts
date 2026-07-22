@@ -30,10 +30,14 @@ query FetchLogs(
     query_request: $query_request
     request: $request
   }) {
-    timestamp
-    severity
-    message
-    labels
+    logs {
+      timestamp
+      severity
+      message
+      labels
+    }
+    query
+    provider
   }
 }
 `;
@@ -71,7 +75,7 @@ const observability = {
         return {
           data: {
             data: {
-              logs_list: [],
+              logs_list: { logs: [], query: '', provider: '' },
             },
           },
         };

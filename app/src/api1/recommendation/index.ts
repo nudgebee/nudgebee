@@ -66,6 +66,7 @@ query list_k8_recommendation($limit:Int, $offset:Int) {
       finops_score
       finops_band
       finops_score_breakdown
+      safety_band
     }
   }
   recommendation_aggregate: recommendation_groupings_v2(where: __WHERE__){
@@ -193,6 +194,7 @@ query get_security_recommendation {
       count_severity_high
       count_severity_critical
       count_severity_medium
+      count_severity_info
       workload_name
       namespace
     }
@@ -217,6 +219,7 @@ export const GET_SECURITY_RECOMMENDATION_LISTING_IMAGES = `query get_security_re
       count_severity_high
       count_severity_critical
       count_severity_medium
+      count_severity_info
       image
       package_id
       created_at

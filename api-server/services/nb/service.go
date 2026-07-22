@@ -289,7 +289,15 @@ func executeBatchedMetastoreJob(ctx *security.RequestContext, jobName, query str
 
 	var totalDeleted int64
 	for batch := 1; batch <= cleanupMaxBatches; batch++ {
-		r, err := databaseManager.Db.Exec(query)
+		// Honor context cancellation/deadline between batches so a caller-imposed
+		// timeout actually bounds the run (e.g. the detached cron goroutines wrap
+		// this in a context.WithTimeout). Harmless for callers whose context never
+		// cancels.
+		if err := ctx.GetContext().Err(); err != nil {
+			ctx.GetLogger().Warn("nb: stopping batched cleanup early", "error", err, "job", jobName, "batch", batch, "total_deleted", totalDeleted)
+			return err
+		}
+		r, err := databaseManager.Db.ExecContext(ctx.GetContext(), query)
 		if err != nil {
 			ctx.GetLogger().Error("nb: failed to execute batch", "error", err, "query", query, "job", jobName, "batch", batch)
 			return err

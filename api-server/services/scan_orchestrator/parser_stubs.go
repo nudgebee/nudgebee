@@ -13,4 +13,10 @@ const (
 	KubeBenchRuleName        = "CIS"                // collector RuleName.CIS — uppercase!
 	ImageScanRuleName        = "image_scan"         // collector RuleName.IMAGE_SCAN
 	HelmChartUpgradeRuleName = "helm_chart_upgrade" // collector RuleName.HELM_CHART_UPGRADE
+
+	// ImageScanSummaryRuleName is the per-image scan-bookkeeping row (one row per
+	// scanned image, keyed on the image name) written alongside the per-CVE
+	// image_scan rows. A DISTINCT rule_name keeps it out of every existing
+	// image_scan CVE query; see image_scan_summary.go for what it unlocks.
+	ImageScanSummaryRuleName = "image_scan_summary"
 )

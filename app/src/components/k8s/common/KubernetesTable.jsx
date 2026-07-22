@@ -56,6 +56,7 @@ import CodeMirrorDiffViewer from '@shared/viewers/DiffViewer';
 import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
 import { buildNubiChartPrompt } from 'src/utils/nubiPromptBuilder';
 import { ds, resolveColor, resolveColors } from 'src/utils/colors';
+import MetricQueryInfo, { K8S_METRIC_QUERY_LABELS, buildPromQueries } from '@shared/MetricQueryInfo';
 
 const chartContainerStyle = {
   border: '1px solid var(--ds-gray-200)',
@@ -583,6 +584,20 @@ export const KubernetesUtilizationCharts2 = ({
     updateDateRange(setDateTimeRange, passedSelectedDateTime);
   };
 
+  // Split the executed metric queries (keyed by metric, e.g. cpu_usage / memory_limit) per chart.
+  const cpuQueries = {};
+  const memoryQueries = {};
+  const diskQueries = {};
+  Object.entries(promQueries).forEach(([key, q]) => {
+    if (key.startsWith('cpu_')) {
+      cpuQueries[key] = q;
+    } else if (key.startsWith('memory_')) {
+      memoryQueries[key] = q;
+    } else if (key.startsWith('disk')) {
+      diskQueries[key] = q;
+    }
+  });
+
   return (
     <ListingLayout id='box-utilization-charts'>
       <ListingLayout.Toolbar
@@ -624,8 +639,13 @@ export const KubernetesUtilizationCharts2 = ({
           <Grid item xs={12}>
             <Grid container sx={chartContainerStyle}>
               <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
+                  <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.brand[500], lineHeight: '1.3' }}>
+                    CPU Utilization (Core)
+                  </Typography>
+                  <MetricQueryInfo queries={cpuQueries} labelMap={K8S_METRIC_QUERY_LABELS} />
+                </Box>
                 <Chart.Line
-                  chartTitle='CPU Utilization (Core)'
                   colors={resolveColors([ds.amber[500], ds.blue[400], ds.red[500]])}
                   dataset={[
                     {
@@ -661,8 +681,13 @@ export const KubernetesUtilizationCharts2 = ({
                 />
               </Grid>
               <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
+                  <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.brand[500], lineHeight: '1.3' }}>
+                    Memory Utilization (GB)
+                  </Typography>
+                  <MetricQueryInfo queries={memoryQueries} labelMap={K8S_METRIC_QUERY_LABELS} />
+                </Box>
                 <Chart.Line
-                  chartTitle='Memory Utilization (GB)'
                   colors={resolveColors([ds.amber[500], ds.blue[400], ds.red[500]])}
                   dataset={[
                     {
@@ -712,8 +737,13 @@ export const KubernetesUtilizationCharts2 = ({
                 }}
               >
                 <Grid item xs={12}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
+                    <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.brand[500], lineHeight: '1.3' }}>
+                      Disk Utilization (GB)
+                    </Typography>
+                    <MetricQueryInfo queries={diskQueries} labelMap={K8S_METRIC_QUERY_LABELS} />
+                  </Box>
                   <Chart.Line
-                    chartTitle='Disk Utilization (GB)'
                     colors={resolveColors([ds.amber[500], ds.blue[400]])}
                     dataset={[
                       {
@@ -1372,6 +1402,7 @@ export const KubernetesNetwork = ({ accountId, query }) => {
   const [showLoading, setShowLoading] = useState(false);
   const [data, setData] = useState([]);
   const [labels, setLabels] = useState([]);
+  const [promQueries, setPromQueries] = useState({});
   const [dateTimeRange, setDateTimeRange] = useState({
     startDate: getSpecificTime(60),
     endDate: new Date().getTime(),
@@ -1390,6 +1421,8 @@ export const KubernetesNetwork = ({ accountId, query }) => {
         endDate: dateTimeRange.endDate,
         metrics: ['network_receive_packet', 'network_transmit_packets'],
       });
+
+      setPromQueries(buildPromQueries(response));
 
       const getSeriesData = (key) => {
         const found = response.find((r) => r.query_key === key);
@@ -1481,13 +1514,13 @@ export const KubernetesNetwork = ({ accountId, query }) => {
           <Grid item xs={12}>
             <Grid container sx={chartContainerStyle}>
               <Grid item xs={12}>
-                <Chart.Line
-                  chartTitle='Network - Bandwidth (MB)'
-                  dataset={data}
-                  labels={labels}
-                  chartLabel={['Received', 'Transmitted']}
-                  loading={showLoading}
-                />
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
+                  <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.brand[500], lineHeight: '1.3' }}>
+                    Network - Bandwidth (MB)
+                  </Typography>
+                  <MetricQueryInfo queries={promQueries} />
+                </Box>
+                <Chart.Line dataset={data} labels={labels} chartLabel={['Received', 'Transmitted']} loading={showLoading} />
               </Grid>
             </Grid>
           </Grid>
@@ -1506,6 +1539,7 @@ export const KubernetesDiskTrend = ({ accountId, query }) => {
   const [showLoading, setShowLoading] = useState(false);
   const [data, setData] = useState([]);
   const [labels, setLabels] = useState([]);
+  const [promQueries, setPromQueries] = useState({});
   const [dateTimeRange, setDateTimeRange] = useState({
     startDate: getSpecificTime(60),
     endDate: new Date().getTime(),
@@ -1524,6 +1558,8 @@ export const KubernetesDiskTrend = ({ accountId, query }) => {
         endDate: dateTimeRange.endDate,
         metrics: ['disk_used', 'disk_total'],
       });
+
+      setPromQueries(buildPromQueries(response));
 
       const getSeriesData = (key) => {
         const found = response.find((r) => r.query_key === key);
@@ -1615,13 +1651,13 @@ export const KubernetesDiskTrend = ({ accountId, query }) => {
           <Grid item xs={12}>
             <Grid container sx={chartContainerStyle}>
               <Grid item xs={12}>
-                <Chart.Line
-                  chartTitle='Disk Utilization (GB)'
-                  dataset={data}
-                  labels={labels}
-                  chartLabel={['Disk Used', 'Disk Total']}
-                  loading={showLoading}
-                />
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
+                  <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.brand[500], lineHeight: '1.3' }}>
+                    Disk Utilization (GB)
+                  </Typography>
+                  <MetricQueryInfo queries={promQueries} />
+                </Box>
+                <Chart.Line dataset={data} labels={labels} chartLabel={['Disk Used', 'Disk Total']} loading={showLoading} />
               </Grid>
             </Grid>
           </Grid>
@@ -1640,6 +1676,7 @@ export const KubernetesPVCUtilization = ({ accountId, query, heading }) => {
   const [showLoading, setShowLoading] = useState(false);
   const [data, setData] = useState([]);
   const [labels, setLabels] = useState([]);
+  const [promQueries, setPromQueries] = useState({});
   const [dateTimeRange, setDateTimeRange] = useState({
     startDate: getLast30Days().getTime(),
     endDate: new Date().getTime(),
@@ -1658,6 +1695,8 @@ export const KubernetesPVCUtilization = ({ accountId, query, heading }) => {
           endDate: dateTimeRange.endDate,
           metrics: ['pvc_usage', 'pvc_requests'],
         });
+
+        setPromQueries(buildPromQueries(response));
 
         const getSeriesData = (key) => {
           const found = response.find((r) => r.query_key === key);
@@ -1727,8 +1766,13 @@ export const KubernetesPVCUtilization = ({ accountId, query, heading }) => {
         }
       />
       <ListingLayout.Body>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
+          <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.brand[500], lineHeight: '1.3' }}>
+            PVC - Utilization (GB)
+          </Typography>
+          <MetricQueryInfo queries={promQueries} />
+        </Box>
         <Chart.Line
-          chartTitle='PVC - Utilization (GB)'
           dataset={data}
           labels={labels}
           colors={resolveColors([ds.blue[400], ds.amber[500]])}
@@ -1750,6 +1794,7 @@ export const KubernetesNodeStorageUtilization = ({ accountId, query, heading }) 
   const [showLoading, setShowLoading] = useState(false);
   const [data, setData] = useState([]);
   const [labels, setLabels] = useState([]);
+  const [promQueries, setPromQueries] = useState({});
   const [dateTimeRange, setDateTimeRange] = useState({
     startDate: getLast30Days().getTime(),
     endDate: new Date().getTime(),
@@ -1769,6 +1814,7 @@ export const KubernetesNodeStorageUtilization = ({ accountId, query, heading }) 
     apiKubernetes1
       .utilisationApi(requestBody)
       .then((response) => {
+        setPromQueries(buildPromQueries(response));
         const pvcUsage = response?.find((data) => data.query_key === 'pvc_usage')?.payload || [];
         let data = [];
         if (pvcUsage.length > 0) {
@@ -1810,14 +1856,13 @@ export const KubernetesNodeStorageUtilization = ({ accountId, query, heading }) 
         }
       />
       <ListingLayout.Body>
-        <Chart.Line
-          chartTitle='Node Disk - Utilization (%)'
-          dataset={data}
-          labels={labels}
-          chartLabel={['Usage']}
-          colors={resolveColors([ds.amber[500]])}
-          loading={showLoading}
-        />
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
+          <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.brand[500], lineHeight: '1.3' }}>
+            Node Disk - Utilization (%)
+          </Typography>
+          <MetricQueryInfo queries={promQueries} />
+        </Box>
+        <Chart.Line dataset={data} labels={labels} chartLabel={['Usage']} colors={resolveColors([ds.amber[500]])} loading={showLoading} />
       </ListingLayout.Body>
     </ListingLayout>
   );
@@ -1832,6 +1877,7 @@ KubernetesNodeStorageUtilization.propTypes = {
 export const KubernetesRequestResponseTrend = ({ accountId, query = {}, selectedDateRange, additionalFilters = [], heading = '' }) => {
   const [httpStatusData, setHttpStatusData] = useState({ data: [], labels: [] });
   const [httpResponseTimeData, setHttpResponseTimeData] = useState({ data: [], labels: [] });
+  const [promQueries, setPromQueries] = useState({});
   const [dateTimeRange, setDateTimeRange] = useState(
     selectedDateRange ?? {
       startDate: Date.now() - 1 * 3600 * 1000,
@@ -1853,6 +1899,8 @@ export const KubernetesRequestResponseTrend = ({ accountId, query = {}, selected
         endDate: dateTimeRange.endDate,
         metrics: ['http_status', 'http_max_response_time'],
       });
+
+      setPromQueries(buildPromQueries(response));
 
       const processMetricData = (key, labelGenerator) => {
         const metricResult = response.find((r) => r.query_key === key);
@@ -1933,6 +1981,12 @@ export const KubernetesRequestResponseTrend = ({ accountId, query = {}, selected
           <Grid item xs={12}>
             <Grid container sx={chartContainerStyle}>
               <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
+                  <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.brand[500], lineHeight: '1.3' }}>
+                    HTTP Status
+                  </Typography>
+                  <MetricQueryInfo queries={{ http_status: promQueries.http_status }} />
+                </Box>
                 <Chart.Line
                   colors={resolveColors([ds.amber[500], ds.blue[400], ds.red[500]])}
                   data={httpStatusData.data}
@@ -1942,6 +1996,12 @@ export const KubernetesRequestResponseTrend = ({ accountId, query = {}, selected
                 />
               </Grid>
               <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
+                  <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.brand[500], lineHeight: '1.3' }}>
+                    HTTP Max Response Time
+                  </Typography>
+                  <MetricQueryInfo queries={{ http_max_response_time: promQueries.http_max_response_time }} />
+                </Box>
                 <Chart.Line
                   colors={resolveColors([ds.amber[500], ds.blue[400], ds.red[500]])}
                   data={httpResponseTimeData.data}
@@ -1997,6 +2057,7 @@ export const KubernetesReplicaTrend = ({ accountId, query, heading }) => {
   const [showLoading, setShowLoading] = useState(false);
   const [data, setData] = useState([]);
   const [labels, setLabels] = useState([]);
+  const [promQueries, setPromQueries] = useState({});
   const [dateTimeRange, setDateTimeRange] = useState({
     startDate: getLast30Days().getTime(),
     endDate: new Date().getTime(),
@@ -2017,6 +2078,7 @@ export const KubernetesReplicaTrend = ({ accountId, query, heading }) => {
     apiKubernetes1
       .utilisationApi(requestBody)
       .then((response) => {
+        setPromQueries(buildPromQueries(response));
         const replicaDefined = response?.find((data) => data.query_key === 'replica_defined')?.payload || [];
         const replicaReady = response?.find((data) => data.query_key === 'replica_ready')?.payload || [];
         let data = [];
@@ -2066,14 +2128,13 @@ export const KubernetesReplicaTrend = ({ accountId, query, heading }) => {
         }
       />
       <ListingLayout.Body>
-        <Chart.Line
-          chartTitle='Replica Over Time'
-          dataset={data}
-          labels={labels}
-          chartLabel={['Replicas']}
-          colors={resolveColors([ds.amber[500]])}
-          loading={showLoading}
-        />
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
+          <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.brand[500], lineHeight: '1.3' }}>
+            Replica Over Time
+          </Typography>
+          <MetricQueryInfo queries={promQueries} />
+        </Box>
+        <Chart.Line dataset={data} labels={labels} chartLabel={['Replicas']} colors={resolveColors([ds.amber[500]])} loading={showLoading} />
       </ListingLayout.Body>
     </ListingLayout>
   );

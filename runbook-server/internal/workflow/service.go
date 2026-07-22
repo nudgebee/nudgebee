@@ -1735,6 +1735,18 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, account
 		// Status is stale — update the workflow in the response
 		workflows[i].LastExecutionStatus = latestStatus
 
+		var runVersion *int
+		if latestExec.Memo != nil {
+			if val, ok := latestExec.Memo.Fields[model.MemoWorkflowVersionNumber]; ok {
+				var vn int64
+				if err := s.dataConverter.FromPayload(val, &vn); err == nil {
+					v := int(vn)
+					runVersion = &v
+					workflows[i].LastExecutionVersion = &v
+				}
+			}
+		}
+
 		// Asynchronously update the DB so future reads are correct
 		wfID := workflows[i].ID
 		closeTime := time.Now().UTC()
@@ -1748,7 +1760,7 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, account
 		go func() {
 			dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := s.store.SetLastExecutionStatus(dbCtx, tenantID, accountId, wfID, latestStatus, closeTime, statusMessage); err != nil {
+			if err := s.store.SetLastExecutionStatus(dbCtx, tenantID, accountId, wfID, latestStatus, closeTime, statusMessage, runVersion); err != nil {
 				slog.Error("Failed to reconcile stale workflow status", "workflowID", wfID, "error", err)
 			}
 		}()
@@ -2373,6 +2385,18 @@ func (s *Service) ListWorkflowExecutions(ctx *security.RequestContext, accountId
 			}
 		}
 
+		if info.Memo != nil {
+			if v, ok := info.Memo.GetFields()[model.MemoWorkflowVersionNumber]; ok {
+				var val any
+				if err := s.dataConverter.FromPayload(v, &val); err == nil {
+					if vn, ok := toInt(val); ok {
+						summary.Version = &vn
+						summary.VersionNumber = &vn
+					}
+				}
+			}
+		}
+
 		summaries = append(summaries, summary)
 	}
 
@@ -2444,6 +2468,19 @@ func (s *Service) ListWorkflowExecutionsForEvent(ctx *security.RequestContext, a
 				}
 			}
 		}
+
+		if info.Memo != nil {
+			if v, ok := info.Memo.GetFields()[model.MemoWorkflowVersionNumber]; ok {
+				var val any
+				if err := s.dataConverter.FromPayload(v, &val); err == nil {
+					if vn, ok := toInt(val); ok {
+						summary.Version = &vn
+						summary.VersionNumber = &vn
+					}
+				}
+			}
+		}
+
 		summaries = append(summaries, summary)
 	}
 
@@ -2711,6 +2748,43 @@ func (s *Service) GetDetailedWorkflowExecution(ctx *security.RequestContext, acc
 	workflowDetails.WorkflowResult = historyDetails.WorkflowResult
 	workflowDetails.Error = historyDetails.Error
 	workflowDetails.Tasks = historyDetails.Tasks
+
+	// Reconcile pending approvals against Temporal's live PendingActivities set.
+	// A core.approval task is an async-completed activity (Execute returns
+	// activity.ErrResultPending), so while it waits for a human the persisted
+	// history carries only ACTIVITY_TASK_SCHEDULED and processWorkflowHistory
+	// correctly reconstructs it as SCHEDULED. But history-replay is the only
+	// signal: if the activity leaves the pending set without replay seeing a
+	// recognized terminal event (e.g. an unhandled ACTIVITY_TASK_CANCELED, or
+	// history/mutable-state skew on the async-completion path), the task stays
+	// SCHEDULED forever and the UI keeps showing it as a pending approval even
+	// after it was approved and the page hard-refreshed (#32891). PendingActivities
+	// is the authoritative "still actionable" signal (also used by
+	// fetchApprovalIMContext and the integration tests): a genuinely-waiting
+	// approval is always present here — Temporal lists scheduled-but-not-yet-started
+	// activities too — so demoting an approval that is absent from it is safe (no
+	// false negatives, no flicker). Task IDs equal their Temporal ActivityId
+	// (processWorkflowHistory sets taskID := attrs.GetActivityId()).
+	pendingActivityIDs := make(map[string]struct{})
+	for _, pa := range describeResp.GetPendingActivities() {
+		pendingActivityIDs[pa.GetActivityId()] = struct{}{}
+	}
+	for i := range workflowDetails.Tasks {
+		t := &workflowDetails.Tasks[i]
+		if t.Type != "core.approval" || t.Status != model.TaskStatusScheduled {
+			continue
+		}
+		if _, stillPending := pendingActivityIDs[t.ID]; !stillPending {
+			// Resolved approval that replay left stuck at SCHEDULED — demote so the
+			// frontend's `status === 'SCHEDULED'` pending-approval filter clears it.
+			// The decision (approved/rejected) isn't recoverable here; COMPLETED is
+			// the closest non-pending state. The happy path is untouched: when the
+			// terminal event is in history, processWorkflowHistory already set the
+			// accurate status before this runs.
+			t.Status = model.TaskStatusCompleted
+		}
+	}
+
 	// For non-persisted (inline/dry-run) workflows the history reconstruction
 	// is the only source of truth for the definition itself — keep it.
 	if isNonPersistedWorkflow && historyDetails.Definition != nil {

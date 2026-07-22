@@ -102,6 +102,8 @@ func (s *Server) handleAction(c *gin.Context) {
 		s.handleListTemplates(c, sc, args)
 	case "workflow_get_template":
 		s.handleGetTemplate(c, sc, args)
+	case "workflow_sync_templates":
+		s.handleSyncTemplates(c, sc, args)
 	case "workflow_list_mcp_tools":
 		s.handleListMCPTools(c, sc, args)
 	case "workflow_list_versions":

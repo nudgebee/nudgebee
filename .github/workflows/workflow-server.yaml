@@ -47,15 +47,27 @@ jobs:
       - name: Install C toolchain (for -race)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc libc6-dev
 
-      # Unit suite. Tests that need a live backend (LLM / cloud server / cluster
-      # credentials / Postgres / Temporal) skip themselves cleanly via the
-      # testutils.RequireEnv guard and per-test TEST_* checks, so this runs
-      # hermetically on a bare runner. The Postgres+Temporal integration tier
-      # (docker-compose.test.yml, `make integration-test`) stays a separate,
-      # opt-in concern.
+      # Unit suite. Integration tests that need a live backend (LLM / cloud
+      # server / cluster credentials / Postgres / Temporal) live in
+      # *_e2e_test.go files behind `//go:build e2e`, so they are excluded from
+      # this default run -- it executes only hermetic unit tests on a bare
+      # runner. The Postgres+Temporal integration tier (docker-compose.test.yml,
+      # `make integration-test`) and the e2e suite stay separate, opt-in concerns.
       - name: Run unit tests
         working-directory: ./runbook-server
         # setup-go leaves CGO_ENABLED unset; -race requires cgo, so enable it.
         env:
           CGO_ENABLED: "1"
         run: go test -race ./...
+
+      # Compile-only gate for the e2e-tagged tests (//go:build e2e). They need
+      # live infra CI does not have, so we do NOT run them -- but `go vet`
+      # type-checks every file, including the e2e-tagged ones, without executing
+      # any binary, so build breakage in them still surfaces on the PR. Switch to
+      # `go test -tags e2e ./...` once internal e2e infra exists.
+      - name: Build e2e-tagged tests (compile-only)
+        # Run even if the unit-test step failed, so e2e compile breakage is
+        # always reported instead of being masked by an unrelated test failure.
+        if: ${{ !cancelled() }}
+        working-directory: ./runbook-server
+        run: go vet -tags e2e ./...

@@ -202,13 +202,14 @@ const (
 // priority makes provenance non-deterministic under the strict-< dedup at L296.
 var edgeTypePriorities = map[RelationshipType]map[string]EdgeSourcePriority{
 	RelationshipCalls: {
-		"k8s":          EdgePriority1, // K8s has authoritative service-to-service data
-		"manual":       EdgePriority2, // User-declared dependency (intent)
-		"aws":          EdgePriority3, // AWS has authoritative cloud resource data
-		"ebpf":         EdgePriority4, // eBPF has accurate network-level data
-		"traces":       EdgePriority5, // Traces has rich application-level data
-		"datadog-apm":  EdgePriority6, // External APM source (instrumentation-derived)
-		"newrelic-apm": EdgePriority7, // External APM source (NRQL Span aggregation)
+		"k8s":              EdgePriority1, // K8s has authoritative service-to-service data
+		"manual":           EdgePriority2, // User-declared dependency (intent)
+		"aws":              EdgePriority3, // AWS has authoritative cloud resource data
+		"ebpf":             EdgePriority4, // eBPF has accurate network-level data
+		"traces":           EdgePriority5, // Traces has rich application-level data
+		"gcp-cloud-traces": EdgePriority5, // GCP Cloud Trace (disjoint from K8s "traces" accounts)
+		"datadog-apm":      EdgePriority6, // External APM source (instrumentation-derived)
+		"newrelic-apm":     EdgePriority7, // External APM source (NRQL Span aggregation)
 	},
 	RelationshipResolvesTo: {
 		"k8s":              EdgePriority1, // K8s DNS resolution
@@ -637,6 +638,20 @@ func getNodeProp(properties map[string]interface{}, key string) string {
 	return ""
 }
 
+// extractNodeLocation returns the most specific region/zone/AZ available for a cloud
+// resource, used by the UI to disambiguate identically-named nodes (e.g. many "default"
+// subnets across zones). Different sources store it under different keys — zone (GCP
+// compute), availability_zone (AWS), region (subnets, Azure, GKE, global services) — so we
+// probe them most-specific first. Returns "" for nodes with no location (e.g. K8s workloads).
+func extractNodeLocation(properties map[string]interface{}) string {
+	for _, key := range []string{"zone", "availability_zone", "region", "location"} {
+		if v := getNodeProp(properties, key); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // languageLogoID normalizes a backend canonical language name to the logo_id expected by LangTypeIcon.jsx.
 // LangTypeIcon lowercases before matching, so keys here must align with its switch cases.
 func languageLogoID(lang string) string {
@@ -676,19 +691,56 @@ func resolveServiceLogoID(nodeType NodeType, source, serviceName, propType strin
 	return serviceName // "" when absent; all other service_name values pass through to LangTypeIcon
 }
 
+// engineLogoID maps a datastore engine string to a LangTypeIcon-compatible logo id.
+// Accepts both managed-DB engine strings (e.g. "aurora-postgresql", "POSTGRES_17") and
+// the canonical in-cluster engines set by the K8s source (e.g. "valkey", "mongodb").
+// Returns "" when there's no matching icon, so callers fall through to other rules.
+func engineLogoID(engine string) string {
+	switch {
+	case strings.Contains(engine, "postgres"), strings.Contains(engine, "cockroach"):
+		return "postgres"
+	case strings.Contains(engine, "mysql"), strings.Contains(engine, "mariadb"), strings.Contains(engine, "percona"):
+		return "mysql"
+	case strings.Contains(engine, "sqlserver"), strings.Contains(engine, "sql_server"):
+		return "sqlserver"
+	case strings.Contains(engine, "mongo"):
+		return "mongodb"
+	case strings.Contains(engine, "clickhouse"):
+		return "clickhouse"
+	case strings.Contains(engine, "scylla"), strings.Contains(engine, "cassandra"):
+		return "cassandra"
+	case strings.Contains(engine, "opensearch"):
+		return "opensearch"
+	case strings.Contains(engine, "elasticsearch"):
+		return "elasticsearch"
+	case strings.Contains(engine, "valkey"), strings.Contains(engine, "keydb"),
+		strings.Contains(engine, "dragonfly"), strings.Contains(engine, "redis"):
+		return "redis"
+	case strings.Contains(engine, "memcached"):
+		return "memcached"
+	case strings.Contains(engine, "rabbitmq"):
+		return "rabbitmq"
+	case strings.Contains(engine, "kafka"):
+		return "kafka"
+	case strings.Contains(engine, "pulsar"):
+		return "pulsar"
+	case strings.Contains(engine, "nats"):
+		return "nats"
+	case strings.Contains(engine, "zookeeper"):
+		return "zookeeper"
+	}
+	return ""
+}
+
 // ComputeLogoID returns the icon identifier for a KG node so the frontend can render the correct logo.
 // source is the node's top-level source field (e.g. "aws", "gcp", "k8s", "trace") — not from properties.
 func ComputeLogoID(nodeType NodeType, source string, properties map[string]interface{}) string {
-	// 1. Database engine (e.g. "POSTGRES_17", "MYSQL_8_0")
-	engine := strings.ToLower(getNodeProp(properties, "engine"))
-	if strings.Contains(engine, "postgres") {
-		return "postgres"
-	}
-	if strings.Contains(engine, "mysql") {
-		return "mysql"
-	}
-	if strings.Contains(engine, "sqlserver") || strings.Contains(engine, "sql_server") {
-		return "sqlserver"
+	// 1. Database/cache/queue engine — handles managed-DB strings ("POSTGRES_17",
+	// "aurora-postgresql") and in-cluster canonical engines ("redis", "valkey", "mongodb").
+	if engine := strings.ToLower(getNodeProp(properties, "engine")); engine != "" {
+		if logo := engineLogoID(engine); logo != "" {
+			return logo
+		}
 	}
 
 	// 1.5 Azure resource-provider types ("microsoft.compute/virtualmachines", ...) match none of
@@ -851,10 +903,16 @@ func ConvertDbEdgesToKgEdges(dbEdges []*DbEdge) []KgEdge {
 // ConvertKgNodeToKgNodeSlim converts a KgNode to KgNodeSlim with only essential fields
 func ConvertKgNodeToKgNodeSlim(kgNode KgNode) KgNodeSlim {
 	name := ""
+	role := ""
+	engine := ""
+	location := ""
 	if kgNode.Properties != nil {
 		if nameVal, ok := kgNode.Properties["name"]; ok {
 			name = fmt.Sprintf("%v", nameVal)
 		}
+		role = getNodeProp(kgNode.Properties, "role")
+		engine = getNodeProp(kgNode.Properties, "engine")
+		location = extractNodeLocation(kgNode.Properties)
 	}
 	return KgNodeSlim{
 		ID:        kgNode.ID,
@@ -865,6 +923,9 @@ func ConvertKgNodeToKgNodeSlim(kgNode KgNode) KgNodeSlim {
 		TenantID:  kgNode.TenantID,
 		UniqueKey: kgNode.UniqueKey,
 		LogoID:    kgNode.LogoID,
+		Role:      role,
+		Engine:    engine,
+		Location:  location,
 	}
 }
 
@@ -1060,6 +1121,69 @@ func GetK8sAccountsForTenant(tenantID string, cloudAccountIDs []string) ([]K8sAc
 	}
 
 	return k8sAccounts, nil
+}
+
+// GCPAccount represents an active GCP cloud account for a tenant.
+type GCPAccount struct {
+	CloudAccountID string `db:"cloud_account_id"`
+	AccountNumber  string `db:"account_number"`
+	Name           string `db:"name"`
+	Tenant         string `db:"tenant"`
+}
+
+// GetGCPAccountsForTenant retrieves all active GCP cloud accounts for a tenant,
+// optionally filtered to specific cloud account IDs. Mirrors GetK8sAccountsForTenant
+// but for GCP (no agent join — GCP traces are pulled via the cloud-collector, not an
+// in-cluster agent). The CloudAccountID is the UUID passed to cloud.QueryTraces.
+func GetGCPAccountsForTenant(tenantID string, cloudAccountIDs []string) ([]GCPAccount, error) {
+	dbManager, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database manager: %w", err)
+	}
+
+	query := `
+		SELECT ca.id as cloud_account_id, ca.account_number as account_number,
+		       ca.account_name as name, ca.tenant as tenant
+		FROM cloud_accounts ca
+		WHERE ca.cloud_provider = 'GCP'
+		  AND ca.status = 'active'
+		  AND ca.tenant = ?`
+
+	args := []interface{}{tenantID}
+
+	if len(cloudAccountIDs) > 0 {
+		query += `
+		  AND ca.id IN (?)`
+		args = append(args, cloudAccountIDs)
+	}
+
+	// Expand the IN clause, then rebind to PostgreSQL placeholders.
+	var queryErr error
+	query, args, queryErr = sqlx.In(query, args...)
+	if queryErr != nil {
+		return nil, fmt.Errorf("failed to expand query with IN clause: %w", queryErr)
+	}
+	query = dbManager.Db.Rebind(query)
+
+	rows, err := dbManager.Db.Queryx(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query GCP accounts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var gcpAccounts []GCPAccount
+	for rows.Next() {
+		var account GCPAccount
+		if err := rows.StructScan(&account); err != nil {
+			continue
+		}
+		gcpAccounts = append(gcpAccounts, account)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating GCP account rows: %w", err)
+	}
+
+	return gcpAccounts, nil
 }
 
 // ExtractDeploymentFromReplicaSet extracts the Deployment name from a ReplicaSet name

@@ -1,0 +1,124 @@
+slug: create_ticket_from_event
+name: "Create Ticket from Event"
+description: "Create a ticket in your configured ticketing system from an event. Works with Jira, GitHub Issues, ServiceNow, and other integrations."
+category: "general"
+icon: "confirmation_number"
+status: ACTIVE
+tags:
+  labels:
+    - "ticketing"
+  event_sources:
+    - "prometheus"
+    - "alertmanager"
+    - "cloudwatch"
+    - "azure_monitor"
+    - "gcp_monitoring"
+    - "datadog"
+    - "pagerduty"
+    - "opsgenie"
+    - "kubernetes"
+    - "aws"
+    - "azure"
+    - "gcp"
+  alert_names: []
+definition:
+  version: "v1"
+  inputs:
+    - id: "title"
+      type: "string"
+      description: "Ticket title"
+      required: true
+    - id: "description"
+      type: "string"
+      description: "Ticket description"
+      required: true
+    - id: "integration_id"
+      type: "string"
+      description: "Ticket integration ID"
+      required: true
+    - id: "project_key"
+      type: "string"
+      description: "Project key (e.g. PROJ for Jira, owner/repo for GitHub)"
+      required: true
+    - id: "ticket_type"
+      type: "string"
+      description: "Ticket type (Task, Bug, Incident)"
+      default: "Incident"
+    - id: "severity"
+      type: "string"
+      description: "Priority/severity level"
+      default: "High"
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: |-
+          Approve creating a **{{ Inputs.ticket_type }}** ticket in **{{ Inputs.project_key }}**?
+
+          Title: {{ Inputs.title }}
+    - id: "create_ticket"
+      type: "tickets.create"
+      params:
+        integration_id: "{{ Inputs.integration_id }}"
+        project_key: "{{ Inputs.project_key }}"
+        title: "{{ Inputs.title }}"
+        description: "{{ Inputs.description }}"
+        ticket_type: "{{ Inputs.ticket_type }}"
+        severity: "{{ Inputs.severity }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+  output:
+    ticket_id: "{{ Tasks.create_ticket.output.ticket_id }}"
+    ticket_url: "{{ Tasks.create_ticket.output.url }}"
+  timeout: "10m"
+template_variables:
+  - id: "title"
+    input_ref: "title"
+    display_name: "Ticket Title"
+    required: true
+    type: "string"
+  - id: "description"
+    input_ref: "description"
+    display_name: "Description"
+    required: true
+    type: "string"
+  - id: "integration_id"
+    input_ref: "integration_id"
+    display_name: "Ticket Integration"
+    required: true
+    type: "string"
+  - id: "project_key"
+    input_ref: "project_key"
+    display_name: "Project Key"
+    required: true
+    type: "string"
+    placeholder: "PROJ"
+  - id: "ticket_type"
+    input_ref: "ticket_type"
+    display_name: "Ticket Type"
+    type: "string"
+    options:
+      - "Incident"
+      - "Bug"
+      - "Task"
+  - id: "severity"
+    input_ref: "severity"
+    display_name: "Severity"
+    type: "string"
+    options:
+      - "Critical"
+      - "High"
+      - "Medium"
+      - "Low"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

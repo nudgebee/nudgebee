@@ -253,7 +253,6 @@ const SummaryView = () => {
         .sort((a, b) => a.label.localeCompare(b.label)),
     [accounts]
   );
-  const selectedAccountName = accountFilter ? accounts[accountFilter]?.account_name || accountFilter : '';
   const nubiBriefing = useMemo(() => generateNubiBriefing(filtered, totalSavings, savingsSymbol), [filtered, totalSavings, savingsSymbol]);
 
   const costItems = useMemo(() => filtered.filter((i) => i.category === 'cost'), [filtered]);
@@ -370,20 +369,14 @@ const SummaryView = () => {
               ))}
             </FilterFacet>
 
-            <FilterFacet label='Account'>
-              <FilterDropdown
-                id='account-filter-select'
-                placeholder='All accounts'
-                options={accountOptions}
-                value={accountOptions.find((opt) => opt.value === accountFilter) ?? null}
-                onSelect={(_: unknown, opt: { value: string } | null) => setAccountFilter(opt?.value || null)}
-              />
-              {accountFilter && (
-                <Chip size='sm' tone='info' pressed onDismiss={() => setAccountFilter(null)} id='account-filter-chip'>
-                  {selectedAccountName}
-                </Chip>
-              )}
-            </FilterFacet>
+            <FilterDropdown
+              id='account-filter-select'
+              label='Account'
+              placeholder='All accounts'
+              options={accountOptions}
+              value={accountOptions.find((opt) => opt.value === accountFilter) ?? null}
+              onSelect={(_: unknown, opt: { value: string } | null) => setAccountFilter(opt?.value || null)}
+            />
 
             {hasActiveFilter && (
               <Chip size='sm' tone='neutral' onDismiss={clearAll} onClick={clearAll}>

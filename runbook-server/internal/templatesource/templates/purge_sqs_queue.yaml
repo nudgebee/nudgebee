@@ -1,0 +1,84 @@
+slug: purge_sqs_queue
+name: "Purge SQS Queue"
+description: "Purge all messages from an SQS queue. Useful when a queue is backed up with stale or poison messages that block processing."
+category: "aws"
+icon: "delete_sweep"
+status: ACTIVE
+tags:
+  labels:
+    - "purge"
+    - "destructive"
+  event_sources:
+    - "AWS_CloudWatch_Alarm"
+    - "AWS_EventBridge"
+  alert_names: []
+  subject_types:
+    - "queue"
+definition:
+  version: "v1"
+  inputs:
+    - id: "queue_url"
+      type: "string"
+      description: "Full SQS queue URL"
+      required: true
+    - id: "region"
+      type: "string"
+      description: "AWS region (e.g. us-east-1)"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "check_depth"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws sqs get-queue-attributes --queue-url {{ Inputs.queue_url }} --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible --region {{ Inputs.region }}"
+        account_id: "{{ Inputs.account_id }}"
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: |-
+          Purge all messages from SQS queue?
+
+          **Queue:** {{ Inputs.queue_url }}
+          **Region:** {{ Inputs.region }}
+
+          This will permanently delete all messages in the queue.
+      depends_on:
+        - "check_depth"
+    - id: "purge"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws sqs purge-queue --queue-url {{ Inputs.queue_url }} --region {{ Inputs.region }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws sqs get-queue-attributes --queue-url {{ Inputs.queue_url }} --attribute-names ApproximateNumberOfMessages --region {{ Inputs.region }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "purge"
+  timeout: "5m"
+template_variables:
+  - id: "queue_url"
+    input_ref: "queue_url"
+    display_name: "SQS Queue URL"
+    required: true
+    type: "string"
+    placeholder: "https://sqs.us-east-1.amazonaws.com/123456789012/my-queue"
+  - id: "region"
+    input_ref: "region"
+    display_name: "AWS Region"
+    required: true
+    type: "string"
+    placeholder: "us-east-1"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

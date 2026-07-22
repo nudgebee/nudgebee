@@ -1,0 +1,82 @@
+slug: restart_deployment_on_high_error_logs
+name: "Restart Deployment on High Error Logs"
+description: "Collect recent logs and perform a rolling restart of a deployment experiencing high error rates. Useful for transient application failures."
+category: "kubernetes"
+icon: "restart_alt"
+status: ACTIVE
+tags:
+  labels:
+    - "restart"
+    - "disruptive"
+  event_sources:
+    - "prometheus"
+    - "kubernetes_api_server"
+    - "alertmanager"
+  alert_names:
+    - "HighErrorCriticalLogs"
+    - "ApplicationAPIFailures"
+  subject_types:
+    - "deployment"
+    - "pod"
+    - "daemonset"
+    - "statefulset"
+definition:
+  version: "v1"
+  inputs:
+    - id: "namespace"
+      type: "string"
+      description: "Kubernetes namespace"
+      required: true
+    - id: "deployment"
+      type: "string"
+      description: "Deployment name"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "collect_logs"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl logs deployment/{{ Inputs.deployment }} -n {{ Inputs.namespace }} --tail=50 --all-containers"
+        account_id: "{{ Inputs.account_id }}"
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Recent logs collected. Approve rolling restart of **{{ Inputs.deployment }}** in **{{ Inputs.namespace }}**?"
+      depends_on:
+        - "collect_logs"
+    - id: "restart"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl rollout restart deployment/{{ Inputs.deployment }} -n {{ Inputs.namespace }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl rollout status deployment/{{ Inputs.deployment }} -n {{ Inputs.namespace }} --timeout=300s"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "restart"
+  timeout: "10m"
+template_variables:
+  - id: "namespace"
+    input_ref: "namespace"
+    display_name: "Namespace"
+    required: true
+    type: "string"
+  - id: "deployment"
+    input_ref: "deployment"
+    display_name: "Deployment Name"
+    required: true
+    type: "string"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

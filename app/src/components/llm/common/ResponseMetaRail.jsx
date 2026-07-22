@@ -89,8 +89,12 @@ const countItem = (key, tone, count, onClick) => {
 // FilterEvents (the planner may make several LLM calls), so we surface a
 // count and pick the strongest mode for tone:
 //   - any "enforce" hit → 'critical' (the call was blocked)
-//   - else any "audit" hit → 'warning' (call went through but secrets detected)
+//   - else any "detect" hit → 'warning' (call went through but secrets detected)
 //   - else nothing rendered
+// Mode string compatibility: the Go backend uses "detect" as the canonical
+// mode string (renamed from "audit"); "audit" is kept as a legacy alias for
+// pre-rename rows. Without accepting "detect" here, the chip silently returns
+// null for every event and no chip renders even though metadata is present.
 // Tones must come from the design system's ChipTone union (see Chip.tsx) —
 // passing an unrecognised tone crashes the resolveColors call.
 //
@@ -103,8 +107,8 @@ const egressfilterItem = (events) => {
     return null;
   }
   const hasEnforce = events.some((e) => e?.mode === 'enforce');
-  const hasAudit = events.some((e) => e?.mode === 'audit');
-  if (!hasEnforce && !hasAudit) {
+  const hasDetect = events.some((e) => e?.mode === 'detect' || e?.mode === 'audit');
+  if (!hasEnforce && !hasDetect) {
     return null;
   }
 
@@ -296,3 +300,4 @@ ResponseMetaRail.propTypes = {
 };
 
 export default ResponseMetaRail;
+export { egressfilterItem as __egressfilterItemForTest };

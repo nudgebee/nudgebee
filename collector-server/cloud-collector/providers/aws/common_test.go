@@ -104,6 +104,43 @@ func TestIsRegionUnreachableRealSdkChain(t *testing.T) {
 	}
 }
 
+func TestIsServiceUnavailableInRegion(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"plain string error", errors.New("boom"), false},
+		{"InvalidAction api error", &smithy.GenericAPIError{Code: "InvalidAction", Message: ""}, true},
+		{"UnknownOperationException", &smithy.GenericAPIError{Code: "UnknownOperationException", Message: ""}, true},
+		{"UnknownOperation", &smithy.GenericAPIError{Code: "UnknownOperation", Message: ""}, true},
+		{"not-supported message", &smithy.GenericAPIError{Code: "ValidationException", Message: "SES is not supported in this region"}, true},
+		{"not-supported message mixed case", &smithy.GenericAPIError{Code: "ValidationException", Message: "SES is Not Supported In This Region"}, true},
+		{"unrelated api error still surfaces", &smithy.GenericAPIError{Code: "AccessDenied", Message: "no perms"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isServiceUnavailableInRegion(c.err); got != c.want {
+				t.Fatalf("isServiceUnavailableInRegion=%v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestIsServiceUnavailableInRegionRealSdkChain pins the FULL aws-sdk-go-v2 wrapping
+// that SES ListIdentities produces in an opt-in region where SES isn't offered
+// (eu-south-2): smithy.OperationError -> smithy.GenericAPIError{Code:"InvalidAction"}.
+// Guards against an SDK upgrade breaking the errors.As unwrap that drives the skip.
+func TestIsServiceUnavailableInRegionRealSdkChain(t *testing.T) {
+	apiErr := &smithy.GenericAPIError{Code: "InvalidAction", Message: ""}
+	opErr := &smithy.OperationError{ServiceID: "SES", OperationName: "ListIdentities", Err: apiErr}
+
+	if !isServiceUnavailableInRegion(opErr) {
+		t.Fatalf("isServiceUnavailableInRegion=false for the real SDK SES InvalidAction chain; the region skip would not trigger in prod")
+	}
+}
+
 // timeoutError mimics poll.TimeoutError ("i/o timeout"): a net.Error whose
 // Timeout() reports true, as the runtime surfaces for a TCP dial deadline.
 type timeoutError struct{}

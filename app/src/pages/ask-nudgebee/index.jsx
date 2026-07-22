@@ -1,6 +1,7 @@
 import KubernetesLLMResponseGenerator from '@components/llm/KubernetesLLMResponseGeneratorV2';
 import { useRouter } from 'next/router';
 import { useMemo, memo } from 'react';
+import { withAccountGuard } from '@shared/AccountGuard';
 
 const AskNudgebee = memo(() => {
   const router = useRouter();
@@ -13,4 +14,4 @@ const AskNudgebee = memo(() => {
 
 AskNudgebee.displayName = 'AskNudgebee';
 
-export default AskNudgebee;
+export default withAccountGuard(AskNudgebee, { hideContent: true });

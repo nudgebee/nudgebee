@@ -140,11 +140,23 @@ type azureNSGMeta struct {
 }
 
 // azureFunctionMeta resolves an App Service / Function app's VNet-integration
-// subnet.
+// subnet, its App Service Plan (compute host), and the data resources referenced
+// by its app settings / connection strings (extracted secret-free by the collector
+// into meta.referenced_resources).
 type azureFunctionMeta struct {
 	Properties struct {
 		VirtualNetworkSubnetID string `json:"virtualNetworkSubnetId"`
+		ServerFarmID           string `json:"serverFarmId"`
 	} `json:"properties"`
+	ReferencedResources []azureReferencedResource `json:"referenced_resources"`
+}
+
+// azureReferencedResource is a secret-free reference to a resource an app uses,
+// extracted from its app settings / connection strings by the collector. `Name`
+// is the resource's short name or host label (never a key or connection string).
+type azureReferencedResource struct {
+	Kind string `json:"kind"` // storage | keyvault | sql | postgres | mysql | redis | servicebus | cognitive
+	Name string `json:"name"`
 }
 
 // azureVNetRuleMeta resolves VNet service-endpoint / firewall rules that allow a
@@ -233,6 +245,8 @@ func (s *AzureSource) dispatchResourceEdges(
 		s.resolveNSGEdges(r, srcNode, resolve, addEdge)
 	case "microsoft.web/sites":
 		s.resolveFunctionEdges(r, srcNode, resolve, addEdge)
+	case "microsoft.network/privateendpoints":
+		s.resolvePrivateEndpointOwnEdges(r, srcNode, resolve, addEdge)
 	case "microsoft.storage/storageaccounts/fileservices":
 		// A file service is a sub-resource of its storage account; link it to the
 		// parent (collapsing its own id to the top-level resource).
@@ -409,6 +423,54 @@ func (s *AzureSource) resolvePrivateEndpointEdges(
 	}
 }
 
+// azurePrivateEndpointMeta captures a Private Endpoint's own linkage — the
+// consumer subnet it lives in and the PaaS resource(s) it connects to — as
+// populated by the private-endpoint collector lister.
+type azurePrivateEndpointMeta struct {
+	Properties struct {
+		Subnet                              *azureIDRef                   `json:"subnet"`
+		PrivateLinkServiceConnections       []azurePrivateLinkServiceConn `json:"privateLinkServiceConnections"`
+		ManualPrivateLinkServiceConnections []azurePrivateLinkServiceConn `json:"manualPrivateLinkServiceConnections"`
+	} `json:"properties"`
+}
+
+type azurePrivateLinkServiceConn struct {
+	Properties struct {
+		PrivateLinkServiceID string `json:"privateLinkServiceId"`
+	} `json:"properties"`
+}
+
+// resolvePrivateEndpointOwnEdges wires a Private Endpoint from its own metadata:
+// PE → consumer Subnet (HOSTED_ON) and PE → target PaaS resource (ASSOCIATED_WITH).
+// The target side covers resources (e.g. Key Vault) whose own meta doesn't expose
+// privateEndpointConnections, so resolvePrivateEndpointEdges alone misses them.
+// Together they make the private-link path traceable: subnet ← PE → PaaS resource.
+func (s *AzureSource) resolvePrivateEndpointOwnEdges(
+	r *CloudResourceRow,
+	peNode *core.DbNode,
+	resolve func(string) *core.DbNode,
+	addEdge func(src, dst *core.DbNode, rel core.RelationshipType, connectionType string),
+) {
+	var meta azurePrivateEndpointMeta
+	if err := json.Unmarshal(r.Meta, &meta); err != nil {
+		return
+	}
+	if meta.Properties.Subnet != nil && meta.Properties.Subnet.ID != "" {
+		if subnet := resolve(meta.Properties.Subnet.ID); subnet != nil {
+			addEdge(peNode, subnet, core.RelationshipHostedOn, "private_endpoint_subnet")
+		}
+	}
+	conns := append(meta.Properties.PrivateLinkServiceConnections, meta.Properties.ManualPrivateLinkServiceConnections...)
+	for _, c := range conns {
+		if c.Properties.PrivateLinkServiceID == "" {
+			continue
+		}
+		if target := resolve(c.Properties.PrivateLinkServiceID); target != nil && target.ID != peNode.ID {
+			addEdge(peNode, target, core.RelationshipAssociatedWith, "private_link")
+		}
+	}
+}
+
 // resolveUserAssignedIdentityEdges emits resource → ManagedIdentity (RUNS_AS) for
 // every user-assigned identity attached to a resource.
 func (s *AzureSource) resolveUserAssignedIdentityEdges(
@@ -486,4 +548,227 @@ func (s *AzureSource) resolveFunctionEdges(
 	if subnet := resolve(meta.Properties.VirtualNetworkSubnetID); subnet != nil {
 		addEdge(fnNode, subnet, core.RelationshipHostedOn, "function_subnet")
 	}
+	// App Service Plan is the compute host for the site (serverFarmId is always
+	// present on a web/site).
+	if plan := resolve(meta.Properties.ServerFarmID); plan != nil {
+		addEdge(fnNode, plan, core.RelationshipHostedOn, "app_service_plan")
+	}
+}
+
+// azureRefKindToNodeType maps a collector-extracted app-config reference kind to
+// the KG node type its Name should match.
+var azureRefKindToNodeType = map[string]core.NodeType{
+	"storage":    core.NodeTypeStorage,
+	"keyvault":   core.NodeTypeSecretVault,
+	"sql":        core.NodeTypeDatabase,
+	"postgres":   core.NodeTypeDatabase,
+	"mysql":      core.NodeTypeDatabase,
+	"redis":      core.NodeTypeCache,
+	"servicebus": core.NodeTypeMessageQueue,
+	"cognitive":  core.NodeTypeAIService,
+}
+
+// createAppReferenceEdges connects an App Service / Function to the data
+// resources it references in its app settings / connection strings — the
+// app -> Storage/KeyVault/Database/Cache/… dependency layer. It consumes the
+// secret-free references the collector extracted into meta.referenced_resources
+// (kind + resource name), matching each to a node by (nodeType, name).
+func (s *AzureSource) createAppReferenceEdges(resources []CloudResourceRow, lookup *NodeLookup, req *core.SourceBuildRequest) []*core.DbEdge {
+	edges := make([]*core.DbEdge, 0)
+	byTypeName := make(map[core.NodeType]map[string]*core.DbNode)
+	for nt, nodes := range lookup.byNodeType {
+		m := make(map[string]*core.DbNode, len(nodes))
+		for _, n := range nodes {
+			if name, ok := n.Properties["name"].(string); ok && name != "" {
+				m[strings.ToLower(name)] = n
+			}
+		}
+		byTypeName[nt] = m
+	}
+	arnIndex := lowercaseResourceIndex(lookup)
+
+	seen := make(map[string]bool)
+	for i := range resources {
+		r := &resources[i]
+		if !strings.EqualFold(r.ServiceName, "microsoft.web/sites") {
+			continue
+		}
+		var meta azureFunctionMeta
+		if err := json.Unmarshal(r.Meta, &meta); err != nil || len(meta.ReferencedResources) == 0 {
+			continue
+		}
+		if site := arnIndex[strings.ToLower(r.ARN)]; site != nil {
+			edges = append(edges, s.appRefEdgesForSite(site, meta.ReferencedResources, byTypeName, seen, req)...)
+		}
+	}
+	s.logger.Info("created Azure app-config reference edges", "edge_count", len(edges))
+	return edges
+}
+
+// appRefEdgesForSite emits deduplicated Function -> resource CALLS edges for one
+// site's referenced resources.
+func (s *AzureSource) appRefEdgesForSite(site *core.DbNode, refs []azureReferencedResource, byTypeName map[core.NodeType]map[string]*core.DbNode, seen map[string]bool, req *core.SourceBuildRequest) []*core.DbEdge {
+	edges := make([]*core.DbEdge, 0, len(refs))
+	for _, ref := range refs {
+		nt, ok := azureRefKindToNodeType[strings.ToLower(ref.Kind)]
+		if !ok || ref.Name == "" {
+			continue
+		}
+		target := byTypeName[nt][strings.ToLower(ref.Name)]
+		if target == nil || target.ID == site.ID {
+			continue
+		}
+		dk := site.ID + "|" + target.ID
+		if seen[dk] {
+			continue
+		}
+		seen[dk] = true
+		edges = append(edges, s.createEdge(site, target, core.RelationshipCalls,
+			map[string]interface{}{"connection_type": "app_config", "ref_kind": ref.Kind}, req))
+	}
+	return edges
+}
+
+// ============================================================================
+// RBAC role-assignment access edges (ServiceIdentity -> resource HAS_ACCESS_TO)
+// ============================================================================
+
+const (
+	azureRoleAssignmentService       = "microsoft.authorization/roleassignments"
+	azureUserAssignedIdentityService = "microsoft.managedidentity/userassignedidentities"
+)
+
+// azureBuiltInRoleNames maps the common Azure built-in role GUIDs to friendly
+// names so the emitted edges are self-describing. Unmapped roles fall back to the
+// raw GUID. Keys are lowercase GUIDs.
+var azureBuiltInRoleNames = map[string]string{
+	"4633458b-17de-408a-b874-0445c86b69e6": "Key Vault Secrets User",
+	"b86a8fe4-44ce-4948-aee5-eccb2c155cd7": "Key Vault Secrets Officer",
+	"21090545-7ca7-4776-b22c-e363652d74d2": "Key Vault Reader",
+	"ba92f5b4-2d11-453d-a403-e96b0029c9fe": "Storage Blob Data Contributor",
+	"2a2b9908-6ea1-4ae2-8e65-a410df84e7d1": "Storage Blob Data Reader",
+	"974c5e8b-45b9-4653-ba55-5f855dd0fb88": "Storage Queue Data Contributor",
+	"7f951dda-4ed3-4680-a7ca-43fe172d538d": "AcrPull",
+	"8311e382-0749-4cb8-b61a-304f252e45ec": "AcrPush",
+	"a97b65f3-24c7-4388-baec-2e87135dc908": "Cognitive Services User",
+	"00482a5a-887f-4fb3-b363-3b7fe8e74483": "Key Vault Crypto Service Encryption User",
+	"4d97b98b-1d4f-4787-a291-c67834d212e7": "Network Contributor",
+	"3913510d-42f4-4e42-8a64-420c390055eb": "Monitoring Metrics Publisher",
+	"de139f84-1756-47ae-9be6-808fbbe84772": "Website Contributor",
+	"b24988ac-6180-42a0-ab88-20f7382dd24c": "Contributor",
+	"acdd72a7-3385-48ef-bd42-f606fba81ae7": "Reader",
+	"8e3af657-a8ff-443c-a75c-2fe8c4bcb635": "Owner",
+}
+
+// azureRoleName extracts the trailing GUID from a roleDefinitionId and maps it to
+// a friendly built-in role name, falling back to the GUID.
+func azureRoleName(roleDefinitionID string) string {
+	guid := roleDefinitionID
+	if i := strings.LastIndex(guid, "/"); i >= 0 {
+		guid = guid[i+1:]
+	}
+	if name, ok := azureBuiltInRoleNames[strings.ToLower(guid)]; ok {
+		return name
+	}
+	return guid
+}
+
+// buildPrincipalIndex maps a managed-identity principalId (objectId) to the KG
+// node that acts under it, covering both identity kinds:
+//   - user-assigned: the userAssignedIdentity resource is the principal
+//     (meta.properties.principalId) → its own ServiceIdentity node.
+//   - system-assigned: the hosting resource is the principal
+//     (meta.identity.principalId) → that workload's node (VM/Function/AKS/…),
+//     so a role granted to a resource's system identity attributes to the
+//     resource directly.
+func (s *AzureSource) buildPrincipalIndex(resources []CloudResourceRow, arnIndex map[string]*core.DbNode) map[string]*core.DbNode {
+	idx := make(map[string]*core.DbNode)
+	for i := range resources {
+		r := &resources[i]
+		node := arnIndex[strings.ToLower(r.ARN)]
+		if node == nil {
+			node = arnIndex[strings.ToLower(r.ResourceID)]
+		}
+		if node == nil {
+			continue
+		}
+		var meta struct {
+			Identity struct {
+				PrincipalID string `json:"principalId"`
+			} `json:"identity"`
+			Properties struct {
+				PrincipalID string `json:"principalId"`
+			} `json:"properties"`
+		}
+		if err := json.Unmarshal(r.Meta, &meta); err != nil {
+			continue
+		}
+		// User-assigned identity resource: the identity itself is the principal.
+		if strings.EqualFold(r.ServiceName, azureUserAssignedIdentityService) && meta.Properties.PrincipalID != "" {
+			idx[strings.ToLower(meta.Properties.PrincipalID)] = node
+		}
+		// System-assigned identity: the hosting resource is the principal.
+		// Don't clobber a user-assigned mapping for the same principalId.
+		if meta.Identity.PrincipalID != "" {
+			if _, exists := idx[strings.ToLower(meta.Identity.PrincipalID)]; !exists {
+				idx[strings.ToLower(meta.Identity.PrincipalID)] = node
+			}
+		}
+	}
+	return idx
+}
+
+// createRoleAssignmentEdges turns Azure RBAC role assignments into
+// (identity|workload) -> resource HAS_ACCESS_TO edges. It resolves each
+// assignment's resource-level scope to a collected node and its principal to the
+// acting node via principalId — a user-assigned ServiceIdentity node, or, for a
+// system-assigned identity, the hosting workload node directly (see
+// buildPrincipalIndex). Resource-group/subscription-scoped assignments (no node)
+// and non-ServicePrincipal principals (users/groups) are skipped. Combined with
+// resource->ServiceIdentity RUNS_AS edges, this yields the app -> data-resource
+// access path.
+func (s *AzureSource) createRoleAssignmentEdges(resources []CloudResourceRow, lookup *NodeLookup, req *core.SourceBuildRequest) []*core.DbEdge {
+	edges := make([]*core.DbEdge, 0)
+	arnIndex := lowercaseResourceIndex(lookup)
+	principalIndex := s.buildPrincipalIndex(resources, arnIndex)
+	if len(principalIndex) == 0 {
+		return edges
+	}
+
+	seen := make(map[string]bool)
+	for i := range resources {
+		r := &resources[i]
+		if !strings.EqualFold(r.ServiceName, azureRoleAssignmentService) {
+			continue
+		}
+		var meta struct {
+			PrincipalID      string `json:"principalId"`
+			PrincipalType    string `json:"principalType"`
+			RoleDefinitionID string `json:"roleDefinitionId"`
+			Scope            string `json:"scope"`
+		}
+		if err := json.Unmarshal(r.Meta, &meta); err != nil {
+			continue
+		}
+		if !strings.EqualFold(meta.PrincipalType, "ServicePrincipal") || meta.PrincipalID == "" || meta.Scope == "" {
+			continue
+		}
+		idNode := principalIndex[strings.ToLower(meta.PrincipalID)]
+		if idNode == nil {
+			continue // principal is not a collected user-assigned identity
+		}
+		target := arnIndex[strings.ToLower(meta.Scope)]
+		if target == nil || target.ID == idNode.ID {
+			continue // RG/subscription scope (no node) or self-reference
+		}
+		dk := idNode.ID + "|" + target.ID
+		if seen[dk] {
+			continue
+		}
+		seen[dk] = true
+		edges = append(edges, s.createEdge(idNode, target, core.RelationshipHasAccessTo,
+			map[string]interface{}{"evidence": "rbac_role_assignment", "role": azureRoleName(meta.RoleDefinitionID)}, req))
+	}
+	s.logger.Info("created Azure RBAC access edges", "edge_count", len(edges))
+	return edges
 }

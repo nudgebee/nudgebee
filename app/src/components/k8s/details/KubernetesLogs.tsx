@@ -35,7 +35,8 @@ import CustomTicketLink from '@shared/CustomTicketLink';
 import cache from '@lib/cache';
 import { TicketsIcon } from '@assets';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
-import { Info as InfoIcon } from '@mui/icons-material';
+import { Info as InfoIcon, KeyboardArrowDown as KeyboardArrowDownIcon } from '@mui/icons-material';
+import { DropdownMenu } from '@ui/DropdownMenu';
 import { ds } from '@utils/colors';
 
 interface TimeRange {
@@ -76,7 +77,16 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
   const [errorMsg, setErrorMsg] = useState('');
   const [loading, setLoading] = useState(false);
   const [logProvider, setLogProvider] = useState('');
+  // The provider-native query the backend actually executed (e.g. LogQL),
+  // returned alongside the logs so Builder mode can show what was run.
+  const [executedQuery, setExecutedQuery] = useState('');
   const [operatorDescriptors, setOperatorDescriptors] = useState<OperatorDescriptor[] | undefined>(undefined);
+  // The provider the backend resolved as the account default, plus every
+  // provider the account has configured. Drives the provider switcher: a
+  // dropdown appears only when there is more than one to choose from.
+  const [defaultProvider, setDefaultProvider] = useState('');
+  const [defaultIndex, setDefaultIndex] = useState('');
+  const [availableProviders, setAvailableProviders] = useState<any[]>([]);
   const [runInitialQuery, setRunInitialQuery] = useState(false);
   const [time, setTime] = useState<any>(
     dateTime || {
@@ -169,6 +179,34 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
     setRunInitialQuery(false);
     setQueryRequestFromProps(null);
     setCheckMapper(false);
+  };
+
+  // Operator catalog for a given provider. Each available_providers entry
+  // carries its own supported_operator_descriptors; fall back to the default
+  // provider's entry, then to whatever catalog is currently loaded.
+  const getDescriptorsForProvider = (providerName: string): OperatorDescriptor[] | undefined => {
+    const entry = availableProviders?.find((p) => p?.provider === providerName);
+    if (entry?.supported_operator_descriptors) {
+      return entry.supported_operator_descriptors;
+    }
+    const defaultEntry = availableProviders?.find((p) => p?.provider === defaultProvider);
+    return defaultEntry?.supported_operator_descriptors ?? operatorDescriptors;
+  };
+
+  // Switch the active log provider. Treated like a fresh provider: clears the
+  // current query/results, swaps in the new provider's operator catalog, and
+  // resets the ES index (restoring the configured default only when switching
+  // back to the account default). Flipping logProvider re-runs the query-init
+  // effect, which seeds the new provider's default query and editor mode.
+  const handleProviderChange = (newProvider: string) => {
+    if (!newProvider || newProvider === logProvider) {
+      return;
+    }
+    const descriptors = getDescriptorsForProvider(newProvider);
+    resetStates();
+    setEsIndex(newProvider === defaultProvider ? defaultIndex : '');
+    setOperatorDescriptors(descriptors);
+    setLogProvider(newProvider);
   };
 
   const handleLogQueryFromDrilldown = useCallback(
@@ -342,6 +380,14 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
       const now = new Date().getTime();
       const effectiveQuery = logQuery;
 
+      // Only send log_provider when the user has switched away from the account
+      // default. Omitting it for the default keeps the request byte-identical to
+      // the single-provider behavior (backend resolves the default itself). The
+      // backend resolves the integration source from the provider type, so we
+      // intentionally do not send log_provider_source (it isn't exposed per
+      // available provider and a wrong source would 400).
+      const providerOverride = logProvider && defaultProvider && logProvider !== defaultProvider ? logProvider : undefined;
+
       try {
         if (accountId === 'demo') {
           setLoading(false);
@@ -357,6 +403,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
             query: '',
             limit: logLimit,
             offset: 0,
+            ...(providerOverride ? { log_provider: providerOverride } : {}),
             query_request: {
               where: { _and: queryRequestFromProps },
             },
@@ -370,8 +417,9 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           if (error) {
             throw new Error(parseHttpResponseBodyMessage(response.data));
           }
-          const allResults = response?.data?.data?.logs_list || [];
+          const allResults = response?.data?.data?.logs_list?.logs || [];
           setRawLogs(allResults);
+          setExecutedQuery(response?.data?.data?.logs_list?.query || '');
           fetchTicketsForLogs(allResults);
           formatLogResults(allResults);
           setLoading(false);
@@ -394,6 +442,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           query: payloadQuery,
           limit: logLimit,
           offset: 0,
+          ...(providerOverride ? { log_provider: providerOverride } : {}),
         };
 
         if ((logProvider === 'pinot' || logProvider === 'hive') && qLEditor === 'build') {
@@ -578,8 +627,9 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           throw new Error(parseHttpResponseBodyMessage(response.data));
         }
 
-        const allResults = response?.data?.data?.logs_list || [];
+        const allResults = response?.data?.data?.logs_list?.logs || [];
         setRawLogs(allResults);
+        setExecutedQuery(response?.data?.data?.logs_list?.query || '');
         fetchTicketsForLogs(allResults);
         formatLogResults(allResults);
         setLoading(false);
@@ -596,6 +646,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
     [
       logQuery,
       logProvider,
+      defaultProvider,
       accountId,
       time,
       logLimit,
@@ -616,20 +667,28 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
     const initProvider = async () => {
       setLogProvider('');
       setOperatorDescriptors(undefined);
+      setDefaultProvider('');
+      setDefaultIndex('');
+      setAvailableProviders([]);
       resetStates();
       if (accountId === 'demo') {
         setLogProvider('loki');
+        setDefaultProvider('loki');
         return;
       }
 
-      const cacheKey = `${accountId}-log-v3`;
-      const indexCacheKey = `${accountId}-log-index`;
+      // v4: cache payload widened to carry available_providers + default_index
+      // so the switcher can render from cache without a refetch.
+      const cacheKey = `${accountId}-log-v4`;
       const cached = cache.get(cacheKey);
 
       if (cached && typeof cached === 'object' && cached.provider) {
         setLogProvider(cached.provider);
+        setDefaultProvider(cached.provider);
         setOperatorDescriptors(cached.operator_descriptors);
-        setEsIndex(cache.get(indexCacheKey) || '');
+        setAvailableProviders(cached.available_providers || []);
+        setDefaultIndex(cached.default_index || '');
+        setEsIndex(cached.default_index || '');
         return;
       }
 
@@ -644,17 +703,30 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           return;
         }
 
-        const provider =
-          res?.data?.data?.observability_get_default_provider?.provider || selectedCluster?.agent?.connection_status?.logsConnectionProvider || '';
-        const defaultIndex = res?.data?.data?.observability_get_default_provider?.default_index || '';
-        const descriptors = res?.data?.data?.observability_get_default_provider?.capabilities?.supported_operator_descriptors;
-        setLogProvider(provider);
-        setOperatorDescriptors(descriptors);
-        setEsIndex(defaultIndex);
-        if (defaultIndex) {
-          cache.set(indexCacheKey, defaultIndex, 60 * 60);
+        const obs = res?.data?.data?.observability_get_default_provider;
+        const provider = obs?.provider || selectedCluster?.agent?.connection_status?.logsConnectionProvider || '';
+        const resolvedDefaultIndex = obs?.default_index || '';
+        const descriptors = obs?.capabilities?.supported_operator_descriptors;
+        // Drop any malformed entry without a provider name so the dropdown map
+        // never hits snakeToTitleCase(undefined) or builds an invalid option id.
+        const providers = Array.isArray(obs?.available_providers) ? obs.available_providers.filter((p: any) => p?.provider) : [];
+        // Guarantee the active default is always one of the selectable options
+        // (it can be missing when `provider` came from the cluster fallback),
+        // so it shows a check-mark and the user can switch back to it.
+        if (provider && !providers.some((p: any) => p?.provider === provider)) {
+          providers.unshift({ provider, supported_operator_descriptors: descriptors });
         }
-        cache.set(cacheKey, { provider, operator_descriptors: descriptors }, 60 * 60);
+        setLogProvider(provider);
+        setDefaultProvider(provider);
+        setOperatorDescriptors(descriptors);
+        setAvailableProviders(providers);
+        setDefaultIndex(resolvedDefaultIndex);
+        setEsIndex(resolvedDefaultIndex);
+        cache.set(
+          cacheKey,
+          { provider, operator_descriptors: descriptors, available_providers: providers, default_index: resolvedDefaultIndex },
+          60 * 60
+        );
       } catch (error: any) {
         snackbar.error(error.message || 'Failed to fetch default provider');
       }
@@ -663,7 +735,10 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
     if (accountId) {
       initProvider();
     }
-  }, [accountId, selectedCluster]);
+    // Re-init only on a real account change or when the cluster's fallback log
+    // provider changes — NOT on every selectedCluster identity churn, which
+    // would silently revert a user's provider selection back to the default.
+  }, [accountId, selectedCluster?.agent?.connection_status?.logsConnectionProvider]);
 
   // 2. Parse URL Params & Initialize Query
   useEffect(() => {
@@ -776,6 +851,11 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
   }, [interval]);
 
   // 4. Trigger Fetch when Time Changes (if polling or manual date change)
+  // NOTE: do not add `logQuery` to the deps. On a provider switch this effect
+  // re-runs (logProvider changed) while resetStates() has already cleared
+  // logQuery in the same batch, so it no-ops; the default query is seeded by
+  // the URL-init effect on a later render where these deps are unchanged.
+  // Adding logQuery here would double-fetch on every switch.
   useEffect(() => {
     if (logProvider && (pollLogs || time.startTime !== dateTime.startTime)) {
       if (logQuery || queryRequestFromProps) {
@@ -924,9 +1004,8 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
             </>
           }
         >
-          <Box
-            key={'log-provider-info'}
-            sx={{
+          {(() => {
+            const badgeSx = {
               display: 'flex',
               alignItems: 'center',
               gap: 'var(--ds-space-2)',
@@ -935,28 +1014,74 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
               borderRadius: 'var(--ds-radius-md)',
               border: '1px solid var(--ds-gray-alpha-200)',
               minWidth: 'fit-content',
-            }}
-          >
-            <Text
-              value='Log Provider:'
-              sx={{
-                fontSize: 'var(--ds-text-body-lg)',
-                fontWeight: 'var(--ds-font-weight-medium)',
-                color: 'var(--ds-gray-600)',
-                whiteSpace: 'nowrap',
-              }}
-            />
-            <CloudProviderIcon cloud_provider={logProvider} width='20px' height='20px' />
-            <Text
-              value={snakeToTitleCase(logProvider)}
-              sx={{
-                fontSize: 'var(--ds-text-body-lg)',
-                fontWeight: 'var(--ds-font-weight-semibold)',
-                color: 'var(--ds-gray-700)',
-                whiteSpace: 'nowrap',
-              }}
-            />
-          </Box>
+            } as const;
+            const badgeInner = (
+              <>
+                <Text
+                  value='Log Provider:'
+                  sx={{
+                    fontSize: 'var(--ds-text-body-lg)',
+                    fontWeight: 'var(--ds-font-weight-medium)',
+                    color: 'var(--ds-gray-600)',
+                    whiteSpace: 'nowrap',
+                  }}
+                />
+                <CloudProviderIcon cloud_provider={logProvider} width='20px' height='20px' />
+                <Text
+                  value={snakeToTitleCase(logProvider)}
+                  sx={{
+                    fontSize: 'var(--ds-text-body-lg)',
+                    fontWeight: 'var(--ds-font-weight-semibold)',
+                    color: 'var(--ds-gray-700)',
+                    whiteSpace: 'nowrap',
+                  }}
+                />
+              </>
+            );
+
+            // Only offer a switcher when the account has more than one
+            // configured log provider; otherwise keep the static badge.
+            if (availableProviders.length <= 1) {
+              return (
+                <Box key={'log-provider-info'} sx={badgeSx}>
+                  {badgeInner}
+                </Box>
+              );
+            }
+
+            return (
+              <DropdownMenu
+                key={'log-provider-info'}
+                align='start'
+                minWidth={220}
+                trigger={
+                  <Box
+                    component='button'
+                    type='button'
+                    id='log-provider-switcher'
+                    sx={{
+                      ...badgeSx,
+                      font: 'inherit',
+                      cursor: 'pointer',
+                      transition: 'border-color 120ms ease, background-color 120ms ease',
+                      '&:hover': { borderColor: 'var(--ds-gray-300)', backgroundColor: 'var(--ds-gray-alpha-200)' },
+                    }}
+                  >
+                    {badgeInner}
+                    <KeyboardArrowDownIcon sx={{ fontSize: 'var(--ds-text-heading)', color: 'var(--ds-gray-500)' }} />
+                  </Box>
+                }
+                items={availableProviders.map((p) => ({
+                  id: `log-provider-option-${p.provider}`,
+                  label: snakeToTitleCase(p.provider),
+                  icon: <CloudProviderIcon cloud_provider={p.provider} width='16px' height='16px' />,
+                  kbd: p.provider === logProvider ? '✓' : undefined,
+                  searchText: p.provider,
+                  onSelect: () => handleProviderChange(p.provider),
+                }))}
+              />
+            );
+          })()}
           {showQueryTextBox && (
             <ToggleGroup
               key='query-mode-toggle'
@@ -994,6 +1119,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
                   if (e.index !== undefined) setEsIndex(e.index);
                 }}
                 logProvider={logProvider}
+                providerOverride={logProvider && defaultProvider && logProvider !== defaultProvider ? logProvider : undefined}
                 operatorDescriptors={operatorDescriptors}
                 params={{ ...time }}
                 queryItems={logQueryItems}
@@ -1009,6 +1135,16 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
                 providerType={'logs'}
                 initialEsIndex={esIndex}
               />
+            </Box>
+          )}
+          {executedQuery && (
+            <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 'var(--ds-space-1)', px: 'var(--ds-space-2)', py: 'var(--ds-space-1)' }}>
+              <Box component='span' sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 600, color: ds.gray[600], whiteSpace: 'nowrap' }}>
+                {logProvider ? `${logProvider} query:` : 'Query:'}
+              </Box>
+              <Box component='span' sx={{ fontFamily: 'monospace', fontSize: 'var(--ds-text-small)', color: ds.gray[700], wordBreak: 'break-all' }}>
+                {executedQuery}
+              </Box>
             </Box>
           )}
           <KubernetesTable2

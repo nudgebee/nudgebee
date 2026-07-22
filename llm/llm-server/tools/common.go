@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/tools/core"
@@ -571,81 +570,87 @@ func parseTimeValue(value any) (time.Time, error) {
 // It also checks for a 'range' or 'duration' key to calculate start time relative to end time (defaults to Now).
 // It supports various time formats including RFC3339 and Unix timestamps (s, ms, ns).
 func ExtractStartEndtimeFromLabels(nbRequestContext core.NbToolContext, labels map[string]any) (time.Time, time.Time, error) {
+	// Caller/agent-provided time controls ALWAYS take priority over the ambient
+	// event labels carried in QueryConfig.Labels. An event-triggered conversation
+	// seeds QueryConfig.Labels with the alert's start/end epoch (often a 29s–2m
+	// window); when the LLM explicitly asks for e.g. {"range":"1h"} that request
+	// must win, not the narrow event window. We therefore resolve the caller
+	// labels FIRST — including the range branch — and only fall back to event
+	// labels when the caller supplied no usable time control.
+	//
+	// Resolving each set in isolation (rather than merging them) is what fixes the
+	// long-standing bug where an explicit range lost to the event's start/end
+	// pair: within a single set the explicit-pair check runs before the range
+	// check, so a merged event pair would always shadow a caller range.
+	if start, end, ok := resolveWindowFromLabels(labels); ok {
+		return start, end, nil
+	}
+	if start, end, ok := resolveWindowFromLabels(nbRequestContext.QueryConfig.Labels); ok {
+		return start, end, nil
+	}
+	return time.Time{}, time.Time{}, errors.New("no valid start/end time key pair or range found in labels")
+}
+
+// resolveWindowFromLabels derives a (start, end) window from a single label set.
+// Priority within the set: an explicit start/end pair wins; otherwise a
+// range/duration is applied, anchored to an explicit end key if present, else to
+// now. Returns ok=false when the set holds no usable time information so the
+// caller can fall back to another source (e.g. event labels).
+func resolveWindowFromLabels(labels map[string]any) (time.Time, time.Time, bool) {
 	if labels == nil {
-		labels = map[string]any{}
+		return time.Time{}, time.Time{}, false
 	}
 
-	// Merge event labels as base, then overlay agent/LLM-provided labels on top.
-	// This ensures LLM-specified times (start_time/end_time) take priority over
-	// event label times (start/end epoch millis) which are often narrow windows.
-	labelsFinal := map[string]any{}
-	if nbRequestContext.QueryConfig.Labels != nil {
-		maps.Copy(labelsFinal, nbRequestContext.QueryConfig.Labels)
-	}
-	maps.Copy(labelsFinal, labels)
-
-	// 1. Check for explicit start/end pairs FIRST
+	// 1. Explicit start/end pairs.
 	keyPairs := [][2]string{
 		{"start_time", "end_time"},
 		{"start", "end"},
 		{"starttime", "endtime"},
 	}
-
 	for _, pair := range keyPairs {
-		startKey, endKey := pair[0], pair[1]
-
-		startVal, startOk := labelsFinal[startKey]
-		endVal, endOk := labelsFinal[endKey]
-
-		if startOk && endOk {
-			startTime, err := parseTimeValue(startVal)
-			if err != nil {
-				continue
-			}
-
-			parsedEndTime, err := parseTimeValue(endVal)
-			if err != nil {
-				continue
-			}
-
-			// Swap if start > end (malformed event labels)
-			if startTime.After(parsedEndTime) {
-				startTime, parsedEndTime = parsedEndTime, startTime
-			}
-
-			return startTime, parsedEndTime, nil
+		startVal, startOk := labels[pair[0]]
+		endVal, endOk := labels[pair[1]]
+		if !startOk || !endOk {
+			continue
 		}
+
+		startTime, err := parseTimeValue(startVal)
+		if err != nil {
+			continue
+		}
+		endTime, err := parseTimeValue(endVal)
+		if err != nil {
+			continue
+		}
+
+		// Swap if start > end (malformed event labels).
+		if startTime.After(endTime) {
+			startTime, endTime = endTime, startTime
+		}
+		return startTime, endTime, true
 	}
 
-	// Default End Time is Now
+	// 2. Range/duration, anchored to an explicit end key if present, else now.
 	endTime := time.Now()
-
-	// Check if end time is explicitly provided
-	endKeys := []string{"end_time", "end", "endtime"}
-	for _, k := range endKeys {
-		if val, ok := labelsFinal[k]; ok {
-			parsedEnd, err := parseTimeValue(val)
-			if err == nil {
+	for _, k := range []string{"end_time", "end", "endtime"} {
+		if val, ok := labels[k]; ok {
+			if parsedEnd, err := parseTimeValue(val); err == nil {
 				endTime = parsedEnd
 				break
 			}
 		}
 	}
-
-	// Check for Duration/Range
-	rangeKeys := []string{"range", "duration"}
-	for _, k := range rangeKeys {
-		if val, ok := labelsFinal[k]; ok {
+	for _, k := range []string{"range", "duration"} {
+		if val, ok := labels[k]; ok {
 			if valStr, ok := val.(string); ok {
-				duration, err2 := ParseDuration(valStr)
-				if err2 == nil {
-					return endTime.Add(-duration), endTime, nil
+				if duration, err := ParseDuration(valStr); err == nil {
+					return endTime.Add(-duration), endTime, true
 				}
 			}
 		}
 	}
 
-	return time.Time{}, time.Time{}, errors.New("no valid start/end time key pair or range found in labels")
+	return time.Time{}, time.Time{}, false
 }
 
 // ExpandNarrowTimeWindow widens a time range that is too narrow for log queries.

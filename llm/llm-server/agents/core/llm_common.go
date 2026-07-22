@@ -552,6 +552,22 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 	// RUN ASYNCHRONOUSLY to prevent DB latency from blocking the response
 	bgCtx := security.NewRequestContext(context.Background(), ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 	trackFn := func() {
+		// Best-effort background metrics write — never let a panic crash the
+		// process. Guards against a typed-nil DAO (non-nil interface wrapping a
+		// nil concrete, e.g. a test fake embedding a nil IConversationDao swapped
+		// in concurrently) or a partially-initialised DAO during early startup.
+		defer func() {
+			if r := recover(); r != nil {
+				// Fall back to slog.Default() — bgCtx's logger can be nil (some
+				// test contexts pass a nil logger), and logging on it here would
+				// be a second, unrecovered panic.
+				logger := slog.Default()
+				if bgCtx != nil && bgCtx.GetLogger() != nil {
+					logger = bgCtx.GetLogger()
+				}
+				logger.Error("trackTokenUsage: recovered from panic in background token-usage write", "panic", r)
+			}
+		}()
 		trackTokenUsage(
 			bgCtx,
 			conversationId,
@@ -695,9 +711,19 @@ func getDetailedTokenInfo(response *llms.ContentResponse, cacheResp *CacheRespon
 		}
 	}
 
-	// The total input to the model is the sum of tokens read from cache and the new (non-cached) tokens.
-	// Anthropic provides "InputTokens" as the non-cached part when caching is active.
-	info.InputTokens += info.CacheReadTokens
+	// Reconcile "InputTokens" to a unified "total input (fresh + cached)" convention.
+	// Providers disagree on what input_tokens means when caching is active:
+	//   - Anthropic: input_tokens is the NON-cached (fresh) portion; total = fresh + cache_read.
+	//   - Google AI: PromptTokenCount is ALREADY the total effective prompt size and INCLUDES
+	//     cached tokens, per https://ai.google.dev/api/generate-content
+	//     ("this includes the number of tokens in the cached content"). Adding cache_read here
+	//     would double-count the cached portion — inflating InputTokens by ~2× on cache hits,
+	//     which corrupts downstream cache-hit-rate display and per-token cost calculations.
+	// The googleai client sets NonCachedInputTokens (see llms/googleai/googleai.go) precisely
+	// so we can detect its convention; presence of that key means "already includes cache".
+	if _, alreadyIncludesCache := generateInfo["NonCachedInputTokens"]; !alreadyIncludesCache {
+		info.InputTokens += info.CacheReadTokens
+	}
 
 	// Calculate total tokens
 	if val, ok := generateInfo["total_tokens"]; ok {
@@ -2464,7 +2490,22 @@ func recordTokenUsageFailure(
 	bgCtx := security.NewRequestContext(context.Background(), ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 	insertFn := func() {
 		// Best-effort: skip if the DAO is unavailable rather than panicking this
-		// background goroutine on a nil interface (see trackTokenUsage).
+		// background goroutine on a nil interface (see trackTokenUsage). The
+		// recover also covers a typed-nil DAO — a non-nil interface wrapping a
+		// nil concrete (e.g. a test fake embedding a nil IConversationDao) — that
+		// the `== nil` check below cannot catch.
+		defer func() {
+			if r := recover(); r != nil {
+				// Fall back to slog.Default() — bgCtx's logger can be nil (some
+				// test contexts pass a nil logger), and logging on it here would
+				// be a second, unrecovered panic.
+				logger := slog.Default()
+				if bgCtx != nil && bgCtx.GetLogger() != nil {
+					logger = bgCtx.GetLogger()
+				}
+				logger.Error("recordTokenUsageFailure: recovered from panic in background token-usage write", "panic", r)
+			}
+		}()
 		dao := GetConversationDao()
 		if dao == nil {
 			bgCtx.GetLogger().Debug("recordTokenUsageFailure: skipping — conversation DAO unavailable")

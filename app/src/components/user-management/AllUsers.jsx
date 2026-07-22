@@ -292,7 +292,9 @@ const AllUsers = () => {
                   componentFn: (option, query) => (
                     <ListingLayout id='box-user-integration-profiles'>
                       <ListingLayout.Body>
-                        <IntegrationProfiles userId={query.userId} readOnly hideHeading />
+                        <Box sx={{ py: 2 }}>
+                          <IntegrationProfiles userId={query.userId} readOnly hideHeading />
+                        </Box>
                       </ListingLayout.Body>
                     </ListingLayout>
                   ),

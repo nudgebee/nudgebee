@@ -34,6 +34,7 @@ type IntegrationUserAccount struct {
 	AccountName         sql.NullString `db:"account_name" json:"account_name"`
 	IntegrationType     string         `db:"integration_type" json:"integration_type"`
 	IntegrationId       sql.NullString `db:"integration_id" json:"-"`
+	IntegrationName     sql.NullString `db:"integration_name" json:"-"`
 	ExternalUserId      string         `db:"external_user_id" json:"external_user_id"`
 	ExternalUsername    sql.NullString `db:"external_username" json:"external_username"`
 	ExternalEmail       sql.NullString `db:"external_email" json:"external_email"`
@@ -42,6 +43,7 @@ type IntegrationUserAccount struct {
 	MappedUserId        sql.NullString `db:"mapped_user_id" json:"mapped_user_id"`
 	MappedVia           sql.NullString `db:"mapped_via" json:"mapped_via"`
 	MappedBy            sql.NullString `db:"mapped_by" json:"-"`
+	MappedByName        sql.NullString `db:"mapped_by_name" json:"-"`
 	LastSyncedAt        sql.NullTime   `db:"last_synced_at" json:"last_synced_at"`
 	CreatedAt           time.Time      `db:"created_at" json:"created_at"`
 	UpdatedAt           time.Time      `db:"updated_at" json:"updated_at"`
@@ -62,12 +64,22 @@ type IntegrationAccountDto struct {
 	AccountId       string `json:"account_id"`
 	AccountName     string `json:"account_name"`
 	IntegrationType string `json:"integration_type"`
+	// IntegrationId/IntegrationName identify the specific configured integration
+	// instance (e.g. one of two ServiceNow connections). Empty for legacy rows
+	// synced before instances were tracked. The UI keys per-instance mapping on
+	// these so two instances of the same type are independently mappable.
+	IntegrationId   string `json:"integration_id"`
+	IntegrationName string `json:"integration_name"`
 	ExternalUserId  string `json:"external_user_id"`
 	Username        string `json:"username"`
 	Email           string `json:"email"`
 	DisplayName     string `json:"display_name"`
 	MappedUserId    string `json:"mapped_user_id"`
 	MappedVia       string `json:"mapped_via"`
+	// MappedByName is the username of the admin who manually mapped this account
+	// (empty for auto-email mappings). LastSyncedAt is RFC3339, empty if never synced.
+	MappedByName string `json:"mapped_by_name"`
+	LastSyncedAt string `json:"last_synced_at"`
 }
 
 type CreateAccountMappingRequest struct {
@@ -87,16 +99,24 @@ type AccountMappingResponse struct {
 }
 
 func toIntegrationAccountDto(a IntegrationUserAccount) IntegrationAccountDto {
+	lastSynced := ""
+	if a.LastSyncedAt.Valid {
+		lastSynced = a.LastSyncedAt.Time.Format(time.RFC3339)
+	}
 	return IntegrationAccountDto{
 		Id:              a.Id,
 		AccountId:       a.AccountId.String,
 		AccountName:     a.AccountName.String,
 		IntegrationType: a.IntegrationType,
+		IntegrationId:   a.IntegrationId.String,
+		IntegrationName: a.IntegrationName.String,
 		ExternalUserId:  a.ExternalUserId,
 		Username:        a.ExternalUsername.String,
 		Email:           a.ExternalEmail.String,
 		DisplayName:     a.ExternalDisplayName.String,
 		MappedUserId:    a.MappedUserId.String,
 		MappedVia:       a.MappedVia.String,
+		MappedByName:    a.MappedByName.String,
+		LastSyncedAt:    lastSynced,
 	}
 }

@@ -474,14 +474,14 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'row', width: '100%', gap: ds.space[3], padding: `${ds.space[5]} 0` }}>
-      <WidgetCard sx={eventCardSx('widget-total-events')} {...cardInteractionProps({}, 'widget-total-events')}>
+      <WidgetCard sx={eventCardSx('widget-total-events')} {...cardInteractionProps({ status: 'ALL' }, 'widget-total-events')}>
         <Stat
           size='md'
           sx={clickable ? { cursor: 'inherit' } : undefined}
           label='Total Events'
           info={{
             tooltip:
-              'Total Events tracks the volume of currently firing events from your monitored clusters in the last 24 hours. The percentage indicates the change in event volume compared to the previous 24-hour period.',
+              'Total Events tracks the total volume of alerts ingested from your monitored clusters in the last 24 hours, across every status. The percentage indicates the change in event volume compared to the previous 24-hour period.',
             position: 'right',
           }}
           value={
@@ -500,7 +500,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
 
       <WidgetCard
         sx={eventCardSx('widget-needs-attention')}
-        {...cardInteractionProps({ nbStatus: 'OPEN,ACTION_REQUIRED' }, 'widget-needs-attention')}
+        {...cardInteractionProps({ nbStatus: 'OPEN,ACTION_REQUIRED', status: 'ALL' }, 'widget-needs-attention')}
       >
         <Stat
           size='md'
@@ -525,14 +525,14 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
         />
       </WidgetCard>
 
-      <WidgetCard sx={eventCardSx('widget-new-issues')} {...cardInteractionProps({ issueType: 'new' }, 'widget-new-issues')}>
+      <WidgetCard sx={eventCardSx('widget-new-issues')} {...cardInteractionProps({ issueType: 'new', status: 'ALL' }, 'widget-new-issues')}>
         <Stat
           size='md'
           sx={clickable ? { cursor: 'inherit' } : undefined}
           label='New Issues'
           info={{
             tooltip:
-              'Distinct issues first seen in the last 7 days that are currently firing in the last 24 hours — net-new problems as opposed to recurring noise. The percentage compares against the previous 24-hour period.',
+              'Distinct issues first seen in the last 7 days that occurred in the last 24 hours, across every status — net-new problems as opposed to recurring noise. The percentage compares against the previous 24-hour period.',
             position: 'right',
           }}
           value={
@@ -549,14 +549,17 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
         />
       </WidgetCard>
 
-      <WidgetCard sx={eventCardSx('widget-high-severity')} {...cardInteractionProps({ eventPriority: 'HIGH' }, 'widget-high-severity')}>
+      <WidgetCard
+        sx={eventCardSx('widget-high-severity')}
+        {...cardInteractionProps({ eventPriority: 'HIGH', status: 'ALL' }, 'widget-high-severity')}
+      >
         <Stat
           size='md'
           sx={clickable ? { cursor: 'inherit' } : undefined}
           label='High Severity'
           info={{
             tooltip:
-              'Number of High-priority firing events in the last 24 hours, by the source system’s severity. The percentage compares against the previous 24-hour period.',
+              'Number of High-priority events ingested in the last 24 hours, across every status, by the source system’s severity. The percentage compares against the previous 24-hour period.',
             position: 'right',
           }}
           value={

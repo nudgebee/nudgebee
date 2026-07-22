@@ -76,6 +76,110 @@ func TestParseDelegateInput_MaxIterationsCapped(t *testing.T) {
 	assert.Equal(t, maxDelegateMaxIterations, maxIter)
 }
 
+// TestParseDelegateInput_NotebookMisuseRejected pins the notebook-misuse
+// guard added 2026-06-28. 2026-06-27 production sample (post-#32246 and
+// #32334): 8 of 28 (~28.6%) delegate_agent calls started with "update the
+// notebook" prompts — essentially unchanged from the 32% pre-#32246
+// baseline. The description has prohibited this since #32246 ("DO NOT use
+// to record findings — write to your own notebook with <update_notebook>")
+// but description-only doesn't move misuse share (same lesson as the
+// think-tool tighten arc; see PR #33080). This guard rejects at the tool
+// boundary.
+func TestParseDelegateInput_NotebookMisuseRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		// Verbatim from production samples (post-#32246 misuse window).
+		prompt string
+	}{
+		{
+			name:   "update the notebook + scope+hypothesis tree",
+			prompt: "Update the notebook with the current investigation status for services-server errors in namespace nudgebee. \n\n## Scope\n- Target: services-server in namespace nudgebee\n- Symptom: Recurring errors\n",
+		},
+		{
+			name:   "update the notebook + DONE bullets",
+			prompt: "Update the notebook: [DONE] Identify pod in namespace-70 and check health. [DOING] Check namespace-70 deployment origin.",
+		},
+		{
+			name:   "update the notebook with the final findings",
+			prompt: "Update the notebook with the final findings: ## Scope ...",
+		},
+		{
+			name:   "update the notebook with the following changes",
+			prompt: "Update the notebook with the following changes: ## Hypothesis Tree ...",
+		},
+		{
+			name:   "updating the notebook (gerund form)",
+			prompt: "Updating the notebook to mark H2 as SUPPORTED based on evidence E5.",
+		},
+		{
+			name:   "lowercase + no article",
+			prompt: "update notebook with finalized status.",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, _, err := parseDelegateInput(toolcore.NBToolCallRequest{
+				Arguments: map[string]any{"prompt": c.prompt},
+			})
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "starts with 'update the notebook'",
+				"rejection error must name the misuse pattern explicitly")
+			assert.Contains(t, err.Error(), "<update_notebook>",
+				"rejection error must point at the correct path (use the XML tag in your thought)")
+		})
+	}
+}
+
+// TestParseDelegateInput_LegitimateInvestigationPromptsPass pins the
+// false-positive bound: the legitimate "investigate / check / fetch /
+// find / verify / identify / search / examine" verb-led prompts that
+// dominate the production data must continue to pass.
+func TestParseDelegateInput_LegitimateInvestigationPromptsPass(t *testing.T) {
+	cases := []struct {
+		name string
+		// Verbatim from production samples (post-#32246 legitimate use).
+		prompt string
+	}{
+		{
+			name:   "Investigate verb",
+			prompt: "Investigate the Azure authentication failure (error 7000222: client secret has expired) and DNS resolution issues for the cloud-collector-server workload.",
+		},
+		{
+			name:   "Check verb",
+			prompt: "Check if there are any recent logs (last 1h) for the other pods in the StatefulSet: ordered-app-1 and ordered-app-2 in namespace otel-demo.",
+		},
+		{
+			name:   "Fetch verb",
+			prompt: "The data-processor pod in namespace-70 is running a simulation script. Please fetch the raw last 50 lines of logs for pod data-processor-7695d68bb8-zwq5c.",
+		},
+		{
+			name:   "Find verb",
+			prompt: "Find any workload or pod related to 'api-limiter' or 'rate-limit' across the entire cluster.",
+		},
+		{
+			name:   "Verify verb",
+			prompt: "Verify the environment variables in curl-deployment and identify which downstream service it is calling.",
+		},
+		{
+			name: "false-positive guard: 'notebook' mid-prompt is legitimate",
+			// A prompt that mentions notebook but doesn't START with
+			// the misuse verb must pass — investigating notebook-related
+			// bugs is a legitimate sub-question.
+			prompt: "Investigate why the notebook update logic in agent_planner.go is dropping AdditionalDetails fields on the persistence path.",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotPrompt, _, _, err := parseDelegateInput(toolcore.NBToolCallRequest{
+				Arguments: map[string]any{"prompt": c.prompt},
+			})
+			assert.NoError(t, err,
+				"legitimate investigation prompt must not be rejected by the notebook-misuse guard")
+			assert.Equal(t, c.prompt, gotPrompt)
+		})
+	}
+}
+
 func TestParseDelegateInput_MaxIterationsBelowMinRejected(t *testing.T) {
 	// max_iterations=1 is the empirical tell for misuse: pre-finish narration or
 	// text-formatting work that should have been a plain LLM call. The parser must

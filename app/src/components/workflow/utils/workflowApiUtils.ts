@@ -55,6 +55,19 @@ export const createWorkflowDefinition = (
  * matching the LLM agent's auto-save path (agent_workflow_builder.go:1109).
  * The runbook server ignores this field on update; pass it only on create.
  */
+export const workflowTagsToMap = (tags: string[]): Record<string, any> => {
+  return tags.reduce((acc, tag) => {
+    // Parse tags that contain colon to separate key and value
+    const colonIndex = tag.indexOf(':');
+    if (colonIndex > 0) {
+      const key = tag.substring(0, colonIndex).trim();
+      const value = tag.substring(colonIndex + 1).trim();
+      return { ...acc, [key]: value };
+    }
+    return { ...acc, [tag]: '' };
+  }, {} as Record<string, any>);
+};
+
 export const createWorkflowRequest = (
   name: string,
   definition: WorkflowDefinition,
@@ -64,16 +77,7 @@ export const createWorkflowRequest = (
   return {
     name: name,
     definition: definition,
-    tags: workflowSettings.tags.reduce((acc, tag) => {
-      // Parse tags that contain colon to separate key and value
-      const colonIndex = tag.indexOf(':');
-      if (colonIndex > 0) {
-        const key = tag.substring(0, colonIndex).trim();
-        const value = tag.substring(colonIndex + 1).trim();
-        return { ...acc, [key]: value };
-      }
-      return { ...acc, [tag]: '' };
-    }, {} as Record<string, any>),
+    tags: workflowTagsToMap(workflowSettings.tags),
     status: workflowSettings.status,
     ...(aiSessionId ? { created_from_session_id: aiSessionId } : {}),
   };

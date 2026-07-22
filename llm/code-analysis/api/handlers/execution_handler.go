@@ -79,6 +79,10 @@ var (
 	// filesystem access. Treat references as out-of-scope for the /dev rule
 	// (e.g. `> /dev/null`, `2>&1`, `cat /dev/urandom | head -c N`).
 	devPseudoDeviceRe = regexp.MustCompile(`(?i)/dev/(null|stdout|stderr|stdin|zero|random|urandom|fd/\d+|tty)\b`)
+	// quoteStripper removes both double and single quotes so that quote-interleaved
+	// path obfuscation (e.g. /"e"tc → /etc after stripping) is caught by the
+	// sensitive-path scanner. Applied to scanTarget (after regex carve-outs) only.
+	quoteStripper = strings.NewReplacer(`"`, ``, `'`, ``)
 )
 
 type ExecutionHandler struct {
@@ -281,6 +285,10 @@ func (h *ExecutionHandler) validateCommand(command, workDir string) error {
 	scanTarget := kubectlExecRemoteRe.ReplaceAllString(command, "kubectl exec")
 	scanTarget = devPseudoDeviceRe.ReplaceAllString(scanTarget, "")
 	scanTargetLower := strings.ToLower(scanTarget)
+	// Also check a quote-stripped version to catch obfuscated paths like E=/"e"tc
+	// which reassembles to /etc at runtime. Quotes are removed from scanTarget
+	// (after regex carve-outs), so /dev/null is already gone before stripping.
+	quotesStrippedLower := strings.ToLower(quoteStripper.Replace(scanTarget))
 	sensitivePaths := []string{"/etc", "/var", "/root", "/home", "/proc", "/sys", "/dev", "/usr/local/etc", "/usr/local/var"}
 	for _, path := range sensitivePaths {
 		patterns := []string{" " + path, "=" + path, "\"" + path, "'" + path}
@@ -290,6 +298,23 @@ func (h *ExecutionHandler) validateCommand(command, workDir string) error {
 		for _, p := range patterns {
 			if strings.Contains(scanTargetLower, p) {
 				return fmt.Errorf("access to absolute path %s is blocked", path)
+			}
+		}
+		// Re-run on the quote-stripped command to catch quote-interleaved obfuscation
+		// (e.g. /"e"tc → /etc). After stripping, quoted variants reduce to plain
+		// characters, so shell special chars (space, =, ;, |, &, <, >, `, () cover
+		// all common separator positions where an attacker can embed a sensitive path.
+		obfuscatedPatterns := []string{
+			" " + path, "=" + path, ";" + path, "|" + path,
+			"&" + path, "<" + path, ">" + path, "`" + path,
+			"(" + path,
+		}
+		if strings.HasPrefix(quotesStrippedLower, path) {
+			return fmt.Errorf("access to absolute path %s is blocked (obfuscated)", path)
+		}
+		for _, p := range obfuscatedPatterns {
+			if strings.Contains(quotesStrippedLower, p) {
+				return fmt.Errorf("access to absolute path %s is blocked (obfuscated)", path)
 			}
 		}
 	}

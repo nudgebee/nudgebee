@@ -48,6 +48,12 @@ const apiDashboard = {
         where.cloud_provider = { _eq: cloud_provider };
       }
       const response = await queryGraphQL(GET_CLOUD_ACCOUNTS.replace('__WHERE__', gqlStringify(where, [])), 'GetCloudAccounts', {});
+      // Fail closed: if the query errored or returned no data, throw instead of caching an
+      // empty list. Caching [] here would hide all accounts for the full 1h TTL on a transient
+      // backend hiccup; throwing routes to the catch below so the next call retries fresh.
+      if (!response?.data?.data || response?.data?.errors?.length) {
+        throw new Error(response?.data?.errors?.[0]?.message || 'Failed to fetch cloud accounts');
+      }
       const rows = response?.data?.data?.cloud_accounts?.rows ?? [];
       const data = rows.map((item: any) => {
         const agents = typeof item.agents === 'string' ? safeJSONParse(item.agents) : item.agents;
@@ -66,8 +72,19 @@ const apiDashboard = {
         };
       });
 
-      let demoAccount = null;
+      // Always cache the real account list.
+      cache.set(cacheKeyWithoutDemo, data, 60 * 60);
 
+      // Only hit the demo mock endpoint (/api/public/mock/home) when the caller actually
+      // wants the demo account in the list. Skipping it here avoids firing the mock API on
+      // pages that only need real accounts (e.g. Troubleshoot). Note: we must NOT write the
+      // with-demo cache on this path, otherwise a later includeDemoAccount=true call would
+      // read a demo-less list from cache and never fetch the demo account.
+      if (!includeDemoAccount) {
+        return data;
+      }
+
+      let demoAccount = null;
       try {
         const mockData = await getMockData('home');
         const mockAccount = mockData.GetCloudAccount;
@@ -80,10 +97,9 @@ const apiDashboard = {
         console.log('Failed to fetch demo account, skipping:', mockErr);
       }
 
-      cache.set(cacheKeyWithoutDemo, data, 60 * 60);
       const dataWithDemo = [...data, demoAccount].filter((item) => item !== null && item !== undefined);
       cache.set(cacheKeyWithDemo, dataWithDemo, 60 * 60);
-      return includeDemoAccount ? dataWithDemo : data;
+      return dataWithDemo;
     } catch (err) {
       console.log('getWidget1Query Error is', err);
       return err;

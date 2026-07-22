@@ -371,13 +371,26 @@ func QueryLogs(ctx *security.RequestContext, request ObservabilityLogQueryReques
 		return observabilityResp, fmt.Errorf("logs query failed (status %d): %s", resp.StatusCode, string(jsonBody))
 	}
 
-	response := make([]ObservabilityLog, 0, 100)
-	err = common.UnmarshalJson(jsonBody, &response)
-	if err != nil {
+	// Success: the services server returns {logs, query, provider}. Carry the
+	// query/provider it actually executed into the metadata so callers can
+	// report which query produced these logs (the request query is empty on the
+	// canonical where-clause path).
+	var body struct {
+		Logs     []ObservabilityLog `json:"logs"`
+		Query    string             `json:"query"`
+		Provider string             `json:"provider"`
+	}
+	if err = common.UnmarshalJson(jsonBody, &body); err != nil {
 		return observabilityResp, err
 	}
 
-	observabilityResp.Logs = response
+	observabilityResp.Logs = body.Logs
+	if body.Query != "" {
+		observabilityResp.Metadata.Query = body.Query
+	}
+	if body.Provider != "" {
+		observabilityResp.Metadata.Provider = body.Provider
+	}
 
 	return observabilityResp, nil
 }

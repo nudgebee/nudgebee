@@ -1299,3 +1299,94 @@ func TestGetToolInvocations_SkipsWaitingSteps(t *testing.T) {
 		assert.NotContains(t, inv.Response.Content, "Do you want to continue?")
 	}
 }
+
+// --- validateToolInput evidence tests ---
+
+// stubTool builds a minimal NBTool with the given name and required fields for
+// testing validateToolInput in isolation — no real tool registration needed.
+type stubTool struct {
+	name     string
+	required []string
+	props    map[string]toolcore.ToolSchemaProperty
+}
+
+func (s *stubTool) Name() string                 { return s.name }
+func (s *stubTool) Description() string          { return "" }
+func (s *stubTool) GetType() toolcore.NBToolType { return toolcore.NBToolTypeTool }
+func (s *stubTool) Call(_ toolcore.NbToolContext, _ toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
+	return toolcore.NBToolResponse{}, nil
+}
+func (s *stubTool) InputSchema() toolcore.ToolSchema {
+	return toolcore.ToolSchema{Required: s.required, Properties: s.props}
+}
+
+// TestValidateToolInput_EmptyCommand shows the exact error message the LLM
+// receives when kubectl_execute is called with an empty command. This is the
+// core evidence that the fix returns an actionable message instead of the
+// generic "Empty tool input".
+func TestValidateToolInput_EmptyCommand(t *testing.T) {
+	tool := &stubTool{
+		name:     "kubectl_execute",
+		required: []string{"command"},
+		props: map[string]toolcore.ToolSchemaProperty{
+			"command": {Type: "string", Description: "Kubectl command to execute"},
+		},
+	}
+
+	// Empty command — simulates what the LLM sends when it hallucinates a blank input.
+	resp := validateToolInput(tool, toolcore.NBToolCallRequest{Command: ""})
+
+	if resp == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	t.Logf("Error returned to LLM: %q", resp.Data)
+	assert.Equal(t, toolcore.NBToolResponseStatusError, resp.Status)
+	assert.Contains(t, resp.Data, "kubectl_execute")
+	assert.Contains(t, resp.Data, "command")
+	assert.Contains(t, resp.Data, "string")
+	assert.Contains(t, resp.Data, "Kubectl command to execute")
+}
+
+// TestValidateToolInput_ValidInput confirms no false positives — a well-formed
+// request passes through without error.
+func TestValidateToolInput_ValidInput(t *testing.T) {
+	tool := &stubTool{
+		name:     "kubectl_execute",
+		required: []string{"command"},
+		props: map[string]toolcore.ToolSchemaProperty{
+			"command": {Type: "string", Description: "Kubectl command to execute"},
+		},
+	}
+
+	resp := validateToolInput(tool, toolcore.NBToolCallRequest{Command: "kubectl get pods -n nudgebee"})
+	assert.Nil(t, resp, "valid input must pass through without error")
+}
+
+// TestValidateToolInput_MissingArgField shows the error for a tool whose
+// required field lives in Arguments (not Command), e.g. metrics_series_match.
+func TestValidateToolInput_MissingArgField(t *testing.T) {
+	tool := &stubTool{
+		name:     "metrics_series_match",
+		required: []string{"workload"},
+		props: map[string]toolcore.ToolSchemaProperty{
+			"workload": {Type: "string", Description: "Workload name to match metrics for"},
+		},
+	}
+
+	resp := validateToolInput(tool, toolcore.NBToolCallRequest{})
+	if resp == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	t.Logf("Error returned to LLM: %q", resp.Data)
+	assert.Equal(t, toolcore.NBToolResponseStatusError, resp.Status)
+	assert.Contains(t, resp.Data, "metrics_series_match")
+	assert.Contains(t, resp.Data, "workload")
+}
+
+// TestValidateToolInput_NoRequiredFields confirms tools with no required fields
+// are not affected (early return, no false errors).
+func TestValidateToolInput_NoRequiredFields(t *testing.T) {
+	tool := &stubTool{name: "shell_execute", required: nil}
+	resp := validateToolInput(tool, toolcore.NBToolCallRequest{})
+	assert.Nil(t, resp, "tool with no required fields must always pass")
+}

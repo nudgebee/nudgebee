@@ -44,6 +44,13 @@ func processEventPostProcessMessage(data []byte) error {
 		return nil // Already logged; don't requeue (malformed / missing event)
 	}
 
+	if message.WorkflowOnly {
+		// Re-fire of an existing event: re-deliver to event-trigger workflows only,
+		// without re-running triage/llm/notification (which ran on first insert).
+		event.ReEmitForWorkflows(ctx, eventMap)
+		return nil
+	}
+
 	// Run all event processors
 	event.PostProcessEvent(ctx, eventMap)
 

@@ -140,7 +140,7 @@ const KubernetesPlusMinusLogsGradual: React.FC<KubernetesPlusMinusLogsGradualPro
         return [];
       }
 
-      const fetchedLogs = response?.data?.data?.logs_list || [];
+      const fetchedLogs = response?.data?.data?.logs_list?.logs || [];
       return fetchedLogs;
     } catch (error) {
       console.error('Error fetching logs:', error);

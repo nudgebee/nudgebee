@@ -1,0 +1,83 @@
+slug: expand_azure_managed_disk
+name: "Expand Azure Managed Disk"
+description: "Increase the size of an Azure managed disk. The VM must be deallocated or the disk must be unattached."
+category: "azure"
+icon: "sd_storage"
+status: ACTIVE
+tags:
+  labels:
+    - "expand"
+    - "disruptive"
+  event_sources:
+    - "azure_monitor"
+    - "azure"
+  alert_names:
+    - "DiskSpaceLow"
+    - "OSDiskFull"
+    - "Percentage Disk Used"
+definition:
+  version: "v1"
+  inputs:
+    - id: "resource_group"
+      type: "string"
+      description: "Azure resource group name"
+      required: true
+    - id: "disk_name"
+      type: "string"
+      description: "Managed disk name"
+      required: true
+    - id: "new_size_gb"
+      type: "string"
+      description: "New disk size in GB"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: |-
+          Approve expanding disk **{{ Inputs.disk_name }}** in **{{ Inputs.resource_group }}** to **{{ Inputs.new_size_gb }} GB**?
+
+          Note: VM may need to be deallocated first.
+    - id: "expand"
+      type: "cloud.azure.cli"
+      params:
+        command: "az disk update --resource-group {{ Inputs.resource_group }} --name {{ Inputs.disk_name }} --size-gb {{ Inputs.new_size_gb }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.azure.cli"
+      params:
+        command: "az disk show --resource-group {{ Inputs.resource_group }} --name {{ Inputs.disk_name }} --query {size:diskSizeGb,state:diskState,provisioningState:provisioningState}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "expand"
+  timeout: "10m"
+template_variables:
+  - id: "resource_group"
+    input_ref: "resource_group"
+    display_name: "Resource Group"
+    required: true
+    type: "string"
+  - id: "disk_name"
+    input_ref: "disk_name"
+    display_name: "Disk Name"
+    required: true
+    type: "string"
+  - id: "new_size_gb"
+    input_ref: "new_size_gb"
+    display_name: "New Size (GB)"
+    required: true
+    type: "string"
+    placeholder: "128"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

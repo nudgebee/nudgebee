@@ -66,14 +66,14 @@ export default function KubernetesEventsSummary({ accountId }) {
   const [apiErrorsRecent, setApiErrorsRecent] = useState([]);
   const [workflowData, setWorkflowData] = useState({ totalCount: 0, configuredCount: 0, actionedCount: 0 });
   const [loadingData, setLoadingData] = useState({
-    eventTypeDataLoading: false,
-    applicationEventDataLoading: false,
-    eventRecentDataLoading: false,
-    nodeErrorTableDataLoading: false,
-    apiErrorsByCountLoading: false,
-    apiErrorsRecentLoading: false,
-    eventTotalCountLoading: false,
-    workflowDataLoading: false,
+    eventTypeDataLoading: true,
+    applicationEventDataLoading: true,
+    eventRecentDataLoading: true,
+    nodeErrorTableDataLoading: true,
+    apiErrorsByCountLoading: true,
+    apiErrorsRecentLoading: true,
+    eventTotalCountLoading: true,
+    workflowDataLoading: true,
   });
 
   // summary data
@@ -585,23 +585,16 @@ export default function KubernetesEventsSummary({ accountId }) {
                     />
                   }
                 />
-                {loadingData.eventTypeDataLoading ? (
-                  <Skeleton width='93%' />
-                ) : (
-                  <>
-                    <CustomTable
-                      tableData={eventTypeData}
-                      headers={[
-                        { name: 'Event type', width: '80%' },
-                        { name: 'Count', width: '20%' },
-                      ]}
-                      showUpdatedTable
-                      showEmptyStateText
-                      rowsPerPage={eventTypeData.length}
-                      totalRows={eventTypeData.length}
-                    />
-                  </>
-                )}
+                <CustomTable
+                  tableData={eventTypeData}
+                  headers={[
+                    { name: 'Event type', width: '80%' },
+                    { name: 'Count', width: '20%' },
+                  ]}
+                  showUpdatedTable
+                  showEmptyStateText
+                  loading={loadingData.eventTypeDataLoading}
+                />
               </Box>
               <Box>
                 <TextWithBorder
@@ -623,23 +616,16 @@ export default function KubernetesEventsSummary({ accountId }) {
                     />
                   }
                 />
-                {loadingData.applicationEventDataLoading ? (
-                  <Skeleton width='93%' />
-                ) : (
-                  <>
-                    <CustomTable
-                      tableData={applicationEventData}
-                      headers={[
-                        { name: 'Application name', width: '80%' },
-                        { name: 'Count', width: '20%' },
-                      ]}
-                      showUpdatedTable
-                      showEmptyStateText
-                      rowsPerPage={applicationEventData.length}
-                      totalRows={applicationEventData.length}
-                    />
-                  </>
-                )}
+                <CustomTable
+                  tableData={applicationEventData}
+                  headers={[
+                    { name: 'Application name', width: '80%' },
+                    { name: 'Count', width: '20%' },
+                  ]}
+                  showUpdatedTable
+                  showEmptyStateText
+                  loading={loadingData.applicationEventDataLoading}
+                />
               </Box>{' '}
               <Box>
                 <TextWithBorder
@@ -661,23 +647,16 @@ export default function KubernetesEventsSummary({ accountId }) {
                     />
                   }
                 />
-                {loadingData.eventRecentDataLoading ? (
-                  <Skeleton width='93%' />
-                ) : (
-                  <>
-                    <CustomTable
-                      tableData={recentData}
-                      headers={[
-                        { name: 'Event', width: '65%' },
-                        { name: 'Last occurred', width: '35%' },
-                      ]}
-                      showUpdatedTable
-                      showEmptyStateText
-                      rowsPerPage={recentData.length}
-                      totalRows={recentData.length}
-                    />
-                  </>
-                )}
+                <CustomTable
+                  tableData={recentData}
+                  headers={[
+                    { name: 'Event', width: '65%' },
+                    { name: 'Last occurred', width: '35%' },
+                  ]}
+                  showUpdatedTable
+                  showEmptyStateText
+                  loading={loadingData.eventRecentDataLoading}
+                />
               </Box>{' '}
             </Box>
           </SummaryBlock>
@@ -884,20 +863,13 @@ export default function KubernetesEventsSummary({ accountId }) {
                     />
                   }
                 />
-                {loadingData.apiErrorsByCountLoading ? (
-                  <Skeleton width='93%' />
-                ) : (
-                  <>
-                    <CustomTable
-                      tableData={apiErrorsByCount}
-                      headers={[{ name: 'API', width: '70%' }, { name: 'Count' }, { name: 'Last occurred' }]}
-                      showUpdatedTable
-                      showEmptyStateText
-                      rowsPerPage={apiErrorsByCount.length}
-                      totalRows={apiErrorsByCount.length}
-                    />
-                  </>
-                )}
+                <CustomTable
+                  tableData={apiErrorsByCount}
+                  headers={[{ name: 'API', width: '70%' }, { name: 'Count' }, { name: 'Last occurred' }]}
+                  showUpdatedTable
+                  showEmptyStateText
+                  loading={loadingData.apiErrorsByCountLoading}
+                />
               </Box>
               <Box>
                 <TextWithBorder
@@ -919,20 +891,13 @@ export default function KubernetesEventsSummary({ accountId }) {
                     />
                   }
                 />
-                {loadingData.apiErrorsRecentLoading ? (
-                  <Skeleton width='93%' />
-                ) : (
-                  <>
-                    <CustomTable
-                      tableData={apiErrorsRecent}
-                      headers={[{ name: 'API', width: '70%' }, 'Last occurred']}
-                      showUpdatedTable
-                      showEmptyStateText
-                      rowsPerPage={apiErrorsRecent.length}
-                      totalRows={apiErrorsRecent.length}
-                    />
-                  </>
-                )}
+                <CustomTable
+                  tableData={apiErrorsRecent}
+                  headers={[{ name: 'API', width: '70%' }, 'Last occurred']}
+                  showUpdatedTable
+                  showEmptyStateText
+                  loading={loadingData.apiErrorsRecentLoading}
+                />
               </Box>
             </Box>
           </SummaryBlock>
@@ -996,20 +961,13 @@ export default function KubernetesEventsSummary({ accountId }) {
                     />
                   }
                 />
-                {loadingData.nodeErrorTableDataLoading ? (
-                  <Skeleton width='95%' />
-                ) : (
-                  <>
-                    <CustomTable
-                      tableData={nodeErrorTableData}
-                      headers={[{ name: 'Node name', width: '60%' }, 'Count', 'Last occurred']}
-                      showUpdatedTable
-                      showEmptyStateText
-                      rowsPerPage={nodeErrorTableData.length}
-                      totalRows={nodeErrorTableData.length}
-                    />
-                  </>
-                )}
+                <CustomTable
+                  tableData={nodeErrorTableData}
+                  headers={[{ name: 'Node name', width: '60%' }, 'Count', 'Last occurred']}
+                  showUpdatedTable
+                  showEmptyStateText
+                  loading={loadingData.nodeErrorTableDataLoading}
+                />
               </Box>
             </Box>
           </SummaryBlock>

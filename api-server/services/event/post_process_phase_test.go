@@ -63,6 +63,33 @@ func TestPostProcessEvent_EmitsCreatedEvenWhenInvestigationEnqueued(t *testing.T
 	assert.Equal(t, []string{"triage", "llm", "emit:event.created"}, *called)
 }
 
+func TestReEmitForWorkflows_WorkflowOnlyNoPipeline(t *testing.T) {
+	origTriage, origLLM, origEmit, origWf := triageStep, llmStep, emitLifecycle, emitWorkflowOnly
+	t.Cleanup(func() {
+		triageStep, llmStep, emitLifecycle, emitWorkflowOnly = origTriage, origLLM, origEmit, origWf
+	})
+
+	called := &[]string{}
+	triageStep = func(_ *security.RequestContext, _ map[string]any) error {
+		*called = append(*called, "triage")
+		return nil
+	}
+	llmStep = func(_ *security.RequestContext, _ map[string]any) error { *called = append(*called, "llm"); return nil }
+	emitLifecycle = func(_ *security.RequestContext, phase lifecycle.Phase, _ map[string]any, _ map[string]any) {
+		*called = append(*called, "emit:"+string(phase))
+	}
+	emitWorkflowOnly = func(_ *security.RequestContext, phase lifecycle.Phase, _ map[string]any) {
+		*called = append(*called, "wf:"+string(phase))
+	}
+
+	ReEmitForWorkflows(testCtx(), map[string]any{})
+
+	// A re-fire re-delivers to event-trigger workflows at the event.created phase
+	// ONLY — the full pipeline (triage/llm/notification) ran on first insert and
+	// must not re-run on every repeat occurrence.
+	assert.Equal(t, []string{"wf:event.created"}, *called)
+}
+
 func TestPagerdutyCommentIfNotInvestigated_SkipsWhenEnqueued(t *testing.T) {
 	// When an investigation was enqueued, the created-phase pagerduty hook must
 	// be a no-op (the "report ready" link is posted at investigation.completed

@@ -32,7 +32,7 @@ func (m ElasticsearchAgent) ConfigSchema() core.IntegrationSchema {
 			},
 			"log_index": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Log Index",
+				Description: "Index pattern or exact name, e.g. logs-* or logs-generic.otel-default.",
 				ShowWhen:    map[string]any{"default_log_provider": true},
 				Priority:    17,
 			},
@@ -44,7 +44,7 @@ func (m ElasticsearchAgent) ConfigSchema() core.IntegrationSchema {
 			},
 			"trace_index": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Trace Index",
+				Description: "Index pattern or exact name, e.g. traces-* or traces-generic.otel-default.",
 				ShowWhen:    map[string]any{"default_traces_provider": true},
 				Priority:    13,
 			},
@@ -56,7 +56,7 @@ func (m ElasticsearchAgent) ConfigSchema() core.IntegrationSchema {
 			},
 			"metrics_index": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Metrics Index",
+				Description: "Index pattern or exact name, e.g. metrics-* or metrics-kubeletstatsreceiver.otel-default.",
 				ShowWhen:    map[string]any{"default_metrics_provider": true},
 				Priority:    15,
 			},

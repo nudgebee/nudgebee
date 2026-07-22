@@ -922,6 +922,38 @@ type Mutation {
 }
 
 type Mutation {
+  event_get_threshold_apply_options(
+    alert_rule_key: String!
+    cloud_account_id: String!
+  ): ThresholdApplyOptionsOutput
+}
+
+type Mutation {
+  event_apply_threshold_suggestion(
+    alert_rule_key: String!
+    cloud_account_id: String!
+    method: String!
+    override_risk: Boolean
+    accept_value: Float
+    accept_duration: Int
+    git_provider: String
+    git_integration: String
+    git_file_path: String
+    git_org: String
+    git_repo: String
+    git_branch: String
+    reference_link: String
+  ): ThresholdApplyResultOutput
+}
+
+type Mutation {
+  event_revert_threshold_suggestion(
+    alert_rule_key: String!
+    cloud_account_id: String!
+  ): ThresholdApplyResultOutput
+}
+
+type Mutation {
   event_get_timeline(
     event_id: String!
   ): EventTimelineOutput
@@ -8181,6 +8213,7 @@ type Workflow {
   status: String
   last_execution_status: String
   last_execution_time: timestamp
+  last_execution_version: Int
   name: String!
   created_by: String
   created_by_user: WorkflowUser
@@ -8336,7 +8369,10 @@ type WorkflowExecutionSummary {
   trigger_type: String
   parent_workflow_id: String
   workflow_name: String
+  version: Int
+  version_number: Int
 }
+
 
 type WorkflowUpdateResponse {
   id: String
@@ -9233,6 +9269,36 @@ type ThresholdSuggestionListItem {
   alert_quality: jsonb
   metric_stats: jsonb
   query_metadata: jsonb
+  apply_status: String
+  apply_method: String
+  applied_at: String
+}
+
+type ThresholdApplyOption {
+  method: String!
+  available: Boolean!
+  reason: String
+}
+
+type ThresholdApplyOptionsOutput {
+  options: [ThresholdApplyOption!]!
+  risk_level: String
+  requires_override: Boolean
+  preview_expr: String
+  preview_error: String
+  current_threshold: Float
+  new_threshold: Float
+  operator: String
+}
+
+type ThresholdApplyResultOutput {
+  status: String!
+  method: String
+  applied_expr: String
+  previous_threshold: Float
+  applied_threshold: Float
+  resolution_id: String
+  error: String
 }
 
 type ThresholdAlertQualityScore {

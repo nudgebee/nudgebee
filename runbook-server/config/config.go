@@ -124,6 +124,16 @@ type appConfig struct {
 	OptimizationEnabled                           bool `mapstructure:"runbook_server_optimization_enabled"`
 	OptimizationRecommendationPollIntervalSeconds int  `mapstructure:"runbook_server_optimization_poll_interval_seconds"`
 	WebhookMaxBodySizeMB                          int  `mapstructure:"webhook_max_body_size_mb"`
+
+	// Multi-source system template loading (see internal/templatesource).
+	RunbookServerTemplateSyncEnabled           bool   `mapstructure:"runbook_server_template_sync_enabled"`
+	RunbookServerTemplateSource                string `mapstructure:"runbook_server_template_source"`
+	RunbookServerTemplateGitHubRepo            string `mapstructure:"runbook_server_template_github_repo"`
+	RunbookServerTemplateGitHubRef             string `mapstructure:"runbook_server_template_github_ref"`
+	RunbookServerTemplateGitHubToken           string `mapstructure:"runbook_server_template_github_token"`
+	RunbookServerTemplateSourceURL             string `mapstructure:"runbook_server_template_source_url"`
+	RunbookServerTemplateSyncCron              string `mapstructure:"runbook_server_template_sync_cron"`
+	RunbookServerTemplateSyncDeactivateMissing bool   `mapstructure:"runbook_server_template_sync_deactivate_missing"`
 }
 
 func init() {
@@ -214,6 +224,16 @@ func init() {
 
 	viper.SetDefault("runbook_server_task_scripting_mode", "agent")
 	viper.SetDefault("runbook_server_temporal_queue", "runbook-tasks")
+
+	// Template sync defaults preserve today's behavior: sync off, bundled source.
+	viper.SetDefault("runbook_server_template_sync_enabled", false)
+	viper.SetDefault("runbook_server_template_source", "bundled")
+	viper.SetDefault("runbook_server_template_github_repo", "nudgebee/automation-templates")
+	viper.SetDefault("runbook_server_template_github_ref", "main")
+	viper.SetDefault("runbook_server_template_github_token", "")
+	viper.SetDefault("runbook_server_template_source_url", "")
+	viper.SetDefault("runbook_server_template_sync_cron", "*/30 * * * *")
+	viper.SetDefault("runbook_server_template_sync_deactivate_missing", true)
 
 	viper.SetConfigName("config")
 	viper.SetConfigFile(".env")

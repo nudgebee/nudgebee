@@ -1,0 +1,88 @@
+slug: resize_gcp_persistent_disk
+name: "Resize GCP Persistent Disk"
+description: "Increase the size of a GCP persistent disk. Does not require stopping the VM."
+category: "gcp"
+icon: "sd_storage"
+status: ACTIVE
+tags:
+  labels:
+    - "expand"
+  event_sources:
+    - "gcp_monitoring"
+    - "gcp"
+  alert_names:
+    - "DiskUsageHigh"
+    - "PersistentDiskFull"
+definition:
+  version: "v1"
+  inputs:
+    - id: "project"
+      type: "string"
+      description: "GCP project ID"
+      required: true
+    - id: "zone"
+      type: "string"
+      description: "GCP zone (e.g. us-central1-a)"
+      required: true
+    - id: "disk_name"
+      type: "string"
+      description: "Persistent disk name"
+      required: true
+    - id: "new_size_gb"
+      type: "string"
+      description: "New disk size in GB"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Approve resizing disk **{{ Inputs.disk_name }}** in zone **{{ Inputs.zone }}** to **{{ Inputs.new_size_gb }} GB**?"
+    - id: "resize"
+      type: "cloud.gcp.cli"
+      params:
+        command: "gcloud compute disks resize {{ Inputs.disk_name }} --zone={{ Inputs.zone }} --project={{ Inputs.project }} --size={{ Inputs.new_size_gb }}GB --quiet"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.gcp.cli"
+      params:
+        command: "gcloud compute disks describe {{ Inputs.disk_name }} --zone={{ Inputs.zone }} --project={{ Inputs.project }} --format=json(sizeGb,status,name)"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "resize"
+  timeout: "10m"
+template_variables:
+  - id: "project"
+    input_ref: "project"
+    display_name: "GCP Project"
+    required: true
+    type: "string"
+  - id: "zone"
+    input_ref: "zone"
+    display_name: "Zone"
+    required: true
+    type: "string"
+    placeholder: "us-central1-a"
+  - id: "disk_name"
+    input_ref: "disk_name"
+    display_name: "Disk Name"
+    required: true
+    type: "string"
+  - id: "new_size_gb"
+    input_ref: "new_size_gb"
+    display_name: "New Size (GB)"
+    required: true
+    type: "string"
+    placeholder: "200"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

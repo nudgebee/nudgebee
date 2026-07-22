@@ -130,6 +130,20 @@ func (sc *SecurityContext) GetUserId() string {
 	return sc.userId
 }
 
+// EffectiveUserIdForRPC returns the user id to forward as the x-user-id
+// header on outbound RPC calls to api-server. It collapses the synthetic
+// system-user sentinel (GetSystemUserId(), stamped on automated/background
+// flows only to satisfy NOT NULL uuid columns) to "" so api-server's
+// buildContextFromPayload takes its tenant-admin bypass branch instead of a
+// real per-user user_roles lookup — the sentinel has no grants row in
+// api-server's DB and would otherwise be denied access to every account.
+func (sc *SecurityContext) EffectiveUserIdForRPC() string {
+	if sc.userId == GetSystemUserId() {
+		return ""
+	}
+	return sc.userId
+}
+
 func (sc *SecurityContext) GetRoles() []string {
 	return sc.roles
 }

@@ -19,6 +19,16 @@ export const generateQuery = (logProvider, chips, operations, metricName = '', a
     }
     // For log providers, operations alone (without label chips) can form a valid query
     if (!hasValidOperations) {
+      // ES is the one provider here whose metricName is an *index*, not a query
+      // term. It already travels separately as onQueryChange's `index`, and the
+      // log fetch reads logQueryItems rather than this string, so returning it
+      // would only leak the index name into the Code tab's editor once the user
+      // picks an index but no filters. Every other provider in this branch
+      // leaves metricName empty (the index/metric dropdown renders for ES and
+      // metrics providers only), so scoping to ES changes nothing for them.
+      if (logProvider === 'ES') {
+        return '';
+      }
       return metricName || '';
     }
   }

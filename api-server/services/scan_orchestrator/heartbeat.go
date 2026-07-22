@@ -199,14 +199,17 @@ func runMissedScanners(ctx *security.RequestContext, account ScanAccount, scanne
 }
 
 // runMissedOne dispatches a single missed scanner to the right run path:
-// Job-based scanners go through RunOne; direct-API scanners call their
-// dedicated runners directly. Errors are logged, not returned.
+// Job-based scanners go through runOne; direct-API scanners call their
+// dedicated runners directly. Errors are logged, not returned. A failed scan
+// records a FAILED schedule-job state so it backs off to its next cron tick
+// instead of being re-dispatched on every heartbeat.
 func runMissedOne(ctx *security.RequestContext, account ScanAccount, scanner string, logger *slog.Logger) {
 	scopedLogger := logger.With("scanner", scanner)
 	if _, ok := ScannerCatalog[scanner]; ok {
-		if err := RunOne(ctx, account, scanner, nil); err != nil {
-			scopedLogger.Error("scan_orchestrator: heartbeat RunOne failed", "error", err)
-		}
+		// runOne runs + persists and, on a scan failure, records a FAILED
+		// schedule-job state so this scanner backs off to its next cron tick
+		// instead of being re-dispatched on every heartbeat.
+		runOne(ctx, account, scanner)
 		return
 	}
 	if _, ok := DirectAPIScanners[scanner]; !ok {
@@ -226,5 +229,8 @@ func runMissedOne(ctx *security.RequestContext, account ScanAccount, scanner str
 	}
 	if err != nil {
 		scopedLogger.Error("scan_orchestrator: heartbeat direct-API scan failed", "error", err)
+		// Same back-off for direct-API scanners: stamp FAILED so the next attempt
+		// is the next cron tick, not the next heartbeat.
+		UpsertScheduleJobFailure(ctx, account, scanner)
 	}
 }

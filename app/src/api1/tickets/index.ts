@@ -18,6 +18,27 @@ query ListTicketConfigurations {
 }
 `;
 
+// Read-level config list for the create-ticket form. Backed by the ticket-server
+// (tickets_list_configs) instead of the admin-only integrations_list action, so
+// readonly / account-scoped users who can create tickets can still pick a config
+// without being granted general integration-read access. Returns no credentials.
+export const LIST_TICKET_CONFIGS_FOR_CREATE = `
+query ListTicketConfigsForCreate {
+  tickets_list_configs {
+    rows {
+      id
+      name
+      tool
+      status
+      projects {
+        name
+        key
+      }
+    }
+  }
+}
+`;
+
 export const CREATE_TICKET = `
 mutation CreateTicket($assignee: String, $integration_id: String, $reference_id: String, $ticket_type: String, $project_key: String, $description: String, $title: String, $source: String, $severity: String, $account_id: String, $additional_fields: jsonb) {
   tickets_create(object: {assignee: $assignee, integration_id: $integration_id, reference_id: $reference_id, ticket_type: $ticket_type, project_key: $project_key, description: $description, title: $title, source: $source, severity: $severity, account_id: $account_id, additional_fields: $additional_fields}) {
@@ -264,6 +285,41 @@ const apiIntegrations = {
     } catch (err) {
       console.log('Your Error is', err);
       return err;
+    }
+  },
+
+  // Used by the create-ticket form only. Unlike listTicketConfigurations (which
+  // hits the admin-only integrations_list action), this routes through the
+  // ticket-server's read-level tickets_list_configs so readonly users can pick a
+  // config. Shape matches what TicketFormSection consumes (id, name, tool,
+  // projects); no credentials are returned.
+  listTicketConfigsForCreate: async function (query?: { tool?: string; status?: string }) {
+    try {
+      const response = await queryGraphQL(LIST_TICKET_CONFIGS_FOR_CREATE, 'ListTicketConfigsForCreate');
+      let rows = response?.data?.data?.tickets_list_configs?.rows || [];
+      if (query?.tool) {
+        rows = rows.filter((c: any) => c?.tool === query.tool);
+      }
+      if (query?.status) {
+        rows = rows.filter((c: any) => c?.status === query.status);
+      }
+      const configs = rows.map((c: any) => ({
+        id: c.id,
+        name: c.name,
+        tool: c.tool,
+        status: c.status,
+        is_active: c.status === 'enabled',
+        projects: c.projects || [],
+      }));
+      return {
+        data: configs,
+      };
+    } catch (err) {
+      console.log('Your Error is', err);
+      // Return an empty-but-valid shape so callers can safely read res.data
+      // as an array; returning the raw error would set configList to undefined
+      // and crash later configList.find(...) calls in TicketFormSection.
+      return { data: [] };
     }
   },
 
@@ -578,11 +634,18 @@ const apiIntegrations = {
         ticket_id,
         comment,
       });
+      // A denied/failed request comes back as a top-level GraphQL error with no
+      // `ticket_add_comment` payload, so `payload?.error` is undefined — treating
+      // "no error field" as success would report a false "added" toast. Require an
+      // actual payload with no error, and surface the real failure otherwise.
+      const payload = response?.data?.data?.ticket_add_comment;
+      const gqlError = response?.data?.errors?.[0]?.message;
+      const success = !!payload && !payload.error;
       return {
         data: {
-          success: !response?.data?.data?.ticket_add_comment?.error,
-          error: response?.data?.data?.ticket_add_comment?.error,
-          comments: response?.data?.data?.ticket_add_comment?.comments || [],
+          success,
+          error: success ? undefined : payload?.error || gqlError || 'Failed to add comment',
+          comments: payload?.comments || [],
         },
       };
     } catch (err) {

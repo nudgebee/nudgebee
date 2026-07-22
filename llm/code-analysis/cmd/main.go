@@ -75,6 +75,7 @@ func main() {
 		version          = flag.Bool("version", false, "Show version")
 		conversationId   = flag.String("conversationid", "", "Conversation ID for context (optional)")
 		gitProvider      = flag.String("provider", "", "Git provider (github, gitlab, or auto-detect if empty)")
+		mode             = flag.String("mode", "", "Analysis mode: 'explore' (read-only) or 'fix'. When set it overrides raisepr; use mode=fix with raisepr=false for propose mode (generate a diff without opening a PR).")
 		followup         = flag.Bool("followup", false, "Follow up on an existing PR (address CI failures and review comments)")
 		prURL            = flag.String("pr-url", "", "PR URL to follow up on")
 	)
@@ -131,7 +132,7 @@ func main() {
 			}
 		}
 
-		runCLIAnalysis(cfg, *repoURL, logsValue, *branch, *token, promptValue, *agent, *eventId, *recommendationId, *workflowId, *accountId, raisePR, *conversationId, *gitProvider)
+		runCLIAnalysis(cfg, *repoURL, logsValue, *branch, *token, promptValue, *agent, *eventId, *recommendationId, *workflowId, *accountId, raisePR, *conversationId, *gitProvider, *mode)
 		return
 	}
 
@@ -415,7 +416,7 @@ func redactArgs(args []string) []string {
 	return safe
 }
 
-func runCLIAnalysis(cfg *config.Config, repoURL, logs, branch, token, prompt, agent, eventId, recommendationId, workflowId, accountId string, raisePR bool, conversationId, gitProvider string) {
+func runCLIAnalysis(cfg *config.Config, repoURL, logs, branch, token, prompt, agent, eventId, recommendationId, workflowId, accountId string, raisePR bool, conversationId, gitProvider, mode string) {
 	// Make logs optional for code correlation scenarios
 	if logs == "" && prompt == "Analyze the logs for errors" {
 		log.Fatal("Logs are required (--logs) for log analysis, or provide a specific --prompt for code correlation")
@@ -531,6 +532,7 @@ func runCLIAnalysis(cfg *config.Config, repoURL, logs, branch, token, prompt, ag
 			Type:  "token",
 			Token: token,
 		},
+		Mode:             mode,
 		RaisePR:          raisePR,
 		EventId:          eventId,
 		RecommendationId: recommendationId,

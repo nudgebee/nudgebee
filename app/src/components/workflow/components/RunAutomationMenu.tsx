@@ -557,7 +557,7 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
                 id='run-automation-btn'
                 data-testid='run-automation-btn'
                 tone='secondary'
-                size='sm'
+                size='xs'
                 composition='text+icon'
                 iconPlacement='end'
                 icon={<KeyboardArrowDownIcon sx={{ fontSize: 16 }} />}

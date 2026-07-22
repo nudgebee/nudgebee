@@ -208,6 +208,20 @@ function _assembleConversationLegacyEnvelope(
   return rawResponse;
 }
 
+// True when a cached conversation's last turn failed (every agent status contains 'fail'/'error') — a stale failure callers regenerate instead of re-serving; success/in-progress stay cached.
+export function isFailedCachedConversation(conversations: any[]): boolean {
+  const messages = conversations?.[0]?.llm_conversation_messages ?? [];
+  const lastMessage = messages[messages.length - 1];
+  const agents = lastMessage?.llm_conversation_agents ?? [];
+  return (
+    agents.length > 0 &&
+    agents.every((a: any) => {
+      const s = typeof a?.status === 'string' ? a.status.toLowerCase() : '';
+      return s.includes('fail') || s.includes('error');
+    })
+  );
+}
+
 // Stateful fetcher: maintains shell + Maps + cursor across calls so each call
 // is a delta fetch over the previous state. The first call (cursor null) loads
 // everything; subsequent calls request only rows updated since the last cursor

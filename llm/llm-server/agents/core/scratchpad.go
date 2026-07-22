@@ -19,9 +19,13 @@ type ScratchpadContext struct {
 	Tracker *CompressionTracker
 }
 
-// getMaxObservationChars returns the maximum number of bytes for a single observation in the scratchpad.
+// getMaxObservationChars returns the maximum number of bytes for a single observation
+// in the scratchpad. This is a hard per-observation safety cap (single huge tool
+// outputs are middle-truncated to this) and is deliberately NOT the same knob as the
+// config auto-selection observation length (default 500), which governs an unrelated
+// lightweight heuristic and would clamp the scratchpad cap to its 4096 floor.
 func getMaxObservationChars() int {
-	limit := config.Config.LlmConfigAutoSelectionMaxObservationLen
+	limit := config.Config.LlmServerScratchpadMaxObservationChars
 	if limit <= 0 {
 		return 65536 // Default 64KB
 	}
@@ -30,6 +34,67 @@ func getMaxObservationChars() int {
 		return 4096
 	}
 	return limit
+}
+
+// scratchpadCharsPerToken translates a model context window (tokens) into a char
+// budget for compression gating. We deliberately use the DENSE end of the ratio (~3
+// bytes/token for code/JSON, vs ~4 for prose): converting window→chars with the small
+// ratio yields a smaller, safer char budget, so the scratchpad's worst-case token
+// footprint stays under the configured window fraction even for dense content. The
+// scratchpad is only part of the prompt, and the reactive token-limit handler is the
+// final backstop — so erring toward a tighter budget here avoids window overflow.
+const scratchpadCharsPerToken = 3
+
+// compressionActivationFraction is the fraction of the model context window at which
+// scratchpad compression activates. Configurable; defaults to 0.75.
+func compressionActivationFraction() float64 {
+	f := config.Config.LlmServerScratchpadCompressionActivationFraction
+	if f > 0 && f < 1 {
+		return f
+	}
+	return 0.75
+}
+
+// scratchpadBudget returns the char budgets that govern scratchpad compression for a
+// given model context window (in tokens):
+//   - activation: the scratchpad size at which compression of older observations begins.
+//   - hardCap: the absolute ceiling enforced by final truncation.
+//
+// When maxContextTokens <= 0 the window is unknown and both fall back to the legacy
+// LlmServerAgentMaxScratchpadChars, preserving the pre-existing behavior. Gating on the
+// real window (instead of a flat step count) is what stops compression from firing on
+// conversations whose context is nowhere near the model's window.
+func scratchpadBudget(maxContextTokens int) (activation, hardCap int) {
+	legacy := config.Config.LlmServerAgentMaxScratchpadChars
+	if legacy <= 0 {
+		legacy = 200000
+	}
+	if maxContextTokens <= 0 {
+		return legacy, legacy
+	}
+	windowChars := maxContextTokens * scratchpadCharsPerToken
+	activation = int(float64(windowChars) * compressionActivationFraction())
+	hardCap = int(float64(windowChars) * 0.90) // leave ~10% headroom for prompt overhead + output
+	if hardCap < activation {
+		hardCap = activation
+	}
+	return activation, hardCap
+}
+
+// resolveMaxContextTokens best-effort resolves the model context window (tokens) for a
+// request. Returns 0 when it cannot be determined (callers then fall back to the legacy
+// char budget via scratchpadBudget). agentName is optional — pass "" when the agent name
+// is unknown; the window is a property of the model, so a global/tier resolution is a
+// safe approximation.
+func resolveMaxContextTokens(ctx *security.RequestContext, accountId, agentName, conversationId string) int {
+	if ctx == nil || accountId == "" {
+		return 0
+	}
+	resolution, err := ResolveLLMConfig(ctx, accountId, agentName, conversationId)
+	if err != nil || resolution == nil {
+		return 0
+	}
+	return ResolveModelMaxContext(resolution, resolution.Model)
 }
 
 // recentStepsFullContext is how many recent tool steps retain full observations.
@@ -251,10 +316,15 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 		}
 	}
 
-	maxChars := config.Config.LlmServerAgentMaxScratchpadChars
-	if maxChars <= 0 {
-		maxChars = 200000
+	// Compression activates only as the scratchpad approaches the model's context
+	// window; below that, observations are left intact. activationChars decides when
+	// to start compressing; hardCapChars is the absolute ceiling for final truncation.
+	// When the window can't be resolved both fall back to the legacy char budget.
+	maxContextTokens := 0
+	if scratchpadCtx != nil {
+		maxContextTokens = resolveMaxContextTokens(scratchpadCtx.Ctx, scratchpadCtx.Request.AccountId, "", scratchpadCtx.Request.ConversationId)
 	}
+	activationChars, hardCapChars := scratchpadBudget(maxContextTokens)
 
 	// Calculate total
 	total := len("<observation>\n</observation>\n\n")
@@ -262,10 +332,18 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 		total += len(c.Header) + len(c.Observation) + len(c.Footer) + len("    <response><![CDATA[]]></response>\n")
 	}
 
+	// Stash whether this pass crossed the activation threshold so the visibility
+	// card can be honest about why compression fired. ReWOO has no refinement
+	// path (postRefinementToolIndex=0), so any compression here is window-pressure.
+	windowPressureActive := total > activationChars
+	if scratchpadCtx != nil {
+		scratchpadCtx.Tracker.SetCompressionContext(windowPressureActive, 0)
+	}
+
 	// Compress from oldest if over budget.
 	// When a ScratchpadContext is provided and summarization is enabled, we use an LLM
-	// to generate a concise summary instead of blindly truncating to 100 bytes.
-	if total > maxChars {
+	// to generate a concise summary instead of blindly truncating.
+	if total > activationChars {
 		for i := 0; i < len(components); i++ {
 			if !components[i].IsToolStep || len(components[i].Observation) < 500 {
 				continue
@@ -285,7 +363,7 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 				intermediateSteps[si].CompressedObservation = components[i].Observation
 			}
 			total -= (oldLen - len(components[i].Observation))
-			if total <= maxChars {
+			if total <= activationChars {
 				break
 			}
 		}
@@ -363,8 +441,8 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 	}
 
 	final := res.String()
-	if len(final) > maxChars {
-		final = "<observation>\n  <note>Budget exceeded. Earliest steps truncated.</note>\n" + truncateTail(final, maxChars)
+	if len(final) > hardCapChars {
+		final = "<observation>\n  <note>Budget exceeded. Earliest steps truncated.</note>\n" + truncateTail(final, hardCapChars)
 	}
 	return final
 }

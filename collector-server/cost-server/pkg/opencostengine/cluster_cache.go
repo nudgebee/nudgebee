@@ -1305,6 +1305,30 @@ func (pcc *NudgebeeClusterCache) GetAllReplicationControllers() []*clustercache.
 	return rcs
 }
 
+// GetAllResourceQuotas returns all resource quotas via the relay API.
+// Required by the clustercache.ClusterCache interface as of opencost 1.120.
+func (pcc *NudgebeeClusterCache) GetAllResourceQuotas() []*clustercache.ResourceQuota {
+	rqData, err := pcc.executeK8sApi("resourcequotas", "v1", "", true)
+	if err != nil {
+		log.Errorf("Error getting resourcequotas from relay: %s", err)
+		return nil
+	}
+
+	var rqList v1.ResourceQuotaList
+	err = json.Unmarshal([]byte(rqData), &rqList.Items)
+	if err != nil {
+		log.Errorf("Error unmarshalling resourcequotas: %s", err)
+		return nil
+	}
+
+	rqs := make([]*clustercache.ResourceQuota, 0, len(rqList.Items))
+	for i := range rqList.Items {
+		rqs = append(rqs, clustercache.TransformResourceQuota(&rqList.Items[i]))
+	}
+
+	return rqs
+}
+
 // i32 reads a JSON number (unmarshalled as float64) from a map as int32;
 // JSON numbers cannot be type-asserted to int32 directly.
 func i32(m map[string]any, k string) (int32, bool) {

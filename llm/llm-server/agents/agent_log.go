@@ -261,7 +261,7 @@ func investigationInstructions(shellEnabled bool) []string {
 			"       `grep -inE \"error|fail|fatal|panic|exception|traceback|connection.refused|connectionerror|cannot.connect|timed.out|timeout|denied|unreachable\" <file_ref> | head -20`",
 			"       The default Call A pattern is case-sensitive and misses mixed-case wording (e.g. `ConnectionError`, `Connection refused`) and protocol idioms (`timed out`, `unreachable`).",
 			"     Step E2 — only if Step E1 is also empty, widen the fetch:",
-			"       Re-call fetch_logs with `\"all logs for <pod> in <namespace> last 7d, limit 10000\"`, then re-run the Step E1 grep on the new file_ref.",
+			"       Re-call fetch_logs with `\"all logs for <pod> in <namespace> last 7d, limit 5000\"` (widen the *window*, not the limit — 5000 is the recommended max across providers), then re-run the Step E1 grep on the new file_ref.",
 			"       If the user's question or any earlier observation mentions a specific timestamp, ALSO issue a narrower targeted fetch around that timestamp.",
 			"     **Strict prohibitions:**",
 			"       - Do NOT substitute kubectl events, deployment status, or rollout history for a wider log fetch. Events ≠ logs. The critic rejects \"no issues\" answers based on event checks alone.",

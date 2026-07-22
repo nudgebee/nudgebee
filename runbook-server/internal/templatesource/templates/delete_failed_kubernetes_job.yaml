@@ -1,0 +1,70 @@
+slug: delete_failed_kubernetes_job
+name: "Delete Failed Kubernetes Job"
+description: "Delete a failed Kubernetes job to allow re-creation or cleanup. Useful for stuck or errored batch jobs."
+category: "kubernetes"
+icon: "delete_sweep"
+status: ACTIVE
+tags:
+  labels:
+    - "delete"
+  event_sources:
+    - "prometheus"
+    - "alertmanager"
+    - "kubernetes"
+  alert_names:
+    - "KubeJobFailed"
+    - "KubeJobNotCompleted"
+    - "KubeJobCompletion"
+definition:
+  version: "v1"
+  inputs:
+    - id: "namespace"
+      type: "string"
+      description: "Kubernetes namespace"
+      required: true
+    - id: "job_name"
+      type: "string"
+      description: "Job name to delete"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Approve deletion of failed job **{{ Inputs.job_name }}** in namespace **{{ Inputs.namespace }}**?"
+    - id: "delete_job"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl delete job {{ Inputs.job_name }} -n {{ Inputs.namespace }}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.k8s.cli"
+      params:
+        command: "kubectl get jobs -n {{ Inputs.namespace }} -o wide"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "delete_job"
+  timeout: "10m"
+template_variables:
+  - id: "namespace"
+    input_ref: "namespace"
+    display_name: "Namespace"
+    required: true
+    type: "string"
+  - id: "job_name"
+    input_ref: "job_name"
+    display_name: "Job Name"
+    required: true
+    type: "string"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"

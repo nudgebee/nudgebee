@@ -1,7 +1,9 @@
 package anomoly
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/services/common"
@@ -11,6 +13,7 @@ import (
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -28,6 +31,54 @@ type spendAnomalyConfig struct {
 	ResolutionStddevMultiplier float64
 	ResolutionConsecutiveDays  int
 	TargetDate                 *time.Time // nil = yesterday (CURRENT_DATE - 1 day). Set for testing.
+	CurrencySymbol             string     // resolved per-account from spends.unit; defaults to "$".
+}
+
+// money formats a monetary value with the account's currency symbol (e.g. "$1234.56", "₹1234.56").
+func (c spendAnomalyConfig) money(v float64) string {
+	sym := c.CurrencySymbol
+	if sym == "" {
+		sym = "$"
+	}
+	return fmt.Sprintf("%s%.2f", sym, v)
+}
+
+// getAccountCurrencySymbol resolves the display symbol for an account's billing currency.
+// Spend rows for a given cloud_account share a single unit (USD/INR), so one lookup suffices.
+// Mirrors the frontend CURRENCY_MAP; unknown codes fall back to the raw code rather than
+// mislabeling the amount as dollars.
+func getAccountCurrencySymbol(dbms *database.DatabaseManager, accountId string) string {
+	if dbms == nil || dbms.Db == nil || accountId == "" {
+		return "$"
+	}
+	var unit string
+	err := dbms.Db.Get(&unit, `
+		SELECT unit FROM spends
+		WHERE cloud_account = $1 AND exclude_aggregate = false AND unit IS NOT NULL AND unit != ''
+		ORDER BY date DESC
+		LIMIT 1
+	`, accountId)
+	// No spend rows yet (ErrNoRows) is expected for accounts without data — default silently.
+	// Log only unexpected errors to aid debugging.
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		slog.Warn("spend-anomaly: failed to resolve currency unit, defaulting to $", "account", accountId, "error", err)
+	}
+	return currencySymbolForUnit(unit)
+}
+
+// currencySymbolForUnit maps a billing currency code to a display symbol. Mirrors the frontend
+// CURRENCY_MAP (USD/INR). Unknown codes fall back to the code itself (prefixed) rather than
+// mislabeling the amount as dollars.
+func currencySymbolForUnit(unit string) string {
+	code := strings.ToUpper(strings.TrimSpace(unit))
+	switch code {
+	case "INR":
+		return "₹"
+	case "USD", "":
+		return "$"
+	default:
+		return code + " "
+	}
 }
 
 func getSpendAnomalyConfig(ctx *security.RequestContext, tenantId string) spendAnomalyConfig {
@@ -221,6 +272,7 @@ func executeSpendAnomalyForAccount(ctx *security.RequestContext, acc cloudAccoun
 	}
 
 	cfg := getSpendAnomalyConfig(ctx, acc.TenantID)
+	cfg.CurrencySymbol = getAccountCurrencySymbol(dbms, acc.AccountID)
 
 	if !hasTargetDateData(dbms, acc.AccountID, cfg) {
 		slog.Debug("spend-anomaly: no target date data, skipping", "account", acc.AccountName)
@@ -408,12 +460,12 @@ func updateOpenAnomalyEvent(dbms *database.DatabaseManager, oa OpenSpendAnomaly,
 	var title, description string
 	if oa.AnomalyType == MetricAnomolyTypeCloudSpendAccount {
 		title = fmt.Sprintf("Cloud Spend Anomaly: %s account spend elevated for %d days", accountName, oa.AnomalyDays)
-		description = fmt.Sprintf("Account %s spend anomaly ongoing since %s. Total excess: $%.2f over %d days (frozen baseline: $%.2f/day)",
-			accountName, oa.StartDate, oa.TotalImpact, oa.AnomalyDays, oa.FrozenMean)
+		description = fmt.Sprintf("Account %s spend anomaly ongoing since %s. Total excess: %s over %d days (frozen baseline: %s/day)",
+			accountName, oa.StartDate, cfg.money(oa.TotalImpact), oa.AnomalyDays, cfg.money(oa.FrozenMean))
 	} else {
 		title = fmt.Sprintf("Cloud Spend Anomaly: %s in %s elevated for %d days", oa.Name, accountName, oa.AnomalyDays)
-		description = fmt.Sprintf("Service %s in %s spend anomaly ongoing since %s. Total excess: $%.2f over %d days (frozen baseline: $%.2f/day)",
-			oa.Name, accountName, oa.StartDate, oa.TotalImpact, oa.AnomalyDays, oa.FrozenMean)
+		description = fmt.Sprintf("Service %s in %s spend anomaly ongoing since %s. Total excess: %s over %d days (frozen baseline: %s/day)",
+			oa.Name, accountName, oa.StartDate, cfg.money(oa.TotalImpact), oa.AnomalyDays, cfg.money(oa.FrozenMean))
 	}
 
 	namespace := ""
@@ -512,13 +564,13 @@ func resolveAnomalyEvent(dbms *database.DatabaseManager, oa OpenSpendAnomaly, ac
 
 	var title, description string
 	if oa.AnomalyType == MetricAnomolyTypeCloudSpendAccount {
-		title = fmt.Sprintf("Cloud Spend Anomaly Resolved: %s (lasted %d days, $%.2f excess)", accountName, oa.AnomalyDays, oa.TotalImpact)
-		description = fmt.Sprintf("Account %s spend anomaly resolved. Duration: %s to %s (%d days). Total excess: $%.2f",
-			accountName, oa.StartDate, endDate.Format("2006-01-02"), oa.AnomalyDays, oa.TotalImpact)
+		title = fmt.Sprintf("Cloud Spend Anomaly Resolved: %s (lasted %d days, %s excess)", accountName, oa.AnomalyDays, cfg.money(oa.TotalImpact))
+		description = fmt.Sprintf("Account %s spend anomaly resolved. Duration: %s to %s (%d days). Total excess: %s",
+			accountName, oa.StartDate, endDate.Format("2006-01-02"), oa.AnomalyDays, cfg.money(oa.TotalImpact))
 	} else {
-		title = fmt.Sprintf("Cloud Spend Anomaly Resolved: %s in %s (lasted %d days, $%.2f excess)", oa.Name, accountName, oa.AnomalyDays, oa.TotalImpact)
-		description = fmt.Sprintf("Service %s in %s spend anomaly resolved. Duration: %s to %s (%d days). Total excess: $%.2f",
-			oa.Name, accountName, oa.StartDate, endDate.Format("2006-01-02"), oa.AnomalyDays, oa.TotalImpact)
+		title = fmt.Sprintf("Cloud Spend Anomaly Resolved: %s in %s (lasted %d days, %s excess)", oa.Name, accountName, oa.AnomalyDays, cfg.money(oa.TotalImpact))
+		description = fmt.Sprintf("Service %s in %s spend anomaly resolved. Duration: %s to %s (%d days). Total excess: %s",
+			oa.Name, accountName, oa.StartDate, endDate.Format("2006-01-02"), oa.AnomalyDays, cfg.money(oa.TotalImpact))
 	}
 
 	evidences := buildSpendEvidences(dbms, &Anomaly{
@@ -863,15 +915,17 @@ func insertNewSpendAnomaly(
 func generateSpendAnomalyEvent(dbms *database.DatabaseManager, anomaly *Anomaly, cloudAccountName, cloudProvider, accountId string, cfg spendAnomalyConfig) error {
 	evidences := buildSpendEvidences(dbms, anomaly, cloudAccountName, cloudProvider, accountId, cfg)
 
+	meanVal, _ := anomaly.OldValue["mean"].(float64)
+
 	var title, description string
 	if anomaly.AnomalyType == MetricAnomolyTypeCloudSpendAccount {
 		title = fmt.Sprintf("Cloud Spend Anomaly: %s account spend increased by %.1f%%", cloudAccountName, anomaly.OldValue["pct_change"])
-		description = fmt.Sprintf("Daily spend of $%.2f for account %s exceeds baseline average of $%.2f (z-score: %.2f)",
-			anomaly.CurrentValue, cloudAccountName, anomaly.OldValue["mean"], anomaly.OldValue["z_score"])
+		description = fmt.Sprintf("Daily spend of %s for account %s exceeds baseline average of %s (z-score: %.2f)",
+			cfg.money(anomaly.CurrentValue), cloudAccountName, cfg.money(meanVal), anomaly.OldValue["z_score"])
 	} else {
 		title = fmt.Sprintf("Cloud Spend Anomaly: %s in %s increased by %.1f%%", anomaly.Name, cloudAccountName, anomaly.OldValue["pct_change"])
-		description = fmt.Sprintf("Daily spend of $%.2f for %s in account %s exceeds baseline average of $%.2f (z-score: %.2f)",
-			anomaly.CurrentValue, anomaly.Name, cloudAccountName, anomaly.OldValue["mean"], anomaly.OldValue["z_score"])
+		description = fmt.Sprintf("Daily spend of %s for %s in account %s exceeds baseline average of %s (z-score: %.2f)",
+			cfg.money(anomaly.CurrentValue), anomaly.Name, cloudAccountName, cfg.money(meanVal), anomaly.OldValue["z_score"])
 	}
 
 	eventObj := event.Event{
@@ -919,10 +973,10 @@ func buildSpendEvidences(dbms *database.DatabaseManager, anomaly *Anomaly, cloud
 	absChange := anomaly.CurrentValue - mean
 
 	summaryRows := []any{
-		[]any{"Current Daily Spend", fmt.Sprintf("$%.2f", anomaly.CurrentValue)},
-		[]any{"Expected Daily Spend", fmt.Sprintf("$%.2f", mean)},
-		[]any{"Standard Deviation", fmt.Sprintf("$%.2f", stddev)},
-		[]any{"Change", fmt.Sprintf("+$%.2f (+%.1f%%)", absChange, pctChange)},
+		[]any{"Current Daily Spend", cfg.money(anomaly.CurrentValue)},
+		[]any{"Expected Daily Spend", cfg.money(mean)},
+		[]any{"Standard Deviation", cfg.money(stddev)},
+		[]any{"Change", fmt.Sprintf("+%s (+%.1f%%)", cfg.money(absChange), pctChange)},
 		[]any{"Z-Score", fmt.Sprintf("%.2f", zScore)},
 		[]any{"Cloud Provider", cloudProvider},
 	}
@@ -943,8 +997,8 @@ func buildSpendEvidences(dbms *database.DatabaseManager, anomaly *Anomaly, cloud
 
 			summaryRows = append(summaryRows,
 				[]any{"Duration", fmt.Sprintf("%d days (since %s)", days, startDate)},
-				[]any{"Total Excess Impact", fmt.Sprintf("$%.2f", totalImpact)},
-				[]any{"Max Daily Impact", fmt.Sprintf("$%.2f", maxDailyImpact)},
+				[]any{"Total Excess Impact", cfg.money(totalImpact)},
+				[]any{"Max Daily Impact", cfg.money(maxDailyImpact)},
 			)
 
 			if endDate, ok := anomaly.OldValue["end_date"].(string); ok && endDate != "" {
@@ -953,8 +1007,8 @@ func buildSpendEvidences(dbms *database.DatabaseManager, anomaly *Anomaly, cloud
 		}
 	}
 
-	insightMsg := fmt.Sprintf("Daily spend of $%.2f exceeds baseline average of $%.2f by %.1f%%",
-		anomaly.CurrentValue, mean, pctChange)
+	insightMsg := fmt.Sprintf("Daily spend of %s exceeds baseline average of %s by %.1f%%",
+		cfg.money(anomaly.CurrentValue), cfg.money(mean), pctChange)
 
 	evidences = append(evidences, map[string]any{
 		"type": "table",
@@ -1092,11 +1146,11 @@ func buildRootCauseEvidence(dbms *database.DatabaseManager, anomaly *Anomaly, ac
 
 	tableRows := make([]any, 0, len(rows))
 	for _, r := range rows {
-		changeStr := fmt.Sprintf("+$%.2f", r.Change)
+		changeStr := "+" + cfg.money(r.Change)
 		if r.Change < 0 {
-			changeStr = fmt.Sprintf("-$%.2f", -r.Change)
+			changeStr = "-" + cfg.money(-r.Change)
 		}
-		tableRows = append(tableRows, []any{r.Name, fmt.Sprintf("$%.2f", r.Yesterday), fmt.Sprintf("$%.2f", r.Avg), changeStr, r.IsNew})
+		tableRows = append(tableRows, []any{r.Name, cfg.money(r.Yesterday), cfg.money(r.Avg), changeStr, r.IsNew})
 	}
 
 	return map[string]any{
@@ -1163,7 +1217,7 @@ func buildSpendTrendEvidence(dbms *database.DatabaseManager, anomaly *Anomaly, a
 
 	tableRows := make([]any, 0, len(rows))
 	for _, r := range rows {
-		tableRows = append(tableRows, []any{r.SpendDate.Format("2006-01-02"), fmt.Sprintf("$%.2f", r.DailyAmount)})
+		tableRows = append(tableRows, []any{r.SpendDate.Format("2006-01-02"), cfg.money(r.DailyAmount)})
 	}
 
 	return map[string]any{

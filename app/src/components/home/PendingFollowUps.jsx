@@ -32,7 +32,6 @@ const SOURCE_CONFIG = {
 };
 
 const MAX_DISPLAY = 2;
-const FETCH_LIMIT = 5;
 
 const TruncatableTitle = ({ text, sx }) => {
   const measureRef = useRef(null);
@@ -105,14 +104,14 @@ const PendingFollowUps = ({ accountId }) => {
           account_id: accountId,
           status: 'WAITING',
           user_username: userEmail,
-          limit: FETCH_LIMIT,
+          limit: MAX_DISPLAY,
           offset: 0,
         }),
         apiAskNudgebee.llmConversationHistory({
           account_id: accountId,
           status: 'WAITING',
           user_username_neq: userEmail,
-          limit: FETCH_LIMIT,
+          limit: MAX_DISPLAY,
           offset: 0,
         }),
       ]);

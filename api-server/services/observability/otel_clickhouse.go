@@ -685,7 +685,35 @@ func (s *OtelClickhouseTraceSource) CheckAccess(ctx *security.RequestContext, ac
 	return ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead)
 }
 
+// executeClickhouseQuery runs a ClickHouse query via the relay and maps each row into a
+// column-keyed map[string]any. Column order is lost in this shape; callers that need the raw
+// ordered columns/types (e.g. the free-form agent trace path) should use executeClickhouseQueryRaw.
 func (s OtelClickhouseTraceSource) executeClickhouseQuery(ctx context.Context, clickhouseQuery string, accountId string) ([]map[string]any, error) {
+	raw, err := s.executeClickhouseQueryRaw(ctx, clickhouseQuery, accountId)
+	if err != nil {
+		return nil, err
+	}
+
+	rowsMap := make([]map[string]any, 0, len(raw.Rows))
+	for _, rowValues := range raw.Rows {
+		row := make(map[string]any, len(raw.Columns))
+		for i, colName := range raw.Columns {
+			if i < len(rowValues) {
+				row[colName] = rowValues[i]
+			} else {
+				row[colName] = nil // handle missing values
+			}
+		}
+		rowsMap = append(rowsMap, row)
+	}
+
+	return rowsMap, nil
+}
+
+// executeClickhouseQueryRaw runs a ClickHouse query via the relay and returns the result set with
+// column order and types preserved. This is the source of truth for the round-trip + response
+// envelope parsing; executeClickhouseQuery is a thin column-keyed wrapper over it.
+func (s OtelClickhouseTraceSource) executeClickhouseQueryRaw(ctx context.Context, clickhouseQuery string, accountId string) (RawTraceResult, error) {
 	httpClient := &http.Client{}
 	requestData := map[string]any{
 		"no_sinks": true,
@@ -701,14 +729,14 @@ func (s OtelClickhouseTraceSource) executeClickhouseQuery(ctx context.Context, c
 
 	requestBody, err := common.MarshalJson(requestData)
 	if err != nil {
-		return nil, err
+		return RawTraceResult{}, err
 	}
 
 	stringReader := bytes.NewReader(requestBody)
 	httpRequest, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/request", config.Config.RelayServerEndpoint), stringReader)
 	if err != nil {
 		slog.Error("agent: unable to execute query", "error", err)
-		return nil, fmt.Errorf("unable to execute query")
+		return RawTraceResult{}, fmt.Errorf("unable to execute query")
 	}
 	httpRequest.Header.Add("Content-Type", "application/json")
 	httpRequest.Header.Add("Accept", "application/json")
@@ -718,14 +746,14 @@ func (s OtelClickhouseTraceSource) executeClickhouseQuery(ctx context.Context, c
 	if err != nil {
 		if ctx.Err() == context.Canceled {
 			slog.Warn("agent: query canceled by client", "error", err)
-			return nil, fmt.Errorf("query canceled: %w", ctx.Err())
+			return RawTraceResult{}, fmt.Errorf("query canceled: %w", ctx.Err())
 		}
 		if ctx.Err() == context.DeadlineExceeded {
 			slog.Warn("agent: query timeout exceeded", "error", err)
-			return nil, fmt.Errorf("query timeout: %w", ctx.Err())
+			return RawTraceResult{}, fmt.Errorf("query timeout: %w", ctx.Err())
 		}
 		slog.Error("agent: unable to execute query", "error", err)
-		return nil, fmt.Errorf("unable to execute query: %w", err)
+		return RawTraceResult{}, fmt.Errorf("unable to execute query: %w", err)
 	}
 	defer func() {
 		err := resp.Body.Close()
@@ -738,7 +766,7 @@ func (s OtelClickhouseTraceSource) executeClickhouseQuery(ctx context.Context, c
 		response, err := io.ReadAll(resp.Body)
 		if err != nil {
 			slog.Error("agent: unable to execute query", "status_code", resp.StatusCode)
-			return nil, fmt.Errorf("unable to execute query (status %d)", resp.StatusCode)
+			return RawTraceResult{}, fmt.Errorf("unable to execute query (status %d)", resp.StatusCode)
 		}
 
 		// Try to parse error response as JSON to get detailed message
@@ -748,15 +776,15 @@ func (s OtelClickhouseTraceSource) executeClickhouseQuery(ctx context.Context, c
 
 			// Extract error message if available
 			if message, hasMsg := errorResponse["message"]; hasMsg {
-				return nil, fmt.Errorf("clickhouse query error (status %d): %v", resp.StatusCode, message)
+				return RawTraceResult{}, fmt.Errorf("clickhouse query error (status %d): %v", resp.StatusCode, message)
 			} else if errorData, hasError := errorResponse["error"]; hasError {
-				return nil, fmt.Errorf("clickhouse query error (status %d): %v", resp.StatusCode, errorData)
+				return RawTraceResult{}, fmt.Errorf("clickhouse query error (status %d): %v", resp.StatusCode, errorData)
 			}
 		}
 
 		// Fallback: return response body as text
 		slog.Error("agent: unable to execute query", "status_code", resp.StatusCode, "response_body", string(response))
-		return nil, fmt.Errorf("clickhouse query error (status %d): %s", resp.StatusCode, string(response))
+		return RawTraceResult{}, fmt.Errorf("clickhouse query error (status %d): %s", resp.StatusCode, string(response))
 	}
 	defer func() {
 		err := resp.Body.Close()
@@ -768,51 +796,60 @@ func (s OtelClickhouseTraceSource) executeClickhouseQuery(ctx context.Context, c
 	response, err := io.ReadAll(resp.Body)
 	if err != nil {
 		slog.Error("agent: unable to read response", "error", err)
-		return nil, fmt.Errorf("unable to execute query")
+		return RawTraceResult{}, fmt.Errorf("unable to execute query")
 	}
 
 	jsonResponse := make(map[string]any)
 	err = common.UnmarshalJson(response, &jsonResponse)
 	if err != nil {
-		return nil, fmt.Errorf("unable to execute query")
+		return RawTraceResult{}, fmt.Errorf("unable to execute query")
 	}
 
 	if jsonResponse["status_code"].(float64) != 200 {
 		slog.Error("agent: unable to execute query", "status_code", jsonResponse["status_code"].(float64))
-		return nil, fmt.Errorf("unable to execute query")
+		return RawTraceResult{}, fmt.Errorf("unable to execute query")
 	}
 
 	responseData := jsonResponse["data"]
 	if responseData == nil {
 		slog.Error("agent: unable to read response data", "response", slog.AnyValue(responseData))
-		return nil, fmt.Errorf("unable to read response data")
+		return RawTraceResult{}, fmt.Errorf("unable to read response data")
 	}
 
 	responseDataOuterMap, ok := responseData.(map[string]any)
 	if !ok {
 		slog.Error("agent: unable to read response data, not a map", "response", slog.AnyValue(responseData))
-		return nil, fmt.Errorf("unable to read response data: invalid format")
+		return RawTraceResult{}, fmt.Errorf("unable to read response data: invalid format")
 	}
 
 	responseDataMapAny, ok := responseDataOuterMap["data"]
 	if !ok {
 		slog.Error("agent: unable to read inner response data", "response", slog.AnyValue(responseData))
-		return nil, fmt.Errorf("unable to read response data: missing inner data")
+		return RawTraceResult{}, fmt.Errorf("unable to read response data: missing inner data")
 	}
 
 	responseDataMap, ok := responseDataMapAny.(map[string]any)
 	if !ok {
 		slog.Error("agent: unable to read inner response data map", "response", slog.AnyValue(responseDataMapAny))
-		return nil, fmt.Errorf("unable to read response data: invalid inner data format")
+		return RawTraceResult{}, fmt.Errorf("unable to read response data: invalid inner data format")
 	}
 
+	return parseRawTraceResult(responseDataMap)
+}
+
+// parseRawTraceResult converts the relay `query_data` inner payload (the `data` map carrying
+// `columns`, `column_types`, and `data` rows) into a RawTraceResult with column order and types
+// preserved. It also surfaces ClickHouse-level errors that the relay reports inside a 200 envelope
+// (`error_message` / a non-empty string `error`) so a failed query is not mistaken for empty data.
+// Extracted as a pure function so the column/row ordering logic can be unit-tested without HTTP.
+func parseRawTraceResult(responseDataMap map[string]any) (RawTraceResult, error) {
 	if errorMessage, exists := responseDataMap["error_message"]; exists && errorMessage != nil {
 		errorData := fmt.Sprintf("%v", errorMessage)
 		if errorDetails, exists := responseDataMap["error_details"]; exists && errorDetails != nil {
 			errorData = fmt.Sprintf("%s - %v", errorData, errorDetails)
 		}
 		slog.Error("agent: unable to execute query", "error", errorData)
-		return nil, fmt.Errorf("%s", errorData)
+		return RawTraceResult{}, fmt.Errorf("%s", errorData)
 	}
 
 	// The agent reports a successful round-trip (status_code 200, success=true) even when the
@@ -825,58 +862,53 @@ func (s OtelClickhouseTraceSource) executeClickhouseQuery(ctx context.Context, c
 	if queryError, exists := responseDataMap["error"]; exists {
 		if errStr, ok := queryError.(string); ok && strings.TrimSpace(errStr) != "" {
 			slog.Error("agent: clickhouse query returned an error", "error", errStr)
-			return nil, fmt.Errorf("%s", errStr)
+			return RawTraceResult{}, fmt.Errorf("%s", errStr)
 		}
 	}
 
 	dataCols, ok := responseDataMap["columns"].([]any)
 	if !ok {
-		return nil, fmt.Errorf("invalid columns format")
+		return RawTraceResult{}, fmt.Errorf("invalid columns format")
 	}
 
 	cols := make([]string, len(dataCols))
 	for i, col := range dataCols {
-		cols[i] = col.(string)
+		colStr, ok := col.(string)
+		if !ok {
+			return RawTraceResult{}, fmt.Errorf("invalid column name at index %d: expected string, got %T", i, col)
+		}
+		cols[i] = colStr
 	}
 
-	// column types (if you need them later)
 	colTypesRaw, ok := responseDataMap["column_types"].([]any)
 	if !ok {
-		return nil, fmt.Errorf("invalid column_types format")
+		return RawTraceResult{}, fmt.Errorf("invalid column_types format")
 	}
 	colTypes := make([]string, len(colTypesRaw))
 	for i, ct := range colTypesRaw {
-		colTypes[i] = ct.(string)
+		ctStr, ok := ct.(string)
+		if !ok {
+			return RawTraceResult{}, fmt.Errorf("invalid column type at index %d: expected string, got %T", i, ct)
+		}
+		colTypes[i] = ctStr
 	}
 
 	// actual data rows
 	rowsRaw, ok := responseDataMap["data"].([]any)
 	if !ok {
-		return nil, fmt.Errorf("invalid data format")
+		return RawTraceResult{}, fmt.Errorf("invalid data format")
 	}
 
-	// final result
-	rowsMap := make([]map[string]any, 0, len(rowsRaw))
-
+	rows := make([][]any, 0, len(rowsRaw))
 	for _, r := range rowsRaw {
 		rowValues, ok := r.([]any)
 		if !ok {
-			return nil, fmt.Errorf("invalid row format")
+			return RawTraceResult{}, fmt.Errorf("invalid row format")
 		}
-
-		row := make(map[string]any, len(cols))
-		for i, colName := range cols {
-			if i < len(rowValues) {
-				row[colName] = rowValues[i]
-			} else {
-				row[colName] = nil // handle missing values
-			}
-		}
-
-		rowsMap = append(rowsMap, row)
+		rows = append(rows, rowValues)
 	}
 
-	return rowsMap, nil
+	return RawTraceResult{Columns: cols, ColumnTypes: colTypes, Rows: rows}, nil
 }
 func (s *OtelClickhouseTraceSource) GetBaseTraceQuery(ctx *security.RequestContext, accountId string) string {
 	hasMaterializedColumn := s.hasMaterializedColumn(ctx, accountId)
@@ -999,6 +1031,37 @@ func (s *OtelClickhouseTraceSource) QueryTraces(ctx *security.RequestContext, fe
 		otelTraces = append(otelTraces, otelTrace)
 	}
 	return otelTraces, nil
+}
+
+// QueryTracesRaw runs the same SQL path as QueryTraces but returns the raw ClickHouse result set
+// (columns/types/rows) instead of coercing it into the fixed OpenTelemetryTrace span schema. It is
+// used by the free-form agent trace path (IncludeRawResult) so aggregation / custom-projection
+// queries return their real computed columns. The query executes exactly once.
+func (s *OtelClickhouseTraceSource) QueryTracesRaw(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) (RawTraceResult, error) {
+	// Fail fast on an empty account before touching the data path — an unscoped
+	// query must never reach ClickHouse in a multi-tenant deployment.
+	if fetchTraceRequest.AccountId == "" {
+		return RawTraceResult{}, errors.New("account_id is required")
+	}
+	if !s.CheckAccess(ctx, fetchTraceRequest.AccountId) {
+		return RawTraceResult{}, errors.New("user does not have access")
+	}
+
+	s.injectTimeFilter(&fetchTraceRequest)
+	sqlQuery := ""
+	var err error
+	if fetchTraceRequest.Query == "" {
+		tableDef := s.getTraceTableDef(ctx, fetchTraceRequest.AccountId)
+		queryRequest := getQueryRequest(ctx, fetchTraceRequest.QueryRequest, tableDef, "traces_v2")
+		sqlQuery, err = query.GenerateSqlQuery(ctx, fetchTraceRequest.AccountId, queryRequest, tableDef)
+		if err != nil {
+			return RawTraceResult{}, err
+		}
+	} else {
+		sqlQuery = fetchTraceRequest.Query
+	}
+
+	return s.executeClickhouseQueryRaw(ctx.GetContext(), sqlQuery, fetchTraceRequest.AccountId)
 }
 
 func (s *OtelClickhouseTraceSource) QueryGroupedTraces(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) ([]TraceGroupingValues, error) {

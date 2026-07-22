@@ -422,3 +422,198 @@ func TestCreateReferenceEdges_ApplicationGateway(t *testing.T) {
 		t.Errorf("expected pip1 --ASSOCIATED_WITH--> agw1 (AppGW frontend), got %d edges", len(edges))
 	}
 }
+
+func TestCreateRoleAssignmentEdges(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	source, _ := NewAzureSource(AzureSourceConfig{}, logger)
+
+	const sub = "/subscriptions/s/resourceGroups/rg/providers"
+	identityArn := sub + "/Microsoft.ManagedIdentity/userAssignedIdentities/mi1"
+	kvArn := sub + "/Microsoft.KeyVault/vaults/kv1"
+	saArn := sub + "/Microsoft.Storage/storageAccounts/sa1"
+	const principalID = "7667c80a-39a6-44a2-b387-69a7d1da52af"
+
+	identity := arnNode("mi1", core.NodeTypeServiceIdentity, identityArn)
+	kv := arnNode("kv1", core.NodeTypeSecretVault, kvArn)
+	sa := arnNode("sa1", core.NodeTypeStorage, saArn)
+	lookup := newNodeLookup([]*core.DbNode{identity, kv, sa})
+
+	ra := func(ptype, scope, roleGUID string) CloudResourceRow {
+		return CloudResourceRow{
+			ServiceName: azureRoleAssignmentService,
+			Meta: []byte(`{"principalId":"` + principalID + `","principalType":"` + ptype +
+				`","roleDefinitionId":"/providers/Microsoft.Authorization/roleDefinitions/` + roleGUID +
+				`","scope":"` + scope + `"}`),
+		}
+	}
+	resources := []CloudResourceRow{
+		{ServiceName: azureUserAssignedIdentityService, ARN: identityArn,
+			Meta: []byte(`{"properties":{"principalId":"` + principalID + `"}}`)},
+		ra("ServicePrincipal", kvArn, "4633458b-17de-408a-b874-0445c86b69e6"), // → KeyVault (Key Vault Secrets User)
+		ra("ServicePrincipal", saArn, "ba92f5b4-2d11-453d-a403-e96b0029c9fe"), // → Storage
+		ra("ServicePrincipal", kvArn, "4633458b-17de-408a-b874-0445c86b69e6"), // dup → deduped
+		ra("User", kvArn, "4633458b-17de-408a-b874-0445c86b69e6"),             // User → skipped
+		ra("ServicePrincipal", sub, "b24988ac-6180-42a0-ab88-20f7382dd24c"),   // RG-level scope (no node) → skipped
+	}
+
+	edges := source.createRoleAssignmentEdges(resources, lookup, &core.SourceBuildRequest{TenantID: "t1", CloudAccountID: "a1"})
+
+	if len(edges) != 2 {
+		t.Fatalf("expected 2 HAS_ACCESS_TO edges (KV + Storage, deduped, no user/RG), got %d", len(edges))
+	}
+	dests := map[string]string{}
+	for _, e := range edges {
+		if e.SourceNodeID != identity.ID {
+			t.Errorf("edge must originate from the identity, got %s", e.SourceNodeID)
+		}
+		if e.RelationshipType != core.RelationshipHasAccessTo {
+			t.Errorf("expected HAS_ACCESS_TO, got %s", e.RelationshipType)
+		}
+		if e.Properties["evidence"] != "rbac_role_assignment" {
+			t.Errorf("missing rbac provenance: %+v", e.Properties)
+		}
+		dests[e.DestinationNodeID], _ = e.Properties["role"].(string)
+	}
+	if dests[kv.ID] != "Key Vault Secrets User" {
+		t.Errorf("KeyVault edge should carry friendly role name, got %q", dests[kv.ID])
+	}
+	if dests[sa.ID] != "Storage Blob Data Contributor" {
+		t.Errorf("Storage edge should carry friendly role name, got %q", dests[sa.ID])
+	}
+}
+
+func TestCreateRoleAssignmentEdges_SystemAssignedIdentity(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	source, _ := NewAzureSource(AzureSourceConfig{}, logger)
+
+	const sub = "/subscriptions/s/resourceGroups/rg/providers"
+	vmArn := sub + "/Microsoft.Compute/virtualMachines/vm1"
+	kvArn := sub + "/Microsoft.KeyVault/vaults/kv1"
+	const sysPrincipal = "aaaa1111-2222-3333-4444-555566667777"
+
+	vm := arnNode("vm1", core.NodeTypeComputeInstance, vmArn)
+	kv := arnNode("kv1", core.NodeTypeSecretVault, kvArn)
+	lookup := newNodeLookup([]*core.DbNode{vm, kv})
+
+	resources := []CloudResourceRow{
+		// VM with a system-assigned identity — the VM itself is the principal.
+		{ServiceName: "microsoft.compute/virtualmachines", ARN: vmArn,
+			Meta: []byte(`{"identity":{"type":"SystemAssigned","principalId":"` + sysPrincipal + `"}}`)},
+		// Role assignment granting that system identity access to the Key Vault.
+		{ServiceName: azureRoleAssignmentService,
+			Meta: []byte(`{"principalId":"` + sysPrincipal + `","principalType":"ServicePrincipal","roleDefinitionId":"/x/4633458b-17de-408a-b874-0445c86b69e6","scope":"` + kvArn + `"}`)},
+	}
+
+	edges := source.createRoleAssignmentEdges(resources, lookup, &core.SourceBuildRequest{TenantID: "t1", CloudAccountID: "a1"})
+	if len(edges) != 1 {
+		t.Fatalf("expected 1 edge from the VM's system-assigned identity, got %d", len(edges))
+	}
+	if edges[0].SourceNodeID != vm.ID || edges[0].DestinationNodeID != kv.ID {
+		t.Errorf("edge should be VM -> KeyVault, got %s -> %s", edges[0].SourceNodeID, edges[0].DestinationNodeID)
+	}
+}
+
+func TestAzureRoleName(t *testing.T) {
+	if got := azureRoleName("/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d"); got != "AcrPull" {
+		t.Errorf("AcrPull mapping failed, got %q", got)
+	}
+	if got := azureRoleName("/x/deadbeef-0000-0000-0000-000000000000"); got != "deadbeef-0000-0000-0000-000000000000" {
+		t.Errorf("unmapped role should fall back to GUID, got %q", got)
+	}
+}
+
+func TestResolvePrivateEndpointOwnEdges(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	source, _ := NewAzureSource(AzureSourceConfig{}, logger)
+
+	const sub = "/subscriptions/s/resourceGroups/rg/providers"
+	peArn := sub + "/Microsoft.Network/privateEndpoints/kv-pe"
+	kvArn := sub + "/Microsoft.KeyVault/vaults/kv1"
+	subnetArn := "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet1/subnets/snet1"
+
+	pe := arnNode("kv-pe", core.NodeTypePrivateEndpoint, peArn)
+	kv := arnNode("kv1", core.NodeTypeSecretVault, kvArn)
+	snet := &core.DbNode{ID: "snet1", NodeType: core.NodeTypeSubnet,
+		Properties: map[string]interface{}{"name": "snet1", "resource_id": subnetArn}}
+	lookup := newNodeLookup([]*core.DbNode{pe, kv, snet})
+
+	resources := []CloudResourceRow{{
+		ServiceName: "microsoft.network/privateendpoints", ARN: peArn,
+		Meta: []byte(`{"properties":{"subnet":{"id":"` + subnetArn + `"},"privateLinkServiceConnections":[{"properties":{"privateLinkServiceId":"` + kvArn + `"}}]}}`),
+	}}
+
+	edges := source.createReferenceEdges(resources, lookup, &core.SourceBuildRequest{TenantID: "t1", CloudAccountID: "a1"})
+
+	var toSubnet, toKV bool
+	for _, e := range edges {
+		if e.SourceNodeID == pe.ID && e.DestinationNodeID == snet.ID && e.RelationshipType == core.RelationshipHostedOn {
+			toSubnet = true
+		}
+		if e.SourceNodeID == pe.ID && e.DestinationNodeID == kv.ID && e.RelationshipType == core.RelationshipAssociatedWith {
+			toKV = true
+		}
+	}
+	if !toSubnet {
+		t.Errorf("expected PE -> Subnet (HOSTED_ON) edge")
+	}
+	if !toKV {
+		t.Errorf("expected PE -> KeyVault (ASSOCIATED_WITH) edge from privateLinkServiceConnections")
+	}
+}
+
+func TestResolveFunctionEdges_AppServicePlan(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	source, _ := NewAzureSource(AzureSourceConfig{}, logger)
+
+	const sub = "/subscriptions/s/resourceGroups/rg/providers"
+	siteArn := sub + "/Microsoft.Web/sites/fn1"
+	planArn := sub + "/Microsoft.Web/serverfarms/asp1"
+
+	site := arnNode("fn1", core.NodeTypeServerlessFunction, siteArn)
+	plan := arnNode("asp1", core.NodeTypeServerlessFunction, planArn)
+	lookup := newNodeLookup([]*core.DbNode{site, plan})
+
+	resources := []CloudResourceRow{{
+		ServiceName: "microsoft.web/sites", ARN: siteArn,
+		Meta: []byte(`{"properties":{"serverFarmId":"` + planArn + `"}}`),
+	}}
+	edges := source.createReferenceEdges(resources, lookup, &core.SourceBuildRequest{TenantID: "t1", CloudAccountID: "a1"})
+
+	var found bool
+	for _, e := range edges {
+		if e.SourceNodeID == site.ID && e.DestinationNodeID == plan.ID && e.RelationshipType == core.RelationshipHostedOn {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected Site -> App Service Plan (HOSTED_ON) edge")
+	}
+}
+
+func TestCreateAppReferenceEdges(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	source, _ := NewAzureSource(AzureSourceConfig{}, logger)
+
+	const sub = "/subscriptions/s/resourceGroups/rg/providers"
+	siteArn := sub + "/Microsoft.Web/sites/fn1"
+
+	site := arnNode("fn1", core.NodeTypeServerlessFunction, siteArn)
+	sa := arnNode("myfuncstore", core.NodeTypeStorage, sub+"/Microsoft.Storage/storageAccounts/myfuncstore")
+	kv := arnNode("prod-kv", core.NodeTypeSecretVault, sub+"/Microsoft.KeyVault/vaults/prod-kv")
+	lookup := newNodeLookup([]*core.DbNode{site, sa, kv})
+
+	resources := []CloudResourceRow{{
+		ServiceName: "microsoft.web/sites", ARN: siteArn,
+		Meta: []byte(`{"referenced_resources":[{"kind":"storage","name":"myfuncstore"},{"kind":"keyvault","name":"prod-kv"},{"kind":"redis","name":"missing-cache"}]}`),
+	}}
+
+	edges := source.createAppReferenceEdges(resources, lookup, &core.SourceBuildRequest{TenantID: "t1", CloudAccountID: "a1"})
+	if len(edges) != 2 {
+		t.Fatalf("expected 2 app-config edges (storage + keyvault; missing redis skipped), got %d", len(edges))
+	}
+	for _, e := range edges {
+		if e.SourceNodeID != site.ID || e.RelationshipType != core.RelationshipCalls {
+			t.Errorf("edge should be Function -CALLS-> data resource, got %s -%s-> %s", e.SourceNodeID, e.RelationshipType, e.DestinationNodeID)
+		}
+	}
+}

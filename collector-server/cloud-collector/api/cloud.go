@@ -980,6 +980,39 @@ func handleCloudProviderApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.
 		}))
 	})
 
+	groupV2.POST("/update_alert_rule", func(c *gin.Context) {
+		request := account.UpdateAlertRuleRequest{}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(400, buildApiResponse(nil, err))
+			return
+		}
+		if err := common.ValidateStruct(request); err != nil {
+			slog.Error("error validating update_alert_rule", "error", err)
+			c.JSON(400, buildApiResponse(nil, err))
+			return
+		}
+
+		ctx, cancel, err := buildContextFromGin(c, logger, tracer, meter, request.AccountId)
+		if err != nil {
+			c.JSON(400, buildApiResponse(nil, err))
+			return
+		}
+		if cancel != nil {
+			defer cancel()
+		}
+
+		resp, err := account.UpdateAlertRule(ctx, request)
+		if err != nil {
+			ctx.GetLogger().Error("error updating alert rule", "error", err)
+			c.JSON(500, buildApiResponse(nil, err))
+			return
+		}
+		c.JSON(200, buildApiResponse(map[string]interface{}{
+			"external_rule_id": resp.ExternalRuleId,
+			"status":           resp.Status,
+		}))
+	})
+
 	groupV2.GET("/permission_errors", func(c *gin.Context) {
 		tenantId := c.Request.Header.Get("x-tenant-id")
 		if tenantId == "" {

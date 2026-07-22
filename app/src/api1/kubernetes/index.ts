@@ -45,6 +45,7 @@ query listK8ClusterData {
     rows {
       id
       account_name
+      agents
     }
   }
 }`;
@@ -1196,6 +1197,17 @@ const apiKubernetes = {
         acc.ondemand_node_count = acc.node_count - acc.spot_node_count;
         acc.pod_status_counts = accountGroup.pod_status_counts ? JSON.parse(accountGroup.pod_status_counts) : {};
         acc.workload_type_counts = accountGroup.workload_type_counts ? JSON.parse(accountGroup.workload_type_counts) : {};
+        const parsedAgents = typeof acc.agents === 'string' ? safeJSONParse(acc.agents) : acc.agents;
+        const firstAgent = Array.isArray(parsedAgents) && parsedAgents[0] ? parsedAgents[0] : null;
+        acc.agent = firstAgent
+          ? {
+              ...firstAgent,
+              connection_status:
+                typeof firstAgent.connection_status === 'string'
+                  ? safeJSONParse(firstAgent.connection_status) || {}
+                  : firstAgent.connection_status || {},
+            }
+          : {};
       });
       return {
         cloudaccount_k8s_aggregate: cloudAccounts,
@@ -2429,7 +2441,10 @@ query k8s_event_groupings($limit:Int,$offset:Int){
         ...node,
         conditions: typeof node.conditions === 'string' ? safeJSONParse(node.conditions) : node.conditions,
         labels: typeof node.labels === 'string' ? safeJSONParse(node.labels) : node.labels,
-        taints: typeof node.taints === 'string' ? safeJSONParse(node.taints) : node.taints,
+        // `taints` is a flat comma-separated string ("key=value:Effect,..."), NOT JSON — the agent
+        // emits it that way and the node-details renderer splits it itself. Do NOT run safeJSONParse
+        // here: it returns null for any non-{/[ string, which silently blanks the Taints section.
+        taints: node.taints,
         meta: typeof node.meta === 'string' ? safeJSONParse(node.meta) : node.meta,
       }));
       const aggregateRows = response?.data?.data?.k8s_nodes_aggregate?.rows;

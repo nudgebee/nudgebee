@@ -37,9 +37,10 @@ type FilterEvent struct {
 	// detection time. Format: "egress-<12 lowercase hex>".
 	AuditID string `json:"audit_id"`
 
-	// Mode is the action taken on this call — "audit" (forwarded with a log
-	// line), "enforce" (blocked, error returned), or future "redact" /
-	// "tokenize".
+	// Mode is the operator-configured mode for this call — "detect"
+	// (forwarded with a log line), "enforce" (blocked, error returned), or
+	// future "redact" / "tokenize". Note this is the *requested* mode; the
+	// Action actually taken is decided by resolveAction (see action_gate.go).
 	Mode Mode `json:"mode"`
 
 	// PayloadBytes is the length of the scanned payload after serialization.

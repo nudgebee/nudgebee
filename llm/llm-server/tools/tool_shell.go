@@ -88,7 +88,6 @@ func (m ShellTool) InputSchema() core.ToolSchema {
 }
 
 func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-
 	command := input.Command
 	if command == "" {
 		if cmd, ok := input.Arguments["command"].(string); ok {

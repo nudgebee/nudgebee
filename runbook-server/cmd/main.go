@@ -15,6 +15,7 @@ import (
 	"nudgebee/runbook/internal/storage"
 	"nudgebee/runbook/internal/system"
 	"nudgebee/runbook/internal/tasks"
+	"nudgebee/runbook/internal/templatesource"
 	"nudgebee/runbook/internal/workflow"
 	configSvc "nudgebee/runbook/services/config"
 	"nudgebee/runbook/services/optimizer"
@@ -138,6 +139,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Build the system-template source + syncer (multi-source loading). Constructed
+	// regardless of the enabled flag so the admin force-sync RPC always has a syncer;
+	// the periodic ticker below only starts when sync is enabled.
+	var templateSyncer *templatesource.Syncer
+	if templateSource, srcErr := templatesource.NewSourceFromConfig(); srcErr != nil {
+		slog.Error("unable to create template source, template sync disabled", "error", srcErr)
+	} else {
+		templateSyncer = templatesource.NewSyncer(templateStore, templateSource, logger, config.Config.RunbookServerTemplateSyncDeactivateMissing)
+	}
+
 	// Create workflow service now
 	workflowService := workflow.NewService(temporalClient, dbStore, dc, taskRegistry, executor, configService, templateStore)
 
@@ -182,6 +193,15 @@ func main() {
 	})
 	systemWorker.RegisterWorkflow(system.SystemCleanupWorkflow)
 	systemWorker.RegisterWorkflow(system.CronWebhookWorkflow)
+
+	// Template sync runs as a Temporal-scheduled workflow on the system queue.
+	if templateSyncer != nil {
+		systemWorker.RegisterWorkflow(templatesource.TemplateSyncWorkflow)
+		systemWorker.RegisterActivityWithOptions(
+			templatesource.NewSyncActivities(templateSyncer).TemplateSyncActivity,
+			activity.RegisterOptions{Name: templatesource.TemplateSyncActivityName},
+		)
+	}
 
 	go func() {
 		if err := systemWorker.Run(worker.InterruptCh()); err != nil {
@@ -247,6 +267,9 @@ func main() {
 
 	s.SetWorkflowService(workflowService)
 	s.SetOptimizerService(optimizerService)
+	if templateSyncer != nil {
+		s.SetTemplateSyncer(templateSyncer)
+	}
 
 	// Create a context that can be cancelled
 	ctx, cancel := context.WithCancel(context.Background())
@@ -259,6 +282,15 @@ func main() {
 	pollInterval := time.Duration(config.Config.OptimizationRecommendationPollIntervalSeconds) * time.Second
 	recommendationPoller := events.NewRecommendationPoller(dbStore, eventRegistry, workflowService, logger, pollInterval)
 	go recommendationPoller.Start(ctx)
+
+	// Ensure the Temporal Schedule that drives periodic template sync (opt-in).
+	if templateSyncer != nil && config.Config.RunbookServerTemplateSyncEnabled {
+		if err := templatesource.EnsureSchedule(context.Background(), temporalClient, config.Config.RunbookServerTemplateSyncCron, system.SystemTaskQueue); err != nil {
+			slog.Error("failed to ensure template-sync schedule", "error", err)
+		} else {
+			slog.Info("template-sync schedule ensured", "cron", config.Config.RunbookServerTemplateSyncCron, "source", config.Config.RunbookServerTemplateSource)
+		}
+	}
 
 	// Listen for OS signals
 	sigChan := make(chan os.Signal, 1)

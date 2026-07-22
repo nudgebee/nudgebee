@@ -34,10 +34,7 @@ test("CRUD Custom Agent", async ({ page }) => {
 
   await locators.ageentToolsOrAgentselectionButton.click();
   await locators.selectAgentOrTool.click();
-  // Group headers render as 'TOOL' via CSS but DOM text is 'Tool' (snakeToTitleCase)
-  const toolGroupBtn = page.getByText("Tool", { exact: true });
-  await toolGroupBtn.waitFor({ state: "visible", timeout: 10000 });
-  await toolGroupBtn.click();
+  await locators.listOfAgentsOrTools.waitFor({ state: "visible", timeout: 15000 });
   await locators.listOfAgentsOrTools.click({ timeout: 15000 });
   await page.keyboard.press("Escape");
   await locators.agentToolUsage.fill("Used for automated testing.");

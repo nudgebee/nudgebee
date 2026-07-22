@@ -1,0 +1,70 @@
+slug: scale_rds_storage
+name: "Scale RDS Storage"
+description: "Increase allocated storage for an RDS instance. Resolves low free storage alerts."
+category: "aws"
+icon: "database"
+status: ACTIVE
+tags:
+  labels:
+    - "scale"
+  event_sources:
+    - "cloudwatch"
+    - "aws"
+  alert_names:
+    - "RDSFreeStorageSpace"
+    - "FreeStorageSpace"
+    - "DatabaseFreeStorageSpaceLow"
+definition:
+  version: "v1"
+  inputs:
+    - id: "db_instance_id"
+      type: "string"
+      description: "RDS DB instance identifier"
+      required: true
+    - id: "new_storage_gb"
+      type: "string"
+      description: "New storage size in GB"
+      required: true
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "approve"
+      type: "core.approval"
+      params:
+        message: "Approve scaling RDS instance **{{ Inputs.db_instance_id }}** storage to **{{ Inputs.new_storage_gb }} GB**?"
+    - id: "scale_storage"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws rds modify-db-instance --db-instance-identifier {{ Inputs.db_instance_id }} --allocated-storage {{ Inputs.new_storage_gb }} --apply-immediately"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "approve"
+    - id: "verify"
+      type: "cloud.aws.cli"
+      params:
+        command: "aws rds describe-db-instances --db-instance-identifier {{ Inputs.db_instance_id }} --query DBInstances[0].{Status:DBInstanceStatus,Storage:AllocatedStorage}"
+        account_id: "{{ Inputs.account_id }}"
+      depends_on:
+        - "scale_storage"
+  timeout: "15m"
+template_variables:
+  - id: "db_instance_id"
+    input_ref: "db_instance_id"
+    display_name: "DB Instance ID"
+    required: true
+    type: "string"
+  - id: "new_storage_gb"
+    input_ref: "new_storage_gb"
+    display_name: "New Storage (GB)"
+    required: true
+    type: "string"
+    placeholder: "100"
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"
