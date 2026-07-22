@@ -1936,7 +1936,7 @@ const TagsDisplay: React.FC<TagsDisplayProps> = ({ tags, maxVisible = 3 }) => {
     if (Array.isArray(tags)) {
       tagsArray = tags;
     } else if (typeof tags === 'object') {
-      tagsArray = Object.entries(tags).map(([key, value]) => `${key}: ${value}`);
+      tagsArray = Object.entries(tags).map(([key, value]) => (value ? `${key}: ${value}` : key));
     } else {
       tagsArray = [String(tags)];
     }
