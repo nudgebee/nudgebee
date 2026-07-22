@@ -247,6 +247,7 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 		expectedSubject   string
 		expectedNamespace string
 		expectedKind      string
+		wantSkip          bool // expects the nb_skip_workload_match label to be set
 	}{
 		{
 			name:            "Already has subject - skip",
@@ -447,6 +448,18 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 			expectedSubject: "checkout",
 			expectedKind:    "deployment",
 		},
+		{
+			// A PostgreSQL database-name subject (datname) is a logical database,
+			// not a workload: typed as "database" and marked to skip the workload
+			// name-match so it isn't pinned onto an unrelated same-named workload.
+			name:            "datname resolves as database subject and opts out of workload match",
+			initialSubject:  "",
+			labels:          map[string]string{"datname": "nudgebee"},
+			title:           "PostgreSQLCacheHitRatio",
+			expectedSubject: "nudgebee",
+			expectedKind:    "database",
+			wantSkip:        true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -471,6 +484,10 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 				assert.Empty(t, payload.Investigation.Labels["pod"],
 					"non-pod subject should not fabricate a pod label")
 			}
+			// A logical-database (datname) subject must opt out of the workload
+			// name-match; other subjects must not.
+			_, gotSkip := payload.Investigation.Labels[core.SkipWorkloadMatchLabel]
+			assert.Equal(t, tt.wantSkip, gotSkip, "skip-workload-match label")
 		})
 	}
 }

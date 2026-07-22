@@ -3681,6 +3681,18 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 				continue
 			}
 			parsedPayload.EventSubjectName = val
+			if key == "datname" {
+				// The PostgreSQL database name is a logical database, not a k8s
+				// workload. Type it and opt out of the workload name-match so it
+				// isn't matched onto an unrelated same-named workload (mirrors the
+				// Prometheus datname path). The label is left in place so the core
+				// MatchWorkloadAndEnrich running after this handler consumes it.
+				parsedPayload.EventSubjectKind = "database"
+				if parsedPayload.Investigation.Labels == nil {
+					parsedPayload.Investigation.Labels = map[string]string{}
+				}
+				parsedPayload.Investigation.Labels[core.SkipWorkloadMatchLabel] = "true"
+			}
 			break
 		}
 	}
@@ -3865,6 +3877,14 @@ func isPrometheusScrapeJob(val string) bool {
 func matchWorkloadAndEnrich(sc *security.RequestContext, parsedPayload *core.EventIncomingWebhook, accountId string) {
 	candidateName := parsedPayload.EventSubjectName
 	if candidateName == "" {
+		return
+	}
+
+	// Honor the opt-out for non-workload subjects (e.g. a PostgreSQL database
+	// name), so this ILIKE-capable matcher does not pin a database name onto an
+	// unrelated same-named workload. Left in place for the core
+	// MatchWorkloadAndEnrich (which runs after this handler) to consume.
+	if parsedPayload.Investigation.Labels[core.SkipWorkloadMatchLabel] == "true" {
 		return
 	}
 

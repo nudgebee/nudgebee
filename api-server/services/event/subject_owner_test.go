@@ -90,3 +90,27 @@ func TestOwnerFromLabels(t *testing.T) {
 		})
 	}
 }
+
+func TestIsNonWorkloadDatastoreSubject(t *testing.T) {
+	tests := []struct {
+		subjectType string
+		want        bool
+	}{
+		{"database", true},
+		{"cloudsql_database", true},
+		{"Database", true},          // case-insensitive
+		{"CloudSQL_Database", true}, // case-insensitive
+		{"", false},
+		{"pod", false},
+		{"deployment", false},
+		{"statefulset", false}, // a postgres StatefulSet workload must still resolve
+		{"instance", false},    // generic host fallback must still resolve
+	}
+	for _, tc := range tests {
+		t.Run(tc.subjectType, func(t *testing.T) {
+			if got := isNonWorkloadDatastoreSubject(tc.subjectType); got != tc.want {
+				t.Errorf("isNonWorkloadDatastoreSubject(%q) = %v; want %v", tc.subjectType, got, tc.want)
+			}
+		})
+	}
+}

@@ -253,6 +253,12 @@ func (m PrometheusAlertManagerWebhook) ProcessEventWebook(sc *security.RequestCo
 // refers to the scrape job, not a K8s Job; use `kube_job` for that.
 // `destination_workload_name` / `workload` come from service-mesh telemetry
 // (Istio, Linkerd) where the K8s controller kind is not in the label set.
+//
+// Side effect: for a logical-database (datname) subject with no resolvable host,
+// it sets nb_skip_workload_match on the passed labels map — which is the alert's
+// own label map that becomes the event payload — so subject resolution does not
+// name-match the database onto a workload. The map is the caller's, and this is
+// deliberate: the opt-out must travel with the event.
 func extractPromSubject(labels map[string]string) (kind, name string) {
 	for _, k := range []string{"deployment", "statefulset", "daemonset", "replicaset", "cronjob", "kube_job"} {
 		if v := labels[k]; v != "" {
@@ -321,6 +327,13 @@ func extractPromSubject(labels map[string]string) (kind, name string) {
 				return "database", h
 			}
 		}
+		// No resolvable host — the subject is the logical database name (e.g.
+		// "temporal", "nudgebee"), not a workload. Mark it so subject resolution
+		// does not name-match it onto an unrelated workload (a "database nudgebee"
+		// alert otherwise lands on a same-named agent DaemonSet in another
+		// namespace). It stays typed as a database until Phase 2 gives databases
+		// first-class topology nodes.
+		labels[core.SkipWorkloadMatchLabel] = "true"
 		return "database", dn
 	}
 	if v := labels["instance"]; v != "" {

@@ -55,8 +55,8 @@ func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook
 	if e.EventSubjectName == "" && e.Investigation.Labels[workloadCandidatesLabel] == "" {
 		return
 	}
-	if e.Investigation.Labels[skipWorkloadMatchLabel] == "true" {
-		delete(e.Investigation.Labels, skipWorkloadMatchLabel)
+	if e.Investigation.Labels[SkipWorkloadMatchLabel] == "true" {
+		delete(e.Investigation.Labels, SkipWorkloadMatchLabel)
 		delete(e.Investigation.Labels, workloadCandidatesLabel)
 		return
 	}
@@ -212,11 +212,13 @@ func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook
 	}
 }
 
-// skipWorkloadMatchLabel marks an event whose EventSubjectName is display-only
-// (e.g. an alert title) and should not be matched against the k8s_workloads
-// inventory. The label is consumed by MatchWorkloadAndEnrich so it never
-// reaches the persisted event payload.
-const skipWorkloadMatchLabel = "nb_skip_workload_match"
+// SkipWorkloadMatchLabel marks an event whose EventSubjectName is display-only
+// (e.g. an alert title) or a non-workload identity (e.g. a PostgreSQL database
+// name) and should not be matched against the k8s_workloads inventory. Exported
+// so producing webhooks (e.g. the Prometheus datname path) can set it. The
+// label is consumed by MatchWorkloadAndEnrich so it never reaches the persisted
+// event payload.
+const SkipWorkloadMatchLabel = "nb_skip_workload_match"
 
 // workloadCandidatesLabel carries a comma-separated list of additional workload
 // names a webhook would like MatchWorkloadAndEnrich to try after EventSubjectName

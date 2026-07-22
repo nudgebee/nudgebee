@@ -82,6 +82,11 @@ func ownerFromLabels(labels map[string]string) (string, string) {
 //     in k8s_workloads recovers the parent without needing a separate
 //     ReplicaSet table.
 //
+// The lookup key $3 matches either the pod's own name or its workload_name, so
+// a subject that is itself a ReplicaSet name (e.g. an alert on
+// cloud-collector-server-5cbd8ddb97 with an empty owner) resolves to its
+// Deployment as well — not just pod-named subjects.
+//
 // The join doubles as validation — only resolves to workloads currently known
 // to k8s state. ORDER BY length(kw.name) DESC prefers the longest (most
 // specific) deployment match, so a ReplicaSet for "payment-service" doesn't
@@ -97,7 +102,7 @@ const podOwnerLookupSQL = `
 	        (kp.workload_name = kw.name AND kp.workload_type = kw.kind)
 	     OR (kp.workload_type = 'ReplicaSet' AND kw.kind = 'Deployment' AND kp.workload_name LIKE kw.name || '-%')
 	     )
-	WHERE kp.tenant_id = $1 AND kp.namespace = $2 AND kp.name = $3
+	WHERE kp.tenant_id = $1 AND kp.namespace = $2 AND (kp.name = $3 OR kp.workload_name = $3)
 	ORDER BY length(kw.name) DESC, kp.last_seen DESC
 	LIMIT 1
 `
@@ -1653,7 +1658,13 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 	// fallback to SubjectName. We deliberately do not regex-strip the pod
 	// hash — false positives on Job/CronJob/bare pods would be worse than a
 	// missing owner.
-	if webhookEvent.SubjectOwner == "" {
+	//
+	// Skip logical-database subjects: their name is a datname, not a pod, and
+	// the k8s_pods.workload_name arm of lookupPodOwner would otherwise re-pin a
+	// database onto a same-named same-namespace workload (e.g. db "keycloak" →
+	// the keycloak workload). The nb_skip_workload_match label is already
+	// consumed by MatchWorkloadAndEnrich by now, so gate on subject_type here.
+	if webhookEvent.SubjectOwner == "" && !isNonWorkloadDatastoreSubject(webhookEvent.SubjectType) {
 		if name, kind := ownerFromLabels(webhookEvent.Labels); name != "" {
 			webhookEvent.SubjectOwner = name
 			if webhookEvent.SubjectOwnerKind == "" {
@@ -2233,6 +2244,20 @@ func mergeAggregatedAlertLabels(labels map[string]string, aggregationKey string,
 	return updated
 }
 
+// isNonWorkloadDatastoreSubject reports whether subject_type names a logical
+// datastore (e.g. a PostgreSQL database) rather than a k8s workload. Such
+// subjects must never be name-matched against k8s_workloads: doing so re-pins
+// the datastore onto an unrelated same-named workload (the G2 mis-match). Both
+// the owner lookup in InvestigateEvent and linkK8sCloudResourceId skip them.
+func isNonWorkloadDatastoreSubject(subjectType string) bool {
+	switch strings.ToLower(subjectType) {
+	case "database", "cloudsql_database":
+		return true
+	default:
+		return false
+	}
+}
+
 // linkK8sCloudResourceId resolves cloud_resource_id for Kubernetes-sourced
 // events (kubernetes_api_server, prometheus, anomaly, slo, ...) from the cached
 // k8s state snapshot. Cloud-provider events get their resource id from playbook
@@ -2282,6 +2307,15 @@ func linkK8sCloudResourceId(sc *security.RequestContext, dbms *database.Database
 	}
 
 	// Determine the workload name to resolve against k8s_workloads.
+	// A logical-database subject (e.g. a PostgreSQL datname) is not a k8s
+	// workload; name-matching it against k8s_workloads is how a "database
+	// nudgebee" alert lands on an unrelated same-named workload. A host-named DB
+	// subject (RDS endpoint / postgres service DNS) never matches k8s_workloads
+	// by name anyway, so skipping here changes nothing for it.
+	if isNonWorkloadDatastoreSubject(webhookEvent.SubjectType) {
+		return
+	}
+
 	var workloadName string
 	switch strings.ToLower(webhookEvent.SubjectType) {
 	case "", "pod":
