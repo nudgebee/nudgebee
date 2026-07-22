@@ -1347,18 +1347,29 @@ def rerun_tests(run_id: str, test_indices: list[int]) -> dict:
                 f"Test indices {sorted(missing)} not found in run {run_id}"
             )
 
-        # Reset requested test rows so store_test_result can overwrite them
+        # Reset requested test rows so store_test_result can overwrite them.
+        # conversation_id/polling_conversation_id are cleared so the reconciler
+        # can't re-attach to the previous attempt's (already COMPLETED)
+        # conversation and mark the rerun done before it actually re-executes.
         db.query(BenchmarkTestResult).filter(
             BenchmarkTestResult.run_id == run_id,
             BenchmarkTestResult.test_index.in_(test_indices),
         ).update(
             {
                 BenchmarkTestResult.status: "running",
+                BenchmarkTestResult.conversation_id: None,
+                BenchmarkTestResult.polling_conversation_id: None,
                 BenchmarkTestResult.actual_answer: "",
                 BenchmarkTestResult.answer_similarity: 0.0,
                 BenchmarkTestResult.answer_relevancy: 0.0,
                 BenchmarkTestResult.planner_relevancy: 0.0,
+                BenchmarkTestResult.score_reason: None,
+                BenchmarkTestResult.execution_trace: None,
+                BenchmarkTestResult.followup_request: None,
                 BenchmarkTestResult.duration_seconds: 0.0,
+                BenchmarkTestResult.setup_duration: 0.0,
+                BenchmarkTestResult.llm_duration: 0.0,
+                BenchmarkTestResult.teardown_duration: 0.0,
                 BenchmarkTestResult.cost: 0.0,
                 BenchmarkTestResult.total_tokens: 0,
                 BenchmarkTestResult.input_tokens: 0,
@@ -1836,6 +1847,17 @@ def store_test_result(run_id: str, result: dict):
             # When re-running a test (status -> running), clear stale errors and
             # scores from the previous attempt so they don't leak into the new run
             if new_status == "running":
+                # A (re)started test has no conversation yet — drop the previous
+                # attempt's handle so the reconciler can't re-attach to its
+                # already-terminal conversation (this covers the restart path,
+                # which resets rows via the orchestrator's initial running write).
+                # Guard on the incoming id so _persist_submit_cid, which writes the
+                # new conversation_id with status still "running", isn't wiped.
+                if not result.get("conversation_id"):
+                    tr.conversation_id = None
+                    tr.polling_conversation_id = None
+                tr.score_reason = None
+                tr.execution_trace = None
                 tr.error_message = ""
                 tr.error_category = ""
                 tr.actual_answer = ""
@@ -2739,6 +2761,13 @@ def set_test_running(run_id: str, test_index: int) -> dict:
         # Remember the previous state so finish_single_test can restore it
         prev_state = run.state
         tr.status = "running"
+        # Drop the previous attempt's conversation handle. The reconciler watches
+        # every `running` row that still has a conversation_id and mirrors that
+        # conversation's status — a stale (already COMPLETED) id would make it
+        # mark this retry `pass` before the fresh run even submits. store_test_result
+        # writes the new id once the retry starts.
+        tr.conversation_id = None
+        tr.polling_conversation_id = None
         # Clear stale score/result fields so the dashboard doesn't render the
         # previous pass scores while the retry is in flight; if the subprocess
         # crashes before writing a new result, an empty/running row is the
