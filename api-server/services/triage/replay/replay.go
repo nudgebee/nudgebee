@@ -18,9 +18,8 @@ package replay
 import (
 	"encoding/json"
 	"os"
-	"regexp"
-	"sort"
-	"strings"
+
+	"nudgebee/services/triage"
 )
 
 // GoldenEvent is one recorded alert with the fields grouping keys on, plus the
@@ -39,22 +38,42 @@ type GoldenEvent struct {
 	// Incident is the human label: the incident (or chronic group) this event
 	// belongs to. Events with the same Incident are one ground-truth group.
 	Incident string `json:"incident"`
-	// Tier is the incident tier the event belongs to (core | chronic). Recorded
-	// for future per-tier scoring; the pairwise score below is tier-agnostic.
+	// Tier is the incident tier the event belongs to (core | cause | impact |
+	// chronic, or "none" for an in-window distractor that must be excluded). The
+	// flat pairwise Score below is tier-agnostic; the seed-relative assembly scorer
+	// (assembly.go) uses it.
 	Tier string `json:"tier"`
 
-	// Future fields (Phase 3, #34658): scoring cross-service cause/impact grouping
-	// — where members of one incident have different subjects (a deploy wave, an
-	// upstream failure) — will need per-event timing and change markers, e.g.
-	// `StartsAt time.Time` and `IsConfigChange bool`. Add them here and to the
-	// golden set when the deterministic assembly is scored, so the schema grows
-	// deliberately rather than being retrofitted.
+	// TsOffsetS is the event's start time offset, in seconds, from its incident's
+	// root (negative = before the root). The seed-relative assembly scorer orders
+	// cause (before root) vs impact (at/after root) with it, without wall-clock time.
+	TsOffsetS int `json:"ts_offset_s,omitempty"`
+	// IsConfigChange marks a deploy / configuration-change event (cause-tier input),
+	// mirroring events.finding_type = 'configuration_change'.
+	IsConfigChange bool `json:"is_config_change,omitempty"`
+	// FindingType is the raw events.finding_type ('issue', 'Anomaly', 'SLO', ...).
+	// Derived signals (SLO/Anomaly) are kept out of the cause and impact lanes.
+	FindingType string `json:"finding_type,omitempty"`
+	// Seed marks the canonical event a viewer would open for this incident; the
+	// seed-relative scorer assembles from it. Exactly one per assembly incident.
+	// The flat pairwise corpus leaves it false.
+	Seed bool `json:"seed,omitempty"`
 }
 
 // GoldenSet is a labelled corpus of events.
 type GoldenSet struct {
 	Name   string        `json:"name"`
 	Events []GoldenEvent `json:"events"`
+
+	// DependsOn maps a subject identity (SubjectKey form, "namespace|name") to the
+	// upstream identities it calls. Fixture topology for the seed-relative assembly
+	// scorer, standing in for the knowledge-graph walk the production path makes.
+	// Empty for the flat pairwise corpus.
+	DependsOn map[string][]string `json:"depends_on,omitempty"`
+	// Rates maps "SubjectKey|aggregation_key" to the trailing firing rate the chronic
+	// tier keys on, standing in for the per-(account,subject,aggregation_key) COUNT
+	// the production path runs.
+	Rates map[string]triage.Rate `json:"rates,omitempty"`
 }
 
 // LoadGoldenSet reads a labelled corpus from a JSON file.
@@ -89,16 +108,6 @@ func (BaselineGrouper) Key(e GoldenEvent) string {
 	return e.SubjectNamespace + "|" + e.SubjectName
 }
 
-// hashSuffix matches a trailing ReplicaSet/pod-template hash (e.g. "-5cbd8ddb97",
-// "-6b9kfmn4p2"). Kubernetes encodes these with a vowel-free base32 alphabet
-// (k8s.io/apimachinery rand.SafeEncodeString: "bcdfghjklmnpqrstvwxz" + digits),
-// so match that rather than [a-f0-9] (which misses the many hashes containing
-// g/h/j/k/m/n/... ) or [a-z0-9] (which would wrongly strip real trailing words
-// like "-server"/"-worker" that contain vowels). This regex models the DB-based
-// owner resolution the real ingestion path does; it is only the fallback used
-// here when a golden event has no recorded owner.
-var hashSuffix = regexp.MustCompile(`-[bcdfghjklmnpqrstvwxz0-9]{6,10}$`)
-
 // NormalizedGrouper models the intended grouping: prefer the owning workload,
 // strip a ReplicaSet/pod hash suffix, and collapse per-datname datastore alerts
 // onto their shared server signal (the sorted sibling-datname set). It groups by
@@ -108,21 +117,12 @@ type NormalizedGrouper struct{}
 
 func (NormalizedGrouper) Name() string { return "normalized" }
 
-func (NormalizedGrouper) Key(e GoldenEvent) string {
-	// Datastore alerts carry a logical database name, not a workload. All datnames
-	// on one server report a shared sibling set, so key on that instead of the
-	// per-datname name.
-	if strings.EqualFold(e.SubjectType, "database") && len(e.Series) > 0 {
-		s := append([]string(nil), e.Series...)
-		sort.Strings(s)
-		return "db|" + e.SubjectNamespace + "|" + strings.Join(s, ",")
-	}
-	subj := e.SubjectOwner
-	if subj == "" {
-		subj = hashSuffix.ReplaceAllString(e.SubjectName, "")
-	}
-	return e.SubjectNamespace + "|" + subj
-}
+func (NormalizedGrouper) Key(e GoldenEvent) string { return SubjectKey(e) }
+
+// SubjectKey delegates to the production identity function (triage.SubjectKey), so
+// the harness scores the exact normalization the assembler uses — the reference
+// model and production cannot drift (docs/incident-assembly-spec.md §5).
+func SubjectKey(e GoldenEvent) string { return triage.SubjectKey(toIdentity(e)) }
 
 // ScoreResult holds the pairwise precision/recall of a grouper against the labels.
 type ScoreResult struct {

@@ -64,12 +64,14 @@ func BuildEventTimeline(ctx context.Context, db *sqlx.DB, eventID string, tenant
 		return nil
 	})
 
-	// Add correlated events
-	g.Go(func() error {
-		entries := getCorrelatedEventEntries(gCtx, db, event, tenantID)
-		appendEntries(entries)
-		return nil
-	})
+	// Related alerts are NOT added here any more (#34658). The incident-assembly panel
+	// (event_get_impact -> assembly) is the single source of "what else is related":
+	// it groups by subject identity, separates cause from impact, and suppresses
+	// chronically-noisy alerts by measured firing rate. The old pairwise
+	// event_correlations lane used a ±10-minute window with no rarity gate, so the two
+	// disagreed on the same page. event_correlations is still WRITTEN, and is still
+	// read by ComputeScore for severity dampening — migrating that input to the
+	// assembly output is tracked separately; no UI surface reads it now.
 
 	// Add configuration changes
 	g.Go(func() error {
@@ -387,35 +389,6 @@ func formatHistoryEntrySummary(changeType string, changeReason *string, oldValue
 	default:
 		return fmt.Sprintf("%s: %s → %s", changeType, oldStr, newStr)
 	}
-}
-
-// getCorrelatedEventEntries returns entries for correlated events
-// Excludes Anomaly and SLO events from the timeline
-func getCorrelatedEventEntries(ctx context.Context, db *sqlx.DB, event *models.Event, tenantID string) []TimelineEntry {
-	correlations, err := GetCorrelatedEvents(ctx, db, event.Id, tenantID)
-	if err != nil || len(correlations) == 0 {
-		return nil
-	}
-
-	var entries []TimelineEntry
-	for _, corr := range correlations {
-		// Skip Anomaly and SLO events
-		if corr.CorrelatedFindingType != nil {
-			findingType := strings.ToUpper(*corr.CorrelatedFindingType)
-			if findingType == "ANOMALY" || findingType == "SLO" {
-				continue
-			}
-		}
-
-		entries = append(entries, TimelineEntry{
-			Timestamp: corr.CorrelatedStartsAt,
-			RefType:   "event",
-			RefID:     corr.CorrelatedEventID,
-			Action:    "alert_fired",
-			Summary:   corr.CorrelatedTitle,
-		})
-	}
-	return entries
 }
 
 // getConfigChangeEntries returns entries for configuration changes

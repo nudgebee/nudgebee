@@ -26,18 +26,203 @@ const MetaChip = ({ label }) => (
   />
 );
 
+// --- Incident-assembly (four-tier) rendering (#34658) ---
+
+const TIERS = {
+  core: { color: 'var(--ds-red-500)', label: 'Same problem' },
+  cause: { color: 'var(--ds-amber-500)', label: 'What probably caused it' },
+  impact: { color: 'var(--ds-green-500)', label: 'What it affected' },
+  chronic: { color: 'var(--ds-gray-400)', label: 'Background noise' },
+};
+
+// The backend assembles from a 4-hour window ([root-2h, root+2h]). We use that to turn
+// its "expected in window" figure into an everyday "times per day" number.
+const WINDOW_HOURS = 4;
+
+// dtLabel says in plain words when this alert fired, compared to the one you opened.
+const dtLabel = (s) => {
+  if (typeof s !== 'number') return '';
+  const mins = Math.round(Math.abs(s) / 60);
+  if (mins === 0) return 'same time';
+  const when = s < 0 ? 'before' : 'after';
+  if (mins < 60) return `${mins} min ${when}`;
+  return `${Math.round(mins / 6) / 10} hr ${when}`;
+};
+
+// rarityBadge says how normal this alert is for its service, ALWAYS with the real
+// number so there's no hidden threshold to guess at. Measured over the last 7 days:
+//   under ~1 a day  -> "rarely happens"        (green)  — worth paying attention to
+//   ~1-6 a day      -> "happens fairly often"  (amber)  — weak signal, shown honestly
+//   ~6+ a day       -> "normally happens ~N a day" (grey) — background noise
+const rarityBadge = (ev) => {
+  if (!ev) return null;
+  const expected = Number(ev.expected_in_window || 0);
+  const observed = Number(ev.observed_in_window || 0);
+  const perDay = expected * (24 / WINDOW_HOURS);
+  // Usually noisy, but firing far above its own baseline right now. This is the guard
+  // that stops a real escalation being buried as "background" — it keeps its lane.
+  if (expected >= 1 && observed > 3 * expected) {
+    return {
+      label: `usually noisy — but ~${Math.round((observed / expected) * 10) / 10}× more than normal right now`,
+      fg: 'var(--ds-red-600)',
+      bg: 'var(--ds-red-100)',
+    };
+  }
+  if (perDay <= 0) {
+    return { label: 'not seen at all in the last 7 days', fg: 'var(--ds-green-600)', bg: 'var(--ds-green-100)' };
+  }
+  if (perDay >= 6) {
+    return { label: `normally happens ~${Math.round(perDay)} times a day`, fg: 'var(--ds-gray-600)', bg: 'var(--ds-gray-200)' };
+  }
+  if (perDay >= 1) {
+    return { label: `happens fairly often — ~${Math.round(perDay * 10) / 10} times a day`, fg: 'var(--ds-amber-600)', bg: 'var(--ds-amber-100)' };
+  }
+  const everyDays = Math.round(1 / perDay);
+  return {
+    label: `rarely happens — ${everyDays >= 7 ? 'about once a week or less' : `about once every ${everyDays} days`}`,
+    fg: 'var(--ds-green-600)',
+    bg: 'var(--ds-green-100)',
+  };
+};
+
+// relationLabel says in plain words how this service is wired to the one you opened.
+// "call each other" is shown honestly for two-way pairs, where cause-vs-impact is only
+// a guess based on which alert fired first.
+const relationLabel = (relation, seedName) => {
+  const other = seedName || 'this service';
+  if (relation === 'mutual') return `${other} and this one call each other`;
+  if (relation === 'seed_calls') return `${other} calls this one`;
+  if (relation === 'calls_seed') return `this one calls ${other}`;
+  return '';
+};
+
+const shortName = (item) => (item.subject ? item.subject.split('|').pop() : '') || item.title || 'unknown';
+
+const AggChip = ({ label }) => (
+  <Box
+    component='span'
+    sx={{
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+      fontSize: 10.5,
+      color: 'var(--ds-gray-600)',
+      bgcolor: 'var(--ds-background-100)',
+      border: '1px solid var(--ds-gray-200)',
+      px: 0.75,
+      py: '1px',
+      borderRadius: '5px',
+    }}
+  >
+    {label}
+  </Box>
+);
+
+// TierRow renders one collapsed alert (or config change) in a tier: its subject, timing,
+// occurrence count, merged sources, and rarity badge.
+const TierRow = ({ item, color, goTo, showRarity, isChange, folded, seedName }) => {
+  const badge = showRarity ? rarityBadge(item.evidence) : null;
+  const relation = relationLabel(item.relation, seedName);
+  return (
+    <Box
+      onClick={() => goTo(item.event_id)}
+      sx={{
+        borderLeft: `3px solid ${color}`,
+        bgcolor: folded ? 'var(--ds-gray-100)' : 'var(--ds-background-100)',
+        borderRadius: 'var(--ds-radius-sm)',
+        boxShadow: folded ? 'none' : '0 1px 2px rgba(0,0,0,0.05)',
+        p: 1,
+        mb: 0.75,
+        cursor: item.event_id ? 'pointer' : 'default',
+        transition: 'background 120ms',
+        '&:hover': { bgcolor: item.event_id ? 'var(--ds-brand-100)' : undefined },
+      }}
+    >
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+        <Typography sx={{ fontWeight: 620, fontSize: 13.5 }}>{shortName(item)}</Typography>
+        {isChange && <AggChip label='was deployed / changed' />}
+        {item.occurrence_count > 1 && (
+          <Typography sx={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ds-gray-500)' }}>happened {item.occurrence_count} times</Typography>
+        )}
+      </Box>
+      {item.title && !isChange && (
+        <Typography sx={{ fontSize: 12, color: 'var(--ds-gray-600)', mt: 0.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {item.title}
+        </Typography>
+      )}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 0.4 }}>
+        {typeof item.dt_seconds === 'number' && (
+          <Typography sx={{ fontSize: 11, color: 'var(--ds-gray-500)' }}>{dtLabel(item.dt_seconds)}</Typography>
+        )}
+        {relation && <Typography sx={{ fontSize: 11, color: 'var(--ds-gray-500)' }}>· {relation}</Typography>}
+        {(item.sources || []).length > 1 && (
+          <Typography sx={{ fontSize: 11, color: 'var(--ds-gray-400)' }}>· reported by {item.sources.join(' and ')}</Typography>
+        )}
+        {badge && (
+          <Box
+            component='span'
+            sx={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              height: 17,
+              px: 0.75,
+              fontSize: 10.5,
+              fontWeight: 600,
+              color: badge.fg,
+              bgcolor: badge.bg,
+              borderRadius: '999px',
+            }}
+          >
+            {badge.label}
+          </Box>
+        )}
+      </Box>
+    </Box>
+  );
+};
+
+// TierSection renders a labelled tier with a colored dot, a plain count, and its rows.
+// `label` overrides the tier's default heading (used to name the service explicitly);
+// `unit` is the singular noun for the count ("alert" -> "3 alerts").
+const TierSection = ({ tierKey, label, unit = 'alert', note, items, goTo, showRarity, folded, seedName }) => {
+  if (!items || items.length === 0) return null;
+  const t = TIERS[tierKey];
+  return (
+    <Box sx={{ mt: 1.75 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.5 }}>
+        <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: t.color, flex: 'none' }} />
+        <Typography sx={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ds-gray-700)' }}>
+          {label || t.label}
+        </Typography>
+        <Typography sx={{ ml: 'auto', fontSize: 11, color: 'var(--ds-gray-400)' }}>
+          {items.length} {unit}
+          {items.length === 1 ? '' : 's'}
+        </Typography>
+      </Box>
+      {note && <Typography sx={{ fontSize: 11.5, color: 'var(--ds-gray-400)', mb: 0.75 }}>{note}</Typography>}
+      {items.map((it, i) => (
+        <TierRow key={it.event_id || i} item={it} color={t.color} goTo={goTo} showRarity={showRarity} folded={folded} seedName={seedName} />
+      ))}
+    </Box>
+  );
+};
+
 // ImpactPanel renders the topology-driven correlation for an incident: the root subject,
 // the dependent services actively alerting in the window (the correlated downstream
 // incidents this root caused), and the remaining dependents as potential impact.
-const ImpactPanel = ({ eventId }) => {
+const ImpactPanel = ({ eventId, prefetched }) => {
   const router = useRouter();
   const accountId = router?.query?.accountId || '';
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(prefetched || null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     if (!eventId) {
+      return undefined;
+    }
+    // The card already fetched this to build its summary — reuse it rather than
+    // asking the server for the same assembly a second time.
+    if (prefetched) {
+      setData(prefetched);
       return undefined;
     }
     let active = true;
@@ -63,7 +248,7 @@ const ImpactPanel = ({ eventId }) => {
     return () => {
       active = false;
     };
-  }, [eventId]);
+  }, [eventId, prefetched]);
 
   if (loading) {
     return (
@@ -75,7 +260,137 @@ const ImpactPanel = ({ eventId }) => {
   if (error) {
     return <Typography sx={{ p: 2, color: 'var(--ds-red-500)' }}>{error}</Typography>;
   }
-  if (!data || !data.resolved) {
+  if (!data) {
+    return (
+      <Typography sx={{ p: 2, color: 'var(--ds-gray-500)' }}>
+        Impact unknown — the subject could not be located in the service topology (coverage may be incomplete).
+      </Typography>
+    );
+  }
+
+  const seed = data.seed || {};
+  const a = data.assembly;
+  const causeCfg = (a && a.cause && a.cause.config_changes) || [];
+  const causeUp = (a && a.cause && a.cause.upstream) || [];
+  const hasAssembly =
+    a && ((a.same_incident || []).length || causeCfg.length || causeUp.length || (a.impact || []).length || (a.chronic || []).length) > 0;
+
+  if (hasAssembly) {
+    const goTo = (evId) => evId && router.push(`/investigate?id=${evId}&accountId=${accountId}`);
+    // "No impact found" is only meaningful when we actually have a service map to look
+    // at. Unresolved subject or none/low coverage => we cannot tell, and must say so.
+    const noCoverage = !data.resolved || data.coverage_confidence === 'none' || data.coverage_confidence === 'low';
+    const incidentCount = (a.same_incident || []).length + causeCfg.length + causeUp.length + (a.impact || []).length;
+    return (
+      <Box sx={{ p: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1, mb: 0.5 }}>
+          <Chip size='small' label='ROOT' sx={{ bgcolor: 'var(--ds-red-500)', color: '#fff', fontWeight: 700, height: 20, letterSpacing: 0.5 }} />
+          <Typography sx={{ fontWeight: 700 }}>{seed.name}</Typography>
+          <Typography sx={{ color: 'var(--ds-gray-500)', fontSize: 13 }}>
+            · {seed.namespace} · {seed.type}
+          </Typography>
+        </Box>
+        <Typography sx={{ fontSize: 12, color: 'var(--ds-gray-500)', mb: 0.25 }}>
+          <b style={{ color: 'var(--ds-gray-700)' }}>
+            {incidentCount} alert{incidentCount === 1 ? '' : 's'}
+          </b>{' '}
+          look like one problem
+          {(a.chronic || []).length > 0
+            ? `. ${a.chronic.length} more ${(a.chronic || []).length === 1 ? 'is' : 'are'} just normal background noise, shown at the bottom`
+            : ''}
+          .
+        </Typography>
+
+        <TierSection
+          tierKey='core'
+          label={`More alerts on ${seed.name || 'this service'}`}
+          unit='alert'
+          note='All of these are about the same service you’re looking at — one problem, reported several times.'
+          items={a.same_incident}
+          seedName={seed.name}
+          goTo={goTo}
+          showRarity
+        />
+
+        {(causeCfg.length > 0 || causeUp.length > 0) && (
+          <Box sx={{ mt: 1.75 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.5 }}>
+              <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: TIERS.cause.color, flex: 'none' }} />
+              <Typography sx={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ds-gray-700)' }}>
+                {TIERS.cause.label}
+              </Typography>
+              <Typography sx={{ ml: 'auto', fontSize: 11, color: 'var(--ds-gray-400)' }}>
+                {causeCfg.length + causeUp.length} possible cause{causeCfg.length + causeUp.length === 1 ? '' : 's'}
+              </Typography>
+            </Box>
+            <Typography sx={{ fontSize: 11.5, color: 'var(--ds-gray-400)', mb: 0.75 }}>
+              Things that went wrong just before this did. Best guesses — not confirmed.
+            </Typography>
+            {causeCfg.map((it, i) => (
+              <TierRow key={it.event_id || `c${i}`} item={it} color={TIERS.cause.color} goTo={goTo} seedName={seed.name} isChange />
+            ))}
+            {causeUp.map((it, i) => (
+              <TierRow key={it.event_id || `u${i}`} item={it} color={TIERS.cause.color} goTo={goTo} seedName={seed.name} showRarity />
+            ))}
+          </Box>
+        )}
+
+        <TierSection
+          tierKey='impact'
+          unit='service'
+          note='These broke after this one did. How often each normally alerts is shown on the right.'
+          items={a.impact}
+          seedName={seed.name}
+          goTo={goTo}
+          showRarity
+        />
+
+        {/* An empty impact list must never read as "nothing was affected" — with no
+            service-map coverage we genuinely cannot tell, and saying so is the honest
+            answer (a core finding of the correlation audit). */}
+        {(a.impact || []).length === 0 && (
+          <Box sx={{ mt: 1.75 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.5 }}>
+              <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: TIERS.impact.color, flex: 'none' }} />
+              <Typography sx={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ds-gray-700)' }}>
+                {TIERS.impact.label}
+              </Typography>
+              <Typography sx={{ ml: 'auto', fontSize: 11, color: 'var(--ds-gray-400)' }}>{noCoverage ? 'unknown' : 'none found'}</Typography>
+            </Box>
+            <Typography sx={{ fontSize: 12, color: noCoverage ? 'var(--ds-amber-600)' : 'var(--ds-gray-500)' }}>
+              {noCoverage
+                ? 'We can’t tell. We don’t have a service map for this one, so we don’t know what depends on it — this is not the same as “nothing was affected”.'
+                : 'Nothing that depends on this one raised an alert afterwards.'}
+            </Typography>
+          </Box>
+        )}
+        <TierSection
+          tierKey='chronic'
+          unit='alert'
+          note='These fire this often regardless of any incident, so they don’t say anything specific about this one. Shown for completeness.'
+          items={a.chronic}
+          seedName={seed.name}
+          goTo={goTo}
+          showRarity
+          folded
+        />
+
+        {!data.resolved && (
+          <Typography sx={{ fontSize: 11, color: 'var(--ds-amber-500)', mt: 1.5 }}>
+            ⚠ We couldn’t find this service in the service map, so we can’t show what caused it or what it affected — only other alerts on the same
+            service.
+          </Typography>
+        )}
+        {a.truncated && (
+          <Typography sx={{ fontSize: 11, color: 'var(--ds-gray-400)', mt: 1 }}>
+            There were too many alerts around this time to check them all — we looked at the most recent 1000.
+          </Typography>
+        )}
+      </Box>
+    );
+  }
+
+  if (!data.resolved) {
     return (
       <Typography sx={{ p: 2, color: 'var(--ds-gray-500)' }}>
         Impact unknown — the subject could not be located in the service topology (coverage may be incomplete).
@@ -87,7 +402,6 @@ const ImpactPanel = ({ eventId }) => {
   const dependsOn = Array.isArray(data.depends_on) ? data.depends_on : [];
   const correlated = impacted.filter((s) => s.alerting);
   const potential = impacted.filter((s) => !s.alerting);
-  const seed = data.seed || {};
   const lowCoverage = data.coverage_confidence === 'none' || data.coverage_confidence === 'low';
   const goTo = (evId) => evId && router.push(`/investigate?id=${evId}&accountId=${accountId}`);
 

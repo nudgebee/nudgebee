@@ -1,0 +1,35 @@
+{
+  "name": "incident-assembly-2026-07-22",
+  "_comment": "Seed-relative corpus for the four-tier assembly (#34658), drawn from blast-radius-correlation-audit.md. Two incidents, each with a canonical seed (the alert a viewer would open). depends_on is a fixture call-graph; rates are fixture trailing firing rates keyed 'SubjectKey|aggregation_key'. Workload subjects only — database-family grouping is a data-blocked follow-up. ts_offset_s is seconds from the incident root.",
+
+  "depends_on": {
+    "nudgebee|llm-server": ["nudgebee|workflow-server"],
+    "nudgebee|services-server": ["nudgebee|llm-server"],
+    "nudgebee|app-prod": ["nudgebee|services-server"],
+    "nudgebee|cloud-collector-server": ["nudgebee|services-server"]
+  },
+  "rates": {
+    "nudgebee|services-server|HighP95Latency": {"expected": 1.5, "observed": 2},
+    "nudgebee|cloud-collector-server|HighP95Latency": {"expected": 2.0, "observed": 3},
+    "nudgebee|app-prod|HighP95Latency": {"expected": 0.1, "observed": 1}
+  },
+
+  "events": [
+    {"id": "dc-llm-root", "subject_type": "deployment", "subject_name": "llm-server", "subject_namespace": "nudgebee", "subject_owner": "llm-server", "aggregation_key": "ApplicationAPIFailures", "ts_offset_s": 0, "seed": true, "incident": "deploy-cascade", "tier": "core"},
+    {"id": "dc-llm-errlogs", "subject_type": "deployment", "subject_name": "llm-server", "subject_namespace": "nudgebee", "subject_owner": "llm-server", "aggregation_key": "HighErrorCriticalLogs", "ts_offset_s": -120, "incident": "deploy-cascade", "tier": "core"},
+    {"id": "dc-llm-api2", "subject_type": "deployment", "subject_name": "llm-server", "subject_namespace": "nudgebee", "subject_owner": "llm-server", "aggregation_key": "ApplicationAPIFailures", "ts_offset_s": 180, "incident": "deploy-cascade", "tier": "core"},
+    {"id": "dc-llm-deploy", "subject_type": "deployment", "subject_name": "llm-server", "subject_namespace": "nudgebee", "subject_owner": "llm-server", "aggregation_key": "ConfigurationChange", "ts_offset_s": -2460, "is_config_change": true, "incident": "deploy-cascade", "tier": "cause"},
+    {"id": "dc-wf-deploy", "subject_type": "deployment", "subject_name": "workflow-server", "subject_namespace": "nudgebee", "subject_owner": "workflow-server", "aggregation_key": "ConfigurationChange", "ts_offset_s": -1680, "is_config_change": true, "incident": "deploy-cascade", "tier": "cause"},
+    {"id": "dc-wf-alert", "subject_type": "deployment", "subject_name": "workflow-server", "subject_namespace": "nudgebee", "subject_owner": "workflow-server", "aggregation_key": "ApplicationAPIFailures", "ts_offset_s": -180, "incident": "deploy-cascade", "tier": "cause"},
+    {"id": "dc-ss-chronic", "subject_type": "deployment", "subject_name": "services-server", "subject_namespace": "nudgebee", "subject_owner": "services-server", "aggregation_key": "HighP95Latency", "ts_offset_s": 60, "incident": "deploy-cascade", "tier": "chronic"},
+    {"id": "dc-k8scoll-distractor", "subject_type": "deployment", "subject_name": "k8s-collector", "subject_namespace": "nudgebee", "subject_owner": "k8s-collector", "aggregation_key": "ImagePullBackOff", "ts_offset_s": 30, "incident": "deploy-cascade", "tier": "none"},
+    {"id": "dc-wf-anomaly-distractor", "subject_type": "deployment", "subject_name": "workflow-server", "subject_namespace": "nudgebee", "subject_owner": "workflow-server", "aggregation_key": "Anomaly", "finding_type": "Anomaly", "ts_offset_s": -240, "incident": "deploy-cascade", "tier": "none"},
+
+    {"id": "sd-ss-root", "subject_type": "deployment", "subject_name": "services-server", "subject_namespace": "nudgebee", "subject_owner": "services-server", "aggregation_key": "OOMKilled", "ts_offset_s": 0, "seed": true, "incident": "services-degradation", "tier": "core"},
+    {"id": "sd-ss-lat", "subject_type": "", "subject_name": "services-server-8678c79b", "subject_namespace": "nudgebee", "aggregation_key": "HighP95Latency", "ts_offset_s": 300, "incident": "services-degradation", "tier": "core"},
+    {"id": "sd-app-impact", "subject_type": "deployment", "subject_name": "app-prod", "subject_namespace": "nudgebee", "subject_owner": "app-prod", "aggregation_key": "HighP95Latency", "ts_offset_s": 300, "incident": "services-degradation", "tier": "impact"},
+    {"id": "sd-cc-chronic", "subject_type": "deployment", "subject_name": "cloud-collector-server", "subject_namespace": "nudgebee", "subject_owner": "cloud-collector-server", "aggregation_key": "HighP95Latency", "ts_offset_s": 120, "incident": "services-degradation", "tier": "chronic"},
+    {"id": "sd-relay-distractor", "subject_type": "deployment", "subject_name": "relay-server", "subject_namespace": "nudgebee", "subject_owner": "relay-server", "aggregation_key": "ApplicationAPIFailures", "ts_offset_s": 45, "incident": "services-degradation", "tier": "none"},
+    {"id": "sd-app-slo-distractor", "subject_type": "deployment", "subject_name": "app-prod", "subject_namespace": "nudgebee", "subject_owner": "app-prod", "aggregation_key": "SLOViolation", "finding_type": "SLO", "ts_offset_s": 400, "incident": "services-degradation", "tier": "none"}
+  ]
+}

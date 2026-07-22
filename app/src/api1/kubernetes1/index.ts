@@ -1700,6 +1700,18 @@ const apiKubernetes1 = {
         production_dependents
         coverage_confidence
         truncated
+        assembly {
+          root_identity
+          truncated
+          window { lead_in_s core_s impact_s }
+          same_incident { event_id title subject aggregation_key priority sources occurrence_count relation starts_at dt_seconds evidence { expected_in_window observed_in_window } }
+          cause {
+            config_changes { event_id title subject aggregation_key priority sources occurrence_count relation starts_at dt_seconds evidence { expected_in_window observed_in_window } }
+            upstream { event_id title subject aggregation_key priority sources occurrence_count relation starts_at dt_seconds evidence { expected_in_window observed_in_window } }
+          }
+          impact { event_id title subject aggregation_key priority sources occurrence_count relation starts_at dt_seconds evidence { expected_in_window observed_in_window } }
+          chronic { event_id title subject aggregation_key priority sources occurrence_count relation starts_at dt_seconds evidence { expected_in_window observed_in_window } }
+        }
       }
     }
     `;

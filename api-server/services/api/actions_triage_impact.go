@@ -2,8 +2,10 @@ package api
 
 import (
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,9 +14,11 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/security"
+	"nudgebee/services/triage"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 )
 
 // podHashSuffix matches a Deployment pod's "-<replicaset-hash>-<pod-suffix>" tail and
@@ -233,13 +237,23 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 		"namespace": namespace,
 		"type":      derefStr(ev.SubjectType),
 	}
+	seedIdentity := triage.AlertIdentity{
+		ID:               eventID,
+		SubjectType:      derefStr(ev.SubjectType),
+		SubjectName:      name,
+		SubjectNamespace: namespace,
+		SubjectOwner:     derefStr(ev.SubjectOwner),
+		AggregationKey:   derefStr(ev.AggregationKey),
+	}
+	dependsOnMap := map[string][]string{}
 
 	kg := core.NewService(ctx, ctx.GetLogger(), dbms)
 	nodeID, ok := resolveEventSubjectNodeID(kg, tenantID, accountID, name, namespace,
 		derefStr(ev.SubjectType), derefStr(ev.SubjectOwner), derefStr(ev.SubjectOwnerKind))
 	if !ok {
 		// Subject not resolvable to a single graph node: report unknown coverage rather
-		// than an empty blast radius that would read as "nothing impacted".
+		// than an empty blast radius that would read as "nothing impacted". The
+		// same-subject and seed-deploy tiers still resolve from the window alone.
 		c.JSON(http.StatusOK, gin.H{
 			"event_id":            eventID,
 			"seed":                seed,
@@ -248,6 +262,7 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 			"correlated_count":    0,
 			"dependent_count":     0,
 			"coverage_confidence": string(core.CoverageNone),
+			"assembly":            buildIncidentAssembly(ctx.GetLogger(), dbms.Db, accountID, eventID, rootTime, seedIdentity, dependsOnMap),
 		})
 		return
 	}
@@ -273,9 +288,6 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 		deps = filtered
 	}
 
-	// Topology-driven correlation: which dependents are actually alerting in the window.
-	impacted, correlatedCount := annotateImpactedWithActiveAlerts(dbms.Db, accountID, eventID, rootTime, deps)
-
 	// Same namespace scope for downstream deps — drop #34569 cross-namespace name-collision
 	// edges (e.g. a nudgebee service resolving to every stack's "postgresql"/"redis"/"rabbitmq").
 	dependsOn := impact.DownstreamDependencies
@@ -289,6 +301,25 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 		dependsOn = fd
 	}
 
+	// Topology for the tiering: the subject depends on its downstream dependencies
+	// (cause side); its dependents depend on it (impact side). Keys go through
+	// SubjectKey so they match the candidate identities (same lowercasing/normalization).
+	seedKey := triage.SubjectKey(seedIdentity)
+	topoKey := func(s core.ImpactedService) string {
+		return triage.SubjectKey(triage.AlertIdentity{SubjectNamespace: s.Namespace, SubjectOwner: s.Name})
+	}
+	for _, u := range dependsOn {
+		dependsOnMap[seedKey] = append(dependsOnMap[seedKey], topoKey(u))
+	}
+	for _, d := range deps {
+		dk := topoKey(d)
+		dependsOnMap[dk] = append(dependsOnMap[dk], seedKey)
+	}
+
+	// Topology-driven correlation: which dependents are actually alerting in the window.
+	impacted, correlatedCount := annotateImpactedWithActiveAlerts(dbms.Db, accountID, eventID, rootTime, deps)
+	assembly := buildIncidentAssembly(ctx.GetLogger(), dbms.Db, accountID, eventID, rootTime, seedIdentity, dependsOnMap)
+
 	c.JSON(http.StatusOK, gin.H{
 		"event_id":              eventID,
 		"seed":                  seed,
@@ -300,5 +331,316 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 		"production_dependents": impact.ProductionDependents,
 		"coverage_confidence":   string(impact.CoverageConfidence),
 		"truncated":             impact.Truncated,
+		"assembly":              assembly, // four-tier incident story (#34658)
 	})
+}
+
+// tierItem is one logical alert placed in an incident tier — collapsed across its
+// in-window firings and cross-source copies — with its offset from the root and,
+// for the rarity-gated tiers, how unusual the alert is for its subject.
+type tierItem struct {
+	EventID         string        `json:"event_id"`
+	Title           string        `json:"title,omitempty"`
+	Subject         string        `json:"subject,omitempty"`
+	AggregationKey  string        `json:"aggregation_key,omitempty"`
+	Priority        string        `json:"priority,omitempty"`
+	Sources         []string      `json:"sources,omitempty"`          // unioned across cross-source copies
+	OccurrenceCount int           `json:"occurrence_count,omitempty"` // firings collapsed into this item, in-window
+	Relation        string        `json:"relation,omitempty"`         // how it's wired to the seed (triage.Relation*)
+	StartsAt        string        `json:"starts_at,omitempty"`
+	DtSeconds       int           `json:"dt_seconds"`
+	Evidence        *tierEvidence `json:"evidence,omitempty"`
+}
+
+// tierEvidence is the rarity fact behind a chronic fold or a kept impact: how many
+// firings the subject's own history predicted for the window vs how many occurred.
+type tierEvidence struct {
+	ExpectedInWindow float64 `json:"expected_in_window"`
+	ObservedInWindow float64 `json:"observed_in_window"`
+}
+
+// windowRow is a fetched window event plus the identity the tiering keys on.
+type windowRow struct {
+	id       triage.AlertIdentity
+	title    string
+	priority string
+	source   string
+	startsAt time.Time
+	fp       string
+}
+
+// buildIncidentAssembly computes the deterministic four-tier incident story for the
+// seed (#34658). It fetches the incident window once, computes each candidate's
+// trailing firing rate, runs the pure triage.AssembleTiers (the same function the
+// replay harness scores), then collapses each tier so a recurring alert appears once
+// with an occurrence count rather than as N near-identical rows. It is additive: on
+// any DB error it returns an empty-but-valid assembly so the rest of the panel
+// response is unaffected. Runs for unresolved seeds too (empty topology →
+// same_incident + seed config-changes only).
+func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID string, rootTime time.Time, seed triage.AlertIdentity, dependsOn map[string][]string) gin.H {
+	windowMeta := gin.H{"lead_in_s": 7200, "core_s": 7200, "impact_s": 7200}
+	empty := gin.H{
+		"root_identity": triage.SubjectKey(seed),
+		"same_incident": []tierItem{},
+		"cause":         gin.H{"config_changes": []tierItem{}, "upstream": []tierItem{}},
+		"impact":        []tierItem{},
+		"chronic":       []tierItem{},
+		"window":        windowMeta,
+		"truncated":     false,
+	}
+	if db == nil || accountID == "" {
+		return empty
+	}
+
+	wr, truncated := fetchWindowRows(log, db, accountID, rootEventID, rootTime)
+	if len(wr) == 0 {
+		return empty
+	}
+
+	rates := computeCandidateRates(log, db, accountID, rootTime, wr)
+
+	cands := make([]triage.AlertIdentity, len(wr))
+	for i := range wr {
+		cands[i] = wr[i].id
+	}
+	tiers := triage.AssembleTiers(seed, cands, dependsOn, rates)
+
+	// Collapse: one item per (tier, SubjectKey, aggregation_key). Rows arrive newest-
+	// first (ORDER BY starts_at DESC), so the first row of each group is its newest and
+	// stays the representative; occurrence_count is the in-window firing count and
+	// sources unions cross-source copies (Prometheus + PagerDuty of one alert). Without
+	// this, a recurring alert on a noisy subject would list many near-identical rows.
+	type ckey struct{ tier, subj, agg string }
+	type citem struct {
+		tier  string
+		rep   windowRow
+		count int
+		src   map[string]bool
+	}
+	seen := map[ckey]int{}
+	var items []citem
+	for _, r := range wr {
+		tier, ok := tiers[r.id.ID]
+		if !ok {
+			continue
+		}
+		k := ckey{tier, triage.SubjectKey(r.id), r.id.AggregationKey}
+		i, ok2 := seen[k]
+		if !ok2 {
+			i = len(items)
+			seen[k] = i
+			items = append(items, citem{tier: tier, rep: r, src: map[string]bool{}})
+		}
+		items[i].count++
+		if r.source != "" {
+			items[i].src[r.source] = true
+		}
+	}
+
+	sameIncident, configChanges, upstream, impact, chronic := []tierItem{}, []tierItem{}, []tierItem{}, []tierItem{}, []tierItem{}
+	for _, ci := range items {
+		item := toTierItem(ci.rep, rates)
+		item.OccurrenceCount = ci.count
+		item.Relation = triage.RelationTo(seed, ci.rep.id, dependsOn)
+		for s := range ci.src {
+			item.Sources = append(item.Sources, s)
+		}
+		sort.Strings(item.Sources)
+		switch ci.tier {
+		case triage.TierCore:
+			sameIncident = append(sameIncident, item)
+		case triage.TierCause:
+			if ci.rep.id.IsConfigChange {
+				configChanges = append(configChanges, item)
+			} else {
+				upstream = append(upstream, item)
+			}
+		case triage.TierImpact:
+			impact = append(impact, item)
+		case triage.TierChronic:
+			chronic = append(chronic, item)
+		}
+	}
+
+	return gin.H{
+		"root_identity": triage.SubjectKey(seed),
+		"same_incident": sameIncident,
+		"cause":         gin.H{"config_changes": configChanges, "upstream": upstream},
+		"impact":        impact,
+		"chronic":       chronic,
+		"window":        windowMeta,
+		"truncated":     truncated,
+	}
+}
+
+// windowFetchLimit bounds the window fetch; hitting it sets assembly.truncated.
+const windowFetchLimit = 1000
+
+// fetchWindowRows loads the incident window [root-2h, root+2h] once. Unlike the
+// legacy annotate query it keeps configuration-change rows (the cause tier consumes
+// them) and returns each row's fingerprint (for the rarity count) and its offset
+// from the root. Errors are logged and yield an empty slice so assembly degrades to
+// empty, not a failed response. The bool reports whether the LIMIT was hit.
+func fetchWindowRows(log *slog.Logger, db *sqlx.DB, accountID, rootEventID string, rootTime time.Time) ([]windowRow, bool) {
+	const winQ = `
+		SELECT id::text, COALESCE(fingerprint,''), COALESCE(subject_name,''), COALESCE(subject_namespace,''),
+		       COALESCE(subject_owner,''), COALESCE(subject_type,''), COALESCE(aggregation_key,''),
+		       COALESCE(title,''), COALESCE(NULLIF(computed_priority,''), priority, ''), COALESCE(source,''),
+		       starts_at, COALESCE(finding_type,'')
+		FROM events
+		WHERE cloud_account_id = $1::uuid
+		  AND starts_at >= $2 AND starts_at <= $3
+		  AND id <> $4::uuid
+		ORDER BY starts_at DESC
+		LIMIT 1000`
+	rows, err := db.Query(winQ, accountID, rootTime.Add(-2*time.Hour), rootTime.Add(2*time.Hour), rootEventID)
+	if err != nil {
+		if log != nil {
+			log.Warn("incident assembly: window query failed", "error", err, "account", accountID)
+		}
+		return nil, false
+	}
+	defer func() { _ = rows.Close() }()
+
+	var wr []windowRow
+	for rows.Next() {
+		var id, fp, sname, sns, sowner, stype, aggk, title, prio, source, ftype string
+		var startsAt sql.NullTime
+		if err := rows.Scan(&id, &fp, &sname, &sns, &sowner, &stype, &aggk, &title, &prio, &source, &startsAt, &ftype); err != nil {
+			// A schema/driver mismatch would otherwise fail every row silently and
+			// return an empty assembly that looks like "nothing related".
+			if log != nil {
+				log.Warn("incident assembly: window row scan failed", "error", err, "account", accountID)
+			}
+			continue
+		}
+		var sa time.Time
+		dt := 0
+		if startsAt.Valid {
+			sa = startsAt.Time
+			dt = int(sa.Sub(rootTime).Seconds())
+		}
+		wr = append(wr, windowRow{
+			id: triage.AlertIdentity{
+				ID: id, SubjectType: stype, SubjectName: sname, SubjectNamespace: sns,
+				SubjectOwner: sowner, AggregationKey: aggk, TsOffsetS: dt,
+				IsConfigChange: ftype == "configuration_change",
+				FindingType:    ftype,
+			},
+			title: title, priority: prio, source: source, startsAt: sa, fp: fp,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		if log != nil {
+			log.Warn("incident assembly: window scan failed", "error", err, "account", accountID)
+		}
+		return nil, false
+	}
+	return wr, len(wr) >= windowFetchLimit
+}
+
+// computeCandidateRates returns each candidate's trailing firing rate keyed by
+// triage.RateKey. It counts firings per fingerprint over the 7 days BEFORE the
+// incident (one batched query, covered by events_fingerprint_account_starts_idx — no
+// new index) and sums them into (SubjectKey|aggregation_key) buckets so ReplicaSet-name
+// rotation is absorbed (rotation undercounts, the safe direction — less suppression).
+// Observed is the count actually in the current window.
+func computeCandidateRates(log *slog.Logger, db *sqlx.DB, accountID string, rootTime time.Time, wr []windowRow) map[string]triage.Rate {
+	observed := map[string]float64{}
+	fpBucket := map[string]string{}
+	fps := []string{}
+	for _, r := range wr {
+		observed[triage.RateKey(r.id)]++
+		if r.fp == "" {
+			continue
+		}
+		if _, ok := fpBucket[r.fp]; !ok {
+			fpBucket[r.fp] = triage.RateKey(r.id)
+			fps = append(fps, r.fp)
+		}
+	}
+
+	sum7d := queryFingerprintCounts(log, db, accountID, rootTime, fps, fpBucket)
+
+	const windowDays = 4.0 / 24.0 // the [root-2h, root+2h] fetch window
+	rates := make(map[string]triage.Rate, len(observed))
+	for bucket, o := range observed {
+		rates[bucket] = triage.Rate{Expected: (float64(sum7d[bucket]) / 7.0) * windowDays, Observed: o}
+	}
+	return rates
+}
+
+// queryFingerprintCounts sums each fingerprint's firing count over the 7 days BEFORE
+// the incident into the caller's (SubjectKey|aggregation_key) buckets. One batched
+// query covered by events_fingerprint_account_starts_idx.
+//
+// The window is anchored to rootTime, NOT to now(): "how unusual is this alert" has to
+// mean "as of the incident", otherwise opening a month-old incident would measure it
+// against the last 7 days of today. A service that has since gone quiet would look
+// rare in hindsight and its noise would be promoted to real impact. Anchoring also
+// keeps the incident's own burst out of its baseline, which sharpens burst detection.
+// The $3::timestamptz cast is required — an untyped parameter minus an interval fails
+// at runtime.
+//
+// Errors are logged; a partial/empty result just means less chronic suppression (the
+// safe direction).
+func queryFingerprintCounts(log *slog.Logger, db *sqlx.DB, accountID string, rootTime time.Time, fps []string, fpBucket map[string]string) map[string]int {
+	sum7d := map[string]int{}
+	if accountID == "" || len(fps) == 0 {
+		return sum7d
+	}
+	const q = `
+		SELECT fingerprint, count(*)
+		FROM events
+		WHERE cloud_account_id = $1::uuid
+		  AND fingerprint = ANY($2)
+		  AND starts_at >  $3::timestamptz - interval '7 days'
+		  AND starts_at <= $3::timestamptz
+		GROUP BY fingerprint`
+	rows, err := db.Query(q, accountID, pq.Array(fps), rootTime)
+	if err != nil {
+		if log != nil {
+			log.Warn("incident assembly: rarity query failed", "error", err, "account", accountID)
+		}
+		return sum7d
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var fp string
+		var c int
+		if err := rows.Scan(&fp, &c); err != nil {
+			if log != nil {
+				log.Warn("incident assembly: rarity row scan failed", "error", err, "account", accountID)
+			}
+			continue
+		}
+		sum7d[fpBucket[fp]] += c
+	}
+	if err := rows.Err(); err != nil {
+		if log != nil {
+			log.Warn("incident assembly: rarity scan failed", "error", err, "account", accountID)
+		}
+		return sum7d
+	}
+	return sum7d
+}
+
+// toTierItem builds the display item from a group's representative row; the caller
+// fills OccurrenceCount and Sources from the collapse.
+func toTierItem(r windowRow, rates map[string]triage.Rate) tierItem {
+	item := tierItem{
+		EventID:        r.id.ID,
+		Title:          r.title,
+		Subject:        triage.SubjectKey(r.id),
+		AggregationKey: r.id.AggregationKey,
+		Priority:       r.priority,
+		DtSeconds:      r.id.TsOffsetS,
+	}
+	if !r.startsAt.IsZero() {
+		item.StartsAt = r.startsAt.UTC().Format(time.RFC3339)
+	}
+	if rt, ok := rates[triage.RateKey(r.id)]; ok && (rt.Expected > 0 || rt.Observed > 0) {
+		item.Evidence = &tierEvidence{ExpectedInWindow: rt.Expected, ObservedInWindow: rt.Observed}
+	}
+	return item
 }

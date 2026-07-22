@@ -1090,14 +1090,16 @@ const Investigate = () => {
         }
       }
 
-      const card = new TimelineCard(row);
-      if (await card.canRenderContent()) {
-        dynamicCards.push(card);
-      }
-
+      // The incident card leads: it answers "what is this and what caused it", which is
+      // the question the page is opened to answer. The timeline is supporting evidence.
       const impactCard = new ImpactCard(row);
       if (await impactCard.canRenderContent()) {
         dynamicCards.push(impactCard);
+      }
+
+      const card = new TimelineCard(row);
+      if (await card.canRenderContent()) {
+        dynamicCards.push(card);
       }
 
       // Cloud: severity-based evidence processing

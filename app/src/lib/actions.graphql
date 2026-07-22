@@ -983,6 +983,47 @@ type EventGetImpactOutput {
   production_dependents: Int
   coverage_confidence: String
   truncated: Boolean
+  assembly: IncidentAssembly
+}
+
+type IncidentAssembly {
+  root_identity: String
+  same_incident: [AssemblyItem]
+  cause: AssemblyCause
+  impact: [AssemblyItem]
+  chronic: [AssemblyItem]
+  window: AssemblyWindow
+  truncated: Boolean
+}
+
+type AssemblyCause {
+  config_changes: [AssemblyItem]
+  upstream: [AssemblyItem]
+}
+
+type AssemblyItem {
+  event_id: String
+  title: String
+  subject: String
+  aggregation_key: String
+  priority: String
+  sources: [String]
+  occurrence_count: Int
+  relation: String
+  starts_at: String
+  dt_seconds: Int
+  evidence: AssemblyEvidence
+}
+
+type AssemblyEvidence {
+  expected_in_window: Float
+  observed_in_window: Float
+}
+
+type AssemblyWindow {
+  lead_in_s: Int
+  core_s: Int
+  impact_s: Int
 }
 
 type ImpactSeedNode {
