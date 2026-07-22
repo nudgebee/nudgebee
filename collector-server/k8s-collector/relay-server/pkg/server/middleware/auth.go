@@ -20,8 +20,12 @@ const (
 )
 
 // AgentAuthMiddleware protects agent endpoints (e.g. /register) using Basic‑auth.
-// It expects `Authorization: Basic <base64(accessKey:secret)>`,
-// validates via store.ValidateAgent, and sets the account ID in the context.
+// It accepts `Authorization: Basic <base64(accessKey:secret)>` (scheme is
+// case-insensitive) as well as a bare `Authorization: <base64(accessKey:secret)>`
+// with no scheme prefix — the nudgebee-agent runner's relay client sends the
+// credential without the "Basic " prefix, and requiring the prefix 401s every
+// deployed runner. Validates via store.ValidateAgent and sets the account ID
+// in the context.
 func AgentAuthMiddleware(store db.AgentStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
@@ -32,15 +36,20 @@ func AgentAuthMiddleware(store db.AgentStore) gin.HandlerFunc {
 			return
 		}
 
-		headerParts := strings.SplitN(authHeader, " ", 2)
-		if len(headerParts) != 2 || strings.ToLower(headerParts[0]) != "basic" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized,
-				utils.BuildError(401, "malformed authorization header"),
-			)
-			return
+		// Accept a bare base64 token (no scheme) as well as "Basic <token>"
+		// with a case-insensitive scheme. Trim first so leading/trailing
+		// whitespace can't corrupt the split.
+		trimmedAuth := strings.TrimSpace(authHeader)
+		encoded := trimmedAuth
+		if scheme, rest, found := strings.Cut(trimmedAuth, " "); found {
+			if !strings.EqualFold(scheme, "basic") {
+				c.AbortWithStatusJSON(http.StatusUnauthorized,
+					utils.BuildError(401, "malformed authorization header"),
+				)
+				return
+			}
+			encoded = strings.TrimSpace(rest)
 		}
-
-		encoded := strings.TrimSpace(headerParts[1])
 		decoded, err := base64.StdEncoding.DecodeString(encoded)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized,
