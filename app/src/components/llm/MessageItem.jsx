@@ -81,7 +81,7 @@ const getCardTitle = (data, { indented = false } = {}) => {
   if (!indented && data?.parentAgents?.length > 0) {
     response = data.parentAgents.join(' -> ') + ' -> ' + response;
   }
-  if (data?.plannerId) {
+  if (!indented && data?.plannerId) {
     response = '(' + data.plannerId + ') ' + response;
   }
 

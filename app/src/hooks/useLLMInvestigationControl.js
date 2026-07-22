@@ -226,6 +226,10 @@ const parseConversationMessages = (conversationMessages, accountId) => {
                 references: t.references,
                 created_at: t.created_at,
                 updated_at: t.updated_at,
+                // Lineage for the Tasks-drawer tree only (inline stream ignores these):
+                // this tool call belongs to the orchestrator `agent`, so the drawer nests
+                // it under a synthesized collapsible group for that orchestrator.
+                orchestratorParent: { id: agent.id, name: agent.agent_name, created_at: agent.created_at, status: agent.status },
                 response: { type: 'tool_call_response', text: t.response },
               };
               messageSequence.push(t.tool_id);
@@ -295,6 +299,7 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           }
         }
         const parentAgentsList = getParentAgents(agent);
+        const rawParentAgent = agent.parent_agent_id && agent.parent_agent_id !== NULL_AGENT_ID ? agentIdMap[agent.parent_agent_id] : null;
         toolRequestResponse[agent.id] = {
           // Map Agent to Message
           response_text: agent.response,
@@ -309,10 +314,15 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           thought: agent.thought,
           query: agent.query,
           parentAgents: parentAgentsList,
-          // Nesting depth for the Tasks timeline — number of ancestor agents in
-          // the display breadcrumb. Drives left-indentation + dot shade in the
-          // Tasks drawer so sub-agents read as nested rather than flat siblings.
-          nestingDepth: parentAgentsList.length,
+          // Raw lineage for the Tasks-drawer tree only (inline stream ignores these).
+          // parentAgentId nests this task under its parent task when that parent is
+          // also rendered; orchestratorParent lets the drawer synthesize a collapsible
+          // group when the (hidden) parent is an orchestrator whose children are hoisted.
+          parentAgentId: rawParentAgent ? rawParentAgent.id : null,
+          orchestratorParent:
+            rawParentAgent && debugAgentNames.includes(rawParentAgent.agent_name)
+              ? { id: rawParentAgent.id, name: rawParentAgent.agent_name, created_at: rawParentAgent.created_at, status: rawParentAgent.status }
+              : undefined,
           plannerId: plannerIdChildMapping[agent.id],
           type: 'tool_call',
           toolParameters: parameters,
