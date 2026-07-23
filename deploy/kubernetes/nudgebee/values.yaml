@@ -358,6 +358,20 @@ temporal:
     # migrations still work. Re-enable ad hoc for tctl debugging:
     #   helm upgrade ... --set temporal.admintools.enabled=true
     enabled: false
+  schema:
+    # Run schema setup/update as a normal Job, NOT a Helm hook.
+    #
+    # postgres and the `nudgebee-temporal` secret are bundled in THIS release as
+    # plain (non-hook) resources. The temporal chart defaults useHelmHooks=true,
+    # which runs the schema Job as a pre-install/pre-upgrade hook — i.e. BEFORE
+    # those plain resources are created. The hook then fails with
+    # `secret "nudgebee-temporal" not found`, never completes, and deadlocks the
+    # entire release in `pending-install` (nothing else, postgres included, ever
+    # gets applied). Setting false makes it a normal Job that Helm applies
+    # alongside the secret + postgres; it retries (backoffLimit below) until they
+    # are reachable. Documented by the chart as the setting for GitOps / any
+    # flow that can't rely on hook ordering.
+    useHelmHooks: false
   server:
     enabled: true
     replicaCount: 1
