@@ -358,6 +358,20 @@ temporal:
     # migrations still work. Re-enable ad hoc for tctl debugging:
     #   helm upgrade ... --set temporal.admintools.enabled=true
     enabled: false
+  schema:
+    # Run schema setup/update as a normal Job, NOT a Helm hook.
+    #
+    # postgres and the `nudgebee-temporal` secret are bundled in THIS release as
+    # plain (non-hook) resources. The temporal chart defaults useHelmHooks=true,
+    # which runs the schema Job as a pre-install/pre-upgrade hook — i.e. BEFORE
+    # those plain resources are created. The hook then fails with
+    # `secret "nudgebee-temporal" not found`, never completes, and deadlocks the
+    # entire release in `pending-install` (nothing else, postgres included, ever
+    # gets applied). Setting false makes it a normal Job that Helm applies
+    # alongside the secret + postgres; it retries (backoffLimit below) until they
+    # are reachable. Documented by the chart as the setting for GitOps / any
+    # flow that can't rely on hook ordering.
+    useHelmHooks: false
   server:
     enabled: true
     replicaCount: 1
@@ -388,8 +402,12 @@ temporal:
       # datastores.<name>.sql (raw server-config format), selected via
       # defaultStore / visibilityStore. numHistoryShards MUST stay 512 — the value
       # the existing deployment initialised with; it cannot be changed. createDatabase
-      # is false (the temporal / temporal_visibility DBs already exist); manageSchema
-      # true lets the chart's schema job run update-schema to migrate 1.29 -> 1.31.
+      # is true so a fresh install with bundled postgres creates the temporal /
+      # temporal_visibility DBs (nothing else does — bundled postgres only inits the
+      # `postgres` DB). temporal-sql-tool create-database is idempotent for postgres
+      # (temporalio/temporal#2104), so this is a safe no-op where the DBs already
+      # exist (e.g. an existing deployment). manageSchema true lets the schema job
+      # run setup-schema/update-schema (also idempotent) to migrate on every deploy.
       persistence:
         defaultStore: default
         visibilityStore: visibility
@@ -403,7 +421,7 @@ temporal:
               databaseName: temporal
               user: 'postgres'
               existingSecret: 'nudgebee-temporal'
-              createDatabase: false
+              createDatabase: true
               manageSchema: true
           visibility:
             sql:
@@ -413,7 +431,7 @@ temporal:
               databaseName: temporal_visibility
               user: 'postgres'
               existingSecret: 'nudgebee-temporal'
-              createDatabase: false
+              createDatabase: true
               manageSchema: true
 workflow-server:
   enabled: true
