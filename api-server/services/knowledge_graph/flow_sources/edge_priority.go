@@ -19,13 +19,14 @@ const (
 	EdgePriority5 EdgeSourcePriority = 5 // traces
 	EdgePriority6 EdgeSourcePriority = 6 // datadog-apm
 	EdgePriority7 EdgeSourcePriority = 7 // newrelic-apm
-	EdgePriority8 EdgeSourcePriority = 8 // Lowest priority (unknown sources)
+	EdgePriority8 EdgeSourcePriority = 8 // aws-vpc-flow (VPC Flow Logs — coarsest network observation: no L7, no latency, IP-derived)
+	EdgePriority9 EdgeSourcePriority = 9 // Lowest priority (unknown sources)
 )
 
 // Aliases for readability
 const (
 	EdgePriorityHighest = EdgePriority1
-	EdgePriorityLowest  = EdgePriority8
+	EdgePriorityLowest  = EdgePriority9
 )
 
 // EdgeTypePriorities defines source priority for each edge type.
@@ -54,6 +55,7 @@ var EdgeTypePriorities = map[core.RelationshipType]map[string]EdgeSourcePriority
 		"gcp-cloud-traces": EdgePriority5, // GCP Cloud Trace (disjoint from K8s "traces" accounts)
 		"datadog-apm":      EdgePriority6, // External APM source (instrumentation-derived)
 		"newrelic-apm":     EdgePriority7, // External APM source (NRQL Span aggregation)
+		"aws-vpc-flow":     EdgePriority8, // VPC Flow Logs: sees cloud-managed edges others miss, but coarsest (no L7/latency) — loses to any richer source that corroborates
 	},
 	core.RelationshipResolvesTo: {
 		"k8s":              EdgePriority1, // K8s DNS resolution
@@ -103,6 +105,11 @@ var EdgeTypePriorities = map[core.RelationshipType]map[string]EdgeSourcePriority
 		"datadog-apm":  EdgePriority6,
 		"newrelic-apm": EdgePriority7,
 	},
+	// CONNECTION_REJECTED is produced only by the VPC-flow source (the security
+	// view of blocked traffic). Sole producer, so priority is nominal.
+	core.RelationshipConnectionRejected: {
+		"aws-vpc-flow": EdgePriority1,
+	},
 }
 
 // GetEdgeSourcePriority returns the priority for a source creating a specific edge type.
@@ -141,4 +148,9 @@ var MetricsToMerge = []string{
 	"manual_declared",
 	"manual_dependency_id",
 	"declared_by_user_id",
+	// VPC-flow traffic volumes: preserved (source-prefixed) when aws-vpc-flow
+	// loses dedup to a richer source, so byte/packet counts aren't lost.
+	"total_bytes",
+	"total_packets",
+	"connection_count",
 }

@@ -249,6 +249,12 @@ const (
 	RelationshipSubscribesTo RelationshipType = "SUBSCRIBES_TO"
 	RelationshipRunsOn       RelationshipType = "RUNS_ON"
 
+	// Network-flow relationships (VPC Flow Logs). ACCEPT traffic is modeled as
+	// CALLS (a live dependency); REJECT traffic gets its own edge type so a
+	// blocked/attempted connection is never mistaken for a real dependency. It is
+	// the "security view" of the flow map (attempted-but-blocked reachability).
+	RelationshipConnectionRejected RelationshipType = "CONNECTION_REJECTED" // src → dst: connection attempt blocked (REJECT in flow logs)
+
 	// Deployment & Configuration relationships
 	RelationshipIsDeployedFrom  RelationshipType = "IS_DEPLOYED_FROM" // Workload → Repository
 	RelationshipIsConfiguredBy  RelationshipType = "IS_CONFIGURED_BY" // Workload → Configuration/HelmChart
@@ -408,9 +414,10 @@ type EdgeContributingSource struct {
 //
 // Override at runtime via env var KG_BEHAVIORAL_EDGE_TYPES (comma-separated).
 var DefaultBehavioralEdgeTypes = map[RelationshipType]bool{
-	RelationshipCalls:        true,
-	RelationshipPublishesTo:  true,
-	RelationshipSubscribesTo: true,
+	RelationshipCalls:              true,
+	RelationshipPublishesTo:        true,
+	RelationshipSubscribesTo:       true,
+	RelationshipConnectionRejected: true, // VPC-flow REJECT edges are observed & intermittent — grace period, not immediate tombstone
 }
 
 // KgNodeSlim is a lightweight node for graph traversal API responses
