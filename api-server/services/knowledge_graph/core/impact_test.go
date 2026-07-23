@@ -205,11 +205,16 @@ func TestHasSeedFlowEvidence(t *testing.T) {
 	if !hasSeedFlowEvidence(seed, []*DbEdge{legacy}, nil) {
 		t.Error("legacy Source fallback must count when contributing_sources is empty")
 	}
-	if !hasSeedFlowEvidence(seed, nil, []ImpactedService{{Name: "db", Sources: []string{"k8s", "datadog-apm"}}}) {
-		t.Error("flow-attributed downstream dependency must count")
+	if !hasSeedFlowEvidence(seed, nil, []ImpactedService{{Name: "db", HopsAway: 1, Sources: []string{"k8s", "datadog-apm"}}}) {
+		t.Error("flow-attributed direct downstream dependency must count")
 	}
-	if hasSeedFlowEvidence(seed, nil, []ImpactedService{{Name: "db", Sources: []string{"k8s"}}}) {
+	if hasSeedFlowEvidence(seed, nil, []ImpactedService{{Name: "db", HopsAway: 1, Sources: []string{"k8s"}}}) {
 		t.Error("structural-only downstream attribution must not count")
+	}
+	// Multi-hop walk: a flow-asserted edge deeper in the chain (hop1 -> hop2)
+	// does not touch the seed and must not vouch for its coverage.
+	if hasSeedFlowEvidence(seed, nil, []ImpactedService{{Name: "postgres", HopsAway: 2, Sources: []string{"ebpf"}}}) {
+		t.Error("flow attribution beyond one hop must not count as seed evidence")
 	}
 }
 
