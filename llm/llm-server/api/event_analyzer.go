@@ -1413,6 +1413,25 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 			core.TruncateHead(evidenceContext, maxInvestigationEvidenceBytes)
 	}
 
+	// Point the investigation at the deterministic incident assembly (#34659):
+	// the same four-tier grouping the incident panel computes. Instruction only,
+	// with the concrete event id inline — the agent fetches the data itself via
+	// the get_incident_assembly tool, so the prompt stays small and the assembly
+	// is current at run time rather than frozen at prompt-build time.
+	eventAnalsysisPrompt = eventAnalsysisPrompt +
+		"\n\n## Related-Alert Candidates\nCall get_incident_assembly with event_id=" + request.EventId +
+		" EARLY in your investigation. It returns the alerts around this event grouped by timing and topology: " +
+		"same_incident (this alert's other firings and cross-source copies), cause (config changes and " +
+		"upstream-dependency alerts shortly before it), impact (dependent services alerting after it) and " +
+		"chronic (background noise for that subject). These are candidates only — they may or may not be " +
+		"related. Verify each against evidence before using it in your root-cause reasoning, and distinguish " +
+		"active causes from chronic background noise.\n" +
+		"REQUIRED: end your analysis with a '### Related Alerts Check' section — one line per cause/impact " +
+		"candidate the tool returned, each marked confirmed (with the evidence), ruled out (with the reason), " +
+		"or not assessed. Render each candidate's alert name as a markdown link to its event page using that " +
+		"candidate's event_id from the tool output: [<alert title>](/investigate?id=<event_id>&accountId=" +
+		request.AccountId + "). If the tool returned no candidates, say so in one line."
+
 	accountPrompt, _, _ := core.AgentAdditionalInstructionsAndToolsAndConfigs(ctx, request.AccountId, "event_log_analysis")
 	debugAnalysisEnabled := true
 	debugAnalysisSkipReason := ""
@@ -2685,7 +2704,10 @@ func synthesizeDetailedResponse(ctx *security.RequestContext, request EventAnaly
 	if logAnalysis != "" {
 		userPrompt += fmt.Sprintf("\n\n## Log Analysis\n%s", logAnalysis)
 	}
-	userPrompt += "\n\nProduce a consolidated markdown analysis combining all of the above."
+	userPrompt += "\n\nProduce a consolidated markdown analysis combining all of the above." +
+		" If the investigation findings include a 'Related Alerts Check' section, carry it into the final" +
+		" report verbatim (same section heading), naming each related alert as confirmed, ruled out or not" +
+		" assessed — do not summarize it away."
 
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),

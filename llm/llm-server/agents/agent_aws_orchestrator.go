@@ -272,6 +272,7 @@ func getAwsPlannerSupportedTools(ctx *security.RequestContext, accountId, agentN
 		"redis",           // RedisAgentName
 		"rabbitmq",        // RabbitMQAgentName
 		"kubectl",         // KubectlAgentName
+		tools.ToolIncidentAssembly,
 		DelegateAgentToolName,
 	}
 

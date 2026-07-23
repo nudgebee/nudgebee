@@ -150,7 +150,7 @@ Exception: when citing an external resource that has its own real URL (e.g. a Gi
 Answer the user's question directly in clear markdown. Do NOT use the investigation format above. Use code blocks, tables, or bullet points as appropriate for the content.`
 
 func getGcpPlannerSupportedTools(ctx *security.RequestContext, accountId string) []toolcore.NBTool {
-	supportedToolNames := []string{GcpAgentName, getTicketAgentName(), WorkflowAgentName, GithubAgentName, WebSearchAgentName, RecommendationsAgentName, EventsAgentName, VisualizationAgentName, PostgresAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RedisAgentName, RabbitMQAgentName, KubectlAgentName, DelegateAgentToolName}
+	supportedToolNames := []string{GcpAgentName, getTicketAgentName(), WorkflowAgentName, GithubAgentName, WebSearchAgentName, RecommendationsAgentName, EventsAgentName, VisualizationAgentName, PostgresAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RedisAgentName, RabbitMQAgentName, KubectlAgentName, DelegateAgentToolName, tools.ToolIncidentAssembly}
 
 	// The KG-backed service_dependency_graph covers cloud (AWS/GCP/Azure) topology,
 	// not just K8s. The V1 flag guard here went away with the V1 agent.

@@ -329,7 +329,7 @@ func getSupportedTools(ctx *security.RequestContext, accountId string, agentName
 			toolNames = agentToolNames
 		} else {
 
-			baseTools := []string{kubectlTool, LogsAgentName, WebSearchAgentName, PostgresAgentName, EventsAgentName, TracesAgentName, MetricsAgentName, RedisAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RabbitMQAgentName, SecurityAgentName, HelmAgentName, GithubAgentName, getTicketAgentName(), WorkflowAgentName, ServiceDependencyGraph, VisualizationAgentName, RecommendationsAgentName, aws.AwsAgentName, aws.AgentAwsObservabilityName, GcpAgentName, AzureAgentName, ResourceSearchAgentName, ServerAgentName, AgentCode2, DelegateAgentToolName}
+			baseTools := []string{kubectlTool, LogsAgentName, WebSearchAgentName, PostgresAgentName, EventsAgentName, TracesAgentName, MetricsAgentName, RedisAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RabbitMQAgentName, SecurityAgentName, HelmAgentName, GithubAgentName, getTicketAgentName(), WorkflowAgentName, ServiceDependencyGraph, VisualizationAgentName, RecommendationsAgentName, aws.AwsAgentName, aws.AgentAwsObservabilityName, GcpAgentName, AzureAgentName, ResourceSearchAgentName, ServerAgentName, AgentCode2, DelegateAgentToolName, tools.ToolIncidentAssembly}
 
 			// Conditionally add remediation agent based on feature flag
 			if config.Config.RemediationAgentEnabled {
