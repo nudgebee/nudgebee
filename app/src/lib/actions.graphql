@@ -5361,6 +5361,7 @@ input AgentHealthWhereRequest {
 
 input ValidateCloudCredentialsInput {
   cloud_provider: String!
+  account_id: String
   tenant_id: String
   client_id: String
   client_secret: String

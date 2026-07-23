@@ -1,6 +1,6 @@
-import { Box, Grid, Typography, Stack } from '@mui/material';
+import { Box, Grid, Typography, Stack, Alert } from '@mui/material';
 import { Input } from '@ui/Input';
-import { ContentCopy } from '@mui/icons-material';
+import { ContentCopy, CheckCircleOutline, ErrorOutline } from '@mui/icons-material';
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import apiAccount from '@api1/account';
 import apiIntegrations from '@api1/integrations';
@@ -94,6 +94,8 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
   const [billingDatasetName, setBillingDatasetName] = useState('');
   const [billingTableName, setBillingTableName] = useState('');
   const [billingLoading, setBillingLoading] = useState(false);
+  const [billingValidationResult, setBillingValidationResult] = useState(null);
+  const [isValidatingBilling, setIsValidatingBilling] = useState(false);
   const [cfUpdateModalOpen, setCfUpdateModalOpen] = useState(false);
   const [cfUpdateAccountId, setCfUpdateAccountId] = useState(null);
   const [webhookModalOpen, setWebhookModalOpen] = useState(false);
@@ -307,6 +309,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
       setBillingProjectId(billing.billing_project_id || '');
       setBillingDatasetName(billing.dataset_name || '');
       setBillingTableName(billing.table_name || '');
+      setBillingValidationResult(null);
       setBillingModalOpen(true);
     } else if (menuItem.id === 'real-time-alerts') {
       setWebhookModalAccount(data);
@@ -547,6 +550,45 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
     setBillingDatasetName('');
     setBillingTableName('');
     setBillingLoading(false);
+    setBillingValidationResult(null);
+    setIsValidatingBilling(false);
+  };
+
+  // Live BigQuery access check for an already-onboarded account. The service
+  // account key isn't available client-side (it's encrypted server-side after
+  // onboarding), so we pass account_id instead of credentials_json — the
+  // backend resolves and decrypts the stored key itself before validating.
+  const handleValidateBillingConfig = async () => {
+    if (!selectedAccount || !billingDatasetName || !billingTableName) {
+      return;
+    }
+    setIsValidatingBilling(true);
+    setBillingValidationResult(null);
+    try {
+      const payload = {
+        cloud_provider: 'GCP',
+        account_id: selectedAccount.id,
+        billing_project_id: billingProjectId || undefined,
+        billing_dataset_id: billingDatasetName,
+        billing_table_id: billingTableName,
+      };
+      const result = await apiAccount.validateCloudCredentials(payload);
+      const bqDetail = result?.permissionDetails?.find((d) => d.permission === 'BigQuery Billing Data');
+      if (bqDetail) {
+        setBillingValidationResult({
+          success: bqDetail.hasAccess,
+          message: bqDetail.hasAccess ? 'BigQuery billing table accessible.' : bqDetail.errorDetail || 'Unable to access BigQuery billing data.',
+        });
+      } else if (!result?.success) {
+        setBillingValidationResult({ success: false, message: result?.errorMessage || 'Failed to validate billing access.' });
+      } else {
+        setBillingValidationResult({ success: true, message: 'BigQuery billing table accessible.' });
+      }
+    } catch {
+      setBillingValidationResult({ success: false, message: 'Failed to validate billing access.' });
+    } finally {
+      setIsValidatingBilling(false);
+    }
   };
 
   const handleBillingSubmit = () => {
@@ -807,9 +849,9 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
       <Modal
         width='sm'
         open={billingModalOpen}
-        handleClose={billingLoading ? () => {} : closeBillingModal}
+        handleClose={billingLoading || isValidatingBilling ? () => {} : closeBillingModal}
         title='Edit Billing Config'
-        loader={billingLoading}
+        loader={billingLoading || isValidatingBilling}
       >
         <Grid container spacing={ds.space[4]} p={ds.space[4]}>
           <Grid item xs={12}>
@@ -818,7 +860,10 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
               size='sm'
               id='billing-project-id'
               label='Billing Project ID'
-              onChange={(value) => setBillingProjectId(value)}
+              onChange={(value) => {
+                setBillingProjectId(value);
+                setBillingValidationResult(null);
+              }}
               help='The GCP project containing the BigQuery billing export. Leave empty if same as service account project.'
             />
           </Grid>
@@ -829,7 +874,10 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
               id='billing-dataset-name'
               label='BigQuery Dataset Name'
               required
-              onChange={(value) => setBillingDatasetName(value)}
+              onChange={(value) => {
+                setBillingDatasetName(value);
+                setBillingValidationResult(null);
+              }}
               placeholder='e.g., billing_export'
             />
           </Grid>
@@ -840,10 +888,24 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
               id='billing-table-name'
               label='BigQuery Table Name'
               required
-              onChange={(value) => setBillingTableName(value)}
+              onChange={(value) => {
+                setBillingTableName(value);
+                setBillingValidationResult(null);
+              }}
               placeholder='e.g., gcp_billing_export_v1_XXXXX'
             />
           </Grid>
+          {billingValidationResult && (
+            <Grid item xs={12}>
+              <Alert
+                severity={billingValidationResult.success ? 'success' : 'error'}
+                icon={billingValidationResult.success ? <CheckCircleOutline sx={{ fontSize: 18 }} /> : <ErrorOutline sx={{ fontSize: 18 }} />}
+                sx={{ '& .MuiAlert-message': { fontSize: ds.text.body } }}
+              >
+                {billingValidationResult.message}
+              </Alert>
+            </Grid>
+          )}
         </Grid>
         <Box
           sx={{
@@ -856,10 +918,26 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
             '& button': { minWidth: ds.space.mul(1, 35) },
           }}
         >
-          <DsButton tone='secondary' size='md' onClick={closeBillingModal} disabled={billingLoading}>
+          <DsButton tone='secondary' size='md' onClick={closeBillingModal} disabled={billingLoading || isValidatingBilling}>
             Cancel
           </DsButton>
-          <DsButton tone='primary' size='md' disabled={billingLoading || !billingDatasetName || !billingTableName} onClick={handleBillingSubmit}>
+          <DsButton
+            id='validate-billing-config-btn'
+            tone='secondary'
+            size='md'
+            disabled={billingLoading || isValidatingBilling || !billingDatasetName || !billingTableName}
+            loading={isValidatingBilling}
+            onClick={handleValidateBillingConfig}
+          >
+            Validate
+          </DsButton>
+          <DsButton
+            tone='primary'
+            size='md'
+            disabled={billingLoading || isValidatingBilling || !billingDatasetName || !billingTableName || !billingValidationResult?.success}
+            loading={billingLoading}
+            onClick={handleBillingSubmit}
+          >
             Save
           </DsButton>
         </Box>
