@@ -115,7 +115,8 @@ const transformTableData = (
   accountType: string,
   dateRange: DateRange,
   onMenuClick: (menuItem: any, data: any) => void,
-  onStatusChange?: () => void,
+  onStatusChange?: (eventId: string, newStatus: string, snoozedUntil?: string) => void,
+  onPriorityChange?: (eventId: string, newPriority: string | null, newScore?: number | null, newFactors?: unknown) => void,
   onCreateTicket?: (item: any) => void,
   onClassify?: (item: any, classificationType: string) => void,
   ticketMap?: Map<string, any>,
@@ -212,8 +213,9 @@ const transformTableData = (
                 accountId={item.account_id}
                 currentPriority={item.latest_computed_priority}
                 currentScore={item.latest_computed_score}
+                currentScoreFactors={item.latest_score_factors}
                 canWrite={canWrite}
-                onChanged={onStatusChange}
+                onChanged={(newPriority, newScore, newFactors) => onPriorityChange?.(item.latest_event_id, newPriority, newScore, newFactors)}
               />
             </Box>
           ),
@@ -574,6 +576,27 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     },
     [handleClassifyClose]
   );
+
+  const handlePriorityChange = useCallback((eventId: string, newPriority: string | null, newScore?: number | null, newFactors?: unknown) => {
+    setRawEventGroupings((prev) =>
+      prev.map((row) =>
+        row.latest_event_id === eventId
+          ? {
+              ...row,
+              latest_computed_priority: newPriority,
+              ...(newScore !== undefined ? { latest_computed_score: newScore } : {}),
+              ...(newFactors !== undefined ? { latest_score_factors: newFactors } : {}),
+            }
+          : row
+      )
+    );
+  }, []);
+
+  const handleNBStatusChange = useCallback((eventId: string, newStatus: string, snoozedUntil?: string) => {
+    setRawEventGroupings((prev) =>
+      prev.map((row) => (row.latest_event_id === eventId ? { ...row, latest_nb_status: newStatus, latest_snoozed_until: snoozedUntil ?? null } : row))
+    );
+  }, []);
 
   const closeTicketCreateForm = useCallback(() => {
     setIsTicketCreateFormOpen(false);

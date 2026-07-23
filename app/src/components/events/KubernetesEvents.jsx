@@ -838,9 +838,16 @@ const KubernetesEventsTable = ({
     listEvents();
   };
 
-  const handlePriorityChange = (eventId, newPriority, newScore) => {
+  const handlePriorityChange = (eventId, newPriority, newScore, newFactors) => {
     rawEventsRef.current = rawEventsRef.current.map((e) =>
-      e.id === eventId ? { ...e, computed_priority: newPriority, ...(newScore !== undefined ? { computed_score: newScore } : {}) } : e
+      e.id === eventId
+        ? {
+            ...e,
+            computed_priority: newPriority,
+            ...(newScore !== undefined ? { computed_score: newScore } : {}),
+            ...(newFactors !== undefined ? { score_factors: newFactors } : {}),
+          }
+        : e
     );
     if (buildRowDataRef.current) {
       setData(buildRowDataRef.current(rawEventsRef.current, ticketReferenceMapRef.current));
@@ -1105,8 +1112,9 @@ const KubernetesEventsTable = ({
                   accountId={item.account_id}
                   currentPriority={item.computed_priority}
                   currentScore={item.computed_score}
+                  currentScoreFactors={item.score_factors}
                   canWrite={hasWriteAccess(item.account_id)}
-                  onChanged={(newPriority, newScore) => handlePriorityChange(item.id, newPriority, newScore)}
+                  onChanged={(newPriority, newScore, newFactors) => handlePriorityChange(item.id, newPriority, newScore, newFactors)}
                 />
               </Box>
             ),
