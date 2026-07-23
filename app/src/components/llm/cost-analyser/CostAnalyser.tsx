@@ -90,7 +90,10 @@ export function CostAnalyser({ accountId }: CostAnalyserProps) {
   const effectiveAccountId = selectedAccountId || accountId;
 
   const patch = (p: Partial<CostFilters>) => setFilters((f) => ({ ...f, ...p }));
-  const reset = () => setFilters(defaultFilters());
+  const reset = () => {
+    setFilters(defaultFilters());
+    setSelectedAccountId('');
+  };
 
   const { loading, error, usageFilters, metrics, prevTotals, conversations, listCap } = useCostData(effectiveAccountId, filters);
 
