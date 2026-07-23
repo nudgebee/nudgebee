@@ -334,3 +334,64 @@ class Cache:
             except redis.RedisError as e:
                 LOG.exception(f"Error removing channel session mapping for {channel_id}: {e}")
                 return False
+
+    # --- Channel-awareness watched-set mirror -------------------------------
+    # Mirror of the enabled rows in messaging_channel_watch, one Redis set per
+    # workspace, maintained on every toggle. No TTL: the DB is authoritative and
+    # rebuild_watched_channels reseeds after a Redis flush. Readers must treat
+    # None (Redis unavailable) as "unknown" and fall back to the DB.
+
+    @staticmethod
+    def _watched_channels_key(platform, team_id):
+        return f"watched_channels:{platform}:{team_id}"
+
+    def add_watched_channel(self, platform, team_id, channel_id):
+        self._ensure_connection()
+        if not self.redis_client:
+            return False
+        try:
+            self.redis_client.sadd(self._watched_channels_key(platform, team_id), channel_id)
+            return True
+        except redis.RedisError as e:
+            LOG.exception(f"Error adding watched channel {channel_id}: {e}")
+            return False
+
+    def remove_watched_channel(self, platform, team_id, channel_id):
+        self._ensure_connection()
+        if not self.redis_client:
+            return False
+        try:
+            self.redis_client.srem(self._watched_channels_key(platform, team_id), channel_id)
+            return True
+        except redis.RedisError as e:
+            LOG.exception(f"Error removing watched channel {channel_id}: {e}")
+            return False
+
+    def is_channel_watched(self, platform, team_id, channel_id):
+        """True/False from the mirror, or None when Redis is unavailable so the
+        caller can fall back to the messaging_channel_watch table."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return None
+        try:
+            return bool(self.redis_client.sismember(self._watched_channels_key(platform, team_id), channel_id))
+        except redis.RedisError as e:
+            LOG.exception(f"Error checking watched channel {channel_id}: {e}")
+            return None
+
+    def rebuild_watched_channels(self, platform, team_id, channel_ids):
+        """Reseed one workspace's mirror from the DB truth (e.g. after a flush)."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return False
+        key = self._watched_channels_key(platform, team_id)
+        with self.redis_client.pipeline() as pipe:
+            try:
+                pipe.delete(key)
+                if channel_ids:
+                    pipe.sadd(key, *channel_ids)
+                pipe.execute()
+                return True
+            except redis.RedisError as e:
+                LOG.exception(f"Error rebuilding watched channels for {team_id}: {e}")
+                return False

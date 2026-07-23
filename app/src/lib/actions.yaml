@@ -3385,6 +3385,48 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: Get Notification Service Channels
+  - name: notifications_list_watchable_channels
+    definition:
+      kind: "synchronous"
+      handler: '{{NOTIFICATION_SERVICE_URL}}/api/channels/watchable'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: k8s_namespace_admin_readonly
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: List Slack channels Nubi can watch, with per-channel watch state
+  - name: notifications_enable_channel_watch
+    definition:
+      kind: "synchronous"
+      handler: '{{NOTIFICATION_SERVICE_URL}}/api/channels/watch'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: tenant_admin
+      - role: account_admin
+    comment: Enable Nubi channel awareness for a channel (posts an in-channel disclosure)
+  - name: notifications_disable_channel_watch
+    definition:
+      kind: "synchronous"
+      handler: '{{NOTIFICATION_SERVICE_URL}}/api/channels/unwatch'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: tenant_admin
+      - role: account_admin
+    comment: Disable Nubi channel awareness for a channel
   - name: notification_get_user_list
     definition:
       kind: "synchronous"

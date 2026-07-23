@@ -345,6 +345,28 @@ class ConfigurationStore(Base):
     created_by = Column(PG_UUID(as_uuid=True), nullable=True)
 
 
+class MessagingChannelWatch(Base):
+    """Opt-in registry for Nubi channel awareness. Disabling keeps the row
+    (enabled=false + disabled_at) so consent history survives toggling."""
+
+    __tablename__ = "messaging_channel_watch"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=gen_id)
+    tenant_id = Column(PG_UUID(as_uuid=True), nullable=False)
+    platform = Column(String, nullable=False)
+    team_id = Column(String, nullable=False)
+    channel_id = Column(String, nullable=False)
+    channel_name = Column(String, nullable=True)
+    enabled = Column(Boolean, default=True, nullable=False)
+    retention_days = Column(Integer, default=30, nullable=False)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, nullable=False)
+    disabled_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (UniqueConstraint("tenant_id", "platform", "team_id", "channel_id"),)
+
+
 class CloudAccount(Base):
     __tablename__ = "cloud_accounts"
 

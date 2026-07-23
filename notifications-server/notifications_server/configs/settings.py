@@ -592,6 +592,11 @@ class NotificationSettings(BaseSettings):
     enable_incident_channel_reply: bool = Field(
         True, validation_alias=AliasChoices("ENABLE_INCIDENT_CHANNEL_REPLY", "enable_incident_channel_reply")
     )
+    # Global kill switch for Nubi channel awareness; per-tenant enablement is the
+    # CHANNEL_AWARENESS feature flag, so nothing activates on this default alone.
+    channel_awareness_enabled: bool = Field(
+        True, validation_alias=AliasChoices("CHANNEL_AWARENESS_ENABLED", "channel_awareness_enabled")
+    )
     max_detailed_evidences: int = Field(
         3, validation_alias=AliasChoices("MAX_DETAILED_EVIDENCES", "max_detailed_evidences")
     )
@@ -613,7 +618,7 @@ class NotificationSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    @field_validator("enable_batched", "enable_incident_channel_reply", mode="before")
+    @field_validator("enable_batched", "enable_incident_channel_reply", "channel_awareness_enabled", mode="before")
     @classmethod
     def parse_bool(cls, v):
         """Parse boolean values from environment variables."""
