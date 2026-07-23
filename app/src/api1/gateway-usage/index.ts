@@ -186,6 +186,9 @@ export interface GatewayRequestRow {
   latency_ms: number;
   cost_usd: number;
   session_id: string;
+  /** How session_id was resolved, most-authoritative first:
+   * 'header' | 'metadata.session_id' | 'metadata.user_id' | 'inferred' | ''. */
+  session_source: string;
 }
 
 /** A page of recent requests plus the unpaged total (for the pager). */
@@ -219,6 +222,7 @@ export interface ListGatewayRequestsRequest {
   status?: string; // optional; 'success' (2xx) | 'error' (everything else)
   tool?: string; // optional drill-down from the Tools tab
   // Governance-tab drill-ins — each maps a Governance count to the rows behind it.
+  sessionId?: string; // one session/conversation (drill-in from a request's session)
   routingReason?: string; // e.g. substitute | fallback | deprecated | passthrough
   rejectReason?: string; // e.g. rate_limited | secret_blocked
   dlp?: boolean; // requests that tripped the egress filter
@@ -271,11 +275,11 @@ export async function aggregateGatewayUsage(req: AggregateGatewayUsageRequest, s
  * an upstream body that carries every filter field the Go handler binds. */
 export const LIST_GATEWAY_REQUESTS = `mutation ListGatewayRequests(
     $startDate: String!, $endDate: String!, $userId: String, $providers: [String!], $models: [String!],
-    $status: String, $tool: String, $routingReason: String, $rejectReason: String, $dlp: Boolean, $limit: Int, $offset: Int
+    $status: String, $tool: String, $sessionId: String, $routingReason: String, $rejectReason: String, $dlp: Boolean, $limit: Int, $offset: Int
   ) {
     llm_gateway_list_requests(request: {
       start_date: $startDate, end_date: $endDate, user_id: $userId, providers: $providers, models: $models,
-      status: $status, tool: $tool, routing_reason: $routingReason, reject_reason: $rejectReason, dlp: $dlp, limit: $limit, offset: $offset
+      status: $status, tool: $tool, session_id: $sessionId, routing_reason: $routingReason, reject_reason: $rejectReason, dlp: $dlp, limit: $limit, offset: $offset
     }) {
       data
     }
@@ -295,6 +299,7 @@ export async function listGatewayRequests(req: ListGatewayRequestsRequest, signa
       status: req.status ?? '',
       tool: req.tool ?? '',
       routingReason: req.routingReason ?? '',
+      sessionId: req.sessionId ?? '',
       rejectReason: req.rejectReason ?? '',
       dlp: req.dlp ?? false,
       limit: req.limit ?? 50,

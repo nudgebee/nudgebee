@@ -14,20 +14,53 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// resolveSession returns the session/round correlation id for a request. LLM APIs
-// are stateless, so this is client-supplied only: the configured correlation
-// header first, then Anthropic's body metadata.user_id. Empty when neither is set
-// — we never fabricate one.
-func resolveSession(c *gin.Context, body []byte) (id, source string) {
+// resolveSession returns the session/round correlation id for a request, with its
+// source. Resolution order, most-authoritative first: the configured correlation
+// HEADER; then a real session_id nested inside Anthropic's metadata.user_id (Claude
+// Code sends user_id as a JSON blob {device_id, account_uuid, session_id} — the
+// session_id there is the true per-conversation id); then the raw metadata.user_id
+// (other clients that send a plain identifier); then the INFERRED prefix fingerprint
+// (a stable hash of system+tools+first-user — see prefixFingerprint; deterministic,
+// so a conversation's turns share it). Empty only when there is no prefix to
+// fingerprint either. `fingerprint` is precomputed by the caller (it also feeds
+// cache-affinity routing). New signals slot in above `inferred` later.
+func resolveSession(c *gin.Context, body []byte, fingerprint string) (id, source string) {
 	if h := config.Config.SessionHeader; h != "" {
 		if v := strings.TrimSpace(c.GetHeader(h)); v != "" {
 			return v, "header"
 		}
 	}
-	if uid := bodyMetadataUserID(body); uid != "" {
-		return uid, "metadata.user_id"
+	if uid := strings.TrimSpace(bodyMetadataUserID(body)); uid != "" {
+		if strings.HasPrefix(uid, "{") {
+			// A JSON blob (Claude Code): use the nested session_id if present,
+			// otherwise fall through to the inferred fingerprint — never store the
+			// raw blob as a session id.
+			if sid := nestedSessionID(uid); sid != "" {
+				return sid, "metadata.session_id"
+			}
+		} else {
+			return uid, "metadata.user_id" // a plain client-supplied identifier
+		}
+	}
+	if fingerprint != "" {
+		return fingerprint, "inferred"
 	}
 	return "", ""
+}
+
+// nestedSessionID pulls a real session_id out of a metadata.user_id value when the
+// client encodes one as JSON (Claude Code: {"device_id":…,"account_uuid":…,
+// "session_id":"<uuid>"}). Returns "" for a plain-string user_id (no JSON object),
+// so callers fall back to the raw value.
+func nestedSessionID(uid string) string {
+	if !strings.HasPrefix(strings.TrimSpace(uid), "{") {
+		return ""
+	}
+	var m struct {
+		SessionID string `json:"session_id"`
+	}
+	_ = json.Unmarshal([]byte(uid), &m)
+	return strings.TrimSpace(m.SessionID)
 }
 
 // extractRequestAttributes pulls structure-only metadata from the provider-native

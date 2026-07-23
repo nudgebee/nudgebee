@@ -110,6 +110,9 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   // Governance → Requests drill-in: when set, the Requests tab is scoped to the
   // rows behind a governance count (a routing/reject reason, DLP, or error class).
   const [selectedGov, setSelectedGov] = React.useState<GovScope | null>(null);
+  // Requests → Requests drill-in: clicking a row's session scopes the list to that
+  // one session/conversation (an inferred or client-supplied id).
+  const [selectedSession, setSelectedSession] = React.useState<string | null>(null);
   // Bumped whenever the date window is set from somewhere other than the picker
   // itself (i.e. the Overview drill-in), to re-key it — see the picker below.
   const [dateResetNonce, setDateResetNonce] = React.useState(0);
@@ -212,6 +215,11 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   }, []);
   const onClearGov = React.useCallback(() => setSelectedGov(null), []);
 
+  // Session drill-in stays within the Requests tab (no tab jump — the user is
+  // already here): clicking a row's session narrows the list to that session.
+  const onSelectSession = React.useCallback((id: string) => setSelectedSession(id), []);
+  const onClearSession = React.useCallback(() => setSelectedSession(null), []);
+
   // Pass MUI icons as component references (not JSX elements) so CustomTabs
   // renders them with its built-in `.tab-icon` styling (idle grey, selected
   // colour change) — matching every other CustomTabs usage.
@@ -284,6 +292,9 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
           onClearTool={onClearTool}
           govFilter={selectedGov}
           onClearGov={onClearGov}
+          sessionFilter={selectedSession}
+          onSelectSession={onSelectSession}
+          onClearSession={onClearSession}
         />
       )}
       {tab === 'tools' && <ToolsView metrics={metrics} loading={loading} error={error} onSelectTool={onSelectTool} />}

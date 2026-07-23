@@ -125,6 +125,14 @@ func TestListRequestsFilter(t *testing.T) {
 		assert.Len(t, argsDlp, 3) // dlp adds no arg
 	})
 
+	t.Run("session_id filter (session drill-in)", func(t *testing.T) {
+		req := base
+		req.SessionID = "sess-42"
+		where, args := listRequestsFilter(req)
+		assert.Contains(t, where, "g.session_id = $4")
+		assert.Equal(t, []any{"t1", start, end, "sess-42"}, args)
+	})
+
 	t.Run("all filters compose with correct placeholder numbering", func(t *testing.T) {
 		req := base
 		req.UserID = "u1"

@@ -34,6 +34,7 @@ type apiListRequest struct {
 	RoutingReason string `json:"routing_reason"` // optional; e.g. substitute | fallback | deprecated
 	RejectReason  string `json:"reject_reason"`  // optional; e.g. rate_limited | secret_blocked
 	Dlp           bool   `json:"dlp"`            // optional; requests that tripped the egress filter
+	SessionID     string `json:"session_id"`     // optional; one session/conversation (drill-in)
 	Limit         int    `json:"limit"`
 	Offset        int    `json:"offset"`
 }
@@ -97,6 +98,7 @@ func RegisterRoutes(r *gin.Engine, token string) {
 			TenantID: tenantID, StartDate: start, EndDate: end,
 			UserID: req.UserID, Providers: req.Providers, Models: req.Models, Status: req.Status,
 			Tool: req.Tool, RoutingReason: req.RoutingReason, RejectReason: req.RejectReason, Dlp: req.Dlp,
+			SessionID:    req.SessionID,
 			CallerUserID: c.GetHeader("x-user-id"),
 			Limit:        req.Limit, Offset: req.Offset,
 		})

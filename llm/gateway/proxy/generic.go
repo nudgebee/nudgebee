@@ -98,7 +98,8 @@ func (h *handler) handleChat(c *gin.Context) {
 			fmt.Sprintf("%s->%s", rc.Decision.RequestedModel, rc.Decision.ResolvedModel))
 	}
 
-	sessionID, sessionSource := resolveSession(c, rc.Body)
+	fingerprint := prefixFingerprint(rc.Provider, rc.Body)
+	sessionID, sessionSource := resolveSession(c, rc.Body, fingerprint)
 	rm := &reqMeta{
 		reqID:         uuid.NewString(),
 		provider:      rc.Provider,
@@ -112,6 +113,7 @@ func (h *handler) handleChat(c *gin.Context) {
 		start:         start,
 		sessionID:     sessionID,
 		sessionSource: sessionSource,
+		prefixFinger:  fingerprint,
 		reqAttrs:      extractRequestAttributes(rc.Provider, rc.Body),
 		identity:      identity,
 		decision:      rc.Decision,
