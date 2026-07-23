@@ -20,6 +20,9 @@ func TestResolveModelProvider(t *testing.T) {
 		{"gemini/gemini-3.1-flash", schemas.Gemini, "gemini-3.1-flash", true},
 		{"google/gemini-3.1-flash", schemas.Gemini, "gemini-3.1-flash", true},
 		{"OpenAI/gpt-5", schemas.OpenAI, "gpt-5", true}, // provider prefix is case-insensitive
+		// HuggingFace repo ids keep their own slash (split is on the first "/").
+		{"huggingface/meta-llama/Llama-3.1-8B-Instruct", schemas.HuggingFace, "meta-llama/Llama-3.1-8B-Instruct", true},
+		{"hf/deepseek-ai/DeepSeek-V3", schemas.HuggingFace, "deepseek-ai/DeepSeek-V3", true},
 		// Bare well-known names via prefix heuristic.
 		{"claude-opus-4-8", schemas.Anthropic, "claude-opus-4-8", true},
 		{"gpt-5", schemas.OpenAI, "gpt-5", true},

@@ -41,6 +41,8 @@ func NormalizeProvider(name string) schemas.ModelProvider {
 		return schemas.Vertex
 	case "azure":
 		return schemas.Azure
+	case "huggingface", "hf":
+		return schemas.HuggingFace
 	default:
 		return schemas.ModelProvider(strings.ToLower(strings.TrimSpace(name)))
 	}

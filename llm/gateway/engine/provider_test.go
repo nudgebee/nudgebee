@@ -21,6 +21,8 @@ func TestNormalizeProvider(t *testing.T) {
 		"vertexai":          schemas.Vertex,
 		"vertexai_endpoint": schemas.Vertex,
 		"azure":             schemas.Azure,
+		"huggingface":       schemas.HuggingFace,
+		"hf":                schemas.HuggingFace,
 	}
 	for in, want := range cases {
 		t.Run(in, func(t *testing.T) {
@@ -39,6 +41,19 @@ func TestBuildCred_APIKeyProvider(t *testing.T) {
 	assert.Equal(t, schemas.Anthropic, provider)
 	assert.Equal(t, "sk-ant-real", cred.key.Value.Val)
 	assert.Equal(t, "https://custom.example.com", cred.endpoint)
+	assert.Nil(t, cred.key.BedrockKeyConfig)
+}
+
+func TestBuildCred_HuggingFaceAPIKey(t *testing.T) {
+	// HuggingFace is a plain api-key provider (bearer token), so it takes the same
+	// default path as the other key-based providers — no structured cloud config.
+	provider, cred, ok := buildCred(ProviderCredsConfig{
+		Provider: "huggingface",
+		APIKey:   "hf_realtoken",
+	})
+	require.True(t, ok)
+	assert.Equal(t, schemas.HuggingFace, provider)
+	assert.Equal(t, "hf_realtoken", cred.key.Value.Val)
 	assert.Nil(t, cred.key.BedrockKeyConfig)
 }
 

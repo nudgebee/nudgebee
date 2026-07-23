@@ -65,8 +65,8 @@ func traceResponseHeaderMiddleware() gin.HandlerFunc {
 }
 
 // providerCreds assembles the operator provider credentials from config: a key
-// per API-key provider (Anthropic/OpenAI/Gemini — set any subset to serve them
-// all at once) plus the LLM_PROVIDER_* block for a single cloud provider
+// per API-key provider (Anthropic/OpenAI/Gemini/HuggingFace — set any subset to
+// serve them all at once) plus the LLM_PROVIDER_* block for a single cloud provider
 // (Bedrock/Vertex/Azure) that needs structured creds. engine.New dedupes by
 // provider (per-provider keys win) and skips entries with no credential.
 func providerCreds() []engine.ProviderCredsConfig {
@@ -92,6 +92,7 @@ func providerCreds() []engine.ProviderCredsConfig {
 		{Provider: "anthropic", APIKey: c.AnthropicAPIKey},
 		{Provider: "openai", APIKey: c.OpenAIAPIKey},
 		{Provider: "gemini", APIKey: c.GeminiAPIKey},
+		{Provider: "huggingface", APIKey: c.HuggingFaceAPIKey},
 	} {
 		if pc.APIKey != "" {
 			creds = append(creds, pc)

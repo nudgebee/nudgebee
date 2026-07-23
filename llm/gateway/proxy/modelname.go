@@ -9,16 +9,22 @@ import (
 // genericProviderAliases maps an explicit provider prefix ("provider/model") to a
 // Bifrost provider. "google" is accepted as an alias for Gemini's public API.
 var genericProviderAliases = map[string]schemas.ModelProvider{
-	"anthropic": schemas.Anthropic,
-	"openai":    schemas.OpenAI,
-	"gemini":    schemas.Gemini,
-	"google":    schemas.Gemini,
+	"anthropic":   schemas.Anthropic,
+	"openai":      schemas.OpenAI,
+	"gemini":      schemas.Gemini,
+	"google":      schemas.Gemini,
+	"huggingface": schemas.HuggingFace,
+	"hf":          schemas.HuggingFace,
 }
 
 // resolveModelProvider maps a model name from the generic /v1 endpoint to the
 // provider that serves it and the bare model name to send. Two forms are accepted:
 //
-//   - explicit "provider/model" (e.g. "anthropic/claude-opus-4-8") — unambiguous;
+//   - explicit "provider/model" (e.g. "anthropic/claude-opus-4-8") — unambiguous.
+//     The split is on the first "/", so a HuggingFace repo id keeps its own slash
+//     (e.g. "huggingface/meta-llama/Llama-3.1-8B-Instruct" → model
+//     "meta-llama/Llama-3.1-8B-Instruct"). HuggingFace has no bare-name form: its
+//     ids collide with the "provider/model" shape, so it must be addressed explicitly.
 //   - a bare model name (e.g. "gpt-5", "claude-opus-4-8", "gemini-3.1-flash"),
 //     resolved by a well-known provider prefix.
 //
