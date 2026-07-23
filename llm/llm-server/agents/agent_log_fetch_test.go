@@ -639,7 +639,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 	}
 
 	t.Run("file_ref present: logs previewed, not inlined in full", func(t *testing.T) {
-		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "logs_loki_1.txt", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "logs_loki_1.txt", "", nil))
 		assert.Equal(t, "logs_loki_1.txt", env["file_ref"])
 		assert.Less(t, len(env["logs"]), len(bigLogs),
 			"full logs must not be inlined when a file_ref exists")
@@ -648,7 +648,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 	})
 
 	t.Run("no file_ref: full logs inlined", func(t *testing.T) {
-		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "", "", nil))
 		assert.Equal(t, "", env["file_ref"])
 		assert.Equal(t, bigLogs, env["logs"],
 			"with no file_ref the full logs must remain available inline")
@@ -656,8 +656,15 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 
 	t.Run("file_ref present but logs already small: inlined unchanged", func(t *testing.T) {
 		const small = "tiny log line"
-		env := decode(makeFetchResponse("fetch_logs", "q", small, "logs_loki_2.txt", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", small, "logs_loki_2.txt", "", nil))
 		assert.Equal(t, small, env["logs"])
+	})
+
+	t.Run("bundle_signal present: threaded through envelope verbatim", func(t *testing.T) {
+		const sig = "=== CRASH BUNDLE ===\n[error] 3 hits\n[oom] 1 hit"
+		env := decode(makeFetchResponse("fetch_logs", "q", "tiny", "logs_loki_3.txt", sig, nil))
+		assert.Equal(t, sig, env["bundle_signal"],
+			"bundle_signal must appear verbatim in the envelope so the LLM can read it without a follow-up tool call")
 	})
 }
 
@@ -669,7 +676,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 //     messages, preserving the provider prompt-cache prefix
 //   - oversized → truncated via TruncateMiddle so a huge curated context
 //     cannot bloat every intent call
-func TestBuildLogIntentMessages_AccountPromptPropagation(t *testing.T) {
+func TestBuildLogIntentMessages_AccountPromptPropagation_DuplicateGuard(t *testing.T) {
 	const sysPrompt = "Static system prompt. Extract log retrieval parameters."
 	const gc = "Log fields for this deployment: service.name, body, k8s.pod.name."
 
@@ -715,7 +722,7 @@ func TestBuildLogIntentMessages_AccountPromptPropagation(t *testing.T) {
 // to the query-generator when backend label discovery fails: Signoz stores
 // logs under OTel attribute names — the generic `_body`/`namespace`/`pod` set
 // matches no Signoz attribute and every query silently returns zero rows.
-func TestDefaultProviderLogFields(t *testing.T) {
+func TestDefaultProviderLogFields_DuplicateGuard(t *testing.T) {
 	signozFields := defaultProviderLogFields("signoz")
 	assert.ElementsMatch(t,
 		[]string{"body", "service.name", "k8s.cluster.name", "k8s.namespace.name", "k8s.pod.name", "trace_id"},

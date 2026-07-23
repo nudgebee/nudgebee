@@ -305,6 +305,14 @@ func InvalidateAgentSupportedToolsCache(accountId string, agentName string) {
 	agentSupportedToolsCacheInstance.delete(accountId, agentName)
 }
 
+// The enterprise release can add the on-demand memory tool to orchestrators.
+// That tool is outside the OSS boundary, so the OSS reconciliation keeps the
+// shared call sites inert instead of exposing a tool that is not registered.
+func appendMemoryToolName(names []string) []string { return names }
+
+// See appendMemoryToolName. OSS has no enterprise memory-tool prompt nudge.
+func memoryNudgeIfEnabled() string { return "" }
+
 // getSupportedTools builds the k8s orchestrator tool list. kubectlTool is the first
 // base tool: KubectlAgentName for the delegating orchestrator, or
 // tools.ToolExecuteKubectlCommand for the direct orchestrator that runs kubectl itself.

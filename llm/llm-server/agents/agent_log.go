@@ -151,6 +151,12 @@ func (l *LogAgent) buildToolList(ctx *security.RequestContext) []toolcore.NBTool
 	if config.Config.LlmServerShellToolEnabled {
 		names = append(names, toolcore.ToolExecuteShellCommand)
 	}
+	// standard_diagnostic_grep is no longer exposed to the LLM — the bundle
+	// now fires deterministically inside fetch_logs when the query wording
+	// asks for error content, and the result rides back in the fetch
+	// envelope's `bundle_signal` field. Advertising the tool here would let
+	// the LLM issue a redundant second call for the bundle it already has
+	// in hand. See runAutoDiagnosticBundle in agent_log_fetch.go.
 	var tl []toolcore.NBTool
 	for _, name := range names {
 		if t, ok := toolcore.GetNBTool(l.accountId, name); ok {
@@ -227,13 +233,18 @@ func sharedHeaderAndWorkflow() []string {
 // routineInstructions returns the body for MODE = ROUTINE: a single small
 // fetch, no shell_execute pass, no widening. Investigation/enumeration blocks
 // are not included.
+//
+// The fetch_logs envelope carries a pre-computed `bundle_signal` field when
+// the user's query wording asked for error content — the LLM just reads it
+// out of the response, no separate tool call needed.
 func routineInstructions() []string {
 	return []string{
 		"**Workflow (Routine):**",
 		"  3. **Single fetch is enough.** Phrase the NL question using the right label depending on whether the user gave a hashed pod name or an app/deployment name (see Label-anchor rules below). Keep limits small (200-1000 lines).",
 		labelAnchorRules(),
-		"  4. **No shell_execute pass.** Read the fetch_logs response inline and answer.",
-		"  5. **No widening on empty result.** If the small fetch returns nothing for the user's window, say so explicitly — this mode is for routine viewing, not investigation.",
+		"  4. **Read the fetch response — including the pre-computed bundle_signal.** The fetch_logs envelope carries a `bundle_signal` field. When it's non-empty (the user asked for error content), it holds a category-tagged sweep (error / fatal / panic / OOM / timeout / connection-refused / TLS / HTTP-5xx) computed server-side against the saved file — use its output as the body of your answer without issuing your own grep. When it's empty, answer from the inline logs directly.",
+		"  5. **Envelope is the answer.** Rely entirely on the fetch response (inline logs + `bundle_signal` when present) for your reply. The envelope already contains the categorised signal, so a follow-up shell_execute grep would only re-derive what you already have.",
+		"  6. **No widening on empty result.** If the small fetch returns nothing for the user's window, say so explicitly — this mode is for routine viewing, not investigation.",
 	}
 }
 
@@ -252,6 +263,18 @@ func investigationInstructions(shellEnabled bool) []string {
 	}
 
 	if shellEnabled {
+		// The fetch_logs envelope carries `bundle_signal` — a pre-computed
+		// category sweep that runs deterministically server-side whenever
+		// the query wording asks for error content. That obsoletes the old
+		// "please call standard_diagnostic_grep first" step and saves an
+		// LLM turn. If the bundle signal is clear the LLM can answer from
+		// it directly; if it's thin or ambiguous, the manual Call A + B
+		// pass below still runs.
+		if config.Config.LogsStandardGrepEnabled {
+			out = append(out,
+				"  4a. **Read `bundle_signal` first (fastest path).** The fetch_logs envelope carries a `bundle_signal` field with a pre-computed server-side sweep across error / fatal / panic / OOM / timeout / connection-refused / TLS / HTTP-5xx categories against the saved file. When it's non-empty and shows a clear signal (matches concentrated in one category with a visible transition timestamp), skip step 4 below and go straight to the WHEN report. When it's empty (bundle didn't fire — query wording wasn't error-adjacent) or thin (matches scattered across categories, no clear timestamp cluster), fall through to step 4 for the manual Call A+B pass and any domain-aware patterns. Use the provided bundle output directly — the server has already run the sweep.",
+			)
+		}
 		out = append(out,
 			"  4. **Mandatory shell_execute pass (NOT optional for this mode).** When `fetch_logs` returns a non-empty `file_ref`, you MUST run AT LEAST TWO `shell_execute` calls before producing a final answer. Call A and Call B read the SAME file with different patterns and are INDEPENDENT — **emit BOTH in ONE iteration as a single parallel batch** (do NOT wait for A's result before issuing B); correlate their outputs afterward once both return:",
 			"     **Never batch a `fetch_logs` call together with a `shell_execute` grep on the file_ref it is expected to return — not here, not anywhere else in this workflow.** `file_ref` only exists once `fetch_logs` actually finishes; a grep queued in the same iteration cannot know the real value and will target a file that hasn't been written yet, producing `No such file or directory` even though your command is otherwise correct. Call A and Call B are safe to batch because they both read a file_ref `fetch_logs` has ALREADY returned in a prior, completed step — always let a `fetch_logs` call finish and observe its `file_ref` before grepping it, in the NEXT iteration.",
@@ -316,6 +339,17 @@ func enumerationInstructions(shellEnabled bool) []string {
 	}
 
 	if shellEnabled {
+		// The fetch_logs envelope's `bundle_signal` field already gives us
+		// a category-tagged sweep for the well-known failure axes (crash /
+		// network / oom / …) — exactly what enumeration wants. Present
+		// those categories directly, then use the manual per-signature
+		// pipeline (step 4) to pick up tail signatures the bundle doesn't
+		// know about (custom app errors, service-specific tokens).
+		if config.Config.LogsStandardGrepEnabled {
+			out = append(out,
+				"  3a. **Read `bundle_signal` first (fastest path for enumeration).** The fetch_logs envelope carries a `bundle_signal` field with a pre-computed server-side category sweep against the saved file. When it's non-empty, present those categories directly in your final answer using their tag names (error / fatal / panic / OOM / timeout / connection-refused / TLS / HTTP-5xx). Then run step 4 below only for signatures the bundle didn't cover (custom application errors, service-specific tokens) — focus step 4 exclusively on the tail patterns absent from the bundle output. When `bundle_signal` is empty (bundle didn't fire — query wording wasn't error-adjacent) start with step 4.",
+			)
+		}
 		out = append(out,
 			"  4. **Per-signature aggregation pipeline (MANDATORY — without this you miss error categories):**",
 			"     ```",

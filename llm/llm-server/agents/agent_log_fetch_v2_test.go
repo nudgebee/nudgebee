@@ -50,7 +50,7 @@ func TestFetchResponseIsEmpty(t *testing.T) {
 	// Build envelopes through the real makeFetchResponse so the test tracks the
 	// actual wire shape the agent produces.
 	env := func(logs string) core.NBAgentResponse {
-		return makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, logs, "", nil)
+		return makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, logs, "", "", nil)
 	}
 	cases := []struct {
 		name string

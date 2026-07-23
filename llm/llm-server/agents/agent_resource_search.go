@@ -188,17 +188,7 @@ Strategy:
 		return core.NBAgentResponse{}, err
 	}
 
-	type ToolCall struct {
-		Tool       string          `json:"tool"`
-		ToolCode   string          `json:"tool_code"`
-		ToolName   string          `json:"tool_name"`
-		Name       string          `json:"name"`
-		Input      json.RawMessage `json:"input"`
-		Args       json.RawMessage `json:"args"`
-		Parameters json.RawMessage `json:"parameters"`
-		Arguments  json.RawMessage `json:"arguments"`
-	}
-	var toolCalls []ToolCall
+	var toolCalls []resourceSearchToolCall
 
 	// Robust Extraction: Handle Native Tool Calls AND JSON Content
 	respContent := llmResp.Choices[0].Content
@@ -207,7 +197,7 @@ Strategy:
 	// 1. First check for native tool calls
 	for _, tc := range llmResp.Choices[0].ToolCalls {
 		argBytes, _ := json.Marshal(tc.FunctionCall.Arguments)
-		toolCalls = append(toolCalls, ToolCall{
+		toolCalls = append(toolCalls, resourceSearchToolCall{
 			Tool:  tc.FunctionCall.Name,
 			Input: json.RawMessage(argBytes),
 		})
@@ -215,26 +205,14 @@ Strategy:
 
 	// 2. If no native calls, extract from JSON content
 	if len(toolCalls) == 0 {
-		var rawToolCalls []ToolCall
+		var rawToolCalls []resourceSearchToolCall
 		if err := common.ExtractAndUnmarshalJSON([]byte(respContent), &rawToolCalls); err != nil || len(rawToolCalls) == 0 {
 			_ = json.Unmarshal([]byte(respContent), &rawToolCalls)
 		}
 
 		for _, rtc := range rawToolCalls {
 			tc := rtc
-			if tc.Tool == "" && tc.ToolCode != "" {
-				tc.Tool = tc.ToolCode
-			}
-			if tc.Tool == "" && tc.ToolName != "" {
-				tc.Tool = tc.ToolName
-			}
-			// Function-calling-style output ({"name": ..., "arguments": ...})
-			// is what Gemini and OpenAI models emit by habit even when asked
-			// for tool/input keys; without this alias every call is dropped
-			// and the keyword fallback runs instead.
-			if tc.Tool == "" && tc.Name != "" {
-				tc.Tool = tc.Name
-			}
+			tc.Tool = tc.resolveToolName()
 
 			// Priority order for input payload
 			if len(tc.Input) == 0 || string(tc.Input) == "null" {
@@ -256,15 +234,12 @@ Strategy:
 	if len(toolCalls) == 0 {
 		ctx.GetLogger().Info("resource_search: falling back to manual tool construction", "query", request.Query)
 
-		// 1. Better Heuristic Extraction
-		searchTerms := strings.ToLower(request.Query)
-		fillers := []string{"find", "all", "search", "for", "instances", "across", "my", "cluster", "and", "cloud", "accounts"}
-		for _, f := range fillers {
-			searchTerms = strings.ReplaceAll(searchTerms, f, "")
-		}
-		words := strings.Fields(searchTerms)
-		if len(words) > 0 {
-			resourceName := words[0] // Grab first meaningful word
+		// 1. Better Heuristic Extraction — delegated to the tokenised helper
+		// (see extractFallbackResourceName godoc for why substring-replace
+		// was the bug). Empty return means "no non-filler token in query"
+		// and short-circuits the whole fallback.
+		resourceName := extractFallbackResourceName(request.Query)
+		if resourceName != "" {
 
 			// 2. Alias Expansion (e.g., postgres -> postgresql)
 			variations := []string{resourceName}
@@ -283,8 +258,8 @@ Strategy:
 					ctx.GetLogger().Warn("resource_search: failed to marshal cloud_resource_search input", "error", err, "resource_name", v)
 					continue
 				}
-				toolCalls = append(toolCalls, ToolCall{Tool: tools.ToolResourceSearch, Input: json.RawMessage(rsInput)})
-				toolCalls = append(toolCalls, ToolCall{Tool: tools.ToolCloudResourceSearch, Input: json.RawMessage(crsInput)})
+				toolCalls = append(toolCalls, resourceSearchToolCall{Tool: tools.ToolResourceSearch, Input: json.RawMessage(rsInput)})
+				toolCalls = append(toolCalls, resourceSearchToolCall{Tool: tools.ToolCloudResourceSearch, Input: json.RawMessage(crsInput)})
 			}
 		}
 	}
@@ -317,7 +292,7 @@ Strategy:
 		}
 
 		wg.Add(1)
-		go func(tc ToolCall) {
+		go func(tc resourceSearchToolCall) {
 			defer wg.Done()
 
 			// Normalize tool name

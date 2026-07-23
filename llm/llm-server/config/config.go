@@ -631,6 +631,13 @@ type appConfig struct {
 	// LLM Trace - logs full prompt messages and LLM responses for debugging
 	LlmTraceEnabled bool `mapstructure:"llm_trace_enabled"`
 
+	// LogsStandardGrepEnabled exposes the standard_diagnostic_grep primitive
+	// to the logs agent — a server-side pattern-bundle grep tool that avoids
+	// one-LLM-turn-per-pattern latency. Default off; flip on after validating
+	// the bundle set matches production log shapes. When off, the logs agent
+	// falls back to LLM-emitted shell_execute greps as today.
+	LogsStandardGrepEnabled bool `mapstructure:"llm_logs_standard_grep_enabled"`
+
 	// Memory Module — layered memory architecture (Phase 1+)
 	MemoryModuleEnabled     bool   `mapstructure:"llm_memory_module_enabled"`
 	MemoryLayerSoulEnabled  bool   `mapstructure:"llm_memory_layer_soul_enabled"`
