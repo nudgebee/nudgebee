@@ -9,6 +9,7 @@ import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
+import SearchInput from '@ui/SearchInput';
 import { Switch } from '@ui/Switch';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import CustomTable2 from '@shared/tables/CustomTable2';
@@ -74,14 +75,15 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
   // Filter state
   const [selectedRuleType, setSelectedRuleType] = useState<string>('');
   const [selectedStatus, setSelectedStatus] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [includeSystemRules, setIncludeSystemRules] = useState(true);
   const [selectedAccountFilter, setSelectedAccountFilter] = useState<string[]>(() => {
     const raw = router.query.accountIds as string;
     return raw ? raw.split(',').filter(Boolean) : [];
   });
 
-  // System-rule visibility and Status are both filtered client-side. Status uses each
-  // rule's *effective* status (a system rule disabled for this account via an override
+  // System-rule visibility, Status, and name search are all filtered client-side. Status uses
+  // each rule's *effective* status (a system rule disabled for this account via an override
   // keeps enabled=true), matching the badge in getStatusDisplay — filtering on the raw
   // `enabled` column alone would mismatch override-disabled system rules.
   const filteredRules = useMemo(() => {
@@ -93,8 +95,12 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
         return effectiveEnabled === wantEnabled;
       });
     }
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
+      out = out.filter((r) => (r.name || '').toLowerCase().includes(q));
+    }
     return out;
-  }, [rules, includeSystemRules, selectedStatus]);
+  }, [rules, includeSystemRules, selectedStatus, searchQuery]);
   const totalCount = filteredRules.length;
 
   useEffect(() => {
@@ -539,6 +545,15 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
             </>
           }
         >
+          <SearchInput
+            id='triage-rules-search'
+            label='Search by name'
+            value={searchQuery}
+            onChange={(value: string) => {
+              setSearchQuery(value);
+              setCurrentPage(0);
+            }}
+          />
           {isMultiAccountView && (
             <FilterDropdown
               id='triage-rules-filter-account'

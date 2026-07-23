@@ -174,6 +174,13 @@ jest.mock('@ui/FilterDropdown', () => ({
   },
 }));
 
+jest.mock('@ui/SearchInput', () => ({
+  __esModule: true,
+  default: ({ value, onChange, id, label }: any) => (
+    <input data-testid={id || 'search-input'} placeholder={label} value={value || ''} onChange={(e) => onChange?.(e.target.value)} />
+  ),
+}));
+
 jest.mock('@shared/buttons/DownloadButton', () => ({
   __esModule: true,
   default: ({ onClick }: any) => (
@@ -405,6 +412,21 @@ describe('TriageRulesManager (integration)', () => {
 
     // rule-2 (custom, disabled) + sys-2 (system, override-disabled, enabled=true) = 2.
     await waitFor(() => expect(screen.getByTestId('total')).toHaveTextContent('2'));
+    expect(apiTriage.getTriageRules).not.toHaveBeenCalled();
+  });
+
+  it('filters rules client-side by name via the search field (case-insensitive, no refetch)', async () => {
+    render(<TriageRulesManager accountId='acc-1' />);
+    await waitFor(() => expect(screen.getByText('Suppress Dev Alerts')).toBeInTheDocument());
+    apiTriage.getTriageRules.mockClear();
+
+    fireEvent.change(screen.getByTestId('triage-rules-search'), { target: { value: 'critical' } });
+
+    // Only 'Classify Critical' matches; the other rules drop out of the list.
+    await waitFor(() => expect(screen.getByTestId('total')).toHaveTextContent('1'));
+    expect(screen.getByText('Classify Critical')).toBeInTheDocument();
+    expect(screen.queryByText('Suppress Dev Alerts')).not.toBeInTheDocument();
+    // Search is client-side: it never sends a request upstream.
     expect(apiTriage.getTriageRules).not.toHaveBeenCalled();
   });
 
