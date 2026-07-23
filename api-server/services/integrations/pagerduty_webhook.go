@@ -835,22 +835,26 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 	applyGCPMonitoringSubject(&parsedPayload)
 
 	// LLM fallback: if no subject found after deterministic parsing, use LLM
+	resolvedByLLM := false
 	if parsedPayload.EventSubjectName == "" {
 		tenantId := sc.GetSecurityContext().GetTenantId()
 		if tenant.IsFeatureEnabled(sc, tenantId, tenant.FEATURE_WEBHOOK_LLM_RESOLUTION) {
 			resolveSubjectUsingLLM(sc, &parsedPayload, accountId)
+			resolvedByLLM = parsedPayload.EventSubjectName != ""
 		} else {
 			parsedPayload.Investigation.Labels["nb_llm_match"] = "disabled"
 		}
 	}
 
-	// Auto-learn: save confirmed title → service mapping for future LLM prompts.
+	// Auto-learn: save confirmed title → service mapping for future LLM prompts
+	// Only LLM-resolved subjects are learned
 	// Skipped for Cloud Optimization subjects: their title is "Cloud Optimization -
 	// <rule_name>", identical for every resource the rule fires on, while the subject
 	// is per-resource. Learning it would make each incident overwrite the last one's
 	// mapping and teach the LLM that the rule name means whichever volume it saw most
 	// recently.
-	if parsedPayload.EventSubjectName != "" && parsedPayload.EventTitle != "" &&
+
+	if resolvedByLLM && parsedPayload.EventSubjectName != "" && parsedPayload.EventTitle != "" &&
 		parsedPayload.Investigation.Labels["nb_subject_match"] != cloudOptimizationSubjectMatch {
 		LearnSubjectMapping(sc, sc.GetSecurityContext().GetTenantId(), TenantAttrPagerDutyIncidentsKey, parsedPayload.EventTitle, parsedPayload.EventSubjectName)
 	}

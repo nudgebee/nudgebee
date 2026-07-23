@@ -413,11 +413,13 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	secCtx := sc.GetSecurityContext()
 
 	// LLM fallback: if no subject found after deterministic parsing, use LLM
+	resolvedByLLM := false
 	if parsedPayload.EventSubjectName == "" {
 		if secCtx == nil {
 			parsedPayload.Investigation.Labels["nb_llm_match"] = "disabled"
 		} else if tenant.IsFeatureEnabled(sc, secCtx.GetTenantId(), tenant.FEATURE_WEBHOOK_LLM_RESOLUTION) {
 			resolveZendutySubjectUsingLLM(sc, &parsedPayload, accountId)
+			resolvedByLLM = parsedPayload.EventSubjectName != ""
 		} else {
 			parsedPayload.Investigation.Labels["nb_llm_match"] = "disabled"
 		}
@@ -447,8 +449,11 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		}
 	}
 
-	// Auto-learn: save confirmed title → service mapping for future LLM prompts
-	if secCtx != nil && parsedPayload.EventSubjectName != "" && parsedPayload.EventTitle != "" {
+	// Auto-learn: save confirmed title → service mapping for future LLM prompts.
+	// Only LLM-resolved subjects are learned — a deterministic match already came
+	// from structured metadata, not the title's wording, so it isn't a genuine
+	// title→service pattern and would misleadingly bias future prompts.
+	if resolvedByLLM && secCtx != nil && parsedPayload.EventSubjectName != "" && parsedPayload.EventTitle != "" {
 		LearnSubjectMapping(sc, secCtx.GetTenantId(), TenantAttrZendutyIncidentsKey, parsedPayload.EventTitle, parsedPayload.EventSubjectName)
 	}
 

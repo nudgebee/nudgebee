@@ -43,9 +43,14 @@ func buildWorkloadLookupQuery(predicate string, namespaceScoped bool) string {
 // risks overwriting a correct subject with an unrelated workload whose name
 // happens to contain the candidate as a substring.
 //
+// EventSubjectOwner (e.g. the deployment/daemonset a bare pod subject was
+// resolved to) is tried next when set and distinct from EventSubjectName — a
+// pod name rarely matches k8s_workloads directly since that table stores
+// owning workloads, not individual pod instances.
+//
 // When labels["nb_workload_candidates"] is set (comma-separated list, e.g. the
-// dynatrace impacted-entity list), each entry is also tried after EventSubjectName
-// fails — first match wins. The label is consumed before persistence.
+// dynatrace impacted-entity list), each entry is also tried after the above
+// fail — first match wins. The label is consumed before persistence.
 //
 // When a webhook opts out via labels["nb_skip_workload_match"]="true" (e.g.
 // solarwinds title-as-subject events that would false-positive on ILIKE), the
@@ -62,8 +67,12 @@ func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook
 	}
 
 	candidates := []string{e.EventSubjectName}
+	seen := map[string]bool{e.EventSubjectName: true}
+	if e.EventSubjectOwner != "" && !seen[e.EventSubjectOwner] {
+		seen[e.EventSubjectOwner] = true
+		candidates = append(candidates, e.EventSubjectOwner)
+	}
 	if extra := e.Investigation.Labels[workloadCandidatesLabel]; extra != "" {
-		seen := map[string]bool{e.EventSubjectName: true}
 		for _, c := range strings.Split(extra, ",") {
 			c = strings.TrimSpace(c)
 			if c == "" || seen[c] {
