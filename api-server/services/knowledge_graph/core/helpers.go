@@ -590,6 +590,10 @@ var nodeTypeLogoMap = map[NodeType]string{
 	NodeTypeK8sSecret:          "k8ssecret",
 	NodeTypeConfigMap:          "configmap",
 	NodeTypeCRD:                "crd",
+	NodeTypeSourceControlOrg:   "sourcecontrolorg",
+	NodeTypeUserAccount:        "useraccount",
+	NodeTypeUserGroup:          "usergroup",
+	NodeTypeOnCallService:      "pagerduty",
 }
 
 // azureServiceLogoMap maps an Azure resource-provider type (the lowercased `service_name`
@@ -792,9 +796,29 @@ func engineLogoID(engine string) string {
 	return ""
 }
 
+// specificTypeLogoMap overrides nodeTypeLogoMap for concrete specific_types that need a
+// different icon than their NodeType's generic fallback — e.g. GitHubUser/GitHubOrganization
+// get the GitHub glyph, while other specific_types under the same NodeType (NudgebeeUser under
+// UserAccount) keep the generic icon from nodeTypeLogoMap.
+var specificTypeLogoMap = map[string]string{
+	"GitHubUser":         "github",
+	"GitHubOrganization": "github",
+	"GitLabUser":         "gitlab",
+	"GitLabOrganization": "gitlab",
+	"GitLabGroup":        "gitlab",
+	"PagerDutyUser":      "pagerduty",
+	"PagerDutyTeam":      "pagerduty",
+}
+
 // ComputeLogoID returns the icon identifier for a KG node so the frontend can render the correct logo.
 // source is the node's top-level source field (e.g. "aws", "gcp", "k8s", "trace") — not from properties.
-func ComputeLogoID(nodeType NodeType, source string, properties map[string]interface{}) string {
+func ComputeLogoID(nodeType NodeType, specificType string, source string, properties map[string]interface{}) string {
+	// 0. specific_type override — takes priority over every property-based heuristic below,
+	// since it's the most concrete signal available.
+	if logo, ok := specificTypeLogoMap[specificType]; ok {
+		return logo
+	}
+
 	// 1. Database/cache/queue engine — handles managed-DB strings ("POSTGRES_17",
 	// "aurora-postgresql") and in-cluster canonical engines ("redis", "valkey", "mongodb").
 	if engine := strings.ToLower(getNodeProp(properties, "engine")); engine != "" {
@@ -913,7 +937,7 @@ func ConvertDbNodeToKgNode(dbNode *DbNode) KgNode {
 		Properties:         properties,
 		Labels:             labels,
 		LastUpdated:        dbNode.UpdatedAt,
-		LogoID:             ComputeLogoID(dbNode.NodeType, dbNode.Source, properties),
+		LogoID:             ComputeLogoID(dbNode.NodeType, dbNode.SpecificType, dbNode.Source, properties),
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/database/models"
 	"nudgebee/services/security"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -111,6 +112,25 @@ type SourceBuildRequest struct {
 	TimeRange      *TimeRange
 	Filters        map[string]string
 	Region         string // Filter by AWS region
+}
+
+// TenantScopedSource is an additive interface for SourceCategoryIntegration sources
+// (e.g. github) that have no cloud_account_id of their own — the integration is
+// configured once per tenant, not per cloud account. BuildGraphs' Phase 1b calls
+// ListInstances to discover the tenant's configured instances of the integration,
+// then calls the embedded SourceInterface.BuildGraph once per instance, passing
+// the instance's ID as SourceBuildRequest.CloudAccountID (a dispatch/partition key
+// only — knowledge_graph_node/_edge.cloud_account_id has no FK to cloud_accounts).
+type TenantScopedSource interface {
+	SourceInterface
+	ListInstances(ctx *security.RequestContext, tenantID string) ([]IntegrationInstance, error)
+}
+
+// IntegrationInstance is one configured instance of a tenant-scoped integration
+// source (e.g. one connected GitHub org/account).
+type IntegrationInstance struct {
+	ID   string // the integrations.id row — used as CloudAccountID for KG rows
+	Name string // integration_config_name, for logging/metadata
 }
 
 // ExternalServiceEnricherInterface defines the interface for enriching external services
@@ -561,6 +581,9 @@ const (
 // getSourceCategory returns the category of a source
 func (s *Service) getSourceCategory(sourceName string) SourceCategory {
 	integrationSources := map[string]bool{
+		"github":    true,
+		"gitlab":    true,
+		"pagerduty": true,
 		// Add other integration sources here as they are implemented
 	}
 
@@ -581,10 +604,13 @@ func (s *Service) shouldIncrementSyncVersion(sources []string, flowSources []str
 
 	// Define static sources that should increment version
 	staticSources := map[string]bool{
-		"aws":   true,
-		"k8s":   true,
-		"azure": true,
-		"gcp":   true,
+		"aws":       true,
+		"k8s":       true,
+		"azure":     true,
+		"gcp":       true,
+		"github":    true,
+		"gitlab":    true,
+		"pagerduty": true,
 	}
 
 	// Check if any static source is present in sources list
@@ -857,6 +883,102 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 	}
 
 	response.AccountsProcessed = len(accounts)
+
+	// ========================================================================
+	// PHASE 1b: Build tenant-scoped integration graphs (GitHub)
+	// Unlike Phase 1 (per-cloud_account), these sources are configured once per
+	// tenant and have no cloud_account_id of their own. ListInstances discovers
+	// however many instances (e.g. connected GitHub orgs) the tenant has
+	// configured, and BuildGraph runs once per instance, keyed by the
+	// integration's own ID (used purely as a dispatch/partition key — see
+	// TenantScopedSource).
+	// ========================================================================
+	s.logger.Info("Phase 1b: Building tenant-scoped integration graphs")
+
+	for sourceName, source := range s.sources {
+		if s.getSourceCategory(sourceName) != SourceCategoryIntegration {
+			continue
+		}
+		if len(req.Sources) > 0 && !slices.Contains(req.Sources, sourceName) {
+			continue
+		}
+		if !source.IsEnabled() {
+			s.logger.Warn("integration source not enabled", "source", sourceName)
+			continue
+		}
+		tenantScoped, ok := source.(TenantScopedSource)
+		if !ok {
+			s.logger.Warn("integration source does not implement TenantScopedSource, skipping", "source", sourceName)
+			continue
+		}
+
+		instances, err := tenantScoped.ListInstances(ctx, req.TenantID)
+		if err != nil {
+			s.logger.Error("failed to list integration instances", "source", sourceName, "error", err)
+			continue
+		}
+
+		for _, instance := range instances {
+			instanceMetadata := AccountGraphMetadata{
+				AccountID:      instance.ID,
+				AccountName:    instance.Name,
+				CloudProvider:  sourceName, // e.g. "github" — tenant-scoped integrations have no cloud_provider
+				SourcesBuilt:   make([]string, 0),
+				BuildSucceeded: true,
+			}
+
+			sourceReq := &SourceBuildRequest{
+				TenantID:       req.TenantID,
+				CloudAccountID: instance.ID,
+				TimeRange:      req.TimeRange,
+				Filters:        req.Filters,
+			}
+
+			s.logger.Info("building graph from integration source",
+				"source", sourceName,
+				"instance_id", instance.ID,
+				"instance_name", instance.Name)
+			startTime := time.Now()
+
+			graph, err := source.BuildGraph(ctx, sourceReq)
+			if err != nil {
+				s.logger.Error("failed to build graph from integration source",
+					"source", sourceName,
+					"instance_id", instance.ID,
+					"error", err,
+					"duration", time.Since(startTime).Seconds())
+				instanceMetadata.BuildSucceeded = false
+				instanceMetadata.Error = fmt.Sprintf("source '%s': %v", sourceName, err)
+				response.AccountMetadata = append(response.AccountMetadata, instanceMetadata)
+				continue
+			}
+
+			unifiedGraph.Nodes = append(unifiedGraph.Nodes, graph.Nodes...)
+			unifiedGraph.Edges = append(unifiedGraph.Edges, graph.Edges...)
+
+			for _, node := range graph.Nodes {
+				node.CloudAccountID = instance.ID
+				node.TenantID = req.TenantID
+			}
+			for _, edge := range graph.Edges {
+				edge.CloudAccountID = instance.ID
+				edge.TenantID = req.TenantID
+			}
+
+			instanceMetadata.SourcesBuilt = append(instanceMetadata.SourcesBuilt, sourceName)
+			instanceMetadata.NodeCount = len(graph.Nodes)
+			instanceMetadata.EdgeCount = len(graph.Edges)
+			response.AccountMetadata = append(response.AccountMetadata, instanceMetadata)
+			response.AccountsProcessed++
+
+			s.logger.Info("successfully built graph from integration source",
+				"source", sourceName,
+				"instance_id", instance.ID,
+				"nodes", len(graph.Nodes),
+				"edges", len(graph.Edges),
+				"duration", time.Since(startTime).Seconds())
+		}
+	}
 
 	// ========================================================================
 	// PHASE 2.1: Cross-source enrichment (AWS LoadBalancer -> K8s)
@@ -2019,11 +2141,20 @@ func (s *Service) calculateMetadata(graph *Graph) Metadata {
 
 // queryAccountMappingsFromDB queries account ID -> account name mappings from the DB.
 // It does not touch the cache; callers are responsible for cache updates.
+//
+// UNIONs in the `integrations` rows of tenant-scoped integration sources (currently
+// github, gitlab, and pagerduty) so their pseudo-account IDs (see TenantScopedSource)
+// resolve to a readable name — e.g. the connected org's config name — instead of a raw
+// UUID in the frontend's account filter dropdown.
 func (s *Service) queryAccountMappingsFromDB(tenantID string) (map[string]string, error) {
 	query := `
-		SELECT id, account_name
+		SELECT id::text, account_name
 		FROM cloud_accounts
 		WHERE tenant = $1
+		UNION ALL
+		SELECT id::text, name
+		FROM integrations
+		WHERE tenant_id = $1 AND type IN ('github', 'gitlab', 'pagerduty') AND status != 'disabled'
 	`
 
 	rows, err := s.dbManager.Query(query, tenantID)

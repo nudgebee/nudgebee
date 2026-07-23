@@ -82,6 +82,16 @@ const (
 	NodeTypeHelmRelease   NodeType = "HelmRelease"   // Deployed Helm release
 	NodeTypeConfiguration NodeType = "Configuration" // Values.yaml or config files
 	NodeTypeRepository    NodeType = "Repository"    // Git repository
+
+	// Source control identity (cross-provider ontology — GitHub today, GitLab/Bitbucket
+	// or other SaaS people/teams later)
+	NodeTypeSourceControlOrg NodeType = "SourceControlOrg" // Org or personal account that owns repositories (e.g. GitHub org)
+	NodeTypeUserAccount      NodeType = "UserAccount"      // A human identity (e.g. GitHub user)
+	NodeTypeUserGroup        NodeType = "UserGroup"        // A group of user accounts (e.g. GitHub team)
+
+	// On-call / incident-response identity (cross-provider ontology — PagerDuty today,
+	// Opsgenie/VictorOps or other on-call SaaS later)
+	NodeTypeOnCallService NodeType = "OnCallService" // A pageable service/unit of on-call responsibility (e.g. PagerDuty service)
 )
 
 // NodeCategory represents the category of a node (infrastructure vs non-infrastructure)
@@ -102,6 +112,10 @@ var nodeCategoryMap = map[NodeType]NodeCategory{
 	NodeTypeRepository:         NodeCategoryNonInfrastructure,
 	NodeTypeJob:                NodeCategoryNonInfrastructure, // Batch workloads, run user code
 	NodeTypeCronJob:            NodeCategoryNonInfrastructure, // Scheduled workloads
+	NodeTypeSourceControlOrg:   NodeCategoryNonInfrastructure,
+	NodeTypeUserAccount:        NodeCategoryNonInfrastructure,
+	NodeTypeUserGroup:          NodeCategoryNonInfrastructure,
+	NodeTypeOnCallService:      NodeCategoryNonInfrastructure,
 
 	// Infrastructure - Data Layer
 	NodeTypeDatabase:     NodeCategoryInfrastructure,
@@ -189,6 +203,15 @@ func (nt NodeType) IsInfrastructure() bool {
 // origins (LoadBalancer with Cloudflare, Database with external managed services, Cache,
 // ComputeInstance, etc.) — those rows must remain protected when only a flow source
 // observes them.
+//
+// SourceControlOrg/UserAccount/UserGroup are included here for the same reason as the
+// k8s types: each emitting source (sources/github/, sources/gitlab/, sources/pagerduty/)
+// is authoritative for the rows it itself created — a repo/org/team/user no longer
+// returned by that source's sync should tombstone rather than linger; each source's own
+// nodes are scoped by (source, cloud_account_id), so this is safe even though multiple
+// sources share these NodeTypes. Repository is deliberately NOT authoritative here — it's
+// also inferred from k8s Helm CI annotations (sources/k8s/helm.go) with no cross-source
+// reconciliation yet, so tombstoning it on a single source's sync alone would be premature.
 var InfraAuthoritativeNodeTypes = map[NodeType]bool{
 	NodeTypeCronJob:           true,
 	NodeTypeJob:               true,
@@ -202,6 +225,10 @@ var InfraAuthoritativeNodeTypes = map[NodeType]bool{
 	NodeTypeCRD:               true,
 	NodeTypeConfigMap:         true, // k8s_source is authoritative; tombstone if not re-stamped
 	NodeTypeK8sSecret:         true, // k8s_source is authoritative; tombstone if not re-stamped
+	NodeTypeSourceControlOrg:  true, // github/gitlab sources are authoritative; tombstone if not re-stamped
+	NodeTypeUserAccount:       true, // github/gitlab/pagerduty sources are authoritative; tombstone if not re-stamped
+	NodeTypeUserGroup:         true, // github/gitlab/pagerduty sources are authoritative; tombstone if not re-stamped
+	NodeTypeOnCallService:     true, // pagerduty source is authoritative; tombstone if not re-stamped
 }
 
 // IsInfraAuthoritative reports whether static infra sources are the ground-truth oracle
@@ -234,6 +261,7 @@ const (
 	RelationshipRunsIn    RelationshipType = "RUNS_IN"    // Workload → Cluster/Namespace
 	RelationshipManages   RelationshipType = "MANAGES"    // Parent → Child resource (Deployment → Pod)
 	RelationshipOwns      RelationshipType = "OWNS"       // Owner → Owned resource
+	RelationshipMemberOf  RelationshipType = "MEMBER_OF"  // UserAccount/UserGroup → UserGroup/SourceControlOrg
 
 	// Configuration & Secrets
 	RelationshipUsesConfig         RelationshipType = "USES_CONFIG"          // Workload → ConfigMap
@@ -273,6 +301,7 @@ const (
 	RelationshipRunsAs      RelationshipType = "RUNS_AS"       // Compute resource (Lambda/EC2/ECS) uses this IAM identity
 	RelationshipAssumes     RelationshipType = "ASSUMES"       // ServiceIdentity can assume another ServiceIdentity (trust policy)
 	RelationshipHasAccessTo RelationshipType = "HAS_ACCESS_TO" // ServiceIdentity is IAM-granted access to a data resource (BigQuery/Storage/SecretVault/…)
+	RelationshipSameAs      RelationshipType = "SAME_AS"       // Per-integration identity (GitHubUser, GitLabUser, …) → canonical NudgebeeUser
 
 	// Deprecated - kept for reference (removed in favor of IS_ENCRYPTED_BY)
 	// RelationshipEncryptedBy RelationshipType = "ENCRYPTED_BY"

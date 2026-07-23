@@ -83,7 +83,33 @@ func TestComputeLogoID_Azure(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ComputeLogoID(tt.nodeType, tt.source, tt.properties); got != tt.want {
+			if got := ComputeLogoID(tt.nodeType, "", tt.source, tt.properties); got != tt.want {
+				t.Errorf("ComputeLogoID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestComputeLogoID_SpecificTypeOverride covers the specific_type override: GitHubUser and
+// GitHubOrganization share NodeTypeUserAccount/NodeTypeSourceControlOrg with other specific_types
+// (e.g. NudgebeeUser) that must NOT get the GitHub icon, so the override has to be keyed by
+// specific_type rather than the generic node-type fallback.
+func TestComputeLogoID_SpecificTypeOverride(t *testing.T) {
+	tests := []struct {
+		name         string
+		nodeType     NodeType
+		specificType string
+		want         string
+	}{
+		{"GitHubUser gets the GitHub icon", NodeTypeUserAccount, "GitHubUser", "github"},
+		{"GitHubOrganization gets the GitHub icon", NodeTypeSourceControlOrg, "GitHubOrganization", "github"},
+		{"NudgebeeUser falls back to the generic UserAccount icon", NodeTypeUserAccount, "NudgebeeUser", "useraccount"},
+		{"unspecified specific_type falls back to the generic UserAccount icon", NodeTypeUserAccount, "", "useraccount"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ComputeLogoID(tt.nodeType, tt.specificType, "github", map[string]interface{}{}); got != tt.want {
 				t.Errorf("ComputeLogoID() = %q, want %q", got, tt.want)
 			}
 		})
@@ -125,7 +151,7 @@ func TestComputeLogoID_NonAzureUnaffected(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ComputeLogoID(tt.nodeType, tt.source, tt.properties); got != tt.want {
+			if got := ComputeLogoID(tt.nodeType, "", tt.source, tt.properties); got != tt.want {
 				t.Errorf("ComputeLogoID() = %q, want %q", got, tt.want)
 			}
 		})

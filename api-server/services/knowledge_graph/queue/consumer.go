@@ -12,10 +12,13 @@ import (
 	"nudgebee/services/knowledge_graph/flow_sources"
 	kgmodels "nudgebee/services/knowledge_graph/models"
 	"nudgebee/services/knowledge_graph/sources"
-	_ "nudgebee/services/knowledge_graph/sources/aws"   // register AWS source factory (init side-effect)
-	_ "nudgebee/services/knowledge_graph/sources/azure" // register Azure source factory (init side-effect)
-	_ "nudgebee/services/knowledge_graph/sources/gcp"   // register GCP source factory (init side-effect)
-	_ "nudgebee/services/knowledge_graph/sources/k8s"   // register K8s source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/aws"       // register AWS source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/azure"     // register Azure source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/gcp"       // register GCP source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/github"    // register GitHub source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/gitlab"    // register GitLab source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/k8s"       // register K8s source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/pagerduty" // register PagerDuty source factory (init side-effect)
 	"nudgebee/services/security"
 )
 
