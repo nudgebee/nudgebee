@@ -27,7 +27,15 @@ import {
 import SafeIcon from '@shared/icons/SafeIcon';
 
 // --- CONFIGURATION ---
-const DISABLED_PROVIDERS = new Set(['SPLUNK', 'SPLUNK_OBSERVABILITY_PLATFORM', 'SPLUNK_WEBHOOK', 'GRAFANA-TEMPO', 'BITBUCKET', 'LAST9']);
+const DISABLED_PROVIDERS = new Set([
+  'SPLUNK',
+  'SPLUNK_OBSERVABILITY_PLATFORM',
+  'SPLUNK_WEBHOOK',
+  'GRAFANA-TEMPO',
+  'BITBUCKET',
+  'LAST9',
+  'OPENOBSERVE',
+]);
 // Constants moved to top level for better organization
 const PROVIDERS = {
   CLOUD: ['K8S', 'AWS', 'AZURE', 'GCP', 'CLOUDFOUNDRY'],
