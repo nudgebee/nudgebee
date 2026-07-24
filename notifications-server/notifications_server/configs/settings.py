@@ -597,6 +597,15 @@ class NotificationSettings(BaseSettings):
     channel_awareness_enabled: bool = Field(
         True, validation_alias=AliasChoices("CHANNEL_AWARENESS_ENABLED", "channel_awareness_enabled")
     )
+    # Per-channel ingest ceiling; 0 disables the check. Guards against a
+    # high-volume channel (an alerts feed) dominating retained storage.
+    channel_ingest_max_messages_per_hour: int = Field(
+        500,
+        validation_alias=AliasChoices("CHANNEL_INGEST_MAX_MESSAGES_PER_HOUR", "channel_ingest_max_messages_per_hour"),
+    )
+    channel_retention_sweep_minutes: int = Field(
+        60, validation_alias=AliasChoices("CHANNEL_RETENTION_SWEEP_MINUTES", "channel_retention_sweep_minutes")
+    )
     max_detailed_evidences: int = Field(
         3, validation_alias=AliasChoices("MAX_DETAILED_EVIDENCES", "max_detailed_evidences")
     )

@@ -379,6 +379,19 @@ class Cache:
             LOG.exception(f"Error checking watched channel {channel_id}: {e}")
             return None
 
+    def mark_event_seen(self, event_id, ttl_seconds=600):
+        """True the first time an event id is seen, False on Slack's retries.
+        Fails open (True) when Redis is unavailable — the storage layer upserts,
+        so a duplicate is harmless, whereas dropping a real message is not."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return True
+        try:
+            return bool(self.redis_client.set(f"channel_event:{event_id}", "1", nx=True, ex=ttl_seconds))
+        except redis.RedisError as e:
+            LOG.exception(f"Error deduping event {event_id}: {e}")
+            return True
+
     def rebuild_watched_channels(self, platform, team_id, channel_ids):
         """Reseed one workspace's mirror from the DB truth (e.g. after a flush)."""
         self._ensure_connection()

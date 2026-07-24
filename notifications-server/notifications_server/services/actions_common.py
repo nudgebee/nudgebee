@@ -15,6 +15,7 @@ from notifications_server.services.actions import (
     SkipAutoOptimizeParams,
     ApprovalParams,
 )
+from notifications_server.services.channel_ingest import ChannelIngestService
 from notifications_server.services.common import CommonService
 from notifications_server.services.events import Events
 from notifications_server.services.bot_messages import get_bot_joined_message
@@ -459,8 +460,21 @@ class SlackEventsService(SlackActionsBaseService):
         elif event_type == "member_joined_channel":
             self._handle_member_joined_channel(event, team_id, channel_id)
 
+        elif event_type == "message":
+            self._handle_channel_message(event, team_id, event_id)
+
         else:
             LOG.warning(f"[SlackEventsService] Unsupported event type: {event_type}")
+
+    def _handle_channel_message(self, event, team_id, event_id):
+        """Passive retention for watched channels. Slack delivers every message in
+        every channel the bot is in, so this must stay cheap for the overwhelming
+        majority that are dropped — no Slack API calls, no user resolution.
+
+        Retaining a message never triggers Nubi; only an explicit mention does.
+        """
+        with ChannelIngestService(engine=self.engine) as ingest:
+            ingest.handle_message_event(event, team_id, event_id)
 
     def _handle_app_mention(self, event, team_id, event_id, event_context, channel_id):
         slack_user_id = event.get("user")
