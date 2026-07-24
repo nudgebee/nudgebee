@@ -1,10 +1,10 @@
 import logging
-from typing import List, Optional
+from typing import Dict, Iterable, List, Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from notifications_server.models.models import MessagingChannelWatch
+from notifications_server.models.models import MessagingChannelWatch, User
 from notifications_server.utils.datetime_utils import utc_now
 
 LOG = logging.getLogger(__name__)
@@ -121,6 +121,27 @@ def disable_channel_watch(
         session.rollback()
         LOG.error("Failed to disable channel watch %s for tenant %s: %s", channel_id, tenant_id, e)
         return None
+
+
+def get_display_names(session: Session, user_ids: Iterable[Optional[str]]) -> Dict[str, str]:
+    """Best-effort user-id -> display_name map; missing/unresolvable ids are omitted."""
+    ids = []
+    for user_id in user_ids or []:
+        if isinstance(user_id, UUID):
+            ids.append(user_id)
+        elif isinstance(user_id, str) and user_id:
+            try:
+                ids.append(UUID(user_id))
+            except ValueError:
+                continue
+    if not ids:
+        return {}
+    try:
+        rows = session.query(User.id, User.display_name).filter(User.id.in_(ids)).all()
+        return {str(row[0]): row[1] for row in rows if row[1]}
+    except Exception as e:
+        LOG.error("Failed to resolve watcher display names: %s", e)
+        return {}
 
 
 def list_enabled_channel_ids(session: Session, *, platform: str, team_id: str) -> List[str]:

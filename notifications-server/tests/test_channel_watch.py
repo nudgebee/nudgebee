@@ -231,16 +231,28 @@ def test_list_watchable_merges_watch_state(monkeypatch, svc, fake_cache):
         cw.channel_watch_repository,
         "list_channel_watches",
         lambda session, tenant_id: [
-            {"team_id": "T1", "channel_id": "C1", "platform": "slack", "enabled": True, "retention_days": 30}
+            {
+                "team_id": "T1",
+                "channel_id": "C1",
+                "platform": "slack",
+                "enabled": True,
+                "retention_days": 30,
+                "created_by": "u1",
+                "updated_at": "2026-07-24T10:12:00",
+            }
         ],
     )
+    monkeypatch.setattr(cw.channel_watch_repository, "get_display_names", lambda session, ids: {"u1": "Dana"})
 
     result = svc.list_watchable_channels("t1")
 
     by_id = {c["id"]: c for c in result["data"]}
     assert by_id["C1"]["watched"] is True
     assert by_id["C1"]["retention_days"] == 30
+    assert by_id["C1"]["watched_since"] == "2026-07-24T10:12:00"
+    assert by_id["C1"]["watched_by"] == "Dana"
     assert by_id["C2"]["watched"] is False
+    assert by_id["C2"]["watched_since"] is None
     assert result["team_id"] == "T1"
     assert result["partial"] is False
 

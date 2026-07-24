@@ -91,6 +91,7 @@ class ChannelWatchService:
         if watches is None:
             return {"error": {"message": "Unable to load channel watch state"}}
         watch_map = {(w["team_id"], w["channel_id"]): w for w in watches if w["platform"] == platform}
+        watcher_names = channel_watch_repository.get_display_names(self.session, [w.get("created_by") for w in watches])
 
         channels = []
         next_cursor = None
@@ -109,14 +110,19 @@ class ChannelWatchService:
 
             for channel in response.get("channels", []):
                 watch = watch_map.get((installation.team_id, channel["id"]))
+                is_watched = bool(watch and watch["enabled"])
                 channels.append(
                     {
                         "id": channel["id"],
                         "name": channel["name"],
                         "is_private": channel.get("is_private", False),
                         "is_member": channel.get("is_member", False),
-                        "watched": bool(watch and watch["enabled"]),
+                        "watched": is_watched,
                         "retention_days": watch["retention_days"] if watch else None,
+                        # updated_at reflects the most recent (re-)enable, unlike
+                        # created_at which keeps the first consent ever given.
+                        "watched_since": watch["updated_at"] if is_watched else None,
+                        "watched_by": watcher_names.get(watch["created_by"]) if is_watched else None,
                     }
                 )
 

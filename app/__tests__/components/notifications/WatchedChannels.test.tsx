@@ -31,6 +31,11 @@ jest.mock('@shared/format/Text', () => ({
   default: ({ value }: any) => <span>{value}</span>,
 }));
 
+jest.mock('@shared/format/Datetime', () => ({
+  __esModule: true,
+  default: ({ value }: any) => <span data-testid='datetime'>{value || '—'}</span>,
+}));
+
 jest.mock('@ui/Button', () => ({
   Button: ({ children, onClick, id, disabled, loading }: any) => (
     <button data-testid={id || `btn-${children}`} onClick={onClick} disabled={disabled || loading}>
@@ -49,6 +54,32 @@ jest.mock('@ui/Switch', () => ({
       onChange={(event) => onChange?.(event, event.target.checked)}
     />
   ),
+}));
+
+jest.mock('@ui/Checkbox', () => ({
+  Checkbox: ({ checked, onChange, disabled, label, description }: any) => (
+    <label>
+      <input
+        type='checkbox'
+        data-testid={`pick-${label}`}
+        checked={!!checked}
+        disabled={!!disabled}
+        onChange={(event) => onChange?.(event.target.checked)}
+      />
+      {label}
+      {description ? <span>{description}</span> : null}
+    </label>
+  ),
+}));
+
+jest.mock('@ui/Modal', () => ({
+  Modal: ({ open, title, children, actionButtons }: any) =>
+    open ? (
+      <div data-testid={`modal-${title}`}>
+        {children}
+        {actionButtons}
+      </div>
+    ) : null,
 }));
 
 jest.mock('@ui/Banner', () => ({
@@ -76,17 +107,21 @@ jest.mock('@ui/ListingLayout', () => {
 
 jest.mock('@shared/tables/CustomTable', () => ({
   __esModule: true,
-  default: ({ tableData, loading }: any) => (
+  default: ({ tableData, loading, emptyHeading }: any) => (
     <div data-testid='watched-table'>
-      {loading
-        ? 'loading'
-        : (tableData || []).map((row: any[], i: number) => (
-            <div key={i} data-testid='watched-row'>
-              {row.map((cell: any, j: number) => (
-                <span key={j}>{cell.component}</span>
-              ))}
-            </div>
-          ))}
+      {loading ? (
+        'loading'
+      ) : tableData?.length ? (
+        tableData.map((row: any[], i: number) => (
+          <div key={i} data-testid='watched-row'>
+            {row.map((cell: any, j: number) => (
+              <span key={j}>{cell.component}</span>
+            ))}
+          </div>
+        ))
+      ) : (
+        <div>{emptyHeading}</div>
+      )}
     </div>
   ),
 }));
@@ -100,14 +135,52 @@ const disableMock = apiNotifications.disableChannelWatch as jest.Mock;
 
 const CHANNELS = {
   data: [
-    { id: 'C1', name: 'incidents', is_private: false, is_member: true, watched: true, retention_days: 30 },
-    { id: 'C2', name: 'random', is_private: false, is_member: false, watched: false, retention_days: null },
+    {
+      id: 'C1',
+      name: 'incidents',
+      is_private: false,
+      is_member: true,
+      watched: true,
+      retention_days: 30,
+      watched_since: '2026-07-24T10:12:00',
+      watched_by: 'Dana',
+    },
+    {
+      id: 'C2',
+      name: 'random',
+      is_private: false,
+      is_member: false,
+      watched: false,
+      retention_days: null,
+      watched_since: null,
+      watched_by: null,
+    },
+    {
+      id: 'C3',
+      name: 'secret',
+      is_private: true,
+      is_member: false,
+      watched: false,
+      retention_days: null,
+      watched_since: null,
+      watched_by: null,
+    },
+    {
+      id: 'C4',
+      name: 'deploys',
+      is_private: false,
+      is_member: true,
+      watched: false,
+      retention_days: null,
+      watched_since: null,
+      watched_by: null,
+    },
   ],
   team_id: 'T1',
   partial: false,
 };
 
-describe('WatchedChannels', () => {
+describe('WatchedChannels (watched-first)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockHasWriteAccess.mockReturnValue(true);
@@ -123,48 +196,93 @@ describe('WatchedChannels', () => {
     expect(listMock).not.toHaveBeenCalled();
   });
 
-  it('lists channels with their watch state when enabled', async () => {
+  it('lists only watched channels, with consent metadata', async () => {
     render(<WatchedChannels provider='slack' isConfigured={true} />);
     await waitFor(() => expect(listMock).toHaveBeenCalledWith('slack'));
     expect(await screen.findByText('#incidents')).toBeInTheDocument();
-    expect(screen.getByText('#random')).toBeInTheDocument();
-    const switches = screen.getAllByTestId('watch-switch');
-    expect(switches[0]).toBeChecked();
-    expect(switches[1]).not.toBeChecked();
+    expect(screen.getByText(/by Dana/)).toBeInTheDocument();
+    expect(screen.getByText('30d')).toBeInTheDocument();
+    expect(screen.queryAllByTestId('watched-row')).toHaveLength(1);
+    expect(screen.queryByTestId('modal-Watch channels')).not.toBeInTheDocument();
   });
 
-  it('enables watching through the API and reflects the new state', async () => {
+  it('shows the empty state when nothing is watched', async () => {
+    listMock.mockResolvedValue({ ...CHANNELS, data: CHANNELS.data.map((c) => ({ ...c, watched: false })) });
+    render(<WatchedChannels provider='slack' isConfigured={true} />);
+    expect(await screen.findByText('No channels watched yet')).toBeInTheDocument();
+  });
+
+  it('opens the picker listing only unwatched channels, disabling uninvited private ones', async () => {
+    render(<WatchedChannels provider='slack' isConfigured={true} />);
+    await screen.findByText('#incidents');
+
+    fireEvent.click(screen.getByTestId('watch-channels-btn'));
+
+    expect(screen.getByTestId('modal-Watch channels')).toBeInTheDocument();
+    expect(screen.getByTestId('pick-#random')).toBeInTheDocument();
+    expect(screen.queryByTestId('pick-#incidents')).not.toBeInTheDocument();
+    expect(screen.getByTestId('pick-#secret')).toBeDisabled();
+    expect(screen.getByText('Private — invite @Nubi in Slack first')).toBeInTheDocument();
+  });
+
+  it('watches the selected channels and reloads the list', async () => {
     enableMock.mockResolvedValue({ data: { channel_id: 'C2', enabled: true } });
     render(<WatchedChannels provider='slack' isConfigured={true} />);
-    await screen.findByText('#random');
+    await screen.findByText('#incidents');
 
-    fireEvent.click(screen.getAllByTestId('watch-switch')[1]);
+    fireEvent.click(screen.getByTestId('watch-channels-btn'));
+    fireEvent.click(screen.getByTestId('pick-#random'));
+    fireEvent.click(screen.getByTestId('picker-watch-btn'));
 
     await waitFor(() => expect(enableMock).toHaveBeenCalledWith({ platform: 'slack', channelId: 'C2', teamId: 'T1', channelName: 'random' }));
     await waitFor(() => expect(mockToast.success).toHaveBeenCalled());
-    expect(screen.getAllByTestId('watch-switch')[1]).toBeChecked();
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId('modal-Watch channels')).not.toBeInTheDocument();
   });
 
-  it('surfaces the server error message when enabling fails', async () => {
-    enableMock.mockResolvedValue({ error: { message: 'Invite @Nubi in Slack first, then try again.' } });
+  it('keeps the picker open and reports the channel when enabling fails', async () => {
+    enableMock.mockResolvedValue({ error: { message: 'Slack rejected the request: is_archived' } });
     render(<WatchedChannels provider='slack' isConfigured={true} />);
-    await screen.findByText('#random');
+    await screen.findByText('#incidents');
 
-    fireEvent.click(screen.getAllByTestId('watch-switch')[1]);
+    fireEvent.click(screen.getByTestId('watch-channels-btn'));
+    fireEvent.click(screen.getByTestId('pick-#random'));
+    fireEvent.click(screen.getByTestId('picker-watch-btn'));
 
-    await waitFor(() => expect(mockToast.error).toHaveBeenCalledWith('Invite @Nubi in Slack first, then try again.'));
-    expect(screen.getAllByTestId('watch-switch')[1]).not.toBeChecked();
+    await waitFor(() => expect(mockToast.error).toHaveBeenCalledWith('#random: Slack rejected the request: is_archived'));
+    expect(screen.getByTestId('modal-Watch channels')).toBeInTheDocument();
+    expect(listMock).toHaveBeenCalledTimes(1);
   });
 
-  it('disables watching through the API', async () => {
+  it('keeps only failed channels selected on a mixed batch', async () => {
+    enableMock.mockImplementation(({ channelId }: any) =>
+      Promise.resolve(channelId === 'C2' ? { data: { channel_id: 'C2', enabled: true } } : { error: { message: 'is_archived' } })
+    );
+    render(<WatchedChannels provider='slack' isConfigured={true} />);
+    await screen.findByText('#incidents');
+
+    fireEvent.click(screen.getByTestId('watch-channels-btn'));
+    fireEvent.click(screen.getByTestId('pick-#random'));
+    fireEvent.click(screen.getByTestId('pick-#deploys'));
+    fireEvent.click(screen.getByTestId('picker-watch-btn'));
+
+    await waitFor(() => expect(mockToast.error).toHaveBeenCalledWith('#deploys: is_archived'));
+    await waitFor(() => expect(mockToast.success).toHaveBeenCalled());
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId('modal-Watch channels')).toBeInTheDocument();
+    expect(screen.getByTestId('pick-#deploys')).toBeChecked();
+    expect(screen.getByTestId('pick-#random')).not.toBeChecked();
+  });
+
+  it('stops watching from the row switch', async () => {
     disableMock.mockResolvedValue({ data: { channel_id: 'C1', enabled: false } });
     render(<WatchedChannels provider='slack' isConfigured={true} />);
     await screen.findByText('#incidents');
 
-    fireEvent.click(screen.getAllByTestId('watch-switch')[0]);
+    fireEvent.click(screen.getByTestId('watch-switch'));
 
     await waitFor(() => expect(disableMock).toHaveBeenCalledWith({ platform: 'slack', channelId: 'C1', teamId: 'T1' }));
-    expect(screen.getAllByTestId('watch-switch')[0]).not.toBeChecked();
+    await waitFor(() => expect(screen.queryByText('#incidents')).not.toBeInTheDocument());
   });
 
   it('shows the warning banner when the listing is partial', async () => {
@@ -172,6 +290,5 @@ describe('WatchedChannels', () => {
     render(<WatchedChannels provider='slack' isConfigured={true} />);
     await screen.findByText('#incidents');
     expect(screen.getByTestId('banner-warning')).toBeInTheDocument();
-    expect(screen.queryByTestId('banner-info')).not.toBeInTheDocument();
   });
 });
