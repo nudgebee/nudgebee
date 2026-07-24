@@ -75,8 +75,8 @@ func TestModelSupportsTemperature(t *testing.T) {
 		{"azure o3-mini", "azure", "o3-mini", false},
 		{"azure gpt-5", "azure", "gpt-5", false},
 		{"azure gpt-4o", "azure", "gpt-4o", true},
-		{"custom o1", ProviderCustom, "o1", false},
-		{"custom gpt-4o", ProviderCustom, "gpt-4o", true},
+		{"custom o1", "custom", "o1", false},
+		{"custom gpt-4o", "custom", "gpt-4o", true},
 
 		// Bedrock models
 		{"bedrock claude-sonnet-5", "bedrock", "anthropic.claude-sonnet-5", false},

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1475,6 +1476,49 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 	return eventAnalsysisPrompt, accountPrompt, debugAnalysisEnabled, debugAnalysisSkipReason, runbookRef, err
 }
 
+// saveEventRunbookReference persists the runbook resolved for this event as a
+// knowledge_base conversation reference, so it appears in the Additional
+// Contexts panel alongside every other context source — not only as a prose
+// footer inside the analysis text. Keyed to the investigation's message, so a
+// regenerate writes its own row and a re-served analysis writes none.
+// Best-effort: a failed insert must not fail the analysis.
+func saveEventRunbookReference(ctx *security.RequestContext, accountId string, resp core.NBAgentResponse, ref *tools.RunbookRef) {
+	if ref == nil || resp.ConversationId == "" {
+		return
+	}
+	url := strings.TrimSpace(ref.URL)
+	if url == "" {
+		return
+	}
+	title := strings.TrimSpace(ref.Title)
+	if title == "" {
+		title = url
+	}
+	metadata := map[string]any{
+		"name":    title,
+		"subject": title,
+		"url":     url,
+		"source":  ref.Source,
+		"via":     "event_runbook",
+	}
+	// Snippet of the fetched runbook body so the Additional Contexts row shows
+	// what was actually injected — there is no llm_knowledgebases row to pull
+	// content from for a fetched page.
+	if snippet := strings.TrimSpace(ref.Text); snippet != "" {
+		metadata["content"] = core.TruncateHead(snippet, 700)
+	}
+	err := core.GetConversationDao().SaveAgentReferences(accountId, resp.ConversationId, resp.MessageId, resp.AgentId, []core.AgentReference{{
+		Type: core.AgentReferenceTypeKB,
+		// The runbook is a fetched page, not an llm_knowledgebases row — use a
+		// stable URL-derived id so repeated saves of the same runbook dedupe.
+		ReferenceID: fmt.Sprintf("runbook:%x", sha256.Sum256([]byte(url))),
+		Metadata:    metadata,
+	}})
+	if err != nil {
+		ctx.GetLogger().Warn("analyzer: unable to save runbook reference", "error", err, "conversation_id", resp.ConversationId)
+	}
+}
+
 // appendRunbookReference adds a deterministic, clickable citation for the
 // resolved runbook to the synthesized analysis, so the source stays visible in
 // the UI even when the model doesn't echo it in its own output. No-op when no
@@ -1752,6 +1796,10 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			} else if len(rootcauseAnalysis.Response) > 0 && rootcauseAnalysis.Status == core.ConversationStatusCompleted {
 				investigationResponse = rootcauseAnalysis.Response[0]
 				hasInvestigation = true
+				// Attach the resolved runbook to the investigation conversation
+				// as a context reference (Additional Contexts panel), mirroring
+				// the prose footer appendRunbookReference adds to the text.
+				saveEventRunbookReference(ctx, request.AccountId, rootcauseAnalysis, runbookRef)
 			}
 		}
 

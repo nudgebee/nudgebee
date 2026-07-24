@@ -9305,6 +9305,7 @@ type AIReferenceResponse {
   reference_id: String
   type: String
   content: String
+  metadata: Json
   used: Boolean
   used_by_agent: String
   created_at: timestamp

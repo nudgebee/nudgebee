@@ -1590,6 +1590,7 @@ const api = {
           reference_id
           type
           content
+          metadata
           used
           used_by_agent
           created_at

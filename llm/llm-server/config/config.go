@@ -218,6 +218,11 @@ type appConfig struct {
 	// skill-lists menu) in the human message instead of the cacheable system
 	// prefix. Off keeps the legacy in-prompt <skill-lists> + lazy load_skills flow.
 	LlmServerKBPrestepEnabled bool `mapstructure:"llm_server_kb_prestep_enabled"`
+	// LlmServerKBPrestepTimeoutSeconds bounds the pre-step's RAG call. The
+	// default is sized for the reranked search (embed + query + one LLM rerank
+	// call); the pre-step fails open on timeout, so setting this too low turns
+	// reranking into silent knowledge loss. Values <= 0 fall back to the default.
+	LlmServerKBPrestepTimeoutSeconds int `mapstructure:"llm_server_kb_prestep_timeout_seconds"`
 	// LlmServerSkillDelegationPropagationEnabled, when on, propagates a delegating
 	// agent's skill scope (its own name + the question-aware SelectedSkillIds) to the
 	// sub-agents it delegates to. Skills are agent-scoped, so a runbook mapped to an
@@ -823,6 +828,7 @@ func init() {
 	viper.SetDefault("llm_server_max_skill_content_length", 5000)
 	viper.SetDefault("llm_server_integration_kb_enabled", true)
 	viper.SetDefault("llm_server_kb_prestep_enabled", false)
+	viper.SetDefault("llm_server_kb_prestep_timeout_seconds", 12)
 	viper.SetDefault("llm_server_skill_delegation_propagation_enabled", false)
 	// Bootstrap: only `think` gets schema-authoritative treatment (renderer +
 	// validator). Other tools stay text-description-only until their schema
