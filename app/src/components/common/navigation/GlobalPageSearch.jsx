@@ -35,6 +35,7 @@ import AdminIconBlue from '@assets/header/AdminIconBlue.icon.svg';
 import OptimiseIconBlue from '@assets/header/OptimiseIconBlue.icon.svg';
 import TicketIconBlue from '@assets/header/TicketIconBlue.icon.svg';
 import TroubleshootIconBlue from '@assets/header/TroubleshootIconBlue.icon.svg';
+import { AutomateBlue } from '@assets';
 import {
   navSearchPages,
   k8sDetailsSearchFragments,
@@ -60,6 +61,7 @@ const POPOVER_WIDTH = ds.space.mul(0, 340);
 // main nav uses for these sections), not a distinct icon per tab.
 const NAV_SEARCH_GROUP_ICON = {
   Troubleshoot: TroubleshootIconBlue,
+  Automation: AutomateBlue,
   Optimize: OptimiseIconBlue,
   Tickets: TicketIconBlue,
   Admin: AdminIconBlue,
@@ -717,15 +719,30 @@ export default function GlobalPageSearch() {
   // user who can't see that nav entry shouldn't find its pages (Users,
   // Groups, Audits, Notifications, Integrations, Ownership) via search either.
   const canAccessAdmin = hasReadAccess();
+  // Same gate the Automation page's own Task Runner tab uses (automation/index.jsx's
+  // isAdmin) — only tenant_admin/account_admin can see that tab there, so a
+  // non-admin shouldn't be able to jump to it via search either.
+  const canAccessTaskRunner = !!(data?.roles?.includes('tenant_admin') || data?.roles?.includes('account_admin'));
+
+  // Whether a static nav-search row should be visible to the current user —
+  // shared by the live result list below and resolveRecentOption further
+  // down, so a role gate only has to be expressed once.
+  const isNavSearchItemVisible = useCallback(
+    (opt) => {
+      if (opt.group === 'Admin' && !canAccessAdmin) {
+        return false;
+      }
+      if (opt.label === 'Task Runner' && !canAccessTaskRunner) {
+        return false;
+      }
+      return true;
+    },
+    [canAccessAdmin, canAccessTaskRunner]
+  );
+
   const navSearchItems = useMemo(
-    () => [
-      ...navSearchStaticItems.filter((opt) => opt.group !== 'Admin' || canAccessAdmin),
-      ...k8sNavItems,
-      ...awsNavItems,
-      ...azureNavItems,
-      ...gcpNavItems,
-    ],
-    [k8sNavItems, awsNavItems, azureNavItems, gcpNavItems, canAccessAdmin]
+    () => [...navSearchStaticItems.filter(isNavSearchItemVisible), ...k8sNavItems, ...awsNavItems, ...azureNavItems, ...gcpNavItems],
+    [isNavSearchItemVisible, k8sNavItems, awsNavItems, azureNavItems, gcpNavItems]
   );
 
   // Re-resolves one recent value into a full display option. A static page's
@@ -742,7 +759,7 @@ export default function GlobalPageSearch() {
     (value) => {
       const staticMatch = navSearchStaticItems.find((opt) => opt.value === value);
       if (staticMatch) {
-        return staticMatch.group !== 'Admin' || canAccessAdmin ? staticMatch : null;
+        return isNavSearchItemVisible(staticMatch) ? staticMatch : null;
       }
       const match = ACCOUNT_SCOPED_SEARCH_PATH_RE.exec(value);
       if (!match) {
@@ -759,7 +776,7 @@ export default function GlobalPageSearch() {
       }
       return navSearchProviderItems(config.fragments, config.label, accountId, config.basePath).find((opt) => opt.value === value);
     },
-    [allCluster, canAccessAdmin]
+    [allCluster, isNavSearchItemVisible]
   );
 
   // Two lists under one plain caption each (opt.sectionLabel): recent picks
@@ -1088,12 +1105,7 @@ export default function GlobalPageSearch() {
     // Overrides the MuiPopover-paper's JS-computed inline top/left —
     // disablePortal keeps the paper in this subtree, so the selector reaches
     // it — with !important, since author !important beats both inline
-    // styles and the component's own transform/slide-in keyframes. The
-    // pop-in keyframe bakes the centering translate into its own start/end
-    // values (rather than a separate static transform) so
-    // `animation ... forwards` is the single source of truth for `transform`
-    // post-animation — exit then falls through to GlobalSearchPopoverTransition's
-    // own opacity fade (see its definition above), same as Modal's exit.
+    // styles and the component's own transform/slide-in keyframes.
     // Backdrop mirrors Modal's default dim color (MUI Backdrop's own
     // rgba(0,0,0,0.5)) and its opacity-transition timing.
     <Box
@@ -1110,9 +1122,21 @@ export default function GlobalPageSearch() {
           position: 'fixed !important',
           top: `${ds.space.mul(0, 60)} !important`,
           left: '50% !important',
+          // Static resting transform, matching the keyframe's own 100% value
+          // — kept OUTSIDE the animation (see `forwards` note below) so it's
+          // still in effect once the animation ends.
+          transform: 'translate(-50%, 0)',
           margin: 0,
           padding: ds.space[4],
-          animation: 'globalSearchPopoverPopIn 360ms cubic-bezier(0.22, 1, 0.36, 1) forwards !important',
+          // No `forwards`: an animation held via fill-mode: forwards keeps
+          // its GPU compositing layer pinned indefinitely after it finishes,
+          // which left Chrome occasionally failing to repaint this element's
+          // screen region once it was actually removed from the DOM on
+          // close — a stale "ghost" frame of the popover stayed visible
+          // until something else forced a repaint (e.g. typing). The base
+          // `transform` above already matches the animation's end state, so
+          // dropping `forwards` doesn't cause a visible snap once it ends.
+          animation: 'globalSearchPopoverPopIn 360ms cubic-bezier(0.22, 1, 0.36, 1) !important',
         },
         '@keyframes globalSearchPopoverPopIn': {
           '0%': { transform: 'translate(-50%, 0) translateY(20px) scale(0.96)', opacity: 0 },

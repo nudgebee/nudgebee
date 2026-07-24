@@ -107,6 +107,9 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Troubleshoot', label: 'Manual Investigated', path: '/troubleshoot#investigations/manual-investigated' },
   { group: 'Troubleshoot', label: 'Knowledge Graph', path: '/troubleshoot#kg' },
 
+  { group: 'Automation', label: 'Automations', path: '/automation#automations' },
+  { group: 'Automation', label: 'Task Runner', path: '/automation#task-runner' },
+
   { group: 'Optimize', label: 'Optimize Summary', path: '/optimise#summary' },
   { group: 'Optimize', label: 'Optimize Recommendations', path: '/optimise#recommendations' },
   { group: 'Optimize', label: 'Optimize Resolutions', path: '/optimise#resolutions' },
