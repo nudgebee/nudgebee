@@ -470,7 +470,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		// Handle user conversation question to add context to the original question
 		if agent == nil {
-			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithIsNewConversation(isNewConversation))
+			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithConfig(request.Config))
 			if err != nil {
 				logger.Error("api: error getting router chain", "error", err)
 				c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
@@ -847,7 +847,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		// Handle user conversation question to add context to the original question
 		if agent == nil {
-			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source))
+			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConfig(request.Config))
 			if err != nil {
 				logger.Error("api: error getting router chain", "error", err)
 				c.JSON(500, buildApiResponse(nil, []error{

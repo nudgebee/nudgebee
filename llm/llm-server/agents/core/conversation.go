@@ -341,6 +341,20 @@ func IsNewConversationRequest(configs ...ConversationSessionRequestConfig) bool 
 	return cfg.isNewConversation
 }
 
+// QueryConfigFromRequests extracts the NBQueryConfig from a list of
+// ConversationSessionRequestConfig options. Mirrors IsNewConversationRequest —
+// used by callers (e.g. the router) that need to see per-request signals
+// (k8s_orchestrator_mode, tool_configs, capabilities…) before the agent is
+// picked, not only after HandleConversationSessionRequest carries the config
+// to the executor.
+func QueryConfigFromRequests(configs ...ConversationSessionRequestConfig) toolcore.NBQueryConfig {
+	cfg := additionalConversationSessionRequestConfig{}
+	for _, c := range configs {
+		c.apply(&cfg)
+	}
+	return cfg.config
+}
+
 type sessionRequestWithClientTools struct {
 	clientTools []toolcore.NBToolCommand
 }
