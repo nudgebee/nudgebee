@@ -6251,6 +6251,7 @@ type EventGroupingsRowResponse {
   latest_computed_priority: String
   latest_nb_status: String
   latest_title: String
+  latest_snoozed_until: Datetime
   nb_status: String
   nb_status_changed_at: Datetime
   nb_status_changed_by: String

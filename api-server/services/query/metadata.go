@@ -1270,6 +1270,11 @@ var table_metadata = map[string]TableDefinition{
 				Def:          "(array_agg(title ORDER BY events.created_at DESC))[1]",
 				IsAggregated: true,
 			},
+			"latest_snoozed_until": {
+				Type:         ColumnDefinitionTypeDatetime,
+				Def:          "(array_agg(events.snoozed_until ORDER BY events.created_at DESC))[1]",
+				IsAggregated: true,
+			},
 			"max_created_at": {
 				Type:         ColumnDefinitionTypeDatetime,
 				Def:          "max(events.created_at)",

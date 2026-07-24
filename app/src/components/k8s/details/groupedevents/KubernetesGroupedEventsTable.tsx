@@ -227,7 +227,7 @@ const transformTableData = (
               onCreateTicket={() => onCreateTicket?.(item)}
               disabled={!canWrite}
               disableSnoozeTooltip
-              tooltipTitle={getTriageStatusTooltip(item.latest_nb_status)}
+              tooltipTitle={getTriageStatusTooltip(item.latest_nb_status, item.latest_snoozed_until)}
             />
           ),
         },
@@ -315,7 +315,7 @@ const transformTableData = (
         { component: <Text value={item.count_aggregation_key ?? '-'} /> },
         {
           component: (
-            <Tooltip variant='default' title={getTriageStatusTooltip(item.latest_nb_status)} placement='top'>
+            <Tooltip variant='default' title={getTriageStatusTooltip(item.latest_nb_status, item.latest_snoozed_until)} placement='top'>
               <Box>
                 <Label margin='auto' text={appNbStatus.label} variant={appNbStatus.variant} />
               </Box>
@@ -354,7 +354,7 @@ const transformTableData = (
       { component: <Text value={item.count_subject_name ?? '-'} /> },
       {
         component: (
-          <Tooltip variant='default' title={getTriageStatusTooltip(item.latest_nb_status)} placement='top'>
+          <Tooltip variant='default' title={getTriageStatusTooltip(item.latest_nb_status, item.latest_snoozed_until)} placement='top'>
             <Box>
               <Label margin='auto' text={eventTypeNbStatus.label} variant={eventTypeNbStatus.variant} />
             </Box>
@@ -810,6 +810,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
         'latest_score_factors',
         'latest_computed_score',
         'latest_nb_status',
+        'latest_snoozed_until',
         'latest_title',
         'is_new_issue',
         'fingerprint_first_seen_at',
@@ -827,6 +828,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
         'distinct_status',
         'account_id',
         'latest_nb_status',
+        'latest_snoozed_until',
         'latest_computed_score',
       ];
       groupCols = ['tenant_id', 'account_id', 'subject_name', 'subject_namespace'];
@@ -840,6 +842,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
         'count_subject_name',
         'account_id',
         'latest_nb_status',
+        'latest_snoozed_until',
         'latest_computed_score',
       ];
       groupCols = ['tenant_id', 'account_id', 'aggregation_key'];
