@@ -101,6 +101,54 @@ class Config:
     )  # e.g., openai | azure
     llm_provider_region = os.environ.get("LLM_PROVIDER_REGION", "us-west-2")
 
+    # Benchmark eval judge — LLM used by ragas rubric metrics to score
+    # answers. Decoupled from the agent-under-test's LLM so operators can
+    # point the judge at an instruction-tuned model (e.g. Gemini) even
+    # when the agent runs a thinking model that never emits the score-JSON
+    # ragas expects. Each var falls back to the matching LLM_* /
+    # EMBEDDINGS_* so existing deployments keep working until they set
+    # the BENCHMARK_EVAL_* overrides.
+    eval_llm_provider = os.environ.get("BENCHMARK_EVAL_LLM_PROVIDER", llm_provider)
+    eval_llm_model_name = os.environ.get(
+        "BENCHMARK_EVAL_LLM_MODEL_NAME", llm_model_name
+    )
+    eval_llm_provider_api_endpoint = os.environ.get(
+        "BENCHMARK_EVAL_LLM_PROVIDER_API_ENDPOINT", llm_provider_api_endpoint
+    )
+    eval_llm_provider_api_key = os.environ.get(
+        "BENCHMARK_EVAL_LLM_PROVIDER_API_KEY", llm_provider_api_key
+    )
+    eval_llm_provider_api_version = os.environ.get(
+        "BENCHMARK_EVAL_LLM_PROVIDER_API_VERSION", llm_provider_api_version
+    )
+    eval_llm_provider_api_type = os.environ.get(
+        "BENCHMARK_EVAL_LLM_PROVIDER_API_TYPE", llm_provider_api_type
+    )
+    eval_llm_provider_region = os.environ.get(
+        "BENCHMARK_EVAL_LLM_PROVIDER_REGION", llm_provider_region
+    )
+    eval_embeddings_provider = os.environ.get(
+        "BENCHMARK_EVAL_EMBEDDINGS_PROVIDER", embeddings_provider
+    )
+    eval_embeddings_model_id = os.environ.get(
+        "BENCHMARK_EVAL_EMBEDDINGS_MODEL_NAME", embeddings_model_id
+    )
+    eval_embeddings_api_endpoint = os.environ.get(
+        "BENCHMARK_EVAL_EMBEDDINGS_PROVIDER_API_ENDPOINT", embeddings_api_endpoint
+    )
+    eval_embeddings_api_key = os.environ.get(
+        "BENCHMARK_EVAL_EMBEDDINGS_PROVIDER_API_KEY", embeddings_api_key
+    )
+    eval_embeddings_api_version = os.environ.get(
+        "BENCHMARK_EVAL_EMBEDDINGS_PROVIDER_API_VERSION", embeddings_api_version
+    )
+    eval_embeddings_api_type = os.environ.get(
+        "BENCHMARK_EVAL_EMBEDDINGS_PROVIDER_API_TYPE", embeddings_api_type
+    )
+    eval_embeddings_region = os.environ.get(
+        "BENCHMARK_EVAL_EMBEDDINGS_PROVIDER_REGION", embeddings_region
+    )
+
     # AWS Bedrock
     aws_region = os.environ.get("AWS_REGION", "us-west-2")
     aws_access_key = os.environ.get("aws_access_key_id", "")
