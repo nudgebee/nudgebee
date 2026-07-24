@@ -1549,10 +1549,10 @@ const IntegrationDynamicFormModal = ({
 
   // ES (integrationName is 'ES' or 'elasticsearch') shows the Advanced Settings
   // section for the Per-Account Index mapping in BOTH add and edit flows. Default
-  // Log Filters is not shown for ES (per product decision); it stays edit-only for
-  // the other LOG_FILTER_INTEGRATIONS.
+  // Log Filters is not shown for ES (per product decision), but for the other
+  // LOG_FILTER_INTEGRATIONS it's now shown in both add and edit flows too.
   const isESIntegration = integrationName === 'ES' || integrationName === 'elasticsearch';
-  const showLogFilters = LOG_FILTER_INTEGRATIONS.has(integrationName) && !isESIntegration && !!editData?.name;
+  const showLogFilters = LOG_FILTER_INTEGRATIONS.has(integrationName) && !isESIntegration;
 
   // A fresh tenant with no onboarded cluster / cloud account has nothing to link
   // an account-scoped integration to. The `account_id` schema field is present
