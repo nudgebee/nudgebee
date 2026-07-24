@@ -586,7 +586,7 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
       .applyRecommendation(accountId, recommendation.id, data, integrationType, { name: integrationName, resize_policy: resizePolicyMode })
       .then((res: any) => {
         if (res?.errors?.length > 0) {
-          snackbar.error('Failed to create Pull Request');
+          snackbar.error(res.errors[0]?.message || 'Failed to create Pull Request');
         } else if (res?.data?.length > 0) {
           snackbar.success(
             'PR creation initiated! The code agent is creating the PR in the background. Check the Resolution tab to track progress.',
