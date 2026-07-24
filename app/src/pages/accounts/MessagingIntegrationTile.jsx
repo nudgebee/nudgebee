@@ -18,6 +18,7 @@ import { useEffect, useRef, useState } from 'react';
 import { colors, ds } from 'src/utils/colors';
 import { safeJSONParse, toKebabCase } from 'src/utils/common';
 import ChannelAccountMapping from '@components/notifications/ChannelAccountMapping';
+import WatchedChannels from '@components/notifications/WatchedChannels';
 
 const MessagingIntegrationTile = ({
   provider, // "slack" | "google_chat"
@@ -679,6 +680,8 @@ const MessagingIntegrationTile = ({
       {(provider === 'slack' || provider === 'ms_teams') && (
         <ChannelAccountMapping provider={provider} displayName={displayName} isConfigured={installationData?.length > 0} />
       )}
+
+      {provider === 'slack' && <WatchedChannels provider={provider} isConfigured={installationData?.length > 0} />}
     </>
   );
 };
