@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
 
@@ -3225,168 +3224,44 @@ func (s *Service) GetMultipleNodeNeighbors(reqCtx *security.RequestContext, node
 //     spanning-tree edge filter (filterLayeredEdges) when callers want a tree response
 //     instead of the induced subgraph.
 func (s *Service) discoverNeighborNodesRecursive(tenantID string, nodeIDs []string, levels int, nodeTypes []NodeType) (discoveredIDs []string, traversedEdgeIDs []string, nodeMinDepth map[string]int, err error) {
-	// Convert NodeType slice to string slice for PostgreSQL
+	// Convert NodeType slice to string slice for PostgreSQL (neighbour filter only).
 	nodeTypeStrings := make([]string, len(nodeTypes))
 	for i, nt := range nodeTypes {
 		nodeTypeStrings[i] = string(nt)
 	}
 
-	// Build the query with optional node type filter for neighbors.
-	// Base case: always include original nodes regardless of type (edge_id is NULL).
-	// Recursive case: filter by node_types if specified, project the walked edge id.
-	var query string
-	var rows *sqlx.Rows
-
-	// Param layout (both CTE branches):
-	//   $1 = seed node ids, $2 = tenant id, $3 = max depth, $4 = node type filter (with-type only).
-	if len(nodeTypes) > 0 {
-		// With node type filter - only filter neighbor nodes, not the original nodes
-		query = `
-			WITH RECURSIVE neighbor_traversal AS (
-				-- Base case: Start with input nodes at depth 0 (no type filter)
-				SELECT
-					id AS node_id,
-					NULL::uuid AS edge_id,
-					0 AS depth,
-					ARRAY[id] AS visited_path
-				FROM knowledge_graph_node
-				WHERE id = ANY($1::uuid[])
-				  AND tenant_id = $2
-				  AND level = 'Tenant'
-				  AND is_active = true
-
-				UNION
-
-				-- Recursive case: Find neighbors at next depth (with type filter)
-				SELECT
-					CASE
-						WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						ELSE e.source_node_id
-					END AS node_id,
-					e.id AS edge_id,
-					nt.depth + 1 AS depth,
-					nt.visited_path || CASE
-						WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						ELSE e.source_node_id
-					END AS visited_path
-				FROM neighbor_traversal nt
-				JOIN knowledge_graph_edge e ON (
-					e.source_node_id = nt.node_id OR e.destination_node_id = nt.node_id
-				)
-				JOIN knowledge_graph_node n ON (
-					n.id = CASE
-						WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						ELSE e.source_node_id
-					END
-				)
-				WHERE nt.depth < $3
-				  AND e.tenant_id = $2
-				  AND e.level = 'Tenant'
-				  AND e.is_active = true
-				  AND n.tenant_id = $2
-				  AND n.level = 'Tenant'
-				  AND n.is_active = true
-				  AND n.node_type = ANY($4::text[])
-				  AND NOT (
-					  CASE
-						  WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						  ELSE e.source_node_id
-					  END = ANY(nt.visited_path)
-				  )
-			)
-			SELECT DISTINCT node_id::text, edge_id::text, depth FROM neighbor_traversal
-		`
-		rows, err = s.dbManager.Query(query, pq.Array(nodeIDs), tenantID, levels, pq.Array(nodeTypeStrings))
-	} else {
-		// Without node type filter - return all neighbors
-		query = `
-			WITH RECURSIVE neighbor_traversal AS (
-				-- Base case: Start with input nodes at depth 0
-				SELECT
-					id AS node_id,
-					NULL::uuid AS edge_id,
-					0 AS depth,
-					ARRAY[id] AS visited_path
-				FROM knowledge_graph_node
-				WHERE id = ANY($1::uuid[])
-				  AND tenant_id = $2
-				  AND level = 'Tenant'
-				  AND is_active = true
-
-				UNION
-
-				-- Recursive case: Find neighbors at next depth
-				SELECT
-					CASE
-						WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						ELSE e.source_node_id
-					END AS node_id,
-					e.id AS edge_id,
-					nt.depth + 1 AS depth,
-					nt.visited_path || CASE
-						WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						ELSE e.source_node_id
-					END AS visited_path
-				FROM neighbor_traversal nt
-				JOIN knowledge_graph_edge e ON (
-					e.source_node_id = nt.node_id OR e.destination_node_id = nt.node_id
-				)
-				JOIN knowledge_graph_node n ON (
-					n.id = CASE
-						WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						ELSE e.source_node_id
-					END
-				)
-				WHERE nt.depth < $3
-				  AND e.tenant_id = $2
-				  AND e.level = 'Tenant'
-				  AND e.is_active = true
-				  AND n.tenant_id = $2
-				  AND n.level = 'Tenant'
-				  AND n.is_active = true
-				  AND NOT (
-					  CASE
-						  WHEN e.source_node_id = nt.node_id THEN e.destination_node_id
-						  ELSE e.source_node_id
-					  END = ANY(nt.visited_path)
-				  )
-			)
-			SELECT DISTINCT node_id::text, edge_id::text, depth FROM neighbor_traversal
-		`
-		rows, err = s.dbManager.Query(query, pq.Array(nodeIDs), tenantID, levels)
-	}
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("recursive CTE query failed: %w", err)
-	}
-	defer func() {
-		if closeErr := rows.Close(); closeErr != nil {
-			slog.Warn("Failed to close rows", "error", closeErr)
-		}
-	}()
-
-	// A node reached from k parents at depth d-1 produces k rows (one per incoming
-	// edge); a node on multiple paths of different lengths can also appear at
-	// multiple depths. Dedupe edge ids and collapse to per-node minimum depth so
-	// the layered-DAG edge filter can keep only consecutive-layer edges.
-	edgeIDSet := make(map[string]struct{})
+	// Level-by-level BFS with a single global visited set: each node is expanded
+	// exactly once, so cost is O(edges in the k-hop neighbourhood) rather than the
+	// O(paths) of a visited_path recursive CTE (which re-expands a node once per
+	// route that reaches it). The three return values are unchanged: the distinct
+	// discovered node ids, the distinct walked-edge ids, and each node's minimum
+	// BFS depth.
 	nodeMinDepth = make(map[string]int)
-	for rows.Next() {
-		var nodeID string
-		var edgeID sql.NullString
-		var depth int
-		if err := rows.Scan(&nodeID, &edgeID, &depth); err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to scan traversal row: %w", err)
-		}
-		if cur, ok := nodeMinDepth[nodeID]; !ok || depth < cur {
-			nodeMinDepth[nodeID] = depth
-		}
-		if edgeID.Valid {
-			edgeIDSet[edgeID.String] = struct{}{}
+	edgeIDSet := make(map[string]struct{})
+
+	// Depth 0: validate seeds against tenant/level/is_active (the CTE's base case).
+	// Seeds are never type-filtered; an isolated seed (no edges) still appears. The
+	// seed cursor is closed inside the helper (before the BFS opens its own queries).
+	seeds, err := s.fetchActiveSeedNodeIDs(tenantID, nodeIDs)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var frontier []string
+	for _, id := range seeds {
+		if _, ok := nodeMinDepth[id]; !ok {
+			nodeMinDepth[id] = 0
+			frontier = append(frontier, id)
 		}
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, nil, nil, fmt.Errorf("error iterating discovered node rows: %w", err)
+	// Expand one level at a time (levels <= 3), each a single indexed edge query
+	// over the whole current frontier. A node already in nodeMinDepth is never
+	// re-expanded — that is what removes the recursive CTE's path explosion.
+	for depth := 0; depth < levels && len(frontier) > 0; depth++ {
+		frontier, err = s.expandNeighborFrontier(tenantID, frontier, depth, nodeTypeStrings, nodeMinDepth, edgeIDSet)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
 
 	discoveredIDs = make([]string, 0, len(nodeMinDepth))
@@ -3397,8 +3272,91 @@ func (s *Service) discoverNeighborNodesRecursive(tenantID string, nodeIDs []stri
 	for id := range edgeIDSet {
 		traversedEdgeIDs = append(traversedEdgeIDs, id)
 	}
-
 	return discoveredIDs, traversedEdgeIDs, nodeMinDepth, nil
+}
+
+// fetchActiveSeedNodeIDs returns the subset of nodeIDs that exist for the tenant and
+// are active Tenant-level nodes — the recursive CTE's base case. It closes its cursor
+// via defer before returning, so the seed connection is released before the BFS loop
+// opens its own per-level queries.
+func (s *Service) fetchActiveSeedNodeIDs(tenantID string, nodeIDs []string) ([]string, error) {
+	rows, err := s.dbManager.Query(`
+		SELECT id::text FROM knowledge_graph_node
+		WHERE id = ANY($1::uuid[]) AND tenant_id = $2 AND level = 'Tenant' AND is_active = true
+	`, pq.Array(nodeIDs), tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("seed validation query failed: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			slog.Warn("Failed to close rows", "error", closeErr)
+		}
+	}()
+
+	var seeds []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to scan seed row: %w", err)
+		}
+		seeds = append(seeds, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating seed rows: %w", err)
+	}
+	return seeds, nil
+}
+
+// expandNeighborFrontier runs one BFS level for discoverNeighborNodesRecursive: it
+// fetches every active tenant edge incident to a frontier node, records each such
+// walked edge, and returns the neighbours newly discovered at depth+1 (registering
+// them in nodeMinDepth). The walk is bidirectional (source OR destination). When
+// nodeTypeStrings is non-empty the neighbour is filtered by node type (seeds are
+// not). The walked edge is recorded even when the far endpoint was already visited
+// (cross/back edges), matching the previous CTE's walked-edge set; filterLayeredEdges
+// prunes it to consecutive layers downstream.
+func (s *Service) expandNeighborFrontier(tenantID string, frontier []string, depth int, nodeTypeStrings []string, nodeMinDepth map[string]int, edgeIDSet map[string]struct{}) ([]string, error) {
+	// otherEnd projects the endpoint of e that is NOT the frontier node.
+	const otherEnd = `CASE WHEN e.source_node_id = ANY($1::uuid[]) THEN e.destination_node_id ELSE e.source_node_id END`
+	query := `
+		SELECT e.id::text, (` + otherEnd + `)::text AS other_id
+		FROM knowledge_graph_edge e
+		JOIN knowledge_graph_node n ON n.id = ` + otherEnd + `
+		WHERE (e.source_node_id = ANY($1::uuid[]) OR e.destination_node_id = ANY($1::uuid[]))
+		  AND e.tenant_id = $2 AND e.level = 'Tenant' AND e.is_active = true
+		  AND n.tenant_id = $2 AND n.level = 'Tenant' AND n.is_active = true`
+	args := []interface{}{pq.Array(frontier), tenantID}
+	if len(nodeTypeStrings) > 0 {
+		query += ` AND n.node_type = ANY($3::text[])`
+		args = append(args, pq.Array(nodeTypeStrings))
+	}
+
+	rows, err := s.dbManager.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("frontier expansion query failed at depth %d: %w", depth, err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			slog.Warn("Failed to close rows", "error", closeErr)
+		}
+	}()
+
+	var next []string
+	for rows.Next() {
+		var edgeID, otherID string
+		if scanErr := rows.Scan(&edgeID, &otherID); scanErr != nil {
+			return nil, fmt.Errorf("failed to scan frontier row at depth %d: %w", depth, scanErr)
+		}
+		edgeIDSet[edgeID] = struct{}{}
+		if _, seen := nodeMinDepth[otherID]; !seen {
+			nodeMinDepth[otherID] = depth + 1
+			next = append(next, otherID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating frontier rows at depth %d: %w", depth, err)
+	}
+	return next, nil
 }
 
 // fetchNodesByIDs retrieves node details for a list of node IDs
