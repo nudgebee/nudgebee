@@ -47,7 +47,7 @@ class ImpactCard {
     // "Impacted Services" described only one of the four sections and made people skip
     // the card as a downstream-only list. It now holds the whole incident: the same
     // service's other alerts, the likely cause, what it affected, and the noise it set aside.
-    this.text = 'This incident';
+    this.text = 'Possible Cause & Impact';
     this.resolveButton = false;
     this.insightData = [];
     this.renderContent = true;
