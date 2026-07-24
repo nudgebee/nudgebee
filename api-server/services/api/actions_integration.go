@@ -110,6 +110,9 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		// Audit is persisted by core.CreateIntegrationConfig (CreateAudit, DB) —
 		// no MQ publish here to avoid a duplicate write.
 		llm.InvalidateLLMServerCacheForAccounts(ctx, request.AccountIds)
+		for _, accId := range request.AccountIds {
+			observability.InvalidateDefaultLogFiltersCache(accId)
+		}
 		// Only announce on a genuine new binding (create). A config update of an
 		// existing space (e.g. toggling is_default) carries an IntegrationId and
 		// must not re-post the "now connected" card into the space.
@@ -162,6 +165,9 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		// Audit is persisted by core.DeleteIntegrationConfig (CreateAudit, DB) —
 		// no MQ publish here to avoid a duplicate write.
 		llm.InvalidateLLMServerCacheForAccounts(ctx, affectedAccountIds)
+		for _, accId := range affectedAccountIds {
+			observability.InvalidateDefaultLogFiltersCache(accId)
+		}
 		if request.IntegrationName == integrations.IntegrationGoogleChatSpace {
 			notifyGoogleChatBinding(ctx.GetSecurityContext().GetTenantId(), request.IntegrationConfigName, "unbound")
 		}

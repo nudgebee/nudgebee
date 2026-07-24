@@ -67,36 +67,95 @@ func buildDefaultFilterClause(rows []defaultFilterRow) query.QueryWhereClause {
 	}
 }
 
+// defaultLogFiltersCacheKey must mirror the same (accountId, logProvider,
+// logProviderSource) triple FetchLogs resolves the actual query source with —
+// otherwise an explicit provider override (e.g. querying a non-default Pinot
+// integration) would read/cache another integration's filters instead.
+func defaultLogFiltersCacheKey(accountId, logProvider, logProviderSource string) string {
+	return accountId + "|" + logProvider + "|" + logProviderSource
+}
+
+// defaultLogFiltersAccountTag lets InvalidateDefaultLogFiltersCache drop every
+// cached entry for an account in one call, regardless of which provider/source
+// each entry was cached under.
+func defaultLogFiltersAccountTag(accountId string) string {
+	return "account:" + accountId
+}
+
+// InvalidateDefaultLogFiltersCache drops all cached default-filter clauses for
+// this account. Call after saving/deleting a log integration's `default_filters`
+// config so the new filters apply immediately instead of waiting out the TTL.
+func InvalidateDefaultLogFiltersCache(accountId string) {
+	if accountId == "" {
+		return
+	}
+	if err := common.CacheDeleteWithTag(logDefaultFiltersCacheNamespace, defaultLogFiltersAccountTag(accountId)); err != nil {
+		slog.Warn("InvalidateDefaultLogFiltersCache: failed to invalidate", "account_id", accountId, "error", err)
+	}
+}
+
 // getDefaultLogFilters returns the always-apply where-clause configured for this
-// account on its default log integration. Fails open (empty clause) on any error
-// so a bad/absent config never blocks a log query. Cached per account (10 min).
-func getDefaultLogFilters(ctx *security.RequestContext, accountId string) query.QueryWhereClause {
+// account on the log integration actually used for this query (same
+// logProvider/logProviderSource FetchLogs resolves the query source with).
+// Fails open (empty clause) on any error so a bad/absent config never blocks a
+// log query. Cached per (account, provider, source) for 10 min.
+func getDefaultLogFilters(ctx *security.RequestContext, accountId, logProvider, logProviderSource string) query.QueryWhereClause {
 	if accountId == "" {
 		return query.QueryWhereClause{}
 	}
+	cacheKey := defaultLogFiltersCacheKey(accountId, logProvider, logProviderSource)
 
-	if cached, ok := common.CacheGet(logDefaultFiltersCacheNamespace, accountId); ok {
+	if cached, ok := common.CacheGet(logDefaultFiltersCacheNamespace, cacheKey); ok {
 		var clause query.QueryWhereClause
 		if err := json.Unmarshal(cached, &clause); err == nil {
 			return clause
 		}
-		_ = common.CacheDelete(logDefaultFiltersCacheNamespace, accountId)
+		_ = common.CacheDelete(logDefaultFiltersCacheNamespace, cacheKey)
 	}
 
-	clause := loadDefaultLogFilters(ctx, accountId)
+	clause := loadDefaultLogFilters(ctx, accountId, logProvider, logProviderSource)
 
 	if b, err := json.Marshal(clause); err == nil {
-		if err := common.CacheSet(logDefaultFiltersCacheNamespace, accountId, b); err != nil {
+		tag := defaultLogFiltersAccountTag(accountId)
+		if err := common.CacheSet(logDefaultFiltersCacheNamespace, cacheKey, b, common.CacheSetWithTags(tag)); err != nil {
 			slog.Warn("getDefaultLogFilters: failed to cache default filters", "account_id", accountId, "error", err)
 		}
 	}
 	return clause
 }
 
-// loadDefaultLogFilters resolves the account's default log integration, reads its
-// `default_filters` config, and builds the clause for this account.
-func loadDefaultLogFilters(ctx *security.RequestContext, accountId string) query.QueryWhereClause {
-	provider, _, dto, err := getLogsMetricsTracesProviderWithIntegration(ctx, accountId, "", "logs", "")
+// ApplyDefaultLogFilters ANDs the account's always-apply log filters into
+// fetchLogRequest's where clause in place. Shared by FetchLogs (query
+// execution) and GetLogsQuery (the SQL-preview endpoint that populates the log
+// builder's raw-query editor) so a saved filter reaches Pinot's SQL either way
+// — the raw-query editor is Pinot's default mode, and once a raw query string
+// is submitted, FetchLogs has no where clause left to inject into (see
+// pinot.go/pinot_saas.go QueryLogs: a non-empty Query is executed verbatim).
+func ApplyDefaultLogFilters(ctx *security.RequestContext, fetchLogRequest *FetchLogRequest) {
+	if fetchLogRequest == nil || ctx == nil {
+		return
+	}
+	defaults := getDefaultLogFilters(ctx, fetchLogRequest.AccountId, fetchLogRequest.LogProvider, fetchLogRequest.LogProviderSource)
+	fetchLogRequest.QueryRequest.Where = andWhereClause(fetchLogRequest.QueryRequest.Where, defaults)
+}
+
+// andWhereClause ANDs defaults into existing, skipping either side that carries
+// no data rather than emitting a degenerate And{} branch.
+func andWhereClause(existing, defaults query.QueryWhereClause) query.QueryWhereClause {
+	if !hasWhereData(defaults) {
+		return existing
+	}
+	if !hasWhereData(existing) {
+		return defaults
+	}
+	return query.QueryWhereClause{And: []query.QueryWhereClause{existing, defaults}}
+}
+
+// loadDefaultLogFilters resolves the account's log integration for this
+// logProvider/logProviderSource, reads its `default_filters` config, and builds
+// the clause for this account.
+func loadDefaultLogFilters(ctx *security.RequestContext, accountId, logProvider, logProviderSource string) query.QueryWhereClause {
+	provider, _, dto, err := getLogsMetricsTracesProviderWithIntegration(ctx, accountId, logProvider, "logs", logProviderSource)
 	if err != nil || provider == "" {
 		return query.QueryWhereClause{}
 	}
