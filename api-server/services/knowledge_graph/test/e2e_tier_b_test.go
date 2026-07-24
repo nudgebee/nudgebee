@@ -12,6 +12,7 @@ package test
 // (full-orchestrator smoke) live in e2e_tier_b_build_test.go.
 
 import (
+	"slices"
 	"testing"
 
 	"nudgebee/services/internal/database"
@@ -186,7 +187,25 @@ func tierBAssertFilterOptions(t *testing.T, svc *core.Service) {
 		t.Fatalf("GetFilterOptions: %v", err)
 	}
 	if opts == nil {
-		t.Error("GetFilterOptions returned nil")
+		t.Fatal("GetFilterOptions returned nil")
+	}
+	// The concurrent fetch must populate every field correctly (guards against a
+	// goroutine writing the wrong variable). The Tier-B graph is a k8s topology, so
+	// it has account IDs, node types, and a non-empty unique_key -> id map.
+	if len(opts.AccountIDs) == 0 {
+		t.Error("GetFilterOptions: expected non-empty AccountIDs")
+	}
+	if len(opts.NodeTypes) == 0 {
+		t.Error("GetFilterOptions: expected non-empty NodeTypes")
+	}
+	if !slices.Contains(opts.NodeTypes, string(core.NodeTypePod)) {
+		t.Errorf("GetFilterOptions: NodeTypes %v missing Pod", opts.NodeTypes)
+	}
+	if len(opts.NodeIDMap) == 0 {
+		t.Error("GetFilterOptions: expected non-empty NodeIDMap")
+	}
+	if opts.NodeCount != len(opts.NodeIDMap) {
+		t.Errorf("GetFilterOptions: NodeCount %d != len(NodeIDMap) %d", opts.NodeCount, len(opts.NodeIDMap))
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -1229,6 +1230,10 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 			}
 		}
 	}
+
+	// The graph for this tenant is now rebuilt — refresh the filter-options cache so
+	// the dropdown's unfiltered load stays fast. Best-effort; never fails the build.
+	s.refreshFilterOptionsCache(req.TenantID)
 
 	return response, nil
 }
@@ -3939,154 +3944,183 @@ func buildNodeFilterSQL(filters *GraphFilters, nodeIDs []string, startArgCounter
 	return " AND " + strings.Join(sqlParts, " AND "), args, nil
 }
 
-// GetFilterOptions retrieves available filter options for a tenant
-// Returns account IDs, node types, and available label/attribute keys with their possible values
+// GetFilterOptions retrieves available filter options for a tenant: account IDs,
+// node types, label/attribute keys, and the unique_key -> id map used by the node
+// picker.
+//
+// The unfiltered call (the dropdown's initial load) is served from the per-tenant
+// filter-options cache, which is refreshed at the end of each KG build — so it is
+// never staler than the graph itself. Filtered calls, and unfiltered cache misses,
+// fall through to a live computation.
 func (s *Service) GetFilterOptions(tenantID string, filters *GraphFilters, nodeIDs []string) (*FilterOptions, error) {
 	if s.dbManager == nil {
 		return nil, fmt.Errorf("database manager not initialized")
 	}
 
-	s.logger.Info("retrieving filter options", "tenant_id", tenantID)
-
-	accountMappings, err := s.getAccountMappings(tenantID)
-	if err != nil {
-		s.logger.Warn(msgAccountMappingsFallback, "error", err)
-		accountMappings = make(map[string]string)
+	unfiltered := filters == nil && len(nodeIDs) == 0
+	if unfiltered {
+		if cached, ok := s.readFilterOptionsCache(tenantID); ok {
+			return cached, nil
+		}
 	}
+
+	opts, err := s.computeFilterOptions(tenantID, filters, nodeIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Populate the cache on an unfiltered miss (e.g. the first read after a deploy,
+	// before the next build refreshes it) so subsequent reads are fast. Best-effort.
+	if unfiltered {
+		s.writeFilterOptionsCache(tenantID, opts)
+	}
+	return opts, nil
+}
+
+// computeFilterOptions runs the live queries that assemble a FilterOptions payload.
+// GetFilterOptions serves the unfiltered case from cache; this is the source of
+// truth behind both that cache and every filtered call.
+func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, nodeIDs []string) (*FilterOptions, error) {
+	s.logger.Info("computing filter options", "tenant_id", tenantID)
 
 	filterSQL, filterArgs, err := buildNodeFilterSQL(filters, nodeIDs, 2)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build node filter SQL: %w", err)
 	}
 
-	// 1. Get unique account IDs
-	accountIDsQuery := `
-		SELECT DISTINCT cloud_account_id
-		FROM knowledge_graph_node
-		WHERE tenant_id = $1 AND cloud_account_id IS NOT NULL AND level = 'Tenant' AND is_active = true
-	` + filterSQL + ` ORDER BY cloud_account_id`
-	accountRows, err := s.dbManager.Query(accountIDsQuery, append([]interface{}{tenantID}, filterArgs...)...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query account IDs: %w", err)
-	}
-	defer func() {
-		if err := accountRows.Close(); err != nil {
-			s.logger.Error("failed to close account rows", "error", err)
-		}
-	}()
+	// The data sources below are independent, so fetch them concurrently and join
+	// at g.Wait(). Each goroutine writes a distinct variable (no shared mutable
+	// state), and the pool (MaxOpenConns=20) comfortably absorbs the ~6 connections.
+	// getAccountMappings and last_sync are best-effort: they log and fall back rather
+	// than failing the whole call, preserving the previous sequential behaviour.
+	var (
+		accountIDs      = make([]string, 0)
+		nodeTypes       = make([]string, 0)
+		labelKeys       = make([]string, 0)
+		attributeKeys   = make([]string, 0)
+		nodeIDMap       = make(map[string]string)
+		accountMappings map[string]string
+		lastSyncTime    *time.Time
+	)
 
-	accountIDs := make([]string, 0)
-	for accountRows.Next() {
-		var accountID string
-		if err := accountRows.Scan(&accountID); err != nil {
-			return nil, fmt.Errorf("failed to scan account ID: %w", err)
+	// scanColumn runs a single-column DISTINCT query and appends each row to dst. A
+	// fresh args slice is built per call, so concurrent callers share no mutable state.
+	scanColumn := func(query string, dst *[]string) error {
+		rows, err := s.dbManager.Query(query, append([]interface{}{tenantID}, filterArgs...)...)
+		if err != nil {
+			return err
 		}
-		accountIDs = append(accountIDs, accountID)
-	}
-
-	// 2. Get unique node types
-	nodeTypesQuery := `
-		SELECT DISTINCT node_type
-		FROM knowledge_graph_node
-		WHERE tenant_id = $1 AND level = 'Tenant' AND is_active = true
-		AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')
-	` + filterSQL + ` ORDER BY node_type`
-	nodeTypeRows, err := s.dbManager.Query(nodeTypesQuery, append([]interface{}{tenantID}, filterArgs...)...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query node types: %w", err)
-	}
-	defer func() {
-		if err := nodeTypeRows.Close(); err != nil {
-			s.logger.Error("failed to close node type rows", "error", err)
+		defer func() {
+			if closeErr := rows.Close(); closeErr != nil {
+				s.logger.Error("failed to close filter-option rows", "error", closeErr)
+			}
+		}()
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				return err
+			}
+			*dst = append(*dst, v)
 		}
-	}()
-
-	nodeTypes := make([]string, 0)
-	for nodeTypeRows.Next() {
-		var nodeType string
-		if err := nodeTypeRows.Scan(&nodeType); err != nil {
-			return nil, fmt.Errorf("failed to scan node type: %w", err)
-		}
-		nodeTypes = append(nodeTypes, nodeType)
+		return rows.Err()
 	}
 
-	// 3. Get all unique label keys (without values)
-	labelKeysQuery := `
-		SELECT DISTINCT jsonb_object_keys(labels) as label_key
-		FROM knowledge_graph_node
-		WHERE tenant_id = $1 AND labels != '{}'::jsonb AND level = 'Tenant' AND is_active = true
-	` + filterSQL + ` ORDER BY label_key`
-	labelKeyRows, err := s.dbManager.Query(labelKeysQuery, append([]interface{}{tenantID}, filterArgs...)...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query label keys: %w", err)
-	}
-	defer func() {
-		if err := labelKeyRows.Close(); err != nil {
-			s.logger.Error("failed to close label key rows", "error", err)
-		}
-	}()
+	var g errgroup.Group
 
-	labelKeys := make([]string, 0)
-	for labelKeyRows.Next() {
-		var labelKey string
-		if err := labelKeyRows.Scan(&labelKey); err != nil {
-			return nil, fmt.Errorf("failed to scan label key: %w", err)
+	g.Go(func() error {
+		q := `SELECT DISTINCT cloud_account_id FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND cloud_account_id IS NOT NULL AND level = 'Tenant' AND is_active = true` + filterSQL + ` ORDER BY cloud_account_id`
+		if err := scanColumn(q, &accountIDs); err != nil {
+			return fmt.Errorf("failed to query account IDs: %w", err)
 		}
-		labelKeys = append(labelKeys, labelKey)
-	}
+		return nil
+	})
 
-	// 4. Get all unique query attribute keys (without values)
-	attrKeysQuery := `
-		SELECT DISTINCT jsonb_object_keys(query_attributes) as attr_key
-		FROM knowledge_graph_node
-		WHERE tenant_id = $1 AND query_attributes != '{}'::jsonb AND level = 'Tenant' AND is_active = true
-	` + filterSQL + ` ORDER BY attr_key`
-	attrKeyRows, err := s.dbManager.Query(attrKeysQuery, append([]interface{}{tenantID}, filterArgs...)...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query attribute keys: %w", err)
-	}
-	defer func() {
-		if err := attrKeyRows.Close(); err != nil {
-			s.logger.Error("failed to close attribute key rows", "error", err)
+	g.Go(func() error {
+		q := `SELECT DISTINCT node_type FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND level = 'Tenant' AND is_active = true
+			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL + ` ORDER BY node_type`
+		if err := scanColumn(q, &nodeTypes); err != nil {
+			return fmt.Errorf("failed to query node types: %w", err)
 		}
-	}()
+		return nil
+	})
 
-	attributeKeys := make([]string, 0)
-	for attrKeyRows.Next() {
-		var attrKey string
-		if err := attrKeyRows.Scan(&attrKey); err != nil {
-			return nil, fmt.Errorf("failed to scan attribute key: %w", err)
+	g.Go(func() error {
+		q := `SELECT DISTINCT jsonb_object_keys(labels) AS label_key FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND labels != '{}'::jsonb AND level = 'Tenant' AND is_active = true` + filterSQL + ` ORDER BY label_key`
+		if err := scanColumn(q, &labelKeys); err != nil {
+			return fmt.Errorf("failed to query label keys: %w", err)
 		}
-		attributeKeys = append(attributeKeys, attrKey)
-	}
+		return nil
+	})
 
-	// 5. Get unique_key -> id mapping for all nodes
-	nodeIDMapQuery := `
-		SELECT unique_key, id
-		FROM knowledge_graph_node
-		WHERE tenant_id = $1 AND level = 'Tenant' AND unique_key IS NOT NULL AND is_active = true
-		AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')
-	` + filterSQL
-	nodeIDMapRows, err := s.dbManager.Query(nodeIDMapQuery, append([]interface{}{tenantID}, filterArgs...)...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query node ID map: %w", err)
-	}
-	defer func() {
-		if err := nodeIDMapRows.Close(); err != nil {
-			s.logger.Error("failed to close node ID map rows", "error", err)
+	g.Go(func() error {
+		q := `SELECT DISTINCT jsonb_object_keys(query_attributes) AS attr_key FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND query_attributes != '{}'::jsonb AND level = 'Tenant' AND is_active = true` + filterSQL + ` ORDER BY attr_key`
+		if err := scanColumn(q, &attributeKeys); err != nil {
+			return fmt.Errorf("failed to query attribute keys: %w", err)
 		}
-	}()
+		return nil
+	})
 
-	nodeIDMap := make(map[string]string)
-	for nodeIDMapRows.Next() {
-		var uniqueKey, nodeID string
-		if err := nodeIDMapRows.Scan(&uniqueKey, &nodeID); err != nil {
-			return nil, fmt.Errorf("failed to scan node ID map row: %w", err)
+	g.Go(func() error {
+		q := `SELECT unique_key, id FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND level = 'Tenant' AND unique_key IS NOT NULL AND is_active = true
+			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL
+		rows, err := s.dbManager.Query(q, append([]interface{}{tenantID}, filterArgs...)...)
+		if err != nil {
+			return fmt.Errorf("failed to query node ID map: %w", err)
 		}
-		nodeIDMap[uniqueKey] = nodeID
-	}
-	if err := nodeIDMapRows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating node ID map rows: %w", err)
+		defer func() {
+			if closeErr := rows.Close(); closeErr != nil {
+				s.logger.Error("failed to close node ID map rows", "error", closeErr)
+			}
+		}()
+		for rows.Next() {
+			var uniqueKey, nodeID string
+			if err := rows.Scan(&uniqueKey, &nodeID); err != nil {
+				return fmt.Errorf("failed to scan node ID map row: %w", err)
+			}
+			nodeIDMap[uniqueKey] = nodeID
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("error iterating node ID map rows: %w", err)
+		}
+		return nil
+	})
+
+	// Best-effort: account name mappings (falls back to an empty map on error).
+	g.Go(func() error {
+		m, mErr := s.getAccountMappings(tenantID)
+		if mErr != nil {
+			s.logger.Warn(msgAccountMappingsFallback, "error", mErr)
+			m = make(map[string]string)
+		}
+		accountMappings = m
+		return nil
+	})
+
+	// Best-effort: last sync time from tenant filters (nil when none exist).
+	g.Go(func() error {
+		row, qErr := s.dbManager.QueryRow(`
+			SELECT last_sync_time FROM knowledge_graph_tenant_filters
+			WHERE tenant_id = $1 AND enabled = true
+			ORDER BY last_sync_time DESC NULLS LAST
+			LIMIT 1`, tenantID)
+		if qErr != nil {
+			s.logger.Debug("failed to query last sync time", "tenant_id", tenantID, "error", qErr)
+			return nil
+		}
+		if scanErr := row.Scan(&lastSyncTime); scanErr != nil {
+			// Expected when no filters exist.
+			s.logger.Debug("no last sync time found", "tenant_id", tenantID, "error", scanErr)
+		}
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
 	// Replace account_id with account_name in node_id_map keys.
@@ -4134,23 +4168,6 @@ func (s *Service) GetFilterOptions(tenantID string, filters *GraphFilters, nodeI
 	}
 	nodeIDMap = namedNodeIDMap
 
-	// 6. Get last sync time from tenant filters
-	lastSyncQuery := `
-		SELECT last_sync_time
-		FROM knowledge_graph_tenant_filters
-		WHERE tenant_id = $1 AND enabled = true
-		ORDER BY last_sync_time DESC NULLS LAST
-		LIMIT 1
-	`
-	var lastSyncTime *time.Time
-	row, err := s.dbManager.QueryRow(lastSyncQuery, tenantID)
-	if err != nil {
-		s.logger.Debug("failed to query last sync time", "tenant_id", tenantID, "error", err)
-	} else if err := row.Scan(&lastSyncTime); err != nil {
-		// Log as debug since it's expected when no filters exist
-		s.logger.Debug("no last sync time found", "tenant_id", tenantID, "error", err)
-	}
-
 	s.logger.Info("successfully retrieved filter options",
 		"tenant_id", tenantID,
 		"account_ids_count", len(accountIDs),
@@ -4169,6 +4186,64 @@ func (s *Service) GetFilterOptions(tenantID string, filters *GraphFilters, nodeI
 		NodeIDMap:     nodeIDMap,
 		NodeCount:     len(nodeIDMap),
 	}, nil
+}
+
+// --- Filter-options cache (one JSONB row per tenant, refreshed at each KG build) ---
+
+// refreshFilterOptionsCache recomputes the unfiltered filter options and upserts them
+// into knowledge_graph_filter_options. Called at the end of a successful KG build;
+// best-effort — a failure is logged and never fails the build.
+func (s *Service) refreshFilterOptionsCache(tenantID string) {
+	if s.dbManager == nil || tenantID == "" {
+		return
+	}
+	opts, err := s.computeFilterOptions(tenantID, nil, nil)
+	if err != nil {
+		s.logger.Warn("failed to compute filter options for cache", "tenant_id", tenantID, "error", err)
+		return
+	}
+	s.writeFilterOptionsCache(tenantID, opts)
+}
+
+// readFilterOptionsCache returns the cached unfiltered filter options for a tenant,
+// or ok=false on a miss / malformed payload (the caller then computes live).
+func (s *Service) readFilterOptionsCache(tenantID string) (*FilterOptions, bool) {
+	row, err := s.dbManager.QueryRow(
+		`SELECT payload FROM knowledge_graph_filter_options WHERE tenant_id = $1`, tenantID)
+	if err != nil {
+		s.logger.Debug("filter options cache query failed", "tenant_id", tenantID, "error", err)
+		return nil, false
+	}
+	var payload []byte
+	if err := row.Scan(&payload); err != nil {
+		// sql.ErrNoRows (no cache row yet) is the expected miss; log anything else.
+		if !errors.Is(err, sql.ErrNoRows) {
+			s.logger.Debug("filter options cache read failed", "tenant_id", tenantID, "error", err)
+		}
+		return nil, false
+	}
+	var opts FilterOptions
+	if err := json.Unmarshal(payload, &opts); err != nil {
+		s.logger.Warn("failed to unmarshal cached filter options", "tenant_id", tenantID, "error", err)
+		return nil, false
+	}
+	return &opts, true
+}
+
+// writeFilterOptionsCache upserts the tenant's filter-options payload. Best-effort.
+func (s *Service) writeFilterOptionsCache(tenantID string, opts *FilterOptions) {
+	payload, err := json.Marshal(opts)
+	if err != nil {
+		s.logger.Warn("failed to marshal filter options for cache", "tenant_id", tenantID, "error", err)
+		return
+	}
+	if _, err := s.dbManager.Exec(`
+		INSERT INTO knowledge_graph_filter_options (tenant_id, payload, updated_at)
+		VALUES ($1, $2, now())
+		ON CONFLICT (tenant_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()`,
+		tenantID, payload); err != nil {
+		s.logger.Warn("failed to write filter options cache", "tenant_id", tenantID, "error", err)
+	}
 }
 
 // GetFilterValues retrieves values for a specific filter key (label or attribute).
@@ -4225,6 +4300,7 @@ func (s *Service) GetFilterValues(tenantID, filterType, filterKey string, filter
 		FROM knowledge_graph_node
 		WHERE tenant_id = $1
 		  AND level = 'Tenant'
+		  AND is_active = true
 		  AND jsonb_exists(%[1]s, $2)
 		  AND %[1]s->>$2 IS NOT NULL
 		  AND %[1]s->>$2 != ''%[2]s
