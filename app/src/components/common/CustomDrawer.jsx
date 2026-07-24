@@ -375,7 +375,7 @@ const SecondaryDrawer = ({ open, onClose, title, rightOffset = 0, defaultWidth =
         width: revealed ? `${effectiveWidth}px` : '0px',
         maxWidth: '100vw',
         overflow: 'hidden',
-        zIndex: 1401,
+        zIndex: 1250,
         transition: `width ${SECONDARY_TRANSITION_MS}ms ${SECONDARY_EASE}`,
         pointerEvents: revealed ? 'auto' : 'none',
         ...(isModern && { borderRadius: `${MODERN_RADIUS}px` }),
