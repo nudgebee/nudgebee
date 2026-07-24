@@ -8,9 +8,13 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// Kubernetes namespace: RFC 1123 DNS label (lowercase alphanumeric + hyphens, 1-63 chars)
+var k8sNamespaceRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 const ToolRemediationGenerate = "remediation_generate"
 const ToolRemediationExecute = "remediation_execute"
@@ -276,6 +280,12 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 
 	// Append namespace if provided and not already in command
 	if namespace, ok := input.Arguments["namespace"].(string); ok && namespace != "" {
+		if !k8sNamespaceRe.MatchString(namespace) {
+			return core.NBToolResponse{
+				Data:   "Invalid namespace: must be a valid Kubernetes namespace (lowercase alphanumeric and hyphens, 1-63 chars)",
+				Status: core.NBToolResponseStatusError,
+			}, fmt.Errorf("invalid namespace %q: does not match Kubernetes naming rules", namespace)
+		}
 		if !strings.Contains(command, "-n ") && !strings.Contains(command, "--namespace") {
 			if strings.HasPrefix(command, "kubectl") {
 				command = fmt.Sprintf("%s -n %s", command, namespace)
