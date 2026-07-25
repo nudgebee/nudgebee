@@ -3,12 +3,12 @@ import AutoPilotHeaderCard from '@components/autopilot/card/AutoOptimizeHeaderCa
 import { Box, Typography } from '@mui/material';
 import Tabs from '@shared/navigation/Tabs';
 import { ToggleGroup } from '@ui/ToggleGroup';
+import { Select } from '@ui/Select';
 import { formatMemory } from '@lib/formatter';
 import apiAutoPlaybook from '@api1/autoPlaybook';
 import apiAccount from '@api1/account';
 import k8sApi from '@api1/kubernetes';
 import PropTypes from 'prop-types';
-import { useData } from '@context/DataContext';
 import CustomHeatMap from '@shared/charts/CustomHeatMap';
 import dayjs from 'dayjs';
 import ActionButtons from './AutoOptimizeActionButtons';
@@ -98,6 +98,8 @@ const HorizontalAutoOptimizeSingleConfiguration = ({
   setIsLoading,
   reviewAutoOptimize = false,
   approvalData = {},
+  accountOptions = [],
+  defaultAccountId = '',
   // data,
   // currentData,
 }) => {
@@ -134,7 +136,13 @@ const HorizontalAutoOptimizeSingleConfiguration = ({
   const [resourceFilter, setResourceFilter] = useState(
     autoOptimizeData?.auto_optimize_resource_maps?.map((m) => m.resource_identifier) || autoOptimizeData?.resource_filter || []
   );
-  const { selectedCluster } = useData();
+  // Account picked in this modal only (K8s-only, matching the outer Auto
+  // Optimize tab's own account filter) — fixed to the existing resource's
+  // account when editing/reviewing, otherwise editable and defaulted from
+  // the tab's currently resolved account.
+  const isExistingConfig = Boolean(autoOptimizeData?.accountId || autoOptimizeData?.account_id);
+  const [selectedAccountId, setSelectedAccountId] = useState(autoOptimizeData?.accountId || autoOptimizeData?.account_id || defaultAccountId || '');
+  const selectedCluster = accountOptions.find((option) => option.value === selectedAccountId) || null;
   const [selectedHeatMapMetric, setSelectedHeatMapMetric] = useState('cpu');
   const [heatMapData, setHeatMapData] = useState([]);
   const [metricsData, setMetricsData] = useState({});
@@ -475,6 +483,22 @@ const HorizontalAutoOptimizeSingleConfiguration = ({
 
   return (
     <Box>
+      <Box sx={{ maxWidth: ds.space.mul(0, 115), mb: ds.space[4] }}>
+        <Select
+          id='auto-optimize-horizontal-account'
+          label='Account'
+          required
+          value={selectedAccountId}
+          options={accountOptions}
+          onChange={(next) => {
+            setSelectedAccountId(next || '');
+            setResourceFilter([]);
+          }}
+          disabled={isExistingConfig || reviewAutoOptimize}
+          minWidth={ds.space.mul(0, 115)}
+          placeholder='Select account'
+        />
+      </Box>
       <Box sx={{ marginTop: ds.space[5] }}>
         <AutoPilotHeaderCard
           header='Historical Data'
@@ -484,6 +508,8 @@ const HorizontalAutoOptimizeSingleConfiguration = ({
           scalingType={'horizontal'}
           reviewAutoOptimize={reviewAutoOptimize}
           workloadRequired={false}
+          accountOptions={accountOptions}
+          defaultAccountId={selectedAccountId}
         />
       </Box>
       <Box sx={{ display: 'flex', gap: ds.space[4], marginTop: ds.space[4] }}>
@@ -576,6 +602,8 @@ HorizontalAutoOptimizeSingleConfiguration.propTypes = {
   isGoogleChannelsLoading: PropTypes.bool,
   // data: PropTypes.object,
   // currentData: PropTypes.object,
+  accountOptions: PropTypes.array,
+  defaultAccountId: PropTypes.string,
 };
 
 export default HorizontalAutoOptimizeSingleConfiguration;

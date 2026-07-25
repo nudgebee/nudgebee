@@ -4,7 +4,6 @@ import apiAutoPlaybook from '@api1/autoPlaybook';
 import apiAccount from '@api1/account';
 import k8sApi from '@api1/kubernetes';
 import PropTypes from 'prop-types';
-import { useData } from '@context/DataContext';
 import ActionButtons from './AutoOptimizeActionButtons';
 import NotificationForm from './AutoOptimizeNotificationForm';
 import { Textarea } from '@components/k8s/common/TextArea';
@@ -25,6 +24,8 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   setIsLoading,
   reviewAutoOptimize = false,
   approvalData = {},
+  accountOptions = [],
+  defaultAccountId = '',
 }) => {
   const [activeButton, setActiveButton] = useState('');
   const [notificationData, setNotificationData] = useState({
@@ -75,7 +76,13 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   }, [autoOptimizeData?.id]);
 
   const [reviewComment, setReviewComment] = useState('');
-  const { selectedCluster } = useData();
+  // Account picked in this modal only (K8s-only, matching the outer Auto
+  // Optimize tab's own account filter) — fixed to the existing resource's
+  // account when editing/reviewing, otherwise editable and defaulted from
+  // the tab's currently resolved account.
+  const isExistingConfig = Boolean(autoOptimizeData?.accountId || autoOptimizeData?.account_id);
+  const [selectedAccountId, setSelectedAccountId] = useState(autoOptimizeData?.accountId || autoOptimizeData?.account_id || defaultAccountId || '');
+  const selectedCluster = accountOptions.find((option) => option.value === selectedAccountId) || null;
 
   const [isLoadingSlackChannels, setIsLoadingSlackChannels] = useState(false);
 
@@ -407,6 +414,11 @@ const VerticalAutoOptimizeSingleConfiguration = ({
         setSelectedApplications(selectedApplications.filter((app) => value.includes(app.namespace)));
         setSelectedNamespaces(value);
         break;
+      case 'cluster':
+        setSelectedAccountId(value);
+        setSelectedNamespaces([]);
+        setSelectedApplications([]);
+        break;
     }
   };
 
@@ -419,6 +431,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
           selectedNamespace={selectedNamespaces}
           multipleNamespace
           reviewRunbook={reviewAutoOptimize}
+          clusterOptions={isExistingConfig ? undefined : accountOptions}
           handleChildComponentChange={handleChildComponentChange}
         />
         <Box sx={{ display: 'flex', gap: ds.space[4], marginTop: ds.space[4] }}>
@@ -482,6 +495,8 @@ VerticalAutoOptimizeSingleConfiguration.propTypes = {
   setIsLoading: PropTypes.func,
   isMsTeamsLoading: PropTypes.bool,
   isGoogleChannelsLoading: PropTypes.bool,
+  accountOptions: PropTypes.array,
+  defaultAccountId: PropTypes.string,
 };
 
 export default VerticalAutoOptimizeSingleConfiguration;

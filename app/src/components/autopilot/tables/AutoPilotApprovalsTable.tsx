@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ListingLayout } from '@ui/ListingLayout';
+import FilterDropdown from '@ui/FilterDropdown';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import apiAutoPilot from '@api1/autoPilot';
 import CustomTable from '@shared/tables/CustomTable2';
@@ -18,6 +19,10 @@ import { toast as snackbar } from '@ui/Toast';
 interface AutoPilotApprovalsListingProps {
   accountId: string;
   type: string;
+  accountOptions?: { label: string; value: string }[];
+  selectedAccountId?: string;
+  isAccountsLoading?: boolean;
+  onAccountChange?: (e: unknown, option: { value: string } | null) => void;
 }
 
 interface NotificationChannel {
@@ -34,7 +39,14 @@ interface ApiResponse {
 
 const tableId = 'approvals';
 
-const AutoPilotApprovalsListing: React.FC<AutoPilotApprovalsListingProps> = ({ accountId, type }) => {
+const AutoPilotApprovalsListing: React.FC<AutoPilotApprovalsListingProps> = ({
+  accountId,
+  type,
+  accountOptions = [],
+  selectedAccountId = '',
+  isAccountsLoading = false,
+  onAccountChange,
+}) => {
   const [tableRows, setTableRows] = useState([]);
   const [approvalData, setApprovalData] = useState<any>({});
   const [loading, setLoading] = useState<boolean>(false);
@@ -267,7 +279,16 @@ const AutoPilotApprovalsListing: React.FC<AutoPilotApprovalsListingProps> = ({ a
         </Modal>
       )}
       <ListingLayout id='autopilot-approvals-listing-box'>
-        <ListingLayout.Toolbar actions={<DownloadButton onClick={() => ({ tableId: tableId })} />} />
+        <ListingLayout.Toolbar actions={<DownloadButton onClick={() => ({ tableId: tableId })} />}>
+          <FilterDropdown
+            id='auto-pilot-approvals-filter-account'
+            label='Account'
+            options={accountOptions}
+            value={selectedAccountId}
+            isOptionsLoading={isAccountsLoading}
+            onSelect={onAccountChange}
+          />
+        </ListingLayout.Toolbar>
         <ListingLayout.Body>
           <CustomTable
             id={tableId}
