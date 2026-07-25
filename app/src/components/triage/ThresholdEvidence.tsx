@@ -288,6 +288,7 @@ const MetricChart = ({ data }: { data: ThresholdSuggestionItem }): React.ReactEl
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
     setError(null);
 
@@ -318,6 +319,9 @@ const MetricChart = ({ data }: { data: ThresholdSuggestionItem }): React.ReactEl
     observability
       .metricsQuery(requestPayload)
       .then((response: any) => {
+        if (cancelled) {
+          return;
+        }
         const { timestamps, values, errorMsg } = parseMetricResponse(response);
         if (errorMsg) {
           setError(errorMsg);
@@ -327,11 +331,21 @@ const MetricChart = ({ data }: { data: ThresholdSuggestionItem }): React.ReactEl
         }
       })
       .catch(() => {
+        if (cancelled) {
+          return;
+        }
         setError('Failed to fetch metric data');
       })
       .finally(() => {
+        if (cancelled) {
+          return;
+        }
         setLoading(false);
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [data.cloud_account_id, query_metadata]);
 
   if (query_metadata) {
@@ -486,6 +500,7 @@ const EventTrendChart = ({ data }: { data: ThresholdSuggestionItem }): React.Rea
     if (!data.cloud_account_id || !aggregationKey) {
       return;
     }
+    let cancelled = false;
     setLoading(true);
     const endDate = new Date();
     const startDate = new Date();
@@ -508,6 +523,9 @@ const EventTrendChart = ({ data }: { data: ThresholdSuggestionItem }): React.Rea
         { name: 'created_at', order: 'asc' }
       )
       .then((res: any) => {
+        if (cancelled) {
+          return;
+        }
         const counts: number[] = [];
         const labels: string[] = [];
         (res?.data?.event_groupings || []).forEach((item: any) => {
@@ -520,8 +538,15 @@ const EventTrendChart = ({ data }: { data: ThresholdSuggestionItem }): React.Rea
         console.error('Failed to fetch event trend data', e);
       })
       .finally(() => {
+        if (cancelled) {
+          return;
+        }
         setLoading(false);
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [data.cloud_account_id, data.alert_rule_key, data.source]);
 
   if (!loading && trendData.data.length === 0) {
