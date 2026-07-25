@@ -4207,6 +4207,20 @@ func (s *Service) refreshFilterOptionsCache(tenantID string) {
 
 // readFilterOptionsCache returns the cached unfiltered filter options for a tenant,
 // or ok=false on a miss / malformed payload (the caller then computes live).
+// filterOptionsCacheSchemaVersion is bumped whenever the FilterOptions JSON shape
+// changes (a new field, a renamed key, …). readFilterOptionsCache treats any other
+// version — including a legacy row written before this envelope existed — as a miss,
+// so a shape change can never serve a stale-shape payload past the next recompute.
+// This prevents the transient post-deploy cascade break where an old cached payload
+// lacked a field the current code/UI expects.
+const filterOptionsCacheSchemaVersion = 1
+
+// filterOptionsCacheEnvelope wraps the cached payload with its schema version.
+type filterOptionsCacheEnvelope struct {
+	SchemaVersion int            `json:"schema_version"`
+	Options       *FilterOptions `json:"options"`
+}
+
 func (s *Service) readFilterOptionsCache(tenantID string) (*FilterOptions, bool) {
 	row, err := s.dbManager.QueryRow(
 		`SELECT payload FROM knowledge_graph_filter_options WHERE tenant_id = $1`, tenantID)
@@ -4222,17 +4236,26 @@ func (s *Service) readFilterOptionsCache(tenantID string) (*FilterOptions, bool)
 		}
 		return nil, false
 	}
-	var opts FilterOptions
-	if err := json.Unmarshal(payload, &opts); err != nil {
+	var env filterOptionsCacheEnvelope
+	if err := json.Unmarshal(payload, &env); err != nil {
 		s.logger.Warn("failed to unmarshal cached filter options", "tenant_id", tenantID, "error", err)
 		return nil, false
 	}
-	return &opts, true
+	// A version mismatch — or a legacy row with no envelope (version 0, nil options) —
+	// means the cached shape may not match the current code. Treat it as a miss so the
+	// caller recomputes and repopulates with the current schema.
+	if env.SchemaVersion != filterOptionsCacheSchemaVersion || env.Options == nil {
+		return nil, false
+	}
+	return env.Options, true
 }
 
 // writeFilterOptionsCache upserts the tenant's filter-options payload. Best-effort.
 func (s *Service) writeFilterOptionsCache(tenantID string, opts *FilterOptions) {
-	payload, err := json.Marshal(opts)
+	payload, err := json.Marshal(filterOptionsCacheEnvelope{
+		SchemaVersion: filterOptionsCacheSchemaVersion,
+		Options:       opts,
+	})
 	if err != nil {
 		s.logger.Warn("failed to marshal filter options for cache", "tenant_id", tenantID, "error", err)
 		return
