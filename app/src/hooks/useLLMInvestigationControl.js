@@ -151,23 +151,19 @@ const parseConversationMessages = (conversationMessages, accountId) => {
       // Pre-pass: collect all sub-agent IDs that should be hidden as separate task cards.
       // Building this upfront ensures correct exclusion regardless of iteration order —
       // previously, a child agent appearing before its parent in the list would not be skipped.
-      // Current "*_orchestrator" names plus the legacy "*_debug" names, so runs stored
-      // under either name are recognized as top-level orchestrators (whose sub-agent
-      // task cards are hidden).
-      const debugAgentNames = [
-        'k8s_orchestrator',
-        'aws_orchestrator',
-        'gcp_orchestrator',
-        'azure_orchestrator',
-        'datadog_orchestrator',
-        'k8s_debug',
-        'aws_debug',
-        'gcp_debug',
-        'azure_debug',
-        'datadog_debug',
-      ];
+      // Any "*_orchestrator" agent (including the `_2` / `_lean` variants) plus the legacy
+      // "*_debug" cloud/k8s orchestrators are treated as top-level orchestrators whose
+      // sub-agent task cards are hoisted. An exact-match list missed the newer
+      // `k8s_orchestrator_lean` / `aws_orchestrator_2` etc., so their sub-agent (which owns
+      // most of the tool calls) was skipped and only the orchestrator's single sub-agent
+      // invocation surfaced in Tool Details. Matching `_orchestrator` as a substring fixes
+      // that; the explicit list stays only for the legacy `_debug` names — other `*_debug`
+      // agents (postgres_debug, mysql_debug, …) are leaf tools, NOT orchestrators.
+      const legacyDebugOrchestratorNames = ['k8s_debug', 'aws_debug', 'gcp_debug', 'azure_debug', 'datadog_debug'];
+      const isOrchestratorAgent = (name) =>
+        typeof name === 'string' && (name.includes('_orchestrator') || legacyDebugOrchestratorNames.includes(name));
       agentsWithoutRouter.forEach((agent) => {
-        if (!debugAgentNames.includes(agent?.agent_name)) {
+        if (!isOrchestratorAgent(agent?.agent_name)) {
           (agent?.llm_conversation_tool_calls || []).forEach((t) => {
             if (t.child_agent_id) {
               childAgentsToSkip.push(t.child_agent_id);
@@ -203,7 +199,7 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           });
         };
 
-        if (debugAgentNames.includes(agent?.agent_name)) {
+        if (isOrchestratorAgent(agent?.agent_name)) {
           (agent?.llm_conversation_tool_calls || []).forEach((t) => {
             if (t.child_agent_id) {
               plannerIdChildMapping[t.child_agent_id] = t.tool_id;
@@ -320,7 +316,7 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           // group when the (hidden) parent is an orchestrator whose children are hoisted.
           parentAgentId: rawParentAgent ? rawParentAgent.id : null,
           orchestratorParent:
-            rawParentAgent && debugAgentNames.includes(rawParentAgent.agent_name)
+            rawParentAgent && isOrchestratorAgent(rawParentAgent.agent_name)
               ? { id: rawParentAgent.id, name: rawParentAgent.agent_name, created_at: rawParentAgent.created_at, status: rawParentAgent.status }
               : undefined,
           plannerId: plannerIdChildMapping[agent.id],
