@@ -38,6 +38,7 @@ import TroubleshootIconBlue from '@assets/header/TroubleshootIconBlue.icon.svg';
 import { AutomateBlue } from '@assets';
 import {
   navSearchPages,
+  automationSearchFragments,
   k8sDetailsSearchFragments,
   awsDetailsSearchFragments,
   azureDetailsSearchFragments,
@@ -163,6 +164,30 @@ const navSearchProviderItems = (fragments, provider, accountId, basePath) =>
       })
     : [];
 
+// Search rows for the Automation page's tabs, or [] if no account is
+// resolvable yet — same shape/contract as navSearchProviderItems above, kept
+// as its own function (not folded into it) since Automation isn't tied to a
+// single cloud provider (any connected account works) and its route carries
+// the account as a `?accountId=` query param rather than a `{basePath}/{id}`
+// path segment (see src/pages/automation/index.jsx).
+const navSearchAutomationItems = (fragments, accountId) =>
+  accountId
+    ? fragments.map((entry) => {
+        const path = `/automation?accountId=${accountId}#${entry.fragment}`;
+        return {
+          label: entry.label,
+          icon: NAV_SEARCH_GROUP_ICON.Automation,
+          type: `/${entry.slug}`,
+          value: path,
+          path,
+          accountId,
+          group: 'Automation',
+          acronym: pathAcronym(entry.slug),
+          searchText: `Automation ${entry.slug} ${pathAcronym(entry.slug)}`,
+        };
+      })
+    : [];
+
 // Per-provider fragment list + base path for the "@account" scoped search —
 // keyed by cloud_provider.toUpperCase() since allCluster entries' casing
 // isn't guaranteed to match the mixed-case provider labels used elsewhere.
@@ -181,6 +206,14 @@ const SCOPED_SEARCH_PROVIDER_CONFIG = {
 // below), since a recent value's account isn't necessarily the provider's
 // current single resolved account.
 const ACCOUNT_SCOPED_SEARCH_PATH_RE = /^\/(?:kubernetes\/details|cloud-account\/details)\/([^/#]+)#/;
+
+// Matches an Automation search value stamped by navSearchAutomationItems
+// (`/automation?accountId={accountId}#{fragment}`) and captures the
+// accountId — used to re-resolve a recent pick against allCluster (see
+// resolveRecentOption below), same reasoning as ACCOUNT_SCOPED_SEARCH_PATH_RE
+// above: a recent value's account isn't necessarily whichever one
+// automationAccountId currently resolves to.
+const AUTOMATION_SCOPED_SEARCH_PATH_RE = /^\/automation\?accountId=([^#]+)#/;
 
 // Same provider-order + connection-status + alphabetical sort ClusterDropDown
 // itself uses (CustomDropdown.jsx's groupedOptions, groupByCloudProvider mode)
@@ -724,6 +757,22 @@ export default function GlobalPageSearch() {
   // non-admin shouldn't be able to jump to it via search either.
   const canAccessTaskRunner = !!(data?.roles?.includes('tenant_admin') || data?.roles?.includes('account_admin'));
 
+  // Automation isn't provider-scoped (no K8s/AWS/Azure/GCP concept), so its
+  // search entries can't reuse resolveSearchAccountId's per-provider cache.
+  // Falls back in the same order ClusterDropDown.jsx uses when it resolves
+  // an account with no prior URL/selectedCluster to go on: the cached last
+  // account (any provider), else the first connected account.
+  const automationSearchAccountId = useMemo(() => {
+    if (selectedCluster?.value) {
+      return selectedCluster.value;
+    }
+    const cachedId = apiUser.getUserPreferences()?.[PREFERENCE_LAST_ACCOUNT_ID];
+    if (cachedId && allCluster?.some((c) => c.value === cachedId)) {
+      return cachedId;
+    }
+    return allCluster?.[0]?.value || null;
+  }, [selectedCluster, allCluster]);
+
   // Whether a static nav-search row should be visible to the current user —
   // shared by the live result list below and resolveRecentOption further
   // down, so a role gate only has to be expressed once.
@@ -740,26 +789,48 @@ export default function GlobalPageSearch() {
     [canAccessAdmin, canAccessTaskRunner]
   );
 
+  const automationNavItems = useMemo(
+    () => (hasOpenedSearch ? navSearchAutomationItems(automationSearchFragments, automationSearchAccountId) : []),
+    [hasOpenedSearch, automationSearchAccountId]
+  );
+
   const navSearchItems = useMemo(
-    () => [...navSearchStaticItems.filter(isNavSearchItemVisible), ...k8sNavItems, ...awsNavItems, ...azureNavItems, ...gcpNavItems],
-    [isNavSearchItemVisible, k8sNavItems, awsNavItems, azureNavItems, gcpNavItems]
+    () => [
+      ...navSearchStaticItems.filter(isNavSearchItemVisible),
+      ...automationNavItems.filter(isNavSearchItemVisible),
+      ...k8sNavItems,
+      ...awsNavItems,
+      ...azureNavItems,
+      ...gcpNavItems,
+    ],
+    [isNavSearchItemVisible, automationNavItems, k8sNavItems, awsNavItems, azureNavItems, gcpNavItems]
   );
 
   // Re-resolves one recent value into a full display option. A static page's
-  // value is always in navSearchStaticItems. A provider-detail value carries
-  // its accountId in the path itself — that account isn't necessarily the
-  // provider's current single resolved account (the @mention picker lets you
-  // pick and search within ANY connected account, not just the resolved
-  // one), so navSearchItems alone (built for just that one resolved account
-  // per provider) can't be used as the existence check here. Checking
-  // against allCluster directly instead means a recent pick whose account has
-  // since been disconnected/removed is silently dropped, same as a
-  // renamed/removed static page already was.
+  // value is always in navSearchStaticItems. An Automation or provider-detail
+  // value carries its accountId in the value itself — that account isn't
+  // necessarily the current automationSearchAccountId/provider's single
+  // resolved account (for providers, the @mention picker also lets you pick
+  // and search within ANY connected account, not just the resolved one), so
+  // navSearchItems alone (built for just the currently-resolved account) can't
+  // be used as the existence check here. Checking against allCluster directly
+  // instead means a recent pick whose account has since been
+  // disconnected/removed is silently dropped, same as a renamed/removed
+  // static page already was.
   const resolveRecentOption = useCallback(
     (value) => {
       const staticMatch = navSearchStaticItems.find((opt) => opt.value === value);
       if (staticMatch) {
         return isNavSearchItemVisible(staticMatch) ? staticMatch : null;
+      }
+      const automationMatch = AUTOMATION_SCOPED_SEARCH_PATH_RE.exec(value);
+      if (automationMatch) {
+        const [, accountId] = automationMatch;
+        if (!allCluster?.some((c) => c.value === accountId)) {
+          return null;
+        }
+        const match = navSearchAutomationItems(automationSearchFragments, accountId).find((opt) => opt.value === value);
+        return match && isNavSearchItemVisible(match) ? match : null;
       }
       const match = ACCOUNT_SCOPED_SEARCH_PATH_RE.exec(value);
       if (!match) {
@@ -813,14 +884,19 @@ export default function GlobalPageSearch() {
   // Once an account is picked, results are scoped to just that account's
   // provider detail pages — reuses the same navSearchProviderItems helper the
   // unscoped per-provider lists above already use, so accountId/path/icon
-  // wiring stays identical.
+  // wiring stays identical. Automation isn't provider-specific (any connected
+  // account works there), so it's appended after the provider's own pages
+  // rather than gated behind a cloud_provider match, same filter (Admin/Task
+  // Runner) as the unscoped list.
   const scopedSearchItems = useMemo(() => {
     if (!scopedAccount) {
       return [];
     }
     const config = SCOPED_SEARCH_PROVIDER_CONFIG[scopedAccount.cloud_provider?.toUpperCase()];
-    return config ? navSearchProviderItems(config.fragments, config.label, scopedAccount.value, config.basePath) : [];
-  }, [scopedAccount]);
+    const providerItems = config ? navSearchProviderItems(config.fragments, config.label, scopedAccount.value, config.basePath) : [];
+    const automationItems = navSearchAutomationItems(automationSearchFragments, scopedAccount.value).filter(isNavSearchItemVisible);
+    return [...providerItems, ...automationItems];
+  }, [scopedAccount, isNavSearchItemVisible]);
 
   // The full (unfiltered) option list for whichever mode is active — mirrors
   // ds/FilterDropdown.jsx's `options` prop.
