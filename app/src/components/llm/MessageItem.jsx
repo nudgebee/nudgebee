@@ -103,6 +103,7 @@ const MessageItem = ({
   handleShare,
   sessionId,
   conversationId,
+  conversationJson,
   agentTokenData,
   messageTokenData,
   handleTokenUsageHover,
@@ -559,6 +560,7 @@ const MessageItem = ({
                   handleShare={handleShare}
                   sessionId={sessionId}
                   conversationId={conversationId}
+                  conversationJson={conversationJson}
                   agentTokenData={agentTokenData}
                   messageTokenData={messageTokenData}
                   handleTokenUsageHover={handleTokenUsageHover}
@@ -640,6 +642,7 @@ MessageItem.propTypes = {
   handleShare: PropTypes.func,
   sessionId: PropTypes.string,
   conversationId: PropTypes.string,
+  conversationJson: PropTypes.object,
   agentTokenData: PropTypes.any,
   messageTokenData: PropTypes.any,
   handleTokenUsageHover: PropTypes.func,

@@ -27,6 +27,7 @@ import { Button } from '@ui/Button';
 import ReferencesPopover from './common/ReferencesModal';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import CheckIcon from '@mui/icons-material/Check';
+import { toast } from '@ui/Toast';
 
 const KubernetesLLMRequestResponse = (props) => {
   const [sentFeedback, setSentFeedback] = useState({});
@@ -61,6 +62,26 @@ const KubernetesLLMRequestResponse = (props) => {
   const onPageChange = (page, limit) => {
     setCurrentPage(page - 1);
     setRecordsPerPage(limit);
+  };
+
+  // Download the full conversation JSON. props.conversationJson is the raw
+  // createConversationFetcher() response body the parent already fetched, threaded
+  // down here — so this dumps the entire API response with no extra network call.
+  const handleDownloadConversation = () => {
+    if (!props.conversationJson) {
+      toast.error('No conversation data to download');
+      return;
+    }
+    const downloadId = props.sessionId || props.conversationId || props.toolCall?.id || 'conversation';
+    const blob = new Blob([JSON.stringify(props.conversationJson, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `conversation-${downloadId}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   let toolName = props.toolCall.tool;
@@ -1083,6 +1104,15 @@ const KubernetesLLMRequestResponse = (props) => {
 
                   <CopyButton text={props.toolCall.text} size='sm' />
 
+                  <Button
+                    tone='ghost'
+                    size='sm'
+                    aria-label='Download conversation JSON'
+                    tooltip='Download conversation JSON'
+                    icon={<FileDownloadIcon sx={{ fontSize: 20, color: 'var(--ds-blue-600)' }} />}
+                    onClick={handleDownloadConversation}
+                  />
+
                   {parsedReferences.length > 0 && (
                     <>
                       <Box sx={{ borderLeft: '1px solid var(--ds-gray-200)', height: ds.space.mul(1, 5), mx: ds.space[1] }} />
@@ -1323,6 +1353,7 @@ KubernetesLLMRequestResponse.propTypes = {
   agentTokenData: PropTypes.object,
   selectedModel: PropTypes.object,
   followupReadOnlyKey: PropTypes.string,
+  conversationJson: PropTypes.object,
 };
 
 export default KubernetesLLMRequestResponse;

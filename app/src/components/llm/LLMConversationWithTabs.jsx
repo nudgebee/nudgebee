@@ -29,6 +29,7 @@ const LLMConversationWithTabs = ({
   handleCardClick,
   collapsedObj,
   getCardTitle,
+  conversationJson,
 }) => {
   // Default to Final Response tab when available
   const [activeTab, setActiveTab] = useState('response');
@@ -183,6 +184,7 @@ const LLMConversationWithTabs = ({
                       handleShare={handleShare}
                       sessionId={sessionId}
                       conversationId={conversationId}
+                      conversationJson={conversationJson}
                     />
                   }
                   onCardClick={() => {
@@ -353,6 +355,7 @@ LLMConversationWithTabs.propTypes = {
   handleCardClick: PropTypes.func,
   collapsedObj: PropTypes.object,
   getCardTitle: PropTypes.func,
+  conversationJson: PropTypes.object,
 };
 
 export default LLMConversationWithTabs;

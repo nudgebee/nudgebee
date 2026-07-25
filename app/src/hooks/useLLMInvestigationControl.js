@@ -488,6 +488,10 @@ export const useLLMInvestigationControl = (accountId) => {
   if (!conversationFetcherRef.current) {
     conversationFetcherRef.current = createConversationFetcher();
   }
+  // Raw createConversationFetcher response body, kept so the download button in the
+  // final-response card can dump the entire conversation JSON without refetching.
+  // Set before the SET_MESSAGES dispatch so the ensuing re-render carries a fresh value.
+  const rawConversationRef = useRef(null);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -751,6 +755,7 @@ export const useLLMInvestigationControl = (accountId) => {
     dispatch({ type: 'RESET' });
     currentSessionRef.current = ''; // Invalidate any in-flight fetchConversation calls
     conversationFetcherRef.current?.reset();
+    rawConversationRef.current = null;
   }, []);
 
   const fetchConversation = useCallback(
@@ -824,6 +829,7 @@ export const useLLMInvestigationControl = (accountId) => {
         const conversationResponses = res?.data?.data?.llm_conversations ?? [];
 
         if (conversationResponses.length > 0) {
+          rawConversationRef.current = res?.data ?? null;
           const response = conversationResponses[conversationResponses.length - 1];
 
           // Atomic update for conversation metadata
@@ -987,6 +993,7 @@ export const useLLMInvestigationControl = (accountId) => {
     setConversationStatus,
     conversationTitle,
     conversationIdAtDb,
+    rawConversation: rawConversationRef.current,
     allowStop,
     setAllowStop,
     stopInvestigation,
