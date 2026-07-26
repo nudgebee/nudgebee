@@ -1214,24 +1214,6 @@ func sanitizeServiceNameSpanAttribute(fetchTraceRequest *TracesV3Request) {
 	}
 }
 
-// clickhouseCountValue coerces a ClickHouse count cell to int across the integer/float types the
-// HTTP driver may return (float64 from JSON, or int64/uint64/int), so the count never silently
-// reads as 0 on a type other than float64.
-func clickhouseCountValue(countVal any) int {
-	switch v := countVal.(type) {
-	case float64:
-		return int(v)
-	case int64:
-		return int(v)
-	case uint64:
-		return int(v)
-	case int:
-		return v
-	default:
-		return 0
-	}
-}
-
 // QueryRootSpansByTrace backs the "By Traces" view for ClickHouse: it returns one root span per
 // trace by deduping inside the table-def subquery (see GetBaseRootSpanTraceQuery). The time window
 // is applied inside that subquery, so it is NOT injected into the outer where clause here; the
@@ -1296,9 +1278,10 @@ func (s *OtelClickhouseTraceSource) CountTracesByTrace(ctx *security.RequestCont
 	}
 	result := common.OpenTelemetryTraceCount{}
 	if len(rows) > 0 {
-		if countVal, ok := rows[0]["count"]; ok {
-			result.Count = clickhouseCountValue(countVal)
-		}
+		// count(*) is a ClickHouse UInt64, which the relay's FORMAT JSON round-trip
+		// delivers as a quoted string ("42"), not a float64. Decode via clickhouseInt64
+		// so the count is not silently zeroed on the string shape (mirrors CountTraces).
+		result.Count = int(clickhouseInt64(rows[0]["count"]))
 	}
 	return result, nil
 }
