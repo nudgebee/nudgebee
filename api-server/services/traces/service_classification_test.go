@@ -178,3 +178,62 @@ func TestIsInternalDomain(t *testing.T) {
 		})
 	}
 }
+
+// TestDetectApplicationType_SpanNameFallbackRequiresInboundSpan guards against a
+// service that merely calls a message queue/db being misclassified as being that
+// message queue/db itself — the span-name fallback in detectApplicationType must
+// not trust a CLIENT/PRODUCER span's name, since that name describes the
+// destination/operation being invoked, not the calling service's own identity.
+func TestDetectApplicationType_SpanNameFallbackRequiresInboundSpan(t *testing.T) {
+	builder := &TraceServiceMapBuilder{}
+
+	tests := []struct {
+		description  string
+		workloadName string
+		spanKind     string
+		spanName     string
+		expectedType string
+	}{
+		{
+			description:  "CLIENT span calling rabbitmq must not reclassify the calling service as rabbitmq",
+			workloadName: "cloud-collector-server",
+			spanKind:     "CLIENT",
+			spanName:     "rabbitmq.publish",
+			expectedType: "",
+		},
+		{
+			description:  "PRODUCER span calling kafka must not reclassify the calling service as kafka",
+			workloadName: "services-server",
+			spanKind:     "PRODUCER",
+			spanName:     "kafka.send",
+			expectedType: "",
+		},
+		{
+			description:  "CONSUMER span (inbound) may still use span name as a classification signal",
+			workloadName: "cloud-collector-server",
+			spanKind:     "CONSUMER",
+			spanName:     "rabbitmq.process",
+			expectedType: "rabbitmq",
+		},
+		{
+			description:  "a service self-named after the broker is still classified regardless of span kind",
+			workloadName: "rabbitmq",
+			spanKind:     "CLIENT",
+			spanName:     "amqp.publish",
+			expectedType: "rabbitmq",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			span := TraceSpan{WorkloadName: tt.workloadName, SpanName: tt.spanName}
+			attrs := &SpanAttributes{SpanKind: tt.spanKind}
+
+			appType, _ := builder.detectApplicationType(span, attrs, map[string]string{}, map[string]string{})
+			if appType != tt.expectedType {
+				t.Errorf("detectApplicationType(workload=%q, kind=%q, span=%q) = %q, expected %q",
+					tt.workloadName, tt.spanKind, tt.spanName, appType, tt.expectedType)
+			}
+		})
+	}
+}
