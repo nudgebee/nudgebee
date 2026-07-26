@@ -407,7 +407,7 @@ func (r *EventAnalysisRepository) GetKnowledgebase(ctx *security.RequestContext,
 // InsertRemediationExecution records that a remediation command was run against the event's cluster,
 // so the panel can show "already applied" on reload. type=CommandExecution, resolver NBLLM (attributed
 // to the acting user via resolver_id); type_reference_id is the command so the UI can match it to an action.
-func (r *EventAnalysisRepository) InsertRemediationExecution(ctx *security.RequestContext, eventId, userId, command string, dataJSON string, success bool) error {
+func (r *EventAnalysisRepository) InsertRemediationExecution(ctx *security.RequestContext, eventId, userId, command string, dataJSON string, statusMessage string, success bool) error {
 	status := "Success"
 	if !success {
 		status = "Failed"
@@ -420,9 +420,12 @@ func (r *EventAnalysisRepository) InsertRemediationExecution(ctx *security.Reque
 		dataJSON,
 		status,
 		command,
-		"NBLLM",
+		// A person clicked run; the model only proposed the command. Recording NBLLM here attributed
+		// the action to the assistant and hid the human behind it, because the resolutions list shows
+		// resolver_type and never resolver_id. "User" is what actually happened.
+		"User",
 		userId,
-		"remediation command executed")
+		statusMessage)
 	if err != nil {
 		return fmt.Errorf("InsertRemediationExecution: %w", err)
 	}

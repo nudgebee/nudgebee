@@ -3,8 +3,10 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +37,11 @@ type RemediationGenerateRequest struct {
 	AccountId string `json:"account_id"`
 	EventId   string `json:"event_id"`
 	Context   string `json:"context"`
+	// AvailableArtifacts names the remediation surfaces that hold a real, applicable artifact for
+	// this event — a code fix produced by code analysis, a threshold suggestion computed by triage.
+	// An action with no command can only be carried out through one of these, so an empty list means
+	// no such action is actionable, whatever the model proposes.
+	AvailableArtifacts []string `json:"available_artifacts"`
 }
 
 // Confidence is the model's 0-100 self-reported estimate. The model is unreliable about the exact
@@ -168,7 +175,7 @@ const maxMitigationConfidence = 50
 // free text from the LLM, so anything that isn't recognizably a fix is treated as a mitigation:
 // the safe default is to under-claim, since presenting a mitigation as a fix is the failure mode
 // that misleads an operator.
-func normalizePlan(plan *RemediationPlan) {
+func normalizePlan(plan *RemediationPlan, availableArtifacts []string) {
 	// An action inherits the uncertainty of the hypothesis it addresses: if the cause is only 95%
 	// likely, no action against it can be more than 95% likely to resolve the incident. The model
 	// scores the two independently and routinely emits a 100% action under a 95% hypothesis, which
@@ -178,6 +185,15 @@ func normalizePlan(plan *RemediationPlan) {
 		hypConfidence[strings.ToLower(strings.TrimSpace(h.Hypothesis))] = h.Confidence
 	}
 
+	hasArtifact := false
+	for _, a := range availableArtifacts {
+		if strings.TrimSpace(a) != "" {
+			hasArtifact = true
+			break
+		}
+	}
+
+	kept := plan.Actions[:0]
 	for i := range plan.Actions {
 		a := &plan.Actions[i]
 		if strings.EqualFold(strings.TrimSpace(a.Kind), RemediationKindFix) {
@@ -194,7 +210,36 @@ func normalizePlan(plan *RemediationPlan) {
 		if ceiling, ok := hypConfidence[strings.ToLower(strings.TrimSpace(a.Hypothesis))]; ok && a.Confidence > ceiling {
 			a.Confidence = ceiling
 		}
+
+		if strings.TrimSpace(a.ExecuteCommand) == "" {
+			// An action with no command is carried out on another surface, so it is only real if that
+			// surface actually holds something to apply. With no artifact the card becomes a dead end:
+			// it tells the operator a fix exists and points at a panel with nothing in it. Drop it —
+			// the summary still describes the durable fix, which is where an unactionable one belongs.
+			if !hasArtifact {
+				continue
+			}
+			// Verify and rollback describe checking and undoing a command that ran. Nothing ran here,
+			// so they would be run against unchanged state and report on something else entirely.
+			a.VerifyCommand = ""
+			a.RollbackCommand = ""
+		}
+		kept = append(kept, *a)
 	}
+	plan.Actions = kept
+
+	// Rank by what the action is worth, not by how confident the model felt: anything that removes
+	// the cause outranks anything that merely restores service, however reliable the latter is. The
+	// prompt asks for this ordering and the model does not reliably obey it, so enforce it here.
+	// Stable, so the model's own ordering survives within each group as a tiebreak.
+	sort.SliceStable(plan.Actions, func(i, j int) bool {
+		iFix := plan.Actions[i].Kind == RemediationKindFix
+		jFix := plan.Actions[j].Kind == RemediationKindFix
+		if iFix != jFix {
+			return iFix
+		}
+		return plan.Actions[i].Confidence > plan.Actions[j].Confidence
+	})
 }
 
 // RemediationPlan is the structured plan returned to the UI: the root cause, the candidate hypotheses
@@ -213,7 +258,18 @@ type RemediationExecuteRequest struct {
 	EventId    string `json:"event_id"`
 	Command    string `json:"command"`
 	ConfigName string `json:"config_name"`
+	// Slot is which of an action's three commands this is: execute, verify or rollback. Only the
+	// execute command changes state towards resolving the event, so only it is recorded as a
+	// resolution — running an action used to file three, including a read-only verify and a rollback
+	// that undid the fix. Every slot is still audited. Empty is treated as execute so a caller that
+	// omits it keeps its resolution.
+	Slot string `json:"slot"`
 }
+
+// Command slots within one action.
+const (
+	RemediationSlotExecute = "execute"
+)
 
 // processRemediationGenerate turns the completed investigation into a structured remediation plan
 // (root cause + execute/verify/rollback commands). It reuses the LLM generation + JSON-extraction
@@ -278,7 +334,7 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 		return
 	}
 
-	normalizePlan(&plan)
+	normalizePlan(&plan, request.AvailableArtifacts)
 
 	// Persist the plan so it survives reload (best-effort — a DB hiccup must not fail generation).
 	persistRemediationPlan(ctx, request.AccountId, request.EventId, plan)
@@ -484,9 +540,14 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 		}
 	}
 
+	// Audit covers every command regardless of slot — that is the record of what was run.
 	writeRemediationAudit(ctx, request.AccountId, command, registeredToolName, response.Success)
-	// Record a successful run against the event so the panel can show "already applied" on reload.
-	if response.Success && request.EventId != "" {
+	// A resolution says how the event was acted on, so only the state-changing execute command earns
+	// one. A verify observes and a rollback reverses; filing those as resolutions counted one
+	// remediation attempt three times and listed an undo as though it resolved the event.
+	slot := strings.ToLower(strings.TrimSpace(request.Slot))
+	isExecuteSlot := slot == "" || slot == RemediationSlotExecute
+	if response.Success && request.EventId != "" && isExecuteSlot {
 		persistRemediationExecution(ctx, request.EventId, sc.GetUserId(), command, response.ExitCode)
 	}
 	c.JSON(200, buildApiResponse(response, nil))
@@ -505,7 +566,10 @@ func persistRemediationExecution(ctx *security.RequestContext, eventId, userId, 
 	if err != nil {
 		return
 	}
-	if err := repo.InsertRemediationExecution(ctx, eventId, userId, command, string(data), true); err != nil {
+	// The resolutions list shows status_message next to the row. A fixed string there told the reader
+	// nothing they could not already see from the row's type, so record the outcome instead.
+	statusMessage := fmt.Sprintf("Ran from the remediation panel, exit code %d", exitCode)
+	if err := repo.InsertRemediationExecution(ctx, eventId, userId, command, string(data), statusMessage, true); err != nil {
 		ctx.GetLogger().Warn("remediation: failed to persist execution", "error", err)
 	}
 }

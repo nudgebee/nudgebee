@@ -20,6 +20,11 @@ const STATUS_META = {
   SUCCESS: { text: 'Success', tone: 'success' },
   FAILED: { text: 'Failed', tone: 'critical' },
   RUNNING: { text: 'Running', tone: 'info' },
+  // A verification asserts something about observed state. A command that exits 0 having observed
+  // nothing has not verified anything — a selector that matches no object, a query that returns no
+  // rows, a log tail with no lines all exit 0. Reporting that as Success tells the operator the fix
+  // held when nothing was actually checked, so it gets its own state rather than a green tick.
+  INCONCLUSIVE: { text: 'Inconclusive — no output', tone: 'warning' },
 };
 
 // A fix removes the root cause; a mitigation only restores service while the cause survives, so the
@@ -76,19 +81,33 @@ function formatCodeFixContext(rec) {
   return lines.join('\n');
 }
 
+// Recommendation types that actually propose changing the alert. The rest are triage saying it could
+// not reach a tuning conclusion (insufficient_data, investigate_signal, review_alert, none,
+// not_eligible), and forwarding those as remediation candidates misreads "I don't know" as advice.
+// An absent type means an older suggestion from before the field existed, which stays eligible.
+const TUNABLE_RECOMMENDATION_TYPES = ['tune_threshold', 'increase_duration', 'tune_both', 'disable'];
+
 // formatThresholdContext renders a triage-computed threshold suggestion. `res` is the
 // event_get_threshold_suggestion response: the numbers live under .alert_definition (current) and
 // .suggestion (proposed), with `available` telling us whether triage produced anything at all.
 //
-// Low-confidence suggestions are withheld. Triage marks a suggestion low-confidence when its own
-// inputs are unsound (a contaminated baseline, a saturated histogram), and those produce absurd
-// numbers — one live example raises a 4xx-rate threshold from 5 to 97.67, which would silence every
-// error on the ingress. Handing the model a suggestion its own producer disowned invites it to
-// launder that into a confident recommendation, so it never enters the context.
+// Three of triage's own judgements decide eligibility, rather than a proxy invented here:
+//   - risk_level "dangerous" — the apply service refuses these without an explicit override
+//     (threshold_apply_service.go), so proposing one produces an action that cannot be carried out.
+//   - recommendation_type — only the tuning verdicts are advice; the others are non-conclusions.
+//   - confidence "low" — triage marks its own inputs unsound (a contaminated baseline, a saturated
+//     histogram), and those produce absurd numbers: one live suggestion raises a 4xx-rate threshold
+//     from 5 to 97.67, which would silence every error on the ingress.
+//
+// A "review" risk still goes through, carrying its warnings, because that is a judgement for the
+// operator rather than a reason to hide the option.
 function formatThresholdContext(res) {
   const suggestion = res?.suggestion;
   if (!res?.available || !suggestion || typeof suggestion.suggested_threshold !== 'number') return '';
   if (trimmedString(suggestion.confidence).toLowerCase() === 'low') return '';
+  if (trimmedString(suggestion.risk_level).toLowerCase() === 'dangerous') return '';
+  const recommendationType = trimmedString(suggestion.recommendation_type).toLowerCase();
+  if (recommendationType && !TUNABLE_RECOMMENDATION_TYPES.includes(recommendationType)) return '';
 
   const def = res.alert_definition || {};
   const lines = ['## Threshold suggestion already computed by triage'];
@@ -97,12 +116,18 @@ function formatThresholdContext(res) {
   if (trimmedString(def.alarm_name)) lines.push(`Alert: ${def.alarm_name}`);
   if (trimmedString(def.metric_name)) lines.push(`Metric: ${def.metric_name}`);
   lines.push(`Current threshold: ${def.current_threshold ?? 'unknown'} -> suggested: ${suggestion.suggested_threshold}`);
+  if (recommendationType) lines.push(`Recommendation: ${recommendationType}`);
   if (trimmedString(suggestion.reason)) lines.push(`Reason: ${suggestion.reason}`);
   if (trimmedString(suggestion.confidence)) lines.push(`Confidence: ${suggestion.confidence}`);
   if (typeof suggestion.estimated_reduction === 'number') {
     lines.push(`Estimated noise reduction: ${suggestion.estimated_reduction}`);
   }
   if (trimmedString(res.alert_quality?.classification)) lines.push(`Alert quality: ${res.alert_quality.classification}`);
+  // Carried through so a reviewable suggestion is proposed with its caveats rather than as a clean
+  // recommendation the operator has no reason to question.
+  if (trimmedString(suggestion.risk_level)) lines.push(`Operational risk: ${suggestion.risk_level}`);
+  const warnings = Array.isArray(suggestion.risk_warnings) ? suggestion.risk_warnings.filter((w) => trimmedString(w)) : [];
+  if (warnings.length) lines.push(`Risk warnings: ${warnings.join('; ')}`);
   return lines.join('\n');
 }
 
@@ -144,10 +169,32 @@ ReasoningBullets.propTypes = {
   points: PropTypes.array.isRequired,
 };
 
+// One candidate cause with the evidence behind it. Rendered once for the whole plan: several actions
+// commonly address the same cause, and repeating the statement and its evidence on each of their
+// cards made the operator read the same three bullets three times before reaching the differences.
+function HypothesisBlock({ hypothesis }) {
+  const text = trimmedString(hypothesis?.hypothesis);
+  if (!text) return null;
+  const confidence = formatConfidence(hypothesis?.confidence);
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+      <Box sx={{ fontSize: 'var(--ds-text-small)' }}>
+        {text}
+        {confidence !== null ? <Box component='span' sx={{ color: 'var(--ds-gray-500)' }}>{` — ${confidence}% likely cause`}</Box> : null}
+      </Box>
+      <ReasoningBullets points={toPoints(hypothesis?.reasoning)} />
+    </Box>
+  );
+}
+
+HypothesisBlock.propTypes = {
+  hypothesis: PropTypes.object,
+};
+
 // A single command with an inline play button and its output. The server re-derives read-vs-write
 // and enforces write RBAC + the safety blocklist, so the click here is the human approval. Exposes an
 // imperative run() (returning success) so the action block can sequence execute → verify.
-const CommandRow = forwardRef(function CommandRow({ label, tone, command, accountId, eventId, canRun, disabled, onExecuted }, ref) {
+const CommandRow = forwardRef(function CommandRow({ label, tone, command, accountId, eventId, canRun, disabled, onExecuted, slot }, ref) {
   const [status, setStatus] = useState('IDLE');
   const [result, setResult] = useState(null);
 
@@ -162,10 +209,11 @@ const CommandRow = forwardRef(function CommandRow({ label, tone, command, accoun
     setStatus('RUNNING');
     setResult(null);
     try {
-      const res = await apiKubernetes.executeRemediationCommand(accountId, command, eventId);
+      const res = await apiKubernetes.executeRemediationCommand(accountId, command, eventId, undefined, slot);
       if (res && typeof res === 'object') {
         setResult(res);
-        setStatus(res.success ? 'SUCCESS' : 'FAILED');
+        const observedNothing = slot === 'verify' && !trimmedString(res.stdout);
+        setStatus(res.success ? (observedNothing ? 'INCONCLUSIVE' : 'SUCCESS') : 'FAILED');
         if (res.success && typeof onExecuted === 'function') onExecuted();
         return !!res.success;
       }
@@ -271,6 +319,7 @@ CommandRow.propTypes = {
   canRun: PropTypes.bool.isRequired,
   disabled: PropTypes.bool,
   onExecuted: PropTypes.func,
+  slot: PropTypes.oneOf(['execute', 'verify', 'rollback']).isRequired,
 };
 
 // CodeFixDetails shows the actual change behind a code-fix action: the files touched and the diff
@@ -327,7 +376,6 @@ function ActionCard({ index, action, hypothesis, accountId, eventId, canRun, app
   const rollbackCmd = trimmedString(action?.rollback_command);
 
   const hypText = trimmedString(hypothesis?.hypothesis) || trimmedString(action?.hypothesis);
-  const hypPoints = toPoints(hypothesis?.reasoning);
   const hypConfidence = formatConfidence(hypothesis?.confidence);
   // Only a command-less fix stands in for the code change; a mitigation with a command shows its
   // command rows instead, and must not carry someone else's diff.
@@ -398,15 +446,14 @@ function ActionCard({ index, action, hypothesis, accountId, eventId, canRun, app
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
         {action?.title ? <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>{action.title}</Box> : null}
         {hypText ? (
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
-            <Box sx={{ fontSize: 'var(--ds-text-small)' }}>
-              <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>
-                Hypothesis:{' '}
-              </Box>
-              {hypText}
-              {hypConfidence !== null ? <Box component='span' sx={{ color: 'var(--ds-gray-500)' }}>{` — ${hypConfidence}% likely cause`}</Box> : null}
+          // A reference, not a restatement — the cause and its evidence are listed once above, so the
+          // card only needs to say which one it addresses.
+          <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>
+            <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>
+              Addresses:{' '}
             </Box>
-            <ReasoningBullets points={hypPoints} />
+            {hypText}
+            {hypConfidence !== null ? <Box component='span' sx={{ color: 'var(--ds-gray-500)' }}>{` — ${hypConfidence}% likely cause`}</Box> : null}
           </Box>
         ) : null}
         {showCodeFix ? <CodeFixDetails codeFix={codeFix} /> : null}
@@ -414,6 +461,7 @@ function ActionCard({ index, action, hypothesis, accountId, eventId, canRun, app
           <CommandRow
             ref={execRef}
             label='Execute'
+            slot='execute'
             tone='info'
             command={execCmd}
             accountId={accountId}
@@ -427,6 +475,7 @@ function ActionCard({ index, action, hypothesis, accountId, eventId, canRun, app
           <CommandRow
             ref={verifyRef}
             label='Verify'
+            slot='verify'
             tone='neutral'
             command={verifyCmd}
             accountId={accountId}
@@ -448,6 +497,7 @@ function ActionCard({ index, action, hypothesis, accountId, eventId, canRun, app
           >
             <CommandRow
               label='Rollback'
+              slot='rollback'
               tone='warning'
               command={rollbackCmd}
               accountId={accountId}
@@ -503,12 +553,16 @@ const RemediationPanel = ({ accountId, eventId, nbStatus }) => {
   const canRun = hasWriteAccess(accountId);
   const autoTriggered = useRef(false);
   const mountedRef = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Set on the way in as well as cleared on the way out. Without the set, StrictMode's dev-mode
+    // mount/unmount/mount on one instance leaves the ref false for the pass that actually renders,
+    // and every state update guarded by it is silently dropped — the code-fix diff never appeared
+    // and an applied command never got its badge, with no error to explain either.
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
-    },
-    []
-  );
+    };
+  }, []);
 
   const isResolved = typeof nbStatus === 'string' && RESOLVED_STATUSES.includes(nbStatus.toUpperCase());
 
@@ -536,10 +590,16 @@ const RemediationPanel = ({ accountId, eventId, nbStatus }) => {
     try {
       // Reuse the stored investigation/RCA text as context so we do not re-investigate.
       let context = '';
+      // Surfaces that actually hold something applicable for this event. An action with no command is
+      // carried out on one of these, so the server uses this list to decide whether such an action is
+      // real — without it the model will still describe a code change it has no artifact for.
+      const artifacts = [];
       try {
         const rec = await apiKubernetes.generateAiRecommendation(accountId, eventId, 'pod_log_analysis');
         if (rec && typeof rec === 'object') {
-          if (mountedRef.current) setCodeFix(extractCodeFix(rec));
+          const fix = extractCodeFix(rec);
+          if (mountedRef.current) setCodeFix(fix);
+          if (fix) artifacts.push('code_fix');
           context = [rec.summary, rec.investigation, rec.detailed_response, rec.root_cause_analysis]
             .filter((part) => typeof part === 'string' && part.trim())
             .join('\n\n');
@@ -555,7 +615,9 @@ const RemediationPanel = ({ accountId, eventId, nbStatus }) => {
       // A tuned threshold is a remediation in its own right, and triage may already have computed one
       // for this event. Fetched separately (different service) and best-effort.
       try {
-        context = [context, formatThresholdContext(await apiTriage.getThresholdSuggestion(eventId))].filter(Boolean).join('\n\n');
+        const thresholdContext = formatThresholdContext(await apiTriage.getThresholdSuggestion(eventId));
+        if (thresholdContext) artifacts.push('threshold');
+        context = [context, thresholdContext].filter(Boolean).join('\n\n');
       } catch (err) {
         console.error('RemediationPanel: failed to fetch threshold suggestion', err);
       }
@@ -566,7 +628,7 @@ const RemediationPanel = ({ accountId, eventId, nbStatus }) => {
         setError('This event has no investigation content to build a remediation from.');
         return;
       }
-      const res = await apiKubernetes.generateRemediation(accountId, eventId, context);
+      const res = await apiKubernetes.generateRemediation(accountId, eventId, context, artifacts);
       if (res && typeof res === 'object' && Array.isArray(res.actions)) {
         setPlan(res);
       } else {
@@ -699,40 +761,39 @@ const RemediationPanel = ({ accountId, eventId, nbStatus }) => {
           <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>
             {plan.summary || 'No automated remediation is recommended: the root cause is not conclusive enough.'}
           </Box>
-          {hypotheses.map((h, i) => {
-            const c = formatConfidence(h?.confidence);
-            const text = trimmedString(h?.hypothesis);
-            const points = toPoints(h?.reasoning);
-            if (!text) return null;
-            return (
-              <Box key={i} sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
-                <Box sx={{ fontSize: 'var(--ds-text-small)' }}>
-                  <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>
-                    Hypothesis:{' '}
-                  </Box>
-                  {text}
-                  {c !== null ? <Box component='span' sx={{ color: 'var(--ds-gray-500)' }}>{` — ${c}% confidence`}</Box> : null}
-                </Box>
-                <ReasoningBullets points={points} />
-              </Box>
-            );
-          })}
+          {hypotheses.map((h, i) => (
+            <HypothesisBlock key={i} hypothesis={h} />
+          ))}
         </Box>
       ) : (
-        actions.map((action, idx) => (
-          <ActionCard
-            key={idx}
-            index={idx}
-            action={action}
-            hypothesis={hypByText[trimmedString(action?.hypothesis)]}
-            accountId={accountId}
-            eventId={eventId}
-            canRun={canRun}
-            appliedAt={executedCommands[trimmedString(action?.execute_command)] || ''}
-            onExecuted={loadExecutions}
-            codeFix={codeFix}
-          />
-        ))
+        <>
+          {hypotheses.length ? (
+            <Card variant='tinted' tone='neutral' size='sm' elevation='flat'>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+                <Box sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }}>
+                  {hypotheses.length > 1 ? 'Candidate causes' : 'Candidate cause'}
+                </Box>
+                {hypotheses.map((h, i) => (
+                  <HypothesisBlock key={i} hypothesis={h} />
+                ))}
+              </Box>
+            </Card>
+          ) : null}
+          {actions.map((action, idx) => (
+            <ActionCard
+              key={idx}
+              index={idx}
+              action={action}
+              hypothesis={hypByText[trimmedString(action?.hypothesis)]}
+              accountId={accountId}
+              eventId={eventId}
+              canRun={canRun}
+              appliedAt={executedCommands[trimmedString(action?.execute_command)] || ''}
+              onExecuted={loadExecutions}
+              codeFix={codeFix}
+            />
+          ))}
+        </>
       )}
     </Box>
   );

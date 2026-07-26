@@ -289,6 +289,7 @@ type Query {
     account_id: String!
     event_id: String
     context: String!
+    available_artifacts: [String!]
   ): AIResponse
 }
 
@@ -305,6 +306,7 @@ type Mutation {
     event_id: String
     command: String!
     config_name: String
+    slot: String
   ): AIResponse
 }
 
@@ -9401,6 +9403,8 @@ type ThresholdSuggestionDetail {
   recommendation_type: String
   suggested_duration: Int
   duration_reason: String
+  risk_level: String
+  risk_warnings: [String!]
 }
 
 type ThresholdSuggestionListOutput {

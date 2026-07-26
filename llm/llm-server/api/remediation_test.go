@@ -182,28 +182,43 @@ func TestNormalizePlan_ClampsMitigationConfidence(t *testing.T) {
 		{Action: "Raise checkout memory limit", Kind: "fix", Confidence: 88},
 	}}
 
-	normalizePlan(&plan)
+	normalizePlan(&plan, []string{"code_fix"})
 
-	assert.Equal(t, Confidence(maxMitigationConfidence), plan.Actions[0].Confidence, "mitigation confidence must be capped")
-	assert.Equal(t, Confidence(88), plan.Actions[1].Confidence, "a fix keeps its confidence")
+	// Looked up by name, not index: normalizePlan also reorders fixes ahead of mitigations.
+	assert.Equal(t, Confidence(maxMitigationConfidence), actionByName(t, plan, "Restart flagd deployment").Confidence,
+		"mitigation confidence must be capped")
+	assert.Equal(t, Confidence(88), actionByName(t, plan, "Raise checkout memory limit").Confidence,
+		"a fix keeps its confidence")
+}
+
+// actionByName finds an action regardless of the order normalizePlan settled on.
+func actionByName(t *testing.T, plan RemediationPlan, name string) RemediationAction {
+	t.Helper()
+	for _, a := range plan.Actions {
+		if a.Action == name {
+			return a
+		}
+	}
+	t.Fatalf("no action named %q in plan", name)
+	return RemediationAction{}
 }
 
 // Kind is free text from the model. Anything not recognizably "fix" defaults to mitigation: showing
 // a mitigation as a fix misleads the operator, whereas the reverse only under-claims.
 func TestNormalizePlan_DefaultsUnknownKindToMitigation(t *testing.T) {
 	plan := RemediationPlan{Actions: []RemediationAction{
-		{Kind: "", Confidence: 90},
-		{Kind: "workaround", Confidence: 90},
-		{Kind: "  FIX  ", Confidence: 90},
+		{Action: "empty kind", Kind: "", Confidence: 90},
+		{Action: "unrecognized kind", Kind: "workaround", Confidence: 90},
+		{Action: "padded fix", Kind: "  FIX  ", Confidence: 90},
 	}}
 
-	normalizePlan(&plan)
+	normalizePlan(&plan, []string{"code_fix"})
 
-	assert.Equal(t, RemediationKindMitigation, plan.Actions[0].Kind)
-	assert.Equal(t, Confidence(maxMitigationConfidence), plan.Actions[0].Confidence)
-	assert.Equal(t, RemediationKindMitigation, plan.Actions[1].Kind)
-	assert.Equal(t, RemediationKindFix, plan.Actions[2].Kind, "kind is matched case-insensitively after trimming")
-	assert.Equal(t, Confidence(90), plan.Actions[2].Confidence)
+	assert.Equal(t, RemediationKindMitigation, actionByName(t, plan, "empty kind").Kind)
+	assert.Equal(t, Confidence(maxMitigationConfidence), actionByName(t, plan, "empty kind").Confidence)
+	assert.Equal(t, RemediationKindMitigation, actionByName(t, plan, "unrecognized kind").Kind)
+	assert.Equal(t, RemediationKindFix, actionByName(t, plan, "padded fix").Kind, "kind is matched case-insensitively after trimming")
+	assert.Equal(t, Confidence(90), actionByName(t, plan, "padded fix").Confidence)
 }
 
 // A JSON payload inside a model-generated JSON reply reliably arrives truncated at the first inner
@@ -236,17 +251,17 @@ func TestNormalizePlan_ClampsActionToHypothesisConfidence(t *testing.T) {
 	plan := RemediationPlan{
 		Hypotheses: []RemediationHypothesis{{Hypothesis: "Non-atomic write in flagd-ui", Confidence: 95}},
 		Actions: []RemediationAction{
-			{Hypothesis: "Non-atomic write in flagd-ui", Kind: "fix", Confidence: 100},
-			{Hypothesis: "  non-atomic write in FLAGD-UI  ", Kind: "fix", Confidence: 80},
-			{Hypothesis: "a hypothesis that was never listed", Kind: "fix", Confidence: 100},
+			{Action: "exact match", Hypothesis: "Non-atomic write in flagd-ui", Kind: "fix", Confidence: 100},
+			{Action: "case and space insensitive match", Hypothesis: "  non-atomic write in FLAGD-UI  ", Kind: "fix", Confidence: 80},
+			{Action: "unmatched hypothesis", Hypothesis: "a hypothesis that was never listed", Kind: "fix", Confidence: 100},
 		},
 	}
 
-	normalizePlan(&plan)
+	normalizePlan(&plan, []string{"code_fix"})
 
-	assert.Equal(t, Confidence(95), plan.Actions[0].Confidence, "action is capped at its hypothesis")
-	assert.Equal(t, Confidence(80), plan.Actions[1].Confidence, "an action below the ceiling is untouched")
-	assert.Equal(t, Confidence(100), plan.Actions[2].Confidence, "an unmatched hypothesis leaves the value alone")
+	assert.Equal(t, Confidence(95), actionByName(t, plan, "exact match").Confidence, "action is capped at its hypothesis")
+	assert.Equal(t, Confidence(80), actionByName(t, plan, "case and space insensitive match").Confidence, "an action below the ceiling is untouched")
+	assert.Equal(t, Confidence(100), actionByName(t, plan, "unmatched hypothesis").Confidence, "an unmatched hypothesis leaves the value alone")
 }
 
 // The mitigation cap and the hypothesis ceiling compose: whichever binds harder wins.
@@ -258,7 +273,64 @@ func TestNormalizePlan_MitigationCapAndHypothesisCeilingCompose(t *testing.T) {
 		},
 	}
 
-	normalizePlan(&plan)
+	normalizePlan(&plan, []string{"code_fix"})
 
 	assert.Equal(t, Confidence(30), plan.Actions[0].Confidence, "the 30% hypothesis binds harder than the 50% mitigation cap")
+}
+
+// An action with no command is applied on another surface. When no surface holds anything for this
+// event, such an action is a dead end — it tells the operator a fix exists and points at an empty
+// panel — so it must not survive. This is the shape that shipped a "refactor scraper.py" card for an
+// event that had no code analysis at all.
+func TestNormalizePlan_DropsCommandlessActionWithoutArtifact(t *testing.T) {
+	newPlan := func() RemediationPlan {
+		return RemediationPlan{Actions: []RemediationAction{
+			{Action: "Refactor a source file", Kind: "fix", Confidence: 40},
+			{Action: "Raise memory limit", Kind: "mitigation", Confidence: 50, ExecuteCommand: "kubectl set resources deployment app -n ns --limits=memory=1Gi"},
+		}}
+	}
+
+	withoutArtifact := newPlan()
+	normalizePlan(&withoutArtifact, nil)
+	assert.Len(t, withoutArtifact.Actions, 1, "the command-less action has nothing backing it")
+	assert.Equal(t, "Raise memory limit", withoutArtifact.Actions[0].Action)
+
+	withArtifact := newPlan()
+	normalizePlan(&withArtifact, []string{"code_fix"})
+	assert.Len(t, withArtifact.Actions, 2, "with an artifact present the action is real and is kept")
+
+	blank := newPlan()
+	normalizePlan(&blank, []string{"", "   "})
+	assert.Len(t, blank.Actions, 1, "blank entries do not count as artifacts")
+}
+
+// Verify and rollback describe checking or undoing a command that ran. A command-less action runs
+// nothing, so those would report on unrelated state — as one live plan did, "verifying" a code change
+// by tailing logs.
+func TestNormalizePlan_StripsVerifyAndRollbackFromCommandlessAction(t *testing.T) {
+	plan := RemediationPlan{Actions: []RemediationAction{
+		{Action: "Apply a code change", Kind: "fix", Confidence: 80,
+			VerifyCommand: "kubectl logs -l app=x -n ns --tail=100", RollbackCommand: "kubectl rollout undo deployment x -n ns"},
+	}}
+
+	normalizePlan(&plan, []string{"code_fix"})
+
+	assert.Empty(t, plan.Actions[0].VerifyCommand)
+	assert.Empty(t, plan.Actions[0].RollbackCommand)
+}
+
+// Removing the cause outranks restoring service, however reliable the latter is. The prompt asks for
+// this and the model sorts by confidence instead, so the server decides the order.
+func TestNormalizePlan_OrdersFixesBeforeMitigations(t *testing.T) {
+	plan := RemediationPlan{Actions: []RemediationAction{
+		{Action: "restart", Kind: "mitigation", Confidence: 50, ExecuteCommand: "kubectl rollout restart deployment a -n ns"},
+		{Action: "low-confidence fix", Kind: "fix", Confidence: 40, ExecuteCommand: "kubectl set resources deployment a -n ns --limits=memory=1Gi"},
+		{Action: "high-confidence fix", Kind: "fix", Confidence: 90, ExecuteCommand: "kubectl set image deployment a c=i:2 -n ns"},
+	}}
+
+	normalizePlan(&plan, nil)
+
+	assert.Equal(t, []string{"high-confidence fix", "low-confidence fix", "restart"},
+		[]string{plan.Actions[0].Action, plan.Actions[1].Action, plan.Actions[2].Action},
+		"fixes first (best first), mitigations after — even a 40%% fix outranks a 50%% mitigation")
 }
