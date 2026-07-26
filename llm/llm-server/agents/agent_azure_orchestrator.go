@@ -158,7 +158,7 @@ Answer the user's question directly in clear markdown. Do NOT use the investigat
 // getAzurePlannerSupportedTools returns tools relevant to Azure debugging.
 // For this agent, it's primarily the "azure" tool (AzureAgentName).
 func getAzurePlannerSupportedTools(ctx *security.RequestContext, accountId string) []tocore.NBTool {
-	supportedToolNames := []string{AzureAgentName, getTicketAgentName(), WorkflowAgentName, GithubAgentName, WebSearchAgentName, RecommendationsAgentName, EventsAgentName, VisualizationAgentName, PostgresAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RedisAgentName, RabbitMQAgentName, KubectlAgentName, DelegateAgentToolName, tools.ToolIncidentAssembly}
+	supportedToolNames := []string{AzureAgentName, getTicketAgentName(), WorkflowAgentName, GithubAgentName, WebSearchAgentName, RecommendationsAgentName, EventsAgentName, VisualizationAgentName, PostgresAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RedisAgentName, RabbitMQAgentName, KubectlAgentName, DelegateAgentToolName, tools.ToolIncidentAssembly, tools.SearchSkillsToolName}
 
 	// The KG-backed service_dependency_graph covers cloud (AWS/GCP/Azure) topology,
 	// not just K8s. The V1 flag guard here went away with the V1 agent.

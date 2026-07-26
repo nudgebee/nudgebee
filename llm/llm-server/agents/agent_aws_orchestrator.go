@@ -274,6 +274,7 @@ func getAwsPlannerSupportedTools(ctx *security.RequestContext, accountId, agentN
 		"kubectl",         // KubectlAgentName
 		tools.ToolIncidentAssembly,
 		DelegateAgentToolName,
+		tools.SearchSkillsToolName, // Search knowledge bases by query (#34819)
 	}
 
 	// v1 (delegating) routes AWS resource inspection through the `aws` sub-agent;
