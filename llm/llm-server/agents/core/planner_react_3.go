@@ -1876,6 +1876,14 @@ func (o *NBReActPlanner3) Plan(
 
 	if lastErr != nil && len(intermediateSteps) == 0 {
 		logger.Error("reactagent3: agent failed without making any tool calls", "error", lastErr)
+		// EgressFilter enforce block: the secret never reached the provider.
+		// Surface the user-safe block message AS THE RESPONSE (audit id +
+		// remediation hint, no value echo) rather than a generic internal
+		// error. The message contains BlockedMessageMarker, so the executor
+		// still treats this step as a non-answer (see executor.go).
+		if msg, blocked := egressBlockedMessage(lastErr); blocked {
+			return nil, &NBAgentPlannerFinishAction{Data: msg, Status: ConversationStatusFailed}, nil
+		}
 		// Surface a clear cause for known failure modes (429/quota, oversized
 		// request, transient outage) by throwing a typed, HTTP-coded error —
 		// the executor reports it as a failed turn with the clean message. Only

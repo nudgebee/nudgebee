@@ -2551,6 +2551,25 @@ func classifyUserFacingLLMError(err error) error {
 	}
 }
 
+// egressBlockedMessage returns the user-safe block message and true when err is
+// (or wraps) an egressfilter enforce block. The message is built inside the
+// egressfilter package specifically to be safe to show verbatim — it never
+// echoes the matched secret or detector internals, only an audit id and a
+// remediation hint. Callers surface it as the assistant's *response text*
+// (not a generic internal error), matching the documented design that a block
+// is persisted as the agent's response. The returned string always contains
+// egressfilter.BlockedMessageMarker, so the executor still classifies the step
+// as a non-answer.
+func egressBlockedMessage(err error) (string, bool) {
+	if se, ok := egressfilter.AsError(err); ok {
+		return se.Error(), true
+	}
+	if errors.Is(err, egressfilter.ErrSecretsBlocked) {
+		return egressfilter.BlockedMessageMarker, true
+	}
+	return "", false
+}
+
 // syncModelWithContextOverrides returns the effective provider and model for an LLM call,
 // accounting for runtime context keys that may have changed the llm client from what the
 // config-based resolution returned. It must be called after the config-based resolution so

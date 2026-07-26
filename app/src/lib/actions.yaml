@@ -856,8 +856,64 @@ actions:
       - role: tenant_admin
       - role: account_admin_readonly
       - role: account_admin
-    comment: Hit LLM to get RCA for event
-  - name: ai_get_rcaformat
+      - role: tenant_admin
+  - name: egressfilter_get
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/egressfilter/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: Get the current tenant's LLM egress-filter config (mode + enabled)
+  - name: egressfilter_update
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/egressfilter/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Update the current tenant's LLM egress-filter mode / enabled flag
+  - name: egressfilter_upsert_pattern
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/egressfilter/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Create or update one custom egress detection pattern for the tenant
+  - name: egressfilter_delete_pattern
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/egressfilter/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Delete one custom egress detection pattern by id
+  - name: egressfilter_clear_override
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/egressfilter/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Clear the tenant's egress-filter override so env defaults apply
+  - name: ai_get_gc
     definition:
       kind: "synchronous"
       handler: '{{LLM_SERVER_URL}}/v1/analyze/event/rca/format_get'

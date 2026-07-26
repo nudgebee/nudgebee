@@ -91,6 +91,13 @@ func (w *wrappedModel) scanAndDecide(
 	}
 
 	result := Scan(payload)
+	// Per-tenant custom patterns run alongside the built-in corpus. Their
+	// hits carry the constant custom-pattern rule id and flow through the
+	// same source-tagging, allowlist/disabled-rule filtering, and mode/action
+	// resolution as any built-in hit.
+	if tcfg != nil && len(tcfg.compiledCustomRules) > 0 {
+		result.Hits = append(result.Hits, scanCustomRules(payload, tcfg.compiledCustomRules)...)
+	}
 	// Tag hits with their source kind so dashboards and (future) policy
 	// can distinguish user-typed secrets from agents reading configs. Done
 	// before tenant overrides so the Source survives onto FilterEvent hits.

@@ -24,6 +24,12 @@ type TenantConfig struct {
 	CustomRules   []byte    `db:"custom_rules"  json:"custom_rules"`    // raw JSONB; no admin-API surface yet
 	DisabledRules []string  `db:"disabled_rules" json:"disabled_rules"` // additive; disables env-loaded rules per tenant
 	UpdatedAt     time.Time `db:"updated_at"    json:"updated_at"`
+
+	// compiledCustomRules holds the tenant's enabled custom patterns compiled
+	// for the scan path. Populated by Resolve after a load (not by the DAO, not
+	// serialized) so the compile cost is paid once per cache entry, not per LLM
+	// call. Unexported: the scan path reads it via scanCustomRules.
+	compiledCustomRules []compiledCustomRule
 }
 
 // tenantIDContextKey is the context key under which the agent layer
@@ -170,6 +176,20 @@ func Resolve(ctx context.Context) *TenantConfig {
 			tenantCacheMu.Unlock()
 		}
 		return nil
+	}
+
+	// Compile the tenant's enabled custom patterns once, here, so the LLM
+	// call path (scanCustomRules) never pays the compile cost. A corrupted
+	// custom_rules blob is logged and treated as "no custom rules" — it must
+	// not break the baseline scan for this tenant (fail-open on custom rules
+	// only; the built-in corpus still runs).
+	if cfg != nil {
+		if parsed, perr := ParseCustomRules(cfg.CustomRules); perr != nil {
+			slog.Warn("egressfilter: tenant custom_rules parse failed; ignoring custom rules",
+				"tenant_id", tenantID.String(), "error", perr)
+		} else {
+			cfg.compiledCustomRules = compileCustomRules(parsed)
+		}
 	}
 
 	tenantCacheMu.Lock()
