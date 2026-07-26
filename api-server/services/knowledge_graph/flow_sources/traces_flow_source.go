@@ -1297,6 +1297,14 @@ func (s *TracesFlowSource) createNodeForServiceApplication(
 
 	properties["subtype"] = app.Id.Kind
 
+	// Concrete native label (specific_type), e.g. KubernetesStatefulSet, mirrors
+	// sources/k8s/workload.go's convention. Without this, core.NewNode defaults
+	// specific_type to the literal "Workload" NodeType string for every orphan
+	// node this creates (when matching to the authoritative k8s_source node misses).
+	if nodeType == core.NodeTypeWorkload && app.Id.Kind != "" {
+		properties["specific_type"] = "Kubernetes" + core.CanonicalWorkloadKind(app.Id.Kind)
+	}
+
 	node := core.NewNode(
 		nodeType,
 		uniqueKey,

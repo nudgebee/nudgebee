@@ -23,6 +23,31 @@ func GenerateEdgeID(sourceNodeID, destinationNodeID string, relationshipType Rel
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
 }
 
+// canonicalWorkloadKinds maps case-insensitive Kubernetes workload kind names to
+// their canonical PascalCase form — the casing Kubernetes itself uses, and what
+// sources/k8s/workload.go's "Kubernetes"+Kind specific_type convention expects.
+var canonicalWorkloadKinds = map[string]string{
+	"deployment":  "Deployment",
+	"statefulset": "StatefulSet",
+	"daemonset":   "DaemonSet",
+	"job":         "Job",
+	"cronjob":     "CronJob",
+	"replicaset":  "ReplicaSet",
+}
+
+// CanonicalWorkloadKind normalizes a Kubernetes workload kind string to its
+// canonical PascalCase form (e.g. "statefulset" -> "StatefulSet") so
+// "Kubernetes"+kind always matches sources/k8s/workload.go's specific_type
+// convention regardless of the casing an upstream observer (eBPF agent, traces
+// exporter, Prometheus label) happens to send. Kinds outside this table (e.g.
+// eBPF's custom "Runner" category) pass through unchanged.
+func CanonicalWorkloadKind(kind string) string {
+	if canonical, ok := canonicalWorkloadKinds[strings.ToLower(kind)]; ok {
+		return canonical
+	}
+	return kind
+}
+
 // NewNode creates a new node with generated ID and timestamps.
 //
 // uniqueKey must be a fully-built 6-part key whose position-0 is the
