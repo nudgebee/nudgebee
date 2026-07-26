@@ -203,4 +203,13 @@ func TestConvertGCPServiceMap_EmitsCallsEdges(t *testing.T) {
 	if !redisIsExternal {
 		t.Errorf("expected a Redis ExternalService node")
 	}
+
+	// Every converted node must carry a non-blank SpecificType — an empty string
+	// (Go's zero value) rather than the NodeType default produces a phantom,
+	// unlabeled leaf in the frontend's Node Type filter breakdown (see nb-34880).
+	for _, n := range nodes {
+		if n.SpecificType == "" {
+			t.Errorf("node %q (NodeType=%s) has blank SpecificType", n.ID, n.NodeType)
+		}
+	}
 }
