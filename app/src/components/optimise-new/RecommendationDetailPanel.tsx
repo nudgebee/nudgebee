@@ -73,18 +73,26 @@ const InlineResolutionHistory = ({ recommendationId, refreshKey }: { recommendat
 
   useEffect(() => {
     if (!recommendationId) return;
+    let cancelled = false;
     setLoading(true);
     recommendationApi
       .listRecommendationResolution(recommendationId, rowsPerPage, page * rowsPerPage)
       .then((res: any) => {
+        if (cancelled) return;
         setResolutions(res?.data?.recommendation_resolution || []);
         setTotalCount(res?.data?.recommendation_resolution_aggregate?.aggregate?.count || 0);
       })
       .catch(() => {
+        if (cancelled) return;
         setResolutions([]);
         setTotalCount(0);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [recommendationId, page, rowsPerPage, refreshKey]);
 
   const tableData = resolutions.map((r: any) => {
