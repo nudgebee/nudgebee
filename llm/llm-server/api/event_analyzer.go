@@ -191,6 +191,21 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		processEventAnalysis(c, tracer, meter)
 	})
 
+	groupV2.POST("/remediation/generate", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("remediation_generate")
+		processRemediationGenerate(c, tracer, meter)
+	})
+
+	groupV2.POST("/remediation/get", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("remediation_get")
+		processRemediationGet(c, tracer, meter)
+	})
+
+	groupV2.POST("/remediation/execute", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("remediation_execute")
+		processRemediationExecute(c, tracer, meter)
+	})
+
 	groupV2.POST("/event/rca", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal("event_analyzer")
 		var request EventRCAAnalysisRequest

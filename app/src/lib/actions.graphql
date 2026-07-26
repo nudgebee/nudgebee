@@ -285,6 +285,30 @@ type Query {
 }
 
 type Query {
+  ai_remediation_generate(
+    account_id: String!
+    event_id: String
+    context: String!
+  ): AIResponse
+}
+
+type Query {
+  ai_remediation_get(
+    account_id: String!
+    event_id: String
+  ): AIResponse
+}
+
+type Mutation {
+  ai_remediation_execute(
+    account_id: String!
+    event_id: String
+    command: String!
+    config_name: String
+  ): AIResponse
+}
+
+type Query {
   ai_get_workspace_file(
     request: AiGetWorspaceFile!
   ): jsonb

@@ -95,6 +95,7 @@ import { LiaEditSolid } from 'react-icons/lia';
 import { MdOutlineCategory } from 'react-icons/md';
 import DatadogMonitorSearch from '@components/k8s/investigate/cards/DatadogMonitorSearch';
 import SafeIcon from '@shared/icons/SafeIcon';
+import RemediationPanel from '@components/k8s/investigate/cards/RemediationPanel';
 // Cloud-specific card imports
 import CloudTrailEventCard from '@components/cloudaccount/investigate/cards/CloudTrailEventCard';
 import EventBridgeEventCard from '@components/cloudaccount/investigate/cards/EventBridgeEventCard';
@@ -2395,6 +2396,21 @@ const Investigate = () => {
                               // remounts the memoized card and restarts its polling useEffect.
                               <AIOrRcaCard key={`ai-card-${option.id}-${option?.refreshRenderId || 0}`} option={option} noPadding />
                             ))}
+
+                          {(() => {
+                            const askAi = matchedOptions.find((option) => option?.id === 'AskAiCard');
+                            const remediationEventId = row.id || router.query.id;
+                            return isK8s && askAi && !askAi.errorMessage && askAi.isCompleted?.() ? (
+                              // Key on eventId + refreshRenderId so the panel (and its generated plan) resets
+                              // when the event changes or Refresh Investigation re-runs, matching the AI card above.
+                              <RemediationPanel
+                                key={`remediation-${remediationEventId}-${askAi?.refreshRenderId || 0}`}
+                                accountId={row.cloud_account_id || router.query.accountId}
+                                eventId={remediationEventId}
+                                nbStatus={row?.nb_status}
+                              />
+                            ) : null;
+                          })()}
 
                           {isK8s && !currentInvestigation?.text && matchedOptions.length > 0 && (
                             <Box sx={{ display: 'flex', flexDirection: 'column' }}>{showReferenceLinks()}</Box>

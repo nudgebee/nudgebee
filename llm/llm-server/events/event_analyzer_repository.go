@@ -3,6 +3,7 @@ package events
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"nudgebee/llm/common"
@@ -28,6 +29,7 @@ const (
 	AnalysisTypeLog              EventAnalysisType = "log_analysis"
 	AnalysisTypeRCA              EventAnalysisType = "rca_analysis"
 	AnalysisTypeDetailedResponse EventAnalysisType = "detailed_response"
+	AnalysisTypeRemediation      EventAnalysisType = "remediation"
 )
 
 const (
@@ -400,6 +402,31 @@ func (r *EventAnalysisRepository) GetKnowledgebase(ctx *security.RequestContext,
 		return EventKnowledgebase{}, false
 	}
 	return EventKnowledgebase{}, false
+}
+
+// InsertRemediationExecution records that a remediation command was run against the event's cluster,
+// so the panel can show "already applied" on reload. type=CommandExecution, resolver NBLLM (attributed
+// to the acting user via resolver_id); type_reference_id is the command so the UI can match it to an action.
+func (r *EventAnalysisRepository) InsertRemediationExecution(ctx *security.RequestContext, eventId, userId, command string, dataJSON string, success bool) error {
+	status := "Success"
+	if !success {
+		status = "Failed"
+	}
+	_, err := r.dbManager.Db.Exec(
+		`INSERT INTO event_resolution (id, event_id, type, data, status, type_reference_id, resolver_type, resolver_id, status_message) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		common.GenerateUUID(),
+		eventId,
+		"CommandExecution",
+		dataJSON,
+		status,
+		command,
+		"NBLLM",
+		userId,
+		"remediation command executed")
+	if err != nil {
+		return fmt.Errorf("InsertRemediationExecution: %w", err)
+	}
+	return nil
 }
 
 func (r *EventAnalysisRepository) InsertEventRecommendationResolution(ctx *security.RequestContext, eventId string, parentConversationId string, prUrl string) error {

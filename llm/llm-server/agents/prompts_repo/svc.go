@@ -129,6 +129,9 @@ var watchCompletionSummary string
 //go:embed tool_remediation_generate.txt
 var toolRemediationGenerate string
 
+//go:embed tool_remediation_generate_json.txt
+var toolRemediationGenerateJson string
+
 // agentFinops is the system prompt for the FinOps cost optimization supervisor agent.
 // It orchestrates spend analysis, recommendation discovery, and resource investigation
 // by delegating to specialized sub-tools and agents.
@@ -211,6 +214,12 @@ const PromptWatchCompletionSummary = "watch_completion_summary"
 // PromptToolRemediationGenerate is the system prompt embedded in tool_remediation_generate.txt.
 // Loaded by RemediationGenerateTool.Call() to avoid hardcoding prompts in Go source.
 const PromptToolRemediationGenerate = "tool_remediation_generate"
+
+// PromptToolRemediationGenerateJson is the system prompt embedded in tool_remediation_generate_json.txt.
+// It instructs the model to emit a strict JSON remediation plan (root cause + execute/verify/rollback
+// commands per step) for the structured remediation panel, as opposed to the prose plan the
+// agent-facing PromptToolRemediationGenerate produces.
+const PromptToolRemediationGenerateJson = "tool_remediation_generate_json"
 
 // PromptScratchpadContextSummarizer summarizes a block of older scratchpad context for budget compression.
 const PromptScratchpadContextSummarizer = "scratchpad_context_summarizer"
@@ -311,6 +320,8 @@ func GetPrompt(module string, args ...any) string {
 		data = watchCompletionSummary
 	case PromptToolRemediationGenerate:
 		data = toolRemediationGenerate
+	case PromptToolRemediationGenerateJson:
+		data = toolRemediationGenerateJson
 	case PromptScratchpadSummarizer:
 		data = scratchpadSummarizer
 	case PromptScratchpadContextSummarizer:
