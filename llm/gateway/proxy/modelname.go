@@ -7,7 +7,10 @@ import (
 )
 
 // genericProviderAliases maps an explicit provider prefix ("provider/model") to a
-// Bifrost provider. "google" is accepted as an alias for Gemini's public API.
+// Bifrost provider. "google" is accepted as an alias for Gemini's public API. The
+// second group are OpenAI-compatible api-key providers (bearer token, default
+// endpoint) — drop-in on the generic endpoint; operator/tenant credentials flow
+// through the existing api-key plumbing, so the alias is all that's needed to route.
 var genericProviderAliases = map[string]schemas.ModelProvider{
 	"anthropic":   schemas.Anthropic,
 	"openai":      schemas.OpenAI,
@@ -16,6 +19,17 @@ var genericProviderAliases = map[string]schemas.ModelProvider{
 	"huggingface": schemas.HuggingFace,
 	"hf":          schemas.HuggingFace,
 	"bedrock":     schemas.Bedrock,
+	"groq":        schemas.Groq,
+	"mistral":     schemas.Mistral,
+	"cohere":      schemas.Cohere,
+	"deepseek":    schemas.DeepSeek,
+	"xai":         schemas.XAI,
+	"perplexity":  schemas.Perplexity,
+	"openrouter":  schemas.OpenRouter,
+	"fireworks":   schemas.Fireworks,
+	"cerebras":    schemas.Cerebras,
+	"nebius":      schemas.Nebius,
+	"parasail":    schemas.Parasail,
 }
 
 // resolveModelProvider maps a model name from the generic /v1 endpoint to the
@@ -29,6 +43,8 @@ var genericProviderAliases = map[string]schemas.ModelProvider{
 //     Bedrock is likewise explicit-only — its model id (e.g.
 //     "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", or an inference-profile
 //     id like "bedrock/us.anthropic.claude-...") is passed through after the prefix.
+//     The first-slash split also lets OpenRouter's "vendor/model" ids ride through:
+//     "openrouter/anthropic/claude-3.5-sonnet" → model "anthropic/claude-3.5-sonnet".
 //   - a bare model name (e.g. "gpt-5", "claude-opus-4-8", "gemini-3.1-flash"),
 //     resolved by a well-known provider prefix.
 //

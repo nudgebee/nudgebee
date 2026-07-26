@@ -26,6 +26,20 @@ func TestResolveModelProvider(t *testing.T) {
 		// Bedrock: explicit prefix, model id (incl. inference-profile ids) passed through.
 		{"bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", schemas.Bedrock, "anthropic.claude-3-5-sonnet-20241022-v2:0", true},
 		{"bedrock/us.anthropic.claude-3-5-haiku-20241022-v1:0", schemas.Bedrock, "us.anthropic.claude-3-5-haiku-20241022-v1:0", true},
+		// OpenAI-compatible api-key providers — explicit prefix routes to the provider.
+		{"groq/llama-3.3-70b-versatile", schemas.Groq, "llama-3.3-70b-versatile", true},
+		{"mistral/mistral-large-latest", schemas.Mistral, "mistral-large-latest", true},
+		{"deepseek/deepseek-chat", schemas.DeepSeek, "deepseek-chat", true},
+		{"xai/grok-4", schemas.XAI, "grok-4", true},
+		{"perplexity/sonar", schemas.Perplexity, "sonar", true},
+		{"cohere/command-r-plus", schemas.Cohere, "command-r-plus", true},
+		{"fireworks/llama-v3p1-70b", schemas.Fireworks, "llama-v3p1-70b", true},
+		{"cerebras/llama-3.3-70b", schemas.Cerebras, "llama-3.3-70b", true},
+		{"nebius/deepseek-v3", schemas.Nebius, "deepseek-v3", true},
+		{"parasail/some-model", schemas.Parasail, "some-model", true},
+		// OpenRouter model ids are themselves "vendor/model"; the first-slash split
+		// keeps the rest intact.
+		{"openrouter/anthropic/claude-3.5-sonnet", schemas.OpenRouter, "anthropic/claude-3.5-sonnet", true},
 		// Bare well-known names via prefix heuristic.
 		{"claude-opus-4-8", schemas.Anthropic, "claude-opus-4-8", true},
 		{"gpt-5", schemas.OpenAI, "gpt-5", true},
