@@ -130,8 +130,16 @@ func TestNBAccount_ConfigForProvider(t *testing.T) {
 	require.NotNil(t, cfg2)
 	assert.Equal(t, "https://proxy.example.com", cfg2.NetworkConfig.BaseURL)
 
-	// Unconfigured provider → nil so core rejects it cleanly.
+	// Standard provider with no operator cred → still a default config, so a tenant
+	// BYO key (injected per request as a DirectKey) can serve it without the operator
+	// having pre-configured the provider. Empty BaseURL → the client defaults it.
 	cfg3, err := a.GetConfigForProvider(schemas.Gemini)
 	require.NoError(t, err)
-	assert.Nil(t, cfg3)
+	require.NotNil(t, cfg3, "standard provider must get a config so tenant BYO works")
+	assert.Empty(t, cfg3.NetworkConfig.BaseURL)
+
+	// Unknown/non-standard provider (e.g. a typo) → nil so core rejects it cleanly.
+	cfg4, err := a.GetConfigForProvider(schemas.ModelProvider("not-a-real-provider"))
+	require.NoError(t, err)
+	assert.Nil(t, cfg4)
 }
