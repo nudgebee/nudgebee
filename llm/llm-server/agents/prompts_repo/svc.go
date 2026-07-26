@@ -62,9 +62,6 @@ var eventInvestigation string
 //go:embed memory_extractor.txt
 var memoryExtractor string
 
-//go:embed agent_k8s_debug.txt
-var agentK8sDebug string
-
 //go:embed agent_k8s_debug_react.txt
 var agentK8sDebugReact string
 
@@ -190,7 +187,6 @@ const PromptEventSummary = "event_summary"
 const PromptEventGeneralSummary = "event_general_summary"
 const PromptEventInvestigation = "event_investigation"
 const PromptMemoryExtractor = "memory_extractor"
-const PromptAgentK8sDebug = "agent_k8s_debug"
 const PromptAgentK8sDebugReact = "agent_k8s_debug_react"
 const PromptAgentK8sLean = "agent_k8s_lean"
 const PromptAgentAwsLean = "agent_aws_lean"
@@ -273,8 +269,6 @@ func GetPrompt(module string, args ...any) string {
 		data = eventInvestigation
 	case PromptMemoryExtractor:
 		data = memoryExtractor
-	case PromptAgentK8sDebug:
-		data = agentK8sDebug
 	case PromptAgentK8sDebugReact:
 		data = agentK8sDebugReact
 	case PromptAgentK8sLean:
