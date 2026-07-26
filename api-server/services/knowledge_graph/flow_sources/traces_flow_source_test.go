@@ -420,6 +420,73 @@ func TestTracesFlowSource_MatchK8sInternalDNSToNode(t *testing.T) {
 	}
 }
 
+func TestNormalizeCallTargetName(t *testing.T) {
+	tests := []struct {
+		name     string
+		target   string
+		kind     string
+		wantName string
+	}{
+		{
+			name:     "deployment pod name is normalized to workload name",
+			target:   "llm-server-57744b6758-z5422",
+			kind:     "",
+			wantName: "llm-server",
+		},
+		{
+			name:     "another replica of the same deployment normalizes to the same workload name",
+			target:   "llm-server-57744b6758-bzt2r",
+			kind:     "",
+			wantName: "llm-server",
+		},
+		{
+			name:     "kind Pod forces owner extraction even if name doesn't look pod-shaped",
+			target:   "kafka-0",
+			kind:     "Pod",
+			wantName: "kafka",
+		},
+		{
+			name:     "plain service name is left untouched",
+			target:   "llm-server",
+			kind:     "",
+			wantName: "llm-server",
+		},
+		{
+			name:     "external hostname is left untouched",
+			target:   "api.stripe.com",
+			kind:     "",
+			wantName: "api.stripe.com",
+		},
+		{
+			name:     "bare ReplicaSet name (single hash segment) is normalized to workload name",
+			target:   "cloud-collector-server-5888444974",
+			kind:     "Service",
+			wantName: "cloud-collector-server",
+		},
+		{
+			name:     "another ReplicaSet hash for the same workload normalizes to the same name",
+			target:   "cloud-collector-server-5f6cc75ffb",
+			kind:     "Service",
+			wantName: "cloud-collector-server",
+		},
+		{
+			name:     "short trailing segment below the hash length range is left untouched",
+			target:   "auth-service",
+			kind:     "Service",
+			wantName: "auth-service",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeCallTargetName(tt.target, tt.kind)
+			if got != tt.wantName {
+				t.Errorf("normalizeCallTargetName(%q, %q) = %q, want %q", tt.target, tt.kind, got, tt.wantName)
+			}
+		})
+	}
+}
+
 // NOTE: The main business logic for traces flow source is now in:
 // 1. traces.FetchTracesAndBuildServiceMap() - building the service map from traces
 // 2. ConvertServiceMapToGraph() - converting service map to graph nodes/edges

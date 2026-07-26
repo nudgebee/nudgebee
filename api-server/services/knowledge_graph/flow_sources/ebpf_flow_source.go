@@ -728,7 +728,7 @@ func (s *EbpfFlowSource) parseServiceMapFromRelay(relayResponse map[string]any) 
 func (s *EbpfFlowSource) getApplicationName(app *core.ServiceApplication) string {
 	if app.Id.Name != "" {
 		// If the kind is Pod or the name looks like a pod name, extract the workload name
-		if app.Id.Kind == "Pod" || s.isPodName(app.Id.Name) {
+		if app.Id.Kind == "Pod" || isPodName(app.Id.Name) {
 			_, workloadName := core.ExtractPodOwner(app.Id.Name)
 			return workloadName
 		}
@@ -749,7 +749,7 @@ func (s *EbpfFlowSource) getApplicationName(app *core.ServiceApplication) string
 //   - DaemonSet pattern ({name}-{pod-id}) - too many false positives like "konnectivity-agent"
 //
 // For StatefulSet and DaemonSet pods, the Kind should be "Pod" which triggers extraction directly.
-func (s *EbpfFlowSource) isPodName(name string) bool {
+func isPodName(name string) bool {
 	parts := strings.Split(name, "-")
 
 	// Must have at least 3 parts to avoid false positives
@@ -786,7 +786,7 @@ func (s *EbpfFlowSource) getWorkloadName(app *core.ServiceApplication) string {
 	if app.Id.Name == "" {
 		return ""
 	}
-	if app.Id.Kind == "Pod" || s.isPodName(app.Id.Name) {
+	if app.Id.Kind == "Pod" || isPodName(app.Id.Name) {
 		_, workloadName := core.ExtractPodOwner(app.Id.Name)
 		return workloadName
 	}
@@ -1090,7 +1090,7 @@ func (s *EbpfFlowSource) createExternalServiceNode(
 			"name", id.Name)
 		return nil
 	}
-	if s.isPodName(id.Name) {
+	if isPodName(id.Name) {
 		// The eBPF agent occasionally labels in-cluster pods as kind="external".
 		// Don't persist them as ExternalService — leave matching to the
 		// existing matchApplicationToNode/Workload paths which will resolve

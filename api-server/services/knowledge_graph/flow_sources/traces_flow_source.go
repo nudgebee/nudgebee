@@ -443,18 +443,20 @@ func (s *TracesFlowSource) processK8sAccount(
 					// Drop the edge instead of creating an orphan ExternalService.
 					continue
 				default:
+					matchName := normalizeCallTargetName(targetName, targetKind)
+
 					// First try to match by name/kind to existing nodes
-					upstreamNode = s.tryMatchExternalService(targetName, targetKind, account.CloudAccountID)
+					upstreamNode = s.tryMatchExternalService(matchName, targetKind, account.CloudAccountID)
 					if upstreamNode == nil {
 						// No match found - create external service node
-						upstreamNode = s.createExternalServiceNode(targetName, targetKind, req.TenantID, account)
+						upstreamNode = s.createExternalServiceNode(matchName, targetKind, req.TenantID, account)
 						if upstreamNode == nil {
 							// Empty or raw-IP name — skip the edge entirely.
 							continue
 						}
 						newNodes = append(newNodes, upstreamNode)
-						externalServiceNodes[targetName] = upstreamNode
-						unmatchedDestinations[targetName]++
+						externalServiceNodes[matchName] = upstreamNode
+						unmatchedDestinations[matchName]++
 					}
 				}
 
@@ -527,18 +529,20 @@ func (s *TracesFlowSource) processK8sAccount(
 					// Drop the edge instead of creating an orphan ExternalService.
 					continue
 				default:
+					matchName := normalizeCallTargetName(downstreamName, downstreamKind)
+
 					// First try to match by name/kind to existing nodes
-					downstreamNode = s.tryMatchExternalService(downstreamName, downstreamKind, account.CloudAccountID)
+					downstreamNode = s.tryMatchExternalService(matchName, downstreamKind, account.CloudAccountID)
 					if downstreamNode == nil {
 						// No match found - create external service node
-						downstreamNode = s.createExternalServiceNode(downstreamName, downstreamKind, req.TenantID, account)
+						downstreamNode = s.createExternalServiceNode(matchName, downstreamKind, req.TenantID, account)
 						if downstreamNode == nil {
 							// Empty or raw-IP name — skip the edge entirely.
 							continue
 						}
 						newNodes = append(newNodes, downstreamNode)
-						externalServiceNodes[downstreamName] = downstreamNode
-						unmatchedSources[downstreamName]++
+						externalServiceNodes[matchName] = downstreamNode
+						unmatchedSources[matchName]++
 					}
 				}
 
@@ -883,6 +887,14 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 
 	nodeType, _ := s.inferNodeType(app.Id.Kind, app.Type)
 
+	// Normalize before the exact-match strategies below (1-4), so a
+	// pod/ReplicaSet-shaped observed name has a real chance to match the
+	// existing workload node instead of always missing on exact string
+	// comparison and falling through to node creation. Strategies 0 (DNS)
+	// and 6 (AWS hostname) use their own pattern matching and stay on the
+	// raw app.Id.Name.
+	name := normalizeCallTargetName(app.Id.Name, app.Id.Kind)
+
 	// Build list of node types to try. OTel `service.name` is a logical
 	// identifier that may align with any of:
 	//   - a NodeTypeService node (another traces observation of the same logical service)
@@ -912,7 +924,7 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 	}
 
 	// Strategy 1: Match by namespace and name (same account)
-	if app.Id.Namespace != "" && app.Id.Name != "" {
+	if app.Id.Namespace != "" && name != "" {
 		for _, nt := range nodeTypesToTry {
 			result, err := matcher.FindNode(MatchCriteria{
 				AccountID: k8sAccountID,
@@ -926,7 +938,7 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 					},
 					{
 						PropertyPath:  "name",
-						Value:         app.Id.Name,
+						Value:         name,
 						MatchType:     core.MatchTypeExact,
 						CaseSensitive: false,
 					},
@@ -935,7 +947,7 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 			if err == nil && result.Matched {
 				s.logger.Debug("matched application by namespace and name (strategy 1)",
 					"namespace", app.Id.Namespace,
-					"name", app.Id.Name,
+					"name", name,
 					"node_type", nt,
 					"node", result.Node.UniqueKey)
 				return result.Node, nil
@@ -944,7 +956,7 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 	}
 
 	// Strategy 2: Exact match by name and kind (same account)
-	if app.Id.Name != "" {
+	if name != "" {
 		for _, nt := range nodeTypesToTry {
 			result, err := matcher.FindNode(MatchCriteria{
 				AccountID: k8sAccountID,
@@ -952,7 +964,7 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 				PropertyMatches: []PropertyMatch{
 					{
 						PropertyPath:  "name",
-						Value:         app.Id.Name,
+						Value:         name,
 						MatchType:     core.MatchTypeExact,
 						CaseSensitive: false,
 					},
@@ -960,7 +972,7 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 			})
 			if err == nil && result.Matched {
 				s.logger.Debug("matched application by name (strategy 2)",
-					"name", app.Id.Name,
+					"name", name,
 					"node_type", nt,
 					"node", result.Node.UniqueKey)
 				return result.Node, nil
@@ -969,7 +981,7 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 	}
 
 	// Strategy 3: Match by namespace and name (any account, inferred type only)
-	if app.Id.Namespace != "" && app.Id.Name != "" {
+	if app.Id.Namespace != "" && name != "" {
 		result, err := matcher.FindNode(MatchCriteria{
 			NodeType: nodeType,
 			PropertyMatches: []PropertyMatch{
@@ -981,7 +993,7 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 				},
 				{
 					PropertyPath:  "name",
-					Value:         app.Id.Name,
+					Value:         name,
 					MatchType:     core.MatchTypeExact,
 					CaseSensitive: false,
 				},
@@ -990,7 +1002,7 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 		if err == nil && result.Matched {
 			s.logger.Debug("matched application by namespace and name (strategy 3)",
 				"namespace", app.Id.Namespace,
-				"name", app.Id.Name,
+				"name", name,
 				"node_type", nodeType,
 				"node", result.Node.UniqueKey)
 			return result.Node, nil
@@ -998,13 +1010,13 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 	}
 
 	// Strategy 4: Exact match by name (any account, inferred type only)
-	if app.Id.Name != "" {
+	if name != "" {
 		result, err := matcher.FindNode(MatchCriteria{
 			NodeType: nodeType,
 			PropertyMatches: []PropertyMatch{
 				{
 					PropertyPath:  "name",
-					Value:         app.Id.Name,
+					Value:         name,
 					MatchType:     core.MatchTypeExact,
 					CaseSensitive: false,
 				},
@@ -1012,7 +1024,7 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 		})
 		if err == nil && result.Matched {
 			s.logger.Debug("matched application by name (strategy 4)",
-				"name", app.Id.Name,
+				"name", name,
 				"node_type", nodeType,
 				"node", result.Node.UniqueKey)
 			return result.Node, nil
@@ -1178,6 +1190,41 @@ func (s *TracesFlowSource) matchAWSHostnameToNode(name, k8sAccountID string) *co
 	return nil
 }
 
+// normalizeCallTargetName strips a k8s pod-name suffix (ReplicaSet/job hash +
+// pod ID) from a trace-reported call target. Trace spans often report the raw
+// pod hostname (e.g. via net.peer.name) rather than the owning workload name;
+// without this, every pod replica would resolve to a distinct name and mint
+// its own orphan ExternalService node instead of resolving to the shared
+// workload node. Mirrors ebpf_flow_source.go's isPodName/ExtractPodOwner handling.
+func normalizeCallTargetName(name, kind string) string {
+	if kind == "Pod" || isPodName(name) {
+		_, owner := core.ExtractPodOwner(name)
+		return owner
+	}
+	if isReplicaSetHashName(name) {
+		parts := strings.Split(name, "-")
+		return strings.Join(parts[:len(parts)-1], "-")
+	}
+	return name
+}
+
+// isReplicaSetHashName reports whether name looks like a bare k8s ReplicaSet
+// name ({owner}-{8-10 char hash}) with no pod-ID suffix — the shape OTel
+// auto-instrumentation sometimes reports as service.name when
+// OTEL_SERVICE_NAME isn't configured on the workload, instead of the pod's
+// own name. Deliberately conservative (same hash-length range as the
+// Deployment case in isPodName): a single trailing segment has less
+// structure to confirm it's machine-generated than the two-segment pod
+// pattern, so this only strips when the shape is a strong match.
+func isReplicaSetHashName(name string) bool {
+	parts := strings.Split(name, "-")
+	if len(parts) < 2 {
+		return false
+	}
+	hash := parts[len(parts)-1]
+	return len(hash) >= 8 && len(hash) <= 10 && core.IsAlphanumeric(hash)
+}
+
 // tryMatchExternalService attempts to match an external service to existing nodes
 func (s *TracesFlowSource) tryMatchExternalService(
 	name, kind, k8sAccountID string,
@@ -1237,6 +1284,11 @@ func (s *TracesFlowSource) createNodeForServiceApplication(
 		return nil
 	}
 
+	// Normalize before both the unique key and properties.name so pod/
+	// ReplicaSet replicas of the same workload collapse onto one node
+	// instead of each minting its own duplicate (see normalizeCallTargetName).
+	name := normalizeCallTargetName(app.Id.Name, app.Id.Kind)
+
 	// Build unique key keyed on cloud_provider (not observer). For traces-observed
 	// K8s workloads cloud_provider is "k8s" so the same node merges with views from
 	// k8s_source and other flow sources. Observer ("traces") is recorded on node.Source.
@@ -1246,11 +1298,11 @@ func (s *TracesFlowSource) createNodeForServiceApplication(
 		"",
 		nodeType,
 		app.Id.Namespace,
-		app.Id.Name,
+		name,
 	)
 
 	properties := make(map[string]interface{})
-	properties["name"] = app.Id.Name
+	properties["name"] = name
 	properties["kind"] = app.Id.Kind
 
 	if app.Id.Namespace != "" {
@@ -1329,7 +1381,8 @@ func (s *TracesFlowSource) createNodeForServiceApplication(
 	s.logger.Debug("created new node for application",
 		"node_type", nodeType,
 		"unique_key", uniqueKey,
-		"name", app.Id.Name)
+		"name", name,
+		"observed_name", app.Id.Name)
 
 	return node
 }
