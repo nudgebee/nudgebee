@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 
-	"github.com/maximhq/bifrost/core/schemas"
+	"nudgebee/llm-gateway/auth"
 )
 
 // fingerprintSalt is fixed domain-separation for the prefix hash. It is NOT a secret
@@ -24,10 +24,15 @@ const fingerprintSalt = "nb-gw-prefix-v1"
 // fitting the structure-only capture rule. Provider-shape aware (Anthropic/OpenAI/
 // Gemini). Empty when there is no prefix to hash (e.g. an admin/GET call).
 //
-// Caveat: it is COARSE — two distinct conversations that open identically collide. It's
-// a stateless fallback; a precise per-conversation id needs a client-supplied session
-// id or a growing-prefix + recent-fingerprint store (deferred).
-func prefixFingerprint(_ schemas.ModelProvider, body []byte) string {
+// The caller's identity (tenant + user) is folded into the hash so two DIFFERENT users
+// opening with the same prompt (e.g. "hi" + the same system/tools) get DIFFERENT
+// fingerprints — otherwise they'd be grouped as one conversation. Within one user the
+// prefix is still stable, so a conversation's turns still share the fingerprint.
+//
+// Caveat: it is COARSE — the SAME user's two conversations that open identically still
+// collide. It's a stateless fallback; a precise per-conversation id needs a client-
+// supplied session id or a growing-prefix + recent-fingerprint store (deferred).
+func prefixFingerprint(id auth.Identity, body []byte) string {
 	if len(body) == 0 {
 		return ""
 	}
@@ -84,12 +89,17 @@ func prefixFingerprint(_ schemas.ModelProvider, body []byte) string {
 	if len(system) == 0 && len(r.Tools) == 0 && len(firstUser) == 0 {
 		return "" // nothing stable to fingerprint
 	}
-	// Delimit the variable-length fields with a null byte so boundary shifting
-	// can't collide (system="ab"+tools="c" must not hash the same as system="a"+
-	// tools="bc"). These are raw JSON messages, which never contain an unescaped
-	// 0x00, so the delimiter is unambiguous.
+	// Delimit every field with a null byte so boundary shifting can't collide
+	// (system="ab"+tools="c" must not hash the same as system="a"+tools="bc"). The
+	// JSON fields never contain an unescaped 0x00; identity is scoped ids, so the
+	// delimiter is unambiguous. Identity (tenant ∥ user) leads the input so it
+	// namespaces the prefix per user.
 	h := sha256.New()
 	h.Write([]byte(fingerprintSalt))
+	h.Write([]byte{0})
+	h.Write([]byte(id.TenantID))
+	h.Write([]byte{0})
+	h.Write([]byte(id.UserID))
 	h.Write([]byte{0})
 	h.Write(system)
 	h.Write([]byte{0})

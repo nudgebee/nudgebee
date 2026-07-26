@@ -200,7 +200,7 @@ func (h *handler) handle(c *gin.Context) {
 
 	// Fingerprint the stable prompt prefix (system+tools+first-user): the cache-affinity
 	// key + the inferred session id when the client supplies none. Uses the ORIGINAL body.
-	fingerprint := prefixFingerprint(provider, rc.Body)
+	fingerprint := prefixFingerprint(rc.Identity, rc.Body)
 	sessionID, sessionSource := resolveSession(c, rc.Body, fingerprint)
 	rm := &reqMeta{
 		reqID:         uuid.NewString(),
