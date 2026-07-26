@@ -72,10 +72,13 @@ func traceResponseHeaderMiddleware() gin.HandlerFunc {
 func providerCreds() []engine.ProviderCredsConfig {
 	var creds []engine.ProviderCredsConfig
 
-	// LLM_PROVIDER_* block — only when it actually carries a credential (avoids a
-	// spurious "configured but unusable" warning for the default provider name).
+	// LLM_PROVIDER_* block — when it carries a credential, or when the named provider
+	// can run keyless (Bedrock via IRSA / the AWS default credential chain, enabled by
+	// setting LLM_PROVIDER=bedrock with no static keys). The credential-material guard
+	// avoids a spurious "configured but unusable" warning for the default provider name.
 	c := config.Config
-	if c.LlmProviderApiKey != "" || c.LlmProviderAccessKey != "" || c.LlmProviderSecretKey != "" {
+	if c.LlmProviderApiKey != "" || c.LlmProviderAccessKey != "" || c.LlmProviderSecretKey != "" ||
+		engine.SupportsKeylessOperator(c.LlmProvider) {
 		creds = append(creds, engine.ProviderCredsConfig{
 			Provider:     c.LlmProvider,
 			APIKey:       c.LlmProviderApiKey,

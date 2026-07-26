@@ -194,6 +194,8 @@ var genericModelCatalog = []struct{ id, ownedBy string }{
 	{"gemini/gemini-3.1-flash-lite", "gemini"},
 	{"huggingface/meta-llama/Llama-3.1-8B-Instruct", "huggingface"},
 	{"huggingface/deepseek-ai/DeepSeek-V3", "huggingface"},
+	{"bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock"},
+	{"bedrock/anthropic.claude-3-5-haiku-20241022-v1:0", "bedrock"},
 }
 
 // handleModels serves GET /v1/models in OpenAI's list shape so model pickers in

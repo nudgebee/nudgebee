@@ -15,6 +15,7 @@ var genericProviderAliases = map[string]schemas.ModelProvider{
 	"google":      schemas.Gemini,
 	"huggingface": schemas.HuggingFace,
 	"hf":          schemas.HuggingFace,
+	"bedrock":     schemas.Bedrock,
 }
 
 // resolveModelProvider maps a model name from the generic /v1 endpoint to the
@@ -25,6 +26,9 @@ var genericProviderAliases = map[string]schemas.ModelProvider{
 //     (e.g. "huggingface/meta-llama/Llama-3.1-8B-Instruct" → model
 //     "meta-llama/Llama-3.1-8B-Instruct"). HuggingFace has no bare-name form: its
 //     ids collide with the "provider/model" shape, so it must be addressed explicitly.
+//     Bedrock is likewise explicit-only — its model id (e.g.
+//     "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", or an inference-profile
+//     id like "bedrock/us.anthropic.claude-...") is passed through after the prefix.
 //   - a bare model name (e.g. "gpt-5", "claude-opus-4-8", "gemini-3.1-flash"),
 //     resolved by a well-known provider prefix.
 //

@@ -84,9 +84,56 @@ func TestBuildCred_BedrockCloudBYO(t *testing.T) {
 	assert.Empty(t, cred.key.Value.Val, "cloud creds must not set the api-key Value")
 }
 
-func TestBuildCred_BedrockMissingKeys(t *testing.T) {
-	_, _, ok := buildCred(ProviderCredsConfig{Provider: "bedrock", Region: "us-west-2"})
-	assert.False(t, ok, "bedrock without access/secret key → not usable")
+func TestBuildCred_BedrockKeyless_IRSA(t *testing.T) {
+	// Operator Bedrock with no static keys is valid: Bifrost then uses the AWS default
+	// credential chain (IRSA / instance role). The key still carries the region.
+	provider, cred, ok := buildCred(ProviderCredsConfig{Provider: "bedrock", Region: "eu-west-1"})
+	require.True(t, ok, "operator bedrock may run keyless via IRSA")
+	assert.Equal(t, schemas.Bedrock, provider)
+	require.NotNil(t, cred.key.BedrockKeyConfig)
+	bk := cred.key.BedrockKeyConfig
+	assert.Empty(t, bk.AccessKey.Val, "keyless: no static access key")
+	assert.Empty(t, bk.SecretKey.Val, "keyless: no static secret key")
+	require.NotNil(t, bk.Region)
+	assert.Equal(t, "eu-west-1", bk.Region.Val)
+}
+
+func TestBuildCred_BedrockPartialCreds(t *testing.T) {
+	// Access without secret (or vice versa) is a misconfiguration, not a keyless setup.
+	_, _, ok := buildCred(ProviderCredsConfig{Provider: "bedrock", AccessKey: "AKIA...", Region: "us-west-2"})
+	assert.False(t, ok, "bedrock with access but no secret → rejected (partial creds)")
+
+	_, _, ok = buildCred(ProviderCredsConfig{Provider: "bedrock", SecretKey: "secret", Region: "us-west-2"})
+	assert.False(t, ok, "bedrock with secret but no access → rejected (partial creds)")
+}
+
+func TestBuildTenantKey_BedrockStatic(t *testing.T) {
+	provider, key, ok := BuildTenantKey(ProviderCredsConfig{
+		Provider: "bedrock", AccessKey: "AKIA...", SecretKey: "secret", Region: "us-west-2",
+	})
+	require.True(t, ok)
+	assert.Equal(t, schemas.Bedrock, provider)
+	assert.Equal(t, "bedrock-tenant", key.ID)
+	require.NotNil(t, key.BedrockKeyConfig)
+	assert.Equal(t, "AKIA...", key.BedrockKeyConfig.AccessKey.Val)
+	assert.Equal(t, "secret", key.BedrockKeyConfig.SecretKey.Val)
+}
+
+func TestBuildTenantKey_BedrockKeylessRejected(t *testing.T) {
+	// SECURITY: a tenant must NOT get a keyless Bedrock key — it would sign with the
+	// gateway pod's IAM role (the operator's identity). Empty creds → not usable, so
+	// the request falls back to the operator default instead of borrowing the role.
+	_, _, ok := BuildTenantKey(ProviderCredsConfig{Provider: "bedrock", Region: "us-west-2"})
+	assert.False(t, ok, "tenant bedrock without static creds must not resolve (no IRSA borrowing)")
+}
+
+func TestBuildTenantKey_APIKey(t *testing.T) {
+	provider, key, ok := BuildTenantKey(ProviderCredsConfig{Provider: "anthropic", APIKey: "sk-ant-tenant"})
+	require.True(t, ok)
+	assert.Equal(t, schemas.Anthropic, provider)
+	assert.Equal(t, "anthropic-tenant", key.ID)
+	assert.Equal(t, "sk-ant-tenant", key.Value.Val)
+	assert.Nil(t, key.BedrockKeyConfig)
 }
 
 func TestNBAccount_ReturnsKeyForConfiguredProvider(t *testing.T) {

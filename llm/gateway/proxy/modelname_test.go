@@ -23,6 +23,9 @@ func TestResolveModelProvider(t *testing.T) {
 		// HuggingFace repo ids keep their own slash (split is on the first "/").
 		{"huggingface/meta-llama/Llama-3.1-8B-Instruct", schemas.HuggingFace, "meta-llama/Llama-3.1-8B-Instruct", true},
 		{"hf/deepseek-ai/DeepSeek-V3", schemas.HuggingFace, "deepseek-ai/DeepSeek-V3", true},
+		// Bedrock: explicit prefix, model id (incl. inference-profile ids) passed through.
+		{"bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", schemas.Bedrock, "anthropic.claude-3-5-sonnet-20241022-v2:0", true},
+		{"bedrock/us.anthropic.claude-3-5-haiku-20241022-v1:0", schemas.Bedrock, "us.anthropic.claude-3-5-haiku-20241022-v1:0", true},
 		// Bare well-known names via prefix heuristic.
 		{"claude-opus-4-8", schemas.Anthropic, "claude-opus-4-8", true},
 		{"gpt-5", schemas.OpenAI, "gpt-5", true},
