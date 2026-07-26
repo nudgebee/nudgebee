@@ -881,7 +881,7 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 		return nil, fmt.Errorf("node matcher not initialized")
 	}
 
-	nodeType := s.inferNodeType(app.Id.Kind, app.Type)
+	nodeType, _ := s.inferNodeType(app.Id.Kind, app.Type)
 
 	// Build list of node types to try. OTel `service.name` is a logical
 	// identifier that may align with any of:
@@ -1227,7 +1227,7 @@ func (s *TracesFlowSource) createNodeForServiceApplication(
 	tenantID string,
 	account core.K8sAccount,
 ) *core.DbNode {
-	nodeType := s.inferNodeType(app.Id.Kind, app.Type)
+	nodeType, matchedAppType := s.inferNodeType(app.Id.Kind, app.Type)
 
 	if isK8sAuthoritativeType(nodeType) {
 		s.logger.Debug("skipping traces node creation for k8s-authoritative type",
@@ -1293,6 +1293,18 @@ func (s *TracesFlowSource) createNodeForServiceApplication(
 		if language := core.GetPrimaryLanguage(app.Type); language != "" {
 			properties["language"] = language
 		}
+	}
+
+	// Evidence for the specific span that caused the Database/Cache/MessageQueue
+	// override above, so a misclassification can be traced back to its source.
+	if evidence, ok := lookupTypeEvidence(app, matchedAppType); ok {
+		properties["type_evidence"] = evidence
+	}
+
+	// Evidence that this node exists at all — set for every application
+	// regardless of type, unlike type_evidence above.
+	if app.CreationEvidence != nil {
+		properties["creation_evidence"] = *app.CreationEvidence
 	}
 
 	properties["subtype"] = app.Id.Kind
@@ -1443,7 +1455,10 @@ func (s *TracesFlowSource) enrichNodeWithTraceMetadata(node *core.DbNode, app *t
 // straight to K8sService would be wrong: OTel service.name is frequently
 // the workload name (not the Service object) and just as often a custom
 // identifier that doesn't correspond to any K8s entity at all.
-func (s *TracesFlowSource) inferNodeType(kind string, appType []string) core.NodeType {
+// inferNodeType returns the inferred NodeType, plus the appType entry (if any)
+// that caused a Database/Cache/MessageQueue override — the caller uses that to
+// look up the matching evidence in app.TypeEvidence.
+func (s *TracesFlowSource) inferNodeType(kind string, appType []string) (core.NodeType, string) {
 	kindMap := map[string]core.NodeType{
 		"Service":         core.NodeTypeService, // OTel logical service identifier
 		"Deployment":      core.NodeTypeWorkload,
@@ -1468,16 +1483,28 @@ func (s *TracesFlowSource) inferNodeType(kind string, appType []string) core.Nod
 		for _, t := range appType {
 			switch strings.ToLower(t) {
 			case "database", "postgres", "postgresql", "mysql", "mongodb", "elasticsearch":
-				return core.NodeTypeDatabase
+				return core.NodeTypeDatabase, t
 			case "cache", "redis":
-				return core.NodeTypeCache
+				return core.NodeTypeCache, t
 			case "messaging", "kafka", "rabbitmq", "sqs", "amqp":
-				return core.NodeTypeMessageQueue
+				return core.NodeTypeMessageQueue, t
 			}
 		}
 	}
 
-	return nodeType
+	return nodeType, ""
+}
+
+// lookupTypeEvidence returns the span evidence for matchedAppType, if any was recorded.
+// Normalizes to lowercase since app.TypeEvidence keys are always lowercase
+// (detectApplicationType's return values), but matchedAppType is copied verbatim
+// from app.Type, which other flow sources could populate with mixed case.
+func lookupTypeEvidence(app *traces.ServiceApplication, matchedAppType string) (traces.TypeEvidence, bool) {
+	if matchedAppType == "" {
+		return traces.TypeEvidence{}, false
+	}
+	evidence, ok := app.TypeEvidence[strings.ToLower(matchedAppType)]
+	return evidence, ok
 }
 
 // createEdgeFromUpstream creates an edge from the upstream link
@@ -1513,6 +1540,13 @@ func (s *TracesFlowSource) createEdgeFromUpstream(
 	properties["source_service"] = sourceNode.Properties["name"]
 	properties["dest_service"] = upstreamNode.Properties["name"]
 	properties["connection_type"] = "service"
+
+	if upstream.DependencyType != "" {
+		properties["dependency_type"] = upstream.DependencyType
+	}
+	if upstream.SampleSpanID != "" {
+		properties["sample_span_id"] = upstream.SampleSpanID
+	}
 
 	// Add sample trace IDs from DrillDown if available
 	if upstream.DrillDown != nil && len(upstream.DrillDown.SampleTraceIds) > 0 {
@@ -1562,6 +1596,13 @@ func (s *TracesFlowSource) createEdgeFromDownstream(
 	properties["source_service"] = downstreamNode.Properties["name"]
 	properties["dest_service"] = sourceNode.Properties["name"]
 	properties["connection_type"] = "service"
+
+	if downstream.DependencyType != "" {
+		properties["dependency_type"] = downstream.DependencyType
+	}
+	if downstream.SampleSpanID != "" {
+		properties["sample_span_id"] = downstream.SampleSpanID
+	}
 
 	// Add sample trace IDs from DrillDown if available
 	if downstream.DrillDown != nil && len(downstream.DrillDown.SampleTraceIds) > 0 {
