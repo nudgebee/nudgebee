@@ -403,6 +403,8 @@ export function totalsToKpi(t: UsageTotals | undefined): KpiTotals {
     inputTokens: t?.total_input_tokens ?? 0,
     outputTokens: t?.total_output_tokens ?? 0,
     openAnomalies: 0,
+    cacheHitRatePct: t?.cache_hit_rate_pct ?? 0,
+    cacheSavingsUsd: t?.cache_savings_usd ?? 0,
   };
 }
 

@@ -446,6 +446,10 @@ export interface KpiTotals {
   inputTokens: number;
   outputTokens: number;
   openAnomalies: number;
+  /** Share of input tokens served from cache, 0–100 (spec: Cache Hit Rate). */
+  cacheHitRatePct: number;
+  /** Cached tokens valued at the full input rate (spec: Cache Savings). */
+  cacheSavingsUsd: number;
 }
 
 export function kpiTotals(runs: Run[], anomalies: Anomaly[]): KpiTotals {
@@ -460,6 +464,9 @@ export function kpiTotals(runs: Run[], anomalies: Anomaly[]): KpiTotals {
     inputTokens,
     outputTokens,
     openAnomalies: anomalies.filter((a) => !a.runId || runIds.has(a.runId)).length,
+    // Mock fixtures carry no cache economics — neutral default, per the API-can't-back note above.
+    cacheHitRatePct: 0,
+    cacheSavingsUsd: 0,
   };
 }
 
