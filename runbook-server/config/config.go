@@ -27,6 +27,14 @@ type appConfig struct {
 
 	NudgebeeEncryptionKey string `mapstructure:"nudgebee_encryption_key"`
 
+	// Temporal payload encryption key rotation (optional). NudgebeeEncryptionKeys
+	// maps a key id to a hex-encoded AES key; NudgebeeEncryptionPrimaryKeyID
+	// selects which one seals new writes. All listed keys remain available for
+	// decrypting existing history. When unset, the codec uses NudgebeeEncryptionKey
+	// alone (legacy single-key mode).
+	NudgebeeEncryptionKeys         map[string]string `mapstructure:"nudgebee_encryption_keys"`
+	NudgebeeEncryptionPrimaryKeyID string            `mapstructure:"nudgebee_encryption_primary_key_id"`
+
 	ServiceApiServerToken          string `mapstructure:"action_api_server_token"`
 	ServiceApiServerTokenHeader    string `mapstructure:"action_api_server_token_header"`
 	ServiceEndpoint                string `mapstructure:"service_api_server_url"`
