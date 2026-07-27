@@ -3977,6 +3977,10 @@ func (s *Service) GetFilterOptions(tenantID string, filters *GraphFilters, nodeI
 	return opts, nil
 }
 
+// filterOptionsConcurrency caps how many of computeFilterOptions' queries run at
+// once, and so how much of the connection pool (20 per pod) one call can hold.
+const filterOptionsConcurrency = 4
+
 // computeFilterOptions runs the live queries that assemble a FilterOptions payload.
 // GetFilterOptions serves the unfiltered case from cache; this is the source of
 // truth behind both that cache and every filtered call.
@@ -4025,7 +4029,12 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 		return rows.Err()
 	}
 
+	// Cap how much of the pool one call can take. The comment above puts this at
+	// roughly 6 connections, which is fine on its own but not once several callers
+	// overlap: the pool is 20 per pod, so four concurrent calls are enough to ask
+	// for every connection at once (see #34973).
 	var g errgroup.Group
+	g.SetLimit(filterOptionsConcurrency)
 
 	g.Go(func() error {
 		q := `SELECT DISTINCT cloud_account_id FROM knowledge_graph_node
