@@ -62,7 +62,7 @@ const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution
 
   // Same caveat as the table's link: without an account there is no valid
   // builder URL, so offer the button only when the row carries one.
-  const fullViewHref = accountId ? `/workflow/${execution.workflow_id}?accountId=${accountId}&executionId=${execution.id}#executions` : '';
+  const fullViewHref = accountId ? `/automation/${execution.workflow_id}?accountId=${accountId}&executionId=${execution.id}#executions` : '';
 
   return (
     <CustomDrawer open onClose={onClose} variant='modern' width='640px' storageKey='nb.executionDashboardDrawer.width' title='Execution details'>

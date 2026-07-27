@@ -435,7 +435,7 @@ const Header1 = ({ showBorder = false }) => {
       },
       {
         name: 'Automation Builder',
-        route: '/workflow',
+        route: '/automation',
         icon: WorkflowIconBlue,
         showActiveCluster: true,
         connectClusterButton: false,

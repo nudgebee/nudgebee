@@ -164,7 +164,7 @@ const CreateWorkflowFromCodeModal: React.FC<CreateWorkflowFromCodeModalProps> = 
       snackbar.success(`Automation "${parsed.name}" created successfully`);
       onCreated?.();
       onClose();
-      router.push(`/workflow/${encodeURIComponent(newWorkflowId)}?accountId=${encodeURIComponent(accountId)}`);
+      router.push(`/automation/${encodeURIComponent(newWorkflowId)}?accountId=${encodeURIComponent(accountId)}`);
     } catch (err: any) {
       snackbar.error(err?.message || 'Failed to create automation');
     } finally {

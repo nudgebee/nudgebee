@@ -317,7 +317,7 @@ const PageLayout = ({ children }) => {
       isAskNudgebee: router.pathname === '/ask-nudgebee',
       isAskNudgebeeV2: router.pathname === '/ask-nudgebee-v2',
       isInvestigate: router.pathname?.includes('/investigate') || router.pathname?.includes('/investigate2'),
-      isWorkflow: router.pathname === '/workflow' || router.pathname.startsWith('/workflow/'),
+      isWorkflow: router.pathname?.startsWith('/automation/'),
       isOptimize: router.pathname?.includes('/optimise'),
       isTroubleshoot: router.pathname?.includes('/troubleshoot'),
       isHome: router.pathname === '/home',

@@ -1259,7 +1259,7 @@ const automationFromScratchTour: TourDef = {
       description: 'Build it yourself in the visual editor. Click Next to open the builder.',
       side: 'bottom',
       align: 'start',
-      // Navigates to /workflow/new — the builder's trigger picker mounts next.
+      // Navigates to /automation/new — the builder's trigger picker mounts next.
       onBeforeNext: () => {
         document.querySelector<HTMLElement>('#wf-create-from-scratch-card')?.click();
       },

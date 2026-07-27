@@ -780,7 +780,7 @@ export default function KubernetesEventsSummary({ accountId }) {
                       size='xs'
                       icon={<SafeIcon src={addIcon} alt='add' />}
                       onClick={() => {
-                        router.push(`/workflow/new?accountId=${accountId}`);
+                        router.push(`/automation/new?accountId=${accountId}`);
                       }}
                     >
                       Add new

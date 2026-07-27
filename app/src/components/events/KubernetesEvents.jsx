@@ -842,7 +842,7 @@ const KubernetesEventsTable = ({
       if (data.source) params.set('eventSource', data.source);
       if (accountId) params.set('eventCluster', accountId);
       if (data.subject_namespace) params.set('eventNamespace', data.subject_namespace);
-      router.push(`/workflow/new?${params.toString()}`);
+      router.push(`/automation/new?${params.toString()}`);
     }
   };
 

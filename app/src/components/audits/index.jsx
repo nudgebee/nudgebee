@@ -187,7 +187,7 @@ export const AuditsTable = () => {
       );
     } else if (item.event_category == 'AUTOMATION') {
       return (
-        <Link href={`/workflow/${item.event_target}?accountId=${item.account_id}`}>
+        <Link href={`/automation/${item.event_target}?accountId=${item.account_id}`}>
           <Text sx={{ color: 'inherit' }} value={item.event_target} showAutoEllipsis />
         </Link>
       );

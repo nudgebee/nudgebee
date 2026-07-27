@@ -378,7 +378,7 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
 
   const goToExecution = useCallback(
     (ex: TriggeredExecution) => {
-      const url = `/workflow/${ex.workflow_id}?accountId=${accountId}&executionId=${ex.id}#executions`;
+      const url = `/automation/${ex.workflow_id}?accountId=${accountId}&executionId=${ex.id}#executions`;
       window.open(url, '_blank', 'noopener,noreferrer');
     },
     [accountId]

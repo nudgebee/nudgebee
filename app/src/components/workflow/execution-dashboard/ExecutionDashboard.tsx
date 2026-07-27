@@ -90,7 +90,7 @@ const ExecutionDashboard: React.FC = () => {
           component: execution.account_id ? (
             <Typography
               component='a'
-              href={`/workflow/${execution.workflow_id}?accountId=${execution.account_id}#executions`}
+              href={`/automation/${execution.workflow_id}?accountId=${execution.account_id}#executions`}
               // New tab: the dashboard is a triage surface, and losing the
               // filtered table to inspect one automation is the wrong trade.
               target='_blank'

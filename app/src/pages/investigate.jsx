@@ -510,7 +510,7 @@ const Investigate = () => {
             sessionStorage.setItem('aiSessionId', aiData.session_id);
           }
           sessionStorage.setItem('aiInitialQuery', query);
-          router.push(`/workflow/new?accountId=${accountId}&loadFromAI=true`);
+          router.push(`/automation/new?accountId=${accountId}&loadFromAI=true`);
           setShowAiGenerateModal(false);
         } else {
           snackbar.error('No automation data returned from AI');
@@ -671,7 +671,7 @@ const Investigate = () => {
       const accountId = router.query.accountId;
       sessionStorage.setItem('aiGeneratedWorkflow', workflowJson);
       sessionStorage.setItem('aiSessionId', sessionId);
-      router.push(`/workflow/new?accountId=${accountId}&loadFromAI=true`);
+      router.push(`/automation/new?accountId=${accountId}&loadFromAI=true`);
       setShowAiGenerateModal(false);
     },
     [router]
@@ -2120,7 +2120,9 @@ const Investigate = () => {
                                   onClick={() => {
                                     const parts = (res.type_reference_id || '').split(':');
                                     if (parts.length === 2) {
-                                      router.push(`/workflow/${parts[0]}?tab=executions&executionId=${parts[1]}&accountId=${router.query.accountId}`);
+                                      router.push(
+                                        `/automation/${parts[0]}?tab=executions&executionId=${parts[1]}&accountId=${router.query.accountId}`
+                                      );
                                     }
                                   }}
                                 >

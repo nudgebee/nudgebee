@@ -69,6 +69,16 @@ const nextConfig = {
         destination: '/automation',
         permanent: true,
       },
+      {
+        source: '/workflow',
+        destination: '/automation',
+        permanent: true,
+      },
+      {
+        source: '/workflow/:path*',
+        destination: '/automation/:path*',
+        permanent: true,
+      },
     ];
   },
   async rewrites() {

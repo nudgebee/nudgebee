@@ -404,14 +404,14 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
       const payload = eventContext ? { ...workflow, eventContext } : workflow;
       sessionStorage.setItem('templateWorkflow', JSON.stringify(payload));
       onClose();
-      router.push(`/workflow/new?accountId=${accountId}&loadFromTemplate=true`);
+      router.push(`/automation/new?accountId=${accountId}&loadFromTemplate=true`);
     },
     [accountId, onClose, router, eventContext]
   );
 
   const handleCreateFromScratch = useCallback(() => {
     onClose();
-    router.push(`/workflow/new?accountId=${accountId}`);
+    router.push(`/automation/new?accountId=${accountId}`);
   }, [accountId, onClose, router]);
 
   // Serialize the filter props so the fetch effect keys on VALUES, not array

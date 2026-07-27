@@ -643,7 +643,7 @@ const WorkflowListing: React.FC = () => {
 
   const handleEditWorkflow = useCallback(
     (workflowId: string, workflowAccountId: string) => {
-      router.push(`/workflow/${workflowId}?accountId=${workflowAccountId}`);
+      router.push(`/automation/${workflowId}?accountId=${workflowAccountId}`);
     },
     [router]
   );
@@ -1225,7 +1225,7 @@ const WorkflowListing: React.FC = () => {
       const workflows = res?.data?.workflow_list?.workflows || [];
       const match = sessionId ? workflows.find((w: any) => w.created_from_session_id === sessionId) : undefined;
       if (match?.id) {
-        router.push(`/workflow/${match.id}?accountId=${createAccountId}`);
+        router.push(`/automation/${match.id}?accountId=${createAccountId}`);
         return;
       }
     } catch (error) {
@@ -1331,7 +1331,7 @@ const WorkflowListing: React.FC = () => {
                       id={`workflow-name-link-${workflow.id}`}
                       // An automation that has never run has nothing to show in
                       // the Executions view, so land on the Editor instead.
-                      href={`/workflow/${workflow.id}?accountId=${workflow.account_id}#${
+                      href={`/automation/${workflow.id}?accountId=${workflow.account_id}#${
                         workflow.last_execution_time || workflow.last_execution_status ? 'executions' : 'editor'
                       }`}
                       sx={{
@@ -1717,7 +1717,7 @@ const WorkflowListing: React.FC = () => {
 
   const handleCreateFromScratch = () => {
     setCreateWorkflowOptionsOpen(false);
-    router.push(`/workflow/new?accountId=${createAccountId}`);
+    router.push(`/automation/new?accountId=${createAccountId}`);
   };
 
   const handleUseTemplate = () => {

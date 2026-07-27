@@ -563,7 +563,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
         if (data.aggregation_key) params.set('eventType', data.aggregation_key);
         if (accountId) params.set('eventCluster', accountId);
         if (data.subject_namespace) params.set('eventNamespace', data.subject_namespace);
-        router.push(`/workflow/new?${params.toString()}`);
+        router.push(`/automation/new?${params.toString()}`);
       }
     },
     [router]

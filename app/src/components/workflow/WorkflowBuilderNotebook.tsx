@@ -1704,7 +1704,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           setWorkflowData((prev) => (prev ? { ...prev, id: newWorkflowId } : null));
 
           // Redirect to edit mode after creation
-          router.replace(`/workflow/${newWorkflowId}?accountId=${accountId}`);
+          router.replace(`/automation/${newWorkflowId}?accountId=${accountId}`);
 
           // After URL change, reload the workflow data to ensure complete sync
           setTimeout(async () => {
@@ -2410,7 +2410,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           setWorkflowData((prev) => (prev ? { ...prev, id: currentWorkflowId } : null));
 
           // Update URL to reflect the new workflow ID
-          router.replace(`/workflow/${currentWorkflowId}?accountId=${accountId}`);
+          router.replace(`/automation/${currentWorkflowId}?accountId=${accountId}`);
         } else if (variant === 'current' && hasUnsavedChanges) {
           // "Run current" runs the on-screen draft, so we must persist the
           // draft first or the backend would execute a stale snapshot.
