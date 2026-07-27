@@ -735,7 +735,7 @@ func IsK8sAgentConnected(accountId string) bool {
 
 // Action defines the interface that all playbook actions must implement.
 func ExecutePlaybook(context *security.RequestContext, accountId string, event playbooks.PlaybookEvent) ([]PlaybookActionExecutionResponse, error) {
-	context.GetLogger().Info("eventrule: executing playbook", "event_id", event.EventId, "accountId", accountId, "alertName", event.Name)
+	context.GetLogger().Info("eventrule: executing playbook", "event_id", event.EventId, "account_id", accountId, "event_name", event.Name)
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
