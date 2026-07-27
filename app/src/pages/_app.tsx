@@ -20,6 +20,8 @@ import 'driver.js/dist/driver.css';
 import '../styles/tour.css';
 import '../styles/nubi-animation.css';
 import { useThemeProvider } from '@hooks/useThemeProvider';
+import { useEffect } from 'react';
+import { reportClientError } from '@lib/clientErrorReporter';
 
 // Use of the <SessionProvider> is mandatory to allow components that call
 // `useSession()` anywhere in your application to access the `session` object.
@@ -27,6 +29,33 @@ import { useThemeProvider } from '@hooks/useThemeProvider';
 export default function App({ Component, pageProps }: AppProps<{ session: Session }>) {
   const router = useRouter();
   const { theme } = useThemeProvider();
+
+  // Catch uncaught JS errors and unhandled promise rejections that never reach
+  // a React error boundary, and report them to Loki (see @lib/clientErrorReporter).
+  useEffect(() => {
+    const onError = (event: ErrorEvent) => {
+      reportClientError({
+        kind: 'js-error',
+        message: event.message || 'window.onerror',
+        stack: event.error?.stack,
+        source: event.filename ? `${event.filename}:${event.lineno}:${event.colno}` : undefined,
+      });
+    };
+    const onRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason as { message?: string; stack?: string } | undefined;
+      reportClientError({
+        kind: 'unhandled-rejection',
+        message: reason?.message ?? String(event.reason),
+        stack: reason?.stack,
+      });
+    };
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onRejection);
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onRejection);
+    };
+  }, []);
 
   return (
     <ThemeProvider theme={theme}>
