@@ -420,7 +420,7 @@ const LogQueryBuilderAutocomplete = ({
     }
   }, [logProvider, accountId]);
 
-  const activeSelectedMetric = queryBlocks.find((b) => b.id === activeBlockId)?.selectedMetric || queryBlocks[0]?.selectedMetric || '';
+  const activeSelectedMetric = queryBlocks.find((b) => b.id === activeBlockId)?.selectedMetric || '';
 
   useEffect(() => {
     if (!activeSelectedMetric) return;
@@ -676,11 +676,11 @@ const LogQueryBuilderAutocomplete = ({
     return [];
   };
 
-  const getAvailableLabels = () => {
+  const getAvailableLabels = useCallback(() => {
     // Allow all labels to be used multiple times
     // If wanted to filter already selected label const usedLabels = new Set(chips.map((chip) => chip.label));
     return labels.map((g) => g.label || g.field);
-  };
+  }, [labels]);
 
   const filterSuggestions = (suggestions, filter) => {
     if (!filter) {
@@ -886,7 +886,9 @@ const LogQueryBuilderAutocomplete = ({
     // text to edit it without triggering suggestions.
   };
 
-  // Clear input state when switching blocks
+  // Clear input state when switching blocks. `labels` is cleared too — it's one
+  // shared array (not scoped per block), so without this the new block's field
+  // would flash the previous block's labels until its own fetch resolves.
   useEffect(() => {
     setInputValue('');
     setPendingChip({ label: '', operator: '', value: '' });
@@ -894,7 +896,31 @@ const LogQueryBuilderAutocomplete = ({
     setShowSuggestions(false);
     setSuggestions([]);
     setSelectedIndex(-1);
+    setLabels([]);
   }, [activeBlockId]);
+
+  // `handleInputFocus` only takes a one-time snapshot of `labels` when the field
+  // is focused. If a metric was just selected, `labels` is fetched asynchronously,
+  // so focusing the field before the fetch resolves leaves the suggestion
+  // dropdown empty with nothing to refresh it. Re-populate suggestions here once
+  // labels finish loading, as long as the user is still at the start of the
+  // guided flow (empty input, label step, field actually focused) — otherwise
+  // labels arriving in the background would pop the dropdown open under a field
+  // the user isn't looking at.
+  useEffect(() => {
+    if (loadingLabels || currentStep !== 'label' || inputValue.trim() || document.activeElement !== inputRef.current) {
+      return;
+    }
+    const availableLabels = getAvailableLabels();
+    if (availableLabels.length === 0) {
+      return;
+    }
+    const allLabels = availableLabels.slice(0, MAX_SUGGESTIONS).map((label) => ({ type: 'label', value: label, label }));
+    setIsSuggestionsCapped(availableLabels.length > MAX_SUGGESTIONS);
+    setSuggestions(allLabels);
+    setShowSuggestions(true);
+    setSelectedIndex(-1);
+  }, [labels, loadingLabels, currentStep, inputValue, getAvailableLabels]);
 
   // Sync props data to first block (for backward compatibility) - ONLY when single block
   // Once we've entered multi-block mode, stop syncing from props entirely
@@ -1310,7 +1336,6 @@ const LogQueryBuilderAutocomplete = ({
                       }}
                       placeholder={activeBlockId === block.id ? getPlaceholder() : 'Click to edit'}
                       disabled={
-                        loadingLabels ||
                         loadingValues ||
                         ((logProvider === 'prometheus' ||
                           logProvider == 'datadog' ||
