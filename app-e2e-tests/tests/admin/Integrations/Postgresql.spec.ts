@@ -79,10 +79,6 @@ test.describe.serial("Postgresql Account Integration", () => {
       successToast: locators.postgresqlSuccessToast,
       testName: "Add Postgresql Account Integration",
       operationNames: ["AddIntegrations"],
-      ignoreErrorMessages: [
-        "already has a 'postgresql' integration",
-        `integration config name '${configName}' already exists for this integration type`,
-      ],
     });
   });
 
