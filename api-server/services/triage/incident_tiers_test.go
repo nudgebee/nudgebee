@@ -73,3 +73,26 @@ func TestAssembleTiers(t *testing.T) {
 		}
 	}
 }
+
+// WorkloadName is the single read-side rule for "which workload is this name". The
+// knowledge graph reports a workload both bare and ReplicaSet-suffixed; both must reduce
+// to the identity the event side produces, or a dependent can never be matched to its alert.
+func TestWorkloadName(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"product-reviews-76cf66f66b", "product-reviews"},
+		{"load-generator-86b88dd659", "load-generator"},
+		{"product-reviews", "product-reviews"},
+		{"  Product-Reviews  ", "product-reviews"},
+		// Real trailing words must survive — Kubernetes hashes use a vowel-free base32
+		// alphabet, so anything containing a/e/i/o/u is a word, not a hash.
+		{"llm-server", "llm-server"},
+		{"cloud-collector-server", "cloud-collector-server"},
+		{"postgresql-primary", "postgresql-primary"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := WorkloadName(tt.in); got != tt.want {
+			t.Errorf("WorkloadName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}

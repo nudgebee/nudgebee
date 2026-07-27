@@ -205,6 +205,38 @@ const TierSection = ({ tierKey, label, unit = 'alert', note, items, goTo, showRa
   );
 };
 
+// PossibleGroup is one distance band of the possible-impact list. Rendering direct callers
+// and further-out dependents as separate labelled rows keeps the distinction that matters:
+// a direct caller is worth checking, whereas nearly every service in a small mesh sits two
+// hops from a shared datastore. Each chip opens that workload in the service map.
+const PossibleGroup = ({ label, items, goToService }) => {
+  if (!items || items.length === 0) return null;
+  return (
+    <Box sx={{ mb: 0.75 }}>
+      <Typography sx={{ fontSize: 11, color: 'var(--ds-gray-500)', mb: 0.4 }}>{label}</Typography>
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+        {items.map((s, i) => (
+          <Chip
+            key={`${s.namespace}/${s.name}/${i}`}
+            size='small'
+            label={s.name}
+            clickable
+            onClick={() => goToService(s)}
+            sx={{
+              height: 22,
+              fontSize: 12,
+              bgcolor: 'transparent',
+              color: 'var(--ds-gray-600)',
+              border: '1px dashed var(--ds-brand-150)',
+              '&:hover': { bgcolor: 'var(--ds-brand-100)' },
+            }}
+          />
+        ))}
+      </Box>
+    </Box>
+  );
+};
+
 // ImpactPanel renders the topology-driven correlation for an incident: the root subject,
 // the dependent services actively alerting in the window (the correlated downstream
 // incidents this root caused), and the remaining dependents as potential impact.
@@ -281,6 +313,25 @@ const ImpactPanel = ({ eventId, prefetched }) => {
     // at. Unresolved subject or none/low coverage => we cannot tell, and must say so.
     const noCoverage = !data.resolved || data.coverage_confidence === 'none' || data.coverage_confidence === 'low';
     const incidentCount = (a.same_incident || []).length + causeCfg.length + causeUp.length + (a.impact || []).length;
+    // The impact tier is alert-derived, so a dependent with no alert rule can never enter
+    // it. Those dependents are already in this response — showing them as possible impact
+    // is the difference between "nothing alerted" and "nothing was affected".
+    // Split by distance: a direct caller is the one worth checking, while almost anything
+    // is two hops from a shared datastore, so listing both as equals overstates the second.
+    const possible = (Array.isArray(data.impacted) ? data.impacted : []).filter((s) => !s.alerting);
+    const directDeps = possible.filter((s) => Number(s.hops_away) <= 1);
+    const indirectDeps = possible.filter((s) => Number(s.hops_away) > 1);
+    // The workload, not the pod that reported the alert — nothing depends on a pod, and
+    // the cause section above already names the workload. root_identity is "ns|workload".
+    const rootName = (a.root_identity || '').split('|').pop() || seed.name || 'this service';
+    // The service map filtered to that workload: its live traffic and dependencies, which
+    // is what you'd look at to decide whether it was actually hit. There is no alert to
+    // open — that is the whole point of this section.
+    const goToService = (s) =>
+      accountId &&
+      router.push(
+        `/kubernetes/details/${accountId}?namespace=${encodeURIComponent(s.namespace)}&app=${encodeURIComponent(s.name)}#monitoring/service-map`
+      );
     return (
       <Box sx={{ p: 1 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1, mb: 0.5 }}>
@@ -345,10 +396,34 @@ const ImpactPanel = ({ eventId, prefetched }) => {
           showRarity
         />
 
+        {/* Dependents that exist in the service map but raised no alert. Listing them is
+            what stops an empty impact tier reading as "nothing was affected" — usually it
+            only means nobody wrote an alert rule for the service downstream. */}
+        {possible.length > 0 && (
+          <Box sx={{ mt: 1.75 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.5 }}>
+              <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: TIERS.impact.color, flex: 'none' }} />
+              <Typography sx={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ds-gray-700)' }}>
+                Possible impact
+              </Typography>
+              <Typography sx={{ ml: 'auto', fontSize: 11, color: 'var(--ds-gray-400)' }}>
+                {possible.length} depend on {rootName}
+              </Typography>
+            </Box>
+            <Typography sx={{ fontSize: 11.5, color: 'var(--ds-gray-400)', mb: 0.75 }}>
+              None of these raised an alert — usually that means no alert rule exists for them, not that they were unaffected. Open one to see its
+              traffic.
+            </Typography>
+            <PossibleGroup label={`Calls ${rootName} directly`} items={directDeps} goToService={goToService} />
+            <PossibleGroup label='Further downstream' items={indirectDeps} goToService={goToService} />
+          </Box>
+        )}
+
         {/* An empty impact list must never read as "nothing was affected" — with no
             service-map coverage we genuinely cannot tell, and saying so is the honest
-            answer (a core finding of the correlation audit). */}
-        {(a.impact || []).length === 0 && (
+            answer (a core finding of the correlation audit). Reached only when there is
+            no dependent at all; otherwise the section above already answers this. */}
+        {(a.impact || []).length === 0 && possible.length === 0 && (
           <Box sx={{ mt: 1.75 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.5 }}>
               <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: TIERS.impact.color, flex: 'none' }} />
@@ -360,7 +435,7 @@ const ImpactPanel = ({ eventId, prefetched }) => {
             <Typography sx={{ fontSize: 12, color: noCoverage ? 'var(--ds-amber-600)' : 'var(--ds-gray-500)' }}>
               {noCoverage
                 ? 'We can’t tell. We don’t have a service map for this one, so we don’t know what depends on it — this is not the same as “nothing was affected”.'
-                : 'Nothing that depends on this one raised an alert afterwards.'}
+                : 'Nothing depends on this one in the service map.'}
             </Typography>
           </Box>
         )}

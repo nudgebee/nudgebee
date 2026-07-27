@@ -55,6 +55,48 @@ type impactedNode struct {
 	ActiveAlerts []alertRef `json:"active_alerts,omitempty"`
 }
 
+// scopeAndNormalize prepares a knowledge-graph dependency list for correlation:
+//
+//  1. Namespace scoping — drop the cross-namespace dependents #34569's name-only graph
+//     matching invents (a "postgresql" in one stack picking up every other stack's
+//     callers). An empty seed namespace scopes nothing away.
+//  2. ReplicaSet normalization — the graph holds the SAME workload under two names,
+//     the bare one and the ReplicaSet-suffixed one (observed together in one response:
+//     "load-generator" and "load-generator-86b88dd659", "product-reviews" and
+//     "product-reviews-76cf66f66b"). Events, by contrast, always carry the bare owning
+//     workload in subject_owner, so the suffixed copy can never match an alert: it is
+//     reported as a second, permanently non-alerting dependent, and its topology key
+//     never lines up with any alert identity, so a genuine downstream alert cannot
+//     reach the impact tier through it.
+//  3. Dedup — after normalization the two copies collapse to one, keeping the shallowest
+//     hop count (the closest path is the one worth reporting).
+//
+// Normalization routes through triage.WorkloadName, the same rule the event side uses,
+// so there is one definition of "which workload is this" on both sides of the match.
+func scopeAndNormalize(services []core.ImpactedService, namespace string) []core.ImpactedService {
+	var out []core.ImpactedService
+	seen := map[string]int{} // normalized key -> index in out
+	for _, s := range services {
+		if namespace != "" && !strings.EqualFold(s.Namespace, namespace) {
+			continue
+		}
+		s.Name = triage.WorkloadName(s.Name)
+		if s.Name == "" {
+			continue
+		}
+		k := impactKey(s.Namespace, s.Name)
+		if i, ok := seen[k]; ok {
+			if s.HopsAway < out[i].HopsAway {
+				out[i] = s
+			}
+			continue
+		}
+		seen[k] = len(out)
+		out = append(out, s)
+	}
+	return out
+}
+
 func impactKey(ns, name string) string {
 	return strings.ToLower(strings.TrimSpace(ns)) + "\x00" + strings.ToLower(strings.TrimSpace(name))
 }
@@ -168,6 +210,12 @@ func annotateImpactedWithActiveAlerts(db *sqlx.DB, accountID, rootEventID string
 		}
 		if sname != "" {
 			byKey[impactKey(sns, sname)] = append(byKey[impactKey(sns, sname)], ref)
+			// Dependent names arrive workload-normalized (scopeAndNormalize), so an
+			// ownerless event whose subject is itself a ReplicaSet must be indexed under
+			// its workload too, or it can never be matched back.
+			if wn := triage.WorkloadName(sname); wn != strings.ToLower(strings.TrimSpace(sname)) {
+				byKey[impactKey(sns, wn)] = append(byKey[impactKey(sns, wn)], ref)
+			}
 		}
 		if sowner != "" && !strings.EqualFold(sowner, sname) {
 			byKey[impactKey(sns, sowner)] = append(byKey[impactKey(sns, sowner)], ref)
@@ -275,38 +323,21 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 		return
 	}
 
-	// Scope to the subject's namespace: drop cross-namespace false dependents introduced by
-	// #34569 name-collision edges, so the blast radius is the subject's same-stack callers.
-	deps := impact.Dependents
-	if namespace != "" {
-		var filtered []core.ImpactedService
-		for _, d := range impact.Dependents {
-			if strings.EqualFold(d.Namespace, namespace) {
-				filtered = append(filtered, d)
-			}
-		}
-		deps = filtered
-	}
-
-	// Same namespace scope for downstream deps — drop #34569 cross-namespace name-collision
-	// edges (e.g. a nudgebee service resolving to every stack's "postgresql"/"redis"/"rabbitmq").
-	dependsOn := impact.DownstreamDependencies
-	if namespace != "" {
-		var fd []core.ImpactedService
-		for _, d := range impact.DownstreamDependencies {
-			if strings.EqualFold(d.Namespace, namespace) {
-				fd = append(fd, d)
-			}
-		}
-		dependsOn = fd
-	}
+	// Scope to the subject's namespace and collapse the graph's duplicate ReplicaSet-named
+	// copies onto the workload identity the event side uses — see scopeAndNormalize.
+	deps := scopeAndNormalize(impact.Dependents, namespace)
+	dependsOn := scopeAndNormalize(impact.DownstreamDependencies, namespace)
 
 	// Topology for the tiering: the subject depends on its downstream dependencies
 	// (cause side); its dependents depend on it (impact side). Keys go through
 	// SubjectKey so they match the candidate identities (same lowercasing/normalization).
+	// SubjectName, not SubjectOwner: the owner branch is taken verbatim, so a name that
+	// still carried a ReplicaSet hash would key the topology under an identity no alert
+	// can ever have. scopeAndNormalize has already stripped it; this keeps the two in
+	// agreement even if a caller passes an unnormalized list.
 	seedKey := triage.SubjectKey(seedIdentity)
 	topoKey := func(s core.ImpactedService) string {
-		return triage.SubjectKey(triage.AlertIdentity{SubjectNamespace: s.Namespace, SubjectOwner: s.Name})
+		return triage.SubjectKey(triage.AlertIdentity{SubjectNamespace: s.Namespace, SubjectName: s.Name})
 	}
 	for _, u := range dependsOn {
 		dependsOnMap[seedKey] = append(dependsOnMap[seedKey], topoKey(u))

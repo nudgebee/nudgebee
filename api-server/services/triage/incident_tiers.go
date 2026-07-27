@@ -125,9 +125,21 @@ func SubjectKey(a AlertIdentity) string {
 	}
 	subj := strings.ToLower(strings.TrimSpace(a.SubjectOwner))
 	if subj == "" {
-		subj = podTemplateHashSuffix.ReplaceAllString(strings.ToLower(strings.TrimSpace(a.SubjectName)), "")
+		subj = WorkloadName(a.SubjectName)
 	}
 	return ns + "|" + subj
+}
+
+// WorkloadName reduces a stored name to the workload it belongs to, by stripping a
+// trailing ReplicaSet/pod-template hash ("product-reviews-76cf66f66b" ->
+// "product-reviews"), then lower-casing and trimming.
+//
+// Exported because the knowledge graph reports the same workload under both forms and
+// has to be reduced to the same identity the event side uses before the two can be
+// matched — see api.scopeAndNormalize. Keeping one implementation means the read side
+// cannot drift into two different answers for "which workload is this".
+func WorkloadName(name string) string {
+	return podTemplateHashSuffix.ReplaceAllString(strings.ToLower(strings.TrimSpace(name)), "")
 }
 
 // AssembleTiers sorts each candidate into a tier relative to seed, returning
