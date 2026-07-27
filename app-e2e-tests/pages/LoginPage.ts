@@ -199,12 +199,41 @@ export class LoginPage {
 
     await this.switchTenantSubmitButton.waitFor({ state: "visible", timeout: 10000 });
     await this.switchTenantSubmitButton.click();
+    await dialog.waitFor({ state: "hidden", timeout: 15000 });
     try {
       mkdirSync(PLAYWRIGHT_REPORT_DIR, { recursive: true });
       writeFileSync(TENANT_FILE_PATH, tenantName);
     } catch { }
     console.log(`Switched to tenant: ${tenantName}`);
     await this.page.waitForTimeout(2000);
+  }
+
+  // Retries the whole flow from a clean reload; budgetMs stops before the 240s test timeout so the real error survives.
+  async switchTenantWithRetry(attempts = 6, budgetMs = 180000) {
+    const deadline = Date.now() + budgetMs;
+
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        await this.switchTenant();
+        return;
+      } catch (error) {
+        console.log(`Switch Tenant failed on attempt ${attempt}/${attempts}: ${error}`);
+        if (attempt === attempts) throw error;
+        if (Date.now() > deadline) {
+          console.log(`Switch Tenant retry budget of ${budgetMs}ms exhausted after ${attempt} attempts`);
+          throw error;
+        }
+
+        // Best-effort reset: a failed reload must not mask the real error or eat the remaining attempts.
+        try {
+          await this.page.keyboard.press("Escape");
+          await this.page.goto(process.env.BASE_URL || "");
+          await this.waitForLoaderToDisappear();
+        } catch (resetError) {
+          console.log(`Page reset before retry failed: ${resetError}`);
+        }
+      }
+    }
   }
 
   async selectHighestIterationCluster(): Promise<void> {
@@ -301,7 +330,7 @@ export class LoginPage {
       await this.page.waitForURL(`${process.env.BASE_URL}/**`, { timeout: 30000 });
     }
 
-    await this.switchTenant();
+    await this.switchTenantWithRetry();
     await this.waitForLoaderToDisappear();
     if (selectCluster) {
       const explicitCluster = process.env.CLUSTER_NAME || process.env.CLUSTER;
