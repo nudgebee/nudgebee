@@ -2622,6 +2622,7 @@ func synthesizeDetailedResponse(ctx *security.RequestContext, request EventAnaly
 		core.MessageRoleHuman, core.MessageTypeGeneration,
 		"synthesize detailed response", "", "event_detailed_response",
 		uuid.Nil, nil, "", "", "",
+		core.ConversationStatusInProgress,
 	)
 	if err != nil {
 		return "", fmt.Errorf("synthesizeDetailedResponse: unable to create message record: %w", err)

@@ -392,7 +392,7 @@ func GenerateFollowup(ctx *security.RequestContext, query NBAgentRequest, follow
 		return uuid.Nil, err
 	}
 
-	followupMessage, err := dao.SaveConversationMessage(uuid.NewString(), query.ConversationId, query.AccountId, query.UserId, MessageRoleAI, MessageTypeFollowup, followupRequest.Question, "", followupRequest.AgentName, followupRequest.AgentId, followupRequestConfig, string(followUpContextJson), "", "")
+	followupMessage, err := dao.SaveConversationMessage(uuid.NewString(), query.ConversationId, query.AccountId, query.UserId, MessageRoleAI, MessageTypeFollowup, followupRequest.Question, "", followupRequest.AgentName, followupRequest.AgentId, followupRequestConfig, string(followUpContextJson), "", "", ConversationStatusWaiting)
 	if err != nil {
 		return uuid.Nil, err
 	}
