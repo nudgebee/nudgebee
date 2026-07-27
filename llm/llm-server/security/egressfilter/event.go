@@ -1,6 +1,10 @@
 package egressfilter
 
-import "context"
+import (
+	"context"
+	"strings"
+	"sync"
+)
 
 // FilterEvent is the structured record the wrapper emits whenever a Scan
 // returns hits. One FilterEvent per outbound LLM call (no event when the
@@ -130,4 +134,98 @@ func reporterFromContext(ctx context.Context) func(FilterEvent) {
 		return nil
 	}
 	return v
+}
+
+// reportScopeKey is the unexported context key for the per-turn reporting
+// scope. Unexported so only this package reads it; the public surface is
+// WithReportBaseline + the wrapper's internal lookup.
+type reportScopeKey struct{}
+
+// reportScope decides, for one conversation turn, which detected secrets are
+// NEW to the current message and therefore worth counting on its badge. A
+// secret is NOT new when it either:
+//
+//   - already appears in the pre-turn conversation history (the planner folds
+//     that history back into every outbound prompt, so a secret pasted on an
+//     earlier turn is re-detected every turn — the cross-turn carry-over), or
+//   - was already reported earlier in THIS turn (one turn drives several LLM
+//     calls, each re-scanning the same user text — the per-call multiplication).
+//
+// The scope is stateful: it accumulates the secrets it has reported so later
+// calls in the same turn suppress them, collapsing the per-message count to
+// the number of DISTINCT new secrets. filter is atomic so parallel plan
+// execution can't double-report the same secret.
+//
+// The matched secret bytes live only in this in-memory, per-turn scope for the
+// lifetime of the turn; they are never logged or persisted (the scope is GC'd
+// when the turn ends). Reporting only — block / redact still evaluate the full
+// outbound payload, so a secret re-sent in history is still blocked/redacted.
+type reportScope struct {
+	mu      sync.Mutex
+	history string
+	seen    map[string]struct{}
+}
+
+func newReportScope(history string) *reportScope {
+	return &reportScope{history: history, seen: make(map[string]struct{})}
+}
+
+// filter returns the subset of hits that are new to this message (see
+// reportScope) and marks them seen, plus an index-aligned mask (mask[i] == true
+// ⇔ hits[i] kept) so a parallel slice — e.g. the Redactor's redactions — can be
+// filtered identically. Hits with malformed offsets are kept: a reporting fix
+// must never hide a real detection, so it fails toward counting.
+func (s *reportScope) filter(hits []Hit, payload string) ([]Hit, []bool) {
+	mask := make([]bool, len(hits))
+	kept := make([]Hit, 0, len(hits))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, h := range hits {
+		if h.Start < 0 || h.End > len(payload) || h.Start >= h.End {
+			mask[i] = true
+			kept = append(kept, h)
+			continue
+		}
+		secret := payload[h.Start:h.End]
+		if _, dup := s.seen[secret]; dup {
+			continue
+		}
+		if s.history != "" && strings.Contains(s.history, secret) {
+			continue
+		}
+		// Clone before retaining: payload[a:b] shares the (large) payload
+		// backing array, and seen lives for the whole turn — storing the
+		// slice header would pin the entire payload in memory until the turn
+		// ends. The clone keeps only the secret's bytes.
+		s.seen[strings.Clone(secret)] = struct{}{}
+		mask[i] = true
+		kept = append(kept, h)
+	}
+	return kept, mask
+}
+
+// WithReportBaseline attaches a per-turn reporting scope seeded with the
+// conversation text that existed BEFORE this turn — prior user/assistant
+// messages (and any distilled memory) that the planner folds back into every
+// outbound prompt as history.
+//
+// It must be attached once per turn (a fresh scope per turn), before the
+// turn's LLM calls. The seed suppresses cross-turn carry-over; the scope's
+// accumulated state suppresses within-turn per-call duplicates. An empty seed
+// is still attached so within-turn de-duplication works on the first turn.
+func WithReportBaseline(ctx context.Context, baseline string) context.Context {
+	return context.WithValue(ctx, reportScopeKey{}, newReportScope(baseline))
+}
+
+// reportScopeFromContext returns the attached per-turn scope, or nil if none
+// (e.g. an LLM call outside the conversation path). Used by the wrapper; not
+// exported.
+func reportScopeFromContext(ctx context.Context) *reportScope {
+	if ctx == nil {
+		return nil
+	}
+	if v, ok := ctx.Value(reportScopeKey{}).(*reportScope); ok {
+		return v
+	}
+	return nil
 }

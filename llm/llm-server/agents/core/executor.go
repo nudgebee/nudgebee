@@ -312,6 +312,11 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		}
 	}
 	request.ConversationContext = historyStr
+	// Tell the egressfilter which text is prior-conversation history so a
+	// secret already surfaced on an earlier message isn't recounted against
+	// this message when the planner re-sends that history on every LLM call.
+	// Reporting-only: block / redact still scan the full outbound payload.
+	ctx.SetContext(egressfilter.WithReportBaseline(ctx.GetContext(), historyStr))
 	// saving the agent to Db
 	var agentId uuid.UUID
 	var previousAgentState string
