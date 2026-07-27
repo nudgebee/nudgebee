@@ -50,6 +50,9 @@ def _slo_event(**overrides):
 
 
 def _anomaly_event(**overrides):
+    """Mirrors what api-server actually publishes: the post-process consumer
+    nils Evidences before marshalling, so a real payload has NO `evidences`
+    key at all — only `has_evidences` and whatever rides on `labels`."""
     event = {
         "id": "e1",
         "title": "CPU Anomaly detected for checkout-api in namespace payments",
@@ -63,6 +66,7 @@ def _anomaly_event(**overrides):
         "cluster": "prod-eu",
         "cloud_account_id": "a1",
         "description": "CPU Anomaly detected for checkout-api in namespace payments",
+        "has_evidences": True,
     }
     event.update(overrides)
     return event
@@ -167,37 +171,33 @@ class TestGroupedSloStats:
 
 
 class TestGroupedAnomalyStats:
-    def test_metric_anomaly_gets_current_vs_baseline(self):
-        # Regression: metric anomalies (description == title) previously showed
-        # zero numbers because their value line is suppressed.
-        ev = [{"current_value": 0.82, "reference_value": {"mean": 0.14}, "anomaly_type": "CPU"}]
-        out = get_grouped_anomaly_alerts_template(get_anomaly_aggregated_message_params([_anomaly_event(evidences=ev)]))
-        text = out["attachments"][0]["text"]
-        assert "Current *0.82* vs baseline *0.14*" in text
+    """Stats come from the producer's `labels`. An earlier attempt read them
+    from `evidences`, which never survives to a notification — so every case
+    here uses a payload with no `evidences` key, exactly as published."""
 
-    def test_spend_anomaly_gets_summary_table_stats(self):
-        ev = [
-            {
-                "type": "table",
-                "data": {
-                    "table_name": "Spend Anomaly Summary",
-                    "headers": ["Metric", "Value"],
-                    "rows": [
-                        ["Current Daily Spend", "$208"],
-                        ["Expected Daily Spend", "$14"],
-                        ["Change", "+$194 (+38.0%)"],
-                        ["Z-Score", "4.20"],
-                    ],
-                },
-            }
-        ]
+    def test_metric_anomaly_gets_current_vs_baseline(self):
+        # Metric anomalies set description == title, so they have no value line
+        # at all: without labels they render zero numbers.
+        out = get_grouped_anomaly_alerts_template(
+            get_anomaly_aggregated_message_params(
+                [_anomaly_event(labels={"anomaly_current": "820m", "anomaly_baseline": "140m"})]
+            )
+        )
+        assert "Current *820m* vs baseline *140m*" in out["attachments"][0]["text"]
+
+    def test_spend_anomaly_gets_zscore_and_change(self):
         out = get_grouped_anomaly_alerts_template(
             get_anomaly_aggregated_message_params(
                 [
                     _anomaly_event(
                         title="Cloud Spend Anomaly: prod-aws account spend increased by 38.0%",
                         description="Daily spend of $208 exceeds baseline average of $14 (z-score: 4.20)",
-                        evidences=ev,
+                        labels={
+                            "anomaly_current": "$208",
+                            "anomaly_baseline": "$14",
+                            "anomaly_zscore": "4.20",
+                            "anomaly_change": "+$194 (+38.0%)",
+                        },
                     )
                 ]
             )
@@ -207,22 +207,37 @@ class TestGroupedAnomalyStats:
         assert "*+$194 (+38.0%)*" in text
         assert "expected *$14*" in text
 
-    def test_anomaly_without_evidences_does_not_crash(self):
+    def test_current_only_when_baseline_unavailable(self):
+        # Some reference shapes carry no baseline; show what we do have.
         out = get_grouped_anomaly_alerts_template(
-            get_anomaly_aggregated_message_params([_anomaly_event(evidences=None)])
+            get_anomaly_aggregated_message_params([_anomaly_event(labels={"anomaly_current": "412.5"})])
         )
-        # renders title + facts only, no stats line, no error
-        assert out["attachments"][0]["text"].startswith("*CPU Anomaly")
+        assert "Current value *412.5*" in out["attachments"][0]["text"]
 
-    def test_anomaly_with_odd_evidence_shape_does_not_crash(self):
+    def test_payload_without_labels_renders_without_stats(self):
+        out = get_grouped_anomaly_alerts_template(get_anomaly_aggregated_message_params([_anomaly_event()]))
+        text = out["attachments"][0]["text"]
+        assert text.startswith("*CPU Anomaly")
+        assert "Current" not in text
+
+    def test_empty_or_null_label_values_do_not_crash(self):
+        # The producer sends a JSON object or null; these are the shapes that
+        # can actually arrive with nothing useful in them.
+        for labels in (None, {}, {"anomaly_current": None}, {"anomaly_current": ""}):
+            out = get_grouped_anomaly_alerts_template(
+                get_anomaly_aggregated_message_params([_anomaly_event(labels=labels)])
+            )
+            text = out["attachments"][0]["text"]
+            assert text.startswith("*CPU Anomaly")
+            assert "Current" not in text
+
+    def test_evidences_in_payload_are_ignored(self):
+        # Guards the old approach: even if a payload somehow carried evidences,
+        # stats must come from labels — evidences are not a supported source.
         out = get_grouped_anomaly_alerts_template(
-            get_anomaly_aggregated_message_params([_anomaly_event(evidences=["nonsense", {"data": 5}, None])])
+            get_anomaly_aggregated_message_params(
+                [_anomaly_event(evidences=[{"current_value": 0.82, "reference_value": {"mean": 0.14}}])]
+            )
         )
-        assert out["attachments"][0]["text"].startswith("*CPU Anomaly")
-
-    def test_spend_table_with_non_list_rows_does_not_crash(self):
-        # A malformed summary table whose `rows` is a non-iterable scalar must
-        # be skipped, not crash (guards `for row in rows`).
-        ev = [{"type": "table", "data": {"table_name": "Spend Anomaly Summary", "rows": 5}}]
-        out = get_grouped_anomaly_alerts_template(get_anomaly_aggregated_message_params([_anomaly_event(evidences=ev)]))
-        assert out["attachments"][0]["text"].startswith("*CPU Anomaly")
+        text = out["attachments"][0]["text"]
+        assert "0.82" not in text and "Current" not in text
