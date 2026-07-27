@@ -2917,6 +2917,19 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		}
 	}
 
+	// Forward the tenant-resolved LLM config, exactly as the main analysis path
+	// does. Without this the workspace pod falls back to its global LLM_* secret
+	// env, which is not guaranteed to name a provider code-analysis supports —
+	// every followup then fails at client construction before doing any work.
+	// Degrade gracefully: on any failure, or when nothing tenant-specific
+	// resolves, omit the block. The API key is plaintext — never log it.
+	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, query.AccountId, AgentCodeAnalyzer, query.ConversationId); lerr != nil {
+		logger.Warn("code followup: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
+	} else if llmCfg != nil {
+		analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
+		logger.Info("code followup: forwarding tenant LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model)
+	}
+
 	// Pre-flight: verify workspace pod is reachable
 	healthWm := workspace.NewWorkspaceManagerWithTimeout(10 * time.Second)
 	if _, healthErr := healthWm.CallAPI(ctx, query.AccountId, "GET", "/health", nil, nil); healthErr != nil {

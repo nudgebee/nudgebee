@@ -375,9 +375,20 @@ func (ah *AgenticAnalyzeHandler) HandleAnalyze(c *gin.Context) {
 		defer cancel()
 
 		response, err := ah.HandleAgenticAnalyze(ctx, req)
-		if err != nil {
+		switch {
+		case err != nil:
 			common.FailAnalysis(analysisID, err.Error())
-		} else {
+		case response != nil && response.Error != "":
+			// HandleAgenticAnalyze folds an analysis error into the response body
+			// and returns a nil error (its synchronous callers rely on that). Keyed
+			// on Error rather than Success: a followup that ran and legitimately
+			// reported ExecutionStatus "failed" carries a real AgentResponse the
+			// PR-lifecycle cron still needs, and must stay "completed". Without this
+			// branch a run that never started is stored as completed, so /status
+			// reports success and the failure appears in no log at all.
+			log.Printf("ERROR: analysis %s failed: %s", analysisID, response.Error)
+			common.FailAnalysis(analysisID, response.Error)
+		default:
 			common.CompleteAnalysis(analysisID, response)
 		}
 
