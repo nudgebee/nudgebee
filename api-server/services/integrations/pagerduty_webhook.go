@@ -889,7 +889,7 @@ func EnrichWithPagerDutyIncident(sc *security.RequestContext, parsedPayload *cor
 		return
 	}
 
-	incident, err := GetPagerDutyIncident(password, parsedPayload.EventId)
+	incident, err := fetchPagerDutyIncidentWithRetry(sc, password, parsedPayload.EventId)
 	if err != nil {
 		sc.GetLogger().Error("pagerdutywebhook: failed to get PagerDuty incident", "error", err, "incident_id", parsedPayload.EventId)
 		return
@@ -3380,6 +3380,64 @@ func buildCustomFields(customFields []CustomField) []string {
 	return items
 }
 
+// pagerDutyAPIError carries the HTTP status of a non-200 PagerDuty API response so
+// callers can tell a transient failure (the incident is not readable yet, we are being
+// throttled) from a permanent one (bad or unauthorized token).
+type pagerDutyAPIError struct {
+	StatusCode int
+	Status     string
+}
+
+func (e *pagerDutyAPIError) Error() string {
+	return fmt.Sprintf("PagerDuty API returned a non-200 status code: %d %s", e.StatusCode, e.Status)
+}
+
+// isRetriablePagerDutyFetchError reports whether a failed incident fetch is worth
+// retrying. PagerDuty's REST read API is eventually consistent with incident creation:
+// a GET issued ~1s after the incident.triggered webhook can 404 for a couple of seconds.
+// Observed on incident Q1JVZB8HK4C5OS, whose triggered delivery hit exactly that and so
+// carried no Alertmanager labels at all — the deterministic subject resolver had nothing
+// to key off and the alert fell through to the LLM, while the same alert's resolved
+// delivery five minutes later enriched and resolved deterministically.
+//
+// Transport errors (timeout, DNS, reset), 404, 408, 429 and 5xx are transient. An
+// auth/permission failure never clears on its own, so retrying it would only burn the
+// backoff on every webhook a misconfigured tenant delivers.
+func isRetriablePagerDutyFetchError(err error) bool {
+	var apiErr *pagerDutyAPIError
+	if !errors.As(err, &apiErr) {
+		return true
+	}
+	switch apiErr.StatusCode {
+	case http.StatusNotFound, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	}
+	return apiErr.StatusCode >= http.StatusInternalServerError
+}
+
+// fetchPagerDutyIncidentWithRetry fetches the incident, retrying transient failures with
+// the same bounded ~6s backoff the body.details poll in EnrichWithPagerDutyIncident uses.
+// Waiting here is safe for the same reason it is safe there: this runs on the async
+// webhook processor, not the PagerDuty-facing HTTP handler, which has already stored the
+// payload and returned — so the wait never delays webhook delivery or risks PD
+// re-delivery. Worst case is longer than the sleeps when the PD API itself is slow, since
+// each attempt carries a 10s client timeout. When every attempt fails the caller skips
+// enrichment exactly as before and the LLM subject resolver remains the final fallback.
+func fetchPagerDutyIncidentWithRetry(sc *security.RequestContext, password, incidentID string) (*Incident, error) {
+	const maxFetchRetries = 3
+	incident, err := GetPagerDutyIncident(password, incidentID)
+	for attempt := 1; err != nil && attempt <= maxFetchRetries; attempt++ {
+		if !isRetriablePagerDutyFetchError(err) {
+			return nil, err
+		}
+		sc.GetLogger().Warn("pagerdutywebhook: incident fetch failed, retrying",
+			"incident_id", incidentID, "attempt", attempt, "error", err)
+		time.Sleep(time.Duration(attempt) * time.Second)
+		incident, err = GetPagerDutyIncident(password, incidentID)
+	}
+	return incident, err
+}
+
 // GetPagerDutyIncident queries the PagerDuty API for a specific incident by its ID.
 // It requires a valid PagerDuty API token and the incident ID.
 func GetPagerDutyIncident(apiToken, incidentID string) (*Incident, error) {
@@ -3409,7 +3467,7 @@ func GetPagerDutyIncident(apiToken, incidentID string) (*Incident, error) {
 
 	// 5. Check for non-successful status codes
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("PagerDuty API returned a non-200 status code: %d %s", resp.StatusCode, resp.Status)
+		return nil, &pagerDutyAPIError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 
 	// 6. Read the response body
