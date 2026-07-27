@@ -32,15 +32,17 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # frozen (the alpine 7.4 line stopped at 7.4.6 / .NET 8.0.10 and carries 6 HIGH
 # + 1 MEDIUM fixable .NET CVEs — CVE-2025-21172/-21176/-30399/-55248,
 # CVE-2026-26171/-33116, CVE-2024-38095 — that no published image tag clears),
-# while the GitHub release channel is serviced monthly: 7.4.17 bundles the
-# patched .NET 8 servicing (Crypto.Xml 8.0.3, Asn1 8.0.2) and its extracted
-# tree scans 0 fixable C/H/M. Same LTS major we already ran, so runbook
-# behaviour is unchanged. The tarball is pinned by version + sha256 (verified
-# against the hash published in the GitHub release notes); curl retries cover
-# the transient-download concern that originally motivated the image copy.
+# while the GitHub release channel is serviced monthly. Bump this pin whenever
+# the Trivy scan flags the bundled .NET servicing: 7.4.17 (runtime 8.0.28,
+# Crypto.Xml 8.0.3) accrued 10 HIGH + 1 MEDIUM, cleared by 7.4.18 (2026-07-20),
+# which ships runtime 8.0.29 and Crypto.Xml 8.0.4 — the exact fixed versions.
+# Same LTS major we already ran, so runbook behaviour is unchanged. The tarball
+# is pinned by version + sha256 (verified against the hash published in the
+# GitHub release notes); curl retries cover the transient-download concern that
+# originally motivated the image copy.
 FROM alpine:3.22 AS powershell
-ARG PWSH_VERSION=7.4.17
-ARG PWSH_SHA256=143a1de65ea320c36a0b4bd1808fe65561e5ab12fd66d5f63f78b0b3d66b4397
+ARG PWSH_VERSION=7.4.18
+ARG PWSH_SHA256=979ccf2603fdb4eda6ef115ad55b05e76cc00cc5eee741b864e3a64704fe7fcb
 RUN apk add --no-cache curl \
     && curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
       "https://github.com/PowerShell/PowerShell/releases/download/v${PWSH_VERSION}/powershell-${PWSH_VERSION}-linux-musl-x64.tar.gz" \

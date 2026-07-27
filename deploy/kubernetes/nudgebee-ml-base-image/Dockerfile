@@ -53,10 +53,15 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then MF_ARCH=aarch64; else MF_ARCH=x86_64; f
     "${CONDA_DIR}/bin/conda" install -n myenv -c conda-forge pulp -y && \
     "${CONDA_DIR}/bin/conda" run -n myenv pip install uv && \
     "${CONDA_DIR}/bin/conda" run -n myenv pip uninstall -y importlib-metadata || true && \
-    # Patch the conda base env's msgpack (tooling dep) off the vulnerable 1.1.2
-    # that trivy flags HIGH. The app runs from `myenv`, but the base env still
-    # ships in the image, so bump it to the fixed release.
-    "${CONDA_DIR}/bin/conda" install -n base -c conda-forge "msgpack-python>=1.2.1" -y && \
+    # Patch the conda base env's tooling deps off the versions trivy flags:
+    # msgpack 1.1.2 (HIGH) and the miniforge-bundled setuptools 82.0.1
+    # (MEDIUM, CVE-2026-59890 — fixed in 83.0.0). The app runs from `myenv`,
+    # but the base env still ships in the image, so both get bumped. Keep them
+    # in ONE `conda install`: the solver is the slow part of this build and a
+    # second invocation re-downloads metadata and re-solves from scratch.
+    # The consumers' own setuptools floor lives in their pyproject
+    # (ml-k8s-server, rag-server); this only covers the base env.
+    "${CONDA_DIR}/bin/conda" install -n base -c conda-forge "msgpack-python>=1.2.1" "setuptools>=83" -y && \
     # conda-rattler-solver is an experimental, optional conda solver plugin
     # (conda's default remains libmamba, also installed). It vendors py-rattler,
     # whose rattler.abi3.so statically links pyo3 0.25.1 — trivy flags HIGH

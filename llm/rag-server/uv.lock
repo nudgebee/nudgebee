@@ -506,7 +506,7 @@ scipy==1.15.3
     #   sentence-transformers
 sentence-transformers==5.6.0
     # via ragserver (pyproject.toml)
-setuptools==80.10.2
+setuptools==83.0.0
     # via
     #   ragserver (pyproject.toml)
     #   torch
