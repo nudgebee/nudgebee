@@ -40,6 +40,8 @@ func TestResolveModelProvider(t *testing.T) {
 		// OpenRouter model ids are themselves "vendor/model"; the first-slash split
 		// keeps the rest intact.
 		{"openrouter/anthropic/claude-3.5-sonnet", schemas.OpenRouter, "anthropic/claude-3.5-sonnet", true},
+		// Azure OpenAI (v1 API) — model name after the prefix.
+		{"azure/gpt-4o", schemas.Azure, "gpt-4o", true},
 		// Self-hosted OpenAI-compatible servers.
 		{"ollama/llama3.3", schemas.Ollama, "llama3.3", true},
 		{"vllm/meta-llama/Llama-3.1-8B-Instruct", schemas.VLLM, "meta-llama/Llama-3.1-8B-Instruct", true},

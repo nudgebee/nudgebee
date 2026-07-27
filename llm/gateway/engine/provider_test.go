@@ -127,6 +127,54 @@ func TestBuildTenantKey_BedrockKeylessRejected(t *testing.T) {
 	assert.False(t, ok, "tenant bedrock without static creds must not resolve (no IRSA borrowing)")
 }
 
+func TestBuildCred_Azure(t *testing.T) {
+	// Operator Azure with api-key + endpoint: endpoint on AzureKeyConfig, key in Value.
+	provider, cred, ok := buildCred(ProviderCredsConfig{
+		Provider: "azure", APIKey: "az-key", Endpoint: "https://my-resource.openai.azure.com",
+	})
+	require.True(t, ok)
+	assert.Equal(t, schemas.Azure, provider)
+	require.NotNil(t, cred.key.AzureKeyConfig)
+	assert.Equal(t, "https://my-resource.openai.azure.com", cred.key.AzureKeyConfig.Endpoint.Val)
+	assert.Equal(t, "az-key", cred.key.Value.Val)
+
+	// Operator keyless (managed identity): endpoint set, no key → usable, empty Value.
+	_, cred2, ok2 := buildCred(ProviderCredsConfig{Provider: "azure", Endpoint: "https://r.openai.azure.com"})
+	require.True(t, ok2, "operator azure may run keyless via managed identity")
+	require.NotNil(t, cred2.key.AzureKeyConfig)
+	assert.Empty(t, cred2.key.Value.Val)
+
+	// Endpoint is required.
+	_, _, ok3 := buildCred(ProviderCredsConfig{Provider: "azure", APIKey: "az-key"})
+	assert.False(t, ok3, "azure without an endpoint is not usable")
+
+	// Endpoint is sanitized: a pasted trailing slash + whitespace is trimmed (Bifrost's
+	// chat path would otherwise build a double-slash URL).
+	_, cred4, ok4 := buildCred(ProviderCredsConfig{
+		Provider: "azure", APIKey: "az-key", Endpoint: "  https://r.openai.azure.com/  ",
+	})
+	require.True(t, ok4)
+	assert.Equal(t, "https://r.openai.azure.com", cred4.key.AzureKeyConfig.Endpoint.Val)
+}
+
+func TestBuildTenantKey_Azure(t *testing.T) {
+	// Tenant Azure BYO: endpoint + static api-key → structured key with endpoint + Value.
+	provider, key, ok := BuildTenantKey(ProviderCredsConfig{
+		Provider: "azure", APIKey: "az-key", Endpoint: "https://tenant.openai.azure.com",
+	})
+	require.True(t, ok)
+	assert.Equal(t, schemas.Azure, provider)
+	assert.Equal(t, "azure-tenant", key.ID)
+	require.NotNil(t, key.AzureKeyConfig)
+	assert.Equal(t, "https://tenant.openai.azure.com", key.AzureKeyConfig.Endpoint.Val)
+	assert.Equal(t, "az-key", key.Value.Val)
+
+	// SECURITY: tenant Azure with an endpoint but NO api-key must be rejected — keyless
+	// would sign with the pod's managed identity (the operator's identity), not the tenant's.
+	_, _, ok2 := BuildTenantKey(ProviderCredsConfig{Provider: "azure", Endpoint: "https://tenant.openai.azure.com"})
+	assert.False(t, ok2, "tenant azure without a static api-key must not borrow the pod's managed identity")
+}
+
 func TestBuildCred_SelfHosted(t *testing.T) {
 	// Ollama/vLLM/SGL are reached by base URL with an optional bearer token.
 	// Endpoint set, no key → usable (empty Value); endpoint carried on the cred.

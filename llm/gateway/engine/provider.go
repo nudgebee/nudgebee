@@ -63,11 +63,15 @@ func SupportsEndpointOperator(providerName string) bool {
 
 // SupportsKeylessOperator reports whether an operator can configure this provider
 // with no static credential material — i.e. it authenticates via an ambient mechanism.
-// Bedrock can (AWS default credential chain / IRSA on EKS); the api-key providers
-// cannot. Used to decide whether to enable a provider whose LLM_PROVIDER_* block
-// carries no key.
+// Bedrock can (AWS default credential chain / IRSA on EKS) and Azure can (the Azure
+// default credential chain / managed identity); the api-key providers cannot. Used to
+// decide whether to enable a provider whose LLM_PROVIDER_* block carries no key.
 func SupportsKeylessOperator(providerName string) bool {
-	return NormalizeProvider(providerName) == schemas.Bedrock
+	switch NormalizeProvider(providerName) {
+	case schemas.Bedrock, schemas.Azure:
+		return true
+	}
+	return false
 }
 
 // buildCred converts OPERATOR config into a Bifrost Key. For cloud providers it
@@ -144,6 +148,29 @@ func buildKey(provider schemas.ModelProvider, cfg ProviderCredsConfig, allowKeyl
 			bk.Region = &r
 		}
 		key.BedrockKeyConfig = bk
+	case schemas.Azure:
+		// Azure OpenAI (v1 API): the resource endpoint is REQUIRED and travels ON the
+		// key (AzureKeyConfig.Endpoint), so this works for both operator config and
+		// per-tenant BYO (a DirectKey carries the endpoint). Auth is an api-key (common)
+		// or, keyless, the Azure default credential chain (managed identity). Keyless is
+		// the pod's identity, so it is OPERATOR-ONLY (allowKeyless) — a tenant must supply
+		// a static api-key, never borrow the pod's managed identity. Azure AD client-secret
+		// auth (client/tenant id) is a possible follow-up; not wired here.
+		// Sanitize: a pasted endpoint often has a trailing slash or stray whitespace, and
+		// Bifrost's Azure chat path builds "{endpoint}/openai/v1/chat/completions" without
+		// trimming — a trailing slash would yield a double-slash path and 404.
+		endpoint := strings.TrimRight(strings.TrimSpace(cfg.Endpoint), "/")
+		if endpoint == "" {
+			return schemas.Key{}, false
+		}
+		keyless := cfg.APIKey == ""
+		if keyless && !allowKeyless {
+			return schemas.Key{}, false
+		}
+		key.AzureKeyConfig = &schemas.AzureKeyConfig{Endpoint: schemas.SecretVar{Val: endpoint}}
+		if !keyless {
+			key.Value = schemas.SecretVar{Val: cfg.APIKey}
+		}
 	case schemas.Ollama, schemas.VLLM, schemas.SGL:
 		// Self-hosted OpenAI-compatible servers: reached by base URL (carried via the
 		// provider config's BaseURL from cfg.Endpoint) with an OPTIONAL bearer token.

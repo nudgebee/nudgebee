@@ -33,6 +33,7 @@ var genericProviderAliases = map[string]schemas.ModelProvider{
 	"ollama":      schemas.Ollama,
 	"vllm":        schemas.VLLM,
 	"sgl":         schemas.SGL,
+	"azure":       schemas.Azure,
 }
 
 // resolveModelProvider maps a model name from the generic /v1 endpoint to the
