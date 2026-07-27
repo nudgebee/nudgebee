@@ -37,6 +37,7 @@ from notifications_server.services.bot_messages import (
     get_empty_message_response,
     get_followup_confirmation,
     get_followup_selection_confirmation,
+    get_generic_error_message,
     get_processing_confirmation,
     get_feedback_thanks_message,
     get_exit_message,
@@ -1230,6 +1231,19 @@ class Events:
             LOG.warning(f"Failed to parse follow-up response as JSON: {e}. Using raw response.")
             self.reply(channel_id, team_id, thread_ts, payload.response)
 
+    def handle_error_response(self, payload, cached_entry, channel_id: str, thread_ts: str, team_id: str):
+        """Tell the thread the run failed. ``payload.response`` is a raw upstream
+        error string, so it is logged by the caller and never posted."""
+        message = get_generic_error_message()
+        slack_user_id = cached_entry.get("slack_user_id") if cached_entry else None
+        if slack_user_id:
+            message = f"<@{slack_user_id}> {message}"
+
+        self.reply(channel_id, team_id, thread_ts, message)
+
+        if cached_entry:
+            event_cache.update_event_entry(thread_ts, status="FAILED")
+
     # ==================== Teams Response Handlers ====================
 
     async def handle_teams_final_response(self, payload, cached_entry, conversation_id: str):
@@ -1294,6 +1308,22 @@ class Events:
                 await self.common_service.teams_reply_from_conversation_reference(
                     cached_entry.get("conversation_reference"), payload.response, cached_entry.get("teams_id")
                 )
+
+    async def handle_teams_error_response(self, payload, cached_entry, conversation_id: str):
+        """Tell the Teams thread the run failed. ``payload.response`` is a raw
+        upstream error string, so it is logged by the caller and never posted."""
+        conversation_ref = cached_entry.get("conversation_reference")
+        if not conversation_ref:
+            LOG.error("No conversation reference found in cached entry for Teams error response")
+            return
+
+        try:
+            await self.common_service.teams_reply_from_conversation_reference(
+                conversation_ref, get_generic_error_message(), cached_entry.get("teams_id")
+            )
+            event_cache.update_event_entry(conversation_id, status="FAILED")
+        except Exception as e:
+            LOG.error("Failed to send Teams error reply: %s", e)
 
     # ==================== Teams Bot Messaging Methods ====================
 
@@ -2125,3 +2155,19 @@ class Events:
             tenant_id = cached_entry.get("tenant_id")
             if space_name and tenant_id:
                 self.common_service.gchat_reply_in_thread(space_name, thread_name, payload.response, tenant_id)
+
+    def handle_gchat_error_response(self, payload, cached_entry, thread_name: str):
+        """Tell the Google Chat thread the run failed. ``payload.response`` is a raw
+        upstream error string, so it is logged by the caller and never posted."""
+        space_name = cached_entry.get("space_name")
+        tenant_id = cached_entry.get("tenant_id")
+
+        if not space_name or not tenant_id:
+            LOG.error("Missing space_name or tenant_id in cached entry for Google Chat error response")
+            return
+
+        try:
+            self.common_service.gchat_reply_in_thread(space_name, thread_name, get_generic_error_message(), tenant_id)
+            event_cache.update_event_entry(thread_name, status="FAILED")
+        except Exception as e:
+            LOG.error("Failed to send Google Chat error reply: %s", e)
