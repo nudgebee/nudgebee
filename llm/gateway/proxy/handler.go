@@ -87,6 +87,7 @@ func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, 
 		bodyLog: bodyLog,
 		limiter: limiter,
 		pricer:  pricer,
+		router:  router,
 		// Request pipeline (control stages), run after auth and before passthrough.
 		// route → ratelimit → resolver → filter. Each stage is pluggable; an unset
 		// stage defaults to pass-through.
@@ -115,6 +116,7 @@ type handler struct {
 	bodyLog  metering.BodyLogSink
 	limiter  *ratelimit.Limiter
 	pricer   *metering.Pricer
+	router   routing.Resolver // for pre-pipeline tier-alias lane resolution on /v1
 	pipeline *Pipeline
 }
 

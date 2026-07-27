@@ -50,16 +50,24 @@ func (h *handler) handleChat(c *gin.Context) {
 
 	logRequestProvenance(c, body)
 
+	identity := auth.FromContext(c)
+
 	requestedModel, streaming := parseBody(body)
 	provider, model, ok := resolveModelProvider(requestedModel)
 	if !ok {
-		edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request",
-			`unknown or missing model; address it as "provider/model" (e.g. "anthropic/claude-opus-4-8") or a known model name`)
-		h.recordReject(auth.FromContext(c), schemas.OpenAI, requestedModel, c.Request.Method, chatCompletionsPath, http.StatusBadRequest, "unknown_model", start)
-		return
+		// Not a "provider/model" or a known bare name — but it may be a tier alias
+		// (e.g. "nb-fast") that a routing rule maps to a provider. Adopt that provider
+		// as the lane and keep the tier token as the model, so the route stage does the
+		// authoritative resolution + records reason=alias (metering keeps requested=tier).
+		if lane, isTier := h.tierLane(identity, requestedModel); isTier {
+			provider, model = lane, requestedModel
+		} else {
+			edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request",
+				`unknown or missing model; address it as "provider/model" (e.g. "anthropic/claude-opus-4-8"), a known model name, or a tier alias (nb-fast/nb-cheap/nb-smart)`)
+			h.recordReject(identity, schemas.OpenAI, requestedModel, c.Request.Method, chatCompletionsPath, http.StatusBadRequest, "unknown_model", start)
+			return
+		}
 	}
-
-	identity := auth.FromContext(c)
 	bctx, cancel := schemas.NewBifrostContextWithCancel(c.Request.Context())
 
 	// The routed provider/model feed the control pipeline (rules may re-map the model
@@ -126,6 +134,22 @@ func (h *handler) handleChat(c *gin.Context) {
 	h.unaryChat(c, bctx, rc, rm)
 }
 
+// tierLane resolves a tier-alias model name (e.g. "nb-fast") to the provider its
+// routing rule targets, so the generic /v1 endpoint — which has no addressed provider
+// — can pick a lane. Returns ok=false when the name isn't a tier the rules map to a
+// concrete target. The caller keeps the tier TOKEN as the model; the route stage then
+// does the authoritative token→model resolution and records reason=alias.
+func (h *handler) tierLane(id auth.Identity, model string) (schemas.ModelProvider, bool) {
+	if h.router == nil {
+		return "", false
+	}
+	d := h.router.Resolve(routing.Input{Model: model, TenantID: id.TenantID, UserID: id.UserID})
+	if d.Denied || d.ResolvedProvider == "" || d.ResolvedModel == d.RequestedModel {
+		return "", false // not a tier the rules resolve to a concrete provider/model
+	}
+	return schemas.ModelProvider(d.ResolvedProvider), true
+}
+
 // unaryChat parses the OpenAI body into the unified chat request, pins the routed
 // provider/model, and dispatches through the shared chat core. Metering runs on
 // every exit path.
@@ -185,6 +209,11 @@ func (h *handler) unaryChatWith(c *gin.Context, bctx *schemas.BifrostContext, rm
 // OpenAI-compatible tools; it is NOT a whitelist — the endpoint accepts any valid
 // "provider/model" (or well-known bare name), listed here or not.
 var genericModelCatalog = []struct{ id, ownedBy string }{
+	// NB tier aliases — provider-agnostic names that resolve to a concrete model
+	// (see routing.DefaultTierRules); listed first so pickers surface them up top.
+	{"nb-fast", "nudgebee"},
+	{"nb-cheap", "nudgebee"},
+	{"nb-smart", "nudgebee"},
 	{"anthropic/claude-opus-4-8", "anthropic"},
 	{"anthropic/claude-sonnet-4-6", "anthropic"},
 	{"anthropic/claude-haiku-4-5", "anthropic"},

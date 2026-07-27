@@ -183,6 +183,10 @@ func main() {
 		slog.Error("main: routing config invalid", "error", err)
 		os.Exit(1)
 	}
+	// Append the platform-default tier aliases (nb-fast/cheap/smart). They carry a high
+	// priority so config-file and tenant DB rules override them; appended last so a
+	// config-file tier rule (lower priority / earlier) wins the tie.
+	staticRules = append(staticRules, routing.DefaultTierRules()...)
 	// RuleLoader returns the registered dynamic rule loader, or nil when none is
 	// registered (static config-file rules only). NewStore treats a nil loader as
 	// "static only". The loader reads the metastore, so it's a no-op when no DB is
