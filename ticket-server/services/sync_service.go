@@ -2,18 +2,24 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/tickets-server/clients"
+	"nudgebee/tickets-server/common"
 	"nudgebee/tickets-server/database"
 	"nudgebee/tickets-server/models"
 	"nudgebee/tickets-server/services/tools"
 	"strings"
+	"time"
 
 	"github.com/andygrunwald/go-jira"
 )
 
+// fetchConfigurationList loads all enabled ticketing integrations with their
+// config values in a single JOIN query instead of 2N+1 round-trips (1 listing
+// + N metadata re-fetches + N config-value fetches).
 func fetchConfigurationList() ([]models.TicketConfigurations, error) {
 	dbManager, err := database.GetDatabaseManager()
 	if err != nil {
@@ -21,46 +27,133 @@ func fetchConfigurationList() ([]models.TicketConfigurations, error) {
 		return nil, err
 	}
 
-	// Query all enabled ticketing integrations
 	query := `
 		SELECT
 			i.id,
 			i.tenant_id,
 			i.type,
 			i.name,
-			i.status
+			i.status,
+			i.created_by,
+			COALESCE(icv.name, '')                AS config_name,
+			COALESCE(icv.value, '')               AS config_value,
+			COALESCE(icv.is_encrypted, false)     AS is_encrypted
 		FROM integrations i
+		LEFT JOIN integration_config_values icv ON i.id = icv.integration_id
 		WHERE i.type IN ('jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk')
 		  AND i.status = 'enabled'
-		ORDER BY i.created_at DESC
+		ORDER BY i.created_at DESC, i.id
 	`
 
-	type IntegrationRow struct {
-		ID       string `db:"id"`
-		TenantID string `db:"tenant_id"`
-		Type     string `db:"type"`
-		Name     string `db:"name"`
-		Status   string `db:"status"`
+	type joinRow struct {
+		ID          string  `db:"id"`
+		TenantID    string  `db:"tenant_id"`
+		Type        string  `db:"type"`
+		Name        string  `db:"name"`
+		Status      string  `db:"status"`
+		CreatedBy   *string `db:"created_by"`
+		ConfigName  string  `db:"config_name"`
+		ConfigValue string  `db:"config_value"`
+		IsEncrypted bool    `db:"is_encrypted"`
 	}
 
-	var integrationRows []IntegrationRow
-	err = dbManager.Select(&integrationRows, query)
-	if err != nil {
-		slog.Error("Unable to fetch integrations:", "error", slog.AnyValue(err))
+	var rows []joinRow
+	if err = dbManager.Select(&rows, query); err != nil {
+		slog.Error("Unable to fetch integrations with config values:", "error", slog.AnyValue(err))
 		return nil, err
 	}
 
-	// Fetch config values for each integration
-	var configurations []models.TicketConfigurations
-	for _, row := range integrationRows {
-		config, err := fetchIntegrationWithConfigValues(dbManager, row.ID)
-		if err != nil {
-			slog.Error("Unable to fetch config values for integration:", "error", slog.AnyValue(err), "integration_id", row.ID)
+	seen := make(map[string]int, len(rows))
+	configurations := make([]models.TicketConfigurations, 0, len(rows))
+	failedIntegrations := make(map[string]bool)
+
+	for _, r := range rows {
+		if failedIntegrations[r.ID] {
 			continue
 		}
 
-		configurations = append(configurations, config)
+		idx, exists := seen[r.ID]
+		if !exists {
+			idx = len(configurations)
+			seen[r.ID] = idx
+			configurations = append(configurations, models.TicketConfigurations{
+				ID:        r.ID,
+				Tenant:    r.TenantID,
+				Tool:      r.Type,
+				Name:      r.Name,
+				Status:    r.Status,
+				CreatedBy: r.CreatedBy,
+				IsActive:  r.Status == "enabled",
+			})
+		}
+
+		if r.ConfigName == "" {
+			continue
+		}
+
+		value := r.ConfigValue
+		if r.IsEncrypted && value != "" {
+			decrypted, decErr := common.Decrypt(value)
+			if decErr != nil {
+				slog.Error("Failed to decrypt config value:", "name", r.ConfigName, "error", decErr, "integration_id", r.ID)
+				failedIntegrations[r.ID] = true
+				continue
+			}
+			value = decrypted
+		}
+
+		cfg := &configurations[idx]
+		switch r.ConfigName {
+		case "url":
+			cfg.URL = value
+		case "username":
+			cfg.Username = value
+		case "password":
+			cfg.Password = value
+		case "auth_type":
+			cfg.AuthType = value
+		case "projects":
+			if value != "" {
+				if err := json.Unmarshal([]byte(value), &cfg.Projects); err != nil {
+					slog.Warn("Failed to unmarshal projects config value", "integration_id", r.ID, "error", err)
+				}
+			}
+		case "priorities":
+			if value != "" {
+				if err := json.Unmarshal([]byte(value), &cfg.Priorities); err != nil {
+					slog.Warn("Failed to unmarshal priorities config value", "integration_id", r.ID, "error", err)
+				}
+			}
+		case "users":
+			if value != "" {
+				if err := json.Unmarshal([]byte(value), &cfg.Users); err != nil {
+					slog.Warn("Failed to unmarshal users config value", "integration_id", r.ID, "error", err)
+				}
+			}
+		case "last_connected":
+			if value != "" {
+				lastConnected, parseErr := time.Parse(time.RFC3339, value)
+				if parseErr == nil {
+					cfg.LastConnected = &lastConnected
+				}
+			}
+		default:
+			slog.Debug("Unhandled integration config key", "name", r.ConfigName, "integration_id", r.ID)
+		}
 	}
+
+	// Remove integrations that failed decryption, preserving order.
+	n := 0
+	for _, cfg := range configurations {
+		if !failedIntegrations[cfg.ID] {
+			configurations[n] = cfg
+			n++
+		}
+	}
+	for i := n; i < len(configurations); i++ {
+		configurations[i] = models.TicketConfigurations{}
+	}
+	configurations = configurations[:n]
 
 	return configurations, nil
 }
