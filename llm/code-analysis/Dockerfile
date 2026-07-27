@@ -53,8 +53,10 @@ WORKDIR /app
 # cache key so BuildKit re-runs the apk install and pulls current Alpine security
 # patches instead of a stale cached layer. Committed (not a build-arg) so each
 # refresh is a reviewable, revertable diff; bump when the Trivy scan flags a stale
-# package (e.g. c-ares CVE-2026-33630); currently W29 pulls curl 8.14.1-r3 (CVE-2026-5545).
-ARG OS_PKG_EPOCH=2026-W29
+# package (e.g. c-ares CVE-2026-33630); currently W31 pulls bind 9.20.26-r0,
+# clearing 14 HIGH — 7 CVEs (CVE-2026-11331/-11605/-11622/-11721/-12617/-13204/
+# -13321) counted against both bind-libs and bind-tools.
+ARG OS_PKG_EPOCH=2026-W31
 RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     && apk upgrade --no-cache \
     && apk add --no-cache \
@@ -160,6 +162,29 @@ RUN npm install -g yarn pnpm && \
     ln -s /opt/python-tools/bin/black /usr/local/bin/black && \
     ln -s /opt/python-tools/bin/flake8 /usr/local/bin/flake8 && \
     ln -s /opt/python-tools/bin/mypy /usr/local/bin/mypy
+
+# Patch pnpm's vendored node-tar.
+# pnpm ships its own copy of node-tar in two places (dist/ and the standalone
+# artifacts/exe/dist/). pnpm 11.17.0 — the newest release — still vendors tar
+# 7.5.20, which carries GHSA-r292-9mhp-454m (uncontrolled recursion in
+# mapHas/filesFilter -> uncatchable stack-overflow DoS when extracting a crafted
+# tarball). No installable pnpm version clears it, and pnpm is a supported build
+# runner here (orchestrator_agent.go offers `pnpm lint/build/test` on cloned
+# repos), so overwrite the vendored copies with the patched release instead.
+# tar is pure JS and this is a patch-level bump, so pnpm's usage is unaffected.
+# The directory check fails the build if pnpm ever relocates these paths, rather
+# than silently leaving the vulnerable copy in place. Bump TAR_VERSION when the
+# Trivy scan flags it again.
+ARG TAR_VERSION=7.5.22
+RUN npm install --no-save --prefix /tmp/tarfix "tar@${TAR_VERSION}" \
+    && for d in /usr/local/lib/node_modules/pnpm/dist/node_modules/tar \
+                /usr/local/lib/node_modules/pnpm/artifacts/exe/dist/node_modules/tar; do \
+         [ -d "$d" ] || { echo "ERROR: expected pnpm vendored tar at $d"; exit 1; }; \
+         rm -rf "$d" && cp -R /tmp/tarfix/node_modules/tar "$d"; \
+       done \
+    && rm -rf /tmp/tarfix \
+    && grep -q "\"version\": \"${TAR_VERSION}\"" \
+         /usr/local/lib/node_modules/pnpm/dist/node_modules/tar/package.json
 
 # Copy Go toolchain and golangci-lint from builder.
 # Builder uses golang:1.26-alpine; matching that here keeps build/vet runnable
