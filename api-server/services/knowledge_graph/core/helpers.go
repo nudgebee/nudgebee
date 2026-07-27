@@ -787,6 +787,27 @@ func ComputeLogoID(nodeType NodeType, source string, properties map[string]inter
 		}
 	}
 
+	// 1.2 K8s Workload resolution — handled entirely here, before service_name, so a Workload
+	// node never falls through to an AWS/GCP-oriented heuristic below that has no legitimate
+	// reason to match a k8s node in the first place. A known runtime language (set by
+	// trace/eBPF enrichment, e.g. a Deployment observed running a Python app) still wins over
+	// the generic kind icon, matching this function's original priority. Otherwise, recognized
+	// kinds map to their own icon; anything else — an uncommon kind like ReplicaSet, or a
+	// missing kind — falls back to the generic Deployment icon
+	// (github.com/kubernetes/community icons/svg/resources/labeled/deploy.svg) so a Workload
+	// node is never left without a logo.
+	if nodeType == NodeTypeWorkload {
+		if lang := getNodeProp(properties, "language"); lang != "" {
+			return languageLogoID(lang)
+		}
+		switch kind := strings.ToLower(getNodeProp(properties, "kind")); kind {
+		case "deployment", "statefulset", "daemonset", "job", "cronjob":
+			return kind
+		default:
+			return "deployment"
+		}
+	}
+
 	// 1.5 Azure resource-provider types ("microsoft.compute/virtualmachines", ...) match none of
 	// the AWS/GCP/language heuristics below, so resolve them explicitly. azureLogoID always
 	// returns a non-empty id (generic "azure-resource" fallback), so Azure nodes never fall
@@ -817,14 +838,7 @@ func ComputeLogoID(nodeType NodeType, source string, properties map[string]inter
 		return languageLogoID(lang)
 	}
 
-	// 5. K8s workload kind
-	if nodeType == NodeTypeWorkload {
-		if kind := getNodeProp(properties, "kind"); kind != "" {
-			return strings.ToLower(kind)
-		}
-	}
-
-	// 6. Node-type fallback
+	// 5. Node-type fallback
 	return nodeTypeLogoMap[nodeType]
 }
 
