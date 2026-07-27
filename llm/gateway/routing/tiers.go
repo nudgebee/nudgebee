@@ -52,6 +52,20 @@ func IsTierAlias(model string) bool {
 	return false
 }
 
+// StripTierAliasRules returns rules with any tier-alias rule removed (match on a tier
+// name). Used to make a deployment-wide tiering disable authoritative on EVERY surface
+// — dropping not just the shipped defaults but any config-file or tenant DB rule that
+// maps a tier, so nb-* can't resolve on a native mount either.
+func StripTierAliasRules(rules []Rule) []Rule {
+	out := make([]Rule, 0, len(rules))
+	for _, r := range rules {
+		if !IsTierAlias(r.Match.Model) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // DefaultTierRules turns the catalog into global (tenant_id="") default rules.
 func DefaultTierRules() []Rule {
 	cat := TierCatalog()

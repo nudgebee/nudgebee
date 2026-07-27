@@ -159,6 +159,10 @@ type Configuration struct {
 	// llm_gateway_routing_rules, refreshed every RoutingRefreshSeconds.
 	RoutingConfig         string `mapstructure:"gateway_routing_config"`
 	RoutingRefreshSeconds int    `mapstructure:"gateway_routing_refresh_seconds"`
+	// TiersEnabled ships the platform tier aliases (nb-fast/cheap/smart). Default true;
+	// set false to disable tiering deployment-wide — the defaults are not loaded and
+	// nb-* names resolve to nothing (a clean "unknown model" 400 on the generic endpoint).
+	TiersEnabled bool `mapstructure:"gateway_tiers_enabled"`
 
 	// OpenTelemetry.
 	OtelTracesExporter              string `mapstructure:"otel_traces_exporter"`
@@ -221,6 +225,7 @@ var keyDefaults = map[string]any{
 	"gateway_capture_admin_calls":           false,
 	"gateway_routing_config":                "",
 	"gateway_routing_refresh_seconds":       30,
+	"gateway_tiers_enabled":                 true,
 	"gateway_default_user_cost_limit":       0.0,   // per-user cost guardrail; 0 = disabled
 	"gateway_default_user_cost_period":      "day", // minute|hour|day|month
 	"gateway_egress_filter_mode":            "",    // off|detect|enforce|redact (outbound secret scan)

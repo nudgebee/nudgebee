@@ -16,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"nudgebee/llm-gateway/auth"
+	"nudgebee/llm-gateway/config"
 	"nudgebee/llm-gateway/edgeerr"
 	"nudgebee/llm-gateway/routing"
 )
@@ -62,8 +63,11 @@ func (h *handler) handleChat(c *gin.Context) {
 		if lane, isTier := h.tierLane(identity, requestedModel); isTier {
 			provider, model = lane, requestedModel
 		} else {
-			edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request",
-				`unknown or missing model; address it as "provider/model" (e.g. "anthropic/claude-opus-4-8"), a known model name, or a tier alias (nb-fast/nb-cheap/nb-smart)`)
+			msg := `unknown or missing model; address it as "provider/model" (e.g. "anthropic/claude-opus-4-8") or a known model name`
+			if config.Config.TiersEnabled {
+				msg += `, or a tier alias (nb-fast/nb-cheap/nb-smart)`
+			}
+			edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request", msg)
 			h.recordReject(identity, schemas.OpenAI, requestedModel, c.Request.Method, chatCompletionsPath, http.StatusBadRequest, "unknown_model", start)
 			return
 		}
@@ -140,7 +144,9 @@ func (h *handler) handleChat(c *gin.Context) {
 // concrete target. The caller keeps the tier TOKEN as the model; the route stage then
 // does the authoritative token→model resolution and records reason=alias.
 func (h *handler) tierLane(id auth.Identity, model string) (schemas.ModelProvider, bool) {
-	if h.router == nil {
+	// Tiering disabled deployment-wide: don't resolve tier aliases, even if a stale
+	// tenant override rule for one still exists — nb-* falls through to a 400.
+	if !config.Config.TiersEnabled || h.router == nil {
 		return "", false
 	}
 	d := h.router.Resolve(routing.Input{Model: model, TenantID: id.TenantID, UserID: id.UserID})
@@ -239,6 +245,11 @@ func (h *handler) handleModels(c *gin.Context) {
 	}
 	data := make([]model, 0, len(genericModelCatalog))
 	for _, m := range genericModelCatalog {
+		// Don't advertise the tier aliases when tiering is disabled deployment-wide
+		// (the tier rows are the "nudgebee"-owned entries).
+		if m.ownedBy == "nudgebee" && !config.Config.TiersEnabled {
+			continue
+		}
 		data = append(data, model{ID: m.id, Object: "model", OwnedBy: m.ownedBy})
 	}
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": data})

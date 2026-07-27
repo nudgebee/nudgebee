@@ -11,6 +11,22 @@ func TestDefaultTierRules_Valid(t *testing.T) {
 	require.NoError(t, Validate(DefaultTierRules()), "shipped defaults must pass rule validation")
 }
 
+func TestStripTierAliasRules(t *testing.T) {
+	rules := []Rule{
+		{ID: "keep-model", Match: Match{Model: "gpt-5"}},
+		{ID: "tier-fast", Match: Match{Model: "nb-fast"}},
+		{ID: "keep-provider", Match: Match{Provider: "anthropic"}},
+		{ID: "tier-smart", Match: Match{Model: "nb-smart"}},
+	}
+	out := StripTierAliasRules(rules)
+	require.Len(t, out, 2, "both tier-alias rules removed")
+	for _, r := range out {
+		assert.False(t, IsTierAlias(r.Match.Model))
+	}
+	// No tier rules → unchanged.
+	assert.Len(t, StripTierAliasRules([]Rule{{ID: "x", Match: Match{Model: "gpt-5"}}}), 1)
+}
+
 func TestTierCatalog(t *testing.T) {
 	cat := TierCatalog()
 	require.Len(t, cat, 3)
