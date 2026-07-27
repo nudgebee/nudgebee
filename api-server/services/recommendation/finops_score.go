@@ -355,6 +355,47 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 	}
 	var batch []scoreRow
 
+	// The scan loop below does nothing but read rows, so the SELECT's cursor is
+	// released as soon as the last row lands. Scoring and blast-radius annotation
+	// run afterwards, in a second pass: annotation issues its own knowledge-graph
+	// queries on this same pool, and doing that from inside `rows.Next()` pinned
+	// the connection for the whole recompute — Postgres bills time blocked on a
+	// slow client to the statement, so this SELECT was logging multi-minute
+	// durations against the slow-query alert while the query itself is a PK-keyed
+	// join over an indexed `status = 'Open'` scan.
+	type recRow struct {
+		id                string
+		tenantID          string
+		cloudAccountID    *string
+		category          string
+		ruleName          string
+		severity          *string
+		estimatedSavings  *float32
+		createdAt         *time.Time
+		resourceName      *string
+		resourceNamespace *string
+		resourceID        *string
+	}
+	var recs []recRow
+
+	errCount := 0
+	for rows.Next() {
+		var r recRow
+		if err := rows.Scan(&r.id, &r.tenantID, &r.cloudAccountID, &r.category, &r.ruleName, &r.severity, &r.estimatedSavings, &r.createdAt, &r.resourceName, &r.resourceNamespace, &r.resourceID); err != nil {
+			ctx.GetLogger().Error("error scanning recommendation row", "error", err)
+			errCount++
+			continue
+		}
+		recs = append(recs, r)
+	}
+	if err := rows.Err(); err != nil {
+		ctx.GetLogger().Error("error iterating recommendation rows for score recompute", "error", err)
+		return err
+	}
+	if cerr := rows.Close(); cerr != nil {
+		ctx.GetLogger().Error("error closing rows", "error", cerr)
+	}
+
 	// Blast-radius annotation: resolve each recommendation to its knowledge-graph
 	// node — a k8s workload by (namespace, name), or a cloud resource by resource_id —
 	// and stamp a safety band into the breakdown JSONB. Always on; cost is bounded
@@ -363,51 +404,31 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 	kgService := core.NewService(ctx, ctx.GetLogger(), dbms)
 	impactCache := map[string]*recommendationImpact{}
 
-	errCount := 0
-	for rows.Next() {
-		var (
-			id                string
-			tenantID          string
-			cloudAccountID    *string
-			category          string
-			ruleName          string
-			severity          *string
-			estimatedSavings  *float32
-			createdAt         *time.Time
-			resourceName      *string
-			resourceNamespace *string
-			resourceID        *string
-		)
-		if err := rows.Scan(&id, &tenantID, &cloudAccountID, &category, &ruleName, &severity, &estimatedSavings, &createdAt, &resourceName, &resourceNamespace, &resourceID); err != nil {
-			ctx.GetLogger().Error("error scanning recommendation row", "error", err)
-			errCount++
-			continue
-		}
-
+	for _, r := range recs {
 		savings := float32(0)
-		if estimatedSavings != nil {
-			savings = *estimatedSavings
+		if r.estimatedSavings != nil {
+			savings = *r.estimatedSavings
 		}
-		result := ComputeFinOpsScore(category, ruleName, severity, savings, createdAt)
+		result := ComputeFinOpsScore(r.category, r.ruleName, r.severity, savings, r.createdAt)
 
 		accountID := ""
-		if cloudAccountID != nil {
-			accountID = *cloudAccountID
+		if r.cloudAccountID != nil {
+			accountID = *r.cloudAccountID
 		}
 		// Identity comes from the cloud_resourses join above; annotate no-ops when it
 		// resolves to no graph node (k8s workload or cloud resource absent from the
 		// graph, or an account-level rec with a null resource_id).
 		ns, name, resID := "", "", ""
-		if resourceNamespace != nil {
-			ns = *resourceNamespace
+		if r.resourceNamespace != nil {
+			ns = *r.resourceNamespace
 		}
-		if resourceName != nil {
-			name = *resourceName
+		if r.resourceName != nil {
+			name = *r.resourceName
 		}
-		if resourceID != nil {
-			resID = *resourceID
+		if r.resourceID != nil {
+			resID = *r.resourceID
 		}
-		annotateBreakdownWithImpact(kgService, tenantID, accountID, ns, name, resID, result.Breakdown, impactCache)
+		annotateBreakdownWithImpact(kgService, r.tenantID, accountID, ns, name, resID, result.Breakdown, impactCache)
 
 		breakdownJSON, err := json.Marshal(result.Breakdown)
 		if err != nil {
@@ -416,15 +437,11 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 		}
 
 		batch = append(batch, scoreRow{
-			id:        id,
+			id:        r.id,
 			score:     result.Score,
 			band:      result.Band,
 			breakdown: string(breakdownJSON),
 		})
-	}
-	if err := rows.Err(); err != nil {
-		ctx.GetLogger().Error("error iterating recommendation rows for score recompute", "error", err)
-		return err
 	}
 
 	// Batch update using unnest — single query for all rows
