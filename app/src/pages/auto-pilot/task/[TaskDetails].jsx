@@ -14,6 +14,7 @@ import CustomTable2 from '@shared/tables/CustomTable2';
 import KubernetesDeploymentHistory from '@components/k8s/common/KubernetesDeploymentHistory';
 
 import LinkIcon from '@mui/icons-material/Link';
+import PRLink, { resolutionsDeepLink } from '@shared/links/PRLink';
 import { Label } from '@ui/Label';
 const LISTING_HEADER = [
   { name: 'Scheduled Time', width: '10%' },
@@ -73,6 +74,19 @@ const PRTicketLink = ({ prResolution, ticketLink }) => {
       </Button>
     );
   }
+  // A resolution with no url has not produced a PR — it is still running, it
+  // failed, or the agent found nothing to change. The task itself completed
+  // before any of that was known, so this cell is the only place the outcome
+  // surfaces; it links to the resolution carrying the reason.
+  if (prResolution?.status) {
+    return (
+      <PRLink
+        status={prResolution.status}
+        statusMessage={prResolution.status_message}
+        resolutionHref={resolutionsDeepLink(prResolution.recommendation_id)}
+      />
+    );
+  }
   return <Typography sx={{ color: ds.gray[400], fontSize: ds.text.body }}>-</Typography>;
 };
 
@@ -80,6 +94,8 @@ PRTicketLink.propTypes = {
   prResolution: PropTypes.shape({
     type_reference_id: PropTypes.string,
     status: PropTypes.string,
+    status_message: PropTypes.string,
+    recommendation_id: PropTypes.string,
   }),
   ticketLink: PropTypes.string,
 };
@@ -120,17 +136,30 @@ const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
 
         // Fetch PR resolutions for tasks with recommendation_ids
         const recIds = [...new Set(tasks.map((t) => t.recommendation_id).filter(Boolean))];
-        let prMap = {};
+        // Resolutions are matched to the run that created them (task_id holds the
+        // resolution id), because a scheduled optimizer produces one resolution per
+        // run against the same recommendation. Rows predating that linkage fall back
+        // to the newest resolution for their recommendation.
+        let resolutionById = new Map();
+        let latestResolutionByRec = new Map();
         if (recIds.length > 0) {
           try {
-            const resolutionMap = await apiRecommendations.listPRResolutionsByRecommendationIds(recIds);
-            resolutionMap.forEach((value, key) => {
-              prMap[key] = value;
+            const resolutions = await apiRecommendations.listPRResolutionsByRecommendationIds(recIds);
+            resolutions.forEach((resolution) => {
+              resolutionById.set(resolution.id, resolution);
+              if (!latestResolutionByRec.has(resolution.recommendation_id)) {
+                latestResolutionByRec.set(resolution.recommendation_id, resolution);
+              }
             });
           } catch (e) {
             console.error('Error fetching PR resolutions:', e);
           }
         }
+        const resolutionForTask = (task) =>
+          resolutionById.get(task?.task_id) ||
+          resolutionById.get(task?.attributes?.resolution_id) ||
+          latestResolutionByRec.get(task?.recommendation_id) ||
+          null;
         let data = tasks.map((item) => {
           let resourceFilter = item.resource_filter && Object.keys(item.resource_filter).length > 0 ? item.resource_filter : {};
 
@@ -186,12 +215,7 @@ const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
             },
             { component: <Text value={item?.reason} format='markdown' showAutoEllipsis lineClamp={3} /> },
             {
-              component: (
-                <PRTicketLink
-                  prResolution={item?.recommendation_id ? prMap[item.recommendation_id] : null}
-                  ticketLink={item?.attributes?.ticket_link}
-                />
-              ),
+              component: <PRTicketLink prResolution={resolutionForTask(item)} ticketLink={item?.attributes?.ticket_link} />,
             },
             {
               component: (

@@ -13,7 +13,7 @@ import ShieldOutlinedIcon from '@mui/icons-material/ShieldOutlined';
 import SystemUpdateAltOutlinedIcon from '@mui/icons-material/SystemUpdateAlt';
 import BuildOutlinedIcon from '@mui/icons-material/BuildOutlined';
 import TicketLink from '@shared/links/TicketLink';
-import PRLink from '@shared/links/PRLink';
+import PRLink, { resolutionsDeepLink, hasRenderablePRState } from '@shared/links/PRLink';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import { Label } from '@ui/Label';
 import { Card } from '@ui/Card';
@@ -593,7 +593,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
       )}
 
       {/* Linked Items */}
-      {(rec.ticket || rec.resolution?.type_reference_id) && (
+      {(rec.ticket || hasRenderablePRState(rec.resolution)) && (
         <>
           <Divider />
           <Box>
@@ -615,19 +615,26 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
                   <TicketLink ticketURL={rec.ticket?.url} ticketID={rec.ticket?.ticket_id} />
                 </Box>
               )}
-              {rec.resolution?.type_reference_id && (
+              {hasRenderablePRState(rec.resolution) && (
                 <Box
                   sx={{
                     p: `${ds.space[2]} ${ds.space[3]}`,
                     borderRadius: ds.radius.lg,
-                    backgroundColor: ds.green[100],
-                    border: `1px solid ${ds.green[200]}`,
+                    // A resolution without a url is a pending or failed PR attempt; the
+                    // chip carries its own tone, so keep the container neutral there.
+                    backgroundColor: rec.resolution.type_reference_id ? ds.green[100] : ds.gray[100],
+                    border: `1px solid ${rec.resolution.type_reference_id ? ds.green[200] : ds.gray[200]}`,
                     display: 'flex',
                     alignItems: 'center',
                     gap: ds.space[2],
                   }}
                 >
-                  <PRLink prURL={rec.resolution.type_reference_id} statusMessage={rec.resolution.status_message} />
+                  <PRLink
+                    prURL={rec.resolution.type_reference_id}
+                    statusMessage={rec.resolution.status_message}
+                    status={rec.resolution.status}
+                    resolutionHref={resolutionsDeepLink(rec.id)}
+                  />
                 </Box>
               )}
             </Box>
