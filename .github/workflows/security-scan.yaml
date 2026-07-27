@@ -175,7 +175,7 @@ jobs:
           - ghcr.io/nudgebee/postgres:16.10-alpine-nb2
           - ghcr.io/nudgebee/redis:7.0.12-debian-11-r0-nb2
           - ghcr.io/nudgebee/rabbitmq:3.13.7-debian-12-r5-nb1
-          - ghcr.io/nudgebee/postgres-exporter:v0.20.1
+          - ghcr.io/nudgebee/postgres-exporter:v0.20.1-nb1
           - ghcr.io/nudgebee/nginx:stable-alpine3.20-slim-nb1
           - ghcr.io/nudgebee/kubewatch:2.14.1-nb.2
           # --- genuinely third-party (upstream-owned) ---
@@ -193,7 +193,7 @@ jobs:
           - ghcr.io/nudgebee/forager:0.1.2
           # --- agent-chart runtime dependencies (clickhouse mirror + otel) ---
           - ghcr.io/nudgebee/clickhouse:24.12.4-debian-12-r0-nb-3
-          - ghcr.io/nudgebee/opentelemetry-collector-contrib:0.156.0
+          - ghcr.io/nudgebee/opentelemetry-collector-contrib:0.157.0
     steps:
       - uses: docker/login-action@v3
         with:
