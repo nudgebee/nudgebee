@@ -1,0 +1,21 @@
+-- The k8s-collector node lookup (handlers/event_handler.py::get_resource_info) runs
+--   SELECT id, name FROM cloud_resourses
+--   WHERE type = 'node' AND name = ? AND tenant = ? AND account = ?
+-- No index covers `name`, so the planner falls back to the type-only index and scans
+-- every 'node' row for the account (13k+ on churn-heavy accounts), ~20-30s cold. This
+-- composite index turns it into a point lookup.
+--
+-- Deliberately NOT built CONCURRENTLY here. Atlas Community applies each file inside a
+-- transaction (`--tx-mode file` in run-migrations.sh), and the `-- atlas:txmode none`
+-- directive is a paid-tier feature: on the pinned v0.36.0 it is accepted and ignored,
+-- so a CONCURRENTLY build fails with "cannot run inside a transaction block".
+-- migrations-lint.yaml rejects CONCURRENTLY in migration files for exactly this reason.
+--
+-- Per that gate's prescribed recipe, build the index out-of-band before this merges:
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_cloud_resourses_account_type_name
+--       ON cloud_resourses (account, type, name);
+-- against each environment's database. Where that has been done this statement is a
+-- no-op; where it has not (fresh installs, e2e, local dev) it builds under a SHARE
+-- lock, which blocks writes to cloud_resourses for the duration of the build.
+CREATE INDEX IF NOT EXISTS idx_cloud_resourses_account_type_name
+    ON cloud_resourses (account, type, name);
