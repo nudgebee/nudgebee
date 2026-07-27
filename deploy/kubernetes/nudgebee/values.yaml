@@ -108,7 +108,7 @@ postgresql:
     image:
       registry: 'ghcr.io/nudgebee'
       repository: postgres-exporter
-      tag: 'v0.20.1'
+      tag: 'v0.20.1-nb1'
     serviceMonitor:
       enabled: true
     prometheusRule:
