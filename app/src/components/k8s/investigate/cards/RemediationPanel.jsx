@@ -732,7 +732,7 @@ const RemediationPanel = ({ accountId, eventId, nbStatus }) => {
   return (
     <Box sx={{ mt: 'var(--ds-space-5)', display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-2)' }}>
-        <Box sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: 'var(--ds-text-body-lg)' }}>Remediation</Box>
+        <Box sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: 'var(--ds-text-title)', color: 'var(--ds-blue-500)' }}>Remediation</Box>
         <Button tone='secondary' size='xs' onClick={generate} loading={loading} disabled={loading} data-testid='regenerate-remediation-btn'>
           Regenerate
         </Button>
