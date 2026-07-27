@@ -2,13 +2,8 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
-	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
-	"strings"
-
-	"github.com/samber/lo"
 )
 
 // AgentK8sOrchestratorTrimName is an EXPERIMENTAL, @-invocable eval handle that
@@ -88,72 +83,10 @@ func (a *K8sTrimAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 	return prompt
 }
 
-// trimmedK8sCoreToolNames is the lean preloaded set. The conditional tail mirrors
-// the production orchestrator's exactly (remediation/shell/memory/followup) so the
-// ONLY difference from the direct orchestrator is the removed specialist agents.
-// search_tools is listed unconditionally but only survives the enabled-filter when
-// LLM_SERVER_SEARCH_TOOLS_ENABLED is on (else it is silently absent, and the prompt
-// falls back to delegate-by-name — see trimOnDemandInstruction).
-func trimmedK8sCoreToolNames() []string {
-	names := []string{
-		tools.ToolExecuteKubectlCommand,
-		LogsAgentName,
-		EventsAgentName,
-		MetricsAgentName,
-		TracesAgentName,
-		ResourceSearchAgentName,
-		ServiceDependencyGraph,
-		RecommendationsAgentName,
-		DelegateAgentToolName,
-		SearchToolsToolName,
-	}
-	if config.Config.RemediationAgentEnabled {
-		names = append(names, RemediationAgentName)
-	}
-	if config.Config.LlmServerShellToolEnabled {
-		names = append(names, toolcore.ToolExecuteShellCommand)
-	}
-	names = appendMemoryToolName(names)
-	if core.IsAgentsFollowupEnabled() {
-		names = append(names, FollowupAgentName)
-	}
-	return names
-}
-
-// getTrimmedK8sSupportedTools resolves the lean core name list to enabled NBTools
-// (account-authorized + configured via GetEnabledNBTools) and merges MCP tools
-// fresh — mirroring the production getSupportedTools resolution, but over the
-// trimmed base list. Kept separate from getSupportedTools so the production path
-// is untouched.
-func getTrimmedK8sSupportedTools(ctx *security.RequestContext, accountId, agentName string) []toolcore.NBTool {
-	var staticTools []toolcore.NBTool
-	if cached, ok := agentSupportedToolsCacheInstance.get(accountId, agentName); ok {
-		staticTools = cached
-	} else {
-		enabledTools := toolcore.GetEnabledNBTools(ctx, accountId)
-		enabledMap := make(map[string]toolcore.NBTool, len(enabledTools))
-		for _, t := range enabledTools {
-			enabledMap[strings.ToLower(t.Name())] = t
-		}
-		agentTools := []toolcore.NBTool{}
-		for _, name := range trimmedK8sCoreToolNames() {
-			if t, ok := enabledMap[strings.ToLower(name)]; ok {
-				agentTools = append(agentTools, t)
-			}
-		}
-		staticTools = lo.UniqBy(agentTools, func(t toolcore.NBTool) string { return t.Name() })
-		agentSupportedToolsCacheInstance.set(accountId, agentName, staticTools)
-	}
-
-	mcpTools := toolcore.ListMCPIntegrationTools(accountId)
-	if len(mcpTools) == 0 {
-		return staticTools
-	}
-	merged := make([]toolcore.NBTool, len(staticTools), len(staticTools)+len(mcpTools))
-	copy(merged, staticTools)
-	merged = append(merged, mcpTools...)
-	return lo.UniqBy(merged, func(t toolcore.NBTool) string { return t.Name() })
-}
+// trimmedK8sCoreToolNames and getTrimmedK8sSupportedTools moved to
+// agent_k8s_reduced_core.go — the reduced core is now shared with the lean
+// orchestrator (the production default), so it must not live in this
+// experimental, delete-slated file.
 
 // trimOnDemandInstruction is the override paragraph appended to the k8s prompt. It
 // tells the planner its tool set is intentionally lean and to reach specialists it
