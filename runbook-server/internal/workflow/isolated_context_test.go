@@ -23,6 +23,7 @@ func TestNewIsolatedTaskContext_CarriesNoWorkflowIdentity(t *testing.T) {
 	assert.Equal(t, "", taskCtx.GetWorkflowID(), "isolated runs must not fabricate a workflow id")
 	assert.Equal(t, "", taskCtx.GetWorkflowName(), "isolated runs must not fabricate a workflow name")
 	assert.Equal(t, "", taskCtx.GetWorkflowRunID(), "isolated runs have no workflow run")
+	assert.Equal(t, "", taskCtx.GetEventID(), "isolated runs have no triggering event")
 	// Real identity that the isolated run legitimately carries is preserved.
 	assert.Equal(t, "test-account", taskCtx.GetAccountID())
 	assert.Equal(t, "test-tenant", taskCtx.GetTenantID())

@@ -3322,6 +3322,7 @@ func (s *Service) newIsolatedTaskContext(ctx *security.RequestContext, accountId
 		ctx.GetSecurityContext().GetTenantId(),
 		accountId,
 		"", // workflowID — isolated run, not tied to a workflow execution
+		"", // eventID — isolated run, no triggering event
 		ctx.GetSecurityContext().GetUserId(),
 		"", // workflowName — empty so the tracing footer/link is omitted
 		"", // userDisplayName

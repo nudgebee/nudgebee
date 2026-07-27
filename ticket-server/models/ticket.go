@@ -115,6 +115,7 @@ type InsertTicketsOne struct {
 type TicketFilter struct {
 	Source      string `json:"source"`
 	ReferenceId string `json:"reference_id"`
+	Tenant      string `json:"-"`
 }
 
 type UpdateFields struct {
