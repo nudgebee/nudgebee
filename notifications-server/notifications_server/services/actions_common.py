@@ -7,7 +7,7 @@ import requests
 from botbuilder.schema import Activity, ActivityTypes
 
 from notifications_server.configs.settings import ACCOUNT_SECURITY_CONTEXT, URLRoutes, settings
-from notifications_server.message_templates.slack.finding import FINDING_CALLBACK_ID, SILENCE_ACTION_NAME
+from notifications_server.message_templates.slack.finding import FINDING_CALLBACK_ID, SUPPRESS_ACTION_NAME
 from notifications_server.models.db_base import BaseDB
 from notifications_server.services.actions import (
     Actions,
@@ -23,12 +23,14 @@ from notifications_server.utils.transformer import SLACK_SIGNIN_SECRET
 
 USER_NOT_FOUND_MESSAGE = "Hmm, I couldn't identify your account. Mind checking your setup?"
 UNABLE_TO_PROCESS_REQUEST = "Oops! I ran into a snag with that. Could you try again?"
-SILENCE_NOT_ALLOWED_MESSAGE = "Looks like you don't have permission to silence alerts for this account — ask an admin."
+SUPPRESS_NOT_ALLOWED_MESSAGE = (
+    "Looks like you don't have permission to suppress alerts for this account — ask an admin."
+)
 
 # Mirrors the gateway permissions of event_create_triage_rule in actions.yaml;
 # the internal X-ACTION-TOKEN path bypasses the gateway, so the role gate lives here.
-SILENCE_ALLOWED_ROLES = {"tenant_admin", "account_admin"}
-SILENCE_DURATION_LABELS = {1: "1h", 4: "4h", 24: "24h", 168: "7d"}
+SUPPRESS_ALLOWED_ROLES = {"tenant_admin", "account_admin"}
+SUPPRESS_DURATION_LABELS = {1: "1h", 4: "4h", 24: "24h", 168: "7d"}
 LOG = logging.getLogger(__name__)
 
 
@@ -211,8 +213,8 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
         action_id = action.get("action_id") or action.get("name") or ""
         slack_user_id = data["user"]["id"]
 
-        if action_id == SILENCE_ACTION_NAME:
-            self.handle_silence_finding(channel_id, team_id, user_email, action, data)
+        if action_id == SUPPRESS_ACTION_NAME:
+            self.handle_suppress_finding(channel_id, team_id, user_email, action, data)
         elif action_id == "select_followup_option_dropdown":
             self.event_service.update_followup_for_event(
                 action, channel_id, team_id, slack_user_id, data["message"]["thread_ts"]
@@ -309,7 +311,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             message_ts = data.get("message", {}).get("ts")
             return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
 
-    def handle_silence_finding(self, channel_id, team_id, user_email, action, data):
+    def handle_suppress_finding(self, channel_id, team_id, user_email, action, data):
         message = data.get("message", {})
         message_ts = message.get("ts")
         try:
@@ -322,7 +324,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             payload = json.loads(selected_value)
             body = ActionRequestBody(**(payload.get("body") or {}))
             if not verify_action_request(body, payload.get("signature", ""), SLACK_SIGNIN_SECRET):
-                LOG.warning("Rejecting silence action with invalid signature")
+                LOG.warning("Rejecting suppress action with invalid signature")
                 return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
 
             params = body.action_params or {}
@@ -342,7 +344,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             if not user_id:
                 return self.reply_with_error(channel_id, team_id, message_ts, USER_NOT_FOUND_MESSAGE)
             if not self._can_manage_triage_rules(user_id, tenant_id, account_id):
-                return self.reply_with_error(channel_id, team_id, message_ts, SILENCE_NOT_ALLOWED_MESSAGE)
+                return self.reply_with_error(channel_id, team_id, message_ts, SUPPRESS_NOT_ALLOWED_MESSAGE)
 
             until = datetime.now(timezone.utc) + timedelta(hours=duration_hours)
             rule_input = {
@@ -351,7 +353,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
                 "action": "suppress",
                 "effective_until": until.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "apply_to_existing": True,
-                "name": f"Silenced via Slack by {user_email}",
+                "name": f"Suppressed via Slack by {user_email}",
             }
             if scope == "alertname" and alertname:
                 # match_alertname is evaluated as a regex against aggregation_key.
@@ -377,27 +379,29 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
 
             slack_user_id = data["user"]["id"]
             scope_label = "this alert" if scope == "fingerprint" else f'all "{alertname}" alerts'
-            duration_label = SILENCE_DURATION_LABELS.get(duration_hours, f"{duration_hours}h")
+            duration_label = SUPPRESS_DURATION_LABELS.get(duration_hours, f"{duration_hours}h")
             until_ts = int(until.timestamp())
             until_fallback = until.strftime("%d %b %Y %I:%M %p UTC")
             until_text = f"<!date^{until_ts}^{{date_short_pretty}} {{time}}|{until_fallback}>"
 
-            status_line = f"🔕 Silenced ({scope_label} · {duration_label}) by <@{slack_user_id}> · until {until_text}"
-            self._mark_finding_silenced(channel_id, team_id, message, status_line)
+            status_line = f"Suppressed ({scope_label} · {duration_label}) by <@{slack_user_id}> · until {until_text}"
+            self._mark_finding_suppressed(channel_id, team_id, message, status_line)
 
-            investigate_url = settings.urls.investigate_url(
-                account_id=account_id,
-                finding_id=params.get("event_id"),
+            # The rule lives in Triage Rules, so send people there to undo it —
+            # not to the event the alert came from.
+            triage_rules_url = settings.urls.cluster_details_url(
+                account_id,
                 utm_source=URLRoutes.UTMSource.SLACK,
+                anchor=URLRoutes.Anchors.EVENTS_TRIAGE_RULES,
             )
             confirmation = (
-                f"🔕 Silenced {scope_label} for {duration_label} by <@{slack_user_id}> — repeat alerts won't"
-                f" notify until {until_text}. <{investigate_url}|Open in NudgeBee> to undo."
+                f"<@{slack_user_id}> suppressed {scope_label} for {duration_label} — repeat alerts won't"
+                f" notify until {until_text}. <{triage_rules_url}|Open Triage Rules> to undo."
             )
             self.common_service.slack_reply_in_thread(channel_id, team_id, message_ts, confirmation)
-            return json.dumps({"status": "silenced"})
+            return json.dumps({"status": "suppressed"})
         except Exception as e:
-            LOG.exception(f"Error processing silence action: {e}")
+            LOG.exception(f"Error processing suppress action: {e}")
             return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
 
     @staticmethod
@@ -413,12 +417,12 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             context = (response.json() or {}).get("context") or {}
             if account_id not in (context.get("AccountIds") or []):
                 return False
-            return bool(set(context.get("Roles") or []) & SILENCE_ALLOWED_ROLES)
+            return bool(set(context.get("Roles") or []) & SUPPRESS_ALLOWED_ROLES)
         except Exception as e:
-            LOG.warning("Failed to check silence permission for user %s: %s", user_id, e)
+            LOG.warning("Failed to check suppress permission for user %s: %s", user_id, e)
             return False
 
-    def _mark_finding_silenced(self, channel_id, team_id, message, status_line):
+    def _mark_finding_suppressed(self, channel_id, team_id, message, status_line):
         message_ts = message.get("ts")
         attachments = message.get("attachments") or []
         updated = False
@@ -426,7 +430,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             if attachment.get("callback_id") != FINDING_CALLBACK_ID:
                 continue
             attachment["actions"] = [
-                a for a in (attachment.get("actions") or []) if a.get("name") != SILENCE_ACTION_NAME
+                a for a in (attachment.get("actions") or []) if a.get("name") != SUPPRESS_ACTION_NAME
             ]
             attachment["text"] = "\n".join(part for part in (attachment.get("text"), status_line) if part)
             updated = True

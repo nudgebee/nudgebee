@@ -46,6 +46,7 @@ class URLRoutes:
         EVENTS_APP_ERRORS = "events/app-errors"
         EVENTS_NODE_ERRORS = "events/node-errors"
         EVENTS_POD_ERRORS = "events/pod-errors"
+        EVENTS_TRIAGE_RULES = "events/triage-rules"
 
         # Optimization
         OPTIMIZE_SUMMARY = "optimize/summary"
