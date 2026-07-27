@@ -102,6 +102,17 @@ func (t *ApprovalTask) Execute(taskCtx types.TaskContext, params map[string]any)
 			request.TeamId = teamID
 		}
 
+		// Optional: post the approval prompt as a reply in an existing thread —
+		// typically the message a preceding notifications.im task sent, via
+		// {{ Tasks['<id>'].output.message_id }}. Without this the prompt always
+		// lands top-level, detached from the context that justifies it.
+		// Note the trade-off: Slack collapses thread replies, so a threaded
+		// prompt is less visible than a top-level one. Leave unset for channels
+		// where the approval must not be missed.
+		if thread, ok := params["message_thread_id"].(string); ok && thread != "" {
+			request.ThreadId = thread
+		}
+
 		resp, err := notification.SendNotification(requestContext, request)
 		if err != nil {
 			taskCtx.GetLogger().Error("Failed to send IM notification for approval", "error", err)
@@ -301,6 +312,13 @@ func (t *ApprovalTask) InputSchema() *types.Schema {
 				Default:     []any{"approve", "reject"},
 				Order:       7,
 			},
+			"message_thread_id": {
+				Type:        "string",
+				Description: "Optional IM thread to post the approval prompt into, e.g. {{ Tasks['notify'].output.message_id }} from a preceding Notifications IM task. Leave empty to post top-level — Slack collapses thread replies, so a threaded prompt is easier to miss.",
+				Required:    false,
+				Order:       8,
+				VisibleWhen: &types.VisibleWhen{Field: "approval_type", Value: []string{"instant_message"}},
+			},
 		},
 	}
 }
@@ -310,14 +328,27 @@ func (t *ApprovalTask) OutputSchema() *types.Schema {
 	return &types.Schema{
 		Properties: map[string]types.Property{
 			"status": {
-				Type:        "string",
-				Description: "Approval status (approved/rejected).",
+				Type: "string",
+				// The value is whichever `approval_options` entry the approver
+				// chose — by default "approve" / "reject", NOT "approved" /
+				// "rejected". This previously read "(approved/rejected)", which
+				// led workflow authors to write `if status == 'approved'`
+				// conditions that silently never fire: the approval succeeds,
+				// the workflow completes, and the gated task is skipped with no
+				// error anywhere. Custom approval_options come through verbatim.
+				Description: "The approval_options value the approver chose — \"approve\" or \"reject\" by default, or your custom option verbatim. Compare against your approval_options, not against \"approved\"/\"rejected\".",
 				Required:    true,
 			},
 			"approver": {
-				Type:        "string",
-				Description: "Approver Identifier.",
-				Required:    true,
+				Type: "string",
+				// Populated from the caller's security context (GetUserId), so
+				// it is empty when the approval arrives without a user identity
+				// — notably the Slack button path, which completes via a system
+				// context. The signed `approver` in the approval URL is not
+				// forwarded by handleCompleteWorkflowApproval today. Treat as
+				// best-effort and always template it with a default.
+				Description: "Approver identifier. Best-effort: empty when the approval arrives without a user identity (e.g. the Slack button path).",
+				Required:    false,
 			},
 			"comments": {
 				Type:        "string",
