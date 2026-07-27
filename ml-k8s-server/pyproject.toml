@@ -30,7 +30,11 @@ scikit-learn = "^1.4.1.post1"
 opentelemetry-api = "^1.27.0"
 opentelemetry-sdk = "^1.40.0"
 opentelemetry-exporter-otlp = "^1.27.0"
-opentelemetry-instrumentation-system-metrics = "^0.48b0"
+# 0.48b0 imported the legacy `pkg_resources` at startup, which forced a
+# setuptools<81 cap (see below). opentelemetry-python-contrib dropped
+# pkg_resources in 0.50b0; 0.65b0 is the release aligned with core 1.44
+# (contrib 0.NNb0 tracks core 1.MM where NN = MM + 21).
+opentelemetry-instrumentation-system-metrics = "^0.65b0"
 pydantic = "^2.10.3"
 kombu = "^5.4.2"
 kubernetes = "^26.1.0"
@@ -45,13 +49,14 @@ Brotli = ">=1.2.0"
 "jaraco.context" = ">=6.1.0"
 wheel = ">=0.46.2"
 msgpack = ">=1.2.1"
-# Cap setuptools below 81: 82 removed the legacy `pkg_resources` module and 81
-# deprecates it, but opentelemetry-instrumentation-system-metrics (0.48b0) still
-# imports it at startup. The freshly rebuilt conda base ships setuptools 82, so
-# without this pin the service crashes on boot with "No module named
-# 'pkg_resources'". Staying on 80.x keeps pkg_resources present and warning-free.
-# Revisit once the opentelemetry-instrumentation stack is pkg_resources-free.
-setuptools = ">=68,<81"
+# setuptools 82 removed the legacy `pkg_resources` module, which used to crash
+# this service on boot ("No module named 'pkg_resources'") because
+# opentelemetry-instrumentation-system-metrics 0.48b0 imported it at startup.
+# That import is gone as of contrib 0.50b0 (we now run 0.65b0), so the old
+# `<81` cap is lifted and the floor moves to 83.0.0 for CVE-2026-59890.
+# Re-verify with `uv pip install --requirements pyproject.toml` that no
+# installed package still imports pkg_resources before lowering this floor.
+setuptools = ">=83"
 
 [build-system]
 requires = ["poetry-core"]

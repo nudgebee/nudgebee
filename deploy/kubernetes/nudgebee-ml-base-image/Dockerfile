@@ -57,6 +57,11 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then MF_ARCH=aarch64; else MF_ARCH=x86_64; f
     # that trivy flags HIGH. The app runs from `myenv`, but the base env still
     # ships in the image, so bump it to the fixed release.
     "${CONDA_DIR}/bin/conda" install -n base -c conda-forge "msgpack-python>=1.2.1" -y && \
+    # Same reasoning for the base env's setuptools: miniforge bundles 82.0.1,
+    # which trivy flags MEDIUM (CVE-2026-59890). Fixed in 83.0.0. The consumers'
+    # own floor is set in their pyproject (ml-k8s-server, rag-server) — this only
+    # covers the base env that ships alongside `myenv`.
+    "${CONDA_DIR}/bin/conda" install -n base -c conda-forge "setuptools>=83" -y && \
     # conda-rattler-solver is an experimental, optional conda solver plugin
     # (conda's default remains libmamba, also installed). It vendors py-rattler,
     # whose rattler.abi3.so statically links pyo3 0.25.1 — trivy flags HIGH

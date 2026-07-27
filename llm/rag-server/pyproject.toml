@@ -68,13 +68,15 @@ dependencies = [
     # --- Security-forced transitive bumps (CVE fixes; none imported directly) ---
     # Pulled transitively (msal->PyJWT, rsa->pyasn1, sentence-transformers->onnx/
     # transformers, unstructured->pypdf, fastapi->starlette). Pinned here to force
-    # the patched versions. setuptools<81 guards the ml-base pkg_resources crash.
+    # the patched versions. setuptools>=83 clears CVE-2026-59890; the previous
+    # `<81` cap mirrored ml-k8s-server's pkg_resources crash guard, which no
+    # longer applies (nothing in this resolve imports pkg_resources unguarded).
     "PyJWT>=2.13.0",
     "pyasn1>=0.6.3",
     "onnx>=1.22.0",
     "pypdf>=6.13.3",
     "starlette>=1.3.1",
-    "setuptools<81",
+    "setuptools>=83",
 
     # --- External integrations ---
     "atlassian-python-api==4.0.7",
