@@ -80,7 +80,21 @@ func (t GcpCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 	command = strings.ReplaceAll(command, "\\\r\n", " ")
 	command = strings.ReplaceAll(command, "\\\n", " ")
 
-	if !strings.HasPrefix(command, "gcloud") {
+	// Route-hint guard: catch tool-mismatched inputs at the door.
+	// Without this, the auto-prefix below silently rewrites `curl ...` to
+	// `gcloud curl ...`, gcloud emits "Invalid choice: 'curl'", and the model
+	// wastes a retry round trying to fix a command that never belonged here.
+	// gsutil is legitimately allowed (see agent prompt: "For Cloud Storage
+	// ACLs, prefer using 'gsutil acl get'") — the auto-prefix below also
+	// skips it. Same for `gcloud` itself.
+	if guardErr := rejectNonGcloudShapes(command); guardErr != "" {
+		return core.NBToolResponse{
+			Data:   cliRecoveryEnvelope(guardErr, guardErr, "gcloud", "gcloud <command> --help"),
+			Status: core.NBToolResponseStatusError,
+		}, nil
+	}
+
+	if !strings.HasPrefix(command, "gcloud") && !strings.HasPrefix(command, "gsutil") {
 		command = "gcloud " + command // Ensure "gcloud" prefix
 	}
 
@@ -186,6 +200,85 @@ func (t GcpCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 	}, nil
 }
 
+// rejectNonGcloudShapes screens the input command against known-wrong shapes
+// that don't belong in gcloud_execute — returns an empty string when the
+// command is acceptable (starts with gcloud, gsutil, or looks like a shell
+// command that will get the "gcloud " prefix auto-added and either work or
+// fail with an actionable gcloud error).
+//
+// Rejected shapes (with routing hints instead of silent auto-prefixing):
+//   - curl/wget: model is trying REST API fallback; should route to shell_execute
+//     where auth tokens work naturally (`curl -H "Authorization: Bearer $(gcloud auth print-access-token)" ...`).
+//   - kubectl: wrong tool entirely.
+//   - bq: BigQuery CLI is separate from gcloud; belongs in shell_execute.
+//   - natural-language string (no CLI-token shape as first word): pipeline gap
+//     upstream sent a raw question through as if it were a command.
+//
+// gsutil is INTENTIONALLY allowed — see caller for the auto-prefix skip.
+func rejectNonGcloudShapes(command string) string {
+	// strings.Fields robustly handles all whitespace (space, tab, newline, CR)
+	// as separators — safer than IndexAny(trimmed, " \t") when input arrives
+	// with backslash-continuations already collapsed or embedded newlines.
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return ""
+	}
+	firstToken := fields[0]
+	switch firstToken {
+	case "curl", "wget":
+		return "gcloud_execute runs the gcloud CLI only. For REST API calls " +
+			"(e.g. Cloud Monitoring / Cloud Trace v1), request `shell_execute` from the parent agent — " +
+			"it supports curl with `gcloud auth print-access-token` for auth."
+	case "kubectl":
+		return "gcloud_execute runs the gcloud CLI only. Use the `kubectl` tool for Kubernetes operations."
+	case "bq":
+		return "gcloud_execute runs the gcloud CLI only. For BigQuery queries, request `shell_execute` " +
+			"from the parent agent (the `bq` CLI is available there)."
+	}
+	// Natural-language sniff: first token is long, or has a non-executable
+	// shape (uppercase-first / punctuation). Executable names are short and
+	// match [a-z][A-Za-z0-9_.-]*.
+	if len(firstToken) > 30 || !isExecutableLikeToken(firstToken) {
+		trimmed := strings.TrimSpace(command)
+		preview := trimmed
+		if len(preview) > 80 {
+			preview = preview[:80] + "..."
+		}
+		return "gcloud_execute expects a shell command starting with `gcloud ...`. " +
+			"Got what looks like a natural-language string: \"" + preview + "\". " +
+			"Compose the gcloud command explicitly and re-run."
+	}
+	return ""
+}
+
+// isExecutableLikeToken reports whether s has the shape of a Unix executable
+// name — starts with a lowercase letter, then lowercase-letters / digits /
+// underscore / hyphen / dot only. Used to distinguish shell commands from
+// natural-language strings.
+//
+// The lowercase-first rule matters: natural-language sentences typically
+// start with an uppercase word ("Check ...", "List all ...", "Show me ..."),
+// and this heuristic catches them without false-positives against real Unix
+// commands (essentially all of which start lowercase — `Xvfb` is the only
+// widely-known exception, and it's not in play here).
+func isExecutableLikeToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case i == 0 && r >= 'a' && r <= 'z':
+			// ok — lowercase start (real executable name shape)
+		case i > 0 && ((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.'):
+			// ok — mixed case + digits + safe punctuation after the first char
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // gcloudErrorHint returns an actionable recovery hint for the two gcloud
 // failure classes the model most often thrashes on (2026-07-02 sweep:
 // 38 of 83 gcloud errors were the shell-syntax class, plus recurring
@@ -216,6 +309,22 @@ func gcloudErrorHint(rawError string) string {
 			"Do NOT retry the same command on this project — report the specific project + API in your answer so the user can enable it, and continue with other projects if there are any."
 	case strings.Contains(lower, "quota exceeded"):
 		return "GCP quota exceeded for this API. Retrying will fail the same way; report the specific quota to the user and continue with other work."
+	case strings.Contains(lower, "invalid choice:"):
+		// Subcommand hallucination — model invented a subcommand that doesn't
+		// exist in this gcloud tree (`gcloud sql insights`, `gcloud monitoring
+		// timeseries`, etc.). gcloud's own error prints the valid alternatives
+		// under a "Maybe you meant:" section on line 2+. Steer the model to
+		// read that list rather than guessing another name.
+		if strings.Contains(lower, "maybe you meant:") {
+			return "gcloud printed the valid alternatives above under 'Maybe you meant:'. " +
+				"Pick one from that list and re-run — do NOT guess another subcommand name. " +
+				"If none of the suggestions fit your intent, extract the parent path from the error " +
+				"line (e.g. `ERROR: (gcloud.sql.insights)` → parent is `gcloud sql`) and run " +
+				"`gcloud <parent> --help` to see the full subcommand tree."
+		}
+		return "The subcommand is invalid. Extract the parent path from the error line " +
+			"(e.g. `ERROR: (gcloud.sql.insights)` → parent is `gcloud sql`) and run " +
+			"`gcloud <parent> --help` to see the valid subcommands. Do NOT guess another name."
 	}
 	return ""
 }
