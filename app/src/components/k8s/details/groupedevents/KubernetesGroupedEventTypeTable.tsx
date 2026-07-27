@@ -88,7 +88,13 @@ const KubernetesGroupedEventTypeTable: React.FC<KubernetesGroupedEventTypeTableP
   };
 
   useEffect(() => {
+    // Cleared before the early return so a switch to a falsy account drops the
+    // previous account's rows. (On a normal refetch `loading` swaps the body for
+    // a skeleton, so this costs no visible flicker.)
+    setEventGroupings([]);
+    setTotalRows(0);
     if (!accountId) return;
+    let cancelled = false;
 
     const query: any = {
       account_id: accountId,
@@ -108,11 +114,17 @@ const KubernetesGroupedEventTypeTable: React.FC<KubernetesGroupedEventTypeTableP
         order: 'desc',
       })
       .then((res: any) => {
+        if (cancelled) return;
         setEventGroupings(res.data?.event_groupings || []);
         setTotalRows(res.data?.event_groupings_aggregate?.aggregate?.count || 0);
       })
       .catch((error) => console.error(error))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [
     currentPage,
     selectedDateRange.startDate,
@@ -125,7 +137,11 @@ const KubernetesGroupedEventTypeTable: React.FC<KubernetesGroupedEventTypeTableP
   ]);
 
   useEffect(() => {
+    // Cleared before the early return so the dropdown never offers the previous
+    // account's aggregation keys.
+    setAggregationKeyFilter([]);
     if (!accountId) return;
+    let cancelled = false;
 
     k8sApi
       .getEventFilterValues({
@@ -135,6 +151,7 @@ const KubernetesGroupedEventTypeTable: React.FC<KubernetesGroupedEventTypeTableP
         endTime: new Date(selectedDateRange.endDate).toISOString(),
       })
       .then((res: any) => {
+        if (cancelled) return;
         const aggregationFilter = res?.data?.filters?.find((f: any) => f.filter_type === 'aggregation_key');
         setAggregationKeyFilter(
           (aggregationFilter?.values || []).map((d: any) => ({
@@ -143,6 +160,9 @@ const KubernetesGroupedEventTypeTable: React.FC<KubernetesGroupedEventTypeTableP
           }))
         );
       });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, selectedDateRange.startDate, selectedDateRange.endDate]);
 
   const handleDateRangeChange = (passedSelectedDateTime: any) => {
