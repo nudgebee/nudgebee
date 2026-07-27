@@ -18,6 +18,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import AutoAwesomeRoundedIcon from '@mui/icons-material/AutoAwesomeRounded';
+import SearchOffRoundedIcon from '@mui/icons-material/SearchOffRounded';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import FilterListIcon from '@mui/icons-material/FilterList';
@@ -264,6 +265,13 @@ const fallbackLayout = async (nodes, edges, options) => {
 };
 
 const LOD_ZOOM_THRESHOLD = 0.35;
+
+// fitView() is never allowed to auto-zoom out past this. Below LOD_ZOOM_THRESHOLD
+// nodes already collapse to 12px dots; once the canvas transform scales those down
+// further too, a small-but-real result set renders as imperceptible specks (looks
+// identical to "no results"). Capped comfortably above the LOD threshold so an
+// auto-fit lands somewhere legible even if it means panning to see the rest.
+const FIT_VIEW_MIN_ZOOM = 0.4;
 
 // Datastore-facet labels for in-cluster workloads classified as databases/caches/queues.
 // Keyed by the node's `role` (see backend db_classifier.go).
@@ -864,6 +872,9 @@ const ServiceMapContent = () => {
   // hasn't applied any filters. Indicates KG ingestion hasn't populated yet
   // (vs. "filters returned nothing", which is a different empty state).
   const isTenantEmpty = !hasUserFilters && kgNodeCount === 0;
+  // Filters applied but the query matched nothing — without this, the canvas
+  // just renders blank with no explanation, indistinguishable from "still loading".
+  const isFilteredEmpty = hasUserFilters && !isGraphLoading && (rawData?.nodes?.length || 0) === 0;
 
   const handleInfoClick = useCallback(async (properties) => {
     const { adjacencyMap, edgeTypeLookup, uniqueServiceKeysMap, selectedNodes } = pathComputationRef.current;
@@ -1617,7 +1628,7 @@ const ServiceMapContent = () => {
       );
       setEdges((eds) => eds.map((e) => ({ ...e, hidden: !connectedIds.has(e.source) || !connectedIds.has(e.target) })));
 
-      setTimeout(() => fitView({ duration: 300, padding: 0.2 }), 100);
+      setTimeout(() => fitView({ duration: 300, padding: 0.2, minZoom: FIT_VIEW_MIN_ZOOM }), 100);
     },
     [getNodes, getEdges, setNodes, setEdges, fitView, clearPinHighlight]
   );
@@ -1635,7 +1646,7 @@ const ServiceMapContent = () => {
     originalPositionsRef.current = null;
     focusLayoutIdRef.current++;
     setFocusedNodeId(null);
-    setTimeout(() => fitView({ duration: 300 }), 50);
+    setTimeout(() => fitView({ duration: 300, minZoom: FIT_VIEW_MIN_ZOOM }), 50);
   }, [setNodes, setEdges, fitView]);
 
   // Keep the stable ref pointer up to date whenever enterFocusMode changes (adjacency map update)
@@ -1664,7 +1675,7 @@ const ServiceMapContent = () => {
         if (currentLayoutId !== layoutIdRef.current) return;
         setNodes(layouted.nodes);
         setEdges(layouted.edges);
-        setTimeout(() => window.requestAnimationFrame(() => fitView()), 50);
+        setTimeout(() => window.requestAnimationFrame(() => fitView({ minZoom: FIT_VIEW_MIN_ZOOM })), 50);
       } finally {
         if (currentLayoutId === layoutIdRef.current) {
           setIsGraphLoading(false);
@@ -2661,6 +2672,69 @@ const ServiceMapContent = () => {
                   </Box>
                 </Box>
               </Box>
+            ) : isFilteredEmpty ? (
+              <Box
+                data-testid='kg-empty-filtered'
+                display='flex'
+                flexDirection='column'
+                alignItems='center'
+                justifyContent='center'
+                height='100%'
+                width='100%'
+                p={ds.space[6]}
+              >
+                <Box
+                  sx={{
+                    maxWidth: ds.space.mul(0, 240),
+                    width: '100%',
+                    textAlign: 'center',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 'var(--ds-space-5)',
+                  }}
+                >
+                  <Box
+                    sx={{
+                      width: ds.space.mul(0, 32),
+                      height: ds.space.mul(0, 32),
+                      borderRadius: 'var(--ds-radius-pill)',
+                      background: 'linear-gradient(135deg, var(--ds-gray-100) 0%, var(--ds-gray-200) 100%)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <SearchOffRoundedIcon sx={{ fontSize: 32, color: 'var(--ds-gray-500)' }} />
+                  </Box>
+
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+                    <Typography
+                      sx={{
+                        fontSize: 'var(--ds-text-heading)',
+                        fontWeight: 'var(--ds-font-weight-semibold)',
+                        fontFamily: 'Poppins',
+                        color: ds.gray[700],
+                      }}
+                    >
+                      No nodes match your filters
+                    </Typography>
+                    <Typography
+                      sx={{
+                        fontSize: 'var(--ds-text-body)',
+                        fontWeight: 'var(--ds-font-weight-regular)',
+                        color: ds.gray[600],
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      Try a broader level, a different node, or clearing filters entirely.
+                    </Typography>
+                  </Box>
+                  <Button data-testid='kg-empty-filtered-clear-btn' tone='secondary' size='sm' onClick={handleClear}>
+                    Clear Filters
+                  </Button>
+                </Box>
+              </Box>
             ) : (
               <>
                 <ReactFlow
@@ -2678,6 +2752,7 @@ const ServiceMapContent = () => {
                   onNodeMouseEnter={handleNodeMouseEnter}
                   onNodeMouseLeave={handleNodeMouseLeave}
                   fitView
+                  fitViewOptions={{ minZoom: FIT_VIEW_MIN_ZOOM }}
                   minZoom={0.1}
                   maxZoom={2}
                   proOptions={REACT_FLOW_PRO_OPTIONS}
