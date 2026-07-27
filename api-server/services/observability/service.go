@@ -882,13 +882,15 @@ func closestValues(target string, candidates []string) []string {
 
 // unknownLabelError builds the actionable, token-conscious error returned when a query
 // references label names the provider doesn't expose. It names the unknown label(s) and
-// either the closest valid matches or a pointer to the label-listing action — never the
-// full label list. noun is "logs"/"traces", providerNoun is "log"/"trace".
-func unknownLabelError(noun, providerNoun, listAction string, unknown, available []string) error {
+// either the closest valid matches or action-agnostic guidance (verify or drop the
+// filter) — never the full label list, and never a listing tool the caller may not
+// have (mirrors unknownValueError's fallback). noun is "logs"/"traces", providerNoun is
+// "log"/"trace".
+func unknownLabelError(noun, providerNoun string, unknown, available []string) error {
 	if suggestions := suggestLabels(unknown, available); len(suggestions) > 0 {
 		return fmt.Errorf("no %s matched: unknown label name(s) %v for this %s provider; closest valid label(s): %v", noun, unknown, providerNoun, suggestions)
 	}
-	return fmt.Errorf("no %s matched: unknown label name(s) %v for this %s provider; call %s for valid names", noun, unknown, providerNoun, listAction)
+	return fmt.Errorf("no %s matched: unknown label name(s) %v for this %s provider; verify the name is correct or remove this filter", noun, unknown, providerNoun)
 }
 
 // unknownReferencedLabels partitions the referenced field names against the set the
@@ -952,7 +954,7 @@ func validateReferencedLabels(ctx *security.RequestContext, source LogSource, fe
 	if len(unknown) == 0 {
 		return nil
 	}
-	return unknownLabelError("logs", "log", "logs_list_labels", unknown, available)
+	return unknownLabelError("logs", "log", unknown, available)
 }
 
 // valueValidationLookback bounds how far back the value validator looks when establishing a
@@ -1076,7 +1078,7 @@ func validateReferencedTraceLabels(ctx *security.RequestContext, source TraceSou
 	if len(unknown) == 0 {
 		return nil
 	}
-	return unknownLabelError("traces", "trace", "traces_list_labels", unknown, available)
+	return unknownLabelError("traces", "trace", unknown, available)
 }
 
 // normalizeOutputLogLabels adds canonical label names as aliases for provider-specific

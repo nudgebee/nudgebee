@@ -133,6 +133,15 @@ func TestValidateReferencedLabels(t *testing.T) {
 		src := &fakeLabelSource{labels: []OutputLogLabel{}}
 		assert.NoError(t, validateReferencedLabels(ctx, src, logReq, refSet("service_nam"), nil))
 	})
+
+	t.Run("no close match gives action-agnostic guidance", func(t *testing.T) {
+		src := &fakeLabelSource{labels: labelSet("k8s_cluster", "namespace", "pod")}
+		err := validateReferencedLabels(ctx, src, logReq, refSet("kaas_cluster"), nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "kaas_cluster")
+		assert.Contains(t, err.Error(), "verify the name")
+		assert.NotContains(t, err.Error(), "logs_list_labels") // don't name a tool the caller may lack
+	})
 }
 
 func TestUnknownReferencedLabels(t *testing.T) {
@@ -219,5 +228,14 @@ func TestValidateReferencedTraceLabels(t *testing.T) {
 	t.Run("fails open when discovery errors", func(t *testing.T) {
 		src := &fakeTraceSource{err: errors.New("clickhouse down")}
 		assert.NoError(t, validateReferencedTraceLabels(ctx, src, traceReq, refSet("service_nam"), nil))
+	})
+
+	t.Run("no close match gives action-agnostic guidance", func(t *testing.T) {
+		src := &fakeTraceSource{labels: traceLabelSet("app.custom.attr")}
+		err := validateReferencedTraceLabels(ctx, src, traceReq, refSet("zzzzzz"), nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "zzzzzz")
+		assert.Contains(t, err.Error(), "verify the name")
+		assert.NotContains(t, err.Error(), "traces_list_labels") // don't name a tool the caller may lack
 	})
 }
