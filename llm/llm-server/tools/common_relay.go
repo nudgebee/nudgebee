@@ -860,14 +860,13 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 	case RelayJobRabbitmq:
 		if strings.Contains(query, "rabbitmqadmin") {
 			query = strings.Replace(query, "rabbitmqadmin", "rabbitmqadmin --host $RABBITMQ_HOST --port $RABBITMQ_PORT --username $RABBITMQ_USER --password $RABBITMQ_PASSWORD ", 1)
-		} else if strings.Contains(query, "curl") && strings.Contains(query, "/api/") {
-			// Inject credentials for RabbitMQ HTTP Management API calls.
-			// Replace bare `curl` with `curl -s -u $RABBITMQ_USER:$RABBITMQ_PASSWORD` and
-			// substitute the placeholder host/port so the agent can use $RABBITMQ_HOST and
-			// $RABBITMQ_MGMT_PORT (defaults to 15672 if not set).
+		} else if strings.Contains(query, "curl") {
+			// Inject basic-auth credentials for RabbitMQ HTTP Management API calls.
+			// The URL targets $RABBITMQ_HOST:$RABBITMQ_PORT — the same host/port the
+			// working rabbitmqadmin path uses. Do NOT rewrite the port: the mgmt API
+			// is served on $RABBITMQ_PORT per the mounted secret, so hardcoding 15672
+			// (the previous behaviour) broke setups whose mgmt port differs.
 			query = strings.Replace(query, "curl ", "curl -s -u $RABBITMQ_USER:$RABBITMQ_PASSWORD ", 1)
-			// Normalise any literal management-port placeholder the agent may emit.
-			query = strings.ReplaceAll(query, "$RABBITMQ_PORT", "${RABBITMQ_MGMT_PORT:-15672}")
 		}
 	case RelayJobKafka:
 		// Inject -b $KAFKA_BROKERS plus SASL/TLS -X flags. The SASL/TLS flags use ${VAR:+...}

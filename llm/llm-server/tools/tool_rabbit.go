@@ -3,10 +3,8 @@ package tools
 import (
 	"fmt"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
-	"nudgebee/llm/workspace"
 	"regexp"
 	"strings"
 
@@ -47,16 +45,16 @@ func (m RabbitExecuteTool) Description() string {
 		**Examples (rabbitmqadmin):**
 		{"instance":"<server-name>", "args":"list queues", "command": "rabbitmqadmin"} – List Queues.
 		{"instance":"<server-name>", "args":"list connections", "command": "rabbitmqadmin"} – List Connections.
-		{"instance":"<server-name>", "args":"list consumers", "command": "rabbitmqadmin"} – List all Consumers (no queue breakdown).
+		{"instance":"<server-name>", "args":"list consumers", "command": "rabbitmqadmin"} – List all Consumers.
 
-		**Examples (HTTP Management API via curl – use when queue-level consumer detail is needed):**
-		{"args":"curl http://$RABBITMQ_HOST:${RABBITMQ_MGMT_PORT:-15672}/api/consumers | jq '.[] | {queue: .queue.name, tag: .consumer_tag, pod_ip: .channel_details.peer_host}'"} – All consumers with queue names.
-		{"args":"curl http://$RABBITMQ_HOST:${RABBITMQ_MGMT_PORT:-15672}/api/queues/%2F/my_queue | jq '.consumer_details[] | {tag: .consumer_tag, pod_ip: .channel_details.peer_host, prefetch: .prefetch_count}'"} – Consumers for a specific queue (replace my_queue; %2F = default vhost /).
+		**Examples (HTTP Management API via curl – use for message rates, cluster overview, health checks, or per-queue consumer detail that rabbitmqadmin can't express):**
+		{"args":"curl http://$RABBITMQ_HOST:$RABBITMQ_PORT/api/overview | jq '{version: .rabbitmq_version, totals: .object_totals, message_stats: .message_stats}'"} – Cluster overview with rates.
+		{"args":"curl http://$RABBITMQ_HOST:$RABBITMQ_PORT/api/queues/%2F/my_queue | jq '.consumer_details[] | {tag: .consumer_tag, pod_ip: .channel_details.peer_host, prefetch: .prefetch_count}'"} – Consumers for a specific queue (replace my_queue; %2F = default vhost /).
 
 		**Important Notes:**
 
 		* Do NOT include credentials in commands – they are injected automatically.
-		* Use 'curl' against the HTTP Management API when the user needs consumers filtered by queue, or wants to see which pod IPs are consuming a specific queue.
+		* curl URLs must target the management API on $RABBITMQ_HOST:$RABBITMQ_PORT (do NOT hardcode a port).
 		* Use the output of this tool to inform your responses and suggestions to the user.
 		`
 }
@@ -118,11 +116,11 @@ func (m RabbitExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 	}
 
 	if command.Args == "" {
-		return core.NBToolResponse{}, errors.New("missing 'args' parameter: rabbitmq command or curl required")
+		return core.NBToolResponse{}, errors.New("missing 'args' parameter: rabbitmqadmin command or curl required")
 	}
 
-	// If args is a curl command (HTTP Management API call), use it directly.
-	// Otherwise prefix with the configured command (default: rabbitmqadmin).
+	// Build the command string. A curl call to the HTTP Management API is used
+	// as-is; anything else is prefixed with the configured CLI (rabbitmqadmin).
 	var commandStr string
 	if strings.HasPrefix(strings.TrimSpace(command.Args), "curl ") {
 		commandStr = strings.TrimSpace(command.Args)
@@ -130,76 +128,16 @@ func (m RabbitExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 		if command.Command == "" {
 			command.Command = "rabbitmqadmin"
 		}
-		commandStr = command.Command + " " + command.Args
-		commandStr = strings.TrimSpace(commandStr)
+		commandStr = strings.TrimSpace(command.Command + " " + command.Args)
 	}
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		// curl commands are not intercepted by the shim in the workspace pod, so
-		// $RABBITMQ_HOST and other env vars are not available there.
-		// Route curl-based HTTP Management API calls through the relay path instead,
-		// which injects credentials from the k8s secret into a dedicated relay pod.
-		if strings.Contains(commandStr, "curl") && strings.Contains(commandStr, "/api/") {
-			response, err := ExecuteContainerJob(nbRequestContext, RelayJobRabbitmq, commandStr, nbRequestContext.AccountId, map[string]any{}, false)
-			if err != nil {
-				nbRequestContext.Ctx.GetLogger().Error("rabbit: unable to execute curl command via relay", "error", err.Error())
-				responseData := ""
-				if response != nil {
-					if responseData1, ok := response.(string); ok {
-						responseData = responseData1
-					}
-				}
-				return core.NBToolResponse{
-					Data:   responseData,
-					Status: core.NBToolResponseStatusError,
-				}, err
-			}
-			data := response.(string)
-			return core.NBToolResponse{
-				Data:   data,
-				Type:   core.NBToolResponseTypeText,
-				Status: core.NBToolResponseStatusSuccess,
-			}, nil
-		}
-
-		wm := workspace.NewWorkspaceManager()
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, commandStr, map[string]string{
-			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-		})
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("rabbit: unable to execute shell script", "error", err.Error(), "command", commandStr)
-			if response == "" {
-				response = err.Error()
-			}
-			// rabbitmqctl uses `help` as a subcommand (no dashes),
-			// e.g. `rabbitmqctl help list_queues`.
-			return core.NBToolResponse{
-				Data:   cliRecoveryEnvelope(response, "", "rabbitmqctl", "rabbitmqctl help <command>"),
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		// Wrap in JSON to be consistent with non-workspace mode
-		outputformat := map[string]string{
-			"stdout": response,
-		}
-		outputformatBytes, err := common.MarshalJson(outputformat)
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("rabbit: unable to marshal response", "error", err.Error())
-			return core.NBToolResponse{
-				Data:   response,
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-		response = string(outputformatBytes)
-
-		return core.NBToolResponse{
-			Data:   response,
-			Type:   core.NBToolResponseTypeText,
-			Status: core.NBToolResponseStatusSuccess,
-		}, nil
-	}
-
+	// Always execute in the customer environment via the relay — never the
+	// workspace pod. rabbitmqadmin and curl-against-the-HTTP-Management-API both
+	// need the customer's RabbitMQ host, credentials, and network route, none of
+	// which exist in the workspace pod (where curl, being un-shimmed, would run
+	// locally against nothing). Routing every command through ExecuteContainerJob
+	// keeps both in the customer env and preserves shell piping (`... | jq ...`)
+	// since the whole command runs in the relay pod.
 	response, err := ExecuteContainerJob(nbRequestContext, RelayJobRabbitmq, commandStr, nbRequestContext.AccountId, map[string]any{}, false)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("rabbit: unable to execute shell script", "error", err.Error())
