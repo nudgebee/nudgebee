@@ -67,12 +67,9 @@ func (s *EbpfFlowSource) isIPAddress(name string) bool {
 // These are ephemeral or intermediate controller resources that are already represented
 // by higher-level workload nodes (Deployment, StatefulSet, DaemonSet).
 func (s *EbpfFlowSource) isIgnoredKind(kind string) bool {
-	ignoredKinds := map[string]bool{
-		"pod":        true, // ephemeral instances, covered by Deployment/StatefulSet/DaemonSet
-		"replicaset": true, // managed by Deployment controller, duplicate of Deployment node
-		"staticpods": true, // kubelet-managed low-level pods, noise
-	}
-	return ignoredKinds[strings.ToLower(kind)]
+	return strings.EqualFold(kind, "pod") ||
+		strings.EqualFold(kind, "replicaset") ||
+		strings.EqualFold(kind, "staticpods")
 }
 
 // isK8sAuthoritativeType reports whether the node type is one for which
@@ -293,6 +290,16 @@ func (s *EbpfFlowSource) processK8sAccount(
 	unmatchedSources := make(map[string]int)
 	unmatchedDestinations := make(map[string]int)
 
+	// Index applications by ID for O(1) lookups in the edge-processing loops below.
+	// Without this, findApplicationByID scans the full slice per edge — O(N*E) total.
+	appByID := make(map[core.ServiceApplicationId]*core.ServiceApplication, len(serviceMap.Applications))
+	for i := range serviceMap.Applications {
+		id := serviceMap.Applications[i].Id
+		if _, exists := appByID[id]; !exists {
+			appByID[id] = &serviceMap.Applications[i]
+		}
+	}
+
 	// Process each application and its connections
 	for i := range serviceMap.Applications {
 		app := &serviceMap.Applications[i]
@@ -352,8 +359,8 @@ func (s *EbpfFlowSource) processK8sAccount(
 		for j := range app.Downstreams {
 			downstream := &app.Downstreams[j]
 
-			// Find the destination application
-			destApp := s.findApplicationByID(serviceMap.Applications, downstream.Id)
+			// Find the destination application (O(1) indexed lookup)
+			destApp := appByID[downstream.Id]
 			var downstreamNode *core.DbNode
 			var destErr error
 
@@ -488,8 +495,8 @@ func (s *EbpfFlowSource) processK8sAccount(
 				continue
 			}
 
-			// Find the upstream application
-			upstreamApp := s.findApplicationByID(serviceMap.Applications, *upstreamID)
+			// Find the upstream application (O(1) indexed lookup)
+			upstreamApp := appByID[*upstreamID]
 
 			if upstreamApp != nil && !skipNodeSearch {
 				// Skip ephemeral kinds, raw IP names, and the empty-name
@@ -784,22 +791,6 @@ func (s *EbpfFlowSource) getWorkloadName(app *core.ServiceApplication) string {
 		return workloadName
 	}
 	return app.Id.Name
-}
-
-// findApplicationByID finds an application in the list by its ID
-func (s *EbpfFlowSource) findApplicationByID(
-	applications []core.ServiceApplication,
-	id core.ServiceApplicationId,
-) *core.ServiceApplication {
-	for i := range applications {
-		app := &applications[i]
-		if app.Id.Name == id.Name &&
-			app.Id.Kind == id.Kind &&
-			app.Id.Namespace == id.Namespace {
-			return app
-		}
-	}
-	return nil
 }
 
 // matchApplicationToNode matches a service application to a knowledge graph node
