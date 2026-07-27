@@ -109,8 +109,6 @@ const TRACK_CATEGORIES: Record<OptimizeTrack, string[]> = {
   reliability: ['Configuration'],
   all: ['RightSizing', 'K8sSpotRecommendation', 'InfraUpgrade', 'Configuration'],
 };
-const trackForCategory = (category: string): OptimizeTrack => (TRACK_CATEGORIES.reliability.includes(category) ? 'reliability' : 'cost');
-
 // Sort presets for the "Sort by" control. Each maps to a real backend sort
 // column so the dropdown and the column-header sort share one source of truth
 // (sortField + sortDirection). Options with no backend column (e.g. a pure
@@ -143,22 +141,6 @@ const chipSkeletons = (count: number, width: number) =>
   Array.from({ length: count }, (_, i) => <Skeleton key={i} shape='rect' width={width} height={20} />);
 
 const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
-
-// Hover affordance for clickable summary widgets: the whole card lifts and
-// tints blue on hover so it reads as interactive, not just the cursor.
-const WIDGET_HOVER_SX = {
-  cursor: 'pointer',
-  // Stat paints `cursor: default` over its own content; doubling the card class
-  // (`&&`) wins specificity so the pointer covers the entire card, not just the edge.
-  '&& *': { cursor: 'pointer' },
-  transition: `border-color ${ds.motion.micro} ${ds.motion.ease}, box-shadow ${ds.motion.micro} ${ds.motion.ease}, background-color ${ds.motion.micro} ${ds.motion.ease}, transform ${ds.motion.micro} ${ds.motion.ease}`,
-  '&:hover': {
-    borderColor: ds.blue[300],
-    backgroundColor: ds.blue[100],
-    boxShadow: `0px 6px 16px -2px ${ds.gray.alpha[300]}`,
-    transform: 'translateY(-1px)',
-  },
-};
 
 const WIDGET_CATEGORIES = ['RightSizing', 'InfraUpgrade', 'Configuration', 'K8sSpotRecommendation'] as const;
 
@@ -545,6 +527,7 @@ const OptimizeNewPage = () => {
       // No explicit category chips → scope to the active track's categories.
       query.category = merged.category.length > 0 ? merged.category : TRACK_CATEGORIES[track];
       query.status = DEFAULT_STATUS;
+      query.excludeRuleName = UPGRADE_PLANNER_RULES;
 
       if (merged.account.length > 0) {
         query.accountId = merged.account;
@@ -894,23 +877,6 @@ const OptimizeNewPage = () => {
 
   // ─── Handlers ───
 
-  const handleWidgetCategoryClick = useCallback(
-    (category: string | null) => {
-      // The summary cards span both tracks; selecting a category from the other
-      // track flips the toggle so the toggle and the table never disagree.
-      if (category) {
-        setTrack(trackForCategory(category));
-      }
-      const newFilters = {
-        ...filters,
-        category: category ? [category] : [],
-        severity: [],
-      };
-      handleFiltersChange(newFilters);
-    },
-    [filters, handleFiltersChange]
-  );
-
   // Track toggle — switching tracks clears any category-chip narrowing so the
   // new track shows its full category set rather than carrying a stale category.
   const handleTrackChange = useCallback(
@@ -1148,13 +1114,13 @@ const OptimizeNewPage = () => {
           // Recommendation
           {
             component: (
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)', maxWidth: ds.space.mul(0, 130) }}>
                 {row.brief && <OverflowTooltip text={row.brief} sx={{ color: ds.gray[700] }} placement='top' enterDelay={400} />}
                 <Box
                   component='span'
                   sx={{
                     display: 'inline-block',
-                    maxWidth: ds.space.mul(0, 130),
+                    maxWidth: '100%',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
@@ -1265,9 +1231,7 @@ const OptimizeNewPage = () => {
             minWidth: 0,
             mt: 0,
             padding: `${ds.space[3]} ${ds.space[4]}`,
-            ...WIDGET_HOVER_SX,
           }}
-          onClick={() => handleWidgetCategoryClick(null)}
         >
           <Stat
             size='md'
@@ -1300,7 +1264,6 @@ const OptimizeNewPage = () => {
         </WidgetCard>
 
         {WIDGET_CATEGORIES.map((cat) => {
-          const isActive = filters.category.length === 1 && filters.category[0] === cat;
           const catCount = categoryCounts[cat]?.count || 0;
           const catSavings = categoryCounts[cat]?.savings || 0;
           return (
@@ -1311,12 +1274,7 @@ const OptimizeNewPage = () => {
                 minWidth: 0,
                 mt: 0,
                 padding: `${ds.space[3]} ${ds.space[4]}`,
-                ...WIDGET_HOVER_SX,
-                borderColor: isActive ? ds.blue[600] : undefined,
-                // Keep the strong selected border on hover for the active card.
-                '&:hover': { ...WIDGET_HOVER_SX['&:hover'], ...(isActive ? { borderColor: ds.blue[600] } : {}) },
               }}
-              onClick={() => handleWidgetCategoryClick(isActive ? null : cat)}
             >
               <Stat
                 size='md'
@@ -1466,49 +1424,10 @@ const OptimizeNewPage = () => {
           }}
           data-testid='severity-summary-bar'
         >
-          <Typography
-            sx={{
-              fontSize: ds.text.caption,
-              color: ds.gray[500],
-              fontWeight: ds.weight.semibold,
-              letterSpacing: '0.5px',
-              textTransform: 'uppercase',
-              mr: ds.space[1],
-            }}
-          >
-            Severity
-          </Typography>
-          {severityLoading
-            ? chipSkeletons(5, 88)
-            : summaryData.map((item) => {
-                const isActive = filters.severity.includes(item.severity);
-                return (
-                  <Chip
-                    key={item.severity}
-                    size='sm'
-                    pressed={isActive}
-                    onClick={() => handleSeverityClick(item.severity)}
-                    dot
-                    tone={SEVERITY_TONE[item.severity]}
-                    count={item.count}
-                    highlightCount
-                    data-testid={`severity-chip-${item.severity.toLowerCase()}`}
-                    sx={dotSx(SEVERITY_DOT_COLOR[item.severity])}
-                  >
-                    {item.severity}
-                  </Chip>
-                );
-              })}
-
           {/* Category chips — only when the active track has more than one
               category to narrow between (the reliability track is a single one). */}
           {trackCategoryOptions.length > 1 && (
             <>
-              {/* Divider between the severity and category chip groups */}
-              <Box
-                aria-hidden='true'
-                sx={{ width: '1px', alignSelf: 'stretch', backgroundColor: ds.gray[200], mx: ds.space[1], minHeight: ds.space[4] }}
-              />
               <Typography
                 sx={{
                   fontSize: ds.text.caption,
@@ -1545,8 +1464,48 @@ const OptimizeNewPage = () => {
                       </Chip>
                     );
                   })}
+
+              {/* Divider between the category and severity chip groups */}
+              <Box
+                aria-hidden='true'
+                sx={{ width: '1px', alignSelf: 'stretch', backgroundColor: ds.gray[200], mx: ds.space[1], minHeight: ds.space[4] }}
+              />
             </>
           )}
+
+          <Typography
+            sx={{
+              fontSize: ds.text.caption,
+              color: ds.gray[500],
+              fontWeight: ds.weight.semibold,
+              letterSpacing: '0.5px',
+              textTransform: 'uppercase',
+              mr: ds.space[1],
+            }}
+          >
+            Severity
+          </Typography>
+          {severityLoading
+            ? chipSkeletons(5, 88)
+            : summaryData.map((item) => {
+                const isActive = filters.severity.includes(item.severity);
+                return (
+                  <Chip
+                    key={item.severity}
+                    size='sm'
+                    pressed={isActive}
+                    onClick={() => handleSeverityClick(item.severity)}
+                    dot
+                    tone={SEVERITY_TONE[item.severity]}
+                    count={item.count}
+                    highlightCount
+                    data-testid={`severity-chip-${item.severity.toLowerCase()}`}
+                    sx={dotSx(SEVERITY_DOT_COLOR[item.severity])}
+                  >
+                    {item.severity}
+                  </Chip>
+                );
+              })}
         </Box>
 
         {/* Top issues row — separate band so the eye reads severity first,
