@@ -412,7 +412,7 @@ func processEventAnalysis(c *gin.Context, tracer trace.Tracer, meter metric.Mete
 	}
 
 	if request.UserId == "" || request.AccountId == "" || request.EventId == "" {
-		slog.Error("analyzer: userId, accountId and eventId are required", "payload", slog.AnyValue(actionRequest), "headers", slog.AnyValue(c.Request.Header))
+		slog.Error("analyzer: userId, accountId and eventId are required", "user_id", request.UserId, "account_id", request.AccountId, "event_id", request.EventId)
 		c.JSON(400, buildApiResponse(nil, []error{
 			common.Error{
 				Message: "userId, accountId and eventId are required",
