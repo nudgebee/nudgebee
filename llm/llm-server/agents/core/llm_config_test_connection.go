@@ -192,14 +192,17 @@ func enumerateProbeTargets(cfg map[string]string) []probeTarget {
 		return nil
 	}
 
-	// dedupeKey -> []source labels.
-	type pair struct{ provider, model string }
-	deduped := map[pair]probeTarget{}
+	// Dedupe on (provider, model, credentials). Credentials are part of the key
+	// so the same model reached via different per-tier/agent keys is probed
+	// separately — collapsing on (provider, model) alone would silently skip a
+	// tier whose credentials differ. Same-cred duplicates still collapse.
+	type dedupKey struct{ provider, model, creds string }
+	deduped := map[dedupKey]probeTarget{}
 	addTarget := func(prov, mod, source string, effectiveCfg map[string]string) {
 		if prov == "" || mod == "" {
 			return
 		}
-		key := pair{prov, mod}
+		key := dedupKey{prov, mod, credFingerprint(effectiveCfg)}
 		if existing, ok := deduped[key]; ok {
 			// Append the source label so the user knows every place the
 			// duplicate-model is referenced.
@@ -225,7 +228,9 @@ func enumerateProbeTargets(cfg map[string]string) []probeTarget {
 			tierProvider = provider
 		}
 		tierModel := cfg["llm_tier_model_"+tier]
-		tierCfg := overlayCfg(cfg, tierCredsOverlay(cfg, tier, tierProvider, tierModel))
+		tierCfg := buildScopedCfg(cfg, tierProvider, tierModel, func(generic string) string {
+			return cfg[tierScopedKey(generic, tier)]
+		})
 		if tierModel != "" {
 			addTarget(tierProvider, tierModel, "tier-"+tier, tierCfg)
 		}
@@ -244,7 +249,9 @@ func enumerateProbeTargets(cfg map[string]string) []probeTarget {
 		if agentProvider == "" {
 			agentProvider = provider
 		}
-		agentCfg := overlayCfg(cfg, agentCredsOverlay(cfg, agent, agentProvider, val))
+		agentCfg := buildScopedCfg(cfg, agentProvider, val, func(generic string) string {
+			return cfg[generic+"_"+agent]
+		})
 		addTarget(agentProvider, val, "agent-"+agent, agentCfg)
 		for _, fb := range splitFallbacks(cfg["llm_model_fallbacks_"+agent]) {
 			addTarget(agentProvider, fb, "agent-"+agent+"-fallback", agentCfg)
@@ -281,69 +288,61 @@ func splitFallbacks(raw string) []string {
 	return out
 }
 
-// overlayCfg returns a shallow merge of base with overlay's non-empty values
-// on top. Used to build per-target effective configs without mutating the
-// shared cfg map.
-func overlayCfg(base, overlay map[string]string) map[string]string {
-	out := make(map[string]string, len(base)+len(overlay))
-	for k, v := range base {
+// providerScopedKeys are config fields whose meaning is tied to a specific
+// provider (endpoint, wire type, API version, region, and each credential).
+// A tier/agent that overrides the provider must NOT inherit these from the
+// global config — a googleai tier has no business using the global
+// huggingface endpoint. They come only from that tier/agent's own scoped keys.
+var providerScopedKeys = []string{
+	cfgKeyAPIKey, cfgKeyAPIEndpoint, cfgKeyAPIVersion, cfgKeyAPIType,
+	cfgKeyRegion, cfgKeyAccessKey, cfgKeySecretKey, cfgKeySessionToken,
+}
+
+// buildScopedCfg returns the effective config for a tier/agent probe target.
+// It copies the global cfg, sets the target's provider+model, then resolves
+// each provider-scoped field: the target's own scoped value wins; if it has
+// none and the target's provider matches the global provider, the global value
+// is inherited; otherwise (a different provider) the field is cleared so a
+// foreign provider's endpoint/region/keys can't leak in. scoped maps a generic
+// cfgKey to the target's per-scope value.
+func buildScopedCfg(global map[string]string, provider, model string, scoped func(genericKey string) string) map[string]string {
+	out := make(map[string]string, len(global))
+	for k, v := range global {
 		out[k] = v
 	}
-	for k, v := range overlay {
-		if v != "" {
+	out[cfgKeyProvider] = provider
+	out[cfgKeyModel] = model
+	sameProvider := provider == global[cfgKeyProvider]
+	for _, k := range providerScopedKeys {
+		if v := scoped(k); v != "" {
 			out[k] = v
+		} else if !sameProvider {
+			// Different provider and no scoped value — drop the global's
+			// provider-scoped field rather than inheriting it.
+			delete(out, k)
 		}
 	}
 	return out
 }
 
-// agentCredsOverlay collects the per-agent credential keys that override the
-// global ones (e.g. llm_provider_api_key_<agent>). Only keys with non-empty
-// values are included so global creds remain the default fallthrough.
-func agentCredsOverlay(cfg map[string]string, agent, agentProvider, agentModel string) map[string]string {
-	overlay := map[string]string{
-		cfgKeyProvider: agentProvider,
-		cfgKeyModel:    agentModel,
-	}
-	for _, k := range []string{
-		cfgKeyAPIKey, cfgKeyAPIEndpoint, cfgKeyAPIVersion, cfgKeyAPIType,
-		cfgKeyRegion, cfgKeyAccessKey, cfgKeySecretKey, cfgKeySessionToken,
-	} {
-		if v := cfg[k+"_"+agent]; v != "" {
-			overlay[k] = v
-		}
-	}
-	return overlay
+// tierScopedKey maps a generic provider-scoped key (llm_provider_<x>) to its
+// per-tier variant (llm_tier_<x>_<tier>), matching the per-tier resolvers in
+// llm_config.go. Derived from the shared llm_provider_/llm_tier_ naming so new
+// provider-scoped keys are picked up without editing this.
+func tierScopedKey(generic, tier string) string {
+	return "llm_tier_" + strings.TrimPrefix(generic, "llm_provider_") + "_" + tier
 }
 
-// tierCredsOverlay is the tier equivalent of agentCredsOverlay. Tier credential
-// keys live under llm_tier_<credtype>_<tier> and were added alongside the
-// per-tier credential resolvers in llm_config.go. Only keys with non-empty
-// values are merged so global creds remain the default fallthrough.
-func tierCredsOverlay(cfg map[string]string, tier, tierProvider, tierModel string) map[string]string {
-	overlay := map[string]string{
-		cfgKeyProvider: tierProvider,
-		cfgKeyModel:    tierModel,
+// credFingerprint is a stable string over a target's provider-scoped fields,
+// used as part of the dedupe key so two targets sharing (provider, model) but
+// differing in credentials are probed separately.
+func credFingerprint(cfg map[string]string) string {
+	var b strings.Builder
+	for _, k := range providerScopedKeys {
+		b.WriteString(cfg[k])
+		b.WriteByte(0)
 	}
-	// Map from generic credential key (cfgKey*) → tier-specific key name. The
-	// per-credential resolvers in llm_config.go read from
-	// llm_tier_<credtype>_<tier>; mirror that here.
-	tierKeyMap := map[string]string{
-		cfgKeyAPIKey:       "llm_tier_api_key_" + tier,
-		cfgKeyAPIEndpoint:  "llm_tier_api_endpoint_" + tier,
-		cfgKeyAPIVersion:   "llm_tier_api_version_" + tier,
-		cfgKeyAPIType:      "llm_tier_api_type_" + tier,
-		cfgKeyRegion:       "llm_tier_region_" + tier,
-		cfgKeyAccessKey:    "llm_tier_access_key_" + tier,
-		cfgKeySecretKey:    "llm_tier_secret_key_" + tier,
-		cfgKeySessionToken: "llm_tier_session_token_" + tier,
-	}
-	for generic, scoped := range tierKeyMap {
-		if v := cfg[scoped]; v != "" {
-			overlay[generic] = v
-		}
-	}
-	return overlay
+	return b.String()
 }
 
 func buildLLMFromConfig(provider, model string, cfg map[string]string) (llms.Model, error) {
