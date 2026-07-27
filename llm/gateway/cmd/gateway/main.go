@@ -72,12 +72,15 @@ func traceResponseHeaderMiddleware() gin.HandlerFunc {
 func providerCreds() []engine.ProviderCredsConfig {
 	var creds []engine.ProviderCredsConfig
 
-	// LLM_PROVIDER_* block — when it carries a credential, or when the named provider
-	// can run keyless (Bedrock via IRSA / the AWS default credential chain, enabled by
-	// setting LLM_PROVIDER=bedrock with no static keys). The credential-material guard
-	// avoids a spurious "configured but unusable" warning for the default provider name.
+	// LLM_PROVIDER_* block — when it carries a credential, an endpoint for a self-hosted
+	// provider (Ollama/vLLM/SGL are reached by base URL with an optional key), or when the
+	// named provider can run keyless (Bedrock via IRSA / the AWS default credential chain,
+	// enabled by setting LLM_PROVIDER=bedrock with no static keys). Scoping the endpoint
+	// case to self-hosted avoids a spurious "configured but unusable" warning for a plain
+	// base-URL override on an api-key provider that has no key set.
 	c := config.Config
 	if c.LlmProviderApiKey != "" || c.LlmProviderAccessKey != "" || c.LlmProviderSecretKey != "" ||
+		(c.LlmProviderApiEndpoint != "" && engine.SupportsEndpointOperator(c.LlmProvider)) ||
 		engine.SupportsKeylessOperator(c.LlmProvider) {
 		creds = append(creds, engine.ProviderCredsConfig{
 			Provider:     c.LlmProvider,

@@ -49,6 +49,18 @@ func NormalizeProvider(name string) schemas.ModelProvider {
 	}
 }
 
+// SupportsEndpointOperator reports whether an operator can enable this provider with
+// just an endpoint and no key — the self-hosted, OpenAI-compatible servers (Ollama,
+// vLLM, SGL), which are reached by base URL with an OPTIONAL bearer token. These are
+// operator-only (a per-tenant DirectKey cannot carry a base URL).
+func SupportsEndpointOperator(providerName string) bool {
+	switch NormalizeProvider(providerName) {
+	case schemas.Ollama, schemas.VLLM, schemas.SGL:
+		return true
+	}
+	return false
+}
+
 // SupportsKeylessOperator reports whether an operator can configure this provider
 // with no static credential material — i.e. it authenticates via an ambient mechanism.
 // Bedrock can (AWS default credential chain / IRSA on EKS); the api-key providers
@@ -132,6 +144,24 @@ func buildKey(provider schemas.ModelProvider, cfg ProviderCredsConfig, allowKeyl
 			bk.Region = &r
 		}
 		key.BedrockKeyConfig = bk
+	case schemas.Ollama, schemas.VLLM, schemas.SGL:
+		// Self-hosted OpenAI-compatible servers: reached by base URL (carried via the
+		// provider config's BaseURL from cfg.Endpoint) with an OPTIONAL bearer token.
+		//
+		// OPERATOR-ONLY, enforced here as a hard boundary. allowKeyless is true only on
+		// the operator path (buildCred) and false on the tenant path (BuildTenantKey),
+		// so `!allowKeyless` rejects every tenant self-hosted config outright. This is
+		// defense-in-depth: a per-tenant DirectKey cannot carry a base URL, so even if a
+		// tenant config somehow supplied an endpoint, BuildTenantKey would drop it and
+		// the request would silently route to the OPERATOR's server — a cross-tenant
+		// leak. Rejecting on the tenant path regardless of endpoint prevents that.
+		// The endpoint is required on the operator path (nowhere to send otherwise).
+		if !allowKeyless || cfg.Endpoint == "" {
+			return schemas.Key{}, false
+		}
+		if cfg.APIKey != "" {
+			key.Value = schemas.SecretVar{Val: cfg.APIKey}
+		}
 	default:
 		if cfg.APIKey == "" {
 			return schemas.Key{}, false

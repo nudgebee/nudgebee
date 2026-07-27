@@ -127,6 +127,37 @@ func TestBuildTenantKey_BedrockKeylessRejected(t *testing.T) {
 	assert.False(t, ok, "tenant bedrock without static creds must not resolve (no IRSA borrowing)")
 }
 
+func TestBuildCred_SelfHosted(t *testing.T) {
+	// Ollama/vLLM/SGL are reached by base URL with an optional bearer token.
+	// Endpoint set, no key → usable (empty Value); endpoint carried on the cred.
+	provider, cred, ok := buildCred(ProviderCredsConfig{Provider: "ollama", Endpoint: "http://ollama:11434"})
+	require.True(t, ok, "self-hosted with an endpoint is usable without a key")
+	assert.Equal(t, schemas.Ollama, provider)
+	assert.Empty(t, cred.key.Value.Val, "no bearer token → empty Value")
+	assert.Equal(t, "http://ollama:11434", cred.endpoint, "endpoint flows to the provider config BaseURL")
+
+	// Endpoint + optional bearer token.
+	_, cred2, ok2 := buildCred(ProviderCredsConfig{Provider: "vllm", Endpoint: "http://vllm:8000", APIKey: "tok"})
+	require.True(t, ok2)
+	assert.Equal(t, "tok", cred2.key.Value.Val)
+
+	// No endpoint → not usable (nowhere to send the request).
+	_, _, ok3 := buildCred(ProviderCredsConfig{Provider: "sgl", APIKey: "tok"})
+	assert.False(t, ok3, "self-hosted without an endpoint is not usable")
+}
+
+func TestBuildTenantKey_SelfHostedRejected(t *testing.T) {
+	// Self-hosted is operator infrastructure: the tenant resolver does not carry a base
+	// URL, so a tenant self-hosted config is not usable and falls back to the operator.
+	_, _, ok := BuildTenantKey(ProviderCredsConfig{Provider: "ollama", APIKey: "tok"})
+	assert.False(t, ok, "tenant self-hosted has no endpoint → not a usable tenant credential")
+
+	// Hard boundary: rejected even if an endpoint is somehow present — a tenant DirectKey
+	// cannot carry a base URL, so allowing it would silently route to the operator's server.
+	_, _, ok2 := BuildTenantKey(ProviderCredsConfig{Provider: "ollama", Endpoint: "http://ollama:11434", APIKey: "tok"})
+	assert.False(t, ok2, "tenant self-hosted must be rejected even with an endpoint (operator-only)")
+}
+
 func TestBuildTenantKey_APIKey(t *testing.T) {
 	provider, key, ok := BuildTenantKey(ProviderCredsConfig{Provider: "anthropic", APIKey: "sk-ant-tenant"})
 	require.True(t, ok)

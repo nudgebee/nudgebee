@@ -30,6 +30,9 @@ var genericProviderAliases = map[string]schemas.ModelProvider{
 	"cerebras":    schemas.Cerebras,
 	"nebius":      schemas.Nebius,
 	"parasail":    schemas.Parasail,
+	"ollama":      schemas.Ollama,
+	"vllm":        schemas.VLLM,
+	"sgl":         schemas.SGL,
 }
 
 // resolveModelProvider maps a model name from the generic /v1 endpoint to the
