@@ -363,6 +363,8 @@ class MessagingChannelWatch(Base):
     created_at = Column(DateTime, default=utc_now, nullable=False)
     updated_at = Column(DateTime, default=utc_now, nullable=False)
     disabled_at = Column(DateTime, nullable=True)
+    # Per-channel retrieval overrides; absent keys fall back to process defaults.
+    settings = Column(JSON, nullable=True)
 
     __table_args__ = (UniqueConstraint("tenant_id", "platform", "team_id", "channel_id"),)
 
@@ -388,6 +390,11 @@ class MessagingChannelMessage(Base):
     posted_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=utc_now, nullable=False)
     updated_at = Column(DateTime, default=utc_now, nullable=False)
+    # Keyword-lexicon tags applied at ingest; inputs to ranking and to the
+    # "what did <person> say about <topic>" lookup.
+    is_decision = Column(Boolean, default=False, nullable=False)
+    topic = Column(String, nullable=True)
+    people_mentioned = Column(JSON, nullable=True)
 
     __table_args__ = (UniqueConstraint("tenant_id", "platform", "team_id", "channel_id", "provider_message_id"),)
 

@@ -313,6 +313,7 @@ type additionalConversationSessionRequestConfig struct {
 	isNewConversation     bool
 	isResume              bool
 	images                []ImageAttachment
+	channelContext        string
 }
 
 type ConversationSessionRequestConfig interface {
@@ -555,6 +556,23 @@ func ConversationSessionRequestWithImages(images []ImageAttachment) Conversation
 	}
 }
 
+type sessionRequestWithChannelContext struct {
+	channelContext string
+}
+
+func (h sessionRequestWithChannelContext) apply(c *additionalConversationSessionRequestConfig) {
+	c.channelContext = h.channelContext
+}
+
+// ConversationSessionRequestWithChannelContext carries conversation observed in
+// a watched messaging channel. Deliberately separate from the query so the
+// agent can distinguish what the user asked from what it merely overheard.
+func ConversationSessionRequestWithChannelContext(channelContext string) ConversationSessionRequestConfig {
+	return sessionRequestWithChannelContext{
+		channelContext: channelContext,
+	}
+}
+
 func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgent, userId string, accountId string, sessionId string, query string, configs ...ConversationSessionRequestConfig) (NBAgentResponse, error) {
 
 	defaultConfig := additionalConversationSessionRequestConfig{
@@ -618,6 +636,7 @@ func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgen
 		PreviousState:         defaultConfig.previousState,
 		IsResume:              defaultConfig.isResume,
 		Images:                defaultConfig.images,
+		ChannelContext:        defaultConfig.channelContext,
 	}
 
 	response, err := handleConversationRequest(ctx, agentRequest, agent, sessionId, defaultConfig.source)

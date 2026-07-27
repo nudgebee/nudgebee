@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from notifications_server.configs.settings import settings
 from notifications_server.models.db_base import BaseDB
 from notifications_server.repositories import channel_message_repository
+from notifications_server.services import channel_analysis
 from notifications_server.services.cache import Cache
 from notifications_server.utils.secret_redaction import redact_secrets
 
@@ -138,6 +139,13 @@ class ChannelIngestService:
             return False
         thread_id = inner.get("thread_ts")
 
+        # Tagged once here rather than per question: retrieval ranks and filters
+        # on these, and re-deriving them at mention time would repeat the work on
+        # every read. Keyword lexicons only — no model call on the ingest path.
+        is_decision = channel_analysis.classify_decision(redacted)
+        topic = channel_analysis.classify_topic(redacted)
+        people_mentioned = channel_analysis.extract_people(redacted)
+
         stored = False
         for tenant_id in tenants:
             stored = (
@@ -152,6 +160,9 @@ class ChannelIngestService:
                     posted_at=posted_at,
                     thread_id=thread_id if thread_id != provider_message_id else None,
                     author_id=inner.get("user"),
+                    is_decision=is_decision,
+                    topic=topic,
+                    people_mentioned=people_mentioned or None,
                 )
                 or stored
             )

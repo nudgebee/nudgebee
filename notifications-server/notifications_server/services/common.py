@@ -53,6 +53,11 @@ ERR_TOKEN_REFRESH_FAILED = "Token refresh failed"
 ERR_GCHAT_TOKEN_REFRESH = "Unable to refresh g chat token for installation id %s"
 MSG_DM_SENT_SUCCESS = "Direct message sent successfully"
 
+# Separates the latest user message from the rest of a thread transcript. The
+# text before it is what the user actually just asked; everything after is
+# surrounding conversation. Callers that need the question alone split on this.
+THREAD_CONTEXT_MARKER = "\n--- context ---"
+
 
 class CommonService:
     def __init__(self, engine, slack_app, teams_app):
@@ -1595,7 +1600,7 @@ class CommonService:
             return last_message
 
         context = "\n".join(f"{role}:\n{text}\n" for role, text in context_entries)
-        return f"{last_message}\n\n--- context ---\n{context}"
+        return f"{last_message}\n{THREAD_CONTEXT_MARKER}\n{context}"
 
     def _extract_meaningful_text(self, msg, bot):
         parts = []

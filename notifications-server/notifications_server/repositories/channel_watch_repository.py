@@ -160,3 +160,28 @@ def list_enabled_channel_ids(session: Session, *, platform: str, team_id: str) -
     except Exception as e:
         LOG.error("Failed to list enabled channel watches for team %s: %s", team_id, e)
         return []
+
+
+def get_channel_settings(
+    session: Session, *, tenant_id, platform: str, team_id: str, channel_id: str
+) -> Optional[dict]:
+    """Retrieval overrides stored for one watched channel, if any.
+
+    Read per mention rather than cached, which is what lets a changed window take
+    effect on the next question instead of at the next restart.
+    """
+    try:
+        row = (
+            session.query(MessagingChannelWatch.settings)
+            .filter(
+                MessagingChannelWatch.tenant_id == _to_uuid(tenant_id),
+                MessagingChannelWatch.platform == platform,
+                MessagingChannelWatch.team_id == team_id,
+                MessagingChannelWatch.channel_id == channel_id,
+            )
+            .first()
+        )
+        return row[0] if row and isinstance(row[0], dict) else None
+    except Exception as e:
+        LOG.error("Failed to read channel settings for %s/%s: %s", team_id, channel_id, e)
+        return None

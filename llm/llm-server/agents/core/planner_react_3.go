@@ -2402,6 +2402,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 {{.notebook}}
 </notebook_content>
 {{end}}
+{{.channel_context_block}}
 <question>{{.input}}</question>
 
 {{.scratchpad}}`
@@ -2416,6 +2417,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"global_preferences_block",
 		"kb_prestep_content",
 		"skill_lists_menu",
+		"channel_context_block",
 	}))
 
 	tools = FilterTools(tools, request.Capabilities)
@@ -2453,6 +2455,9 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		// KB pre-step is enabled.
 		"kb_prestep_content": request.KBPrestepContent,
 		"skill_lists_menu":   request.SkillListsMenu,
+		// Sits above the question so context compression never trims it away
+		// before the model reads what it is meant to be grounded in.
+		"channel_context_block": renderChannelContextBlock(request.ChannelContext),
 	}
 	return tmpl, tools
 }

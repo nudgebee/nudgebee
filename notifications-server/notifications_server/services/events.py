@@ -18,6 +18,9 @@ from notifications_server.configs.settings import ACCOUNT_SECURITY_CONTEXT, LLM_
 from notifications_server.message_templates.blocks import MarkdownBlock, ContextBlock
 from notifications_server.models.models import ChannelAccountMapping
 from notifications_server.services.cache import Cache
+from notifications_server.services import channel_analysis
+from notifications_server.services.channel_context import ChannelContextService
+from notifications_server.services.common import THREAD_CONTEXT_MARKER
 from notifications_server.services.messaging_installations import load_installation_by_team
 from notifications_server.services.slack_images import collect_slack_images
 from notifications_server.services.actions import (
@@ -153,8 +156,8 @@ class Events:
         return blocks
 
     @staticmethod
-    def build_llm_payload(cached_entry, query_override=None):
-        return {
+    def build_llm_payload(cached_entry, query_override=None, channel_context=None):
+        payload = {
             "query": query_override or cached_entry["text"],
             "account_id": cached_entry["account_id"],
             "user_id": cached_entry["user_id"],
@@ -162,6 +165,12 @@ class Events:
             "source": "InstantNotification",
             "async": True,
         }
+        # Deliberately its own field: channel conversation is third-party text and
+        # must stay distinguishable from what the user actually asked. Never fold
+        # it into `query`.
+        if channel_context:
+            payload["channel_context"] = channel_context
+        return payload
 
     def _slack_bot_token(self, team_id):
         try:
@@ -192,6 +201,15 @@ class Events:
         self.cache.cache_thread_images(thread_ts, images)
         if skipped:
             LOG.info("Skipped %d Slack image(s) for thread %s: %s", len(skipped), thread_ts, "; ".join(skipped))
+
+    def _stash_thread_mentions(self, event, thread_ts):
+        """Remember who this turn pointed at, before the text is cleaned.
+
+        clean_slack_text strips every <…> token, so by the time retrieval sees
+        the question the user ids are gone. Written on every turn — including an
+        empty list — so a later turn does not inherit a prior one's targets.
+        """
+        self.cache.cache_thread_mentions(thread_ts, channel_analysis.extract_people(event.get("text", "")))
 
     def _attach_images(self, payload, thread_ts):
         """Attach any cached images for this thread to the outgoing LLM payload,
@@ -229,6 +247,7 @@ class Events:
                 return
 
             self._stash_thread_images(event, team_id, thread_ts)
+            self._stash_thread_mentions(event, thread_ts)
 
             cached_entry = self.cache.get_event_entry(thread_ts)
 
@@ -270,12 +289,21 @@ class Events:
                 self._process_event(channel_id, text, team_id, thread_ts, "chat")
                 return
 
+            is_thread_request = thread_ts != event_ts
+
             if self._check_history_for_conversation(
-                channel_id, text, event_context, event_id, team_id, thread_ts, user_email, slack_user_id
+                channel_id,
+                text,
+                event_context,
+                event_id,
+                team_id,
+                thread_ts,
+                user_email,
+                slack_user_id,
+                is_thread_request,
             ):
                 return
 
-            is_thread_request = thread_ts != event_ts
             LOG.debug(f"New conversation {text} with {thread_ts}")
 
             self._handle_new_conversation(
@@ -294,7 +322,7 @@ class Events:
             LOG.error("Error executing event: %s", e)
 
     def _check_history_for_conversation(
-        self, channel_id, text, context, event_id, team_id, thread_ts, user_email, slack_user_id
+        self, channel_id, text, context, event_id, team_id, thread_ts, user_email, slack_user_id, is_thread=False
     ):
         session_id = self._session_id(channel_id, thread_ts)
         with Session(self.session.get_bind()) as session:
@@ -313,6 +341,10 @@ class Events:
                 "user_id": user_id,
                 "account_id": conversation["account_id"],
                 "tenant_id": conversation["tenant_id"],
+                # Carried so a resumed conversation still retrieves at thread
+                # scope; without it a threaded mention would silently fall back
+                # to the wider channel window.
+                "is_thread": is_thread,
                 "slack_user_id": slack_user_id,
                 "channel_id": channel_id,
                 "team_id": team_id,
@@ -784,6 +816,47 @@ class Events:
         self.cache.update_event_entry(thread_ts, tenant_id=account.get("tenant"), account_id=account.get("id"))
         return account.get("account_name"), account.get("id")
 
+    def _build_channel_context(self, cached_entry, channel_id, team_id, thread_ts, query_text):
+        """Retained conversation from this channel, when it is being watched.
+
+        Scope follows where the question was asked. Inside a thread, the thread
+        is the context and Slack's own transcript already covers it, so the
+        thread is excluded from the wider channel read and only the evidence the
+        previous turn rested on is carried forward. A channel-level mention has
+        no thread to anchor to and falls back to a ranked time window.
+
+        Never fatal — a failure here means Nubi answers without channel context,
+        which is the pre-existing behaviour.
+        """
+        in_thread = bool(cached_entry.get("is_thread"))
+        # For a thread, query_text is the whole transcript, with the user's
+        # latest message first and the rest of the conversation after a marker.
+        # Only that first part is the question: overrides, the self-contained
+        # gate and keyword search all read intent from it, and running them over
+        # an entire thread would OR every word in the conversation into the
+        # search and match most of the channel.
+        question = (query_text or "").split(THREAD_CONTEXT_MARKER, 1)[0].strip()
+        try:
+            with ChannelContextService(engine=self.session.get_bind(), common_service=self.common_service) as svc:
+                block, used = svc.build(
+                    tenant_id=cached_entry.get("tenant_id"),
+                    team_id=team_id,
+                    channel_id=channel_id,
+                    query_text=question,
+                    exclude_thread_id=thread_ts,
+                    thread_id=thread_ts if in_thread else None,
+                    carry_message_ids=cached_entry.get("channel_context_used"),
+                    referenced_user_ids=self.cache.get_thread_mentions(thread_ts),
+                )
+        except Exception:
+            LOG.exception("Failed to build channel context for %s/%s", team_id, channel_id)
+            return None
+        # Kept with the conversation, not the message rows: which messages an
+        # answer rested on is per-thread state that should expire with the
+        # thread's session rather than outlive it in the database.
+        self.cache.update_event_entry(thread_ts, channel_context_used=used)
+        return block
+
     def _process_event(self, channel_id, cleaned_string, team_id, thread_ts, _type):
         cached_entry = self.cache.get_event_entry(thread_ts)
         if not cached_entry:
@@ -812,7 +885,8 @@ class Events:
             cleaned_string = conversation
             cached_entry = self.cache.get_event_entry(thread_ts)
 
-        payload = self.build_llm_payload(cached_entry, query_override=cleaned_string)
+        channel_context = self._build_channel_context(cached_entry, channel_id, team_id, thread_ts, cleaned_string)
+        payload = self.build_llm_payload(cached_entry, query_override=cleaned_string, channel_context=channel_context)
 
         headers = {
             "x-tenant-id": cached_entry["tenant_id"],

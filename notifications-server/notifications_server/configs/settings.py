@@ -606,6 +606,61 @@ class NotificationSettings(BaseSettings):
     channel_retention_sweep_minutes: int = Field(
         60, validation_alias=AliasChoices("CHANNEL_RETENTION_SWEEP_MINUTES", "channel_retention_sweep_minutes")
     )
+    # Ceiling on the channel-context block so it cannot crowd out the rest of the
+    # prompt; the recent window is trimmed oldest-first to fit.
+    channel_context_max_tokens: int = Field(
+        2500, validation_alias=AliasChoices("CHANNEL_CONTEXT_MAX_TOKENS", "channel_context_max_tokens")
+    )
+    channel_context_recent_limit: int = Field(
+        50, validation_alias=AliasChoices("CHANNEL_CONTEXT_RECENT_LIMIT", "channel_context_recent_limit")
+    )
+    channel_context_search_limit: int = Field(
+        15, validation_alias=AliasChoices("CHANNEL_CONTEXT_SEARCH_LIMIT", "channel_context_search_limit")
+    )
+    # Retrieval scope. Every value below can be overridden per channel via
+    # messaging_channel_watch.settings; these are the fallbacks.
+    #
+    # Thread messages pulled when the mention lands in a thread. The thread is
+    # the context there, so nothing from the wider channel is added.
+    channel_thread_message_limit: int = Field(
+        10, validation_alias=AliasChoices("CHANNEL_THREAD_MESSAGE_LIMIT", "channel_thread_message_limit")
+    )
+    # Age bound on channel-scope recall. Without it a channel that was busy last
+    # week and silent since returns week-old chatter as "recent conversation".
+    channel_lookback_minutes: int = Field(
+        15, validation_alias=AliasChoices("CHANNEL_LOOKBACK_MINUTES", "channel_lookback_minutes")
+    )
+    # Hard cap on raw messages after ranking. Decisions are exempt.
+    channel_max_context_messages: int = Field(
+        15, validation_alias=AliasChoices("CHANNEL_MAX_CONTEXT_MESSAGES", "channel_max_context_messages")
+    )
+    channel_author_reference_top_k: int = Field(
+        3, validation_alias=AliasChoices("CHANNEL_AUTHOR_REFERENCE_TOP_K", "channel_author_reference_top_k")
+    )
+    # Ranking. score = recency*w_recency + normalised_salience*w_salience, where
+    # recency decays by half every half-life. Salience combines reply count,
+    # length and the decision flag.
+    channel_recency_halflife_minutes: int = Field(
+        30, validation_alias=AliasChoices("CHANNEL_RECENCY_HALFLIFE_MINUTES", "channel_recency_halflife_minutes")
+    )
+    channel_rank_weight_recency: float = Field(
+        1.0, validation_alias=AliasChoices("CHANNEL_RANK_WEIGHT_RECENCY", "channel_rank_weight_recency")
+    )
+    channel_rank_weight_salience: float = Field(
+        0.5, validation_alias=AliasChoices("CHANNEL_RANK_WEIGHT_SALIENCE", "channel_rank_weight_salience")
+    )
+    channel_salience_weight_replies: float = Field(
+        1.0, validation_alias=AliasChoices("CHANNEL_SALIENCE_WEIGHT_REPLIES", "channel_salience_weight_replies")
+    )
+    channel_salience_weight_length: float = Field(
+        0.3, validation_alias=AliasChoices("CHANNEL_SALIENCE_WEIGHT_LENGTH", "channel_salience_weight_length")
+    )
+    channel_salience_weight_decision: float = Field(
+        2.0, validation_alias=AliasChoices("CHANNEL_SALIENCE_WEIGHT_DECISION", "channel_salience_weight_decision")
+    )
+    channel_length_norm_chars: int = Field(
+        280, validation_alias=AliasChoices("CHANNEL_LENGTH_NORM_CHARS", "channel_length_norm_chars")
+    )
     max_detailed_evidences: int = Field(
         3, validation_alias=AliasChoices("MAX_DETAILED_EVIDENCES", "max_detailed_evidences")
     )

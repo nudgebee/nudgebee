@@ -266,6 +266,44 @@ class Cache:
                 return []
         return []
 
+    def cache_thread_mentions(self, thread_ts, user_ids):
+        # The people a question points at ("what did @john say") can only be read
+        # from the raw event text — the cleaned query has had every <@U…> token
+        # stripped by the time retrieval sees it. Stashed per turn, alongside the
+        # images, for the same reason: it belongs to this turn, not the entry.
+        self._ensure_connection()
+        if not self.redis_client:
+            return
+        key = f"chat_mentions:{thread_ts}"
+        with self.redis_client.pipeline() as pipe:
+            try:
+                pipe.set(key, json.dumps(user_ids))
+                pipe.expire(key, settings.redis.conversation_cache_expiration_minutes * 60)
+                pipe.execute()
+            except (TypeError, redis.RedisError) as e:
+                LOG.exception(f"Error caching thread mentions {thread_ts}: {e}")
+
+    def get_thread_mentions(self, thread_ts):
+        """Reads and clears. Button and dropdown followups reach retrieval
+        without re-stashing, and inheriting a previous turn's targets would make
+        Nubi answer "what did @john say" for a question that named nobody."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return []
+        key = f"chat_mentions:{thread_ts}"
+        try:
+            raw = self.redis_client.get(key)
+            self.redis_client.delete(key)
+        except redis.RedisError as e:
+            LOG.exception(f"Error retrieving thread mentions {thread_ts}: {e}")
+            return []
+        if raw:
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return []
+        return []
+
     def cache_channel_session_mapping(self, channel_id, team_id, session_id, account_id=None, tenant_id=None):
         """Cache the mapping between channel_id and session_id from /channels/join"""
         self._ensure_connection()
@@ -378,6 +416,27 @@ class Cache:
         except redis.RedisError as e:
             LOG.exception(f"Error checking watched channel {channel_id}: {e}")
             return None
+
+    def get_cached_user_name(self, team_id, user_id):
+        self._ensure_connection()
+        if not self.redis_client:
+            return None
+        try:
+            return self.redis_client.get(f"slack_user_name:{team_id}:{user_id}")
+        except redis.RedisError as e:
+            LOG.exception(f"Error reading cached user name for {user_id}: {e}")
+            return None
+
+    def cache_user_name(self, team_id, user_id, display_name, ttl_seconds=86400):
+        self._ensure_connection()
+        if not self.redis_client or not display_name:
+            return False
+        try:
+            self.redis_client.set(f"slack_user_name:{team_id}:{user_id}", display_name, ex=ttl_seconds)
+            return True
+        except redis.RedisError as e:
+            LOG.exception(f"Error caching user name for {user_id}: {e}")
+            return False
 
     def mark_event_seen(self, event_id, ttl_seconds=600):
         """True the first time an event id is seen, False on Slack's retries.
