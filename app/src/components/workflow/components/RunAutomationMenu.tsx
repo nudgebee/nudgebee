@@ -526,7 +526,7 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
           minWidth={380}
           itemsMaxHeight='min(420px, calc(100vh - 260px))'
           searchable
-          searchPlaceholder='Search automations…'
+          searchPlaceholder='Search automation'
           onRefresh={() => {
             fetchWorkflows();
             fetchExecutions();
