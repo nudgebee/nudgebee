@@ -563,9 +563,11 @@ func (s *K8sSource) fetchK8sNodes(ctx context.Context, req *core.SourceBuildRequ
 	query := `
 		SELECT
 			n.tenant_id, n.cloud_account_id, n.name, n.is_active, n.node_creation_time,
-			n.conditions, n.node_type, n.node_flavor, n.node_region, n.node_zone,
+			COALESCE(n.conditions, '') AS conditions, COALESCE(n.node_type, '') AS node_type,
+			COALESCE(n.node_flavor, '') AS node_flavor, COALESCE(n.node_region, '') AS node_region,
+			COALESCE(n.node_zone, '') AS node_zone,
 			n.memory_capacity, n.cpu_capacity, n.memory_allocatable, n.cpu_allocatable,
-			n.meta, ca.account_name as cluster_name
+			n.meta, COALESCE(ca.account_name, '') as cluster_name
 		FROM k8s_nodes n
 		LEFT JOIN cloud_accounts ca ON n.cloud_account_id = ca.id
 		WHERE n.tenant_id = $1

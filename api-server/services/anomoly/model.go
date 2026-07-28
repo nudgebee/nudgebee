@@ -52,7 +52,7 @@ const (
 
 // OpenSpendAnomaly represents an active spend anomaly being tracked.
 type OpenSpendAnomaly struct {
-	ID                    int64           `db:"id"`
+	ID                    string          `db:"id"`
 	Tenant                string          `db:"tenant"`
 	AccountID             string          `db:"account_id"`
 	Name                  string          `db:"name"`
