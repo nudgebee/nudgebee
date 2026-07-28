@@ -2,6 +2,7 @@ package triage
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -19,7 +20,8 @@ type CriticalityDiscoveryStats struct {
 	Scanned   int // active workloads examined
 	Candidate int // workloads the deterministic pass flagged as topologically important
 	Demoted   int // candidates the LLM demoted to medium (no row written)
-	Tiered    int // rows written (critical/high/low) after the LLM precision review
+	Tiered    int // rows actually written (critical/high/low) after the LLM precision review
+	Failed    int // classified rows whose write failed — counted separately, never as Tiered
 	Elapsed   time.Duration
 }
 
@@ -153,6 +155,7 @@ func DiscoverWorkloadCriticality(ctx context.Context, db *sqlx.DB, account, tena
 	}
 
 	tieredCRIDs := make([]string, 0, len(candidates))
+	var firstWriteErr error
 	for _, c := range candidates {
 		level, source, rationale, conf := c.detLevel, CriticalitySourceFact, c.detRat, c.detConf
 		if v, ok := verdicts[c.crid]; ok {
@@ -162,8 +165,17 @@ func DiscoverWorkloadCriticality(ctx context.Context, db *sqlx.DB, account, tena
 			st.Demoted++ // LLM judged this candidate not actually important → medium default, no row
 			continue
 		}
-		upsertAutoCriticality(ctx, db, tenant, account, c.crid, c.namespace, source, level, rationale, conf, c.signals)
+		// The crid is retained either way: a workload we merely FAILED to refresh must not look
+		// "no longer tiered" to the prune below, or a transient write error would also destroy the
+		// last good row for that workload.
 		tieredCRIDs = append(tieredCRIDs, c.crid)
+		if err := upsertAutoCriticality(ctx, db, tenant, account, c.crid, c.namespace, source, level, rationale, conf, c.signals); err != nil {
+			st.Failed++
+			if firstWriteErr == nil {
+				firstWriteErr = err
+			}
+			continue
+		}
 		st.Tiered++
 	}
 
@@ -187,6 +199,12 @@ func DiscoverWorkloadCriticality(ctx context.Context, db *sqlx.DB, account, tena
 	}
 
 	st.Elapsed = time.Since(start)
+	if firstWriteErr != nil {
+		// Surfaced as an error, not a warn: a sweep that classifies workloads and persists none of
+		// them is a broken sweep, and the counters alone read as success.
+		return st, fmt.Errorf("%d of %d criticality rows failed to persist (first error: %w)",
+			st.Failed, st.Failed+st.Tiered, firstWriteErr)
+	}
 	return st, nil
 }
 
