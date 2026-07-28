@@ -251,6 +251,8 @@ func getLogSource(provider, integrationSource string) (LogSource, error) {
 		return &PinotSaasSource{}, nil
 	case provider == "hive" && integrationSource == "user":
 		return &HiveSaasSource{}, nil
+	case provider == "openobserve" && integrationSource == "user":
+		return &OpenObserveLogSource{}, nil
 		// hive:agent is intentionally NOT wired here yet — the relay-mode
 		// `HiveSource` is implemented but the matching `hive_query` /
 		// `hive_schema` actions don't exist in nudgebee-agent yet. Returning
@@ -371,6 +373,8 @@ func getTraceSource(provider, integrationSource string) (TraceSource, error) {
 		// GCP cloud accounts have no agent/integration row; the provider is synthesized
 		// by the resolver, so match on provider alone regardless of source.
 		return &GcpTraceSource{}, nil
+	case provider == "openobserve" && integrationSource == "user":
+		return &OpenObserveTraceSource{}, nil
 	default:
 		return nil, fmt.Errorf(
 			"unsupported traces provider/source combination: provider=%s, integrationSource=%s",
@@ -403,6 +407,8 @@ func getMetricsSource(provider, integrationSource string) (MetricSource, error) 
 		return &DynatraceMetricSource{}, nil
 	case provider == "solarwinds" && integrationSource == "user":
 		return &SolarWindsMetricSource{}, nil
+	case provider == "openobserve" && integrationSource == "user":
+		return &OpenObserveMetricSource{}, nil
 	default:
 		return nil, fmt.Errorf(
 			"unsupported metric provider/source combination: provider=%s, integrationSource=%s",
@@ -766,6 +772,12 @@ var allProviderCaps = map[string]providerStaticCaps{
 	"prometheus": {
 		SupportsServiceMap: true,
 		SupportsRawQuery:   true,
+	},
+	"openobserve": {
+		SupportsServiceMap:    true,
+		SupportsRawQuery:      true,
+		SupportsHeatmap:       false,
+		SupportsTraceGrouping: false,
 	},
 }
 
