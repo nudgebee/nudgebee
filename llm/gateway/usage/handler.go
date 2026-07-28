@@ -39,6 +39,16 @@ type apiListRequest struct {
 	Offset        int    `json:"offset"`
 }
 
+// apiSessionsRequest is the body for the paginated session list (Sessions tab).
+type apiSessionsRequest struct {
+	StartDate string `json:"start_date"`
+	EndDate   string `json:"end_date"`
+	UserID    string `json:"user_id"` // optional; scope to one user
+	Search    string `json:"search"`  // optional; session_id contains
+	Limit     int    `json:"limit"`
+	Offset    int    `json:"offset"`
+}
+
 // RegisterRoutes mounts the read-only usage query API under /rpc/usage, guarded by
 // the service token (X-ACTION-TOKEN) that the app's RPC gateway forwards. This is a
 // separate plane from the NB-PAT passthrough lanes: app → gateway service-to-service.
@@ -104,6 +114,37 @@ func RegisterRoutes(r *gin.Engine, token string) {
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "request list failed"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": res})
+	})
+
+	g.POST("/sessions", func(c *gin.Context) {
+		var req apiSessionsRequest
+		if !rpc.BindAction(c, &req) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+		tenantID, ok := rpc.RequireTenant(c)
+		if !ok {
+			return
+		}
+		start, end, ok := parseWindow(c, req.StartDate, req.EndDate)
+		if !ok {
+			return
+		}
+		db, err := common.GetDatabaseManager(common.MeteringSink)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "metering store unavailable"})
+			return
+		}
+		res, err := ListSessions(c.Request.Context(), db, ListSessionsRequest{
+			TenantID: tenantID, StartDate: start, EndDate: end,
+			UserID: req.UserID, Search: req.Search,
+			Limit: req.Limit, Offset: req.Offset,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "session list failed"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"data": res})

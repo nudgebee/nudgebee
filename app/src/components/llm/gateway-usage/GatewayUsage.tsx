@@ -27,6 +27,7 @@ import DashboardOutlinedIcon from '@mui/icons-material/DashboardOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import PeopleAltOutlinedIcon from '@mui/icons-material/PeopleAltOutlined';
 import ReceiptLongOutlinedIcon from '@mui/icons-material/ReceiptLongOutlined';
+import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import HandymanOutlinedIcon from '@mui/icons-material/HandymanOutlined';
 import ShieldOutlinedIcon from '@mui/icons-material/ShieldOutlined';
 import dayjs from 'dayjs';
@@ -39,6 +40,7 @@ import OverviewView from './views/OverviewView';
 import ModelsView from './views/ModelsView';
 import UsersView from './views/UsersView';
 import RequestsView from './views/RequestsView';
+import SessionsView from './views/SessionsView';
 import ToolsView from './views/ToolsView';
 import GovernanceView from './views/GovernanceView';
 import type { GatewayGranularity } from '@api1/gateway-usage';
@@ -72,7 +74,7 @@ const DATE_RANGE_SHORTCUTS = ['Last 24 Hours', 'Current Week', 'Current Month', 
 // Every sub-tab, and the source of truth for TabId — a new tab added here is
 // automatically deep-linkable, and one added only to `tabOptions` below fails to
 // type-check rather than silently resolving to the default.
-const TAB_IDS = ['connect', 'overview', 'models', 'users', 'requests', 'tools', 'governance'] as const;
+const TAB_IDS = ['connect', 'overview', 'models', 'users', 'requests', 'sessions', 'tools', 'governance'] as const;
 
 type TabId = (typeof TAB_IDS)[number];
 
@@ -219,6 +221,11 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   // already here): clicking a row's session narrows the list to that session.
   const onSelectSession = React.useCallback((id: string) => setSelectedSession(id), []);
   const onClearSession = React.useCallback(() => setSelectedSession(null), []);
+  // Sessions tab → Requests drill-in: scope Requests to the clicked session and jump.
+  const onDrillSession = React.useCallback((id: string) => {
+    setSelectedSession(id);
+    setTab('requests');
+  }, []);
 
   // Pass MUI icons as component references (not JSX elements) so CustomTabs
   // renders them with its built-in `.tab-icon` styling (idle grey, selected
@@ -231,6 +238,7 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
     { value: 'models', text: 'Models', icon: AutoAwesomeOutlinedIcon, iconSize: 16 },
     { value: 'users', text: 'Users', icon: PeopleAltOutlinedIcon, iconSize: 16 },
     { value: 'requests', text: 'Requests', icon: ReceiptLongOutlinedIcon, iconSize: 16 },
+    { value: 'sessions', text: 'Sessions', icon: ForumOutlinedIcon, iconSize: 16 },
     { value: 'tools', text: 'Tools', icon: HandymanOutlinedIcon, iconSize: 16 },
     { value: 'governance', text: 'Governance', icon: ShieldOutlinedIcon, iconSize: 16 },
   ];
@@ -297,6 +305,7 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
           onClearSession={onClearSession}
         />
       )}
+      {tab === 'sessions' && <SessionsView filters={filters} onDrillSession={onDrillSession} />}
       {tab === 'tools' && <ToolsView metrics={metrics} loading={loading} error={error} onSelectTool={onSelectTool} />}
       {tab === 'governance' && <GovernanceView metrics={metrics} filters={filters} loading={loading} error={error} onDrill={onDrillGov} />}
     </Box>

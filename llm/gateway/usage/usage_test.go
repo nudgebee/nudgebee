@@ -150,6 +150,50 @@ func TestListRequestsFilter(t *testing.T) {
 	})
 }
 
+func TestSessionsFilter(t *testing.T) {
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)
+	base := ListSessionsRequest{TenantID: "t1", StartDate: start, EndDate: end}
+
+	t.Run("base scopes tenant + window + non-empty session", func(t *testing.T) {
+		where, args := sessionsFilter(base)
+		assert.Equal(t, "g.tenant_id = $1 AND g.created_at >= $2 AND g.created_at < $3 AND g.session_id <> ''", where)
+		assert.Equal(t, []any{"t1", start, end}, args)
+	})
+
+	t.Run("user scope", func(t *testing.T) {
+		req := base
+		req.UserID = "u1"
+		where, args := sessionsFilter(req)
+		assert.Contains(t, where, "g.user_id = $4")
+		assert.Equal(t, []any{"t1", start, end, "u1"}, args)
+	})
+
+	t.Run("search wraps in wildcards (ILIKE)", func(t *testing.T) {
+		req := base
+		req.Search = "01f9"
+		where, args := sessionsFilter(req)
+		assert.Contains(t, where, "g.session_id ILIKE $4")
+		assert.Equal(t, []any{"t1", start, end, "%01f9%"}, args)
+	})
+
+	t.Run("user + search compose with correct numbering", func(t *testing.T) {
+		req := base
+		req.UserID = "u1"
+		req.Search = "abc"
+		where, args := sessionsFilter(req)
+		assert.Contains(t, where, "g.user_id = $4")
+		assert.Contains(t, where, "g.session_id ILIKE $5")
+		assert.Equal(t, []any{"t1", start, end, "u1", "%abc%"}, args)
+	})
+}
+
+func TestSplitNonEmpty(t *testing.T) {
+	assert.Nil(t, splitNonEmpty(""))
+	assert.Equal(t, []string{"a"}, splitNonEmpty("a"))
+	assert.Equal(t, []string{"a", "b"}, splitNonEmpty("a,b"))
+}
+
 func TestAggregate_ValidatesRequest(t *testing.T) {
 	r := newRouter("secret")
 	// The RPC gateway wraps args as { input: { request: {…} } }.

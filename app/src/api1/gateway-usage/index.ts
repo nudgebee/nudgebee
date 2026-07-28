@@ -311,6 +311,71 @@ export async function listGatewayRequests(req: ListGatewayRequestsRequest, signa
   return response?.data?.data?.llm_gateway_list_requests?.data ?? null;
 }
 
+// ─── Sessions (per-conversation rollup) ────────────────────────────────────────
+
+/** One conversation/session, aggregated from its requests (Sessions tab). */
+export interface GatewaySession {
+  session_id: string;
+  /** How the id was resolved: header | metadata.session_id | metadata.user_id | inferred. */
+  session_source: string;
+  user: string; // resolved display name (falls back to user id)
+  user_id: string;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  cost_usd: number;
+  models: string[]; // distinct models the session touched
+  providers: string[];
+  first_seen: string; // RFC3339 UTC
+  last_seen: string;
+}
+
+export interface GatewaySessionList {
+  rows: GatewaySession[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ListGatewaySessionsRequest {
+  startDate: string; // RFC3339 UTC
+  endDate: string; // RFC3339 UTC
+  userId?: string; // optional; scope to one user
+  search?: string; // optional; session_id contains
+  limit?: number;
+  offset?: number;
+}
+
+const LIST_GATEWAY_SESSIONS = `mutation ListGatewaySessions(
+    $startDate: String!, $endDate: String!, $userId: String, $search: String, $limit: Int, $offset: Int
+  ) {
+    llm_gateway_list_sessions(request: {
+      start_date: $startDate, end_date: $endDate, user_id: $userId, search: $search, limit: $limit, offset: $offset
+    }) {
+      data
+    }
+  }`;
+
+/** List sessions (paginated, most-recently-active first) for the Sessions tab. */
+export async function listGatewaySessions(req: ListGatewaySessionsRequest, signal?: AbortSignal): Promise<GatewaySessionList | null> {
+  const response = await queryGraphQL(
+    LIST_GATEWAY_SESSIONS,
+    'ListGatewaySessions',
+    {
+      startDate: req.startDate,
+      endDate: req.endDate,
+      userId: req.userId ?? '',
+      search: req.search ?? '',
+      limit: req.limit ?? 50,
+      offset: req.offset ?? 0,
+    },
+    undefined,
+    signal
+  );
+  return response?.data?.data?.llm_gateway_list_sessions?.data ?? null;
+}
+
 /**
  * Fetch the captured request + response body for a single request (EE body view).
  * Returns `{ available: false }` when the body wasn't captured, has expired, or
