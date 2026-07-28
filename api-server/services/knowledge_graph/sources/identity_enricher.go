@@ -31,11 +31,13 @@ var nudgebeeUserSchema = core.SpecificTypeSchema{
 }
 
 // integrationIdentitySpecificTypes maps an integration_user_accounts.integration_type
-// value to the KG specific_type its per-integration identity nodes use. The node's
-// `username` property is matched against integration_user_accounts.external_user_id.
-// Adding a new integration to the KG (e.g. GitLab, Slack) needs exactly one entry
-// here — no other enricher changes, as long as that source's identity nodes carry a
-// `username` property holding the same login/id the Identity Sync cron records.
+// value to the KG specific_type its per-integration identity nodes use. A node is
+// matched against one integration_user_accounts row by (username, integration instance)
+// — see identityKey. Adding a new integration to the KG (e.g. Slack) needs exactly one
+// entry here — no other enricher changes, as long as that source's identity nodes carry
+// a `username` property holding the same login/id the Identity Sync cron records, and
+// set node CloudAccountID to the integrations.id (the pattern every source in this
+// package already follows for its per-instance dispatch key).
 var integrationIdentitySpecificTypes = map[string]string{
 	"github":    "GitHubUser",
 	"gitlab":    "GitLabUser",
@@ -121,7 +123,7 @@ func buildSameAsEdges(
 		if !known {
 			continue // this integration isn't wired into the KG yet
 		}
-		identityNode, ok := identityIndex[identityKey{specificType, m.externalUserID}]
+		identityNode, ok := identityIndex[identityKey{specificType, m.externalUserID, m.integrationID}]
 		if !ok {
 			continue // that identity node wasn't built this cycle (e.g. access revoked)
 		}
@@ -133,16 +135,23 @@ func buildSameAsEdges(
 	return edges
 }
 
-// identityKey indexes a per-integration identity node by its concrete specific_type
-// and login/username, so it can be matched against an integration_user_accounts row.
+// identityKey indexes a per-integration identity node by its concrete specific_type,
+// login/username, and the specific integration instance (node.CloudAccountID — the
+// integrations.id, per BuildGraph's doc comment in each source) it was built from, so
+// it can be matched against one specific integration_user_accounts row. The instance
+// must be part of the key: a tenant can configure more than one integration of the
+// same type (e.g. two PagerDuty accounts), and if the same external user shows up in
+// both, they'd otherwise collide on (specific_type, username) and only one of the two
+// identity nodes would ever get a SAME_AS edge, silently dropping the other.
 type identityKey struct {
-	specificType string
-	username     string
+	specificType  string
+	username      string
+	integrationID string
 }
 
 // indexIdentityNodes indexes every node whose specific_type is a known
 // per-integration identity type (see integrationIdentitySpecificTypes) by
-// (specific_type, username).
+// (specific_type, username, integration instance).
 func indexIdentityNodes(allNodes []*core.DbNode) map[identityKey]*core.DbNode {
 	knownSpecificTypes := make(map[string]bool, len(integrationIdentitySpecificTypes))
 	for _, st := range integrationIdentitySpecificTypes {
@@ -158,7 +167,7 @@ func indexIdentityNodes(allNodes []*core.DbNode) map[identityKey]*core.DbNode {
 		if username == "" {
 			continue
 		}
-		index[identityKey{n.SpecificType, username}] = n
+		index[identityKey{n.SpecificType, username, n.CloudAccountID}] = n
 	}
 	return index
 }
@@ -212,11 +221,14 @@ func (e *IdentityEnricher) buildCanonicalUserNodes(dbms *database.DatabaseManage
 }
 
 // mappingRow is one integration_user_accounts row linking an external identity to a
-// Nudgebee user.
+// Nudgebee user. integrationID is that row's integration_id — a tenant can configure
+// more than one integration of the same type, and this is what disambiguates which
+// one's identity node this row should link (see identityKey).
 type mappingRow struct {
 	integrationType string
 	externalUserID  string
 	mappedUserID    string
+	integrationID   string
 }
 
 // fetchMappings loads every active, mapped external identity for the tenant, across
@@ -224,7 +236,7 @@ type mappingRow struct {
 // filters down to the ones the KG actually has nodes for this cycle.
 func (e *IdentityEnricher) fetchMappings(dbms *database.DatabaseManager, tenantID string) ([]mappingRow, error) {
 	rows, err := dbms.Query(`
-		SELECT integration_type, external_user_id, mapped_user_id::text
+		SELECT integration_type, external_user_id, mapped_user_id::text, COALESCE(integration_id::text, '')
 		FROM integration_user_accounts
 		WHERE tenant_id = $1 AND is_active = true AND mapped_user_id IS NOT NULL
 	`, tenantID)
@@ -240,7 +252,7 @@ func (e *IdentityEnricher) fetchMappings(dbms *database.DatabaseManager, tenantI
 	var results []mappingRow
 	for rows.Next() {
 		var m mappingRow
-		if err := rows.Scan(&m.integrationType, &m.externalUserID, &m.mappedUserID); err != nil {
+		if err := rows.Scan(&m.integrationType, &m.externalUserID, &m.mappedUserID, &m.integrationID); err != nil {
 			return nil, fmt.Errorf("scan integration user mapping row: %w", err)
 		}
 		results = append(results, m)
