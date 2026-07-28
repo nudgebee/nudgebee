@@ -465,6 +465,7 @@ const apiAccount = {
         'loggly',
         'loki',
         'signoz',
+        'openobserve',
         'azure_app_insights',
         'prometheus',
         'otel_clickhouse',

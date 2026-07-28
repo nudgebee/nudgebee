@@ -63,7 +63,7 @@ func TestOpenObserveTraceSource_BuildSQL(t *testing.T) {
 		},
 	}
 
-	sql, err := s.buildSQL(req)
+	sql, err := s.buildSQL(req, "default")
 	require.NoError(t, err)
 
 	expected := `SELECT * FROM "default" WHERE status_code = '2' ORDER BY _timestamp DESC LIMIT 25`
@@ -87,4 +87,18 @@ func TestParseOpenObserveTraceHitsUsesNativeSchemaAndMicrosecondDuration(t *test
 	assert.Equal(t, "GET /health", traces[0].SpanName)
 	assert.Equal(t, "api", traces[0].ServiceName)
 	assert.Equal(t, int64(123000), traces[0].DurationNs)
+}
+
+func TestOpenObserveTraceSourceBuildSQLUsesConfiguredStream(t *testing.T) {
+	s := &OpenObserveTraceSource{}
+	req := TracesV3Request{}
+	req.QueryRequest.Limit = 25
+
+	sql, err := s.buildSQL(req, "otel_traces")
+	require.NoError(t, err)
+	assert.Equal(t, `SELECT * FROM "otel_traces" ORDER BY _timestamp DESC LIMIT 25`, sql)
+
+	_, err = s.buildSQL(req, `x" OR "1"="1`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsafe stream name")
 }

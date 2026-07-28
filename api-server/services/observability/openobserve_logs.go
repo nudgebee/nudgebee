@@ -24,6 +24,10 @@ var openObserveLogLabelMapping = map[string]string{
 	"timestamp": "_timestamp",
 	"body":      "body",
 	"message":   "body",
+	// "content" is the canonical field the query builder's line-filter
+	// operations emit (cf. Loki's content→log). Without it those filters would
+	// target a non-existent OpenObserve column.
+	"content": "body",
 }
 
 func (s *OpenObserveLogSource) GetSupportedOperators() []string {
@@ -154,10 +158,17 @@ func buildOpenObserveSQLWhereClause(where query.QueryWhereClause) (string, error
 	return "", nil
 }
 
-func (s *OpenObserveLogSource) buildSQL(req FetchLogRequest) (string, error) {
+func (s *OpenObserveLogSource) buildSQL(req FetchLogRequest, stream string) (string, error) {
 	whereClause, err := buildOpenObserveSQLWhereClause(req.QueryRequest.Where)
 	if err != nil {
 		return "", err
+	}
+
+	if stream == "" {
+		stream = integrations.OpenObserveDefaultStream
+	}
+	if !integrations.IsSafeOpenObserveIdentifier(stream) {
+		return "", fmt.Errorf("invalid or unsafe stream name: %q", stream)
 	}
 
 	limit := req.Limit
@@ -168,7 +179,7 @@ func (s *OpenObserveLogSource) buildSQL(req FetchLogRequest) (string, error) {
 		limit = 10000
 	}
 
-	sql := `SELECT * FROM "default"`
+	sql := fmt.Sprintf("SELECT * FROM %q", stream)
 	if whereClause != "" {
 		sql += " WHERE " + whereClause
 	}
@@ -179,16 +190,24 @@ func (s *OpenObserveLogSource) buildSQL(req FetchLogRequest) (string, error) {
 }
 
 func (s *OpenObserveLogSource) GetQuery(ctx *security.RequestContext, req FetchLogRequest) (string, error) {
-	return s.buildSQL(req)
+	// Resolve the configured stream so the previewed SQL matches what QueryLogs
+	// actually executes. Fall back to the default stream when the integration
+	// cannot be read (e.g. preview for an account with no config yet) rather
+	// than failing the preview outright.
+	stream := integrations.OpenObserveDefaultStream
+	if cfg, err := integrations.GetOpenObserveConfig(ctx, req.AccountId); err == nil {
+		stream = cfg.LogStream
+	}
+	return s.buildSQL(req, stream)
 }
 
 func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req FetchLogRequest) ([]OutputLog, error) {
-	url, orgID, username, password, err := integrations.GetOpenObserveConfigs(ctx, req.AccountId)
+	cfg, err := integrations.GetOpenObserveConfig(ctx, req.AccountId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
 
-	sql, err := s.buildSQL(req)
+	sql, err := s.buildSQL(req, cfg.LogStream)
 	if err != nil {
 		return nil, err
 	}
@@ -207,8 +226,8 @@ func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req Fetch
 		return nil, fmt.Errorf("failed to marshal search request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/api/%s/_search", url, orgID)
-	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(username+":"+password)))
+	endpoint := fmt.Sprintf("%s/api/%s/_search", cfg.URL, cfg.OrgID)
+	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(cfg.Username+":"+cfg.Password)))
 
 	resp, err := common.HttpPost(endpoint,
 		common.HttpWithHeaders(map[string]string{
@@ -323,7 +342,7 @@ func (s *OpenObserveLogSource) QueryLabels(ctx *security.RequestContext, req Fet
 
 func (s *OpenObserveLogSource) QueryLabelValues(ctx *security.RequestContext, req FetchLogLabelValuesRequest) ([]OutputLogLabelValue, error) {
 	// Query unique values for the requested label using SQL GROUP BY
-	url, orgID, username, password, err := integrations.GetOpenObserveConfigs(ctx, req.AccountId)
+	cfg, err := integrations.GetOpenObserveConfig(ctx, req.AccountId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
@@ -336,10 +355,28 @@ func (s *OpenObserveLogSource) QueryLabelValues(ctx *security.RequestContext, re
 		return nil, fmt.Errorf("invalid or unsafe label name: %q", col)
 	}
 
-	sql := fmt.Sprintf("SELECT %s FROM \"default\" GROUP BY %s LIMIT 100", col, col)
+	stream := cfg.LogStream
+	if stream == "" {
+		stream = integrations.OpenObserveDefaultStream
+	}
+	if !integrations.IsSafeOpenObserveIdentifier(stream) {
+		return nil, fmt.Errorf("invalid or unsafe stream name: %q", stream)
+	}
 
-	startTimeMicros := req.StartTime * 1000
-	endTimeMicros := req.EndTime * 1000
+	sql := fmt.Sprintf("SELECT %s FROM %q GROUP BY %s LIMIT 100", col, stream, col)
+
+	// Callers (the log query-builder autocomplete in particular) routinely omit
+	// the time range. OpenObserve rejects a zero-width window with a 400, so
+	// apply the same one-hour fallback QueryLabels already uses.
+	startTime, endTime := req.StartTime, req.EndTime
+	if startTime == 0 && endTime == 0 {
+		now := time.Now()
+		endTime = now.UnixMilli()
+		startTime = now.Add(-time.Hour).UnixMilli()
+	}
+
+	startTimeMicros := startTime * 1000
+	endTimeMicros := endTime * 1000
 
 	searchReq := openObserveSearchRequest{}
 	searchReq.Query.SQL = sql
@@ -351,8 +388,8 @@ func (s *OpenObserveLogSource) QueryLabelValues(ctx *security.RequestContext, re
 		return nil, fmt.Errorf("failed to marshal search request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/api/%s/_search", url, orgID)
-	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(username+":"+password)))
+	endpoint := fmt.Sprintf("%s/api/%s/_search", cfg.URL, cfg.OrgID)
+	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(cfg.Username+":"+cfg.Password)))
 
 	resp, err := common.HttpPost(endpoint,
 		common.HttpWithHeaders(map[string]string{
@@ -368,7 +405,10 @@ func (s *OpenObserveLogSource) QueryLabelValues(ctx *security.RequestContext, re
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("OpenObserve query failed with status %d", resp.StatusCode)
+		// Surface the body: a bare status code gives no clue whether the stream
+		// name, the column, or the time window was at fault.
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("OpenObserve label-values query failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var searchResp openObserveSearchResponse

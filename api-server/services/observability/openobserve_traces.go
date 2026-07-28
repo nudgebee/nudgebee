@@ -98,10 +98,17 @@ func buildOpenObserveTraceWhereClause(where query.QueryWhereClause) (string, err
 	return "", nil
 }
 
-func (s *OpenObserveTraceSource) buildSQL(req TracesV3Request) (string, error) {
+func (s *OpenObserveTraceSource) buildSQL(req TracesV3Request, stream string) (string, error) {
 	whereClause, err := buildOpenObserveTraceWhereClause(req.QueryRequest.Where)
 	if err != nil {
 		return "", err
+	}
+
+	if stream == "" {
+		stream = integrations.OpenObserveDefaultStream
+	}
+	if !integrations.IsSafeOpenObserveIdentifier(stream) {
+		return "", fmt.Errorf("invalid or unsafe stream name: %q", stream)
 	}
 
 	limit := req.QueryRequest.Limit
@@ -112,7 +119,7 @@ func (s *OpenObserveTraceSource) buildSQL(req TracesV3Request) (string, error) {
 		limit = 10000
 	}
 
-	sql := `SELECT * FROM "default"`
+	sql := fmt.Sprintf("SELECT * FROM %q", stream)
 	if whereClause != "" {
 		sql += " WHERE " + whereClause
 	}
@@ -123,16 +130,22 @@ func (s *OpenObserveTraceSource) buildSQL(req TracesV3Request) (string, error) {
 }
 
 func (s *OpenObserveTraceSource) GetQuery(ctx *security.RequestContext, req TracesV3Request) (string, error) {
-	return s.buildSQL(req)
+	// Mirror QueryTraces so the previewed SQL names the same stream that will
+	// actually be queried; fall back to the default if config is unreadable.
+	stream := integrations.OpenObserveDefaultStream
+	if cfg, err := integrations.GetOpenObserveConfig(ctx, req.AccountId); err == nil {
+		stream = cfg.TraceStream
+	}
+	return s.buildSQL(req, stream)
 }
 
 func (s *OpenObserveTraceSource) QueryTraces(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
-	url, orgID, username, password, err := integrations.GetOpenObserveConfigs(ctx, req.AccountId)
+	cfg, err := integrations.GetOpenObserveConfig(ctx, req.AccountId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
 
-	sql, err := s.buildSQL(req)
+	sql, err := s.buildSQL(req, cfg.TraceStream)
 	if err != nil {
 		return nil, err
 	}
@@ -151,8 +164,8 @@ func (s *OpenObserveTraceSource) QueryTraces(ctx *security.RequestContext, req T
 	}
 
 	// For traces, we query the _search endpoint with type=traces if possible, or just the default stream
-	endpoint := fmt.Sprintf("%s/api/%s/_search?type=traces", url, orgID)
-	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(username+":"+password)))
+	endpoint := fmt.Sprintf("%s/api/%s/_search?type=traces", cfg.URL, cfg.OrgID)
+	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(cfg.Username+":"+cfg.Password)))
 
 	resp, err := common.HttpPost(endpoint,
 		common.HttpWithHeaders(map[string]string{
@@ -229,7 +242,7 @@ func parseOpenObserveTraceHits(hits []map[string]any) []common.OpenTelemetryTrac
 }
 
 func (s *OpenObserveTraceSource) CountTraces(ctx *security.RequestContext, req TracesV3Request) (common.OpenTelemetryTraceCount, error) {
-	url, orgID, username, password, err := integrations.GetOpenObserveConfigs(ctx, req.AccountId)
+	cfg, err := integrations.GetOpenObserveConfig(ctx, req.AccountId)
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
@@ -239,7 +252,14 @@ func (s *OpenObserveTraceSource) CountTraces(ctx *security.RequestContext, req T
 		return common.OpenTelemetryTraceCount{}, err
 	}
 
-	sql := `SELECT count(*) as count FROM "default"`
+	countStream := cfg.TraceStream
+	if countStream == "" {
+		countStream = integrations.OpenObserveDefaultStream
+	}
+	if !integrations.IsSafeOpenObserveIdentifier(countStream) {
+		return common.OpenTelemetryTraceCount{}, fmt.Errorf("invalid or unsafe stream name: %q", countStream)
+	}
+	sql := fmt.Sprintf("SELECT count(*) as count FROM %q", countStream)
 	if whereClause != "" {
 		sql += " WHERE " + whereClause
 	}
@@ -257,8 +277,8 @@ func (s *OpenObserveTraceSource) CountTraces(ctx *security.RequestContext, req T
 		return common.OpenTelemetryTraceCount{}, fmt.Errorf("failed to marshal count request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/api/%s/_search?type=traces", url, orgID)
-	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(username+":"+password)))
+	endpoint := fmt.Sprintf("%s/api/%s/_search?type=traces", cfg.URL, cfg.OrgID)
+	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(cfg.Username+":"+cfg.Password)))
 
 	resp, err := common.HttpPost(endpoint,
 		common.HttpWithHeaders(map[string]string{
@@ -295,7 +315,7 @@ func (s *OpenObserveTraceSource) CountTraces(ctx *security.RequestContext, req T
 }
 
 func (s *OpenObserveTraceSource) GetLabelValues(ctx *security.RequestContext, req TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
-	url, orgID, username, password, err := integrations.GetOpenObserveConfigs(ctx, req.AccountId)
+	cfg, err := integrations.GetOpenObserveConfig(ctx, req.AccountId)
 	if err != nil {
 		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
@@ -308,10 +328,25 @@ func (s *OpenObserveTraceSource) GetLabelValues(ctx *security.RequestContext, re
 		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("invalid or unsafe label name: %q", col)
 	}
 
-	sql := fmt.Sprintf(`SELECT %s FROM "default" GROUP BY %s LIMIT 100`, col, col)
+	lvStream := cfg.TraceStream
+	if lvStream == "" {
+		lvStream = integrations.OpenObserveDefaultStream
+	}
+	if !integrations.IsSafeOpenObserveIdentifier(lvStream) {
+		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("invalid or unsafe stream name: %q", lvStream)
+	}
+	sql := fmt.Sprintf("SELECT %s FROM %q GROUP BY %s LIMIT 100", col, lvStream, col)
 
-	startTimeMicros := req.StartTime * 1000
-	endTimeMicros := req.EndTime * 1000
+	// Autocomplete callers routinely omit the range; a zero-width window is a 400.
+	startTime, endTime := req.StartTime, req.EndTime
+	if startTime == 0 && endTime == 0 {
+		now := time.Now()
+		endTime = now.UnixMilli()
+		startTime = now.Add(-time.Hour).UnixMilli()
+	}
+
+	startTimeMicros := startTime * 1000
+	endTimeMicros := endTime * 1000
 
 	searchReq := openObserveSearchRequest{}
 	searchReq.Query.SQL = sql
@@ -323,8 +358,8 @@ func (s *OpenObserveTraceSource) GetLabelValues(ctx *security.RequestContext, re
 		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("failed to marshal search request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/api/%s/_search?type=traces", url, orgID)
-	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(username+":"+password)))
+	endpoint := fmt.Sprintf("%s/api/%s/_search?type=traces", cfg.URL, cfg.OrgID)
+	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(cfg.Username+":"+cfg.Password)))
 
 	resp, err := common.HttpPost(endpoint,
 		common.HttpWithHeaders(map[string]string{

@@ -600,6 +600,18 @@ const LogQueryBuilderAutocomplete = ({
               tagType: findLabel?.attributes?.type || 'resource',
             },
           });
+        } else if (logProvider === 'openobserve') {
+          // OpenObserve resolves label values with a SQL GROUP BY scoped to the
+          // search window, so the range goes top-level (start_time/end_time in ms)
+          // rather than inside `request` the way Loki's query string does.
+          response = await observability.fetchLogLabelValues({
+            account_id: accountId,
+            label_name: findLabel.label,
+            ...(providerOverride ? { log_provider: providerOverride } : {}),
+            start_time: params.startTime,
+            end_time: params.endTime,
+            request: {},
+          });
         } else if (logProvider === 'loki') {
           response = await observability.fetchLogLabelValues({
             account_id: accountId,

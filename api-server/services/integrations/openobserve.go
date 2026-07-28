@@ -20,7 +20,38 @@ func init() {
 
 const IntegrationOpenObserve = "openobserve"
 
+// OpenObserveDefaultStream is the stream OTLP/JSON ingestion creates when the
+// caller does not name one. It is only a default — deployments that route logs
+// or traces to named streams must override it per integration.
+const OpenObserveDefaultStream = "default"
+
 type OpenObserve struct{}
+
+// OpenObserveConfig is the resolved, decrypted connection config for one account.
+type OpenObserveConfig struct {
+	URL         string
+	OrgID       string
+	Username    string
+	Password    string
+	LogStream   string
+	TraceStream string
+}
+
+// IsSafeOpenObserveIdentifier reports whether s is usable as a bare SQL
+// identifier (stream or column name). Stream names reach the query builder from
+// user-supplied config, so they are validated before interpolation rather than
+// trusted.
+func IsSafeOpenObserveIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
+}
 
 func (m OpenObserve) Name() string {
 	return IntegrationOpenObserve
@@ -54,6 +85,18 @@ func (m OpenObserve) ConfigSchema() core.IntegrationSchema {
 				Description: "Email or username for OpenObserve Basic Auth.",
 				Priority:    75,
 				IsTestable:  true,
+			},
+			"openobserve_log_stream": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "OpenObserve stream holding logs. Defaults to 'default' (the stream OTLP ingestion creates); set this when logs are routed to a named stream.",
+				Default:     OpenObserveDefaultStream,
+				Priority:    68,
+			},
+			"openobserve_trace_stream": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "OpenObserve stream holding traces. Defaults to 'default' (the stream OTLP ingestion creates); set this when traces are routed to a named stream.",
+				Default:     OpenObserveDefaultStream,
+				Priority:    67,
 			},
 			"openobserve_password": {
 				Type:        core.ToolSchemaTypeString,
@@ -102,7 +145,7 @@ func (m OpenObserve) ConfigSchema() core.IntegrationSchema {
 }
 
 func (m OpenObserve) ValidateConfig(sc *security.SecurityContext, config []core.IntegrationConfigValue, accountId string) []error {
-	var openobserveURL, orgID, username, password string
+	var openobserveURL, orgID, username, password, logStream, traceStream string
 	for _, c := range config {
 		switch c.Name {
 		case "openobserve_url":
@@ -113,6 +156,10 @@ func (m OpenObserve) ValidateConfig(sc *security.SecurityContext, config []core.
 			username = c.Value
 		case "openobserve_password":
 			password = c.Value
+		case "openobserve_log_stream":
+			logStream = c.Value
+		case "openobserve_trace_stream":
+			traceStream = c.Value
 		}
 	}
 
@@ -137,6 +184,15 @@ func (m OpenObserve) ValidateConfig(sc *security.SecurityContext, config []core.
 	}
 	if password == "" {
 		errs = append(errs, fmt.Errorf("openobserve_password is required"))
+	}
+	// Stream names are optional (they default to OpenObserveDefaultStream), but a
+	// supplied one is interpolated into SQL, so reject anything unsafe up front
+	// rather than at query time.
+	if s := strings.TrimSpace(logStream); s != "" && !IsSafeOpenObserveIdentifier(s) {
+		errs = append(errs, fmt.Errorf("openobserve_log_stream %q is invalid: only letters, digits, '_' and '-' are allowed", s))
+	}
+	if s := strings.TrimSpace(traceStream); s != "" && !IsSafeOpenObserveIdentifier(s) {
+		errs = append(errs, fmt.Errorf("openobserve_trace_stream %q is invalid: only letters, digits, '_' and '-' are allowed", s))
 	}
 	return errs
 }
@@ -205,41 +261,59 @@ func normalizeOpenObserveURL(raw string) string {
 	return parsed.Scheme + "://" + parsed.Host
 }
 
-// GetOpenObserveConfigs retrieves and decrypts OpenObserve configuration for an account
-func GetOpenObserveConfigs(sc *security.RequestContext, accountId string) (string, string, string, string, error) {
-	url := ""
-	orgID := ""
-	username := ""
-	password := ""
+// GetOpenObserveConfig retrieves and decrypts the OpenObserve configuration for
+// an account, including the log/trace stream names. Stream names fall back to
+// OpenObserveDefaultStream when unset, and are rejected if they are not safe
+// bare identifiers — they are interpolated into SQL by the query builders.
+func GetOpenObserveConfig(sc *security.RequestContext, accountId string) (OpenObserveConfig, error) {
+	cfg := OpenObserveConfig{
+		LogStream:   OpenObserveDefaultStream,
+		TraceStream: OpenObserveDefaultStream,
+	}
 
 	openobserveIntegrations, err := core.ListIntegrationConfigs(sc, accountId, IntegrationOpenObserve)
 	if err != nil {
-		return url, orgID, username, password, fmt.Errorf("failed to list OpenObserve integration configs: %w", err)
+		return cfg, fmt.Errorf("failed to list OpenObserve integration configs: %w", err)
 	}
 	if len(openobserveIntegrations) == 0 {
-		return url, orgID, username, password, fmt.Errorf("openobserve integration not found for account: %s", accountId)
+		return cfg, fmt.Errorf("openobserve integration not found for account: %s", accountId)
 	}
 	openobserveIntegration := openobserveIntegrations[0]
 	for _, config := range openobserveIntegration.Configs {
 		switch config.Name {
 		case "openobserve_url":
-			url = config.Value
+			cfg.URL = config.Value
 		case "openobserve_org_id":
-			orgID = config.Value
+			cfg.OrgID = config.Value
 		case "openobserve_username":
-			username = config.Value
+			cfg.Username = config.Value
+		case "openobserve_log_stream":
+			if v := strings.TrimSpace(config.Value); v != "" {
+				cfg.LogStream = v
+			}
+		case "openobserve_trace_stream":
+			if v := strings.TrimSpace(config.Value); v != "" {
+				cfg.TraceStream = v
+			}
 		case "openobserve_password":
-			password = config.Value
+			cfg.Password = config.Value
 			if config.IsEncrypted {
-				var err error
-				password, err = common.Decrypt(config.Value)
-				if err != nil {
-					return url, orgID, username, password, fmt.Errorf("failed to decrypt OpenObserve password: %w", err)
+				decrypted, derr := common.Decrypt(config.Value)
+				if derr != nil {
+					return cfg, fmt.Errorf("failed to decrypt OpenObserve password: %w", derr)
 				}
+				cfg.Password = decrypted
 			}
 		}
 	}
 
-	url = normalizeOpenObserveURL(url)
-	return url, orgID, username, password, nil
+	if !IsSafeOpenObserveIdentifier(cfg.LogStream) {
+		return cfg, fmt.Errorf("invalid openobserve_log_stream %q: only letters, digits, '_' and '-' are allowed", cfg.LogStream)
+	}
+	if !IsSafeOpenObserveIdentifier(cfg.TraceStream) {
+		return cfg, fmt.Errorf("invalid openobserve_trace_stream %q: only letters, digits, '_' and '-' are allowed", cfg.TraceStream)
+	}
+
+	cfg.URL = normalizeOpenObserveURL(cfg.URL)
+	return cfg, nil
 }

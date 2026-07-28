@@ -75,7 +75,7 @@ func TestOpenObserveLogSource_QueryLogs(t *testing.T) {
 		Limit: 50,
 	}
 
-	sql, err := s.buildSQL(req)
+	sql, err := s.buildSQL(req, "default")
 	require.NoError(t, err)
 
 	expectedSQL := `SELECT * FROM "default" WHERE str_match_ignore_case(body, 'error') ORDER BY _timestamp DESC LIMIT 50`
@@ -137,4 +137,37 @@ func openObserveLogLabelNames(labels []OutputLogLabel) []string {
 		names = append(names, label.Label)
 	}
 	return names
+}
+
+func TestOpenObserveLogSourceBuildSQLUsesConfiguredStream(t *testing.T) {
+	s := &OpenObserveLogSource{}
+	req := FetchLogRequest{Limit: 10}
+
+	sql, err := s.buildSQL(req, "app_logs")
+	require.NoError(t, err)
+	assert.Equal(t, `SELECT * FROM "app_logs" ORDER BY _timestamp DESC LIMIT 10`, sql)
+
+	// Empty stream falls back to the OTLP-created default rather than erroring.
+	sql, err = s.buildSQL(req, "")
+	require.NoError(t, err)
+	assert.Equal(t, `SELECT * FROM "default" ORDER BY _timestamp DESC LIMIT 10`, sql)
+}
+
+func TestOpenObserveLogSourceBuildSQLRejectsUnsafeStream(t *testing.T) {
+	s := &OpenObserveLogSource{}
+	// A stream name carrying a quote would otherwise break out of the FROM clause.
+	for _, bad := range []string{`a" OR "1"="1`, "logs;DROP", "logs stream", "log.stream"} {
+		_, err := s.buildSQL(FetchLogRequest{}, bad)
+		require.Error(t, err, "stream %q must be rejected", bad)
+		assert.Contains(t, err.Error(), "unsafe stream name")
+	}
+}
+
+func TestOpenObserveLabelSampleRequestDefaultsZeroWindow(t *testing.T) {
+	// QueryLabelValues applies the same one-hour fallback; both paths must agree
+	// so autocomplete callers that omit the range don't get a 400.
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	got := buildOpenObserveLabelSampleRequest(FetchLogLabelRequest{AccountId: "a"}, now)
+	assert.Equal(t, now.Add(-time.Hour).UnixMilli(), got.StartTime)
+	assert.Equal(t, now.UnixMilli(), got.EndTime)
 }

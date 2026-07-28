@@ -3,6 +3,7 @@ export const generateQuery = (logProvider, chips, operations, metricName = '', a
     logProvider === 'loggly' ||
     logProvider === 'observe' ||
     logProvider === 'loki' ||
+    logProvider === 'openobserve' ||
     logProvider === 'azure_app_insights' ||
     (logProvider === 'signoz' && providerType === 'logs') ||
     (logProvider === 'newrelic' && providerType === 'logs') ||
@@ -212,6 +213,7 @@ export const generateQuery = (logProvider, chips, operations, metricName = '', a
     logProvider === 'loggly' ||
     logProvider == 'observe' ||
     logProvider == 'loki' ||
+    logProvider == 'openobserve' ||
     logProvider == 'azure_app_insights' ||
     (logProvider === 'signoz' && providerType == 'logs') ||
     (logProvider === 'newrelic' && providerType == 'logs') ||

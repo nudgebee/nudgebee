@@ -43,7 +43,7 @@ func (s *OpenObserveMetricSource) GetQuery(_ *security.RequestContext, req Fetch
 }
 
 func (s *OpenObserveMetricSource) FetchMetricsQuery(ctx *security.RequestContext, req FetchMetricsRequest) (OutputMetricQuery, error) {
-	url, orgID, username, password, err := integrations.GetOpenObserveConfigs(ctx, req.AccountId)
+	cfg, err := integrations.GetOpenObserveConfig(ctx, req.AccountId)
 	if err != nil {
 		return OutputMetricQuery{}, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
@@ -69,7 +69,7 @@ func (s *OpenObserveMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 			}
 		}
 
-		endpoint := fmt.Sprintf("%s/api/%s/prometheus/api/v1/query_range", url, orgID)
+		endpoint := fmt.Sprintf("%s/api/%s/prometheus/api/v1/query_range", cfg.URL, cfg.OrgID)
 
 		form := neturl.Values{}
 		form.Add("query", query)
@@ -77,7 +77,7 @@ func (s *OpenObserveMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 		form.Add("end", end)
 		form.Add("step", strconv.Itoa(step))
 
-		authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(username+":"+password)))
+		authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(cfg.Username+":"+cfg.Password)))
 
 		resp, err := common.HttpPost(endpoint,
 			common.HttpWithHeaders(map[string]string{
@@ -159,18 +159,18 @@ func (s *OpenObserveMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 }
 
 func (s *OpenObserveMetricSource) FetchMetricList(ctx *security.RequestContext, req FetchMetricsListRequest) ([]OutputMetrics, error) {
-	url, orgID, username, password, err := integrations.GetOpenObserveConfigs(ctx, req.AccountId)
+	cfg, err := integrations.GetOpenObserveConfig(ctx, req.AccountId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/api/%s/prometheus/api/v1/label/__name__/values", url, orgID)
+	endpoint := fmt.Sprintf("%s/api/%s/prometheus/api/v1/label/__name__/values", cfg.URL, cfg.OrgID)
 
 	if req.Metric != "" {
 		endpoint += "?match[]=" + neturl.QueryEscape(fmt.Sprintf("{__name__=~.*%s.*}", req.Metric))
 	}
 
-	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(username+":"+password)))
+	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(cfg.Username+":"+cfg.Password)))
 
 	resp, err := common.HttpGet(endpoint,
 		common.HttpWithHeaders(map[string]string{
@@ -203,14 +203,14 @@ func (s *OpenObserveMetricSource) FetchMetricList(ctx *security.RequestContext, 
 }
 
 func (s *OpenObserveMetricSource) FetchMetricLabelValues(ctx *security.RequestContext, req FetchMetricsLabelValueRequest) ([]OutputMetricsLabelValues, error) {
-	url, orgID, username, password, err := integrations.GetOpenObserveConfigs(ctx, req.AccountId)
+	cfg, err := integrations.GetOpenObserveConfig(ctx, req.AccountId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/api/%s/prometheus/api/v1/label/%s/values", url, orgID, req.Label)
+	endpoint := fmt.Sprintf("%s/api/%s/prometheus/api/v1/label/%s/values", cfg.URL, cfg.OrgID, req.Label)
 
-	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(username+":"+password)))
+	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(cfg.Username+":"+cfg.Password)))
 
 	resp, err := common.HttpGet(endpoint,
 		common.HttpWithHeaders(map[string]string{
@@ -243,17 +243,17 @@ func (s *OpenObserveMetricSource) FetchMetricLabelValues(ctx *security.RequestCo
 }
 
 func (s *OpenObserveMetricSource) FetchMetricsLabels(ctx *security.RequestContext, req FetchMetricLabelsRequest) ([]OutputMetricLabels, error) {
-	url, orgID, username, password, err := integrations.GetOpenObserveConfigs(ctx, req.AccountId)
+	cfg, err := integrations.GetOpenObserveConfig(ctx, req.AccountId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/api/%s/prometheus/api/v1/labels", url, orgID)
+	endpoint := fmt.Sprintf("%s/api/%s/prometheus/api/v1/labels", cfg.URL, cfg.OrgID)
 	if req.MetricName != "" {
 		endpoint += "?match[]=" + neturl.QueryEscape(fmt.Sprintf("{__name__=\"%s\"}", req.MetricName))
 	}
 
-	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(username+":"+password)))
+	authHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(cfg.Username+":"+cfg.Password)))
 
 	resp, err := common.HttpGet(endpoint,
 		common.HttpWithHeaders(map[string]string{
