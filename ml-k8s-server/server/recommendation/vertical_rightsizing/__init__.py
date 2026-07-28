@@ -2,7 +2,6 @@ from typing import List, Optional, Any, Dict, Union
 from dataclasses import dataclass
 import logging
 import traceback
-import warnings
 from server.recommendation.vertical_rightsizing.models.config import Config
 from server.recommendation.vertical_rightsizing.services.service import RecommendationService
 from datetime import datetime
@@ -13,9 +12,6 @@ import math
 from server.utils.utils import get_trace, DatabaseEngine
 from sqlalchemy import text
 from server.recommendation.vertical_rightsizing.models.result import ResourceType
-
-# Suppress pkg_resources deprecation warning
-warnings.filterwarnings("ignore", message="pkg_resources is deprecated", category=UserWarning)
 
 logger = logging.getLogger("krr")
 tracer = get_trace(__name__)

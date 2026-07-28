@@ -67,7 +67,11 @@ jobs:
           # Distroless passthrough of the upstream prometheus-community image
           # (replaces the CVE-heavy bitnamilegacy build: 2C/35H fixable + debian-11
           # floor -> 0/1/1, 0 unfixable). OS_PKG_EPOCH is accepted but unused there.
-          - { image: postgres-exporter, context: deploy/kubernetes/nudgebee-mirrors/postgres-exporter, tag: v0.20.1 }
+          # -nb1 rebuilds the exporter on Go 1.26.5 (clears the 1H/1M Go-stdlib
+          # pair in upstream's 1.26.4 build; v0.20.1 is the newest release, so no
+          # tag bump clears it). Needs a Go build stage — the shared build step
+          # handles it.
+          - { image: postgres-exporter, context: deploy/kubernetes/nudgebee-mirrors/postgres-exporter, tag: v0.20.1-nb1 }
           # Alpine re-mirrors of official images (apk upgrade; no version change).
           # -nb2 also swaps in a gosu rebuilt on Go 1.26.5 (clears 1C/14H Go-stdlib
           # CVEs in the postgres image's prebuilt gosu); needs a Go build stage.
