@@ -545,9 +545,7 @@ multidict==6.7.1
     #   aiohttp
     #   yarl
 multiprocess==0.70.16
-    # via
-    #   benchmark (pyproject.toml)
-    #   datasets
+    # via datasets
 mypy==1.5.1
     # via benchmark (pyproject.toml)
 mypy-extensions==1.1.0
