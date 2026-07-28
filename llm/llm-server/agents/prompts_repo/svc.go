@@ -143,7 +143,6 @@ var sharedAsyncCompletionRules string
 //go:embed watch_completion_summary.txt
 var watchCompletionSummary string
 
-
 // toolRemediationGenerate is the system prompt for the remediation_generate tool.
 // It instructs the LLM to produce a structured remediation plan (root cause, impact,
 // proposed actions, verification steps) without executing anything — the user must approve first.
