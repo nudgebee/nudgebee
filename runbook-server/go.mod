@@ -10,7 +10,7 @@ require (
 	github.com/allegro/bigcache/v3 v3.1.0
 	github.com/dop251/goja v0.0.0-20251201205617-2bb4c724c0f9
 	github.com/dustin/go-humanize v1.0.1
-	github.com/eko/gocache/lib/v4 v4.2.3
+	github.com/eko/gocache/lib/v4 v4.2.4
 	github.com/eko/gocache/store/bigcache/v4 v4.2.4
 	github.com/eko/gocache/store/redis/v4 v4.2.6
 	github.com/gin-gonic/gin v1.12.0
@@ -48,7 +48,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.44.0
 	go.opentelemetry.io/otel/sdk/metric v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
-	go.temporal.io/api v1.63.3
+	go.temporal.io/api v1.63.4
 	go.temporal.io/sdk v1.46.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/oauth2 v0.36.0
@@ -56,9 +56,9 @@ require (
 	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 	gopkg.in/yaml.v3 v3.0.1
-	k8s.io/api v0.36.2
-	k8s.io/apimachinery v0.36.2
-	k8s.io/client-go v0.36.2
+	k8s.io/api v0.36.3
+	k8s.io/apimachinery v0.36.3
+	k8s.io/client-go v0.36.3
 )
 
 require (
@@ -155,6 +155,6 @@ require (
 	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
-	sigs.k8s.io/structured-merge-diff/v6 v6.3.2 // indirect
+	sigs.k8s.io/structured-merge-diff/v6 v6.3.3 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
