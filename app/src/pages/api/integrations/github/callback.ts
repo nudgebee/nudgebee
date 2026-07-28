@@ -133,7 +133,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   } catch (error: any) {
     console.error('GitHub callback error:', error);
     res.status(500).json({
-      error: error.message || 'Internal Server Error',
+      error: 'Internal Server Error',
       requestId,
     });
   }

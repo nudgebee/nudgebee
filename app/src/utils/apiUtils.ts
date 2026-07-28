@@ -50,8 +50,8 @@ export function handleErrorResponse(res: NextApiResponse, error: any, requestId:
     .status(error.status || 500)
     .setHeader('x-request-id', requestId)
     .json({
-      code: error.code || 'internal_error',
-      error: error.message || 'Internal Server Error',
+      code: 'internal_error',
+      error: 'Internal Server Error',
     });
 }
 

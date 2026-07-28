@@ -47,6 +47,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.redirect(installUrl);
   } catch (error: any) {
     console.error('GitHub install error:', error, { requestId });
-    return res.status(500).json({ error: error.message || 'Internal Server Error', requestId });
+    return res.status(500).json({ error: 'Internal Server Error', requestId });
   }
 }
