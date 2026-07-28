@@ -947,14 +947,17 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 	}
 
 	// Check span names for additional clues — but only for spans where this
-	// service is NOT the one making an outbound call (CLIENT/PRODUCER). An
-	// outbound span's name describes the operation/destination being invoked
-	// (e.g. "SQS.ReceiveMessage", "rabbitmq.publish"), not this service's own
-	// identity — trusting it there is exactly what misclassifies an ordinary
-	// service that merely calls a message queue/db as being that queue/db
-	// itself (the failure mode TypeEvidence exists to help debug).
+	// service is NOT the one making an outbound call (CLIENT/PRODUCER/CONSUMER).
+	// An outbound span's name describes the operation/destination being invoked
+	// (e.g. "SQS.ReceiveMessage", "rabbitmq.publish", "rabbitmq.consume"), not
+	// this service's own identity — trusting it there is exactly what
+	// misclassifies an ordinary service that merely calls (or consumes from) a
+	// message queue/db as being that queue/db itself. CONSUMER is included
+	// alongside CLIENT/PRODUCER because consuming from a queue is just as much
+	// an outbound interaction with an external system as producing to one —
+	// neither describes the consuming service's own identity.
 	spanName := strings.ToLower(span.SpanName)
-	if !strings.EqualFold(attrs.SpanKind, "CLIENT") && !strings.EqualFold(attrs.SpanKind, "PRODUCER") {
+	if !strings.EqualFold(attrs.SpanKind, "CLIENT") && !strings.EqualFold(attrs.SpanKind, "PRODUCER") && !strings.EqualFold(attrs.SpanKind, "CONSUMER") {
 		for pattern, appType := range patterns {
 			if strings.Contains(spanName, pattern) {
 				return appType, evidence("span_name", pattern)

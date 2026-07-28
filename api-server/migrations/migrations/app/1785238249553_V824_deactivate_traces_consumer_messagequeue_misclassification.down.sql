@@ -1,0 +1,7 @@
+-- Intentional no-op, same rationale as V815's down migration: this
+-- deactivates rows identified as bad data (phantom MessageQueue/Database/Cache
+-- nodes for services that are actually k8s Workloads); resurrecting them by
+-- flipping is_active back to true would reintroduce confirmed-wrong data
+-- rather than undo a schema change. If this migration needs to be rolled
+-- back, do it by restoring from a pre-migration backup, not by re-running
+-- this file.
