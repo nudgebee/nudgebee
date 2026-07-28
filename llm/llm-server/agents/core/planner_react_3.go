@@ -45,9 +45,18 @@ type NBReActPlanner3 struct {
 		feedback string
 		answer   string
 	}
-	tools          []toolcore.NBTool
-	enableCritique bool
-	Notebook       string
+
+	// consecutiveNotebookOnlyTurns counts back-to-back turns whose only content
+	// was a notebook update (no action / final answer). It bounds the notebook-only
+	// recovery so a model that keeps "remembering" instead of answering cannot spin.
+	// Reset to 0 on any turn that produces a real action or final answer. Turn-scoped
+	// and intentionally NOT persisted across resume (a resumed conversation starts
+	// fresh). Cap in maxConsecutiveNotebookOnlyTurns.
+	consecutiveNotebookOnlyTurns    int
+	maxConsecutiveNotebookOnlyTurns int
+	tools                           []toolcore.NBTool
+	enableCritique                  bool
+	Notebook                        string
 
 	// hypothesisModeEnabled mirrors the prompt-build gate (top-level +
 	// notebook-enabled investigation orchestrator). Carried on the planner so
@@ -918,11 +927,53 @@ func (o *NBReActPlanner3) parseOutputInternal(contentResp *llms.ContentResponse,
 		}
 	}
 
+	// A turn whose only content was a notebook update (the model "remembering" a
+	// finding, with no tool action and no final answer) is NOT malformed — it is a
+	// legitimate step that simply produced no forward action. Signal it distinctly
+	// so the caller nudges the model to continue rather than running the generic
+	// reformat-retry loop (which mislabels it as malformed and burns MaxRetries).
+	// processNotebookUpdate above already captured the content for notebook-enabled
+	// agents; lean gets it back transiently via the nudge's prior-content echo.
+	if o.isNotebookOnlyOutput(output) {
+		return nil, nil, ErrNotebookOnlyTurn
+	}
+
 	// All stages failed — return diagnostic error for retry prompt
 	if reason != "" {
 		return nil, nil, fmt.Errorf("%w: %s", ErrParseFailure, reason)
 	}
 	return nil, nil, ErrParseFailure
+}
+
+// isNotebookOnlyOutput reports whether the model's output consisted solely of a
+// notebook update — an inline <update_notebook> tag or an update_notebook-style
+// tool call (see isNotebookToolName) — with no executable action and no final
+// answer. It is only consulted after tryExtractResponse has already failed to
+// find any action/answer, so a present notebook signal means the turn was
+// notebook-only. Kept conservative: it matches the observed real-world variants
+// (a <tool_name>update_notebook</tool_name> action and the inline tag) without
+// trying to parse partial/truncated XML.
+func (o *NBReActPlanner3) isNotebookOnlyOutput(output string) bool {
+	lower := strings.ToLower(output)
+	if strings.Contains(lower, "<update_notebook") {
+		return true
+	}
+	if toolName := common.XmlExtractTagContent(output, "tool_name"); toolName != "" && isNotebookToolName(toolName) {
+		return true
+	}
+	// Tool-name-as-tag variant: <action><update_notebook>...</update_notebook></action>.
+	for _, tag := range []string{"action", "thought_action"} {
+		block := strings.ToLower(common.XmlExtractTagContent(output, tag))
+		if block == "" {
+			continue
+		}
+		for _, nb := range []string{"update_notebook", "notebook_update", "create_notebook", "write_notebook", "save_notebook", "edit_notebook"} {
+			if strings.Contains(block, "<"+nb+">") || strings.Contains(block, "<"+nb+" ") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // tryExtractResponse attempts to extract actions or final answers from the output.
@@ -1712,17 +1763,33 @@ func (o *NBReActPlanner3) Plan(
 			logger.Info("reactagent3: output parsed", "duration", time.Since(parseStart).String(), "actionsCount", len(actions), "isParallel", len(actions) > 1)
 			finish = finish1
 			if err != nil {
-				logger.Warn("reactagent3: failed to parse llm output", "error", err, "data", result.Choices[0].Content)
-				if !errors.Is(err, ErrParseFailure) {
-					lastErr = err
-					break
+				if errors.Is(err, ErrNotebookOnlyTurn) {
+					// A valid notebook step: the model recorded a finding but emitted no
+					// action or final answer. Not malformed — handle in-place with a
+					// single context-aware nudge (bounded by maxConsecutiveNotebookOnlyTurns)
+					// instead of the reformat-retry loop that would mislabel it.
+					actions, finish, err = o.handleNotebookOnlyTurn(mcList, result, intermediateSteps)
+					if err != nil {
+						lastErr = err
+						break
+					}
+				} else {
+					logger.Warn("reactagent3: failed to parse llm output", "error", err, "data", result.Choices[0].Content)
+					if !errors.Is(err, ErrParseFailure) {
+						lastErr = err
+						break
+					}
+					// Retry with reformat prompts
+					actions, finish, err = o.retryParsing(mcList, result, intermediateSteps, err)
+					if err != nil {
+						lastErr = err
+						break
+					}
 				}
-				// Retry with reformat prompts
-				actions, finish, err = o.retryParsing(mcList, result, intermediateSteps, err)
-				if err != nil {
-					lastErr = err
-					break
-				}
+			} else {
+				// A turn that produced a real action or final answer clears the
+				// consecutive notebook-only counter.
+				o.consecutiveNotebookOnlyTurns = 0
 			}
 
 			if finish == nil {
@@ -1933,6 +2000,90 @@ STRICT CONSTRAINTS:
 		time.Sleep(time.Duration(retryCount) * time.Second)
 	}
 	return nil, nil, originalErr
+}
+
+// handleNotebookOnlyTurn processes a turn whose only content was a notebook
+// update — the model recorded a finding but emitted no tool action or final
+// answer. This is a legitimate "remember this" step, NOT a malformed response,
+// so it must not run the reformat-retry loop (which would mislabel it and burn
+// MaxRetries). It issues ONE context-aware nudge asking the model to continue
+// (next action) or finalize (<final_answer>), echoing the model's own prior
+// output back so a lean turn — which does not persist the notebook — does not
+// lose what it just recorded. Consecutive occurrences are bounded by
+// maxConsecutiveNotebookOnlyTurns: at the cap the nudge hard-demands a final
+// answer, and if the model STILL only updates the notebook a parse failure is
+// surfaced so the caller falls back to scratchpad summarization (a bounded
+// answer) rather than looping.
+func (o *NBReActPlanner3) handleNotebookOnlyTurn(
+	mcList []llms.MessageContent,
+	result *llms.ContentResponse,
+	intermediateSteps []NBAgentPlannerToolActionStep,
+) ([]NBAgentPlannerToolAction, *NBAgentPlannerFinishAction, error) {
+	logger := o.ctx.GetLogger()
+	o.consecutiveNotebookOnlyTurns++
+
+	forceFinal := o.consecutiveNotebookOnlyTurns >= o.maxConsecutiveNotebookOnlyTurns
+	refining := o.refinementAttempts > 0
+	logger.Info("reactagent3: notebook-only turn — nudging to continue",
+		"consecutive", o.consecutiveNotebookOnlyTurns, "force_final", forceFinal, "refining", refining)
+	MetricsCritiqueDecision(o.nbAgent.GetName(), "notebook_only", o.consecutiveNotebookOnlyTurns)
+
+	priorContent := ""
+	if len(result.Choices) > 0 {
+		priorContent = result.Choices[0].Content
+	}
+
+	nudgeMessages := make([]llms.MessageContent, len(mcList))
+	copy(nudgeMessages, mcList)
+	if priorContent != "" {
+		nudgeMessages = append(nudgeMessages, llms.MessageContent{
+			Role:  llms.ChatMessageTypeAI,
+			Parts: []llms.ContentPart{llms.TextContent{Text: priorContent}},
+		})
+	}
+	nudgeMessages = append(nudgeMessages, llms.MessageContent{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextContent{Text: notebookOnlyNudge(refining, forceFinal)}},
+	})
+
+	nudgeResult, nudgeErr := GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, false, nudgeMessages, true, llms.WithTemperature(0.0))
+	if nudgeErr != nil || len(nudgeResult.Choices) == 0 || nudgeResult.Choices[0].Content == "" {
+		logger.Warn("reactagent3: notebook-only nudge llm call failed — falling back to summarization", "error", nudgeErr)
+		return nil, nil, ErrParseFailure
+	}
+
+	actions, finish, err := o.parseOutput(nudgeResult, intermediateSteps)
+	if err == nil {
+		o.consecutiveNotebookOnlyTurns = 0 // real forward progress
+		return actions, finish, nil
+	}
+	if errors.Is(err, ErrNotebookOnlyTurn) && !forceFinal {
+		// Still only a notebook update, but under the cap — nudge once more. Pass
+		// the accumulated nudgeMessages (not the original mcList) so the prior
+		// notebook response and its nudge stay in context — essential in lean mode,
+		// where the notebook content is not persisted and would otherwise be lost.
+		return o.handleNotebookOnlyTurn(nudgeMessages, nudgeResult, intermediateSteps)
+	}
+	// At/over the cap, or a genuine parse failure: surface a parse failure so the
+	// caller breaks to scratchpad summarization instead of spinning.
+	logger.Warn("reactagent3: notebook-only recovery exhausted — falling back to summarization", "consecutive", o.consecutiveNotebookOnlyTurns)
+	return nil, nil, ErrParseFailure
+}
+
+// notebookOnlyNudge builds the corrective instruction for a notebook-only turn.
+// It acknowledges the saved notebook (so the model does not re-record it) and
+// asks for forward progress, tuned to context: during refinement or once the
+// consecutive cap is reached it hard-demands a <final_answer>; otherwise it
+// allows either the next tool action or a final answer.
+func notebookOnlyNudge(refining, forceFinal bool) string {
+	switch {
+	case forceFinal:
+		return "Your notebook has been saved. You have updated it repeatedly without answering. You MUST now respond with a <final_answer> block containing your complete answer based on the evidence already gathered. Do NOT update the notebook again."
+	case refining:
+		return "Your notebook has been saved. You are refining your final answer — respond now with a <final_answer> block that addresses the critique feedback. Do NOT update the notebook again; deliver the answer."
+	default:
+		return "Your notebook has been saved. Continue the investigation: either issue your next tool action in a <thought_action> block, or provide your <final_answer> if the investigation is complete. Do NOT repeat the notebook update."
+	}
 }
 
 // runCritique runs the critique LLM to evaluate the final answer quality.
@@ -2333,20 +2484,21 @@ func NewReActAgent3(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 	leanMode := promptVariantFromCtx(ctx) == promptVariantLean
 
 	return &NBReActPlanner3{
-		ctx:                   ctx,
-		llm:                   model,
-		prompt:                prompt,
-		request:               request,
-		nbAgent:               nbAgent,
-		summaryToolName:       summaryToolName,
-		retryConfig:           retryConfig,
-		refinementAttempts:    0,
-		maxRefinementAttempts: 2,
-		tools:                 tools,
-		enableCritique:        request.EnableCritique,
-		Notebook:              initialNotebook,
-		leanMode:              leanMode,
-		hypothesisModeEnabled: resolveHypothesisModeEnabled(request, nbAgent) && !leanMode,
+		ctx:                             ctx,
+		llm:                             model,
+		prompt:                          prompt,
+		request:                         request,
+		nbAgent:                         nbAgent,
+		summaryToolName:                 summaryToolName,
+		retryConfig:                     retryConfig,
+		refinementAttempts:              0,
+		maxRefinementAttempts:           2,
+		maxConsecutiveNotebookOnlyTurns: 2,
+		tools:                           tools,
+		enableCritique:                  request.EnableCritique,
+		Notebook:                        initialNotebook,
+		leanMode:                        leanMode,
+		hypothesisModeEnabled:           resolveHypothesisModeEnabled(request, nbAgent) && !leanMode,
 		// -1 sentinels mean "no notebook update yet observed".
 		notebookLastUpdateTurn:  -1,
 		notebookFirstUpdateTurn: -1,
