@@ -120,7 +120,11 @@ type appConfig struct {
 	LlmProviderEnbeddingModel string `mapstructure:"llm_provider_embedding_model"`
 	LlmProviderMaxRetries     int    `mapstructure:"llm_provider_max_retries"`
 	LlmProviderThinkingLevel  string `mapstructure:"llm_provider_thinking_level"`  // empty (default): use per-model default; "minimal"/"low"/"medium"/"high": explicit level
-	LlmProviderThinkingBudget int    `mapstructure:"llm_provider_thinking_budget"` // -1 (default): use per-model default; 0: disable thinking; >0: explicit token budget
+	LlmProviderThinkingBudget int    `mapstructure:"llm_provider_thinking_budget"` // -1 (default): use per-model default; 0: disable thinking; >0: explicit token budget — global override, wins over the per-tier budgets below
+	// Per-tier thinking-token ceilings (ModelTier), applied when LlmProviderThinkingBudget is unset (-1). 0 leaves a tier uncapped.
+	LlmThinkingBudgetReasoning int `mapstructure:"llm_thinking_budget_reasoning"`
+	LlmThinkingBudgetRetrieval int `mapstructure:"llm_thinking_budget_retrieval"`
+	LlmThinkingBudgetSummary   int `mapstructure:"llm_thinking_budget_summary"`
 	// LlmCacheTTLMinutes defines the lifespan of LLM request/response pairs in the cache.
 	LlmCacheTTLMinutes int  `mapstructure:"llm_cache_ttl_minutes"`
 	LlmEnableCaching   bool `mapstructure:"llm_enable_caching"`
@@ -159,6 +163,13 @@ type appConfig struct {
 	// LlmServerMaxIndividualCallTimeoutMinutes caps the duration of a single LLM request.
 	// Prevents the system from hanging indefinitely if a provider (like Google AI) stalls.
 	LlmServerMaxIndividualCallTimeoutMinutes int `mapstructure:"llm_server_max_individual_call_timeout_minutes"`
+
+	// Global default TTFT (time-to-first-token) timeout in seconds. Applies only
+	// when a provider is explicitly enabled via LLM_PROVIDER_TTFT_TIMEOUT_ENABLED_<PROVIDER>=true
+	// and does NOT have its own LLM_PROVIDER_TTFT_TIMEOUT_SECONDS_<PROVIDER> override.
+	// See getLLMTTFTTimeout in agents/core/llm_config.go. The watchdog cancels and
+	// retries the same model if no first streamed token arrives within this deadline.
+	LlmProviderTTFTTimeoutSeconds int `mapstructure:"llm_provider_ttft_timeout_seconds"`
 
 	// LlmServerGlobalRetryBudgetMinutes caps the total time spent on a single agent step,
 	// including the initial call and all subsequent retries/continuations.
@@ -767,7 +778,10 @@ func init() {
 	viper.SetDefault("llm_provider_embedding_model", "text-embedding-ada-002")
 	viper.SetDefault("llm_provider_max_retries", 5)
 	viper.SetDefault("llm_provider_thinking_level", "")  // empty = not configured (use per-model default); "minimal"/"low"/"medium"/"high" = explicit level
-	viper.SetDefault("llm_provider_thinking_budget", -1) // -1: model default, 0: disable, >0: token budget
+	viper.SetDefault("llm_provider_thinking_budget", -1) // -1: model default, 0: disable, >0: token budget (global override, wins over the per-tier budgets below)
+	viper.SetDefault("llm_thinking_budget_reasoning", 16000)
+	viper.SetDefault("llm_thinking_budget_retrieval", 8000)
+	viper.SetDefault("llm_thinking_budget_summary", 4000)
 	viper.SetDefault("llm_cache_ttl_minutes", 10)
 	viper.SetDefault("llm_enable_caching", true)
 
@@ -790,6 +804,7 @@ func init() {
 	viper.SetDefault("llm_server_egressfilter_allowlist", "")
 	viper.SetDefault("llm_server_max_individual_call_timeout_minutes", 5)
 	viper.SetDefault("llm_server_global_retry_budget_minutes", 10)
+	viper.SetDefault("llm_provider_ttft_timeout_seconds", 30)
 
 	// SLM specific configs for agents
 	viper.SetDefault("llm_provider_promql_query", "")

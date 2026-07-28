@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -324,6 +325,12 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 			} else {
 				options = append(options, WithThinkingLevel(defaultLevel))
 			}
+		}
+
+		// Cap thinking-token spend (ThinkingLevel alone is a hint the model can exceed).
+		// Only applies here, not to callers with an explicit level — they already made that choice.
+		if budget := resolveThinkingBudget(res.Tier); budget >= 0 {
+			options = append(options, WithThinkingBudget(budget))
 		}
 	} else {
 		// Caller explicitly set a thinking level — still clamp it for model compatibility.
@@ -844,6 +851,44 @@ func WithThinkingLevel(level string) llms.CallOption {
 	}
 }
 
+// WithThinkingBudget sets a hard numeric ceiling (in tokens) on thinking/reasoning
+// generation, unlike WithThinkingLevel's qualitative hint. tokens < 0 is the
+// "no override" sentinel and is a no-op; tokens == 0 means "disable thinking".
+func WithThinkingBudget(tokens int) llms.CallOption {
+	return func(o *llms.CallOptions) {
+		if tokens < 0 {
+			return
+		}
+		if o.Metadata == nil {
+			o.Metadata = make(map[string]any)
+		}
+		o.Metadata["ThinkingBudget"] = tokens
+	}
+}
+
+// resolveThinkingBudget returns the thinking-token ceiling for the given model
+// tier, or -1 if nothing should be applied. The global override wins whenever
+// it's >= 0 (0 means "disable thinking", a real value, not "unset"); an
+// unrecognized tier falls back to the Retrieval budget.
+func resolveThinkingBudget(tier ModelTier) int {
+	if config.Config.LlmProviderThinkingBudget >= 0 {
+		return config.Config.LlmProviderThinkingBudget
+	}
+	var tierBudget int
+	switch tier {
+	case ModelTierReasoning:
+		tierBudget = config.Config.LlmThinkingBudgetReasoning
+	case ModelTierSummary:
+		tierBudget = config.Config.LlmThinkingBudgetSummary
+	default:
+		tierBudget = config.Config.LlmThinkingBudgetRetrieval
+	}
+	if tierBudget <= 0 {
+		return -1
+	}
+	return tierBudget
+}
+
 // isMaxTokensStop returns true when the stop reason indicates the response was
 // truncated due to reaching the max output-token limit.
 // Comparison is case-insensitive to handle provider variations:
@@ -962,6 +1007,35 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 	tracker.started = start
 	optionsToSend = append(optionsToSend, tracker.option())
 
+	// TTFT timeout: cancel and retry same-model if no first chunk arrives within
+	// the configured deadline, instead of waiting out the full callTimeout. Only
+	// armed for streaming calls — non-streaming has no "first chunk" concept.
+	// Enable is per-provider (see getLLMTTFTTimeout): the timer fires only when
+	// LLM_PROVIDER_TTFT_TIMEOUT_ENABLED_<PROVIDER> is explicitly true for the
+	// current provider. Captured in the outer scope so the error log at the end
+	// prints the same value the timer actually used.
+	var watchdogFired atomic.Bool
+	var watchdogTimer *time.Timer
+	watchdogSeconds := 0
+	// done closes a race where the timer fires (Timer.Stop() doesn't wait for an
+	// in-flight callback) at the same instant GenerateContent returns for an
+	// unrelated reason, which would otherwise mislabel that error as a timeout.
+	var done atomic.Bool
+	watchdogOpts := llms.CallOptions{}
+	for _, opt := range optionsToSend {
+		opt(&watchdogOpts)
+	}
+	if enabled, s := getLLMTTFTTimeout(rc.currentProvider); enabled && s > 0 && watchdogOpts.StreamingFunc != nil {
+		watchdogSeconds = s
+		watchdogTimer = time.AfterFunc(time.Duration(watchdogSeconds)*time.Second, func() {
+			if !done.Load() && !tracker.wasStreaming() {
+				watchdogFired.Store(true)
+				cancel()
+			}
+		})
+		defer watchdogTimer.Stop()
+	}
+
 	if rc.conversationId != "" && rc.enableCaching {
 		rc.ctx.GetLogger().Debug("Applying cache for current model",
 			"model", rc.currentModel,
@@ -1069,6 +1143,17 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 	}
 
 	completion, err := rc.llm.GenerateContent(ctx, messagesToSend, optionsToSend...)
+	// done must be set before Stop(), which doesn't wait for an in-flight callback.
+	done.Store(true)
+	if watchdogTimer != nil {
+		watchdogTimer.Stop()
+	}
+	if err != nil && watchdogFired.Load() {
+		// Must match isTransientError ("timeout") to trigger a same-model retry, and must
+		// NOT contain "deadline exceeded" or isDeadlineExceededError routes to fallback models instead.
+		err = fmt.Errorf("ttft timeout: model did not emit a first token within %ds, timeout — retrying same model: %w",
+			watchdogSeconds, err)
+	}
 	if err == nil && (completion == nil || len(completion.Choices) == 0 || completion.Choices[0].Content == "") {
 		stopReason := ""
 		var toolCallCount int

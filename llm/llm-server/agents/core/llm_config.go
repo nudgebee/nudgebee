@@ -63,6 +63,18 @@ const llmModelAdapterFormat = "llm_provider_adapter_id_%s"
 const llmModelAdapterSupportFormat = "llm_provider_require_adapter_id_%s"
 const llmModelFallbackFormat = "llm_model_fallbacks_%s"
 
+// Per-provider TTFT (time-to-first-token) timeout controls. Env-var lookup
+// follows the same AutomaticEnv/uppercase convention as the other llm_provider_*
+// format keys — e.g. fmt.Sprintf(llmProviderTTFTTimeoutEnabledFormat, "huggingface")
+// resolves the viper key `llm_provider_ttft_timeout_enabled_huggingface`, which
+// AutomaticEnv reads from the env var LLM_PROVIDER_TTFT_TIMEOUT_ENABLED_HUGGINGFACE.
+//
+// Enable is required per-provider: the watchdog does NOT fire for any provider
+// unless its ENABLED key is explicitly true. When enabled without a per-provider
+// SECONDS override, the global config.Config.LlmProviderTTFTTimeoutSeconds is used.
+const llmProviderTTFTTimeoutEnabledFormat = "llm_provider_ttft_timeout_enabled_%s"
+const llmProviderTTFTTimeoutSecondsFormat = "llm_provider_ttft_timeout_seconds_%s"
+
 // Category-tier config keys. A tier (reasoning / retrieval / summary)
 // is configured like an agent but in its own namespace so it cannot collide
 // with an agent that happens to share the name.
@@ -1001,6 +1013,27 @@ func getLLMSecretKey(accountId, provider, agentName string, appendAgentName bool
 
 func getLLMSessionToken(accountId, provider, agentName string, appendAgentName bool, resolution ...*LLMConfigResolution) string {
 	return resolveLLMSecret(accountId, provider, agentName, config.Config.LlmProviderSessionToken, "llm_provider_session_token", llmProviderSessionTokenFormat, llmTierSessionTokenFormat, appendAgentName, resolution...)
+}
+
+// getLLMTTFTTimeout returns whether the TTFT timeout should fire for calls to
+// the given provider, and the deadline in seconds. Enable is per-provider —
+// callers get (false, 0) unless LLM_PROVIDER_TTFT_TIMEOUT_ENABLED_<PROVIDER>=true
+// is explicitly set. When enabled, the seconds value is the provider-specific
+// override (LLM_PROVIDER_TTFT_TIMEOUT_SECONDS_<PROVIDER>) if set, otherwise the
+// global default (config.Config.LlmProviderTTFTTimeoutSeconds).
+func getLLMTTFTTimeout(provider string) (enabled bool, seconds int) {
+	if provider == "" {
+		return false, 0
+	}
+	p := strings.ToLower(provider)
+	if !config.Config.GetBool(fmt.Sprintf(llmProviderTTFTTimeoutEnabledFormat, p), false) {
+		return false, 0
+	}
+	seconds = config.Config.LlmProviderTTFTTimeoutSeconds
+	if v := config.Config.GetInt(fmt.Sprintf(llmProviderTTFTTimeoutSecondsFormat, p), 0); v > 0 {
+		seconds = v
+	}
+	return true, seconds
 }
 
 func GetLlmModel(ctx *security.RequestContext, agentName string, accountId string, conversationId string, resolution ...*LLMConfigResolution) (llms.Model, error) {

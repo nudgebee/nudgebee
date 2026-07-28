@@ -108,17 +108,34 @@ func (g *GoogleAI) GenerateContent(
 		}
 	}
 
+	// Gemini rejects setting both at once: 400 INVALID_ARGUMENT "You can only set
+	// only one of thinking budget and thinking level" (confirmed live against the
+	// real API — the SDK struct allows both but server-side validation doesn't).
+	_, hasThinkingBudget := opts.Metadata["ThinkingBudget"]
+
 	// ThinkingConfig with the string-based ThinkingLevel API is only accepted
 	// by a subset of Gemini models (currently gemini-3.x families). Older
 	// thinking-capable models like gemini-2.5-flash reject ThinkingLevel with
 	// HTTP 400 "Thinking level is not supported for this model". Gate the
 	// application so callers can safely pass WithThinkingLevel without knowing
 	// the model — unsupported models just resolve as a normal call.
-	if val, ok := opts.Metadata["ThinkingLevel"]; ok && supportsThinkingLevelOption(opts.Model) {
+	if val, ok := opts.Metadata["ThinkingLevel"]; ok && !hasThinkingBudget && supportsThinkingLevelOption(opts.Model) {
 		if level, ok := val.(string); ok && level != "" {
-			cfg.ThinkingConfig = &genai.ThinkingConfig{
-				ThinkingLevel: genai.ThinkingLevel(strings.ToUpper(level)),
+			if cfg.ThinkingConfig == nil {
+				cfg.ThinkingConfig = &genai.ThinkingConfig{}
 			}
+			cfg.ThinkingConfig.ThinkingLevel = genai.ThinkingLevel(strings.ToUpper(level))
+		}
+	}
+
+	// budget >= 0, not > 0: Gemini treats ThinkingBudget=0 as "disable thinking", a real value.
+	if val, ok := opts.Metadata["ThinkingBudget"]; ok && isThinkingModel(opts.Model) {
+		if budget, ok := val.(int); ok && budget >= 0 {
+			if cfg.ThinkingConfig == nil {
+				cfg.ThinkingConfig = &genai.ThinkingConfig{}
+			}
+			b := int32(budget)
+			cfg.ThinkingConfig.ThinkingBudget = &b
 		}
 	}
 
