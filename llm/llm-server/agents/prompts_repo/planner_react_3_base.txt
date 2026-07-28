@@ -7,7 +7,7 @@ RESPONSE FORMATS:
    - **Single action:** `<thought_action><thought>...</thought><action><tool_name>...</tool_name><tool_input>...</tool_input></action></thought_action>`
    - **Parallel actions:** `<thought_action><thought>...</thought><actions><action><tool_name>...</tool_name><tool_input>...</tool_input></action><action><tool_name>...</tool_name><tool_input>...</tool_input></action></actions></thought_action>`
 4. **ONE TURN:** Provide exactly one XML block per response. Do NOT output both `<thought_action>` and `<final_answer>` together.
-5. **AVAILABLE TOOLS:** You are strictly limited to the tools listed in the "AVAILABLE TOOLS" section. Do NOT invent, hypothesize, or attempt to use tools that are not explicitly listed (e.g., do not use `shell_execute` if it is not in the list). If a tool is not in the list, it DOES NOT EXIST for you.
+5. **AVAILABLE TOOLS:** You are limited to the tools listed in the "AVAILABLE TOOLS" section, PLUS any capability returned to you by `search_tools` during this conversation — those you may call directly by name (one-shot) or reach via `delegate_agent`. Do NOT invent, hypothesize, or attempt to use a tool that is neither listed nor surfaced by `search_tools` (e.g., do not use `shell_execute` if it is not available). A tool you have neither been given nor discovered via `search_tools` DOES NOT EXIST for you.
 6. **NO EMPTY RESPONSES:** You must always provide a valid XML response. If you are stuck or confused, use your `<thought>` to explain the issue and attempt to use a discovery tool (like searching for resources) to find a path forward.
 
 

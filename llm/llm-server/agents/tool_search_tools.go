@@ -111,6 +111,15 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 		}, nil
 	}
 
+	// Record the surfaced capabilities as directly-callable for this conversation, so the
+	// dispatch auth gate accepts a direct call to one of them (the one-shot path) — not
+	// only a delegate_agent call. Scoped to what was actually surfaced here.
+	discovered := make([]string, 0, len(matched))
+	for _, c := range matched {
+		discovered = append(discovered, c.name)
+	}
+	core.RecordDiscoveredTools(ctx.ConversationId, discovered)
+
 	ctx.Ctx.GetLogger().Info("tool: search_tools success", "query", query, "match_count", len(matched))
 	common.MetricsToolOperationsTotal(t.Name(), "success", ctx.AccountId)
 	return toolcore.NBToolResponse{
@@ -241,7 +250,7 @@ func scoreAndRankSearchTools(query string, candidates []searchToolCandidate, lim
 // discovered name as a direct action the executor would reject.
 func renderSearchToolsOutput(matched []searchToolCandidate) string {
 	var b strings.Builder
-	b.WriteString("Matching capabilities. These are NOT in your tool list — to use one, call `delegate_agent` with {\"prompt\": <what to do>, \"tools\": [\"<name>\"]}.\n")
+	b.WriteString("Matching capabilities. These are now callable even though they were not preloaded: for a single quick call, invoke one directly by its name; for multi-step or noisy work, run it via `delegate_agent` with {\"prompt\": <what to do>, \"tools\": [\"<name>\"]} to keep your context clean.\n")
 	for _, c := range matched {
 		fmt.Fprintf(&b, "\n<capability name=%q kind=%q>\n  <description>%s</description>",
 			c.name, c.kind, html.EscapeString(strings.TrimSpace(c.description)))
