@@ -211,6 +211,15 @@ Two safety details: a re-entrancy lock (`isTransitioningRef`) ignores clicks
 while an async transition is in flight (no duplicate side-effects), and
 `driverRef.current !== d` checks bail out if the tour was closed mid-`await`.
 
+**Keyboard:** ←/→ mirror Back/Next through the same lock, via a document-level
+`keydown` listener owned by the engine (added on start, removed on destroy).
+driver.js's built-in arrow handling only works in `drive(steps)` mode — it
+early-returns without the steps-mode `activeIndex`, which `highlight()` never
+sets — so the engine handles arrows itself. Escape still closes via driver.js.
+Arrows are ignored when the event target owns them (inputs, textareas,
+selects, contenteditable, and `role`s like slider/tab/menuitem — the spotlit
+element stays interactive) and when a modifier is held (Alt+← = history back).
+
 ## Why a hand-rolled stepper instead of driver's `drive(steps)`
 
 driver's built-in multi-step mode resolves every element up front and can't
@@ -230,8 +239,10 @@ under `.nb-tour-popover` so other driver usage (if any) is unaffected.
   yet — see _Extending_ below.
 - **Keyboard inside a MUI Dialog.** MUI's focus-trap pulls focus back from the
   popover, so Tab/Enter onto popover buttons doesn't work inside a dialog
-  (mouse does). To support keyboard, pass `disableEnforceFocus` to the dialog
-  while a tour is active.
+  (mouse does). ←/→ still work — the engine's `keydown` listener sits on
+  `document`, and keydown bubbles there no matter where the trap parks focus.
+  To support Tab/Enter too, pass `disableEnforceFocus` to the dialog while a
+  tour is active.
 - **Optional-step timing.** An `optional` step waits only briefly
   (`OPTIONAL_WAIT_MS`); if its element is still loading it gets skipped. Fine
   for non-essential fields; don't mark a slow-loading critical step optional.

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import apiUser, { PREFERENCE_APP_TOUR_SEEN } from '@api1/user';
+import apiUser, { PREFERENCE_APP_TOUR_SEEN, PREFERENCE_APP_TOUR_SNOOZED_UNTIL } from '@api1/user';
 import { useTour, TOURS, brandText } from '@components/common/tour';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 import TourWelcomeDialog from './TourWelcomeDialog';
@@ -16,9 +16,13 @@ const APP_TOUR_ID = 'app-overview';
  * per-browser, not per-user across devices. True cross-device first-login would
  * need a server-side flag on the user record; localStorage is the pragmatic v1.
  *
- * Snooze leaves the flag unset, so the welcome reappears next visit. Starting
- * the tour sets the flag, so it won't auto-show again.
+ * Snooze defers the welcome for 24h (PREFERENCE_APP_TOUR_SNOOZED_UNTIL holds
+ * the epoch-ms expiry) without setting the seen flag, so it reappears on the
+ * first visit after the window lapses. Starting the tour sets the seen flag,
+ * so it won't auto-show again.
  */
+const SNOOZE_MS = 24 * 60 * 60 * 1000;
+
 const FirstLoginTour = () => {
   const { start } = useTour();
   const [welcomeOpen, setWelcomeOpen] = useState(false);
@@ -39,12 +43,15 @@ const FirstLoginTour = () => {
     firedRef.current = true;
 
     let seen = false;
+    let snoozedUntil = 0;
     try {
-      seen = Boolean(apiUser.getUserPreferences()?.[PREFERENCE_APP_TOUR_SEEN]);
+      const prefs = apiUser.getUserPreferences() || {};
+      seen = Boolean(prefs[PREFERENCE_APP_TOUR_SEEN]);
+      snoozedUntil = Number(prefs[PREFERENCE_APP_TOUR_SNOOZED_UNTIL]) || 0;
     } catch {
       seen = false;
     }
-    if (!seen) {
+    if (!seen && Date.now() >= snoozedUntil) {
       setWelcomeOpen(true);
     }
   }, []);
@@ -60,8 +67,12 @@ const FirstLoginTour = () => {
   };
 
   const handleSnooze = () => {
-    // Leave the flag unset → welcome reappears on the next visit.
     setWelcomeOpen(false);
+    try {
+      apiUser.storeUserPreferences(PREFERENCE_APP_TOUR_SNOOZED_UNTIL, Date.now() + SNOOZE_MS);
+    } catch {
+      // localStorage unavailable — falls back to the old next-visit behavior.
+    }
   };
 
   if (!tour?.welcome) {

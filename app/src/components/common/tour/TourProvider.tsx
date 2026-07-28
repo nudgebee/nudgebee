@@ -8,6 +8,11 @@
  * with `highlight()` one step at a time so we can (a) await the modal mounting
  * before spotlighting a field and (b) skip optional steps whose element is
  * absent rather than render a detached, centered popover.
+ *
+ * Keyboard: ←/→ mirror Back/Next via our own document-level listener.
+ * driver.js's built-in arrow handling is a no-op in `highlight()` mode — it
+ * early-returns unless the steps-mode `activeIndex` state is set, which only
+ * `drive(steps)` sets. Escape still closes via driver.js itself.
  */
 import * as React from 'react';
 import { driver } from 'driver.js';
@@ -66,6 +71,29 @@ function waitForElement(selector: string, timeout: number): Promise<HTMLElement 
 const REQUIRED_WAIT_MS = 5000;
 const OPTIONAL_WAIT_MS = 600;
 
+// Elements whose own arrow-key semantics must win over tour navigation: the
+// spotlit element stays interactive (disableActiveInteraction: false), so a
+// user may be moving a text caret, changing a select/radio/slider value, or
+// switching tabs when an arrow key lands.
+const ARROW_KEY_ROLES = new Set(['slider', 'spinbutton', 'combobox', 'listbox', 'option', 'menuitem', 'radio', 'tab']);
+
+// driver.js renders progressText with innerHTML, so static markup is safe
+// here (no user-supplied strings). Styled in styles/tour.css.
+function kbdHint(key: string): string {
+  return `<kbd class="nb-tour-kbd">${key}</kbd>`;
+}
+
+function ownsArrowKeys(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable) {
+    return true;
+  }
+  const role = target.getAttribute('role');
+  return role !== null && ARROW_KEY_ROLES.has(role);
+}
+
 export function TourProvider({ children }: { children: React.ReactNode }): React.ReactElement {
   const driverRef = React.useRef<DriverInstance | null>(null);
   // Guards against re-entrant navigation: the popover stays clickable while an
@@ -99,6 +127,7 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
       // being explained. (driver.js default, set explicitly for intent.)
       disableActiveInteraction: false,
       onDestroyed: () => {
+        document.removeEventListener('keydown', onKeyDown);
         driverRef.current = null;
         setActiveTourId(null);
       },
@@ -107,6 +136,9 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
     setActiveTourId(tourId);
 
     const steps = tour.steps;
+    // Index of the step currently on screen, for the keyboard handler. -1
+    // until the first step renders.
+    let currentIndex = -1;
 
     // Show step `target`, skipping over optional steps that aren't on screen.
     // `direction` decides which way to skip so Back also lands on a real step.
@@ -140,7 +172,64 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
       d.destroy();
     };
 
+    const goPrev = async (from: number): Promise<void> => {
+      // No-op on step 1 (the Back button is hidden there, but ArrowLeft isn't):
+      // goTo(-1) would walk off the front and destroy the tour.
+      if (from <= 0 || isTransitioningRef.current) {
+        return;
+      }
+      isTransitioningRef.current = true;
+      try {
+        await goTo(from - 1, -1);
+      } finally {
+        isTransitioningRef.current = false;
+      }
+    };
+
+    const goNext = async (from: number): Promise<void> => {
+      if (isTransitioningRef.current) {
+        return;
+      }
+      isTransitioningRef.current = true;
+      try {
+        if (from === steps.length - 1) {
+          d.destroy();
+          return;
+        }
+        try {
+          await steps[from].onBeforeNext?.();
+        } catch (err) {
+          // Side-effect failed (e.g. trigger missing) — keep advancing so
+          // the tour doesn't dead-end. goTo() waits for the next step's
+          // element and ends the tour if a required step never mounts.
+          console.warn(`[tour] onBeforeNext failed on "${tourId}" step ${from + 1} (${steps[from].element})`, err);
+        }
+        // No explicit wait here: goTo() already waits for the next step's
+        // element to mount before highlighting it.
+        await goTo(from + 1, 1);
+      } finally {
+        isTransitioningRef.current = false;
+      }
+    };
+
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') {
+        return;
+      }
+      // e.repeat: a held key would otherwise fast-forward through the tour.
+      // Modifiers: leave browser/OS shortcuts alone (Alt+Left = history back).
+      if (e.repeat || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || ownsArrowKeys(e.target)) {
+        return;
+      }
+      if (driverRef.current !== d || currentIndex < 0) {
+        return;
+      }
+      e.preventDefault();
+      void (e.key === 'ArrowRight' ? goNext(currentIndex) : goPrev(currentIndex));
+    };
+
     const renderStep = (i: number, el: HTMLElement, step: TourStepDef): void => {
+      currentIndex = i;
       const isLast = i === steps.length - 1;
       // Bring the target into view before highlighting. driver.js scrolls too,
       // but its window-based check misses elements clipped inside a scrollable
@@ -155,53 +244,31 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
           description: brandText(step.description),
           side: step.side ?? 'bottom',
           align: step.align ?? 'start',
-          progressText: `${i + 1 + progressOffset} of ${totalSteps}`,
+          // highlight() defaults showProgress to false (unlike drive(steps)),
+          // so it must be opted into or progressText never renders.
+          showProgress: true,
+          // ← / → chips flank the count, each sitting next to the button it
+          // mirrors. No ← on step 1 — Back is hidden there and ArrowLeft is a
+          // no-op.
+          progressText: `${i > 0 ? `${kbdHint('←')} ` : ''}${i + 1 + progressOffset} of ${totalSteps} ${kbdHint('→')}`,
           // No Back on step 1 — there's nowhere to go back to.
           showButtons: i === 0 ? ['next', 'close'] : ['next', 'previous', 'close'],
           nextBtnText: isLast ? 'Done' : 'Next',
           prevBtnText: 'Back',
-          onPrevClick: async () => {
-            if (isTransitioningRef.current) {
-              return;
-            }
-            isTransitioningRef.current = true;
-            try {
-              await goTo(i - 1, -1);
-            } finally {
-              isTransitioningRef.current = false;
-            }
+          onPrevClick: () => {
+            void goPrev(i);
           },
           onCloseClick: () => {
             d.destroy();
           },
-          onNextClick: async () => {
-            if (isTransitioningRef.current) {
-              return;
-            }
-            isTransitioningRef.current = true;
-            try {
-              if (isLast) {
-                d.destroy();
-                return;
-              }
-              try {
-                await step.onBeforeNext?.();
-              } catch {
-                // Side-effect failed (e.g. trigger missing) — keep advancing so
-                // the tour doesn't dead-end. goTo() waits for the next step's
-                // element and ends the tour if a required step never mounts.
-              }
-              // No explicit wait here: goTo() already waits for the next step's
-              // element to mount before highlighting it.
-              await goTo(i + 1, 1);
-            } finally {
-              isTransitioningRef.current = false;
-            }
+          onNextClick: () => {
+            void goNext(i);
           },
         },
       });
     };
 
+    document.addEventListener('keydown', onKeyDown);
     void goTo(0, 1);
   }, []);
 
