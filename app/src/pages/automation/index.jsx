@@ -5,9 +5,10 @@ import { withAccountGuard } from '@shared/AccountGuard';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import { useRouter } from 'next/router';
 import { getUserSession } from '@lib/auth';
-import { WorkflowIconBlue, PlayCircleIcon } from '@assets';
+import { AutomateBlue, PlayCircleIcon, dashboardIcon1 } from '@assets';
 import WorkflowListing from '@components/workflow/WorkflowListing';
 import TaskRunner from '@components/workflow/TaskRunner';
+import ExecutionDashboard from '@components/workflow/execution-dashboard/ExecutionDashboard';
 
 const Automation = () => {
   const router = useRouter();
@@ -18,21 +19,13 @@ const Automation = () => {
   const [selectedFilter, setSelectedFilter] = React.useState(null);
   const [subTab, setSubTab] = React.useState(0);
 
+  // Executions is appended rather than inserted first: selectedFilter defaults
+  // to 0 and the render block below is index-based, so putting it first would
+  // silently change which tab everyone lands on.
   const filterOptions = [
-    {
-      name: 'Automation',
-      value: 0,
-      disabled: false,
-      fragment: 'workflow',
-      icon: WorkflowIconBlue,
-    },
-    {
-      name: 'Task Runner',
-      value: 2,
-      fragment: 'task-runner',
-      disabled: !isAdmin,
-      icon: PlayCircleIcon,
-    },
+    { name: 'Automations', id: 'automations', value: 0, fragment: 'automations', icon: AutomateBlue },
+    { name: 'Task Runner', id: 'task-runner', value: 1, fragment: 'task-runner', disabled: !isAdmin, icon: PlayCircleIcon },
+    { name: 'Executions', id: 'executions', value: 2, fragment: 'executions', icon: dashboardIcon1 },
   ];
 
   useEffect(() => {
@@ -67,21 +60,13 @@ const Automation = () => {
           setSubTab(subVal);
         }}
       />
-    );
-    return Anchor;
-  };
-
-  return (
-    <>
-      {getAnchorComponent()}
-
-      <ErrorBoundary key={`${selectedFilter}-${subTab}`}>
-        <Box>
-          <Box>{selectedFilter === 0 && <WorkflowListing accountId={router?.query?.accountId} />}</Box>
-
-          <Box>{selectedFilter === 2 && isAdmin && <TaskRunner accountId={router?.query?.accountId} />}</Box>
-        </Box>
-      </ErrorBoundary>
+      <Box sx={{ position: 'relative', mt: 3 }}>
+        <ErrorBoundary key={selectedFilter}>
+          {selectedFilter === 0 && <WorkflowListing accountId={router?.query?.accountId} />}
+          {selectedFilter === 1 && isAdmin && <TaskRunner accountId={router?.query?.accountId} />}
+          {selectedFilter === 2 && <ExecutionDashboard accountId={router?.query?.accountId} />}
+        </ErrorBoundary>
+      </Box>
     </>
   );
 };

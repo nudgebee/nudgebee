@@ -1227,7 +1227,11 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
                     <Link
                       id={`workflow-name-link-${workflow.id}`}
-                      href={`/workflow/${workflow.id}?accountId=${accountId}#executions`}
+                      // An automation that has never run has nothing to show in
+                      // the Executions view, so land on the Editor instead.
+                      href={`/workflow/${workflow.id}?accountId=${accountId}#${
+                        workflow.last_execution_time || workflow.last_execution_status ? 'executions' : 'editor'
+                      }`}
                       sx={{
                         textDecoration: 'none',
                         fontSize: 'var(--ds-text-body)',

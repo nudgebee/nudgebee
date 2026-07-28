@@ -2310,6 +2310,19 @@ type Query {
 }
 
 type Query {
+  executions_list(
+    request: AccountExecutionListRequest!
+  ): AccountExecutionListResponse
+}
+
+type Query {
+  executions_aggregate(
+    request: ExecutionAggregateRequest!
+  ): ExecutionAggregateResponse
+}
+
+
+type Query {
   workflow_get_template(
     request: WorkflowGetTemplateRequest!
   ): WorkflowTemplateType
@@ -4826,6 +4839,35 @@ input WorkflowExecutionListForEventRequest {
   account_id: String!
   event_id: String!
 }
+
+# Cross-automation execution dashboard. Unlike WorkflowExecutionListRequest
+# there is no required automation id, filters are multi-select, and the window
+# is bounded by a date range.
+input AccountExecutionListRequest {
+  account_id: String!
+  start_date: timestamp
+  end_date: timestamp
+  workflow_ids: [String!]
+  triggered_by: [String!]
+  statuses: [String!]
+  trigger_types: [String!]
+  limit: Int
+  page: Int
+  next_page_token: String
+  include_failure_reason: Boolean
+}
+
+input ExecutionAggregateRequest {
+  account_id: String!
+  start_date: timestamp
+  end_date: timestamp
+  workflow_ids: [String!]
+  triggered_by: [String!]
+  statuses: [String!]
+  trigger_types: [String!]
+  top_failed_limit: Int
+}
+
 
 input WorkflowExecutionGetRequest {
   account_id: String!
@@ -8534,6 +8576,51 @@ type WorkflowExecutionSummary {
   version: Int
   version_number: Int
 }
+
+# A dashboard row: the standard summary plus the fields Temporal's visibility
+# store cannot supply on its own (user display name, duration, failure reason).
+type AccountExecutionSummary {
+  workflow_id: String!
+  id: String!
+  status: String!
+  start_time: timestamp
+  close_time: timestamp
+  triggered_by: String
+  trigger_type: String
+  parent_workflow_id: String
+  workflow_name: String
+  version: Int
+  version_number: Int
+  duration_ms: Float
+  user_name: String
+  failure_reason: String
+}
+
+type AccountExecutionListResponse {
+  executions: [AccountExecutionSummary!]
+  next_page_token: String
+  total_count: Float
+  total_is_approximate: Boolean
+}
+
+type FailedAutomationCount {
+  workflow_id: String!
+  workflow_name: String
+  failure_count: Float
+}
+
+type ExecutionAggregateResponse {
+  total: Float
+  succeeded: Float
+  failed: Float
+  running: Float
+  counts_are_approximate: Boolean
+  top_failed: [FailedAutomationCount!]
+  top_failed_is_approximate: Boolean
+  retention_days: Int
+}
+
+
 
 
 type WorkflowUpdateResponse {

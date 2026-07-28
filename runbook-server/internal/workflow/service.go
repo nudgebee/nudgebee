@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -67,6 +68,9 @@ type WorkflowService interface {
 	DryRunWorkflowAsync(ctx *security.RequestContext, accountId string, request model.DryRunWorkflowRequest) (string, string, error)
 	CountWorkflows(ctx *security.RequestContext, req model.WorkflowCountRequest) (model.WorkflowCountResponse, error)
 	CountWorkflowExecutions(ctx *security.RequestContext, req model.WorkflowExecutionCountRequest) (model.WorkflowExecutionCountResponse, error)
+	// Cross-automation execution dashboard (see execution_dashboard.go)
+	ListAccountExecutions(ctx *security.RequestContext, req model.ListAccountExecutionsRequest) (model.ListAccountExecutionsResponse, error)
+	AggregateExecutions(ctx *security.RequestContext, req model.AggregateExecutionsRequest) (model.AggregateExecutionsResponse, error)
 	// Template operations (type=system uses global store, type=user reserved for future)
 	ListTemplates(ctx *security.RequestContext, request model.ListWorkflowTemplateRequest) (model.ListWorkflowTemplateResponse, error)
 	GetTemplate(ctx *security.RequestContext, id string) (*model.WorkflowTemplate, error)
@@ -113,6 +117,11 @@ type Service struct {
 	taskRegistry     *tasks.TaskRegistry
 	workflowExecutor *WorkflowExecutor
 	configService    configSvc.ConfigService
+
+	// Temporal namespace retention, read lazily and cached once known. It is
+	// the hard ceiling on how far back the execution dashboard can look.
+	retentionMu   sync.RWMutex
+	retentionDays int
 }
 
 func NewService(temporalClient client.Client, store model.WorkflowStore, dataConverter converter.DataConverter, taskRegistry *tasks.TaskRegistry, workflowExecutor *WorkflowExecutor, configService configSvc.ConfigService, templateStore ...model.WorkflowTemplateStore) *Service {
