@@ -58,6 +58,7 @@ interface KubernetesLogProps {
   showPolling?: boolean;
   showDateFilter?: boolean;
   showPlusMinusTab?: boolean;
+  nubiAboveModal?: boolean;
 }
 
 const KubernetesLogs: React.FC<KubernetesLogProps> = ({
@@ -68,6 +69,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
   showPolling = true,
   showDateFilter = true,
   showPlusMinusTab = true,
+  nubiAboveModal = false,
 }) => {
   const router = useRouter();
   const { selectedCluster } = useData();
@@ -937,6 +939,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
         position='right'
         mode='overlay'
         width='500px'
+        aboveModal={nubiAboveModal}
       />
 
       <TicketCreatePopupForm
