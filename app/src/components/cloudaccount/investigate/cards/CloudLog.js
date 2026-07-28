@@ -1,7 +1,7 @@
 import { titleCase } from '@lib/formatter';
 import LogsIcon from '@assets/investigation/logs-blue.svg';
 import { safeJSONParse } from 'src/utils/common';
-import CloudLogViewer from './CloudLogViewer';
+import CloudLogsTable from '@components/cloudaccount/cloud-logs/CloudLogsTable';
 
 // Default card titles per log source, used when the enricher didn't stamp an explicit
 // additional_info.title (e.g. evidence captured before title propagation). Without this
@@ -59,10 +59,18 @@ class CloudLog {
     if (isCloudLogData) {
       const serverLogParsedData = safeJSONParse(this.enricherData.data);
       if (serverLogParsedData && Array.isArray(serverLogParsedData.data) && serverLogParsedData.data.length > 0) {
-        // Keep the full structured record per entry (timestamp, message, attributes).
-        // GCP request logs (httpRequest entries) carry no textPayload, so their data
-        // lives entirely in `attributes`; the viewer surfaces it generically.
-        this.logs = serverLogParsedData.data;
+        // Normalize to the shared CloudLogsTable contract ({timestamp, message,
+        // severity, labels}). The evidence records key structured fields as
+        // `attributes`; the tab/native path calls the same thing `labels`, so
+        // alias them. GCP request logs (httpRequest entries) carry no textPayload,
+        // so their data lives entirely in labels — the table renders those as
+        // dynamic columns generically.
+        this.logs = serverLogParsedData.data.map((entry) => ({
+          timestamp: entry.timestamp,
+          message: entry.message,
+          severity: entry.severity ?? '',
+          labels: entry.attributes ?? {},
+        }));
         this.insightData = this.enricherData?.insight ? [...this.enricherData.insight] : [];
         this.renderContent = true;
       }
@@ -77,7 +85,7 @@ class CloudLog {
   };
 
   getContentComponents = () => {
-    return [() => <CloudLogViewer logs={this.logs} />];
+    return [() => <CloudLogsTable id={this.id} logs={this.logs} />];
   };
 }
 

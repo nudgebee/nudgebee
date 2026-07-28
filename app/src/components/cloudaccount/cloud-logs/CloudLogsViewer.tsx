@@ -1,6 +1,5 @@
-import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Box, Typography } from '@mui/material';
-import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { KeyboardArrowDown as KeyboardArrowDownIcon } from '@mui/icons-material';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -8,10 +7,7 @@ import { DropdownMenu } from '@ui/DropdownMenu';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { Banner } from '@ui/Banner';
 import { EmptyState } from '@ui/EmptyState';
-import { Chip as DsChip } from '@ui/Chip';
 import { Button as DsButton } from '@ui/Button';
-import CustomTable from '@shared/tables/CustomTable';
-import Datetime from '@shared/format/Datetime';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
@@ -23,6 +19,7 @@ import { safeJSONParse, snakeToTitleCase } from 'src/utils/common';
 import { ds } from '@utils/colors';
 import { useCloudLogsQueryPanel, type CloudLogsQueryParams } from './CloudLogsQueryPanel';
 import CloudLogsQueryHelp from './CloudLogsQueryHelp';
+import CloudLogsTable, { type LogEntry } from './CloudLogsTable';
 
 // The cloud-native log path is a synthetic provider (`aws_cloudwatch`) the
 // backend dispatches by cloud account type; it is never in available_providers,
@@ -64,13 +61,6 @@ interface CloudLogsViewerProps {
   provider: 'AWS' | 'Azure' | 'GCP';
 }
 
-interface LogEntry {
-  timestamp: string;
-  message: string;
-  severity: string;
-  labels: Record<string, any>;
-}
-
 const TABLE_ID = 'cloudLogsViewerTable';
 
 const LIMIT_OPTIONS = [
@@ -80,133 +70,6 @@ const LIMIT_OPTIONS = [
   { label: '500', value: '500' },
   { label: '1000', value: '1000' },
 ];
-
-const SEVERITY_COLORS: Record<string, string> = {
-  error: ds.red[500],
-  critical: ds.red[700],
-  fatal: ds.red[700],
-  warning: ds.amber[500],
-  warn: ds.amber[500],
-  info: ds.blue[500],
-  debug: ds.gray[400],
-  notice: ds.green[500],
-};
-
-const MAX_DYNAMIC_COLUMNS = 5;
-const LONG_VALUE_THRESHOLD = 80;
-
-function getSeverityColor(severity: string): string {
-  if (!severity) {
-    return ds.gray[400];
-  }
-  return SEVERITY_COLORS[severity.toLowerCase()] || ds.gray[400];
-}
-
-function isUsefulValue(value: any): boolean {
-  return value !== undefined && value !== null && value !== '' && value !== '<nil>';
-}
-
-const CopyableValue = ({ value }: { value: string }) => {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(value);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
-
-  return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], minWidth: 0 }}>
-      <Typography
-        sx={{
-          fontSize: ds.text.small,
-          fontFamily: 'monospace',
-          color: ds.gray[600],
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          maxWidth: ds.space.mul(0, 160),
-        }}
-        title={value}
-      >
-        {value}
-      </Typography>
-      <DsButton
-        tone='ghost'
-        size='xs'
-        composition='icon-only'
-        icon={<ContentCopyIcon fontSize='small' sx={{ color: copied ? ds.green[600] : undefined }} />}
-        aria-label='Copy value'
-        tooltip={copied ? 'Copied!' : 'Copy'}
-        onClick={handleCopy}
-      />
-    </Box>
-  );
-};
-
-const LogExpandedRow = ({ row }: { row: any[] }) => {
-  const labels: Record<string, any> = row?.[row.length - 1]?._labels || {};
-  const entries = Object.entries(labels).filter(([, v]) => isUsefulValue(v));
-
-  if (entries.length === 0) {
-    return (
-      <Box p={ds.space[3]}>
-        <Typography variant='body2' sx={{ color: ds.gray[500] }}>
-          No additional details
-        </Typography>
-      </Box>
-    );
-  }
-
-  return (
-    <Box
-      sx={{
-        p: ds.space[3],
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))',
-        gap: ds.space[2],
-      }}
-    >
-      {entries.map(([key, value]) => {
-        const strValue = String(value);
-        const isLong = strValue.length > LONG_VALUE_THRESHOLD || key === '@ptr';
-
-        return (
-          <Box
-            key={key}
-            sx={{
-              display: 'flex',
-              gap: ds.space[2],
-              alignItems: 'baseline',
-              py: ds.space[1],
-              borderBottom: `1px solid ${ds.gray[200]}`,
-            }}
-          >
-            <Box sx={{ flexShrink: 0 }}>
-              <DsChip variant='tag' tone='neutral' size='xs'>
-                {key}
-              </DsChip>
-            </Box>
-            {isLong ? (
-              <CopyableValue value={strValue} />
-            ) : (
-              <Typography
-                sx={{
-                  fontSize: ds.text.small,
-                  fontFamily: 'monospace',
-                  wordBreak: 'break-all',
-                  color: ds.gray[600],
-                }}
-              >
-                {strValue}
-              </Typography>
-            )}
-          </Box>
-        );
-      })}
-    </Box>
-  );
-};
 
 const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }) => {
   const [loading, setLoading] = useState(false);
@@ -425,120 +288,11 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
     }
   }, [dateRange]);
 
-  const hasMessages = useMemo(() => data.some((log) => !!log.message), [data]);
-
-  const dynamicLabelKeys = useMemo(() => {
-    if (hasMessages || data.length === 0) {
-      return [];
-    }
-    const keyCounts: Record<string, number> = {};
-    for (const log of data) {
-      for (const [key, value] of Object.entries(log.labels || {})) {
-        if (isUsefulValue(value)) {
-          keyCounts[key] = (keyCounts[key] || 0) + 1;
-        }
-      }
-    }
-    return Object.entries(keyCounts)
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .map(([key]) => key)
-      .slice(0, MAX_DYNAMIC_COLUMNS);
-  }, [data, hasMessages]);
-
-  const hasLabels = useMemo(() => data.some((log) => Object.keys(log.labels || {}).length > 0), [data]);
-  const useDynamicColumns = !hasMessages && dynamicLabelKeys.length > 0;
-
-  const tableHeaders = useMemo(() => {
-    const headers: { name: string; width: string }[] = [{ name: 'Timestamp', width: '160px' }];
-    if (useDynamicColumns) {
-      for (const key of dynamicLabelKeys) {
-        headers.push({ name: key, width: 'auto' });
-      }
-    } else {
-      headers.push({ name: 'Message', width: '90%' });
-    }
-    return headers;
-  }, [useDynamicColumns, dynamicLabelKeys]);
-
-  const logTableData = useMemo(() => {
-    return data.map((log) => {
-      const severity = log.severity || '';
-      const timestampCell = {
-        // `whiteSpace: 'nowrap'` prevents `table-layout: auto` from shrinking
-        // this column to min-content ("7h") on wide tables, which would wrap
-        // "7h 12m ago" across multiple lines.
-        text: (
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], whiteSpace: 'nowrap' }}>
-            <Box
-              sx={{
-                width: 3,
-                height: ds.space[5],
-                borderRadius: ds.radius.sm,
-                bgcolor: getSeverityColor(severity),
-                flexShrink: 0,
-              }}
-            />
-            <Datetime value={log.timestamp} />
-          </Box>
-        ),
-      };
-
-      if (useDynamicColumns) {
-        const labelCells = dynamicLabelKeys.map((key) => {
-          const value = log.labels?.[key];
-          return {
-            text: (
-              <Typography
-                sx={{
-                  fontSize: ds.text.small,
-                  fontFamily: 'monospace',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  maxWidth: ds.space.mul(0, 150),
-                }}
-                title={isUsefulValue(value) ? String(value) : ''}
-              >
-                {isUsefulValue(value) ? String(value) : '-'}
-              </Typography>
-            ),
-            data: isUsefulValue(value) ? String(value) : '',
-          };
-        });
-        // Attach labels to the last cell so LogExpandedRow can read them.
-        const lastLabel = labelCells[labelCells.length - 1];
-        return [timestampCell, ...labelCells.slice(0, -1), { ...lastLabel, _labels: log.labels || {} }];
-      }
-
-      const messageCell = {
-        text: (
-          <Typography
-            component='pre'
-            sx={{
-              fontSize: ds.text.small,
-              fontFamily: 'monospace',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-all',
-              m: 0,
-              maxHeight: ds.space.mul(0, 100),
-              overflow: 'auto',
-            }}
-          >
-            {log.message}
-          </Typography>
-        ),
-        _labels: log.labels || {},
-      };
-
-      return [timestampCell, messageCell];
-    });
-  }, [data, useDynamicColumns, dynamicLabelKeys]);
-
   const handleInsertQuery = (query: string) => {
     setQuery(query);
   };
 
-  const hasRows = logTableData.length > 0;
+  const hasRows = data.length > 0;
 
   const emptyDescription = !isNative
     ? 'Build or write a query, then click "Run Query" to fetch logs.'
@@ -679,15 +433,7 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
         {!error && !loading && !hasRows ? (
           <EmptyState size='inline' illustration='no-results' title='No log entries' description={emptyDescription} />
         ) : (
-          <CustomTable
-            id={TABLE_ID}
-            headers={tableHeaders}
-            tableData={logTableData}
-            rowsPerPage={hasRows ? logTableData.length : 5}
-            loading={loading}
-            showExpandable={hasLabels}
-            expandable={{ component: LogExpandedRow }}
-          />
+          <CloudLogsTable id={TABLE_ID} logs={data} loading={loading} />
         )}
       </ListingLayout.Body>
     </ListingLayout>
