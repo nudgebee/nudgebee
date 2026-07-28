@@ -367,7 +367,7 @@ func handleWorkspaceExecute(c *gin.Context, tracer trace.Tracer, meter metric.Me
 	case "clickhouse", "clickhouse-client":
 		relayJob = tools.RelayJobClickhouse
 		registeredToolName = tools.ToolExecuteClickhouseQuery
-	case "rabbitmq", "rabbitmqadmin":
+	case "rabbitmq", "rabbitmqadmin", "rabbitmq-api":
 		relayJob = tools.RelayJobRabbitmq
 		registeredToolName = tools.ToolExecuteRabbitCommand
 	case "mssql", "sqlcmd":
