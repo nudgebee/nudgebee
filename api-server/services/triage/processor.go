@@ -108,9 +108,49 @@ func ProcessEvent(ctx context.Context, db *sqlx.DB, event *models.Event) error {
 	return nil
 }
 
+// DefaultDedupWindow bounds how long a fingerprint's occurrence chain stays open. A
+// matching fingerprint arriving after this much silence opens a NEW chain instead of
+// extending the old one, so it is triaged as a fresh incident rather than auto-classified
+// DUPLICATE of an event that may be months old.
+//
+// 24h is taken from the live chain data: every chain that had grown past 30 days contained
+// at least one gap longer than 24h, so this bound breaks all of them, while only ~2.7% of
+// existing duplicate links have a gap that wide.
+const DefaultDedupWindow = 24 * time.Hour
+
+// dedupWindowBySource overrides DefaultDedupWindow for sources whose natural firing cadence
+// does not fit the default — a detector that samples on a long interval needs a wider
+// window, a chatty source may want a narrower one. Keyed by events.source; empty means every
+// source uses the default.
+//
+// Written once here and read-only thereafter, which is what keeps the per-event lookup
+// lock-free. Anything that needs to populate it at runtime (config reload, per-tenant
+// overrides from the DB) must add synchronisation first — and tests must not mutate it,
+// which is why the lookup below is split so they can pass their own table.
+var dedupWindowBySource = map[string]time.Duration{}
+
+// dedupWindowForSource resolves the dedup window for an event's source, falling back to
+// DefaultDedupWindow for an absent or unlisted source.
+func dedupWindowForSource(source *string) time.Duration {
+	return dedupWindowFrom(dedupWindowBySource, source)
+}
+
+// dedupWindowFrom is the lookup itself, taking the override table as a parameter so tests can
+// exercise a per-source override without writing to the package-level map.
+func dedupWindowFrom(windows map[string]time.Duration, source *string) time.Duration {
+	if source == nil {
+		return DefaultDedupWindow
+	}
+	if window, ok := windows[*source]; ok {
+		return window
+	}
+	return DefaultDedupWindow
+}
+
 // detectAndRecordDuplicate checks if this event is a duplicate and records it
-// Creates chains per fingerprint. If the chain's first event is RESOLVED, starts a new chain
-// while keeping a reference to the previous chain via previous_event_id.
+// Creates chains per fingerprint. If the chain's first event is RESOLVED, or the chain has
+// been silent for longer than the source's dedup window, starts a new chain while keeping a
+// reference to the previous chain via previous_event_id.
 // db is sqlx.ExtContext (satisfied by both *sqlx.DB and *sqlx.Tx) so the full
 // path can run inside a rolled-back transaction in integration tests.
 func detectAndRecordDuplicate(ctx context.Context, db sqlx.ExtContext, event *models.Event) (int, error) {
@@ -211,10 +251,37 @@ func detectAndRecordDuplicate(ctx context.Context, db sqlx.ExtContext, event *mo
 		return 0, fmt.Errorf("failed to query duplicate chain: %w", err)
 	}
 
-	// Check if the first event in the chain is RESOLVED
-	// If so, start a NEW chain (occurrence=1) but keep reference to old chain
-	if chainInfo.FirstEventNBStatus == NBStatusResolved {
-		// Start a new chain - this is a recurrence after resolution
+	// Gap between the chain's latest occurrence and this one, measured start to start.
+	timeSincePrevious := int(event.StartsAt.Sub(chainInfo.LatestEventStartsAt).Seconds())
+
+	// Start a NEW chain (occurrence=1), keeping a reference to the old chain via
+	// previous_event_id, when the old chain is no longer live. Two triggers:
+	//   - the chain's first event is RESOLVED: a recurrence after a fix.
+	//   - the gap to the previous occurrence exceeds the source's dedup window: a
+	//     fingerprint firing again a day later is a new incident, not the 300th duplicate
+	//     of one from three months ago. Without this the chain is effectively immortal,
+	//     since the RESOLVED check almost never fires (nb_status rarely reaches RESOLVED).
+	// Deliberately NOT "the previous occurrence has closed" on its own: sources here clear
+	// alerts within minutes, so that alone would turn one flapping alert into hundreds of
+	// separate incidents. The window is what separates flapping from genuine recurrence.
+	//
+	// The gap is measured from the previous occurrence's START, not its ends_at, even
+	// though ends_at would more precisely describe how long the fingerprint was quiet.
+	// ends_at is not trustworthy across sources: on `anomaly` its median implies a 0.5h
+	// alert but p95 implies 76 DAYS, with a third of rows claiming durations over a week.
+	// Those far-future ends sit past the next occurrence's start, so an ends_at-based gap
+	// is permanently negative and the chain never breaks — measured on live data it left
+	// 83 chains running over 30 days versus 1 here, i.e. it failed toward exactly the
+	// over-suppression this change exists to fix. Starting from the previous start instead
+	// can split one genuinely long-running alert into two chains, which surfaces the event
+	// as OPEN rather than hiding it as a duplicate: the safe direction to be wrong in.
+	//
+	// A negative gap means out-of-order delivery — this event predates the chain's latest,
+	// so it can never trip the window and the existing chaining behaviour is unchanged.
+	dedupWindow := dedupWindowForSource(event.Source)
+	chainWentStale := timeSincePrevious > int(dedupWindow.Seconds())
+
+	if chainInfo.FirstEventNBStatus == NBStatusResolved || chainWentStale {
 		insertQuery := `
 			INSERT INTO event_duplicates (
 				event_id, fingerprint, cloud_account_id, tenant_id,
@@ -234,12 +301,19 @@ func detectAndRecordDuplicate(ctx context.Context, db sqlx.ExtContext, event *mo
 			chainInfo.AbsoluteFirstSeenAt, // absolute_first_seen_at (carry from old chain, never reset)
 		)
 		if err != nil {
-			return 0, fmt.Errorf("failed to insert new chain after resolved: %w", err)
+			return 0, fmt.Errorf("failed to insert new chain: %w", err)
 		}
 
-		slog.InfoContext(ctx, "Recurrence after resolved - starting new chain",
+		reason := "resolved"
+		if chainWentStale {
+			reason = "dedup_window_elapsed"
+		}
+		slog.InfoContext(ctx, "Recurrence - starting new chain",
 			"event_id", event.Id,
+			"reason", reason,
 			"previous_chain_first_event_id", chainInfo.FirstEventID,
+			"time_since_previous_seconds", timeSincePrevious,
+			"dedup_window_seconds", int(dedupWindow.Seconds()),
 			"fingerprint", *event.Fingerprint,
 		)
 		return 1, nil
@@ -248,7 +322,6 @@ func detectAndRecordDuplicate(ctx context.Context, db sqlx.ExtContext, event *mo
 	// This is a duplicate event - continue the existing chain
 	occurrenceNumber := chainInfo.OccurrenceNumber + 1
 	timeSinceFirst := int(event.StartsAt.Sub(chainInfo.FirstEventStartsAt).Seconds())
-	timeSincePrevious := int(event.StartsAt.Sub(chainInfo.LatestEventStartsAt).Seconds())
 
 	insertQuery := `
 		INSERT INTO event_duplicates (
