@@ -945,10 +945,17 @@ func (s *Service) ExecuteWorkflow(ctx *security.RequestContext, accountId, id st
 		switch wf.Status {
 		case model.WorkflowStatusPaused:
 			if triggerType != model.WorkflowTriggerManual {
-				return "", fmt.Errorf("workflow %s is paused", id)
+				return "", common.ErrorBadRequest(fmt.Sprintf("workflow %s is paused and can only be run manually", id))
 			}
 		default:
-			return "", fmt.Errorf("workflow %s is not active, status is %s", id, wf.Status)
+			// Manual triggers may run ACTIVE or PAUSED workflows; all other
+			// trigger types require ACTIVE. Reflect that in the message so an
+			// INACTIVE workflow reads accurately for the caller's trigger type.
+			expected := "ACTIVE"
+			if triggerType == model.WorkflowTriggerManual {
+				expected = "ACTIVE or PAUSED"
+			}
+			return "", common.ErrorBadRequest(fmt.Sprintf("workflow cannot be run because its status is %s (must be %s)", wf.Status, expected))
 		}
 	}
 
@@ -994,7 +1001,7 @@ func (s *Service) TriggerWorkflowFromDraft(ctx *security.RequestContext, account
 	// manual triggers). Only fully Inactive / unknown statuses are refused, so a
 	// disabled workflow can't be hot-revived through the draft path.
 	if wf.Status != model.WorkflowStatusActive && wf.Status != model.WorkflowStatusPaused {
-		return "", fmt.Errorf("workflow %s is not runnable, status is %s", id, wf.Status)
+		return "", common.ErrorBadRequest(fmt.Sprintf("workflow cannot be run because its status is %s (must be ACTIVE or PAUSED)", wf.Status))
 	}
 
 	// wf.Definition is the current draft as loaded by Find — run it as-is.

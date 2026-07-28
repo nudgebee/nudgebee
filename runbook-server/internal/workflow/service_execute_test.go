@@ -151,7 +151,7 @@ func TestTriggerWorkflowFromDraftRejectsInactiveStatus(t *testing.T) {
 
 	_, err := service.TriggerWorkflowFromDraft(sc, "test-account", "wf-inactive", nil)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not runnable")
+	assert.Contains(t, err.Error(), "must be ACTIVE or PAUSED")
 	// Must short-circuit before any version write.
 	mockStore.AssertNotCalled(t, "PublishVersion", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
