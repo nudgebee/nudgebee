@@ -607,6 +607,63 @@ func parseProxySSHResponse(response map[string]any) (string, error) {
 	return string(result), nil
 }
 
+var (
+	// rabbitmqAPIShimHeader parses the `METHOD /path [extra]` header of a
+	// rabbitmq-api shim invocation. \s+ between the header tokens tolerates
+	// tabs and multi-space runs; interior whitespace inside the optional
+	// [extra] group is preserved so JSON bodies and shell-quoted args pass
+	// through intact. Mirror of the regex in collector-server/.../workspace.go
+	// — keep both in sync.
+	rabbitmqAPIShimHeader = regexp.MustCompile(`^\s*rabbitmq-api\s+(\S+)\s+(\S+)(?:\s+([\s\S]*?))?\s*$`)
+
+	// rabbitmqAPIPathAllowlist restricts the shim's /path segment to characters
+	// that are both URL-legal AND safe to interpolate inside a double-quoted
+	// shell string. Rejects $, `, \, ", ', ;, |, <, >, (, ), {, }, !, *,
+	// whitespace — the characters that would let the path close the quoted
+	// URL or trigger command substitution and defeat the scope-lock.
+	rabbitmqAPIPathAllowlist = regexp.MustCompile(`^/[A-Za-z0-9\-._~/?&=#%@:+,\[\]]*$`)
+)
+
+// rewriteRabbitmqAPICommand transforms `rabbitmq-api METHOD /path [extra]`
+// into an authenticated, scope-locked curl invocation against the customer's
+// RabbitMQ HTTP Management API. Host/port are hard-locked to
+// $RABBITMQ_HOST:$RABBITMQ_PORT (matching the port the sibling rabbitmqadmin
+// rewrite uses — the mgmt API is served on $RABBITMQ_PORT per the mounted
+// secret; do NOT hardcode 15672). Path is allowlist-filtered so it can't
+// break out of the double-quoted URL (see PR #35005 for the shell-injection
+// details Gemini flagged).
+//
+// Kept in sync with the twin implementation in
+// collector-server/k8s-collector/relay-server/pkg/server/handlers/workspace.go.
+// Both must accept the same input surface and produce equivalent curl strings
+// — the outbound rewrite here fires on the rabbit_execute tool path and on
+// the workspace-shim path via workspace_proxy; the relay-server helper fires
+// on the direct shim → relay-server /workspace/execute endpoint.
+func rewriteRabbitmqAPICommand(command string) (string, error) {
+	m := rabbitmqAPIShimHeader.FindStringSubmatch(command)
+	if m == nil {
+		return "", fmt.Errorf("rabbitmq-api: expected 'rabbitmq-api METHOD /path [extra args]', got %q", command)
+	}
+	method := strings.ToUpper(m[1])
+	switch method {
+	case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD":
+	default:
+		return "", fmt.Errorf("rabbitmq-api: unsupported HTTP method %q (allowed: GET/POST/PUT/DELETE/PATCH/HEAD)", m[1])
+	}
+	path := m[2]
+	if !rabbitmqAPIPathAllowlist.MatchString(path) {
+		return "", fmt.Errorf("rabbitmq-api: path %q contains characters outside the safe URL-path allowlist "+
+			"(letters, digits, and -._~/?&=#%%@:+,[]); reject prevents shell breakout inside the double-quoted URL",
+			path)
+	}
+	extra := ""
+	if m[3] != "" {
+		extra = " " + m[3]
+	}
+	return fmt.Sprintf(`curl -s -X %s -u "$RABBITMQ_USER:$RABBITMQ_PASSWORD" "http://$RABBITMQ_HOST:$RABBITMQ_PORT%s"%s`,
+		method, path, extra), nil
+}
+
 func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query string, accountId string, configs map[string]any, raw bool) (any, error) {
 
 	if !slices.Contains([]RelayJob{RelayJobShell, RelayJobPostgres, RelayJobMysql, RelayJobMssql, RelayJobClickhouse, RelayJobOracle, RelayJobKubectl, RelayJobRabbitmq, RelayJobRedis, RelayJobHelm, RelayJobArgoCD, RelayJobSSH, RelayJobKafka}, module) {
@@ -858,9 +915,23 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 		}
 
 	case RelayJobRabbitmq:
-		if strings.Contains(query, "rabbitmqadmin") {
+		// Ordering: rabbitmq-api is the scoped HTTP Management API shim (PR #35005).
+		// Its rewrite produces a fully-formed curl string with basic-auth already
+		// injected and host/port hard-locked, so it must run BEFORE the generic
+		// rabbitmqadmin / curl branches — otherwise the plain curl-injection
+		// below would double-add -u and mangle the command. Kept in sync with
+		// collector-server/.../workspace.go's rabbitmq case; the two rewrites
+		// must accept the same inputs and produce equivalent curl strings.
+		switch {
+		case strings.HasPrefix(strings.TrimSpace(query), "rabbitmq-api"):
+			rewritten, err := rewriteRabbitmqAPICommand(query)
+			if err != nil {
+				return nil, err
+			}
+			query = rewritten
+		case strings.Contains(query, "rabbitmqadmin"):
 			query = strings.Replace(query, "rabbitmqadmin", "rabbitmqadmin --host $RABBITMQ_HOST --port $RABBITMQ_PORT --username $RABBITMQ_USER --password $RABBITMQ_PASSWORD ", 1)
-		} else if strings.Contains(query, "curl") {
+		case strings.Contains(query, "curl"):
 			// Inject basic-auth credentials for RabbitMQ HTTP Management API calls.
 			// The URL targets $RABBITMQ_HOST:$RABBITMQ_PORT — the same host/port the
 			// working rabbitmqadmin path uses. Do NOT rewrite the port: the mgmt API
