@@ -42,6 +42,13 @@ func (l RabbitMQAgent) GetSupportedTools(ctx *security.RequestContext) []toolcor
 	return toolList
 }
 
+// Flattenable implements flattenableAgent: rabbitmq's GetSystemPrompt is static (Rag is
+// unused) and its whole contribution is that prompt + rabbitmq_execute. A delegate_agent
+// call naming "rabbitmq" inlines the leaf tool (single hop) and carries its GetSystemPrompt
+// guidance — including its management-API curl/jq examples, which are the real value —
+// instead of nesting the whole agent as its own ReAct loop.
+func (l RabbitMQAgent) Flattenable() bool { return true }
+
 func (l RabbitMQAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 
 	instructions := []string{

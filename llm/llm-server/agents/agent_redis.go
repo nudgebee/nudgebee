@@ -44,6 +44,13 @@ func (l RedisAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.N
 	tools := []toolcore.NBTool{tools.RedisExecuteTool{}}
 	return tools
 }
+
+// Flattenable implements flattenableAgent: redis's GetSystemPrompt is static and its whole
+// contribution is that prompt + its leaf tool, so a delegate_agent call naming "redis"
+// inlines the leaf tool (single hop) and carries its GetSystemPrompt guidance, instead of
+// nesting the whole agent (which would run its own ReAct loop).
+func (l RedisAgent) Flattenable() bool { return true }
+
 func (l RedisAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 
 	instructions := []string{

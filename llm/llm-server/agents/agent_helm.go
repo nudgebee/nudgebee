@@ -48,6 +48,12 @@ func (l HelmAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NB
 	return tools
 }
 
+// Flattenable implements flattenableAgent: helm's GetSystemPrompt is static and its whole
+// contribution is that prompt + helm_execute, so a delegate_agent call naming "helm"
+// inlines the leaf tool (single hop) and carries its GetSystemPrompt guidance, instead of
+// nesting the whole agent (which would run its own ReAct loop).
+func (l HelmAgent) Flattenable() bool { return true }
+
 func (l HelmAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 
 	instructions := []string{
