@@ -10,6 +10,7 @@ import Datetime from '@shared/format/Datetime';
 import { Label } from '@ui/Label';
 import { Button } from '@ui/Button';
 import { ds } from '@utils/colors';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import type { AccountExecutionItem } from '@api1/workflow/types';
 import { getDuration, getStatusTone } from '../utils/executionStatus';
 import useExecutionDashboard from './useExecutionDashboard';
@@ -18,14 +19,13 @@ import MostFailedAutomations from './MostFailedAutomations';
 import ExecutionDetailDrawer from './ExecutionDetailDrawer';
 import { EXECUTION_STATUS_OPTIONS, MAX_PAGEABLE_ROWS, TABLE_HEADERS, executionUserLabel } from './constants';
 
-interface ExecutionDashboardProps {
-  accountId?: string;
-}
-
 const TABLE_ID = 'execution-dashboard-table';
 
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
 /**
- * Executions across every automation in the account.
+ * Executions across every automation in every account the caller can read,
+ * narrowed by the Account filter.
  *
  * Two behaviours here are consequences of the Temporal visibility store and
  * are deliberate, not omissions:
@@ -34,7 +34,7 @@ const TABLE_ID = 'execution-dashboard-table';
  *   - Counts render with a "≈" prefix and the date range is clamped to the
  *     namespace retention, because executions older than that do not exist.
  */
-const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) => {
+const ExecutionDashboard: React.FC = () => {
   const {
     filters,
     updateFilters,
@@ -48,8 +48,10 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
     aggregate,
     automationOptions,
     userOptions,
+    accounts,
+    accountOptions,
     refresh,
-  } = useExecutionDashboard(accountId);
+  } = useExecutionDashboard();
 
   const [selectedExecution, setSelectedExecution] = useState<AccountExecutionItem | null>(null);
 
@@ -63,10 +65,14 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
       executions.map((execution) => [
         { component: <Datetime value={execution.start_time} baseDate={new Date()} /> },
         {
-          component: (
+          // The builder needs an account, and a visibility record written
+          // before nb_account_id existed carries none — link only when the row
+          // can actually say where it ran, rather than sending the user to
+          // `?accountId=undefined`.
+          component: execution.account_id ? (
             <Typography
               component='a'
-              href={`/workflow/${execution.workflow_id}?accountId=${accountId}#executions`}
+              href={`/workflow/${execution.workflow_id}?accountId=${execution.account_id}#executions`}
               // New tab: the dashboard is a triage surface, and losing the
               // filtered table to inspect one automation is the wrong trade.
               target='_blank'
@@ -87,6 +93,40 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
             >
               {execution.workflow_name || execution.workflow_id}
             </Typography>
+          ) : (
+            <Typography
+              title={execution.workflow_name || execution.workflow_id}
+              sx={{
+                fontSize: 'var(--ds-text-body)',
+                color: 'var(--ds-gray-700)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {execution.workflow_name || execution.workflow_id}
+            </Typography>
+          ),
+        },
+        {
+          component: (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, overflow: 'hidden' }}>
+              {execution.account_id && accounts[execution.account_id]?.cloud_provider && (
+                <CloudProviderIcon cloud_provider={accounts[execution.account_id].cloud_provider} width='14px' height='14px' />
+              )}
+              <Typography
+                title={(execution.account_id && accounts[execution.account_id]?.name) || execution.account_id || ''}
+                sx={{
+                  fontSize: 'var(--ds-text-small)',
+                  color: 'var(--ds-gray-700)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {(execution.account_id && accounts[execution.account_id]?.name) || execution.account_id || '-'}
+              </Typography>
+            </Box>
           ),
         },
         {
@@ -142,7 +182,7 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
           ),
         },
       ]),
-    [executions, accountId]
+    [executions, accounts]
   );
 
   // The server refuses to page past MAX_PAGEABLE_ROWS, so don't render page
@@ -192,6 +232,16 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
           }
         >
           <FilterDropdown
+            id='execution-dashboard-filter-account'
+            label='Account'
+            multiple
+            grouped
+            groupIcon={renderAccountGroupIcon}
+            options={accountOptions}
+            value={accountOptions.filter((option) => filters.accountIds.includes(option.value))}
+            onSelect={(_event: any, items: any) => updateFilters({ accountIds: (items || []).map((item: any) => item.value) })}
+          />
+          <FilterDropdown
             id='execution-dashboard-filter-automation'
             label='Automation'
             multiple
@@ -220,7 +270,10 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', padding: `0 ${ds.space[5]}` }}>
           <InfoOutlined sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-500)' }} />
           <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
-            {`Filters apply to this table only; the summary above is not affected. Sorted newest first.${
+            {/* Account is a scope, not a table filter — it replaced the page-level
+                account the summary used to be pinned to, so it moves the cards
+                too. The rest still narrow only the table. */}
+            {`Account applies to the whole page; the other filters apply to this table only. Sorted newest first.${
               retentionDays > 0 ? ` Execution history is retained for ${retentionDays} days.` : ''
             }`}
           </Typography>
@@ -246,7 +299,7 @@ const ExecutionDashboard: React.FC<ExecutionDashboardProps> = ({ accountId }) =>
         </ListingLayout.Body>
       </ListingLayout>
 
-      <ExecutionDetailDrawer execution={selectedExecution} accountId={accountId} onClose={() => setSelectedExecution(null)} />
+      <ExecutionDetailDrawer execution={selectedExecution} onClose={() => setSelectedExecution(null)} />
     </Box>
   );
 };

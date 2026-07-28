@@ -77,13 +77,11 @@ func (s *Server) handleAggregateExecutions(c *gin.Context, sc *security.RequestC
 // parseExecutionDashboardFilter reads the filter set shared by the list and the
 // aggregate, so the two can never diverge on how an argument is interpreted.
 func parseExecutionDashboardFilter(args map[string]any) (model.ExecutionDashboardFilter, error) {
-	accountID, ok := args["account_id"].(string)
-	if !ok || accountID == "" {
-		return model.ExecutionDashboardFilter{}, fmt.Errorf("account_id is required")
-	}
-
+	// Tenant-level like the Automations listing (#35113): no account means
+	// every account this caller can read. parseAccountFilter also accepts the
+	// legacy single `account_id`.
 	filter := model.ExecutionDashboardFilter{
-		AccountID:    accountID,
+		AccountIDs:   parseAccountFilter(args),
 		WorkflowIDs:  parseStringSlice(args["workflow_ids"]),
 		TriggeredBy:  parseStringSlice(args["triggered_by"]),
 		TriggerTypes: parseStringSlice(args["trigger_types"]),

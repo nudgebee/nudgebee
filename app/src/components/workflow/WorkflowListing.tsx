@@ -2,19 +2,20 @@ import apiWorkflow from '@api1/workflow';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiUser from '@api1/user';
 import type { WorkflowCreateRequest } from '@api1/workflow/types';
-import { useEffect, useState, useCallback, useRef, createContext, useContext } from 'react';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import { useEffect, useState, useCallback, useMemo, useRef, createContext, useContext } from 'react';
+import CustomTable from '@shared/tables/CustomTable';
 import { Box, CircularProgress, DialogContentText, Link, Tooltip } from '@mui/material';
 import Text from '@shared/format/Text';
 import Datetime from '@shared/format/Datetime';
 import { Label } from '@ui/Label';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Button as DsButton } from '@ui/Button';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import FilterDropdown from '@ui/FilterDropdown';
 import { useRouter } from 'next/router';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
-import { useData } from '@context/DataContext';
+import apiHome from '@api1/home';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
 import { hasWriteAccess, hasFeatureAccess, getUserSession } from '@lib/auth';
@@ -27,7 +28,6 @@ import ConfigurationManager from './ConfigurationManager';
 import CreateWorkflowOptionsModal from './components/CreateWorkflowOptionsModal';
 import CreateWorkflowFromCodeModal from './components/CreateWorkflowFromCodeModal';
 import WorkflowTemplatesModal from './components/WorkflowTemplatesModal';
-import { getAutomationToggleAction } from './automationMenu';
 import {
   manualTriggerIcon,
   SettingsIcon,
@@ -41,7 +41,6 @@ import {
 } from '@assets';
 import { applyFiltersOnRouter } from '@lib/router';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { colors } from 'src/utils/colors';
 import { Refresh, StopCircleOutlined, Visibility } from '@mui/icons-material';
 
 // Icons for menu items
@@ -74,17 +73,46 @@ interface ExecutionSnapshot {
 // or refetching the listing.
 const LiveExecutionStatusContext = createContext<Record<string, ExecutionSnapshot>>({});
 
+// Same trick for the accounts lookup: the accounts call and the listing call
+// race, so a cell baked at fetch time can't read the names directly — it would
+// be stuck on raw ids whenever the listing wins.
+type AccountInfo = { name: string; cloud_provider: string };
+const AccountsContext = createContext<Record<string, AccountInfo>>({});
+
+const AccountCell: React.FC<{ accountId?: string }> = ({ accountId }) => {
+  const accounts = useContext(AccountsContext);
+  const account = accountId ? accounts[accountId] : undefined;
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+      {account?.cloud_provider && <CloudProviderIcon cloud_provider={account.cloud_provider} width='14px' height='14px' />}
+      <Text value={account?.name || accountId || '-'} sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-brand-500)' }} />
+    </Box>
+  );
+};
+
 const formatExecutionStatus = (status: string): string =>
   status
     .toLowerCase()
     .replace(/_/g, ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase());
 
+// Reads the account filter out of the URL. `?account=` may repeat (Next.js
+// hands it over as a string or string[]); `?accountId=` is the single-account
+// form that every pre-tenant-level deep link into /automation still uses, and
+// seeding the filter from it keeps those links landing where they used to.
+const readAccountFilterFromQuery = (query: Record<string, any>): string[] => {
+  const raw = query?.account ?? query?.accountId;
+  if (!raw) return [];
+  return (Array.isArray(raw) ? raw : [raw]).filter(Boolean);
+};
+
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
 interface WorkflowActionsCellProps {
   workflow: any;
   accountId: string | undefined;
   onStop: (workflow: any) => void;
-  onEdit: (workflowId: string) => void;
+  onEdit: (workflowId: string, workflowAccountId: string) => void;
   getMenuItems: (workflow: any) => { label: string; id: string; icon: any; disabled?: boolean }[];
   onMenuClick: (menuItem: any, workflow: any) => void;
 }
@@ -101,8 +129,8 @@ const WorkflowActionsCell: React.FC<WorkflowActionsCellProps> = ({ workflow, acc
           id={`workflow-view-btn-${workflow.id}`}
           tone='secondary'
           size='xs'
-          icon={<Visibility sx={{ fontSize: 14 }} />}
-          onClick={() => onEdit(workflow.id)}
+          icon={<Visibility sx={{ fontSize: 'var(--ds-text-body-lg)' }} />}
+          onClick={() => onEdit(workflow.id, workflow.account_id)}
         >
           View
         </DsButton>
@@ -125,7 +153,7 @@ const WorkflowActionsCell: React.FC<WorkflowActionsCellProps> = ({ workflow, acc
               id={`workflow-stop-btn-${workflow.id}`}
               tone='secondary'
               size='xs'
-              icon={<StopCircleOutlined sx={{ fontSize: 14, color: colors.error }} />}
+              icon={<StopCircleOutlined sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-red-600)' }} />}
               onClick={() => onStop(workflow)}
             >
               Cancel
@@ -138,7 +166,7 @@ const WorkflowActionsCell: React.FC<WorkflowActionsCellProps> = ({ workflow, acc
         tone='secondary'
         size='xs'
         icon={<SafeIcon style={{ height: '14px', width: '14px' }} src={EditIcon} alt={'edit'} />}
-        onClick={() => onEdit(workflow.id)}
+        onClick={() => onEdit(workflow.id, workflow.account_id)}
       >
         Edit
       </DsButton>
@@ -170,7 +198,7 @@ const LastExecutionCell: React.FC<LastExecutionCellProps> = ({ workflow }) => {
   const time = override?.closeTime || override?.startTime || workflow.last_execution_time;
   const version = workflow.last_execution_version;
   if (!status) {
-    return <Text value='No Executions yet' sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.tertiarymedium, fontStyle: 'italic' }} />;
+    return <Text value='No Executions yet' sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-brand-200)', fontStyle: 'italic' }} />;
   }
 
   const getStatusTone = (statusStr: string) => {
@@ -194,14 +222,14 @@ const LastExecutionCell: React.FC<LastExecutionCellProps> = ({ workflow }) => {
       <Datetime
         baseDate={new Date()}
         value={time}
-        sxSuffix={{ fontSize: 'var(--ds-text-caption)', color: colors.text.tertiary }}
-        sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondary }}
+        sxSuffix={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)' }}
+        sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-brand-500)' }}
       />
     </Box>
   );
 };
 
-const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
+const WorkflowListing: React.FC = () => {
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [deleteModalOpen, setDeleteModalOpen] = useState<boolean>(false);
@@ -229,11 +257,13 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   const [selectedWorkflow, setSelectedWorkflow] = useState<any>({ id: '', name: '' });
   const [triggerLoading, setTriggerLoading] = useState<boolean>(false);
   const router = useRouter();
-  // Global cluster list (same one the header ClusterDropdown populates).
-  // `null` = still loading; `[]` = resolved with no clusters (e.g. upstream
-  // unreachable or zero accounts). Used to settle the table out of its initial
-  // loading skeleton when no accountId will ever arrive (see effect below).
-  const { allCluster } = useData();
+  // Account filter. The page is tenant-level, so `[]` means "every account I
+  // can read" — not "none". Seeded from `?account=` (repeated, the shape the
+  // Optimize page uses) or a legacy single `?accountId=`, which every
+  // `/automation?accountId=` deep link still scattered through the app sends.
+  const [selectedAccounts, setSelectedAccounts] = useState<string[]>(() => readAccountFilterFromQuery(router.query));
+  // id → { name, cloud_provider } for the filter options and the Account column.
+  const [accounts, setAccounts] = useState<Record<string, AccountInfo>>({});
   const [selectedStatus, setSelectedStatus] = useState<string>((router?.query?.status as string) || 'All');
   const [selectedLastExecutionStatus, setSelectedLastExecutionStatus] = useState<string>((router?.query?.last_execution_status as string) || 'All');
   const [selectedTriggerType, setSelectedTriggerType] = useState<string>((router?.query?.type as string) || '');
@@ -332,13 +362,6 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   const [selectedCreatedBy, setSelectedCreatedBy] = useState<string>((router?.query?.created_by as string) || 'All');
   const [createdByOptions, setCreatedByOptions] = useState<string[]>(['All']);
 
-  // The "Created By" filter is sourced from the tenant user list
-  // (users_list_by_tenant), which only tenant-level roles can read. Hide it for
-  // everyone else (e.g. account_admin) instead of rendering an empty, broken
-  // filter — they'd otherwise just see "All".
-  const sessionRoles: string[] = getUserSession()?.roles || [];
-  const canFilterByCreatedBy = sessionRoles.includes('tenant_admin') || sessionRoles.includes('tenant_admin_readonly');
-
   // Committed search values — only update on Enter or Clear, not on every keystroke.
   const [committedSearchName, setCommittedSearchName] = useState<string>((router?.query?.name as string) || '');
   const [committedSelectedTags, setCommittedSelectedTags] = useState<string>((router?.query?.tags as string) || '');
@@ -363,7 +386,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     const MENU_ITEMS: { label: string; id: string; icon: any; disabled?: boolean }[] = [];
     const isRunning = ['RUNNING', 'IN_PROGRESS'].includes(workflow?.last_execution_status?.toUpperCase());
 
-    if (accountId && hasWriteAccess(accountId)) {
+    if (workflow?.account_id && hasWriteAccess(workflow.account_id)) {
       // Add trigger option for all workflows
       MENU_ITEMS.push({
         label: 'Manual run',
@@ -382,18 +405,16 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
       const pauseResumeApplicable = workflow?.definition?.triggers?.some((trigger: any) => ['schedule', 'event', 'webhook'].includes(trigger.type));
 
       if (pauseResumeApplicable) {
-        // State-aware toggle (see getAutomationToggleAction): Active -> Pause,
-        // Paused -> Activate, anything else -> neither.
-        const toggleAction = getAutomationToggleAction(workflow?.status);
-        if (toggleAction === 'pause') {
+        // Show pause button only if workflow is not paused
+        if (workflow?.status !== 'PAUSED') {
           MENU_ITEMS.push({
             label: 'Pause',
             id: 'pause',
             icon: pauseIcon,
           });
-        } else if (toggleAction === 'activate') {
+        } else {
           MENU_ITEMS.push({
-            label: 'Activate',
+            label: 'Resume',
             id: 'resume',
             icon: playIcon,
           });
@@ -419,7 +440,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
       activeDeleteWorkflowIdRef.current = workflow.id;
       (async () => {
         try {
-          const res: any = await apiWorkflow.listCallers(accountId!, workflow.id);
+          const res: any = await apiWorkflow.listCallers(workflow.account_id, workflow.id);
           // Drop the result if a newer delete-modal opened in the meantime.
           if (activeDeleteWorkflowIdRef.current !== workflow.id) return;
           const callers = res?.data?.workflow_list_callers?.callers ?? [];
@@ -453,7 +474,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   const handleDeleteWorkflow = async () => {
     setLoading(true);
     try {
-      const response = await apiWorkflow.deleteWorkflow(accountId!, selectedWorkflow.id);
+      const response = await apiWorkflow.deleteWorkflow(selectedWorkflow.account_id, selectedWorkflow.id);
       const errorMessage = parseHttpResponseBodyMessage(response);
       if (errorMessage) {
         snackbar.error(errorMessage);
@@ -482,18 +503,9 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const handlePauseWorkflow = async () => {
-    if (!accountId || !selectedWorkflow?.id) {
-      snackbar.error('Cannot pause automation: missing account or automation id');
-      return;
-    }
     setLoading(true);
     try {
-      const response = await apiWorkflow.pauseWorkflow(accountId, selectedWorkflow.id);
-      // pauseWorkflow swallows errors and resolves undefined on failure; treat a
-      // missing response as a failure rather than showing a false success toast.
-      if (!response) {
-        throw new Error('No response from server while pausing automation');
-      }
+      const response = await apiWorkflow.pauseWorkflow(selectedWorkflow.account_id, selectedWorkflow.id);
       const errorMessage = parseHttpResponseBodyMessage(response);
       if (errorMessage) {
         snackbar.error(errorMessage);
@@ -520,23 +532,14 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const handleResumeWorkflow = async () => {
-    if (!accountId || !selectedWorkflow?.id) {
-      snackbar.error('Cannot activate automation: missing account or automation id');
-      return;
-    }
     setLoading(true);
     try {
-      const response = await apiWorkflow.resumeWorkflow(accountId, selectedWorkflow.id);
-      // resumeWorkflow swallows errors and resolves undefined on failure; treat a
-      // missing response as a failure rather than showing a false success toast.
-      if (!response) {
-        throw new Error('No response from server while activating automation');
-      }
+      const response = await apiWorkflow.resumeWorkflow(selectedWorkflow.account_id, selectedWorkflow.id);
       const errorMessage = parseHttpResponseBodyMessage(response);
       if (errorMessage) {
         snackbar.error(errorMessage);
       } else {
-        snackbar.success(`Automation "${selectedWorkflow.name}" activated successfully`);
+        snackbar.success(`Automation "${selectedWorkflow.name}" resumed successfully`);
         // Refresh current page
         const offsetToken = pageOffsetTokens[currentPage] ?? ((currentPage - 1) * rowsPerPage).toString();
         listWorkflows(currentPage, rowsPerPage, offsetToken);
@@ -544,7 +547,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     } catch (_error) {
       console.error(_error);
 
-      snackbar.error(`Failed to activate automation "${selectedWorkflow.name}"`);
+      snackbar.error(`Failed to resume automation "${selectedWorkflow.name}"`);
     } finally {
       setResumeModalOpen(false);
       setSelectedWorkflow({ id: '', name: '' });
@@ -563,10 +566,10 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   }, []);
 
   const handleEditWorkflow = useCallback(
-    (workflowId: string) => {
-      router.push(`/workflow/${workflowId}?accountId=${accountId}`);
+    (workflowId: string, workflowAccountId: string) => {
+      router.push(`/workflow/${workflowId}?accountId=${workflowAccountId}`);
     },
-    [router, accountId]
+    [router]
   );
 
   const handleCloseStopExecutionModal = () => {
@@ -575,11 +578,12 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const handleStopExecution = async () => {
-    if (!accountId || !selectedWorkflow?.id) return;
+    if (!selectedWorkflow?.account_id || !selectedWorkflow?.id) return;
+    const workflowAccountId = selectedWorkflow.account_id;
     setStopExecutionLoading(true);
     try {
       // Fetch recent executions to find the running one
-      const execResponse: any = await apiWorkflow.ListWorkflowExecutions(accountId, selectedWorkflow.id, 5);
+      const execResponse: any = await apiWorkflow.ListWorkflowExecutions(workflowAccountId, selectedWorkflow.id, 5);
       const execErrorMessage = parseHttpResponseBodyMessage(execResponse);
       if (execErrorMessage) {
         snackbar.error(`Failed to fetch executions: ${execErrorMessage}`);
@@ -597,7 +601,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
       }
 
       const cancelResponse: any = await apiWorkflow.cancelExecution({
-        account_id: accountId,
+        account_id: workflowAccountId,
         id: selectedWorkflow.id,
         execution_id: runningExecution.id,
       });
@@ -635,7 +639,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
       const poll = async () => {
         attempts++;
         try {
-          const execResp: any = await apiWorkflow.getWorkflowExecution(accountId, pollWorkflowId, pollExecutionId);
+          const execResp: any = await apiWorkflow.getWorkflowExecution(workflowAccountId, pollWorkflowId, pollExecutionId);
           const status = execResp?.data?.workflow_get_execution?.status?.toUpperCase() || '';
           if (TERMINAL_EXECUTION_STATUSES.includes(status) || attempts >= maxAttempts) {
             if (cancelPollRef.current) {
@@ -665,14 +669,16 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const handleDuplicateWorkflow = async (workflow: any) => {
-    if (!accountId) {
+    // A duplicate belongs to the same account as its source.
+    const workflowAccountId = workflow?.account_id;
+    if (!workflowAccountId) {
       snackbar.error('Account ID is required');
       return;
     }
 
     try {
       // Fetch full workflow definition (listing query does not include tasks)
-      const fullWorkflowResponse: any = await apiWorkflow.getWorkflowById(accountId, workflow.id);
+      const fullWorkflowResponse: any = await apiWorkflow.getWorkflowById(workflowAccountId, workflow.id);
       const fullWorkflowErrorMessage = parseHttpResponseBodyMessage(fullWorkflowResponse);
       if (fullWorkflowErrorMessage) {
         snackbar.error(fullWorkflowErrorMessage);
@@ -720,7 +726,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
       }
 
       const createRequest: WorkflowCreateRequest = {
-        account_id: accountId,
+        account_id: workflowAccountId,
         workflow: {
           name: `Copy of ${fullWorkflow.name}`,
           definition: clonedDefinition,
@@ -756,8 +762,8 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   // reflects the new last_execution_status. The polling interval and
   // terminal-status set match the post-cancel polling above so behavior is
   // consistent.
-  const startTriggerPolling = (workflowId: string, executionId: string) => {
-    if (!accountId) return;
+  const startTriggerPolling = (workflowId: string, workflowAccountId: string, executionId: string) => {
+    if (!workflowAccountId) return;
     const existing = triggerPollsRef.current.get(workflowId);
     if (existing) {
       clearInterval(existing);
@@ -800,7 +806,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     const poll = async () => {
       attempts++;
       try {
-        const resp: any = await apiWorkflow.getWorkflowExecution(accountId, workflowId, executionId);
+        const resp: any = await apiWorkflow.getWorkflowExecution(workflowAccountId, workflowId, executionId);
         const exec = resp?.data?.workflow_get_execution;
         const status = (exec?.status || '').toUpperCase();
         const closeTime = exec?.close_time || undefined;
@@ -862,7 +868,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const handleTriggerWorkflow = async (inputs: any) => {
-    if (!selectedWorkflow.id || !accountId) {
+    if (!selectedWorkflow.id || !selectedWorkflow.account_id) {
       snackbar.error('Invalid automation or account ID');
       return;
     }
@@ -870,7 +876,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     setTriggerLoading(true);
     try {
       const response: any = await apiWorkflow.triggerWorkflow({
-        account_id: accountId,
+        account_id: selectedWorkflow.account_id,
         id: selectedWorkflow.id,
         inputs: inputs,
       });
@@ -888,7 +894,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
         // RUNNING + startTime override so the row updates in place — no
         // need to refetch the listing here. The override is reconciled
         // with server data on the next user-driven listing fetch.
-        startTriggerPolling(selectedWorkflow.id, triggerData.execution_id);
+        startTriggerPolling(selectedWorkflow.id, selectedWorkflow.account_id, triggerData.execution_id);
       } else {
         snackbar.error('Failed to get execution ID from automation trigger');
       }
@@ -907,14 +913,24 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const handleAiGenerateWorkflow = async (query: string) => {
-    if (!accountId || !query.trim()) {
+    if (!createAccountId || !query.trim()) {
       snackbar.error('Invalid input');
       return;
     }
 
     setAiGenerateLoading(true);
     try {
-      const response: any = await apiWorkflow.aiGenerateWorkflow(accountId, query);
+      const response: any = await apiWorkflow.aiGenerateWorkflow(
+        createAccountId,
+        query,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'Automation'
+      );
 
       const errorMessage = parseHttpResponseBodyMessage(response);
       if (errorMessage) {
@@ -926,27 +942,13 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
       const aiData = response?.data?.ai_generate_workflow?.data;
 
       if (aiData?.response && aiData.response.length > 0) {
-        // Parse the workflow JSON from response
-        const workflowJson = aiData.response[0];
-
-        // Store in sessionStorage instead of URL (avoids URL length limits)
-        sessionStorage.setItem('aiGeneratedWorkflow', workflowJson);
-
-        // Store conversation context for iterative refinement
-        if (aiData.conversation_id) {
-          sessionStorage.setItem('aiConversationId', aiData.conversation_id);
-        }
-        if (aiData.session_id) {
-          sessionStorage.setItem('aiSessionId', aiData.session_id);
-        }
-        // Store the initial query for chat context
-        sessionStorage.setItem('aiInitialQuery', query);
-
-        // Navigate with clean URL
-        router.push(`/workflow/new?accountId=${accountId}&loadFromAI=true`);
-
-        snackbar.success('Automation generated successfully!');
+        // Auto-saved server-side (source "Automation") — it already exists in the
+        // Automations list. Close the modal and refresh the list to show it.
         setAiGenerateModalOpen(false);
+        snackbar.success('Automation created and saved.');
+        setCurrentPage(1);
+        setPageOffsetTokens({ 1: '' });
+        listWorkflows(1, rowsPerPage, '');
       } else {
         snackbar.error('No automation data returned from AI');
       }
@@ -959,11 +961,21 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const handleGenerateWorkflowAsync = async (query: string): Promise<{ sessionId: string; conversationId: string } | null> => {
-    if (!accountId || !query.trim()) {
+    if (!createAccountId || !query.trim()) {
       return null;
     }
     try {
-      const response: any = await apiWorkflow.aiGenerateWorkflow(accountId, query, undefined, undefined, undefined, true);
+      const response: any = await apiWorkflow.aiGenerateWorkflow(
+        createAccountId,
+        query,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        undefined,
+        undefined,
+        'Automation'
+      );
       const errorMessage = parseHttpResponseBodyMessage(response);
       if (errorMessage) {
         return null;
@@ -1101,11 +1113,11 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const handlePollWorkflowConversation = async (sessionId: string) => {
-    if (!accountId) {
+    if (!createAccountId) {
       return null;
     }
     try {
-      const response: any = await apiAskNudgebee.getLlmConversation({ sessionId, accountId });
+      const response: any = await apiAskNudgebee.getLlmConversation({ sessionId, accountId: createAccountId });
       const conversation = response?.data?.data?.llm_conversations?.[0];
       if (!conversation) {
         return null;
@@ -1118,18 +1130,36 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const handleApproveOrRespondWorkflow = async (query: string, conversationId: string, sessionId: string, messageId?: string, agentId?: string) => {
-    if (!accountId) {
+    if (!createAccountId) {
       return;
     }
-    await apiWorkflow.aiGenerateWorkflow(accountId, query, conversationId, sessionId, undefined, true, messageId, agentId);
+    await apiWorkflow.aiGenerateWorkflow(createAccountId, query, conversationId, sessionId, undefined, true, messageId, agentId, 'Automation');
   };
 
-  const handleWorkflowCompleted = (workflowJson: string, _conversationId: string, sessionId: string) => {
-    sessionStorage.setItem('aiGeneratedWorkflow', workflowJson);
-    sessionStorage.setItem('aiSessionId', sessionId);
-    router.push(`/workflow/new?accountId=${accountId}&loadFromAI=true`);
-    snackbar.success('Automation generated successfully!');
+  const handleWorkflowCompleted = async (_workflowJson: string, _conversationId: string, sessionId: string) => {
+    // The workflow is auto-saved server-side (source "Automation"). Locate the new row
+    // by its chat-session lineage (created_from_session_id) and open it in the builder.
+    // Fall back to refreshing the list if the row can't be pinned (e.g. read lag).
     setAiGenerateModalOpen(false);
+    if (!createAccountId) {
+      return;
+    }
+    try {
+      const res: any = await apiWorkflow.listWorkflows([createAccountId], undefined, undefined, undefined, 50, '', '', undefined, undefined);
+      const workflows = res?.data?.workflow_list?.workflows || [];
+      const match = sessionId ? workflows.find((w: any) => w.created_from_session_id === sessionId) : undefined;
+      if (match?.id) {
+        router.push(`/workflow/${match.id}?accountId=${createAccountId}`);
+        return;
+      }
+    } catch (error) {
+      console.error('Failed to locate the saved automation by session:', error);
+    }
+    // Fallback: stay on the listing and refresh so the new automation is at least visible.
+    snackbar.success('Automation created and saved.');
+    setCurrentPage(1);
+    setPageOffsetTokens({ 1: '' });
+    listWorkflows(1, rowsPerPage, '');
   };
 
   const handleCloseAiGenerateModal = () => {
@@ -1146,10 +1176,6 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
 
   const listWorkflows = useCallback(
     (page: number, pageSize: number, offsetToken: string, silent = false) => {
-      if (!accountId) {
-        return Promise.resolve();
-      }
-
       const currentRequestId = ++requestCountRef.current;
 
       // Silent (background poll) refreshes skip the loading flag so the table
@@ -1203,7 +1229,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
 
       return apiWorkflow
         .listWorkflows(
-          accountId,
+          selectedAccounts,
           statusFilter,
           lastExecutionStatusFilter,
           triggerTypeFilter,
@@ -1229,13 +1255,13 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
                       id={`workflow-name-link-${workflow.id}`}
                       // An automation that has never run has nothing to show in
                       // the Executions view, so land on the Editor instead.
-                      href={`/workflow/${workflow.id}?accountId=${accountId}#${
+                      href={`/workflow/${workflow.id}?accountId=${workflow.account_id}#${
                         workflow.last_execution_time || workflow.last_execution_status ? 'executions' : 'editor'
                       }`}
                       sx={{
                         textDecoration: 'none',
                         fontSize: 'var(--ds-text-body)',
-                        color: colors.text.primary,
+                        color: 'var(--ds-blue-500)',
                         '&:hover': {
                           textDecoration: 'underline',
                           cursor: 'pointer',
@@ -1251,23 +1277,23 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
                         alignItems: 'center',
                         gap: 0.5,
                         fontSize: 'var(--ds-text-small)',
-                        color: colors.text.secondary,
+                        color: 'var(--ds-brand-500)',
                       }}
                     >
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, whiteSpace: 'nowrap' }}>
-                        <Text value='Created:' sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondaryDark }} />
+                        <Text value='Created:' sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)' }} />
                         <Datetime
                           baseDate={new Date()}
                           value={workflow.created_at}
-                          sxSuffix={{ fontSize: 'var(--ds-text-caption)', color: colors.text.tertiary }}
-                          sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondary }}
+                          sxSuffix={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)' }}
+                          sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-brand-500)' }}
                         />
                         {workflow.created_by_user?.display_name && (
                           <Tooltip title={workflow.created_by_user.display_name} arrow placement='top'>
                             <span>
                               <Text
                                 value={`· ${workflow.created_by_user.display_name.split(' ')[0]}`}
-                                sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.tertiary, cursor: 'default' }}
+                                sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', cursor: 'default' }}
                               />
                             </span>
                           </Tooltip>
@@ -1275,19 +1301,19 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
                       </Box>
                       <Text value='|' secondaryText sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-medium)' }} />
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, whiteSpace: 'nowrap' }}>
-                        <Text value='Updated:' sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondaryDark }} />
+                        <Text value='Updated:' sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)' }} />
                         <Datetime
                           baseDate={new Date()}
                           value={workflow.updated_at}
-                          sxSuffix={{ fontSize: 'var(--ds-text-caption)', color: colors.text.tertiary }}
-                          sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondary }}
+                          sxSuffix={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)' }}
+                          sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-brand-500)' }}
                         />
                         {workflow.updated_by_user?.display_name && (
                           <Tooltip title={workflow.updated_by_user.display_name} arrow placement='top'>
                             <span>
                               <Text
                                 value={`· ${workflow.updated_by_user.display_name.split(' ')[0]}`}
-                                sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.tertiary, cursor: 'default' }}
+                                sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', cursor: 'default' }}
                               />
                             </span>
                           </Tooltip>
@@ -1298,6 +1324,11 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
                 ),
               },
 
+              {
+                // Automation names are only unique within an account, so without
+                // this column two rows from different accounts look identical.
+                component: <AccountCell accountId={workflow.account_id} />,
+              },
               {
                 component: <LastExecutionCell workflow={workflow} />,
               },
@@ -1312,7 +1343,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
                             value={trigger.type.charAt(0).toUpperCase() + trigger.type.slice(1).toLowerCase()}
                             sx={{
                               fontSize: 'var(--ds-text-small)',
-                              color: colors.text.secondary,
+                              color: 'var(--ds-brand-500)',
                               fontWeight: 'var(--ds-font-weight-regular)',
                               marginRight: 'var(--ds-space-2)',
                             }}
@@ -1328,27 +1359,24 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
                 component: workflow?.tags ? (
                   <TagsDisplay tags={workflow?.tags} maxVisible={2} />
                 ) : (
-                  <Text value='Unlabeled' sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.tertiarymedium, fontStyle: 'italic' }} />
+                  <Text value='Unlabeled' sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-brand-200)', fontStyle: 'italic' }} />
                 ),
               },
               {
                 component: (
-                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                     <Label text={workflow.status?.toLowerCase() || 'Unknown'} textTransform='capitalize' />
                     {workflow.live_version_id ? (
                       <Tooltip title={`All triggers run the live version${workflow.live_version_name ? ` (“${workflow.live_version_name}”)` : ''}.`}>
                         <Box>
                           <Text
                             value={`Live v${workflow.live_version_number ?? '?'}`}
-                            sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.tertiarymedium }}
+                            sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-brand-200)' }}
                           />
                         </Box>
                       </Tooltip>
                     ) : (
-                      <Text
-                        value='No live version'
-                        sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.tertiarymedium, fontStyle: 'italic' }}
-                      />
+                      <Text value='No live version' sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-brand-200)', fontStyle: 'italic' }} />
                     )}
                   </Box>
                 ),
@@ -1357,7 +1385,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
                 component: (
                   <WorkflowActionsCell
                     workflow={workflow}
-                    accountId={accountId}
+                    accountId={workflow.account_id}
                     onStop={handleOpenStopExecutionModal}
                     onEdit={handleEditWorkflow}
                     getMenuItems={getMenuItems}
@@ -1400,7 +1428,15 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
         });
       // eslint-disable-next-line react-hooks/exhaustive-deps
     },
-    [accountId, selectedStatus, selectedLastExecutionStatus, selectedTriggerType, committedSearchName, committedSelectedTags, selectedCreatedBy]
+    [
+      selectedAccounts,
+      selectedStatus,
+      selectedLastExecutionStatus,
+      selectedTriggerType,
+      committedSearchName,
+      committedSelectedTags,
+      selectedCreatedBy,
+    ]
   );
 
   // Sync state from router query params (e.g. direct URL navigation or bookmark).
@@ -1417,7 +1453,20 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     setSelectedTags((tags as string) || '');
     setCommittedSelectedTags((tags as string) || '');
     setSelectedCreatedBy((created_by as string) || 'All');
+
+    const nextAccounts = readAccountFilterFromQuery(router.query);
+    // Compare by value: this effect runs on every router.query identity change,
+    // and handing back a fresh array each time would restart the listing fetch
+    // (selectedAccounts is a listWorkflows dependency) on unrelated filter edits.
+    setSelectedAccounts((prev) => (prev.length === nextAccounts.length && prev.every((id, i) => id === nextAccounts[i]) ? prev : nextAccounts));
   }, [router.query]);
+
+  // The "Created By" filter is sourced from the tenant user list
+  // (users_list_by_tenant), which only tenant-level roles can read. Hide it for
+  // everyone else (e.g. account_admin) instead of rendering an empty, broken
+  // filter — they'd otherwise just see "All".
+  const sessionRoles: string[] = getUserSession()?.roles || [];
+  const canFilterByCreatedBy = sessionRoles.includes('tenant_admin') || sessionRoles.includes('tenant_admin_readonly');
 
   // Fetch active users for the "Created By" filter. Only tenant-level roles can
   // read the tenant user list; skip the call for others to avoid a 403.
@@ -1446,24 +1495,15 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     setPageOffsetTokens({ 1: '' });
     listWorkflows(1, rowsPerPage, '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId, selectedStatus, selectedLastExecutionStatus, selectedTriggerType, committedSearchName, committedSelectedTags, selectedCreatedBy]);
-
-  // Settle the initial loading skeleton when there is no account to query and
-  // the cluster list has resolved EMPTY (upstream unreachable or zero clusters).
-  // In that state listWorkflows() early-returns on `!accountId` without ever
-  // clearing the `loading=true` it mounts with, so the table would otherwise
-  // show a skeleton forever. Gating on `allCluster.length === 0` (not just
-  // `!accountId`) avoids flashing the empty state on a healthy first load, where
-  // accountId is briefly undefined before the header dropdown pushes it to the
-  // URL — there `allCluster` is non-empty, so this stays a no-op and the main
-  // fetch effect takes over.
-  useEffect(() => {
-    if (!accountId && Array.isArray(allCluster) && allCluster.length === 0) {
-      setData([]);
-      setTotalRows(0);
-      setLoading(false);
-    }
-  }, [accountId, allCluster]);
+  }, [
+    selectedAccounts,
+    selectedStatus,
+    selectedLastExecutionStatus,
+    selectedTriggerType,
+    committedSearchName,
+    committedSelectedTags,
+    selectedCreatedBy,
+  ]);
 
   // Background listing refresh: while the tab is visible, silently re-fetch the
   // current page every 10s so running executions and newly started runs surface
@@ -1472,7 +1512,6 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   // refs so it always targets the page the user is on; filters come from the
   // current listWorkflows closure (re-created when filters change → new interval).
   useEffect(() => {
-    if (!accountId) return;
     const tick = () => {
       if (document.hidden || silentPollInFlightRef.current) return;
       const page = currentPageRef.current;
@@ -1489,7 +1528,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     };
     const handle = setInterval(tick, WORKFLOW_LISTING_POLL_INTERVAL_MS);
     return () => clearInterval(handle);
-  }, [accountId, listWorkflows]);
+  }, [listWorkflows]);
 
   // Check AI workflow feature flag
   useEffect(() => {
@@ -1504,6 +1543,56 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     };
     checkAiFeatureAccess();
   }, []);
+
+  // Accounts backing the Account filter, the Account column and the create
+  // modal's picker. Non-blocking: the listing renders fine with raw ids if this
+  // fails, it just loses the friendly names.
+  useEffect(() => {
+    apiHome
+      .getCloudAccounts()
+      .then((res: any) => {
+        if (!isMountedRef.current || !Array.isArray(res)) return;
+        setAccounts(Object.fromEntries(res.map((v: any) => [v.id, { name: v.account_name, cloud_provider: v.cloud_provider || '' }])));
+      })
+      .catch(() => {
+        /* names degrade to ids */
+      });
+  }, []);
+
+  // Grouped by cloud provider so the dropdown renders a collapsible header per
+  // provider, matching the Account filter on Troubleshoot / Optimize.
+  const accountFilterOptions = useMemo(
+    () =>
+      Object.entries(accounts).map(([id, info]) => ({
+        label: info.name || id,
+        value: id,
+        group: (info.cloud_provider || '').toUpperCase() || 'Other',
+      })),
+    [accounts]
+  );
+
+  // Creating an automation still needs exactly one account, and it must be one
+  // the user can write to — the read-only accounts that legitimately appear in
+  // the filter above would only fail at submit time.
+  const writableAccountOptions = useMemo(
+    () =>
+      Object.entries(accounts)
+        .filter(([id]) => hasWriteAccess(id))
+        .map(([id, info]) => ({ value: id, label: info.name || id })),
+    [accounts]
+  );
+
+  // Account the create/AI flows write into, chosen in the create modal.
+  const [createAccountId, setCreateAccountId] = useState<string>('');
+
+  // Default the picker so the common cases cost no extra click: a tenant with
+  // one writable account, or a filter already narrowed to a single account.
+  useEffect(() => {
+    if (createAccountId && writableAccountOptions.some((o) => o.value === createAccountId)) return;
+    const filtered = selectedAccounts.filter((id) => writableAccountOptions.some((o) => o.value === id));
+    const only = filtered.length === 1 ? filtered[0] : writableAccountOptions.length === 1 ? writableAccountOptions[0].value : '';
+    setCreateAccountId(only);
+  }, [writableAccountOptions, selectedAccounts, createAccountId]);
 
   // Check workflow templates feature flag
   useEffect(() => {
@@ -1520,10 +1609,11 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   }, []);
 
   const tableHeaders = [
-    { name: 'Name', width: '30%' },
-    { name: 'Last Execution', width: '15%' },
+    { name: 'Name', width: '26%' },
+    { name: 'Account', width: '12%' },
+    { name: 'Last Execution', width: '14%' },
     { name: 'Trigger Type', width: '10%' },
-    { name: 'Tags', width: '18%' },
+    { name: 'Tags', width: '16%' },
     { name: 'Status', width: '10%' },
     { name: '', width: '5%' },
   ];
@@ -1534,11 +1624,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
 
   const handleCreateFromScratch = () => {
     setCreateWorkflowOptionsOpen(false);
-    let path = '/workflow/new';
-    if (accountId) {
-      path = path + '?accountId=' + accountId;
-    }
-    router.push(path);
+    router.push(`/workflow/new?accountId=${createAccountId}`);
   };
 
   const handleUseTemplate = () => {
@@ -1610,6 +1696,15 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     applyFiltersOnRouter(router, { tags: '' });
   };
 
+  const onAccountFilterChange = (next: string[]) => {
+    setSelectedAccounts(next);
+    // Empty → drop the param entirely rather than writing `?account=`, so the
+    // URL for "all accounts" is the same clean /automation the sidebar links to.
+    // `accountId` is cleared alongside it: once the user touches the filter, the
+    // legacy single-account param that seeded it is no longer the source of truth.
+    applyFiltersOnRouter(router, { account: next.length ? next : undefined, accountId: undefined });
+  };
+
   const handlePageChange = (page: number, limit: number) => {
     const prevLimit = rowsPerPage;
     setRowsPerPage(limit);
@@ -1633,295 +1728,309 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   return (
-    <LiveExecutionStatusContext.Provider value={liveExecutionStatuses}>
-      <Modal
-        open={deleteModalOpen}
-        handleClose={handleCloseDeleteModal}
-        width='sm'
-        title={`Delete Automation "${selectedWorkflow.name}"`}
-        loader={loading}
-        actionButtons={
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
-            <DsButton id='workflow-delete-cancel-btn' tone='secondary' size='md' onClick={handleCloseDeleteModal} disabled={loading}>
-              Cancel
-            </DsButton>
-            <DsButton id='workflow-delete-confirm-btn' size='md' onClick={handleDeleteWorkflow} loading={loading}>
-              Delete
-            </DsButton>
-          </Box>
-        }
-      >
-        <DialogContentText>Are you sure you want to delete this automation? This action cannot be undone.</DialogContentText>
-        {deleteCallersLoading && (
-          <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', gap: 1, color: 'var(--ds-brand-500)', fontSize: 'var(--ds-text-small)' }}>
-            <CircularProgress size={14} />
-            <span>Checking which automations reference this one…</span>
-          </Box>
-        )}
-        {!deleteCallersLoading && deleteCallers && deleteCallers.length > 0 && (
-          <Box
-            data-testid='workflow-delete-callers-warning'
-            sx={{
-              mt: 2,
-              p: 1.5,
-              borderRadius: 'var(--ds-radius-sm)',
-              border: '1px solid var(--ds-red-200)',
-              backgroundColor: 'var(--ds-yellow-100)',
-            }}
-          >
-            <Box sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-red-600)', mb: 0.5 }}>
-              Used by {deleteCallers.length} other automation{deleteCallers.length === 1 ? '' : 's'}
-            </Box>
-            <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-brand-500)', mb: 1 }}>
-              These automations call this one via a Call Workflow step. Deleting will break them at runtime — they reference by name and won&apos;t be
-              auto-updated.
-            </Box>
-            <Box component='ul' sx={{ m: 0, pl: 2.5, maxHeight: 140, overflowY: 'auto' }}>
-              {deleteCallers.map((c) => (
-                <Box component='li' key={c.id} sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-blue-500)', mb: 0.25 }}>
-                  <span>{c.name}</span>
-                  <span style={{ color: 'var(--ds-gray-600)', marginLeft: 8 }}>({c.status})</span>
-                </Box>
-              ))}
-            </Box>
-            <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', mt: 1 }}>
-              Note: automations that pass <code>workflow_name</code> as a template (<code>{`{{ ... }}`}</code>) can&apos;t be detected here.
-            </Box>
-          </Box>
-        )}
-      </Modal>
-
-      <Modal
-        open={pauseModalOpen}
-        handleClose={handleClosePauseModal}
-        width='sm'
-        title={`Pause Automation "${selectedWorkflow.name}"`}
-        loader={loading}
-        actionButtons={
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
-            <DsButton id='workflow-pause-cancel-btn' tone='secondary' size='md' onClick={handleClosePauseModal} disabled={loading}>
-              Cancel
-            </DsButton>
-            <DsButton id='workflow-pause-confirm-btn' size='md' onClick={handlePauseWorkflow} loading={loading}>
-              Pause
-            </DsButton>
-          </Box>
-        }
-      >
-        <DialogContentText>Are you sure you want to pause this scheduled automation? It will stop executing until resumed.</DialogContentText>
-      </Modal>
-
-      <Modal
-        open={resumeModalOpen}
-        handleClose={handleCloseResumeModal}
-        width='sm'
-        title={`Activate Automation "${selectedWorkflow.name}"`}
-        loader={loading}
-        actionButtons={
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
-            <DsButton id='workflow-activate-cancel-btn' tone='secondary' size='md' onClick={handleCloseResumeModal} disabled={loading}>
-              Cancel
-            </DsButton>
-            <DsButton id='workflow-activate-confirm-btn' size='md' onClick={handleResumeWorkflow} loading={loading}>
-              Activate
-            </DsButton>
-          </Box>
-        }
-      >
-        <DialogContentText>
-          Are you sure you want to activate this scheduled automation? It will start executing according to its schedule.
-        </DialogContentText>
-      </Modal>
-
-      <Modal
-        open={stopExecutionModalOpen}
-        handleClose={handleCloseStopExecutionModal}
-        width='sm'
-        title={`Cancel Running Execution — "${selectedWorkflow.name}"`}
-        loader={stopExecutionLoading}
-        actionButtons={
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
-            <DsButton
-              id='workflow-stop-execution-cancel-btn'
-              tone='secondary'
-              size='md'
-              onClick={handleCloseStopExecutionModal}
-              disabled={stopExecutionLoading}
-            >
-              Keep Running
-            </DsButton>
-            <DsButton id='workflow-stop-execution-confirm-btn' tone='danger' size='md' onClick={handleStopExecution} loading={stopExecutionLoading}>
-              Cancel Execution
-            </DsButton>
-          </Box>
-        }
-      >
-        <DialogContentText>Are you sure you want to cancel the currently running execution? This action cannot be undone.</DialogContentText>
-      </Modal>
-
-      <TriggerWorkflowModal
-        open={triggerModalOpen}
-        onClose={handleCloseTriggerModal}
-        workflowName={selectedWorkflow.name}
-        triggerType={getPrimaryTriggerType(selectedWorkflow)}
-        defaultInputs={getDefaultTriggerInputs(selectedWorkflow)}
-        inputSchema={getWorkflowInputSchema(selectedWorkflow)}
-        onTrigger={handleTriggerWorkflow}
-        loading={triggerLoading}
-        liveVersionNumber={selectedWorkflow.live_version_number}
-        liveVersionName={selectedWorkflow.live_version_name}
-      />
-
-      <AiGenerateWorkflowModal
-        open={aiGenerateModalOpen}
-        onClose={handleCloseAiGenerateModal}
-        onGenerate={handleAiGenerateWorkflow}
-        onGenerateAsync={handleGenerateWorkflowAsync}
-        onPollConversation={handlePollWorkflowConversation}
-        onApproveOrRespond={handleApproveOrRespondWorkflow}
-        onWorkflowCompleted={handleWorkflowCompleted}
-        loading={aiGenerateLoading}
-      />
-
-      <CreateWorkflowOptionsModal
-        open={createWorkflowOptionsOpen}
-        onClose={handleCloseCreateWorkflowOptions}
-        onCreateFromScratch={handleCreateFromScratch}
-        onUseTemplate={handleUseTemplate}
-        onAskAI={handleAskAIFromOptions}
-        onCreateFromCode={handleCreateFromCode}
-        aiFeatureEnabled={aiFeatureEnabled}
-        templateFeatureEnabled={templateFeatureEnabled}
-      />
-
-      {accountId && <CreateWorkflowFromCodeModal open={createFromCodeOpen} onClose={handleCloseCreateFromCode} accountId={accountId} />}
-
-      <WorkflowTemplatesModal open={templateModalOpen} onClose={handleCloseTemplateModal} accountId={accountId!} />
-
-      <ConfigurationManager accountId={accountId!} open={configModalOpen} onClose={handleConfigModalClose} />
-
-      <ListingLayout id='workflow-listing-box'>
-        <ListingLayout.Toolbar
-          actions={
-            <>
-              <DsButton
-                id='workflow-listing-refresh-btn'
-                tone='secondary'
-                size='md'
-                composition='icon-only'
-                icon={<Refresh fontSize='small' />}
-                aria-label='Refresh'
-                loading={loading}
-                onClick={handleRefresh}
-              />
-              <DsButton
-                id='workflow-listing-configs-btn'
-                tone='secondary'
-                size='md'
-                composition='text+icon'
-                icon={<SafeIcon style={{ height: '14px', width: '14px' }} src={SettingsIcon} alt='manage configs' />}
-                onClick={() => setConfigModalOpen(true)}
-              >
-                Configs
+    <AccountsContext.Provider value={accounts}>
+      <LiveExecutionStatusContext.Provider value={liveExecutionStatuses}>
+        <Modal
+          open={deleteModalOpen}
+          handleClose={handleCloseDeleteModal}
+          width='sm'
+          title={`Delete Automation "${selectedWorkflow.name}"`}
+          loader={loading}
+          actionButtons={
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
+              <DsButton id='workflow-delete-cancel-btn' tone='secondary' size='md' onClick={handleCloseDeleteModal} disabled={loading}>
+                Cancel
               </DsButton>
-              {accountId && hasWriteAccess(accountId) && (
-                <DsButton
-                  id='workflow-listing-create-btn'
-                  tone='primary'
-                  size='md'
-                  composition='text+icon'
-                  icon={<SafeIcon style={{ height: '14px', width: '14px' }} src={addIconWhite} alt='create automation' />}
-                  onClick={handleCreateWorkflow}
-                >
-                  Create Automation
-                </DsButton>
-              )}
-            </>
+              <DsButton id='workflow-delete-confirm-btn' size='md' onClick={handleDeleteWorkflow} loading={loading}>
+                Delete
+              </DsButton>
+            </Box>
           }
         >
-          <CustomSearch
-            id='workflow-name-search'
-            value={searchName}
-            label='Search by Automation Name'
-            onChange={onNameSearchChange}
-            onEnterPress={onNameEnterPress}
-            onClear={onNameClear}
-          />
-          <CustomSearch
-            id='workflow-tags-search'
-            value={selectedTags}
-            label='Search by Tags'
-            onChange={onTagsSearchChange}
-            onEnterPress={onTagsEnterPress}
-            onClear={onTagsClear}
-          />
-          {canFilterByCreatedBy && (
+          <DialogContentText>Are you sure you want to delete this automation? This action cannot be undone.</DialogContentText>
+          {deleteCallersLoading && (
+            <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', gap: 1, color: 'var(--ds-brand-500)', fontSize: 'var(--ds-text-small)' }}>
+              <CircularProgress size={14} />
+              <span>Checking which automations reference this one…</span>
+            </Box>
+          )}
+          {!deleteCallersLoading && deleteCallers && deleteCallers.length > 0 && (
+            <Box
+              data-testid='workflow-delete-callers-warning'
+              sx={{
+                mt: 2,
+                p: 1.5,
+                borderRadius: 'var(--ds-radius-sm)',
+                border: '1px solid var(--ds-red-200)',
+                backgroundColor: 'var(--ds-yellow-100)',
+              }}
+            >
+              <Box sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-red-600)', mb: 0.5 }}>
+                Used by {deleteCallers.length} other automation{deleteCallers.length === 1 ? '' : 's'}
+              </Box>
+              <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-brand-500)', mb: 1 }}>
+                These automations call this one via a Call Workflow step. Deleting will break them at runtime — they reference by name and won&apos;t
+                be auto-updated.
+              </Box>
+              <Box component='ul' sx={{ m: 0, pl: 2.5, maxHeight: 140, overflowY: 'auto' }}>
+                {deleteCallers.map((c) => (
+                  <Box component='li' key={c.id} sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-blue-500)', mb: 0.25 }}>
+                    <span>{c.name}</span>
+                    <span style={{ color: 'var(--ds-gray-600)', marginLeft: 8 }}>({c.status})</span>
+                  </Box>
+                ))}
+              </Box>
+              <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', mt: 1 }}>
+                Note: automations that pass <code>workflow_name</code> as a template (<code>{`{{ ... }}`}</code>) can&apos;t be detected here.
+              </Box>
+            </Box>
+          )}
+        </Modal>
+
+        <Modal
+          open={pauseModalOpen}
+          handleClose={handleClosePauseModal}
+          width='sm'
+          title={`Pause Automation "${selectedWorkflow.name}"`}
+          loader={loading}
+          actionButtons={
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
+              <DsButton id='workflow-pause-cancel-btn' tone='secondary' size='md' onClick={handleClosePauseModal} disabled={loading}>
+                Cancel
+              </DsButton>
+              <DsButton id='workflow-pause-confirm-btn' size='md' onClick={handlePauseWorkflow} loading={loading}>
+                Pause
+              </DsButton>
+            </Box>
+          }
+        >
+          <DialogContentText>Are you sure you want to pause this scheduled automation? It will stop executing until resumed.</DialogContentText>
+        </Modal>
+
+        <Modal
+          open={resumeModalOpen}
+          handleClose={handleCloseResumeModal}
+          width='sm'
+          title={`Resume Automation "${selectedWorkflow.name}"`}
+          loader={loading}
+          actionButtons={
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
+              <DsButton id='workflow-resume-cancel-btn' tone='secondary' size='md' onClick={handleCloseResumeModal} disabled={loading}>
+                Cancel
+              </DsButton>
+              <DsButton id='workflow-resume-confirm-btn' size='md' onClick={handleResumeWorkflow} loading={loading}>
+                Resume
+              </DsButton>
+            </Box>
+          }
+        >
+          <DialogContentText>
+            Are you sure you want to resume this scheduled automation? It will start executing according to its schedule.
+          </DialogContentText>
+        </Modal>
+
+        <Modal
+          open={stopExecutionModalOpen}
+          handleClose={handleCloseStopExecutionModal}
+          width='sm'
+          title={`Cancel Running Execution — "${selectedWorkflow.name}"`}
+          loader={stopExecutionLoading}
+          actionButtons={
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
+              <DsButton
+                id='workflow-stop-execution-cancel-btn'
+                tone='secondary'
+                size='md'
+                onClick={handleCloseStopExecutionModal}
+                disabled={stopExecutionLoading}
+              >
+                Keep Running
+              </DsButton>
+              <DsButton id='workflow-stop-execution-confirm-btn' tone='danger' size='md' onClick={handleStopExecution} loading={stopExecutionLoading}>
+                Cancel Execution
+              </DsButton>
+            </Box>
+          }
+        >
+          <DialogContentText>Are you sure you want to cancel the currently running execution? This action cannot be undone.</DialogContentText>
+        </Modal>
+
+        <TriggerWorkflowModal
+          open={triggerModalOpen}
+          onClose={handleCloseTriggerModal}
+          workflowName={selectedWorkflow.name}
+          triggerType={getPrimaryTriggerType(selectedWorkflow)}
+          defaultInputs={getDefaultTriggerInputs(selectedWorkflow)}
+          inputSchema={getWorkflowInputSchema(selectedWorkflow)}
+          onTrigger={handleTriggerWorkflow}
+          loading={triggerLoading}
+          liveVersionNumber={selectedWorkflow.live_version_number}
+          liveVersionName={selectedWorkflow.live_version_name}
+        />
+
+        <AiGenerateWorkflowModal
+          open={aiGenerateModalOpen}
+          onClose={handleCloseAiGenerateModal}
+          onGenerate={handleAiGenerateWorkflow}
+          onGenerateAsync={handleGenerateWorkflowAsync}
+          onPollConversation={handlePollWorkflowConversation}
+          onApproveOrRespond={handleApproveOrRespondWorkflow}
+          onWorkflowCompleted={handleWorkflowCompleted}
+          loading={aiGenerateLoading}
+        />
+
+        <CreateWorkflowOptionsModal
+          open={createWorkflowOptionsOpen}
+          onClose={handleCloseCreateWorkflowOptions}
+          onCreateFromScratch={handleCreateFromScratch}
+          onUseTemplate={handleUseTemplate}
+          onAskAI={handleAskAIFromOptions}
+          onCreateFromCode={handleCreateFromCode}
+          aiFeatureEnabled={aiFeatureEnabled}
+          templateFeatureEnabled={templateFeatureEnabled}
+          accountOptions={writableAccountOptions}
+          selectedAccountId={createAccountId}
+          onAccountChange={setCreateAccountId}
+        />
+
+        {createAccountId && <CreateWorkflowFromCodeModal open={createFromCodeOpen} onClose={handleCloseCreateFromCode} accountId={createAccountId} />}
+
+        <WorkflowTemplatesModal open={templateModalOpen} onClose={handleCloseTemplateModal} accountId={createAccountId} />
+
+        <ConfigurationManager accountOptions={writableAccountOptions} open={configModalOpen} onClose={handleConfigModalClose} />
+
+        <ListingLayout id='workflow-listing-box'>
+          <ListingLayout.Toolbar
+            actions={
+              <>
+                <DsButton
+                  id='workflow-listing-refresh-btn'
+                  tone='secondary'
+                  size='md'
+                  composition='icon-only'
+                  icon={<Refresh fontSize='small' />}
+                  aria-label='Refresh'
+                  loading={loading}
+                  onClick={handleRefresh}
+                />
+                <DsButton
+                  id='workflow-listing-configs-btn'
+                  tone='secondary'
+                  size='md'
+                  composition='text+icon'
+                  icon={<SafeIcon style={{ height: '14px', width: '14px' }} src={SettingsIcon} alt='manage configs' />}
+                  onClick={() => setConfigModalOpen(true)}
+                >
+                  Configs
+                </DsButton>
+                {writableAccountOptions.length > 0 && (
+                  <DsButton
+                    id='workflow-listing-create-btn'
+                    tone='primary'
+                    size='md'
+                    composition='text+icon'
+                    icon={<SafeIcon style={{ height: '14px', width: '14px' }} src={addIconWhite} alt='create automation' />}
+                    onClick={handleCreateWorkflow}
+                  >
+                    Create Automation
+                  </DsButton>
+                )}
+              </>
+            }
+          >
+            <SearchInput
+              id='workflow-name-search'
+              value={searchName}
+              label='Search by Automation Name'
+              onChange={onNameSearchChange}
+              onEnterPress={onNameEnterPress}
+              onClear={onNameClear}
+            />
+            <SearchInput
+              id='workflow-tags-search'
+              value={selectedTags}
+              label='Search by Tags'
+              onChange={onTagsSearchChange}
+              onEnterPress={onTagsEnterPress}
+              onClear={onTagsClear}
+            />
             <FilterDropdown
-              id='workflow-filter-created-by'
-              label='Created By'
-              options={createdByOptions}
-              value={selectedCreatedBy}
-              onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
-                setSelectedCreatedBy(e?.target?.value);
-                applyFiltersOnRouter(router, { created_by: e?.target?.value });
+              id='workflow-filter-account'
+              label='Account'
+              multiple
+              grouped
+              groupIcon={renderAccountGroupIcon}
+              options={accountFilterOptions}
+              value={accountFilterOptions.filter((o) => selectedAccounts.includes(o.value))}
+              onSelect={(_e: any, items: any) => {
+                const next = (Array.isArray(items) ? items : []).map((it: any) => it.value);
+                onAccountFilterChange(next);
               }}
             />
-          )}
-          <FilterDropdown
-            id='workflow-filter-status'
-            label='Status'
-            options={['All', 'Active', 'Inactive', 'Paused']}
-            value={selectedStatus}
-            onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
-              setSelectedStatus(e?.target?.value);
-              applyFiltersOnRouter(router, { status: e?.target?.value });
-            }}
-          />
-          <FilterDropdown
-            id='workflow-filter-last-exec-status'
-            label='Last Exec. Status'
-            options={['All', 'Running', 'Completed', 'Failed', 'Canceled', 'Terminated', 'Timed Out', 'Continued As New', 'Unspecified']}
-            value={selectedLastExecutionStatus}
-            onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
-              setSelectedLastExecutionStatus(e?.target?.value);
-              applyFiltersOnRouter(router, { last_execution_status: e?.target?.value });
-            }}
-          />
-          <FilterDropdown
-            id='workflow-filter-trigger-type'
-            label='Trigger Type'
-            options={triggerTypeOptions}
-            value={selectedTriggerType}
-            onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
-              const next = e?.target?.value || '';
-              setSelectedTriggerType(next);
-              applyFiltersOnRouter(router, { type: next });
-            }}
-          />
-        </ListingLayout.Toolbar>
-        <ListingLayout.Body>
-          <CustomTable2
-            id='workflows-table'
-            tableData={data}
-            headers={tableHeaders}
-            loading={loading}
-            rowsPerPage={rowsPerPage}
-            totalRows={totalRows}
-            pageNumber={currentPage}
-            onPageChange={handlePageChange}
-            tableHeadingCenter={['Status']}
-          />
-        </ListingLayout.Body>
-      </ListingLayout>
-    </LiveExecutionStatusContext.Provider>
+            {canFilterByCreatedBy && (
+              <FilterDropdown
+                id='workflow-filter-created-by'
+                label='Created By'
+                options={createdByOptions}
+                value={selectedCreatedBy}
+                onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  setSelectedCreatedBy(e?.target?.value);
+                  applyFiltersOnRouter(router, { created_by: e?.target?.value });
+                }}
+              />
+            )}
+            <FilterDropdown
+              id='workflow-filter-status'
+              label='Status'
+              options={['All', 'Active', 'Inactive', 'Paused']}
+              value={selectedStatus}
+              onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
+                setSelectedStatus(e?.target?.value);
+                applyFiltersOnRouter(router, { status: e?.target?.value });
+              }}
+            />
+            <FilterDropdown
+              id='workflow-filter-last-exec-status'
+              label='Last Exec. Status'
+              options={['All', 'Running', 'Completed', 'Failed', 'Canceled', 'Terminated', 'Timed Out', 'Continued As New', 'Unspecified']}
+              value={selectedLastExecutionStatus}
+              onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
+                setSelectedLastExecutionStatus(e?.target?.value);
+                applyFiltersOnRouter(router, { last_execution_status: e?.target?.value });
+              }}
+            />
+            <FilterDropdown
+              id='workflow-filter-trigger-type'
+              label='Trigger Type'
+              options={triggerTypeOptions}
+              value={selectedTriggerType}
+              onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
+                const next = e?.target?.value || '';
+                setSelectedTriggerType(next);
+                applyFiltersOnRouter(router, { type: next });
+              }}
+            />
+          </ListingLayout.Toolbar>
+          <ListingLayout.Body>
+            <CustomTable
+              id='workflows-table'
+              tableData={data}
+              headers={tableHeaders}
+              loading={loading}
+              rowsPerPage={rowsPerPage}
+              totalRows={totalRows}
+              pageNumber={currentPage}
+              onPageChange={handlePageChange}
+              tableHeadingCenter={['Status']}
+            />
+          </ListingLayout.Body>
+        </ListingLayout>
+      </LiveExecutionStatusContext.Provider>
+    </AccountsContext.Provider>
   );
 };
 
 export default WorkflowListing;
-
-interface WorkflowListingProps {
-  accountId?: string;
-}
 
 interface TagsDisplayProps {
   tags: string[] | Record<string, any> | string;

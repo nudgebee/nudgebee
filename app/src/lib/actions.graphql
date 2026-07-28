@@ -4690,7 +4690,13 @@ input WorkflowTaskDefinitionListRequest {
 }
 
 input WorkflowListRequest {
-  account_id: String!
+  """
+  Account filter. Omit both to list across every account the caller can read —
+  the Automations page is tenant-level. account_id is the legacy single-account
+  form, still sent by `/automation?accountId=` deep links.
+  """
+  account_ids: [String!]
+  account_id: String
   name: String
   tags: String
   limit: Int
@@ -4707,7 +4713,12 @@ input WorkflowGetRequest {
 }
 
 input WorkflowCountRequest {
-  account_id: String!
+  """
+  Same optional account filter as WorkflowListRequest, so a count always matches
+  the listing it labels.
+  """
+  account_ids: [String!]
+  account_id: String
   status: String
   trigger_type: String
 }
@@ -4845,7 +4856,12 @@ input WorkflowExecutionListForEventRequest {
 # there is no required automation id, filters are multi-select, and the window
 # is bounded by a date range.
 input AccountExecutionListRequest {
-  account_id: String!
+  """
+  Account filter. Omit both to span every account the caller can read — the
+  Executions tab is tenant-level. account_id is the legacy single-account form.
+  """
+  account_ids: [String!]
+  account_id: String
   start_date: timestamp
   end_date: timestamp
   workflow_ids: [String!]
@@ -4859,7 +4875,12 @@ input AccountExecutionListRequest {
 }
 
 input ExecutionAggregateRequest {
-  account_id: String!
+  """
+  Account filter. Omit both to span every account the caller can read — the
+  Executions tab is tenant-level. account_id is the legacy single-account form.
+  """
+  account_ids: [String!]
+  account_id: String
   start_date: timestamp
   end_date: timestamp
   workflow_ids: [String!]
@@ -8581,6 +8602,7 @@ type WorkflowExecutionSummary {
 # A dashboard row: the standard summary plus the fields Temporal's visibility
 # store cannot supply on its own (user display name, duration, failure reason).
 type AccountExecutionSummary {
+  account_id: String
   workflow_id: String!
   id: String!
   status: String!

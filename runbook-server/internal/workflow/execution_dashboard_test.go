@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -9,7 +10,7 @@ import (
 )
 
 func TestBuildExecutionQueryAlwaysScopesTenantAndAccount(t *testing.T) {
-	query, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{AccountID: "acct-1"})
+	query, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{AccountIDs: []string{"acct-1"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -25,7 +26,7 @@ func TestBuildExecutionQueryNeverEmitsOrderBy(t *testing.T) {
 	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
 	query, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{
-		AccountID:    "acct-1",
+		AccountIDs:   []string{"acct-1"},
 		StartDate:    &start,
 		EndDate:      &end,
 		WorkflowIDs:  []string{"wf-1", "wf-2"},
@@ -43,7 +44,7 @@ func TestBuildExecutionQueryNeverEmitsOrderBy(t *testing.T) {
 
 func TestBuildExecutionQueryMultiValueFiltersUseOrGroups(t *testing.T) {
 	query, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{
-		AccountID:   "acct-1",
+		AccountIDs:  []string{"acct-1"},
 		WorkflowIDs: []string{"wf-1", "wf-2"},
 	})
 	if err != nil {
@@ -56,7 +57,7 @@ func TestBuildExecutionQueryMultiValueFiltersUseOrGroups(t *testing.T) {
 
 func TestBuildExecutionQuerySingleValueFilterSkipsParentheses(t *testing.T) {
 	query, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{
-		AccountID:   "acct-1",
+		AccountIDs:  []string{"acct-1"},
 		WorkflowIDs: []string{"wf-1"},
 	})
 	if err != nil {
@@ -69,7 +70,7 @@ func TestBuildExecutionQuerySingleValueFilterSkipsParentheses(t *testing.T) {
 
 func TestBuildExecutionQueryEscapesQuotes(t *testing.T) {
 	query, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{
-		AccountID:    "acct-1",
+		AccountIDs:   []string{"acct-1"},
 		TriggerTypes: []string{"o'brien"},
 	})
 	if err != nil {
@@ -86,8 +87,8 @@ func TestBuildExecutionQueryFormatsDatesAsUTCRFC3339(t *testing.T) {
 	zone := time.FixedZone("IST", 5*3600+1800)
 	start := time.Date(2026, 7, 27, 5, 30, 0, 0, zone)
 	query, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{
-		AccountID: "acct-1",
-		StartDate: &start,
+		AccountIDs: []string{"acct-1"},
+		StartDate:  &start,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -99,8 +100,8 @@ func TestBuildExecutionQueryFormatsDatesAsUTCRFC3339(t *testing.T) {
 
 func TestBuildExecutionQueryDropsUnmappedStatuses(t *testing.T) {
 	query, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{
-		AccountID: "acct-1",
-		Statuses:  []model.WorkflowExecutionStatus{model.WorkflowExecutionStatusUnspecified},
+		AccountIDs: []string{"acct-1"},
+		Statuses:   []model.WorkflowExecutionStatus{model.WorkflowExecutionStatusUnspecified},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -115,13 +116,76 @@ func TestBuildExecutionQueryRejectsOversizedFilters(t *testing.T) {
 	for i := range ids {
 		ids[i] = "wf"
 	}
-	if _, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{AccountID: "acct-1", WorkflowIDs: ids}); err == nil {
+	if _, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{AccountIDs: []string{"acct-1"}, WorkflowIDs: ids}); err == nil {
 		t.Fatal("expected an error for an oversized filter")
 	}
 }
 
+// The Executions tab is tenant-level with an account filter, so a page can span
+// several accounts. The account clause has to be an OR group like the other
+// multi-value filters -- ANDing them together would match nothing.
+func TestBuildExecutionQueryOrGroupsMultipleAccounts(t *testing.T) {
+	query, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{AccountIDs: []string{"acct-1", "acct-2"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "nb_tenant_id='tenant-1' AND (nb_account_id='acct-1' OR nb_account_id='acct-2')"
+	if query != want {
+		t.Fatalf("got %q, want %q", query, want)
+	}
+}
+
+// An all-blank account list must not silently degrade to a tenant-wide query --
+// that would return runs from accounts the caller may not read.
+func TestBuildExecutionQueryRejectsBlankAccounts(t *testing.T) {
+	if _, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{AccountIDs: []string{"", ""}}); err == nil {
+		t.Fatal("expected an error when every account id is blank")
+	}
+}
+
+func TestBuildExecutionQueryRejectsOversizedAccountFilter(t *testing.T) {
+	ids := make([]string, model.MaxExecutionFilterValues+1)
+	for i := range ids {
+		ids[i] = "acct"
+	}
+	if _, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{AccountIDs: ids}); err == nil {
+		t.Fatal("expected an error for an oversized account filter")
+	}
+}
+
+// A tenant-wide caller is already scoped by the tenant clause, so the account
+// group is redundant. Regression test: enumerating it instead meant a tenant
+// with more accounts than MaxExecutionFilterValues could not load the
+// unfiltered dashboard at all -- the cap is meant to bound what a caller may
+// ASK for, not the resolved "every account I can read" set.
+func TestBuildExecutionQueryOmitsAccountClauseWhenTenantWide(t *testing.T) {
+	ids := make([]string, model.MaxExecutionFilterValues+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("acct-%d", i)
+	}
+
+	query, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{AccountIDs: ids, TenantWide: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if query != "nb_tenant_id='tenant-1'" {
+		t.Fatalf("got %q, want the tenant clause alone", query)
+	}
+}
+
+// The same caller narrowing to a subset must still be pinned to it.
+func TestBuildExecutionQueryKeepsAccountClauseWhenFiltered(t *testing.T) {
+	query, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{AccountIDs: []string{"acct-1"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if query != "nb_tenant_id='tenant-1' AND nb_account_id='acct-1'" {
+		t.Fatalf("got %q, want the account clause retained", query)
+	}
+}
+
 func TestBuildExecutionQueryRequiresTenantAndAccount(t *testing.T) {
-	if _, err := buildExecutionQuery("", model.ExecutionDashboardFilter{AccountID: "acct-1"}); err == nil {
+	if _, err := buildExecutionQuery("", model.ExecutionDashboardFilter{AccountIDs: []string{"acct-1"}}); err == nil {
 		t.Fatal("expected an error when tenantID is empty")
 	}
 	if _, err := buildExecutionQuery("tenant-1", model.ExecutionDashboardFilter{}); err == nil {

@@ -4,7 +4,9 @@ import "time"
 
 // WorkflowCountRequest - filters for counting workflows
 type WorkflowCountRequest struct {
-	AccountID   string         `json:"account_id"`
+	// AccountIDs narrows the count to specific accounts. Empty means "every
+	// account the caller can read" — the tenant-level default (see #35113).
+	AccountIDs  []string       `json:"account_ids,omitempty"`
 	Status      WorkflowStatus `json:"status,omitempty"`       // ACTIVE, INACTIVE, PAUSED
 	TriggerType string         `json:"trigger_type,omitempty"` // schedule, event, manual, webhook
 }

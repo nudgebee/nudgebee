@@ -617,8 +617,8 @@ func (m *MockWorkflowStore) CreateWorkflowWithInitialVersion(ctx context.Context
 	return args.String(0), v, args.Error(2)
 }
 
-func (m *MockWorkflowStore) List(ctx context.Context, tenantID, accountID string, request model.ListWorkflowRequest) ([]model.Workflow, int, error) {
-	args := m.Called(ctx, tenantID, accountID, request)
+func (m *MockWorkflowStore) List(ctx context.Context, tenantID string, accountIDs []string, request model.ListWorkflowRequest) ([]model.Workflow, int, error) {
+	args := m.Called(ctx, tenantID, accountIDs, request)
 	return args.Get(0).([]model.Workflow), args.Int(1), args.Error(2)
 }
 
@@ -714,13 +714,13 @@ func (m *MockWorkflowStore) SetState(ctx context.Context, workflowID string, upd
 	return args.Error(1)
 }
 
-func (m *MockWorkflowStore) CountWorkflows(ctx context.Context, tenantID, accountID string, status model.WorkflowStatus, triggerType string) (int64, error) {
-	args := m.Called(ctx, tenantID, accountID, status, triggerType)
+func (m *MockWorkflowStore) CountWorkflows(ctx context.Context, tenantID string, accountIDs []string, status model.WorkflowStatus, triggerType string) (int64, error) {
+	args := m.Called(ctx, tenantID, accountIDs, status, triggerType)
 	return args.Get(0).(int64), args.Error(1)
 }
 
-func (m *MockWorkflowStore) GetWorkflowNames(ctx context.Context, tenantID, accountID string, ids []string) (map[string]string, error) {
-	args := m.Called(ctx, tenantID, accountID, ids)
+func (m *MockWorkflowStore) GetWorkflowNames(ctx context.Context, tenantID string, accountIDs []string, ids []string) (map[string]string, error) {
+	args := m.Called(ctx, tenantID, accountIDs, ids)
 	res, _ := args.Get(0).(map[string]string)
 	return res, args.Error(1)
 }

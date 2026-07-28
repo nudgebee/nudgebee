@@ -51,8 +51,8 @@ func buildExecutionQuery(tenantID string, f model.ExecutionDashboardFilter) (str
 	if tenantID == "" {
 		return "", fmt.Errorf("tenantID is required")
 	}
-	if f.AccountID == "" {
-		return "", fmt.Errorf("account_id is required")
+	if len(f.AccountIDs) == 0 {
+		return "", fmt.Errorf("at least one account_id is required")
 	}
 	for name, values := range map[string][]string{
 		"workflow_ids": f.WorkflowIDs,
@@ -69,7 +69,21 @@ func buildExecutionQuery(tenantID string, f model.ExecutionDashboardFilter) (str
 
 	conditions := []string{
 		fmt.Sprintf("%s='%s'", model.SearchAttrTenantID, escapeTemporalString(tenantID)),
-		fmt.Sprintf("%s='%s'", model.SearchAttrAccountID, escapeTemporalString(f.AccountID)),
+	}
+	// A tenant-wide caller who asked for no subset is already fully scoped by
+	// the tenant clause above, so enumerating every account would be redundant
+	// — and on a tenant with more accounts than MaxExecutionFilterValues it
+	// would be rejected outright. Everyone else must be pinned to their own
+	// accounts: the tenant clause alone would span accounts they cannot read.
+	if !f.TenantWide {
+		if len(f.AccountIDs) > model.MaxExecutionFilterValues {
+			return "", common.ErrorBadRequest(fmt.Sprintf("account_ids accepts at most %d values", model.MaxExecutionFilterValues))
+		}
+		accountGroup := temporalOrGroup(model.SearchAttrAccountID, f.AccountIDs)
+		if accountGroup == "" {
+			return "", fmt.Errorf("at least one account_id is required")
+		}
+		conditions = append(conditions, accountGroup)
 	}
 
 	if group := temporalOrGroup(model.SearchAttrWorkflowID, f.WorkflowIDs); group != "" {
@@ -147,9 +161,12 @@ func intersectStatuses(userFilter, want []model.WorkflowExecutionStatus) []model
 // ListAccountExecutions returns one page of executions across every automation
 // in an account.
 func (s *Service) ListAccountExecutions(ctx *security.RequestContext, req model.ListAccountExecutionsRequest) (model.ListAccountExecutionsResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountID, security.SecurityAccessTypeRead) {
-		return model.ListAccountExecutionsResponse{}, common.ErrorUnauthorized("account not accessible")
+	scope, err := ResolveAccountScope(ctx, req.AccountIDs)
+	if err != nil {
+		return model.ListAccountExecutionsResponse{}, err
 	}
+	req.AccountIDs = scope.AccountIDs
+	req.TenantWide = scope.TenantWide
 	tenantID := ctx.GetSecurityContext().GetTenantId()
 
 	query, err := buildExecutionQuery(tenantID, req.ExecutionDashboardFilter)
@@ -202,7 +219,12 @@ func (s *Service) ListAccountExecutions(ctx *security.RequestContext, req model.
 	rows := make([]model.AccountExecutionSummary, 0, len(infos))
 	for _, info := range infos {
 		summary := s.executionSummaryFromInfo(info)
-		row := model.AccountExecutionSummary{WorkflowExecutionSummary: summary}
+		row := model.AccountExecutionSummary{
+			WorkflowExecutionSummary: summary,
+			// Read off the row's own visibility record — a page can span
+			// several accounts now.
+			AccountID: s.searchAttrString(info.GetSearchAttributes(), model.SearchAttrAccountID),
+		}
 		if summary.StartTime != nil && summary.CloseTime != nil {
 			durationMs := summary.CloseTime.Sub(*summary.StartTime).Milliseconds()
 			row.DurationMs = &durationMs
@@ -210,7 +232,7 @@ func (s *Service) ListAccountExecutions(ctx *security.RequestContext, req model.
 		rows = append(rows, row)
 	}
 
-	s.resolveWorkflowNames(ctx, tenantID, req.AccountID, rows)
+	s.resolveWorkflowNames(ctx, tenantID, req.AccountIDs, rows)
 	s.resolveUserNames(ctx, rows)
 	if req.IncludeFailureReason {
 		s.resolveFailureReasons(ctx, rows)
@@ -243,9 +265,12 @@ func (s *Service) ListAccountExecutions(ctx *security.RequestContext, req model.
 // AggregateExecutions returns the dashboard's summary metrics plus the
 // most-failed-automation leaderboard, over the same filter as the list.
 func (s *Service) AggregateExecutions(ctx *security.RequestContext, req model.AggregateExecutionsRequest) (model.AggregateExecutionsResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountID, security.SecurityAccessTypeRead) {
-		return model.AggregateExecutionsResponse{}, common.ErrorUnauthorized("account not accessible")
+	scope, err := ResolveAccountScope(ctx, req.AccountIDs)
+	if err != nil {
+		return model.AggregateExecutionsResponse{}, err
 	}
+	req.AccountIDs = scope.AccountIDs
+	req.TenantWide = scope.TenantWide
 	tenantID := ctx.GetSecurityContext().GetTenantId()
 
 	// Validate the base filter up front so a bad request fails before any
@@ -361,7 +386,7 @@ func (s *Service) topFailedAutomations(
 		for _, entry := range ranked {
 			ids = append(ids, entry.WorkflowID)
 		}
-		names, nameErr := s.store.GetWorkflowNames(ctx.GetContext(), tenantID, filter.AccountID, ids)
+		names, nameErr := s.store.GetWorkflowNames(ctx.GetContext(), tenantID, filter.AccountIDs, ids)
 		if nameErr != nil {
 			ctx.GetLogger().Error("failed to get workflow names for leaderboard", "error", nameErr)
 		} else {
@@ -419,12 +444,12 @@ func (s *Service) searchAttrString(attrs *commonpb.SearchAttributes, key string)
 	return value
 }
 
-func (s *Service) resolveWorkflowNames(ctx *security.RequestContext, tenantID, accountID string, rows []model.AccountExecutionSummary) {
+func (s *Service) resolveWorkflowNames(ctx *security.RequestContext, tenantID string, accountIDs []string, rows []model.AccountExecutionSummary) {
 	ids := distinctNonEmpty(len(rows), func(i int) string { return rows[i].WorkflowID })
 	if len(ids) == 0 {
 		return
 	}
-	names, err := s.store.GetWorkflowNames(ctx.GetContext(), tenantID, accountID, ids)
+	names, err := s.store.GetWorkflowNames(ctx.GetContext(), tenantID, accountIDs, ids)
 	if err != nil {
 		ctx.GetLogger().Error("failed to get workflow names for executions", "error", err)
 		return

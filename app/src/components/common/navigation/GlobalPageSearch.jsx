@@ -45,6 +45,7 @@ import { AutomateBlue, AgentIconBlue } from '@assets';
 import {
   navSearchPages,
   accountScopedSearchFragments,
+  automationSearchFragments,
   k8sDetailsSearchFragments,
   awsDetailsSearchFragments,
   azureDetailsSearchFragments,
@@ -248,6 +249,26 @@ const navSearchAccountScopedItems = (fragments, accountId) =>
       })
     : [];
 
+// Search rows for the Automation page's tabs. Separate from the helper above
+// because /automation is tenant-level (#35113): the plain rows carry no account
+// at all, and only an "@account" scoped pick appends one — as `?account=`, the
+// param the listing's Account filter reads.
+const navSearchAutomationItems = (fragments, accountId) =>
+  fragments.map((entry) => {
+    const path = accountId ? `/automation?account=${accountId}#${entry.fragment}` : `/automation#${entry.fragment}`;
+    return {
+      label: entry.label,
+      icon: NAV_SEARCH_GROUP_ICON.Automation,
+      type: `/${entry.slug}`,
+      value: path,
+      path,
+      accountId,
+      group: 'Automation',
+      acronym: pathAcronym(entry.slug),
+      searchText: `Automation ${entry.slug} ${pathAcronym(entry.slug)}`,
+    };
+  });
+
 // Per-provider fragment list + base path for the "@account" scoped search —
 // keyed by cloud_provider.toUpperCase() since allCluster entries' casing
 // isn't guaranteed to match the mixed-case provider labels used elsewhere.
@@ -275,7 +296,19 @@ const ACCOUNT_SCOPED_SEARCH_PATH_RE = /^\/(?:kubernetes\/details|cloud-account\/
 // defaultAccountId currently resolves to. The alternation must list every
 // basePath used in accountScopedSearchFragments (navSearchPages.ts) — add a
 // new one there when adding a new basePath.
-const ACCOUNT_SCOPED_QUERY_SEARCH_PATH_RE = /^\/(?:automation|agentHealth)\?accountId=([^#]+)#/;
+const ACCOUNT_SCOPED_QUERY_SEARCH_PATH_RE = /^\/(?:agentHealth)\?accountId=([^#]+)#/;
+
+// Matches an Automation search value stamped by navSearchAutomationItems and
+// captures the account, if any:
+//   /automation#{fragment}                — the tenant-level row
+//   /automation?account={id}#{fragment}   — an "@account" scoped pick
+// The `accountId` alternative only exists so recents predating #35113 (and the
+// pre-split /automation?accountId= rows) are still recognised as Automation
+// rather than falling through to the provider-detail branch; they no longer
+// match a generated value, so they drop out of Recents on first use — the same
+// self-healing path a renamed page already takes. A captured account is
+// re-resolved against allCluster, same reasoning as above.
+const AUTOMATION_SCOPED_SEARCH_PATH_RE = /^\/automation(?:\?(?:accountId|account)=([^#&]+))?#/;
 
 // Same provider-order + connection-status + alphabetical sort ClusterDropDown
 // itself uses (CustomDropdown.jsx's groupedOptions, groupByCloudProvider mode)
@@ -918,16 +951,21 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
     [hasOpenedSearch, defaultAccountId]
   );
 
+  // No account passed: the plain rows point at the tenant-level listing. Only
+  // the "@account" scoped list below pre-seeds one.
+  const automationNavItems = useMemo(() => (hasOpenedSearch ? navSearchAutomationItems(automationSearchFragments) : []), [hasOpenedSearch]);
+
   const navSearchItems = useMemo(
     () => [
       ...navSearchStaticItems.filter(isNavSearchItemVisible),
+      ...automationNavItems.filter(isNavSearchItemVisible),
       ...accountScopedNavItems.filter(isNavSearchItemVisible),
       ...k8sNavItems,
       ...awsNavItems,
       ...azureNavItems,
       ...gcpNavItems,
     ],
-    [isNavSearchItemVisible, accountScopedNavItems, k8sNavItems, awsNavItems, azureNavItems, gcpNavItems]
+    [isNavSearchItemVisible, automationNavItems, accountScopedNavItems, k8sNavItems, awsNavItems, azureNavItems, gcpNavItems]
   );
 
   // Re-resolves one recent value into a full display option. A static page's
@@ -946,6 +984,17 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
       const staticMatch = navSearchStaticItems.find((opt) => opt.value === value);
       if (staticMatch) {
         return isNavSearchItemVisible(staticMatch) ? staticMatch : null;
+      }
+      const automationMatch = AUTOMATION_SCOPED_SEARCH_PATH_RE.exec(value);
+      if (automationMatch) {
+        const [, accountId] = automationMatch;
+        // Only an account-scoped pick needs the account to still exist; the
+        // tenant-level row is always resolvable.
+        if (accountId && !allCluster?.some((c) => c.value === accountId)) {
+          return null;
+        }
+        const match = navSearchAutomationItems(automationSearchFragments, accountId).find((opt) => opt.value === value);
+        return match && isNavSearchItemVisible(match) ? match : null;
       }
       const accountScopedQueryMatch = ACCOUNT_SCOPED_QUERY_SEARCH_PATH_RE.exec(value);
       if (accountScopedQueryMatch) {
@@ -1019,7 +1068,8 @@ export default function GlobalPageSearch({ hasClusterDropdown = true }) {
     const config = SCOPED_SEARCH_PROVIDER_CONFIG[scopedAccount.cloud_provider?.toUpperCase()];
     const providerItems = config ? navSearchProviderItems(config.fragments, config.label, scopedAccount.value, config.basePath) : [];
     const accountScopedItems = navSearchAccountScopedItems(accountScopedSearchFragments, scopedAccount.value).filter(isNavSearchItemVisible);
-    return [...providerItems, ...accountScopedItems];
+    const automationItems = navSearchAutomationItems(automationSearchFragments, scopedAccount.value).filter(isNavSearchItemVisible);
+    return [...providerItems, ...automationItems, ...accountScopedItems];
   }, [scopedAccount, isNavSearchItemVisible]);
 
   // The full (unfiltered) option list for whichever mode is active — mirrors

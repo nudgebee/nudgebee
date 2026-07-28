@@ -207,11 +207,9 @@ func (s *Server) handleCreateWorkflow(c *gin.Context, sc *security.RequestContex
 }
 
 func (s *Server) handleListWorkflows(c *gin.Context, sc *security.RequestContext, args map[string]any) {
-	accountID, ok := args["account_id"].(string)
-	if !ok || accountID == "" {
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("account_id is required")}))
-		return
-	}
+	// The Automations listing is tenant-level with an account filter (#35113):
+	// no account means "every account this caller can read".
+	accountIDs := parseAccountFilter(args)
 
 	var search model.ListWorkflowRequest
 	if name, ok := args["name"].(string); ok {
@@ -260,14 +258,29 @@ func (s *Server) handleListWorkflows(c *gin.Context, sc *security.RequestContext
 		search.NextPageToken = nextPageToken
 	}
 
-	workflows, err := s.workflowService.ListWorkflows(sc, accountID, search)
+	workflows, err := s.workflowService.ListWorkflows(sc, accountIDs, search)
 	if err != nil {
 		s.logger.Error("failed to list workflows via RPC", "error", err)
-		c.JSON(http.StatusBadRequest, common.ErrorActionInternal("failed to list workflows"))
+		handleServiceError(c, err, "failed to list workflows")
 		return
 	}
 
 	c.JSON(http.StatusOK, workflows)
+}
+
+// parseAccountFilter reads the optional account scope shared by the tenant-level
+// listing actions. It accepts `account_ids` (the multi-select filter) and falls
+// back to a single `account_id`, which every pre-#35113 caller — and the
+// per-account deep links still scattered through the UI — sends. Empty means
+// "no filter"; ResolveReadableAccounts turns that into the caller's full set.
+func parseAccountFilter(args map[string]any) []string {
+	if ids := parseStringSlice(args["account_ids"]); len(ids) > 0 {
+		return ids
+	}
+	if accountID, ok := args["account_id"].(string); ok && accountID != "" {
+		return []string{accountID}
+	}
+	return nil
 }
 
 func (s *Server) handleGetWorkflow(c *gin.Context, sc *security.RequestContext, args map[string]any) {
@@ -1021,14 +1034,8 @@ func (s *Server) handleListTemplatingFunctions(c *gin.Context, sc *security.Requ
 }
 
 func (s *Server) handleWorkflowCount(c *gin.Context, sc *security.RequestContext, args map[string]any) {
-	accountID, ok := args["account_id"].(string)
-	if !ok || accountID == "" {
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("account_id is required")}))
-		return
-	}
-
 	req := model.WorkflowCountRequest{
-		AccountID: accountID,
+		AccountIDs: parseAccountFilter(args),
 	}
 
 	if status, ok := args["status"].(string); ok && status != "" {

@@ -203,7 +203,9 @@ func (s *Server) listWorkflows(c *gin.Context) {
 		search.Limit = limit
 	}
 
-	workflows, err := s.workflowService.ListWorkflows(sc, accountID, search)
+	// The REST route stays single-account — getRequestDetails already rejects a
+	// blank account id, so this is always a one-element scope.
+	workflows, err := s.workflowService.ListWorkflows(sc, []string{accountID}, search)
 	if err != nil {
 		s.logger.Error("failed to list workflows", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve workflows"})

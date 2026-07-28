@@ -12,7 +12,6 @@ import { executionUserLabel } from './constants';
 
 interface ExecutionDetailDrawerProps {
   execution: AccountExecutionItem | null;
-  accountId?: string;
   onClose: () => void;
 }
 
@@ -28,7 +27,10 @@ const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, 
  * error (with stack) is fetched lazily here via workflow_get_execution rather
  * than being loaded for every row of every page.
  */
-const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution, accountId, onClose }) => {
+const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution, onClose }) => {
+  // The drawer follows whichever run is selected, so the account comes off the
+  // row rather than the page — the dashboard spans accounts now.
+  const accountId = execution?.account_id;
   const [detail, setDetail] = useState<any>(null);
   const [loading, setLoading] = useState(false);
 
@@ -56,7 +58,9 @@ const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution
 
   if (!execution) return null;
 
-  const fullViewHref = `/workflow/${execution.workflow_id}?accountId=${accountId}&executionId=${execution.id}#executions`;
+  // Same caveat as the table's link: without an account there is no valid
+  // builder URL, so offer the button only when the row carries one.
+  const fullViewHref = accountId ? `/workflow/${execution.workflow_id}?accountId=${accountId}&executionId=${execution.id}#executions` : '';
 
   return (
     <CustomDrawer open onClose={onClose} variant='modern' width='640px' storageKey='nb.executionDashboardDrawer.width' title='Execution details'>
@@ -106,16 +110,18 @@ const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution
           </Box>
         )}
 
-        <Button
-          tone='secondary'
-          size='sm'
-          data-testid='execution-dashboard-open-full-view-btn'
-          // New tab, same reasoning as the table's automation links: keep the
-          // filtered dashboard behind you.
-          onClick={() => window.open(fullViewHref, '_blank', 'noopener,noreferrer')}
-        >
-          Open full execution view
-        </Button>
+        {fullViewHref && (
+          <Button
+            tone='secondary'
+            size='sm'
+            data-testid='execution-dashboard-open-full-view-btn'
+            // New tab, same reasoning as the table's automation links: keep the
+            // filtered dashboard behind you.
+            onClick={() => window.open(fullViewHref, '_blank', 'noopener,noreferrer')}
+          >
+            Open full execution view
+          </Button>
+        )}
       </Box>
     </CustomDrawer>
   );

@@ -42,7 +42,15 @@ var FailedExecutionStatuses = []WorkflowExecutionStatus{
 // the aggregate. Both build their visibility query from this same struct so a
 // summary metric can never disagree with the rows below it.
 type ExecutionDashboardFilter struct {
-	AccountID    string                    `json:"account_id"`
+	// AccountIDs narrows the dashboard to specific accounts. Empty means every
+	// account the caller can read — the Automations page is tenant-level
+	// (#35113), so the Executions tab spans accounts the same way the listing
+	// does.
+	AccountIDs []string `json:"account_ids,omitempty"`
+	// TenantWide marks AccountIDs as "every account in the tenant", letting the
+	// query scope by tenant alone instead of OR-ing every account id. Resolved
+	// server-side; never read off the wire.
+	TenantWide   bool                      `json:"-"`
 	StartDate    *time.Time                `json:"start_date,omitempty"`
 	EndDate      *time.Time                `json:"end_date,omitempty"`
 	WorkflowIDs  []string                  `json:"workflow_ids,omitempty"`
@@ -69,6 +77,9 @@ type ListAccountExecutionsRequest struct {
 // plus the fields the dashboard shows that visibility alone cannot supply.
 type AccountExecutionSummary struct {
 	WorkflowExecutionSummary
+	// AccountID of the run's own account — a page can span several, so the UI
+	// labels each row and links it back to the right account.
+	AccountID string `json:"account_id,omitempty"`
 	// DurationMs is nil while the run is still open.
 	DurationMs *int64 `json:"duration_ms,omitempty"`
 	// UserName resolves TriggeredBy (a user id) to a display name. Empty for

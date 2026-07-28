@@ -41,8 +41,8 @@ func (m *MockWorkflowService) CreateWorkflow(ctx *security.RequestContext, accou
 	return args.String(0), args.String(1), args.Error(2)
 }
 
-func (m *MockWorkflowService) ListWorkflows(ctx *security.RequestContext, accountId string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error) {
-	args := m.Called(ctx, accountId, request)
+func (m *MockWorkflowService) ListWorkflows(ctx *security.RequestContext, accountIds []string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error) {
+	args := m.Called(ctx, accountIds, request)
 	return args.Get(0).(model.ListWorkflowResponse), args.Error(1)
 }
 

@@ -3,6 +3,7 @@ import { Box } from '@mui/material';
 import Tooltip from '@ui/Tooltip';
 import DataObjectIcon from '@mui/icons-material/DataObject';
 import { Modal } from '@ui/Modal';
+import { Select, type SelectOption } from '@ui/Select';
 import Text from '@shared/format/Text';
 import WidgetCard from '@ui/WidgetCard';
 import { workflowAddIcon, workflowAiIcon, workflowTemplateIcon } from '@assets';
@@ -18,6 +19,10 @@ interface CreateWorkflowOptionsModalProps {
   onCreateFromCode: () => void;
   aiFeatureEnabled: boolean;
   templateFeatureEnabled: boolean;
+  /** Accounts the user can create automations in (write access only). */
+  accountOptions: SelectOption[];
+  selectedAccountId: string;
+  onAccountChange: (accountId: string) => void;
 }
 
 const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
@@ -29,8 +34,14 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
   onCreateFromCode,
   aiFeatureEnabled,
   templateFeatureEnabled,
+  accountOptions,
+  selectedAccountId,
+  onAccountChange,
 }) => {
   const { assistantName } = useTenantBranding();
+  // The listing is tenant-level, so an automation's account is no longer
+  // implied by the page — it has to be chosen here before any path can start.
+  const accountChosen = !!selectedAccountId;
   return (
     <Modal
       open={open}
@@ -41,6 +52,19 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
       subtitle={'Choose how you would like to get started'}
     >
       {' '}
+      <Box sx={{ padding: 'var(--ds-space-2) var(--ds-space-3) 0 var(--ds-space-3)', maxWidth: '360px' }}>
+        <Select
+          id='wf-create-account-select'
+          label='Account'
+          placeholder='Select an account'
+          options={accountOptions}
+          value={selectedAccountId || null}
+          onChange={(next) => onAccountChange(next || '')}
+          help={accountChosen ? undefined : 'Pick the account this automation will run in.'}
+          required
+          searchable
+        />
+      </Box>
       <Box
         sx={{
           display: 'grid',
@@ -53,21 +77,26 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
         <WidgetCard
           sx={{
             mt: 0,
-            cursor: 'pointer',
+            cursor: accountChosen ? 'pointer' : 'default',
             padding: 'var(--ds-space-4)',
             height: '240px',
             display: 'flex',
             flexDirection: 'column',
             gap: 'var(--ds-space-4)',
-            '&:hover': {
-              transform: 'translateY(-2px)',
-              boxShadow:
-                '0 var(--ds-space-1) calc(var(--ds-space-0) * 10) -1px rgba(229, 229, 229, 8), 0 var(--ds-space-0) calc(var(--ds-space-0) * 10) 0 rgb(233, 233, 233)',
-              border: '1px solid var(--ds-purple-300)',
-            },
+            opacity: accountChosen ? 1 : 0.5,
+            ...(accountChosen
+              ? {
+                  '&:hover': {
+                    transform: 'translateY(-2px)',
+                    boxShadow:
+                      '0 var(--ds-space-1) calc(var(--ds-space-0) * 10) -1px rgba(229, 229, 229, 8), 0 var(--ds-space-0) calc(var(--ds-space-0) * 10) 0 rgb(233, 233, 233)',
+                    border: '1px solid var(--ds-purple-300)',
+                  },
+                }
+              : {}),
             transition: 'all 0.2s ease',
           }}
-          onClick={onCreateFromScratch}
+          onClick={accountChosen ? onCreateFromScratch : undefined}
           id='wf-create-from-scratch-card'
         >
           <Box
@@ -113,19 +142,19 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
           </Box>
         </WidgetCard>
 
-        <Tooltip title={!templateFeatureEnabled ? 'Coming Soon' : ''} arrow placement='top'>
+        <Tooltip title={!templateFeatureEnabled ? 'Coming Soon' : !accountChosen ? 'Select an account first' : ''} arrow placement='top'>
           <Box>
             <WidgetCard
               sx={{
                 mt: 0,
-                cursor: templateFeatureEnabled ? 'pointer' : 'default',
+                cursor: templateFeatureEnabled && accountChosen ? 'pointer' : 'default',
                 padding: 'var(--ds-space-4)',
                 height: '240px',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 'var(--ds-space-4)',
-                opacity: templateFeatureEnabled ? 1 : 0.5,
-                ...(templateFeatureEnabled
+                opacity: templateFeatureEnabled && accountChosen ? 1 : 0.5,
+                ...(templateFeatureEnabled && accountChosen
                   ? {
                       '&:hover': {
                         transform: 'translateY(-2px)',
@@ -137,7 +166,7 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
                   : {}),
                 transition: 'all 0.2s ease',
               }}
-              onClick={templateFeatureEnabled ? onUseTemplate : undefined}
+              onClick={templateFeatureEnabled && accountChosen ? onUseTemplate : undefined}
               id='wf-create-from-template-card'
             >
               <Box
@@ -185,19 +214,19 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
           </Box>
         </Tooltip>
 
-        <Tooltip title={!aiFeatureEnabled ? 'Coming Soon' : ''} arrow placement='top'>
+        <Tooltip title={!aiFeatureEnabled ? 'Coming Soon' : !accountChosen ? 'Select an account first' : ''} arrow placement='top'>
           <Box>
             <WidgetCard
               sx={{
                 mt: 0,
-                cursor: aiFeatureEnabled ? 'pointer' : 'default',
+                cursor: aiFeatureEnabled && accountChosen ? 'pointer' : 'default',
                 padding: 'var(--ds-space-4)',
                 height: '240px',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 'var(--ds-space-4)',
-                opacity: aiFeatureEnabled ? 1 : 0.5,
-                ...(aiFeatureEnabled
+                opacity: aiFeatureEnabled && accountChosen ? 1 : 0.5,
+                ...(aiFeatureEnabled && accountChosen
                   ? {
                       '&:hover': {
                         transform: 'translateY(-2px)',
@@ -209,7 +238,7 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
                   : {}),
                 transition: 'all 0.2s ease',
               }}
-              onClick={aiFeatureEnabled ? onAskAI : undefined}
+              onClick={aiFeatureEnabled && accountChosen ? onAskAI : undefined}
               id='wf-create-from-ai-card'
             >
               <Box
@@ -278,21 +307,26 @@ const CreateWorkflowOptionsModal: React.FC<CreateWorkflowOptionsModalProps> = ({
         <WidgetCard
           sx={{
             mt: 0,
-            cursor: 'pointer',
+            cursor: accountChosen ? 'pointer' : 'default',
             padding: 'var(--ds-space-4)',
             height: '240px',
             display: 'flex',
             flexDirection: 'column',
             gap: 'var(--ds-space-4)',
-            '&:hover': {
-              transform: 'translateY(-2px)',
-              boxShadow:
-                '0 var(--ds-space-1) calc(var(--ds-space-0) * 10) -1px rgba(229, 229, 229, 8), 0 var(--ds-space-0) calc(var(--ds-space-0) * 10) 0 rgb(233, 233, 233)',
-              border: '1px solid var(--ds-purple-300)',
-            },
+            opacity: accountChosen ? 1 : 0.5,
+            ...(accountChosen
+              ? {
+                  '&:hover': {
+                    transform: 'translateY(-2px)',
+                    boxShadow:
+                      '0 var(--ds-space-1) calc(var(--ds-space-0) * 10) -1px rgba(229, 229, 229, 8), 0 var(--ds-space-0) calc(var(--ds-space-0) * 10) 0 rgb(233, 233, 233)',
+                    border: '1px solid var(--ds-purple-300)',
+                  },
+                }
+              : {}),
             transition: 'all 0.2s ease',
           }}
-          onClick={onCreateFromCode}
+          onClick={accountChosen ? onCreateFromCode : undefined}
           id='wf-create-from-code-card'
           data-testid='create-workflow-from-code-card'
         >

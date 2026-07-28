@@ -164,6 +164,8 @@ export interface ExecutionAggregateRequest extends ExecutionDashboardFilterReque
 
 export interface AccountExecutionItem {
   id: string;
+  /** The run's own account — a page can span several. */
+  account_id?: string;
   workflow_id: string;
   workflow_name?: string;
   status: string;

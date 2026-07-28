@@ -19,7 +19,7 @@ import (
 //     edits during a rollback.
 type WorkflowStore interface {
 	CreateWorkflowWithInitialVersion(ctx context.Context, tenantID, accountID string, wf Workflow) (workflowID string, version *WorkflowVersion, err error)
-	List(ctx context.Context, tenantID, accountID string, request ListWorkflowRequest) ([]Workflow, int, error)
+	List(ctx context.Context, tenantID string, accountIDs []string, request ListWorkflowRequest) ([]Workflow, int, error)
 	Find(ctx context.Context, tenantID, accountID, id string) (*Workflow, error)
 	FindByName(ctx context.Context, tenantID, accountID, name string) (*Workflow, error)
 	FindByIntegrationName(ctx context.Context, tenantID, accountID, integrationName string) (*Workflow, error)
@@ -51,8 +51,8 @@ type WorkflowStore interface {
 	SetState(ctx context.Context, workflowID string, updates []WorkflowStateUpdate) error
 	DeleteExpiredState(ctx context.Context, limit int) (int64, error)
 	SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status WorkflowExecutionStatus, executionTime time.Time, statusMessage string, version *int) error
-	CountWorkflows(ctx context.Context, tenantID, accountID string, status WorkflowStatus, triggerType string) (int64, error)
-	GetWorkflowNames(ctx context.Context, tenantID, accountID string, ids []string) (map[string]string, error)
+	CountWorkflows(ctx context.Context, tenantID string, accountIDs []string, status WorkflowStatus, triggerType string) (int64, error)
+	GetWorkflowNames(ctx context.Context, tenantID string, accountIDs []string, ids []string) (map[string]string, error)
 	// GetUserNames resolves user ids to display names. The execution dashboard
 	// needs it because Temporal only records the triggering user's id.
 	// Unknown ids are simply absent from the result.

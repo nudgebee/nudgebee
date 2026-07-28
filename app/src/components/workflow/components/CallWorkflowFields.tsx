@@ -151,7 +151,7 @@ const CallWorkflowFields: React.FC<CallWorkflowFieldsProps> = ({
     setLoadError('');
     (async () => {
       try {
-        const result: any = await apiWorkflow.listWorkflows(accountId);
+        const result: any = await apiWorkflow.listWorkflows([accountId]);
         if (cancelled) return;
         const list = result?.data?.workflow_list?.workflows ?? [];
         setWorkflows(list);

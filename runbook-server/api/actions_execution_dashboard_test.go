@@ -28,12 +28,42 @@ func TestParseStringSlice(t *testing.T) {
 	}
 }
 
-func TestParseExecutionDashboardFilterRequiresAccountID(t *testing.T) {
-	if _, err := parseExecutionDashboardFilter(map[string]any{}); err == nil {
-		t.Fatal("expected an error when account_id is missing")
+// The dashboard is tenant-level now (#35113): no account means "every account
+// the caller can read", which ResolveReadableAccounts fills in downstream. The
+// parser must therefore accept an absent account rather than reject it -- but
+// it must not invent one either, or the scope check would be bypassed.
+func TestParseExecutionDashboardFilterAllowsNoAccount(t *testing.T) {
+	for name, args := range map[string]map[string]any{
+		"missing": {},
+		"empty":   {"account_id": ""},
+	} {
+		filter, err := parseExecutionDashboardFilter(args)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		if len(filter.AccountIDs) != 0 {
+			t.Fatalf("%s: expected no accounts, got %v", name, filter.AccountIDs)
+		}
 	}
-	if _, err := parseExecutionDashboardFilter(map[string]any{"account_id": ""}); err == nil {
-		t.Fatal("expected an error when account_id is empty")
+}
+
+func TestParseExecutionDashboardFilterReadsAccountFilter(t *testing.T) {
+	// The multi-select filter sends account_ids...
+	filter, err := parseExecutionDashboardFilter(map[string]any{"account_ids": []any{"acct-1", "acct-2"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(filter.AccountIDs) != 2 || filter.AccountIDs[0] != "acct-1" || filter.AccountIDs[1] != "acct-2" {
+		t.Fatalf("unexpected accounts: %v", filter.AccountIDs)
+	}
+
+	// ...while pre-#35113 deep links still send a single account_id.
+	filter, err = parseExecutionDashboardFilter(map[string]any{"account_id": "acct-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(filter.AccountIDs) != 1 || filter.AccountIDs[0] != "acct-1" {
+		t.Fatalf("unexpected accounts: %v", filter.AccountIDs)
 	}
 }
 

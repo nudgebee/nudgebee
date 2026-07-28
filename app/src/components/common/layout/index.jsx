@@ -55,6 +55,13 @@ const getDynamicPath = (path, router) => {
     return `${path}#all-events`;
   }
 
+  // 2b. Automations is tenant-level too — it has its own Account filter, so
+  // seeding accountId from whatever page you clicked from would silently
+  // pre-narrow the listing to one account.
+  if (path === '/automation') {
+    return path;
+  }
+
   // Helper to get Account ID from various sources
   const getAccountId = () => {
     const { asPath, query } = router;

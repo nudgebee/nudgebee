@@ -48,9 +48,11 @@ const Automation = () => {
       />
       <Box sx={{ position: 'relative', mt: 3 }}>
         <ErrorBoundary key={selectedFilter}>
-          {selectedFilter === 0 && <WorkflowListing accountId={router?.query?.accountId} />}
-          {selectedFilter === 1 && isAdmin && <TaskRunner accountId={router?.query?.accountId} />}
-          {selectedFilter === 2 && <ExecutionDashboard accountId={router?.query?.accountId} />}
+          {/* Tenant-level: each tab resolves its own accounts. The listing and
+              Executions carry an Account filter; Task Runner an account picker. */}
+          {selectedFilter === 0 && <WorkflowListing />}
+          {selectedFilter === 1 && isAdmin && <TaskRunner />}
+          {selectedFilter === 2 && <ExecutionDashboard />}
         </ErrorBoundary>
       </Box>
     </>

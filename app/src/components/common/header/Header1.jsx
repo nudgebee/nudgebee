@@ -316,8 +316,11 @@ const Header1 = ({ showBorder = false }) => {
         name: 'Automation',
         route: '/automation',
         icon: WorkflowIconBlue,
-        clusterDetailButton: true,
-        showActiveCluster: true,
+        // Tenant-level like Troubleshoot / Optimize above: the listing carries
+        // its own multi-select Account filter, so the global cluster dropdown
+        // would be a second, conflicting account control.
+        clusterDetailButton: false,
+        showActiveCluster: false,
       },
       {
         name: 'Auto Pilot',
@@ -590,18 +593,7 @@ const Header1 = ({ showBorder = false }) => {
       return;
     }
 
-    // 3. Handle Auto Pilot Route (NEW)
-    else if (currentRouter.pathname.indexOf('/automation') > -1 || currentRouter.pathname.indexOf('/auto-pilot') > -1) {
-      const currentAccountId = currentRouter.query.accountId;
-      if (currentAccountId !== e.value) {
-        updateClusterState(e);
-        // Switch account but keep the same tab (hash)
-        currentRouter.push(`/automation?accountId=${e.value}${hashString}`);
-        return;
-      }
-    }
-
-    // 4. Handle same-view switching (staying on details page)
+    // 3. Handle same-view switching (staying on details page)
     const accountId = currentRouter?.query?.accountId || currentRouter.query?.KubernetesDetails || currentRouter.query?.CloudAccountDetails || '';
 
     if (accountId && accountId != e.value) {

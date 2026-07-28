@@ -12,11 +12,14 @@ export const EXECUTION_STATUS_OPTIONS = [
 ];
 
 export const TABLE_HEADERS = [
-  { name: 'Date/Time', width: '13%' },
-  { name: 'Automation', width: '20%' },
-  { name: 'Execution ID', width: '12%' },
-  { name: 'Status', width: '10%' },
-  { name: 'User', width: '13%' },
+  { name: 'Date/Time', width: '12%' },
+  { name: 'Automation', width: '18%' },
+  // A page spans accounts now, and automation names are only unique within
+  // one — without this column two rows can read identically.
+  { name: 'Account', width: '11%' },
+  { name: 'Execution ID', width: '10%' },
+  { name: 'Status', width: '9%' },
+  { name: 'User', width: '12%' },
   { name: 'Duration', width: '8%' },
   'Details',
 ];

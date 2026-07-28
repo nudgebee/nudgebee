@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import apiWorkflow from '@api1/workflow';
+import apiHome from '@api1/home';
 import apiUser from '@api1/user';
 import type { AccountExecutionItem, AccountExecutionListRequest, ExecutionAggregateResponse } from '@api1/workflow/types';
 import { isExecutionCompleted } from '../utils/executionStatus';
@@ -16,6 +17,8 @@ import {
 export interface ExecutionDashboardFilters {
   startDate: Date;
   endDate: Date;
+  /** Empty means every account the caller can read — the tab is tenant-level. */
+  accountIds: string[];
   workflowIds: string[];
   triggeredBy: string[];
   statuses: string[];
@@ -45,16 +48,19 @@ const parseDate = (raw: unknown, fallback: Date): Date => {
  * the summary exactly once per account on mount. Filtering the table never
  * refetches the summary.
  */
-export function useExecutionDashboard(accountId?: string) {
+export function useExecutionDashboard() {
   const router = useRouter();
 
   const [filters, setFilters] = useState<ExecutionDashboardFilters>(() => ({
     startDate: new Date(Date.now() - DEFAULT_RANGE_DAYS * DAY_MS),
     endDate: new Date(),
+    accountIds: [],
     workflowIds: [],
     triggeredBy: [],
     statuses: [],
   }));
+  // id -> display name for the Account filter and the table's Account column.
+  const [accounts, setAccounts] = useState<Record<string, { name: string; cloud_provider: string }>>({});
   const [page, setPage] = useState(1);
   // Seed from the user's saved table page size — the same preference every
   // other table in the app reads, written by CustomTablePagination when the
@@ -99,10 +105,11 @@ export function useExecutionDashboard(accountId?: string) {
   // after router.isReady because router.query is empty on first render.
   useEffect(() => {
     if (!router.isReady || seeded) return;
-    const { from, to, automations, users, statuses, page: pageParam, size } = router.query;
+    const { from, to, accounts: accountsParam, accountId, automations, users, statuses, page: pageParam, size } = router.query;
     setFilters((prev) => ({
       startDate: parseDate(from, prev.startDate),
       endDate: parseDate(to, prev.endDate),
+      accountIds: fromCsv(accountsParam).length ? fromCsv(accountsParam) : fromCsv(accountId),
       workflowIds: fromCsv(automations),
       triggeredBy: fromCsv(users),
       statuses: fromCsv(statuses),
@@ -134,6 +141,7 @@ export function useExecutionDashboard(accountId?: string) {
     const nextParams: Record<string, string | undefined> = {
       from: filters.startDate.toISOString(),
       to: filters.endDate.toISOString(),
+      accounts: toCsv(filters.accountIds),
       automations: toCsv(filters.workflowIds),
       users: toCsv(filters.triggeredBy),
       statuses: toCsv(filters.statuses),
@@ -183,12 +191,6 @@ export function useExecutionDashboard(accountId?: string) {
       // Wait for the URL seed, otherwise a shared link fetches the default
       // range first and immediately refetches the real one.
       if (!seeded) return;
-      // No account yet (router.query is empty on first render). Settle out of
-      // the skeleton rather than leaving it spinning forever.
-      if (!accountId) {
-        setLoading(false);
-        return;
-      }
       const requestId = ++requestIdRef.current;
       if (!isPolling) setLoading(true);
 
@@ -200,7 +202,7 @@ export function useExecutionDashboard(accountId?: string) {
       const knownToken = pageTokensRef.current[page];
       if (knownToken) request.next_page_token = knownToken;
 
-      const response = await apiWorkflow.listAccountExecutions(accountId, request);
+      const response = await apiWorkflow.listAccountExecutions(filters.accountIds, request);
       // Drop a response the user has already navigated away from.
       if (!isMountedRef.current || requestId !== requestIdRef.current) return;
 
@@ -219,7 +221,7 @@ export function useExecutionDashboard(accountId?: string) {
       }
       if (!isPolling) setLoading(false);
     },
-    [accountId, filterRequest, page, pageSize, seeded]
+    [filters.accountIds, filterRequest, page, pageSize, seeded]
   );
 
   /**
@@ -229,11 +231,10 @@ export function useExecutionDashboard(accountId?: string) {
    * depend on `filterRequest`, so filtering the table costs zero extra calls.
    */
   const fetchAggregate = useCallback(async () => {
-    if (!accountId) return;
-    const response = await apiWorkflow.aggregateExecutions(accountId, { top_failed_limit: TOP_FAILED_LIMIT });
+    const response = await apiWorkflow.aggregateExecutions(filters.accountIds, { top_failed_limit: TOP_FAILED_LIMIT });
     if (!isMountedRef.current) return;
     setAggregate(response?.data?.executions_aggregate || null);
-  }, [accountId]);
+  }, [filters.accountIds]);
 
   useEffect(() => {
     fetchExecutions();
@@ -246,9 +247,8 @@ export function useExecutionDashboard(accountId?: string) {
   // Options for the Automation filter. Fetched once per account — the filter
   // lists automations, not executions, so it doesn't move with the date range.
   useEffect(() => {
-    if (!accountId) return;
     let cancelled = false;
-    apiWorkflow.listWorkflows(accountId, undefined, undefined, undefined, AUTOMATION_OPTIONS_LIMIT).then((response: any) => {
+    apiWorkflow.listWorkflows(filters.accountIds, undefined, undefined, undefined, AUTOMATION_OPTIONS_LIMIT).then((response: any) => {
       if (cancelled || !isMountedRef.current) return;
       const workflows = response?.data?.workflow_list?.workflows || [];
       setAutomationOptions(workflows.map((workflow: any) => ({ value: workflow.id, label: workflow.name || workflow.id })));
@@ -256,7 +256,30 @@ export function useExecutionDashboard(accountId?: string) {
     return () => {
       cancelled = true;
     };
-  }, [accountId]);
+  }, [filters.accountIds]);
+
+  // Accounts the caller can see, for the Account filter and the Account column.
+  useEffect(() => {
+    apiHome
+      .getCloudAccounts()
+      .then((response: any) => {
+        if (!isMountedRef.current || !Array.isArray(response)) return;
+        setAccounts(Object.fromEntries(response.map((a: any) => [a.id, { name: a.account_name, cloud_provider: a.cloud_provider || '' }])));
+      })
+      .catch(() => {
+        /* names degrade to ids */
+      });
+  }, []);
+
+  const accountOptions = useMemo(
+    () =>
+      Object.entries(accounts).map(([id, info]) => ({
+        label: info.name || id,
+        value: id,
+        group: (info.cloud_provider || '').toUpperCase() || 'Other',
+      })),
+    [accounts]
+  );
 
   // Poll the table only, and only while something is actually running.
   const hasRunningExecution = executions.some((execution) => !isExecutionCompleted(execution.status));
@@ -326,6 +349,8 @@ export function useExecutionDashboard(accountId?: string) {
     aggregate,
     automationOptions,
     userOptions,
+    accounts,
+    accountOptions,
     refresh,
   };
 }

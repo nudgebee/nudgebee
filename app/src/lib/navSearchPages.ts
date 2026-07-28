@@ -141,16 +141,17 @@ export const navSearchPages: NavSearchPage[] = [
 // render time, but — unlike the K8s/cloud detail pages below — aren't scoped
 // to a single cloud provider (any connected account works), and carry the
 // accountId as a `?accountId=` query param rather than a path segment. Each
-// entry names its own `basePath` and `group` (rather than this being one
-// page's array) since more than one such page now shares this shape —
-// currently /automation (src/pages/automation/index.jsx) and /agentHealth
-// (src/pages/agentHealth.jsx). `fragment` is appended after
+// entry names its own `basePath` and `group`. `fragment` is appended after
 // `{basePath}?accountId={accountId}#`. `label` is the hardcoded row title
 // shown to the user; `slug` is the slash-joined path used for the row's `type`
 // chip, its searchText, and its acronym; `group` picks the row's icon via
 // NAV_SEARCH_GROUP_ICON in GlobalPageSearch.jsx. Adding a new basePath here
 // also means adding it to ACCOUNT_SCOPED_QUERY_SEARCH_PATH_RE's alternation
 // in GlobalPageSearch.jsx.
+//
+// /automation used to live here too. It is tenant-level now (#35113), so its
+// rows are built from automationSearchFragments below instead — the shape is
+// no longer shared.
 export interface AccountScopedSearchFragment {
   label: string;
   slug: string;
@@ -160,11 +161,27 @@ export interface AccountScopedSearchFragment {
 }
 
 export const accountScopedSearchFragments: AccountScopedSearchFragment[] = [
-  { label: 'Automations', slug: 'automation/automations', fragment: 'automations', basePath: '/automation', group: 'Automation' },
-  { label: 'Task Runner', slug: 'automation/task-runner', fragment: 'task-runner', basePath: '/automation', group: 'Automation' },
-  { label: 'Executions', slug: 'automation/executions', fragment: 'executions', basePath: '/automation', group: 'Automation' },
   { label: 'Agent', slug: 'agent-health/agent', fragment: 'agent', basePath: '/agentHealth', group: 'Agent Health' },
   { label: 'Proxy Agent', slug: 'agent-health/proxy-agent', fragment: 'proxy-agent', basePath: '/agentHealth', group: 'Agent Health' },
+];
+
+// Automation (/automation) tabs. Kept apart from accountScopedSearchFragments
+// above because the row's href isn't a fixed shape: /automation is tenant-level
+// (#35113), so the plain search rows are `/automation#{fragment}`, while an
+// "@account" scoped pick becomes `/automation?account={accountId}#{fragment}` to
+// pre-seed the listing's Account filter. `label` is the hardcoded row title
+// shown to the user; `slug` is the slash-joined path used for the row's `type`
+// chip, its searchText, and its acronym.
+export interface AutomationSearchFragment {
+  label: string;
+  slug: string;
+  fragment: string;
+}
+
+export const automationSearchFragments: AutomationSearchFragment[] = [
+  { label: 'Automations', slug: 'automation/automations', fragment: 'automations' },
+  { label: 'Task Runner', slug: 'automation/task-runner', fragment: 'task-runner' },
+  { label: 'Executions', slug: 'automation/executions', fragment: 'executions' },
 ];
 
 // Kubernetes Details (/kubernetes/details/[KubernetesDetails]) tabs, kept

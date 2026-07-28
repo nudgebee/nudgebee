@@ -44,7 +44,7 @@ type WorkflowService interface {
 	ExecuteWorkflow(ctx *security.RequestContext, accountId, id string, triggerType model.WorkflowTrigger, inputs map[string]any) (string, error)
 	TriggerWorkflowFromDraft(ctx *security.RequestContext, accountId, id string, inputs map[string]any) (string, error)
 	RetriggerWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string, inputs map[string]any) (string, error)
-	ListWorkflows(ctx *security.RequestContext, accountId string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error)
+	ListWorkflows(ctx *security.RequestContext, accountIds []string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error)
 	GetWorkflow(ctx *security.RequestContext, accountId, id string) (*model.Workflow, error)
 	UpdateWorkflow(ctx *security.RequestContext, accountId, id string, workflow model.Workflow) (model.Workflow, error)
 	DeleteWorkflow(ctx *security.RequestContext, accountId, id string) error
@@ -1688,16 +1688,92 @@ func (s *Service) validateWorkflowInputs(definedInputs []model.Input, providedPa
 	return nil
 }
 
-func (s *Service) ListWorkflows(ctx *security.RequestContext, accountId string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
-		return model.ListWorkflowResponse{}, common.ErrorUnauthorized("account not accessible")
+// ResolveReadableAccounts turns the account filter sent by a tenant-level
+// listing into the concrete set of accounts to query.
+//
+// `requested` empty  → every account the caller can read (the tenant-level default).
+// `requested` set    → the requested accounts, minus any the caller can't read.
+//
+// It deliberately does NOT fall back to HasTenantAccess the way configAccountScope
+// does: that would 401 account admins, who are exactly the users the account
+// filter exists for. An empty result is an authorization failure rather than an
+// empty page — a caller with no readable accounts should be told so, and an
+// unbounded `account_id = ANY('{}')` is a bug we want surfaced, not answered.
+func ResolveReadableAccounts(ctx *security.RequestContext, requested []string) ([]string, error) {
+	scope, err := ResolveAccountScope(ctx, requested)
+	if err != nil {
+		return nil, err
+	}
+	return scope.AccountIDs, nil
+}
+
+// AccountScope is a resolved account filter.
+type AccountScope struct {
+	// AccountIDs is the concrete set to filter on. Never empty.
+	AccountIDs []string
+	// TenantWide reports that AccountIDs is exactly "every account in the
+	// tenant": the caller holds tenant-level read and asked for no subset. A
+	// query that already scopes by tenant can then drop the per-account
+	// predicate entirely — it is equivalent, and it avoids enumerating every
+	// account of a large tenant into the query.
+	TenantWide bool
+}
+
+// ResolveAccountScope is ResolveReadableAccounts plus the tenant-wide signal.
+func ResolveAccountScope(ctx *security.RequestContext, requested []string) (AccountScope, error) {
+	sc := ctx.GetSecurityContext()
+
+	readable := sc.ListAccountIds()
+	if len(readable) == 0 {
+		return AccountScope{}, common.ErrorUnauthorized("no accessible accounts")
+	}
+
+	if len(requested) == 0 {
+		return AccountScope{
+			AccountIDs: readable,
+			TenantWide: sc.HasTenantAccess(security.SecurityAccessTypeRead),
+		}, nil
+	}
+
+	scoped := make([]string, 0, len(requested))
+	for _, accountId := range requested {
+		if accountId == "" {
+			continue
+		}
+		if !sc.HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+			continue
+		}
+		scoped = append(scoped, accountId)
+	}
+	if len(scoped) == 0 {
+		return AccountScope{}, common.ErrorUnauthorized("account not accessible")
+	}
+
+	// Selecting every account you can see is the same request as selecting
+	// none — the account filter's per-provider "Select All" makes that a click
+	// away, and on a large tenant enumerating the result would blow the
+	// downstream filter-size cap for no reason.
+	if len(scoped) == len(readable) && sc.HasTenantAccess(security.SecurityAccessTypeRead) {
+		return AccountScope{AccountIDs: scoped, TenantWide: true}, nil
+	}
+
+	return AccountScope{AccountIDs: scoped}, nil
+}
+
+// ListWorkflows lists automations across `accountIds`. The Automations page is
+// tenant-level with an account filter (#35113), so an empty `accountIds` means
+// "every account this caller can read" rather than "none".
+func (s *Service) ListWorkflows(ctx *security.RequestContext, accountIds []string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error) {
+	scopedAccountIds, err := ResolveReadableAccounts(ctx, accountIds)
+	if err != nil {
+		return model.ListWorkflowResponse{}, err
 	}
 
 	if request.Limit <= 0 {
 		request.Limit = 50
 	}
 
-	workflows, totalCount, err := s.store.List(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, request)
+	workflows, totalCount, err := s.store.List(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), scopedAccountIds, request)
 	if err != nil {
 		return model.ListWorkflowResponse{}, err
 	}
@@ -1722,7 +1798,7 @@ func (s *Service) ListWorkflows(ctx *security.RequestContext, accountId string, 
 	// Reconcile stale RUNNING statuses by checking Temporal's actual execution status.
 	// When WorkflowExecutionTimeout fires, Temporal terminates the workflow server-side
 	// without running cleanup code, leaving last_execution_status as RUNNING in the DB.
-	s.reconcileRunningStatuses(ctx, accountId, workflows)
+	s.reconcileRunningStatuses(ctx, workflows)
 
 	var nextPageToken string
 	if len(workflows) == request.Limit {
@@ -1742,7 +1818,9 @@ func (s *Service) ListWorkflows(ctx *security.RequestContext, accountId string, 
 // NOTE: This makes one Temporal visibility query per RUNNING workflow. This is acceptable
 // because (a) very few workflows are in RUNNING state at any time, and (b) after the first
 // reconciliation the DB is corrected so subsequent calls won't re-query for that workflow.
-func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, accountId string, workflows []model.Workflow) {
+// A page can span several accounts, so the visibility query is built from each
+// row's own account rather than a single page-level one.
+func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, workflows []model.Workflow) {
 	tenantID := ctx.GetSecurityContext().GetTenantId()
 	for i := range workflows {
 		if workflows[i].LastExecutionStatus != model.WorkflowExecutionStatusRunning {
@@ -1751,7 +1829,7 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, account
 
 		query := fmt.Sprintf("%s='%s' AND %s='%s' AND %s='%s'",
 			model.SearchAttrTenantID, tenantID,
-			model.SearchAttrAccountID, accountId,
+			model.SearchAttrAccountID, workflows[i].AccountID,
 			model.SearchAttrWorkflowID, workflows[i].ID)
 
 		resp, err := s.temporalClient.ListWorkflow(ctx.GetContext(), &workflowservice.ListWorkflowExecutionsRequest{
@@ -1785,6 +1863,7 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, account
 
 		// Asynchronously update the DB so future reads are correct
 		wfID := workflows[i].ID
+		wfAccountID := workflows[i].AccountID
 		closeTime := time.Now().UTC()
 		if latestExec.CloseTime != nil {
 			closeTime = latestExec.CloseTime.AsTime()
@@ -1796,7 +1875,7 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, account
 		go func() {
 			dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := s.store.SetLastExecutionStatus(dbCtx, tenantID, accountId, wfID, latestStatus, closeTime, statusMessage, runVersion); err != nil {
+			if err := s.store.SetLastExecutionStatus(dbCtx, tenantID, wfAccountID, wfID, latestStatus, closeTime, statusMessage, runVersion); err != nil {
 				slog.Error("Failed to reconcile stale workflow status", "workflowID", wfID, "error", err)
 			}
 		}()
@@ -2528,7 +2607,7 @@ func (s *Service) ListWorkflowExecutionsForEvent(ctx *security.RequestContext, a
 		for id := range idSet {
 			ids = append(ids, id)
 		}
-		names, nameErr := s.store.GetWorkflowNames(ctx.GetContext(), tenantID, accountId, ids)
+		names, nameErr := s.store.GetWorkflowNames(ctx.GetContext(), tenantID, []string{accountId}, ids)
 		if nameErr != nil {
 			ctx.GetLogger().Error("failed to get workflow names for executions", "error", nameErr)
 		} else {
@@ -4221,13 +4300,14 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 
 // CountWorkflows counts workflows with optional filters for status and trigger type.
 func (s *Service) CountWorkflows(ctx *security.RequestContext, req model.WorkflowCountRequest) (model.WorkflowCountResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountID, security.SecurityAccessTypeRead) {
-		return model.WorkflowCountResponse{}, common.ErrorUnauthorized("account not accessible")
+	accountIDs, err := ResolveReadableAccounts(ctx, req.AccountIDs)
+	if err != nil {
+		return model.WorkflowCountResponse{}, err
 	}
 
 	tenantID := ctx.GetSecurityContext().GetTenantId()
 
-	count, err := s.store.CountWorkflows(ctx.GetContext(), tenantID, req.AccountID, req.Status, req.TriggerType)
+	count, err := s.store.CountWorkflows(ctx.GetContext(), tenantID, accountIDs, req.Status, req.TriggerType)
 	if err != nil {
 		return model.WorkflowCountResponse{}, fmt.Errorf("failed to count workflows: %w", err)
 	}

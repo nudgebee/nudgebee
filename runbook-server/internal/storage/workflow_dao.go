@@ -127,14 +127,25 @@ func (s *WorkflowDao) CreateWorkflowWithInitialVersion(ctx context.Context, tena
 	return id, version, nil
 }
 
-func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, request model.ListWorkflowRequest) ([]model.Workflow, int, error) {
+// List returns the workflows for `accountIDs` within `tenantID`. The listing is
+// tenant-level with an account filter (see #35113), so callers pass the set of
+// accounts the requester may read rather than a single account. `accountIDs`
+// must never be empty: `account_id = ANY('{}')` matches nothing but still costs
+// a scan, and an accidentally-blank scope is a bug worth surfacing rather than
+// answering with an empty page (same reasoning as the blank-id guards in
+// ListCallers and UpdateWorkflowStatus).
+func (s *WorkflowDao) List(ctx context.Context, tenantID string, accountIDs []string, request model.ListWorkflowRequest) ([]model.Workflow, int, error) {
 	var workflows []model.Workflow
+
+	if tenantID == "" || len(accountIDs) == 0 {
+		return nil, 0, fmt.Errorf("List: tenantID and at least one accountID are required")
+	}
 
 	// Build the base WHERE clause with filters (shared by both queries)
 	// Note: Main query uses 'w.' prefix, count query uses no prefix
-	whereClause := "WHERE tenant_id = $1 AND account_id = $2"
-	whereClauseWithAlias := "WHERE w.tenant_id = $1 AND w.account_id = $2"
-	baseArgs := []any{tenantID, accountID}
+	whereClause := "WHERE tenant_id = $1 AND account_id = ANY($2)"
+	whereClauseWithAlias := "WHERE w.tenant_id = $1 AND w.account_id = ANY($2)"
+	baseArgs := []any{tenantID, pq.Array(accountIDs)}
 	argId := 3
 
 	if request.Name != "" {
@@ -235,7 +246,7 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 	// Build main query (with all filters + LIMIT/OFFSET)
 	// Join with users table to get user details for created_by and updated_by
 	mainQuery := `
-		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
+		SELECT w.id::text, w.account_id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
 			cu.id::text as created_by_user_id, cu.display_name as created_by_display_name,
 			uu.id::text as updated_by_user_id, uu.display_name as updated_by_display_name,
 			w.live_version_id::text, lv.version_number, lv.name, lv.status,
@@ -278,6 +289,7 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 
 	for rows.Next() {
 		var wfID string
+		var wfAccountID string
 		var wfName string
 		var wfBytes []byte
 		var tagBytes []byte
@@ -300,7 +312,7 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 		var draftVersionNumber sql.NullInt64
 		var draftVersionName sql.NullString
 
-		if err := rows.Scan(&wfID, &wfName, &wfBytes, &tagBytes, &status, &lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime, &lastExecutionVersion, &createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
+		if err := rows.Scan(&wfID, &wfAccountID, &wfName, &wfBytes, &tagBytes, &status, &lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime, &lastExecutionVersion, &createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
 			&createdByUserID, &createdByDisplayName, &updatedByUserID, &updatedByDisplayName,
 			&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
 			&draftVersionID, &draftVersionNumber, &draftVersionName); err != nil {
@@ -330,7 +342,9 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 			v := int(lastExecutionVersion.Int64)
 			wf.LastExecutionVersion = &v
 		}
-		wf.AccountID = accountID
+		// Read the account off the row, not off the request — a page can now
+		// span several accounts.
+		wf.AccountID = wfAccountID
 		wf.TenantID = tenantID
 		wf.CreatedBy = createdBy
 		wf.UpdatedBy = updatedBy
@@ -453,17 +467,17 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	return &wf, nil
 }
 
-func (s *WorkflowDao) GetWorkflowNames(ctx context.Context, tenantID, accountID string, ids []string) (map[string]string, error) {
+func (s *WorkflowDao) GetWorkflowNames(ctx context.Context, tenantID string, accountIDs []string, ids []string) (map[string]string, error) {
 	out := map[string]string{}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if tenantID == "" || accountID == "" {
-		return nil, fmt.Errorf("tenantID and accountID are required")
+	if tenantID == "" || len(accountIDs) == 0 {
+		return nil, fmt.Errorf("tenantID and at least one accountID are required")
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id::text, name FROM workflows WHERE tenant_id = $1 AND account_id = $2 AND id = ANY($3::uuid[])`,
-		tenantID, accountID, pq.Array(ids))
+		`SELECT id::text, name FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) AND id = ANY($3::uuid[])`,
+		tenantID, pq.Array(accountIDs), pq.Array(ids))
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch workflow names: %w", err)
 	}
@@ -1352,10 +1366,16 @@ func (s *WorkflowDao) ListCallers(ctx context.Context, tenantID, accountID, call
 }
 
 // CountWorkflows counts workflows with optional filters for status and trigger type.
-func (s *WorkflowDao) CountWorkflows(ctx context.Context, tenantID, accountID string, status model.WorkflowStatus, triggerType string) (int64, error) {
+// Like List, it counts across the set of accounts the caller may read; an empty
+// set is rejected rather than silently counted as zero.
+func (s *WorkflowDao) CountWorkflows(ctx context.Context, tenantID string, accountIDs []string, status model.WorkflowStatus, triggerType string) (int64, error) {
+	if tenantID == "" || len(accountIDs) == 0 {
+		return 0, fmt.Errorf("CountWorkflows: tenantID and at least one accountID are required")
+	}
+
 	// Build the query with dynamic filters
-	query := `SELECT COUNT(*) FROM workflows WHERE tenant_id = $1 AND account_id = $2`
-	args := []any{tenantID, accountID}
+	query := `SELECT COUNT(*) FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2)`
+	args := []any{tenantID, pq.Array(accountIDs)}
 	argID := 3
 
 	if status != "" {
