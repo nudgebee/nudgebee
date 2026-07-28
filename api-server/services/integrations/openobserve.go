@@ -2,7 +2,9 @@ package integrations
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	neturl "net/url"
 	"nudgebee/services/common"
@@ -124,7 +126,7 @@ func (m OpenObserve) ValidateConfig(sc *security.SecurityContext, config []core.
 		errs = append(errs, fmt.Errorf("openobserve_url is required"))
 	} else if !strings.HasPrefix(openobserveURL, "http://") && !strings.HasPrefix(openobserveURL, "https://") {
 		errs = append(errs, fmt.Errorf("openobserve_url must start with http:// or https:// (got %q)", openobserveURL))
-	} else if hasURLPath(rawURL) {
+	} else if parsed, err := neturl.Parse(rawURL); err == nil && parsed.Path != "" && parsed.Path != "/" {
 		errs = append(errs, fmt.Errorf("openobserve_url must be the base URL only — remove the path after the host (use %q, not %q)", openobserveURL, rawURL))
 	}
 	if orgID == "" {
@@ -168,6 +170,9 @@ func (m OpenObserve) TestConnection(sc *security.SecurityContext, config []core.
 		common.HttpWithTimeout(15*time.Second),
 	)
 	if err != nil {
+		if errors.Is(err, io.EOF) || strings.Contains(err.Error(), "connection refused") {
+			return fmt.Errorf("failed to connect to OpenObserve at %s the server may be down, or a tunnel/port-forward may have died: %w", openobserveURL, err)
+		}
 		return fmt.Errorf("failed to connect to OpenObserve at %s: %w", openobserveURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -198,4 +203,43 @@ func normalizeOpenObserveURL(raw string) string {
 		return strings.TrimRight(raw, "/")
 	}
 	return parsed.Scheme + "://" + parsed.Host
+}
+
+// GetOpenObserveConfigs retrieves and decrypts OpenObserve configuration for an account
+func GetOpenObserveConfigs(sc *security.RequestContext, accountId string) (string, string, string, string, error) {
+	url := ""
+	orgID := ""
+	username := ""
+	password := ""
+
+	openobserveIntegrations, err := core.ListIntegrationConfigs(sc, accountId, IntegrationOpenObserve)
+	if err != nil {
+		return url, orgID, username, password, fmt.Errorf("failed to list OpenObserve integration configs: %w", err)
+	}
+	if len(openobserveIntegrations) == 0 {
+		return url, orgID, username, password, fmt.Errorf("openobserve integration not found for account: %s", accountId)
+	}
+	openobserveIntegration := openobserveIntegrations[0]
+	for _, config := range openobserveIntegration.Configs {
+		switch config.Name {
+		case "openobserve_url":
+			url = config.Value
+		case "openobserve_org_id":
+			orgID = config.Value
+		case "openobserve_username":
+			username = config.Value
+		case "openobserve_password":
+			password = config.Value
+			if config.IsEncrypted {
+				var err error
+				password, err = common.Decrypt(config.Value)
+				if err != nil {
+					return url, orgID, username, password, fmt.Errorf("failed to decrypt OpenObserve password: %w", err)
+				}
+			}
+		}
+	}
+
+	url = normalizeOpenObserveURL(url)
+	return url, orgID, username, password, nil
 }

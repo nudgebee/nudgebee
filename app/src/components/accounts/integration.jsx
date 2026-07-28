@@ -57,6 +57,7 @@ const PROVIDERS = {
     'LOGGLY',
     'LOKI',
     'SIGNOZ',
+    'OPENOBSERVE',
     'OBSERVE',
     'AZURE_APP_INSIGHTS',
     'PROMETHEUS',
@@ -132,6 +133,7 @@ const SECTIONS_CONFIG = [
       'LOGGLY',
       'LOKI',
       'SIGNOZ',
+      'OPENOBSERVE',
       'OBSERVE',
       'AZURE_APP_INSIGHTS',
       'PROMETHEUS',
@@ -519,6 +521,8 @@ const accountHelpers = {
         activeClouds = accountHelpers.mapWebhooksToActiveStatus(observabilityAccounts.loki);
       } else if (provider?.toLowerCase() === 'signoz') {
         activeClouds = accountHelpers.mapWebhooksToActiveStatus(observabilityAccounts.signoz);
+      } else if (provider?.toLowerCase() === 'openobserve') {
+        activeClouds = accountHelpers.mapWebhooksToActiveStatus(observabilityAccounts.openobserve);
       } else if (provider?.toLowerCase() === 'azure_app_insights') {
         activeClouds = accountHelpers.mapWebhooksToActiveStatus(observabilityAccounts.azure);
       } else if (provider?.toLowerCase() === 'prometheus') {

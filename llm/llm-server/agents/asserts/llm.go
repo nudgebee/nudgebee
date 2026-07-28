@@ -133,10 +133,10 @@ func JudgeClaims(
 		sc,
 		sc.GetSecurityContext().GetUserId(),
 		firstAccount(sc),
-		"",   // conversationId — not persisted; judge calls don't belong to a user conversation
-		"",   // messageId — same
+		"",               // conversationId — not persisted; judge calls don't belong to a user conversation
+		"",               // messageId — same
 		"semantic_judge", // agentId
-		false, // trackContent — don't write to llm_conversation_messages
+		false,            // trackContent — don't write to llm_conversation_messages
 		messages,
 		true, // cleanupMarkdown — strip code fences if model wraps output
 		options...,
