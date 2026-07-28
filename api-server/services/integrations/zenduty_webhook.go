@@ -390,10 +390,10 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	accountMapping := core.ParseAccountMapping(settings, sc.GetLogger())
 	accountId = core.ApplyAccountMapping(accountId, parsedPayload.Investigation.Labels, accountMapping)
 
-	// Validate and enrich subject against k8s_workloads inventory
-	if parsedPayload.EventSubjectName != "" {
-		matchWorkloadAndEnrich(sc, &parsedPayload, accountId)
-	}
+	// Subject validation against k8s_workloads is NOT done here. Every webhook event
+	// goes through core.MatchWorkloadAndEnrich in enrichEventsWithSubjectResolution
+	// after account mapping, and that matcher scopes the lookup to the event's own
+	// namespace and refuses ambiguous rows when the namespace is unknown.
 
 	// Deterministic last resort: the Zenduty service itself. Only reached once the
 	// title regex, the firing-label walk and the API enrichment have all come up
@@ -549,7 +549,7 @@ func resolveZendutySubjectFromService(sc *security.RequestContext, parsedPayload
 	}
 
 	parsedPayload.EventSubjectName = serviceName
-	matchWorkloadAndEnrich(sc, parsedPayload, accountId)
+	core.MatchWorkloadAndEnrich(sc, parsedPayload, accountId)
 
 	if parsedPayload.Investigation.Labels["nb_matched_workload"] == "true" {
 		parsedPayload.Investigation.Labels["nb_subject_resolution"] = "zenduty_service_validated"
@@ -613,7 +613,7 @@ func resolveZendutySubjectUsingLLM(sc *security.RequestContext, parsedPayload *c
 	common.MetricsSubjectResolution(sc.GetContext(), IntegrationZendutyWebhook, "live", "matched", tenantId)
 
 	parsedPayload.EventSubjectName = name
-	matchWorkloadAndEnrich(sc, parsedPayload, accountId)
+	core.MatchWorkloadAndEnrich(sc, parsedPayload, accountId)
 }
 
 // EnrichWithZenDutyIncident enriches the event with full incident details from ZenDuty API.
