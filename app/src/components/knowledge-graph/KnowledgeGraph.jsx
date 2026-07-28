@@ -49,6 +49,7 @@ import LogQueryBuilderAutocomplete, { PropertyFilterHelp } from '@components/k8s
 import EdgeDetails from '@components/k8s/details/EdgeDetails';
 import Datetime from '@shared/format/Datetime';
 import KGSettings from './KGSettings';
+import { parseUniqueKey, decodeFilterOptions, computeFilterOptionsClientSide } from './kgFilterCascade';
 import { isTenantAdmin } from '@lib/auth';
 import PropTypes from 'prop-types';
 
@@ -699,19 +700,7 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
 // unknown providers, which would be misleading on an ExternalService row.
 const KNOWN_CLOUD_PROVIDERS = new Set(['aws', 'k8s', 'gcp', 'azure']);
 
-// Parse a canonical 6-part KG unique key into its components.
-// Format: {cloud_provider}:{account}:{location}:{NodeType}:{hierarchy}:{name}
-// (see api-server/services/knowledge_graph/core/unique_key_builder.go). `name` is
-// guaranteed colon-free server-side, so a positional split is safe. Returns null
-// for non-canonical keys (e.g. legacy 3-part flow-source keys) so callers fall
-// back to the raw string.
-const parseUniqueKey = (key) => {
-  if (typeof key !== 'string') return null;
-  const parts = key.split(':');
-  if (parts.length !== 6) return null;
-  const [provider, account, location, nodeType, hierarchy, name] = parts;
-  return { provider, account, location, nodeType, hierarchy, name };
-};
+// parseUniqueKey is imported from ./kgFilterCascade (shared with the client-side cascade).
 
 // PascalCase NodeType → spaced label ("ServiceIdentity" → "Service Identity").
 // snakeToTitleCase only splits on '_', so it would leave these un-spaced.
@@ -1003,25 +992,20 @@ const ServiceMapContent = () => {
     apiKubernetes1
       .knowledgeGraphFilterOptions()
       .then((res) => {
-        const filterOptions = {};
-        const nodeTypes =
-          res?.data?.data?.kg_get_filter_options?.data?.node_types?.map((d) => ({
-            label: snakeToTitleCase(d),
-            value: d,
-          })) || [];
-        filterOptions.nodeTypes = nodeTypes;
-        const attributes = res?.data?.data?.kg_get_filter_options?.data?.attribute_keys || [];
-        filterOptions.attributeMap = attributes.map((l) => ({ label: l }));
-        const labels = res?.data?.data?.kg_get_filter_options?.data?.label_keys || [];
-        filterOptions.labelMap = labels.map((l) => ({ label: l }));
-        const accountIds = res?.data?.data?.kg_get_filter_options?.data?.account_ids || [];
-        filterOptions.accountIds = accountIds;
-        const lastSyncTime = res?.data?.data?.kg_get_filter_options?.data?.last_sync_time || null;
-        filterOptions.lastSyncTime = lastSyncTime;
-        const nodeIdMap = res?.data?.data?.kg_get_filter_options?.data?.node_id_map || {};
-        filterOptions.nodeIdMap = nodeIdMap;
-        const nodeCount = res?.data?.data?.kg_get_filter_options?.data?.node_count ?? 0;
-        filterOptions.nodeCount = nodeCount;
+        // The payload is columnar (v2); decode it back into the maps the UI consumes.
+        // The ref also carries the label/attr key tuple coverage used by the offline
+        // label/attribute cascade (kept on the ref only, not rendered).
+        const decoded = decodeFilterOptions(res?.data?.data?.kg_get_filter_options?.data);
+        const filterOptions = {
+          ...decoded,
+          nodeTypes: buildNodeTypeOptions(decoded.nodeTypeList, decoded.specificTypesByNodeType),
+          labelMap: decoded.labelKeys.map((l) => ({ label: l })),
+          attributeMap: decoded.attributeKeys.map((l) => ({ label: l })),
+        };
+        nodeTypeGroupingRef.current = {
+          nodeTypeList: decoded.nodeTypeList,
+          specificTypesByNodeType: decoded.specificTypesByNodeType,
+        };
         initialKgFilterOptionsRef.current = filterOptions;
         setKgFilterOptions(filterOptions);
         setKgFiltersReady(true);
@@ -1069,16 +1053,22 @@ const ServiceMapContent = () => {
 
     const suppressNodeTypesUpdate = draftNodeTypes?.length > 0 && !accountChanged;
 
-    const onFilterOptionsSuccess = (res) => {
+    // Apply the client-computed dropdown scoping. Mirrors the previous network
+    // onFilterOptionsSuccess shape: still gates the Node-Type update behind
+    // suppressNodeTypesUpdate, always refreshes the Node maps, and scopes the
+    // label/attribute key lists (Option-B tuple coverage) to the current selection.
+    const applyComputedOptions = (computed) => {
       if (cancelled) return;
-      const d = res?.data?.data?.kg_get_filter_options?.data;
+      const { nodeTypeList, specificTypesByNodeType } = computed;
       const updates = {
         ...(!suppressNodeTypesUpdate && {
           nodeTypes: d?.node_types?.map((v) => ({ label: snakeToTitleCase(v), value: v })) || [],
         }),
-        labelMap: (d?.label_keys || []).map((l) => ({ label: l })),
-        attributeMap: (d?.attribute_keys || []).map((l) => ({ label: l })),
-        nodeIdMap: d?.node_id_map || {},
+        labelMap: computed.labelMap,
+        attributeMap: computed.attributeMap,
+        nodeIdMap: computed.nodeIdMap,
+        nodeClusterMap: computed.nodeClusterMap,
+        nodeSpecificTypeMap: computed.nodeSpecificTypeMap,
       };
       setKgFilterOptions((prev) => ({ ...prev, ...updates }));
       setIsFilterOptionsRefreshing(false);
@@ -1086,19 +1076,25 @@ const ServiceMapContent = () => {
 
     clearTimeout(filterOptionsDebounceRef.current);
     filterOptionsDebounceRef.current = setTimeout(() => {
+      // Baseline is guaranteed loaded here (the effect early-returns until
+      // kgFiltersInitialized flips, which happens after the ref is set), but guard
+      // defensively so a future refactor can't scope the dropdowns to empty maps.
+      const baseline = initialKgFilterOptionsRef.current;
+      if (cancelled || !baseline) return;
       setIsFilterOptionsRefreshing(true);
-      apiKubernetes1
-        .knowledgeGraphFilterOptions({
-          accountIds: draftAccountIds?.map((e) => e.value),
-          nodeTypes: draftNodeTypes?.map((e) => e.value),
-        })
-        .then(onFilterOptionsSuccess)
-        .catch((err) => {
-          if (cancelled) return;
-          console.error('Failed to refresh filter options:', err);
-          setIsFilterOptionsRefreshing(false);
-        });
-    }, 300);
+      const { nodeTypes: draftBroadNodeTypes, specificTypes: draftSpecificTypes } = splitNodeTypeSelection(
+        draftNodeTypes?.map((e) => e.value),
+        nodeTypeGroupingRef.current.nodeTypeList,
+        nodeTypeGroupingRef.current.specificTypesByNodeType
+      );
+      // Scope the dropdowns entirely client-side from the unfiltered baseline — no backend round-trip.
+      const computed = computeFilterOptionsClientSide(baseline, {
+        accountIds: draftAccountIds?.map((e) => e.value),
+        broadNodeTypes: draftBroadNodeTypes,
+        specificTypes: draftSpecificTypes,
+      });
+      applyComputedOptions(computed);
+    }, 150);
 
     return () => {
       cancelled = true;

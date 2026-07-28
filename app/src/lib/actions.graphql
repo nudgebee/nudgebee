@@ -8920,11 +8920,21 @@ type kg_get_filter_options_output {
 
 type kg_filter_options {
   account_ids: [String]
-  node_types: [String]
+  node_types: jsonb
   label_keys: [String]
   attribute_keys: [String]
   last_sync_time: timestamptz
-  node_id_map: jsonb
+  node_keys: [String]
+  node_ids: [String]
+  node_account_idx: jsonb
+  node_specific_type_idx: jsonb
+  node_cluster_idx: jsonb
+  node_bucket_idx: jsonb
+  specific_type_dict: [String]
+  cluster_dict: [String]
+  filter_buckets: jsonb
+  label_key_buckets: jsonb
+  attribute_key_buckets: jsonb
   node_count: Int
 }
 

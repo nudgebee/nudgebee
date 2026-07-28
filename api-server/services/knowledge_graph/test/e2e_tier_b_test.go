@@ -12,7 +12,6 @@ package test
 // (full-orchestrator smoke) live in e2e_tier_b_build_test.go.
 
 import (
-	"slices"
 	"testing"
 
 	"nudgebee/services/internal/database"
@@ -198,14 +197,17 @@ func tierBAssertFilterOptions(t *testing.T, svc *core.Service) {
 	if len(opts.NodeTypes) == 0 {
 		t.Error("GetFilterOptions: expected non-empty NodeTypes")
 	}
-	if !slices.Contains(opts.NodeTypes, string(core.NodeTypePod)) {
+	if _, ok := opts.NodeTypes[string(core.NodeTypePod)]; !ok {
 		t.Errorf("GetFilterOptions: NodeTypes %v missing Pod", opts.NodeTypes)
 	}
-	if len(opts.NodeIDMap) == 0 {
-		t.Error("GetFilterOptions: expected non-empty NodeIDMap")
+	if len(opts.NodeKeys) == 0 {
+		t.Error("GetFilterOptions: expected non-empty NodeKeys")
 	}
-	if opts.NodeCount != len(opts.NodeIDMap) {
-		t.Errorf("GetFilterOptions: NodeCount %d != len(NodeIDMap) %d", opts.NodeCount, len(opts.NodeIDMap))
+	if opts.NodeCount != len(opts.NodeKeys) {
+		t.Errorf("GetFilterOptions: NodeCount %d != len(NodeKeys) %d", opts.NodeCount, len(opts.NodeKeys))
+	}
+	if len(opts.NodeIDs) != len(opts.NodeKeys) {
+		t.Errorf("GetFilterOptions: NodeIDs %d != NodeKeys %d (columns must be index-aligned)", len(opts.NodeIDs), len(opts.NodeKeys))
 	}
 }
 

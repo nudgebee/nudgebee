@@ -7,7 +7,6 @@ package core
 import (
 	"io"
 	"log/slog"
-	"slices"
 	"testing"
 
 	"nudgebee/services/internal/testenv"
@@ -32,8 +31,9 @@ func TestFilterOptionsCache_UnfilteredServedFromCacheFilteredBypasses(t *testing
 	// this empty tenant could never produce.
 	const sentinel = "SENTINEL-CACHE-TYPE"
 	svc.writeFilterOptionsCache(filterCacheTenant, &FilterOptions{
-		NodeTypes: []string{sentinel},
-		NodeIDMap: map[string]string{"k8s:acct::Pod::x": "id-1"},
+		NodeTypes: map[string][]string{sentinel: {}},
+		NodeKeys:  []string{"k8s:acct::Pod::x"},
+		NodeIDs:   []string{"id-1"},
 		NodeCount: 1,
 	})
 
@@ -42,7 +42,7 @@ func TestFilterOptionsCache_UnfilteredServedFromCacheFilteredBypasses(t *testing
 	if err != nil {
 		t.Fatalf("GetFilterOptions unfiltered: %v", err)
 	}
-	if !slices.Contains(unfiltered.NodeTypes, sentinel) {
+	if _, ok := unfiltered.NodeTypes[sentinel]; !ok {
 		t.Errorf("unfiltered call did not read the cache: NodeTypes=%v", unfiltered.NodeTypes)
 	}
 
@@ -51,7 +51,7 @@ func TestFilterOptionsCache_UnfilteredServedFromCacheFilteredBypasses(t *testing
 	if err != nil {
 		t.Fatalf("GetFilterOptions filtered: %v", err)
 	}
-	if slices.Contains(filtered.NodeTypes, sentinel) {
+	if _, ok := filtered.NodeTypes[sentinel]; ok {
 		t.Errorf("filtered call incorrectly served from cache: NodeTypes=%v", filtered.NodeTypes)
 	}
 
@@ -60,7 +60,7 @@ func TestFilterOptionsCache_UnfilteredServedFromCacheFilteredBypasses(t *testing
 	if !ok {
 		t.Fatal("readFilterOptionsCache: expected a hit")
 	}
-	if got.NodeCount != 1 || len(got.NodeIDMap) != 1 || !slices.Contains(got.NodeTypes, sentinel) {
+	if _, hasSentinel := got.NodeTypes[sentinel]; got.NodeCount != 1 || len(got.NodeKeys) != 1 || !hasSentinel {
 		t.Errorf("cache round-trip mismatch: %+v", got)
 	}
 }

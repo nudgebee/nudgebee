@@ -1816,7 +1816,17 @@ const apiKubernetes1 = {
           label_keys
           node_types
           last_sync_time
-          node_id_map
+          node_keys
+          node_ids
+          node_account_idx
+          node_specific_type_idx
+          node_cluster_idx
+          node_bucket_idx
+          specific_type_dict
+          cluster_dict
+          filter_buckets
+          label_key_buckets
+          attribute_key_buckets
           node_count
         }
       }

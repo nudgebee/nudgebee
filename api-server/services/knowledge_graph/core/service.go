@@ -3771,14 +3771,42 @@ func (s *Service) GetEdgeByID(edgeID string) (*KgEdge, error) {
 
 // FilterOptions represents available filter options for the UI
 // This includes account IDs, node types, and available label/attribute keys (but not their values)
+// FilterOptions is the columnar ("v2") filter-options payload. It replaced the
+// earlier four per-node maps (node_id_map / node_cluster_map / node_specific_type_map /
+// node_account_map) and the flat node_types list to shrink the wire + JSONB-cache size
+// ~60%: each unique_key is shipped once (was 3x) and low-cardinality values
+// (account/specific_type/cluster) are dictionary-encoded to small integer indices. The
+// frontend decodes the columns back into the maps it already uses in one O(N) pass.
 type FilterOptions struct {
-	AccountIDs    []string          `json:"account_ids"`              // Unique cloud account IDs
-	NodeTypes     []string          `json:"node_types"`               // Unique node types
-	LabelKeys     []string          `json:"label_keys"`               // Available label keys
-	AttributeKeys []string          `json:"attribute_keys"`           // Available attribute keys
-	LastSyncTime  *time.Time        `json:"last_sync_time,omitempty"` // Last sync time from tenant filters
-	NodeIDMap     map[string]string `json:"node_id_map"`              // Map of unique_key -> node id
-	NodeCount     int               `json:"node_count"`               // Total number of nodes
+	AccountIDs    []string `json:"account_ids"`    // Distinct cloud account IDs (the account dictionary)
+	LabelKeys     []string `json:"label_keys"`     // Available label keys
+	AttributeKeys []string `json:"attribute_keys"` // Available attribute keys
+
+	// NodeTypes maps each node_type to its distinct specific_types (empty list => no
+	// breakdown). Its keys are the full node-type list (replaces the former flat
+	// node_types array + specific_types_by_node_type map).
+	NodeTypes map[string][]string `json:"node_types"`
+
+	// Per-node columns, index-aligned, length = NodeCount.
+	NodeKeys            []string `json:"node_keys"`              // unique_key (account-name rewritten for display)
+	NodeIDs             []string `json:"node_ids"`               // node id
+	NodeAccountIdx      []int    `json:"node_account_idx"`       // index into AccountIDs (-1 = none)
+	NodeSpecificTypeIdx []int    `json:"node_specific_type_idx"` // index into SpecificTypeDict (-1 = none)
+	NodeClusterIdx      []int    `json:"node_cluster_idx"`       // index into ClusterDict (-1 = none)
+	NodeBucketIdx       []int    `json:"node_bucket_idx"`        // index into FilterBuckets (each node's own bucket; for Option-B scoping)
+	SpecificTypeDict    []string `json:"specific_type_dict"`     // dictionary for NodeSpecificTypeIdx
+	ClusterDict         []string `json:"cluster_dict"`           // dictionary for NodeClusterIdx
+
+	// Option B — label/attribute key -> covered filterBuckets, for offline dropdown scoping.
+	// FilterBuckets entries are [account_idx, node_type_idx, specific_type_idx] (indices into
+	// AccountIDs / sorted(keys(NodeTypes)) / SpecificTypeDict; -1 = none). LabelKeyBuckets
+	// and AttributeKeyBuckets are aligned to LabelKeys / AttributeKeys.
+	FilterBuckets       [][3]int `json:"filter_buckets"`
+	LabelKeyBuckets     [][]int  `json:"label_key_buckets"`
+	AttributeKeyBuckets [][]int  `json:"attribute_key_buckets"`
+
+	LastSyncTime *time.Time `json:"last_sync_time,omitempty"` // Last sync time from tenant filters
+	NodeCount    int        `json:"node_count"`               // Total number of nodes
 }
 
 // FilterValuesRequest represents a request to get values for a specific filter key
@@ -3981,6 +4009,37 @@ func (s *Service) GetFilterOptions(tenantID string, filters *GraphFilters, nodeI
 // once, and so how much of the connection pool (20 per pod) one call can hold.
 const filterOptionsConcurrency = 4
 
+// filterKeyCovRow is one distinct (label|attribute key, node_type, specific_type, account)
+// combination, collected to build Option-B per-key bucket coverage.
+type filterKeyCovRow struct {
+	key          string
+	nodeType     string
+	specificType sql.NullString
+	account      sql.NullString
+}
+
+// scanFilterKeyCoverage runs a `SELECT DISTINCT jsonb_object_keys(col), node_type,
+// specific_type, cloud_account_id` query and appends each row to dst.
+func (s *Service) scanFilterKeyCoverage(query, tenantID string, filterArgs []interface{}, dst *[]filterKeyCovRow) error {
+	rows, err := s.dbManager.Query(query, append([]interface{}{tenantID}, filterArgs...)...)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			s.logger.Error("failed to close filter-key coverage rows", "error", closeErr)
+		}
+	}()
+	for rows.Next() {
+		var r filterKeyCovRow
+		if err := rows.Scan(&r.key, &r.nodeType, &r.specificType, &r.account); err != nil {
+			return err
+		}
+		*dst = append(*dst, r)
+	}
+	return rows.Err()
+}
+
 // computeFilterOptions runs the live queries that assemble a FilterOptions payload.
 // GetFilterOptions serves the unfiltered case from cache; this is the source of
 // truth behind both that cache and every filtered call.
@@ -3998,13 +4057,21 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 	// getAccountMappings and last_sync are best-effort: they log and fall back rather
 	// than failing the whole call, preserving the previous sequential behaviour.
 	var (
-		accountIDs      = make([]string, 0)
-		nodeTypes       = make([]string, 0)
-		labelKeys       = make([]string, 0)
-		attributeKeys   = make([]string, 0)
-		nodeIDMap       = make(map[string]string)
-		accountMappings map[string]string
-		lastSyncTime    *time.Time
+		accountIDs              = make([]string, 0)
+		nodeTypes               = make([]string, 0)
+		specificTypesByNodeType = make(map[string][]string)
+		labelKeys               = make([]string, 0)
+		attributeKeys           = make([]string, 0)
+		nodeIDMap               = make(map[string]string)
+		nodeClusterMap          = make(map[string]string)
+		nodeSpecificTypeMap     = make(map[string]string)
+		nodeAccountMap          = make(map[string]string)
+		accountMappings         map[string]string
+		lastSyncTime            *time.Time
+		// Option B: raw (key, node_type, specific_type, account) rows for each label /
+		// attribute key, mapped to bucket ids after columnarization below.
+		labelCov []filterKeyCovRow
+		attrCov  []filterKeyCovRow
 	)
 
 	// scanColumn runs a single-column DISTINCT query and appends each row to dst. A
@@ -4055,9 +4122,39 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 		return nil
 	})
 
+	// specificTypesByNodeType is exclusively written by this goroutine (no shared
+	// mutable state with the others), matching the pattern the rest of this function
+	// already relies on for concurrent safety.
+	g.Go(func() error {
+		q := `SELECT DISTINCT node_type, specific_type FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND level = 'Tenant' AND is_active = true AND specific_type IS NOT NULL
+			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL + ` ORDER BY node_type, specific_type`
+		rows, err := s.dbManager.Query(q, append([]interface{}{tenantID}, filterArgs...)...)
+		if err != nil {
+			return fmt.Errorf("failed to query specific types: %w", err)
+		}
+		defer func() {
+			if closeErr := rows.Close(); closeErr != nil {
+				s.logger.Error("failed to close specific-type rows", "error", closeErr)
+			}
+		}()
+		for rows.Next() {
+			var nodeType, specificType string
+			if err := rows.Scan(&nodeType, &specificType); err != nil {
+				return fmt.Errorf("failed to scan specific type row: %w", err)
+			}
+			specificTypesByNodeType[nodeType] = append(specificTypesByNodeType[nodeType], specificType)
+		}
+		return rows.Err()
+	})
+
+	// label_keys / attribute_keys exclude inferred nodes so the global lists share the
+	// exact population behind the node columns and the Option-B bucket coverage — this
+	// keeps the client-side label/attr scoping byte-for-byte identical to a live query.
 	g.Go(func() error {
 		q := `SELECT DISTINCT jsonb_object_keys(labels) AS label_key FROM knowledge_graph_node
-			WHERE tenant_id = $1 AND labels != '{}'::jsonb AND level = 'Tenant' AND is_active = true` + filterSQL + ` ORDER BY label_key`
+			WHERE tenant_id = $1 AND labels != '{}'::jsonb AND level = 'Tenant' AND is_active = true
+			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL + ` ORDER BY label_key`
 		if err := scanColumn(q, &labelKeys); err != nil {
 			return fmt.Errorf("failed to query label keys: %w", err)
 		}
@@ -4066,15 +4163,49 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 
 	g.Go(func() error {
 		q := `SELECT DISTINCT jsonb_object_keys(query_attributes) AS attr_key FROM knowledge_graph_node
-			WHERE tenant_id = $1 AND query_attributes != '{}'::jsonb AND level = 'Tenant' AND is_active = true` + filterSQL + ` ORDER BY attr_key`
+			WHERE tenant_id = $1 AND query_attributes != '{}'::jsonb AND level = 'Tenant' AND is_active = true
+			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL + ` ORDER BY attr_key`
 		if err := scanColumn(q, &attributeKeys); err != nil {
 			return fmt.Errorf("failed to query attribute keys: %w", err)
 		}
 		return nil
 	})
 
+	// Option B — per label/attribute key, the distinct (node_type, specific_type, account)
+	// combinations it appears on. Uses the same node population as the node columns
+	// (inferred-excluded) so the combinations map onto the node filterBuckets built below.
 	g.Go(func() error {
-		q := `SELECT unique_key, id FROM knowledge_graph_node
+		q := `SELECT DISTINCT jsonb_object_keys(labels) AS k, node_type, specific_type, cloud_account_id FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND labels != '{}'::jsonb AND level = 'Tenant' AND is_active = true
+			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL
+		if err := s.scanFilterKeyCoverage(q, tenantID, filterArgs, &labelCov); err != nil {
+			return fmt.Errorf("failed to query label key coverage: %w", err)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		q := `SELECT DISTINCT jsonb_object_keys(query_attributes) AS k, node_type, specific_type, cloud_account_id FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND query_attributes != '{}'::jsonb AND level = 'Tenant' AND is_active = true
+			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL
+		if err := s.scanFilterKeyCoverage(q, tenantID, filterArgs, &attrCov); err != nil {
+			return fmt.Errorf("failed to query attribute key coverage: %w", err)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		// query_attributes->>'cluster' is hoisted (Indexed: true) on nearly every
+		// k8s specific-type schema — surfacing it lets the Node dropdown disambiguate
+		// same-named namespaces/resources across clusters (see buildNodeOption in
+		// the frontend). NULL for non-k8s nodes and k8s node types that don't carry it.
+		// specific_type lets the Node dropdown badge/icon identity nodes (GitHubUser,
+		// PagerDutyUser, NudgebeeUser, ...) by their concrete source instead of the
+		// generic NodeType, mirroring the Node Type filter's existing specific-type nesting.
+		// cloud_account_id (raw UUID) is keyed by node id, not unique_key, so the client can
+		// scope by account offline without the applyAccountNames key rewrite (the key's account
+		// segment becomes the account NAME below, which no longer matches the account-id filter).
+		q := `SELECT unique_key, id, query_attributes->>'cluster' AS cluster, specific_type, cloud_account_id FROM knowledge_graph_node
 			WHERE tenant_id = $1 AND level = 'Tenant' AND unique_key IS NOT NULL AND is_active = true
 			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL
 		rows, err := s.dbManager.Query(q, append([]interface{}{tenantID}, filterArgs...)...)
@@ -4088,10 +4219,20 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 		}()
 		for rows.Next() {
 			var uniqueKey, nodeID string
-			if err := rows.Scan(&uniqueKey, &nodeID); err != nil {
+			var cluster, specificType, cloudAccountID sql.NullString
+			if err := rows.Scan(&uniqueKey, &nodeID, &cluster, &specificType, &cloudAccountID); err != nil {
 				return fmt.Errorf("failed to scan node ID map row: %w", err)
 			}
 			nodeIDMap[uniqueKey] = nodeID
+			if cluster.Valid && cluster.String != "" {
+				nodeClusterMap[uniqueKey] = cluster.String
+			}
+			if specificType.Valid && specificType.String != "" {
+				nodeSpecificTypeMap[uniqueKey] = specificType.String
+			}
+			if cloudAccountID.Valid && cloudAccountID.String != "" {
+				nodeAccountMap[nodeID] = cloudAccountID.String
+			}
 		}
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("error iterating node ID map rows: %w", err)
@@ -4168,32 +4309,197 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 		return result, hasUnmapped
 	}
 
+	effectiveMappings := accountMappings
 	namedNodeIDMap, hasUnmapped := applyAccountNames(nodeIDMap, accountMappings)
 	if hasUnmapped {
 		// At least one account_id was not in the cache — refresh and retry once.
 		if fresh, refreshErr := s.refreshAccountMappings(tenantID); refreshErr == nil {
+			effectiveMappings = fresh
 			namedNodeIDMap, _ = applyAccountNames(nodeIDMap, fresh)
 		}
 	}
 	nodeIDMap = namedNodeIDMap
+	// nodeClusterMap is keyed by the same raw unique_key as nodeIDMap, so it needs
+	// the identical account_id -> account_name key rewrite to stay joinable with it.
+	nodeClusterMap, _ = applyAccountNames(nodeClusterMap, effectiveMappings)
+	nodeSpecificTypeMap, _ = applyAccountNames(nodeSpecificTypeMap, effectiveMappings)
+	// nodeAccountMap is keyed by node id (not unique_key) and its value is the raw
+	// cloud_account_id, so it deliberately skips the applyAccountNames key rewrite —
+	// the client joins it as nodeAccountMap[nodeIdMap[uniqueKey]] and matches the value
+	// against the account-id filter directly.
+
+	// ---- Columnarize into the v2 payload ----
+	// Merged node_types: every node_type is a key; value is its specific_types (empty
+	// when the type has no breakdown). Replaces the flat list + specific_types map.
+	mergedNodeTypes := make(map[string][]string, len(nodeTypes))
+	for _, nt := range nodeTypes {
+		if sts, ok := specificTypesByNodeType[nt]; ok {
+			mergedNodeTypes[nt] = sts
+		} else {
+			mergedNodeTypes[nt] = []string{}
+		}
+	}
+
+	// Encoding dictionaries. accountIDs is already the sorted distinct account list;
+	// sortedNodeTypes gives node_type -> index for the filterBuckets.
+	accountIndex := make(map[string]int, len(accountIDs))
+	for i, a := range accountIDs {
+		accountIndex[a] = i
+	}
+	sortedNodeTypes := make([]string, 0, len(mergedNodeTypes))
+	for nt := range mergedNodeTypes {
+		sortedNodeTypes = append(sortedNodeTypes, nt)
+	}
+	sort.Strings(sortedNodeTypes)
+	nodeTypeIndex := make(map[string]int, len(sortedNodeTypes))
+	for i, nt := range sortedNodeTypes {
+		nodeTypeIndex[nt] = i
+	}
+
+	specificTypeDict := make([]string, 0)
+	clusterDict := make([]string, 0)
+	spIndex := make(map[string]int)
+	clIndex := make(map[string]int)
+	intern := func(dict *[]string, index map[string]int, v string) int {
+		if v == "" {
+			return -1
+		}
+		if i, ok := index[v]; ok {
+			return i
+		}
+		i := len(*dict)
+		*dict = append(*dict, v)
+		index[v] = i
+		return i
+	}
+
+	filterBuckets := make([][3]int, 0)
+	bucketIndex := make(map[[3]int]int)
+	internBucket := func(t [3]int) int {
+		if i, ok := bucketIndex[t]; ok {
+			return i
+		}
+		i := len(filterBuckets)
+		filterBuckets = append(filterBuckets, t)
+		bucketIndex[t] = i
+		return i
+	}
+
+	// Deterministic column order (stable cache payload + tests).
+	sortedKeys := make([]string, 0, len(nodeIDMap))
+	for k := range nodeIDMap {
+		sortedKeys = append(sortedKeys, k)
+	}
+	sort.Strings(sortedKeys)
+
+	nodeKeys := make([]string, 0, len(sortedKeys))
+	nodeIDsCol := make([]string, 0, len(sortedKeys))
+	nodeAccountIdx := make([]int, 0, len(sortedKeys))
+	nodeSpecificTypeIdx := make([]int, 0, len(sortedKeys))
+	nodeClusterIdx := make([]int, 0, len(sortedKeys))
+	nodeBucketIdx := make([]int, 0, len(sortedKeys))
+	for _, uk := range sortedKeys {
+		id := nodeIDMap[uk]
+		nodeKeys = append(nodeKeys, uk)
+		nodeIDsCol = append(nodeIDsCol, id)
+		aIdx := -1
+		if acc, ok := nodeAccountMap[id]; ok {
+			if i, ok2 := accountIndex[acc]; ok2 {
+				aIdx = i
+			}
+		}
+		nodeAccountIdx = append(nodeAccountIdx, aIdx)
+		spIdx := intern(&specificTypeDict, spIndex, nodeSpecificTypeMap[uk])
+		nodeSpecificTypeIdx = append(nodeSpecificTypeIdx, spIdx)
+		nodeClusterIdx = append(nodeClusterIdx, intern(&clusterDict, clIndex, nodeClusterMap[uk]))
+		// bucket for this node (node_type is parts[3] of the unique_key). Ship the id per
+		// node so the client never has to recompute it (no Go/JS sort-order dependency).
+		ntIdx := -1
+		if parts := strings.Split(uk, ":"); len(parts) == UniqueKeyPartCount {
+			if i, ok := nodeTypeIndex[parts[3]]; ok {
+				ntIdx = i
+			}
+		}
+		nodeBucketIdx = append(nodeBucketIdx, internBucket([3]int{aIdx, ntIdx, spIdx}))
+	}
+
+	// Option B: map each label/attribute key's coverage rows to bucket ids.
+	buildKeyBuckets := func(keys []string, cov []filterKeyCovRow) [][]int {
+		keyPos := make(map[string]int, len(keys))
+		for i, k := range keys {
+			keyPos[k] = i
+		}
+		sets := make([]map[int]bool, len(keys))
+		for i := range sets {
+			sets[i] = make(map[int]bool)
+		}
+		for _, r := range cov {
+			pos, ok := keyPos[r.key]
+			if !ok {
+				continue
+			}
+			aIdx := -1
+			if r.account.Valid {
+				if i, ok := accountIndex[r.account.String]; ok {
+					aIdx = i
+				}
+			}
+			ntIdx := -1
+			if i, ok := nodeTypeIndex[r.nodeType]; ok {
+				ntIdx = i
+			}
+			spIdx := -1
+			if r.specificType.Valid && r.specificType.String != "" {
+				if i, ok := spIndex[r.specificType.String]; ok {
+					spIdx = i
+				}
+			}
+			sets[pos][internBucket([3]int{aIdx, ntIdx, spIdx})] = true
+		}
+		out := make([][]int, len(keys))
+		for i := range keys {
+			ids := make([]int, 0, len(sets[i]))
+			for t := range sets[i] {
+				ids = append(ids, t)
+			}
+			sort.Ints(ids)
+			out[i] = ids
+		}
+		return out
+	}
+	labelKeyBuckets := buildKeyBuckets(labelKeys, labelCov)
+	attributeKeyBuckets := buildKeyBuckets(attributeKeys, attrCov)
 
 	s.logger.Info("successfully retrieved filter options",
 		"tenant_id", tenantID,
 		"account_ids_count", len(accountIDs),
-		"node_types_count", len(nodeTypes),
+		"node_types_count", len(mergedNodeTypes),
 		"label_keys_count", len(labelKeys),
 		"attribute_keys_count", len(attributeKeys),
-		"node_id_map_count", len(nodeIDMap),
+		"node_count", len(nodeKeys),
+		"specific_type_dict_count", len(specificTypeDict),
+		"cluster_dict_count", len(clusterDict),
+		"filter_buckets_count", len(filterBuckets),
 		"last_sync_time", lastSyncTime)
 
 	return &FilterOptions{
-		AccountIDs:    accountIDs,
-		NodeTypes:     nodeTypes,
-		LabelKeys:     labelKeys,
-		AttributeKeys: attributeKeys,
-		LastSyncTime:  lastSyncTime,
-		NodeIDMap:     nodeIDMap,
-		NodeCount:     len(nodeIDMap),
+		AccountIDs:          accountIDs,
+		LabelKeys:           labelKeys,
+		AttributeKeys:       attributeKeys,
+		NodeTypes:           mergedNodeTypes,
+		NodeKeys:            nodeKeys,
+		NodeIDs:             nodeIDsCol,
+		NodeAccountIdx:      nodeAccountIdx,
+		NodeSpecificTypeIdx: nodeSpecificTypeIdx,
+		NodeClusterIdx:      nodeClusterIdx,
+		NodeBucketIdx:       nodeBucketIdx,
+		SpecificTypeDict:    specificTypeDict,
+		ClusterDict:         clusterDict,
+		FilterBuckets:       filterBuckets,
+		LabelKeyBuckets:     labelKeyBuckets,
+		AttributeKeyBuckets: attributeKeyBuckets,
+		LastSyncTime:        lastSyncTime,
+		NodeCount:           len(nodeKeys),
 	}, nil
 }
 
@@ -4222,7 +4528,15 @@ func (s *Service) refreshFilterOptionsCache(tenantID string) {
 // so a shape change can never serve a stale-shape payload past the next recompute.
 // This prevents the transient post-deploy cascade break where an old cached payload
 // lacked a field the current code/UI expects.
-const filterOptionsCacheSchemaVersion = 1
+//
+// v2: added FilterOptions.NodeAccountMap (node id -> cloud_account_id) so the client
+// can scope the filter cascade by account offline. v1 rows lack it and are recomputed.
+// v3: columnar payload (node_keys/node_ids/*_idx + dicts), merged node_types map, and
+// Option-B label/attribute key bucket coverage. v2 rows deserialize into empty columns
+// and are recomputed on the first unfiltered read.
+// v4: renamed the coverage fields (filter_buckets / node_bucket_idx / label_key_buckets /
+// attribute_key_buckets); v3 rows carry the old JSON keys, so bump to invalidate them.
+const filterOptionsCacheSchemaVersion = 4
 
 // filterOptionsCacheEnvelope wraps the cached payload with its schema version.
 type filterOptionsCacheEnvelope struct {

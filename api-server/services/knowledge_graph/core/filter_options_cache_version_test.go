@@ -35,26 +35,26 @@ func TestFilterOptionsCache_SchemaVersionGuardsStalePayloads(t *testing.T) {
 	}
 
 	// 1. A legacy bare FilterOptions payload (pre-envelope) must read as a MISS.
-	bare, _ := json.Marshal(&FilterOptions{NodeTypes: []string{"LEGACY"}, NodeCount: 1})
+	bare, _ := json.Marshal(&FilterOptions{NodeTypes: map[string][]string{"LEGACY": {}}, NodeCount: 1})
 	upsert(bare)
 	if _, ok := svc.readFilterOptionsCache(filterCacheVersionTenant); ok {
 		t.Error("legacy bare payload should be a cache miss, got a hit")
 	}
 
 	// 2. A payload written by writeFilterOptionsCache (current version) must HIT.
-	svc.writeFilterOptionsCache(filterCacheVersionTenant, &FilterOptions{NodeTypes: []string{"CURRENT"}, NodeCount: 2})
+	svc.writeFilterOptionsCache(filterCacheVersionTenant, &FilterOptions{NodeTypes: map[string][]string{"CURRENT": {}}, NodeCount: 2})
 	got, ok := svc.readFilterOptionsCache(filterCacheVersionTenant)
 	if !ok {
 		t.Fatal("current-version payload should be a cache hit")
 	}
-	if got.NodeCount != 2 || len(got.NodeTypes) != 1 || got.NodeTypes[0] != "CURRENT" {
+	if _, hasCurrent := got.NodeTypes["CURRENT"]; got.NodeCount != 2 || len(got.NodeTypes) != 1 || !hasCurrent {
 		t.Errorf("round-trip mismatch: %+v", got)
 	}
 
 	// 3. A future/mismatched schema version must read as a MISS.
 	wrong, _ := json.Marshal(filterOptionsCacheEnvelope{
 		SchemaVersion: filterOptionsCacheSchemaVersion + 1,
-		Options:       &FilterOptions{NodeTypes: []string{"FUTURE"}, NodeCount: 3},
+		Options:       &FilterOptions{NodeTypes: map[string][]string{"FUTURE": {}}, NodeCount: 3},
 	})
 	upsert(wrong)
 	if _, ok := svc.readFilterOptionsCache(filterCacheVersionTenant); ok {
