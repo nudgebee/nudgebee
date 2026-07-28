@@ -48,6 +48,24 @@ func RequireTenant(c *gin.Context) (string, bool) {
 	return tenantID, true
 }
 
+// CallerRole returns the caller's effective role from the session — the app RPC gateway
+// injects x-user-role (the highest-priority role the user holds). Empty for direct
+// service-to-service / curl calls that don't set it.
+func CallerRole(c *gin.Context) string { return c.GetHeader("x-user-role") }
+
+// tenantAdminRoles may read ANY user's data within their OWN tenant (never
+// cross-tenant — tenant scoping still applies). Read-only variants are included:
+// viewing is a read.
+var tenantAdminRoles = map[string]bool{
+	"tenant_admin": true, "tenant_admin_readonly": true,
+	"account_admin": true, "account_admin_readonly": true,
+	"super_admin": true, "super_admin_readonly": true,
+}
+
+// IsTenantAdmin reports whether the caller's role grants tenant-wide read access
+// (e.g. viewing another user's captured request body, within the same tenant).
+func IsTenantAdmin(c *gin.Context) bool { return tenantAdminRoles[CallerRole(c)] }
+
 // BindAction reads the request args into dst, tolerating both shapes (mirrors the
 // app's action handlers): the RPC-gateway envelope — { input: { request: {…} } } or
 // { input: {…} } — and a direct flat body, so the endpoints work via the app RPC

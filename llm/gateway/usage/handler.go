@@ -108,9 +108,10 @@ func RegisterRoutes(r *gin.Engine, token string) {
 			TenantID: tenantID, StartDate: start, EndDate: end,
 			UserID: req.UserID, Providers: req.Providers, Models: req.Models, Status: req.Status,
 			Tool: req.Tool, RoutingReason: req.RoutingReason, RejectReason: req.RejectReason, Dlp: req.Dlp,
-			SessionID:    req.SessionID,
-			CallerUserID: c.GetHeader("x-user-id"),
-			Limit:        req.Limit, Offset: req.Offset,
+			SessionID:     req.SessionID,
+			CallerUserID:  c.GetHeader("x-user-id"),
+			CallerIsAdmin: rpc.IsTenantAdmin(c),
+			Limit:         req.Limit, Offset: req.Offset,
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "request list failed"})

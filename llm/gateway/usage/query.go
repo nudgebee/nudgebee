@@ -591,7 +591,8 @@ type ListRequest struct {
 	RejectReason  string   // filter to one derived.reject_reason (drill-in from Governance rejects)
 	Dlp           bool     // filter to requests that tripped the egress filter (drill-in from Governance DLP)
 	SessionID     string   // filter to one session/conversation (drill-in from a request's session)
-	CallerUserID  string   // the requesting user (x-user-id); a row's body is viewable only by its own user
+	CallerUserID  string   // the requesting user (x-user-id); a row's body is viewable by its own user
+	CallerIsAdmin bool     // caller is a tenant admin → may view ANY user's body within the tenant
 	Limit         int
 	Offset        int
 }
@@ -815,8 +816,11 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 			LatencyMs: r.LatencyMs,
 			CostUsd:   r.Cost,
 			SessionID: r.SessionID, SessionSource: r.SessionSource,
-			Dlp:         parseDLP(r.DlpJSON),
-			CanViewBody: bodyEnabled && req.CallerUserID != "" && r.UserID == req.CallerUserID,
+			Dlp: parseDLP(r.DlpJSON),
+			// Viewable when body-logging is on AND (the row is the caller's own request
+			// OR the caller is a tenant admin — admins may view any user's body within
+			// the tenant; the query is already tenant-scoped, so never cross-tenant).
+			CanViewBody: bodyEnabled && (req.CallerIsAdmin || (req.CallerUserID != "" && r.UserID == req.CallerUserID)),
 		})
 	}
 	return &RequestList{Rows: out, Total: total, Limit: limit, Offset: offset}, nil
