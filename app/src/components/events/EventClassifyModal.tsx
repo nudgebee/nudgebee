@@ -170,7 +170,7 @@ const EventClassifyModal: React.FC<EventClassifyModalProps> = ({ open, handleClo
         onSuccess?.({
           eventId: event.id,
           newStatus: preview?.current_event?.new_status,
-          newPriority: correctedPriority || undefined,
+          newPriority: undefined,
           snoozedUntil: applyScope === 'time_limited' && applyUntilDate ? applyUntilDate.toISOString() : undefined,
         });
       } else {

@@ -10,7 +10,7 @@ import { TicketsIcon } from '@assets';
 import { getBrandingAsset } from '@hooks/useTenantBranding';
 import { action } from 'src/utils/actionStyles';
 import { getLast7Days } from '@lib/datetime';
-import type { ICustomTableRow } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/types';
 import Text from '@shared/format/Text';
 import CustomButton from '@shared/NewCustomButton';
 

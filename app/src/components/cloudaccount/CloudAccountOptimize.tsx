@@ -10,7 +10,7 @@ import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
 import RecommendationJobDetails from '@components/k8s/common/RecommendationJobDetails';
 import { action } from 'src/utils/actionStyles';
 import { getLast7Days } from '@lib/datetime';
-import type { ICustomTableRow } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/types';
 import OptimizeUtilization from './OptimizeUnutilized';
 import { MENU_ITEMS, CustomText } from './common';
 

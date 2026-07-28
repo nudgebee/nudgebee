@@ -38,7 +38,6 @@ import { getLicenseDetails, SERVICES_SERVER_UNREACHABLE_MSG, type LicenseTier } 
 import { enrichAuthToken, enrichSession, onReturningOAuthSignIn, onUnknownOAuthSignIn, resolveLicensedTenantUser } from '@lib/authHooks';
 
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
-import uniq from 'lodash/uniq';
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 export interface NudgebeeUser extends AdapterUser {
@@ -173,11 +172,11 @@ export async function adapterUser(user: any): Promise<NudgebeeUser> {
     );
   }
 
-  roles = uniq(roles);
-  accountIds = uniq(accountIds);
-  readonlyAccountIds = uniq(readonlyAccountIds);
-  namespacedAccountIds = uniq(namespacedAccountIds);
-  namespacedReadOnlyAccountIds = uniq(namespacedReadOnlyAccountIds);
+  roles = [...new Set(roles)];
+  accountIds = [...new Set(accountIds)];
+  readonlyAccountIds = [...new Set(readonlyAccountIds)];
+  namespacedAccountIds = [...new Set(namespacedAccountIds)];
+  namespacedReadOnlyAccountIds = [...new Set(namespacedReadOnlyAccountIds)];
 
   if (accountIds.length > 0 || readonlyAccountIds.length > 0) {
     // Narrow role-granted account ids to those that belong to the selected tenant.
@@ -1205,11 +1204,11 @@ async function jwtUpdateTokenOnUpdateTrigger(token: any, session: any, trigger: 
             roles.push(role.role);
           }
         }
-        token.roles = uniq(roles);
-        token.accountIds = uniq(accountIds);
-        token.readOnlyAccountIds = uniq(readOnlyAccountIds);
-        token.namespacedAccountIds = uniq(namespacedAccountIds);
-        token.namespacedReadOnlyAccountIds = uniq(namespacedReadOnlyAccountIds);
+        token.roles = [...new Set(roles)];
+        token.accountIds = [...new Set(accountIds)];
+        token.readOnlyAccountIds = [...new Set(readOnlyAccountIds)];
+        token.namespacedAccountIds = [...new Set(namespacedAccountIds)];
+        token.namespacedReadOnlyAccountIds = [...new Set(namespacedReadOnlyAccountIds)];
         token.k8sNamespaces = k8sNamespaces;
       } else if (token.isSuperAdmin || token.isSuperAdminReadonly) {
         // Super admin with no direct access to this tenant → readonly
