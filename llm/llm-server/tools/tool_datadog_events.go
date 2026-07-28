@@ -26,7 +26,7 @@ func (m DatadogEventsExecuteTool) Name() string { return ToolDatadogEventsExecut
 func (m DatadogEventsExecuteTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (m DatadogEventsExecuteTool) Description() string {
-	return `Executes a Datadog event query and retrieves the corresponding event data.`
+	return `Executes a Datadog event query and retrieves the event data. Input is a tag query (e.g. "tags:env:prod,source:kubernetes"); returns the last hour of events.`
 }
 
 func (m DatadogEventsExecuteTool) InputSchema() core.ToolSchema {

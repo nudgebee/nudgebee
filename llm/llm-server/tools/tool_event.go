@@ -132,7 +132,7 @@ func (m EventsExecuteTool) GetType() core.NBToolType {
 }
 
 func (m EventsExecuteTool) Description() string {
-	return "Executes a SQL query for events and returns the data for event."
+	return "Run a read-only SQL SELECT against the `events` table (columns: id, title, severity, priority, subject_name/type/namespace, status, starts_at, evidences, …). Only SELECT/WITH/DESC/SHOW allowed; results limited to the last 30 days unless filtering by id."
 }
 
 func (m EventsExecuteTool) InputSchema() core.ToolSchema {

@@ -137,6 +137,12 @@ var sharedCodeAnalysisRules string
 //go:embed shared_security_rules.txt
 var sharedSecurityRules string
 
+//go:embed shared_async_completion_rules.txt
+var sharedAsyncCompletionRules string
+
+//go:embed watch_completion_summary.txt
+var watchCompletionSummary string
+
 // toolRemediationGenerate is the system prompt for the remediation_generate tool.
 // It instructs the LLM to produce a structured remediation plan (root cause, impact,
 // proposed actions, verification steps) without executing anything — the user must approve first.
@@ -150,6 +156,13 @@ var toolRemediationGenerate string
 //
 //go:embed agent_finops.txt
 var agentFinops string
+
+// agentWebhookSubjectExtractor is the system prompt for the webhook subject-name
+// extractor: a single-shot classifier that maps an incoming alert to the running
+// workload/service it concerns.
+//
+//go:embed agent_webhook_subject_extractor.txt
+var agentWebhookSubjectExtractor string
 
 // scratchpadSummarizer is used by the scratchpad compression system to generate
 // concise LLM-backed summaries of older tool observations, preserving analytical
@@ -221,6 +234,8 @@ const PromptSharedTimeHandlingRules = "shared_time_handling_rules"
 const PromptSharedDataProtectionRules = "shared_data_protection_rules"
 const PromptSharedCodeAnalysisRules = "shared_code_analysis_rules"
 const PromptSharedSecurityRules = "shared_security_rules"
+const PromptSharedAsyncCompletionRules = "shared_async_completion_rules"
+const PromptWatchCompletionSummary = "watch_completion_summary"
 
 // PromptToolRemediationGenerate is the system prompt embedded in tool_remediation_generate.txt.
 // Loaded by RemediationGenerateTool.Call() to avoid hardcoding prompts in Go source.
@@ -231,6 +246,10 @@ const PromptScratchpadContextSummarizer = "scratchpad_context_summarizer"
 
 // PromptAgentFinops is the system prompt for the FinOps cost optimization supervisor agent.
 const PromptAgentFinops = "agent_finops"
+
+// PromptAgentWebhookSubjectExtractor is the system prompt for the webhook
+// subject-name extractor agent.
+const PromptAgentWebhookSubjectExtractor = "agent_webhook_subject_extractor"
 
 // PromptScratchpadSummarizer generates concise summaries of tool observations for scratchpad compression.
 const PromptScratchpadSummarizer = "scratchpad_summarizer"
@@ -329,6 +348,10 @@ func GetPrompt(module string, args ...any) string {
 		data = sharedCodeAnalysisRules
 	case PromptSharedSecurityRules:
 		data = sharedSecurityRules
+	case PromptSharedAsyncCompletionRules:
+		data = sharedAsyncCompletionRules
+	case PromptWatchCompletionSummary:
+		data = watchCompletionSummary
 	case PromptToolRemediationGenerate:
 		data = toolRemediationGenerate
 	case PromptScratchpadSummarizer:
@@ -337,6 +360,8 @@ func GetPrompt(module string, args ...any) string {
 		data = scratchpadContextSummarizer
 	case PromptAgentFinops:
 		data = agentFinops
+	case PromptAgentWebhookSubjectExtractor:
+		data = agentWebhookSubjectExtractor
 	case PromptAgentKgUsage:
 		data = agentKgUsage
 	case PromptCostOptimization:

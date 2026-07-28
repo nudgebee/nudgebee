@@ -29,7 +29,7 @@ func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool)
 		"delegate_agent_enabled", "notebook_enabled", "hypothesis_mode_enabled",
 		"conversation_context_enabled", "context_management_rules", "time_handling_rules",
 		"data_protection_rules", "code_analysis_rules", "security_rules",
-		"memory_consumption_rules",
+		"memory_consumption_rules", "async_completion_rules",
 	}
 	tmpl := prompts.NewPromptTemplate(base, vars)
 	out, err := tmpl.Format(map[string]any{
@@ -47,6 +47,7 @@ func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool)
 		"code_analysis_rules":          "",
 		"security_rules":               "",
 		"memory_consumption_rules":     "",
+		"async_completion_rules":       "",
 	})
 	assert.NoError(t, err, "react_3 base prompt must render without template errors")
 	return out
@@ -721,6 +722,78 @@ func TestReAct3BuildScratchpadSingleAction(t *testing.T) {
 	assert.NotContains(t, scratchpad, "<actions>")
 }
 
+// TestReAct3BuildScratchpad_EmptyResultGetsSuccessMarker pins the fix for issue
+// #29875's ReAct3 gap: a write/mutation command that exits 0 with empty stdout
+// (ToolStatusEmptyResult) must be marked as an explicit success in the scratchpad,
+// mirroring the [TOOL-FAILED] treatment ToolStatusFailure already gets. Without
+// this, the LLM only sees the hedged plannerToolNoData sentinel text and may still
+// report the action as failed or re-issue it through a different tool.
+func TestReAct3BuildScratchpad_EmptyResultGetsSuccessMarker(t *testing.T) {
+	planner := &NBReActPlanner3{}
+	steps := []NBAgentPlannerToolActionStep{
+		{
+			Action: NBAgentPlannerToolAction{
+				Tool:      "github_execute",
+				ToolInput: `{"command":"gh run rerun 123 --repo org/repo"}`,
+				Log:       "Rerunning the workflow.",
+				ToolID:    "github_execute-001",
+			},
+			Observation: plannerToolNoData,
+			Status:      ToolStatusEmptyResult,
+		},
+	}
+
+	scratchpad := planner.buildScratchpad(steps)
+	assert.Contains(t, scratchpad, "[SUCCESS-NO-OUTPUT]")
+	assert.Contains(t, scratchpad, "This action completed successfully")
+	assert.Contains(t, scratchpad, "Do NOT retry this exact command")
+	assert.NotContains(t, scratchpad, "[TOOL-FAILED]")
+}
+
+// TestReAct3BuildScratchpad_FailureStillGetsFailureMarker guards against the
+// empty-result marker above accidentally suppressing the existing failure marker.
+func TestReAct3BuildScratchpad_FailureStillGetsFailureMarker(t *testing.T) {
+	planner := &NBReActPlanner3{}
+	steps := []NBAgentPlannerToolActionStep{
+		{
+			Action: NBAgentPlannerToolAction{
+				Tool:      "shell_execute",
+				ToolInput: "gh run rerun 123 --repo org/repo",
+				Log:       "retry",
+				ToolID:    "shell_execute-001",
+			},
+			Observation: "run 123 cannot be rerun; its workflow file may be broken",
+			Status:      ToolStatusFailure,
+		},
+	}
+
+	scratchpad := planner.buildScratchpad(steps)
+	assert.Contains(t, scratchpad, "[TOOL-FAILED]")
+	assert.NotContains(t, scratchpad, "[SUCCESS-NO-OUTPUT]")
+}
+
+// TestReAct3EmptyResult_FooterExitCodeMatchesSuccessMarker: an empty-but-successful
+// result's footer must show exitStatus 0, matching the [SUCCESS-NO-OUTPUT] marker.
+func TestReAct3EmptyResult_FooterExitCodeMatchesSuccessMarker(t *testing.T) {
+	planner := &NBReActPlanner3{}
+	step := NBAgentPlannerToolActionStep{
+		Action: NBAgentPlannerToolAction{
+			Tool:      "github_execute",
+			ToolInput: `{"command":"gh run rerun 123 --repo org/repo"}`,
+			ToolID:    "github_execute-001",
+		},
+		Observation: plannerToolNoData,
+		Status:      ToolStatusEmptyResult,
+		Metadata:    &toolcore.NBToolResponseMetadata{ExitStatus: toolStatusToExitCode(ToolStatusEmptyResult)},
+	}
+
+	obs := planner.resolveObservation(step)
+	assert.Contains(t, obs, "[SUCCESS-NO-OUTPUT]")
+	assert.Contains(t, obs, "exit code 0")
+	assert.Contains(t, obs, "[exitStatus: 0 |")
+	assert.NotContains(t, obs, "[exitStatus: 2")
+}
+
 // TestReAct3BuildScratchpad_CompressionGatedByWindow verifies the core fix: with
 // many steps (>recentStepsFullContext) but a scratchpad well under the budget, NO
 // older observation is compressed; once the scratchpad exceeds the budget, older
@@ -796,6 +869,41 @@ func TestReAct3BuildScratchpad_CompressionGatedByWindow(t *testing.T) {
 		for i := 6; i < len(steps); i++ {
 			assert.Empty(t, steps[i].CompressedObservation, "post-refinement step %d should stay full under budget", i)
 		}
+	})
+
+	// Regression guard for production convo 650ba57d (2026-07-01 06:06 UTC):
+	// the rendered scratchpad string can exceed hardCapChars while raw observation
+	// bytes stay under activationChars (tags + thoughts + tool inputs + notebook
+	// nudges add up). Pre-fix: line-291 stamped compressionActive=false based on
+	// obs bytes alone → compressScratchpad fired at line 398 and synthesized a
+	// CompressedObservation on step 0 → visibility card landed as "cause not
+	// classified" because the tracker still said "no window pressure".
+	//
+	// This test constructs the exact shape: zero-byte observations + large
+	// thoughts / tool inputs, tiny scratchpad budget. Post-fix: the tracker must
+	// end the pass with windowPressureActive=true so the visibility card
+	// classifies the event as window-pressure — the only accurate cause when we
+	// hit the hard cap.
+	t.Run("hard-cap path stamps window-pressure even when obs bytes are zero", func(t *testing.T) {
+		config.Config.LlmServerAgentMaxScratchpadChars = 400 // small enough that scaffolding alone exceeds it
+		steps := make([]NBAgentPlannerToolActionStep, 0, 15)
+		for i := 0; i < 15; i++ {
+			steps = append(steps, NBAgentPlannerToolActionStep{
+				Action: NBAgentPlannerToolAction{
+					Tool:      "kubectl",
+					ToolInput: strings.Repeat(fmt.Sprintf("input-%02d ", i), 20),   // ~200 chars
+					Log:       strings.Repeat(fmt.Sprintf("thought-%02d ", i), 20), // ~240 chars
+					ToolID:    fmt.Sprintf("kubectl-%03d", i),
+				},
+				Observation: "", // <-- ZERO obs bytes: totalObsBytes stays 0 < activation
+				Status:      ToolStatusSuccess,
+			})
+		}
+		planner := &NBReActPlanner3{compressionTracker: NewCompressionTracker()}
+		_ = planner.buildScratchpad(steps)
+
+		assert.True(t, planner.compressionTracker.windowPressureActive,
+			"hard-cap path must flip windowPressureActive=true; unfixed the tracker keeps its earlier false stamp and the visibility card classifies as 'unknown'")
 	})
 }
 

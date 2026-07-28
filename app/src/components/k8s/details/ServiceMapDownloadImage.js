@@ -1,6 +1,8 @@
-import React from 'react';
-import { Panel, useReactFlow, getRectOfNodes, getTransformForBounds } from 'reactflow';
-import { toPng } from 'html-to-image';
+import React, { useEffect } from 'react';
+import { Panel, useReactFlow, getNodesBounds, getViewportForBounds } from 'reactflow';
+import { toPng, getFontEmbedCSS } from 'html-to-image';
+import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
+import { Button } from '@ui/Button';
 import { colors } from 'src/utils/colors';
 
 function downloadImage(dataUrl) {
@@ -10,11 +12,46 @@ function downloadImage(dataUrl) {
   a.click();
 }
 
+// Fonts loaded in the document are static for the session, so fetch and
+// embed them once and cache the in-flight promise. Caching the promise
+// (rather than just the resolved value) also prevents concurrent duplicate
+// fetches if Download is clicked while the background prefetch is still
+// running.
+let cachedFontEmbedCSSPromise = null;
+
+function ensureFontEmbedCSSCached(viewport) {
+  if (!viewport) {
+    return Promise.resolve(null);
+  }
+  if (!cachedFontEmbedCSSPromise) {
+    cachedFontEmbedCSSPromise = getFontEmbedCSS(viewport).catch((error) => {
+      console.error('Error embedding fonts:', error);
+      cachedFontEmbedCSSPromise = null;
+      return null;
+    });
+  }
+  return cachedFontEmbedCSSPromise;
+}
+
 function ServiceMapDownloadImage() {
   const { getNodes } = useReactFlow();
 
-  const onClick = () => {
-    const nodesBounds = getRectOfNodes(getNodes());
+  // Warm the font cache in the background so the first Download click is
+  // fast too, without blocking the graph from rendering.
+  useEffect(() => {
+    const idleCallback = window.requestIdleCallback || ((cb) => setTimeout(cb, 1));
+    const cancelIdleCallback = window.cancelIdleCallback || clearTimeout;
+
+    const handle = idleCallback(() => {
+      const viewport = document.querySelector('.react-flow__viewport');
+      ensureFontEmbedCSSCached(viewport);
+    });
+
+    return () => cancelIdleCallback(handle);
+  }, []);
+
+  const onClick = async () => {
+    const nodesBounds = getNodesBounds(getNodes());
 
     // Add padding around the graph
     const padding = 100;
@@ -23,8 +60,8 @@ function ServiceMapDownloadImage() {
     const imageWidth = nodesBounds.width + padding * 2;
     const imageHeight = nodesBounds.height + padding * 2;
 
-    // Calculate transform to center the graph with padding
-    const transform = getTransformForBounds(
+    // Calculate viewport to center the graph with padding
+    const graphViewport = getViewportForBounds(
       nodesBounds,
       imageWidth,
       imageHeight,
@@ -34,6 +71,7 @@ function ServiceMapDownloadImage() {
     );
 
     const viewport = document.querySelector('.react-flow__viewport');
+    const cachedFontEmbedCSS = await ensureFontEmbedCSSCached(viewport);
 
     toPng(viewport, {
       backgroundColor: colors.background.white,
@@ -42,10 +80,13 @@ function ServiceMapDownloadImage() {
       style: {
         width: `${imageWidth}px`,
         height: `${imageHeight}px`,
-        transform: `translate(${transform[0]}px, ${transform[1]}px) scale(${transform[2]})`,
+        transform: `translate(${graphViewport.x}px, ${graphViewport.y}px) scale(${graphViewport.zoom})`,
       },
       // Increase quality for better output
       pixelRatio: 2,
+      // Reuse the cached font CSS when it still covers the fonts in use,
+      // instead of re-fetching every font file (~100 requests) each click.
+      fontEmbedCSS: cachedFontEmbedCSS || undefined,
     })
       .then(downloadImage)
       .catch((error) => {
@@ -55,9 +96,9 @@ function ServiceMapDownloadImage() {
 
   return (
     <Panel position='top-right'>
-      <button className='download-btn' onClick={onClick}>
+      <Button id='download-service-map-image-btn' tone='secondary' size='sm' icon={<FileDownloadOutlinedIcon />} onClick={onClick}>
         Download Image
-      </button>
+      </Button>
     </Panel>
   );
 }

@@ -996,16 +996,21 @@ def trigger_notification(
     )
     # filter sorted_recommendation if rule name is CIS and sorted_recommendation["recommendation"]["type"] is manual
     # or sorted_recommendation["recommendation"]["status"] is pass
-    sorted_recommendations = [
-        rec
-        for rec in sorted_recommendations
-        if rec["rule_name"] != RuleName.CIS.value
-        or (
-            json.loads(rec["recommendation"])["type"] != "manual"
-            and json.loads(rec["recommendation"])["status"] != "PASS"
-            and "Manual" not in json.loads(rec["recommendation"])["test_desc"]
-        )
-    ]
+    filtered_recommendations = []
+    for rec in sorted_recommendations:
+        if rec["rule_name"] != RuleName.CIS.value:
+            filtered_recommendations.append(rec)
+            continue
+        # Parse once instead of 3x per record — avoids redundant JSON deserialization
+        parsed = _parse_recommendation_field(rec["recommendation"])
+        if (
+            isinstance(parsed, dict)
+            and parsed.get("type") != "manual"
+            and parsed.get("status") != "PASS"
+            and "Manual" not in parsed.get("test_desc", "")
+        ):
+            filtered_recommendations.append(rec)
+    sorted_recommendations = filtered_recommendations
 
     if len(sorted_recommendations) == 0:
         return

@@ -88,17 +88,20 @@ You MUST evaluate the <final_answer> against these strict rules:
     - **Feedback Example (no behavioural evidence):** "The answer concludes 'no issues detected' from status checks alone, but `<tools_invoked>` shows the agent never called any behavioural-evidence tool (logs / events / metrics / traces). Status fields like 'Running' / 'Active' / '0 restarts' do not prove the resource is functioning — errors, timeouts, and slow paths live in behavioural sources, not state fields. Use the `logs` tool (and `events` / `metrics` if relevant) to fetch evidence for the resource within the relevant time window before concluding."
 {{end}}
 
-5.  **The 5-Whys Rule:**
+5.  **The Root Cause Depth Rule:**
 {{if eq .question_type "investigation"}}
     - **MANDATORY (Investigation only):** Does the answer identify the *foundational root cause*? If the answer only reports a symptom (e.g., "The pod is crashing", "CrashLoopBackOff", "connection refused") without explaining *why*, you MUST set `<decision>refine</decision>` and demand a deeper look into the cause.
+    - **A root cause is a specific mechanism.** Acceptable roots name a concrete lever the user can act on: a config value ("memory limit set to 128Mi"), an image or version ("`v0.27.0` introduces the panic in `handler.go:142`"), a missing resource ("Service `orders-db-primary` does not exist"), an environment mismatch ("pod's `DB_HOST` points to staging while the deployment is in prod"), a credential problem ("secret `x` missing key `y`"), or a specific application signal ("feature flag `adManualGc` triggers 800ms of manual GC per request"). Category words alone — "network issue", "system error", "connection failure", "misconfiguration", "resource contention" — are symptoms restated; REJECT.
     - **Verify Depth:** Ensure the chain goes deeper than symptoms. If the answer identifies a symptom but not the *cause* (e.g., "Missing config", "Infinite loop in code", "OOM due to memory leak"), REJECT it.
+    - **Reject escape-hatch chains.** If the chain terminates with "no longer available", "cannot determine", "unclear", "historical trigger not in event history", or lists disjunctive alternatives as the root ("X *or* Y — we don't know"), REJECT. The agent must either investigate further (state which additional tool call would resolve the ambiguity), or state explicitly "investigation not possible because <specific blocker>" and stop pretending a root cause was found.
 
-    A 5 Whys example shows how asking "why" repeatedly reveals a problem's root cause, like a car not starting:
+    Depth example — asking "why" repeatedly until a specific mechanism surfaces, like a car not starting:
       1. Why won't it start? The battery is dead.
       2. Why is the battery dead? The lights were left on.
       3. Why were the lights left on? There's no reminder chime when the door is open.
       4. Why isn't there a chime? The chime wasn't installed.
       5. Why wasn't it installed? The technician skipped it during maintenance because they were rushed, uncovering a process/training issue, not just a dead battery.
+    Fewer steps are fine when they reach a specific mechanism sooner ("adManualGc feature flag causes manual GC" is a complete root cause in 3 whys); more steps are wasted when they descend into speculation. The count is not the point — the specificity of the terminal cause is.
 {{else}}
     - **Optional (Query):** For simple queries, this rule is optional. However, if the query is complex, finding deeper reasons is still recommended but not mandatory for acceptance.
 {{end}}

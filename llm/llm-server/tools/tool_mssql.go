@@ -35,7 +35,7 @@ func (m MSSQLExecuteTool) Description() string {
 		**Usage:**
 
 		* **Prioritize this tool:** Whenever you require information about mssql database to make decisions or provide accurate responses, use this tool.
-		* **Input:** Provide a valid, read-only T-SQL query as input. Do not include any other information.
+		* **Input:** Provide a valid, read-only T-SQL SELECT query as a plain string, OR a JSON object {query, database?}. To run against a specific database, set the 'database' field — do NOT use USE statements to switch databases.
 		* **Output:** The tool will return the output of the executed query.
 		* **Security:** This tool is strictly limited to read-only operations. It cannot modify any resources within the database.
 
@@ -48,19 +48,25 @@ func (m MSSQLExecuteTool) Description() string {
 }
 
 func (m MSSQLExecuteTool) InputSchema() core.ToolSchema {
+	// 'command'/'query' are aliases (Call() prefers 'command'); RequiredOneOf
+	// enforces at least one without rejecting a 'query'-keyed input.
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
 			"command": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "T-SQL query to execute. Do NOT use USE statements to switch databases — use the 'database' parameter instead.",
+				Description: "T-SQL query to execute. Either 'command' or 'query' must be provided. Do NOT use USE statements to switch databases — use the 'database' parameter instead.",
+			},
+			"query": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Alias for 'command' — accepted at the top level for backward compatibility.",
 			},
 			"database": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Target database name to run the query against. Use this instead of USE statements.",
 			},
 		},
-		Required: []string{"command"},
+		RequiredOneOf: [][]string{{"command", "query"}},
 	}
 }
 
@@ -125,8 +131,9 @@ func (m MSSQLExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 			if response == "" {
 				response = err.Error()
 			}
+			// sqlcmd uses `-?` (single dash + question mark), NOT `--help`.
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, "", "sqlcmd", "sqlcmd -?"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}
@@ -151,8 +158,14 @@ func (m MSSQLExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 				responseData = responseData1
 			}
 		}
+		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
+		// non-string response, so the LLM always sees the failure reason
+		// rather than an empty envelope.
+		if responseData == "" {
+			responseData = err.Error()
+		}
 		return core.NBToolResponse{
-			Data:   responseData,
+			Data:   cliRecoveryEnvelope(responseData, "", "mssql", ""),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}

@@ -203,6 +203,14 @@ type NBAgentPlannerToolActionStep struct {
 	// Computed once when the step is first compressed, then reused across subsequent
 	// scratchpad builds to avoid redundant LLM calls.
 	CompressedObservation string `json:"compressed_observation,omitempty"`
+	// SubAgentEvidence is a small, budget-bounded manifest of the concrete tool calls
+	// the sub-agent behind this step actually ran. It is rendered verbatim after the
+	// observation and — unlike Observation — is exempt from compression: the raw
+	// observation may be summarized as the step ages, but this distilled manifest
+	// survives so the orchestrator can always reconcile against the real artifacts.
+	// It is intentionally excluded from the scratchpad's compression-activation byte
+	// count so it never drags the window-pressure threshold. Empty for non-agent steps.
+	SubAgentEvidence string `json:"sub_agent_evidence,omitempty"`
 }
 
 type ToolStatus string
@@ -381,19 +389,46 @@ type NBAgentCategoryProvider interface {
 	GetModelCategory() ModelTier
 }
 
-// agentModelCategory returns the category an agent opted into, or the default
-// Retrieval tier when it declared none. Retrieval is the fleet floor: most
-// agents are read/query tools, so defaulting to Retrieval keeps them untagged
-// while still routing them off the (expensive) global model. Agents that need
-// a different tier opt in explicitly — Summary (analysis/extract) or Reasoning
-// (orchestrators). Global is no longer a per-agent routing target; it remains
-// the inherited base/fallback every tier resolves to when its own model is
+// agentModelCategory returns the category an agent opted into, or a sensible
+// default when it declared none. An explicit NBAgentCategoryProvider always
+// wins (the "someone is overriding model_tier" case).
+//
+// Defaults when nothing is declared:
+//   - Classification agents → Summary. A classification planner is a single-shot
+//     analysis/extraction task (map an alert title to a service, pick one label),
+//     which wants the Summary-tier model, not the cheap Retrieval floor.
+//   - Everything else → Retrieval. Retrieval is the fleet floor: most agents are
+//     read/query tools, so defaulting to Retrieval keeps them untagged while
+//     still routing them off the (expensive) global model.
+//
+// Agents that need a different tier opt in explicitly — Summary (analysis/extract)
+// or Reasoning (orchestrators). Global is no longer a per-agent routing target; it
+// remains the inherited base/fallback every tier resolves to when its own model is
 // unconfigured.
 func agentModelCategory(agent NBAgent) ModelTier {
+	if agent == nil {
+		return ModelTierRetrieval
+	}
 	if p, ok := agent.(NBAgentCategoryProvider); ok {
 		return p.GetModelCategory()
 	}
+	if agent.GetPlannerType() == AgentPlannerTypeClassification {
+		return ModelTierSummary
+	}
 	return ModelTierRetrieval
+}
+
+// isSingleShotClassifier reports whether the agent is a single-shot
+// classification agent (planner type Classification). These agents — e.g.
+// webhook_subject_name_extractor — are invoked programmatically by internal
+// callers (webhook handlers, etc.) with a throwaway conversation per call and
+// never carry follow-up turns. The conversational-enrichment background tasks
+// (acknowledgment, title/summary generation, conversation-context extraction,
+// long-term memory extraction, response evaluation) never surface to a user or
+// get reused for them, so running those only burns tokens, latency, and cost.
+// Callers use this to skip that enrichment for internal classifier runs.
+func isSingleShotClassifier(agent NBAgent) bool {
+	return agent != nil && agent.GetPlannerType() == AgentPlannerTypeClassification
 }
 
 // NBAgentCacheScopeProvider is an optional interface that allows agents to define

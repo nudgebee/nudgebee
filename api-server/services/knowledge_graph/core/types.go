@@ -1083,16 +1083,20 @@ const (
 
 // SearchNodesParams defines parameters for kg_list_nodes.
 type SearchNodesParams struct {
-	TenantID    string            `json:"-"`
-	Name        string            `json:"name,omitempty"`
-	NamePattern string            `json:"name_pattern,omitempty"`
-	Namespace   string            `json:"namespace,omitempty"`
-	Cluster     string            `json:"cluster,omitempty"`
-	NodeTypes   []NodeType        `json:"node_types,omitempty"`
-	Source      string            `json:"source,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	AccountIDs  []string          `json:"account_ids,omitempty"`
-	Limit       int               `json:"limit,omitempty"` // default 20, max 100
+	TenantID    string `json:"-"`
+	Name        string `json:"name,omitempty"`
+	NamePattern string `json:"name_pattern,omitempty"`
+	Namespace   string `json:"namespace,omitempty"`
+	Cluster     string `json:"cluster,omitempty"`
+	// ResourceID matches a node by the cloud_resourses row id it was built from
+	// (persisted on every node as the nb_resource_id property). An exact identity
+	// filter, unlike Name — robust to duplicate resource names.
+	ResourceID string            `json:"resource_id,omitempty"`
+	NodeTypes  []NodeType        `json:"node_types,omitempty"`
+	Source     string            `json:"source,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	AccountIDs []string          `json:"account_ids,omitempty"`
+	Limit      int               `json:"limit,omitempty"` // default 20, max 100
 }
 
 // SearchNodeResult is a single result from kg_list_nodes.

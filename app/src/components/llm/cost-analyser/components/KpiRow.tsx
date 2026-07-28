@@ -8,7 +8,7 @@ import * as React from 'react';
 import { Box } from '@mui/material';
 import { Stat, type StatDelta } from '@ui/Stat';
 import { Card } from '@ui/Card';
-import { fmtCost, fmtDuration, fmtTokens, type KpiTotals } from '../format';
+import { fmtCost, fmtTokens, type KpiTotals } from '../format';
 
 interface KpiRowProps {
   current: KpiTotals;
@@ -39,7 +39,6 @@ export function KpiRow({ current, previous, storageCost = 0 }: KpiRowProps) {
   const costDelta = pctDelta(current.totalCost, previous.totalCost);
   const avgDelta = pctDelta(current.avgCostPerRun, previous.avgCostPerRun);
   const runsDelta = pctDelta(current.runs, previous.runs);
-  const latDelta = pctDelta(current.avgLatencyMs, previous.avgLatencyMs);
   // All-in = token cost + prorated cache-storage cost. The hero shows this so
   // the headline isn't under-reporting; the split is spelled out on hover and in
   // the dedicated storage card.
@@ -85,16 +84,6 @@ export function KpiRow({ current, previous, storageCost = 0 }: KpiRowProps) {
 
       <Card sx={cardSx}>
         <Stat label='Tokens (in/out)' value={`${fmtTokens(current.inputTokens)} / ${fmtTokens(current.outputTokens)}`} />
-      </Card>
-
-      <Card sx={cardSx}>
-        <Stat
-          label='Avg latency / run'
-          value={fmtDuration(current.avgLatencyMs)}
-          delta={pctDeltaProps(latDelta, latDelta > 0 ? 'waste' : 'savings')}
-          deltaPlacement='inline'
-          info={{ tooltip: 'Model latency only — excludes human approval wait time.' }}
-        />
       </Card>
     </Box>
   );

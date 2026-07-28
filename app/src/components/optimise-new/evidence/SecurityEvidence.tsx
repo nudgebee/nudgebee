@@ -1,6 +1,6 @@
 import { Box, Typography, Link } from '@mui/material';
 import { ds } from 'src/utils/colors';
-import { SavingsFooter, SectionTitle, MetricRow } from '@components/optimise-new/EvidencePanel';
+import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
 import ShieldIcon from '@mui/icons-material/Shield';
 import BuildIcon from '@mui/icons-material/Build';
 import { safeParseJSON } from '@components/optimise-new/utils';

@@ -80,6 +80,14 @@ const createMarkdownRenderer = (chartCodes) => {
   const renderer = new marked.Renderer();
   let chartCounter = 0;
 
+  // A markdown table needs a scroll container that is a *separate* element from
+  // the table itself. Making the <table> its own scroller (display:block;
+  // overflow-x:auto) leaves the anonymous inner table box constrained to the
+  // available width, which pins every column to its min-content. Wrapping instead
+  // lets the table take `width: max-content` and the wrapper do the scrolling.
+  const baseTable = renderer.table.bind(renderer);
+  renderer.table = (token) => `<div class="md-table-wrap">${baseTable(token)}</div>`;
+
   renderer.image = ({ href, title, text }) => {
     return `<img src="${href}" alt="${text}" title="${
       title || ''
@@ -295,14 +303,19 @@ const defaultStyles = {
   '& h1 + hr': {
     display: 'none',
   },
-  '& table': {
-    width: '100%',
+  '& .md-table-wrap': {
     maxWidth: '100%',
-    display: 'block',
     overflowX: 'auto',
+    marginBottom: 'var(--ds-space-4)',
+  },
+  '& table': {
+    // `max-content` lets each column take its natural width and the wrapper scroll.
+    // `min-width: 100%` keeps a narrow table stretched across the message instead
+    // of shrink-wrapping to its content.
+    width: 'max-content',
+    minWidth: '100%',
     borderCollapse: 'separate',
     borderSpacing: 0,
-    marginBottom: 'var(--ds-space-4)',
     '& th': {
       backgroundColor: 'var(--ds-blue-100)',
       color: 'var(--ds-gray-700)',
@@ -318,8 +331,11 @@ const defaultStyles = {
       color: 'var(--ds-gray-700)',
       fontSize: 'var(--ds-text-body)',
       transition: 'background-color 0.2s ease',
-      overflowWrap: 'anywhere',
-      wordBreak: 'break-word',
+      // Caps a prose-heavy cell so one long sentence can't stretch the table off
+      // screen; `break-word` (never `anywhere`, which collapses min-content to a
+      // single character) still breaks unbreakable tokens like ARNs.
+      maxWidth: ds.space.mul(0, 160),
+      overflowWrap: 'break-word',
     },
     '& tr:hover td': {
       backgroundColor: 'var(--ds-gray-100)',
@@ -935,7 +951,7 @@ export default withErrorBoundary(MarkDowns);
 MarkDowns.propTypes = {
   data: PropTypes.string,
   sx: PropTypes.object,
-  allowExecutable: PropTypes.func,
+  allowExecutable: PropTypes.oneOfType([PropTypes.func, PropTypes.bool]),
   canRunCode: PropTypes.bool,
   onLinkClick: PropTypes.func,
 };

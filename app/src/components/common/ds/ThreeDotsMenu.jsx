@@ -71,7 +71,8 @@ const ThreeDotsMenu = ({
       size='sm'
       minWidth={menuWidth ?? 160}
       items={dsItems}
-      disablePortal={false}
+      disablePortal={true}
+      keepMounted={true}
       trigger={
         <DsButton id={id || 'three-dot-menu'} tone='secondary' size='xs' composition='icon-only' icon={<MoreVert />} aria-label='More actions' />
       }

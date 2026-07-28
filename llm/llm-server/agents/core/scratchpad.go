@@ -431,12 +431,22 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 	if failedCount > 0 || emptyCount > 0 {
 		totalUniqueTools := failedCount + emptyCount + successCount
 		fmt.Fprintf(&res, "<data_quality failed=\"%d\" empty=\"%d\" success=\"%d\" total=\"%d\">\n", failedCount, emptyCount, successCount, totalUniqueTools)
-		res.WriteString("Some tool calls FAILED or returned NO DATA. Review the observations above to assess whether the gathered data is sufficient to answer the user's question.\n")
-		res.WriteString("- If the data IS sufficient despite some failures, provide a confident final answer based on what was gathered.\n")
-		res.WriteString("- If critical data is MISSING and you cannot provide a reliable answer, you MUST:\n")
-		res.WriteString("  1. Clearly state what could NOT be investigated and why.\n")
-		res.WriteString("  2. Include a '### Recommended Next Steps' section with specific CLI commands or manual steps the user can run to gather the missing information.\n")
-		res.WriteString("  3. Do NOT fabricate findings for the missing data.\n")
+		// Empty output on a SUCCESSFUL exit is the normal signal for write/mutation
+		// commands (gh run rerun, kubectl apply, helm upgrade, aws s3 cp); it is NOT
+		// a failure and must not trigger the missing-data / next-steps framing. Only
+		// genuine FAILED calls do. Mirrors buildToolCallSummary's SUCCESS_NO_OUTPUT
+		// handling — see issue #29875.
+		if emptyCount > 0 {
+			res.WriteString("Some tool calls returned empty output but exited successfully. For write/mutation commands this is the normal success signal — treat the action as completed. Do NOT infer failure or missing data from absence of output.\n")
+		}
+		if failedCount > 0 {
+			res.WriteString("Some tool calls FAILED. Review the observations above to assess whether the gathered data is sufficient to answer the user's question.\n")
+			res.WriteString("- If the data IS sufficient despite some failures, provide a confident final answer based on what was gathered.\n")
+			res.WriteString("- If critical data is MISSING and you cannot provide a reliable answer, you MUST:\n")
+			res.WriteString("  1. Clearly state what could NOT be investigated and why.\n")
+			res.WriteString("  2. Include a '### Recommended Next Steps' section with specific CLI commands or manual steps the user can run to gather the missing information.\n")
+			res.WriteString("  3. Do NOT fabricate findings for the missing data.\n")
+		}
 		res.WriteString("</data_quality>\n\n")
 	}
 

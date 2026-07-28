@@ -505,6 +505,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 					// alive to TTL, so billing to expires_at still matches reality.
 					// Synchronous by design (see cacheLifecycleWriteTimeout).
 					recordCacheLifecycleInvalidation(cacheInfo.CacheName)
+					common.MetricsLLMCacheInvalidations(req.Provider, req.Model, invalidationScope(req.Scope), "content_changed")
 				}
 			} else {
 				slog.Warn("Google AI cache: failed to init helper for orphan deletion",
@@ -810,8 +811,19 @@ func (p *GoogleAICacheProvider) InvalidateCache(ctx context.Context, req *CacheR
 	// the cache is already gone from the provider, our DB bookkeeping
 	// shouldn't block the caller.
 	recordCacheLifecycleInvalidation(cacheInfo.CacheName)
+	common.MetricsLLMCacheInvalidations(req.Provider, req.Model, invalidationScope(req.Scope), "explicit")
 
 	return nil
+}
+
+// invalidationScope normalizes an empty scope to the conversation default,
+// mirroring createCache's scopeOverride logic, so the invalidation metric
+// never emits an empty scope label.
+func invalidationScope(scope CacheScope) string {
+	if scope == "" {
+		return string(CacheScopeConversation)
+	}
+	return string(scope)
 }
 
 // ========== Anthropic Cache Provider ==========

@@ -296,12 +296,18 @@ func (t *CLITool) Execute(ctx context.Context, input map[string]any) core.NBTool
 // than an error. The exit code propagates from the last command in the pipeline,
 // so only that stage is checked.
 func isSearchNoMatch(cmd string) bool {
-	// Split into pipeline stages on shell control operators only (NOT space/=, which
-	// would shatter a stage into individual words). Per-word env-prefix and path
-	// handling happens below within the final stage.
+	// Split into pipeline stages on the operators that chain commands and hand the
+	// pipeline's exit code to the *last* command run: pipes and sequence operators
+	// (| || ; & &&). We deliberately do NOT split on redirection (< >), command
+	// substitution (`), or grouping ((), because those characters routinely appear
+	// inside quoted grep patterns (git conflict markers "<<<<<<<", arrow fns "=>").
+	// Splitting on them would shatter a `grep "<<<<<<<" .` command so its final stage
+	// no longer looks like a search, and its normal no-match exit 1 would be
+	// misreported as a failure. Per-word env-prefix and path handling happens below
+	// within the final stage.
 	segs := strings.FieldsFunc(cmd, func(r rune) bool {
 		switch r {
-		case ';', '|', '&', '<', '>', '`', '(':
+		case ';', '|', '&':
 			return true
 		}
 		return false

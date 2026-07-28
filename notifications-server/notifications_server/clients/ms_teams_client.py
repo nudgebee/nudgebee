@@ -362,6 +362,86 @@ class MsTeamsClient:
         return {"success": False, "error": "Rate limit exceeded creating channel"}
 
     @staticmethod
+    def add_team_members(
+        access_token: str,
+        team_id: str,
+        user_ids: List[str],
+        max_retries: int = settings.ms_teams.max_rate_limit_retries,
+    ) -> Dict[str, Any]:
+        """
+        Add users as members of a team via MS Graph API.
+
+        Access to standard channels in Teams is governed by *team* membership —
+        standard channels have no independent membership list — so adding a user
+        to the team is the correct operation for granting them channel access.
+        (Private/shared channels keep their own membership and are out of scope
+        here.) Each user is added individually so a single failure does not block
+        the rest and results can be reported per user.
+
+        Args:
+            access_token: MS Graph access token
+            team_id: The team to add members to
+            user_ids: AAD object IDs of the users to add
+            max_retries: Maximum retry attempts for rate limiting
+
+        Returns:
+            Dict with per-user "added", "already_members", and "failed" lists.
+        """
+        validate_graph_api_id(team_id, "team_id")
+
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": CONTENT_TYPE_JSON}
+        add_member_url = f"{GRAPH_API_BASE_URL}/v1.0/teams/{team_id}/members"
+
+        added: List[str] = []
+        already_members: List[str] = []
+        failed: List[Dict[str, str]] = []
+
+        for user_id in user_ids:
+            # Validate before interpolating into the Graph URL to prevent path
+            # traversal / injection. A bad id fails just that user, keeping the
+            # per-user partial semantics rather than aborting the whole batch.
+            try:
+                validate_graph_api_id(user_id, "user_id")
+            except ValueError as e:
+                failed.append({"user_id": user_id, "error": str(e)})
+                continue
+
+            payload = {
+                "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                "roles": [],
+                "user@odata.bind": f"{GRAPH_API_BASE_URL}/v1.0/users('{user_id}')",
+            }
+
+            for attempt in range(max_retries + 1):
+                response = requests.post(add_member_url, headers=headers, json=payload)
+
+                if response.status_code == 429:
+                    if attempt < max_retries:
+                        retry_after = _get_retry_after(response)
+                        LOG.warning("MS Teams rate limited adding member. Retrying after %ss...", retry_after)
+                        time.sleep(retry_after)
+                        continue
+                    failed.append({"user_id": user_id, "error": "Rate limit exceeded adding member"})
+                    break
+
+                if response.status_code in (200, 201):
+                    added.append(user_id)
+                    break
+
+                body_text = response.text or ""
+                # Graph reports an existing membership with a 400/409 whose body
+                # mentions the conflict; treat that as idempotent success.
+                if response.status_code == 409 or "already exist" in body_text.lower():
+                    already_members.append(user_id)
+                    break
+
+                LOG.warning("Failed to add MS Teams member %s: %s - %s", user_id, response.status_code, body_text)
+                failed.append({"user_id": user_id, "error": f"{response.status_code} - {body_text}"})
+                break
+
+        return {"success": True, "added": added, "already_members": already_members, "failed": failed}
+
+    @staticmethod
     def set_reaction(
         access_token: str,
         team_id: str,

@@ -1903,6 +1903,7 @@ const apiKubernetes1 = {
         rows {
           event_count
           count_new_issues
+          count_new_issue_events
           count_priority_high
         }
       }
@@ -1913,6 +1914,7 @@ const apiKubernetes1 = {
         rows {
           event_count
           count_new_issues
+          count_new_issue_events
           count_priority_high
         }
       }

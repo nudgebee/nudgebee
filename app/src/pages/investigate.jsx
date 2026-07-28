@@ -878,7 +878,6 @@ const Investigate = () => {
 
     // Skip reload if we already loaded this event (URL rewrite just added accountId)
     if (String(loadedEventIdRef.current) === String(id) && router.query.accountId) return;
-    loadedEventIdRef.current = id;
 
     let cancelled = false;
     resetState();
@@ -887,7 +886,16 @@ const Investigate = () => {
       if (!cancelled && isMountedRef.current) setRecurrenceInfo(info);
     });
     apiRecommendations.listEventResolutions(id).then((resolutions) => {
-      if (!cancelled && isMountedRef.current) setEventResolutions(resolutions);
+      // Only mark this id "loaded" once the fetch actually lands uncancelled —
+      // setting it synchronously up front let React StrictMode's dev-mode
+      // double-invoke poison the guard above: its throwaway first pass would
+      // set the ref before the real second pass ran, so the second pass's
+      // early-return skipped this call entirely and the first pass's own
+      // result was then discarded by its `cancelled` cleanup, leaving
+      // eventResolutions permanently empty.
+      if (cancelled) return;
+      loadedEventIdRef.current = id;
+      if (isMountedRef.current) setEventResolutions(resolutions);
     });
     return () => {
       cancelled = true;
@@ -974,14 +982,27 @@ const Investigate = () => {
   }, [handleAutomationTriggered]);
 
   // The code-fix pull request to surface as a banner at the top of the analysis.
-  // Prefer a PR that was actually raised (has a link) so a later failed retry
-  // (e.g. "PR already exists") never hides a working PR; only fall back to the
-  // most recent attempt (a failure) when nothing was ever raised. Rows are
-  // ordered updated_at desc, so the first match is the newest.
+  // Prefer a resolution that's still active or succeeded over one that
+  // failed/closed, so a stale failure never hides a working attempt (same
+  // tiering as getResolutionForCard); within each tier prefer one with an
+  // actual PR link. Rows are ordered updated_at desc, so falling back to the
+  // first entry is the newest attempt in that tier.
+  // Scoped to AskAiCard specifically (same card_id match — plus the legacy
+  // provider-based fallback for resolutions predating card_id — used by
+  // getResolutionForCard) so a PR raised from a different card (e.g.
+  // MemoryAllocationCard) never gets shown under this "code fix" banner.
   const raisedPrResolution = useMemo(() => {
-    const prs = eventResolutions.filter((r) => r?.type === 'PullRequest');
-    const raised = prs.find((r) => typeof r?.type_reference_id === 'string' && /^https?:\/\//.test(r.type_reference_id));
-    return raised || prs[0] || null;
+    const isAskAiCard = (r) => {
+      const d = typeof r?.data === 'string' ? safeJSONParse(r.data) : r?.data;
+      const input = d?.data;
+      if (input?.card_id) return input.card_id === 'AskAiCard';
+      return d?.provider === 'git' || d?.provider === 'github' || d?.provider === 'gitlab';
+    };
+    const prs = eventResolutions.filter((r) => r?.type === 'PullRequest' && isAskAiCard(r));
+    if (prs.length === 0) return null;
+    const withLink = (list) => list.find((r) => typeof r?.type_reference_id === 'string' && /^https?:\/\//.test(r.type_reference_id));
+    const notFailed = prs.filter((r) => r?.status !== 'Failed');
+    return withLink(notFailed) || notFailed[0] || withLink(prs) || prs[0];
   }, [eventResolutions]);
 
   // Pause polling when the tab is hidden; resume on return if a run is still live.
@@ -1540,20 +1561,32 @@ const Investigate = () => {
   };
 
   const getResolutionForCard = (cardId) => {
+    const matches = [];
     for (const resolution of eventResolutions) {
-      const d = typeof resolution.data === 'string' ? JSON.parse(resolution.data) : resolution.data;
+      const d = typeof resolution.data === 'string' ? safeJSONParse(resolution.data) : resolution.data;
       const input = d?.data;
-      if (input?.card_id === cardId) return resolution;
+      if (input?.card_id === cardId) matches.push(resolution);
     }
-    for (const resolution of eventResolutions) {
-      const d = typeof resolution.data === 'string' ? JSON.parse(resolution.data) : resolution.data;
-      const input = d?.data;
-      if (!input || input.card_id) continue;
-      if (cardId === 'MemoryAllocationCard' && input.container_name) return resolution;
-      if (cardId?.startsWith('LastDeploymentCard') && input.revert === true && !input.container_name) return resolution;
-      if (cardId === 'AskAiCard' && (d?.provider === 'git' || d?.provider === 'github' || d?.provider === 'gitlab')) return resolution;
+    if (matches.length === 0) {
+      for (const resolution of eventResolutions) {
+        const d = typeof resolution.data === 'string' ? safeJSONParse(resolution.data) : resolution.data;
+        const input = d?.data;
+        if (!input || input.card_id) continue;
+        if (cardId === 'MemoryAllocationCard' && input.container_name) matches.push(resolution);
+        else if (cardId?.startsWith('LastDeploymentCard') && input.revert === true && !input.container_name) matches.push(resolution);
+        else if (cardId === 'AskAiCard' && (d?.provider === 'git' || d?.provider === 'github' || d?.provider === 'gitlab')) matches.push(resolution);
+      }
     }
-    return null;
+    if (matches.length === 0) return null;
+    // Prefer a resolution that's still active or succeeded over one that
+    // failed/closed, so a stale failure never hides a working attempt; within
+    // each tier prefer one that actually raised a PR (has a link). Rows are
+    // ordered updated_at desc, so falling back to the first entry is the
+    // newest attempt in that tier. A failed resolution only surfaces when
+    // nothing better exists.
+    const withLink = (list) => list.find((r) => typeof r?.type_reference_id === 'string' && /^https?:\/\//.test(r.type_reference_id));
+    const notFailed = matches.filter((r) => r?.status !== 'Failed');
+    return withLink(notFailed) || notFailed[0] || withLink(matches) || matches[0];
   };
 
   const handleTicketSuccess = () => {
@@ -1568,7 +1601,9 @@ const Investigate = () => {
     setIsTroubleshootFormOpen(false);
   };
 
-  const getInvestigateDescription = (logText) => {
+  // Memoized: avoids re-running 3 regexes on every render (was called 5× inline with same args)
+  const investigateDescription = useMemo(() => {
+    let logText = row?.description;
     if (isK8s && alertLabels?.nb_webhook_url) {
       logText = (logText || '') + `\n\n**Alert Url -** [${alertLabels.alertname || alertLabels.nb_webhook_event_id}](${alertLabels.nb_webhook_url})`;
     }
@@ -1583,7 +1618,7 @@ const Investigate = () => {
       };
     }
     return { logSample: '', containerId: '', failureCount: '' };
-  };
+  }, [row?.description, isK8s, alertLabels]);
 
   const handleGenerateRCA = () => {
     apiKubernetes.generateRCA(id, router.query.accountId, true).then((response) => {
@@ -1864,7 +1899,14 @@ const Investigate = () => {
             fingerprint: row?.fingerprint,
             accountId: router.query.accountId || row?.cloud_account_id,
           }}
-          onSuccess={() => loadData(row.id)}
+          onSuccess={(update) => {
+            setRow((prev) => ({
+              ...prev,
+              ...(update.newStatus != null ? { nb_status: update.newStatus } : {}),
+              ...(update.newPriority != null ? { computed_priority: update.newPriority } : {}),
+              ...(update.snoozedUntil != null ? { snoozed_until: update.snoozedUntil } : {}),
+            }));
+          }}
         />
       )}
       {showTemplatesModal && (
@@ -2483,36 +2525,27 @@ const Investigate = () => {
                   )}
                   {row?.description && (
                     <>
-                      {getInvestigateDescription(row?.description).containerId && (
+                      {investigateDescription.containerId && (
                         <>
                           <Text value={'Container Id'} secondaryText />
                           <Text
-                            value={getInvestigateDescription(row?.description).containerId || '-'}
+                            value={investigateDescription.containerId || '-'}
                             copyableTooltip
                             showAutoEllipsis
                             sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[700] }}
                           />
                         </>
                       )}
-                      {getInvestigateDescription(row?.description).failureCount && (
+                      {investigateDescription.failureCount && (
                         <>
                           <Text value={'Failure Count'} secondaryText />
-                          <Text
-                            className='text-value'
-                            value={getInvestigateDescription(row?.description).failureCount}
-                            secondaryText
-                            sx={{ color: ds.gray[700] }}
-                          />
+                          <Text className='text-value' value={investigateDescription.failureCount} secondaryText sx={{ color: ds.gray[700] }} />
                         </>
                       )}
                       {isCloud && (
                         <>
                           <Text value={'Description'} secondaryText />
-                          <Text
-                            value={getInvestigateDescription(row?.description).logSample}
-                            showAutoEllipsis
-                            sx={{ fontSize: 'var(--ds-text-small)' }}
-                          />
+                          <Text value={investigateDescription.logSample} showAutoEllipsis sx={{ fontSize: 'var(--ds-text-small)' }} />
                         </>
                       )}
                     </>
@@ -3004,20 +3037,65 @@ const Investigate = () => {
                                 sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-medium)', mb: 'var(--ds-space-3)' }}
                               />
                               <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-3)', flexWrap: 'wrap' }}>
-                                {matchedOptions.filter(shouldShowResolveButton).map((resolvableOption) => (
-                                  <Button
-                                    key={`fix-${resolvableOption.id}`}
-                                    tone='primary'
-                                    size='sm'
-                                    trailingAccent={<ArrowForwardRoundedIcon />}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setOpenResolveComponentId(resolvableOption.id);
-                                    }}
-                                  >
-                                    {resolvableOption.id === 'AskAiCard' ? 'Raise PR' : `Fix ${resolvableOption.text}`}
-                                  </Button>
-                                ))}
+                                {matchedOptions.filter(shouldShowResolveButton).map((resolvableOption) => {
+                                  const resolution = isK8s ? getResolutionForCard(resolvableOption.id) : undefined;
+                                  const baseLabel = resolvableOption.id === 'AskAiCard' ? 'Raise PR' : `Fix ${resolvableOption.text}`;
+                                  // A fix already ran (or is running) for this card — show its status
+                                  // instead of a re-clickable "Fix" button so the user can tell it was
+                                  // already applied. Failed still gets a button, relabeled "Retry".
+                                  if (resolution && resolution.status !== 'Failed') {
+                                    const prUrl =
+                                      resolution.type === 'PullRequest' &&
+                                      typeof resolution.type_reference_id === 'string' &&
+                                      /^https?:\/\//.test(resolution.type_reference_id)
+                                        ? resolution.type_reference_id
+                                        : null;
+                                    return (
+                                      <Box
+                                        key={`fix-status-${resolvableOption.id}`}
+                                        sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}
+                                      >
+                                        <Label
+                                          text={`${resolvableOption.text}: ${(resolution.status === 'InProgress'
+                                            ? 'In Progress'
+                                            : resolution.status
+                                          ).toUpperCase()}`}
+                                          height={ds.space[5]}
+                                        />
+                                        {prUrl && (
+                                          <Link
+                                            href={prUrl}
+                                            openInNew
+                                            style={{
+                                              fontSize: 'var(--ds-text-small)',
+                                              fontWeight: 'var(--ds-font-weight-semibold)',
+                                              whiteSpace: 'nowrap',
+                                              flexShrink: 0,
+                                            }}
+                                          >
+                                            View PR
+                                          </Link>
+                                        )}
+                                      </Box>
+                                    );
+                                  }
+                                  return (
+                                    <Button
+                                      key={`fix-${resolvableOption.id}`}
+                                      tone='primary'
+                                      size='sm'
+                                      trailingAccent={<ArrowForwardRoundedIcon />}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setOpenResolveComponentId(resolvableOption.id);
+                                      }}
+                                    >
+                                      {resolution?.status === 'Failed'
+                                        ? `Retry ${resolvableOption.id === 'AskAiCard' ? 'Raise PR' : resolvableOption.text}`
+                                        : baseLabel}
+                                    </Button>
+                                  );
+                                })}
                               </Box>
                             </>
                           )}

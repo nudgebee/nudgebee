@@ -112,7 +112,7 @@ def get_recommendation_resolution_message_template(
 
     # Action buttons
     blocks.append({"type": "divider"})
-    cta_url = f"{base_url}/optimise?id={params.recommendation_id}#summary"
+    cta_url = f"{base_url}/optimise?id={params.recommendation_id}#resolutions"
     blocks.append(
         {
             "type": "actions",

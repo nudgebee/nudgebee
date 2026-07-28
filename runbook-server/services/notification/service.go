@@ -678,3 +678,102 @@ func CreateChannel(ctx *security.RequestContext, request CreateChannelRequest) (
 	result.Created = response.Created
 	return result, nil
 }
+
+// AddChannelMembersRequest represents a request to add users to a channel/space.
+type AddChannelMembersRequest struct {
+	Platform  string   `json:"platform" validate:"required"`
+	ChannelID string   `json:"channel_id" validate:"required"`
+	UserIDs   []string `json:"user_ids" validate:"required"`
+	TeamID    string   `json:"team_id,omitempty"`
+	AccountID string   `json:"account_id" validate:"required"`
+}
+
+// AddMemberFailure describes a single user that could not be added.
+type AddMemberFailure struct {
+	UserID string `json:"user_id"`
+	Error  string `json:"error"`
+}
+
+// AddChannelMembersResponse represents the per-user result of an add-members call.
+type AddChannelMembersResponse struct {
+	Platform       string             `json:"platform"`
+	ChannelID      string             `json:"channel_id"`
+	TeamID         string             `json:"team_id"`
+	Added          []string           `json:"added"`
+	AlreadyMembers []string           `json:"already_members"`
+	Failed         []AddMemberFailure `json:"failed"`
+}
+
+// AddChannelMembers adds one or more users to a channel/space on the given
+// platform via the notifications-server. Adding a user who is already a member
+// is idempotent — such users are reported under AlreadyMembers, not Failed.
+func AddChannelMembers(ctx *security.RequestContext, request AddChannelMembersRequest) (AddChannelMembersResponse, error) {
+	if err := validatePlatform(request.Platform); err != nil {
+		return AddChannelMembersResponse{}, err
+	}
+
+	if ctx.GetSecurityContext().GetTenantId() == "" {
+		return AddChannelMembersResponse{}, errors.New("notifications: tenantId is required")
+	}
+
+	if err := common.ValidateStruct(request); err != nil {
+		return AddChannelMembersResponse{}, err
+	}
+
+	if len(request.UserIDs) == 0 {
+		return AddChannelMembersResponse{}, errors.New("notifications: at least one user is required")
+	}
+
+	if request.Platform == "ms_teams" && request.TeamID == "" {
+		return AddChannelMembersResponse{}, errors.New("notifications: team_id is required for ms_teams")
+	}
+
+	headers := map[string]string{
+		"tenant":       ctx.GetSecurityContext().GetTenantId(),
+		"Content-Type": "application/json",
+	}
+
+	requestBody := map[string]any{
+		"platform":   request.Platform,
+		"channel_id": request.ChannelID,
+		"user_ids":   request.UserIDs,
+	}
+	if request.TeamID != "" {
+		requestBody["team_id"] = request.TeamID
+	}
+
+	resp, err := common.HttpPost(config.Config.NotificationServerUrl+"/api/channels/members/add", common.HttpWithHeaders(withActionToken(headers)), common.HttpWithJsonBody(requestBody))
+	if err != nil {
+		ctx.GetLogger().Error("notifications: unable to add members", "error", err)
+		return AddChannelMembersResponse{}, errors.New("notifications: unable to add members request")
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		ctx.GetLogger().Error("notifications: unable to read body", "error", err)
+		return AddChannelMembersResponse{}, err
+	}
+
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		return AddChannelMembersResponse{}, fmt.Errorf("notifications: unable to add members - %s", string(body))
+	}
+
+	var response struct {
+		Success bool                      `json:"success"`
+		Data    AddChannelMembersResponse `json:"data"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return AddChannelMembersResponse{}, err
+	}
+
+	// A 200 with success=false shouldn't be silently treated as a success with
+	// empty data; surface it as an error so structured failures propagate.
+	if !response.Success {
+		return AddChannelMembersResponse{}, errors.New("notifications: unable to add members")
+	}
+
+	return response.Data, nil
+}

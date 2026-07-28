@@ -3,8 +3,8 @@
  *
  * Built on `@shared/tables/CustomTable`:
  *   - "Models" column lists every model with its call count + cost.
- *   - Sortable columns via the table's own header sort icons (Trigger, Cost,
- *     Tokens[by input], Duration, Latency, Calls). No separate sort control.
+ *   - Sortable columns via the table's own header sort icons (Start time, Cost,
+ *     Tokens[by input], Duration, Avg latency, Calls). No separate sort control.
  *   - Each row expands to a "Tasks" panel — a nested table of the steps (adds a
  *     Wait-time column; sortable by cost / input tokens / wait / latency;
  *     default order is task sequence). This is in addition to the detail popup.
@@ -76,12 +76,23 @@ const numCell = { fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', 
 
 // Header name → sort key (only sortable headers appear here).
 const HEADER_TO_KEY: Record<string, ConvSortKey> = {
+  'Start time': 'start',
   Trigger: 'trigger',
   Cost: 'cost',
   Tokens: 'tokens',
   Duration: 'duration',
   Latency: 'latency',
   Calls: 'calls',
+};
+
+// Per-conversation latency shown in the table = AVERAGE model response time per
+// call (SUM of per-call latencies ÷ call count), NOT the sum. The sum double-
+// counts calls that run in parallel (ReWOO parallel exec) and can exceed the
+// conversation's wall-clock Duration; the average is a per-call figure that
+// stays ≤ Duration and matches the detail panel's "Avg latency / call" stat.
+const avgLatencyMs = (r: Run): number => {
+  const n = runCallCount(r);
+  return n > 0 ? r.totalModelLatencyMs / n : 0;
 };
 const KEY_TO_HEADER: Record<ConvSortKey, string> = {
   start: 'Start time',
@@ -104,7 +115,7 @@ function runValue(r: Run, key: ConvSortKey): number | string {
     case 'duration':
       return r.wallClockMs;
     case 'latency':
-      return r.totalModelLatencyMs;
+      return avgLatencyMs(r);
     case 'calls':
       return runCallCount(r);
     case 'start':
@@ -263,7 +274,7 @@ export function ConversationsTable({
   // Quick-filter presets narrow the set; the column sort then orders what's shown.
   const viewRuns = React.useMemo(() => {
     if (view === 'cost') return [...runs].sort((a, b) => b.totalCost - a.totalCost).slice(0, 5);
-    if (view === 'latency') return [...runs].sort((a, b) => b.totalModelLatencyMs - a.totalModelLatencyMs).slice(0, 5);
+    if (view === 'latency') return [...runs].sort((a, b) => avgLatencyMs(b) - avgLatencyMs(a)).slice(0, 5);
     if (view === 'calls') return [...runs].sort((a, b) => runCallCount(b) - runCallCount(a)).slice(0, 5);
     if (view === 'failed') return runs.filter((r) => r.status === 'failed');
     return runs;
@@ -297,7 +308,7 @@ export function ConversationsTable({
     models: <HeaderLabel label='Models' secondary='(calls · cost)' info='Models used in this conversation, with per-model calls · cost.' />,
     start: <HeaderLabel label='Start time' info='When the conversation started.' />,
     duration: <HeaderLabel label='Duration' info='Wall-clock time from start to end.' />,
-    latency: <HeaderLabel label='Latency' info='Total time spent waiting on model responses.' />,
+    latency: <HeaderLabel label='Avg latency' info='Average model response time per call (total model time ÷ calls).' />,
     calls: <HeaderLabel label='Calls' info='Total model (LLM) API calls in the conversation.' />,
     cost: <HeaderLabel label='Cost' info='Total cost of the conversation.' />,
     tokens: <HeaderLabel label='Tokens' secondary='(in/out)' info='Input / output tokens across the conversation.' />,
@@ -307,7 +318,7 @@ export function ConversationsTable({
     ? [
         { name: 'Conversation', width: '24%', component: H.conversation },
         { name: 'Models (calls · cost)', width: '23%', component: H.models },
-        { name: 'Start time', width: '8%', component: H.start },
+        { name: 'Start time', width: '8%', sortEnabled: true, component: H.start },
         { name: 'Duration', width: '9%', sortEnabled: true, component: H.duration },
         { name: 'Latency', width: '10%', sortEnabled: true, component: H.latency },
         { name: 'Calls', width: '7%', sortEnabled: true, component: H.calls },
@@ -319,7 +330,7 @@ export function ConversationsTable({
       [
         { name: 'Conversation', width: '24%', component: H.conversation },
         { name: 'Models (calls · cost)', width: '10%', component: H.models },
-        { name: 'Start time', width: '6%', component: H.start },
+        { name: 'Start time', width: '6%', sortEnabled: true, component: H.start },
         { name: 'Duration', width: '4%', sortEnabled: true, component: H.duration },
         { name: 'Latency', width: '6%', sortEnabled: true, component: H.latency },
         { name: 'Calls', width: '5%', sortEnabled: true, component: H.calls },
@@ -329,9 +340,9 @@ export function ConversationsTable({
         { name: 'Actions', width: '4%' },
       ];
 
-  // Relative outlier highlighting: rank cost / model-latency within the rows shown.
+  // Relative outlier highlighting: rank cost / avg-latency within the rows shown.
   const costSev = React.useMemo(() => makeSeverity(sortedRuns.map((r) => r.totalCost)), [sortedRuns]);
-  const latSev = React.useMemo(() => makeSeverity(sortedRuns.map((r) => r.totalModelLatencyMs)), [sortedRuns]);
+  const latSev = React.useMemo(() => makeSeverity(sortedRuns.map((r) => avgLatencyMs(r))), [sortedRuns]);
 
   const tableData = sortedRuns.map((run) => {
     const models = runModelBreakdown(run);
@@ -380,8 +391,8 @@ export function ConversationsTable({
     const duration = { component: <Box sx={numCell}>{fmtDuration(run.wallClockMs)}</Box> };
     const llmLatency = {
       component: (
-        <SeverityCell severity={latSev(run.totalModelLatencyMs)} metric='latency'>
-          <Box sx={numCell}>{fmtDuration(run.totalModelLatencyMs)}</Box>
+        <SeverityCell severity={latSev(avgLatencyMs(run))} metric='latency'>
+          <Box sx={numCell}>{fmtDuration(avgLatencyMs(run))}</Box>
         </SeverityCell>
       ),
     };

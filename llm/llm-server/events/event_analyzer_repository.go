@@ -153,6 +153,61 @@ func (r *EventAnalysisRepository) UpsertEventAnalysisInProgress(ctx *security.Re
 	return nil
 }
 
+// ClaimEventAnalysis atomically claims an analysis row for processing,
+// transitioning it to IN_PROGRESS and reporting whether THIS caller won the
+// claim (claimed == true when exactly one row was affected).
+//
+// This is the atomic gate that replaces the check-then-write pattern the
+// live dispatchers used (read status, then UpsertEventAnalysisInProgress). That
+// pattern raced across the entry points that fire for one event on ingestion —
+// the two llm-server MQ consumers and the HTTP investigation endpoint — letting
+// two of them both read "nothing in progress" before either wrote, and each then
+// run the full summary → investigation → log → detailed-response pipeline (the
+// observed duplicate-task bug). The INSERT ... ON CONFLICT ... WHERE makes
+// claim-or-skip a single statement, so at most one dispatcher proceeds. On a
+// concurrent fresh INSERT the conflict serialises on the row: the loser's
+// DO UPDATE re-evaluates its WHERE against the winner's committed IN_PROGRESS
+// and affects zero rows.
+//
+// This method is used by the MQ and HTTP dispatch gates. The sync-recovery job
+// (syncStuckEventAnalyses) does NOT go through it — it deliberately re-drives
+// rows this claim would refuse (already IN_PROGRESS but stale), and is instead
+// serialised by leader election plus its own age / conversation-status guards.
+//
+// The claim never steals a row another worker is actively running (IN_PROGRESS
+// is always excluded). The force flag controls COMPLETED handling:
+//   - force == false (auto dispatch): a COMPLETED row is NOT re-claimed. Callers
+//     use this so a finished analysis keeps its cached result.
+//   - force == true (regenerate): a COMPLETED row IS re-claimed, so an explicit
+//     regenerate re-runs the pipeline.
+func (r *EventAnalysisRepository) ClaimEventAnalysis(ctx *security.RequestContext, eventId, fingerprint, accountId, aggKey string, analysisType EventAnalysisType, force bool) (bool, error) {
+	// Always exclude IN_PROGRESS (never steal an active run). Additionally
+	// exclude COMPLETED unless forcing a regenerate.
+	claimQuery := `INSERT INTO event_log_analysis (event_id, event_fingerprint, analysis, summary, status, cloud_account_id, event_aggregation_key, analysis_type)
+VALUES ($1, $2, '', '', $3, $4, $5, $6)
+ON CONFLICT (cloud_account_id, event_fingerprint, event_aggregation_key, analysis_type)
+DO UPDATE SET status = EXCLUDED.status, event_id = EXCLUDED.event_id, updated_at = NOW()
+WHERE event_log_analysis.status <> $7`
+	args := []any{eventId, fingerprint, AnalysisStatusInProgress, accountId, aggKey, analysisType, AnalysisStatusInProgress}
+	if !force {
+		claimQuery += ` AND event_log_analysis.status <> $8`
+		args = append(args, AnalysisStatusCompleted)
+	}
+	claimQuery += `;`
+
+	result, err := r.dbManager.Db.Exec(claimQuery, args...)
+	if err != nil {
+		ctx.GetLogger().Warn("analyzer: failed to claim analysis in database", "error", err, "event_id", eventId, "analysis_type", analysisType)
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		ctx.GetLogger().Warn("analyzer: failed to read rows affected on claim", "error", err, "event_id", eventId, "analysis_type", analysisType)
+		return false, err
+	}
+	return affected > 0, nil
+}
+
 // SaveEventRCAAnalysis saves the final RCA analysis result.
 // Bumps updated_at so stuck-RCA detection works — see UpsertEventAnalysisInProgress.
 func (r *EventAnalysisRepository) SaveEventRCAAnalysis(ctx *security.RequestContext, eventId, fingerprint, accountId, aggKey, analysisResult string) error {

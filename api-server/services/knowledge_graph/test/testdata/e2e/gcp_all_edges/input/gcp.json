@@ -1,0 +1,281 @@
+[
+  {
+    "id": "vpc-1",
+    "resourse_id": "my-vpc",
+    "name": "my-vpc",
+    "type": "vpc-network",
+    "service_name": "Networking",
+    "account": "proj-1",
+    "region": "global",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "vpc-1",
+    "meta": {}
+  },
+  {
+    "id": "subnet-1",
+    "resourse_id": "my-subnet",
+    "name": "my-subnet",
+    "type": "subnet",
+    "service_name": "Networking",
+    "account": "proj-1",
+    "region": "us-central1",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "subnet-1",
+    "meta": {
+      "network": "projects/proj-1/global/networks/my-vpc"
+    }
+  },
+  {
+    "id": "gce-1",
+    "resourse_id": "my-vm",
+    "name": "my-vm",
+    "type": "compute-engine",
+    "service_name": "Compute Engine",
+    "account": "proj-1",
+    "region": "us-central1",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "gce-1",
+    "meta": {
+      "network_interfaces": [
+        {
+          "network": "projects/proj-1/global/networks/my-vpc",
+          "subnetwork": "projects/proj-1/regions/us-central1/subnetworks/my-subnet"
+        }
+      ]
+    }
+  },
+  {
+    "id": "fw-1",
+    "resourse_id": "my-fw",
+    "name": "my-fw",
+    "type": "firewall-rule",
+    "service_name": "Networking",
+    "account": "proj-1",
+    "region": "global",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "fw-1",
+    "meta": {
+      "network": "projects/proj-1/global/networks/my-vpc",
+      "direction": "INGRESS"
+    }
+  },
+  {
+    "id": "sql-1",
+    "resourse_id": "primary-db",
+    "name": "primary-db",
+    "type": "cloud-sql",
+    "service_name": "Cloud SQL",
+    "account": "proj-1",
+    "region": "us-central1",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "sql-1",
+    "meta": {
+      "settings": {
+        "ipConfiguration": {
+          "privateNetwork": "projects/proj-1/global/networks/my-vpc"
+        }
+      }
+    }
+  },
+  {
+    "id": "sql-2",
+    "resourse_id": "replica-db",
+    "name": "replica-db",
+    "type": "cloud-sql",
+    "service_name": "Cloud SQL",
+    "account": "proj-1",
+    "region": "us-central1",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "sql-2",
+    "meta": {
+      "instanceType": "READ_REPLICA_INSTANCE",
+      "masterInstanceName": "proj-1:primary-db"
+    }
+  },
+  {
+    "id": "bqds-1",
+    "resourse_id": "my_dataset",
+    "name": "my_dataset",
+    "type": "bigquery.googleapis.com/Dataset",
+    "service_name": "BigQuery",
+    "account": "proj-1",
+    "region": "US",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "bqds-1",
+    "meta": {}
+  },
+  {
+    "id": "bqt-1",
+    "resourse_id": "my_table",
+    "name": "my_table",
+    "type": "bigquery.googleapis.com/Table",
+    "service_name": "BigQuery",
+    "account": "proj-1",
+    "region": "US",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "bqt-1",
+    "meta": {
+      "FullID": "proj-1:my_dataset.my_table"
+    }
+  },
+  {
+    "id": "run-1",
+    "resourse_id": "my-service",
+    "name": "my-service",
+    "type": "run.googleapis.com/Service",
+    "service_name": "Cloud Run",
+    "account": "proj-1",
+    "region": "us-central1",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "run-1",
+    "meta": {
+      "service_account": "sa@proj-1.iam.gserviceaccount.com",
+      "secrets": [
+        "my-secret"
+      ],
+      "redis_endpoints": [
+        "10.0.0.5"
+      ],
+      "container_image": "us-central1-docker.pkg.dev/proj-1/my-repo/img@sha256:abc"
+    }
+  },
+  {
+    "id": "sa-1",
+    "resourse_id": "sa@proj-1.iam.gserviceaccount.com",
+    "name": "sa@proj-1.iam.gserviceaccount.com",
+    "type": "iam.googleapis.com/ServiceAccount",
+    "service_name": "IAM",
+    "account": "proj-1",
+    "region": "global",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "sa-1",
+    "meta": {
+      "email": "sa@proj-1.iam.gserviceaccount.com"
+    }
+  },
+  {
+    "id": "sec-1",
+    "resourse_id": "my-secret",
+    "name": "my-secret",
+    "type": "secret",
+    "service_name": "Secret Manager",
+    "account": "proj-1",
+    "region": "global",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "sec-1",
+    "meta": {}
+  },
+  {
+    "id": "redis-1",
+    "resourse_id": "my-cache",
+    "name": "my-cache",
+    "type": "redis",
+    "service_name": "Memorystore",
+    "account": "proj-1",
+    "region": "us-central1",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "redis-1",
+    "meta": {
+      "host": "10.0.0.5"
+    }
+  },
+  {
+    "id": "ar-1",
+    "resourse_id": "my-repo",
+    "name": "my-repo",
+    "type": "artifact-registry",
+    "service_name": "Artifact Registry",
+    "account": "proj-1",
+    "region": "us-central1",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "ar-1",
+    "meta": {}
+  },
+  {
+    "id": "topic-1",
+    "resourse_id": "my-topic",
+    "name": "my-topic",
+    "type": "pubsub.googleapis.com/Topic",
+    "service_name": "Cloud Pub/Sub",
+    "account": "proj-1",
+    "region": "global",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "topic-1",
+    "meta": {}
+  },
+  {
+    "id": "storage-1",
+    "resourse_id": "my-bucket",
+    "name": "my-bucket",
+    "type": "storage.googleapis.com/Bucket",
+    "service_name": "Cloud Storage",
+    "account": "proj-1",
+    "region": "US",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "storage-1",
+    "meta": {}
+  },
+  {
+    "id": "cron-1",
+    "resourse_id": "my-cron",
+    "name": "my-cron",
+    "type": "cloud-scheduler",
+    "service_name": "Cloud Scheduler",
+    "account": "proj-1",
+    "region": "us-central1",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "cron-1",
+    "meta": {
+      "target_type": "pubsub",
+      "target": "projects/proj-1/topics/my-topic"
+    }
+  },
+  {
+    "id": "iam-1",
+    "resourse_id": "iam-storage",
+    "name": "iam-storage",
+    "type": "cloudresourcemanager.googleapis.com/IamBinding",
+    "service_name": "IAM",
+    "account": "proj-1",
+    "region": "global",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "iam-1",
+    "meta": {
+      "member": "sa@proj-1.iam.gserviceaccount.com",
+      "role": "roles/storage.admin"
+    }
+  },
+  {
+    "id": "iam-3",
+    "resourse_id": "iam-sub",
+    "name": "iam-sub",
+    "type": "cloudresourcemanager.googleapis.com/IamBinding",
+    "service_name": "IAM",
+    "account": "proj-1",
+    "region": "global",
+    "cloud_provider": "GCP",
+    "is_active": true,
+    "external_resource_id": "iam-3",
+    "meta": {
+      "member": "sa@proj-1.iam.gserviceaccount.com",
+      "role": "roles/pubsub.subscriber"
+    }
+  }
+]

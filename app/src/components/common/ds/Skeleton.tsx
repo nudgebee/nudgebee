@@ -46,10 +46,13 @@ const TEXT_SIZE_DEFAULT_WIDTH: Record<SkeletonTextSize, string> = {
   heading: '240px',
 };
 
+// Animate `transform` (compositor-friendly) rather than `background-position`, which
+// runs on the main thread and is flagged by Lighthouse "avoid non-composited animations".
+// The sweep lives on an ::after overlay that translates across the clipped element.
 const SHIMMER_KEYFRAMES = {
   '@keyframes ds-skeleton-shimmer': {
-    '0%': { backgroundPosition: '-200% 0' },
-    '100%': { backgroundPosition: '200% 0' },
+    '0%': { transform: 'translateX(-100%)' },
+    '100%': { transform: 'translateX(100%)' },
   },
 };
 
@@ -59,14 +62,22 @@ function shimmerStyle(animation: SkeletonAnimation) {
   }
   return {
     backgroundColor: 'var(--ds-gray-100)',
-    backgroundImage: 'linear-gradient(90deg, transparent 0%, var(--ds-gray-200) 50%, transparent 100%)',
-    backgroundSize: '200% 100%',
-    backgroundRepeat: 'no-repeat',
-    animation: 'ds-skeleton-shimmer 1.4s infinite linear',
-    // prefers-reduced-motion: honoured via --ds-motion-* tokens (the @media in styles.css collapses to 1ms)
+    position: 'relative',
+    overflow: 'hidden',
+    '&::after': {
+      content: '""',
+      position: 'absolute',
+      inset: 0,
+      backgroundImage: 'linear-gradient(90deg, transparent 0%, var(--ds-gray-200) 50%, transparent 100%)',
+      transform: 'translateX(-100%)',
+      animation: 'ds-skeleton-shimmer 1.4s infinite linear',
+    },
+    // prefers-reduced-motion: collapse to a static gray block (no sweep).
     '@media (prefers-reduced-motion: reduce)': {
-      animation: 'none',
-      backgroundImage: 'none',
+      '&::after': {
+        animation: 'none',
+        backgroundImage: 'none',
+      },
     },
   };
 }

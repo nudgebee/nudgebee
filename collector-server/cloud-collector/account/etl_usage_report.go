@@ -795,8 +795,16 @@ func updateResourcesFromUsageReport(ctx *security.RequestContext, dbms *common.D
 						is_active = EXCLUDED.is_active,
 						status = EXCLUDED.status`
 	} else {
+		// AWS/GCP: arbiter on (account, external_resource_id) — the canonical
+		// identity, referenced by spends and events — paired with the
+		// reconcileExternalResourceIds pre-step inside the transaction below.
+		// Deliberately does NOT update the natural-key columns
+		// (resourse_id/type/region/service_name): an external_resource_id match
+		// can land on a row whose 5-column key differs, and rewriting it could
+		// violate the 5-column unique index. The canonical row's natural key
+		// already matches the value that produced its external_resource_id.
 		conflictClause = `
-				 on conflict (account, resourse_id, type, region, service_name)
+				 on conflict (account, external_resource_id)
 					do update set
 						last_seen = EXCLUDED.last_seen,
 						tags = cloud_resourses.tags || EXCLUDED.tags,
@@ -808,7 +816,6 @@ func updateResourcesFromUsageReport(ctx *security.RequestContext, dbms *common.D
 						END,
 						arn = EXCLUDED.arn,
 						name = EXCLUDED.name,
-						external_resource_id = EXCLUDED.external_resource_id,
 						is_active = EXCLUDED.is_active,
 						status = EXCLUDED.status`
 	}
@@ -820,6 +827,11 @@ func updateResourcesFromUsageReport(ctx *security.RequestContext, dbms *common.D
 			_, err := tx.Exec(updateQuery, accountId, time.Now().UTC().Format(time.RFC3339), providers.ResourceStatusDeleted, pq.Array(resourceMapKeys))
 			if err != nil {
 				return nil, fmt.Errorf("update resources inactive: %w", err)
+			}
+		}
+		if !strings.EqualFold(account.CloudProvider, "azure") {
+			if err := reconcileExternalResourceIds(tx, accountId, slices.Collect(maps.Values(resourceMap))); err != nil {
+				return nil, fmt.Errorf("reconcile external_resource_id: %w", err)
 			}
 		}
 		_, err := tx.NamedExec(insertQuery, slices.Collect(maps.Values(resourceMap)))

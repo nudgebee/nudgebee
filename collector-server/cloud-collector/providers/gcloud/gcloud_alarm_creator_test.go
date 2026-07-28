@@ -374,6 +374,135 @@ func TestBuildSimpleCondition_FromEmbeddedTemplate(t *testing.T) {
 	}
 }
 
+// Regression for issue #33376: recommendations stored before #32489 carry only the
+// short display label (MetricName) plus the namespace — no metric_type_filter /
+// resource_type. buildSimpleCondition must recover those from the alarm templates so
+// "Create Alarm" doesn't fail with "unknown resource type for metric: DiskUtilization".
+func TestBuildSimpleCondition_StaleConfigRecoversFromTemplate(t *testing.T) {
+	config := providers.AlarmCreationConfig{
+		AlarmName:         "gcp_cloudsql_disk_utilization_alarm_missing-test-instance",
+		MetricName:        "DiskUtilization", // short label only, as stored before #32489
+		Namespace:         "cloudsql.googleapis.com",
+		Period:            300,
+		EvaluationPeriods: 2,
+		Threshold:         0.8,
+		Statistic:         "ALIGN_MEAN",
+		Dimensions: []providers.AlarmDimension{
+			{Name: "database_id", Value: "test-project:test-instance"},
+		},
+		// MetricTypeFilter and ResourceType intentionally empty.
+	}
+
+	condition, err := buildSimpleCondition(config)
+	if err != nil {
+		t.Fatalf("buildSimpleCondition() unexpected error = %v", err)
+	}
+
+	threshold := condition.GetConditionThreshold()
+	if threshold == nil {
+		t.Fatal("Expected ConditionThreshold, got nil")
+		return
+	}
+
+	wantFilter := `resource.type="cloudsql_database" AND metric.type="cloudsql.googleapis.com/database/disk/utilization" AND resource.labels.database_id="test-project:test-instance"`
+	if threshold.GetFilter() != wantFilter {
+		t.Errorf("Filter =\n  %q\nwant\n  %q", threshold.GetFilter(), wantFilter)
+	}
+}
+
+// resolveGCPMetricAndResource must recover the fully-qualified metric type and resource
+// type from the templates for every short label the YAML templates emit — including the
+// agent.googleapis.com/* Compute metrics that the hardcoded getResourceTypeFromMetric /
+// getGCPMetricType maps do NOT know about.
+func TestResolveGCPMetricAndResource_StaleLabels(t *testing.T) {
+	tests := []struct {
+		name           string
+		namespace      string
+		metricName     string
+		wantResource   string
+		wantMetricType string
+		wantErr        bool
+	}{
+		{
+			name:           "cloudsql disk utilization",
+			namespace:      "cloudsql.googleapis.com",
+			metricName:     "DiskUtilization",
+			wantResource:   "cloudsql_database",
+			wantMetricType: "cloudsql.googleapis.com/database/disk/utilization",
+		},
+		{
+			name:           "cloudsql cpu utilization",
+			namespace:      "cloudsql.googleapis.com",
+			metricName:     "CPUUtilization",
+			wantResource:   "cloudsql_database",
+			wantMetricType: "cloudsql.googleapis.com/database/cpu/utilization",
+		},
+		{
+			name:           "cloudsql memory utilization",
+			namespace:      "cloudsql.googleapis.com",
+			metricName:     "MemoryUtilization",
+			wantResource:   "cloudsql_database",
+			wantMetricType: "cloudsql.googleapis.com/database/memory/utilization",
+		},
+		{
+			// agent.googleapis.com metric — not in the hardcoded maps, only in templates.
+			name:           "compute disk utilization via agent metric",
+			namespace:      "agent.googleapis.com",
+			metricName:     "DiskUtilization",
+			wantResource:   "gce_instance",
+			wantMetricType: "agent.googleapis.com/disk/percent_used",
+		},
+		{
+			name:           "compute memory utilization via agent metric",
+			namespace:      "agent.googleapis.com",
+			metricName:     "MemoryUtilization",
+			wantResource:   "gce_instance",
+			wantMetricType: "agent.googleapis.com/memory/percent_used",
+		},
+		{
+			name:       "unknown label with unknown namespace still errors",
+			namespace:  "unknown.googleapis.com",
+			metricName: "TotallyMadeUpMetric",
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotResource, gotMetricType, err := resolveGCPMetricAndResource(tt.namespace, tt.metricName, "", "")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("resolveGCPMetricAndResource() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if gotResource != tt.wantResource {
+				t.Errorf("resourceType = %q, want %q", gotResource, tt.wantResource)
+			}
+			if gotMetricType != tt.wantMetricType {
+				t.Errorf("metricType = %q, want %q", gotMetricType, tt.wantMetricType)
+			}
+		})
+	}
+}
+
+// Explicit template fields must always win over template recovery, so freshly-generated
+// recommendations are unaffected by the stale-config fallback.
+func TestResolveGCPMetricAndResource_ExplicitFieldsWin(t *testing.T) {
+	gotResource, gotMetricType, err := resolveGCPMetricAndResource(
+		"cloudsql.googleapis.com", "DiskUtilization",
+		"custom.googleapis.com/my/metric", "custom_resource")
+	if err != nil {
+		t.Fatalf("resolveGCPMetricAndResource() unexpected error = %v", err)
+	}
+	if gotResource != "custom_resource" {
+		t.Errorf("resourceType = %q, want %q", gotResource, "custom_resource")
+	}
+	if gotMetricType != "custom.googleapis.com/my/metric" {
+		t.Errorf("metricType = %q, want %q", gotMetricType, "custom.googleapis.com/my/metric")
+	}
+}
+
 // Test buildMQLCondition
 func TestBuildMQLCondition(t *testing.T) {
 	config := providers.AlarmCreationConfig{

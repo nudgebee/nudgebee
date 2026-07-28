@@ -34,8 +34,12 @@ export function fmtDuration(ms: number | null | undefined): string {
   if (ms < 1_000) return `${Math.round(ms)}ms`;
   const s = ms / 1_000;
   if (s < 60) return `${s.toFixed(1)}s`;
-  const m = Math.floor(s / 60);
-  const rem = Math.round(s % 60);
+  // Round to whole seconds first, then decompose — otherwise a per-unit
+  // Math.round can yield "30m 60s" when the seconds remainder rounds up to 60
+  // instead of carrying into minutes (and minutes into hours).
+  const totalSec = Math.round(s);
+  const m = Math.floor(totalSec / 60);
+  const rem = totalSec % 60;
   if (m < 60) return `${m}m ${String(rem).padStart(2, '0')}s`;
   const h = Math.floor(m / 60);
   const remM = m % 60;
@@ -441,7 +445,6 @@ export interface KpiTotals {
   avgCostPerRun: number;
   inputTokens: number;
   outputTokens: number;
-  avgLatencyMs: number;
   openAnomalies: number;
 }
 
@@ -449,7 +452,6 @@ export function kpiTotals(runs: Run[], anomalies: Anomaly[]): KpiTotals {
   const totalCost = runs.reduce((a, r) => a + r.totalCost, 0);
   const inputTokens = runs.reduce((a, r) => a + r.totalInputTokens, 0);
   const outputTokens = runs.reduce((a, r) => a + r.totalOutputTokens, 0);
-  const latency = runs.reduce((a, r) => a + r.totalModelLatencyMs, 0);
   const runIds = new Set(runs.map((r) => r.runId));
   return {
     totalCost,
@@ -457,7 +459,6 @@ export function kpiTotals(runs: Run[], anomalies: Anomaly[]): KpiTotals {
     avgCostPerRun: runs.length ? totalCost / runs.length : 0,
     inputTokens,
     outputTokens,
-    avgLatencyMs: runs.length ? latency / runs.length : 0,
     openAnomalies: anomalies.filter((a) => !a.runId || runIds.has(a.runId)).length,
   };
 }

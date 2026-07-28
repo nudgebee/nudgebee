@@ -65,7 +65,7 @@ export class WorkflowLocators extends CommonLocators {
     super(page);
 
     this.autoPilotSidenavBtn = page.locator("#auto-pilot-sidenavbutton");
-    this.createAutomationBtn = page.getByRole("button", { name: "Create Automation" });
+    this.createAutomationBtn = page.locator("#workflow-listing-create-btn");
     this.createNewAutomationModal = page.getByText("Create a New Automation", { exact: true });
     this.makeAnAutomationCard = page.getByText("Make an Automation", { exact: true });
 
@@ -83,7 +83,7 @@ export class WorkflowLocators extends CommonLocators {
     this.runBtn = page.locator("#run-current-btn");
     this.triggerAutomationBtn = page.getByRole("button", { name: "Trigger Automation" });
     this.backBtn = page.locator("#workflow-back-btn");
-    this.nameSearchInput = page.getByPlaceholder("Search by Automation Name");
+    this.nameSearchInput = page.locator("#workflow-name-search");
     this.deleteConfirmBtn = page.locator("#workflow-delete-confirm-btn");
     this.statusDropdown = page
       .locator(".MuiAutocomplete-root")
@@ -101,11 +101,11 @@ export class WorkflowLocators extends CommonLocators {
     this.action_tickets_assign = page.getByTestId("rf__node-tickets_assign");
     this.action_notifications_im = page.getByTestId("rf__node-notifications_im");
     this.action_notifications_email = page.getByTestId("rf__node-notifications_email");
-    this.action_llm_nubi = page.getByRole("button", { name: /llm nubi/i }).first();
-    this.action_llm_mcp_call = page.getByRole("button", { name: /llm mcp call/i }).first();
-    this.action_llm_investigate = page.getByRole("button", { name: /llm investigate/i }).first();
-    this.action_llm_summary = page.getByRole("button", { name: /llm summary/i }).first();
-    this.action_k8s_cli = page.getByRole("button", { name: /k8s cli/i }).first();
+    this.action_llm_nubi = page.getByTestId("rf__node-llm_nubi");
+    this.action_llm_mcp_call = page.getByTestId("rf__node-llm_mcp_call");
+    this.action_llm_investigate = page.getByTestId("rf__node-llm_investigate");
+    this.action_llm_summary = page.getByTestId("rf__node-llm_summary");
+    this.action_k8s_cli = page.getByTestId("rf__node-k8s_cli");
     this.select_channel = page.locator("#auto-complete-channel");
     this.select_team = page.locator("#auto-complete-team-id");
 

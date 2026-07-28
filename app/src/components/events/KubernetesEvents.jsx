@@ -30,7 +30,9 @@ import IosShareOutlinedIcon from '@mui/icons-material/IosShareOutlined';
 import DownloadButton from '@shared/buttons/DownloadButton';
 
 // TODO(ds-migration): no v2 yet — track in V2_GAPS follow-up
-import KubernetesTable from '@components/k8s/common/KubernetesTable';
+// Dynamic import breaks the mutual dependency with KubernetesTable.
+import dynamic from 'next/dynamic';
+const KubernetesTable = dynamic(() => import('@components/k8s/common/KubernetesTable'));
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import Chart from '@ui/Chart';
@@ -46,7 +48,7 @@ import k8sApi from '@api1/kubernetes';
 import ticketsApi from '@api1/tickets';
 import apiUser from '@api1/user';
 import { getDateString, getLast24Hrs } from '@lib/datetime';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, getCurrentTenant } from '@lib/auth';
 import { safeJSONParse, titleCaseForAggregationKey, syncFilterFromQuery, toSeverityLevel, EXCLUDED_TRIAGE_AGGREGATION_KEYS } from 'src/utils/common';
 import { applyFiltersOnRouter } from '@lib/router';
 import { action } from 'src/utils/actionStyles';
@@ -100,6 +102,10 @@ const DEFAULT_TABLE_COLUMNS = [
     align: 'left',
     truncate: 'clamp-2',
     defaultVisible: true,
+    // Always-on: without the Application column rows lose the context that
+    // makes the other columns interpretable, so it can't be deselected — same
+    // treatment as Severity / Alert Status / Action.
+    mandatory: true,
     info: 'The resource or workload this event belongs to.',
   },
   {
@@ -108,6 +114,9 @@ const DEFAULT_TABLE_COLUMNS = [
     align: 'left',
     truncate: 'clamp-2',
     defaultVisible: true,
+    // Always-on for the same reason as Application — the event message is core
+    // to understanding each row, so it stays locked in the column selector.
+    mandatory: true,
     info: 'The alert message as received from the source system.',
   },
   { name: 'Event Type', width: '11%', align: 'left', defaultVisible: false },
@@ -239,7 +248,12 @@ const KubernetesEventsTable = ({
   // localStorage is what survives a "leave + come back" round-trip. All other
   // call sites (PodsDetails, KubernetesTable expand, SLO configs, threshold
   // evidence) keep the legacy URL-only behavior.
-  const persistKey = isTroubleshootPage ? TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY : null;
+  // Scoped by tenant: cached filters (namespace, account, etc.) from one tenant
+  // are meaningless after switching to another, so each tenant gets its own key.
+  // withAuth (the shared PageLayout every page is wrapped in) blocks rendering
+  // until the session resolves, so getCurrentTenant() is already populated here.
+  const tenantId = getCurrentTenant()?.id;
+  const persistKey = isTroubleshootPage && tenantId ? `${TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY}:${tenantId}` : null;
   // Read once on mount; precedence is URL query > localStorage > component default.
   const persisted = useMemo(() => readPersistedFilters(persistKey), [persistKey]);
 
@@ -528,13 +542,32 @@ const KubernetesEventsTable = ({
   }, []);
 
   useEffect(() => {
+    // Only sync from an explicit external source (prop or URL). If neither is
+    // set, leave selectedAccountId as-is — it may have come from persisted
+    // storage on mount, and there's nothing here to override it with.
     const raw = accountId || router.query.accountId;
-    const next = raw ? String(raw).split(',').filter(Boolean) : [];
+    if (!raw) return;
+    const next = String(raw).split(',').filter(Boolean);
     setSelectedAccountId((prev) => {
       if (prev.length === next.length && prev.every((id, i) => id === next[i])) return prev;
       return next;
     });
   }, [accountId, router.query.accountId]);
+
+  // Once the real accounts list has loaded, drop any cached/URL account ids
+  // that no longer exist (deleted account, revoked access). Without this,
+  // a stale id never shows as a selected chip (the dropdown only renders
+  // selections found in `accounts`) yet keeps being sent on every API call.
+  useEffect(() => {
+    if (!accounts.length || !selectedAccountId.length) return;
+    const validIds = new Set(accounts.map((acc) => acc.id || acc.value));
+    const pruned = selectedAccountId.filter((id) => validIds.has(id));
+    if (pruned.length === selectedAccountId.length) return;
+    setSelectedAccountId(pruned);
+    applyFiltersOnRouter(router, { accountId: pruned.join(',') });
+    writePersistedFilters(persistKey, { accountId: pruned });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accounts, selectedAccountId]);
 
   useEffect(() => {
     if (isTroubleshootPage) {
@@ -564,6 +597,13 @@ const KubernetesEventsTable = ({
   }, [tableColumns]);
 
   const prevDefaultAggregationKeyRef = useRef(defaultQuery?.aggregation_key);
+  const rawEventsRef = useRef([]);
+  const ticketReferenceMapRef = useRef(new Map());
+  const buildRowDataRef = useRef(null);
+  // Sequence guards so a slow, superseded request can't overwrite state set by a
+  // later, faster one (e.g. rapid filter changes firing overlapping API calls).
+  const eventsRequestIdRef = useRef(0);
+  const trendRequestIdRef = useRef(0);
   useEffect(() => {
     const next = defaultQuery?.aggregation_key;
     const prev = prevDefaultAggregationKeyRef.current;
@@ -802,8 +842,9 @@ const KubernetesEventsTable = ({
     if (!selectedAccountId.length && !isTroubleshootPage) {
       return;
     }
+    const requestId = ++eventsRequestIdRef.current;
     setData([]);
-    setTotalCount([]);
+    setTotalCount(0);
     let query = {
       exact_subject_name_search: getValidParam(router.query?.exact) === 'true',
     };
@@ -1071,21 +1112,18 @@ const KubernetesEventsTable = ({
         if (headersArray.includes('Triage Status')) {
           row.push({
             component: (
-              <Tooltip variant='default' title={getTriageStatusTooltip(item.nb_status || 'OPEN', item.snoozed_until)} placement='top'>
-                <Box>
-                  <NBStatusBadge
-                    eventId={item.id}
-                    currentStatus={item.nb_status || 'OPEN'}
-                    snoozedUntil={item.snoozed_until}
-                    onStatusChange={() => listEvents()}
-                    onCreateTicket={() => {
-                      setTicketData(item);
-                      setIsTicketCreateFormOpen(true);
-                    }}
-                    disableTooltip
-                  />
-                </Box>
-              </Tooltip>
+              <NBStatusBadge
+                eventId={item.id}
+                currentStatus={item.nb_status || 'OPEN'}
+                snoozedUntil={item.snoozed_until}
+                onStatusChange={() => listEvents()}
+                onCreateTicket={() => {
+                  setTicketData(item);
+                  setIsTicketCreateFormOpen(true);
+                }}
+                disableSnoozeTooltip
+                tooltipTitle={getTriageStatusTooltip(item.nb_status || 'OPEN', item.snoozed_until)}
+              />
             ),
             data: item.nb_status || 'OPEN',
           });
@@ -1123,6 +1161,7 @@ const KubernetesEventsTable = ({
 
     // Data + tickets chain: once data arrives, fetch ticket summaries, then render
     const dataAndTicketsPromise = dataPromise.then((res) => {
+      if (requestId !== eventsRequestIdRef.current) return;
       const events = res.data?.events || [];
       const uniqueReferenceIds = new Set();
       events.forEach((item) => {
@@ -1131,6 +1170,7 @@ const KubernetesEventsTable = ({
       const references = Array.from(uniqueReferenceIds);
 
       return ticketsApi.listTicketsSummary({ reference_id: references }).then((ticketRes) => {
+        if (requestId !== eventsRequestIdRef.current) return;
         const ticketReferenceMap = new Map();
         ticketRes?.data?.tickets?.forEach((element) => {
           ticketReferenceMap.set(element.reference_id, element);
@@ -1143,11 +1183,13 @@ const KubernetesEventsTable = ({
 
     // Count updates independently (doesn't block table rendering)
     countPromise.then((countRes) => {
+      if (requestId !== eventsRequestIdRef.current) return;
       setTotalCount(countRes.count);
     });
 
     // Handle errors from the data chain
     dataAndTicketsPromise.catch(() => {
+      if (requestId !== eventsRequestIdRef.current) return;
       setLoading(false);
     });
   };
@@ -1230,10 +1272,12 @@ const KubernetesEventsTable = ({
     if (defaultQuery) {
       query = { ...query, ...defaultQuery };
     }
+    const requestId = ++trendRequestIdRef.current;
     setIsTrendChartLoading(true);
     k8sApi
       .getK8sEventGroupings(1000, 0, query)
       .then((res) => {
+        if (requestId !== trendRequestIdRef.current) return;
         const groupings = res?.data?.event_groupings || [];
 
         // Build a shared, time-sorted x-axis from every distinct bucket so each
@@ -1277,6 +1321,7 @@ const KubernetesEventsTable = ({
         });
       })
       .finally(() => {
+        if (requestId !== trendRequestIdRef.current) return;
         setIsTrendChartLoading(false);
       });
   }, [
@@ -1311,10 +1356,22 @@ const KubernetesEventsTable = ({
             fingerprint: selectedEvent?.fingerprint,
             accountId: selectedEvent?.account_id || selectedAccountId[0],
           }}
-          onSuccess={() => {
+          onSuccess={(update) => {
             setIsClassifyModalOpen(false);
             setSelectedEvent({});
-            listEvents();
+            rawEventsRef.current = rawEventsRef.current.map((e) =>
+              e.id === update.eventId
+                ? {
+                    ...e,
+                    ...(update.newStatus != null ? { nb_status: update.newStatus } : {}),
+                    ...(update.newPriority != null ? { computed_priority: update.newPriority } : {}),
+                    ...(update.snoozedUntil != null ? { snoozed_until: update.snoozedUntil } : {}),
+                  }
+                : e
+            );
+            if (buildRowDataRef.current) {
+              setData(buildRowDataRef.current(rawEventsRef.current, ticketReferenceMapRef.current));
+            }
           }}
         />
       )}

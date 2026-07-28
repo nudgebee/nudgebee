@@ -124,7 +124,7 @@ export interface ConversationCostRow {
   started_at: string;
   ended_at: string;
   wall_clock_seconds: number;
-  model_latency_seconds: number;
+  total_model_time_seconds: number;
   cost_usd: number;
   input_tokens: number;
   output_tokens: number;
@@ -158,7 +158,7 @@ export interface ConversationTreeSummary {
   started_at: string;
   ended_at: string;
   wall_clock_seconds: number;
-  model_latency_seconds: number;
+  total_model_time_seconds: number;
   total_cost_usd: number;
   total_input_tokens: number;
   total_output_tokens: number;

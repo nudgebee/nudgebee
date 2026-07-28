@@ -65,7 +65,8 @@ const SafeIcon = ({ src, alt = 'icon', ...props }) => {
     return <Icon {...rest} style={style} />;
   }
 
-  const isSvgUrl = typeof iconSource === 'string' && iconSource.endsWith('.svg');
+  const iconSourcePath = typeof iconSource === 'string' ? iconSource : iconSource?.src;
+  const isSvgUrl = typeof iconSourcePath === 'string' && iconSourcePath.split(/[?#]/)[0].endsWith('.svg');
   return (
     <Image
       src={iconSource}

@@ -1,5 +1,5 @@
 import apiAskNudgebee from '@api1/ask-nudgebee';
-import { ShareIconBlue, SaveIconOutlineselect } from '@assets';
+import { ShareIconBlue } from '@assets';
 import { LineChart } from '@shared';
 import Text from '@shared/format/Text';
 import CopyButton from '@shared/buttons/CopyButton';
@@ -16,7 +16,6 @@ import KubernetesSecurityDetails from '@components/recommendations/security/Kube
 import { Box, Grid, Typography } from '@mui/material';
 import SafeIcon from '@shared/icons/SafeIcon';
 import PropTypes from 'prop-types';
-import { useRouter } from 'next/router';
 import React, { useEffect, useState } from 'react';
 import { ds } from '@utils/colors';
 import { convertToReadableFormat } from 'src/utils/common';
@@ -24,15 +23,12 @@ import KubernetesTable2 from '@components/k8s/common/KubernetesTable2';
 import { mapToTableData } from '@components/k8s/details/KubernetesLogStash';
 import { LogDate } from '@components/k8s/common/LogDate';
 import { AgentTokenUsage } from './common/TokenUsageDisplay';
-import { detectWorkflowJson } from '@components/workflow/utils/workflowDetection';
 import { Button } from '@ui/Button';
-import { toast as snackbar } from '@ui/Toast';
 import ReferencesPopover from './common/ReferencesModal';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import CheckIcon from '@mui/icons-material/Check';
 
 const KubernetesLLMRequestResponse = (props) => {
-  const router = useRouter();
   const [sentFeedback, setSentFeedback] = useState({});
   const [recordsPerPage, setRecordsPerPage] = useState(5);
   const [currentPage, setCurrentPage] = useState(0);
@@ -194,13 +190,6 @@ const KubernetesLLMRequestResponse = (props) => {
       </Grid>
     );
   };
-
-  // Detect if response contains workflow JSON
-  const responseText = props.toolCall?.response?.text || props.toolCall?.response_text || props.toolCall?.text;
-  const chainName = props.toolCall?.response?.chain_name || props.toolCall?.agentName;
-
-  const workflowJson = detectWorkflowJson(responseText, chainName);
-  const isWorkflowResponse = workflowJson !== null;
 
   const getToolResponseCard = function () {
     let toolName = props.toolCall.tool;
@@ -1073,38 +1062,6 @@ const KubernetesLLMRequestResponse = (props) => {
             wordBreak: 'break-word',
           }}
         >
-          {/* Per-message token-usage widget and duration are now rendered in the response meta-rail
-              (top-right of the card). The "Apply to Editor" workflow CTA stays right-aligned here. */}
-          {isWorkflowResponse && (
-            <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: ds.space[3] }}>
-              <Button
-                tone='primary'
-                size='sm'
-                onClick={() => {
-                  try {
-                    // Format JSON nicely before applying
-                    const formatted = JSON.stringify(JSON.parse(workflowJson), null, 2);
-
-                    // Store workflow JSON and navigate to workflow editor.
-                    // The originating chat session_id is forwarded too so the
-                    // builder can stamp `created_from_session_id` on save and
-                    // reload this conversation when the workflow is reopened.
-                    sessionStorage.setItem('aiGeneratedWorkflow', formatted);
-                    if (props.sessionId) {
-                      sessionStorage.setItem('aiSessionId', props.sessionId);
-                    }
-                    router.push(`/workflow/new?accountId=${props.accountId}&loadFromAI=true`);
-                  } catch (error) {
-                    console.error('Failed to parse workflow JSON:', error);
-                    snackbar.error('Failed to parse automation JSON');
-                  }
-                }}
-                icon={<SafeIcon src={SaveIconOutlineselect} alt='apply' width={16} height={16} />}
-              >
-                Apply to Editor
-              </Button>
-            </Box>
-          )}
           <Box key={'index'} fontSize={'var(--ds-text-small)'} fontWeight={400} color={'var(--ds-gray-700)'}>
             <LLMAnswerRenderer
               toolCall={props.toolCall}

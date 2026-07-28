@@ -89,7 +89,7 @@ function KubernetesNodePodStatus({ data = [], node }) {
           return (
             <Tooltip key={index} title={title}>
               <Box>
-                <SafeIcon alt={index} style={styles.image} src={icon} />
+                <SafeIcon alt={title || type} style={styles.image} src={icon} />
                 <Typography sx={styles.text}>{count}</Typography>
               </Box>
             </Tooltip>

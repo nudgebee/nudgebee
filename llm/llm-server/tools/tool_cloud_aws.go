@@ -44,7 +44,7 @@ func (t AwsCliTool) Description() string {
 		**Usage:**
 
 		* **Prioritize this tool:**  When interacting with AWS, use this tool to retrieve information or perform actions.
-		* **Input:**  A valid 'aws' CLI command string.  Include necessary options and arguments. Be explicit about regions.
+		* **Input:**  A valid 'aws' CLI command string.  Include necessary options and arguments. Be explicit about regions. Single command only — no shell loops, pipes into shells, '&&', or '$()'.
 		* **Output:**  The raw output of the executed 'aws' CLI command.
 
 		**Examples:**
@@ -126,8 +126,11 @@ func (t AwsCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 			if response == "" {
 				response = err.Error()
 			}
+			// aws uses `aws <service> help` (no dashes), NOT `--help`, as the
+			// canonical help subcommand — hardcoding `--help` here would send
+			// the model to a slightly different code path.
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, "", "aws", "aws <service> help"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}

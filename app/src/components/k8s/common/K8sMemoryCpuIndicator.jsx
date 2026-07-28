@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Box, Typography } from '@mui/material';
+import { Box, Typography, IconButton } from '@mui/material';
 import dynamic from 'next/dynamic';
 import PropTypes from 'prop-types';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import ClusterCustomTooltip from './ClusterCustomTooltip';
 import Text from '@shared/format/Text';
 import MetricQueryInfo from '@shared/MetricQueryInfo';
@@ -23,6 +24,7 @@ const K8sMemoryCpuIndicator = ({
   showUsage = false,
   hideLabels = false,
   queries = undefined,
+  onOpenTrend = undefined,
 }) => {
   const [showTooltip, setShowTooltip] = useState(false);
 
@@ -190,6 +192,20 @@ const K8sMemoryCpuIndicator = ({
               />
             )}
           </Box>
+          {onOpenTrend && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], mt: ds.space[1], mb: ds.space[1] }}>
+              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)' }}>Trend</Typography>
+              <IconButton
+                id={`open-${(title || '').toLowerCase()}-trend-btn`}
+                aria-label={`Open ${title} utilization trend`}
+                size='small'
+                onClick={onOpenTrend}
+                sx={{ p: '2px', color: 'var(--ds-brand-400)' }}
+              >
+                <OpenInNewIcon sx={{ fontSize: '14px' }} />
+              </IconButton>
+            </Box>
+          )}
           {!hideLabels && (
             <Box>
               <Box display={'flex'} gap={ds.space.mul(0, 7)}>
@@ -548,6 +564,7 @@ K8sMemoryCpuIndicator.propTypes = {
   primaryPointerColor: PropTypes.string,
   updatedOverview: PropTypes.bool,
   showUsage: PropTypes.bool,
-  hideLabels: PropTypes,
+  hideLabels: PropTypes.bool,
   queries: PropTypes.object,
+  onOpenTrend: PropTypes.func,
 };

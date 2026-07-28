@@ -494,7 +494,6 @@ const KubernetesUnusedVolumes = ({ isOptimisePage = false, resourceIds, groupNam
             onPageChange={changePage}
             pageNumber={page + 1}
             loading={loading}
-            stickyColumnIndex='8'
             showUpdatedEmptyData={props.showUpdatedEmptyData}
             showExpandable={true}
             expandable={{

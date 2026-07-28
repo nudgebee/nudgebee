@@ -450,11 +450,47 @@ func FindTicketsByReferenceId(filter models.TicketFilter) (interface{}, error) {
 	}, nil
 }
 
+// lookupStoredProjectKey returns the project_key persisted for a ticket at
+// creation time, matched by external ticket ID within an integration. The query
+// is tenant-scoped for isolation; callers pass the tenant from the fetched
+// configuration. Returns "" when unavailable.
+func lookupStoredProjectKey(ticket models.Ticket, tenant string) string {
+	if ticket.TicketID == "" || ticket.IntegrationID == "" || tenant == "" {
+		return ""
+	}
+	dbManager, err := database.GetDatabaseManager()
+	if err != nil {
+		slog.Warn("lookupStoredProjectKey: database unavailable", "error", err)
+		return ""
+	}
+	var projectKey string
+	// `<> ''` also excludes NULL, so rows without a stored key scan cleanly.
+	err = dbManager.Get(&projectKey, `
+		SELECT project_key FROM tickets
+		WHERE ticket_id = $1 AND integration_id = $2 AND tenant = $3 AND project_key <> ''
+		ORDER BY created_at DESC
+		LIMIT 1`,
+		ticket.TicketID, ticket.IntegrationID, tenant)
+	if err != nil {
+		slog.Debug("lookupStoredProjectKey: no stored project_key", "ticketID", ticket.TicketID, "integrationID", ticket.IntegrationID, "tenant", tenant, "error", err)
+		return ""
+	}
+	return projectKey
+}
+
 func FetchTicketComments(ctx *gin.Context, ticket models.Ticket) (models.CommentsResponse, error) {
 	configuration, err := fetchToolConfiguration(ticket.IntegrationID)
 	if err != nil {
 		slog.Error("Error fetching tool configuration:", "integrationID", ticket.IntegrationID, "tenant", ticket.Tenant, "error", slog.AnyValue(err))
 		return GetErrorCommentResponse(fmt.Sprintf("unable to fetch configuration for integration %s", ticket.IntegrationID)), err
+	}
+
+	// For GitHub/GitLab, recover the issue's repo from the stored ticket when the
+	// caller omitted project_key, so read-back doesn't default to the first project.
+	if ticket.ProjectKey == "" {
+		if tool := strings.ToLower(configuration.Tool); tool == "github" || tool == "gitlab" {
+			ticket.ProjectKey = lookupStoredProjectKey(ticket, configuration.Tenant)
+		}
 	}
 
 	// Override project key for platforms that need it (GitHub, GitLab).
@@ -517,6 +553,25 @@ func AddCommentToTicket(ctx *gin.Context, ticket models.Ticket) (models.Comments
 
 	ticket.Source = strings.ToLower(config.Tool)
 
+	// For GitHub/GitLab, recover the issue's repo from the stored ticket when the
+	// caller omitted project_key, and mirror it into Projects[0] so the comment
+	// add and follow-up read-back don't default to the first project.
+	if ticket.ProjectKey == "" {
+		if tool := strings.ToLower(config.Tool); tool == "github" || tool == "gitlab" {
+			ticket.ProjectKey = lookupStoredProjectKey(ticket, config.Tenant)
+		}
+	}
+	if ticket.ProjectKey != "" {
+		projects := make([]models.Project, len(config.Projects))
+		copy(projects, config.Projects)
+		if len(projects) > 0 {
+			projects[0].Key = ticket.ProjectKey
+		} else {
+			projects = []models.Project{{Key: ticket.ProjectKey}}
+		}
+		config.Projects = projects
+	}
+
 	manager, ok := ticketmgr.GetTicketManager(config.Tool)
 	if !ok {
 		slog.Error("unsupported platform for adding comment", "source", ticket.Source, "config.Tool", config.Tool)
@@ -557,6 +612,14 @@ func GetTicketByID(ctx *gin.Context, ticket models.Ticket) (*models.Ticket, erro
 	if configuration.Tenant != ticket.Tenant {
 		slog.Warn("Cross-tenant access attempt", "requestTenant", ticket.Tenant, "configTenant", configuration.Tenant)
 		return nil, fmt.Errorf("integration not found")
+	}
+
+	// For GitHub/GitLab, recover the issue's repo from the stored ticket when the
+	// caller omitted project_key, so read-back doesn't default to the first project.
+	if ticket.ProjectKey == "" {
+		if tool := strings.ToLower(configuration.Tool); tool == "github" || tool == "gitlab" {
+			ticket.ProjectKey = lookupStoredProjectKey(ticket, configuration.Tenant)
+		}
 	}
 
 	// Override project key for platforms that need it (GitHub, GitLab).

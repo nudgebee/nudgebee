@@ -25,7 +25,6 @@ import {
 import TriageRulesManager from '@components/triage/TriageRulesManager';
 import ThresholdSuggestionsManager from '@components/triage/ThresholdSuggestionsManager';
 import { useRouter } from 'next/router';
-import { hasFeatureAccess } from '@lib/auth';
 import { clearPersistedFilters } from '@hooks/usePersistedFilters';
 import { getLast24Hrs } from '@lib/datetime';
 
@@ -47,11 +46,13 @@ const renderEventContent = (activeToggle) => {
 };
 
 const TroubleshootPage = () => {
-  const [selectedFilter, setSelectedFilter] = useState(0);
+  // selectedFilter is the parent-tab selection: 0 = All Events, 1 = Investigations,
+  // 2 = Knowledge Graph. Investigations was promoted from a NewToggleButtons sub-tab
+  // inside "All Events" to its own top-level AnchorComponent tab.
+  const [selectedFilter, setSelectedFilter] = useState(null);
   const [activeToggleGroupedEvents, setActiveToggleGroupedEvents] = useState('fingerprint');
   const [activeTab, setActiveTab] = useState('events');
   const [investigationTab, setInvestigationTab] = useState('auto');
-  const [showKnowledgeGraphTab, setShowKnowledgeGraphTab] = useState(true);
   // Bumped on each summary-widget click so the Events tab remounts and re-reads
   // the URL filters even when it is already the active tab. Kept separate from
   // the grouped tabs' own router writes so their internal filtering never forces
@@ -110,22 +111,6 @@ const TroubleshootPage = () => {
     });
   };
 
-  // Check feature flag to conditionally show/hide Knowledge Graph tab
-  useEffect(() => {
-    const checkKnowledgeGraphFeatureFlag = async () => {
-      try {
-        const isKgCacheEnabled = await hasFeatureAccess('TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH');
-        // Show Knowledge Graph tab when the feature flag is enabled
-        setShowKnowledgeGraphTab(isKgCacheEnabled);
-      } catch (error) {
-        console.error('Error checking TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH feature flag:', error);
-        // Default to hiding the tab on error
-        setShowKnowledgeGraphTab(false);
-      }
-    };
-    checkKnowledgeGraphFeatureFlag();
-  }, []);
-
   const baseFilterOptions = [
     {
       name: 'All Events',
@@ -137,21 +122,21 @@ const TroubleshootPage = () => {
     },
   ];
 
-  // Conditionally add Knowledge Graph tab based on feature flag
-  const filterOptions = showKnowledgeGraphTab
-    ? [
-        ...baseFilterOptions,
-        {
-          name: 'Knowledge Graph',
-          fragment: 'kg',
-          value: 1,
-          disabled: false,
-          betaIcon: false,
-          icon: ServiceMapsIcon,
-          iconSize: 16,
-        },
-      ]
-    : baseFilterOptions;
+  // Knowledge Graph is enabled by default for every tenant (opt-out via the
+  // TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH feature flag is enforced server-side by
+  // the nightly build cron), so the tab is always shown here.
+  const filterOptions = [
+    ...baseFilterOptions,
+    {
+      name: 'Knowledge Graph',
+      fragment: 'kg',
+      value: 1,
+      disabled: false,
+      betaIcon: false,
+      icon: ServiceMapsIcon,
+      iconSize: 16,
+    },
+  ];
 
   const tabOptions = [
     { value: 'fingerprint', text: 'Triage Inbox', fragment: 'fingerprint', icon: PodErrorsIcon },
@@ -180,7 +165,10 @@ const TroubleshootPage = () => {
 
   useEffect(() => {
     const hash = router.asPath.split('#')[1];
-    if (!hash || !filterOptions.length) return;
+    if (!hash || !filterOptions.length) {
+      setSelectedFilter(0);
+      return;
+    }
     const fragment = hash;
     const filter = filterOptions.find((option) => option.fragment === fragment);
     if (filter) {
@@ -195,10 +183,12 @@ const TroubleshootPage = () => {
         if (invTab) {
           setActiveTab('investigations');
           setInvestigationTab(invTab.value);
+        } else {
+          setSelectedFilter(0);
         }
       }
     }
-  }, [router.asPath, showKnowledgeGraphTab]);
+  }, [router.asPath]);
   // Need to handle toggleGroupedEvents' fragment with router.asPath
 
   const toggleOptions = [
@@ -251,7 +241,7 @@ const TroubleshootPage = () => {
               <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', alignItems: 'center' }}>
                 <TroubleshootSummary range={summaryRange} onWidgetFilter={applyWidgetFilter} />
               </Box>
-              <Box sx={{ marginBottom: '8px' }}>
+              <Box id='troubleshoot-event-tabs' sx={{ marginBottom: '8px' }}>
                 <CustomTabs
                   value={activeToggleGroupedEvents}
                   onChange={(newValue) => setActiveToggleGroupedEvents(newValue)}

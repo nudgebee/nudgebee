@@ -24,6 +24,13 @@ const useClusterData = (allCluster, setAllCluster) => {
       return transformed;
     } catch (error) {
       console.error('Failed to fetch clusters', error);
+      // Move allCluster out of the `null` (never-loaded) state on the FIRST
+      // failure so the init effect's `allCluster == null` gate doesn't re-fetch
+      // in a loop. Guard on `== null` so a later refresh failure (transient
+      // network blip) preserves the already-loaded list instead of blanking the
+      // dropdown. setAllCluster (DataContext) takes a value, not a functional
+      // updater, so this guard — not `(prev) => ...` — is how we read prior state.
+      if (allCluster == null) setAllCluster([]);
       return [];
     } finally {
       setIsLoading(false);
@@ -63,8 +70,14 @@ const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = 
 
     const init = async () => {
       let currentClusters = allCluster;
-      // Only fetch if we don't have any cluster data yet (including demo accounts)
-      if (!allCluster || allCluster.length === 0) {
+      // Fetch only when the accounts list has never been loaded. `null` = not yet
+      // fetched; `[]` = fetched and genuinely empty (or a transient upstream
+      // failure — getCloudAccounts returns [] without caching). Gating on
+      // `length === 0` instead conflates those two states: an empty result reads
+      // as "still unloaded", and because fetchClusters() writes a new []
+      // reference into allCluster (an effect dependency), the effect re-runs and
+      // re-fetches forever, hammering /rpc/query while the upstream is down.
+      if (allCluster == null) {
         currentClusters = await fetchClusters();
       }
 

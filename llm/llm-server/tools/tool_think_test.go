@@ -2,6 +2,7 @@ package tools
 
 import (
 	"testing"
+	"unicode/utf8"
 
 	core "nudgebee/llm/tools/core"
 
@@ -49,7 +50,117 @@ func TestThinkTool_Metadata(t *testing.T) {
 	schema := tool.InputSchema()
 	assert.Equal(t, core.ToolSchemaTypeObject, schema.Type)
 	assert.Contains(t, schema.Properties, "reasoning")
-	assert.Equal(t, []string{"reasoning"}, schema.Required)
+	assert.Equal(t, []string{"reasoning"}, schema.Required,
+		"Required stays honest so the LLM sees the correct spec; per-tool "+
+			"actionable messages flow through OnMissingRequiredFields instead")
+}
+
+// TestTruncateForError_UTF8Safe pins the rune-boundary walk-back so a
+// cut in the middle of a multi-byte rune never glues the ellipsis onto
+// a half-rune (would render as a replacement char downstream). Uses the
+// nudgebee brand + a mixed-script sample so the test is robust to future
+// edits.
+func TestTruncateForError_UTF8Safe(t *testing.T) {
+	// Each of these characters is 3 bytes in UTF-8 — cutting at a
+	// non-boundary byte would produce invalid output.
+	s := "α β γ δ ε ζ η θ ι κ λ μ ν ξ ο π ρ σ τ υ φ χ ψ ω"
+	for maxBytes := 1; maxBytes < len(s); maxBytes++ {
+		got := truncateForError(s, maxBytes)
+		// The truncated prefix (before ellipsis) must be a complete UTF-8
+		// sequence — no half-runes — else the message is corrupt.
+		prefix := got
+		if len(got) >= len("…") && got[len(got)-len("…"):] == "…" {
+			prefix = got[:len(got)-len("…")]
+		}
+		if !utf8.ValidString(prefix) {
+			t.Fatalf("maxBytes=%d produced invalid UTF-8 prefix: %q (full: %q)", maxBytes, prefix, got)
+		}
+	}
+	// Under-cap: returns unchanged.
+	assert.Equal(t, s, truncateForError(s, len(s)+10))
+	assert.Equal(t, s, truncateForError(s, len(s)))
+	// ASCII short input: no ellipsis.
+	assert.Equal(t, "hello", truncateForError("hello", 100))
+}
+
+// TestThinkTool_OnMissingRequiredFields pins the escape-hatch that
+// intercepts the planner-level "missing required fields — reasoning" line
+// so the model sees actionable guidance instead of the generic message.
+// Schema-Required stays honest; this handler runs when it fails.
+func TestThinkTool_OnMissingRequiredFields(t *testing.T) {
+	tool := &thinkTool{}
+
+	t.Run("empty command → empty-input reject with final_answer pointer", func(t *testing.T) {
+		resp := tool.OnMissingRequiredFields(core.NBToolCallRequest{}, []string{"reasoning"})
+		if assert.NotNil(t, resp) {
+			assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+			assert.Contains(t, resp.Data, "requires a non-empty 'reasoning'")
+			assert.Contains(t, resp.Data, "<final_answer>")
+		}
+	})
+
+	t.Run("whitespace-only command → treated as empty", func(t *testing.T) {
+		resp := tool.OnMissingRequiredFields(core.NBToolCallRequest{Command: "   \n\t  "}, []string{"reasoning"})
+		if assert.NotNil(t, resp) {
+			assert.Contains(t, resp.Data, "requires a non-empty 'reasoning'")
+		}
+	})
+
+	t.Run("narration text on Command → narration reject with wrong-field nudge", func(t *testing.T) {
+		// Sample verbatim from production 2026-07-07 — narration landed on
+		// Command instead of Arguments["reasoning"], so the schema-Required
+		// check rejected it before Call() could see it. The responder must
+		// catch this: narration guard fires AND names the wrong-field
+		// misplacement.
+		resp := tool.OnMissingRequiredFields(core.NBToolCallRequest{
+			Command: "I have all the evidence needed. I will now generate the final answer explaining why scaling down ingress-nginx is not safe yet.",
+		}, []string{"reasoning"})
+		if assert.NotNil(t, resp) {
+			assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+			assert.Contains(t, resp.Data, "narration of an upcoming action")
+			assert.Contains(t, resp.Data, "<final_answer>")
+			assert.Contains(t, resp.Data, "'reasoning' field",
+				"must nudge model to move reasoning to the correct field")
+		}
+	})
+
+	t.Run("real reasoning on wrong field → nudge to correct field, no narration reject", func(t *testing.T) {
+		resp := tool.OnMissingRequiredFields(core.NBToolCallRequest{
+			Command: "Retry with a longer timeout vs. pivot to fetch_logs — pivoting because the pod may be unreachable.",
+		}, []string{"reasoning"})
+		if assert.NotNil(t, resp) {
+			assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+			assert.Contains(t, resp.Data, "'reasoning' field")
+			assert.NotContains(t, resp.Data, "narration of an upcoming action",
+				"real reasoning shape shouldn't get the narration rejection")
+		}
+	})
+}
+
+// TestThinkTool_EmptyInputRejectedInCall verifies the belt-and-suspenders
+// empty-check inside Call() — the planner-level validator normally catches
+// this via schema-Required, but Call() is called directly by tests and
+// custom invokers, so the defensive check keeps its contract.
+func TestThinkTool_EmptyInputRejectedInCall(t *testing.T) {
+	tool := &thinkTool{}
+	cases := []struct {
+		name string
+		req  core.NBToolCallRequest
+	}{
+		{"nil arguments and empty command", core.NBToolCallRequest{}},
+		{"whitespace-only command", core.NBToolCallRequest{Command: "   \n\t  "}},
+		{"empty reasoning in arguments", core.NBToolCallRequest{Arguments: map[string]any{"reasoning": ""}}},
+		{"whitespace-only reasoning in arguments", core.NBToolCallRequest{Arguments: map[string]any{"reasoning": "  \n"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			resp, err := tool.Call(core.NbToolContext{}, c.req)
+			assert.NoError(t, err)
+			assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+			assert.Contains(t, resp.Data, "requires a non-empty 'reasoning'")
+			assert.Contains(t, resp.Data, "<final_answer>")
+		})
+	}
 }
 
 // TestThinkTool_DescriptionForbidsNarration pins the narration-misuse
@@ -156,6 +267,71 @@ func TestThinkTool_NarrationGuardRejects(t *testing.T) {
 			name:   "consolidated findings followed by space (trailing-boundary bug)",
 			sample: "Consolidated findings: ready to provide the final answer.",
 		},
+		{
+			// 2026-07-02 recheck leak class: the pre-fix regex only knew
+			// `i have (enough|sufficient|gathered|confirmed|identified|
+			// verified|completed)` — the "necessary information" stem is
+			// a distinct sentence structure the model adopted after the
+			// first-order stems started rejecting. Adds
+			// `i have all (the )?(necessary|required|needed)
+			// (info|information|data|evidence|context)`.
+			name:   "I have all the necessary information + I will format (post-33080 leak)",
+			sample: "I have all the necessary information to provide the final answer. I will format it according to the RESOURCE DRILL-DOWN requirements.",
+		},
+		{
+			name:   "I have all the necessary information (bare)",
+			sample: "I have all the necessary information from the previous steps. The node health check is complete. All nodes are Ready.",
+		},
+		{
+			// 2026-07-02 recheck leak class: `i will format this into
+			// the required investigation summary` — `format` was in the
+			// "ready to X" list but missing from the "i will X"
+			// verb-action list. Adds `format` there plus optional
+			// object slots so "into", "it", "this", "the report", etc.
+			// all match.
+			name:   "I will format this into (post-33080 leak — verb missing from I-will list)",
+			sample: "The user has provided a complete incident report. No further tool calls are needed. I will format this into the required investigation summary.",
+		},
+		{
+			// Trailing-space / word-boundary bug regression: the original
+			// pattern had trailing spaces INSIDE the optional groups
+			// (`(the |a |this |it )?`), so a bare phrase ending with `.` or
+			// end-of-string could match up to a trailing space and then fail
+			// the `\b` check (no boundary between space and non-word char).
+			// New pattern moves the space INSIDE the group as a leading
+			// character so the match always ends on a word char.
+			// Regression for the Gemini high-priority finding on PR #33390.
+			name:   "I will format this. (trailing space bug)",
+			sample: "I will format this.",
+		},
+		{
+			name:   "I will format it. (trailing space bug)",
+			sample: "I will format it.",
+		},
+		{
+			name:   "I will format. (trailing space bug, no object at all)",
+			sample: "I will format.",
+		},
+		{
+			// 2026-07-08 sweep leak class: swapped word order — the
+			// qualifier ("needed") lands AFTER the noun. Original
+			// pattern only caught qualifier-BEFORE-noun. Real sample
+			// from production convos on account a2a30b02.
+			name:   "I have all the evidence needed (post-33390 swapped order)",
+			sample: "I have all the evidence needed. I will now generate the final answer explaining why scaling down ingress-nginx is not safe yet.",
+		},
+		{
+			// 2026-07-08 same leak class — swapped order with a
+			// different noun (data) and no "all" quantifier.
+			name:   "I have the data needed to provide (post-33390 swapped order, no all)",
+			sample: "I have the data needed to provide the final answer. I will format the top 3 PVCs into a table.",
+		},
+		{
+			// 2026-07-08 swapped-order coverage for information/context
+			// as sanity for the noun alternation.
+			name:   "I have the information needed (post-33390 swapped order)",
+			sample: "I have the information needed to answer. All nodes are healthy.",
+		},
 	}
 
 	for _, c := range productionNarrationSamples {
@@ -243,12 +419,19 @@ func TestThinkTool_NarrationGuardAllowsRealDecisions(t *testing.T) {
 func TestThinkTool_NarrationGuardEdgeCases(t *testing.T) {
 	tool := &thinkTool{}
 
-	t.Run("empty reasoning does NOT trigger narration guard (different failure mode)", func(t *testing.T) {
+	t.Run("empty reasoning is now handled by Call()-level empty-check, not narration guard", func(t *testing.T) {
+		// Pre-2026-07-08 the schema-Required validator caught this before
+		// Call() ran, so the narration guard test asserted empty→SUCCESS
+		// as documentation of what happens "if we ever get here". Now the
+		// schema-Required guard is gone (see InputSchema comment) and
+		// Call() itself rejects empty input with the actionable message.
+		// See TestThinkTool_EmptyInputRejected for the full matrix.
 		resp, err := tool.Call(core.NbToolContext{}, core.NBToolCallRequest{
 			Arguments: map[string]any{"reasoning": ""},
 		})
 		assert.NoError(t, err)
-		assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
+		assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+		assert.Contains(t, resp.Data, "requires a non-empty 'reasoning'")
 	})
 
 	t.Run("very short random text passes", func(t *testing.T) {

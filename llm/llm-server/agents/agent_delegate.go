@@ -200,6 +200,12 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 		additionalDetails["tools_used"] = toolsUsed
 	}
 
+	// Build the bounded evidence manifest from the delegated sub-agent's
+	// chronological steps. This wrapper bypasses factory_agent's generic path,
+	// so without this a delegated sub-agent drops its evidence at the boundary.
+	// Keyed by the delegated agent's name so the log line is greppable per target.
+	subAgentEvidence := core.BuildSubAgentEvidenceForTool(ctx.Ctx, dynamicAgent.GetName(), resp.AgentStepResponse)
+
 	if resp.Status == core.ConversationStatusFailed {
 		responseData := "Sub-agent failed to provide a response."
 		if len(resp.Response) > 0 {
@@ -219,6 +225,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 			Status:            toolcore.NBToolResponseStatusSuccess,
 			Type:              toolcore.NBToolResponseTypeText,
 			AdditionalDetails: additionalDetails,
+			SubAgentEvidence:  subAgentEvidence,
 		}, nil
 	}
 
@@ -230,6 +237,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 				Status:            toolcore.NBToolResponseStatusSuccess,
 				Type:              toolcore.NBToolResponseTypeText,
 				AdditionalDetails: additionalDetails,
+				SubAgentEvidence:  subAgentEvidence,
 			}, nil
 		}
 	}

@@ -25,7 +25,7 @@ func (t NewRelicInfrastructureContainersTool) Name() string {
 func (t NewRelicInfrastructureContainersTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (t NewRelicInfrastructureContainersTool) Description() string {
-	return `Searches for infrastructure container entities in New Relic including Kubernetes pods and containers.`
+	return `Searches for infrastructure container entities in New Relic including Kubernetes pods and containers. Input: a filter string of space-separated key:value terms, e.g. 'name:nginx tags.k8s.namespaceName:production'.`
 }
 
 func (t NewRelicInfrastructureContainersTool) InputSchema() core.ToolSchema {

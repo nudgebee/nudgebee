@@ -18,6 +18,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/prompts"
+	"nudgebee/llm/security/egressfilter"
 	toolscore "nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 
@@ -170,6 +171,16 @@ func main() {
 		}
 	}
 
+	// Bootstrap the egressfilter allowlist from env. Loaded once at startup;
+	// the registry has no runtime change path. No-op when the env is empty.
+	egressfilter.LoadAllowlistFromCSV(config.Config.LlmServerEgressFilterAllowlist)
+
+	// Wire the per-tenant config loader so the wrapper's Resolve() can fetch
+	// overrides from the public.llm_egressfilter_tenant_config table. Without
+	// this, Resolve returns nil for every tenant and env defaults apply
+	// universally — which is the safe fallback when the table is empty.
+	egressfilter.InitTenantConfigLoader()
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	pprof.Register(r)
@@ -191,6 +202,11 @@ func main() {
 
 	// Start background integration KB sync
 	syncCtx, syncCancel := context.WithCancel(context.Background())
+	// Periodic cleanup of the in-memory egressfilter tenant-config cache.
+	// Without this, the map grows by one entry per tenant ever resolved
+	// and never shrinks. The cleanup walks the map once a minute and
+	// drops expired entries.
+	egressfilter.StartTenantConfigCacheCleanup(syncCtx)
 	go toolscore.StartIntegrationKBSync(syncCtx)
 	slog.Info("main: started integration KB sync background thread")
 
@@ -199,6 +215,12 @@ func main() {
 
 	// Periodically delete never-used and stale long-term memories.
 	go core.StartMemoryTTLCleanup(syncCtx)
+
+	// Wire the watch package against the LLM + security stack and register
+	// the leader-elected dispatcher. No-op when LLM_SERVER_WATCH_ENABLED=false.
+	if err := core.BootstrapWatch(); err != nil {
+		slog.Error("main: failed to bootstrap watch", "error", err)
+	}
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)

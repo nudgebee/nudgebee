@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -93,6 +95,14 @@ func (m PrometheusAlertManagerWebhook) ProcessEventWebook(sc *security.RequestCo
 			labels["externalURL"] = externalURL
 		}
 		annotations := mapStringAnyToStringString(alert["annotations"])
+
+		// Alertmanager carries runbook_url as an annotation, not a label, but the
+		// downstream alert-rule evidence card (buildAlertRuleEvidence) reads Labels.
+		// Surface it there (non-clobber) so the runbook link renders — mirrors the
+		// zenduty/pagerduty parser, which flattens annotations into labels.
+		if rb := annotations["runbook_url"]; rb != "" && labels["runbook_url"] == "" {
+			labels["runbook_url"] = rb
+		}
 
 		startsAtStr, _ := alert["startsAt"].(string)
 		startsAt, err := time.Parse(time.RFC3339, startsAtStr)
@@ -235,7 +245,7 @@ func (m PrometheusAlertManagerWebhook) ProcessEventWebook(sc *security.RequestCo
 }
 
 // extractPromSubject picks the K8s subject from Prometheus alert labels.
-// Priority: K8s controllers > service-mesh workload > service > pod > instance.
+// Priority: K8s controllers > service-mesh workload > app_id > PVC/HPA/Job > service > pod > instance.
 // Controllers preferred over pod because pod names are ephemeral. Service
 // preferred over pod when no controller label is present since prometheus
 // usually labels alerts with the K8s Service name. The `job` label is
@@ -258,16 +268,109 @@ func extractPromSubject(labels map[string]string) (kind, name string) {
 			return "workload", v
 		}
 	}
+	// NudgeBee-native aggregated alerts (HighErrorCriticalLogs, …) carry none of
+	// the standard k8s controller/pod labels — their PromQL groups by (namespace,
+	// app_id) so the workload rides only in `app_id` (formatted /k8s/{ns}/{app}).
+	// Extract the workload deterministically; an empty subject would otherwise send
+	// the alert to the LLM, which hallucinates an unrelated workload. Ranked below
+	// explicit controller/mesh labels (which are authoritative) but above the
+	// generic service/pod fallbacks. Namespace is intentionally not taken from
+	// app_id's middle segment — it is an app-group (e.g. "nudgebee"), not the k8s
+	// namespace — so the real `namespace` label (handled by extractPromNamespace)
+	// wins.
+	if w := extractAppIDWorkload(labels["app_id"]); w != "" {
+		return "workload", w
+	}
+	// Specific k8s resource labels (PVC / HPA / Job) name the resource the alert is
+	// actually about and must win over the generic service/pod/instance fallbacks
+	// below. E.g. KubePersistentVolumeFillingUp / KubernetesVolumeOutOfDiskSpace carry
+	// persistentvolumeclaim=<pvc> alongside instance=<node host> and job=kubelet (the
+	// scrape target) — the PVC is the subject, not the node or the kubelet scraper, so
+	// without this branch these alerts resolve to the node instance (or the kubelet
+	// scrape service). Mirrors the PagerDuty handler's resourceKeys precedence
+	// (resolveSubjectFromLabels). `job_name` (NOT the prometheus `job` scrape label) is
+	// the real K8s Job that kube-state-metrics emits on kube_job_* series.
+	for _, rk := range []struct{ key, kind string }{
+		{"persistentvolumeclaim", "persistentvolumeclaim"},
+		{"horizontalpodautoscaler", "horizontalpodautoscaler"},
+		{"hpa", "horizontalpodautoscaler"},
+		{"job_name", "job"},
+	} {
+		if v := labels[rk.key]; v != "" {
+			return rk.kind, v
+		}
+	}
 	if v := labels["service"]; v != "" {
 		return "service", v
 	}
 	if v := labels["pod"]; v != "" {
 		return "pod", v
 	}
+	// PostgreSQL exporter alerts (PostgreSQLCacheHitRatio, …) key on `datname` — the
+	// database — with no k8s workload/pod/service label. Prefer the database HOST
+	// when the alert carries it (server / instance / host / hostname): it points at
+	// the postgres pod or the RDS endpoint, which is the actionable subject, and it
+	// resolves against k8s/cloud inventory. Fall back to the database name so the
+	// subject is never empty — an empty subject sends the alert to the LLM, which
+	// hallucinates an unrelated workload (e.g. datname=rdsadmin → a node-agent
+	// daemonset). The port and loopback hosts (a sidecar exporter's
+	// server=localhost:5432) are dropped so we skip to the next, real host.
+	if dn := labels["datname"]; dn != "" {
+		for _, k := range []string{"server", "instance", "host", "hostname"} {
+			if h := dbHostOnly(labels[k]); h != "" {
+				return "database", h
+			}
+		}
+		return "database", dn
+	}
 	if v := labels["instance"]; v != "" {
 		return "instance", v
 	}
 	return "", ""
+}
+
+// extractAppIDWorkload parses NudgeBee's native `app_id` label — formatted
+// `/k8s/{namespace}/{workload}` — and returns the workload (last path segment).
+// Mirrors the same parse in the PagerDuty webhook handler
+// (resolveSubjectFromLabels) so both ingest paths resolve app_id identically.
+// Returns "" when app_id is absent or not in the /k8s/{ns}/{workload} form so the
+// caller falls through to the next label.
+func extractAppIDWorkload(appID string) string {
+	if appID == "" {
+		return ""
+	}
+	parts := strings.Split(strings.TrimPrefix(appID, "/"), "/")
+	if len(parts) == 3 && parts[0] == "k8s" {
+		return parts[2]
+	}
+	return ""
+}
+
+// dbHostOnly extracts the bare host from a Prometheus host-label value such as
+// "10.0.0.5:9187", "mydb.abc.rds.amazonaws.com:5432", or "http://exp:9187/metrics",
+// dropping scheme, path, port and IPv6 brackets. Loopback values — which don't
+// identify a real database server (e.g. a sidecar exporter's server=localhost:5432)
+// — return "" so the caller falls through to the next label.
+func dbHostOnly(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if i := strings.Index(v, "://"); i >= 0 {
+		v = v[i+3:]
+	}
+	if i := strings.IndexByte(v, '/'); i >= 0 {
+		v = v[:i]
+	}
+	if host, _, err := net.SplitHostPort(v); err == nil {
+		v = host
+	}
+	v = strings.Trim(v, "[]")
+	switch strings.ToLower(v) {
+	case "localhost", "127.0.0.1", "::1", "0.0.0.0":
+		return ""
+	}
+	return v
 }
 
 // extractPromNamespace picks the namespace from Prometheus alert labels,

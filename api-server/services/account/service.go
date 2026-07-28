@@ -1890,6 +1890,9 @@ func GetResource(ctx *security.RequestContext, id string) (models.Resource, erro
 	}
 	rcrc := models.Resource{}
 	err = r.StructScan(&rcrc)
+	if errors.Is(err, sql.ErrNoRows) {
+		return models.Resource{}, common.ErrorNotFound(fmt.Sprintf("cloud resource %s not found", id))
+	}
 	return rcrc, err
 }
 

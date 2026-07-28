@@ -374,7 +374,7 @@ IntegrationProfiles.propTypes = {
   onNotify: PropTypes.func,
 };
 
-function UserModal({ open, handleClose, handleSnackBarData, mode, userData }) {
+function UserModal({ open, handleClose, handleSnackBarData, mode, userData = null }) {
   const { reset, handleSubmit } = useForm();
   const router = useRouter();
   const currentFragment = useMemo(() => {
@@ -823,10 +823,6 @@ UserModal.propTypes = {
   handleSnackBarData: PropTypes.func.isRequired,
   mode: PropTypes.oneOf(['add', 'edit']).isRequired,
   userData: PropTypes.object,
-};
-
-UserModal.defaultProps = {
-  userData: null,
 };
 
 export default UserModal;

@@ -27,8 +27,12 @@ import (
 // here, matching the per-conversation metrics path.
 
 // perCallCostExpr is the per-call cost in USD for one llm_conversation_token_usage
-// row `t` joined to llm_model_pricing `p`. Tier-aware (long-ctx) per row.
-const perCallCostExpr = `(CASE
+// row `t` joined to llm_model_pricing `p`. Prefers the cost persisted on `t` at
+// insert time (see cost_usd column comment) — reconciles with the per-conversation
+// metrics (conversation_dao.go GetConversationTokenUsage) and tree
+// (conversation_tree.go), which use the same preference. Falls back to a live,
+// tier-aware (long-ctx) recompute for legacy rows with no stored cost_usd.
+const perCallCostExpr = `COALESCE(t.cost_usd, (CASE
 		WHEN p.context_threshold_tokens IS NOT NULL
 			 AND (t.input_tokens + COALESCE(t.cache_creation_tokens, 0)) > p.context_threshold_tokens
 			 AND p.cost_per_million_input_tokens_long_ctx IS NOT NULL
@@ -42,11 +46,18 @@ const perCallCostExpr = `(CASE
 			+ COALESCE(t.cached_input_tokens, 0) * COALESCE(p.cost_per_million_cached_input_tokens, p.cost_per_million_input_tokens)
 			+ COALESCE(t.cache_creation_tokens, 0) * COALESCE(p.cost_per_million_cache_creation_tokens, p.cost_per_million_input_tokens)
 			+ (t.output_tokens + COALESCE(t.thinking_tokens, 0)) * p.cost_per_million_output_tokens
-	END / 1000000.0)`
+	END / 1000000.0))`
 
 // cacheSavingsExpr values cached input tokens at the full (non-cached) input
-// rate — i.e. "what the cache avoided paying". Matches the Grafana dashboard.
-const cacheSavingsExpr = `(COALESCE(t.cached_input_tokens, 0) / 1000000.0 * COALESCE(p.cost_per_million_input_tokens, 0))`
+// rate — i.e. "what the cache avoided paying". Tier-aware: long-ctx calls are
+// saved at the long-ctx rate, matching how perCallCostExpr bills them.
+const cacheSavingsExpr = `(CASE
+		WHEN p.context_threshold_tokens IS NOT NULL
+			 AND (t.input_tokens + COALESCE(t.cache_creation_tokens, 0)) > p.context_threshold_tokens
+			 AND p.cost_per_million_input_tokens_long_ctx IS NOT NULL
+		THEN COALESCE(t.cached_input_tokens, 0) / 1000000.0 * COALESCE(p.cost_per_million_input_tokens_long_ctx, 0)
+		ELSE COALESCE(t.cached_input_tokens, 0) / 1000000.0 * COALESCE(p.cost_per_million_input_tokens, 0)
+	END)`
 
 // usageBaseFrom is the shared FROM/JOIN for every aggregation here.
 const usageBaseFrom = `
@@ -1063,26 +1074,26 @@ type ConversationModelStat struct {
 // ConversationCostRow is one explorer row: a conversation with its rolled-up
 // cost, tokens, models, and structural counts (messages/agents/llm calls).
 type ConversationCostRow struct {
-	ConversationID      string                  `json:"conversation_id"`
-	SessionID           string                  `json:"session_id"`
-	Source              string                  `json:"source"`
-	Status              string                  `json:"status"`
-	Title               string                  `json:"title"`
-	UserID              string                  `json:"user_id"`
-	AccountID           string                  `json:"account_id"`
-	StartedAt           time.Time               `json:"started_at"`
-	EndedAt             time.Time               `json:"ended_at"`
-	WallClockSeconds    float64                 `json:"wall_clock_seconds"`
-	ModelLatencySeconds float64                 `json:"model_latency_seconds"`
-	CostUsd             float64                 `json:"cost_usd"`
-	InputTokens         int64                   `json:"input_tokens"`
-	OutputTokens        int64                   `json:"output_tokens"`
-	CachedInputTokens   int64                   `json:"cached_input_tokens"`
-	MessageCount        int                     `json:"message_count"`
-	AgentCount          int                     `json:"agent_count"`
-	LLMCallCount        int                     `json:"llm_call_count"`
-	ModelsUsed          []string                `json:"models_used"`
-	ModelBreakdown      []ConversationModelStat `json:"model_breakdown"`
+	ConversationID        string                  `json:"conversation_id"`
+	SessionID             string                  `json:"session_id"`
+	Source                string                  `json:"source"`
+	Status                string                  `json:"status"`
+	Title                 string                  `json:"title"`
+	UserID                string                  `json:"user_id"`
+	AccountID             string                  `json:"account_id"`
+	StartedAt             time.Time               `json:"started_at"`
+	EndedAt               time.Time               `json:"ended_at"`
+	WallClockSeconds      float64                 `json:"wall_clock_seconds"`
+	TotalModelTimeSeconds float64                 `json:"total_model_time_seconds"`
+	CostUsd               float64                 `json:"cost_usd"`
+	InputTokens           int64                   `json:"input_tokens"`
+	OutputTokens          int64                   `json:"output_tokens"`
+	CachedInputTokens     int64                   `json:"cached_input_tokens"`
+	MessageCount          int                     `json:"message_count"`
+	AgentCount            int                     `json:"agent_count"`
+	LLMCallCount          int                     `json:"llm_call_count"`
+	ModelsUsed            []string                `json:"models_used"`
+	ModelBreakdown        []ConversationModelStat `json:"model_breakdown"`
 }
 
 // ConversationListPage carries pagination metadata. Total is the full count of
@@ -1102,25 +1113,25 @@ type ConversationCostList struct {
 }
 
 type conversationCostScan struct {
-	ConversationID      string         `db:"conversation_id"`
-	SessionID           sql.NullString `db:"session_id"`
-	Source              string         `db:"source"`
-	Status              string         `db:"status"`
-	Title               string         `db:"title"`
-	UserID              string         `db:"user_id"`
-	AccountID           string         `db:"account_id"`
-	CreatedAt           time.Time      `db:"created_at"`
-	UpdatedAt           sql.NullTime   `db:"updated_at"`
-	WallClockSeconds    float64        `db:"wall_clock_seconds"`
-	ModelLatencySeconds float64        `db:"model_latency_seconds"`
-	CostUsd             float64        `db:"cost_usd"`
-	InputTokens         int64          `db:"input_tokens"`
-	OutputTokens        int64          `db:"output_tokens"`
-	CachedInputTokens   int64          `db:"cached_input_tokens"`
-	MessageCount        int            `db:"message_count"`
-	AgentCount          int            `db:"agent_count"`
-	LLMCallCount        int            `db:"llm_call_count"`
-	ModelsUsed          pq.StringArray `db:"models_used"`
+	ConversationID        string         `db:"conversation_id"`
+	SessionID             sql.NullString `db:"session_id"`
+	Source                string         `db:"source"`
+	Status                string         `db:"status"`
+	Title                 string         `db:"title"`
+	UserID                string         `db:"user_id"`
+	AccountID             string         `db:"account_id"`
+	CreatedAt             time.Time      `db:"created_at"`
+	UpdatedAt             sql.NullTime   `db:"updated_at"`
+	WallClockSeconds      float64        `db:"wall_clock_seconds"`
+	TotalModelTimeSeconds float64        `db:"total_model_time_seconds"`
+	CostUsd               float64        `db:"cost_usd"`
+	InputTokens           int64          `db:"input_tokens"`
+	OutputTokens          int64          `db:"output_tokens"`
+	CachedInputTokens     int64          `db:"cached_input_tokens"`
+	MessageCount          int            `db:"message_count"`
+	AgentCount            int            `db:"agent_count"`
+	LLMCallCount          int            `db:"llm_call_count"`
+	ModelsUsed            pq.StringArray `db:"models_used"`
 }
 
 // ListConversationCosts returns a filtered, sorted, paginated page of
@@ -1186,8 +1197,14 @@ func (chat *ConversationDao) ListConversationCosts(filter UsageMetricsFilter, so
 			COALESCE(c.account_id::text, '')                 AS account_id,
 			c.created_at                                     AS created_at,
 			c.updated_at                                     AS updated_at,
-			COALESCE(EXTRACT(EPOCH FROM (c.updated_at - c.created_at)), 0) AS wall_clock_seconds,
-			COALESCE(SUM(t.latency_seconds), 0)              AS model_latency_seconds,
+			COALESCE((
+				SELECT EXTRACT(EPOCH FROM (
+					MAX(COALESCE(m.responded_at, m.updated_at)) - MIN(m.created_at)
+				))
+				FROM llm_conversation_messages m
+				WHERE m.conversation_id = c.id
+			), 0)                                            AS wall_clock_seconds,
+			COALESCE(SUM(t.latency_seconds), 0)              AS total_model_time_seconds,
 			COALESCE(SUM(%s), 0)                             AS cost_usd,
 			COALESCE(SUM(t.input_tokens), 0)                 AS input_tokens,
 			COALESCE(SUM(t.output_tokens), 0)                AS output_tokens,
@@ -1221,24 +1238,24 @@ func (chat *ConversationDao) ListConversationCosts(filter UsageMetricsFilter, so
 	rows := make([]ConversationCostRow, 0, len(scans))
 	for _, s := range scans {
 		row := ConversationCostRow{
-			ConversationID:      s.ConversationID,
-			SessionID:           s.SessionID.String,
-			Source:              s.Source,
-			Status:              s.Status,
-			Title:               s.Title,
-			UserID:              s.UserID,
-			AccountID:           s.AccountID,
-			StartedAt:           s.CreatedAt,
-			WallClockSeconds:    s.WallClockSeconds,
-			ModelLatencySeconds: s.ModelLatencySeconds,
-			CostUsd:             s.CostUsd,
-			InputTokens:         s.InputTokens,
-			OutputTokens:        s.OutputTokens,
-			CachedInputTokens:   s.CachedInputTokens,
-			MessageCount:        s.MessageCount,
-			AgentCount:          s.AgentCount,
-			LLMCallCount:        s.LLMCallCount,
-			ModelsUsed:          []string(s.ModelsUsed),
+			ConversationID:        s.ConversationID,
+			SessionID:             s.SessionID.String,
+			Source:                s.Source,
+			Status:                s.Status,
+			Title:                 s.Title,
+			UserID:                s.UserID,
+			AccountID:             s.AccountID,
+			StartedAt:             s.CreatedAt,
+			WallClockSeconds:      s.WallClockSeconds,
+			TotalModelTimeSeconds: s.TotalModelTimeSeconds,
+			CostUsd:               s.CostUsd,
+			InputTokens:           s.InputTokens,
+			OutputTokens:          s.OutputTokens,
+			CachedInputTokens:     s.CachedInputTokens,
+			MessageCount:          s.MessageCount,
+			AgentCount:            s.AgentCount,
+			LLMCallCount:          s.LLMCallCount,
+			ModelsUsed:            []string(s.ModelsUsed),
 		}
 		if s.UpdatedAt.Valid {
 			row.EndedAt = s.UpdatedAt.Time

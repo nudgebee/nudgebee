@@ -398,6 +398,20 @@ export const AuditsTable = () => {
   }
 
   function getSummaryMessageForExecute(item) {
+    // Workflow-automation runs (runbook-server) also use the EXECUTE action —
+    // don't label them as cloud commands.
+    if (item.event_category === 'AUTOMATION') {
+      if (item.event_type === 'AUTOMATION_TASK_MANUAL_RUN') {
+        return <Text value={'Automation Approval Task Completed'} showAutoEllipsis />;
+      }
+      let state = {};
+      try {
+        state = JSON.parse(item.event_state) || {};
+      } catch (e) {
+        console.error(e);
+      }
+      return <Text value={`Automation ${state.workflow_name ? `${state.workflow_name} ` : ''}Run Triggered`} showAutoEllipsis />;
+    }
     let data = {};
     try {
       data = JSON.parse(item?.event_attr) || {};

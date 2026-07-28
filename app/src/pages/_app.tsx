@@ -13,8 +13,11 @@ import { ThemeProvider } from '@mui/material/styles';
 import { AppErrorBoundary } from '@shared/ErrorBoundary';
 import { DataProvider } from '@context/DataContext';
 import { Toast as SnackbarComponent } from '@ui/Toast';
+import { TourProvider } from '@components/common/tour';
 import 'swiper/css/bundle';
 import '../styles/CustomSwiperCarousel.css';
+import 'driver.js/dist/driver.css';
+import '../styles/tour.css';
 import { useThemeProvider } from '@hooks/useThemeProvider';
 
 // Use of the <SessionProvider> is mandatory to allow components that call
@@ -27,7 +30,19 @@ export default function App({ Component, pageProps }: AppProps<{ session: Sessio
   return (
     <ThemeProvider theme={theme}>
       <AppErrorBoundary>
-        <SessionProvider session={pageProps.session}>
+        <SessionProvider
+          session={pageProps.session}
+          // Keep an open tab's session alive. NextAuth (jwt strategy) only rolls
+          // the session cookie's expiry when the client hits /api/auth/session;
+          // ordinary /api/graphql traffic does NOT extend it. With no interval,
+          // an open-but-idle tab is never refreshed and the JWT hard-expires at
+          // session.maxAge, after which the next 401/invalid-jwt bounces the user
+          // to /signin. Poll every 5 min (well under maxAge) so any live tab
+          // renews the cookie; only when online, plus the default focus refetch.
+          refetchInterval={5 * 60}
+          refetchOnWindowFocus={true}
+          refetchWhenOffline={false}
+        >
           <GlobalFilterContextProvider>
             {router.pathname.indexOf('signin') >= 0 ||
             router.pathname.indexOf('signup') >= 0 ||
@@ -39,10 +54,12 @@ export default function App({ Component, pageProps }: AppProps<{ session: Sessio
               <Component {...pageProps} />
             ) : (
               <DataProvider>
-                <PageLayout>
-                  <Component {...pageProps} />
-                  <SnackbarComponent />
-                </PageLayout>
+                <TourProvider>
+                  <PageLayout>
+                    <Component {...pageProps} />
+                    <SnackbarComponent />
+                  </PageLayout>
+                </TourProvider>
               </DataProvider>
             )}
           </GlobalFilterContextProvider>

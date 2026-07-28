@@ -233,7 +233,7 @@ const TicketListInfoGraph = ({ defaultQuery = {}, selectedStatus, selectedPriori
           }}
         >
           <DoughnutChart
-            size={'60px'}
+            size={60}
             borderWidth={0}
             borderRadius={0}
             values={updatedTotalTicketData?.map((s) => (typeof s?.count === 'number' ? s?.count : 0))}
@@ -295,7 +295,7 @@ const TicketListInfoGraph = ({ defaultQuery = {}, selectedStatus, selectedPriori
           <DoughnutChart
             borderWidth={0}
             borderRadius={0}
-            size={'60px'}
+            size={60}
             values={updatedPriorityData?.map((s) => (typeof s?.count === 'number' ? s?.count : 0))}
             labels={updatedPriorityData?.map((s) => s?.severity)}
             displayValue={data?.total_count || 0}

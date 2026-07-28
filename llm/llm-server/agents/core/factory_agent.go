@@ -189,6 +189,12 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 		return toolcore.NBToolResponse{AdditionalDetails: additionalDetails, References: resp.References}, err
 	}
 
+	// Build the sub-agent evidence manifest ONCE, from the original chronological
+	// step order — before the fallback path below may reverse resp.AgentStepResponse
+	// in place. The manifest is budget-bounded, so this is cheap even for
+	// high-volume sub-agents (logs/metrics/traces). Empty unless the feature is on.
+	subAgentEvidence := BuildSubAgentEvidenceForTool(nbRequestContext.Ctx, m.name, resp.AgentStepResponse)
+
 	if resp.Status == ConversationStatusWaiting {
 		additionalDetails[nbToolCallAdditionalDatailsQuery] = resp.Query
 		additionalDetails[nbToolCallAdditionalDatailsFollowupRequest] = resp.FollowupRequest
@@ -199,6 +205,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 			IsTerminal:        resp.IsTerminal,
 			AdditionalDetails: additionalDetails,
 			References:        resp.References,
+			SubAgentEvidence:  subAgentEvidence,
 		}, nil
 	} else if resp.Status == ConversationStatusFailed {
 		responseData := "Agent failed to provide a response."
@@ -234,6 +241,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 						IsTerminal:        resp.IsTerminal,
 						AdditionalDetails: additionalDetails,
 						References:        resp.References,
+						SubAgentEvidence:  subAgentEvidence,
 					}, nil
 				}
 			}
@@ -245,6 +253,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 			IsTerminal:        resp.IsTerminal,
 			AdditionalDetails: additionalDetails,
 			References:        resp.References,
+			SubAgentEvidence:  subAgentEvidence,
 		}, nil
 	} else if resp.AgentStepResponse != nil {
 		// Sometimes LLMs are not able to analyze the responses, so return data as-is for the next step.

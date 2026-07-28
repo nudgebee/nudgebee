@@ -135,8 +135,8 @@ func (chat *ConversationDao) ListToolUsage(filter UsageMetricsFilter, sortBy str
 			COUNT(*) FILTER (WHERE lower(tc.status) = 'success')                           AS success_count,
 			COUNT(*) FILTER (WHERE lower(tc.status) IN ('fail', 'error', 'terminated'))    AS error_count,
 			COUNT(*) FILTER (WHERE lower(tc.status) IN ('in_progress', 'waiting', 'waiting_for_client')) AS in_progress_count,
-			COALESCE(AVG(d.duration_seconds), 0)                                           AS avg_duration_seconds,
-			COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY d.duration_seconds), 0)   AS p90_duration_seconds,
+			COALESCE(AVG(NULLIF(d.duration_seconds, 0)), 0)                                AS avg_duration_seconds,
+			COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY d.duration_seconds) FILTER (WHERE d.duration_seconds > 0), 0) AS p90_duration_seconds,
 			COALESCE(MAX(d.duration_seconds), 0)                                           AS max_duration_seconds,
 			COUNT(DISTINCT tc.agent_id)                                                    AS distinct_agents,
 			COUNT(DISTINCT tc.conversation_id)                                             AS distinct_conversations

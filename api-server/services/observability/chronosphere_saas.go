@@ -1518,3 +1518,22 @@ func (s *ChronosphereMetricSaasSource) GetQuery(_ *security.RequestContext, req 
 	}
 	return "", nil
 }
+
+// QueryRootSpansByTrace returns one root span per trace for the "By Traces" view (see
+// queryRootSpansViaSpans): spans are fetched via QueryTraces and reduced to one root per trace.
+func (c *ChronosphereTraceSaasSource) QueryRootSpansByTrace(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	return queryRootSpansViaSpans(ctx, c, req)
+}
+
+// CountTracesByTrace returns -1 (estimate) for the "By Traces" view; distinct-trace counting is
+// not available cheaply for this provider, so the frontend estimates pagination.
+func (c *ChronosphereTraceSaasSource) CountTracesByTrace(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
+	return countTracesByTraceEstimate()
+}
+
+// QueryLabels returns backend-discovered trace label keys. ChronosphereTraceSaasSource has no generic
+// label-key discovery API, so it returns an empty list; FetchTraceLabels falls back to
+// the derived canonical + mapping label set. Implements TraceSource.QueryLabels.
+func (c *ChronosphereTraceSaasSource) QueryLabels(_ *security.RequestContext, _ FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
+	return []OutputTraceLabel{}, nil
+}

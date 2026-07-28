@@ -5,13 +5,14 @@ import {
   loginAndNavigateToNewWorkflow,
   pasteAndApplyWorkflowJson,
   saveNewWorkflow,
-  setWorkflowActiveAndSave,
   runWorkflowWithGraphQLValidation,
+  waitForExecutionToComplete,
+  deleteCreatedWorkflow,
   closeActionPanel,
   configureNotificationsImSlack,
 } from "../workflowHelper";
 
-const SLACK_CHANNEL = process.env["SLACK-CHANNEL"]!;
+const SLACK_CHANNEL = process.env.SLACK_CHANNEL!;
 
 const WORKFLOW_JSON_TEMPLATE = {
   definition: {
@@ -24,7 +25,7 @@ const WORKFLOW_JSON_TEMPLATE = {
         id: "llm_investigate",
         type: "llm.investigate",
         params: {
-          message: "investigate the latest events coming from Prometheus",
+          message: "Hi",
         },
         timeout: "10m",
       },
@@ -68,6 +69,8 @@ test("Automation workflow LLM Investigate", async ({ page }) => {
   await closeActionPanel(page, locators);
 
   await saveNewWorkflow(page, locators, workflowName);
-  await setWorkflowActiveAndSave(page, locators);
   await runWorkflowWithGraphQLValidation(page, locators, "Automation workflow LLM Investigate");
+  await waitForExecutionToComplete(page, locators);
+
+  await deleteCreatedWorkflow(page, locators, workflowName);
 });

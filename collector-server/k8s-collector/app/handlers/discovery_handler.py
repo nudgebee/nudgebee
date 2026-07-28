@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import uuid
@@ -827,52 +828,38 @@ def handle_active_resources_deletion(  # noqa: C901
                     select_query, [cloud_account_id, resource_ids], cursor_factory=extras.RealDictCursor
                 )
 
-                # Insert history for each event
-                for event in affected_events:
-                    import hashlib
-
-                    old_value = event.get("status", "FIRING")
-                    new_value = "CLOSED"
-
-                    old_json = json.dumps(old_value, sort_keys=True)
-                    new_json = json.dumps(new_value, sort_keys=True)
-                    fingerprint = f"{event['id']}|status|{old_json}|{new_json}"
-                    history_id = hashlib.sha256(fingerprint.encode()).hexdigest()[:32]
-
-                    history_insert = """
-                        INSERT INTO event_history (
-                            id, event_id, tenant_id, cloud_account_id,
-                            change_type, old_value, new_value,
-                            change_reason, metadata
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (id) DO NOTHING
-                    """
-
-                    metadata = json.dumps(
-                        {
-                            "method": "discovery_cleanup",
-                            "resource_type": resource_type,
-                            "trigger": "resource_inactive_or_deleted",
-                        }
-                    )
-
+                # Batch insert history for all affected events (single query instead of N)
+                if affected_events:
+                    history_records = []
+                    meta_dict = {
+                        "method": "discovery_cleanup",
+                        "resource_type": resource_type,
+                        "trigger": "resource_inactive_or_deleted",
+                    }
+                    metadata_json = json.dumps(meta_dict)
+                    new_json = json.dumps("CLOSED")
+                    for event in affected_events:
+                        old_json = json.dumps(event.get("status", "FIRING"))
+                        fingerprint = f"{event['id']}|status|{old_json}|{new_json}"
+                        history_records.append(
+                            {
+                                "id": hashlib.sha256(fingerprint.encode()).hexdigest()[:32],
+                                "event_id": event["id"],
+                                "tenant_id": event.get("tenant"),
+                                "cloud_account_id": event.get("cloud_account_id"),
+                                "change_type": "status",
+                                "old_value": old_json,
+                                "new_value": new_json,
+                                "change_reason": "resource_inactive",
+                                "metadata": metadata_json,
+                            }
+                        )
                     try:
-                        database.run_query(
-                            history_insert,
-                            [
-                                history_id,
-                                event["id"],
-                                event.get("tenant"),
-                                event.get("cloud_account_id"),
-                                "status",
-                                json.dumps(old_value),
-                                json.dumps(new_value),
-                                "resource_inactive",
-                                metadata,
-                            ],
+                        database.insert_data(
+                            "event_history", history_records, on_conflict="ON CONFLICT (id) DO NOTHING"
                         )
                     except Exception:
-                        logging.exception(f"Failed to insert event history for resource cleanup: {event['id']}")
+                        logging.exception("Failed to batch insert event history for resource cleanup")
 
                 # Now close the events
                 database.run_query(
@@ -994,53 +981,39 @@ def handle_active_resources_deletion(  # noqa: C901
                     select_query, [cloud_account_id], cursor_factory=extras.RealDictCursor
                 )
 
-                # Insert history for each event
-                import hashlib
-
-                for event in affected_events:
-                    old_value = event.get("status", "FIRING")
-                    new_value = "CLOSED"
-
-                    old_json = json.dumps(old_value, sort_keys=True)
-                    new_json = json.dumps(new_value, sort_keys=True)
-                    fingerprint = f"{event['id']}|status|{old_json}|{new_json}"
-                    history_id = hashlib.sha256(fingerprint.encode()).hexdigest()[:32]
-
-                    history_insert = """
-                        INSERT INTO event_history (
-                            id, event_id, tenant_id, cloud_account_id,
-                            change_type, old_value, new_value,
-                            change_reason, metadata
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (id) DO NOTHING
-                    """
-
-                    metadata = json.dumps(
-                        {
-                            "method": "discovery_cleanup",
-                            "resource_type": resource_type,
-                            "trigger": "all_resources_deleted",
-                            "total_resources": 0,
-                        }
-                    )
-
+                # Batch insert history for all affected events (single query instead of N)
+                if affected_events:
+                    history_records = []
+                    meta_dict = {
+                        "method": "discovery_cleanup",
+                        "resource_type": resource_type,
+                        "trigger": "all_resources_deleted",
+                        "total_resources": 0,
+                    }
+                    metadata_json = json.dumps(meta_dict)
+                    new_json = json.dumps("CLOSED")
+                    for event in affected_events:
+                        old_json = json.dumps(event.get("status", "FIRING"))
+                        fingerprint = f"{event['id']}|status|{old_json}|{new_json}"
+                        history_records.append(
+                            {
+                                "id": hashlib.sha256(fingerprint.encode()).hexdigest()[:32],
+                                "event_id": event["id"],
+                                "tenant_id": event.get("tenant"),
+                                "cloud_account_id": event.get("cloud_account_id"),
+                                "change_type": "status",
+                                "old_value": old_json,
+                                "new_value": new_json,
+                                "change_reason": "all_resources_deleted",
+                                "metadata": metadata_json,
+                            }
+                        )
                     try:
-                        database.run_query(
-                            history_insert,
-                            [
-                                history_id,
-                                event["id"],
-                                event.get("tenant"),
-                                event.get("cloud_account_id"),
-                                "status",
-                                json.dumps(old_value),
-                                json.dumps(new_value),
-                                "all_resources_deleted",
-                                metadata,
-                            ],
+                        database.insert_data(
+                            "event_history", history_records, on_conflict="ON CONFLICT (id) DO NOTHING"
                         )
                     except Exception:
-                        logging.exception(f"Failed to insert event history for bulk cleanup: {event['id']}")
+                        logging.exception("Failed to batch insert event history for bulk cleanup")
 
                 # Now close all events
                 database.run_query(

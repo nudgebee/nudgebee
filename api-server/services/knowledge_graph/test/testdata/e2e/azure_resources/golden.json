@@ -1,0 +1,382 @@
+{
+  "nodes": [
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:Cache::app-redis",
+      "node_type": "Cache",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "Azure",
+        "external_resource_id": "az-redis-1",
+        "is_active": true,
+        "labels": null,
+        "name": "app-redis",
+        "nb_account_id": "test-account-azure-1",
+        "nb_resource_id": "az-redis-1",
+        "region": "eastus",
+        "resource_id": "redis-1",
+        "service_name": "microsoft.cache/redis",
+        "source": "azure",
+        "status": "",
+        "subtype": "redis",
+        "type": "redis"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-redis"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:ComputeInstance:vnet-1:app-vm",
+      "node_type": "ComputeInstance",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "Azure",
+        "external_resource_id": "az-vm-1",
+        "is_active": true,
+        "labels": null,
+        "name": "app-vm",
+        "nb_account_id": "test-account-azure-1",
+        "nb_resource_id": "az-vm-1",
+        "os_type": "Linux",
+        "region": "eastus",
+        "resource_id": "vm-1",
+        "service_name": "microsoft.compute/virtualmachines",
+        "source": "azure",
+        "status": "",
+        "subnet_id": "subnet-1",
+        "subtype": "virtualmachines",
+        "type": "virtualmachines",
+        "vm_size": "Standard_D2s_v3",
+        "vnet_id": "vnet-1",
+        "vnet_name_hierarchy": "app-vnet"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-vm",
+        "subtype": "virtualmachines"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:Database::app-sql",
+      "node_type": "Database",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "Azure",
+        "external_resource_id": "az-sql-1",
+        "is_active": true,
+        "labels": null,
+        "name": "app-sql",
+        "nb_account_id": "test-account-azure-1",
+        "nb_resource_id": "az-sql-1",
+        "region": "eastus",
+        "resource_id": "sql-1",
+        "service_name": "microsoft.sql/servers",
+        "source": "azure",
+        "status": "",
+        "subtype": "sqlserver",
+        "type": "sqlserver"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-sql",
+        "subtype": "sqlserver"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:LoadBalancer::app-lb",
+      "node_type": "LoadBalancer",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "Azure",
+        "external_resource_id": "az-lb-1",
+        "is_active": true,
+        "labels": null,
+        "name": "app-lb",
+        "nb_account_id": "test-account-azure-1",
+        "nb_resource_id": "az-lb-1",
+        "region": "eastus",
+        "resource_id": "lb-1",
+        "service_name": "microsoft.network/loadbalancers",
+        "source": "azure",
+        "status": "",
+        "subtype": "loadbalancers",
+        "type": "loadbalancers"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-lb",
+        "type": "loadbalancers"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:ManagedCluster:microsoft.containerservice/managedclusters:app-aks",
+      "node_type": "ManagedCluster",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "Azure",
+        "external_resource_id": "az-aks-1",
+        "is_active": true,
+        "labels": null,
+        "name": "app-aks",
+        "nb_account_id": "test-account-azure-1",
+        "nb_resource_id": "az-aks-1",
+        "region": "eastus",
+        "resource_id": "aks-1",
+        "service_name": "microsoft.containerservice/managedclusters",
+        "source": "azure",
+        "status": "",
+        "subtype": "managedclusters",
+        "type": "managedclusters"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-aks",
+        "region": "eastus",
+        "status": "",
+        "subtype": "managedclusters"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:SecretVault::app-kv",
+      "node_type": "SecretVault",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "Azure",
+        "external_resource_id": "az-kv-1",
+        "is_active": true,
+        "labels": null,
+        "name": "app-kv",
+        "nb_account_id": "test-account-azure-1",
+        "nb_resource_id": "az-kv-1",
+        "region": "eastus",
+        "resource_id": "kv-1",
+        "service_name": "microsoft.keyvault/vaults",
+        "source": "azure",
+        "status": "",
+        "subtype": "vaults",
+        "type": "vaults"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-kv"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:SecurityGroup::app-nsg",
+      "node_type": "SecurityGroup",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "Azure",
+        "external_resource_id": "az-nsg-1",
+        "is_active": true,
+        "labels": null,
+        "name": "app-nsg",
+        "nb_account_id": "test-account-azure-1",
+        "nb_resource_id": "az-nsg-1",
+        "region": "eastus",
+        "resource_id": "nsg-1",
+        "service_name": "microsoft.network/networksecuritygroups",
+        "source": "azure",
+        "status": "",
+        "subtype": "networksecuritygroups",
+        "type": "networksecuritygroups"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-nsg"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:Storage::appstorage",
+      "node_type": "Storage",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "Azure",
+        "external_resource_id": "az-storage-1",
+        "is_active": true,
+        "labels": null,
+        "name": "appstorage",
+        "nb_account_id": "test-account-azure-1",
+        "nb_resource_id": "az-storage-1",
+        "region": "eastus",
+        "resource_id": "storage-1",
+        "service_name": "microsoft.storage/storageaccounts",
+        "source": "azure",
+        "status": "",
+        "subtype": "storageaccounts",
+        "type": "storageaccounts"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "appstorage",
+        "subtype": "storageaccounts"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:Subnet:vnet-1:app-subnet",
+      "node_type": "Subnet",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cidr_block": "10.0.1.0/24",
+        "cloud_provider": "Azure",
+        "external_resource_id": "az-subnet-1",
+        "is_active": true,
+        "labels": null,
+        "name": "app-subnet",
+        "nb_account_id": "test-account-azure-1",
+        "nb_resource_id": "az-subnet-1",
+        "region": "eastus",
+        "resource_id": "subnet-1",
+        "service_name": "microsoft.network/virtualnetworks/subnets",
+        "source": "azure",
+        "status": "",
+        "subnet_id": "subnet-1",
+        "subtype": "subnets",
+        "type": "subnets",
+        "vnet_id": "vnet-1",
+        "vnet_name_hierarchy": "app-vnet"
+      },
+      "labels": {},
+      "query_attributes": {
+        "cidr_block": "10.0.1.0/24",
+        "name": "app-subnet",
+        "subnet_id": "subnet-1"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:VPC::app-vnet",
+      "node_type": "VPC",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "_raw_meta": {
+          "addressSpace": "10.0.0.0/16"
+        },
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "Azure",
+        "external_resource_id": "az-vnet-1",
+        "is_active": true,
+        "labels": null,
+        "name": "app-vnet",
+        "nb_account_id": "test-account-azure-1",
+        "nb_resource_id": "az-vnet-1",
+        "region": "eastus",
+        "resource_id": "vnet-1",
+        "service_name": "microsoft.network/virtualnetworks",
+        "source": "azure",
+        "status": "",
+        "subtype": "virtualnetworks",
+        "type": "virtualnetworks",
+        "vnet_id": "vnet-1"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-vnet"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src_key": "azure:test-account-azure-1:eastus:ComputeInstance:vnet-1:app-vm",
+      "dst_key": "azure:test-account-azure-1:eastus:Subnet:vnet-1:app-subnet",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "connection_type": "subnet",
+        "contributing_sources": [
+          "azure"
+        ]
+      },
+      "contributing_sources": [
+        "azure"
+      ]
+    },
+    {
+      "src_key": "azure:test-account-azure-1:eastus:ComputeInstance:vnet-1:app-vm",
+      "dst_key": "azure:test-account-azure-1:eastus:VPC::app-vnet",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "connection_type": "vnet",
+        "contributing_sources": [
+          "azure"
+        ]
+      },
+      "contributing_sources": [
+        "azure"
+      ]
+    },
+    {
+      "src_key": "azure:test-account-azure-1:eastus:Subnet:vnet-1:app-subnet",
+      "dst_key": "azure:test-account-azure-1:eastus:VPC::app-vnet",
+      "relationship_type": "BELONGS_TO",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "connection_type": "vnet_subnet",
+        "contributing_sources": [
+          "azure"
+        ]
+      },
+      "contributing_sources": [
+        "azure"
+      ]
+    }
+  ]
+}

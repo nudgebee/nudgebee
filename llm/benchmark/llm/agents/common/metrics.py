@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import sys
+import time
 
 import requests
 from dotenv import load_dotenv
@@ -19,6 +20,13 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+# llm-server writes llm_conversation_token_usage rows on a background worker
+# pool (kept off the response path to avoid adding DB latency there), so the
+# row(s) for a conversation can briefly not exist yet right after its LLM
+# response returns. Retry a few times before accepting an empty/zero result.
+_TOKEN_METRICS_MAX_ATTEMPTS = 5
+_TOKEN_METRICS_RETRY_DELAY_SECONDS = 1.0
+
 # --- Database Setup ---
 _DB_URL = os.environ.get("APP_DATABASE_URL", "")
 _db_engine = None
@@ -29,9 +37,7 @@ if _DB_URL:
         print(f"Warning: Failed to create database engine: {e}", file=sys.stderr)
 
 
-def get_token_metrics(
-    session_id: str, account_id: str, tenant_id: str, user_id: str
-):
+def get_token_metrics(session_id: str, account_id: str, tenant_id: str, user_id: str):
     """Fetch token usage, cost, and tool call metrics from the LLM server.
 
     Args:
@@ -43,6 +49,12 @@ def get_token_metrics(
     cached_input_tokens, cost, cache_hit_rate, model_providers, model_names,
     total_tool_calls, successful_tool_calls, timing info, etc.
     Returns None on failure.
+
+    Retries a few times (see _TOKEN_METRICS_MAX_ATTEMPTS) while the server
+    reports total_requests == 0 — usage rows are written asynchronously on
+    llm-server, so they can briefly lag behind the LLM response we just got
+    back. A real call always ends up with total_requests > 0, so this only
+    adds latency on the (rare) race, not on the common case.
     """
     if not session_id:
         return None
@@ -52,6 +64,7 @@ def get_token_metrics(
         "x-tenant-id": tenant_id,
         "x-user-id": user_id,
         "Content-Type": "application/json",
+        "x-action-token": os.getenv("LLM_SERVER_TOKEN", ""),
     }
     # API field is named "conversation_id" but server queries by session_id
     payload = json.dumps(
@@ -62,68 +75,74 @@ def get_token_metrics(
         }
     )
 
-    try:
-        response = requests.post(url, headers=headers, data=payload)
-        response.raise_for_status()
-        data = response.json()
+    for attempt in range(_TOKEN_METRICS_MAX_ATTEMPTS):
+        try:
+            response = requests.post(
+                url, headers=headers, data=payload, timeout=int(os.getenv("LLM_READ_TIMEOUT", "30"))
+            )
+            response.raise_for_status()
+            data = response.json()
 
-        if "data" not in data or "conversation" not in data["data"]:
+            if "data" not in data or "conversation" not in data["data"]:
+                return None
+
+            conv = data["data"]["conversation"]
+
+            if conv.get("total_requests", 0) == 0 and attempt < _TOKEN_METRICS_MAX_ATTEMPTS - 1:
+                time.sleep(_TOKEN_METRICS_RETRY_DELAY_SECONDS)
+                continue
+
+            input_tokens = conv.get("total_input_tokens", 0)
+            completion_tokens = conv.get("total_output_tokens", 0)
+            cached_input_tokens = conv.get("total_cached_input_tokens", 0)
+
+            model_providers = set()
+            model_names = set()
+            # Prefer top-level model_usage (new format)
+            for mu in conv.get("model_usage", []):
+                if mu.get("model_provider"):
+                    model_providers.add(mu["model_provider"])
+                if mu.get("model_name"):
+                    model_names.add(mu["model_name"])
+            # Fallback to messages[].agents[] (legacy nullable SQL format)
+            if not model_names:
+                for message in conv.get("messages", []):
+                    for agent in message.get("agents", []):
+                        prov = agent.get("model_provider_name")
+                        if isinstance(prov, dict) and prov.get("Valid"):
+                            model_providers.add(prov["String"])
+                        elif isinstance(prov, str) and prov:
+                            model_providers.add(prov)
+                        name = agent.get("model_name")
+                        if isinstance(name, dict) and name.get("Valid"):
+                            model_names.add(name["String"])
+                        elif isinstance(name, str) and name:
+                            model_names.add(name)
+
+            return {
+                "total_tokens": input_tokens + completion_tokens,
+                "input_tokens": input_tokens,
+                "completion_tokens": completion_tokens,
+                "cached_input_tokens": cached_input_tokens,
+                "cost": conv.get("total_cost_usd", 0.0),
+                "cache_hit_rate": conv.get("total_cache_hit_rate_percentage", 0.0),
+                "model_providers": sorted(list(model_providers)),
+                "model_names": sorted(list(model_names)),
+                "total_tool_calls": conv.get("total_tool_calls", 0),
+                "successful_tool_calls": conv.get("successful_tool_calls", 0),
+                "wall_time_seconds": conv.get("wall_time_seconds"),
+                "tool_time_seconds": conv.get("tool_time_seconds"),
+                "api_time_seconds": conv.get("api_time_seconds"),
+                "success_rate_percentage": conv.get("success_rate_percentage"),
+                "total_requests": conv.get("total_requests", 0),
+                "failed_requests": conv.get("failed_requests", 0),
+            }
+        except requests.exceptions.RequestException as e:
+            logger.error("Failed to get token metrics for session %s: %s", session_id, e)
             return None
-
-        conv = data["data"]["conversation"]
-        input_tokens = conv.get("total_input_tokens", 0)
-        completion_tokens = conv.get("total_output_tokens", 0)
-        cached_input_tokens = conv.get("total_cached_input_tokens", 0)
-
-        model_providers = set()
-        model_names = set()
-        # Prefer top-level model_usage (new format)
-        for mu in conv.get("model_usage", []):
-            if mu.get("model_provider"):
-                model_providers.add(mu["model_provider"])
-            if mu.get("model_name"):
-                model_names.add(mu["model_name"])
-        # Fallback to messages[].agents[] (legacy nullable SQL format)
-        if not model_names:
-            for message in conv.get("messages", []):
-                for agent in message.get("agents", []):
-                    prov = agent.get("model_provider_name")
-                    if isinstance(prov, dict) and prov.get("Valid"):
-                        model_providers.add(prov["String"])
-                    elif isinstance(prov, str) and prov:
-                        model_providers.add(prov)
-                    name = agent.get("model_name")
-                    if isinstance(name, dict) and name.get("Valid"):
-                        model_names.add(name["String"])
-                    elif isinstance(name, str) and name:
-                        model_names.add(name)
-
-        return {
-            "total_tokens": input_tokens + completion_tokens,
-            "input_tokens": input_tokens,
-            "completion_tokens": completion_tokens,
-            "cached_input_tokens": cached_input_tokens,
-            "cost": conv.get("total_cost_usd", 0.0),
-            "cache_hit_rate": conv.get("total_cache_hit_rate_percentage", 0.0),
-            "model_providers": sorted(list(model_providers)),
-            "model_names": sorted(list(model_names)),
-            "total_tool_calls": conv.get("total_tool_calls", 0),
-            "successful_tool_calls": conv.get("successful_tool_calls", 0),
-            "wall_time_seconds": conv.get("wall_time_seconds"),
-            "tool_time_seconds": conv.get("tool_time_seconds"),
-            "api_time_seconds": conv.get("api_time_seconds"),
-            "success_rate_percentage": conv.get("success_rate_percentage"),
-            "total_requests": conv.get("total_requests", 0),
-            "failed_requests": conv.get("failed_requests", 0),
-        }
-    except requests.exceptions.RequestException as e:
-        logger.error("Failed to get token metrics for session %s: %s", session_id, e)
-    except json.JSONDecodeError as e:
-        logger.error(
-            "Failed to decode token metrics JSON for session %s: %s", session_id, e
-        )
-
-    return None
+        except json.JSONDecodeError as e:
+            logger.error("Failed to decode token metrics JSON for session %s: %s", session_id, e)
+            return None
 
 
 def get_planner_response(convo_id: str, account_id: str):
@@ -136,8 +155,7 @@ def get_planner_response(convo_id: str, account_id: str):
 
     try:
         with _db_engine.connect() as connection:
-            query = text(
-                """
+            query = text("""
                 SELECT response
                 FROM llm_conversation_agent
                 WHERE conversation_id = :conversation_id
@@ -146,11 +164,8 @@ def get_planner_response(convo_id: str, account_id: str):
                   AND response IS NOT NULL
                 ORDER BY created_at DESC
                 LIMIT 1
-            """
-            )
-            result = connection.execute(
-                query, {"conversation_id": convo_id, "account_id": account_id}
-            ).fetchone()
+            """)
+            result = connection.execute(query, {"conversation_id": convo_id, "account_id": account_id}).fetchone()
 
             if result and result[0]:
                 return str(result[0])
@@ -223,7 +238,7 @@ def get_execution_trace(convo_id: str, account_id: str) -> str:
             agent_lines = []
             for i, a in enumerate(agents, 1):
                 name, query, status, thought = a[0], (a[1] or "")[:150], a[2] or "unknown", (a[3] or "")[:100]
-                line = f"  Agent {i}: [{status.upper()}] {name}(\"{query}\")"
+                line = f'  Agent {i}: [{status.upper()}] {name}("{query}")'
                 if thought:
                     line += f"\n    Thought: {thought}"
                 agent_lines.append(line)
@@ -234,8 +249,11 @@ def get_execution_trace(convo_id: str, account_id: str) -> str:
             tool_lines = []
             for i, t in enumerate(tools, 1):
                 name, params, status, thought, resp = (
-                    t[0], (t[1] or "")[:150], t[2] or "unknown",
-                    (t[3] or "")[:100], (t[4] or "")[:150],
+                    t[0],
+                    (t[1] or "")[:150],
+                    t[2] or "unknown",
+                    (t[3] or "")[:100],
+                    (t[4] or "")[:150],
                 )
                 line = f"  Step {i}: [{status.upper()}] {name}({params})"
                 if thought:
@@ -255,8 +273,7 @@ def get_execution_trace(convo_id: str, account_id: str) -> str:
             failed = sum(1 for t in tools if t[2] == "fail")
             errors = sum(1 for t in tools if t[2] == "error")
             parts.append(
-                f"== STATS ==\n"
-                f"Total tool calls: {total} | Success: {success} | Failed: {failed} | Errors: {errors}"
+                f"== STATS ==\n" f"Total tool calls: {total} | Success: {success} | Failed: {failed} | Errors: {errors}"
             )
 
         return "\n\n".join(parts) if parts else ""
@@ -276,15 +293,13 @@ def get_tool_names(convo_id: str):
 
     try:
         with _db_engine.connect() as connection:
-            query = text(
-                """
+            query = text("""
                 SELECT DISTINCT tool_name, status
                 FROM llm_conversation_tool_calls
                 WHERE conversation_id = :conversation_id
                   AND tool_name IS NOT NULL
                   AND tool_name != ''
-            """
-            )
+            """)
             rows = connection.execute(query, {"conversation_id": convo_id}).fetchall()
 
             tool_names = set()
@@ -320,8 +335,7 @@ def get_failure_diagnostics(convo_id: str, account_id: str):
 
         with _db_engine.connect() as connection:
             # Get agent-level error (the main error message)
-            agent_query = text(
-                """
+            agent_query = text("""
                 SELECT agent_name, status, LEFT(response, 500) as response
                 FROM llm_conversation_agent
                 WHERE conversation_id = :conversation_id
@@ -329,8 +343,7 @@ def get_failure_diagnostics(convo_id: str, account_id: str):
                   AND status = 'fail'
                 ORDER BY created_at DESC
                 LIMIT 1
-            """
-            )
+            """)
             agent_result = connection.execute(
                 agent_query, {"conversation_id": convo_id, "account_id": account_id}
             ).fetchone()
@@ -340,8 +353,7 @@ def get_failure_diagnostics(convo_id: str, account_id: str):
                 diagnostics["agent_error"] = agent_result[2] or ""
 
             # Get tool-level errors
-            tool_query = text(
-                """
+            tool_query = text("""
                 SELECT tool_name, status, LEFT(response, 300) as response
                 FROM llm_conversation_tool_calls
                 WHERE conversation_id = :conversation_id
@@ -349,8 +361,7 @@ def get_failure_diagnostics(convo_id: str, account_id: str):
                   AND status IN ('error', 'fail')
                 ORDER BY created_at DESC
                 LIMIT 5
-            """
-            )
+            """)
             tool_results = connection.execute(
                 tool_query, {"conversation_id": convo_id, "account_id": account_id}
             ).fetchall()
@@ -364,9 +375,7 @@ def get_failure_diagnostics(convo_id: str, account_id: str):
                     }
                     for row in tool_results
                 ]
-                diagnostics["failed_tool_names"] = sorted(
-                    set(row[0] for row in tool_results)
-                )
+                diagnostics["failed_tool_names"] = sorted(set(row[0] for row in tool_results))
 
         return diagnostics if diagnostics else None
     except Exception as e:
@@ -385,8 +394,7 @@ def fetch_tool_command_from_db(conversation_id: str, account_id: str, tool_name:
 
     try:
         with _db_engine.connect() as connection:
-            query = text(
-                """
+            query = text("""
                 SELECT params_sql, parameters
                 FROM llm_conversation_tool_calls
                 WHERE account_id = :account_id
@@ -394,8 +402,7 @@ def fetch_tool_command_from_db(conversation_id: str, account_id: str, tool_name:
                   AND tool_name = :tool_name
                 ORDER BY updated_at DESC
                 LIMIT 1
-            """
-            )
+            """)
             result = connection.execute(
                 query,
                 {
@@ -438,19 +445,15 @@ def lookup_session_id(conversation_uuid: str):
 
     try:
         with _db_engine.connect() as connection:
-            query = text(
-                """
+            query = text("""
                 SELECT session_id
                 FROM llm_conversations
                 WHERE id = :conversation_id
                   AND session_id IS NOT NULL
                   AND session_id != ''
                 LIMIT 1
-            """
-            )
-            result = connection.execute(
-                query, {"conversation_id": conversation_uuid}
-            ).fetchone()
+            """)
+            result = connection.execute(query, {"conversation_id": conversation_uuid}).fetchone()
 
             if result and result[0]:
                 return str(result[0])
@@ -458,6 +461,7 @@ def lookup_session_id(conversation_uuid: str):
     except Exception as e:
         logger.error(
             "Failed to look up session_id for conversation %s: %s",
-            conversation_uuid, e,
+            conversation_uuid,
+            e,
         )
         return None

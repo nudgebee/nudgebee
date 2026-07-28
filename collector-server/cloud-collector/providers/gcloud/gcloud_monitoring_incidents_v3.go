@@ -191,9 +191,15 @@ func convertAlertToEvent(ctx providers.CloudProviderContext, httpClient *http.Cl
 		eventTime = &now
 	}
 
-	// Determine severity
+	// Determine severity from the GCP alert policy's severity field.
+	// GCP's AlertPolicy.severity enum is only CRITICAL / ERROR / WARNING /
+	// SEVERITY_UNSPECIFIED — there is no INFO/LOW tier on the GCP side. Most
+	// customer policies leave severity unset, so an unspecified/unknown value
+	// must NOT default to HIGH (that floods HIGH with routine alerts like
+	// deployment notifications). Treat "no severity" as MEDIUM: a real fired
+	// alert, but not critical.
 	var severity providers.EventSeverity
-	if alert.Policy != nil && alert.Policy.Severity != "" {
+	if alert.Policy != nil {
 		switch alert.Policy.Severity {
 		case "CRITICAL":
 			severity = providers.EventSeverityHigh
@@ -202,10 +208,10 @@ func convertAlertToEvent(ctx providers.CloudProviderContext, httpClient *http.Cl
 		case "WARNING":
 			severity = providers.EventSeverityMedium
 		default:
-			severity = providers.EventSeverityHigh
+			severity = providers.EventSeverityMedium
 		}
 	} else {
-		severity = providers.EventSeverityHigh
+		severity = providers.EventSeverityMedium
 	}
 
 	// Determine event status
@@ -314,9 +320,29 @@ func convertAlertToEvent(ctx providers.CloudProviderContext, httpClient *http.Cl
 	if resourceType == "" {
 		resourceType = "unknown"
 	}
-	if resourceID == "" {
-		// Fall back to alert incident ID if no resource ID available
-		resourceID = extractResourceNameFromPath(alert.Name)
+
+	// Track whether resourceID was resolved from a real monitored-resource /
+	// metric label. When it wasn't, GCP gave us no resource identity for this
+	// alert (typical for log-based metric alerts, e.g. a load-balancer 429
+	// counter). We must NOT fall back to the incident ID here: alert.Name is
+	// unique per firing, so using it as the resource ID gives a meaningless
+	// subject ("0.oa00fmkshhth") AND makes the fingerprint change every firing,
+	// defeating dedup. Instead use a stable "<resourceType> (<project>)" subject
+	// and let buildStableEventID fingerprint on policy+resourceType.
+	resourceResolved := resourceID != ""
+	if !resourceResolved {
+		projectID := ""
+		if alert.Resource != nil {
+			projectID = alert.Resource.Labels["project_id"]
+		}
+		if projectID == "" && account != nil {
+			projectID = account.AccountNumber
+		}
+		if projectID != "" {
+			resourceID = fmt.Sprintf("%s (%s)", resourceType, projectID)
+		} else {
+			resourceID = resourceType
+		}
 	}
 
 	// Map resource type to service name
@@ -427,7 +453,7 @@ func convertAlertToEvent(ctx providers.CloudProviderContext, httpClient *http.Cl
 	// - Same policy on different resources = different fingerprints
 	// - Same policy on same resource at different times = same fingerprint
 	// - finding_id = fingerprint + timestamp (computed in etl_events.go)
-	eventID := buildStableEventID(alert, resourceType, resourceID)
+	eventID := buildStableEventID(alert, resourceType, resourceID, resourceResolved)
 
 	event := providers.Event{
 		Title:               getAlertTitle(alert),
@@ -474,7 +500,7 @@ func getEventName(alert *Alert) string {
 // Example: "projects/nudgebee-dev/alertPolicies/67890:gce_instance:1234567890"
 //
 // This is analogous to AWS AlarmArn which is stable across firings
-func buildStableEventID(alert *Alert, resourceType, resourceID string) string {
+func buildStableEventID(alert *Alert, resourceType, resourceID string, resourceResolved bool) string {
 	var policyName string
 	if alert.Policy != nil {
 		policyName = alert.Policy.Name
@@ -489,8 +515,24 @@ func buildStableEventID(alert *Alert, resourceType, resourceID string) string {
 	// This ensures:
 	// - Same policy on VM-A and VM-B = different fingerprints
 	// - Same policy on VM-A at time T1 and T2 = same fingerprint
-	if resourceType != "" && resourceID != "" {
+	//
+	// Only include resourceID when it was resolved from a real resource label.
+	// When it wasn't (resourceID is the synthetic "<type> (<project>)" subject),
+	// fingerprint on policy+resourceType alone so repeat firings of the same
+	// log-based policy dedup instead of minting a new fingerprint each time.
+	if resourceResolved && resourceType != "" && resourceID != "" {
 		return fmt.Sprintf("%s:%s:%s", policyName, resourceType, resourceID)
+	}
+
+	// Class-B (no resource identity): collapse all firings of this policy+type to
+	// one fingerprint. Safe today because such incidents (e.g. log-based
+	// load-balancer 429) fire sequentially, never overlapping. If GCP ever emits
+	// concurrent distinct incidents for such a policy, they would share this
+	// fingerprint and a CLOSED one could prematurely resolve a still-open one via
+	// resolveExistingEvents — at that point incorporate a stable discriminating
+	// metric label (e.g. rule_number) into the key here.
+	if resourceType != "" {
+		return fmt.Sprintf("%s:%s", policyName, resourceType)
 	}
 
 	// If no resource info, just use policy name
@@ -548,6 +590,17 @@ func gcpResourceIDLabelKeys(resourceType string) []string {
 	switch resourceType {
 	case "cloud_run_revision":
 		return []string{"service_name", "configuration_name", "revision_name"}
+	case "gke_cluster", "k8s_cluster":
+		return []string{"cluster_name"}
+	case "gke_nodepool":
+		return []string{"nodepool_name", "cluster_name"}
+	case "k8s_node_pool":
+		// New GKE monitoring model uses node_pool_name (vs legacy gke_nodepool's nodepool_name).
+		return []string{"node_pool_name", "cluster_name"}
+	case "k8s_node", "gke_node":
+		return []string{"node_name", "cluster_name"}
+	case "audited_resource":
+		return []string{"method", "service"}
 	case "gae_app":
 		return []string{"module_id", "version_id"}
 	case "cloud_tasks_queue":

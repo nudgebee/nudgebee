@@ -14,10 +14,11 @@ import (
 	"nudgebee/services/security"
 )
 
-// RCAWritebackRequest is the internal payload llm-server POSTs to /rpc/event
-// (action "event_rca_writeback") once an RCA report has been saved. It carries
-// only what llm-server knows; everything else (incident id, source, account,
-// severity, per-tenant config) is resolved here from the authoritative event row.
+// RCAWritebackRequest is the input to ProcessRCAWriteback, assembled in-process
+// by the investigation.completed lifecycle hook (rcaWritebackHook) from the
+// completion envelope's analysis. It carries only the event id, an account hint,
+// and the analysis text; everything else (incident id, source, severity,
+// per-tenant config) is resolved here from the authoritative event row.
 type RCAWritebackRequest struct {
 	EventId   string `json:"event_id"`
 	AccountId string `json:"account_id"`
@@ -55,11 +56,12 @@ const (
 
 var rcaWritebackCacheOnce sync.Once
 
-// ProcessRCAWriteback posts a completed RCA report back onto the originating
-// incident (currently ZenDuty) as a note. It is best-effort and idempotent: a
-// no-op unless the event came from a registered source, the per-tenant toggle is
-// on, and the event's NudgeBee priority is in the configured severity set.
-// Re-posting the same RCA version is suppressed; a revised RCA appends a new note.
+// ProcessRCAWriteback posts the completed investigation analysis back onto the
+// originating incident (ZenDuty / PagerDuty) as a note. It is best-effort and
+// idempotent: a no-op unless the event came from a registered source, the
+// per-tenant toggle is on, and the event's NudgeBee priority is in the configured
+// severity set. Re-posting the same analysis is suppressed; a revised analysis
+// appends a new note.
 //
 // All trust-bearing fields (tenant, account, incident id, source, priority) are
 // taken from the event row, never from the caller-supplied request.
@@ -89,8 +91,9 @@ func ProcessRCAWriteback(ctx *security.RequestContext, req RCAWritebackRequest) 
 	}
 	// Cross-tenant guard: the caller's authenticated tenant must own the event.
 	// An empty caller tenant is a super-admin context (no tenant assertion to
-	// check); the llm-server signal always sends a concrete x-tenant-id, so the
-	// legitimate path is always enforced.
+	// check); the investigation.completed hook runs in a tenant-scoped context
+	// (loadEventMap builds it from the event's own tenant), so the legitimate
+	// path is always enforced.
 	if callerTenant := ctx.GetSecurityContext().GetTenantId(); callerTenant != "" && callerTenant != tenant {
 		return fmt.Errorf("rca_writeback: caller tenant %s does not match event tenant %s", callerTenant, tenant)
 	}
@@ -164,6 +167,37 @@ func ProcessRCAWriteback(ctx *security.RequestContext, req RCAWritebackRequest) 
 	ctx.GetLogger().Info("rca_writeback: posted RCA note",
 		"event_id", req.EventId, "incident_id", findingId, "source", target.commentSource, "priority", priority)
 	return nil
+}
+
+// processRCAWritebackFn is an indirection seam so rcaWritebackHook is
+// unit-testable without a live DB. Overridden in tests.
+var processRCAWritebackFn = ProcessRCAWriteback
+
+// rcaWritebackHook is the investigation.completed lifecycle hook that posts the
+// completed investigation analysis back onto the originating incident. It is the
+// api-server-side trigger for the writeback: when an event's investigation
+// reaches COMPLETED, the investigation-completed consumer emits
+// PhaseInvestigationCompleted carrying the analysis on the event map, and this
+// hook forwards it to ProcessRCAWriteback (which self-gates on source, per-tenant
+// toggle, severity, and idempotency). It replaces llm-server's former post-RCA
+// signal, so starting the writeback no longer crosses a service boundary.
+func rcaWritebackHook(ctx *security.RequestContext, event map[string]any) error {
+	eventId, _ := event["id"].(string)
+	if eventId == "" {
+		return nil
+	}
+	// analysis_summary is the enriched combined analysis (DetailedResponse); fall
+	// back to the raw investigation output when it is empty.
+	rcaText, _ := event["analysis_summary"].(string)
+	if strings.TrimSpace(rcaText) == "" {
+		rcaText, _ = event["analysis_investigation"].(string)
+	}
+	accountId, _ := event["cloud_account_id"].(string)
+	return processRCAWritebackFn(ctx, RCAWritebackRequest{
+		EventId:   eventId,
+		AccountId: accountId,
+		RCAText:   rcaText,
+	})
 }
 
 // loadRCAWritebackConfig reads the per-tenant on/off flag and severity gate from
@@ -240,7 +274,11 @@ func postIncidentComment(tenant, accountId, source, ticketId, comment string) er
 					"comment":    comment,
 				},
 			},
-			"session_variables": map[string]any{"role": "admin"},
+			// ticket-server's bindAndAuthoriseTicketRequest unconditionally
+			// overwrites the object's tenant with session_variables.tenant_id, so
+			// the tenant MUST travel here — with only "role" set, the lookup ran
+			// with an empty tenant and every add-comment failed with 400.
+			"session_variables": map[string]any{"role": "admin", "tenant_id": tenant},
 		}),
 		common.HttpWithHeaders(map[string]string{"Content-Type": "application/json"}),
 	)

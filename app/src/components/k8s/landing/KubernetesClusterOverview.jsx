@@ -15,6 +15,7 @@ import { Skeleton } from '@ui/Skeleton';
 import { toast as snackbar } from '@ui/Toast';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import { Button as DsButton } from '@ui/Button';
+import { TourLauncher } from '@components/common/tour';
 import { hasWriteAccess } from '@lib/auth';
 import { ds } from '@utils/colors';
 
@@ -206,8 +207,8 @@ const KubernetesClusterOverview = () => {
                 />
               </ErrorBoundary>
             </Box>
-            <Grid container alignItems='stretch' spacing='14px' columns={{ xs: 4, sm: 8, md: 12 }} sx={{ minWidth: 0, overflow: 'hidden' }}>
-              <Grid item md={7} sx={{ overflow: 'hidden' }}>
+            <Grid container alignItems='stretch' spacing='14px' columns={{ xs: 4, sm: 8, md: 12 }} sx={{ minWidth: 0, overflow: 'visible' }}>
+              <Grid item md={7} sx={{ overflow: 'visible' }}>
                 <ErrorBoundary>
                   <KubernetesMemoryCpuOverView
                     key={`cluster-box-${cluster?.account_id ?? ''}`}
@@ -359,9 +360,14 @@ const KubernetesClusterOverview = () => {
             </Stack>
 
             {hasWriteAccess() ? (
-              <DsButton tone='primary' size='lg' onClick={() => setShowAddClusterModal(true)}>
-                Add Cluster
-              </DsButton>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <TourLauncher tourId='connect-cluster' label='Show me how' size='lg' />
+                {/* id='add-k8s-account' anchors the connect-cluster tour's first step (same id the
+                    Accounts-page button uses; only one route renders at a time, so no duplicate). */}
+                <DsButton id='add-k8s-account' tone='primary' size='lg' onClick={() => setShowAddClusterModal(true)}>
+                  Add Cluster
+                </DsButton>
+              </Box>
             ) : (
               <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-600)', fontStyle: 'italic' }}>
                 Need admin permission to connect a cluster

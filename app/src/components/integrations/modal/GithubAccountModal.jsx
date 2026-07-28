@@ -199,8 +199,9 @@ const GithubAccountModal = ({ openModal, handleClose, editConfig = null }) => {
     };
 
     try {
-      // Check for duplicate names
-      const res = await apiIntegrations.listTicketConfigurationsByTool({ tool: 'github' });
+      // Scope by name and lift the default 10-row limit so a same-named integration
+      // (e.g. an existing GitHub App one) is reliably found, not silently overwritten.
+      const res = await apiIntegrations.listTicketConfigurationsByTool({ tool: 'github', name: bodyData.name, limit: 100 });
       const githubConfList = res?.data || [];
       let duplicateExists = false;
 

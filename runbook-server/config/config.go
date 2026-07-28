@@ -119,6 +119,15 @@ type appConfig struct {
 	RunbookServerEventSyncIntervalSeconds int    `mapstructure:"runbook_server_event_sync_interval_seconds"`
 	RunbookServerTemporalQueue            string `mapstructure:"runbook_server_temporal_queue"`
 
+	// TemporalDeadlockDetectionTimeoutSeconds raises Temporal's per-workflow-task
+	// deadlock detector threshold (SDK default 1s). Inline template rendering and
+	// matrix expansion run on the workflow goroutine; large definitions can
+	// legitimately exceed 1s. <= 0 keeps the SDK default.
+	TemporalDeadlockDetectionTimeoutSeconds int `mapstructure:"runbook_server_temporal_deadlock_detection_timeout_seconds"`
+	// MatrixMaxCombinations caps the cartesian product a single matrix task may
+	// expand to before it is rejected. <= 0 disables the cap.
+	MatrixMaxCombinations int `mapstructure:"runbook_server_matrix_max_combinations"`
+
 	NudgebeeNamespace string `mapstructure:"nudgebee_namespace"`
 
 	OptimizationEnabled                           bool `mapstructure:"runbook_server_optimization_enabled"`
@@ -224,6 +233,8 @@ func init() {
 
 	viper.SetDefault("runbook_server_task_scripting_mode", "agent")
 	viper.SetDefault("runbook_server_temporal_queue", "runbook-tasks")
+	viper.SetDefault("runbook_server_temporal_deadlock_detection_timeout_seconds", 5)
+	viper.SetDefault("runbook_server_matrix_max_combinations", 1000)
 
 	// Template sync defaults preserve today's behavior: sync off, bundled source.
 	viper.SetDefault("runbook_server_template_sync_enabled", false)

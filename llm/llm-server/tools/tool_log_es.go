@@ -31,16 +31,16 @@ func (m ElasticSearchExecuteTool) GetType() core.NBToolType {
 }
 
 func (m ElasticSearchExecuteTool) Description() string {
-	return `Executes a ElasticSearch query against a ElasticSearch instance and retrieves the corresponding log data. 
+	return `Executes an ElasticSearch query against an ElasticSearch instance and retrieves the corresponding log data.
 
 	Usage:
 
-	* Input: Provide a well-formatted ElasticSearch query as input.
+	* Input: A JSON object { "query": <ES DSL>, "index"?: <index pattern> }. If "index" is omitted, the account's default index is used.
 	* Output: The tool will return the log data retrieved from ElasticSearch based on your query.
 
 	Important Notes:
 
-	* Ensure the LogQL query is syntactically correct and adheres to the ElasticSearch query language specification.
+	* Ensure the ElasticSearch query is syntactically correct and adheres to the ElasticSearch Query DSL specification.
 	* The output may contain a large volume of log data. You should process and summarize the data appropriately before presenting it to the user.`
 }
 
@@ -111,8 +111,13 @@ func (m ElasticSearchExecuteTool) Call(nbRequestContext core.NbToolContext, inpu
 				responseData = responseData1
 			}
 		}
+		if responseData == "" {
+			responseData = err.Error()
+		}
+		// ElasticSearch is an HTTP API — no CLI --help. Point at the DSL
+		// docs by name so the model self-directs rather than pivots.
 		return core.NBToolResponse{
-			Data:   responseData,
+			Data:   cliRecoveryEnvelope(responseData, "", "elasticsearch", ""),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}

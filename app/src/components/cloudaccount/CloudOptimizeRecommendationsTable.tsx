@@ -6,7 +6,7 @@ import { usePagination } from '@hooks/usePagination';
 import { interpolateMitigations, buildDescriptionMarkdown } from '@api1/recommendation/data';
 import { useEffectiveRecommendation } from '@hooks/useEffectiveRecommendation';
 import apiRecommendations, { RECOMMENDATION_STATUS } from '@api1/recommendation';
-import type { ICustomTableRow } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/types';
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import { Box, Typography } from '@mui/material';
 import WidgetCard from '@ui/WidgetCard';
@@ -44,7 +44,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import SavingsPlanEvidence from '@components/optimise-new/evidence/SavingsPlanEvidence';
 import CommandExecutionHistory from '@components/cloudaccount/CommandExecutionHistory';
-import ApplyMitigationModal from '@components/cloudaccount/ApplyMitigationModal';
+import ApplyMitigationModal, { stripOptionalMarkers } from '@components/cloudaccount/ApplyMitigationModal';
 
 type CanonicalSeverityLevel = 'critical' | 'high' | 'medium' | 'low' | 'info';
 const toCanonicalSeverityLevel = (severity: string | undefined): CanonicalSeverityLevel => {
@@ -163,10 +163,6 @@ const CloudOptimizeRecommendationsTable = (props: {
   const [loading, setLoading] = useState(false);
   const [loadingTotal, setLoadingTotal] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  // Bumped after a command executes so the per-row "Audit History" tab
-  // (CommandExecutionHistory) re-fetches in real time instead of staying stale
-  // until the row is collapsed and re-expanded.
-  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
   const [nubiQuery, setNubiQuery] = useState('');
   const [nubiAccountId, setNubiAccountId] = useState('');
@@ -803,9 +799,10 @@ const CloudOptimizeRecommendationsTable = (props: {
             totalRows={recommendationsCount}
             expandable={{
               tabs: [
-                { componentFn: optimizeEvidance, text: 'Evidence' },
-                { componentFn: optimizeDescription, text: 'Description' },
+                { value: 'evidence', componentFn: optimizeEvidance, text: 'Evidence' },
+                { value: 'description', componentFn: optimizeDescription, text: 'Description' },
                 {
+                  value: 'mitigation',
                   componentFn: (_option: any, drilldownQuery: any) => {
                     const row = drilldownQuery?.recommendation;
                     const resolvedStatuses = ['Closed', 'Dismissed', 'Archive'];
@@ -853,23 +850,17 @@ const CloudOptimizeRecommendationsTable = (props: {
                         canExecuteCommand={canExecuteCommand}
                         accountId={row?.account_id ?? selectedAccountId}
                         recommendationId={row?.id}
-                        onExecuted={() => setHistoryRefreshKey((k) => k + 1)}
                       />
                     );
                   },
                   text: 'Mitigation',
                 },
                 {
+                  value: 'audit-history',
                   text: 'Audit History',
                   componentFn: function (_opt: any, drilldownQuery: any) {
                     const row = drilldownQuery?.recommendation;
-                    return (
-                      <CommandExecutionHistory
-                        accountId={row?.account_id ?? props?.accountId ?? ''}
-                        recommendationId={row?.id ?? ''}
-                        refreshKey={historyRefreshKey}
-                      />
-                    );
+                    return <CommandExecutionHistory accountId={row?.account_id ?? props?.accountId ?? ''} recommendationId={row?.id ?? ''} />;
                   },
                 },
               ],
@@ -942,7 +933,7 @@ function optimizeEvidance(_accountId: any, drilldownQuery: any) {
   const ruleName = drilldownQuery?.recommendation?.rule_name;
   if (ruleName && SAVINGS_PLAN_RULES.has(ruleName)) {
     return (
-      <Box sx={{ background: ds.background[100], borderRadius: ds.radius.md }}>
+      <Box sx={{ background: ds.background[100], borderRadius: ds.radius.md, border: `1px solid ${ds.gray[200]}` }}>
         <SavingsPlanEvidence
           recommendation={drilldownQuery?.recommendation?.recommendation}
           ruleName={ruleName}
@@ -953,7 +944,7 @@ function optimizeEvidance(_accountId: any, drilldownQuery: any) {
   }
 
   return (
-    <Box sx={{ background: ds.background[100], borderRadius: ds.radius.md, p: ds.space[5] }}>
+    <Box sx={{ background: ds.background[100], borderRadius: ds.radius.md, p: ds.space[5], border: `1px solid ${ds.gray[200]}` }}>
       <DrilldownDetails data={drilldownQuery?.recommendation?.recommendation} showCopyIconOnHover={true} />
     </Box>
   );
@@ -962,7 +953,7 @@ function optimizeEvidance(_accountId: any, drilldownQuery: any) {
 function optimizeDescription(_accountId: any, drilldownQuery: any) {
   const markdown = buildDescriptionMarkdown(drilldownQuery?.recommenedationDetails);
   return (
-    <Box sx={{ background: ds.background[100], borderRadius: ds.radius.md, p: ds.space[2] }}>
+    <Box sx={{ background: ds.background[100], borderRadius: ds.radius.md, p: ds.space[2], border: `1px solid ${ds.gray[200]}` }}>
       {markdown ? (
         <MarkDowns data={markdown} sx={{ padding: 0, '& p:last-child': { marginBottom: 0 } }} allowExecutable={false} onLinkClick={null} />
       ) : (
@@ -988,14 +979,12 @@ function OptimizeMitigation({
   canExecuteCommand = false,
   accountId,
   recommendationId,
-  onExecuted,
 }: {
   drilldownQuery: any;
   sideActions?: MitigationSideAction[];
   canExecuteCommand?: boolean;
   accountId?: string;
   recommendationId?: string;
-  onExecuted?: () => void;
 }) {
   const { alternateOptions, selectedAlternateType, setSelectedAlternateType, effectiveRecommendation } = useEffectiveRecommendation(
     drilldownQuery?.recommendation
@@ -1006,7 +995,16 @@ function OptimizeMitigation({
   const [primaryAction, ...secondaryActions] = sideActions;
 
   return (
-    <Box sx={{ background: ds.background[100], borderRadius: ds.radius.md, p: ds.space[2], display: 'flex', gap: ds.space[4] }}>
+    <Box
+      sx={{
+        background: ds.background[100],
+        borderRadius: ds.radius.md,
+        p: ds.space[2],
+        display: 'flex',
+        gap: ds.space[4],
+        border: `1px solid ${ds.gray[200]}`,
+      }}
+    >
       {/* Left: mitigation content */}
       <Box sx={{ flex: 1, minWidth: 0 }}>
         {alternateOptions.length > 0 && (
@@ -1022,17 +1020,11 @@ function OptimizeMitigation({
           </Box>
         )}
         <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 'var(--ds-space-2)' }}>
-          <ApplyMitigationModal
-            markdowns={markdowns}
-            accountId={accountId}
-            recommendationId={recommendationId}
-            canExecute={canExecuteCommand}
-            onExecuted={onExecuted}
-          />
+          <ApplyMitigationModal markdowns={markdowns} accountId={accountId} recommendationId={recommendationId} canExecute={canExecuteCommand} />
         </Box>
         {markdowns ? (
           <MarkDowns
-            data={markdowns}
+            data={stripOptionalMarkers(markdowns)}
             sx={{ padding: 0, '& p:last-child': { marginBottom: 0 }, maxHeight: 'none', overflow: 'visible' }}
             allowExecutable={false}
             onLinkClick={null}

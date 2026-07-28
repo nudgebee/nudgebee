@@ -5,6 +5,7 @@ import { useRouter } from 'next/router';
 import homeApi from '@api1/home';
 import { v4 as uuidv4 } from 'uuid';
 import apiAskNudgebee from '@api1/ask-nudgebee';
+import { safeJSONParse } from '@utils/common';
 import QuickLink from '@assets/home/new/quick-link.icon.svg';
 import WorkflowIconBlue from '@assets/workflow/workflow-icon-blue.icon.svg';
 import RecentErrorIcon from '@assets/home/new/recent-error.icon.svg';
@@ -77,6 +78,7 @@ import { useData } from '@context/DataContext';
 import { toast as snackbar } from '@ui/Toast';
 import { Input } from '@ui/Input';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
+import ConnectClusterHelp from '@components/onboarding/ConnectClusterHelp';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { getUserSession } from '@lib/auth';
 import { FiArrowRight } from 'react-icons/fi';
@@ -1804,7 +1806,7 @@ const Home = () => {
         const recommendation = res?.data?.data?.recommendation?.rows || [];
         if (recommendation.length > 0) {
           const allRecommendations = recommendation.map((r) => r.recommendation);
-          const parsedArray = allRecommendations.map(JSON.parse);
+          const parsedArray = allRecommendations.map((r) => safeJSONParse(r)).filter(Boolean);
           const expiringSoon = parsedArray?.filter((item) => {
             const expiry = new Date(item.expiry_date);
             return expiry.getTime() - new Date().getTime() <= 30 * 24 * 60 * 60 * 1000;
@@ -2094,14 +2096,17 @@ const Home = () => {
                             You are currently on our Demo Account (which only has partial data) Let&apos;s get you started with your cluster/account
                           </Typography>
                         </Box>
-                        <Button
-                          tone='primary'
-                          size='sm'
-                          trailingAccent={<ArrowForwardIcon />}
-                          onClick={() => router.push(`/user-management#integrations`)}
-                        >
-                          Add K8s Account
-                        </Button>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
+                          <ConnectClusterHelp />
+                          <Button
+                            tone='primary'
+                            size='sm'
+                            trailingAccent={<ArrowForwardIcon />}
+                            onClick={() => router.push(`/user-management#integrations`)}
+                          >
+                            Add K8s Account
+                          </Button>
+                        </Box>
                       </Box>
                     </DSCard>
 

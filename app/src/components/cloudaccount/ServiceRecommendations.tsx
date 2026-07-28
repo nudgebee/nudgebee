@@ -10,7 +10,7 @@ import { Button as DsButton } from '@ui/Button';
 import { SeverityIcon as DsSeverityIcon } from '@ui/SeverityIcon';
 import CloudAccountTable from './CloudAccountTable';
 import SafeIcon from '@shared/icons/SafeIcon';
-import type { ICustomTableRow } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/types';
 import { usePagination } from '@hooks/usePagination';
 import Datetime from '@shared/format/Datetime';
 import { ds } from '@utils/colors';

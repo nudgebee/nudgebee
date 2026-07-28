@@ -28,22 +28,15 @@ func (m CisScanTool) GetType() core.NBToolType {
 }
 
 func (m CisScanTool) Description() string {
-	return `Triggers a CIS scan on a cluster.
+	return `Triggers the (fixed) CIS scan job on the current cluster.
 
 **Usage:**
 
 * Use this tool when you are asked to trigger cis scans.
-* **Input:** command.
-* **Output:** Returns the status of the scan.
-
-**Example Input:**
-{
-	"AccountId": "abc",
-	"job_name": "trivy_cis_scan"
-}
+* **Input:** put any short instruction in ` + "`command`" + ` — its content is not parsed. The job name is hardcoded and the cluster/account is taken from context.
+* **Output:** Returns the status of the scan trigger.
 
 **Important Notes:**
-* The job_name must be valid.
 * Use the returned status to guide further action or suggest remediation.
 `
 }

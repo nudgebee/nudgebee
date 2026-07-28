@@ -444,24 +444,24 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 				return
 			}
 
-			// Knowledge Graph is enabled by default for every tenant: build for all
-			// tenants EXCEPT those that have explicitly disabled the
-			// TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH feature flag.
-			featureTenants, featureErr := tenant.ListTenantsWithFeatureEnabledByDefault(ctx, tenant.FEATURE_TRACES_KNOWLEDGE_GRAPH)
-			if featureErr != nil {
-				ctx.GetLogger().Warn("cron: failed to get tenants with knowledge graph feature", "error", featureErr)
-			} else if len(featureTenants) > 0 {
+			// Knowledge Graph is built for every tenant unconditionally — there is
+			// no feature flag or opt-out. Ensure each tenant has a default filter
+			// so the build below also covers tenants that have never been built.
+			allTenants, tenantErr := tenant.ListTenants(ctx)
+			if tenantErr != nil {
+				ctx.GetLogger().Warn("cron: failed to list tenants for knowledge graph build", "error", tenantErr)
+			} else if len(allTenants) > 0 {
 				// Build set of existing tenant IDs from filters
 				existingTenants := make(map[string]bool)
 				for _, f := range filters {
 					existingTenants[f.TenantID.String()] = true
 				}
 
-				// Create default filters for tenants with feature enabled but no filter entry
-				for _, featureTenantID := range featureTenants {
-					if !existingTenants[featureTenantID] {
+				// Create a default filter for any tenant that doesn't have one yet
+				for _, t := range allTenants {
+					if !existingTenants[t.Id] {
 						newFilter := &kgmodels.KnowledgeGraphTenantFilter{
-							TenantID:    uuid.MustParse(featureTenantID),
+							TenantID:    uuid.MustParse(t.Id),
 							FilterName:  "default",
 							AccountIDs:  []string{},
 							Sources:     []string{},
@@ -472,13 +472,13 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 						}
 						createErr := filterRepo.CreateFilter(ctx, newFilter)
 						if createErr != nil {
-							ctx.GetLogger().Warn("cron: failed to create default filter for tenant with feature flag",
-								"tenant_id", featureTenantID, "error", createErr)
+							ctx.GetLogger().Warn("cron: failed to create default knowledge graph filter for tenant",
+								"tenant_id", t.Id, "error", createErr)
 							continue
 						}
 						filters = append(filters, newFilter)
-						ctx.GetLogger().Info("cron: created default knowledge graph filter for tenant with feature flag",
-							"tenant_id", featureTenantID)
+						ctx.GetLogger().Info("cron: created default knowledge graph filter for tenant",
+							"tenant_id", t.Id)
 					}
 				}
 			}

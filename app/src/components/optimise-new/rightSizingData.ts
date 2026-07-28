@@ -62,7 +62,19 @@ export interface RightSizingSummary {
   reclaimText: string;
   /** Compact usage evidence (primary container) for the strip under "why". */
   evidence: { label: string; value: string }[];
+  /** Lookback the recommendation was computed over, e.g. "14 days · 1.25-min step". */
+  observedWindow: string | null;
+  /** Robustness of the call, derived from the lookback length. */
+  confidence: 'High' | 'Medium' | 'Low' | null;
 }
+
+// "336" (hours) + "1.25" (minutes) → "14 days · 1.25-min step".
+const formatWindow = (hours: number | null, stepMin: number | null): string | null => {
+  if (hours == null) return null;
+  const days = hours / 24;
+  const head = hours >= 24 ? `${Number.isInteger(days) ? days : days.toFixed(1)} days` : `${Math.round(hours)} hours`;
+  return `${head}${stepMin != null ? ` · ${stepMin}-min step` : ''}`;
+};
 
 const reqOf = (entry: any): number | null => {
   const v = entry?.recommended?.request;
@@ -136,11 +148,38 @@ export function summarizeRightSizing(recData: any): RightSizingSummary | null {
 
   // Observed usage only — the recommended values are already in the verdict and
   // the "Recommended Resource Changes" table below, so we don't repeat them.
+  // CPU sized off P95/P99 (compressible); memory off its peak (incompressible),
+  // mirroring the two statistics the SRE framework requires per resource.
   const p99 = primary.cpu?.add_info?.cpu_percentile_99;
   const p95 = primary.cpu?.add_info?.cpu_percentile_95;
+  // Memory peak: prefer an explicit percentile if the collector emits one, else
+  // fall back to actual_recommended_request — the observed max the "max + buffer"
+  // recommendation is built on (the only peak-shaped memory number in the blob).
+  //
+  // Guard the fallback: actual_recommended_request only equals the true max when
+  // recommended.request ≈ max × (1 + buffer). When the recommendation is clamped
+  // to a minimum floor (e.g. 100 Mi), the ratio collapses to ~1.0 and the field is
+  // the floor, not the peak — so we suppress it rather than overstate usage.
+  const memInfo = primary.memory?.add_info || {};
+  const memBufferPct = primary.memory?.strategy?.settings?.memory_buffer_percentage;
+  const memBuffer = typeof memBufferPct === 'number' ? memBufferPct / 100 : 0;
+  const actualMax = typeof memInfo.actual_recommended_request === 'number' ? memInfo.actual_recommended_request : null;
+  const memFloored = actualMax != null && memRec != null && actualMax > 0 && Math.abs(memRec / actualMax - (1 + memBuffer)) > 0.03;
+  const memPeak =
+    typeof memInfo.memory_percentile_p99 === 'number' ? memInfo.memory_percentile_p99 : actualMax != null && !memFloored ? actualMax : null;
   const evidence: { label: string; value: string }[] = [];
   if (typeof p99 === 'number') evidence.push({ label: 'CPU usage P99', value: formatCpuShort(p99) });
   if (typeof p95 === 'number') evidence.push({ label: 'P95', value: formatCpuShort(p95) });
+  if (memPeak != null) evidence.push({ label: 'Mem peak', value: formatMemShort(memPeak) });
+
+  // Observation window & confidence — the recommender stamps the lookback it used
+  // (history_duration hours) and the sampling step (timeframe_duration minutes).
+  const settings = primary.cpu?.strategy?.settings || primary.memory?.strategy?.settings || {};
+  const windowHours = typeof settings.history_duration === 'number' ? settings.history_duration : null;
+  const stepMinutes = typeof settings.timeframe_duration === 'number' ? settings.timeframe_duration : null;
+  const observedWindow = formatWindow(windowHours, stepMinutes);
+  const confidence: RightSizingSummary['confidence'] =
+    windowHours == null ? null : windowHours >= 336 ? 'High' : windowHours >= 168 ? 'Medium' : 'Low';
 
   return {
     containerCount: containers.length,
@@ -149,6 +188,8 @@ export function summarizeRightSizing(recData: any): RightSizingSummary | null {
     changeText: changeParts.join(' · '),
     reclaimText: reclaimBits.join(' & '),
     evidence,
+    observedWindow,
+    confidence,
   };
 }
 

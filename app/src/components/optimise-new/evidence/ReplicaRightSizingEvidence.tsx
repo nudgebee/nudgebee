@@ -1,6 +1,6 @@
 import { Box, Typography } from '@mui/material';
 import { ds } from 'src/utils/colors';
-import { SavingsFooter, SectionTitle, MetricRow } from '@components/optimise-new/EvidencePanel';
+import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import BarChartIcon from '@mui/icons-material/BarChart';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';

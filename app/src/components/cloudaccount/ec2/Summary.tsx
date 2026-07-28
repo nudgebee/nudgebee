@@ -6,7 +6,7 @@ import { formatMemory, formatNumber } from '@lib/formatter';
 import CustomTable from '@shared/tables/CustomTable';
 import apiCloudAccount from '@api1/cloud-account';
 import { useCurrencySymbol } from '@hooks/useCurrencySymbol';
-import type { ICustomTableRow } from './Instances';
+import type { ICustomTableRow } from './types';
 import { CustomText } from '@components/cloudaccount/common';
 import Text from '@shared/format/Text';
 import Chart from '@ui/Chart';

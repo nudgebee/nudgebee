@@ -594,7 +594,7 @@ export class IntegrationLocators extends CommonLocators {
     this.githubTestConnectionSuccessToast = page.getByText("connection successful",{ exact: false },);
     this.githubTestConnectionErrorToast = page.getByText("connection test failed",{ exact: false },);
     this.githubSaveBtn = page.locator("#create-github-acc");
-    this.githubTestConnectionBtn = page.locator("#test-github-connection-btn")
+    this.githubTestConnectionBtn = page.locator("#test-github-connection")
       .or(page.getByRole("button", { name: /test connection/i }));
 
     // Zenduty Locators

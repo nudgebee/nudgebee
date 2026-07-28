@@ -386,6 +386,7 @@ const ListingRecommendationResolution = ({ accountId }) => {
           expandable={{
             tabs: [
               {
+                value: 'details',
                 text: 'Details',
                 componentFn: (_option, drilldownQuery) => {
                   if (drilldownQuery?.typeReferenceId === 'cli_execution' && drilldownQuery?.recommendationId) {
@@ -451,6 +452,7 @@ const ListingRecommendationResolution = ({ accountId }) => {
                 },
               },
               {
+                value: 'message',
                 text: 'Message',
                 componentFn: (_option, drilldownQuery) => {
                   const messageData = drilldownQuery?.message || 'No Message Available';

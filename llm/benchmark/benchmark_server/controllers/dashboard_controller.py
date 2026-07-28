@@ -221,14 +221,17 @@ async def get_tool_configs(
             )
 
     try:
+        headers = {
+            "x-tenant-id": effective_tenant_id,
+            "x-user-id": user.user_id,
+        }
+        action_token = os.environ.get("LLM_SERVER_TOKEN", "")
+        if action_token:
+            headers["x-action-token"] = action_token
         r = requests.post(
             f"{LLM_SERVER_URL}/v1/tools/configs",
             json={"account_id": account_id},
-            headers={
-                "x-tenant-id": effective_tenant_id,
-                # Always the authenticated user — never a query-param override.
-                "x-user-id": user.user_id,
-            },
+            headers=headers,
             timeout=30,
         )
         r.raise_for_status()

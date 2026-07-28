@@ -94,6 +94,74 @@ func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 
 		c.JSON(200, resp)
 		return
+	case "traces_by_trace_v3":
+		var request observability.TracesV3Request
+		reqMap, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("request field is required and must be an object"))
+			return
+		}
+		err := common.UnmarshalMapToStruct(reqMap, &request)
+		if err != nil {
+			slog.Error("traces_by_trace_v3: failed to decode request", "error", err)
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		err = common.ValidateStruct(request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		if request.AccountId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+			return
+		}
+		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
+			return
+		}
+		resp, err := observability.GetRootSpansByTrace(ctx, request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		c.JSON(200, resp)
+		return
+	case "traces_by_trace_count_v3":
+		var request observability.TracesV3Request
+		reqMap, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("request field is required and must be an object"))
+			return
+		}
+		err := common.UnmarshalMapToStruct(reqMap, &request)
+		if err != nil {
+			slog.Error("traces_by_trace_count_v3: failed to decode request", "error", err)
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		err = common.ValidateStruct(request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		if request.AccountId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+			return
+		}
+		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
+			return
+		}
+		resp, err := observability.CountTracesByTrace(ctx, request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		c.JSON(200, resp)
+		return
 	case "traces_label_values":
 		var request observability.TracesV3LabelValuesRequest
 		err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request)
@@ -116,6 +184,40 @@ func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			return
 		}
 		resp, err := observability.GetTracesLabelValues(ctx, request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		c.JSON(200, resp)
+		return
+	case "traces_list_labels":
+		var request observability.FetchTraceLabelRequest
+		reqMap, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("request field is missing or invalid"))
+			return
+		}
+		err := common.UnmarshalMapToStruct(reqMap, &request)
+		if err != nil {
+			slog.Error("traces_list_labels: failed to decode request", "error", err)
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		err = common.ValidateStruct(request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		if request.AccountId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+			return
+		}
+		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
+			return
+		}
+		resp, err := observability.FetchTraceLabels(ctx, request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return

@@ -81,11 +81,26 @@ func (p *ClassificationPlanner) Plan(
 		}
 	})
 
+	// Honour the agent's declared cache scope, mirroring the ReAct/ReWOO planners.
+	// GenerateAndTrackLLMContent reads ContextKeyCacheScope from the context and
+	// defaults to Conversation scope when it is absent, so without this an agent's
+	// GetCacheScope() would have no effect on the classification path.
+	llmCtx := p.ctx
+	if cacheProvider, ok := p.nbAgent.(NBAgentCacheScopeProvider); ok {
+		llmCtx = security.NewRequestContext(
+			context.WithValue(p.ctx.GetContext(), ContextKeyCacheScope, cacheProvider.GetCacheScope()),
+			p.ctx.GetSecurityContext(),
+			p.ctx.GetLogger(),
+			p.ctx.GetTracer(),
+			p.ctx.GetMeter(),
+		)
+	}
+
 	var chosenOption string
 	var isValid bool
 
 	for i := range 3 {
-		result, err := GenerateAndTrackLLMContent(p.ctx, p.request.UserId, p.request.AccountId, p.request.ConversationId, p.request.MessageId, p.request.ParentAgentId, true, mcList, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
+		result, err := GenerateAndTrackLLMContent(llmCtx, p.request.UserId, p.request.AccountId, p.request.ConversationId, p.request.MessageId, p.request.ParentAgentId, true, mcList, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
 		if err != nil {
 			logger.Error("classification_planner: unable to process llm request", "error", err, "attempt", i+1)
 			return nil, nil, err

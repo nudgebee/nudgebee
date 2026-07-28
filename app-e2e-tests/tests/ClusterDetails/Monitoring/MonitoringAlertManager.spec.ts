@@ -165,7 +165,11 @@ test("Cluster Details->Monitoring-> Alert Manager -> Edit Alert", async ({ page 
   await expect(page.getByText(ALERT_NAME)).toBeVisible();
 
   await clickAlertRowMenu(page, ALERT_NAME);
-  await page.getByRole("menuitem", { name: /edit/i }).click();
+  await page
+    .locator("#edit:visible")
+    .or(page.locator('[role="menuitem"]:visible', { hasText: /edit/i }))
+    .first()
+    .click();
 
   const editDialog = page.locator('[role="dialog"]');
   await expect(editDialog).toBeVisible();

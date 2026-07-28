@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -21,9 +22,17 @@ func TestNoOpTerminalAnswer_DetectsAndExplains(t *testing.T) {
 	answer, isNoOp := noOpTerminalAnswer(resp)
 
 	assert.True(t, isNoOp, "execution_status=no_op must be detected as a terminal no-op")
-	assert.Contains(t, answer, "No pull request was created")
-	// The explanatory answer must carry the agent's actual reasoning, not be a bare skip.
-	assert.Contains(t, answer, "already applied by an existing migration")
+
+	// The answer is a structured envelope so programmatic callers can key off
+	// execution_status instead of parsing prose.
+	var env map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(answer), &env), "no-op answer must be a JSON envelope")
+	assert.Equal(t, "no_op", env["execution_status"], "envelope must preserve execution_status=no_op")
+
+	// The human-readable message must still carry the agent's actual reasoning.
+	message, _ := env["message"].(string)
+	assert.Contains(t, message, "No pull request was created")
+	assert.Contains(t, message, "already applied by an existing migration")
 }
 
 func TestNoOpTerminalAnswer_SuccessWithPRIsNotNoOp(t *testing.T) {
@@ -49,9 +58,11 @@ func TestHandleAnalysisResult_NoOpCachesTerminalAnswer(t *testing.T) {
 
 	final := handleAnalysisResult(ctx, conv, msg, resp)
 
-	// First call surfaces the explanatory terminal answer (not the raw JSON).
+	// First call surfaces the explanatory terminal answer as a structured envelope
+	// (execution_status=no_op with a human message).
 	assert.Contains(t, final, "No pull request was created")
 	assert.Contains(t, final, "Already present on main.")
+	assert.Contains(t, final, "no_op")
 
 	// And it caches a NOOP-prefixed guard so a same-message re-dispatch replays it.
 	cached, ok := common.CacheGet(codeAgentFailuresCacheNS, guardKey)

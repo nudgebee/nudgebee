@@ -211,12 +211,19 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 			}
 		}
 
+		// Build the bounded evidence manifest from the chronological step order
+		// BEFORE the in-place reverse below — this bespoke wrapper bypasses
+		// factory_agent's generic path, so without this the `metrics` sub-agent
+		// drops its evidence at the tool boundary.
+		subAgentEvidence := core.BuildSubAgentEvidenceForTool(nbRequestContext.Ctx, MetricsAgentName, resp.AgentStepResponse)
+
 		if _, ok := agent.(core.NBAgentReActPlannerSummaryToolProvider); ok {
 			return toolcore.NBToolResponse{
-				Data:       metricData,
-				Type:       toolcore.NBToolResponseTypeText,
-				Status:     toolcore.NBToolResponseStatusSuccess,
-				References: references,
+				Data:             metricData,
+				Type:             toolcore.NBToolResponseTypeText,
+				Status:           toolcore.NBToolResponseStatusSuccess,
+				References:       references,
+				SubAgentEvidence: subAgentEvidence,
 			}, nil
 		}
 
@@ -232,18 +239,20 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 				}
 
 				return toolcore.NBToolResponse{
-					Data:       respData,
-					Type:       respType,
-					Status:     toolcore.NBToolResponseStatusSuccess,
-					References: references,
+					Data:             respData,
+					Type:             respType,
+					Status:           toolcore.NBToolResponseStatusSuccess,
+					References:       references,
+					SubAgentEvidence: subAgentEvidence,
 				}, nil
 			}
 		}
 		return toolcore.NBToolResponse{
-			Data:       metricData,
-			Type:       toolcore.NBToolResponseTypeText,
-			Status:     toolcore.NBToolResponseStatusSuccess,
-			References: references,
+			Data:             metricData,
+			Type:             toolcore.NBToolResponseTypeText,
+			Status:           toolcore.NBToolResponseStatusSuccess,
+			References:       references,
+			SubAgentEvidence: subAgentEvidence,
 		}, nil
 	}
 

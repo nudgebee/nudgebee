@@ -184,6 +184,7 @@ const awsReactOutputFormat = `Choose the format based on the type of user reques
 **CRITICAL: Citation Format Rule**
 You MUST use the full markdown link format for EVERY reference: [Short Tool Name - ID](#task-ID).
 Example: ...found in [AWS - E1](#task-E1) and [CloudWatch Logs - E3](#task-E3).
+Exception: when citing an external resource that has its own real URL (e.g. a GitHub PR/issue link), use [Label](actual-url) with that real URL instead — never substitute a #task-ID anchor for it.
 
 **Blast Radius:**
 - Affected resources: [list]
@@ -431,13 +432,10 @@ func getAwsPlannerSupportedTools(ctx *security.RequestContext, accountId string)
 		DelegateAgentToolName,
 	}
 
-	// The KG-backed V2 service_dependency_graph covers cloud (AWS/GCP/Azure)
-	// topology, not just K8s, so expose it to this orchestrator when V2 is active.
-	// V1 is K8s-only — gate on the V2 flag so AWS debugging never gets the
-	// K8s-only runtime-metrics variant.
-	if config.Config.ServiceDependencyGraphV2Enabled {
-		supportedToolNames = append(supportedToolNames, ServiceDependencyGraph)
-	}
+	// The KG-backed service_dependency_graph covers cloud (AWS/GCP/Azure) topology,
+	// not just K8s, so expose it to this orchestrator. The old V1 variant that
+	// was K8s-only has been removed; the V2 flag guard here went with it.
+	supportedToolNames = append(supportedToolNames, ServiceDependencyGraph)
 
 	// shell_execute is injected automatically by FilterAndInjectDefaultTools when enabled.
 	// It auto-injects cloud credentials based on account type.

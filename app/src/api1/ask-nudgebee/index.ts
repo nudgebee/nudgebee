@@ -1758,6 +1758,87 @@ const api = {
       return { data: null, errors: [error] };
     }
   },
+
+  // ---------------------------------------------------------------------------
+  // Watch tasks (#28294)
+  // Lists / cancels background watches scoped to a single conversation. The
+  // list is shown in the Watches tab inside LLMConversationWithTabs; cancel is
+  // a direct Hasura UPDATE since the v1 watch path is idempotent and has no
+  // server-side side effects beyond the row state change.
+  // ---------------------------------------------------------------------------
+  // Watch reads + cancel both go through Hasura actions (not raw table
+  // queries) so the same calls work under RPC_BYPASS_HASURA=true — the
+  // bypass router can route registered actions to llm-server but has no
+  // path for arbitrary table queries. The previous raw `llm_watch_tasks`
+  // and `update_llm_watch_tasks` queries are obsolete; server-side
+  // tenant scoping is now enforced in llm-server's HTTP handlers
+  // (api/watches.go) rather than Hasura row permissions.
+  async listWatchesByConversation({ conversationId }: { conversationId: string }) {
+    const LIST_WATCHES_BY_CONVERSATION = `
+      query AILlmWatchList($conversationId: String!) {
+        ai_list_watches_by_conversation(request: { conversation_id: $conversationId }) {
+          data {
+            watches {
+              id
+              status
+              source_kind
+              predicate_kind
+              predicate_expr
+              predicate_negate
+              poll_interval_sec
+              max_duration_sec
+              poll_count
+              failure_count
+              next_poll_at
+              last_poll_at
+              last_poll_result
+              final_result
+              error
+              expires_at
+              created_at
+              updated_at
+            }
+          }
+          err
+        }
+      }
+    `;
+    const response = await queryGraphQL(LIST_WATCHES_BY_CONVERSATION, 'AILlmWatchList', { conversationId });
+    return response?.data?.data?.ai_list_watches_by_conversation?.data?.watches || [];
+  },
+
+  async cancelWatch({ watchId }: { watchId: string }) {
+    // The non-terminal-only guard (PENDING/ACTIVE → CANCELLED) used to
+    // live in the Hasura update permission. It now lives in
+    // watch.Manager.Cancel's SQL, and the HTTP handler reads the row
+    // back to compute affected_rows. The UI keeps the same
+    // affected_rows + returning shape so the WatchesTab component's
+    // success/already-terminal branching does not have to change.
+    const CANCEL_WATCH = `
+      mutation AILlmWatchCancel($watchId: String!) {
+        ai_cancel_watch(request: { watch_id: $watchId }) {
+          data {
+            affected_rows
+            watch_id
+            status
+          }
+          err
+        }
+      }
+    `;
+    const response = await queryGraphQL(CANCEL_WATCH, 'AILlmWatchCancel', { watchId });
+    const data = response?.data?.data?.ai_cancel_watch?.data;
+    if (!data) {
+      return { affected_rows: 0, returning: [] };
+    }
+    return {
+      affected_rows: data.affected_rows ?? 0,
+      // Synthesise the old `returning` array shape from the new
+      // {watch_id, status} pair so the WatchesTab component does not
+      // need to switch on response shape.
+      returning: data.watch_id ? [{ id: data.watch_id, status: data.status }] : [],
+    };
+  },
 };
 
 export default api;

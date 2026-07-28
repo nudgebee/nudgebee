@@ -1,6 +1,6 @@
 import { Box, Typography, LinearProgress } from '@mui/material';
 import { ds } from 'src/utils/colors';
-import { SavingsFooter, SectionTitle, MetricRow } from '@components/optimise-new/EvidencePanel';
+import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import InfoIcon from '@mui/icons-material/Info';

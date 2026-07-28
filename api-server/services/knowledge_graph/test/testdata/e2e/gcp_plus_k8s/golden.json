@@ -1,0 +1,76 @@
+{
+  "nodes": [
+    {
+      "unique_key": "gcp:test-account-gcp-1:global:ServiceIdentity:GCPServiceAccount:sa@proj-1.iam.gserviceaccount.com",
+      "node_type": "ServiceIdentity",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "arn": "",
+        "cloud_provider": "GCP",
+        "email": "sa@proj-1.iam.gserviceaccount.com",
+        "is_active": true,
+        "meta": {
+          "email": "sa@proj-1.iam.gserviceaccount.com"
+        },
+        "name": "sa@proj-1.iam.gserviceaccount.com",
+        "nb_account_id": "test-account-gcp-1",
+        "region": "global",
+        "resource_id": "sa@proj-1.iam.gserviceaccount.com",
+        "service_name": "GCPIAM",
+        "source": "gcp",
+        "subtype": "GCPServiceAccount"
+      },
+      "labels": {},
+      "query_attributes": {
+        "arn": "",
+        "name": "sa@proj-1.iam.gserviceaccount.com",
+        "service_name": "GCPIAM",
+        "subtype": "GCPServiceAccount"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::K8sServiceAccount:default:my-ksa",
+      "node_type": "K8sServiceAccount",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "gcp_service_account_email": "sa@proj-1.iam.gserviceaccount.com",
+        "name": "my-ksa",
+        "namespace": "default",
+        "source": "k8s"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-ksa",
+        "namespace": "default"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src_key": "k8s:test-account-k8s-1::K8sServiceAccount:default:my-ksa",
+      "dst_key": "gcp:test-account-gcp-1:global:ServiceIdentity:GCPServiceAccount:sa@proj-1.iam.gserviceaccount.com",
+      "relationship_type": "ASSUMES",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "",
+      "level": "",
+      "source": "cross_account",
+      "properties": {
+        "contributing_sources": [
+          "cross_account"
+        ],
+        "cross_account_rule": "k8s_serviceaccount_to_gcp_iam_sa_wi",
+        "source_type": "k8s",
+        "target_type": "gcp"
+      },
+      "contributing_sources": [
+        "cross_account"
+      ]
+    }
+  ]
+}

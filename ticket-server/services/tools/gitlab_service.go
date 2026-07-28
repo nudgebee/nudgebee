@@ -443,13 +443,22 @@ func (s *GitLabService) Update(ctx *gin.Context, config models.TicketConfigurati
 		hasUpdates = true
 	}
 
-	if updateFields.Assignee != "" {
-		// Lookup user by username
-		users, _, err := gitlabClient.Users.ListUsers(&gitlab.ListUsersOptions{
-			Username: gitlab.Ptr(updateFields.Assignee),
-		})
-		if err == nil && len(users) > 0 {
-			updateOpts.AssigneeIDs = &[]int64{users[0].ID}
+	if assignees := updateFields.AssigneeList(); len(assignees) > 0 {
+		// GitLab natively supports multiple assignees. Resolve each username to a
+		// user ID; setting AssigneeIDs replaces the current set (set semantics).
+		ids := make([]int64, 0, len(assignees))
+		for _, username := range assignees {
+			users, _, err := gitlabClient.Users.ListUsers(&gitlab.ListUsersOptions{
+				Username: gitlab.Ptr(username),
+			})
+			if err == nil && len(users) > 0 {
+				ids = append(ids, users[0].ID)
+			} else {
+				slog.Warn("Could not find GitLab user for assignee", "assignee", username)
+			}
+		}
+		if len(ids) > 0 {
+			updateOpts.AssigneeIDs = &ids
 			hasUpdates = true
 		}
 	}

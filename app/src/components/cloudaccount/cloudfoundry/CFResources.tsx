@@ -7,7 +7,7 @@ import { DataBlock, CustomText } from '../common';
 import { usePagination } from '@hooks/usePagination';
 import TagsCell from '../TagsCell';
 import CloudAccountEvents from '../CloudAccountEvents';
-import type { ICustomTableRow } from '../ec2/Instances';
+import type { ICustomTableRow } from '../ec2/types';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import CustomSearch from '@shared/CustomSearch';
@@ -135,6 +135,7 @@ const OrgDetails = ({ drilldownQuery }: any) => (
       backgroundColor: ds.background[100],
       padding: ds.space[5],
       borderRadius: ds.radius.md,
+      border: `1px solid ${ds.gray[200]}`,
     }}
   >
     {drilldownQuery.name && <DataBlock title={'Name'} data={drilldownQuery.name} />}
@@ -167,6 +168,7 @@ const SpaceDetails = ({ drilldownQuery }: any) => {
         backgroundColor: ds.background[100],
         padding: ds.space[5],
         borderRadius: ds.radius.md,
+        border: `1px solid ${ds.gray[200]}`,
       }}
     >
       {drilldownQuery.name && <DataBlock title={'Name'} data={drilldownQuery.name} />}
@@ -201,6 +203,7 @@ const RouteDetails = ({ drilldownQuery }: any) => {
         backgroundColor: ds.background[100],
         padding: ds.space[5],
         borderRadius: ds.radius.md,
+        border: `1px solid ${ds.gray[200]}`,
       }}
     >
       {drilldownQuery.meta?.url && <DataBlock title={'URL'} data={drilldownQuery.meta.url} />}

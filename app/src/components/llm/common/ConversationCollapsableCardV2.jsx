@@ -103,19 +103,21 @@ function ConversationCollapsableCard({
               <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: ds.space[1], flexShrink: 0 }}>
                 {getIcon(toolData.tool || toolData.type) ? (
                   <Tooltip title={toolData.tool || toolData.type} placement='top'>
-                    <SafeIcon
-                      style={{
-                        mixBlendMode: 'multiply',
-                        width: ds.space.mul(1, 5),
-                        height: ds.space.mul(1, 5),
-                        objectFit: 'contain',
-                      }}
-                      src={getIcon(toolData.tool || toolData.type)}
-                      alt={toolData.tool || toolData.type}
-                      className='icon'
-                      width={24}
-                      height={24}
-                    />
+                    <Box component='span' sx={{ display: 'inline-flex', lineHeight: 0 }}>
+                      <SafeIcon
+                        style={{
+                          mixBlendMode: 'multiply',
+                          width: ds.space.mul(1, 5),
+                          height: ds.space.mul(1, 5),
+                          objectFit: 'contain',
+                        }}
+                        src={getIcon(toolData.tool || toolData.type)}
+                        alt={toolData.tool || toolData.type}
+                        className='icon'
+                        width={24}
+                        height={24}
+                      />
+                    </Box>
                   </Tooltip>
                 ) : (
                   <Tooltip title={toolData.tool?.[0] || toolData.type} placement='top'>
@@ -130,6 +132,7 @@ function ConversationCollapsableCard({
                   line-height pushing the row taller than the meta-rail content. */}
               {toolData.type !== 'response' && (
                 <Typography
+                  component='div'
                   sx={{
                     fontSize: 'var(--ds-text-body-lg)',
                     color: 'var(--ds-gray-700)',

@@ -7,7 +7,7 @@ const withBundleAnalyzer = require('@next/bundle-analyzer')({
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // Core Next.js flags
-  reactStrictMode: true,
+  reactStrictMode: false,
   async headers() {
     // Anti-framing (clickjacking) + standard hardening applied to every
     // response. CSP here only carries frame-ancestors — it does not restrict

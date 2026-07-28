@@ -6,7 +6,8 @@ import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker
 import { Label } from '@ui/Label';
 import { Button as DsButton } from '@ui/Button';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import { KubernetesUtilizationCharts } from '@components/k8s/common/KubernetesTable2';
+import dynamic from 'next/dynamic';
+const KubernetesUtilizationCharts = dynamic(() => import('@components/k8s/common/KubernetesTable2').then((m) => m.KubernetesUtilizationCharts));
 import { useRouter } from 'next/router';
 import {
   type SortOrderObject,
@@ -37,6 +38,9 @@ import { getTableData4 } from '@components/k8s/investigate/cards/util';
 import apiAccount from '@api1/account';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { ds } from '@utils/colors';
+import { ToggleGroup } from '@ui/ToggleGroup';
+
+type TraceViewMode = 'spans' | 'traces';
 
 interface PassedTimestamp {
   startTimestamp: number;
@@ -44,15 +48,19 @@ interface PassedTimestamp {
 }
 
 interface KubernetesTracesListingProps {
-  namespace: string;
-  workloadName: string;
-  destinationWorkload: string;
-  destinationNamespace: string;
+  // All of these have component-level defaults; they're optional so callers that
+  // only drive the listing by accountId (the K8s details page, the cloud-account
+  // GCP traces tab) or feed it static spans (TracesCard) don't have to pass filter
+  // scaffolding.
+  namespace?: string;
+  workloadName?: string;
+  destinationWorkload?: string;
+  destinationNamespace?: string;
   destinationName?: string;
-  showNamespaceFilter: boolean;
-  showWorkloadFilter: boolean;
-  showTimeFilter: boolean;
-  passedSelectedTimestamp: PassedTimestamp;
+  showNamespaceFilter?: boolean;
+  showWorkloadFilter?: boolean;
+  showTimeFilter?: boolean;
+  passedSelectedTimestamp?: PassedTimestamp;
   fixedTrace?: boolean;
   httpStatus?: string | string[];
   accountId: string;
@@ -149,6 +157,20 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
     { name: 'Resource', width: '15%' },
     !fixedTrace ? { name: 'Destination', width: '35%' } : '',
     { name: '', width: '5%' },
+  ];
+  // Cloud Trace (GCP) spans are HTTP-service (Cloud Run / OTel) or database
+  // (Cloud SQL) traces, not K8s service-to-service traces — the
+  // workload/namespace/destination columns are always empty for them. Use a
+  // universal set that reads both span families: Service is service.name / Cloud
+  // Run service / DB instance; Resource is the URL or SQL query; Status is the
+  // HTTP status (blank for DB spans). Full per-span labels stay in the drilldown.
+  const GCP_LISTING_HEADER = [
+    { name: 'Timestamp', width: '12%' },
+    { name: 'Span', width: '22%' },
+    { name: 'Duration', sortEnabled: true, width: '10%' },
+    { name: 'Service', width: '18%' },
+    { name: 'Resource', width: '30%' },
+    { name: 'Status', width: '8%' },
   ];
   const tracesSource = ['ebpf', 'otel'];
   const selectedK8sAccount = (router.query?.KubernetesDetails as string) || (router.query?.accountId as string) || accountId;
@@ -275,6 +297,8 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   const [sessionId, setSessionId] = useState<string>('');
   const [traceProvider, setTraceProvider] = useState('');
   const [services, setServices] = useState<string[]>([]);
+  // 'spans' (default) = one row per span; 'traces' = one row per trace (root span).
+  const [traceView, setTraceView] = useState<TraceViewMode>('spans');
 
   useEffect(() => {
     if (traceData.length > 0) {
@@ -324,7 +348,35 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
     return '-';
   };
 
+  // Universal Cloud Trace rows — works for both span families (Cloud Run / OTel
+  // HTTP and Cloud SQL). The backend maps service.name / Cloud Run service / DB
+  // instance into service_name, the URL or SQL query into resource, and the HTTP
+  // status into http_status_code (blank for DB spans). Full labels are in the
+  // drilldown's Span Attributes tab.
+  const getGcpTraceTableData = (traceData: any[]) => {
+    const smallFont = { '@media(max-width: 1425px)': { fontSize: 'var(--ds-text-small)' } };
+    const showData =
+      traceData?.map((item: any) => {
+        return [
+          {
+            component: <DateTime value={item?.timestamp} baseDate={new Date()} />,
+            drilldownQuery: item,
+          },
+          { component: <Text sx={smallFont} showAutoEllipsis value={item.span_name || '-'} /> },
+          { component: <Text sx={smallFont} value={formatDurationInTrace(item.duration_ns)} /> },
+          { component: <Text sx={smallFont} showAutoEllipsis value={item.workload_name || item.service_name || '-'} /> },
+          { component: <Text sx={smallFont} showAutoEllipsis value={item.resource || '-'} /> },
+          { component: <Label text={getHttpStatusText(item)} /> },
+        ];
+      }) || [];
+    setData(showData);
+  };
+
   const getTraceTableData = (traceData: any[]) => {
+    if (traceProvider === 'gcp') {
+      getGcpTraceTableData(traceData);
+      return;
+    }
     const showData =
       traceData?.map((item: any) => {
         return [
@@ -506,6 +558,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
         traceSource: selectedTracesSource,
         traceId: traceId || traceIds,
         fromWorkload: fromWorkload,
+        byTrace: traceView === 'traces',
         cols: [
           'trace_id',
           'span_id',
@@ -637,50 +690,35 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
     }
   }, [traceData]);
 
-  const traceDeps =
-    traceProvider != 'otel_clickhouse'
-      ? [
-          currentPage,
-          time,
-          selectedK8sAccount,
-          recordsPerPage,
-          selectedWorkload,
-          selectedStatusCode,
-          selectedHttpStatus,
-          selectedHttpSpan,
-          destinationSelectedNamespace,
-          destinationSelectedWorkload,
-          resource,
-          traceId,
-          selectedHttpSpan,
-          sortObject,
-        ]
-      : [
-          currentPage,
-          recordsPerPage,
-          selectedNamespace,
-          selectedWorkload,
-          time,
-          selectedHttpStatus,
-          selectedHttpSpan,
-          selectedK8sAccount,
-          sortObject,
-          destinationSelectedNamespace,
-          destinationSelectedWorkload,
-          selectedStatusCode,
-          selectedTracesSource,
-          resource,
-          traceId,
-          header,
-        ];
-
   useEffect(() => {
     if (traceData.length > 0 || !traceProvider) {
       return;
     }
     listTraces();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [traceProvider, ...traceDeps]);
+  }, [
+    traceProvider,
+    currentPage,
+    recordsPerPage,
+    selectedNamespace,
+    selectedWorkload,
+    time,
+    selectedHttpStatus,
+    selectedHttpSpan,
+    selectedK8sAccount,
+    sortObject,
+    destinationSelectedNamespace,
+    destinationSelectedWorkload,
+    selectedStatusCode,
+    selectedTracesSource,
+    resource,
+    traceId,
+    header,
+    traceView,
+    destinationName,
+    fromWorkload,
+    duration,
+    traceIds?.join(','),
+  ]);
 
   const filterWorkloadOnSelectedNamespace = (value: string | string[]) => {
     let filteredWorkloads;
@@ -870,6 +908,25 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                 />
               </Box>
             )}
+            {!fixedTrace && traceData.length === 0 && traceProvider && (
+              <Box sx={{ marginLeft: 'var(--ds-space-3)' }}>
+                <ToggleGroup
+                  id='k8s-traces-view-toggle'
+                  selection='single'
+                  size='sm'
+                  ariaLabel='Trace listing view'
+                  value={traceView}
+                  onChange={(v) => {
+                    setTraceView(v as TraceViewMode);
+                    setCurrentPage(0);
+                  }}
+                  options={[
+                    { value: 'spans', label: 'By Spans', tooltip: 'One row per span' },
+                    { value: 'traces', label: 'By Traces', tooltip: 'One row per trace (root span); filters match the root span' },
+                  ]}
+                />
+              </Box>
+            )}
             <Box sx={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
               {showTimeFilter && (
                 <CustomDateTimeRangePicker
@@ -923,16 +980,21 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                       }}
                       size='sm'
                     />
-                    <FilterDropdown
-                      label='Ok/Error'
-                      options={okErrorOptions}
-                      value={selectedStatusCode}
-                      onSelect={(e: any) => {
-                        setSelectedStatusCode(e?.target?.value);
-                        setCurrentPage(0);
-                      }}
-                      size='sm'
-                    />
+                    {/* Cloud Trace has no status/error facet in its filter grammar, so the
+                        Ok/Error filter can't be pushed to the source — hide it for GCP
+                        rather than present a control that does nothing. */}
+                    {traceProvider !== 'gcp' && (
+                      <FilterDropdown
+                        label='Ok/Error'
+                        options={okErrorOptions}
+                        value={selectedStatusCode}
+                        onSelect={(e: any) => {
+                          setSelectedStatusCode(e?.target?.value);
+                          setCurrentPage(0);
+                        }}
+                        size='sm'
+                      />
+                    )}
                     <FilterDropdown
                       label='HTTP Status'
                       options={['200', '201', '204', '301', '302', '400', '401', '403', '404', '500', '502', '503', '504']}
@@ -1201,7 +1263,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
         <ListingLayout.Body>
           <CustomTable
             id='k8s-trace-listing'
-            headers={LISTING_HEADER}
+            headers={traceProvider === 'gcp' ? GCP_LISTING_HEADER : LISTING_HEADER}
             rowsPerPage={traceData.length > 0 ? traceData.length : recordsPerPage}
             tableData={data}
             onPageChange={(page: number, limit: number) => {
@@ -1225,12 +1287,14 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                   value: 0,
                   text: 'Service & Operation',
                   componentFn: function (_opt: any, drilldownQuery: any) {
-                    // Cloud Trace spans aren't in the K8s trace store, so re-fetching by
-                    // trace_id returns unrelated data. Pass the trace's own spans (already
-                    // in this listing's evidence) so the gantt renders from them. K8s spans
-                    // keep the backend fetch (no traceData) — no regression.
+                    // Evidence path: the trace's spans are already in this listing (static
+                    // traceData) — pass them so the gantt renders without a re-fetch. Unified
+                    // path (empty traceData): let KubernetesTraceServiceOperation fetch via
+                    // traces_get_heatmap, which resolves to the GCP Cloud Trace source
+                    // (GcpTraceSource.QueryTracesHeatmap → Cloud Trace GetTrace).
                     const isCloudTrace = drilldownQuery?.trace_source === 'gcp';
-                    const cloudTraceSpans = isCloudTrace ? traceData.filter((s: any) => s.trace_id === drilldownQuery.trace_id) : undefined;
+                    const cloudTraceSpans =
+                      isCloudTrace && traceData.length > 0 ? traceData.filter((s: any) => s.trace_id === drilldownQuery.trace_id) : undefined;
                     return <KubernetesTraceServiceOperation accountId={selectedK8sAccount} query={drilldownQuery} traceData={cloudTraceSpans} />;
                   },
                 },
@@ -1275,13 +1339,24 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                   componentFn: function (_opt: any, drilldownQuery: any) {
                     // GCP cloud traces: fetch Cloud Logging entries correlated to this
                     // trace id (K8s log query below would 404 against a cloud account).
+                    // project/region/service arrive top-level on the evidence path and inside
+                    // span_attributes on the unified traces_list path — read from both.
                     if (drilldownQuery?.trace_source === 'gcp') {
+                      let gcpAttrs: any = drilldownQuery?.span_attributes;
+                      if (typeof gcpAttrs === 'string') {
+                        try {
+                          gcpAttrs = JSON.parse(gcpAttrs);
+                        } catch {
+                          gcpAttrs = {};
+                        }
+                      }
+                      gcpAttrs = gcpAttrs || {};
                       return (
                         <CloudTraceLogs
                           accountId={selectedK8sAccount}
-                          project={drilldownQuery.project}
-                          region={drilldownQuery.region}
-                          serviceName={drilldownQuery.service_name}
+                          project={drilldownQuery.project || gcpAttrs.project}
+                          region={drilldownQuery.region || gcpAttrs.region}
+                          serviceName={drilldownQuery.service_name || drilldownQuery.workload_name || gcpAttrs.service_name}
                           traceId={drilldownQuery.trace_id}
                           timestamp={drilldownQuery.timestamp}
                         />

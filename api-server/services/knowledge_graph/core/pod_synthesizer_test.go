@@ -3,6 +3,8 @@ package core
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestIncludesPod covers the node-type filter that decides whether
@@ -100,9 +102,7 @@ func TestPodRowToNode(t *testing.T) {
 	}
 
 	got := row.node("k8s-dev")
-	if got == nil {
-		t.Fatal("node() returned nil")
-	}
+	require.NotNil(t, got, "node() returned nil")
 
 	if got.ID != row.CloudResourceID {
 		t.Errorf("ID = %q, want %q (synth ID must equal cloud_resource_id for LLM round-trip)", got.ID, row.CloudResourceID)
@@ -173,9 +173,7 @@ func TestPodRowToNode_EmptyCluster(t *testing.T) {
 		LastSeen: time.Now(),
 	}
 	got := row.node("")
-	if got == nil {
-		t.Fatal("node() returned nil")
-	}
+	require.NotNil(t, got, "node() returned nil")
 	if _, ok := got.Properties["cluster"]; ok {
 		t.Error("cluster should be omitted from properties when empty")
 	}

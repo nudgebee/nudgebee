@@ -592,6 +592,44 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 	}
 	startDate := time.Now().Add(-time.Hour * 24 * 7)
 	endDate := time.Now()
+
+	// Bulk-fetch CPUUtilization for every compute instance up front, grouped by region.
+	// CloudWatch GetMetricData batches many instances into a handful of calls, so an
+	// account with thousands of instances no longer makes one metrics round-trip per
+	// instance inside the loop below (which was serial and could exceed the post-report
+	// time budget). NetworkIn/NetworkOut stay per-instance because they are only fetched
+	// for the small idle subset.
+	cpuByResource := map[string]providers.MetricItem{}
+	cpuErrByRegion := map[string]error{}
+	{
+		instanceIDsByRegion := map[string][]string{}
+		for _, resource := range existingResources {
+			if resource.Type == "compute-instance" {
+				instanceIDsByRegion[resource.Region] = append(instanceIDsByRegion[resource.Region], resource.Id)
+			}
+		}
+		for region, ids := range instanceIDsByRegion {
+			resp, errMetrics := a.QueryMetrices(ctx, account, providers.QueryMetricsRequest{
+				ResourceIds: ids,
+				ServiceName: ServiceNameEc2,
+				StartDate:   &startDate,
+				EndDate:     &endDate,
+				Region:      region,
+				MetricNames: []string{"CPUUtilization"},
+				Step:        3600 * time.Second, // 1 hour step
+				Statistics:  []string{"Maximum"},
+			})
+			if errMetrics != nil {
+				ctx.GetLogger().Error("Error bulk-fetching CPU metrics for idle check", "region", region, "instances", len(ids), "error", errMetrics)
+				cpuErrByRegion[region] = errMetrics
+				continue
+			}
+			for _, item := range resp.Items {
+				cpuByResource[item.ResourceId] = item
+			}
+		}
+	}
+
 	for _, resource := range existingResources {
 		if resource.Type == "storage" && len(resource.Meta) > 0 {
 			size := 0.0
@@ -913,21 +951,15 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 			// Assume not idle if metrics are missing to prevent incorrect recommendations.
 			isIdle := false // Default to not idle
 			var cpuMetrics providers.QueryMetricsResponse
-			var errCpuMetrics error
 
-			// Only fetch metrics if the instance is not recently launched (e.g., older than 1 day)
-			// This is a placeholder for a more sophisticated check, for now, we fetch for all.
-			// if time.Since(resource.CreatedAt) > 24*time.Hour {
-			cpuMetrics, errCpuMetrics = a.QueryMetrices(ctx, account, providers.QueryMetricsRequest{
-				ResourceIds: []string{resource.Id},
-				ServiceName: resource.ServiceName,
-				StartDate:   &startDate,
-				EndDate:     &endDate,
-				Region:      resource.Region,
-				MetricNames: []string{"CPUUtilization"},
-				Step:        3600 * time.Second, // 1 hour step
-				Statistics:  []string{"Maximum"},
-			})
+			// CPUUtilization was fetched in bulk before the loop (see cpuByResource).
+			// Reconstruct the same per-resource shape the code below expects: a region-
+			// level fetch error propagates to every instance in that region, and a hit in
+			// the map yields a single-item response identical to the old per-instance call.
+			errCpuMetrics := cpuErrByRegion[resource.Region]
+			if item, ok := cpuByResource[resource.Id]; ok {
+				cpuMetrics = providers.QueryMetricsResponse{Items: []providers.MetricItem{item}}
+			}
 			if errCpuMetrics != nil {
 				ctx.GetLogger().Error("Error getting CPU metrics for idle check", "resourceId", resource.Id, "error", errCpuMetrics)
 				// Do not proceed with idle check if CPU metrics failed. isIdle remains false.

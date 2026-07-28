@@ -389,7 +389,7 @@ func (m KubectlExecuteTool) Description() string {
 		**Usage:**
 
 		* **Prioritize this tool:** Whenever you require information about the user's cluster to make decisions or provide accurate responses, use this tool.
-		* **Input:** Provide a valid, 'kubectl' command as input. Shell piping (|) is supported — you can pipe kubectl output through grep, head, tail, awk, etc.
+		* **Input:** Provide a valid, 'kubectl' command as input. Shell piping (|) is supported — you can pipe kubectl output through grep, head, tail, awk, etc. Reads of Secret-bearing kinds (secrets, sealedsecrets, externalsecrets) and secret-mounted exec/cp are blocked.
 		* **Output:** The tool will return the output of the executed command.
 
 		**Examples:**
@@ -620,24 +620,11 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 //     getRelayCommandResponseData removes the dominant source of this,
 //     but we keep the hint in case another code path produces it.
 func wrapKubectlError(rawError, command string) string {
-	if rawError == "" {
-		return rawError
-	}
-	hint := kubectlErrorHint(rawError)
-	if hint == "" {
-		return rawError
-	}
-	envelope := map[string]string{
-		"error_hint":     hint,
-		"original_error": rawError,
-	}
-	body, err := common.MarshalJson(envelope)
-	if err != nil {
-		// Marshal failure is exceptionally unlikely with two string fields;
-		// fall back to raw so the LLM still sees the underlying signal.
-		return rawError
-	}
-	return string(body)
+	// Prefer the kubectl-specific hint; if it doesn't match, cliRecoveryEnvelope
+	// falls back to the generic "read the raw output before switching" nudge
+	// (only when the raw error carries CLI signal). Byte-for-byte raw
+	// passthrough on empty rawError or opaque errors is preserved.
+	return cliRecoveryEnvelope(rawError, kubectlErrorHint(rawError), "kubectl", "kubectl <command> --help")
 }
 
 // kubectlErrorHint maps a raw kubectl error string to an actionable hint

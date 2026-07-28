@@ -38,7 +38,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	awsProvider "nudgebee/collector/cloud/providers/aws"
-	azureProvider "nudgebee/collector/cloud/providers/azure"
+	_ "nudgebee/collector/cloud/providers/azure"
 	gcpProvider "nudgebee/collector/cloud/providers/gcloud"
 )
 
@@ -155,16 +155,6 @@ func main() {
 			}
 		}()
 		awsProvider.StartEventBridgeSQSConsumer(cloudCtx, sqsEventHandler)
-	}()
-
-	// Start the Azure Event Grid Service Bus consumer in a goroutine
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("Azure Event Grid Service Bus consumer panicked", "error", r)
-			}
-		}()
-		azureProvider.StartAzureServiceBusConsumer(cloudCtx, sqsEventHandler)
 	}()
 
 	// Start the GCP Pub/Sub consumer for Cloud Monitoring alerts and events

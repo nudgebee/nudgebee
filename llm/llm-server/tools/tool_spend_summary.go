@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"nudgebee/llm/common"
@@ -19,13 +20,6 @@ func init() {
 
 const ToolSpendSummary = "spend_summary"
 
-// Spend summary lookback windows, expressed in days.
-const (
-	lastWeekDays    = 7
-	lastMonthDays   = 30
-	lastQuarterDays = 90
-)
-
 // SpendSummaryTool provides pre-aggregated cloud spend data grouped by account or service.
 // Unlike SQL-executor tools, it runs fixed parameterized queries — no LLM-generated SQL.
 type SpendSummaryTool struct{}
@@ -37,7 +31,7 @@ func (t SpendSummaryTool) Description() string {
 	return "Retrieves pre-aggregated cloud spend summary. Returns spend amounts, period-over-period changes, and estimated savings. " +
 		"Optional group_by parameter: 'cloud_account' (default) for per-account breakdown or 'service' for per-service breakdown. " +
 		"Optional account_id parameter: UUID of a specific cloud account to scope results to (defaults to the current account). " +
-		"Optional window parameter: '7d', '30d' (default), or '90d'."
+		"Optional window parameter: any '{N}d' value from 1 to 365 days (e.g. '7d', '15d', '30d', '90d'). Defaults to '30d'."
 }
 
 func (t SpendSummaryTool) InputSchema() core.ToolSchema {
@@ -56,9 +50,12 @@ func (t SpendSummaryTool) InputSchema() core.ToolSchema {
 			},
 			"window": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Time window for spend data. '7d' for last 7 days, '30d' for last 30 days, '90d' for last 90 days.",
-				Enum:        []any{"7d", "30d", "90d"},
+				Description: "Time window for spend data as '{N}d' (e.g. '7d', '15d', '30d', '90d'). Range: 1–365 days.",
 				Default:     "30d",
+			},
+			"filter": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Optional case-insensitive substring to scope results to a specific entity. With group_by='service' it matches the service name (e.g. 'elasticsearch'); with group_by='cloud_account' it matches the account name. Use this when the user asks about ONE service/account so only the relevant rows are returned instead of the top-N.",
 			},
 		},
 		Required: []string{},
@@ -74,6 +71,7 @@ func (t SpendSummaryTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 	groupBy := "cloud_account"
 	window := "30d"
 	accountId := ""
+	filter := ""
 
 	if v, ok := input.Arguments["group_by"].(string); ok && v != "" {
 		groupBy = v
@@ -84,6 +82,18 @@ func (t SpendSummaryTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 	if v, ok := input.Arguments["account_id"].(string); ok && v != "" {
 		accountId = v
 	}
+	if v, ok := input.Arguments["filter"].(string); ok && v != "" {
+		filter = strings.TrimSpace(v)
+	}
+
+	windowDays, err := parseWindowDays(window)
+	if err != nil {
+		return core.NBToolResponse{
+			Data:   err.Error(),
+			Status: core.NBToolResponseStatusError,
+		}, nil
+	}
+	window = fmt.Sprintf("%dd", windowDays)
 
 	// Default to the requesting user's account to avoid cross-account duplication.
 	// Multiple cloud_accounts often share the same underlying billing source (e.g.,
@@ -112,16 +122,7 @@ func (t SpendSummaryTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 	// includes all of windowEnd's data (date >= windowStart AND date < windowEnd).
 	now := time.Now().UTC()
 	windowEnd := now.Truncate(24 * time.Hour) // start of today
-	var windowStart time.Time
-	switch window {
-	case "7d":
-		windowStart = windowEnd.AddDate(0, 0, -lastWeekDays)
-	case "90d":
-		windowStart = windowEnd.AddDate(0, 0, -lastQuarterDays)
-	default:
-		windowStart = windowEnd.AddDate(0, 0, -lastMonthDays)
-		window = "30d"
-	}
+	windowStart := windowEnd.AddDate(0, 0, -windowDays)
 
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -132,12 +133,28 @@ func (t SpendSummaryTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 	}
 
 	var result any
+	var grandTotal float64
+	var rowCount, shownCount int
 
 	switch groupBy {
 	case "service":
-		result, err = querySpendByService(dbManager, tenantId, accountId, windowStart, windowEnd)
+		rows, qErr := querySpendByService(dbManager, tenantId, accountId, filter, windowStart, windowEnd)
+		err = qErr
+		result = rows
+		shownCount = len(rows)
+		if len(rows) > 0 {
+			grandTotal = rows[0].GrandTotal
+			rowCount = rows[0].RowCount
+		}
 	default:
-		result, err = querySpendByCloudAccount(dbManager, tenantId, accountId, windowStart, windowEnd)
+		rows, qErr := querySpendByCloudAccount(dbManager, tenantId, accountId, filter, windowStart, windowEnd)
+		err = qErr
+		result = rows
+		shownCount = len(rows)
+		if len(rows) > 0 {
+			grandTotal = rows[0].GrandTotal
+			rowCount = rows[0].RowCount
+		}
 	}
 
 	if err != nil {
@@ -153,10 +170,23 @@ func (t SpendSummaryTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 		"window":       window,
 		"window_start": windowStart.Format("2006-01-02"),
 		"window_end":   windowEnd.Format("2006-01-02"),
+		"total_spend":  roundCents(grandTotal),
 		"data":         result,
+	}
+	// When the result is truncated (more groups exist than were returned), tell the
+	// agent so it reports "top N of M" with the true total instead of implying the
+	// shown rows are everything.
+	if rowCount > shownCount {
+		responseMap["group_count"] = rowCount
+		responseMap["shown_count"] = shownCount
+		responseMap["note"] = fmt.Sprintf("Showing the top %d of %d %s groups by spend; total_spend ($%.2f) is the sum across ALL of them.",
+			shownCount, rowCount, groupBy, grandTotal)
 	}
 	if accountId != "" {
 		responseMap["account_id"] = accountId
+	}
+	if filter != "" {
+		responseMap["filter"] = filter
 	}
 
 	jsonBytes, err := json.Marshal(responseMap)
@@ -181,6 +211,10 @@ type spendByAccountRow struct {
 	Saving           float64 `json:"estimated_savings" db:"saving"`
 	AmountLast       float64 `json:"amount_previous_period" db:"amount_last"`
 	PercentageChange float64 `json:"percentage_change" db:"percentage_change"`
+	// Window aggregates over the full result set (before LIMIT); identical on every
+	// row, read once into the response envelope, excluded from per-row JSON.
+	GrandTotal float64 `json:"-" db:"grand_total"`
+	RowCount   int     `json:"-" db:"row_count"`
 }
 
 type spendByServiceRow struct {
@@ -190,9 +224,13 @@ type spendByServiceRow struct {
 	AmountLast       float64 `json:"amount_previous_period" db:"spend_amount_last"`
 	PercentageChange float64 `json:"percentage_change" db:"percentage_change"`
 	EstimatedSaving  float64 `json:"estimated_savings" db:"resource_estimated_saving"`
+	// Window aggregates over the full result set (before LIMIT); identical on every
+	// row, read once into the response envelope, excluded from per-row JSON.
+	GrandTotal float64 `json:"-" db:"grand_total"`
+	RowCount   int     `json:"-" db:"row_count"`
 }
 
-func querySpendByCloudAccount(dbManager *common.DatabaseManager, tenantId string, accountId string, windowStart, windowEnd time.Time) ([]spendByAccountRow, error) {
+func querySpendByCloudAccount(dbManager *common.DatabaseManager, tenantId string, accountId string, filter string, windowStart, windowEnd time.Time) ([]spendByAccountRow, error) {
 	// When accountId is provided, filter to that single account.
 	// Otherwise show all accounts for the tenant.
 	accountFilter := ""
@@ -200,6 +238,14 @@ func querySpendByCloudAccount(dbManager *common.DatabaseManager, tenantId string
 	if accountId != "" {
 		accountFilter = " AND spends.cloud_account = $4"
 		args = append(args, accountId)
+	}
+
+	// Optional case-insensitive name scope so a question about one account
+	// returns just that account's row instead of the top-10.
+	nameFilter := ""
+	if filter != "" {
+		args = append(args, "%"+filter+"%")
+		nameFilter = fmt.Sprintf(" WHERE ca.account_name ILIKE $%d", len(args))
 	}
 
 	query := fmt.Sprintf(`
@@ -212,7 +258,9 @@ func querySpendByCloudAccount(dbManager *common.DatabaseManager, tenantId string
 			CASE WHEN COALESCE(s1.amount, 0) > 0
 				THEN ROUND(((s.amount - s1.amount) / s1.amount * 100)::numeric, 2)::float
 				ELSE 0
-			END AS percentage_change
+			END AS percentage_change,
+			ROUND(SUM(COALESCE(s.amount, 0)) OVER ()::numeric, 2)::float AS grand_total,
+			COUNT(*) OVER ()::int AS row_count
 		FROM cloud_accounts ca
 		INNER JOIN (
 			SELECT SUM(spends.amount) AS amount, spends.cloud_account
@@ -229,17 +277,18 @@ func querySpendByCloudAccount(dbManager *common.DatabaseManager, tenantId string
 		LEFT JOIN (
 			SELECT recommendation.cloud_account_id, SUM(recommendation.estimated_savings) AS estimated_savings
 			FROM recommendation
+			WHERE recommendation.status = 'Open' AND recommendation.tenant_id = $1
 			GROUP BY recommendation.cloud_account_id
-		) r ON ca.id = r.cloud_account_id
+		) r ON ca.id = r.cloud_account_id%s
 		ORDER BY s.amount DESC
-		LIMIT 10`, accountFilter, accountFilter)
+		LIMIT 10`, accountFilter, accountFilter, nameFilter)
 
 	rows := []spendByAccountRow{}
 	err := dbManager.Db.Select(&rows, query, args...)
 	return rows, err
 }
 
-func querySpendByService(dbManager *common.DatabaseManager, tenantId string, accountId string, windowStart, windowEnd time.Time) ([]spendByServiceRow, error) {
+func querySpendByService(dbManager *common.DatabaseManager, tenantId string, accountId string, filter string, windowStart, windowEnd time.Time) ([]spendByServiceRow, error) {
 	// When accountId is provided, scope spends to that account and deduplicate
 	// resources by resourse_id to avoid counting the same cloud resource multiple
 	// times (GCP sub-projects that share the same billing account create duplicate
@@ -251,6 +300,15 @@ func querySpendByService(dbManager *common.DatabaseManager, tenantId string, acc
 		accountFilter = " AND spends.cloud_account = $4"
 		resourceAccountFilter = " AND cr.account = $4"
 		args = append(args, accountId)
+	}
+
+	// Optional case-insensitive service-name scope, applied early in the dedup
+	// subquery so a question about one service narrows the resource set instead of
+	// returning the top-20.
+	nameFilter := ""
+	if filter != "" {
+		args = append(args, "%"+filter+"%")
+		nameFilter = fmt.Sprintf(" AND cr.service_name ILIKE $%d", len(args))
 	}
 
 	query := fmt.Sprintf(`
@@ -266,16 +324,19 @@ func querySpendByService(dbManager *common.DatabaseManager, tenantId string, acc
 				THEN ROUND(((SUM(s.amount) - SUM(s1.amount)) / SUM(s1.amount) * 100)::numeric, 2)::float
 				ELSE 0
 			END AS percentage_change,
-			ROUND(COALESCE(SUM(r.estimated_savings), 0)::numeric, 2)::float AS resource_estimated_saving
+			ROUND(COALESCE(SUM(r.estimated_savings), 0)::numeric, 2)::float AS resource_estimated_saving,
+			ROUND(SUM(SUM(s.amount)) OVER ()::numeric, 2)::float AS grand_total,
+			COUNT(*) OVER ()::int AS row_count
 		FROM (
 			SELECT DISTINCT ON (cr.resourse_id, cr.service_name) cr.id, cr.resourse_id, cr.service_name
 			FROM cloud_resourses cr
-			WHERE cr.tenant = $1 AND cr.service_name IS NOT NULL%s
+			WHERE cr.tenant = $1 AND cr.service_name IS NOT NULL%s%s
 			ORDER BY cr.resourse_id, cr.service_name, cr.created_at ASC
 		) dedup
 		LEFT JOIN (
 			SELECT recommendation.resource_id, SUM(recommendation.estimated_savings) AS estimated_savings
 			FROM recommendation
+			WHERE recommendation.status = 'Open' AND recommendation.tenant_id = $1
 			GROUP BY recommendation.resource_id
 		) r ON dedup.id = r.resource_id
 		INNER JOIN (
@@ -293,7 +354,7 @@ func querySpendByService(dbManager *common.DatabaseManager, tenantId string, acc
 		WHERE s.amount > 0
 		GROUP BY dedup.service_name
 		ORDER BY SUM(s.amount) DESC
-		LIMIT 20`, resourceAccountFilter, accountFilter, accountFilter)
+		LIMIT 20`, resourceAccountFilter, nameFilter, accountFilter, accountFilter)
 
 	rows := []spendByServiceRow{}
 	err := dbManager.Db.Select(&rows, query, args...)

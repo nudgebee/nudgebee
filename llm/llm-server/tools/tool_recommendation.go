@@ -61,7 +61,7 @@ func (m RecommendationExecuteTool) GetType() core.NBToolType {
 }
 
 func (m RecommendationExecuteTool) Description() string {
-	return "Executes a SQL query for recommendation_view and returns the result."
+	return "Executes a SQL query for recommendation_view and returns the result. Columns: id, namespace, resource_name, estimated_saving, category, severity, status, rule_name, recommendation."
 }
 
 func (m RecommendationExecuteTool) InputSchema() core.ToolSchema {

@@ -109,3 +109,68 @@ func TestListMetricsAzure(t *testing.T) {
 	assert.NotNil(t, response)
 
 }
+
+func TestIsMetriclessService(t *testing.T) {
+	// Control-plane / governance types → skipped (no metrics).
+	metricless := []string{
+		"microsoft.authorization/policyassignments",
+		"microsoft.authorization/roleassignments",
+		"microsoft.security/pricings",
+		"microsoft.insights/metricalerts",
+		"microsoft.network/networkwatchers",
+		"Microsoft.Authorization/PolicyAssignments", // case-insensitive
+		"  microsoft.security/pricings  ",           // trimmed
+	}
+	for _, s := range metricless {
+		assert.Truef(t, isMetriclessService(s), "expected %q to be metricless", s)
+	}
+
+	// Types that DO expose metrics must never be skipped — including the two
+	// known missing-mapping gaps we explicitly chose not to denylist.
+	withMetrics := []string{
+		"microsoft.compute/virtualmachines",
+		"microsoft.sql/servers/databases",
+		"microsoft.storage/storageaccounts",
+		"microsoft.insights/components",      // App Insights — has metrics
+		"microsoft.network/privateendpoints", // has PEBytesIn/Out
+		"aws/ec2",
+		"",
+	}
+	for _, s := range withMetrics {
+		assert.Falsef(t, isMetriclessService(s), "expected %q to NOT be metricless", s)
+	}
+}
+
+func TestMetricIdentifierFor(t *testing.T) {
+	const taskArn = "arn:aws:ecs:us-east-1:123456789012:task/my-cluster/abc123"
+	const serviceArn = "arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service"
+
+	cases := []struct {
+		name         string
+		serviceName  string
+		resourceType string
+		resourseId   string
+		arn          string
+		want         string
+	}{
+		// ECS/Fargate tasks & services with an ARN → query by ARN (dimension building needs it).
+		{"ecs task", "AmazonECS", "task", "abc123", taskArn, taskArn},
+		{"ecs service", "AmazonECS", "service", "my-service", serviceArn, serviceArn},
+		{"fargate task", "AWSFargate", "task", "abc123", taskArn, taskArn},
+		{"fargate service", "AWSFargate", "service", "my-service", serviceArn, serviceArn},
+		{"case-insensitive service name", "amazonecs", "TASK", "abc123", taskArn, taskArn},
+		// ECS clusters keep the bare id (ClusterName works directly with ListServices).
+		{"ecs cluster", "AmazonECS", "cluster", "my-cluster", "arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster", "my-cluster"},
+		// Non-ECS services always keep the bare resourse_id, even with an ARN present.
+		{"ec2 instance", "AmazonEC2", "compute-instance", "i-0abc", "arn:aws:ec2:us-east-1:123456789012:instance/i-0abc", "i-0abc"},
+		// Missing ARN → fall back to bare resourse_id regardless of service/type.
+		{"ecs task no arn", "AmazonECS", "task", "abc123", "", "abc123"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := metricIdentifierFor(tc.serviceName, tc.resourceType, tc.resourseId, tc.arn)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

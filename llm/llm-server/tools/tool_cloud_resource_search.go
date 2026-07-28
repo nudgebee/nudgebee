@@ -58,6 +58,8 @@ func (r CloudResourceSearchTool) Description() string {
 * resource_type (optional): Type of resource (e.g., 'instance', 'bucket').
 * region (optional): Region to search in.
 
+At least one of resource_name/service/resource_type/region is required.
+
 **Output:** JSON with matching resource details.`
 }
 

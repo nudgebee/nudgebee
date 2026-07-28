@@ -23,7 +23,7 @@ func (t NewRelicInfrastructureHostsTool) Name() string { return ToolNewRelicInfr
 func (t NewRelicInfrastructureHostsTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (t NewRelicInfrastructureHostsTool) Description() string {
-	return `Searches for infrastructure host entities in New Relic with system metrics including CPU, memory, and disk utilization.`
+	return `Searches for infrastructure host entities in New Relic with system metrics including CPU, memory, and disk utilization. Input: a filter string of space-separated key:value terms, e.g. 'name:prod-web-01 tags.environment:production'.`
 }
 
 func (t NewRelicInfrastructureHostsTool) InputSchema() core.ToolSchema {

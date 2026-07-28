@@ -180,6 +180,9 @@ mutation AddJiraAccount($bodyData: ticket_integration_create_config_input!) {
 export const GET_NOTIFICATION_CHANNEL_LIST = `query GetChannelList($platform:String!) {
   notifications_list_channels(platform: $platform) {
     data
+    hint
+    invite_url
+    error
   }
 }
 `;
@@ -404,7 +407,10 @@ const apiAccount = {
       console.error(`Failed to list messaging platforms- `, err);
     }
     try {
-      const res: any = await apiIntegrations.listIntegrations({ type: ['slack', 'ms_teams', 'google_chat', 'google_chat_space'], limit: 50 });
+      const res: any = await apiIntegrations.listIntegrations({
+        type: ['slack', 'ms_teams', 'google_chat', 'google_chat_space', 'discord'],
+        limit: 50,
+      });
       if (res instanceof Error) throw res;
       if (res?.data?.errors?.length) throw new Error(res.data.errors[0]?.message || 'listIntegrations failed');
       (res?.data?.data?.integrations_list?.rows || []).forEach((row: { type?: string }) => {
@@ -492,6 +498,7 @@ const apiAccount = {
         'google_chat_space',
         'slack',
         'ms_teams',
+        'discord',
       ];
 
       const accountsWhere = gqlStringify({ cloud_provider: { _in: cloudProviders } });
@@ -583,7 +590,9 @@ const apiAccount = {
       if (!response.ok) {
         throw new Error(data?.detail || data?.error || 'Failed to install Discord integration');
       }
-      return { success: true, data };
+      // data carries bot_username, guild_count and invite_url so the caller can
+      // prompt the user to invite the bot to a server when guild_count is 0.
+      return { success: true, ...data };
     } catch (err: any) {
       console.log('Failed to install Discord integration', err);
       return { success: false, error: err.message };

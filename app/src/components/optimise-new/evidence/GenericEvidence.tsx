@@ -1,6 +1,6 @@
 import { Box, Typography } from '@mui/material';
 import { ds } from 'src/utils/colors';
-import { SavingsFooter, SectionTitle, MetricRow } from '@components/optimise-new/EvidencePanel';
+import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
 import recommendationApi from '@api1/recommendation';
 import AssignmentIcon from '@mui/icons-material/Assignment';
 

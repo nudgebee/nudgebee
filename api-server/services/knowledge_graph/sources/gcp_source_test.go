@@ -6,6 +6,8 @@ import (
 	"nudgebee/services/knowledge_graph/core"
 	"os"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestGCPSourceGenerateUniqueKey(t *testing.T) {
@@ -487,9 +489,7 @@ func TestCreateNodeFromResourceProjectID(t *testing.T) {
 		AccountNumber: "cbp-infra", IsActive: true,
 	}
 	node := source.createNodeFromResource(bare, req)
-	if node == nil {
-		t.Fatal("expected a node, got nil")
-	}
+	require.NotNil(t, node, "createNodeFromResource returned nil")
 	if node.Properties["gcp_project_id"] != "cbp-infra" {
 		t.Errorf("gcp_project_id = %v, want cbp-infra", node.Properties["gcp_project_id"])
 	}
@@ -502,6 +502,7 @@ func TestCreateNodeFromResourceProjectID(t *testing.T) {
 	node2 := source.createNodeFromResource(fallback, req)
 	if node2 == nil {
 		t.Fatal("expected a node, got nil")
+		return
 	}
 	if node2.Properties["gcp_project_id"] != "myproj" {
 		t.Errorf("fallback gcp_project_id = %v, want myproj", node2.Properties["gcp_project_id"])

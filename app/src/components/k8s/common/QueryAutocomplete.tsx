@@ -135,7 +135,7 @@ const QueryAutocomplete: React.FC<QueryAutocompleteProps> = ({
         if (res?.data?.success) {
           const response = res?.data?.data ?? {};
           if (response) {
-            const indexedMappings = JSON.parse(response)?.fields ?? ['.*'];
+            const indexedMappings = safeJSONParse(response)?.fields ?? ['.*'];
             setQLOption(Object.keys(indexedMappings).sort((a, b) => a.localeCompare(b)));
             apilabelData.labels = Object.keys(indexedMappings).sort((a, b) => a.localeCompare(b));
           }
@@ -181,7 +181,7 @@ const QueryAutocomplete: React.FC<QueryAutocompleteProps> = ({
         if (res?.data?.success) {
           const labels = res?.data?.data || ['.*'];
           if (labels) {
-            setIndices(Object.keys(JSON.parse(labels)).sort());
+            setIndices(Object.keys(safeJSONParse(labels) || {}).sort());
           } else {
             setIndices(['.*']);
           }

@@ -122,7 +122,9 @@ mutation EventCreateTriageRule(
     success
     rule {
       id
+      account_id
       name
+      description
       rule_type
       action
       priority
@@ -134,9 +136,16 @@ mutation EventCreateTriageRule(
       match_source
       match_priority
       match_labels
+      match_finding_type
+      match_occurrence_greater_than
       action_value
       effective_from
       effective_until
+      is_editable
+      is_system_rule
+      is_overridden
+      match_count
+      apply_to_existing
       created_at
       updated_at
     }
@@ -193,7 +202,9 @@ mutation EventUpdateTriageRule(
     success
     rule {
       id
+      account_id
       name
+      description
       rule_type
       action
       priority
@@ -205,9 +216,16 @@ mutation EventUpdateTriageRule(
       match_source
       match_priority
       match_labels
+      match_finding_type
+      match_occurrence_greater_than
       action_value
       effective_from
       effective_until
+      is_editable
+      is_system_rule
+      is_overridden
+      match_count
+      apply_to_existing
       created_at
       updated_at
     }

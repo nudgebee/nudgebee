@@ -1,4 +1,4 @@
-export const applyFiltersOnRouter = (router: any, param: any) => {
+export const applyFiltersOnRouter = (router: any, param: any, options: { shallow?: boolean } = {}) => {
   const { ...otherParams } = router.query;
   const updatedParams = {
     ...otherParams,
@@ -11,9 +11,13 @@ export const applyFiltersOnRouter = (router: any, param: any) => {
   });
 
   const hash = router.asPath.split('#');
-  router.push({
-    pathname: router.pathname,
-    query: updatedParams,
-    hash: hash[1],
-  });
+  router.push(
+    {
+      pathname: router.pathname,
+      query: updatedParams,
+      hash: hash[1],
+    },
+    undefined,
+    { shallow: options.shallow }
+  );
 };

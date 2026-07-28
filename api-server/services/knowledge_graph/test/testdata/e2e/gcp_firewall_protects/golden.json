@@ -1,0 +1,95 @@
+{
+  "nodes": [
+    {
+      "unique_key": "gcp:test-account-gcp-1:global:SecurityGroup:my-fw:my-fw",
+      "node_type": "SecurityGroup",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "direction": "INGRESS",
+        "disabled": false,
+        "external_resource_id": "fw-1",
+        "gcp_project_id": "my-fw",
+        "is_active": true,
+        "labels": null,
+        "meta": {
+          "direction": "INGRESS",
+          "network": "projects/proj-1/global/networks/my-vpc"
+        },
+        "name": "my-fw",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "fw-1",
+        "region": "global",
+        "resource_id": "my-fw",
+        "service_name": "Networking",
+        "source": "gcp",
+        "status": "",
+        "subtype": "FirewallRule",
+        "type": "firewall-rule",
+        "vpc_id": "my-vpc",
+        "vpc_network_url": "projects/proj-1/global/networks/my-vpc"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-fw"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:global:VPC:my-vpc:my-vpc",
+      "node_type": "VPC",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "vpc-1",
+        "gcp_project_id": "my-vpc",
+        "is_active": true,
+        "labels": null,
+        "name": "my-vpc",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "vpc-1",
+        "region": "global",
+        "resource_id": "my-vpc",
+        "service_name": "Networking",
+        "source": "gcp",
+        "status": "",
+        "subtype": "vpc-network",
+        "type": "vpc-network"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-vpc"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src_key": "gcp:test-account-gcp-1:global:SecurityGroup:my-fw:my-fw",
+      "dst_key": "gcp:test-account-gcp-1:global:VPC:my-vpc:my-vpc",
+      "relationship_type": "PROTECTS",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "firewall_vpc",
+        "contributing_sources": [
+          "gcp"
+        ],
+        "direction": "INGRESS"
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    }
+  ]
+}

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,6 +26,103 @@ const (
 	preContextLineCount  = 2
 	postContextLineCount = 5
 )
+
+// cliErrorPrefixRe matches CLI-style error prefixes (`error:`, `fatal:`,
+// `usage:`) only when they appear at start-of-string or after whitespace —
+// NOT after a `"` character. This is what separates real stderr prefixes
+// like `error: unknown flag` from JSON-payload keys like `{"error":"..."}`.
+// Without this anchor, every relay-wrapped opaque error (`{"error":"connection
+// timeout"}`) would falsely register as CLI signal and get wrapped in the
+// generic recovery hint, defeating the pass-through goal.
+var cliErrorPrefixRe = regexp.MustCompile(`(?:^|[ \t\n\r])(?:error|fatal|usage):`)
+
+// wrapCliError packages a raw CLI error together with an actionable recovery
+// hint as a JSON {error_hint, original_error} envelope for the planner
+// observation. When hint is empty it returns rawError unchanged, so callers can
+// pass the result of a tool-specific hint function and only pay the envelope
+// when there is something useful to say. This is the shared skeleton behind the
+// per-tool hint functions (shellErrorHint, githubErrorHint, ...): each tool
+// supplies its own hint text — including its own help invocation, since help
+// syntax differs per CLI (`gh <sub> --help`, `kubectl <cmd> --help`, etc.).
+func wrapCliError(rawError, hint string) string {
+	if strings.TrimSpace(hint) == "" {
+		return rawError
+	}
+	wrapped := map[string]string{
+		"error_hint":     hint,
+		"original_error": rawError,
+	}
+	body, err := common.MarshalJson(wrapped)
+	if err != nil {
+		// Marshal can't realistically fail on a string-only map, but degrade
+		// gracefully rather than masking the underlying error.
+		return rawError
+	}
+	return string(body)
+}
+
+// genericCliRecoveryHint returns a universal "read the error before switching
+// commands" nudge for CLI-shape tool failures that don't match any
+// tool-specific hint. Steers the model to correct THIS command rather than
+// pivoting to a different tool — the dominant recoverable-failure misuse
+// pattern surfaced across the 2026-06-22 and 2026-07-02 DB sweeps.
+//
+// Fires ONLY when the raw error carries CLI signal (usage/available/unknown/
+// invalid/did-you-mean/expected/not a valid/error:/fatal:), so genuinely
+// opaque errors (network, backend timeouts) don't get wrapped in noise.
+//
+// The optional helpInvocation is the tool-specific way to see valid syntax.
+// CLI help conventions are NOT uniform — DO NOT hardcode `--help` (Cobra),
+// sqlcmd uses `-?`, sqlplus uses `-H`, mysql/psql have `\h`/`\?` in
+// interactive mode, and some tools (raw HTTP, SQL query wrappers) have no
+// useful CLI help mechanism at all. Pass "" to omit the help suggestion.
+func genericCliRecoveryHint(rawError, toolDisplayName, helpInvocation string) string {
+	trimmed := strings.TrimSpace(rawError)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	// Boundary-anchor the colon-suffixed prefixes so JSON keys like
+	// `{"error":"connection timeout"}` don't false-positive into the signal
+	// bucket — the shape shows up in every relay-wrapped opaque error, and
+	// treating `"error":` as a CLI-error prefix would wrap those too, defeating
+	// the pass-through goal. Match `error:` / `fatal:` / `usage:` only at
+	// start-of-string or after horizontal whitespace / newline (never after
+	// a `"`, which is what distinguishes CLI prefixes from JSON keys).
+	hasSignal := cliErrorPrefixRe.MatchString(lower) ||
+		strings.Contains(lower, "available") ||
+		strings.Contains(lower, "unknown") ||
+		strings.Contains(lower, "invalid") ||
+		strings.Contains(lower, "did you mean") ||
+		strings.Contains(lower, "expected") ||
+		strings.Contains(lower, "not a valid") ||
+		strings.Contains(lower, "syntax error")
+	if !hasSignal {
+		return ""
+	}
+	base := "Before switching to a different command, re-read the raw output above — CLI tools typically print the correct usage / valid values on error. Correct THIS command rather than pivoting to something else."
+	if toolDisplayName != "" && helpInvocation != "" {
+		base += fmt.Sprintf(" If you're unsure of the syntax for %s, run `%s` to see valid options.", toolDisplayName, helpInvocation)
+	}
+	return base
+}
+
+// cliRecoveryEnvelope is a convenience wrapper that combines a tool-specific
+// hint (may be empty) with the generic CLI-recovery fallback and packages the
+// result through wrapCliError. New callers should prefer this over the
+// two-step compose-then-wrap idiom used by PR #33404's initial rollout —
+// same behavior, fewer moving parts.
+//
+// The specific hint always wins when present; the generic hint fires only
+// when the specific hint is empty AND the raw error carries CLI signal.
+// When both are empty, rawError is returned unchanged (no envelope).
+func cliRecoveryEnvelope(rawError, specificHint, toolDisplayName, helpInvocation string) string {
+	hint := specificHint
+	if strings.TrimSpace(hint) == "" {
+		hint = genericCliRecoveryHint(rawError, toolDisplayName, helpInvocation)
+	}
+	return wrapCliError(rawError, hint)
+}
 
 func convertCsvToJsonString(toolContext core.NbToolContext, csvData string, seprator rune) string {
 	reader := csv.NewReader(strings.NewReader(csvData))

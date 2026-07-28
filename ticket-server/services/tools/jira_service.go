@@ -929,17 +929,21 @@ func (s *JiraService) Update(ctx *gin.Context, config models.TicketConfiguration
 		update["priority"] = map[string]string{"name": updateFields.Severity}
 	}
 
-	if updateFields.Assignee != "" {
+	if assignees := updateFields.AssigneeList(); len(assignees) > 0 {
+		if len(assignees) > 1 {
+			return fmt.Errorf("only a single assignee is supported for Jira; %d were provided", len(assignees))
+		}
+		assignee := assignees[0]
 		// Check if it's an account ID or email
-		if len(strings.Split(updateFields.Assignee, ":")) == 2 {
-			update["assignee"] = map[string]string{"accountId": updateFields.Assignee}
+		if len(strings.Split(assignee, ":")) == 2 {
+			update["assignee"] = map[string]string{"accountId": assignee}
 		} else {
 			// Try to look up by email
-			accountID := lookupAccountIDByEmail(jiraClient, updateFields.Assignee)
+			accountID := lookupAccountIDByEmail(jiraClient, assignee)
 			if accountID != "" {
 				update["assignee"] = map[string]string{"accountId": accountID}
 			} else {
-				update["assignee"] = map[string]string{"emailAddress": updateFields.Assignee}
+				update["assignee"] = map[string]string{"emailAddress": assignee}
 			}
 		}
 	}

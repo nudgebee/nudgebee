@@ -5,13 +5,14 @@ import {
   loginAndNavigateToNewWorkflow,
   pasteAndApplyWorkflowJson,
   saveNewWorkflow,
-  setWorkflowActiveAndSave,
   runWorkflowWithGraphQLValidation,
+  waitForExecutionToComplete,
+  deleteCreatedWorkflow,
   closeActionPanel,
   configureNotificationsImSlack,
 } from "../workflowHelper";
 
-const SLACK_CHANNEL = process.env["SLACK-CHANNEL"]!;
+const SLACK_CHANNEL = process.env.SLACK_CHANNEL!;
 const KUBECTL_NAMESPACE = process.env.KUBECTL_NAMESPACE!;
 
 const WORKFLOW_JSON_TEMPLATE = {
@@ -25,7 +26,7 @@ const WORKFLOW_JSON_TEMPLATE = {
         id: "llm_nubi",
         type: "llm.nubi",
         params: {
-          message: `get me the list of active pods from ${KUBECTL_NAMESPACE} namespace`,
+          message: "Hi",
         },
         timeout: "5m",
       },
@@ -69,6 +70,8 @@ test("Automation workflow LLM Nubi", async ({ page }) => {
   await closeActionPanel(page, locators);
 
   await saveNewWorkflow(page, locators, workflowName);
-  await setWorkflowActiveAndSave(page, locators);
   await runWorkflowWithGraphQLValidation(page, locators, "Automation workflow LLM Nubi");
+  await waitForExecutionToComplete(page, locators);
+
+  await deleteCreatedWorkflow(page, locators, workflowName);
 });

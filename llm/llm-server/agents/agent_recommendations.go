@@ -83,7 +83,9 @@ func (l RecommendationsAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 			"Output: the data returned by the sql query.",
 		},
 	}
-	outputFormat := "The output should be a clear and concise summary of the query results in markdown format language using markdown format"
+	outputFormat := "Output a Markdown table as the primary format. Columns: Namespace | Resource | Category | Severity | Est. Saving ($/mo) | Rule | Status | Age. " +
+		"Sort rows by estimated_saving descending (nulls last). For a null/zero estimated_saving show \"—\", never \"$0.00\". " +
+		"After the table, add one line: the row count and total quantified savings. Append [recommendation_execute] after the table heading."
 	schema := []string{
 		"**recommendation_view:** This view contains comprehensive information about Nudgebee recommendations across various categories.",
 		"",
@@ -123,96 +125,34 @@ func (l RecommendationsAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 		"- Use severity filtering for prioritization (Critical > High > Medium > Low > Info)",
 		"- Combine category and rule_name for precise filtering",
 	}
+	// Four structurally-distinct examples, one per query shape. They teach the
+	// patterns (explicit columns, status filter, aggregation, financial threshold,
+	// nulls-last savings ordering) the agent generalizes from — not an exhaustive
+	// catalog. Construct other queries by applying the instruction rules above.
 	examples := []core.NBAgentPromptExample{
-		// Basic Queries
+		// 1. Basic list — explicit columns + default Open status.
 		{
-			Question:    "What are latest recommendations?",
+			Question:    "What are the latest recommendations?",
 			Answer:      "SELECT " + defaultColumns + " FROM recommendation_view WHERE status = 'Open' ORDER BY created_at DESC LIMIT 10",
-			Explanation: "Retrieves the 10 most recent recommendations with an 'Open' status using explicit columns.",
+			Explanation: "Lists recent Open recommendations using explicit columns (never SELECT *).",
 		},
+		// 2. Aggregate — GROUP BY with COUNT/SUM, excluding NULL savings from the sum.
 		{
-			Question:    "How many recommendations are there for persistent volume?",
-			Answer:      "SELECT count(*) AS count FROM recommendation_view WHERE category = 'RightSizing' AND status = 'Open' AND rule_name in ('pv_rightsize', 'unused_pvc')",
-			Explanation: "Counts the number of 'Open' recommendations in the 'RightSizing' category.",
+			Question:    "What are the total estimated savings by category for open recommendations?",
+			Answer:      "SELECT category, COUNT(*) as recommendation_count, ROUND(SUM(estimated_saving), 2) as total_savings FROM recommendation_view WHERE status = 'Open' AND estimated_saving IS NOT NULL GROUP BY category ORDER BY total_savings DESC",
+			Explanation: "Aggregates by category; no LIMIT on aggregates; NULL savings excluded from the sum.",
 		},
-
-		// Category-based Queries
-		{
-			Question:    "Get all high security recommendations.",
-			Answer:      "SELECT " + defaultColumns + " FROM recommendation_view WHERE category = 'Security' AND severity = 'High' AND status = 'Open' ORDER BY created_at DESC LIMIT 10",
-			Explanation: "Retrieves the 10 most recent 'High' severity 'Open' recommendations in the 'Security' category.",
-		},
-		{
-			Question:    "Get all recommendations for right sizing.",
-			Answer:      "SELECT " + defaultColumns + " FROM recommendation_view WHERE status = 'Open' AND category = 'RightSizing' ORDER BY created_at DESC LIMIT 10",
-			Explanation: "Retrieves the 10 most recent 'Open' recommendations in the 'RightSizing' category.",
-		},
-		{
-			Question:    "Get the list of best practices",
-			Answer:      "SELECT " + defaultColumns + " FROM recommendation_view WHERE category = 'Configuration' AND status = 'Open' ORDER BY created_at DESC LIMIT 50",
-			Explanation: "Retrieves 'Open' recommendations in the 'Configuration' category, focusing on best practices for configuration management.",
-		},
-
-		// Rule-specific Queries
-		{
-			Question:    "Get all images issues.",
-			Answer:      "SELECT " + defaultColumns + " FROM recommendation_view WHERE category = 'Security' AND rule_name = 'image_scan' AND status = 'Open' ORDER BY created_at DESC LIMIT 10",
-			Explanation: "Retrieves the 10 most recent 'Open' recommendations related to image scanning.",
-		},
-		{
-			Question:    "Get me list of abandoned services and PVCs",
-			Answer:      "SELECT " + defaultColumns + " FROM recommendation_view WHERE category = 'RightSizing' AND status = 'Open' AND rule_name IN ('abandoned_resource', 'unused_pvc') ORDER BY created_at DESC LIMIT 10",
-			Explanation: "Retrieves the 10 most recent 'Open' recommendations in the 'RightSizing' category related to abandoned services and PVCs.",
-		},
-
-		// Multi-criteria and Financial Impact
+		// 3. Multi-criteria with a financial threshold, ranked by savings.
 		{
 			Question:    "Show me critical security recommendations with high savings potential",
 			Answer:      "SELECT " + defaultColumns + " FROM recommendation_view WHERE category = 'Security' AND severity = 'Critical' AND status = 'Open' AND estimated_saving > 100 ORDER BY estimated_saving DESC LIMIT 15",
-			Explanation: "Retrieves critical security recommendations that also offer significant cost savings (>$100), ordered by savings potential.",
+			Explanation: "Combines category, severity, and a savings threshold, ordered by dollar impact.",
 		},
-
-		// Aggregation and Analytics
+		// 4. Storage rightsizing — rule_name filter, savings ranked nulls-last.
 		{
-			Question:    "What are the total estimated savings by category for open recommendations?",
-			Answer:      "SELECT category, COUNT(*) as recommendation_count, ROUND(SUM(estimated_saving), 2) as total_savings, ROUND(AVG(estimated_saving), 2) as avg_savings FROM recommendation_view WHERE status = 'Open' GROUP BY category ORDER BY total_savings DESC",
-			Explanation: "Aggregates open recommendations by category showing count, total savings, and average savings per category.",
-		},
-		{
-			Question:    "Show me workloads with multiple high-severity recommendations",
-			Answer:      "SELECT namespace, resource_name, controller_name, COUNT(*) as recommendation_count, STRING_AGG(DISTINCT category, ', ') as categories FROM recommendation_view WHERE severity IN ('Critical', 'High') AND status = 'Open' GROUP BY namespace, resource_name, controller_name HAVING COUNT(*) > 1 ORDER BY recommendation_count DESC",
-			Explanation: "Groups recommendations by workload to identify resources with multiple high-severity issues across different categories.",
-		},
-
-		// Temporal and Production Focus
-		{
-			Question:    "Find recommendations in production namespaces that haven't been updated in the last 30 days",
-			Answer:      "SELECT " + defaultColumns + " FROM recommendation_view WHERE (namespace ILIKE '%prod%' OR namespace ILIKE '%production%') AND status = 'Open' AND updated_at < NOW() - INTERVAL '30 days' ORDER BY created_at ASC LIMIT 20",
-			Explanation: "Identifies stale recommendations in production environments that may need attention.",
-		},
-
-		// Combination Queries
-		{
-			Question:    "Get me all security and configuration issues combined",
-			Answer:      "SELECT " + defaultColumns + " FROM recommendation_view WHERE category IN ('Security', 'Configuration') AND status = 'Open' ORDER BY severity DESC, created_at DESC LIMIT 20",
-			Explanation: "Retrieves both security and configuration recommendations together, ordered by severity then recency.",
-		},
-		{
-			Question:    "Show me rightsizing and spot instance recommendations for cost optimization",
-			Answer:      "SELECT " + defaultColumns + " FROM recommendation_view WHERE category IN ('RightSizing', 'K8sSpotRecommendation') AND status = 'Open' ORDER BY estimated_saving DESC LIMIT 15",
-			Explanation: "Combines rightsizing and spot instance recommendations for comprehensive cost optimization analysis.",
-		},
-		{
-			Question:    "Get all storage-related recommendations including PV, PVC, and S3 issues",
-			Answer:      "SELECT " + defaultColumns + " FROM recommendation_view WHERE (category = 'K8sPersistentVolumeRecommendation' OR rule_name IN ('unused_pvc', 'pv_rightsize', 's3_abandoned_buckets', 'volumes_not_attached_for_a_long_time')) AND status = 'Open' ORDER BY estimated_saving DESC LIMIT 20",
-			Explanation: "Comprehensive storage optimization covering Kubernetes persistent volumes and cloud storage resources.",
-		},
-
-		// Advanced Scenarios
-		{
-			Question:    "Show recommendations with potential impact analysis including severity and savings",
-			Answer:      "SELECT " + defaultColumns + ", CASE WHEN severity = 'Critical' AND estimated_saving > 200 THEN 'High Impact' WHEN severity IN ('Critical', 'High') OR estimated_saving > 100 THEN 'Medium Impact' ELSE 'Low Impact' END as impact_level FROM recommendation_view WHERE status = 'Open' ORDER BY CASE WHEN severity = 'Critical' AND estimated_saving > 200 THEN 1 WHEN severity IN ('Critical', 'High') OR estimated_saving > 100 THEN 2 ELSE 3 END, estimated_saving DESC LIMIT 25",
-			Explanation: "Categorizes recommendations by impact level combining severity and financial impact for prioritization.",
+			Question:    "Which PVCs are over-provisioned or abandoned?",
+			Answer:      "SELECT " + defaultColumns + " FROM recommendation_view WHERE category = 'RightSizing' AND status = 'Open' AND rule_name IN ('pv_rightsize', 'unused_pvc', 'abandoned_resource') ORDER BY estimated_saving DESC NULLS LAST LIMIT 20",
+			Explanation: "Storage rightsizing via rule_name; NULLS LAST keeps unquantified rows from sorting above real savings.",
 		},
 	}
 	return core.NBAgentPrompt{

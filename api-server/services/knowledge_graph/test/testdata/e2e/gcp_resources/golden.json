@@ -1,0 +1,661 @@
+{
+  "nodes": [
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:AIService:my-vertex-endpoint:my-vertex-endpoint",
+      "node_type": "AIService",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "my-project",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "ext-gcp-vertex-1",
+        "gcp_project_id": "my-project",
+        "is_active": true,
+        "labels": {},
+        "name": "my-vertex-endpoint",
+        "nb_account_id": "gcp-account-1",
+        "nb_resource_id": "gcp-res-14",
+        "region": "us-central1",
+        "resource_id": "gcp-vertex-1",
+        "service_name": "Vertex AI",
+        "source": "gcp",
+        "status": "active",
+        "subtype": "Vertex AI",
+        "type": "vertex-ai"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-vertex-endpoint",
+        "region": "us-central1"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:my-project:gke-my-cluster-default-pool-abc12345",
+      "node_type": "ComputeInstance",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "my-project",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "ext-gcp-compute-2",
+        "gcp_project_id": "my-project",
+        "is_active": true,
+        "labels": {},
+        "meta": {
+          "network_interfaces": [
+            {
+              "network": "https://www.googleapis.com/compute/v1/projects/my-project/global/networks/default",
+              "network_i_p": "10.128.0.5",
+              "subnetwork": "https://www.googleapis.com/compute/v1/projects/my-project/regions/us-central1/subnetworks/default-subnet"
+            }
+          ],
+          "zone": "projects/my-project/zones/us-central1-a"
+        },
+        "name": "my-project/zones/us-central1-a/instances/gke-my-cluster-default-pool-abc12345",
+        "nb_account_id": "gcp-account-1",
+        "nb_resource_id": "gcp-res-2",
+        "private_ip": "10.128.0.5",
+        "region": "us-central1",
+        "resource_id": "gcp-compute-2",
+        "service_name": "Compute Engine",
+        "source": "gcp",
+        "status": "active",
+        "subnet_id": "default-subnet",
+        "subnet_url": "https://www.googleapis.com/compute/v1/projects/my-project/regions/us-central1/subnetworks/default-subnet",
+        "subtype": "ComputeEngine",
+        "type": "compute.googleapis.com/Instance",
+        "vpc_id": "default",
+        "vpc_network_url": "https://www.googleapis.com/compute/v1/projects/my-project/global/networks/default",
+        "zone": "projects/my-project/zones/us-central1-a"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-project/zones/us-central1-a/instances/gke-my-cluster-default-pool-abc12345",
+        "private_ip": "10.128.0.5",
+        "subtype": "ComputeEngine",
+        "vpc_id": "default",
+        "zone": "projects/my-project/zones/us-central1-a"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:my-project:web-server-1",
+      "node_type": "ComputeInstance",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "my-project",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "ext-gcp-compute-1",
+        "gcp_project_id": "my-project",
+        "is_active": true,
+        "labels": {
+          "env": "production",
+          "team": "backend"
+        },
+        "machine_type": "e2-medium",
+        "meta": {
+          "machine_type": "projects/my-project/zones/us-central1-a/machineTypes/e2-medium",
+          "network_interfaces": [
+            {
+              "access_configs": [
+                {
+                  "nat_i_p": "34.123.45.67"
+                }
+              ],
+              "network": "https://www.googleapis.com/compute/v1/projects/my-project/global/networks/default",
+              "network_i_p": "10.128.0.2",
+              "subnetwork": "https://www.googleapis.com/compute/v1/projects/my-project/regions/us-central1/subnetworks/default-subnet"
+            }
+          ],
+          "zone": "projects/my-project/zones/us-central1-a"
+        },
+        "name": "my-project/zones/us-central1-a/instances/web-server-1",
+        "nb_account_id": "gcp-account-1",
+        "nb_resource_id": "gcp-res-1",
+        "private_ip": "10.128.0.2",
+        "public_ip": "34.123.45.67",
+        "region": "us-central1",
+        "resource_id": "gcp-compute-1",
+        "service_name": "Compute Engine",
+        "source": "gcp",
+        "status": "active",
+        "subnet_id": "default-subnet",
+        "subnet_url": "https://www.googleapis.com/compute/v1/projects/my-project/regions/us-central1/subnetworks/default-subnet",
+        "subtype": "ComputeEngine",
+        "type": "compute.googleapis.com/Instance",
+        "vpc_id": "default",
+        "vpc_network_url": "https://www.googleapis.com/compute/v1/projects/my-project/global/networks/default",
+        "zone": "projects/my-project/zones/us-central1-a"
+      },
+      "labels": {
+        "env": "production",
+        "team": "backend"
+      },
+      "query_attributes": {
+        "name": "my-project/zones/us-central1-a/instances/web-server-1",
+        "private_ip": "10.128.0.2",
+        "subtype": "ComputeEngine",
+        "vpc_id": "default",
+        "zone": "projects/my-project/zones/us-central1-a"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:my-project:web-server-2",
+      "node_type": "ComputeInstance",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "my-project",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "ext-gcp-compute-3",
+        "gcp_project_id": "my-project",
+        "is_active": true,
+        "labels": {},
+        "name": "my-project/web-server-2",
+        "nb_account_id": "gcp-account-1",
+        "nb_resource_id": "gcp-res-3",
+        "region": "us-central1",
+        "resource_id": "gcp-compute-3",
+        "service_name": "Compute Engine",
+        "source": "gcp",
+        "status": "active",
+        "subtype": "ComputeEngine",
+        "type": "compute-engine"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-project/web-server-2",
+        "subtype": "ComputeEngine"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:Database:my-sql-cost:my-sql-cost",
+      "node_type": "Database",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "my-project",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "ext-gcp-sql-2",
+        "gcp_project_id": "my-project",
+        "is_active": true,
+        "labels": {},
+        "name": "my-sql-cost",
+        "nb_account_id": "gcp-account-1",
+        "nb_resource_id": "gcp-res-5",
+        "region": "us-central1",
+        "resource_id": "gcp-sql-2",
+        "service_name": "Cloud SQL",
+        "source": "gcp",
+        "status": "active",
+        "subtype": "CloudSQL",
+        "type": "cloud-sql"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-sql-cost",
+        "subtype": "CloudSQL"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:Database:my-sql-instance:my-sql-instance",
+      "node_type": "Database",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "my-project",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "dns_name": "my-project:us-central1:my-sql-instance",
+        "engine": "POSTGRES_15",
+        "external_resource_id": "ext-gcp-sql-1",
+        "gcp_project_id": "my-project",
+        "is_active": true,
+        "labels": {},
+        "meta": {
+          "connectionName": "my-project:us-central1:my-sql-instance",
+          "databaseVersion": "POSTGRES_15",
+          "ipAddresses": [
+            {
+              "ipAddress": "10.0.0.5",
+              "type": "PRIVATE"
+            }
+          ],
+          "settings": {
+            "ipConfiguration": {
+              "privateNetwork": "projects/my-project/global/networks/default"
+            }
+          }
+        },
+        "name": "my-sql-instance",
+        "nb_account_id": "gcp-account-1",
+        "nb_resource_id": "gcp-res-4",
+        "private_ip": "10.0.0.5",
+        "region": "us-central1",
+        "resource_id": "gcp-sql-1",
+        "service_name": "Cloud SQL",
+        "source": "gcp",
+        "status": "active",
+        "subtype": "CloudSQL",
+        "type": "sqladmin.googleapis.com/Instance/POSTGRES_17",
+        "vpc_id": "default",
+        "vpc_network_url": "projects/my-project/global/networks/default"
+      },
+      "labels": {},
+      "query_attributes": {
+        "dns_name": "my-project:us-central1:my-sql-instance",
+        "engine": "POSTGRES_15",
+        "name": "my-sql-instance",
+        "private_ip": "10.0.0.5",
+        "subtype": "CloudSQL",
+        "vpc_id": "default"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:LogAggregator:my-log-sink:my-log-sink",
+      "node_type": "LogAggregator",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "my-project",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "ext-gcp-logging-1",
+        "gcp_project_id": "my-project",
+        "is_active": true,
+        "labels": {},
+        "name": "my-log-sink",
+        "nb_account_id": "gcp-account-1",
+        "nb_resource_id": "gcp-res-12",
+        "region": "us-central1",
+        "resource_id": "gcp-logging-1",
+        "service_name": "Cloud Logging",
+        "source": "gcp",
+        "status": "active",
+        "subtype": "CloudLogging",
+        "type": "cloud-logging"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-log-sink"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:ManagedCluster:my-cluster-cost:my-cluster-cost",
+      "node_type": "ManagedCluster",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "my-project",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "ext-gcp-gke-2",
+        "gcp_project_id": "my-project",
+        "is_active": true,
+        "labels": {},
+        "name": "my-cluster-cost",
+        "nb_account_id": "gcp-account-1",
+        "nb_resource_id": "gcp-res-7",
+        "region": "us-central1",
+        "resource_id": "gcp-gke-2",
+        "service_name": "Kubernetes Engine",
+        "source": "gcp",
+        "status": "active",
+        "subtype": "GKE",
+        "type": "kubernetes-engine"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-cluster-cost",
+        "region": "us-central1",
+        "status": "active",
+        "subtype": "GKE"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:ManagedCluster:my-cluster:my-cluster",
+      "node_type": "ManagedCluster",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "my-project",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "dns_name": "35.192.0.1",
+        "external_resource_id": "ext-gcp-gke-1",
+        "gcp_project_id": "my-project",
+        "is_active": true,
+        "kubernetes_version": "1.28.3-gke.1203000",
+        "labels": {},
+        "meta": {
+          "current_master_version": "1.28.3-gke.1203000",
+          "endpoint": "35.192.0.1",
+          "network_config": {
+            "network": "projects/my-project/global/networks/default",
+            "subnetwork": "projects/my-project/regions/us-central1/subnetworks/default-subnet"
+          }
+        },
+        "name": "my-cluster",
+        "nb_account_id": "gcp-account-1",
+        "nb_resource_id": "gcp-res-6",
+        "region": "us-central1",
+        "resource_id": "gcp-gke-1",
+        "service_name": "Kubernetes Engine",
+        "source": "gcp",
+        "status": "active",
+        "subnet_id": "default-subnet",
+        "subnet_url": "projects/my-project/regions/us-central1/subnetworks/default-subnet",
+        "subtype": "GKE",
+        "type": "container.googleapis.com/Cluster",
+        "vpc_id": "default",
+        "vpc_network_url": "projects/my-project/global/networks/default"
+      },
+      "labels": {},
+      "query_attributes": {
+        "dns_name": "35.192.0.1",
+        "kubernetes_version": "1.28.3-gke.1203000",
+        "name": "my-cluster",
+        "region": "us-central1",
+        "status": "active",
+        "subnet_id": "default-subnet",
+        "subtype": "GKE",
+        "vpc_id": "default"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:MonitoringService:my-monitoring:my-monitoring",
+      "node_type": "MonitoringService",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "my-project",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "ext-gcp-monitoring-1",
+        "gcp_project_id": "my-project",
+        "is_active": true,
+        "labels": {},
+        "name": "my-monitoring",
+        "nb_account_id": "gcp-account-1",
+        "nb_resource_id": "gcp-res-13",
+        "region": "us-central1",
+        "resource_id": "gcp-monitoring-1",
+        "service_name": "Cloud Monitoring",
+        "source": "gcp",
+        "status": "active",
+        "subtype": "CloudMonitoring",
+        "type": "cloud-monitoring"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-monitoring"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:Storage:my-bucket:my-bucket",
+      "node_type": "Storage",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "my-project",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "dns_name": "my-bucket.storage.googleapis.com",
+        "external_resource_id": "ext-gcp-storage-1",
+        "gcp_project_id": "my-project",
+        "is_active": true,
+        "labels": {},
+        "name": "my-bucket",
+        "nb_account_id": "gcp-account-1",
+        "nb_resource_id": "gcp-res-8",
+        "region": "us-central1",
+        "resource_id": "gcp-storage-1",
+        "service_name": "Cloud Storage",
+        "source": "gcp",
+        "status": "active",
+        "subtype": "CloudStorage",
+        "type": "storage.googleapis.com/Bucket"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-bucket",
+        "subtype": "CloudStorage"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:Subnet:default-subnet:default-subnet",
+      "node_type": "Subnet",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "my-project",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "ext-gcp-subnet-1",
+        "gcp_project_id": "my-project",
+        "is_active": true,
+        "labels": {},
+        "name": "default-subnet",
+        "nb_account_id": "gcp-account-1",
+        "nb_resource_id": "gcp-res-11",
+        "region": "us-central1",
+        "resource_id": "gcp-subnet-1",
+        "service_name": "Networking",
+        "source": "gcp",
+        "status": "active",
+        "subtype": "subnet",
+        "type": "subnet"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "default-subnet"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:VPC:default:default",
+      "node_type": "VPC",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "my-project",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "ext-gcp-vpc-1",
+        "gcp_project_id": "my-project",
+        "is_active": true,
+        "labels": {},
+        "name": "default",
+        "nb_account_id": "gcp-account-1",
+        "nb_resource_id": "gcp-res-10",
+        "region": "us-central1",
+        "resource_id": "gcp-vpc-1",
+        "service_name": "Networking",
+        "source": "gcp",
+        "status": "active",
+        "subtype": "networking",
+        "type": "networking"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "default"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:my-project:gke-my-cluster-default-pool-abc12345",
+      "dst_key": "gcp:test-account-gcp-1:us-central1:Subnet:default-subnet:default-subnet",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "subnet",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:my-project:gke-my-cluster-default-pool-abc12345",
+      "dst_key": "gcp:test-account-gcp-1:us-central1:VPC:default:default",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:my-project:web-server-1",
+      "dst_key": "gcp:test-account-gcp-1:us-central1:Subnet:default-subnet:default-subnet",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "subnet",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:my-project:web-server-1",
+      "dst_key": "gcp:test-account-gcp-1:us-central1:VPC:default:default",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:Database:my-sql-instance:my-sql-instance",
+      "dst_key": "gcp:test-account-gcp-1:us-central1:VPC:default:default",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:ManagedCluster:my-cluster:my-cluster",
+      "dst_key": "gcp:test-account-gcp-1:us-central1:Subnet:default-subnet:default-subnet",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "subnet",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:ManagedCluster:my-cluster:my-cluster",
+      "dst_key": "gcp:test-account-gcp-1:us-central1:VPC:default:default",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:Subnet:default-subnet:default-subnet",
+      "dst_key": "gcp:test-account-gcp-1:us-central1:VPC:default:default",
+      "relationship_type": "BELONGS_TO",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "vpc_inferred",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    }
+  ]
+}

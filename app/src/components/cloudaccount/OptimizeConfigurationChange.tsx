@@ -6,7 +6,7 @@ import { getLast7Days } from '@lib/datetime';
 import CloudAccountTable from './CloudAccountTable';
 import { usePagination } from '@hooks/usePagination';
 import apiRecommendations from '@api1/recommendation';
-import type { ICustomTableRow } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/types';
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import { Box, Grid, Typography, CircularProgress } from '@mui/material';
 import SummaryWidget from '@components/optimise/SummaryWidget';

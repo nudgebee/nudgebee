@@ -359,34 +359,6 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 
 		c.JSON(200, response)
 
-	case "event_rca_writeback":
-		// Internal service-to-service action: llm-server calls this after an RCA
-		// report is saved so api-server can post it back onto the source incident.
-		var request event.RCAWritebackRequest
-		requestData := actionRequest
-		if reqMap, ok := actionRequest["request"].(map[string]any); ok {
-			requestData = reqMap
-		} else if objMap, ok := actionRequest["object"].(map[string]any); ok {
-			requestData = objMap
-		}
-		if err := common.UnmarshalMapToStruct(requestData, &request); err != nil {
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-
-		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
-		if err != nil {
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-
-		if err := event.ProcessRCAWriteback(ctx, request); err != nil {
-			ctx.GetLogger().Error("event_rca_writeback: failed", "error", err, "event_id", request.EventId)
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-		c.JSON(200, gin.H{"status": "ok"})
-
 	default:
 		c.JSON(400, common.ErrorActionBadRequest("invalid action name - "+actionPayload.Action.Name))
 	}

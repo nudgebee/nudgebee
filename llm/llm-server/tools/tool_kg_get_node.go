@@ -30,7 +30,8 @@ func (t KGGetNodeTool) Description() string {
 	return `Fetch the full payload of a single Knowledge Graph node by ID — the drill-down companion to kg_search_nodes and kg_traverse. ` +
 		`Returns the complete node detail including properties, labels, source, category, level, and timestamps. ` +
 		`The KG does not carry runtime metrics — use service_dependency_graph for latency / error-rate / traffic-volume data. ` +
-		`Typical chain: kg_search_nodes (find candidate IDs) → kg_get_node (inspect one in detail), or kg_traverse (locate a node in the topology) → kg_get_node (inspect properties).`
+		`Typical chain: kg_search_nodes (find candidate IDs) → kg_get_node (inspect one in detail), or kg_traverse (locate a node in the topology) → kg_get_node (inspect properties). ` +
+		`Input: {"node_id":"<uuid>"} (or the bare UUID string).`
 }
 
 func (t KGGetNodeTool) InputSchema() core.ToolSchema {

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"nudgebee/code-analysis-agent/common"
@@ -589,12 +590,56 @@ func repoKeyFromURL(repoURL string) string {
 	return u
 }
 
+// repoLocks serializes base-clone / fetch / worktree-add per repository. Without
+// it, two concurrent analyses of the same repo both observe a missing base and
+// each perform a full bare clone (the "re-cloned all 9,199 files" waste), and
+// the reuse path's mutations of the shared bare-repo config (remote set-url /
+// set-branches, plus worktree metadata) race. Keyed by repoKey so different
+// repos still prepare in parallel. Locks are process-lived and never removed —
+// the set is bounded by the number of distinct repos a workspace pod sees.
+//
+// Implemented as a per-repo buffered channel (cap 1) rather than a sync.Mutex so
+// the wait is context-aware: since holding the lock spans a multi-minute clone /
+// fetch, a queued dispatch whose context is cancelled must be able to bail out
+// instead of blocking on an uninterruptible Mutex.Lock() for that whole window.
+var (
+	repoLocksMu sync.Mutex
+	repoLocks   = map[string]chan struct{}{}
+)
+
+// lockForRepo returns the per-repo semaphore: a cap-1 channel pre-filled with a
+// token. Receive from it to acquire the lock; send back to release.
+func lockForRepo(repoKey string) chan struct{} {
+	repoLocksMu.Lock()
+	defer repoLocksMu.Unlock()
+	ch, ok := repoLocks[repoKey]
+	if !ok {
+		ch = make(chan struct{}, 1)
+		ch <- struct{}{}
+		repoLocks[repoKey] = ch
+	}
+	return ch
+}
+
 // CloneOrReuseRepository clones a repo to a persistent base directory or reuses an existing clone.
 // It creates a git worktree for the requested branch in worktreeDir for session isolation.
 // Returns a CloneResult pointing to the worktree path.
 func (gc *GitClient) CloneOrReuseRepository(ctx context.Context, repoURL string, creds *credentials.ResolvedCredentials, branch string, worktreeDir string) (*CloneResult, error) {
 	repoKey := repoKeyFromURL(repoURL)
 	baseDir := filepath.Join(gc.workspaceDir, "repos", repoKey)
+
+	// Serialize base preparation + worktree creation for this repo so concurrent
+	// same-repo dispatches reuse one bare clone instead of racing into duplicate
+	// full clones and colliding on the shared base config. Different repos use
+	// different locks and still run in parallel. Context-aware so a cancelled
+	// dispatch waiting behind another repo's in-flight clone returns promptly.
+	repoLock := lockForRepo(repoKey)
+	select {
+	case <-repoLock:
+		defer func() { repoLock <- struct{}{} }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 
 	gc.logger.Log(common.EventStepStart, "Clone or reuse repository", map[string]any{
 		"repo_url":     repoURL,
@@ -673,11 +718,21 @@ func (gc *GitClient) CloneOrReuseRepository(ctx context.Context, repoURL string,
 		ref = "origin/" + branch
 	}
 
+	// Resolve the ref to a concrete commit so the checkout is deterministic even
+	// if the branch tip moves mid-run, and so the CloneResult reports exactly the
+	// commit that was analyzed. Falls back to the symbolic ref if rev-parse fails.
+	checkoutRef := ref
+	if out, err := exec.CommandContext(ctx, "git", "-C", baseDir, "rev-parse", ref).Output(); err == nil {
+		if sha := strings.TrimSpace(string(out)); sha != "" {
+			checkoutRef = sha
+		}
+	}
+
 	// Create worktree
 	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create worktree directory: %w", err)
 	}
-	wtCmd := exec.CommandContext(ctx, "git", "-C", baseDir, "worktree", "add", "--detach", worktreeDir, ref)
+	wtCmd := exec.CommandContext(ctx, "git", "-C", baseDir, "worktree", "add", "--detach", worktreeDir, checkoutRef)
 	if out, err := wtCmd.CombinedOutput(); err != nil {
 		// If detach with ref fails, try without ref (use HEAD)
 		gc.logger.Log(common.EventStepFailure, "Worktree add with ref failed, trying HEAD", map[string]any{"error": err.Error(), "output": string(out), "ref": ref})

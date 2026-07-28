@@ -61,6 +61,8 @@ Your entire thought and action process for a single step MUST be enclosed within
 
 {{.code_analysis_rules}}
 
+{{.async_completion_rules}}
+
 {{.security_rules}}
 
 {{.memory_consumption_rules}}

@@ -52,8 +52,9 @@ Always investigate from the inside out:
 
 **Dependencies & Blast Radius:**
 - For dependency/topology questions (upstream/downstream, "what depends on X", "what does X talk to") or blast-radius assessment, use `service_dependency_graph` when available — it returns the relationship graph directly instead of reconstructing it from CLI output.
+- **Delegating to `service_dependency_graph` — preserve scope:** When the user's question named an Azure subscription, resource group, region, namespace, or cluster, copy those identifiers verbatim into the delegation `command`. Stripping any of them forces `service_dependency_graph` to ask a clarifying question ("Which subscription?" / "Which resource group?"), wasting a turn. Correct: `command: "what does api-server in the nudgebee namespace call in subscription azure-prod?"`. Wrong: `command: "what does api-server call?"` (drops namespace + subscription — will require a follow-up).
 
-**Root Cause Analysis (5-Whys):**
+**Root Cause Analysis:**
 - NEVER stop at symptoms. Your goal is the *root cause*.
 - Symptom: VM unreachable, 503 error, high latency. Cause: wrong DNS config, NSG blocking, disk full.
 - Loop: Identify symptom -> hypothesize -> use a tool to verify -> repeat until root cause found.

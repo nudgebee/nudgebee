@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { getUserSession } from '@lib/auth';
+import { useSession } from 'next-auth/react';
 
 // Hardcoded fallback defaults — used during SSR and before the runtime config fetch resolves.
 // These are also exported so existing direct imports continue to work as safe fallbacks.
@@ -96,6 +96,38 @@ export const useBrandingConfig = () => {
 };
 
 /**
+ * Runtime feature flag for background watches. Driven by LLM_SERVER_WATCH_ENABLED
+ * on llm-server and surfaced to the client via /api/public/app_config
+ * (`watchEnabled`). The chat UI polls the watch-list endpoint only when this is
+ * true — llm-server unmounts the /v1/watches route when the flag is off, so
+ * gating here avoids the otherwise-guaranteed 404 per conversation.
+ *
+ * Starts false on both server and client (matching useBrandingConfig) to avoid
+ * a hydration mismatch, then resolves from the eagerly-fetched config cache.
+ */
+export const useWatchFeatureEnabled = () => {
+  const [enabled, setEnabled] = useState(false);
+
+  useEffect(() => {
+    if (_configCache) {
+      setEnabled(!!_configCache.watchEnabled);
+      return undefined;
+    }
+    let mounted = true;
+    fetchBrandingConfig().then((data) => {
+      if (mounted) {
+        setEnabled(!!data?.watchEnabled);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  return enabled;
+};
+
+/**
  * Non-hook getter for nubi icon URLs.
  * Reads from the eagerly-fetched config cache, falling back to defaults.
  * Safe to call from plain functions (e.g. getIcon) after initial page load.
@@ -122,6 +154,11 @@ const BRANDING_ASSETS = {
   k8sBee: { configKey: 'k8sBeeUrl', defaultFile: 'k8s-bee.svg' },
   newUserBee: { configKey: 'newUserBeeUrl', defaultFile: 'troubleshoot_empty_state.png' },
   securityBee: { configKey: 'securityBeeUrl', defaultFile: 'security_empty_state.png' },
+  // Optional onboarding GIF for the "connect a cluster" help popup. No default
+  // ships (the popup falls back to the live interactive walkthrough, which is
+  // brand-correct everywhere) — a white-label tenant sets connectClusterGifUrl
+  // in their theme.json to show their own recording instead.
+  connectClusterGif: { configKey: 'connectClusterGifUrl', defaultFile: 'connect-cluster.gif' },
 };
 
 export const getBrandingAsset = (key) => {
@@ -145,7 +182,7 @@ export const getBrandingAsset = (key) => {
  *   - isDefaultTenant: true if tenant is nudgebee/default
  */
 export const useTenantBranding = () => {
-  const session = getUserSession();
+  const { data: session } = useSession();
   const tenantName = session?.tenant?.tenant?.name || '';
   const tenantKey = useMemo(() => getTenantKey(tenantName), [tenantName]);
   const isDefaultTenant = !tenantKey || tenantKey === 'nudgebee';

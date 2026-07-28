@@ -1,13 +1,16 @@
 package services
 
 import (
+	"errors"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"nudgebee/tickets-server/models"
 	ticketmgr "nudgebee/tickets-server/services/ticket"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lib/pq"
 )
 
 // fakeManager is a no-op TicketManager that counts GetCreateMeta calls so we can
@@ -81,5 +84,52 @@ func TestFetchCreateMetaCached(t *testing.T) {
 	// Unknown tool surfaces a clear error rather than caching nonsense.
 	if _, err := fetchCreateMetaCached(ctx, models.TicketConfigurations{ID: "x", Tool: "nope_tool"}, "P"); err == nil {
 		t.Error("expected error for unregistered tool")
+	}
+}
+
+// TestShouldRehydrateCredentials pins the id gate: a create (no id) must not
+// rehydrate, so a token config can't inherit a same-named App's auth_type (#33173).
+func TestShouldRehydrateCredentials(t *testing.T) {
+	cases := []struct {
+		name     string
+		id       string
+		password string
+		authType string
+		want     bool
+	}{
+		{"create with token, no auth_type (the reported bug) -> no rehydrate", "", "ghp_pat", "", false},
+		{"create with token and auth_type -> no rehydrate", "", "ghp_pat", "token", false},
+		{"create with everything blank, no id -> no rehydrate", "", "", "", false},
+		{"edit, password omitted -> rehydrate", "cfg-1", "", "token", true},
+		{"edit, auth_type omitted -> rehydrate", "cfg-1", "ghp_pat", "", true},
+		{"edit, both omitted -> rehydrate", "cfg-1", "", "", true},
+		{"edit, both present -> no rehydrate", "cfg-1", "ghp_pat", "application", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ShouldRehydrateCredentials(tc.id, tc.password, tc.authType); got != tc.want {
+				t.Errorf("ShouldRehydrateCredentials(%q, %q, %q) = %v, want %v", tc.id, tc.password, tc.authType, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDuplicateNameError: a 23505 becomes a friendly name-bearing message; every
+// other error passes through as nil.
+func TestDuplicateNameError(t *testing.T) {
+	if err := duplicateNameError(&pq.Error{Code: "23505"}, "acme", "github"); err == nil {
+		t.Fatal("expected a friendly error for a 23505 unique violation, got nil")
+	} else if !strings.Contains(err.Error(), "acme") || !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("friendly error missing name/context: %q", err.Error())
+	}
+
+	if err := duplicateNameError(&pq.Error{Code: "23503"}, "acme", "github"); err != nil {
+		t.Errorf("non-23505 pq error should pass through as nil, got %v", err)
+	}
+	if err := duplicateNameError(errors.New("connection refused"), "acme", "github"); err != nil {
+		t.Errorf("non-pq error should pass through as nil, got %v", err)
+	}
+	if err := duplicateNameError(nil, "acme", "github"); err != nil {
+		t.Errorf("nil error should pass through as nil, got %v", err)
 	}
 }

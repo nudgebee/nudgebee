@@ -26,6 +26,11 @@ const getCurrencySymbol = (currency: string): string => {
 
 export function useSummaryData() {
   const [accounts, setAccounts] = useState<Record<string, { account_name: string; cloud_provider: string }>>({});
+  // Whether the accounts fetch has settled (success OR failure). `accounts` being
+  // empty alone can't tell "still loading" from "loaded, none" (upstream down /
+  // no cloud accounts) — this flag does, so the cost effect can clear costLoading
+  // on a genuinely empty account set instead of leaving the card on a skeleton.
+  const [accountsLoaded, setAccountsLoaded] = useState(false);
   const [rawApiRows, setRawApiRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -56,6 +61,8 @@ export function useSummaryData() {
         setAccounts(map);
       } catch (err) {
         console.error('Failed to fetch accounts:', err);
+      } finally {
+        if (!cancelled) setAccountsLoaded(true);
       }
     })();
     return () => {
@@ -140,7 +147,14 @@ export function useSummaryData() {
   // per-origin connection limit and dominated first load.
   useEffect(() => {
     const accountIds = Object.keys(accounts);
-    if (accountIds.length === 0) return;
+    if (accountIds.length === 0) {
+      // No accounts to fetch cost for. Once the accounts fetch has settled with
+      // none (upstream unreachable / no cloud accounts), clear costLoading so the
+      // Cost & Health card drops to its empty state instead of a perpetual
+      // skeleton. While accounts are still loading, leave the skeleton up.
+      if (accountsLoaded) setCostLoading(false);
+      return;
+    }
     let cancelled = false;
     setCostLoading(true);
 
@@ -236,7 +250,7 @@ export function useSummaryData() {
     return () => {
       cancelled = true;
     };
-  }, [accounts]);
+  }, [accounts, accountsLoaded]);
 
   return {
     accounts,

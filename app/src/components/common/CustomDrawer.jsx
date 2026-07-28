@@ -2,10 +2,60 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import PropTypes from 'prop-types';
 import { Drawer, Box, Typography, IconButton, Paper } from '@mui/material';
+import { useForkRef } from '@mui/material/utils';
+import { Transition } from 'react-transition-group';
 import CloseIcon from '@mui/icons-material/Close';
 import { ds } from 'src/utils/colors';
 
-const SECONDARY_TRANSITION_MS = 260;
+const SECONDARY_TRANSITION_MS = 360;
+const SECONDARY_EASE = 'cubic-bezier(0.16, 1, 0.3, 1)';
+
+const DRAWER_MS = 420;
+const DRAWER_EASE = 'cubic-bezier(0.16, 1, 0.3, 1)';
+const DRAWER_TRANSITION = `opacity ${DRAWER_MS}ms ${DRAWER_EASE}, transform ${DRAWER_MS}ms ${DRAWER_EASE}`;
+
+// Read a layout prop to flush pending styles so the browser animates from the
+// hidden state instead of snapping straight to shown.
+const reflow = (node) => node && node.scrollTop;
+
+const SoftDrawerTransition = React.forwardRef(function SoftDrawerTransition({ children, in: inProp, onEnter, onExited }, ref) {
+  const nodeRef = useRef(null);
+  const handleRef = useForkRef(nodeRef, ref);
+  return (
+    <Transition
+      nodeRef={nodeRef}
+      in={inProp}
+      appear
+      timeout={DRAWER_MS}
+      // MUI's Modal relies on onEnter/onExited to flush styles and to unmount.
+      onEnter={() => {
+        reflow(nodeRef.current);
+        onEnter?.(nodeRef.current);
+      }}
+      onExited={() => onExited?.(nodeRef.current)}
+    >
+      {(state) => {
+        const shown = state === 'entering' || state === 'entered';
+        return React.cloneElement(children, {
+          ref: handleRef,
+          style: {
+            transition: DRAWER_TRANSITION,
+            opacity: shown ? 1 : 0,
+            transform: shown ? 'translateX(0)' : 'translateX(24px)',
+            ...children.props.style,
+          },
+        });
+      }}
+    </Transition>
+  );
+});
+
+SoftDrawerTransition.propTypes = {
+  children: PropTypes.element.isRequired,
+  in: PropTypes.bool,
+  onEnter: PropTypes.func,
+  onExited: PropTypes.func,
+};
 
 const STORAGE_KEY = 'nb.customDrawer.width';
 const MIN_WIDTH = 320;
@@ -169,10 +219,22 @@ DrawerHeader.propTypes = {
 };
 
 const MODERN_INSET = 16;
-const MODERN_RADIUS = 16;
+const MODERN_RADIUS = 10;
 
-const CustomDrawer = ({ open, onClose, title, width = ds.space.mul(0, 225), children, onWidthChange, resizable = true, variant = 'default' }) => {
-  const { width: drawerWidth, handleMouseDown } = useDrawerResize(width, STORAGE_KEY, resizable);
+const CustomDrawer = ({
+  open,
+  onClose,
+  title,
+  width = ds.space.mul(0, 225),
+  children,
+  onWidthChange,
+  resizable = true,
+  variant = 'default',
+  bare = false,
+  storageKey = STORAGE_KEY,
+  nonModal = false,
+}) => {
+  const { width: drawerWidth, handleMouseDown } = useDrawerResize(width, storageKey, resizable);
   const effectiveWidth = drawerWidth;
   const isModern = variant === 'modern';
 
@@ -186,17 +248,38 @@ const CustomDrawer = ({ open, onClose, title, width = ds.space.mul(0, 225), chil
       variant='temporary'
       open={open}
       onClose={onClose}
-      sx={{ zIndex: 1200 }}
+      // In non-modal mode the Modal root would still cover the viewport and
+      // swallow clicks, so make the root click-through and re-enable pointer
+      // events on the Paper only — letting the user work with the page behind.
+      sx={{ zIndex: 1200, ...(nonModal && { pointerEvents: 'none' }) }}
+      TransitionComponent={SoftDrawerTransition}
+      transitionDuration={DRAWER_MS}
+      hideBackdrop={nonModal}
+      ModalProps={
+        nonModal
+          ? {
+              // Keep focus, scrolling, and clicks free for the page behind.
+              disableScrollLock: true,
+              disableEnforceFocus: true,
+              disableAutoFocus: true,
+              disableRestoreFocus: true,
+            }
+          : undefined
+      }
       slotProps={{
         backdrop: {
-          sx: { backgroundColor: `color-mix(in srgb, ${ds.gray[700]} 25%, transparent)` },
+          sx: { backgroundColor: `color-mix(in srgb, ${ds.gray[700]} 15%, transparent)` },
         },
       }}
       PaperProps={{
+        tabIndex: -1,
         sx: {
           width: `${effectiveWidth}px`,
           maxWidth: '100vw',
           overflow: 'hidden',
+          border: `1px solid ${ds.gray.alpha[300]}`,
+          overscrollBehavior: 'contain',
+          ...(nonModal && { pointerEvents: 'auto' }),
           ...(isModern
             ? {
                 top: `${MODERN_INSET}px`,
@@ -205,7 +288,7 @@ const CustomDrawer = ({ open, onClose, title, width = ds.space.mul(0, 225), chil
                 height: 'auto',
                 borderRadius: `${MODERN_RADIUS}px`,
                 backgroundColor: ds.background[200],
-                boxShadow: `0 ${ds.space[3]} ${ds.space[6]} color-mix(in srgb, ${ds.gray[700]} 16%, transparent)`,
+                boxShadow: `0 ${ds.space[3]} ${ds.space[4]} color-mix(in srgb, ${ds.gray[700]} 16%, transparent)`,
               }
             : {
                 boxShadow: `${ds.space.mul(1, -1)} 0 ${ds.space[3]} ${ds.gray.alpha[200]}`,
@@ -214,8 +297,14 @@ const CustomDrawer = ({ open, onClose, title, width = ds.space.mul(0, 225), chil
       }}
     >
       {resizable && <ResizeHandle onMouseDown={handleMouseDown} />}
-      <DrawerHeader title={title} onClose={onClose} />
-      <Box sx={{ flex: 1, overflowY: 'auto', px: 'var(--ds-space-4)', py: 'var(--ds-space-4)' }}>{children}</Box>
+      {bare ? (
+        children
+      ) : (
+        <>
+          <DrawerHeader title={title} onClose={onClose} />
+          <Box sx={{ flex: 1, overflowY: 'auto', px: 'var(--ds-space-4)', py: 'var(--ds-space-4)' }}>{children}</Box>
+        </>
+      )}
     </Drawer>
   );
 };
@@ -229,6 +318,9 @@ CustomDrawer.propTypes = {
   onWidthChange: PropTypes.func,
   resizable: PropTypes.bool,
   variant: PropTypes.oneOf(['default', 'modern']),
+  bare: PropTypes.bool,
+  storageKey: PropTypes.string,
+  nonModal: PropTypes.bool,
 };
 
 const SecondaryDrawer = ({ open, onClose, title, rightOffset = 0, defaultWidth = '40%', children, variant = 'default' }) => {
@@ -283,8 +375,8 @@ const SecondaryDrawer = ({ open, onClose, title, rightOffset = 0, defaultWidth =
         width: revealed ? `${effectiveWidth}px` : '0px',
         maxWidth: '100vw',
         overflow: 'hidden',
-        zIndex: 1401,
-        transition: `width ${SECONDARY_TRANSITION_MS}ms cubic-bezier(0.4, 0, 0.2, 1)`,
+        zIndex: 1250,
+        transition: `width ${SECONDARY_TRANSITION_MS}ms ${SECONDARY_EASE}`,
         pointerEvents: revealed ? 'auto' : 'none',
         ...(isModern && { borderRadius: `${MODERN_RADIUS}px` }),
       }}

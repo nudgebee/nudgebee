@@ -302,7 +302,9 @@ const SummaryView = () => {
             gap: ds.space[4],
             position: 'sticky',
             top: 0,
-            zIndex: 2,
+            // Keep below the global tab bar (AnchorComponent is z-index 2) so the
+            // Auto Optimize tab's hover dropdown isn't covered by this sticky card.
+            zIndex: 1,
           }}
         >
           {loading || savingsLoading ? (
@@ -401,6 +403,11 @@ const SummaryView = () => {
                   : 'Your infrastructure looks well-optimised. Check back later.'
               }
               action={hasActiveFilter ? { label: 'Clear filters', onClick: clearAll } : undefined}
+              // The success tone draws its own green card; the neutral (filtered)
+              // tone is box-less by default, which read as inconsistent next to it.
+              // Give the filtered state a matching neutral card so both empty
+              // states share the same boxed treatment.
+              sx={hasActiveFilter ? { backgroundColor: ds.gray[100], border: `1px solid ${ds.gray[200]}` } : undefined}
             />
           )}
           {!loading && filtered.length > 0 && (

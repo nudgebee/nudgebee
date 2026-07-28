@@ -40,7 +40,17 @@ func (c *appConfig) GetFloat64(key string, defaultValue float64) float64 {
 
 var Config appConfig
 
-const SERVICE_NAME = "llm-server"
+// SERVICE_NAME is the worker_type used in the leader-election table (nb_workers).
+// Defaults to "llm-server" so production behavior is unchanged. Local developers
+// can override via LLM_SERVER_SERVICE_NAME=llm-server-<dev> to opt out of the
+// shared election pool — each dev's local llm-server then has its own pool of
+// one, always wins the leader lease, and runs the watch dispatcher reliably.
+var SERVICE_NAME = func() string {
+	if v := os.Getenv("LLM_SERVER_SERVICE_NAME"); v != "" {
+		return v
+	}
+	return "llm-server"
+}()
 
 type appConfig struct {
 	Port string `mapstructure:"port"`
@@ -194,6 +204,41 @@ type appConfig struct {
 	// skill-lists menu) in the human message instead of the cacheable system
 	// prefix. Off keeps the legacy in-prompt <skill-lists> + lazy load_skills flow.
 	LlmServerKBPrestepEnabled bool `mapstructure:"llm_server_kb_prestep_enabled"`
+	// LlmServerToolSchemaValidationTools is a comma-separated allowlist of tool
+	// names for which the framework treats the InputSchema as authoritative.
+	// A tool on this list has BOTH of the following applied by the framework:
+	//
+	//   1. Its InputSchema is rendered into the AVAILABLE TOOLS block for the
+	//      LLM as a compact "Input: object with fields:" line-list (via
+	//      agents/core/utils.go:renderInputSchema) — the LLM sees required
+	//      fields, types, and enum values at plan-time instead of having to
+	//      infer them from prose.
+	//   2. Its input is validated pre-execution against the schema (types,
+	//      required, enums, RequiredOneOf) — handled by the coordinated
+	//      schema-validation PR (piyushbhavsarr/nudgebee-enterprise#31271).
+	//
+	// The same allowlist gates BOTH intentionally. A tool whose schema is
+	// authoritative enough to render is also authoritative enough to enforce.
+	// Splitting the two would create tools where the LLM sees a schema the
+	// framework won't hold it to — confusing feedback loop.
+	//
+	// Empty (default) = both features OFF for every tool. Special value "*"
+	// = both ON for every registered tool.
+	//
+	// Per-tool gating is used here rather than a global on/off because most
+	// existing tools have InputSchema declarations that don't match how their
+	// Call() actually accepts input (schema says one required "command",
+	// Call() unpacks a bunch of top-level fields — legacy pattern documented
+	// in tool_postgres.go's Call() and elsewhere). Making those schemas
+	// visible + enforced would push the LLM toward a different tool_input
+	// shape than the agent prompt teaches, drifting the DB `parameters`
+	// column and downstream consumers. The right sequence is: reconcile each
+	// tool's schema with its Call() reality, then add the tool to this list,
+	// then watch `parameters` shape stability, then flip the next tool.
+	// Bootstrap default: "think", which is the tool that motivated the whole
+	// feature (88% error rate in PR #33748 investigation) and has a schema
+	// that already matches its Call() behaviour.
+	LlmServerToolSchemaValidationTools string `mapstructure:"llm_server_tool_schema_validation_tools"`
 	// LlmServerMaxToolOutputLen caps a successful tool response at the source,
 	// before it enters cache, DB, or scratchpad. 0 disables truncation.
 	LlmServerMaxToolOutputLen int `mapstructure:"llm_server_max_tool_output_len"`
@@ -363,7 +408,23 @@ type appConfig struct {
 	LlmServerReActCritiqueEnabled bool `mapstructure:"llm_server_react_critique_enabled"`
 	LlmServerReAct3Enabled        bool `mapstructure:"llm_server_react3_enabled"`
 	LlmServerRewooToReact3Enabled bool `mapstructure:"llm_server_rewoo_to_react3_enabled"`
-	LlmServerThinkToolEnabled     bool `mapstructure:"llm_server_think_tool_enabled"`
+	// LlmServerThinkToolEnabled gates injection of the `think` tool into the
+	// six orchestrator agents (k8s / aws / azure / gcp / datadog / finops).
+	// Default flipped to false 2026-07-12 after 30d prod data showed the
+	// tool has never produced actionable reasoning:
+	//   - 88% of think calls were rejected by the in-Call narration guard
+	//     (#33080) as "not reasoning, just narration"
+	//   - Of the ~12% that passed, every sampled case was still narration
+	//     that the guard's regex happened to miss ("I have enough info,
+	//     will now provide final answer" x N)
+	//   - Zero observed cases where think meaningfully changed the model's
+	//     next action; the ReAct3 <thought> block already carries any
+	//     genuine reasoning inline
+	// Kept as a flag (not deleted) so ops can re-enable per-env for a
+	// week-long observation window; if signal remains flat, follow-up
+	// PR deletes the tool + all injection sites entirely.
+	// Rollback: set LLM_SERVER_THINK_TOOL_ENABLED=true in the env.
+	LlmServerThinkToolEnabled bool `mapstructure:"llm_server_think_tool_enabled"`
 	// KGToolsEnabled gates Knowledge Graph tools (kg_list_nodes, kg_list_path) on
 	// the service_dependency_graph agent, enabling static topology + CALLS queries
 	// alongside runtime metrics. Defaults to false — enable per-tenant for canary first.
@@ -373,11 +434,6 @@ type appConfig struct {
 	// Split from KGToolsEnabled so the drill-down can be canaried or disabled
 	// separately if its payload size or latency proves problematic.
 	KGGetNodeEnabled bool `mapstructure:"llm_server_kg_get_node_enabled"`
-	// ServiceDependencyGraphV2Enabled selects the KG-only V2 implementation of the
-	// service_dependency_graph agent. V1 and V2 register under the SAME name
-	// ("service_dependency_graph") and are mutually exclusive at process start —
-	// exactly one of them runs RegisterNBAgentFactoryAndTool. Defaults to false.
-	ServiceDependencyGraphV2Enabled bool `mapstructure:"llm_server_service_dependency_graph_v2_enabled"`
 	// LlmServerSkillSelectionTopK, when > 0, enables question-aware skill selection.
 	// At top-level entry the executor scores every active KB mapped to the agent
 	// (or any inherited ancestor) against the user's question and keeps only the top
@@ -414,8 +470,23 @@ type appConfig struct {
 	// window — instead of a flat step count — stops compression from firing on small
 	// conversations. Default 0.75; values <=0 or >=1 fall back to the default.
 	LlmServerScratchpadCompressionActivationFraction float64 `mapstructure:"llm_server_scratchpad_compression_activation_fraction"`
-	EvaluationEnabled                                bool    `mapstructure:"llm_server_evaluation_enabled"`
-	AutoIdentifyAccountEnabled                       bool    `mapstructure:"llm_server_auto_identify_account_enabled"`
+	// LlmServerSubAgentEvidenceEnabled attaches a small, budget-bounded manifest of the
+	// concrete tool calls a sub-agent actually ran (tool + input + short output digest) to
+	// the observation the parent orchestrator ingests — carried as a SEPARATE field, not
+	// concatenated into the observation text, so it is exempt from scratchpad compression
+	// (the raw observation may be summarized as it ages; this distilled manifest survives
+	// verbatim). Without it the parent sees only the sub-agent's prose conclusion and cannot
+	// verify or reconcile the real artifacts (the query EXPLAIN'd, the grep that produced a
+	// count, etc.). Default false (opt-in).
+	LlmServerSubAgentEvidenceEnabled bool `mapstructure:"llm_server_sub_agent_evidence_enabled"`
+	// LlmServerSubAgentEvidenceMaxChars is the HARD total byte budget for that manifest. The
+	// whole block is capped here regardless of how many steps a sub-agent ran or how large
+	// their raw outputs were — a multi-MB fetch_logs step cannot inflate the parent context
+	// because the manifest is assembled newest-first (most-distilled steps win) and truncated
+	// to this budget. Default 2048; clamped to a 256 minimum.
+	LlmServerSubAgentEvidenceMaxChars int  `mapstructure:"llm_server_sub_agent_evidence_max_chars"`
+	EvaluationEnabled                 bool `mapstructure:"llm_server_evaluation_enabled"`
+	AutoIdentifyAccountEnabled        bool `mapstructure:"llm_server_auto_identify_account_enabled"`
 
 	// Termination cache configs
 	LlmServerMessageTerminationCacheTTLSeconds int `mapstructure:"llm_server_message_termination_cache_ttl_seconds"`
@@ -554,6 +625,36 @@ type appConfig struct {
 	// complexity tier replaces the flat baseline in a later phase.
 	ProductivityManualBaselineMinutes int     `mapstructure:"llm_productivity_manual_baseline_minutes"`
 	ProductivityEngineerHourlyRateUsd float64 `mapstructure:"llm_productivity_engineer_hourly_rate_usd"`
+
+	// Watch (background-poll-and-notify) feature.
+	// When enabled, agents can register a "watch" via the watch_resource tool;
+	// a leader-elected dispatcher polls each watch's source on a fixed cadence,
+	// evaluates a predicate, and notifies the user's conversation on termination.
+	WatchEnabled               bool `mapstructure:"llm_server_watch_enabled"`
+	WatchDispatcherIntervalSec int  `mapstructure:"llm_server_watch_dispatcher_interval_sec"`
+	WatchWorkerCount           int  `mapstructure:"llm_server_watch_worker_count"`
+	WatchWorkerQueueSize       int  `mapstructure:"llm_server_watch_worker_queue_size"`
+	WatchMinIntervalSec        int  `mapstructure:"llm_server_watch_min_interval_sec"`
+	WatchMaxDurationSec        int  `mapstructure:"llm_server_watch_max_duration_sec"`
+	WatchMaxPerTenant          int  `mapstructure:"llm_server_watch_max_per_tenant"`
+	WatchMaxFailures           int  `mapstructure:"llm_server_watch_max_failures"`
+	WatchPrimingPollTimeoutSec int  `mapstructure:"llm_server_watch_priming_poll_timeout_sec"`
+	WatchSubmitTimeoutSec      int  `mapstructure:"llm_server_watch_submit_timeout_sec"`
+	WatchPollTimeoutSec        int  `mapstructure:"llm_server_watch_poll_timeout_sec"`
+	WatchSummarizerTimeoutSec  int  `mapstructure:"llm_server_watch_summarizer_timeout_sec"`
+	WatchDispatchBatchSize     int  `mapstructure:"llm_server_watch_dispatch_batch_size"`
+	// WatchSqlSourceEnabled gates the sql watch source kind separately from
+	// the overall feature flag. The sql source executes agent-authored
+	// SELECTs against the metastore in a READ ONLY tx — the predicate stays
+	// safe but the query has no per-tenant row filter (a SELECT on a
+	// shared table will see all tenants). Default false until that path
+	// runs under a tenant-scoped role / RLS.
+	WatchSqlSourceEnabled bool `mapstructure:"llm_server_watch_sql_source_enabled"`
+	// WatchBypassLeaderElection skips the leader-elected scheduler and runs
+	// the dispatcher tick in a plain goroutine on every replica. Intended
+	// for local demos where a shared dev DB has cluster pods holding the
+	// lease. Never set this in a multi-replica production deployment.
+	WatchBypassLeaderElection bool `mapstructure:"llm_server_watch_bypass_leader_election"`
 }
 
 func (a appConfig) SetString(key string, value string) {
@@ -624,6 +725,11 @@ func init() {
 	viper.SetDefault("llm_server_max_skill_content_length", 5000)
 	viper.SetDefault("llm_server_integration_kb_enabled", true)
 	viper.SetDefault("llm_server_kb_prestep_enabled", false)
+	// Bootstrap: only `think` gets schema-authoritative treatment (renderer +
+	// validator). Other tools stay text-description-only until their schema
+	// is reconciled with their Call() acceptance shape. See
+	// LlmServerToolSchemaValidationTools docstring.
+	viper.SetDefault("llm_server_tool_schema_validation_tools", "think")
 	viper.SetDefault("llm_server_max_tool_output_len", 65536)
 	viper.SetDefault("llm_server_max_tool_error_output_len", 16384)
 
@@ -809,10 +915,12 @@ func init() {
 	viper.SetDefault("llm_server_react_critique_enabled", false)
 	viper.SetDefault("llm_server_react3_enabled", true)
 	viper.SetDefault("llm_server_rewoo_to_react3_enabled", true)
-	viper.SetDefault("llm_server_think_tool_enabled", true)
+	// Flipped false 2026-07-12 — see LlmServerThinkToolEnabled docstring.
+	// Any env that wants the tool back sets LLM_SERVER_THINK_TOOL_ENABLED=true
+	// (env override still wins over SetDefault).
+	viper.SetDefault("llm_server_think_tool_enabled", false)
 	viper.SetDefault("llm_server_kg_tools_enabled", true)
 	viper.SetDefault("llm_server_kg_get_node_enabled", false)
-	viper.SetDefault("llm_server_service_dependency_graph_v2_enabled", true)
 	viper.SetDefault("llm_server_evaluation_enabled", false)
 	viper.SetDefault("llm_server_auto_identify_account_enabled", false)
 	viper.SetDefault("llm_server_image_support_enabled", false)
@@ -923,8 +1031,45 @@ func init() {
 	viper.SetDefault("llm_productivity_manual_baseline_minutes", 25)
 	viper.SetDefault("llm_productivity_engineer_hourly_rate_usd", 5.0)
 
+	// Watch (background-poll-and-notify) defaults. Disabled by default — opt in via env.
+	viper.SetDefault("llm_server_watch_enabled", false)
+	viper.SetDefault("llm_server_watch_dispatcher_interval_sec", 10)
+	viper.SetDefault("llm_server_watch_worker_count", 10)
+	viper.SetDefault("llm_server_watch_worker_queue_size", 50)
+	viper.SetDefault("llm_server_watch_min_interval_sec", 30)
+	// Default cap is 1h, lowered from 86400 (24h) to shrink the blast
+	// radius of the static-admin context the watch poll runs under: an
+	// off-boarded user / disabled account would otherwise keep driving
+	// admin-scoped tool calls for a full day before the watch expires.
+	// Ops can raise per-environment via LLM_SERVER_WATCH_MAX_DURATION_SEC
+	// once the per-poll re-validation hook lands. Real watches today cap
+	// at 600s (rollouts) / 1800s (jobs) / 3600s (stack ops) per the
+	// shared async-completion prompt, so this is a generous ceiling.
+	viper.SetDefault("llm_server_watch_max_duration_sec", 3600)
+	viper.SetDefault("llm_server_watch_max_per_tenant", 20)
+	viper.SetDefault("llm_server_watch_max_failures", 3)
+	viper.SetDefault("llm_server_watch_priming_poll_timeout_sec", 5)
+	viper.SetDefault("llm_server_watch_submit_timeout_sec", 5)
+	// Lowered from 60s — 60 was the LLM-judge worst case, not the typical
+	// case. A bounded worker pool of 10 was being pinned for the full 60s
+	// by a handful of slow kubectl / github / llm_judge polls, so other
+	// tenants' watches got cascade-starved. Slow predicates needing more
+	// budget should raise this per-tenant via env override rather than
+	// inflict the worst case on everyone.
+	viper.SetDefault("llm_server_watch_poll_timeout_sec", 15)
+	// Bounds the terminal-state LLM summarizer. The summarize call runs
+	// after MarkTerminal commits, so it is OK for it to fail (responder
+	// falls back to the raw predicate summary); the timeout is here only
+	// to prevent a stuck Gemini/Bedrock call from pinning a watch worker.
+	viper.SetDefault("llm_server_watch_summarizer_timeout_sec", 30)
+	viper.SetDefault("llm_server_watch_dispatch_batch_size", 100)
+	viper.SetDefault("llm_server_watch_sql_source_enabled", false)
+	viper.SetDefault("llm_server_watch_bypass_leader_election", false)
+
 	viper.SetDefault("llm_server_scratchpad_summarization_enabled", true)
 	viper.SetDefault("llm_server_scratchpad_max_observation_chars", 65536)
+	viper.SetDefault("llm_server_sub_agent_evidence_enabled", false)
+	viper.SetDefault("llm_server_sub_agent_evidence_max_chars", 2048)
 	viper.SetDefault("llm_server_scratchpad_compression_activation_fraction", 0.75)
 
 	hostName, err := os.Hostname()

@@ -1,7 +1,12 @@
 // Regression tests for the egressfilter chip predicate. The Go backend
-// renamed the mode string "audit" -> "detect"; the chip must render for the
-// canonical "detect" string (and still for the legacy "audit" alias),
-// otherwise metadata is persisted but no chip appears in the UI.
+// evolves its mode strings over time; each new value must be added to the
+// predicate in the same PR that ships it, or the chip silently returns
+// null for every new event with no CI signal.
+//   - PR #33187: renamed "audit" → "detect"
+//   - PR #33358: added "redact" mode
+//
+// Precedence for tone / verb: enforce > redact > detect.
+
 import { __egressfilterItemForTest as egressfilterItem } from '@components/llm/common/ResponseMetaRail';
 
 describe('egressfilterItem', () => {
@@ -27,8 +32,37 @@ describe('egressfilterItem', () => {
     expect(item).not.toBeNull();
   });
 
-  it('returns null for an unrecognised mode', () => {
+  it('renders a chip for "redact" mode (post-#33358)', () => {
+    const item = egressfilterItem([{ mode: 'redact', hit_count: 1, rule_ids: ['github-pat'], audit_id: 'egress-red1' }]);
+    expect(item).not.toBeNull();
+  });
+
+  it('returns null for an unrecognised mode (defensive)', () => {
     const item = egressfilterItem([{ mode: 'garbage', hit_count: 1, rule_ids: ['x'], audit_id: 'egress-x' }]);
     expect(item).toBeNull();
+  });
+
+  it('handles mixed detect + enforce events (enforce wins the tone)', () => {
+    const item = egressfilterItem([
+      { mode: 'detect', hit_count: 1, rule_ids: ['a'] },
+      { mode: 'enforce', hit_count: 1, rule_ids: ['b'] },
+    ]);
+    expect(item).not.toBeNull();
+  });
+
+  it('handles mixed detect + redact events (redact precedence over detect)', () => {
+    const item = egressfilterItem([
+      { mode: 'detect', hit_count: 1, rule_ids: ['a'] },
+      { mode: 'redact', hit_count: 1, rule_ids: ['b'] },
+    ]);
+    expect(item).not.toBeNull();
+  });
+
+  it('handles mixed enforce + redact events (enforce still wins over redact)', () => {
+    const item = egressfilterItem([
+      { mode: 'redact', hit_count: 1, rule_ids: ['a'] },
+      { mode: 'enforce', hit_count: 1, rule_ids: ['b'] },
+    ]);
+    expect(item).not.toBeNull();
   });
 });

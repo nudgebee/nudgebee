@@ -37,11 +37,7 @@ func (m DatadogHostsTool) GetType() toolcore.NBToolType {
 }
 
 func (m DatadogHostsTool) Description() string {
-	return `Retrieves a list of hosts from Datadog.
-	Usage:
-	* Input: Datadog hosts query.
-	* Output: A JSON array of host details from Datadog.
-	`
+	return `Retrieves the full list of hosts reported to Datadog. Ignores any query input (returns all hosts). Output: a JSON array of host details.`
 }
 
 func (m DatadogHostsTool) InputSchema() toolcore.ToolSchema {

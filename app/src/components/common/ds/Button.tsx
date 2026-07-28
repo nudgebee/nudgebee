@@ -83,7 +83,7 @@ interface BaseButtonProps {
   target?: string;
 }
 
-export type ButtonProps = BaseButtonProps;
+export type ButtonProps = BaseButtonProps & Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, keyof BaseButtonProps | 'ref'>;
 
 const SIZE_TOKENS: Record<
   ButtonSize,
@@ -199,28 +199,32 @@ function deriveComposition(
   return 'text';
 }
 
-export function Button({
-  tone = 'primary',
-  size = 'md',
-  composition,
-  icon,
-  iconPlacement = 'start',
-  trailingAccent,
-  tooltip,
-  tooltipPlacement = 'top',
-  tooltipDisableFlip = false,
-  loading = false,
-  disabled = false,
-  fullWidth = false,
-  type = 'button',
-  id,
-  className,
-  children,
-  onClick,
-  'aria-label': ariaLabel,
-  href,
-  target,
-}: ButtonProps) {
+export const Button = React.forwardRef<HTMLElement, ButtonProps>(function Button(
+  {
+    tone = 'primary',
+    size = 'md',
+    composition,
+    icon,
+    iconPlacement = 'start',
+    trailingAccent,
+    tooltip,
+    tooltipPlacement = 'top',
+    tooltipDisableFlip = false,
+    loading = false,
+    disabled = false,
+    fullWidth = false,
+    type = 'button',
+    id,
+    className,
+    children,
+    onClick,
+    'aria-label': ariaLabel,
+    href,
+    target,
+    ...rest
+  },
+  ref
+) {
   const isInteractionDisabled = disabled || loading;
   const tokens = SIZE_TOKENS[size];
   const palette = TONE_PALETTE[tone];
@@ -305,6 +309,8 @@ export function Button({
 
   const buttonNode = (
     <ButtonBase
+      {...rest}
+      ref={ref as React.Ref<HTMLButtonElement>}
       id={id}
       className={className}
       type={type}
@@ -390,6 +396,8 @@ export function Button({
   }
 
   return buttonNode;
-}
+});
+
+Button.displayName = 'Button';
 
 export default Button;

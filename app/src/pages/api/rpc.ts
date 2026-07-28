@@ -174,28 +174,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             );
             return;
           case 'upstream_unreachable':
-            res.status(502).json(
-              rpcError(rpcId, RPC_UPSTREAM_ERROR, 'upstream_unreachable', {
-                method: result.error.method,
-                url: result.error.url,
-                detail: result.error.detail,
-              })
-            );
+            console.error(`[rpc-proxy] upstream_unreachable method=${result.error.method} url=${result.error.url} detail=${result.error.detail}`);
+            res.status(502).json(rpcError(rpcId, RPC_UPSTREAM_ERROR, 'upstream_unreachable', { method: result.error.method }));
             return;
           case 'upstream_parse_failed':
-            res.status(502).json(
-              rpcError(rpcId, RPC_UPSTREAM_ERROR, 'upstream_parse_failed', {
-                method: result.error.method,
-                url: result.error.url,
-                detail: result.error.detail,
-              })
-            );
+            console.error(`[rpc-proxy] upstream_parse_failed method=${result.error.method} url=${result.error.url} detail=${result.error.detail}`);
+            res.status(502).json(rpcError(rpcId, RPC_UPSTREAM_ERROR, 'upstream_parse_failed', { method: result.error.method }));
             return;
           case 'upstream_error':
+            console.error(`[rpc-proxy] upstream_error method=${result.error.method} url=${result.error.url} status=${result.error.status}`);
             res.status(result.error.status).json(
               rpcError(rpcId, RPC_UPSTREAM_ERROR, `upstream_${result.error.status}`, {
                 method: result.error.method,
-                url: result.error.url,
                 payload: result.error.payload,
               })
             );
@@ -208,10 +198,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       res.status(200).json(rpcResult(rpcId, result.payload));
       span.setStatus({ code: SpanStatusCode.OK });
     } catch (err: any) {
+      console.error(`[rpc-proxy] unhandled error method=${methodForLog}`, err);
       span.recordException(err);
       span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
       if (!res.headersSent) {
-        res.status(500).json(rpcError(rpcId, RPC_INTERNAL_ERROR, err.message));
+        res.status(500).json(rpcError(rpcId, RPC_INTERNAL_ERROR, 'Internal server error'));
       } else if (!res.writableEnded) {
         res.end();
       }

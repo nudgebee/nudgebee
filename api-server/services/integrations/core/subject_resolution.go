@@ -2,88 +2,14 @@ package core
 
 import (
 	"encoding/json"
-	"fmt"
-	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/llm"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"strings"
-	"sync"
+
+	"github.com/prometheus/prometheus/promql/parser"
 )
-
-// HistoricalIncident represents a past incident title mapped to a service.
-// Stored in tenant_attrs under TenantAttrHistoricalIncidentsKey so the LLM
-// prompt can ground its service-name guesses in real prior incidents.
-type HistoricalIncident struct {
-	Title   string  `json:"title"`
-	Service *string `json:"service"`
-}
-
-// TenantAttrHistoricalIncidentsKey is the tenant_attrs row name that stores
-// the historical title→service mapping JSON.
-const TenantAttrHistoricalIncidentsKey = "DATADOG_INCIDENT_TITLE_SERVICE_MAPPING"
-
-// historicalIncidentsByTenant caches the parsed mapping per tenant. The key is
-// the tenantId; absence means "not loaded yet"; an empty slice means "loaded,
-// but the tenant has no patterns configured" (prevents repeated DB lookups).
-var historicalIncidentsByTenant sync.Map
-
-// historicalForTenant returns the cached patterns for the calling tenant,
-// loading from tenant_attrs (with proper tenant_id filtering) on the first
-// call per tenant. A miss in tenant_attrs is cached as an empty slice so we
-// don't hammer the DB on every webhook.
-func historicalForTenant(sc *security.RequestContext) []HistoricalIncident {
-	tenantId := sc.GetSecurityContext().GetTenantId()
-	if cached, ok := historicalIncidentsByTenant.Load(tenantId); ok {
-		return cached.([]HistoricalIncident)
-	}
-
-	attrs, err := tenant.GetTenantAttributesByName(sc, TenantAttrHistoricalIncidentsKey)
-	if err != nil || len(attrs) == 0 {
-		historicalIncidentsByTenant.Store(tenantId, []HistoricalIncident{})
-		return nil
-	}
-
-	var incidents []HistoricalIncident
-	if err := common.UnmarshalJson([]byte(attrs[0].Value), &incidents); err != nil {
-		sc.GetLogger().Warn("subject_resolution: failed to unmarshal historical incidents", "error", err)
-		historicalIncidentsByTenant.Store(tenantId, []HistoricalIncident{})
-		return nil
-	}
-
-	historicalIncidentsByTenant.Store(tenantId, incidents)
-	sc.GetLogger().Info("subject_resolution: loaded historical incidents", "tenant_id", tenantId, "count", len(incidents))
-	return incidents
-}
-
-// historicalIncidentsForPrompt formats up to `limit` historical incidents
-// for inclusion in the LLM prompt.
-func historicalIncidentsForPrompt(incidents []HistoricalIncident, limit int) string {
-	if limit <= 0 {
-		limit = 50
-	}
-	if len(incidents) == 0 {
-		return "(No historical data available)"
-	}
-
-	var sb strings.Builder
-	count := 0
-	for _, incident := range incidents {
-		if incident.Service == nil || *incident.Service == "" {
-			continue
-		}
-		fmt.Fprintf(&sb, "  - %q → %q\n", incident.Title, *incident.Service)
-		count++
-		if count >= limit {
-			break
-		}
-	}
-	if sb.Len() == 0 {
-		return "(No historical data available)"
-	}
-	return sb.String()
-}
 
 // MatchWorkloadAndEnrich validates EventSubjectName against the k8s_workloads
 // inventory for the given account and enriches the event with namespace, kind,
@@ -222,162 +148,278 @@ const skipWorkloadMatchLabel = "nb_skip_workload_match"
 // (e.g. dynatrace's impacted-entity list). The label is consumed during matching.
 const workloadCandidatesLabel = "nb_workload_candidates"
 
-// ResolveSubjectViaLLM asks the LLM to extract resource-identification labels
-// from the full alert context (title, description, URL, labels) and validates
-// the result against the k8s_workloads inventory.
-//
-// The caller should only invoke this when EventSubjectName is empty — this
-// function does not short-circuit to preserve the same prompt-gen cost/benefit
-// tradeoff the caller chose.
-func ResolveSubjectViaLLM(sc *security.RequestContext, e *EventIncomingWebhook, accountId string) {
-	dbms, err := database.GetDatabaseManager(database.Metastore)
-	if err != nil {
-		sc.GetLogger().Error("subject_resolution: failed to get database manager for LLM matching", "error", err)
-		return
-	}
+const (
+	// webhookSubjectAgentMention pins the dedicated single-shot classifier agent in
+	// llm-server, bypassing the LLM router.
+	webhookSubjectAgentMention = "@webhook_subject_name_extractor"
+	// webhookSubjectAgentSource tags the request origin for observability/budgeting.
+	webhookSubjectAgentSource = "webhook_subject_name_extractor"
+	// webhookSubjectAgentNotFound is the sentinel the agent returns when it declines.
+	webhookSubjectAgentNotFound = "Not Found"
+)
 
-	tenantId := sc.GetSecurityContext().GetTenantId()
+// clusterScopePromQLParser is a shared, stateless PromQL parser used to classify
+// an alert's scope from its rule expression. ParseExpr builds a fresh internal
+// parser per call, so one package-level instance is concurrency-safe.
+var clusterScopePromQLParser = parser.NewParser(parser.Options{})
 
-	// Pull both workload names and the datadog service tag values so the LLM
-	// can match either convention. Some envs use bare workload names; others
-	// (datadog deployments) tag workloads with tags.datadoghq.com/service.
-	var names []string
-	err = dbms.Db.Select(&names, `
-		SELECT DISTINCT name FROM k8s_workloads
-		WHERE tenant_id = $1 AND cloud_account_id = $2
-		  AND is_active = true AND kind NOT IN ('Job', 'CronJob')
-		  AND name IS NOT NULL
-		UNION
-		SELECT DISTINCT labels->>'tags.datadoghq.com/service' FROM k8s_workloads
-		WHERE tenant_id = $1 AND cloud_account_id = $2
-		  AND is_active = true AND kind NOT IN ('Job', 'CronJob')
-		  AND labels->>'tags.datadoghq.com/service' IS NOT NULL
-	`, tenantId, accountId)
-	if err != nil {
-		sc.GetLogger().Error("subject_resolution: failed to query workload names for LLM", "error", err)
-		return
-	}
-	if len(names) == 0 {
-		return
-	}
-
-	historicalPatterns := historicalIncidentsForPrompt(historicalForTenant(sc), 1000)
-
-	labelsJSON, _ := json.Marshal(e.Investigation.Labels)
-
-	prompt := fmt.Sprintf(`@llm You are a resource label extractor for monitoring alerts. Analyze the complete alert data below and extract resource identification labels.
-
-## Alert Data
-**Title:** %s
-**Description:** %s
-**Source URL:** %s
-**Existing Labels:** %s
-
-## Known Running Services/Workloads
-%s
-
-## Historical Title → Service Patterns
-%s
-
-## Task
-From the alert data above, extract the following labels. Look at ALL the data — title, description, labels, URLs — to find clues about which resource this alert is about.
-
-Return ONLY a valid JSON object with these fields (use empty string "" if not found):
-{
-  "subject_name": "<k8s workload/service name from the Running Services list that this alert is about>",
-  "namespace": "<k8s namespace>",
-  "cluster": "<k8s cluster name>",
-  "pod_name": "<specific pod name if mentioned>",
-  "service_name": "<application/service name>",
-  "aws_service_name": "<AWS service like EC2, RDS, ELB if this is an AWS alert>",
-  "aws_resource_id": "<AWS resource identifier like instance-id, ARN>"
+// objectDimensionLabels are the Prometheus label names that identify a concrete
+// k8s/cloud object an alert is about. When an alert's PromQL references any of
+// these (as a selector matcher, an aggregation `by (…)` grouping label, or an
+// `on (…)` matching label), it has a per-object subject — so it is NOT cluster
+// scoped. `job`, `cluster`, `resource`, `severity`, etc. are intentionally absent:
+// `job` is the scrape target, not the alert's subject.
+var objectDimensionLabels = map[string]bool{
+	"namespace": true, "pod": true, "pod_name": true, "node": true, "instance": true,
+	"container": true, "container_name": true, "deployment": true, "statefulset": true,
+	"daemonset": true, "replicaset": true, "cronjob": true, "job_name": true,
+	"persistentvolumeclaim": true, "horizontalpodautoscaler": true, "hpa": true,
+	"service": true, "workload": true, "destination_workload_name": true,
+	"source_workload_name": true, "ingress": true, "endpoint": true,
 }
 
-RULES:
-1. For subject_name: MUST be an exact match from the Running Services list, or empty string
-2. Look for service names in alert titles (e.g. "booking-service down" → subject_name="booking-service")
-3. Look for service names in pipe-delimited titles (e.g. "Critical | Prod | EKS | payment-service | high latency")
-4. Look for service names embedded in URLs (e.g. service.name=courier-worker in query params)
-5. Look for k8s resource references in labels (job, pod, deployment names)
-6. For AWS alerts: extract the resource type and identifier from dimensions/labels
-7. Consult the Historical Title → Service Patterns when rules 1-5 don't yield a match
-8. If you cannot confidently identify a resource, return empty strings — do NOT guess
-9. Return ONLY the JSON object, no explanation, no markdown fences`,
-		e.EventTitle,
-		e.EventDescription,
-		e.Investigation.SourceUrl,
-		string(labelsJSON),
-		strings.Join(names, ", "),
-		historicalPatterns,
-	)
+// clusterScopedAlertNames is a guaranteed floor of well-known kube-prometheus /
+// kubernetes-mixin alerts that are cluster- or control-plane-scoped and name NO
+// object. It is the fallback for when the alert's rule expression isn't available
+// in event_rules (e.g. the rule sync hasn't run for the tenant, or the very first
+// occurrence races rule creation) — the primary, data-driven classifier is
+// isClusterScopedByExpr, which reads event_rules.expr. Their PromQL aggregates
+// `by (cluster)` or uses `absent(up{job="…"})`, so the firing series carries no
+// object-identifying label — there is nothing for the subject extractor to
+// resolve. Sending them to the LLM wastes a call and, worse, invites a
+// hallucinated subject (observed in prod: KubeSchedulerDown →
+// "newrelic-bundle-nrk8s-controlplane", KubeVersionMismatch →
+// "prometheus-…-kube-prometheus-prometheus").
+//
+// Deliberately CONSERVATIVE: only alerts with genuinely no object dimension are
+// listed. Alerts that carry a resolvable subject are intentionally excluded even
+// when they are "infrastructure" — e.g. TargetDown (job/instance), KubeClientErrors
+// (instance), KubeAggregatedAPIDown (name/namespace), AlertmanagerClusterDown
+// (namespace/service), etcd* (instance) — because a false skip would HIDE a real
+// subject, which is worse than a wasted LLM call.
+var clusterScopedAlertNames = map[string]bool{
+	// Cluster capacity / quota overcommit — aggregate `by (cluster)`.
+	"KubeCPUOvercommit":         true,
+	"KubeMemoryOvercommit":      true,
+	"KubeCPUQuotaOvercommit":    true,
+	"KubeMemoryQuotaOvercommit": true,
+	// Control-plane component down — `absent(up{job="…"})`, no object label.
+	"KubeSchedulerDown":         true,
+	"KubeControllerManagerDown": true,
+	"KubeAPIDown":               true,
+	"KubeProxyDown":             true,
+	"KubeletDown":               true,
+	// Cluster-wide apiserver / version / cert health — no object dimension.
+	"KubeVersionMismatch":             true,
+	"KubeAPIErrorBudgetBurn":          true,
+	"KubeAPITerminatedRequests":       true,
+	"KubeClientCertificateExpiration": true,
+	// Always-firing watchdog — no subject by construction.
+	"Watchdog": true,
+}
+
+// alertNameFromLabels returns the canonical alert name for an event, using the
+// same precedence the playbook lookup uses: `nb_alert_name` (set during webhook
+// enrichment, e.g. the real prometheus alert name extracted from a PagerDuty
+// title) then the raw `alertname` label. This is path-independent — it survives
+// Prometheus → PagerDuty/Datadog relays that flatten the original labels.
+func alertNameFromLabels(labels map[string]string) string {
+	if labels == nil {
+		return ""
+	}
+	if n := labels["nb_alert_name"]; n != "" {
+		return n
+	}
+	return labels["alertname"]
+}
+
+// classifyPromExprClusterScoped parses a Prometheus rule expression and reports
+// whether the alert it defines is cluster-scoped — i.e. it produces a series with
+// no object-identifying label, so there is nothing to resolve a subject to.
+//
+// An alert is cluster-scoped iff (a) there is a positive cluster signal — an
+// aggregation grouped `by (cluster)` / `by ()` (collapsing to the cluster or a
+// global scalar), or an `absent()` — AND (b) no object-dimension label appears
+// anywhere in the expression (selector matchers, `by (…)` groupings, or `on (…)`
+// matching labels). Requiring the positive signal is what makes this safe: a bare
+// per-instance alert like `up{job="x"} == 0` carries a natural `instance` label
+// that isn't in any matcher, so it has no cluster signal and is NOT skipped.
+//
+// The AST is used deliberately: recording-rule metric NAMES such as
+// `namespace_cpu:kube_pod_container_resource_requests:sum` contain "namespace" as
+// a substring but expose it as `__name__`, not a label — a text scan would
+// misclassify; the parser does not. `parsed` is false when expr is not valid
+// PromQL (e.g. a Datadog/chronosphere expression), so the caller falls through.
+func classifyPromExprClusterScoped(expr string) (isCluster bool, parsed bool) {
+	node, err := clusterScopePromQLParser.ParseExpr(expr)
+	if err != nil {
+		return false, false
+	}
+	objectSeen := false
+	clusterSignal := false
+	parser.Inspect(node, func(n parser.Node, _ []parser.Node) error {
+		switch e := n.(type) {
+		case *parser.VectorSelector:
+			for _, m := range e.LabelMatchers {
+				if m.Name != "__name__" && objectDimensionLabels[m.Name] {
+					objectSeen = true
+				}
+			}
+		case *parser.AggregateExpr:
+			// `without (…)` keeps the unlisted labels (unknown, possibly object) and
+			// gives no cluster collapse — no signal either way.
+			if !e.Without {
+				onlyCluster := true
+				for _, g := range e.Grouping {
+					if objectDimensionLabels[g] {
+						objectSeen = true
+					}
+					if g != "cluster" {
+						onlyCluster = false
+					}
+				}
+				if onlyCluster {
+					clusterSignal = true
+				}
+			}
+		case *parser.Call:
+			if e.Func != nil && (e.Func.Name == "absent" || e.Func.Name == "absent_over_time") {
+				clusterSignal = true
+			}
+		case *parser.BinaryExpr:
+			// Only `on (…)` matching labels are carried into the result; `ignoring (…)`
+			// labels are dropped, so they don't indicate an object subject.
+			if e.VectorMatching != nil && e.VectorMatching.On {
+				for _, l := range e.VectorMatching.MatchingLabels {
+					if objectDimensionLabels[l] {
+						objectSeen = true
+					}
+				}
+			}
+		}
+		return nil
+	})
+	return clusterSignal && !objectSeen, true
+}
+
+// fetchEventRuleExpr returns the Prometheus rule expression for an alert from the
+// event_rules catalog (the per-tenant source of truth, synced from the cluster's
+// PrometheusRule CRDs). Returns "" on any miss/error so the caller falls back to
+// the curated set.
+func fetchEventRuleExpr(sc *security.RequestContext, accountId, alert string) string {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return ""
+	}
+	var expr string
+	err = dbms.Db.Get(&expr,
+		`SELECT expr FROM event_rules WHERE alert = $1 AND tenant_id = $2 AND account_id = $3 AND enabled = true AND expr IS NOT NULL AND expr != '' LIMIT 1`,
+		alert, sc.GetSecurityContext().GetTenantId(), accountId)
+	if err != nil {
+		return ""
+	}
+	return expr
+}
+
+// isClusterScopedAlert reports whether an alert is cluster-/control-plane-scoped
+// with no object subject, so the LLM subject extractor can only return not_found
+// or hallucinate. Primary signal is data-driven — the alert's PromQL from
+// event_rules (covers custom cluster rules for prometheus/grafana). The curated
+// clusterScopedAlertNames set is a floor for when the expression isn't available.
+func isClusterScopedAlert(sc *security.RequestContext, accountId string, labels map[string]string) bool {
+	alert := alertNameFromLabels(labels)
+	if alert == "" {
+		return false
+	}
+	if clusterScopedAlertNames[alert] {
+		return true
+	}
+	if expr := fetchEventRuleExpr(sc, accountId, alert); expr != "" {
+		if isCluster, parsed := classifyPromExprClusterScoped(expr); parsed && isCluster {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveSubjectNameViaAgent asks the webhook_subject_name_extractor agent to map
+// an alert to a single running-service name. The agent owns the running-services
+// inventory and the historical title→service patterns (fetched and cached
+// server-side), so this sends only the alert itself — no inventory is embedded in
+// the request, which is what keeps webhook token cost bounded.
+//
+// It returns the matched service name, or "" when the agent declines ("Not Found"),
+// and records the nb_llm_match label (and a default service label) on labels.
+func ResolveSubjectNameViaAgent(sc *security.RequestContext, accountId, title, description, sourceURL string, labels map[string]string) string {
+	if labels == nil {
+		labels = map[string]string{}
+	}
+
+	// Skip the LLM for cluster-/control-plane-scoped alerts that carry no object
+	// subject: the extractor has nothing to resolve and would only waste a call or
+	// hallucinate. Scope is classified from the alert's PromQL in event_rules (with a
+	// curated floor). Deterministic resolution has already run and come up empty by
+	// the time we reach here, so nothing is lost. Runs at this single choke point so
+	// it covers every ingestion path (prometheus, pagerduty, datadog, zenduty, …).
+	if isClusterScopedAlert(sc, accountId, labels) {
+		labels["nb_llm_match"] = "skipped_cluster_scoped"
+		labels["nb_subject_resolution"] = "cluster-scoped"
+		return ""
+	}
+
+	payload, _ := json.Marshal(map[string]any{
+		"title":       title,
+		"description": description,
+		"source_url":  sourceURL,
+		"labels":      labels,
+	})
 
 	chatRequest := llm.ConversationApiRequest{
-		Query:     prompt,
+		Query:     webhookSubjectAgentMention + "\n" + string(payload),
 		AccountId: accountId,
 		UserId:    sc.GetSecurityContext().GetUserId(),
 		Async:     false,
-		Source:    "webhook_label_extraction",
+		Source:    webhookSubjectAgentSource,
 	}
 
 	response, err := llm.ChatCompletion(sc, chatRequest)
 	if err != nil {
-		sc.GetLogger().Error("subject_resolution: LLM label extraction failed", "error", err)
-		return
+		sc.GetLogger().Error("subject_resolution: webhook_subject_name_extractor call failed", "error", err)
+		return ""
 	}
 	if response == nil || len(response.Response) == 0 {
-		sc.GetLogger().Warn("subject_resolution: LLM returned empty response")
-		return
+		sc.GetLogger().Warn("subject_resolution: webhook_subject_name_extractor returned empty response")
+		return ""
 	}
 
-	responseText := response.Response[0]
-	responseText = strings.TrimPrefix(responseText, "```json")
-	responseText = strings.TrimPrefix(responseText, "```")
-	responseText = strings.TrimSuffix(responseText, "```")
-	responseText = strings.TrimSpace(responseText)
-
-	var extracted map[string]string
-	if err := json.Unmarshal([]byte(responseText), &extracted); err != nil {
-		sc.GetLogger().Error("subject_resolution: failed to parse LLM response as JSON", "error", err, "response", responseText)
-		return
+	name := strings.TrimSpace(response.Response[0])
+	if name == "" || strings.EqualFold(name, webhookSubjectAgentNotFound) {
+		labels["nb_llm_match"] = "not_found"
+		return ""
 	}
+	labels["nb_llm_match"] = name
+	if labels["service"] == "" {
+		labels["service"] = name
+	}
+	return name
+}
 
+// ResolveSubjectViaLLM resolves an event's subject via the
+// webhook_subject_name_extractor agent and validates the result against the
+// k8s_workloads inventory. The caller should only invoke this when
+// EventSubjectName is empty.
+func ResolveSubjectViaLLM(sc *security.RequestContext, e *EventIncomingWebhook, accountId string) {
 	if e.Investigation.Labels == nil {
 		e.Investigation.Labels = map[string]string{}
 	}
 
-	if subj := extracted["subject_name"]; subj != "" {
-		// LLM may return multiple comma-separated services. Keep the full
-		// response on labels["service"] for downstream auto-actions, but use
-		// only the first part as the subject + workload-lookup candidate.
-		lookup := subj
-		if parts := strings.SplitN(subj, ",", 2); len(parts) > 1 {
-			lookup = strings.TrimSpace(parts[0])
-		}
-		e.EventSubjectName = lookup
-		e.Investigation.Labels["nb_llm_match"] = subj
-		if e.Investigation.Labels["service"] == "" {
-			e.Investigation.Labels["service"] = subj
-		}
-	} else {
-		e.Investigation.Labels["nb_llm_match"] = "not_found"
+	name := ResolveSubjectNameViaAgent(sc, accountId, e.EventTitle, e.EventDescription, e.Investigation.SourceUrl, e.Investigation.Labels)
+	if name == "" {
+		return
 	}
 
-	if ns := extracted["namespace"]; ns != "" && e.EventSubjectNamespace == "" {
-		e.EventSubjectNamespace = ns
-		e.Investigation.Labels["namespace"] = ns
-	}
-
-	for _, key := range []string{"cluster", "pod_name", "service_name", "aws_service_name", "aws_resource_id"} {
-		if val := extracted[key]; val != "" {
-			if e.Investigation.Labels[key] == "" {
-				e.Investigation.Labels[key] = val
-			}
-		}
-	}
-
-	if e.EventSubjectName != "" {
-		MatchWorkloadAndEnrich(sc, e, accountId)
-	}
+	e.EventSubjectName = name
+	MatchWorkloadAndEnrich(sc, e, accountId)
 }
 
 // enrichEventsWithSubjectResolution runs on every webhook event after account
@@ -401,6 +443,12 @@ func enrichEventsWithSubjectResolution(sc *security.RequestContext, events []Eve
 		}
 		if events[i].EventSubjectName != "" {
 			MatchWorkloadAndEnrich(sc, &events[i], accountId)
+			continue
+		}
+		// An integration-specific resolver (datadog/pagerduty/zenduty) already ran
+		// the extractor agent when it set nb_llm_match. Don't fire a second, redundant
+		// call here — the agent would just reproduce the prior not_found.
+		if _, alreadyTried := events[i].Investigation.Labels["nb_llm_match"]; alreadyTried {
 			continue
 		}
 		if llmEnabled {

@@ -8,6 +8,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/recommendation"
 	"nudgebee/services/security"
+	"nudgebee/services/spend"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -68,6 +69,11 @@ func handleAuditApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, l
 			// TriggerInitialScans is idempotent, so reconnects don't re-run it.
 			if a.EventType == audit.EventTypeK8sRelayAgentConnected && a.AccountId != "" {
 				triggerInitialScansAsync(c, a.AccountId, a.TenantId, tracer, meter, logger)
+				// Same first-connect edge: kick a one-off server-side OpenCost sync so a
+				// freshly onboarded / re-onboarded K8s cluster stamps opencostServerSide
+				// immediately instead of showing "disconnected" until the next 6-hourly
+				// cron. Guarded + idempotent, so reconnects of a stamped cluster no-op.
+				triggerServerSideOpenCostAsync(c, a.AccountId, a.TenantId, tracer, meter, logger)
 			}
 		}
 		if len(errs) > 0 {
@@ -107,4 +113,19 @@ func triggerInitialScansAsync(c *gin.Context, accountId, tenantId string, tracer
 			logger.Error("audit: error triggering initial scans", "error", err, "account_id", accountId)
 		}
 	}()
+}
+
+// triggerServerSideOpenCostAsync kicks a one-off server-side OpenCost sync for a
+// just-connected K8s cluster. It delegates to spend.TriggerServerSideOnConnect,
+// which guards on the opencostServerSide marker being unset (so reconnects of an
+// already-stamped cluster no-op) and runs the sync on its own detached,
+// timeout-bounded context — keeping the /v1/audit ingest response fast.
+func triggerServerSideOpenCostAsync(c *gin.Context, accountId, tenantId string, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
+	secCtx := security.NewSecurityContextForTenantAdmin(tenantId)
+	if secCtx == nil {
+		logger.Error("audit: nil tenant-admin context for server-side opencost", "account_id", accountId, "tenant_id", tenantId)
+		return
+	}
+	ctx := security.NewRequestContext(c.Request.Context(), secCtx, logger, tracer, meter)
+	spend.TriggerServerSideOnConnect(ctx, accountId, tenantId)
 }

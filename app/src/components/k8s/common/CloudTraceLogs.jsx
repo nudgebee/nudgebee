@@ -36,7 +36,10 @@ const CloudTraceLogs = ({ accountId, project, region, serviceName, traceId, time
         limit: 200,
         request: { region, service_name: serviceName },
       });
-      const list = res?.data?.data?.logs_list || [];
+      // logs_list is an object { logs, query, provider } (same shape KubernetesLogs
+      // reads) — the entries are under .logs, not logs_list itself.
+      const rawLogs = res?.data?.data?.logs_list?.logs;
+      const list = Array.isArray(rawLogs) ? rawLogs : [];
       // observability flattens GCP label pairs into a `labels` object; CloudLogViewer
       // renders structured fields from `attributes`, so alias the two.
       setLogs(

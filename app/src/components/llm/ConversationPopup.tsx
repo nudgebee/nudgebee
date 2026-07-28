@@ -1,5 +1,7 @@
+import dynamic from 'next/dynamic';
 import { Modal } from '@shared/modal';
-import KubernetesLLMResponseGenerator from './KubernetesLLMResponseGeneratorV2';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const KubernetesLLMResponseGenerator = dynamic<any>(() => import('./KubernetesLLMResponseGeneratorV2'));
 
 interface ConversationPopupProps {
   query: string;

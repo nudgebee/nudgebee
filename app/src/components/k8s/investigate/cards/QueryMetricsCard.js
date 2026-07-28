@@ -50,7 +50,7 @@ class QueryMetricsCard {
     const plusMinus30MinDuration = formatDateForPlusMinusDuration(new Date(startDate).getTime(), 30);
     return (
       <QueryMetrics
-        showDrilldown={false}
+        showDrilldown={true}
         preparedEvidences={this.preparedEvidences}
         showExtraOptions={false}
         showQueryBox={false}

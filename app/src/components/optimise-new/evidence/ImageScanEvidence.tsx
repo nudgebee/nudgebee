@@ -1,7 +1,7 @@
 import { Box, Typography, Link } from '@mui/material';
 import { ds } from 'src/utils/colors';
 import { Label } from '@ui/Label';
-import { SavingsFooter, SectionTitle, MetricRow } from '@components/optimise-new/EvidencePanel';
+import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
 import SearchIcon from '@mui/icons-material/Search';
 import BarChartIcon from '@mui/icons-material/BarChart';
 import { safeParseJSON } from '@components/optimise-new/utils';

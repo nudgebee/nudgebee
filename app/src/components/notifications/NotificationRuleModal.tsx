@@ -5,6 +5,7 @@ import { Divider } from '@ui/Divider';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import CloseIcon from '@mui/icons-material/Close';
 import { Modal } from '@ui/Modal';
+import { Link } from '@ui/Link';
 import React, { useEffect, useState } from 'react';
 import SafeIcon from '@shared/icons/SafeIcon';
 import apiUser from '@api1/user';
@@ -96,6 +97,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
   const [selectedGChatChannel, setSelectedGChatChannel] = useState<string>('');
   const [discordChannelList, setDiscordChannelList] = useState([]);
   const [selectedDiscordChannel, setSelectedDiscordChannel] = useState<string>('');
+  const [discordChannelHint, setDiscordChannelHint] = useState<{ hint: string; inviteUrl?: string } | null>(null);
   const [email, setEmail] = useState('');
   const [selectedExclusionEmails, setSelectedExclusionEmails] = useState<Option[]>([]);
   const [selectedCluster, setSelectedCluster] = useState('');
@@ -578,6 +580,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
           const channels = res?.data?.channels || res?.data?.data || [];
           const teamOptions = channels.map((item: any) => ({ label: item.name, value: item.id }));
           setDiscordChannelList(teamOptions);
+          setDiscordChannelHint(res?.data?.hint ? { hint: res.data.hint, inviteUrl: res.data.invite_url } : null);
         })
         .finally(() => {
           setLoadingChannelList((prev) => ({
@@ -1825,6 +1828,21 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
                         {errors.discord}
                       </FormHelperText>
                     )}
+                    {!loadingChannelList.discord && discordChannelList.length === 0 && discordChannelHint && (
+                      <FormHelperText sx={{ mt: ds.space[1] }}>
+                        {discordChannelHint.hint === 'bot_not_in_any_server'
+                          ? 'The bot is not in any Discord server yet — invite it to see channels here.'
+                          : 'The bot cannot see any text channels — grant it View Channels and Send Messages.'}
+                        {discordChannelHint.inviteUrl && (
+                          <>
+                            {' '}
+                            <a href={discordChannelHint.inviteUrl} target='_blank' rel='noopener noreferrer'>
+                              Open invite page
+                            </a>
+                          </>
+                        )}
+                      </FormHelperText>
+                    )}
                   </Box>
                 </Box>
               )}
@@ -1906,9 +1924,12 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
 
           {/* Empty state */}
           {!activeChannel && visibleConfigured.length === 0 && (
-            <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600], pl: ds.space[1] }}>
-              Click a channel badge above to configure it
-            </Typography>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: ds.space[1], pl: ds.space[1] }}>
+              <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600] }}>Click a channel badge above to configure it, or</Typography>
+              <Link href='/accounts/account-form?cloudProvider=SLACK' openInNew secondaryText>
+                integrate a notification tool
+              </Link>
+            </Box>
           )}
 
           {errors.general && (

@@ -171,8 +171,10 @@ func (m RabbitExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 			if response == "" {
 				response = err.Error()
 			}
+			// rabbitmqctl uses `help` as a subcommand (no dashes),
+			// e.g. `rabbitmqctl help list_queues`.
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, "", "rabbitmqctl", "rabbitmqctl help <command>"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}
@@ -207,8 +209,14 @@ func (m RabbitExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 				responseData = responseData1
 			}
 		}
+		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
+		// non-string response, so the LLM always sees the failure reason
+		// rather than an empty envelope.
+		if responseData == "" {
+			responseData = err.Error()
+		}
 		return core.NBToolResponse{
-			Data:   responseData,
+			Data:   cliRecoveryEnvelope(responseData, "", "rabbitmqctl", ""),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}

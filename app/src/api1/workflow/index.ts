@@ -131,11 +131,8 @@ query ListWorkflows($accountId:String!, $status:String, $last_execution_status:S
     next_page_token
     total_count
     workflows {
-      account_id
       created_at
-      created_by
       created_by_user {
-        id
         display_name
       }
       id
@@ -146,35 +143,20 @@ query ListWorkflows($accountId:String!, $status:String, $last_execution_status:S
       live_version_id
       live_version_number
       live_version_name
-      live_version_status
-      draft_version_id
-      draft_version_number
-      draft_version_name
       tags
-      tenant_id
       updated_at
-      updated_by
       updated_by_user {
-        id
         display_name
       }
       last_execution_time
       last_execution_version
       definition {
-        output
-        timeout
-        version
         triggers {
-          params
           type
         }
         inputs {
           default
           description
-          id
-          type
-        }
-        tasks {
           id
           type
         }
@@ -443,6 +425,7 @@ query getWorkflowExecution($request: WorkflowExecutionGetRequest!) {
       start_time
       end_time
       input
+      rendered_params
       output
       error
       attempt

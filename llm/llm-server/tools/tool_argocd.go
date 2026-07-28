@@ -104,7 +104,7 @@ func (m ArgoCDExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 				response = err.Error()
 			}
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, "", "argocd", "argocd <command> --help"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}

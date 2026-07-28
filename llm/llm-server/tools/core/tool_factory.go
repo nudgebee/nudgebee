@@ -15,6 +15,25 @@ func RegisterNBToolFactory(tool string, toolFactory func(accountId string) (NBTo
 	nbSystemTools[strings.ToLower(tool)] = toolFactory
 }
 
+// ListRegisteredSystemToolNames returns every tool name registered via
+// RegisterNBToolFactory. Names are returned in stable (sorted) order for
+// deterministic test iteration and log-friendly output. Excludes
+// account-scoped custom tools and MCP-integration tools — this is only
+// the built-in registry, which is what schema-render audits care about.
+func ListRegisteredSystemToolNames() []string {
+	names := make([]string, 0, len(nbSystemTools))
+	for name := range nbSystemTools {
+		names = append(names, name)
+	}
+	// Sort in-place for stable output. Callers can further filter/sort.
+	for i := 1; i < len(names); i++ {
+		for j := i; j > 0 && names[j-1] > names[j]; j-- {
+			names[j-1], names[j] = names[j], names[j-1]
+		}
+	}
+	return names
+}
+
 // GetNBTool resolves a tool name to an NBTool by consulting, in order:
 //
 //  1. Built-in system tools registered via RegisterNBToolFactory.

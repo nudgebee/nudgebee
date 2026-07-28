@@ -35,6 +35,7 @@ import WidgetCard from '@ui/WidgetCard';
 import Loader from '@shared/Loader';
 import apiKubernetes1 from '@api1/kubernetes1';
 import LangTypeIcon from '@shared/icons/LangTypeIcon';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { toast as snackbar } from '@ui/Toast';
 import apiHome from '@api1/home';
 import { safeJSONParse, snakeToTitleCase } from 'src/utils/common';
@@ -638,6 +639,96 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
       }));
     return { initialNodes, initialEdges };
   }, [rawData, onInfoClick, accMap]);
+};
+
+// Cloud providers we render a real logo for. `external` (and anything else)
+// deliberately gets no icon — CloudProviderIcon falls back to the AWS logo for
+// unknown providers, which would be misleading on an ExternalService row.
+const KNOWN_CLOUD_PROVIDERS = new Set(['aws', 'k8s', 'gcp', 'azure']);
+
+// Parse a canonical 6-part KG unique key into its components.
+// Format: {cloud_provider}:{account}:{location}:{NodeType}:{hierarchy}:{name}
+// (see api-server/services/knowledge_graph/core/unique_key_builder.go). `name` is
+// guaranteed colon-free server-side, so a positional split is safe. Returns null
+// for non-canonical keys (e.g. legacy 3-part flow-source keys) so callers fall
+// back to the raw string.
+const parseUniqueKey = (key) => {
+  if (typeof key !== 'string') return null;
+  const parts = key.split(':');
+  if (parts.length !== 6) return null;
+  const [provider, account, location, nodeType, hierarchy, name] = parts;
+  return { provider, account, location, nodeType, hierarchy, name };
+};
+
+// PascalCase NodeType → spaced label ("ServiceIdentity" → "Service Identity").
+// snakeToTitleCase only splits on '_', so it would leave these un-spaced.
+const humanizeNodeType = (nodeType) => (nodeType || '').replace(/([a-z])([A-Z])/g, '$1 $2');
+
+// Build a Node-dropdown option from a unique key + node id. Shapes the row as
+// [provider icon] [NodeType badge] <name>  <location · hierarchy chip> — see
+// FilterDropdown OptionItem (icon / badge / label / type slots). The node type
+// rides on the left `badge`; the right `type` chip holds the location/namespace
+// context (region · vpc for cloud, cluster · namespace for k8s). Showing both
+// lets an operator disambiguate same-named nodes across types and namespaces.
+// The full key is kept in `searchText` so search still matches
+// namespace/region/type, and `displayLabel` mirrors the legacy value for any
+// consumer that reads it.
+const buildNodeOption = (uniqueKey, id) => {
+  const parsed = parseUniqueKey(uniqueKey);
+  if (!parsed) {
+    return { label: uniqueKey, displayLabel: uniqueKey, value: id, searchText: uniqueKey };
+  }
+  const { provider, location, nodeType, hierarchy, name } = parsed;
+  const contextChip = [location, hierarchy].filter(Boolean).join(' · ');
+  const option = {
+    label: name || uniqueKey,
+    displayLabel: uniqueKey,
+    value: id,
+    badge: humanizeNodeType(nodeType),
+    type: contextChip,
+    // location/hierarchy are case-sensitive identifiers (k8s namespace, region,
+    // vpc/resource-group id) — keep their casing verbatim, don't title-case.
+    typeTextTransform: 'none',
+    searchText: uniqueKey,
+  };
+  if (KNOWN_CLOUD_PROVIDERS.has(provider)) {
+    option.icon = <CloudProviderIcon cloud_provider={provider} width='16px' height='16px' />;
+  }
+  return option;
+};
+
+// Rich tooltip body for a filter's ⓘ: a bold title, a short explanation, and
+// optional extra children (e.g. the Node row legend).
+const InfoTip = ({ title, children }) => (
+  <Box sx={{ maxWidth: 280, py: 'var(--ds-space-1)' }}>
+    <Typography
+      sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-foreground)', mb: 'var(--ds-space-1)' }}
+    >
+      {title}
+    </Typography>
+    <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', lineHeight: 1.5 }}>{children}</Box>
+  </Box>
+);
+InfoTip.propTypes = { title: PropTypes.string.isRequired, children: PropTypes.node.isRequired };
+
+// Wraps a sidebar filter control with a right-aligned ⓘ whose tooltip explains
+// what the filter does — matching the info affordance the Label/Attribute
+// query-builder filters already render to the right of their input. The
+// `& > button` rule stretches the dropdown's (inline-flex) trigger to fill the
+// row so the ⓘ sits right beside it, not far off to the right.
+const FilterWithInfo = ({ info, children }) => (
+  <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', '& > button': { flex: 1, minWidth: 0 } }}>
+    {children}
+    <Tooltip title={info} placement='top'>
+      <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', color: 'var(--ds-gray-400)', cursor: 'help', flexShrink: 0 }}>
+        <InfoOutlinedIcon sx={{ fontSize: 18 }} />
+      </Box>
+    </Tooltip>
+  </Box>
+);
+FilterWithInfo.propTypes = {
+  info: PropTypes.node.isRequired,
+  children: PropTypes.node.isRequired,
 };
 
 const ServiceMapContent = () => {
@@ -1599,7 +1690,8 @@ const ServiceMapContent = () => {
       neighborIds.forEach((id) => {
         const node = uniqueServiceKeysMap.get(id);
         if (node) {
-          neighborOptions.push({ label: node.label, displayLabel: node.displayLabel, value: node.value });
+          // node.uniqueKey / node.label both hold the canonical unique key.
+          neighborOptions.push(buildNodeOption(node.uniqueKey || node.label, node.value));
         }
       });
       return [...neighborOptions, ...draftNodes];
@@ -1608,11 +1700,7 @@ const ServiceMapContent = () => {
     // Default: full list from Stage-1 filter data.
     // Always include currently drafted nodes even if not returned by the filtered API response.
     const map = kgFilterOptions?.nodeIdMap || {};
-    const options = Object.entries(map).map(([uniqueKey, id]) => ({
-      label: uniqueKey,
-      displayLabel: uniqueKey,
-      value: id,
-    }));
+    const options = Object.entries(map).map(([uniqueKey, id]) => buildNodeOption(uniqueKey, id));
     const optionValues = new Set(Object.values(map));
     const selectedNotInMap = (draftNodes || []).filter((sel) => !optionValues.has(sel.value));
     return [...options, ...selectedNotInMap];
@@ -1998,6 +2086,7 @@ const ServiceMapContent = () => {
         {/* Left Sidebar - Filters */}
         {!isFilterCollapsed && (
           <WidgetCard
+            id='kg-filter-panel'
             sx={{
               mt: 0,
               p: 'var(--ds-space-4)',
@@ -2057,49 +2146,106 @@ const ServiceMapContent = () => {
             </Box>
 
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
-              <FilterDropdown
-                label='Account'
-                options={accountOptions}
-                value={draftAccountIds}
-                onSelect={(e) => setDraftAccountIds(e.target.value)}
-                multiple
-                width='100%'
-              />
-              <FilterDropdown
-                label='Node Type'
-                options={mergedNodeTypeOptions}
-                value={draftNodeTypes}
-                onSelect={(e) => setDraftNodeTypes(e.target.value)}
-                multiple
-                isOptionsLoading={isFilterLoading || isFilterOptionsRefreshing}
-                width='100%'
-              />
-              <FilterDropdown
-                label='Node'
-                options={filterNodeOptions}
-                value={draftNodes}
-                onSelect={(e) => {
-                  setDraftNodes(e.target.value);
-                  if (e.target.value.length > 0) {
-                    setDraftAccountIds([]);
-                    setDraftNodeTypes([]);
-                    setDraftLabelFilters('');
-                    setDraftAttributeFilters('');
-                    setQueryItems([]);
-                    setQueryItemsLabel([]);
-                  }
-                }}
-                multiple
-                isOptionsLoading={isFilterLoading || isFilterOptionsRefreshing}
-                width='100%'
-              />
-              <FilterDropdown
-                label='Level'
-                options={levelOptions}
-                value={draftLevel}
-                onSelect={(e) => setDraftLevel(Number(e.target.value))}
-                width='100%'
-              />
+              <FilterWithInfo
+                info={
+                  <InfoTip title='Account'>
+                    Scope the graph to specific cloud accounts. Only resources owned by the selected account(s) are shown. Leave empty to include
+                    every connected AWS, GCP, Azure and Kubernetes account.
+                  </InfoTip>
+                }
+              >
+                <FilterDropdown
+                  label='Account'
+                  options={accountOptions}
+                  value={draftAccountIds}
+                  onSelect={(e) => setDraftAccountIds(e.target.value)}
+                  multiple
+                  width='100%'
+                />
+              </FilterWithInfo>
+              <FilterWithInfo
+                info={
+                  <InfoTip title='Node Type'>
+                    Restrict the graph to specific resource kinds — e.g. Workload, Service, EC2 Instance, Route Table, VPC. Select one or more, and
+                    combine with Account to focus on a slice of your infrastructure.
+                  </InfoTip>
+                }
+              >
+                <FilterDropdown
+                  label='Node Type'
+                  options={mergedNodeTypeOptions}
+                  value={draftNodeTypes}
+                  onSelect={(e) => setDraftNodeTypes(e.target.value)}
+                  multiple
+                  isOptionsLoading={isFilterLoading || isFilterOptionsRefreshing}
+                  width='100%'
+                />
+              </FilterWithInfo>
+              <FilterWithInfo
+                info={
+                  <InfoTip title='Node'>
+                    Center the graph on one or more specific nodes. Selecting a node clears the other filters and expands outward from it by the
+                    chosen Level.
+                    <Box
+                      component='ul'
+                      sx={{ m: 'var(--ds-space-2) 0 0', pl: 'var(--ds-space-4)', display: 'flex', flexDirection: 'column', gap: '2px' }}
+                    >
+                      <li>Cloud provider icon (AWS / GCP / Azure / K8s)</li>
+                      <li>
+                        <b>Left blue badge</b> — the node&apos;s type (e.g. Route Table)
+                      </li>
+                      <li>
+                        <b>Middle</b> — the node&apos;s name
+                      </li>
+                      <li>
+                        <b>Right grey chip</b> — its location: namespace for Kubernetes, region · VPC for cloud
+                      </li>
+                    </Box>
+                    <Box sx={{ mt: 'var(--ds-space-2)' }}>Type-ahead matches name, namespace, region and type.</Box>
+                  </InfoTip>
+                }
+              >
+                <FilterDropdown
+                  label='Node'
+                  options={filterNodeOptions}
+                  value={draftNodes}
+                  onSelect={(e) => {
+                    setDraftNodes(e.target.value);
+                    if (e.target.value.length > 0) {
+                      setDraftAccountIds([]);
+                      setDraftNodeTypes([]);
+                      setDraftLabelFilters('');
+                      setDraftAttributeFilters('');
+                      setQueryItems([]);
+                      setQueryItemsLabel([]);
+                    }
+                  }}
+                  multiple
+                  isOptionsLoading={isFilterLoading || isFilterOptionsRefreshing}
+                  width='100%'
+                  // Rows pack a left type badge + name + right location/vpc chip;
+                  // the narrow sidebar trigger width crushes the name to a few
+                  // chars. Widen the menu (it left-anchors and extends over the
+                  // canvas) so the name stays readable — mirrors KgNodePicker.
+                  popoverWidth='520px'
+                />
+              </FilterWithInfo>
+              <FilterWithInfo
+                info={
+                  <InfoTip title='Level'>
+                    Traversal depth — how many relationship hops to expand out from the matched nodes. Level 1 shows only direct neighbours; higher
+                    levels reveal more of the graph but make it denser.
+                  </InfoTip>
+                }
+              >
+                <FilterDropdown
+                  label='Level'
+                  options={levelOptions}
+                  value={draftLevel}
+                  onSelect={(e) => setDraftLevel(Number(e.target.value))}
+                  width='100%'
+                />
+              </FilterWithInfo>
             </Box>
 
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
@@ -2249,7 +2395,7 @@ const ServiceMapContent = () => {
             />
           )}
 
-          <Box ref={graphWrapperRef} sx={{ flex: 1, position: 'relative' }}>
+          <Box id='kg-canvas' ref={graphWrapperRef} sx={{ flex: 1, position: 'relative' }}>
             {/* Focus mode banner */}
             {focusedNodeId && (
               <Box

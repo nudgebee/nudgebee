@@ -26,7 +26,7 @@ func (m DatadogIncidentExecuteTool) Name() string { return ToolDatadogIncidentEx
 func (m DatadogIncidentExecuteTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (m DatadogIncidentExecuteTool) Description() string {
-	return `Executes a Datadog incident query and retrieves the corresponding incident data.`
+	return `Executes a Datadog incident query and retrieves the incident data. Input is a filter query (e.g. "severity:critical", "state:active").`
 }
 
 func (m DatadogIncidentExecuteTool) InputSchema() core.ToolSchema {

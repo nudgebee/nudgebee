@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Box } from '@mui/material';
 import { writeIcon } from '@assets';
+import { TourLauncher } from '@components/common/tour';
 import apiUserManagement from '@api1/user';
 import { useSession } from 'next-auth/react';
 import { hasWriteAccess } from '@lib/auth';
@@ -222,9 +223,12 @@ const AllUsers = () => {
         <ListingLayout.Toolbar
           actions={
             hasWriteAccess() ? (
-              <DsButton id='new-user' tone='primary' size='md' onClick={() => setAddUserModalVisible(true)}>
-                Add New User
-              </DsButton>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <TourLauncher tourId='create-user' label='How to add a user' />
+                <DsButton id='new-user' tone='primary' size='md' onClick={() => setAddUserModalVisible(true)}>
+                  Add New User
+                </DsButton>
+              </Box>
             ) : undefined
           }
         >

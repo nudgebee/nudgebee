@@ -1037,6 +1037,27 @@ func TestTruncateToolResponse(t *testing.T) {
 	})
 }
 
+func TestIsToolConfirmationApproved(t *testing.T) {
+	cases := []struct {
+		name          string
+		confirmations map[string]string
+		tool          string
+		want          bool
+	}{
+		{"yes", map[string]string{"github_execute": "yes"}, "github_execute", true},
+		{"ok with surrounding space and caps", map[string]string{"t": " OK "}, "t", true},
+		{"true", map[string]string{"t": "true"}, "t", true},
+		{"no", map[string]string{"github_execute": "no"}, "github_execute", false},
+		{"absent key", map[string]string{}, "github_execute", false},
+		{"nil map", nil, "github_execute", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isToolConfirmationApproved(tc.confirmations, tc.tool))
+		})
+	}
+}
+
 func TestToolStatusToExitCode(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -1045,7 +1066,7 @@ func TestToolStatusToExitCode(t *testing.T) {
 	}{
 		{"success", ToolStatusSuccess, 0},
 		{"failure", ToolStatusFailure, 1},
-		{"empty result", ToolStatusEmptyResult, 2},
+		{"empty result is success, not error", ToolStatusEmptyResult, 0},
 		{"unknown defaults to success", ToolStatus("weird"), 0},
 	}
 	for _, tc := range cases {
@@ -1058,9 +1079,8 @@ func TestToolStatusToExitCode(t *testing.T) {
 // TestIsNoMatchEnvelope pins the classifier's recognition of the
 // `"no_matches":true` JSON envelope that shell_execute / kubectl_execute
 // / helm_execute emit via successResponseNoMatches. Without this, those
-// tools' non-empty Data falls through to ToolStatusSuccess (ExitStatus=0)
-// even though semantically they ran successfully with no matches — the
-// "exit status 2" signal the footer is supposed to expose.
+// tools' non-empty Data falls through to ToolStatusSuccess instead of
+// ToolStatusEmptyResult, losing the empty-result classification.
 func TestIsNoMatchEnvelope(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1094,13 +1114,9 @@ func TestIsNoMatchEnvelope(t *testing.T) {
 	}
 }
 
-// TestClassifierExitStatus2_FiresForNoMatchEnvelope is the integration-
-// shaped test that pins the EXACT problem from the PR #32253 follow-up
-// discussion: shell_execute's no-match envelope was being classified as
-// ExitStatus=0 instead of 2 because the classifier's "empty Data"
-// heuristic was too narrow. This test asserts the alignment is now
-// correct by walking the classifier's branch logic directly.
-func TestClassifierExitStatus2_FiresForNoMatchEnvelope(t *testing.T) {
+// TestClassifierEmptyResult_FiresForNoMatchEnvelope pins that a no-match envelope
+// classifies as ToolStatusEmptyResult, not Success (PR #32253 follow-up).
+func TestClassifierEmptyResult_FiresForNoMatchEnvelope(t *testing.T) {
 	cases := []struct {
 		name           string
 		status         toolcore.NBToolResponseStatus
@@ -1147,8 +1163,6 @@ func exitCodeFor(s ToolStatus) int {
 	switch s {
 	case ToolStatusFailure:
 		return 1
-	case ToolStatusEmptyResult:
-		return 2
 	default:
 		return 0
 	}
@@ -1163,7 +1177,7 @@ func TestFormatToolMetadataFooter(t *testing.T) {
 		{"nil metadata renders nothing", nil, ""},
 		{"success", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 123}, "\n[exitStatus: 0 | executionDuration: 123ms]"},
 		{"failure", &toolcore.NBToolResponseMetadata{ExitStatus: 1, ExecutionDurationMs: 45}, "\n[exitStatus: 1 | executionDuration: 45ms]"},
-		{"empty result", &toolcore.NBToolResponseMetadata{ExitStatus: 2, ExecutionDurationMs: 8}, "\n[exitStatus: 2 | executionDuration: 8ms]"},
+		{"formatter renders arbitrary exit code faithfully", &toolcore.NBToolResponseMetadata{ExitStatus: 2, ExecutionDurationMs: 8}, "\n[exitStatus: 2 | executionDuration: 8ms]"},
 		{"negative duration clamps to 0", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: -1}, "\n[exitStatus: 0 | executionDuration: 0ms]"},
 		{"multi-second renders as ms", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 3200}, "\n[exitStatus: 0 | executionDuration: 3200ms]"},
 	}
@@ -1345,6 +1359,12 @@ func TestValidateToolInput_EmptyCommand(t *testing.T) {
 	assert.Contains(t, resp.Data, "command")
 	assert.Contains(t, resp.Data, "string")
 	assert.Contains(t, resp.Data, "Kubectl command to execute")
+	// Universal recovery guidance — applies to any tool, not just shell —
+	// so the model can pick either path: populate the field or drop the
+	// action from the batch. Locks in the executor_planner.go enhancement
+	// that replaced the per-tool shell responder.
+	assert.Contains(t, resp.Data, "drop this action from your batch",
+		"generic hint must nudge the model at the universal recovery — drop the action if no work")
 }
 
 // TestValidateToolInput_ValidInput confirms no false positives — a well-formed
@@ -1389,4 +1409,247 @@ func TestValidateToolInput_NoRequiredFields(t *testing.T) {
 	tool := &stubTool{name: "shell_execute", required: nil}
 	resp := validateToolInput(tool, toolcore.NBToolCallRequest{})
 	assert.Nil(t, resp, "tool with no required fields must always pass")
+}
+
+// stubResponderTool is a stubTool that implements MissingFieldsResponder,
+// used to pin the escape-hatch that lets a tool override the generic
+// missing-fields line without weakening the schema-Required spec the LLM
+// sees at call time.
+type stubResponderTool struct {
+	stubTool
+	response *toolcore.NBToolResponse
+}
+
+func (s *stubResponderTool) OnMissingRequiredFields(_ toolcore.NBToolCallRequest, _ []string) *toolcore.NBToolResponse {
+	return s.response
+}
+
+// TestValidateToolInput_ResponderOverridesGenericMessage pins the escape
+// hatch: when a tool implements MissingFieldsResponder and returns a
+// non-nil response, that response reaches the LLM instead of the generic
+// "<tool>: missing required fields — <field> (<type>): <desc>" line.
+func TestValidateToolInput_ResponderOverridesGenericMessage(t *testing.T) {
+	custom := &toolcore.NBToolResponse{
+		Status: toolcore.NBToolResponseStatusError,
+		Data:   "think rejected: reasoning belongs in the 'reasoning' field, not the top-level command.",
+	}
+	tool := &stubResponderTool{
+		stubTool: stubTool{
+			name:     "think",
+			required: []string{"reasoning"},
+			props: map[string]toolcore.ToolSchemaProperty{
+				"reasoning": {Type: "string", Description: "The conflict, stuck point, etc."},
+			},
+		},
+		response: custom,
+	}
+	resp := validateToolInput(tool, toolcore.NBToolCallRequest{Command: "I have all the evidence needed."})
+	if assert.NotNil(t, resp, "responder must produce a response, not nil") {
+		assert.Equal(t, custom, resp, "responder response must be returned verbatim")
+		assert.NotContains(t, resp.Data, "missing required fields",
+			"responder overrides the generic missing-fields line")
+	}
+}
+
+// TestValidateToolInput_ResponderFallsBackWhenNil confirms that a responder
+// returning nil falls back to the generic message — so a tool can opt out
+// case-by-case without breaking the default validator behavior.
+func TestValidateToolInput_ResponderFallsBackWhenNil(t *testing.T) {
+	tool := &stubResponderTool{
+		stubTool: stubTool{
+			name:     "think",
+			required: []string{"reasoning"},
+			props: map[string]toolcore.ToolSchemaProperty{
+				"reasoning": {Type: "string", Description: "The conflict, stuck point, etc."},
+			},
+		},
+		response: nil,
+	}
+	resp := validateToolInput(tool, toolcore.NBToolCallRequest{})
+	if assert.NotNil(t, resp) {
+		assert.Contains(t, resp.Data, "missing required fields",
+			"nil responder must fall back to the generic message")
+		assert.Contains(t, resp.Data, "reasoning")
+	}
+}
+
+// newAccumulateStepsExecutor builds a minimal plannerExecutor suitable for
+// exercising accumulateSteps in isolation (no DB / tool execution needed).
+func newAccumulateStepsExecutor() *plannerExecutor {
+	ctx := security.NewRequestContextForTenantAccountAdmin(
+		"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+		"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+		[]string{"cccccccc-cccc-cccc-cccc-cccccccccccc"},
+	)
+	return &plannerExecutor{
+		ctx:      ctx,
+		agent:    &MockAgent{},
+		stepKeys: map[string]bool{},
+	}
+}
+
+func stepWith(toolID, tool string, status ToolStatus, observation string) NBAgentPlannerToolActionStep {
+	return NBAgentPlannerToolActionStep{
+		Action:      NBAgentPlannerToolAction{ToolID: toolID, Tool: tool, ToolInput: "gh issue create ..."},
+		Observation: observation,
+		Status:      status,
+	}
+}
+
+// TestAccumulateSteps_RetrySuccessReplacesPriorFailure is the regression test
+// for the "ticket created but reported as config failure" bug: an identical
+// retried command hashes to the same ToolID, so the successful retry must
+// replace the stranded failure rather than being dropped by the dedup.
+func TestAccumulateSteps_RetrySuccessReplacesPriorFailure(t *testing.T) {
+	const toolID = "github_execute-abc123"
+
+	t.Run("failed then identical success upgrades in place", func(t *testing.T) {
+		e := newAccumulateStepsExecutor()
+
+		// Iteration 1: the create attempt fails with the config error.
+		upgraded := e.accumulateSteps([]NBAgentPlannerToolActionStep{
+			stepWith(toolID, "github_execute", ToolStatusFailure, "Tool github_execute requires configuration but none was found"),
+		})
+		assert.False(t, upgraded)
+		require.Len(t, e.steps, 1)
+		assert.Equal(t, ToolStatusFailure, e.steps[0].Status)
+
+		// Iteration 2: the LLM retries the byte-identical command and it succeeds.
+		upgraded = e.accumulateSteps([]NBAgentPlannerToolActionStep{
+			stepWith(toolID, "github_execute", ToolStatusSuccess, "https://github.com/nudgebee/nudgebee-enterprise/issues/31141"),
+		})
+		assert.True(t, upgraded, "successful retry of a previously failed identical command must be recorded as progress")
+		require.Len(t, e.steps, 1, "the retry must replace the failed step, not append a duplicate")
+		assert.Equal(t, ToolStatusSuccess, e.steps[0].Status)
+		assert.Contains(t, e.steps[0].Observation, "issues/31141")
+	})
+
+	t.Run("stale failure never downgrades a recorded success", func(t *testing.T) {
+		e := newAccumulateStepsExecutor()
+		e.accumulateSteps([]NBAgentPlannerToolActionStep{
+			stepWith(toolID, "github_execute", ToolStatusSuccess, "https://github.com/nudgebee/nudgebee-enterprise/issues/31141"),
+		})
+		// A later identical-ID failure must be dropped, leaving success intact.
+		upgraded := e.accumulateSteps([]NBAgentPlannerToolActionStep{
+			stepWith(toolID, "github_execute", ToolStatusFailure, "transient error"),
+		})
+		assert.False(t, upgraded)
+		require.Len(t, e.steps, 1)
+		assert.Equal(t, ToolStatusSuccess, e.steps[0].Status, "a recorded success must not be downgraded by a later duplicate failure")
+	})
+
+	t.Run("new tool ids are appended", func(t *testing.T) {
+		e := newAccumulateStepsExecutor()
+		upgraded := e.accumulateSteps([]NBAgentPlannerToolActionStep{
+			stepWith("a", "github_execute", ToolStatusSuccess, "out-a"),
+			stepWith("b", "github_execute", ToolStatusSuccess, "out-b"),
+		})
+		assert.False(t, upgraded)
+		assert.Len(t, e.steps, 2)
+	})
+}
+
+// TestBuildToolCallSummary_EmptyResultIsNotFailure pins the regression for
+// issue #29875: a tool call that exits 0 with empty stdout (e.g. `gh run
+// rerun`, `kubectl apply`, `helm upgrade`) MUST be classified as
+// SUCCESS_NO_OUTPUT and MUST NOT set hasAnyFailure. Treating it as a failure
+// caused the React loop to retry write/mutation commands and the summarizer
+// to report failure to users when the action had actually succeeded.
+func TestBuildToolCallSummary_EmptyResultIsNotFailure(t *testing.T) {
+	mkStep := func(tool string, status ToolStatus) NBAgentPlannerToolActionStep {
+		return NBAgentPlannerToolActionStep{
+			Action: NBAgentPlannerToolAction{Tool: tool},
+			Status: status,
+		}
+	}
+
+	t.Run("all success → no failure, all SUCCESS", func(t *testing.T) {
+		summary, anyFail := buildToolCallSummary([]NBAgentPlannerToolActionStep{
+			mkStep("github_execute", ToolStatusSuccess),
+			mkStep("kubectl", ToolStatusSuccess),
+		})
+		assert.False(t, anyFail)
+		assert.Contains(t, summary, "1. github_execute — SUCCESS")
+		assert.Contains(t, summary, "2. kubectl — SUCCESS")
+		assert.NotContains(t, summary, "FAILED")
+		assert.NotContains(t, summary, "NO_DATA") // legacy label must be gone
+	})
+
+	t.Run("empty result is success-no-output, NOT failure (regression for #29875)", func(t *testing.T) {
+		summary, anyFail := buildToolCallSummary([]NBAgentPlannerToolActionStep{
+			mkStep("github_execute", ToolStatusEmptyResult), // gh run rerun: silent on success
+		})
+		assert.False(t, anyFail, "empty stdout on a successful tool call must NOT be flagged as failure")
+		assert.Contains(t, summary, "SUCCESS_NO_OUTPUT")
+		assert.NotContains(t, summary, "NO_DATA")
+		assert.NotContains(t, summary, "FAILED")
+	})
+
+	t.Run("mixed empty + success → still no failure", func(t *testing.T) {
+		summary, anyFail := buildToolCallSummary([]NBAgentPlannerToolActionStep{
+			mkStep("github_execute", ToolStatusEmptyResult), // silent-success write
+			mkStep("github_execute", ToolStatusSuccess),
+		})
+		assert.False(t, anyFail)
+		assert.Contains(t, summary, "1. github_execute — SUCCESS_NO_OUTPUT")
+		assert.Contains(t, summary, "2. github_execute — SUCCESS")
+	})
+
+	t.Run("real failure → flagged", func(t *testing.T) {
+		summary, anyFail := buildToolCallSummary([]NBAgentPlannerToolActionStep{
+			mkStep("kubectl", ToolStatusFailure),
+		})
+		assert.True(t, anyFail)
+		assert.Contains(t, summary, "FAILED")
+	})
+
+	t.Run("waiting steps are labeled WAITING, not SUCCESS, and don't flag failure", func(t *testing.T) {
+		// A step still pending user confirmation / client execution must not be
+		// reported to the summarizer as a completed SUCCESS — mirrors the
+		// WAITING skip in GetToolInvocations.
+		summary, anyFail := buildToolCallSummary([]NBAgentPlannerToolActionStep{
+			mkStep("github_execute", ToolStatusWaiting),
+			mkStep("kubectl", ToolStatusWaitingForClient),
+		})
+		assert.False(t, anyFail, "a pending/waiting step is not a failure")
+		assert.Contains(t, summary, "1. github_execute — WAITING")
+		assert.Contains(t, summary, "2. kubectl — WAITING")
+		// Pin intent without false-matching the SUCCESS_NO_OUTPUT substring:
+		// a plain-success line ends "— SUCCESS\n", which SUCCESS_NO_OUTPUT does not.
+		assert.NotContains(t, summary, "— SUCCESS\n")
+	})
+
+	t.Run("mixed empty + failure → only the failure flips the flag", func(t *testing.T) {
+		_, anyFail := buildToolCallSummary([]NBAgentPlannerToolActionStep{
+			mkStep("github_execute", ToolStatusEmptyResult),
+			mkStep("kubectl", ToolStatusFailure),
+		})
+		assert.True(t, anyFail, "real failure must still flip hasAnyFailure")
+	})
+
+	t.Run("unnamed tool falls back to (unknown)", func(t *testing.T) {
+		summary, _ := buildToolCallSummary([]NBAgentPlannerToolActionStep{
+			mkStep("", ToolStatusSuccess),
+		})
+		assert.Contains(t, summary, "(unknown)")
+	})
+
+	t.Run("empty steps → header only, no failure", func(t *testing.T) {
+		summary, anyFail := buildToolCallSummary(nil)
+		assert.False(t, anyFail)
+		assert.Contains(t, summary, "TOOL CALL SUMMARY")
+	})
+}
+
+// TestPlannerToolNoData_IsInformative pins that the empty-stdout sentinel
+// observation does not literally read "No Data" any more — the new text must
+// be self-explanatory enough that a downstream LLM does not mistake silent
+// success for failure (issue #29875).
+func TestPlannerToolNoData_IsInformative(t *testing.T) {
+	assert.NotEqual(t, "No Data", plannerToolNoData,
+		"sentinel must not read like a failure marker")
+	assert.Contains(t, strings.ToLower(plannerToolNoData), "successfully",
+		"sentinel must signal success to the LLM")
+	assert.Contains(t, strings.ToLower(plannerToolNoData), "write",
+		"sentinel must explain the write/mutation case")
 }

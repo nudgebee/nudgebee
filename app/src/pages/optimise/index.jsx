@@ -5,10 +5,16 @@ import OptimizeNewPage from '@components/optimise-new/OptimizeNewPage';
 import SummaryView from '@components/optimise-new/summary/SummaryView';
 import ResolutionsView from '@components/optimise-new/ResolutionsView';
 import CostAnalyser from '@components/llm/cost-analyser/CostAnalyser';
+import AutoOptimizeTabs from '@components/autopilot/tables/AutoOptimizeTabs';
 import { useRouter } from 'next/router';
-import { OptimizeSummaryIcon, RecommendationIcon, RecommendationResolutionIcon, LLMConsumptionIcon } from '@assets';
-import { hasReadAccess } from '@lib/auth';
+import { OptimizeSummaryIcon, RecommendationIcon, RecommendationResolutionIcon, LLMConsumptionIcon, AutomateBlue, BetaIcon } from '@assets';
+import { hasReadAccess, hasWriteAccess } from '@lib/auth';
 import { useData } from '@context/DataContext';
+import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
+import { Button as DsButton } from '@ui/Button';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import SafeIcon from '@shared/icons/SafeIcon';
+import { ds } from '@utils/colors';
 
 export async function getServerSideProps() {
   return {
@@ -21,7 +27,10 @@ export async function getServerSideProps() {
 const Optimise = ({ enableLlmAnalyser }) => {
   const router = useRouter();
   const { selectedCluster } = useData();
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTab] = useState(null);
+  const [subTab, setSubTab] = useState(0);
+  const [openCreateAutoOptimize, setOpenCreateAutoOptimize] = useState(false);
+  const [openCreateAutoOptimizeType, setOpenCreateAutoOptimizeType] = useState(null);
   // Gate the admin-only tab on mount so the first client render matches the
   // server HTML (hasReadAccess reads a client-populated session) — avoids any
   // hydration mismatch; the tab resolves on the next tick.
@@ -42,13 +51,28 @@ const Optimise = ({ enableLlmAnalyser }) => {
         { name: 'Summary', id: 'summary', fragment: 'summary', value: 0, icon: OptimizeSummaryIcon },
         { name: 'Recommendations', id: 'recommendations', fragment: 'recommendations', value: 1, icon: RecommendationIcon, iconSize: 18 },
         { name: 'Resolutions', id: 'resolutions', fragment: 'resolutions', value: 2, icon: RecommendationResolutionIcon, iconSize: 18 },
+        {
+          name: 'Auto Optimize',
+          id: 'auto-optimize',
+          fragment: 'auto-optimize',
+          value: 3,
+          icon: AutomateBlue,
+          tabOptions: [
+            { id: 'Optimizations', text: 'Optimizations', value: 0, fragment: 'optimizations' },
+            { id: 'approvals', text: 'Approvals', value: 1, fragment: 'approvals' },
+          ],
+        },
+        // Auto Optimize stays at a fixed index 3 so it sits BEFORE this
+        // feature-flagged tab. AnchorComponent renders sub-tabs via
+        // filterOptions[activeDropdownTab] (index === value), so a tab with
+        // tabOptions must keep value === array index regardless of the flag.
         isMounted &&
           enableLlmAnalyser &&
           hasReadAccess(selectedCluster?.value) && {
             name: 'LLM Analyser',
             id: 'llm-analyser',
             fragment: 'cost-analyser',
-            value: 3,
+            value: 4,
             icon: LLMConsumptionIcon,
             iconSize: 18,
           },
@@ -62,23 +86,88 @@ const Optimise = ({ enableLlmAnalyser }) => {
       setActiveTab(0);
       return;
     }
-    const fragment = hash;
+    const [fragment, subFragment] = hash.split('/');
     const filter = filterOptions.find((option) => option.fragment === fragment);
-    if (filter) {
-      setActiveTab(filter.value);
+    if (!filter) {
+      setActiveTab(0);
+      return;
+    }
+    setActiveTab(filter.value);
+    if (subFragment && filter.tabOptions) {
+      const sub = filter.tabOptions.find((tab) => tab.fragment === subFragment);
+      if (sub) {
+        setSubTab(sub.value);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterOptions]);
 
+  const handleOpenCreateAutoOptimize = (type) => {
+    setOpenCreateAutoOptimizeType(type);
+    setOpenCreateAutoOptimize(true);
+  };
+
+  const handleCloseCreateAutoOptimize = () => {
+    setOpenCreateAutoOptimizeType('');
+    setOpenCreateAutoOptimize(false);
+  };
+
+  const createAutoOptimizeButton =
+    activeTab === 3 && hasWriteAccess(router?.query?.accountId) ? (
+      <DsDropdownMenu
+        align='end'
+        disablePortal={false}
+        items={[
+          {
+            id: 'continuous_rightsize',
+            label: (
+              <span style={{ display: 'flex', alignItems: 'center' }}>
+                Continuous Vertical Right Sizing
+                <SafeIcon src={BetaIcon} alt='Beta Icon' width={25} height={20} style={{ marginLeft: ds.space[1] }} />
+              </span>
+            ),
+            onSelect: () => handleOpenCreateAutoOptimize('continuous_rightsize'),
+          },
+          { id: 'horizontal_rightsize', label: 'Horizontal Right Sizing', onSelect: () => handleOpenCreateAutoOptimize('horizontal_rightsize') },
+          { id: 'vertical_rightsize', label: 'Scheduled Vertical Right Sizing', onSelect: () => handleOpenCreateAutoOptimize('vertical_rightsize') },
+          { id: 'pvc_rightsize', label: 'PVC Right Sizing', onSelect: () => handleOpenCreateAutoOptimize('pvc_rightsize') },
+        ]}
+        trigger={
+          <DsButton id='create-auto-optimize' tone='primary' size='md' composition='text+icon' icon={<KeyboardArrowDownIcon fontSize='small' />}>
+            Create Auto Optimize
+          </DsButton>
+        }
+      />
+    ) : null;
+
   return (
     <>
-      <AnchorComponent manageRoute={true} filterOptions={filterOptions} onChangeFilter={(val) => setActiveTab(val)} />
-      <ErrorBoundary key={activeTab}>
-        {activeTab === 0 && <SummaryView />}
-        {activeTab === 1 && <OptimizeNewPage />}
-        {activeTab === 2 && <ResolutionsView />}
-        {activeTab === 3 && <CostAnalyser />}
-      </ErrorBoundary>
+      <AnchorComponent
+        manageRoute={true}
+        filterOptions={filterOptions}
+        onChangeFilter={(val, subVal) => {
+          setActiveTab(val);
+          setSubTab(subVal || 0);
+        }}
+        buttonComponent={createAutoOptimizeButton}
+      />
+      {activeTab !== null && (
+        <ErrorBoundary key={activeTab}>
+          {activeTab === 0 && <SummaryView />}
+          {activeTab === 1 && <OptimizeNewPage />}
+          {activeTab === 2 && <ResolutionsView />}
+          {activeTab === 3 && (
+            <AutoOptimizeTabs
+              subTab={subTab}
+              openCreateAutoOptimize={openCreateAutoOptimize}
+              openCreateAutoOptimizeType={openCreateAutoOptimizeType}
+              handleOpenCreateAutoOptimize={handleOpenCreateAutoOptimize}
+              handleCloseCreateAutoOptimize={handleCloseCreateAutoOptimize}
+            />
+          )}
+          {activeTab === 4 && <CostAnalyser />}
+        </ErrorBoundary>
+      )}
     </>
   );
 };

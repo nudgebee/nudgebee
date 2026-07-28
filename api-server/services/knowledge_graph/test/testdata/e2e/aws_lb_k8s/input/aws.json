@@ -1,0 +1,18 @@
+[
+  {
+    "id": "alb-1", "resourse_id": "app-alb", "name": "app-alb",
+    "type": "application_loadbalancer", "service_name": "AWSELB",
+    "account": "123456789012", "region": "us-east-1", "cloud_provider": "AWS",
+    "is_active": true, "external_resource_id": "alb-1",
+    "arn": "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/app-alb/abc123",
+    "tags": { "kubernetes.io/service-name": "default/my-svc" },
+    "meta": { "LoadBalancerName": "app-alb", "VPCId": "vpc-1", "Scheme": "internet-facing", "Type": "application" }
+  },
+  {
+    "id": "eks-1", "resourse_id": "my-eks", "name": "my-eks",
+    "type": "cluster", "service_name": "AmazonEKS",
+    "account": "123456789012", "region": "us-east-1", "cloud_provider": "AWS",
+    "is_active": true, "external_resource_id": "eks-1",
+    "meta": { "Name": "my-eks", "ResourcesVpcConfig": { "VpcId": "vpc-1" } }
+  }
+]

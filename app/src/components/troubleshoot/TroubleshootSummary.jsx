@@ -145,6 +145,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
     newIssues: 0,
     newIssuesPrev: 0,
     newIssuesDiff: 0,
+    newIssueEvents: 0,
     highSev: 0,
     highSevPrev: 0,
     highSevDiff: 0,
@@ -185,6 +186,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
           const previous = prev.event_count || 0;
           const newIssues = cur.count_new_issues || 0;
           const newIssuesPrev = prev.count_new_issues || 0;
+          const newIssueEvents = cur.count_new_issue_events || 0;
           const highSev = cur.count_priority_high || 0;
           const highSevPrev = prev.count_priority_high || 0;
           const attention = res?.data?.data?.current_attention?.rows?.[0]?.event_count || 0;
@@ -201,6 +203,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
             newIssues,
             newIssuesPrev,
             newIssuesDiff: pct(newIssues, newIssuesPrev),
+            newIssueEvents,
             highSev,
             highSevPrev,
             highSevDiff: pct(highSev, highSevPrev),
@@ -251,7 +254,11 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
           const current = comparisonRes?.data?.data?.current?.aggregate?.count ?? 0;
 
           const completedCount = aggregates?.completed_count ?? 0;
-          const wallTimeSeconds = aggregates?.total_wall_time_seconds ?? 0;
+          // total_agent_active_time_seconds (not total_wall_time_seconds) — wall
+          // time spans conversation created_at to updated_at and includes time
+          // spent waiting on user replies, which dwarfs the manual baseline and
+          // clamped every investigation's savings to zero.
+          const activeTimeSeconds = aggregates?.total_agent_active_time_seconds ?? 0;
           const manualBaselineMins = aggregates?.manual_baseline_minutes ?? FALLBACK_MANUAL_MINS;
           const hourlyRate = aggregates?.engineer_hourly_rate_usd ?? FALLBACK_HOURLY_USD;
 
@@ -259,7 +266,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
           // Capped at the manual baseline so a slow AI run never produces a
           // negative "time saved". Total saved multiplies by completed rows
           // since in-progress/waiting investigations haven't saved time yet.
-          const avgAiMins = completedCount > 0 ? wallTimeSeconds / 60 / completedCount : 0;
+          const avgAiMins = completedCount > 0 ? activeTimeSeconds / 60 / completedCount : 0;
           const savedPerInvestigation = Math.max(0, manualBaselineMins - avgAiMins);
           const currentSavedMinutes = completedCount * savedPerInvestigation;
 
@@ -531,8 +538,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
           sx={clickable ? { cursor: 'inherit' } : undefined}
           label='New Issues'
           info={{
-            tooltip:
-              'Distinct issues first seen in the last 7 days that occurred in the last 24 hours, across every status — net-new problems as opposed to recurring noise. The percentage compares against the previous 24-hour period.',
+            tooltip: `Distinct issues first seen in the last 7 days that occurred in the last 24 hours, across every status — net-new problems as opposed to recurring noise. The percentage compares against the previous 24-hour period. Clicking through lists every matching event below (${ev.newIssueEvents.toLocaleString()} events), so the table row count is usually higher than this distinct-issue total.`,
             position: 'right',
           }}
           value={

@@ -6,6 +6,7 @@ import { Link } from '@ui/Link';
 import { Modal } from '@ui/Modal';
 import apiTickets from '@api1/tickets';
 import apiRecommendations from '@api1/recommendation';
+import { toast as snackbar } from '@ui/Toast';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { ds } from 'src/utils/colors';
 
@@ -104,11 +105,9 @@ const EventRaisePrPanel = ({ data, repoUrl, filePath }) => {
         } catch {
           url = '';
         }
-        setResult({
-          ok: true,
-          url,
-          message: url ? 'Pull request raised.' : 'Raising pull request — it will appear at the top of the analysis shortly.',
-        });
+        const successMessage = url ? 'Pull request raised.' : 'Raising pull request — it will appear at the top of the analysis shortly.';
+        setResult({ ok: true, url, message: successMessage });
+        snackbar.success(successMessage);
         // The PR resolution row is inserted server-side asynchronously; signal the
         // investigate page to poll for it so the "PR raised" banner surfaces.
         if (typeof window !== 'undefined') {

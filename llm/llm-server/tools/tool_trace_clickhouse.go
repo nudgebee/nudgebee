@@ -42,7 +42,7 @@ func (m TracesExecuteClickhouseTool) GetType() core.NBToolType {
 }
 
 func (m TracesExecuteClickhouseTool) Description() string {
-	return "Executes a Traces SQL query and returns the result."
+	return "Executes a Traces SQL query and returns the result. Input: ClickHouse SQL over trace spans; query the `traces_view` table (columns: service_name, workload_name, trace_id, span_id, duration_ns, endpoint, status_code, ...); no trailing semicolon."
 }
 
 type ClickhouseAgentRow struct {

@@ -852,6 +852,135 @@ func TestValidateTaskTypes(t *testing.T) {
 		err := service.validateTaskTypes(testCtx, "test_account_id", wf)
 		assert.Error(t, err)
 	})
+
+	t.Run("data.transform with javascript scriptType skips JSONata validation", func(t *testing.T) {
+		mockTemporalClient := &MockTemporalClient{}
+		mockDataConverter := converter.GetDefaultDataConverter()
+		mockStore := new(MockWorkflowStore)
+		mockTaskRegistry := tasks.NewInitializedTaskRegistry()
+		mockConfigService := new(MockConfigService)
+		workflowExector := &WorkflowExecutor{
+			temporalClient: mockTemporalClient,
+			workflowStore:  mockStore,
+			dataConverter:  mockDataConverter,
+		}
+		service := NewService(mockTemporalClient, mockStore, mockDataConverter, mockTaskRegistry, workflowExector, mockConfigService)
+
+		wf := model.Workflow{
+			Definition: model.WorkflowDefinition{
+				Tasks: []model.Task{
+					{
+						ID:   "transform1",
+						Type: "data.transform",
+						Params: map[string]any{
+							"input":      "{}",
+							"scriptType": "javascript",
+							// Valid JavaScript, but not valid JSONata.
+							"expression": "var events = data.events || []; events;",
+						},
+					},
+				},
+			},
+		}
+		err := service.validateTaskTypes(testCtx, "test_account_id", wf)
+		assert.NoError(t, err)
+	})
+
+	t.Run("data.transform with invalid JSONata is rejected", func(t *testing.T) {
+		mockTemporalClient := &MockTemporalClient{}
+		mockDataConverter := converter.GetDefaultDataConverter()
+		mockStore := new(MockWorkflowStore)
+		mockTaskRegistry := tasks.NewInitializedTaskRegistry()
+		mockConfigService := new(MockConfigService)
+		workflowExector := &WorkflowExecutor{
+			temporalClient: mockTemporalClient,
+			workflowStore:  mockStore,
+			dataConverter:  mockDataConverter,
+		}
+		service := NewService(mockTemporalClient, mockStore, mockDataConverter, mockTaskRegistry, workflowExector, mockConfigService)
+
+		wf := model.Workflow{
+			Definition: model.WorkflowDefinition{
+				Tasks: []model.Task{
+					{
+						ID:   "transform1",
+						Type: "data.transform",
+						Params: map[string]any{
+							"input": "{}",
+							// No scriptType means JSONata, and this is not valid JSONata.
+							"expression": "var events = data.events;",
+						},
+					},
+				},
+			},
+		}
+		err := service.validateTaskTypes(testCtx, "test_account_id", wf)
+		assert.Error(t, err)
+	})
+
+	t.Run("data.filter with a valid condition passes", func(t *testing.T) {
+		mockTemporalClient := &MockTemporalClient{}
+		mockDataConverter := converter.GetDefaultDataConverter()
+		mockStore := new(MockWorkflowStore)
+		mockTaskRegistry := tasks.NewInitializedTaskRegistry()
+		mockConfigService := new(MockConfigService)
+		workflowExector := &WorkflowExecutor{
+			temporalClient: mockTemporalClient,
+			workflowStore:  mockStore,
+			dataConverter:  mockDataConverter,
+		}
+		service := NewService(mockTemporalClient, mockStore, mockDataConverter, mockTaskRegistry, workflowExector, mockConfigService)
+
+		wf := model.Workflow{
+			Definition: model.WorkflowDefinition{
+				Tasks: []model.Task{
+					{
+						ID:   "filter1",
+						Type: "data.filter",
+						Params: map[string]any{
+							"list": "{{ Tasks['x'].output.data }}",
+							// Runs as "$[value > 10]", which is valid JSONata.
+							"condition": "value > 10",
+						},
+					},
+				},
+			},
+		}
+		err := service.validateTaskTypes(testCtx, "test_account_id", wf)
+		assert.NoError(t, err)
+	})
+
+	t.Run("data.filter with an invalid condition is rejected", func(t *testing.T) {
+		mockTemporalClient := &MockTemporalClient{}
+		mockDataConverter := converter.GetDefaultDataConverter()
+		mockStore := new(MockWorkflowStore)
+		mockTaskRegistry := tasks.NewInitializedTaskRegistry()
+		mockConfigService := new(MockConfigService)
+		workflowExector := &WorkflowExecutor{
+			temporalClient: mockTemporalClient,
+			workflowStore:  mockStore,
+			dataConverter:  mockDataConverter,
+		}
+		service := NewService(mockTemporalClient, mockStore, mockDataConverter, mockTaskRegistry, workflowExector, mockConfigService)
+
+		wf := model.Workflow{
+			Definition: model.WorkflowDefinition{
+				Tasks: []model.Task{
+					{
+						ID:   "filter1",
+						Type: "data.filter",
+						Params: map[string]any{
+							"list": "{{ Tasks['x'].output.data }}",
+							// Runs as "$[var x = 1]", which is not valid JSONata.
+							"condition": "var x = 1",
+						},
+					},
+				},
+			},
+		}
+		err := service.validateTaskTypes(testCtx, "test_account_id", wf)
+		assert.Error(t, err)
+	})
 }
 
 func TestWebhookTriggers(t *testing.T) {

@@ -487,6 +487,22 @@ func (p *ReActPlanner) SetToolTracker(tracker *common.ToolInvocationTracker) {
 	p.toolTracker = tracker
 }
 
+// toolSelfTracks reports whether tool already records its own invocations on the
+// planner's shared tracker — i.e. it is a TrackedToolWrapper bound to the same
+// tracker. Such tools track (and log) themselves inside Execute, so the planner
+// must not also track them directly (see executeStep). Compared by tracker
+// pointer so an (unexpected) wrapper bound to a different tracker still gets the
+// planner's direct tracking rather than silently going unrecorded.
+func (p *ReActPlanner) toolSelfTracks(tool core.NBTool) bool {
+	if p.toolTracker == nil {
+		return false
+	}
+	tc, ok := tool.(interface {
+		GetTracker() *common.ToolInvocationTracker
+	})
+	return ok && tc.GetTracker() == p.toolTracker
+}
+
 func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt string) (*PlannerResult, error) {
 	result := &PlannerResult{
 		Steps:  []Step{},
@@ -1248,8 +1264,15 @@ func (p *ReActPlanner) executeStep(ctx context.Context, step *Step) {
 		secureInput["__intention"] = step.Thought
 	}
 
+	// A tool wrapped by TrackedToolWrapper already records itself on this same
+	// tracker (and logs tool_start/tool_complete) inside Execute. Tracking it
+	// again here would double every step — two tracker entries with consecutive
+	// step numbers → two persisted tool-call rows and 2× observation tokens in
+	// the parent. So the planner only tracks directly for tools that don't
+	// self-track on the same tracker (the documented fallback for the rare
+	// unwrapped tool). The wrapper still reads the "__intention" set above.
 	var invocationID string
-	if p.toolTracker != nil {
+	if p.toolTracker != nil && !p.toolSelfTracks(tool) {
 		invocationID = p.toolTracker.StartInvocationWithIntention(step.Action, secureInput, step.Thought)
 		if p.logger != nil {
 			p.logger.Log(common.EventToolStart, "Tool execution started", map[string]any{

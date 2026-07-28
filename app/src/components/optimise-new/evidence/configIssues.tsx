@@ -117,7 +117,7 @@ const IssueRow = ({ issue, last }: { issue: DedupedIssue; last: boolean }) => {
   return (
     <Box
       sx={{
-        px: ds.space[3],
+        px: ds.space[0],
         py: ds.space[2],
         borderBottom: last ? 'none' : `1px solid ${ds.gray[200]}`,
         display: 'flex',
@@ -143,10 +143,8 @@ const IssueRow = ({ issue, last }: { issue: DedupedIssue; last: boolean }) => {
 };
 
 const issueCard = {
-  backgroundColor: ds.background[100],
   borderRadius: ds.radius.lg,
   overflow: 'hidden',
-  border: `1px solid ${ds.gray[200]}`,
 } as const;
 
 /** The deduped findings list — severity-sorted (Popeye shape) or category-grouped. */

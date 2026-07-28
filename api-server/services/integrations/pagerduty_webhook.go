@@ -13,7 +13,6 @@ import (
 	"nudgebee/services/event"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/internal/database"
-	"nudgebee/services/llm"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"regexp"
@@ -320,7 +319,16 @@ var (
 	reNamespace   = regexp.MustCompile(`namespace=\"([^\"]+)\"`)
 	rePod         = regexp.MustCompile(`pod=\"([^\"]+)\"`)
 	reServiceName = regexp.MustCompile(`service_name=\"([^\"]+)\"`)
-	reK8sPath     = regexp.MustCompile(`/k8s/([^/\s]+)/([^/\s]+)`)
+	// /k8s/<namespace>/<pod>/<workload-or-container> — Alertmanager embeds this in
+	// the incident title. The 4th segment (the workload/container name) is optional
+	// and, when present, is the resolvable subject; the pod carries a ReplicaSet hash.
+	reK8sPath = regexp.MustCompile(`/k8s/([^/\s]+)/([^/\s]+)(?:/([^/\s]+))?`)
+
+	// GCP Cloud Monitoring alert-title parsing (for alerts routed to PagerDuty).
+	// The `for <project> <resource…>` clause runs up to the metric-labels, threshold,
+	// or metric-absence boundary; the project id is read from the View-incident URL.
+	reGCPMonitoringFor = regexp.MustCompile(`(?i)\bfor\s+(.+?)\s+(?:with metric labels\b|is (?:above|below) the threshold\b|is absent\b)`)
+	reGCPProject       = regexp.MustCompile(`[?&]project=([A-Za-z0-9:_.-]+)`)
 )
 
 func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings []core.IntegrationConfigValue, accountId, webhookPayloadString string) ([]core.EventIncomingWebhook, error) {
@@ -632,6 +640,12 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 	// Improve title: Alertmanager default title is a concatenation of all label values.
 	// Prefer a human-readable summary; fall back to alertname.
 	if title := resolveEventTitleFromLabels(parsedPayload.Investigation.Labels); title != "" {
+		// Preserve the original title before overwriting it: it carries the
+		// /k8s/<ns>/<pod>/<workload> path that the deterministic subject fallback in
+		// resolveSubjectFromLabels relies on, which the human-readable title drops.
+		if parsedPayload.EventTitle != "" && parsedPayload.Investigation.Labels != nil {
+			parsedPayload.Investigation.Labels["nb_pd_raw_title"] = parsedPayload.EventTitle
+		}
 		parsedPayload.EventTitle = title
 	}
 
@@ -646,6 +660,13 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 	if parsedPayload.EventSubjectName != "" {
 		matchWorkloadAndEnrich(sc, &parsedPayload, accountId)
 	}
+
+	// GCP Cloud Monitoring alerts routed via PagerDuty carry the resource only in
+	// the incident title (no structured labels survive). Parse it deterministically
+	// before the LLM fallback so a Cloud SQL / GCE / GKE resource resolves to itself
+	// instead of an LLM-hallucinated k8s workload. Runs after matchWorkloadAndEnrich
+	// so a real workload always wins.
+	applyGCPMonitoringSubject(&parsedPayload)
 
 	// LLM fallback: if no subject found after deterministic parsing, use LLM
 	if parsedPayload.EventSubjectName == "" {
@@ -691,41 +712,52 @@ func EnrichWithPagerDutyIncident(sc *security.RequestContext, parsedPayload *cor
 		return
 	}
 
-	// PagerDuty race condition: webhook fires ~700ms after incident creation,
-	// but body.details may not be populated yet. Retry once after a short delay.
-	if incident.Body.Details == nil {
-		sc.GetLogger().Info("pagerdutywebhook: incident body.details is null, retrying after delay",
-			"incident_id", parsedPayload.EventId)
-		time.Sleep(2 * time.Second)
-		retryIncident, retryErr := GetPagerDutyIncident(password, parsedPayload.EventId)
-		if retryErr == nil && retryIncident.Body.Details != nil {
-			incident = retryIncident
-		}
-	}
+	// PagerDuty attaches the CEF (body.details, which carries the Alertmanager Labels
+	// block used for deterministic subject resolution) asynchronously — it is often
+	// still null when this webhook fires (~1s after incident creation) and can take
+	// several seconds to populate. Poll until it does: refetch the incident (the
+	// __pd_cef_payload format extractBodyDetails prefers), and if still null fall back
+	// to the incident's alerts endpoint, which carries the same firing text in
+	// body.details / body.cef_details.
+	//
+	// This runs on the async webhook processor (not the PagerDuty-facing HTTP handler,
+	// which has already stored the payload and returned), so the wait never delays
+	// webhook delivery or risks PD re-delivery. The backoff sleeps total ~6s across the
+	// attempts; the true worst case is longer when the PD API itself is slow, since each
+	// attempt makes up to two GETs that each carry a 10s client timeout. When the CEF
+	// never arrives in time, the LLM subject resolver remains the final fallback.
+	const maxBodyDetailsRetries = 3
+	for attempt := 1; incident.Body.Details == nil && attempt <= maxBodyDetailsRetries; attempt++ {
+		sc.GetLogger().Info("pagerdutywebhook: incident body.details is null, retrying",
+			"incident_id", parsedPayload.EventId, "attempt", attempt)
+		time.Sleep(time.Duration(attempt) * time.Second)
 
-	// Fallback: if still null after retry, try the alerts endpoint
-	// which contains the CEF payload with Alertmanager labels
-	if incident.Body.Details == nil {
-		sc.GetLogger().Warn("pagerdutywebhook: incident body.details still null after retry, trying alerts endpoint",
-			"incident_id", parsedPayload.EventId)
+		retryIncident, retryErr := GetPagerDutyIncident(password, parsedPayload.EventId)
+		if retryErr != nil {
+			sc.GetLogger().Warn("pagerdutywebhook: incident refetch failed", "attempt", attempt, "error", retryErr)
+		} else if retryIncident.Body.Details != nil {
+			incident = retryIncident
+			break
+		}
+
 		alerts, alertErr := GetPagerDutyIncidentAlerts(password, parsedPayload.EventId)
 		if alertErr != nil {
-			sc.GetLogger().Warn("pagerdutywebhook: alerts endpoint failed", "error", alertErr)
-		} else {
-			for _, alert := range alerts {
-				// PD alerts endpoint returns CEF data in both body.details and body.cef_details.
-				// Check details first, then fall back to cef_details.
-				if alert.Body.Details != nil {
-					incident.Body = alert.Body
-					break
+			sc.GetLogger().Warn("pagerdutywebhook: alerts endpoint failed", "attempt", attempt, "error", alertErr)
+			continue
+		}
+		for _, alert := range alerts {
+			// PD alerts endpoint returns CEF data in both body.details and body.cef_details.
+			// Check details first, then fall back to cef_details.
+			if alert.Body.Details != nil {
+				incident.Body = alert.Body
+				break
+			}
+			if alert.Body.CefDetails != nil {
+				incident.Body.Details = alert.Body.CefDetails
+				if incident.Body.Type == "" {
+					incident.Body.Type = alert.Body.Type
 				}
-				if alert.Body.CefDetails != nil {
-					incident.Body.Details = alert.Body.CefDetails
-					if incident.Body.Type == "" {
-						incident.Body.Type = alert.Body.Type
-					}
-					break
-				}
+				break
 			}
 		}
 	}
@@ -3284,6 +3316,129 @@ func resolveEventTitleFromLabels(labels map[string]string) string {
 // and EventSubjectKind from Investigation.Labels populated by enrichment parsing.
 // It checks label keys in priority order and only sets values not already resolved
 // from the title regex parsing.
+// applyK8sPathSubject sets EventSubjectName / EventSubjectNamespace from a
+// /k8s/<namespace>/<pod>/<workload> path — the shape Alertmanager embeds in
+// `container_id` labels and in incident titles. Fully deterministic (no LLM). The
+// 4th segment (workload / container name — matches k8s_workloads) is preferred over
+// the pod, whose ReplicaSet hash never matches the inventory; the pod is kept as a
+// label. Returns true when a subject was set.
+func applyK8sPathSubject(p *core.EventIncomingWebhook, labels map[string]string, path string) bool {
+	match := reK8sPath.FindStringSubmatch(path)
+	if len(match) != 4 {
+		return false
+	}
+	namespace, pod, workload := match[1], match[2], match[3]
+	if workload != "" {
+		p.EventSubjectName = workload
+	} else {
+		p.EventSubjectName = pod
+	}
+	if p.EventSubjectNamespace == "" {
+		p.EventSubjectNamespace = namespace
+	}
+	if pod != "" && labels != nil && labels["pod"] == "" {
+		labels["pod"] = pod
+	}
+	return p.EventSubjectName != ""
+}
+
+// extractGCPMonitoringSubject parses a GCP Cloud Monitoring alert title that was
+// routed through PagerDuty. These arrive with ONLY the human-readable title — the
+// PagerDuty Events-API payload carries no structured GCP resource labels, and the
+// incident API enrichment's body.details just echoes the same text — so the resource
+// must be read from the title. The format is stable:
+//
+//	<metric/condition> for <project> <resource…> [with metric labels {…}] is
+//	(above|below) the threshold of N with a value of N. | Violation started: … |
+//	Policy: … | Condition: … | View incident:
+//	https://console.cloud.google.com/monitoring/alerting/…?…&project=<project>
+//
+// It returns the resource display name (the trailing value of the `for` clause — the
+// space-joined resource-label values end with the instance/resource name, e.g. a
+// Cloud SQL instance), the project id (from the View-incident URL, falling back to
+// the leading `for`-clause token), and a kind when the datasource is identifiable
+// (Cloud SQL log-based metrics carry `cloudsql.googleapis.com` in their labels).
+// All return values are empty when the title is not a GCP Cloud Monitoring alert.
+func extractGCPMonitoringSubject(title string) (resource, project, kind string) {
+	if title == "" || !strings.Contains(title, "console.cloud.google.com/monitoring/alerting") {
+		return "", "", ""
+	}
+	if m := reGCPProject.FindStringSubmatch(title); m != nil {
+		project = m[1]
+	}
+	// Parse the resource out of the first pipe segment (the summary line) so a
+	// stray " for " in a later segment can never be matched.
+	summary := strings.SplitN(title, " | ", 2)[0]
+	m := reGCPMonitoringFor.FindStringSubmatch(summary)
+	if m == nil {
+		return "", project, ""
+	}
+	fields := strings.Fields(strings.TrimSpace(m[1])) // "<project> <resource…>"
+	if len(fields) == 0 {
+		return "", project, ""
+	}
+	resource = fields[len(fields)-1]
+	if project == "" {
+		project = fields[0]
+	}
+	// Never let the bare project become the subject (e.g. a resource-less clause).
+	if resource == project {
+		return "", project, ""
+	}
+	if strings.Contains(title, "cloudsql.googleapis.com") {
+		kind = "cloudsql_database"
+	}
+	return resource, project, kind
+}
+
+// applyGCPMonitoringSubject resolves the subject for a GCP Cloud Monitoring alert
+// routed via PagerDuty from the incident title (see extractGCPMonitoringSubject).
+// Without it the title carries no label the workload parser understands, so the
+// alert falls to the LLM, which has no matching workload and hallucinates an
+// unrelated one (observed: a Cloud SQL `dev-pg-slow-queries` alert resolved to a
+// `nudgebee-agent-prod-node-agent` daemonset). Sets the GCP project as the event
+// cluster (`cluster` label) to mirror native GCP events (whose cluster IS the
+// project) and satisfy the ingest guard, which drops any event with an empty
+// cluster. Must run AFTER matchWorkloadAndEnrich (so a real workload always wins)
+// and BEFORE the LLM fallback (so these alerts never reach it). No-op unless the
+// subject is still empty and the title is a GCP Cloud Monitoring alert.
+func applyGCPMonitoringSubject(parsedPayload *core.EventIncomingWebhook) {
+	if parsedPayload.EventSubjectName != "" {
+		return
+	}
+	labels := parsedPayload.Investigation.Labels
+	title := ""
+	if labels != nil {
+		title = labels["nb_pd_raw_title"]
+	}
+	if title == "" {
+		title = parsedPayload.EventTitle
+	}
+	resource, project, kind := extractGCPMonitoringSubject(title)
+	if resource == "" {
+		return
+	}
+	parsedPayload.EventSubjectName = resource
+	if kind != "" {
+		parsedPayload.EventSubjectKind = kind
+	}
+	// Guard against a nil label map: without this a resolved subject would be set
+	// but the `cluster` label never written, and the ingest guard drops any event
+	// with an empty cluster.
+	if labels == nil {
+		labels = map[string]string{}
+		parsedPayload.Investigation.Labels = labels
+	}
+	if project != "" {
+		labels["project_id"] = project
+		if labels["cluster"] == "" {
+			labels["cluster"] = project
+		}
+	}
+	labels["nb_subject_match"] = "gcp_monitoring_title"
+	labels["nb_subject_resolution"] = "gcp-monitoring"
+}
+
 func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 	labels := parsedPayload.Investigation.Labels
 	if labels == nil {
@@ -3306,7 +3461,14 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 			if val == "" {
 				continue
 			}
-			if strings.Contains(val, "kube-state-metrics") {
+			// Skip the kube-state-metrics EXPORTER only (exact match). A substring
+			// match also drops a helm-prefixed real workload like
+			// "victoria-kube-state-metrics" — so a KubeDeploymentReplicasMismatch
+			// about the KSM deployment itself lost every deterministic candidate
+			// and fell to the LLM. The bare exporter name never names a real
+			// workload here, so exact-match keeps the guard while letting the
+			// actual subject through.
+			if val == "kube-state-metrics" {
 				continue
 			}
 			parsedPayload.EventSubjectName = val
@@ -3324,6 +3486,15 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 					parsedPayload.EventSubjectNamespace = parts[1]
 				}
 			}
+		}
+	}
+
+	// Parse container_id (/k8s/{namespace}/{pod}/{workload}) — Alertmanager/Grafana
+	// attach the full k8s path in this label. Structured and reliable, so it runs
+	// ahead of the generic service/pod labels below. Deterministic — no LLM.
+	if parsedPayload.EventSubjectName == "" {
+		if cid := labels["container_id"]; cid != "" {
+			applyK8sPathSubject(parsedPayload, labels, cid)
 		}
 	}
 
@@ -3378,6 +3549,7 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 			"nb_alert_job",   // Chronosphere normalized job
 			"service_name",   // Generic service name
 			"service.name",   // OpenTelemetry-style service name
+			"service",        // Alertmanager/Prometheus bare `service` label (e.g. TargetDown)
 			"pod",            // Pod name from labels
 			"pod_name",       // Alternative pod name key
 			"container",      // Container name (Chronosphere events)
@@ -3389,15 +3561,25 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 			if val == "" {
 				continue
 			}
-			if strings.Contains(val, "kube-state-metrics") {
+			// Exact match, not substring: filter the bare kube-state-metrics
+			// exporter without dropping a helm-prefixed real workload
+			// (e.g. pod=victoria-kube-state-metrics), which is the deterministic
+			// subject when the alert is about the KSM deployment itself. The
+			// scrape-target keys below are still guarded by isPrometheusScrapeJob.
+			if val == "kube-state-metrics" {
 				continue
 			}
-			// `job`/`nb_alert_job` carry the prometheus scrape target on every
-			// series (kubelet, node-exporter, …). Never let an exporter become
-			// the subject — that's how KubePersistentVolumeFillingUp resolved
-			// to subject=kubelet instead of the persistentvolumeclaim.
-			if (key == "job" || key == "nb_alert_job") && isPrometheusScrapeJob(val) {
-				continue
+			// `job`/`nb_alert_job` — and the service keys — can carry the prometheus
+			// scrape target on every series (kubelet, node-exporter, …). Never let a
+			// bare exporter become the subject: that's how KubePersistentVolumeFillingUp
+			// resolved to subject=kubelet instead of the persistentvolumeclaim.
+			// isPrometheusScrapeJob matches the exporter exactly, so a real Service
+			// name like "nudgebee-prometheus-kube-p-kubelet" still resolves normally.
+			switch key {
+			case "job", "nb_alert_job", "service", "service_name", "service.name":
+				if isPrometheusScrapeJob(val) {
+					continue
+				}
 			}
 			parsedPayload.EventSubjectName = val
 			break
@@ -3446,16 +3628,20 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 		}
 	}
 
-	// Last resort: parse /k8s/{namespace}/{workload} from the event title.
-	// Alertmanager-routed PagerDuty alerts embed this pattern in the title
-	// even when body.details is unavailable due to API race conditions.
+	// Last resort: parse the /k8s/{namespace}/{pod}/{workload} path Alertmanager
+	// embeds in the incident title. This is fully deterministic (no LLM) and the only
+	// subject source present in the raw webhook — the `service`/`namespace` labels
+	// arrive later via the PagerDuty API enrichment, which races (body.details null),
+	// so relying on them alone sends these alerts to the LLM. Read the ORIGINAL title
+	// (preserved before the human-readable override, which strips the path). Prefer
+	// the 4th segment (workload/container — matches k8s_workloads) over the pod, whose
+	// ReplicaSet hash never matches the inventory; keep the pod as a label.
 	if parsedPayload.EventSubjectName == "" {
-		if match := reK8sPath.FindStringSubmatch(parsedPayload.EventTitle); len(match) == 3 {
-			parsedPayload.EventSubjectName = match[2]
-			if parsedPayload.EventSubjectNamespace == "" {
-				parsedPayload.EventSubjectNamespace = match[1]
-			}
+		k8sPathTitle := labels["nb_pd_raw_title"]
+		if k8sPathTitle == "" {
+			k8sPathTitle = parsedPayload.EventTitle
 		}
+		applyK8sPathSubject(parsedPayload, labels, k8sPathTitle)
 	}
 
 	// Resolve namespace if not already set
@@ -3612,153 +3798,27 @@ func matchWorkloadAndEnrich(sc *security.RequestContext, parsedPayload *core.Eve
 		"kind", workload.Kind)
 }
 
-// resolveSubjectUsingLLM passes the full alert context (title, description, all labels,
-// known workload names) to the LLM and asks it to extract structured resource labels.
-// This is the catch-all fallback when deterministic parsing cannot identify a resource.
+// resolveSubjectUsingLLM asks the webhook_subject_name_extractor agent to map the
+// alert to a running service, then validates the result against k8s_workloads with
+// PagerDuty's ILIKE-capable matcher. The agent owns the running-services and
+// historical context server-side, so only the alert is sent here.
 func resolveSubjectUsingLLM(sc *security.RequestContext, parsedPayload *core.EventIncomingWebhook, accountId string) {
-	dbms, err := database.GetDatabaseManager(database.Metastore)
-	if err != nil {
-		sc.GetLogger().Error("pagerdutywebhook: failed to get database manager for LLM matching", "error", err)
-		return
+	if parsedPayload.Investigation.Labels == nil {
+		parsedPayload.Investigation.Labels = map[string]string{}
 	}
-
 	tenantId := sc.GetSecurityContext().GetTenantId()
 
-	// Query distinct active workload names
-	var names []string
-	err = dbms.Db.Select(&names, `
-		SELECT DISTINCT name FROM k8s_workloads
-		WHERE tenant_id = $1 AND cloud_account_id = $2
-		  AND is_active = true AND kind NOT IN ('Job', 'CronJob')
-	`, tenantId, accountId)
-	if err != nil {
-		sc.GetLogger().Error("pagerdutywebhook: failed to query workload names for LLM", "error", err)
-		return
-	}
-	if len(names) == 0 {
-		return
-	}
-
-	// Build full context from all available data
-	labelsJSON, _ := json.Marshal(parsedPayload.Investigation.Labels)
-
-	// Load historical incident → service mappings for improved accuracy
-	historicalMappings, err := GetSubjectMappingsForPrompt(sc, tenantId, TenantAttrPagerDutyIncidentsKey, 1000)
-	if err != nil {
-		sc.GetLogger().Warn("pagerdutywebhook: failed to load historical mappings, continuing without them", "error", err)
-	}
-	historicalPatterns := FormatSubjectMappingsForPrompt(historicalMappings, 1000)
-
-	prompt := fmt.Sprintf(`@llm You are a resource label extractor for monitoring alerts. Analyze the complete alert data below and extract resource identification labels.
-
-## Alert Data
-**Title:** %s
-**Description:** %s
-**Source URL:** %s
-**Existing Labels:** %s
-
-## Historical patterns (title → service)
-%s
-
-## Known Running Services/Workloads
-%s
-
-## Task
-From the alert data above, extract the following labels. Look at ALL the data — title, description, labels, URLs, and historical patterns — to find clues about which resource this alert is about.
-
-Return ONLY a valid JSON object with these fields (use empty string "" if not found):
-{
-  "subject_name": "<k8s workload/service name from the Running Services list that this alert is about>",
-  "namespace": "<k8s namespace>",
-  "cluster": "<k8s cluster name>",
-  "pod_name": "<specific pod name if mentioned>",
-  "service_name": "<application/service name>",
-  "aws_service_name": "<AWS service like EC2, RDS, ELB if this is an AWS alert>",
-  "aws_resource_id": "<AWS resource identifier like instance-id, ARN>"
-}
-
-RULES:
-1. For subject_name: MUST be an exact match from the Running Services list, or empty string
-2. Look for service names in alert titles (e.g. "booking-service down" → subject_name="booking-service")
-3. Look for service names in pipe-delimited titles (e.g. "Critical | Prod | EKS | payment-service | high latency")
-4. Look for service names embedded in URLs (e.g. service.name=courier-worker in query params)
-5. Look for k8s resource references in labels (job, pod, deployment names)
-6. For AWS alerts: extract the resource type and identifier from dimensions/labels
-7. If the title closely matches a Historical pattern, use the same service mapping
-8. If you cannot confidently identify a resource, return empty strings — do NOT guess
-9. Return ONLY the JSON object, no explanation, no markdown fences`,
-		parsedPayload.EventTitle,
-		parsedPayload.EventDescription,
-		parsedPayload.Investigation.SourceUrl,
-		string(labelsJSON),
-		historicalPatterns,
-		strings.Join(names, ", "),
-	)
-
-	chatRequest := llm.ConversationApiRequest{
-		Query:     prompt,
-		AccountId: accountId,
-		UserId:    sc.GetSecurityContext().GetUserId(),
-		Async:     false,
-		Source:    "webhook_label_extraction",
-	}
-
-	response, err := llm.ChatCompletion(sc, chatRequest)
-	if err != nil {
-		sc.GetLogger().Error("pagerdutywebhook: LLM label extraction failed", "error", err)
-		return
-	}
-	if response == nil || len(response.Response) == 0 {
-		sc.GetLogger().Warn("pagerdutywebhook: LLM returned empty response")
-		return
-	}
-
-	// Parse JSON response from LLM
-	var extractedLabels map[string]string
-	responseText := response.Response[0]
-	// Strip markdown code fences if LLM wraps response
-	responseText = strings.TrimPrefix(responseText, "```json")
-	responseText = strings.TrimPrefix(responseText, "```")
-	responseText = strings.TrimSuffix(responseText, "```")
-	responseText = strings.TrimSpace(responseText)
-
-	if err := json.Unmarshal([]byte(responseText), &extractedLabels); err != nil {
-		sc.GetLogger().Error("pagerdutywebhook: failed to parse LLM response as JSON",
-			"error", err, "response", responseText)
-		return
-	}
-
-	sc.GetLogger().Info("pagerdutywebhook: LLM extracted labels", "labels", extractedLabels, "title", parsedPayload.EventTitle)
-
-	// Apply extracted labels
-	if subjectName := extractedLabels["subject_name"]; subjectName != "" {
-		parsedPayload.EventSubjectName = subjectName
-		parsedPayload.Investigation.Labels["nb_llm_match"] = subjectName
-		common.MetricsSubjectResolution(sc.GetContext(), IntegrationPagerdutyWebhook, "live", "matched", tenantId)
-	} else {
-		parsedPayload.Investigation.Labels["nb_llm_match"] = "not_found"
+	name := core.ResolveSubjectNameViaAgent(sc, accountId,
+		parsedPayload.EventTitle, parsedPayload.EventDescription,
+		parsedPayload.Investigation.SourceUrl, parsedPayload.Investigation.Labels)
+	if name == "" {
 		common.MetricsSubjectResolution(sc.GetContext(), IntegrationPagerdutyWebhook, "live", "not_found", tenantId)
+		return
 	}
+	common.MetricsSubjectResolution(sc.GetContext(), IntegrationPagerdutyWebhook, "live", "matched", tenantId)
 
-	if ns := extractedLabels["namespace"]; ns != "" && parsedPayload.EventSubjectNamespace == "" {
-		parsedPayload.EventSubjectNamespace = ns
-		parsedPayload.Investigation.Labels["namespace"] = ns
-	}
-
-	// Merge any other useful extracted labels
-	llmLabelKeys := []string{"cluster", "pod_name", "service_name", "aws_service_name", "aws_resource_id"}
-	for _, key := range llmLabelKeys {
-		if val := extractedLabels[key]; val != "" {
-			if parsedPayload.Investigation.Labels[key] == "" {
-				parsedPayload.Investigation.Labels[key] = val
-			}
-		}
-	}
-
-	// Validate and enrich the LLM result against k8s_workloads
-	if parsedPayload.EventSubjectName != "" {
-		matchWorkloadAndEnrich(sc, parsedPayload, accountId)
-	}
+	parsedPayload.EventSubjectName = name
+	matchWorkloadAndEnrich(sc, parsedPayload, accountId)
 }
 
 // pipeSegmentSkipList contains words that should be skipped when parsing pipe-delimited titles

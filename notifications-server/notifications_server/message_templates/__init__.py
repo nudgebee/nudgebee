@@ -123,6 +123,23 @@ from notifications_server.message_templates.discord.slo import (
 from notifications_server.message_templates.discord.grouped_anomaly import (
     get_discord_grouped_anomaly_template,
 )
+from notifications_server.message_templates.discord.generic import get_discord_generic_message_template
+from notifications_server.message_templates.discord.daily_highlight import get_discord_daily_highlight_template
+from notifications_server.message_templates.discord.recommendation import get_discord_recommendation_template
+from notifications_server.message_templates.discord.auto_optimize_scheduled_notification import (
+    get_discord_auto_optimize_schedule_message_template,
+)
+from notifications_server.message_templates.discord.event_summary import get_discord_events_summary_template
+from notifications_server.message_templates.discord.cloud_cost_summary import get_discord_cloud_cost_message_template
+from notifications_server.message_templates.discord.recommendation_nudge_digest import (
+    get_discord_recommendation_nudge_digest_template,
+)
+from notifications_server.message_templates.discord.recommendation_proactive_nudge import (
+    get_discord_recommendation_proactive_nudge_template,
+)
+from notifications_server.message_templates.discord.recommendation_resolution import (
+    get_discord_recommendation_resolution_template,
+)
 
 template_mapping = {
     "default": {
@@ -137,7 +154,7 @@ template_mapping = {
         "slack": get_slack_generic_message_template,
         "ms_teams": get_ms_teams_generic_message_template,
         "google_chat": get_google_chat_generic_message_template,
-        "discord": None,
+        "discord": get_discord_generic_message_template,
     },
     "batched_findings": {
         "common_params": get_batched_findings_message_params,
@@ -151,14 +168,14 @@ template_mapping = {
         "slack": get_daily_recap_message_template,
         "ms_teams": get_teams_daily_highlight_template,
         "google_chat": get_gchat_daily_highlight_template,
-        "discord": None,
+        "discord": get_discord_daily_highlight_template,
     },
     "k8s_recommendation": {
         "common_params": get_recommendation_message_params,
         "slack": get_recommendation_message_template,
         "ms_teams": get_teams_recommendation_message_template,
         "google_chat": get_gchat_recommendation_template,
-        "discord": None,
+        "discord": get_discord_recommendation_template,
     },
     "slo_alert": {
         "common_params": get_slo_alert_message_params,
@@ -172,14 +189,14 @@ template_mapping = {
         "slack": get_slack_auto_pilot_scheduled_message_template,
         "ms_teams": get_ms_teams_auto_pilot_scheduled_message_template,
         "google_chat": get_google_chat_auto_optimize_schedule_message_template,
-        "discord": None,
+        "discord": get_discord_auto_optimize_schedule_message_template,
     },
     "events_summary": {
         "common_params": get_events_summary_message_params,
         "slack": get_events_summary_message_template,
         "ms_teams": get_teams_events_summary_template,
         "google_chat": get_gchat_events_summary_template,
-        "discord": None,
+        "discord": get_discord_events_summary_template,
     },
     "grouped_slo_alert": {
         "common_params": get_slo_aggregated_message_params,
@@ -193,7 +210,7 @@ template_mapping = {
         "slack": get_cloud_cost_message_template,
         "ms_teams": get_teams_cloud_cost_message_template,
         "google_chat": get_cloud_cost_gchat_message_template,
-        "discord": None,
+        "discord": get_discord_cloud_cost_message_template,
     },
     "grouped_anomaly": {
         "common_params": get_anomaly_aggregated_message_params,
@@ -207,20 +224,20 @@ template_mapping = {
         "slack": get_recommendation_nudge_digest_message_template,
         "ms_teams": get_teams_recommendation_nudge_digest_template,
         "google_chat": get_gchat_recommendation_nudge_digest_template,
-        "discord": None,
+        "discord": get_discord_recommendation_nudge_digest_template,
     },
     "recommendation_proactive_nudge": {
         "common_params": get_recommendation_proactive_nudge_message_params,
         "slack": get_recommendation_proactive_nudge_message_template,
         "ms_teams": get_teams_recommendation_proactive_nudge_template,
         "google_chat": get_gchat_recommendation_proactive_nudge_template,
-        "discord": None,
+        "discord": get_discord_recommendation_proactive_nudge_template,
     },
     "recommendation_resolution": {
         "common_params": get_recommendation_resolution_message_params,
         "slack": get_recommendation_resolution_message_template,
         "ms_teams": get_teams_recommendation_resolution_template,
         "google_chat": get_gchat_recommendation_resolution_template,
-        "discord": None,
+        "discord": get_discord_recommendation_resolution_template,
     },
 }

@@ -14,7 +14,7 @@ export default function OwnerBadge({ owner, onClick }) {
   if (!owner || !owner.found) {
     if (onClick) {
       return (
-        <Chip variant='tag' size='xs' tone='neutral' onClick={onClick}>
+        <Chip variant='action' size='xs' tone='neutral' onClick={onClick}>
           — Assign
         </Chip>
       );
@@ -32,7 +32,7 @@ export default function OwnerBadge({ owner, onClick }) {
 
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
-      <Chip variant='tag' size='xs' tone={isGroup ? 'info' : 'neutral'} onClick={onClick}>
+      <Chip variant={onClick ? 'action' : 'tag'} size='xs' tone={isGroup ? 'info' : 'neutral'} onClick={onClick}>
         {owner.owner_name || owner.owner_id}
       </Chip>
       {hint ? <Text value={hint} secondaryText showAutoEllipsis /> : null}

@@ -9,6 +9,7 @@ import {
   ouOpenAi,
   ouRelic,
   jiraIcon as JiraIcon,
+  ConfluenceIcon,
   slackIcon as SlackIcon,
   ouPostgres,
   ouMssql as MssqlIcon,
@@ -113,7 +114,7 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
   } else if (cloud_provider.toUpperCase() === 'REDIS') {
     Icon = RedisLogoIcon;
   } else if (cloud_provider.toUpperCase() === 'CONFLUENCE') {
-    Icon = JiraIcon;
+    Icon = ConfluenceIcon;
   } else if (cloud_provider.toUpperCase() === 'PROMETHEUS_ALERTMANAGER_WEBHOOK') {
     Icon = PrometheusIcon;
   } else if (cloud_provider.toUpperCase() === 'GRAFANA_WEBHOOK') {

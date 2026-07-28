@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_workflows_tenant_account_created_at;

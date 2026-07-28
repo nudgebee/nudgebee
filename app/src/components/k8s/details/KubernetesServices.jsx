@@ -14,8 +14,9 @@ import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
 import Text from '@shared/format/Text';
 import { ds } from '@utils/colors';
+import { safeJSONParse } from '@utils/common';
 
-const NAMESPACE_HEADERS = ['Name', 'Namespaces', 'Type', 'Cluster-Ip', 'External-Ip', 'Ports', 'Age'];
+const NAMESPACE_HEADERS = ['Name', 'Namespaces', 'Type', 'Cluster-Ip', 'External-Ip', 'Ports', 'Endpoints', 'Age'];
 
 function parseK8sDate(date) {
   return new Date(date?.replace(' ', 'T'));
@@ -40,6 +41,73 @@ function getExternalIP(svc) {
   return svc?.spec?.external_i_ps?.join(',') || '';
 }
 
+// Unwrap the relay `get_resource` envelope (findings → evidence → JSON string) into
+// the resource array. Shared by the services and endpoints fetches.
+function parseRelayResourceData(res) {
+  let data = res?.data?.findings?.[0]?.evidence?.[0]?.data;
+  if (data) {
+    try {
+      const parsedData = JSON.parse(data);
+      data = parsedData[0].data;
+    } catch (e) {
+      console.error('Error parsing data', e);
+    }
+  }
+  if (typeof data === 'string') {
+    data = safeJSONParse(data) || [];
+  }
+  return Array.isArray(data) ? data : [];
+}
+
+// Index v1 Endpoints objects by `namespace/name` (shared with the Service name) and
+// flatten ready vs not-ready addresses so each Service can report endpoint readiness.
+function buildEndpointsMap(endpoints) {
+  const map = {};
+  for (const ep of endpoints) {
+    const key = `${ep?.metadata?.namespace}/${ep?.metadata?.name}`;
+    const addresses = [];
+    let ready = 0;
+    let notReady = 0;
+    for (const subset of ep?.subsets ?? []) {
+      const ports = (subset?.ports ?? [])
+        .map((p) => p.port)
+        .filter(Boolean)
+        .join(', ');
+      for (const a of subset?.addresses ?? []) {
+        ready += 1;
+        addresses.push({ ip: a.ip, pod: a?.target_ref?.name, node: a.node_name, ports, ready: true });
+      }
+      for (const a of subset?.not_ready_addresses ?? []) {
+        notReady += 1;
+        addresses.push({ ip: a.ip, pod: a?.target_ref?.name, node: a.node_name, ports, ready: false });
+      }
+    }
+    map[key] = { ready, notReady, total: ready + notReady, addresses };
+  }
+  return map;
+}
+
+// Endpoint-readiness status for the Endpoints column. Only selector-backed,
+// non-ExternalName Services are expected to route, so only those flag red/amber;
+// selectorless/ExternalName Services and clusters without endpoint data stay neutral.
+function getEndpointStatus(svc, endpointInfo, endpointsAvailable) {
+  const ready = endpointInfo?.ready ?? 0;
+  const total = endpointInfo?.total ?? 0;
+  const hasSelector = svc?.spec?.selector && Object.keys(svc.spec.selector).length > 0;
+  const shouldRoute = hasSelector && svc?.spec?.type !== 'ExternalName';
+
+  if (!endpointsAvailable || !shouldRoute) {
+    return { text: total ? `${ready}/${total}` : '-', tone: 'neutral' };
+  }
+  if (ready === 0) {
+    return { text: `${ready}/${total}`, tone: 'critical' };
+  }
+  if (ready < total) {
+    return { text: `${ready}/${total}`, tone: 'warning' };
+  }
+  return { text: `${ready}/${total}`, tone: 'success' };
+}
+
 const KubernetesServiceTable = ({ accountId }) => {
   const router = useRouter();
 
@@ -58,7 +126,24 @@ const KubernetesServiceTable = ({ accountId }) => {
     }
     setLoading(true);
 
-    k8sApi
+    const servicesRequest = k8sApi.relayForwardRequest({
+      no_sinks: true,
+      cache: false,
+      body: {
+        account_id: accountId,
+        action_name: 'get_resource',
+        action_params: {
+          group: '',
+          version: 'v1',
+          resource_type: 'services',
+          all_namespaces: true,
+        },
+      },
+    });
+
+    // One bulk endpoints fetch, joined to Services client-side for per-Service
+    // endpoint readiness. Tolerate failure so Services still render without it.
+    const endpointsRequest = k8sApi
       .relayForwardRequest({
         no_sinks: true,
         cache: false,
@@ -68,24 +153,21 @@ const KubernetesServiceTable = ({ accountId }) => {
           action_params: {
             group: '',
             version: 'v1',
-            resource_type: 'services',
+            resource_type: 'endpoints',
             all_namespaces: true,
           },
         },
       })
-      .then((res) => {
-        let data = res?.data?.findings?.[0]?.evidence?.[0]?.data;
-        if (data) {
-          try {
-            let parsedData = JSON.parse(data);
-            data = parsedData[0].data;
-          } catch (e) {
-            console.error('Error parsing data', e);
-          }
-        }
-        if (typeof data === 'string') {
-          data = JSON.parse(data);
-        }
+      .catch(() => null);
+
+    Promise.all([servicesRequest, endpointsRequest])
+      .then(([servicesRes, endpointsRes]) => {
+        let data = parseRelayResourceData(servicesRes);
+
+        const endpointsList = endpointsRes ? parseRelayResourceData(endpointsRes) : [];
+        const endpointsAvailable = endpointsList.length > 0;
+        const endpointsMap = buildEndpointsMap(endpointsList);
+
         let allowedNamespace = getAllowedNamespaces(accountId);
         if (allowedNamespace != null && allowedNamespace.length > 0) {
           data = data.filter((item) => allowedNamespace.includes(item.metadata.namespace));
@@ -94,11 +176,15 @@ const KubernetesServiceTable = ({ accountId }) => {
         setNamespaceFilter([...new Set(namespaces)]);
 
         let tableData = data?.map((item) => {
+          const endpointInfo = endpointsMap[`${item.metadata.namespace}/${item.metadata.name}`];
+          const endpointStatus = getEndpointStatus(item, endpointInfo, endpointsAvailable);
           return [
             {
               component: <Text value={item.metadata.name} showAutoEllipsis />,
               drilldownQuery: {
                 data: item,
+                endpoints: endpointInfo,
+                endpointsAvailable,
               },
             },
             {
@@ -127,6 +213,9 @@ const KubernetesServiceTable = ({ accountId }) => {
                   }
                 />
               ),
+            },
+            {
+              component: <Label tone={endpointStatus.tone} dot text={endpointStatus.text} />,
             },
             {
               component: <Datetime value={parseK8sDate(item.metadata.creation_timestamp)} />,
@@ -232,6 +321,47 @@ function servicesDetailsFn(accountId, drilldownQuery) {
       );
     }
     return labelArray;
+  };
+
+  const svc = drilldownQuery?.data;
+  const endpointInfo = drilldownQuery?.endpoints;
+  const endpointsAvailable = drilldownQuery?.endpointsAvailable;
+  const hasSelector = svc?.spec?.selector && Object.keys(svc.spec.selector).length > 0;
+  const shouldRoute = hasSelector && svc?.spec?.type !== 'ExternalName';
+
+  const renderEndpoints = () => {
+    if (!endpointsAvailable) {
+      return <Text value='-' />;
+    }
+    const addresses = endpointInfo?.addresses ?? [];
+    if (!addresses.length) {
+      return shouldRoute ? <Label tone='critical' dot text='No ready endpoints' /> : <Text value='-' />;
+    }
+    return (
+      <CustomTable
+        rowsPerPage={addresses.length}
+        headers={['Endpoint IP', 'Pod', 'Node', 'Port', 'Status']}
+        tableData={addresses.map((a) => {
+          return [
+            {
+              component: <Text value={a.ip || '-'} />,
+            },
+            {
+              component: <Text value={a.pod || '-'} showAutoEllipsis />,
+            },
+            {
+              component: <Text value={a.node || '-'} showAutoEllipsis />,
+            },
+            {
+              component: <Text value={a.ports || '-'} />,
+            },
+            {
+              component: <Label tone={a.ready ? 'success' : 'critical'} dot text={a.ready ? 'Ready' : 'Not Ready'} />,
+            },
+          ];
+        })}
+      />
+    );
   };
 
   return (
@@ -504,6 +634,40 @@ function servicesDetailsFn(accountId, drilldownQuery) {
               ];
             })}
           />
+        </Grid>
+      </Grid>
+      <Grid container sx={{ marginBottom: 'var(--ds-space-2)' }}>
+        <Grid item md={3}>
+          <Typography
+            width={ds.space.mul(0, 75)}
+            sx={{
+              fontFamily: 'Roboto',
+              fontSize: 'var(--ds-text-body-lg)',
+              fontWeight: 'var(--ds-font-weight-medium)',
+              lineHeight: '20px',
+              color: 'var(--ds-brand-500)',
+            }}
+          >
+            Endpoints
+          </Typography>
+        </Grid>
+        <Grid
+          item
+          md={9}
+          sx={{
+            display: 'flex',
+            flexDirection: 'row',
+            flexWrap: 'wrap',
+            gap: 'var(--ds-space-3)',
+            fontFamily: 'Roboto',
+            fontSize: 'var(--ds-text-body-lg)',
+            fontWeight: 'var(--ds-font-weight-medium)',
+            lineHeight: '20px',
+            color: 'var(--ds-blue-500)',
+            maxWidth: ds.space.mul(0, 180),
+          }}
+        >
+          {renderEndpoints()}
         </Grid>
       </Grid>
     </Box>

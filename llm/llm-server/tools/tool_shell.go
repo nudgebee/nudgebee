@@ -18,6 +18,14 @@ import (
 
 var wm = workspace.NewWorkspaceManager()
 
+// shellEmptyCommandRejectionMsg is a defensive check inside Call() for
+// direct-invocation callers (tests, custom invokers). The planner-level
+// path is handled by the generic missing-fields hint in
+// executor_planner.go:validateToolInput, which already includes the
+// universal "populate the field or drop this action" guidance that
+// applies to every tool — no per-tool nuance is needed here.
+const shellEmptyCommandRejectionMsg = "shell_execute called with empty 'command'. Populate 'command' or drop this action from your batch."
+
 func init() {
 	core.RegisterNBToolFactory(core.ToolExecuteShellCommand, func(accountId string) (core.NBTool, error) {
 		return ShellTool{AccountId: accountId}, nil
@@ -45,7 +53,7 @@ func (m ShellTool) Description() string {
 
 	**Available CLIs:** ` + "`grep`, `awk`, `sed`, `jq`, `find`, `xargs`, `curl`, `tar`, `unzip`" + `, plus ` + "`kubectl`, `helm`, `psql`, `mysql`, `redis-cli`, `argocd`, `clickhouse-client`, `rabbitmqadmin`, `sqlcmd`, `sqlplus`, `ssh`, `aws`, `gcloud`, `az`, `gh`, `python3`" + `. Pipes (` + "`|`" + `), redirection (` + "`>`, `>>`, `<`" + `), command substitution (` + "`$()`" + `), env vars all work.
 
-	**Working directory:** Each call runs in a per-conversation directory. Relative paths (` + "`cat foo.json`, `ls`, `kubectl get pods > pods.json`" + `) read and write there. Tools that save large output (` + "`logs_*.txt`, `metrics_*.json`, `traces_*.json`" + `) put their files in this same directory, so the same relative paths read those artifacts back. Run ` + "`ls -la`" + ` first when you resume a conversation or want to see what earlier tool calls left behind — re-running the upstream query is wasteful.
+	**Working directory:** Each call runs in a per-conversation directory. Relative paths (` + "`cat foo.json`, `ls`, `kubectl get pods > pods.json`" + `) read and write there. Tools that save large output (` + "`logs_*.txt`, `metrics_*.json`, `traces_*.json`" + `) put their files in this same directory, so the same relative paths read those artifacts back. Run ` + "`ls -la`" + ` first when you resume a conversation or want to see what earlier tool calls left behind — re-running the upstream query is wasteful. An optional ` + "`work_dir`" + ` field sets the working directory for this call (equivalent to a leading ` + "`cd`" + `).
 
 	**Persistence:** Files at relative paths persist across turns within this conversation. Files at absolute ` + "`/tmp/...`" + ` paths are shared with other conversations on the same account — do NOT write secrets, credentials, or per-chat state there. Treat absolute ` + "`/tmp/`" + ` as system scratch only.
 
@@ -97,7 +105,7 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return core.NBToolResponse{
-			Data:   "shell_execute requires a non-empty 'command'. If you meant to call a different tool, use that tool name directly instead of shell_execute with an empty input.",
+			Data:   shellEmptyCommandRejectionMsg,
 			Status: core.NBToolResponseStatusError,
 		}, fmt.Errorf("empty command")
 	}
@@ -376,21 +384,7 @@ func looksLikeJSONEnvelope(command string) bool {
 // preserved verbatim under `original_error` so the LLM still sees the
 // underlying signal.
 func wrapShellError(rawError, originalCommand string) string {
-	hint := shellErrorHint(rawError, originalCommand)
-	if hint == "" {
-		return rawError
-	}
-	wrapped := map[string]string{
-		"error_hint":     hint,
-		"original_error": rawError,
-	}
-	body, err := common.MarshalJson(wrapped)
-	if err != nil {
-		// Marshal can't realistically fail on a string-only map, but
-		// degrade gracefully rather than masking the underlying error.
-		return rawError
-	}
-	return string(body)
+	return wrapCliError(rawError, shellErrorHint(rawError, originalCommand))
 }
 
 func shellErrorHint(rawError, originalCommand string) string {

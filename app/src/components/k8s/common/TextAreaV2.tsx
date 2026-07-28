@@ -1,5 +1,6 @@
 import { Button } from '@ui/Button';
 import TextareaAutosize, { type TextareaAutosizeProps } from '@mui/material/TextareaAutosize';
+import { useForkRef } from '@mui/material/utils';
 import { Avatar, Box, ButtonBase as MuiButtonBase, ClickAwayListener, Popper, styled, Typography } from '@mui/material';
 import type { Theme } from '@mui/material/styles';
 import React, { useEffect, useRef, useState } from 'react';
@@ -507,30 +508,33 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   );
 };
 
-const AutoSuggestTextarea: React.FC<AutoSuggestTextareaProps> = ({
-  value,
-  suggestionsAt,
-  functionSuggestions = [],
-  placeholder,
-  maxLength,
-  maxRows,
-  onKeyDown,
-  fontSize,
-  fontWeight,
-  buttonProperties,
-  chatScreen = false,
-  isFollowUp = false,
-  disabled = false,
-  allowStop = false,
-  models = [],
-  defaultModel: _defaultModel,
-  selectedModel,
-  onModelSelect,
-  selectedTierModels,
-  onTierModelsSelect,
-  popupInitial = false,
-  imageSupport,
-}) => {
+const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTextareaProps>(function AutoSuggestTextarea(
+  {
+    value,
+    suggestionsAt,
+    functionSuggestions = [],
+    placeholder,
+    maxLength,
+    maxRows,
+    onKeyDown,
+    fontSize,
+    fontWeight,
+    buttonProperties,
+    chatScreen = false,
+    isFollowUp = false,
+    disabled = false,
+    allowStop = false,
+    models = [],
+    defaultModel: _defaultModel,
+    selectedModel,
+    onModelSelect,
+    selectedTierModels,
+    onTierModelsSelect,
+    popupInitial = false,
+    imageSupport,
+  },
+  forwardedRef
+) {
   const [text, setText] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
@@ -538,6 +542,9 @@ const AutoSuggestTextarea: React.FC<AutoSuggestTextareaProps> = ({
   const [filteredFunctions, setFilteredFunctions] = useState<{ name: string; description: string; variables?: any; variable_defaults?: any }[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Point both the internal ref (used for focus/anchor positioning below) and any
+  // ref forwarded by the parent (which calls `.focus()`) at the same DOM textarea.
+  const mergedTextareaRef = useForkRef(textareaRef, forwardedRef);
   const [suggestionsTrigger, setSuggestionsTrigger] = useState<'at' | 'button' | 'call'>('at');
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const agentButtonRef = useRef<HTMLDivElement | null>(null);
@@ -789,7 +796,7 @@ const AutoSuggestTextarea: React.FC<AutoSuggestTextareaProps> = ({
     <Box sx={{ width: '100%', display: 'flex', flexDirection: popupInitial ? 'column' : chatScreen ? 'row' : 'column' }}>
       <div style={{ position: 'relative', flex: chatScreen ? '1' : undefined, width: '100%' }}>
         <Textarea
-          ref={textareaRef}
+          ref={mergedTextareaRef}
           fontSize={fontSize}
           fontWeight={fontWeight}
           value={text}
@@ -1214,6 +1221,6 @@ const AutoSuggestTextarea: React.FC<AutoSuggestTextareaProps> = ({
       ) : null}
     </Box>
   );
-};
+});
 
 export default AutoSuggestTextarea;

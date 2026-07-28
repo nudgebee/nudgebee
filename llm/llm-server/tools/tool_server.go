@@ -161,8 +161,14 @@ func (m ServerExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 	response, err := m.executeShellCommand(nbRequestContext, command.Instance, command.Args, command.HostName, command.UserName)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("server: unable to execute shell script", "error", err.Error())
+		errText := err.Error()
+		if response != "" {
+			errText = response
+		}
+		// server_execute runs arbitrary shell over SSH — help syntax varies by
+		// what the model actually ran (top-level shell has no unified help).
 		return core.NBToolResponse{
-			Data:   err.Error(),
+			Data:   cliRecoveryEnvelope(errText, "", "", ""),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}

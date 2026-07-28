@@ -30,3 +30,35 @@ func TestExtractAssignee(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractRequiredStringSlice(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    map[string]any
+		expected []string
+		wantErr  bool
+	}{
+		{"single string wrapped", map[string]any{"assignee": "alice"}, []string{"alice"}, false},
+		{"string trimmed", map[string]any{"assignee": "  alice  "}, []string{"alice"}, false},
+		{"[]any of strings", map[string]any{"assignee": []any{"alice", "bob"}}, []string{"alice", "bob"}, false},
+		{"[]string", map[string]any{"assignee": []string{"alice", "bob"}}, []string{"alice", "bob"}, false},
+		{"[]any trims and drops empties", map[string]any{"assignee": []any{" alice ", "", "  "}}, []string{"alice"}, false},
+		{"missing key errors", map[string]any{"other": "x"}, nil, true},
+		{"empty string errors", map[string]any{"assignee": ""}, nil, true},
+		{"empty slice errors", map[string]any{"assignee": []any{}}, nil, true},
+		{"whitespace-only slice errors", map[string]any{"assignee": []any{"  ", ""}}, nil, true},
+		{"non-string element errors", map[string]any{"assignee": []any{"alice", 42}}, nil, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := extractRequiredStringSlice(tc.input, "assignee")
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expected, got)
+		})
+	}
+}

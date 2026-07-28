@@ -55,10 +55,10 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
       <Box
         sx={{
           borderTop: `1px solid ${ds.gray[200]}`,
-          backgroundColor: ds.gray[100],
+          backgroundColor: ds.background[100],
           flexShrink: 0,
           px: ds.space[4],
-          py: ds.space.mul(0, 5),
+          py: ds.space.mul(0, 6),
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
@@ -69,13 +69,20 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
         {/* Primary actions */}
         <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
           {isK8sRightSizing && canWrite && (
-            <Button tone='primary' size='xs' onClick={() => onResolve?.(rec)} id='action-bar-resolve'>
+            <Button
+              tone='primary'
+              size='sm'
+              icon={<AutoFixHighOutlinedIcon sx={{ color: ds.yellow[400] }} />}
+              iconPlacement='start'
+              onClick={() => onResolve?.(rec)}
+              id='action-bar-resolve'
+            >
               Resolve
             </Button>
           )}
           <Button
             tone='secondary'
-            size='xs'
+            size='sm'
             icon={<ConfirmationNumberOutlinedIcon />}
             iconPlacement='start'
             onClick={() => onCreateTicket?.(rec)}
@@ -88,7 +95,7 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
           {isK8sRightSizing && (
             <Button
               tone='secondary'
-              size='xs'
+              size='sm'
               icon={<ContentCopyOutlinedIcon />}
               iconPlacement='start'
               onClick={() => onCopyCli?.(rec)}
@@ -111,7 +118,7 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
           )}
           <Button
             tone='secondary'
-            size='xs'
+            size='sm'
             icon={<SafeIcon src={getNubiIconUrl()} alt={`Ask ${assistantName}`} width={14} height={14} />}
             iconPlacement='start'
             onClick={() => onAskNubi?.(rec)}

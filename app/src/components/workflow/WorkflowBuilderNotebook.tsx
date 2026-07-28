@@ -1353,6 +1353,12 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   // Dry run state
   const [isDryRunning, setIsDryRunning] = useState(false);
   const dryRunPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Cancellers for in-flight pollDryRunUntilDone loops. Each clears its interval
+  // and resolves its promise; all are invoked on unmount so no loop or awaiter
+  // is left hanging. A Set (not a single slot) because the per-task dry runs
+  // ('Run previous steps' / 'Dry run to task') aren't gated by isDryRunning and
+  // can overlap.
+  const dryRunAwaitCancelsRef = useRef<Set<() => void>>(new Set());
   const dryRunIdRef = useRef<string | null>(null);
   const dryRunExecutionIdRef = useRef<string | null>(null);
   const [dryRunResult, setDryRunResult] = useState<any>(null);
@@ -1860,13 +1866,37 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     }
     assistantReloadInFlightRef.current = true;
     try {
-      const reload: any = await apiWorkflow.getWorkflowById(accountId, workflowId);
-      const reloaded = reload?.data?.workflow_get;
+      // Detect the assistant's server-side edit by comparing the fetched definition to the one
+      // currently loaded — NOT updated_at, which can lag or fail to bump and silently left the
+      // canvas stale. Read-after-write: the save committed moments ago, so retry briefly until the
+      // server reflects it before giving up.
+      const currentDefStr = JSON.stringify(workflowData?.definition ?? null);
+      let reloaded: WorkflowData | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const reload: any = await apiWorkflow.getWorkflowById(accountId, workflowId);
+        // Fail-closed: on an error response, stop and leave the canvas on its current definition
+        // rather than risk applying partial/stale data.
+        if (parseHttpResponseBodyMessage(reload)) {
+          reloaded = null;
+          break;
+        }
+        reloaded = reload?.data?.workflow_get;
+        if (!reloaded) {
+          break;
+        }
+        if (JSON.stringify(reloaded.definition ?? null) !== currentDefStr) {
+          break; // server change is now visible
+        }
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 700));
+        }
+      }
       if (!reloaded) {
         return;
       }
-      // No server-side change since our last load/save → nothing for the assistant to refresh.
-      if (reloaded.updated_at && workflowData?.updated_at && reloaded.updated_at === workflowData.updated_at) {
+      // The turn did not change the saved definition (e.g. the assistant answered a question
+      // without editing) → nothing for the canvas to refresh.
+      if (JSON.stringify(reloaded.definition ?? null) === currentDefStr) {
         return;
       }
       if (hasUnsavedChanges) {
@@ -2668,13 +2698,21 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
         const startTime = Date.now();
         const terminalStatuses = ['COMPLETED', 'COMPLETE', 'FAILED', 'COMPLETE_WITH_ERROR', 'CANCELED', 'TERMINATED', 'TIMED_OUT'];
         let interval: ReturnType<typeof setInterval> | null = null;
+        // Settle this loop exactly once: stop the timer, deregister, resolve.
+        // resolve() is idempotent, so a terminal status racing an unmount is safe.
+        const finish = (value: any) => {
+          if (interval !== null) {
+            clearInterval(interval);
+            interval = null;
+          }
+          dryRunAwaitCancelsRef.current.delete(cancel);
+          resolve(value);
+        };
+        const cancel = () => finish(null);
         const poll = async () => {
           if (Date.now() - startTime > 600000) {
-            if (interval !== null) {
-              clearInterval(interval);
-            }
             snackbar.error('Dry run timed out');
-            resolve(null);
+            finish(null);
             return;
           }
           try {
@@ -2684,10 +2722,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
               return;
             }
             if (terminalStatuses.includes(execution.status)) {
-              if (interval !== null) {
-                clearInterval(interval);
-              }
-              resolve({
+              finish({
                 status: execution.status,
                 output: execution.workflow_result,
                 error: execution.error,
@@ -2698,6 +2733,9 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             console.error('Dry run polling error:', error);
           }
         };
+        // Register a canceller so unmount cleanup can stop the loop and unblock
+        // the awaiter (callers already handle a null result).
+        dryRunAwaitCancelsRef.current.add(cancel);
         poll();
         interval = setInterval(poll, 3000);
       });
@@ -3342,6 +3380,9 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       if (dryRunPollingRef.current) {
         clearInterval(dryRunPollingRef.current);
       }
+      // Stop any in-flight pollDryRunUntilDone loops and unblock their awaiters.
+      // Copy first: each cancel() deletes itself from the Set as it runs.
+      [...dryRunAwaitCancelsRef.current].forEach((cancel) => cancel());
     };
   }, []);
 

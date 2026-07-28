@@ -187,7 +187,7 @@ func TestListConversationCosts_ModelBreakdown(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"conversation_id", "session_id", "source", "status", "title",
 			"user_id", "account_id", "created_at", "updated_at",
-			"wall_clock_seconds", "model_latency_seconds", "cost_usd",
+			"wall_clock_seconds", "total_model_time_seconds", "cost_usd",
 			"input_tokens", "output_tokens", "cached_input_tokens",
 			"message_count", "agent_count", "llm_call_count", "models_used",
 		}).AddRow(

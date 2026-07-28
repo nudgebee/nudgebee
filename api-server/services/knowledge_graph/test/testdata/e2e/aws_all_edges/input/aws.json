@@ -1,0 +1,488 @@
+[
+  {
+    "id": "vpc-a",
+    "resourse_id": "vpc-1",
+    "name": "main-vpc",
+    "type": "vpc",
+    "service_name": "AmazonVPC",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "vpc-a",
+    "meta": {
+      "VpcId": "vpc-1",
+      "CidrBlock": "10.0.0.0/16"
+    }
+  },
+  {
+    "id": "subnet-a",
+    "resourse_id": "subnet-1",
+    "name": "main-subnet",
+    "type": "subnet",
+    "service_name": "AmazonVPC",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "subnet-a",
+    "meta": {
+      "SubnetId": "subnet-1",
+      "VpcId": "vpc-1",
+      "CidrBlock": "10.0.1.0/24"
+    }
+  },
+  {
+    "id": "ec2-a",
+    "resourse_id": "i-0aaa",
+    "name": "app-ec2",
+    "type": "compute-instance",
+    "service_name": "AmazonEC2",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "ec2-a",
+    "tags": {
+      "eks:cluster-name": "my-eks"
+    },
+    "meta": {
+      "InstanceId": "i-0aaa",
+      "VpcId": "vpc-1",
+      "SubnetId": "subnet-1"
+    }
+  },
+  {
+    "id": "rds-a",
+    "resourse_id": "mydb",
+    "name": "mydb",
+    "type": "db",
+    "service_name": "AmazonRDS",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "rds-a",
+    "meta": {
+      "DBInstanceIdentifier": "mydb",
+      "Engine": "postgres",
+      "VpcId": "vpc-1",
+      "KmsKeyId": "key-1"
+    }
+  },
+  {
+    "id": "kms-a",
+    "resourse_id": "key-1",
+    "name": "app-key",
+    "type": "key",
+    "service_name": "AWSKMS",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "kms-a",
+    "meta": {
+      "KeyId": "key-1",
+      "Arn": "arn:aws:kms:us-east-1:123456789012:key/key-1",
+      "KeyState": "Enabled"
+    }
+  },
+  {
+    "id": "eks-a",
+    "resourse_id": "my-eks",
+    "name": "my-eks",
+    "type": "cluster",
+    "service_name": "AmazonEKS",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "eks-a",
+    "meta": {
+      "Name": "my-eks",
+      "ResourcesVpcConfig": {
+        "VpcId": "vpc-1",
+        "SubnetIds": [
+          "subnet-1"
+        ]
+      }
+    }
+  },
+  {
+    "id": "ng-a",
+    "resourse_id": "my-nodegroup",
+    "name": "my-nodegroup",
+    "type": "nodegroup",
+    "service_name": "AmazonEKS",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "ng-a",
+    "meta": {
+      "NodegroupName": "my-nodegroup",
+      "ClusterName": "my-eks",
+      "Subnets": [
+        "subnet-1"
+      ]
+    }
+  },
+  {
+    "id": "ecsc-a",
+    "resourse_id": "my-ecs",
+    "name": "my-ecs",
+    "type": "cluster",
+    "service_name": "AmazonECS",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "ecsc-a",
+    "meta": {
+      "clusterName": "my-ecs"
+    }
+  },
+  {
+    "id": "ecss-a",
+    "resourse_id": "svc1",
+    "name": "svc1",
+    "type": "service",
+    "service_name": "AmazonECS",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "ecss-a",
+    "arn": "arn:aws:ecs:us-east-1:123456789012:service/my-ecs/svc1",
+    "meta": {
+      "serviceName": "svc1",
+      "clusterArn": "arn:aws:ecs:us-east-1:123456789012:cluster/my-ecs"
+    }
+  },
+  {
+    "id": "sqs-a",
+    "resourse_id": "main-queue",
+    "name": "main-queue",
+    "type": "queue",
+    "service_name": "AWSQueueService",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "sqs-a",
+    "meta": {
+      "QueueName": "main-queue",
+      "QueueArn": "arn:aws:sqs:us-east-1:123456789012:main-queue",
+      "RedrivePolicy": "{\"deadLetterTargetArn\":\"arn:aws:sqs:us-east-1:123456789012:dlq\",\"maxReceiveCount\":5}"
+    },
+    "arn": "arn:aws:sqs:us-east-1:123456789012:main-queue"
+  },
+  {
+    "id": "dlq-a",
+    "resourse_id": "dlq",
+    "name": "dlq",
+    "type": "queue",
+    "service_name": "AWSQueueService",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "dlq-a",
+    "meta": {
+      "QueueName": "dlq",
+      "QueueArn": "arn:aws:sqs:us-east-1:123456789012:dlq"
+    },
+    "arn": "arn:aws:sqs:us-east-1:123456789012:dlq"
+  },
+  {
+    "id": "s3-a",
+    "resourse_id": "app-bucket",
+    "name": "app-bucket",
+    "type": "storage",
+    "service_name": "AmazonS3",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "s3-a",
+    "meta": {
+      "Name": "app-bucket",
+      "NotificationConfiguration": {
+        "TopicConfigurations": [
+          {
+            "TopicArn": "arn:aws:sns:us-east-1:123456789012:app-topic",
+            "Events": [
+              "s3:ObjectCreated:*"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "sns-a",
+    "resourse_id": "app-topic",
+    "name": "app-topic",
+    "type": "topic",
+    "service_name": "AmazonSNS",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "sns-a",
+    "meta": {
+      "TopicName": "app-topic",
+      "TopicArn": "arn:aws:sns:us-east-1:123456789012:app-topic"
+    },
+    "arn": "arn:aws:sns:us-east-1:123456789012:app-topic"
+  },
+  {
+    "id": "bv-a",
+    "resourse_id": "my-vault",
+    "name": "my-vault",
+    "type": "backup-vault",
+    "service_name": "AWSBackup",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "bv-a",
+    "meta": {
+      "BackupVaultName": "my-vault",
+      "EncryptionKeyArn": "arn:aws:kms:us-east-1:123456789012:key/key-1"
+    }
+  },
+  {
+    "id": "bp-a",
+    "resourse_id": "my-plan",
+    "name": "my-plan",
+    "type": "backup-plan",
+    "service_name": "AWSBackup",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "bp-a",
+    "meta": {
+      "BackupPlanName": "my-plan",
+      "PlanDetails": {
+        "Rules": [
+          {
+            "RuleName": "daily",
+            "TargetBackupVaultName": "my-vault"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "lg-a",
+    "resourse_id": "/aws/rds/instance/mydb/postgresql",
+    "name": "/aws/rds/instance/mydb/postgresql",
+    "type": "log-group",
+    "service_name": "AmazonCloudWatch",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "lg-a",
+    "meta": {
+      "LogGroupName": "/aws/rds/instance/mydb/postgresql"
+    }
+  },
+  {
+    "id": "alb-a",
+    "resourse_id": "app-alb",
+    "name": "app-alb",
+    "type": "application_loadbalancer",
+    "service_name": "AWSELB",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "alb-a",
+    "tags": {
+      "elbv2.k8s.aws/cluster": "my-eks"
+    },
+    "meta": {
+      "LoadBalancerName": "app-alb",
+      "VPCId": "vpc-1",
+      "Scheme": "internet-facing",
+      "Type": "application"
+    }
+  },
+  {
+    "id": "role-app",
+    "resourse_id": "app-role",
+    "name": "app-role",
+    "type": "Role",
+    "service_name": "AWSIAM",
+    "account": "123456789012",
+    "region": "global",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "role-app",
+    "meta": {
+      "RoleName": "app-role",
+      "Arn": "arn:aws:iam::123456789012:role/app-role",
+      "AssumeRolePolicyDocument": "%7B%22Version%22%3A%20%222012-10-17%22%2C%20%22Statement%22%3A%20%5B%7B%22Effect%22%3A%20%22Allow%22%2C%20%22Principal%22%3A%20%7B%22AWS%22%3A%20%22arn%3Aaws%3Aiam%3A%3A123456789012%3Arole/admin-role%22%7D%2C%20%22Action%22%3A%20%22sts%3AAssumeRole%22%7D%5D%7D"
+    }
+  },
+  {
+    "id": "role-admin",
+    "resourse_id": "admin-role",
+    "name": "admin-role",
+    "type": "Role",
+    "service_name": "AWSIAM",
+    "account": "123456789012",
+    "region": "global",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "role-admin",
+    "meta": {
+      "RoleName": "admin-role",
+      "Arn": "arn:aws:iam::123456789012:role/admin-role",
+      "AssumeRolePolicyDocument": "%7B%7D"
+    }
+  },
+  {
+    "id": "lambda-a",
+    "resourse_id": "app-func",
+    "name": "app-func",
+    "type": "function",
+    "service_name": "AWSLambda",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "lambda-a",
+    "meta": {
+      "FunctionName": "app-func",
+      "Runtime": "python3.12",
+      "Role": "arn:aws:iam::123456789012:role/app-role"
+    }
+  },
+  {
+    "id": "eip-a",
+    "resourse_id": "eipalloc-1",
+    "name": "app-eip",
+    "type": "elastic-ip",
+    "service_name": "AmazonVPC",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "eip-a",
+    "meta": {
+      "AllocationId": "eipalloc-1",
+      "PublicIp": "52.1.2.3",
+      "InstanceId": "i-0aaa"
+    }
+  },
+  {
+    "id": "nat-a",
+    "resourse_id": "nat-1",
+    "name": "app-nat",
+    "type": "natgateway",
+    "service_name": "AmazonVPC",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "nat-a",
+    "meta": {
+      "NatGatewayId": "nat-1",
+      "VpcId": "vpc-1",
+      "SubnetId": "subnet-1"
+    }
+  },
+  {
+    "id": "igw-a",
+    "resourse_id": "igw-1",
+    "name": "app-igw",
+    "type": "internet-gateway",
+    "service_name": "AmazonVPC",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "igw-a",
+    "meta": {
+      "InternetGatewayId": "igw-1",
+      "VpcId": "vpc-1"
+    }
+  },
+  {
+    "id": "rt-a",
+    "resourse_id": "rtb-1",
+    "name": "app-rtb",
+    "type": "route-table",
+    "service_name": "AmazonVPC",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "rt-a",
+    "meta": {
+      "RouteTableId": "rtb-1",
+      "VpcId": "vpc-1",
+      "Routes": [
+        {
+          "NatGatewayId": "nat-1",
+          "DestinationCidrBlock": "0.0.0.0/0"
+        },
+        {
+          "GatewayId": "igw-1",
+          "DestinationCidrBlock": "10.0.0.0/8"
+        }
+      ],
+      "Associations": [
+        {
+          "SubnetId": "subnet-1",
+          "Main": false
+        }
+      ]
+    }
+  },
+  {
+    "id": "sg-a",
+    "resourse_id": "sg-1",
+    "name": "app-sg",
+    "type": "security_group",
+    "service_name": "AmazonVPC",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "sg-a",
+    "meta": {
+      "GroupId": "sg-1",
+      "VpcId": "vpc-1"
+    }
+  },
+  {
+    "id": "vpce-a",
+    "resourse_id": "vpce-1",
+    "name": "app-vpce",
+    "type": "vpc-endpoint",
+    "service_name": "AmazonVPC",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "cloud_provider": "AWS",
+    "is_active": true,
+    "external_resource_id": "vpce-a",
+    "meta": {
+      "VpcEndpointId": "vpce-1",
+      "VpcId": "vpc-1",
+      "SubnetIds": [
+        "subnet-1"
+      ],
+      "Groups": [
+        {
+          "GroupId": "sg-1"
+        }
+      ],
+      "VpcEndpointType": "Interface"
+    }
+  }
+]

@@ -201,6 +201,8 @@ class SentNotifications(Base):
     teams_message_id = Column(String, nullable=True)
     slack_metadata = Column(String, nullable=True)
     teams_metadata = Column(String, nullable=True)
+    discord_channel_id = Column(String, nullable=True)
+    discord_message_id = Column(String, nullable=True)
 
 
 class NotificationRules(Base):

@@ -44,6 +44,7 @@ const CustomTablePagination = ({ page = 1, totalPages = 1, totalRows = 1, rowsPe
         alignItems: 'center',
         gap: 'var(--ds-space-4)',
         width: '100%',
+        boxSizing: 'border-box',
         p: 'var(--ds-space-4) var(--ds-space-2)',
       }}
     >

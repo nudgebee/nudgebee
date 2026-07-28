@@ -39,7 +39,7 @@ func (t *TicketsAssignTask) Execute(taskCtx types.TaskContext, params map[string
 		return nil, err
 	}
 
-	assignee, err := extractRequiredString(params, "assignee")
+	assignees, err := extractRequiredStringSlice(params, "assignee")
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +57,7 @@ func (t *TicketsAssignTask) Execute(taskCtx types.TaskContext, params map[string
 	request := ticket.AssignTicketRequest{
 		TicketId:      ticketId,
 		IntegrationId: integrationId,
-		Assignee:      assignee,
+		Assignees:     assignees,
 		ProjectKey:    projectKey,
 		AccountId:     accountId,
 	}
@@ -70,7 +70,7 @@ func (t *TicketsAssignTask) Execute(taskCtx types.TaskContext, params map[string
 
 	return map[string]any{
 		"ticket_id": resp.TicketID,
-		"assignee":  resp.Assignee,
+		"assignee":  resp.Assignees,
 		"message":   resp.Message,
 	}, nil
 }
@@ -96,26 +96,29 @@ func (t *TicketsAssignTask) InputSchema() *types.Schema {
 				Required:    true,
 				Order:       3,
 			},
-			"assignee": {
-				Type:        types.PropertyTypeString,
-				Description: "Assignee (Jira: account ID or email; GitHub/GitLab: username; ServiceNow: sys_id or email)",
-				Required:    true,
-				Order:       4,
-				DependsOn:   []string{"integration_id"},
-				OptionsSource: &types.OptionsSource{
-					Type:              "ticket_assignees",
-					DependencyMapping: map[string]string{"integration_id": "integration_id", "project_key": "project_key"},
-				},
-			},
+			// project_key is ordered before assignee because the assignee options are
+			// project/repo-scoped (GitHub/GitLab), so the repo must be picked first
+			// for the assignee dropdown to populate.
 			"project_key": {
 				Type:        types.PropertyTypeString,
 				Description: "Project key (required for GitHub/GitLab in owner/repo format)",
 				Required:    false,
-				Order:       5,
+				Order:       4,
 				DependsOn:   []string{"integration_id"},
 				OptionsSource: &types.OptionsSource{
 					Type:              "ticket_projects",
 					DependencyMapping: map[string]string{"integration_id": "integration_id"},
+				},
+			},
+			"assignee": {
+				Type:        types.PropertyTypeArray,
+				Description: "Assignee(s) (Jira: account ID or email; GitHub/GitLab: username; ServiceNow: sys_id or email). GitHub/GitLab accept multiple; Jira/ServiceNow accept only one.",
+				Required:    true,
+				Order:       5,
+				DependsOn:   []string{"integration_id", "project_key"},
+				OptionsSource: &types.OptionsSource{
+					Type:              "ticket_assignees",
+					DependencyMapping: map[string]string{"integration_id": "integration_id", "project_key": "project_key"},
 				},
 			},
 		},
@@ -131,8 +134,8 @@ func (t *TicketsAssignTask) OutputSchema() *types.Schema {
 				Required:    true,
 			},
 			"assignee": {
-				Type:        types.PropertyTypeString,
-				Description: "Assigned user",
+				Type:        types.PropertyTypeArray,
+				Description: "Assigned user(s)",
 				Required:    true,
 			},
 			"message": {

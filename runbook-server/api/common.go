@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/services/security"
+	"reflect"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -85,6 +86,21 @@ func formatValidationError(err error) string {
 			messages = append(messages, fmt.Sprintf("%s must be 'v1'", field))
 		case "workflowtrigger":
 			messages = append(messages, fmt.Sprintf("%s has an invalid trigger type", field))
+		case "min":
+			// e.g. `tasks` / `triggers` are `min=1` slices — "min" alone reads as
+			// a truncated/cryptic tag, so spell out the constraint by field kind.
+			switch fe.Kind() {
+			case reflect.Slice, reflect.Array, reflect.Map:
+				unit := "items"
+				if fe.Param() == "1" {
+					unit = "item"
+				}
+				messages = append(messages, fmt.Sprintf("%s must contain at least %s %s", field, fe.Param(), unit))
+			case reflect.String:
+				messages = append(messages, fmt.Sprintf("%s must be at least %s characters long", field, fe.Param()))
+			default:
+				messages = append(messages, fmt.Sprintf("%s must be at least %s", field, fe.Param()))
+			}
 		default:
 			messages = append(messages, fmt.Sprintf("%s failed validation: %s", field, fe.Tag()))
 		}

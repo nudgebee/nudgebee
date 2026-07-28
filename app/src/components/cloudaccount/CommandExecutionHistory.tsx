@@ -1,8 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Box, Chip, Typography } from '@mui/material';
+import { Box, Chip } from '@mui/material';
 import apiCloudAccount from '@api1/cloud-account';
 import apiUser from '@api1/user';
-import Loader from '@shared/Loader';
 import Datetime from '@shared/format/Datetime';
 import Text from '@shared/format/Text';
 import { ds } from '@utils/colors';
@@ -179,32 +178,6 @@ const CommandExecutionHistory: React.FC<CommandExecutionHistoryProps> = ({ accou
   // Re-derive rows whenever audits or userMap change.
   const tableData = useMemo(() => buildRows(audits, userMap), [audits, userMap]);
 
-  if (loading) {
-    return (
-      <Box display='flex' justifyContent='center' alignItems='center' height={ds.space.mul(2, 25)}>
-        <Loader />
-      </Box>
-    );
-  }
-
-  if (audits.length === 0) {
-    return (
-      <Box
-        sx={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          py: ds.space[3],
-          borderRadius: ds.radius.lg,
-          border: `1px solid ${ds.gray[200]}`,
-          backgroundColor: ds.background[100],
-        }}
-      >
-        <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600] }}>No command executions recorded for this recommendation.</Typography>
-      </Box>
-    );
-  }
-
   return (
     <CustomTable2
       id={`command-execution-history-${recommendationId}`}
@@ -219,6 +192,8 @@ const CommandExecutionHistory: React.FC<CommandExecutionHistoryProps> = ({ accou
       }}
       loading={loading}
       pageNumber={page + 1}
+      showEmptyStateText
+      emptyStateText='No command executions recorded for this recommendation.'
     />
   );
 };

@@ -3,13 +3,13 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { ds } from '@utils/colors';
 
 const NUDGEBEE_WORDS = [
-  'Bee with you in a moment…',
-  'Bee right back with this…',
-  'Hmm, let me think on this…',
-  'Just connecting a few dots…',
-  'Let me consult my hive notes…',
-  'Buzzing around for the answer…',
-  'Flying off to grab the answer…',
+  'Bee with you in a moment',
+  'Bee right back with this',
+  'Hmm, let me think on this',
+  'Just connecting a few dots',
+  'Let me consult my hive notes',
+  'Buzzing around for the answer',
+  'Flying off to grab the answer',
   'Nubing',
   'Buzzifying',
   'Hive-syncing',
@@ -73,24 +73,24 @@ const NUDGEBEE_WORDS = [
 ];
 
 const CATEGORY_MESSAGES = {
-  small_talk: ['Bee with you in a moment…', 'Bee right back with this…', 'Hmm, let me think on this…', 'On it…', 'One sec…'],
+  small_talk: ['Bee with you in a moment', 'Bee right back with this', 'Hmm, let me think on this', 'On it', 'One sec'],
   kubernetes: [
-    'Scanning your cluster…',
-    'Checking your pods…',
-    'Reading the workload state…',
-    'Talking to the cluster…',
-    'Inspecting your namespaces…',
-    'Pulling node metrics…',
+    'Scanning your cluster',
+    'Checking your pods',
+    'Reading the workload state',
+    'Talking to the cluster',
+    'Inspecting your namespaces',
+    'Pulling node metrics',
   ],
   cloud: [
-    'Pulling your cloud data…',
-    'Checking your cloud spend…',
-    'Scanning your cloud resources…',
-    'Reading your account details…',
-    'Fetching resource inventory…',
+    'Pulling your cloud data',
+    'Checking your cloud spend',
+    'Scanning your cloud resources',
+    'Reading your account details',
+    'Fetching resource inventory',
   ],
-  logs: ['Digging through the logs…', 'Tracing that error…', 'Scanning recent events…', 'Following the trail…', 'Combing through the stack…'],
-  workflow: ['Loading the runbook…', 'Checking the automation…', 'Spinning up the workflow…', 'Queuing that up…', 'Prepping the pipeline…'],
+  logs: ['Digging through the logs', 'Tracing that error', 'Scanning recent events', 'Following the trail', 'Combing through the stack'],
+  workflow: ['Loading the runbook', 'Checking the automation', 'Spinning up the workflow', 'Queuing that up', 'Prepping the pipeline'],
 };
 
 function classifyQuery(query) {
@@ -119,6 +119,7 @@ const getRandomDelay = () => Math.floor(Math.random() * (10000 - 4000 + 1)) + 40
 const ConversationLoader = ({ query }) => {
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
   const [dotCount, setDotCount] = useState(1);
+  const [elapsedSec, setElapsedSec] = useState(0);
   const timeoutRef = useRef(null);
 
   const pool = useMemo(() => {
@@ -149,7 +150,16 @@ const ConversationLoader = ({ query }) => {
     return () => clearInterval(id);
   }, []);
 
+  // Live elapsed timer. The rotating words cycle randomly and can read as a loop;
+  // a monotonically increasing clock is honest proof that work is still progressing
+  // during a long single step, so a stalled-looking screen still says "working".
+  useEffect(() => {
+    const id = setInterval(() => setElapsedSec((prev) => prev + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
   const dots = ' .'.repeat(dotCount);
+  const elapsedLabel = `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, '0')}`;
 
   return (
     <Box
@@ -264,6 +274,25 @@ const ConversationLoader = ({ query }) => {
         >
           {dots}
         </Box>
+        {/* Elapsed timer — appears after a few seconds so quick replies stay clean. */}
+        {elapsedSec >= 3 && (
+          <Box
+            component='span'
+            role='timer'
+            aria-live='off'
+            sx={{
+              fontFamily: 'var(--ds-font-display)',
+              fontSize: 'var(--ds-text-caption)',
+              fontWeight: 'var(--ds-font-weight-regular)',
+              color: 'var(--ds-gray-500)',
+              lineHeight: 1,
+              ml: 'var(--ds-space-1)',
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {elapsedLabel}
+          </Box>
+        )}
       </Box>
     </Box>
   );

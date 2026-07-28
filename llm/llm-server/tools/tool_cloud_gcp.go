@@ -127,7 +127,7 @@ func (t GcpCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 				response = err.Error()
 			}
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, gcloudErrorHint(response), "gcloud", "gcloud <command> --help"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}
@@ -184,6 +184,40 @@ func (t GcpCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 		Data: data,
 		Type: core.NBToolResponseTypeText,
 	}, nil
+}
+
+// gcloudErrorHint returns an actionable recovery hint for the two gcloud
+// failure classes the model most often thrashes on (2026-07-02 sweep:
+// 38 of 83 gcloud errors were the shell-syntax class, plus recurring
+// API-not-enabled per-project 403s). Both surface answers the model can
+// act on with a single correction, but the raw error is either cryptic
+// (`sh: syntax error: unexpected "("`) or repetitive across projects.
+// Returns "" for unrecognized errors so raw gcloud output is preserved.
+// Mirrors githubErrorHint's contract added in PR #33404.
+func gcloudErrorHint(rawError string) string {
+	lower := strings.ToLower(rawError)
+	switch {
+	case strings.Contains(lower, "syntax error: unexpected \"(\""),
+		strings.Contains(lower, "syntax error near unexpected token `('"):
+		// gcloud's `--format=table(name, status, ...)` uses parentheses which
+		// the shell wrapping sh -c interprets as subshell syntax and rejects
+		// before gcloud ever runs. This is a tool-integration bug the model
+		// can work around by quoting the flag.
+		return "The shell wrapping this command interpreted the parentheses in --format as subshell syntax. " +
+			"Wrap the --format value in single quotes so the shell passes it through unchanged: " +
+			"`--format='table(name,status,version)'` or `--format='value(name)'`. " +
+			"Correct this command rather than dropping --format entirely — gcloud needs the format spec to produce structured output."
+	case strings.Contains(lower, "has not been used in project") && strings.Contains(lower, "before or it is disabled"),
+		strings.Contains(lower, "permission_denied") && strings.Contains(lower, "api has not been used"):
+		// Per-project API enablement. The model tends to retry across every
+		// project instead of moving on. Steer it to acknowledge the enablement
+		// gap as user-actionable and skip further calls on the same project.
+		return "The required API is not enabled on this GCP project (a user/admin action, not something you can fix from this tool). " +
+			"Do NOT retry the same command on this project — report the specific project + API in your answer so the user can enable it, and continue with other projects if there are any."
+	case strings.Contains(lower, "quota exceeded"):
+		return "GCP quota exceeded for this API. Retrying will fail the same way; report the specific quota to the user and continue with other work."
+	}
+	return ""
 }
 
 func (t GcpCliTool) IdentifyConfig(ctx core.NbToolContext, input core.NBToolCallRequest, availableConfigs []core.ToolConfig) (core.ToolConfig, error) {

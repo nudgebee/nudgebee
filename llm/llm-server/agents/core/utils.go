@@ -3,15 +3,51 @@ package core
 import (
 	"fmt"
 	"log/slog"
+	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/samber/lo"
 )
+
+// watchToolNames lists the four watch tools that get globally injected into
+// every agent's tool list when WatchEnabled is on. Kept as a package-level var
+// so the inject and strip blocks below stay in sync.
+var watchToolNames = []string{
+	tools.ToolWatchResource,
+	tools.ToolWatchStatus,
+	tools.ToolWatchCancel,
+	tools.ToolWatchList,
+}
+
+// WatchAsyncCompletionRulesPrompt returns the shared async-completion
+// rule body for injection into a planner's system prompt — or the empty
+// string when the watch feature flag is off. Centralising the gate here
+// keeps planner_react_2 / planner_react_3 / planner_rewoo_2 from each
+// having to know about config.Config.WatchEnabled; they just call this
+// helper at template-var fill time and pay zero prompt-tokens when the
+// feature is disabled.
+func WatchAsyncCompletionRulesPrompt() string {
+	if !config.Config.WatchEnabled {
+		return ""
+	}
+	return prompts_repo.GetPrompt(prompts_repo.PromptSharedAsyncCompletionRules)
+}
+
+func isWatchToolName(name string) bool {
+	for _, w := range watchToolNames {
+		if strings.EqualFold(name, w) {
+			return true
+		}
+	}
+	return false
+}
 
 // DefaultToolsOptOut lets an agent decline the planner's automatic default-tool injection
 // (shell_execute, load_skills). Implement and return true for agents whose tool list is
@@ -34,9 +70,12 @@ type DefaultToolsOptOut interface {
 // `disabled_tools` historically does NOT block default injection (a documented quirk preserved here).
 // `allowed_tools` is a stricter, opt-in scope set by callers (e.g. runbook investigation tasks)
 // and therefore overrides default injection too.
-func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt string, tools []toolcore.NBTool, capabilities toolcore.AgentCapabilities) []toolcore.NBTool {
+// `toolList` parameter is intentionally not named `tools` to avoid shadowing
+// the `nudgebee/llm/tools` package import (used by `watchToolNames` at the
+// top of this file). Same convention applied to sibling Has* helpers.
+func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt string, toolList []toolcore.NBTool, capabilities toolcore.AgentCapabilities) []toolcore.NBTool {
 	// 1. Initial filtering based on capabilities (e.g. disabled_tools, allowed_tools)
-	tools = FilterTools(tools, capabilities)
+	toolList = FilterTools(toolList, capabilities)
 
 	skipInjection := false
 	if agent != nil {
@@ -48,38 +87,62 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 	// 2. Inject or Remove shell_execute based on global config
 	if config.Config.LlmServerShellToolEnabled {
 		if !skipInjection {
-			found := lo.ContainsBy(tools, func(t toolcore.NBTool) bool {
+			found := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
 				return strings.EqualFold(t.Name(), toolcore.ToolExecuteShellCommand)
 			})
 			if !found {
 				if t, ok := toolcore.GetNBTool(accountId, toolcore.ToolExecuteShellCommand); ok {
-					tools = append(tools, t)
+					toolList = append(toolList, t)
 				}
 			}
 		}
 	} else {
 		// If explicitly disabled globally, ensure it's removed even if an agent tried to include it
-		tools = lo.Filter(tools, func(t toolcore.NBTool, _ int) bool {
+		toolList = lo.Filter(toolList, func(t toolcore.NBTool, _ int) bool {
 			return !strings.EqualFold(t.Name(), toolcore.ToolExecuteShellCommand)
 		})
 	}
 
-	// 3. Inject load_skills tool if the agent has KB mappings (indicated by skill-lists in the prompt)
+	// 3. Inject watch tools globally when enabled. Mirrors the shell_execute pattern: any
+	// agent that takes async write actions (rollouts, jobs, helm/argocd/cert-manager,
+	// cloud-provider stack ops, github workflows, etc.) gets the same uniform watch
+	// capability, so we don't have to wire it per-agent. Same opt-out semantics as shell.
+	if config.Config.WatchEnabled {
+		if !skipInjection {
+			for _, watchToolName := range watchToolNames {
+				already := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
+					return strings.EqualFold(t.Name(), watchToolName)
+				})
+				if already {
+					continue
+				}
+				if t, ok := toolcore.GetNBTool(accountId, watchToolName); ok {
+					toolList = append(toolList, t)
+				}
+			}
+		}
+	} else {
+		toolList = lo.Filter(toolList, func(t toolcore.NBTool, _ int) bool {
+			return !isWatchToolName(t.Name())
+		})
+	}
+
+	// 4. Inject load_skills tool if the agent has KB mappings (indicated by skill-lists in the prompt)
 	if !skipInjection && strings.Contains(agentPrompt, "<skill-lists>") {
-		found := lo.ContainsBy(tools, func(t toolcore.NBTool) bool {
+		found := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
 			return t.Name() == "load_skills"
 		})
 		if !found {
 			if t, ok := toolcore.GetNBTool(accountId, "load_skills"); ok {
-				tools = append(tools, t)
+				toolList = append(toolList, t)
 			}
 		}
 	}
 
-	// 4. If callers passed an explicit allow-list, enforce it on the injected defaults too.
+	// 5. If callers passed an explicit allow-list, enforce it on the injected defaults too.
 	if capabilities.HasAllowedTools() {
-		tools = FilterTools(tools, capabilities)
-		if len(tools) == 0 {
+		toolList = FilterTools(toolList, capabilities)
+		if len(toolList) == 0 {
 			// A pinned allow-list that produced zero tools is almost certainly a misconfiguration —
 			// e.g. the allow-listed tools belong to a different agent than the one auto-selected
 			// by the router. Surface a clear breadcrumb so support can diagnose without a traceback.
@@ -89,13 +152,13 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 		}
 	}
 
-	return tools
+	return toolList
 }
 
 // HasShellTool checks if shell_execute is in the agent's final tool list.
 // Used to set shell_tool_enabled per-agent instead of globally.
-func HasShellTool(tools []toolcore.NBTool) bool {
-	for _, t := range tools {
+func HasShellTool(toolList []toolcore.NBTool) bool {
+	for _, t := range toolList {
 		if t.Name() == toolcore.ToolExecuteShellCommand {
 			return true
 		}
@@ -104,8 +167,8 @@ func HasShellTool(tools []toolcore.NBTool) bool {
 }
 
 // HasDelegateAgentTool returns true if the delegate_agent tool is present in the tool list.
-func HasDelegateAgentTool(tools []toolcore.NBTool) bool {
-	for _, t := range tools {
+func HasDelegateAgentTool(toolList []toolcore.NBTool) bool {
+	for _, t := range toolList {
 		if strings.EqualFold(t.Name(), "delegate_agent") {
 			return true
 		}
@@ -369,8 +432,173 @@ func reActPromptToolDescriptions(tools []toolcore.NBTool) string {
 		fmt.Fprintf(&sb, "Tool Name: %s\n", tool.Name())
 		fmt.Fprintf(&sb, "Type: %s\n", string(tool.GetType()))
 		fmt.Fprintf(&sb, "Description: %s", tool.Description())
+		if isToolSchemaAuthoritative(tool.Name()) {
+			if schemaBlock := renderInputSchema(tool.InputSchema()); schemaBlock != "" {
+				sb.WriteString("\n")
+				sb.WriteString(schemaBlock)
+			}
+		}
 	}
 	return sb.String()
+}
+
+// isToolSchemaAuthoritative reports whether the framework treats a tool's
+// InputSchema as authoritative — used by the renderer here to gate the
+// compact "Input: object with fields:" block, and (in a coordinated PR)
+// by the schema validator to gate pre-execution type/enum/required checks.
+// Driven by config.LlmServerToolSchemaValidationTools — see that field's
+// docstring for the migration-safety motivation.
+//
+// Special values:
+//
+//	""   → renderer OFF (default)
+//	"*"  → renderer ON for every tool
+//
+// Otherwise the value is a comma-separated list matched case-insensitively.
+func isToolSchemaAuthoritative(toolName string) bool {
+	list := strings.TrimSpace(config.Config.LlmServerToolSchemaValidationTools)
+	if list == "" {
+		return false
+	}
+	if list == "*" {
+		return true
+	}
+	name := strings.ToLower(strings.TrimSpace(toolName))
+	if name == "" {
+		return false
+	}
+	for _, entry := range strings.Split(list, ",") {
+		if strings.EqualFold(strings.TrimSpace(entry), name) {
+			return true
+		}
+	}
+	return false
+}
+
+// maxSchemaFieldDescriptionChars caps per-field description length so the
+// renderer never balloons on tools with long property descriptions (e.g.
+// kg_traverse's 10 properties x ~200 chars each would add ~2KB otherwise).
+// Cap chosen empirically — long enough to carry LLM signal, short enough
+// that a 10-field tool stays under 1KB. UTF-8 rune-safe truncation.
+const maxSchemaFieldDescriptionChars = 100
+
+// renderInputSchema formats a tool's InputSchema into a compact,
+// LLM-facing block appended to the tool's description in the
+// AVAILABLE TOOLS section of the base prompt. Returns "" when the
+// schema is empty (no properties), so tools without input still
+// render with just Name/Type/Description as before.
+//
+// Format (per property, one line):
+//
+//   - <name> (<type>, required|optional): <description[:100]>  [one of: v1, v2, ...]
+//
+// Properties render in THREE blocks: Required[] fields first, then any
+// fields named in RequiredOneOf groups, then the rest — each alphabetical
+// among itself. Three motivations:
+//  1. Byte-stable output — Go map iteration is randomized, so any
+//     deterministic order works; matters for LLM prompt caching (providers
+//     cache on exact prefix).
+//  2. Required-first foregrounds what MUST be filled. A pure alphabetical
+//     sort would surface fields like `tool_resource_search`'s
+//     `label_selector` before its required `search_type`, weakening the
+//     LLM's "fill required first" signal.
+//  3. Adjacent placement of RequiredOneOf group members lets the LLM see
+//     the aliases together (command|query for SQL tools; skill_name|
+//     skill_names|skills for load_skills); a trailing "Provide at least
+//     one of" summary line pins the group-level constraint at the end so
+//     the LLM sees it after the field list.
+//
+// Required is looked up from schema.Required (a []string). Enum values are
+// appended inline when present — usually short, high-signal. Default is
+// intentionally NOT rendered — most tools don't set it, and it adds noise
+// for the few that do.
+func renderInputSchema(schema toolcore.ToolSchema) string {
+	if len(schema.Properties) == 0 {
+		return ""
+	}
+	requiredSet := make(map[string]bool, len(schema.Required))
+	for _, f := range schema.Required {
+		requiredSet[f] = true
+	}
+	oneOfSet := make(map[string]bool)
+	for _, group := range schema.RequiredOneOf {
+		for _, name := range group {
+			if !requiredSet[name] {
+				oneOfSet[name] = true
+			}
+		}
+	}
+	required := make([]string, 0, len(schema.Required))
+	oneOf := make([]string, 0, len(oneOfSet))
+	optional := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		switch {
+		case requiredSet[name]:
+			required = append(required, name)
+		case oneOfSet[name]:
+			oneOf = append(oneOf, name)
+		default:
+			optional = append(optional, name)
+		}
+	}
+	slices.Sort(required)
+	slices.Sort(oneOf)
+	slices.Sort(optional)
+	names := append(required, oneOf...)
+	names = append(names, optional...)
+	var sb strings.Builder
+	sb.WriteString("Input: object with fields:")
+	for _, name := range names {
+		prop := schema.Properties[name]
+		reqMarker := "optional"
+		if requiredSet[name] {
+			reqMarker = "required"
+		}
+		typ := string(prop.Type)
+		if typ == "" {
+			typ = "string"
+		}
+		// Collapse whitespace so multi-line property descriptions render on
+		// one line — matches the "one line per field" contract in the format
+		// docstring and keeps the token budget predictable.
+		desc := strings.Join(strings.Fields(prop.Description), " ")
+		desc = truncateSchemaFieldDescription(desc, maxSchemaFieldDescriptionChars)
+		fmt.Fprintf(&sb, "\n  - %s (%s, %s)", name, typ, reqMarker)
+		if desc != "" {
+			fmt.Fprintf(&sb, ": %s", desc)
+		}
+		if len(prop.Enum) > 0 {
+			enumStrs := make([]string, 0, len(prop.Enum))
+			for _, v := range prop.Enum {
+				enumStrs = append(enumStrs, fmt.Sprintf("%v", v))
+			}
+			fmt.Fprintf(&sb, " [one of: %s]", strings.Join(enumStrs, ", "))
+		}
+	}
+	// RequiredOneOf trailing block — each group needs ≥1 of the listed
+	// keys present. Matches the wording formatSchemaErrorMessage emits in
+	// the validator so the plan-time hint and the validator error use the
+	// same phrasing.
+	if len(schema.RequiredOneOf) > 0 {
+		sb.WriteString("\nProvide at least one of:")
+		for _, group := range schema.RequiredOneOf {
+			fmt.Fprintf(&sb, "\n  - %s", strings.Join(group, " | "))
+		}
+	}
+	return sb.String()
+}
+
+// truncateSchemaFieldDescription caps s at maxBytes, walking back to the
+// nearest UTF-8 rune boundary so the ellipsis never glues onto a
+// half-rune. Uses utf8.RuneStart from the stdlib (Gemini PR #33820 review).
+func truncateSchemaFieldDescription(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return s[:maxBytes] + "…"
 }
 
 // RenderToolDescriptions exposes reActPromptToolDescriptions for use

@@ -690,6 +690,68 @@ func handleUserAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 		}
 		c.JSON(200, resp)
 		return
+	case "auth_delete_session":
+		var request user.AuthDeleteSessionRequest
+		var err error
+		if tenantRequest["object"] != nil {
+			err = common.UnmarshalMapToStruct(tenantRequest["object"].(map[string]any), &request)
+		} else {
+			err = common.UnmarshalMapToStruct(tenantRequest, &request)
+		}
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		resp, err := user.DeleteSession(ctx, request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, resp)
+		if err := audit.PublishAuditEvent(ctx, audit.Audit{
+			TenantId:      ctx.GetSecurityContext().GetTenantId(),
+			UserId:        request.UserId,
+			EventTime:     time.Now(),
+			EventCategory: audit.EventCategoryUser,
+			EventType:     audit.EventTypeUserLoginDelete,
+			EventState:    request,
+			EventActor:    audit.EventActorApiService,
+			EventTarget:   "user_session",
+			EventAction:   audit.EventActionDelete,
+			EventStatus:   audit.EventStatusSuccess,
+		}); err != nil {
+			ctx.GetLogger().Error("failed to publish audit event", "error", err)
+		}
+		return
+	case "auth_check_session":
+		var request user.AuthCheckSessionRequest
+		var err error
+		if tenantRequest["object"] != nil {
+			err = common.UnmarshalMapToStruct(tenantRequest["object"].(map[string]any), &request)
+		} else {
+			err = common.UnmarshalMapToStruct(tenantRequest, &request)
+		}
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		resp, err := user.CheckSession(ctx, request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, resp)
+		return
 	default:
 		c.JSON(400, common.ErrorActionBadRequest("invalid action name - "+actionPayload.Action.Name))
 		return

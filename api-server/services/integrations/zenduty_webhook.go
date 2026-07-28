@@ -12,11 +12,8 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/event"
 	"nudgebee/services/integrations/core"
-	"nudgebee/services/internal/database"
-	"nudgebee/services/llm"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
-	"strings"
 )
 
 // ZenDuty Webhook Payload Structures
@@ -77,11 +74,12 @@ const (
 	ZenDutyStatusResolved     = 3
 )
 
-// ZenDuty Urgency Constants
+// ZenDuty Urgency Constants — ZenDuty urgency is binary: 0 = Low, 1 = High
+// (https://zenduty.com/docs/workflows/, trigger_data.urgency). There is no
+// medium and no value 2.
 const (
-	ZenDutyUrgencyLow    = 0
-	ZenDutyUrgencyMedium = 1
-	ZenDutyUrgencyHigh   = 2
+	ZenDutyUrgencyLow  = 0
+	ZenDutyUrgencyHigh = 1
 )
 
 // parseAssignedTo parses the assigned_to field which can be either a single object or an array.
@@ -264,8 +262,6 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	switch incident.Urgency {
 	case ZenDutyUrgencyHigh:
 		alert.Severity = event.EventPriorityHigh
-	case ZenDutyUrgencyMedium:
-		alert.Severity = event.EventPriorityMedium
 	default:
 		alert.Severity = event.EventPriorityLow
 	}
@@ -444,16 +440,10 @@ func mapZenDutyStatusToString(status int) string {
 
 // mapZenDutyUrgencyToString converts ZenDuty numeric urgency to string.
 func mapZenDutyUrgencyToString(urgency int) string {
-	switch urgency {
-	case ZenDutyUrgencyLow:
-		return "low"
-	case ZenDutyUrgencyMedium:
-		return "medium"
-	case ZenDutyUrgencyHigh:
+	if urgency == ZenDutyUrgencyHigh {
 		return "high"
-	default:
-		return "medium"
 	}
+	return "low"
 }
 
 // GetZenDutyIncidentDetails fetches full incident details from ZenDuty API.
@@ -488,139 +478,27 @@ func GetZenDutyIncidentDetails(apiKey, incidentID string) (*ZenDutyIncident, err
 	return &incident, nil
 }
 
-// resolveZendutySubjectUsingLLM passes the full alert context to the LLM to extract
-// resource identification labels. Fallback when regex cannot identify a resource.
+// resolveZendutySubjectUsingLLM asks the webhook_subject_name_extractor agent to
+// map the alert to a running service, then validates against k8s_workloads with the
+// ILIKE-capable matcher. The agent owns the running-services and historical context
+// server-side, so only the alert is sent here.
 func resolveZendutySubjectUsingLLM(sc *security.RequestContext, parsedPayload *core.EventIncomingWebhook, accountId string) {
-	dbms, err := database.GetDatabaseManager(database.Metastore)
-	if err != nil {
-		sc.GetLogger().Error("zendutywebhook: failed to get database manager for LLM matching", "error", err)
-		return
+	if parsedPayload.Investigation.Labels == nil {
+		parsedPayload.Investigation.Labels = map[string]string{}
 	}
-
 	tenantId := sc.GetSecurityContext().GetTenantId()
 
-	var names []string
-	err = dbms.Db.Select(&names, `
-		SELECT DISTINCT name FROM k8s_workloads
-		WHERE tenant_id = $1 AND cloud_account_id = $2
-		  AND is_active = true AND kind NOT IN ('Job', 'CronJob')
-	`, tenantId, accountId)
-	if err != nil {
-		sc.GetLogger().Error("zendutywebhook: failed to query workload names for LLM", "error", err)
-		return
-	}
-	if len(names) == 0 {
-		return
-	}
-
-	labelsJSON, _ := json.Marshal(parsedPayload.Investigation.Labels)
-
-	historicalMappings, err := GetSubjectMappingsForPrompt(sc, tenantId, TenantAttrZendutyIncidentsKey, 1000)
-	if err != nil {
-		sc.GetLogger().Warn("zendutywebhook: failed to load historical mappings", "error", err)
-	}
-	historicalPatterns := FormatSubjectMappingsForPrompt(historicalMappings, 1000)
-
-	prompt := fmt.Sprintf(`@llm You are a resource label extractor for monitoring alerts. Analyze the complete alert data below and extract resource identification labels.
-
-## Alert Data
-**Title:** %s
-**Description:** %s
-**Source URL:** %s
-**Existing Labels:** %s
-
-## Historical patterns (title → service)
-%s
-
-## Known Running Services/Workloads
-%s
-
-## Task
-From the alert data above, extract the following labels. Look at ALL the data — title, description, labels, URLs, and historical patterns — to find clues about which resource this alert is about.
-
-Return ONLY a valid JSON object with these fields (use empty string "" if not found):
-{
-  "subject_name": "<k8s workload/service name from the Running Services list that this alert is about>",
-  "namespace": "<k8s namespace>",
-  "cluster": "<k8s cluster name>",
-  "pod_name": "<specific pod name if mentioned>",
-  "service_name": "<application/service name>"
-}
-
-RULES:
-1. For subject_name: MUST be an exact match from the Running Services list, or empty string
-2. Look for service names in alert titles (e.g. "booking-service down" → subject_name="booking-service")
-3. Look for service names in pipe-delimited titles (e.g. "Critical | Prod | EKS | payment-service | high latency")
-4. Look for k8s resource references in labels (job, pod, deployment names)
-5. If the title closely matches a Historical pattern, use the same service mapping
-6. If you cannot confidently identify a resource, return empty strings — do NOT guess
-7. Return ONLY the JSON object, no explanation, no markdown fences`,
-		parsedPayload.EventTitle,
-		parsedPayload.EventDescription,
-		parsedPayload.Investigation.SourceUrl,
-		string(labelsJSON),
-		historicalPatterns,
-		strings.Join(names, ", "),
-	)
-
-	chatRequest := llm.ConversationApiRequest{
-		Query:     prompt,
-		AccountId: accountId,
-		UserId:    sc.GetSecurityContext().GetUserId(),
-		Async:     false,
-		Source:    "webhook_label_extraction",
-	}
-
-	response, err := llm.ChatCompletion(sc, chatRequest)
-	if err != nil {
-		sc.GetLogger().Error("zendutywebhook: LLM label extraction failed", "error", err)
-		return
-	}
-	if response == nil || len(response.Response) == 0 {
-		sc.GetLogger().Warn("zendutywebhook: LLM returned empty response")
-		return
-	}
-
-	var extractedLabels map[string]string
-	responseText := response.Response[0]
-	responseText = strings.TrimPrefix(responseText, "```json")
-	responseText = strings.TrimPrefix(responseText, "```")
-	responseText = strings.TrimSuffix(responseText, "```")
-	responseText = strings.TrimSpace(responseText)
-
-	if err := json.Unmarshal([]byte(responseText), &extractedLabels); err != nil {
-		sc.GetLogger().Error("zendutywebhook: failed to parse LLM response as JSON",
-			"error", err, "response", responseText)
-		return
-	}
-
-	sc.GetLogger().Info("zendutywebhook: LLM extracted labels", "labels", extractedLabels, "title", parsedPayload.EventTitle)
-
-	if subjectName := extractedLabels["subject_name"]; subjectName != "" {
-		parsedPayload.EventSubjectName = subjectName
-		parsedPayload.Investigation.Labels["nb_llm_match"] = subjectName
-		common.MetricsSubjectResolution(sc.GetContext(), IntegrationZendutyWebhook, "live", "matched", tenantId)
-	} else {
-		parsedPayload.Investigation.Labels["nb_llm_match"] = "not_found"
+	name := core.ResolveSubjectNameViaAgent(sc, accountId,
+		parsedPayload.EventTitle, parsedPayload.EventDescription,
+		parsedPayload.Investigation.SourceUrl, parsedPayload.Investigation.Labels)
+	if name == "" {
 		common.MetricsSubjectResolution(sc.GetContext(), IntegrationZendutyWebhook, "live", "not_found", tenantId)
+		return
 	}
+	common.MetricsSubjectResolution(sc.GetContext(), IntegrationZendutyWebhook, "live", "matched", tenantId)
 
-	if ns := extractedLabels["namespace"]; ns != "" && parsedPayload.EventSubjectNamespace == "" {
-		parsedPayload.EventSubjectNamespace = ns
-		parsedPayload.Investigation.Labels["namespace"] = ns
-	}
-
-	for _, key := range []string{"cluster", "pod_name", "service_name"} {
-		if val := extractedLabels[key]; val != "" {
-			if parsedPayload.Investigation.Labels[key] == "" {
-				parsedPayload.Investigation.Labels[key] = val
-			}
-		}
-	}
-
-	if parsedPayload.EventSubjectName != "" {
-		matchWorkloadAndEnrich(sc, parsedPayload, accountId)
-	}
+	parsedPayload.EventSubjectName = name
+	matchWorkloadAndEnrich(sc, parsedPayload, accountId)
 }
 
 // EnrichWithZenDutyIncident enriches the event with full incident details from ZenDuty API.

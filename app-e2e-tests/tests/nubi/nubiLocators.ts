@@ -45,6 +45,34 @@ export class NubiLocators {
   readonly toolStatusDisabledOption: Locator;
   readonly toolDisabledSuccessMessage: Locator;
 
+  // Functions tab locators (LLM Functions)
+  readonly functionsTab: Locator;
+  readonly createFunctionBtn: Locator;
+  readonly searchFunctionInput: Locator;
+  readonly functionNameInput: Locator;
+  readonly functionStatusSelect: Locator;
+  readonly functionStatusDraftOption: Locator;
+  readonly functionStatusActiveOption: Locator;
+  readonly functionCancelBtn: Locator;
+  readonly viewAgentListBtn: Locator;
+  readonly agentListModalTitle: Locator;
+  readonly agentListSearchInput: Locator;
+  readonly rewritePromptBtn: Locator;
+  readonly rewritePromptEmptyError: Locator;
+  readonly variableDefaultsHeading: Locator;
+  readonly functionDescriptionInput: Locator;
+  readonly functionPromptInput: Locator;
+  readonly saveFunctionBtn: Locator;
+  readonly updateFunctionBtn: Locator;
+  readonly functionMoreActionsBtn: Locator;
+  readonly editFunctionMenuItem: Locator;
+  readonly deleteFunctionMenuItem: Locator;
+  readonly confirmDeleteFunctionBtn: Locator;
+  readonly functionCreatedMessage: Locator;
+  readonly functionCreationFailureMessage: Locator;
+  readonly functionUpdatedMessage: Locator;
+  readonly functionDeletedMessage: Locator;
+
   // Agent CRUD action locators
   readonly agentMoreActionsBtn: Locator;
   readonly editAgentMenuItem: Locator;
@@ -112,10 +140,50 @@ export class NubiLocators {
     this.toolDisabledSuccessMessage = page.getByText('Tool updated successfully');
 
 
+    // Functions tab locators (LLM Functions)
+    this.functionsTab = page.getByRole('tab', { name: 'Functions' });
+    this.createFunctionBtn = page.locator('#create-function');
+    this.searchFunctionInput = page.getByPlaceholder('Search Function');
+    this.functionNameInput = page.getByPlaceholder('e.g., get_user_data, process_payment');
+    this.functionStatusSelect = page.getByLabel('Status');
+    this.functionStatusDraftOption = page.getByText('Draft', { exact: true });
+    this.functionStatusActiveOption = page.getByText('Active', { exact: true });
+    this.functionCancelBtn = page.getByRole('button', { name: 'Cancel' });
+    this.viewAgentListBtn = page.getByRole('button', { name: 'View Agent List' });
+    this.agentListModalTitle = page.getByText('Available Agents');
+    this.agentListSearchInput = page.getByPlaceholder('Search agents...');
+    this.rewritePromptBtn = page.getByRole('button', { name: 'Rewrite Prompt' });
+    this.rewritePromptEmptyError = page.getByText('Please enter a prompt to validate');
+    this.variableDefaultsHeading = page.getByText('Variable Default Values');
+    this.functionDescriptionInput = page.getByPlaceholder('What is this function supposed to do?');
+    this.functionPromptInput = page.getByPlaceholder('Write your prompt here...');
+    this.saveFunctionBtn = page.getByRole('button', { name: 'Save Function' });
+    this.updateFunctionBtn = page.getByRole('button', { name: 'Update Function' });
+    this.functionMoreActionsBtn = page.getByRole('button', { name: 'More actions' });
+    this.editFunctionMenuItem = page
+      .locator('[role="menuitem"]#edit:visible')
+      .or(page.locator('[role="menuitem"]:visible', { hasText: 'Edit Function' }))
+      .first();
+    this.deleteFunctionMenuItem = page
+      .locator('[role="menuitem"]#delete:visible')
+      .or(page.locator('[role="menuitem"]:visible', { hasText: 'Delete Function' }))
+      .first();
+    this.confirmDeleteFunctionBtn = page.getByRole('button', { name: 'Delete', exact: true });
+    this.functionCreatedMessage = page.getByText('Function created successfully');
+    this.functionCreationFailureMessage = page.getByText('A function with this name already exists');
+    this.functionUpdatedMessage = page.getByText('Function updated successfully');
+    this.functionDeletedMessage = page.getByText(/deleted successfully/);
+
     // Agent CRUD action locators
     this.agentMoreActionsBtn = page.getByRole('button', { name: 'More actions' });
-    this.editAgentMenuItem = page.getByRole('menuitem', { name: 'Edit Agent' });
-    this.deleteAgentMenuItem = page.getByRole('menuitem', { name: 'Delete Agent' });
+    this.editAgentMenuItem = page
+      .locator('[role="menuitem"]#edit:visible')
+      .or(page.locator('[role="menuitem"]:visible', { hasText: 'Edit Agent' }))
+      .first();
+    this.deleteAgentMenuItem = page
+      .locator('[role="menuitem"]#delete:visible')
+      .or(page.locator('[role="menuitem"]:visible', { hasText: 'Delete Agent' }))
+      .first();
     this.updateAgentBtn = page.getByRole('button', { name: 'Update Agent' });
     this.confirmDeleteAgentBtn = page.getByRole('button', { name: 'Delete' });
     this.updateAgentSuccessMessage = page.getByText('Agent updated successfully');

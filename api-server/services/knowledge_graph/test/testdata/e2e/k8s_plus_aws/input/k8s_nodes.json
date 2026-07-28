@@ -1,0 +1,12 @@
+[
+  {
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "name": "k8s-worker-1",
+    "is_active": true,
+    "node_creation_time": "2024-01-01T00:00:00Z",
+    "node_type": "worker",
+    "node_region": "us-east-1",
+    "meta": { "spec": { "providerID": "aws:///us-east-1a/i-0abc123def456" } }
+  }
+]

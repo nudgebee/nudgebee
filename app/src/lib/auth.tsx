@@ -281,6 +281,20 @@ export async function hasFeatureAccess(featureName: string): Promise<boolean> {
   return false;
 }
 
+/**
+ * Synchronous read of the already-fetched tenant feature flags. Returns false if
+ * the flags haven't been loaded yet — call `fetchFeatureFlagsForTenant()` first
+ * (or rely on another page having warmed the cache). Use for render-time gating
+ * where the async `hasFeatureAccess` can't be awaited.
+ */
+export function hasFeatureAccessCached(featureName: string): boolean {
+  const tenantFeatures: any[] | undefined = featureData[getTenantKey()];
+  if (!tenantFeatures) {
+    return false;
+  }
+  return tenantFeatures.some((f) => f['feature_id'] === featureName && f['status'] === 'enabled');
+}
+
 const getTenantKey = () => userData?.tenant?.name?.replace(/[^a-zA-Z0-9_-]/g, '_') || '';
 
 export async function fetchFeatureFlagsForTenant(refresh = false): Promise<any[]> {

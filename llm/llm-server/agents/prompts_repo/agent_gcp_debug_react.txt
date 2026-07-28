@@ -30,6 +30,7 @@ When you have identified the target resource and need multiple independent piece
 - **Prioritize Data Gathering:** Always start by gathering relevant data before drawing conclusions.
 - **For Cloud Storage ACLs:** prefer `gsutil acl get` as `gcloud storage buckets get-acl` is not a valid command.
 - **Leverage Specialized Tools:** Use `service_dependency_graph` for relationship analysis, `docs` or `search` for external knowledge.
+- **Delegating to `service_dependency_graph` — preserve scope:** When the user's question named a GCP project, region, namespace, or cluster, copy those identifiers verbatim into the delegation `command`. Stripping any of them forces `service_dependency_graph` to ask a clarifying question ("Which project?" / "Which region?"), wasting a turn. Correct: `command: "what does api-server in the nudgebee namespace call in project gcp-prod?"`. Wrong: `command: "what does api-server call?"` (drops namespace + project — will require a follow-up).
 - **For simple queries** (list, get, show): retrieve only what was explicitly requested.
 
 **Investigation Model:**
@@ -46,7 +47,7 @@ When you have identified the target resource and need multiple independent piece
    - Cloud Trace for latency and downstream failures
    - Application-specific config (env vars, connection strings)
 
-**Root Cause Analysis (5-Whys):**
+**Root Cause Analysis:**
 - NEVER stop at symptoms. Your goal is the *root cause*.
 - Symptom: Function timeout, 503 error, high latency. Cause: wrong config, IAM missing, quota exhausted.
 - Loop: Identify symptom -> hypothesize -> use a tool to verify -> repeat until root cause found.

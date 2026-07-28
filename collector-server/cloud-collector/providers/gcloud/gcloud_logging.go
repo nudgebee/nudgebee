@@ -10,6 +10,7 @@ import (
 	"cloud.google.com/go/logging"
 	"cloud.google.com/go/logging/logadmin"
 	"google.golang.org/api/iterator"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 const (
@@ -296,11 +297,134 @@ func logEntryToMessage(entry *logging.Entry) providers.LogMessage {
 			attrs["code.function"] = sl.GetFunction()
 		}
 	}
+
+	// Resource-type-specific fields the generic LogEntry/HTTPRequest extraction above can't
+	// reach because they live only in the structured payload: App Engine request latency
+	// (in the RequestLog protoPayload, not entry.HTTPRequest) and the L7 load balancer's
+	// 5xx reason (statusDetails).
+	if entry.Resource != nil {
+		extractResourceSpecificAttrs(entry.Resource.Type, entry.Payload, msg.Message, attrs)
+	}
+
 	if len(attrs) > 0 {
 		msg.Attributes = attrs
 	}
 
 	return msg
+}
+
+// extractResourceSpecificAttrs surfaces per-resource-type fields that the generic
+// LogEntry/HTTPRequest extraction can't reach because they live only in the structured
+// payload. Values are set only when absent, so they never clobber a field the generic
+// extraction already populated.
+func extractResourceSpecificAttrs(resourceType string, payload any, message string, attrs map[string]any) {
+	if attrs == nil || (resourceType != "gae_app" && resourceType != "http_load_balancer") {
+		return
+	}
+	p := payloadAsMap(payload, message)
+	if p == nil {
+		return
+	}
+	setIfAbsent := func(k string, v any) {
+		if v == nil {
+			return
+		}
+		if _, ok := attrs[k]; !ok {
+			attrs[k] = v
+		}
+	}
+	switch resourceType {
+	case "gae_app":
+		// App Engine RequestLog (snake_case keys). entry.HTTPRequest carries status/url for
+		// these, but not latency — so a latency SLO event has no rankable duration otherwise.
+		if ms, ok := appEngineLatencyMs(p["latency"]); ok {
+			setIfAbsent("http.server.request.duration_ms", ms)
+		}
+		if m, ok := p["method"].(string); ok && m != "" {
+			setIfAbsent("http.request.method", m)
+		}
+		if r, ok := p["resource"].(string); ok && r != "" {
+			setIfAbsent("url.path", r)
+		}
+		if h, ok := p["host"].(string); ok && h != "" {
+			setIfAbsent("server.address", h)
+		}
+		if st, ok := asFloat64(p["status"]); ok && st != 0 {
+			setIfAbsent("http.response.status_code", int(st))
+		}
+		if rs, ok := asFloat64(p["response_size"]); ok && rs != 0 {
+			setIfAbsent("http.response.body.size", int64(rs))
+		}
+	case "http_load_balancer":
+		// L7 load balancer: statusDetails is the canonical reason for a 5xx
+		// (response_sent_by_backend, failed_to_connect_to_backend, no_healthy_backend, …).
+		if sd, ok := p["statusDetails"].(string); ok && sd != "" {
+			setIfAbsent("gcp.lb.status_details", sd)
+		}
+	}
+}
+
+// payloadAsMap resolves a log entry payload to a string-keyed map without a fresh JSON
+// marshal. The GCP logging library hands us a *structpb.Struct for jsonPayload (e.g. the
+// L7 LB) and a proto.Message for protoPayload (e.g. App Engine RequestLog) — never a plain
+// map — so a raw map / *structpb.Struct is converted directly, and only the proto case
+// falls back to the entry's already-serialized JSON (`message`), which was computed anyway.
+func payloadAsMap(payload any, message string) map[string]any {
+	switch p := payload.(type) {
+	case map[string]any:
+		return p
+	case *structpb.Struct:
+		return p.AsMap()
+	}
+	if len(message) > 0 && message[0] == '{' {
+		var m map[string]any
+		if json.Unmarshal([]byte(message), &m) == nil {
+			return m
+		}
+	}
+	return nil
+}
+
+// appEngineLatencyMs converts an App Engine RequestLog latency to whole milliseconds.
+// It is a protobuf Duration, serialized either as an object ({seconds, nanos}) or the
+// canonical string form ("0.054968s") depending on the marshaler.
+func appEngineLatencyMs(v any) (int64, bool) {
+	switch t := v.(type) {
+	case map[string]any:
+		var ms float64
+		if s, ok := asFloat64(t["seconds"]); ok {
+			ms += s * 1000
+		}
+		if n, ok := asFloat64(t["nanos"]); ok {
+			ms += n / 1e6
+		}
+		if ms > 0 {
+			return int64(ms), true
+		}
+	case string:
+		if d, err := time.ParseDuration(t); err == nil && d > 0 {
+			return d.Milliseconds(), true
+		}
+	}
+	return 0, false
+}
+
+// asFloat64 reads a numeric value that may be represented as float64 (JSON / structpb) or
+// a native int kind (e.g. a hand-built map), so extraction doesn't depend on the source.
+func asFloat64(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	}
+	return 0, false
 }
 
 // getLogMetricFilter fetches the filter string for a GCP user-defined log-based metric.

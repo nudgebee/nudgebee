@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -53,7 +54,7 @@ func Execute(body ActionExecuteBody) (map[string]any, error) {
 
 	if resp.StatusCode != 200 {
 		slog.Error("failed to fetch data from relay", "status", resp.StatusCode, "data", string(jsonBody))
-		return data, fmt.Errorf("status: %s", resp.Status)
+		return data, fmt.Errorf("relay error: %s", extractRelayErrorMessage(jsonBody, resp.Status))
 	}
 
 	responseData := map[string]any{}
@@ -73,4 +74,29 @@ func Execute(body ActionExecuteBody) (map[string]any, error) {
 	}
 
 	return responseData, err
+}
+
+// extractRelayErrorMessage parses the relay's JSON error body to get the human-readable
+// message. The relay uses two formats:
+//
+//	{"errors": [{"code": 400, "message": "agent not connected"}]}
+//	{"error": "some message"}
+//
+// Falls back to the HTTP status string if the body can't be parsed.
+func extractRelayErrorMessage(body []byte, fallback string) string {
+	var envelope struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &envelope); err == nil {
+		if len(envelope.Errors) > 0 && envelope.Errors[0].Message != "" {
+			return envelope.Errors[0].Message
+		}
+		if envelope.Error != "" {
+			return envelope.Error
+		}
+	}
+	return fallback
 }

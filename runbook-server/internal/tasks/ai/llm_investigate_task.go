@@ -48,13 +48,18 @@ func (t *LLMInvestigateTask) Execute(taskCtx types.TaskContext, params map[strin
 		return nil, err
 	}
 
+	sessionScope, err := parseSessionScopeParam(params[sessionScopeParamFieldName])
+	if err != nil {
+		return nil, err
+	}
+
 	responseFormat, _ := params["response_format"].(string)
 	if responseFormat == "json" {
 		msg += "\n\nIMPORTANT: Your final answer MUST be a valid JSON object only — no markdown prose, no code fences, no text outside the JSON."
 	}
 
 	requestContext := taskCtx.GetNewRequestContext()
-	resp, err := llm.ProcessRequest(requestContext, applyWorkflowTrace(taskCtx, llm.LLMRequest{
+	resp, err := llm.ProcessRequest(requestContext, applyWorkflowTrace(taskCtx, sessionScope, llm.LLMRequest{
 		Message:      msg,
 		AccountId:    taskCtx.GetAccountID(),
 		Tools:        tools,
@@ -193,7 +198,8 @@ func (t *LLMInvestigateTask) InputSchema() *types.Schema {
 					Type: "llm_tools",
 				},
 			},
-			modelParamFieldName: modelInputSchemaProperty(4),
+			modelParamFieldName:        modelInputSchemaProperty(4),
+			sessionScopeParamFieldName: sessionScopeInputSchemaProperty(5),
 		},
 	}
 }
@@ -204,6 +210,7 @@ func (t *LLMInvestigateTask) RuntimeNotes() []string {
 		"If you need structured data from the investigation, set response_format='json'. The agent is automatically instructed to return a valid JSON object — add a JSON schema or example in your message to control the exact shape.",
 		"If JSON extraction fails with response_format='json', 'data' is an object of the form {\"raw_text\": \"<raw response>\"} and 'parse_error' explains the failure. Referencing other fields on 'data' (e.g. data.summary) will resolve empty in that case — guard downstream tasks accordingly.",
 		"Setting 'tools' restricts the investigation to that allow-list — the auto-selected agent's other tools, shell_execute, and load_skills (knowledge bases) are all hidden unless explicitly listed. Leave empty for the default tool set.",
+		"session_scope='workflow' makes every run of this workflow append to one shared AI conversation (the AI remembers previous runs). The default 'execution' starts a fresh conversation per run.",
 	}
 }
 

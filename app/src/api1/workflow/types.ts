@@ -144,6 +144,8 @@ export interface WorkflowExecutionTaskResponse {
   status: string;
   start_time: string;
   end_time: string;
+  input?: Record<string, unknown> | null;
+  rendered_params?: Record<string, unknown> | null;
   output: Record<string, unknown> | string | null;
   error: string;
   attempt: number;

@@ -40,7 +40,8 @@ func (t KGSearchNodesTool) Description() string {
 		`LoadBalancer, BackendPool, Storage, VPC, SecurityGroup, Subnet, NetworkInterface, RouteTable, CloudResource, InfraStack; ` +
 		`ContainerRegistry, ContainerImage, Artifact, DNSZone, DNSRecord, CDN, NetworkGateway, PrivateEndpoint, APIGateway, SecretVault, EncryptionKey, MonitoringService, LogAggregator, ServerlessFunction, ManagedCluster, BackupVault, BackupPolicy, PublicIP, SecurityService, EmailService, AIService, ServiceIdentity; ` +
 		`K8sService, Ingress, NetworkPolicy, ConfigMap, K8sSecret, PersistentVolumeClaim, PersistentVolume; ` +
-		`HelmChart, HelmRelease, Configuration, Repository.`
+		`HelmChart, HelmRelease, Configuration, Repository. ` +
+		`Input JSON: {"query":"redis% | exact", "node_types":["Workload"], "namespace":"...", "source":"k8s|aws|gcp|azure", "labels":"{\"app\":\"x\"}", "account_ids":[...], "limit":20} — at least one filter is required (` + "`query`" + ` alone works, or ` + "`node_types`" + `/` + "`namespace`" + ` without a query).`
 }
 
 func (t KGSearchNodesTool) InputSchema() core.ToolSchema {
@@ -49,7 +50,7 @@ func (t KGSearchNodesTool) InputSchema() core.ToolSchema {
 		Properties: map[string]core.ToolSchemaProperty{
 			"query": {
 				Type:        core.ToolSchemaTypeString,
-				Description: `Node name (exact) or ILIKE pattern containing % (e.g. "llm-server", "redis%"). Empty string to list all matching the other filters.`,
+				Description: `Node name (exact) or ILIKE pattern containing % (e.g. "llm-server", "redis%"). May be empty when at least one other filter (node_types / namespace / source / labels / account_ids) is supplied — that filter set alone will match.`,
 			},
 			"node_types": {
 				Type:        core.ToolSchemaTypeArray,
@@ -78,7 +79,16 @@ func (t KGSearchNodesTool) InputSchema() core.ToolSchema {
 				Description: `OPTIONAL. Max rows to return (default 20, max 100). When the header says "Found N (showing M)" with N>M the result was capped — raise limit, add filters, or summarize by category; do NOT present the page as complete.`,
 			},
 		},
-		Required: []string{"query"},
+		// query is intentionally NOT required at the schema level. The
+		// framework's required-field validator treats "field present but
+		// empty" as MISSING (see executor_planner.go:3049), which contradicts
+		// this tool's contract that an empty query is valid when filters are
+		// supplied. Semantic validation (must supply query OR at least one
+		// filter) lives inline in Call() below — 2 of 3 kg_search_nodes
+		// errors in the 2026-07-02 sweep were the model correctly following
+		// the description ("Empty string to list all matching the other
+		// filters") and getting rejected here.
+		Required: []string{},
 	}
 }
 
@@ -98,6 +108,10 @@ func (t KGSearchNodesTool) Call(nbCtx core.NbToolContext, input core.NBToolCallR
 	parsed, err := parseKGSearchInput(input)
 	if err != nil {
 		return core.NBToolResponse{}, err
+	}
+
+	if reject := validateKGSearchInput(parsed); reject != nil {
+		return *reject, nil
 	}
 
 	// Fetch the tenant's cloud_account map exactly once. We need it for two
@@ -171,6 +185,29 @@ func (t KGSearchNodesTool) Call(nbCtx core.NbToolContext, input core.NBToolCallR
 		Status:            core.NBToolResponseStatusSuccess,
 		AdditionalDetails: data,
 	}, nil
+}
+
+// validateKGSearchInput returns a rejection response when the parsed input is
+// semantically incomplete — currently one rule: all-empty (no query AND no
+// filters) is an unbounded "list every node in the graph" call that no
+// legitimate use case wants. Returns nil to signal "input is fine, proceed".
+// Kept as a pure function (no I/O) so unit tests don't need a live logger /
+// security context — one of the failure modes the schema-required check
+// previously masked from test coverage.
+func validateKGSearchInput(parsed kgSearchInput) *core.NBToolResponse {
+	if strings.TrimSpace(parsed.Query) == "" &&
+		len(parsed.NodeTypes) == 0 &&
+		strings.TrimSpace(parsed.Namespace) == "" &&
+		strings.TrimSpace(parsed.Source) == "" &&
+		strings.TrimSpace(parsed.Labels) == "" &&
+		len(parsed.AccountIDs) == 0 {
+		return &core.NBToolResponse{
+			Status: core.NBToolResponseStatusError,
+			Data: "kg_search_nodes: at least one of query, node_types, namespace, source, labels, or account_ids must be non-empty. " +
+				"Empty query is only valid when another filter (e.g. node_types=[\"Database\"] + namespace=\"prod\") narrows the search.",
+		}
+	}
+	return nil
 }
 
 func parseKGSearchInput(input core.NBToolCallRequest) (kgSearchInput, error) {

@@ -31,7 +31,7 @@ func (m TicketMaster) GetType() core.NBToolType {
 }
 
 func (m TicketMaster) Description() string {
-	return `Executes a JQL query to search Jira issues.`
+	return `Search/update/comment on Jira issues. Input JSON: {"operation_type":"search|update|comment", "query":"<JQL>" (search), "ticket_id","field_name","new_value","append" (update), "ticket_id","comment_text" (comment)}.`
 }
 
 func (m TicketMaster) InputSchema() core.ToolSchema {

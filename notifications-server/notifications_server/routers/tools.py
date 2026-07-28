@@ -151,20 +151,16 @@ class DiscordInstallRequest(BaseModel):
 
 @router.post("/install/discord")
 async def discord_install(request: Request, body: DiscordInstallRequest):
+    """Install or rotate the tenant's Discord bot token (one install per tenant;
+    re-posting updates the credential in place). Reports the bot's guild count and
+    invite URL so the UI can prompt the user to add the bot to a server."""
     tenant_id = request.headers.get("tenant-id")
     user_email = request.headers.get("x-user-email")
 
     if not tenant_id:
         raise HTTPException(status_code=403, detail="Tenant id missing for installation")
 
-    # Reject duplicates
-    with Session(sync_engine) as session:
-        installations = find_installation_by_tenant_and_platform(session, tenant_id, "discord")
-    if len(installations) > 0:
-        raise HTTPException(status_code=400, detail="Installation already exists for tenant")
-
-    # Validate the bot token
-    result = DiscordClient.validate_token(body.bot_token)
+    result = await run_in_threadpool(DiscordClient.validate_token, body.bot_token)
     if not result.get("ok"):
         raise HTTPException(
             status_code=400,
@@ -172,9 +168,19 @@ async def discord_install(request: Request, body: DiscordInstallRequest):
         )
 
     bot_info = result.get("bot", {})
+    guild_count = await run_in_threadpool(DiscordClient.guild_count, body.bot_token)
 
     service = DiscordService(sync_engine)
-    service.save_discord_installation(tenant_id, body.bot_token, bot_info, user_email)
+    try:
+        await run_in_threadpool(service.save_discord_installation, tenant_id, body.bot_token, bot_info, user_email)
+    except Exception:
+        LOG.exception("Failed to save Discord installation for tenant %s", tenant_id)
+        raise HTTPException(status_code=500, detail="Failed to save Discord installation")
 
     LOG.info("Discord installation saved for tenant %s (bot: %s)", tenant_id, bot_info.get("username"))
-    return {"success": True, "bot_username": bot_info.get("username")}
+    return {
+        "success": True,
+        "bot_username": bot_info.get("username"),
+        "guild_count": guild_count,
+        "invite_url": DiscordClient.invite_url(bot_info.get("id")) if bot_info.get("id") else None,
+    }

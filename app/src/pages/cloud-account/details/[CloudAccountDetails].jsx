@@ -11,6 +11,7 @@ import CloudAccountEvents from '@components/cloudaccount/CloudAccountEvents';
 import CloudAccountMetrices from '@components/cloudaccount/CloudAccountMetrices';
 import { CloudLogsViewer } from '@components/cloudaccount/cloud-logs';
 import { CloudMetricsViewer } from '@components/cloudaccount/cloud-metrics';
+import KubernetesTracesListing from '@components/k8s/details/KubernetesTracesListing';
 import CloudAccountSecurity from '@components/cloudaccount/CloudAccountSecurity';
 import CloudAccountTools from '@components/cloudaccount/CloudAccountTools';
 import CloudAccountAlertManager from '@components/cloudaccount/CloudAccountAlertManager';
@@ -51,6 +52,7 @@ import {
   GCPCloudStorageIcon,
   CloudFoundryIcon,
   NodesIcon,
+  LogsTracesIcon,
 } from '@assets';
 import apiCloudAccount from '@api1/cloud-account';
 import { useRouter } from 'next/router';
@@ -99,12 +101,15 @@ const CloudAccounts = () => {
   const [loading, setLoading] = useState(false);
   const [clusterSummary, setClusterSummary] = useState({});
   const [optimizeRadioTabValue, setOptimizeRadioTabValue] = useState('right-sizing');
-  const [selectedFilter, setSelectedFilter] = useState(0);
+  const [selectedFilter, setSelectedFilter] = useState(null);
   const [selectedSubTab, setSelectedSubTab] = useState(0);
 
   useEffect(() => {
     const hash = router.asPath.split('#')[1];
-    if (!hash || !filterOptions.length) return;
+    if (!hash) {
+      setSelectedFilter(0);
+      return;
+    }
     const [fragment, subFragment] = hash.split('/');
     const filter = filterOptions.find((option) => option.fragment === fragment);
     if (filter) {
@@ -113,8 +118,15 @@ const CloudAccounts = () => {
       if (subTab) {
         setSelectedSubTab(subTab.value);
       }
+    } else if (selectedCluster?.cloud_provider) {
+      // cloud_provider is known so filterOptions is final — fragment not found means
+      // invalid hash or wrong provider. Fall back to Summary.
+      setSelectedFilter(0);
     }
-  }, []);
+    // If cloud_provider is not yet set, cloud-specific tabs (ec2, rds, etc.)
+    // may not be in filterOptions yet. The effect re-runs when filterOptions updates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterOptions]);
 
   const { selectedCluster } = useData();
 
@@ -178,6 +190,11 @@ const CloudAccounts = () => {
           { id: 'alert-manager', text: 'Alert Manager', value: 0, fragment: 'alert-manager', icon: AlertManagerIcon },
           { id: 'logs', text: 'Cloud Logs', value: 1, fragment: 'cloud-logs', icon: QueryLogIcon },
           { id: 'metrics', text: 'Cloud Metrics', value: 2, fragment: 'metrics', icon: NodesIcon },
+          // GCP-only for now: distributed traces come from Cloud Trace (other
+          // providers will be wired in later).
+          ...(selectedCluster?.cloud_provider === 'GCP'
+            ? [{ id: 'traces', text: 'Traces', value: 3, fragment: 'traces', icon: LogsTracesIcon }]
+            : []),
         ],
       },
       {
@@ -617,7 +634,7 @@ const CloudAccounts = () => {
             <>
               {selectedSubTab === 0 && <CloudAccountEvents title accountId={accountId} stickyColumnIndex='8' heading={''} />}
               {selectedSubTab === 1 && <TriageRulesManager accountId={accountId} />}
-              {selectedSubTab === 2 && <ThresholdSuggestionsManager accountId={accountId} />}
+              {selectedSubTab === 2 && <ThresholdSuggestionsManager accountId={accountId} provider={selectedCluster?.cloud_provider} />}
             </>
           )}
           {selectedFilter === getFilterValue('monitoring') &&
@@ -626,6 +643,11 @@ const CloudAccounts = () => {
                 {selectedSubTab === 0 && <CloudAccountAlertManager accountId={accountId} />}
                 {selectedSubTab === 1 && <CloudLogsViewer accountId={accountId} provider={selectedCluster?.cloud_provider || 'AWS'} />}
                 {selectedSubTab === 2 && <CloudMetricsViewer accountId={accountId} provider={selectedCluster?.cloud_provider || 'AWS'} />}
+                {selectedSubTab === 3 && selectedCluster?.cloud_provider === 'GCP' && (
+                  <Box sx={{ width: '100%', overflowX: 'auto' }}>
+                    <KubernetesTracesListing accountId={accountId} />
+                  </Box>
+                )}
               </>
             ) : (
               <Loader />

@@ -109,7 +109,7 @@ const ECSUtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }
   );
 };
 
-const ECSSummaryView = ({ accountId = '', serviceName = 'AmazonECS', resourceId = null, _resourceType = 'cluster' }: any) => {
+const ECSSummaryView = ({ accountId = '', serviceName = 'AmazonECS', resourceId = null, resourceType = 'cluster', showSummary = false }: any) => {
   const [loadingMetrics, setLoadingMetrics] = useState(false);
   const [loadingSummary, setLoadingSummary] = useState(false);
   const [renderMetricsData, setRenderMetricsData] = useState<any>({});
@@ -121,26 +121,30 @@ const ECSSummaryView = ({ accountId = '', serviceName = 'AmazonECS', resourceId 
   const [summaryData, setSummaryData] = useState<any>({});
 
   useEffect(() => {
-    if (!accountId) return;
+    if (!accountId || !showSummary) return;
 
-    // The top 3-column summary is only relevant for the account-wide ECS view;
-    // when scoped to a specific `resourceId`, skip this fetch entirely.
-    if (!resourceId) {
-      setLoadingSummary(true);
-      apiCloudAccount
-        .cloudAccountECSSummary(accountId, { serviceName: 'AmazonECS' })
-        .then((res: any) => setSummaryData(res || {}))
-        .catch((err) => {
-          console.error(`Error fetching ECS summary for account ${accountId}:`, err);
-          snackbar.error(`Failed to load ECS summary: ${err.message}`);
-          setSummaryData({});
-        })
-        .finally(() => setLoadingSummary(false));
-    }
-  }, [accountId, serviceName, resourceId]);
+    // The top 3-column summary is only relevant for the account-wide ECS view
+    // (rendered with `showSummary`); resource-scoped drilldowns skip it entirely.
+    setLoadingSummary(true);
+    apiCloudAccount
+      .cloudAccountECSSummary(accountId, { serviceName: 'AmazonECS' })
+      .then((res: any) => setSummaryData(res || {}))
+      .catch((err) => {
+        console.error(`Error fetching ECS summary for account ${accountId}:`, err);
+        snackbar.error(`Failed to load ECS summary: ${err.message}`);
+        setSummaryData({});
+      })
+      .finally(() => setLoadingSummary(false));
+  }, [accountId, serviceName, showSummary]);
 
   useEffect(() => {
     if (!accountId) return;
+    // Resource-scoped tabs must query by a specific `resourceId`; without one there
+    // is nothing to show, and an unfiltered query would pull the whole account.
+    if (!showSummary && !resourceId) {
+      setRenderMetricsData({});
+      return;
+    }
     setLoadingMetrics(true);
     apiCloudAccount
       .getCloudResourceMetricsDirect({
@@ -204,13 +208,16 @@ const ECSSummaryView = ({ accountId = '', serviceName = 'AmazonECS', resourceId 
     });
   };
 
-  // Resource-scoped view — only the metrics panel, with a friendly resource name
-  // (last `/`-segment of the ARN) in the heading.
-  if (resourceId) {
+  // Resource-scoped view (task/service/cluster drilldown) — only the metrics panel.
+  // The account-wide summary below is reserved for the account-level view
+  // (`showSummary`); a drilldown must never fall through to it, even when the
+  // `resourceId` is missing (in which case it shows "no metrics" instead).
+  if (!showSummary) {
+    const resourceLabel = resourceId ? resourceId.split('/').pop() : resourceType;
     return (
-      <ListingLayout id={`ecs-resource-metrics-${resourceId}`}>
+      <ListingLayout id={`ecs-resource-metrics-${resourceId || resourceType}`}>
         <ListingLayout.Toolbar
-          title={`Metrics for ${resourceId.split('/').pop()}`}
+          title={`Metrics for ${resourceLabel}`}
           actions={
             <CustomDateTimeRangePicker
               passedSelectedDateTime={{

@@ -122,6 +122,12 @@ export interface DropdownMenuProps {
   /** Called after any item.onSelect (or after dismissal) */
   onClose?: () => void;
   disablePortal?: boolean;
+  /**
+   * Mount the panel (hidden) before first open so item icons that lazy-load
+   * on mount are already fetched by the time the user opens the menu. See
+   * `OverlaySurface`'s `keepMounted` doc.
+   */
+  keepMounted?: boolean;
 }
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -163,7 +169,8 @@ export function DropdownMenu({
   refreshLabel = 'Refresh',
   headerActions,
   onClose,
-  disablePortal = false,
+  disablePortal = true,
+  keepMounted = false,
 }: DropdownMenuProps) {
   const [anchorEl, setAnchorEl] = React.useState<HTMLElement | null>(null);
   const [search, setSearch] = React.useState('');
@@ -218,6 +225,7 @@ export function DropdownMenu({
         minWidth={minWidth}
         role='menu'
         disablePortal={disablePortal}
+        keepMounted={keepMounted}
       >
         {showHeader && (
           <Box

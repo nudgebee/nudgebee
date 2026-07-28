@@ -12,6 +12,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"reflect"
 	"runtime/debug"
@@ -47,7 +48,14 @@ func init() {
 }
 
 const plannerDummyTool = "planner"
-const plannerToolNoData = "No Data"
+
+// plannerToolNoData is the observation written when a tool succeeds (exit 0,
+// status=Success) but produces empty stdout. Many CLI mutations are silent on
+// success (e.g. `gh run rerun`, `kubectl apply`, `helm upgrade`, `aws s3 cp`),
+// so an empty body is NOT a failure signal — it's the normal acceptance signal
+// for write commands, or "no rows" for reads. The text is intentionally explicit
+// to keep the summarizer / React loop from inferring failure from absence of stdout.
+const plannerToolNoData = "Tool exited successfully with no output. For write/mutation operations this typically indicates the action was accepted; for read/query operations this indicates no matching results."
 
 const (
 	logErrGetMessage          = "plannerexecutor: unable to get conversation message"
@@ -123,7 +131,15 @@ func sanitizeToolOutput(s string) string {
 // the original input is returned unchanged. Recognized non-JSON shapes:
 //   - XML tags:          <id>abc</id><limit>1</limit>
 //   - key=value pairs:   id=abc,status=FAILED  or  id=abc status=FAILED
-//   - plain text + "command" schema property → {"command": "<input>"}
+//   - plain text + tool with EXACTLY ONE required string property → {"<field>": "<input>"}
+//     (e.g. shell_execute→{command}, think→{reasoning}, docs→{query})
+//
+// The plain-text fallback used to hardcode "command" as the wrapping field,
+// which was a legacy assumption from the pre-schema-render era. Now that
+// tools can declare their real required field name (reasoning, query, ...),
+// the wrap follows the schema's single required string field instead of
+// assuming "command". Tools with zero or multiple required string fields
+// don't get the wrap — plain text falls through to validation.
 func normalizeToolInputForTool(tool toolcore.NBTool, input string) string {
 	if input == "" || tool == nil {
 		return input
@@ -171,18 +187,43 @@ func normalizeToolInputForTool(tool toolcore.NBTool, input string) string {
 		}
 	}
 
-	// Fallback: if the schema has a "command" property and the input is plain
-	// text that didn't match any structured format, wrap it as {"command": ...}.
-	// The LLM sometimes emits plain-text input for ask_clarification instead of
-	// JSON. Without this, the tool receives an empty command field.
-	if _, hasCommand := schema.Properties["command"]; hasCommand {
-		wrapped := map[string]any{"command": input}
+	// Fallback: if the schema has EXACTLY ONE required string property AND
+	// the input is plain text that didn't match any structured format,
+	// wrap it under that field name. The LLM sometimes emits plain-text
+	// input for ask_clarification / think / shell_execute / docs / etc.
+	// Without this, the tool receives an empty required field.
+	if field := singleRequiredStringField(schema); field != "" {
+		wrapped := map[string]any{field: input}
 		if jsonBytes, err := common.MarshalJson(wrapped); err == nil {
 			return string(jsonBytes)
 		}
 	}
 
 	return input
+}
+
+// singleRequiredStringField returns the sole required string field name in
+// the schema, or "" if there are zero or more than one required string
+// fields. Used by the plain-text wrap fallback in normalizeToolInputForTool
+// so we can wrap under the tool's actual field (reasoning, command, query,
+// args, ...) instead of assuming "command".
+func singleRequiredStringField(schema toolcore.ToolSchema) string {
+	var found string
+	for _, name := range schema.Required {
+		prop, ok := schema.Properties[name]
+		if !ok {
+			continue
+		}
+		if prop.Type != "" && prop.Type != toolcore.ToolSchemaTypeString {
+			continue
+		}
+		if found != "" {
+			// Second required string — no unambiguous choice, decline to wrap.
+			return ""
+		}
+		found = name
+	}
+	return found
 }
 
 // normalizeToolInputByName locates a tool by name in the provided list and
@@ -302,6 +343,45 @@ func (e *plannerExecutor) GetCallbackHandler() callbacks.Handler {
 	return nil
 }
 
+// accumulateSteps folds the steps produced by one iteration into e.steps,
+// deduplicating by ToolID (a hash of tool+normalized input, so an identical
+// retried command reuses the same ID). New ToolIDs are appended.
+//
+// A step whose ToolID is already recorded is normally the LLM re-proposing
+// already-completed work and is dropped. The exception: when the prior step
+// for that ToolID FAILED (or returned no data) and the retry now SUCCEEDS, the
+// stale failure is replaced in place with the successful result. Without this,
+// a created resource (e.g. a GitHub issue created on the second attempt after a
+// transient config error) is stranded as a failure in e.steps and the
+// summarizer reports it as failed with "Recommended Next Steps" to re-run.
+//
+// Returns true when at least one prior failed step was upgraded to success, so
+// the caller can treat the iteration as progress rather than a duplicate-loop spin.
+func (e *plannerExecutor) accumulateSteps(steps []NBAgentPlannerToolActionStep) bool {
+	upgraded := false
+	for _, step := range steps {
+		if _, ok := e.stepKeys[step.Action.ToolID]; !ok {
+			e.stepKeys[step.Action.ToolID] = true
+			e.steps = append(e.steps, step)
+			continue
+		}
+		if step.Status != ToolStatusSuccess {
+			continue
+		}
+		for idx := range e.steps {
+			if e.steps[idx].Action.ToolID == step.Action.ToolID &&
+				(e.steps[idx].Status == ToolStatusFailure || e.steps[idx].Status == ToolStatusEmptyResult) {
+				e.ctx.GetLogger().Info("plannerexecutor: replacing prior failed step with successful retry of identical command",
+					"agent", e.agent.GetName(), "tool", step.Action.Tool, "toolId", step.Action.ToolID)
+				e.steps[idx] = step
+				upgraded = true
+				break
+			}
+		}
+	}
+	return upgraded
+}
+
 func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, _ ...chains.ChainCallOption) (map[string]any, error) {
 	defer func() {
 		hits, misses, entries := e.toolCallCache.Stats()
@@ -331,14 +411,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 		prevStepCount := len(e.steps)
 		steps, finish, err := e.doIteration(ctx, e.steps, nameToTool, inputs)
 		e.ctx.GetLogger().Info("plannerexecutor: iteration complete", "iteration", i, "duration", time.Since(iterStart).String(), "steps", len(steps), "hasFinish", finish != nil)
-		if len(steps) > 0 {
-			for _, step := range steps {
-				if _, ok := e.stepKeys[step.Action.ToolID]; !ok {
-					e.stepKeys[step.Action.ToolID] = true
-					e.steps = append(e.steps, step)
-				}
-			}
-		}
+		upgradedFailedStep := e.accumulateSteps(steps)
 
 		// Duplicate-action loop detection: if the LLM returns non-empty steps
 		// but none are new (all were reused from history via skip logic) and
@@ -347,7 +420,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 		// summarizeConversation. Observed with redis SLOWLOG GET: agent
 		// keeps proposing same command despite having the result — wastes
 		// 10 iterations × 10s otherwise (#28141).
-		if finish == nil && len(steps) > 0 && len(e.steps) == prevStepCount {
+		if finish == nil && len(steps) > 0 && len(e.steps) == prevStepCount && !upgradedFailedStep {
 			consecutiveDuplicateIters++
 			if consecutiveDuplicateIters >= 2 {
 				e.ctx.GetLogger().Warn("plannerexecutor: breaking after 2 consecutive duplicate-action iterations (LLM looping on completed work)", "agent", e.agent.GetName(), "iteration", i)
@@ -408,32 +481,57 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 	return map[string]any{"output": agents.ErrNotFinished.Error()}, agents.ErrNotFinished
 }
 
-func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
-	// OTEL: Start Summarize Span
-	_, span := e.ctx.GetTracer().Start(e.ctx.GetContext(), "Agent:Summarize")
-	defer span.End()
-
-	// Build tool call status summary for accurate summarization.
-	var toolSummary strings.Builder
-	toolSummary.WriteString("\n\nTOOL CALL SUMMARY:\n")
+// buildToolCallSummary renders the per-step status block fed into the
+// summarizer prompt and returns whether any genuine FAILURE was observed.
+//
+// Status mapping:
+//   - ToolStatusFailure     → "FAILED"            (counts as failure)
+//   - ToolStatusEmptyResult → "SUCCESS_NO_OUTPUT" (NOT a failure — exit 0
+//     with empty stdout is the normal success signal for write/mutation
+//     CLIs like `gh run rerun`, `kubectl apply`, `helm upgrade`,
+//     `aws s3 cp`. For read commands it means "no rows".)
+//   - ToolStatusWaiting / ToolStatusWaitingForClient → "WAITING" (the action
+//     is pending user confirmation or client execution, not complete — must
+//     not be reported to the summarizer as SUCCESS, mirroring the WAITING
+//     skip in GetToolInvocations).
+//   - everything else       → "SUCCESS"
+//
+// Treating SUCCESS_NO_OUTPUT as failure (the previous behavior) caused two
+// bugs: (1) the React loop retried write/mutation commands, risking
+// duplicate side-effects, and (2) the summarizer reported failure to users
+// when the action had actually succeeded. See issue #29875.
+func buildToolCallSummary(steps []NBAgentPlannerToolActionStep) (string, bool) {
+	var b strings.Builder
+	b.WriteString("\n\nTOOL CALL SUMMARY:\n")
 	hasAnyFailure := false
-	for i, step := range e.steps {
+	for i, step := range steps {
 		status := "SUCCESS"
 		switch step.Status {
 		case ToolStatusFailure:
 			status = "FAILED"
 			hasAnyFailure = true
 		case ToolStatusEmptyResult:
-			status = "NO_DATA"
-			hasAnyFailure = true
+			status = "SUCCESS_NO_OUTPUT"
+		case ToolStatusWaiting, ToolStatusWaitingForClient:
+			status = "WAITING"
 		}
 		toolName := step.Action.Tool
 		if toolName == "" {
 			toolName = "(unknown)"
 		}
-		fmt.Fprintf(&toolSummary, "%d. %s — %s\n", i+1, toolName, status)
+		fmt.Fprintf(&b, "%d. %s — %s\n", i+1, toolName, status)
 	}
-	toolSummary.WriteString("\nIMPORTANT: If the last intended action (like updating/applying changes) was NOT executed because iterations ran out, clearly state that in your summary. Do NOT say 'I will do X' if X was not actually done.\n")
+	b.WriteString("\nIMPORTANT: If the last intended action (like updating/applying changes) was NOT executed because iterations ran out, clearly state that in your summary. Do NOT say 'I will do X' if X was not actually done.\n")
+	return b.String(), hasAnyFailure
+}
+
+func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
+	// OTEL: Start Summarize Span
+	_, span := e.ctx.GetTracer().Start(e.ctx.GetContext(), "Agent:Summarize")
+	defer span.End()
+
+	// Build tool call status summary for accurate summarization.
+	toolSummaryStr, hasAnyFailure := buildToolCallSummary(e.steps)
 
 	mclist := []llms.MessageContent{
 		{
@@ -454,10 +552,10 @@ func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
 		mclist = append(mclist, mc)
 	}
 
-	summarizationPrompt := fmt.Sprintf("Summarize all the previous conversation and return a response based on the question asked.\nIMPORTANT: Do not include any internal technical data flows, queries, prompts, architecture paths, or execution plans in your summary.\nIMPORTANT: If you ran out of steps before completing an action, clearly state what was NOT completed.%s", toolSummary.String())
+	summarizationPrompt := fmt.Sprintf("Summarize all the previous conversation and return a response based on the question asked.\nIMPORTANT: Do not include any internal technical data flows, queries, prompts, architecture paths, or execution plans in your summary.\nIMPORTANT: If you ran out of steps before completing an action, clearly state what was NOT completed.\nIMPORTANT: A tool call labeled SUCCESS_NO_OUTPUT means the tool exited with status=success and empty stdout. For write/mutation commands (e.g. gh run rerun, kubectl apply, helm upgrade, aws s3 cp), this is the normal success signal — report the action as completed. Do NOT infer failure from absence of stdout.%s", toolSummaryStr)
 
 	if hasAnyFailure {
-		summarizationPrompt += "\n\nSome tool calls returned NO DATA or FAILED. Review the tool call summary above." +
+		summarizationPrompt += "\n\nSome tool calls FAILED. Review the tool call summary above." +
 			"\n- If the gathered data is sufficient to answer the question, provide a confident answer." +
 			"\n- If critical data is missing and you cannot provide a reliable answer:" +
 			"\n  1. Clearly state what could NOT be investigated and why." +
@@ -1494,16 +1592,12 @@ func (e *plannerExecutor) doIterationParallel(
 	return newStepsThisIteration, nil, nil
 }
 
-// toolStatusToExitCode maps the internal tool status to the integer the
-// planner sees in the footer: 0 success, 1 failure, 2 empty-but-successful.
-// Not a literal shell exit code — it's a uniform POSIX-shaped signal so
-// planner heuristics can distinguish "no match" from "actually failed".
+// toolStatusToExitCode maps tool status to the footer integer: 1 failure, else 0
+// (an empty-but-successful result is a success → 0).
 func toolStatusToExitCode(status ToolStatus) int {
 	switch status {
 	case ToolStatusFailure:
 		return 1
-	case ToolStatusEmptyResult:
-		return 2
 	default:
 		return 0
 	}
@@ -1517,9 +1611,8 @@ func toolStatusToExitCode(status ToolStatus) int {
 // shell_execute / kubectl_execute / helm_execute via
 // successResponseNoMatches; potentially others later) carry the
 // semantic in their Data — but Data is non-empty, so without this
-// recognition the classifier defaults to ToolStatusSuccess (ExitStatus=0)
-// instead of ToolStatusEmptyResult (ExitStatus=2), losing the
-// "empty-but-successful" signal the footer is supposed to expose.
+// recognition the classifier defaults to ToolStatusSuccess instead of
+// ToolStatusEmptyResult, losing the empty-result signal the footer exposes.
 //
 // Substring-match deliberately — anchoring to start-of-string would
 // miss envelopes that put `"stdout":""` first (Go's encoding/json
@@ -1601,6 +1694,20 @@ func truncateToolResponse(ctx *security.RequestContext, data string, status Tool
 			"max_len", maxLen)
 	}
 	return truncated, originalLen
+}
+
+// writeConfirmationRequired reports whether a write (create/update/delete) tool needs user confirmation.
+// watch_resource is exempt: it's Create only for the access gate and mutates nothing (source is read-only).
+func writeConfirmationRequired(requestType *toolcore.ToolRequestType, toolName string) bool {
+	if requestType == nil {
+		return false
+	}
+	switch *requestType {
+	case toolcore.ToolRequestTypeCreate, toolcore.ToolRequestTypeUpdate, toolcore.ToolRequestTypeDelete:
+		return !strings.EqualFold(toolName, tools.ToolWatchResource)
+	default:
+		return false
+	}
 }
 
 func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action NBAgentPlannerToolAction, queryContext string) (NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
@@ -1814,7 +1921,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 
 	// confirmation if tehre is write operation
 	if tool.GetType() == toolcore.NBToolTypeTool {
-		if requestType != nil && *requestType != "" && (*requestType == toolcore.ToolRequestTypeCreate || *requestType == toolcore.ToolRequestTypeUpdate || *requestType == toolcore.ToolRequestTypeDelete) {
+		if writeConfirmationRequired(requestType, action.Tool) {
 			isFollowupFound := false
 			if e.agentRequest.QueryConfig.ToolConfirmations != nil {
 				if previousData, exists := e.agentRequest.QueryConfig.ToolConfirmations[action.Tool]; exists {
@@ -1886,6 +1993,58 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				return fupStep, followupFinish, nil
 			}
 
+		}
+	}
+
+	// Allowlisted pre-exec schema validation: reject malformed input with a
+	// self-correct observation before Call(). Leaf tools only (NBToolTypeTool).
+	// Same allowlist that gates schema rendering (isToolSchemaAuthoritative) —
+	// a tool whose schema is visible to the LLM is also enforced.
+	if tool != nil && tool.GetType() == toolcore.NBToolTypeTool && isToolSchemaAuthoritative(action.Tool) {
+		// Missing-required-fields short-circuit: when a tool implements
+		// MissingFieldsResponder (e.g. think's narration guard), delegate the
+		// message for THIS specific failure mode so the LLM gets tool-specific
+		// coaching instead of a generic schema error. Non-missing errors
+		// (types, enums, RequiredOneOf) fall through to ValidateToolInput.
+		if responder, ok := tool.(toolcore.MissingFieldsResponder); ok {
+			if missing := toolcore.MissingRequiredFields(tool, action.ToolInput); len(missing) > 0 {
+				request := toolcore.ParseNBToolCallRequestFromInput(action.ToolInput)
+				// Empty-Data guard: fall through to the generic validator
+				// when the responder returned nil or an empty payload. Prevents
+				// a silent "" observation reaching the LLM if a future
+				// MissingFieldsResponder implementation forgets to populate
+				// Data (the current implementer, think, always populates it —
+				// this is defensive, not reactive).
+				if custom := responder.OnMissingRequiredFields(request, missing); custom != nil && custom.Data != "" {
+					e.ctx.GetLogger().Warn("plannerexecutor: tool input missing required fields (responder-emitted)",
+						"tool", action.Tool, "toolId", action.ToolID, "missing", missing)
+					common.MetricsToolOperationsTotal(toolName, "fail_validation", accountID)
+					// Deliberately NOT recording MetricsToolLatencySeconds here:
+					// no Call() ran, so a near-zero latency sample would skew
+					// the p50/p99 downward for tools like `think` and pollute
+					// per-tool latency dashboards. The fail_validation metric
+					// label on MetricsToolOperationsTotal is the split signal.
+					return NBAgentPlannerToolActionStep{
+						Action:      action,
+						Observation: custom.Data,
+						Status:      ToolStatusFailure,
+					}, nil, nil
+				}
+			}
+		}
+		if validationErr := toolcore.ValidateToolInput(tool, action.ToolInput); validationErr != nil {
+			e.ctx.GetLogger().Warn("plannerexecutor: tool input failed schema validation",
+				"tool", action.Tool, "toolId", action.ToolID, "error", *validationErr)
+			common.MetricsToolOperationsTotal(toolName, "fail_validation", accountID)
+			// Deliberately NOT recording MetricsToolLatencySeconds here — see
+			// the responder branch above for the rationale.
+			// ToolStatusFailure (not a new status): downstream consumers treat it
+			// as THE failure sentinel; the fail_validation metric carries the split.
+			return NBAgentPlannerToolActionStep{
+				Action:      action,
+				Observation: *validationErr,
+				Status:      ToolStatusFailure,
+			}, nil, nil
 		}
 	}
 
@@ -2031,10 +2190,11 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		followUpRequest.ToolId = action.ToolID
 
 		return NBAgentPlannerToolActionStep{
-				Action:      action,
-				Observation: observation.Data,
-				Status:      ToolStatusWaiting,
-				Followup:    &followUpRequest,
+				Action:           action,
+				Observation:      observation.Data,
+				Status:           ToolStatusWaiting,
+				Followup:         &followUpRequest,
+				SubAgentEvidence: observation.SubAgentEvidence,
 			}, &NBAgentPlannerFinishAction{
 				Data:              observation.Data,
 				Status:            ConversationStatusWaiting,
@@ -2048,12 +2208,13 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
 
 	result := NBAgentPlannerToolActionStep{
-		Action:      action,
-		Observation: observation.Data,
-		Status:      status,
-		IsTerminal:  observation.IsTerminal,
-		References:  observation.References,
-		Metadata:    observation.Metadata,
+		Action:           action,
+		Observation:      observation.Data,
+		Status:           status,
+		IsTerminal:       observation.IsTerminal,
+		References:       observation.References,
+		Metadata:         observation.Metadata,
+		SubAgentEvidence: observation.SubAgentEvidence,
 	}
 
 	// Cache successful results under both original and rewritten inputs
@@ -2497,6 +2658,16 @@ func isToolConfigResolved(toolConfigs map[string]string, toolName string) bool {
 		return true
 	}
 	return false
+}
+
+// isToolConfirmationApproved reports whether a write-confirmation for toolName was
+// answered affirmatively (ok/yes/true), mirroring the doAction gate; "no" returns false.
+func isToolConfirmationApproved(confirmations map[string]string, toolName string) bool {
+	v, ok := confirmations[toolName]
+	if !ok {
+		return false
+	}
+	return slices.Contains([]string{"ok", "yes", "true"}, strings.ToLower(strings.TrimSpace(v)))
 }
 
 // isChildAgentCompleted returns true iff the parent's tool_call row for
@@ -3022,6 +3193,16 @@ func validateToolInput(tool toolcore.NBTool, request toolcore.NBToolCallRequest)
 	if len(missing) == 0 {
 		return nil
 	}
+	// Give the tool a chance to emit a per-tool actionable message
+	// (e.g. narration guard for think, "use that other tool name
+	// directly" nudge for shell_execute) instead of the generic
+	// missing-fields line. Schema stays honest — the LLM still sees
+	// Required at call time — but the rejection is teachable.
+	if responder, ok := tool.(toolcore.MissingFieldsResponder); ok {
+		if custom := responder.OnMissingRequiredFields(request, missing); custom != nil {
+			return custom
+		}
+	}
 	var hints []string
 	for _, name := range missing {
 		hint := name
@@ -3035,9 +3216,19 @@ func validateToolInput(tool toolcore.NBTool, request toolcore.NBToolCallRequest)
 		}
 		hints = append(hints, hint)
 	}
+	// Universal recovery guidance appended to every missing-fields hint: any
+	// tool can be dropped from the plan if the model has no work for it this
+	// turn (parallel-action batches don't require every slot to be populated),
+	// and any missing field can be corrected by populating it. Tool-specific
+	// nuance (narration guard, wrong-field detection) belongs in the tool's
+	// MissingFieldsResponder implementation — this line is the common
+	// fallback that renders when no responder overrides.
 	resp := toolcore.NBToolResponse{
 		Status: toolcore.NBToolResponseStatusError,
-		Data:   fmt.Sprintf("%s: missing required fields — %s.", tool.Name(), strings.Join(hints, "; ")),
+		Data: fmt.Sprintf(
+			"%s: missing required fields — %s. Populate the field(s) above, or drop this action from your batch if you had no work for %s this turn.",
+			tool.Name(), strings.Join(hints, "; "), tool.Name(),
+		),
 	}
 	return &resp
 }
@@ -3270,11 +3461,12 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					executor.steps = append(executor.steps, step)
 					executor.stepKeys[action.ToolID] = true
 					ctx.GetLogger().Info("plannerexecutor: recovered tool result from DB", "toolId", toolId)
-				} else if errors.Is(err, sql.ErrNoRows) && !isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) {
-					// No row found in DB for this tool AND no config was resolved. This means the tool
-					// was waiting for a config selection that never arrived, or the config was not
-					// propagated into QueryConfig. Proceeding would execute the tool with empty/wrong
-					// credentials and silently produce "No Data". Fail fast with a clear error instead.
+				} else if errors.Is(err, sql.ErrNoRows) && !isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) && !isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, action.Tool) {
+					// No row found in DB for this tool AND neither a config nor a write-confirmation
+					// was resolved. This means the tool was waiting for a config selection that never
+					// arrived. A confirmation-gated tool whose confirmation was just approved is NOT
+					// this case — it re-executes in the branch below. Proceeding here would run with
+					// empty/wrong credentials and silently produce "No Data". Fail fast instead.
 					// Note: only the "no row" case is treated as a config failure; transient DB errors
 					// fall through to the next branch so they remain retriable.
 					ctx.GetLogger().Error("plannerexecutor: no tool record found in DB and config not resolved, failing fast to avoid running with wrong credentials",
@@ -3323,7 +3515,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					}
 					ctx.GetLogger().Info("plannerexecutor: using completed child agent response for WAITING parent tool_call",
 						"toolId", toolId, "tool", action.Tool, "childStatus", childOut.status)
-				} else if request.Query != "" && (strings.EqualFold(string(status), string(toolcore.NBToolResponseStatusWaiting)) || (errors.Is(err, sql.ErrNoRows) && isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool))) {
+				} else if request.Query != "" && (strings.EqualFold(string(status), string(toolcore.NBToolResponseStatusWaiting)) || (errors.Is(err, sql.ErrNoRows) && (isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) || isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, action.Tool)))) {
 					// [Changed for TicketV2] Tool is still waiting — execute it IMMEDIATELY so the planner starts with the result.
 					// Previously, the user's response always replaced tool input. But for tool_config followups
 					// (e.g., user selecting a Jira integration), the user's response is the config choice, not
@@ -3339,9 +3531,11 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					// we ensure doAction runs again with the newly resolved config — triggering the next
 					// config step (e.g., project selection after integration selection).
 					isConfigResolved := isToolConfigResolved(request.QueryConfig.ToolConfigs, action.Tool)
-					if isConfigResolved {
-						ctx.GetLogger().Info("plannerexecutor: resuming tool after config selection, keeping original input",
-							"tool", action.Tool, "toolId", toolId, "isConfigResolved", true, "dbLookupFailed", err != nil)
+					isConfirmationApproved := isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, action.Tool)
+					if isConfigResolved || isConfirmationApproved {
+						// The user's answer was a config/confirmation choice, not the tool input — keep the original command.
+						ctx.GetLogger().Info("plannerexecutor: resuming tool after config/confirmation, keeping original input",
+							"tool", action.Tool, "toolId", toolId, "isConfigResolved", isConfigResolved, "isConfirmationApproved", isConfirmationApproved, "dbLookupFailed", err != nil)
 					} else {
 						ctx.GetLogger().Info("plannerexecutor: immediately resuming waiting tool",
 							"tool", action.Tool, "toolId", toolId, "newInput", request.Query)
@@ -3410,10 +3604,12 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 			ctx.GetLogger().Warn("agentexecutor: deadline exceeded, summarizing partial results",
 				"agent", agent.GetName(), "steps_completed", len(executor.steps))
 			result, sumErr := executor.summarizeConversation()
-			if sumErr == nil && result != nil {
+			// comma-ok on result["output"]: a summary map without a string
+			// "output" key must not panic the timeout-recovery path.
+			if summary, ok := result["output"].(string); sumErr == nil && ok {
 				return NBAgentPlannerExecutorResponse{
 					Status:      AgentExecutionStatusSuccess,
-					Response:    result["output"].(string),
+					Response:    summary,
 					Invocations: executor.GetToolInvocations(),
 				}, nil
 			}
@@ -3497,7 +3693,10 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 	}
 
 	// Phase 2: Long-Term Memory Extraction
-	if status == AgentExecutionStatusSuccess && len(response) > 0 && agent.GetName() != ToolLlm {
+	// Single-shot internal classifiers (e.g. webhook_subject_name_extractor) run
+	// on a throwaway conversation and produce a bare label, not an investigation
+	// worth remembering — skip the memory_extractor / session-memory LLM calls.
+	if status == AgentExecutionStatusSuccess && len(response) > 0 && agent.GetName() != ToolLlm && !isSingleShotClassifier(agent) {
 		bgCtx := security.NewRequestContext(
 			context.Background(),
 			ctx.GetSecurityContext(),

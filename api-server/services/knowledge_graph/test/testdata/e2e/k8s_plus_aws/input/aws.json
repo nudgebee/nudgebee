@@ -1,0 +1,16 @@
+[
+  {
+    "id": "aws-ec2-1",
+    "resourse_id": "i-0abc123def456",
+    "name": "worker-ec2",
+    "type": "compute-instance",
+    "service_name": "AmazonEC2",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "is_active": true,
+    "external_resource_id": "aws-ec2-1",
+    "meta": {}
+  }
+]

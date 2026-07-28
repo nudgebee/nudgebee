@@ -245,22 +245,22 @@ rabbitmq:
             description: 'A node use more than 90% of file descriptors'
 
         - alert: RabbitmqTooManyReadyMessages
-          expr: 'sum(rabbitmq_queue_messages_ready{namespace="{{ .Release.Namespace }}"}) BY (queue, pod, namespace) > 10'
-          for: 1m
+          expr: 'sum(rabbitmq_queue_messages_ready{namespace="{{ .Release.Namespace }}"}) BY (queue, pod, namespace) > 100'
+          for: 15m
           labels:
-            severity: critical
+            severity: warning
           annotations:
             summary: 'RabbitMQ queue {{`{{ $labels.queue }}`}} has too many ready messages'
-            description: 'Queue {{`{{ $labels.queue }}`}} in namespace {{`{{ $labels.namespace }}`}} (pod {{`{{ $labels.pod }}`}}) has more than 10 ready messages'
+            description: 'Queue {{`{{ $labels.queue }}`}} in namespace {{`{{ $labels.namespace }}`}} (pod {{`{{ $labels.pod }}`}}) has more than 100 ready messages'
 
         - alert: RabbitmqTooManyUnackMessages
-          expr: 'sum(rabbitmq_queue_messages_unacked{namespace="{{ .Release.Namespace }}"}) BY (queue, pod, namespace) > 10'
-          for: 1m
+          expr: 'sum(rabbitmq_queue_messages_unacked{namespace="{{ .Release.Namespace }}"}) BY (queue, pod, namespace) > 100'
+          for: 15m
           labels:
-            severity: critical
+            severity: warning
           annotations:
             summary: 'RabbitMQ queue {{`{{ $labels.queue }}`}} has too many unacked messages'
-            description: 'Queue {{`{{ $labels.queue }}`}} in namespace {{`{{ $labels.namespace }}`}} (pod {{`{{ $labels.pod }}`}}) has more than 10 unacknowledged messages'
+            description: 'Queue {{`{{ $labels.queue }}`}} in namespace {{`{{ $labels.namespace }}`}} (pod {{`{{ $labels.pod }}`}}) has more than 100 unacknowledged messages'
 
         - alert: RabbitmqTooManyConnections
           expr: 'rabbitmq_connections{namespace="{{ .Release.Namespace }}"} > 100'
@@ -273,7 +273,7 @@ rabbitmq:
 
         - alert: RabbitmqNoQueueConsumer
           expr: 'rabbitmq_queue_consumers{namespace="{{ .Release.Namespace }}",queue!~".*(dlq|relay|notifications_delayed).*"} < 1'
-          for: 1m
+          for: 10m
           labels:
             severity: critical
           annotations:

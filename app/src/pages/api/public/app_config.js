@@ -54,5 +54,10 @@ export default function handler(req, res) {
     // hardcoded font-family names (e.g. Poppins/Roboto) at a brand font via
     // @font-face injected client-side. Null ⇒ no remap (default Roboto/Poppins).
     fontRemap: Array.isArray(brandingFile?.fontRemap) ? brandingFile.fontRemap : null,
+    // Background-watch feature flag. Mirrors LLM_SERVER_WATCH_ENABLED on
+    // llm-server, which only mounts the /v1/watches route when set. The chat
+    // UI polls the watch-list endpoint solely when this is true, so the route's
+    // absence never produces a 404.
+    watchEnabled: process.env.LLM_SERVER_WATCH_ENABLED === 'true',
   });
 }

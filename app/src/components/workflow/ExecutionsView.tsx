@@ -1860,12 +1860,7 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                             size='xs'
                             aria-label='Copy input'
                             icon={<ContentCopy sx={{ fontSize: 'var(--ds-text-body-lg)' }} />}
-                            onClick={() =>
-                              copyToClipboard(
-                                typeof selectedTaskData.input === 'string' ? selectedTaskData.input : JSON.stringify(selectedTaskData.input, null, 2),
-                                'Input'
-                              )
-                            }
+                            onClick={() => copyToClipboard(JSON.stringify(selectedTaskData.rendered_params ?? {}, null, 2), 'Input')}
                           />
                         </Box>
                       </Box>
@@ -1890,10 +1885,10 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                         }}
                       >
                         {inlineInputViewMode === 'formatted' ? (
-                          renderFormattedField(selectedTaskData.input, 'input')
+                          renderFormattedField(selectedTaskData.rendered_params ?? {}, 'input')
                         ) : (
                           <Box sx={{ fontFamily: 'monospace', fontSize: 'var(--ds-text-body)', color: ds.gray[700], whiteSpace: 'pre-wrap' }}>
-                            {typeof selectedTaskData.input === 'string' ? selectedTaskData.input : JSON.stringify(selectedTaskData.input, null, 2)}
+                            {JSON.stringify(selectedTaskData.rendered_params ?? {}, null, 2)}
                           </Box>
                         )}
                       </Box>

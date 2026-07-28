@@ -8,6 +8,7 @@ import Text from '@shared/format/Text';
 import { Label, type LabelTone } from '@ui/Label';
 import { Box, Typography } from '@mui/material';
 import Link from 'next/link';
+import { useRouter } from 'next/router';
 import { ds } from 'src/utils/colors';
 import { containsLink, snakeToTitleCase, safeJSONParse } from 'src/utils/common';
 
@@ -138,6 +139,9 @@ const STATUS_OPTIONS = [
 const ResolutionsView = () => {
   const resolutionTableId = 'optimise-resolutions';
 
+  const router = useRouter();
+  const deepLinkRecId = typeof router.query.id === 'string' ? router.query.id : '';
+
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(apiUser.getUserPreferencesTablePageSize());
@@ -185,7 +189,16 @@ const ResolutionsView = () => {
     setRowsPerPage(limit);
   };
 
+  // Reset to the first page whenever the deep-link scope toggles, so results aren't hidden on
+  // a stale page offset.
   useEffect(() => {
+    setPage(0);
+  }, [deepLinkRecId]);
+
+  useEffect(() => {
+    // Wait for router.query hydration so a deep-linked ?id= scopes the first fetch
+    // instead of firing an unfiltered request that a filtered one then supersedes.
+    if (!router.isReady) return;
     // Guard against out-of-order responses when filters/page change rapidly —
     // ignore any in-flight request whose effect has been superseded.
     let active = true;
@@ -199,6 +212,7 @@ const ResolutionsView = () => {
         status: selectedStatus,
         type: selectedType,
         resolverType: selectedResolver,
+        recommendationId: deepLinkRecId,
       })
       .then((res: any) => {
         if (!active) return;
@@ -211,7 +225,7 @@ const ResolutionsView = () => {
     return () => {
       active = false;
     };
-  }, [selectedAccounts, selectedStatus, selectedType, selectedResolver, rowsPerPage, page]);
+  }, [selectedAccounts, selectedStatus, selectedType, selectedResolver, rowsPerPage, page, deepLinkRecId, router.isReady]);
 
   // Build table cells from the fetched rows + accounts map. Kept separate from
   // the fetch so Account labels resolve once accounts load without refetching.
@@ -423,6 +437,27 @@ const ResolutionsView = () => {
       </ListingLayout.Toolbar>
 
       <ListingLayout.Body>
+        {deepLinkRecId && (
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: ds.space[2],
+              mb: ds.space[3],
+              px: ds.space[3],
+              py: ds.space[2],
+              backgroundColor: ds.background[100],
+              borderRadius: ds.radius.sm,
+            }}
+          >
+            <Typography sx={{ fontSize: ds.text.body, color: ds.gray[700] }}>
+              Showing resolutions for the recommendation from your notification.
+            </Typography>
+            <Link href='/optimise#resolutions' style={{ fontSize: ds.text.body, fontWeight: ds.weight.medium }}>
+              View all resolutions
+            </Link>
+          </Box>
+        )}
         <CustomTable
           id={resolutionTableId}
           headers={RESOLUTION_HEADERS}
@@ -460,7 +495,14 @@ const ResolutionsView = () => {
 
                   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length > 0) {
                     return (
-                      <Box sx={{ padding: ds.space[4], backgroundColor: ds.background[100], borderRadius: ds.radius.sm }}>
+                      <Box
+                        sx={{
+                          padding: ds.space[4],
+                          backgroundColor: ds.background[100],
+                          borderRadius: ds.radius.sm,
+                          border: `1px solid ${ds.gray[300]}`,
+                        }}
+                      >
                         <KeyValueList data={parsed} />
                       </Box>
                     );
@@ -473,6 +515,7 @@ const ResolutionsView = () => {
                         padding: ds.space[4],
                         backgroundColor: ds.background[100],
                         borderRadius: ds.radius.sm,
+                        border: `1px solid ${ds.gray[300]}`,
                         fontSize: ds.text.body,
                         color: ds.gray[700],
                         whiteSpace: 'pre-wrap',
@@ -494,6 +537,7 @@ const ResolutionsView = () => {
                         padding: ds.space[4],
                         backgroundColor: ds.background[100],
                         borderRadius: ds.radius.sm,
+                        border: `1px solid ${ds.gray[300]}`,
                         fontSize: ds.text.body,
                         color: ds.gray[700],
                         whiteSpace: 'pre-wrap',

@@ -341,7 +341,7 @@ type WorkflowGetTool struct{}
 func (t WorkflowGetTool) Name() string             { return ToolWorkflowGet }
 func (t WorkflowGetTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowGetTool) Description() string {
-	return "Gets the definition and details of a specific automation."
+	return "Gets the definition and details of a specific automation. Arg: id (string, required)."
 }
 func (t WorkflowGetTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
@@ -464,7 +464,9 @@ func (t WorkflowTriggerTool) InferToolRequestType(_ *security.RequestContext, _,
 }
 
 func (t WorkflowTriggerTool) GetType() core.NBToolType { return core.NBToolTypeTool }
-func (t WorkflowTriggerTool) Description() string      { return "Triggers an automation execution." }
+func (t WorkflowTriggerTool) Description() string {
+	return "Triggers an automation execution. Args: id (string, required), inputs (object, optional)."
+}
 func (t WorkflowTriggerTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
@@ -499,7 +501,9 @@ type WorkflowCreateTool struct{}
 
 func (t WorkflowCreateTool) Name() string             { return ToolWorkflowCreate }
 func (t WorkflowCreateTool) GetType() core.NBToolType { return core.NBToolTypeTool }
-func (t WorkflowCreateTool) Description() string      { return "Creates a new automation." }
+func (t WorkflowCreateTool) Description() string {
+	return "Creates a new automation. Requires the automation definition object under 'definition' (tasks, triggers, version, …). Use workflow_examples for the shape and workflow_validate to check it before creating."
+}
 func (t WorkflowCreateTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
@@ -1264,7 +1268,7 @@ type WorkflowExecutionGetTool struct{}
 func (t WorkflowExecutionGetTool) Name() string             { return ToolWorkflowExecutionGet }
 func (t WorkflowExecutionGetTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowExecutionGetTool) Description() string {
-	return "Gets details of a specific automation execution including task-level errors, inputs, and outputs."
+	return "Gets details of a specific automation execution including task-level errors, inputs, and outputs. Args: id (string, required), execution_id (string, required)."
 }
 func (t WorkflowExecutionGetTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
@@ -1307,7 +1311,7 @@ func (t WorkflowExecutionRetriggerTool) InferToolRequestType(_ *security.Request
 
 func (t WorkflowExecutionRetriggerTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowExecutionRetriggerTool) Description() string {
-	return "Re-triggers an automation execution. Useful for retrying a failed execution."
+	return "Re-triggers an automation execution. Useful for retrying a failed execution. Args: id (string, required), execution_id (string, required), inputs (object, optional)."
 }
 func (t WorkflowExecutionRetriggerTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
@@ -1349,7 +1353,7 @@ type WorkflowStateTool struct{}
 func (t WorkflowStateTool) Name() string             { return ToolWorkflowState }
 func (t WorkflowStateTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowStateTool) Description() string {
-	return "Gets the persistent state of an automation (key-value store that persists across runs)."
+	return "Gets the persistent state of an automation (key-value store that persists across runs). Arg: id (string, required)."
 }
 func (t WorkflowStateTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
@@ -1415,7 +1419,7 @@ type WorkflowConfigGetTool struct{}
 func (t WorkflowConfigGetTool) Name() string             { return ToolWorkflowConfigGet }
 func (t WorkflowConfigGetTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowConfigGetTool) Description() string {
-	return "Gets a specific automation config by key. Secret values are masked."
+	return "Gets a specific automation config by key. Secret values are masked. Arg: key (string, required)."
 }
 func (t WorkflowConfigGetTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
@@ -1453,7 +1457,7 @@ func (t WorkflowConfigSaveTool) InferToolRequestType(_ *security.RequestContext,
 
 func (t WorkflowConfigSaveTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowConfigSaveTool) Description() string {
-	return "Creates or updates an automation config. Secret values are encrypted at rest."
+	return "Creates or updates an automation config. Secret values are encrypted at rest. Args: key (string, required), value (string, required), type (optional: 'config' (default) or 'secret')."
 }
 func (t WorkflowConfigSaveTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{

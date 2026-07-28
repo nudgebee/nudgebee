@@ -787,8 +787,61 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 		return
 	}
 
-	// Mark all as in progress
+	// Atomically claim log_analysis as the lead row before dispatching. This is
+	// the same concurrency gate getOrCreateEventAnalysisStatus uses for the MQ
+	// path: the HTTP endpoint and the MQ consumers can fire for one event in the
+	// same window, all having read a non-terminal status above. Only the winner of
+	// the atomic claim dispatches the pipeline; a lost claim reports IN_PROGRESS so
+	// the caller doesn't run a duplicate summary → investigation → log →
+	// detailed-response cycle (the observed duplicate-task bug).
+	//
+	// Partial-completion carve-out: when log_analysis is already COMPLETED but the
+	// pipeline is partial (reached here because some other type is not COMPLETED,
+	// and not regenerating), skip the claim gate and dispatch. Leaving log_analysis
+	// COMPLETED lets Step 3's cache skip it and avoids the redundant log + synthesis
+	// re-run that resetting it would force. (The mark-remaining loop below still
+	// resets the other types to IN_PROGRESS, matching the pre-existing HTTP behavior
+	// of re-running summary/investigation/detailed_response on a partial state; only
+	// log_analysis is preserved. This narrow path is not atomically gated, but it is
+	// the recovery of an already-started analysis, not the fresh-event race that
+	// produced the duplicate-pipeline bug.)
+	logCompleted := dbAnalyses[events.AnalysisTypeLog] != nil &&
+		dbAnalyses[events.AnalysisTypeLog].Status == string(events.AnalysisStatusCompleted)
+	claimedLog := false
+	if request.Regenerate || !logCompleted {
+		claimed, claimErr := eventAnalysisRepo.ClaimEventAnalysis(ctx, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey, events.AnalysisTypeLog, request.Regenerate)
+		if claimErr != nil {
+			// Fail closed: a claim DB error means we can't tell whether we own
+			// the run, and subsequent DB writes would fail too. Return 500 like
+			// the other DB-error paths in this handler rather than reporting a
+			// misleading IN_PROGRESS.
+			ctx.GetLogger().Error("analyzer: failed to claim analysis", "error", claimErr, "event_id", request.EventId)
+			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "analyzer: failed to claim analysis: " + claimErr.Error()}}))
+			return
+		}
+		if !claimed {
+			ctx.GetLogger().Info("analyzer: lost analysis claim, another dispatcher owns this run", "event_id", request.EventId)
+			finalResponse.Status = string(events.AnalysisStatusInProgress)
+			for _, aType := range analysisTypes {
+				finalResponse.TaskStatuses[string(aType)] = string(events.AnalysisStatusInProgress)
+			}
+			c.JSON(200, buildApiResponse(finalResponse, nil))
+			return
+		}
+		claimedLog = true
+	}
+
+	// Dispatching. Mark every type IN_PROGRESS so the UI reflects a running
+	// pipeline. log_analysis is IN_PROGRESS only when we actually claimed/reset
+	// it above; in the preserved-COMPLETED partial case it stays COMPLETED, so
+	// reporting IN_PROGRESS here would flicker back to COMPLETED on the next poll.
 	for _, aType := range analysisTypes {
+		if aType == events.AnalysisTypeLog {
+			if claimedLog {
+				finalResponse.TaskStatuses[string(aType)] = string(events.AnalysisStatusInProgress)
+			}
+			continue
+		}
 		if err := eventAnalysisRepo.UpsertEventAnalysisInProgress(ctx, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey, aType); err != nil {
 			ctx.GetLogger().Warn("failed to upsert event analysis in progress", "error", err, "analysis_type", aType)
 		}
@@ -906,22 +959,42 @@ func getOrCreateEventAnalysisStatus(ctx *security.RequestContext, request EventA
 	}
 
 	if createAnalysis {
-		// Only mark log_analysis as IN_PROGRESS when it isn't already COMPLETED.
-		// Resetting a COMPLETED row would force Step 3 in
-		// analyzeEventUsingAgentsAndUpdateDb to bypass its cache (which gates on
-		// existingLog.Status == COMPLETED) and re-run log analysis or re-emit the
-		// "skipped - no logs" path, which then unconditionally re-runs Step 4
-		// synthesis — the exact duplicate-LLM-call pattern this fix targets.
+		// Atomically claim log_analysis as the pipeline's lead row. This is the
+		// concurrency gate: multiple dispatchers (the two MQ consumers, the HTTP
+		// endpoint, sync-recovery) can reach this point for the same event in the
+		// same window, having all read a non-terminal status above. ClaimEventAnalysis
+		// transitions to IN_PROGRESS in a single statement and reports whether THIS
+		// caller won; a lost claim means another dispatcher already owns the run, so
+		// we report IN_PROGRESS and let the caller skip its own pipeline instead of
+		// running a duplicate summary → investigation → log → detailed-response cycle.
 		//
-		// When log_analysis is COMPLETED but other types are not (e.g.
-		// detailed_response missing after a Step-4 crash), the per-step caches
-		// in analyzeEventUsingAgentsAndUpdateDb skip completed steps and only
-		// re-run what's missing.
-		if existingAnalysis == nil || existingAnalysis.Status != string(events.AnalysisStatusCompleted) {
-			err = eventAnalysisRepo.UpsertEventAnalysisInProgress(ctx, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey, events.AnalysisTypeLog)
-			if err != nil {
-				return EventAnalysisResponse{}, err
-			}
+		// A COMPLETED row is never re-claimed (ClaimEventAnalysis's WHERE excludes it),
+		// so completed log analysis keeps its cached result and the per-step caches in
+		// analyzeEventUsingAgentsAndUpdateDb still skip finished steps and only re-run
+		// what's missing.
+		// Partial-completion carve-out (non-regenerate only): when log_analysis is
+		// already COMPLETED but the overall pipeline is not (e.g. detailed_response
+		// missing after a Step-4 crash), do NOT reset it to IN_PROGRESS — that would
+		// force Step 3 to re-run log analysis and unconditionally re-run Step 4
+		// synthesis. Proceed to dispatch instead; the per-step caches in
+		// analyzeEventUsingAgentsAndUpdateDb skip the completed steps and only re-run
+		// what's missing. (This narrow path is not atomically gated, but the per-step
+		// caches dedupe it; the fresh-event race below is the one that produced the
+		// observed duplicate-pipeline bug.)
+		if !request.Regenerate && existingAnalysis != nil && existingAnalysis.Status == string(events.AnalysisStatusCompleted) {
+			response.Status = string(events.AnalysisStatusCreated)
+			response.RelatedEventId = request.EventId
+			return response, nil
+		}
+		claimed, err := eventAnalysisRepo.ClaimEventAnalysis(ctx, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey, events.AnalysisTypeLog, request.Regenerate)
+		if err != nil {
+			return EventAnalysisResponse{}, err
+		}
+		if !claimed {
+			// Another dispatcher won the claim between our status read and here.
+			ctx.GetLogger().Info("analyzer: lost analysis claim, another dispatcher owns this run", "event_id", request.EventId)
+			response.Status = string(core.ConversationStatusInProgress)
+			return response, nil
 		}
 		response.Status = string(events.AnalysisStatusCreated)
 		response.RelatedEventId = request.EventId
@@ -1206,15 +1279,89 @@ func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request
 			return EventAnalysisResponse{}, err
 		}
 		response.Summary = rcaResponse
-
-		// Best-effort: notify api-server so it can post the RCA back onto the
-		// source incident (e.g. ZenDuty). Never fails the RCA save.
-		postRCAWritebackSignal(ctx, response.EventId, request.AccountId, rcaResponse)
 	} else {
 		return EventAnalysisResponse{}, errors.New("failed to get RCA response")
 	}
 
 	return response, nil
+}
+
+// maxInvestigationEvidenceBytes caps how much collected evidence (logs +
+// insights) is inlined into the investigation prompt. The event's evidence is
+// already gathered on the Event object (populated by the events tool's evidence
+// enrichment), so surfacing it lets the investigation reach a verdict instead of
+// reporting "insufficient" for data the event actually carries. The cap bounds
+// token cost the same way maxAnnotationRCAFormatBytes does for rca_format.
+const maxInvestigationEvidenceBytes = 6000
+
+// buildInvestigationEvidenceContext renders the log lines and insight messages
+// already collected on the event into a compact markdown block for the
+// investigation prompt. Returns "" when no usable evidence is present.
+func buildInvestigationEvidenceContext(ev events.InvestigateData) string {
+	var b strings.Builder
+
+	// Log lines: LogData holds the (capped) log body; ErrorLogData holds the
+	// extracted error lines when the events tool cleared LogData in favour of
+	// them (see EventsExecuteTool.processRowWithMessages). Prefer whichever is
+	// populated so the source IPs / error messages reach the agent.
+	logText := strings.TrimSpace(ev.LogData)
+	if logText == "" && len(ev.ErrorLogData) > 0 {
+		logText = strings.TrimSpace(strings.Join(ev.ErrorLogData, "\n"))
+	}
+	if logText != "" {
+		b.WriteString("### Collected Logs\n```\n")
+		b.WriteString(logText)
+		b.WriteString("\n```\n\n")
+	}
+
+	// Insight messages summarise the metric / trace / alert / dependency findings
+	// the enrichers attached to the event. They are short, high-signal strings —
+	// the primary evidence for metric alerts that carry no logs.
+	if insights := collectEvidenceInsights(ev); len(insights) > 0 {
+		b.WriteString("### Collected Insights\n")
+		for _, msg := range insights {
+			b.WriteString("- ")
+			b.WriteString(msg)
+			b.WriteString("\n")
+		}
+	}
+
+	return strings.TrimSpace(b.String())
+}
+
+// collectEvidenceInsights gathers de-duplicated, non-empty insight messages from
+// every insight-bearing field of the collected evidence, preserving encounter
+// order.
+func collectEvidenceInsights(ev events.InvestigateData) []string {
+	var out []string
+	seen := make(map[string]bool)
+	add := func(insights []events.Insight) {
+		for _, in := range insights {
+			msg := strings.TrimSpace(in.Message)
+			if msg == "" || seen[msg] {
+				continue
+			}
+			seen[msg] = true
+			out = append(out, msg)
+		}
+	}
+	for _, d := range []events.InvestigateDataInsight{
+		ev.PodData, ev.NodeData, ev.Deployment, ev.AlertLabels, ev.JobInformation,
+		ev.JobEvents, ev.JobPodEvents, ev.RelatedEvents, ev.ContainerMetrics,
+		ev.Traces, ev.AlertData, ev.ServiceMap,
+	} {
+		add(d.Insight)
+	}
+	for _, list := range [][]events.InvestigateDataInsight{
+		ev.PodMetrics, ev.NodeMetrics, ev.NoisyNeighbours, ev.ApiFailures,
+		ev.PodEvents, ev.NodeEvents, ev.Markdowns, ev.UserActions,
+		ev.RDBMSQueryData, ev.MetricsData, ev.Others,
+	} {
+		for _, d := range list {
+			add(d.Insight)
+		}
+	}
+	return out
 }
 
 func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Event, request EventAnalysisRequest, response EventAnalysisResponse, parsedLabels map[string]any, anaylsisRepo *events.EventAnalysisRepository) (string, string, bool, string, error) {
@@ -1230,6 +1377,21 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 	// Add account context (cloud provider) to help the LLM tailor its output
 	if cloudProvider := agents.GetCloudProviderForAccount(request.AccountId); cloudProvider != "" {
 		eventAnalsysisPrompt = eventAnalsysisPrompt + "\n\n**Account Context:** This account's infrastructure is on " + cloudProvider + ". Tailor your analysis, examples, and recommendations to this infrastructure type."
+	}
+
+	// Surface the evidence already collected on this event (logs plus metric /
+	// trace / alert insights) into the investigation prompt. The investigation
+	// prompt is an audit of "what is provided" — but previously it only received
+	// the event definition, labels and preliminary summary, never the enriched
+	// evidence the events tool attaches to the event. That made thin-payload
+	// alerts (cloud metric alerts especially) report "Data Assessment:
+	// Insufficient" for logs the event actually carried (e.g. a GCP load-balancer
+	// 429 event whose access logs — source IP, URI, Cloud Armor policy — sat in
+	// ErrorLogData but never reached the agent). Treat it as provided data.
+	if evidenceContext := buildInvestigationEvidenceContext(event.Evidences); evidenceContext != "" {
+		eventAnalsysisPrompt = eventAnalsysisPrompt +
+			"\n\n## Collected Evidence\nThe following evidence was already gathered for this event. Treat it as part of the provided data and use it in your assessment before judging whether data is sufficient:\n\n" +
+			core.TruncateHead(evidenceContext, maxInvestigationEvidenceBytes)
 	}
 
 	accountPrompt, _, _ := core.AgentAdditionalInstructionsAndToolsAndConfigs(ctx, request.AccountId, "event_log_analysis")
@@ -2378,6 +2540,11 @@ func synthesizeDetailedResponse(ctx *security.RequestContext, request EventAnaly
 	if investigation == "" && logAnalysis == "" {
 		return summary, nil
 	}
+
+	// When the investigation reports insufficient/partial evidence, the synthesis
+	// prompt's "Evidence Discipline" section keeps this path honest (no fabricated
+	// root cause) — we intentionally do not try to detect that verdict in Go by
+	// scraping the model's prose, which is brittle and drifts with wording.
 
 	// Resolve the conversation UUID from the parent session so token usage can be
 	// tracked with valid FK references. The conversation was already created during

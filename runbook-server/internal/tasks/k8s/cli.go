@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"errors"
+	"fmt"
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/relay"
@@ -49,31 +50,74 @@ func (t *K8sCliTask) Execute(taskCtx types.TaskContext, params map[string]any) (
 	}
 
 	if respStr, ok := resp.(string); ok {
-		kubectlResp := map[string]any{}
-		if err = common.UnmarshalJson([]byte(respStr), &kubectlResp); err != nil {
-			return nil, errors.New(respStr)
-		}
-
-		if stderr, ok := kubectlResp["stderr"].(string); ok && stderr != "" {
-			// If stderr indicates an error, return it as a task error.
-			if strings.Contains(strings.ToLower(stderr), "error:") || strings.Contains(strings.ToLower(stderr), "fail") {
-				return nil, errors.New(stderr)
-			}
-		}
-
-		// Otherwise, return stdout and any non-error stderr as part of the data.
-		output := map[string]any{
-			"data": kubectlResp["stdout"],
-		}
-		if stderr, ok := kubectlResp["stderr"].(string); ok && stderr != "" {
-			output["stderr"] = stderr
-		}
-
-		return output, nil
-
+		return interpretKubectlResponse(respStr)
 	}
 
 	return nil, errors.New("unable to process request")
+}
+
+// interpretKubectlResponse turns the agent's kubectl response (JSON with
+// stdout/stderr/exit_code) into a task result.
+//
+// A non-zero exit code is a task failure. The agent returns the exit code as
+// data (a failed kubectl is not a transport error), so relying on stderr
+// substrings alone silently passes real failures — e.g. "Error from server
+// (Forbidden/NotFound)", a write rejected by the agent's read-only verb guard,
+// or "no matches for kind". The stderr heuristic is kept only as a fallback for
+// the rare exit-0-with-error case, or an older agent that omits exit_code.
+func interpretKubectlResponse(respStr string) (map[string]any, error) {
+	kubectlResp := map[string]any{}
+	if err := common.UnmarshalJson([]byte(respStr), &kubectlResp); err != nil {
+		return nil, errors.New(respStr)
+	}
+
+	stdout, _ := kubectlResp["stdout"].(string)
+	stderr, _ := kubectlResp["stderr"].(string)
+
+	exitCode, hasExit := kubectlExitCode(kubectlResp["exit_code"])
+	if (hasExit && exitCode != 0) ||
+		strings.Contains(strings.ToLower(stderr), "error:") ||
+		strings.Contains(strings.ToLower(stderr), "fail") {
+		detail := strings.TrimSpace(stderr)
+		if detail == "" {
+			detail = strings.TrimSpace(stdout)
+		}
+		if detail == "" {
+			detail = "unknown error"
+		}
+		if hasExit {
+			return nil, fmt.Errorf("kubectl exited %d: %s", exitCode, detail)
+		}
+		return nil, errors.New(detail)
+	}
+
+	// Success: return stdout and any non-error stderr as part of the data.
+	output := map[string]any{
+		"data": stdout,
+	}
+	if stderr != "" {
+		output["stderr"] = stderr
+	}
+	return output, nil
+}
+
+// kubectlExitCode extracts the kubectl exit code from the agent's response.
+// JSON decodes numbers as float64; a few code paths may hand back int/int64.
+// Returns (code, true) only when an exit code is actually present.
+func kubectlExitCode(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case float32:
+		return int(n), true
+	case int:
+		return n, true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	}
+	return 0, false
 }
 
 func (t *K8sCliTask) InputSchema() *types.Schema {

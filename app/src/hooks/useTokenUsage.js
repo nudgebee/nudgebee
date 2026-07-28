@@ -7,10 +7,11 @@ export const useTokenUsage = (accountId) => {
     conversation: null, // tokenUsageData
     messages: {}, // messageTokenData
     agents: {}, // agentTokenData
+    reasoningByTool: {}, // tool_call_id -> agent reasoning summary
   });
 
   const resetTokenMetrics = useCallback(() => {
-    setMetrics({ conversation: null, messages: {}, agents: {} });
+    setMetrics({ conversation: null, messages: {}, agents: {}, reasoningByTool: {} });
   }, []);
 
   const fetchTokenUsage = useCallback(
@@ -90,6 +91,7 @@ export const useTokenUsage = (accountId) => {
           conversation: conversationTokens,
           messages: messageData,
           agents: agentData,
+          reasoningByTool: conversationData?.reasoning_by_tool_call || {},
         });
       } catch (error) {
         console.error('Error fetching token usage metrics:', error);
@@ -122,6 +124,10 @@ export const useTokenUsage = (accountId) => {
     [metrics.agents, metrics.messages]
   );
 
+  // Per tool_call_id: the reasoning that led to that specific call (time-split by the
+  // backend so slices sum to the agent total instead of repeating it on every tool).
+  const getReasoningForTool = useCallback((toolId) => (toolId && metrics.reasoningByTool[toolId]) || null, [metrics.reasoningByTool]);
+
   return {
     tokenUsageData: metrics.conversation,
     messageTokenData: metrics.messages,
@@ -129,5 +135,6 @@ export const useTokenUsage = (accountId) => {
     fetchTokenUsage,
     resetTokenMetrics,
     getAgentTokenDataForMessage,
+    getReasoningForTool,
   };
 };

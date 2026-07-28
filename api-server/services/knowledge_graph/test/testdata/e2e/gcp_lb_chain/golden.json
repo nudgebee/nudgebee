@@ -1,0 +1,158 @@
+{
+  "nodes": [
+    {
+      "unique_key": "gcp:test-account-gcp-1::BackendPool:my-backend",
+      "node_type": "BackendPool",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "cloud_provider": "GCP",
+        "health_checks": [
+          "my-hc"
+        ],
+        "inferred": false,
+        "load_balancing_scheme": "EXTERNAL_MANAGED",
+        "name": "my-backend",
+        "port": 0,
+        "port_name": "",
+        "protocol": "",
+        "region": "",
+        "self_link": "",
+        "service_name": "Cloud Load Balancing",
+        "session_affinity": "",
+        "source": "gcp",
+        "subtype": "GCPBackendService",
+        "timeout_sec": 0,
+        "type": "backend-service"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-backend",
+        "port": 0,
+        "protocol": ""
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:global:CloudResource:health-check:my-hc",
+      "node_type": "CloudResource",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "check_interval_sec": 0,
+        "cloud_provider": "GCP",
+        "health_check_type": "HTTP",
+        "healthy_threshold": 0,
+        "inferred": false,
+        "name": "my-hc",
+        "self_link": "",
+        "service_name": "Cloud Load Balancing",
+        "source": "gcp",
+        "subtype": "GCPHealthCheck",
+        "timeout_sec": 0,
+        "type": "health-check",
+        "unhealthy_threshold": 0
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-hc"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:global:RouteTable:url-map:my-urlmap",
+      "node_type": "RouteTable",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "cloud_provider": "GCP",
+        "default_service": "my-backend",
+        "default_service_url": "https://www.googleapis.com/compute/v1/projects/proj-1/global/backendServices/my-backend",
+        "inferred": false,
+        "name": "my-urlmap",
+        "self_link": "",
+        "service_name": "Cloud Load Balancing",
+        "source": "gcp",
+        "subtype": "GCPURLMap",
+        "type": "url-map"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-urlmap"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:global:VPC:my-vpc:my-vpc",
+      "node_type": "VPC",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "vpc-1",
+        "gcp_project_id": "my-vpc",
+        "is_active": true,
+        "labels": null,
+        "name": "my-vpc",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "vpc-1",
+        "region": "global",
+        "resource_id": "my-vpc",
+        "service_name": "Networking",
+        "source": "gcp",
+        "status": "",
+        "subtype": "vpc-network",
+        "type": "vpc-network"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-vpc"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src_key": "gcp:test-account-gcp-1::BackendPool:my-backend",
+      "dst_key": "gcp:test-account-gcp-1:global:CloudResource:health-check:my-hc",
+      "relationship_type": "ASSOCIATED_WITH",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "health_check",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:global:RouteTable:url-map:my-urlmap",
+      "dst_key": "gcp:test-account-gcp-1::BackendPool:my-backend",
+      "relationship_type": "ROUTES_TO",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "default_backend",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    }
+  ]
+}

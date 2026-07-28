@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"nudgebee/services/account"
+	"nudgebee/services/cloud"
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/internal/database"
@@ -57,8 +58,23 @@ type TraceSource interface {
 	GetQuery(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) (string, error)
 	CountTraces(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) (common.OpenTelemetryTraceCount, error)
 	GetLabelValues(ctx *security.RequestContext, fetchTraceRequest TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error)
+	// QueryLabels enumerates the label KEYS actually present in the backend (e.g. span/
+	// resource attribute names), analogous to LogSource.QueryLabels. Sources without a
+	// backend label-key discovery API return an empty slice; FetchTraceLabels then falls
+	// back to the derived canonical + mapping label set.
+	QueryLabels(ctx *security.RequestContext, request FetchTraceLabelRequest) ([]OutputTraceLabel, error)
 	QueryGroupedTraces(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) ([]TraceGroupingValues, error)
 	QueryGroupedTracesCount(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) (common.OpenTelemetryTraceGroupCount, error)
+	// QueryRootSpansByTrace backs the "By Traces" listing view: it returns one representative
+	// row per trace (the root span, or the earliest span when no root is present in the
+	// window). Filters apply to the chosen root span. Every TraceSource must implement it so
+	// the toggle works for all providers; non-ClickHouse providers reduce their span result
+	// to roots via the shared pickRootSpans helper.
+	QueryRootSpansByTrace(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) ([]common.OpenTelemetryTrace, error)
+	// CountTracesByTrace returns the number of distinct traces matching the filters for the
+	// "By Traces" view. Providers that cannot count distinct traces cheaply return Count = -1,
+	// which the frontend already treats as an estimate for pagination.
+	CountTracesByTrace(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) (common.OpenTelemetryTraceCount, error)
 	QueryTracesHeatmap(ctx *security.RequestContext, fetchHeatMapRequest TracesHeatMapRequest) ([]common.OpenTelemetryTraceHeatMap, error)
 	GetLabelMapping() map[string]string
 	GetSupportedOperators() []string
@@ -353,6 +369,10 @@ func getTraceSource(provider, integrationSource string) (TraceSource, error) {
 		return &DynatraceTraceSource{}, nil
 	case provider == "solarwinds" && integrationSource == "user":
 		return &SolarWindsTraceSource{}, nil
+	case provider == "gcp":
+		// GCP cloud accounts have no agent/integration row; the provider is synthesized
+		// by the resolver, so match on provider alone regardless of source.
+		return &GcpTraceSource{}, nil
 	case provider == "openobserve" && integrationSource == "user":
 		return &OpenObserveTraceSource{}, nil
 	default:
@@ -457,6 +477,14 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 		} else {
 			agentDetails, err := account.GetAgentConnectionDetails(accountId)
 			if err != nil {
+				// GCP cloud accounts have no agent; their traces come from Cloud Trace.
+				// Resolve them to the gcp trace source before treating the missing agent
+				// as an error — this is the only trace path for a GCP cloud account.
+				if providerType == "traces" {
+					if cp, cErr := cloud.GetCloudAccountProvider(accountId, ctx.GetSecurityContext().GetTenantId()); cErr == nil && strings.EqualFold(cp, "gcp") {
+						return "gcp", "user", nil, nil
+					}
+				}
 				ctx.GetLogger().Error(fmt.Sprintf("unable to get agent details, for account %s", accountId), "error", err)
 				return "", "", nil, err
 			}
@@ -489,6 +517,16 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 			matchedIntegration = integrationDto
 		} else {
 			defaultSource = "agent"
+		}
+	}
+	// GCP cloud accounts register a type=GCP agent row (the cloud-collector
+	// connection), so GetAgentConnectionDetails succeeds but carries no trace
+	// provider — the err-path synthesis above is never reached. Fall back to the
+	// Cloud Trace source for any GCP cloud account still left without a traces
+	// provider, so the account's Traces tab resolves instead of returning empty.
+	if providerType == "traces" && defaultProvider == "" {
+		if cp, cErr := cloud.GetCloudAccountProvider(accountId, ctx.GetSecurityContext().GetTenantId()); cErr == nil && strings.EqualFold(cp, "gcp") {
+			return "gcp", "user", nil, nil
 		}
 	}
 	return defaultProvider, defaultSource, matchedIntegration, nil
@@ -785,8 +823,14 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 		source, err := getTraceSource(provider, integrationSource)
 		if err == nil {
 			caps.SupportedOperators = source.GetSupportedOperators()
-			// Static map only — no trace-merge helper exists yet.
-			caps.LabelMappings = source.GetLabelMapping()
+			// Full canonical→provider merge (static ∪ tenant ∪ account ∪ dynamic).
+			// Skip the merge when accountId is empty: with no account the lookup
+			// can only return the static defaults, so there's nothing to merge.
+			if accountId != "" {
+				caps.LabelMappings = getMergedTraceLabelMapping(ctx, accountId, source)
+			} else {
+				caps.LabelMappings = source.GetLabelMapping()
+			}
 		} else {
 			slog.Warn("getProviderCapabilities: failed to get trace source", "provider", provider, "error", err)
 		}
@@ -996,10 +1040,108 @@ func GetTracesLabelValues(context *security.RequestContext, labelValuesRequest T
 	if err != nil {
 		return common.OpenTelemetryTraceLabelValues{}, err
 	}
-	filteringMap := source.GetLabelMapping()
+	filteringMap := getMergedTraceLabelMapping(context, labelValuesRequest.AccountId, source)
 	labelValuesRequest.QueryRequest.Where = convertWhereClauseWithMApping(labelValuesRequest.QueryRequest.Where, filteringMap)
 
 	return source.GetLabelValues(context, labelValuesRequest)
+}
+
+// canonicalTraceField is a provider-independent trace field with its value type.
+type canonicalTraceField struct {
+	name string
+	typ  string
+}
+
+// canonicalTraceFields is the provider-independent trace field vocabulary the
+// query builder / trace agents can always filter on, regardless of the resolved
+// backend. It is surfaced by FetchTraceLabels alongside any account/tenant
+// trace_labels overrides.
+var canonicalTraceFields = []canonicalTraceField{
+	{"service_name", "string"},
+	{"workload_name", "string"},
+	{"span_name", "string"},
+	{"trace_id", "string"},
+	{"duration_ns", "integer"},
+	{"http_status_code", "integer"},
+	{"status_code", "string"},
+	{"resource", "string"},
+	{"destination_workload_name", "string"},
+	{"destination_workload_namespace", "string"},
+}
+
+// FetchTraceLabels returns the trace labels usable for the account's resolved trace
+// provider: the always-available canonical trace field set (typed) unioned with the
+// merged label mapping keys (static ∪ tenant ∪ account ∪ dynamic) and, when the source
+// supports it (TraceLabelKeysSource, e.g. otel_clickhouse), the label keys actually
+// present in the backend for the time window. Deduped, canonical-first. Live discovery
+// failures degrade gracefully to the derived set.
+func FetchTraceLabels(context *security.RequestContext, request FetchTraceLabelRequest) (TraceLabelsResponse, error) {
+	if request.AccountId == "" {
+		return TraceLabelsResponse{}, fmt.Errorf("account_id is required")
+	}
+
+	traceProvider, integrationSource, err := GetLogsMetricsTracesProvider(context, request.AccountId, request.ProviderType, "traces", request.ProviderSource)
+	if err != nil {
+		return TraceLabelsResponse{}, err
+	}
+	if traceProvider == "" {
+		return TraceLabelsResponse{}, fmt.Errorf("FetchTraceLabels: trace provider (trace_provider) is required")
+	}
+	source, err := getTraceSource(traceProvider, integrationSource)
+	if err != nil {
+		return TraceLabelsResponse{}, err
+	}
+
+	// Live per-provider label-key discovery; sources without a discovery API return an
+	// empty slice. On error keep the derived set so the action never hard-fails on a
+	// backend hiccup.
+	discovered, keyErr := source.QueryLabels(context, request)
+	if keyErr != nil {
+		context.GetLogger().Warn("FetchTraceLabels: live label discovery failed, using derived labels", "provider", traceProvider, "error", keyErr)
+		discovered = nil
+	}
+
+	merged := getMergedTraceLabelMapping(context, request.AccountId, source)
+	return TraceLabelsResponse{Labels: buildTraceLabels(merged, discovered)}, nil
+}
+
+// buildTraceLabels returns the canonical trace field set unioned with the keys of the
+// merged label mapping and any backend-discovered labels, deduped and canonical-first.
+// Canonical fields carry their value type in attributes; mapping/discovered keys carry
+// an empty (non-null) attributes object. Pure helper (no I/O) so the union/dedup
+// behaviour is unit-testable.
+func buildTraceLabels(mergedMapping map[string]string, discovered []OutputTraceLabel) []OutputTraceLabel {
+	seen := make(map[string]struct{})
+	labels := make([]OutputTraceLabel, 0, len(canonicalTraceFields)+len(mergedMapping)+len(discovered))
+	appendLabel := func(key, typ string) {
+		if key == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		// Attributes always defaults to an empty object (never null); canonical
+		// fields carry their value type, mapping/discovered keys stay {}.
+		attrs := map[string]any{}
+		if typ != "" {
+			attrs["type"] = typ
+		}
+		labels = append(labels, OutputTraceLabel{Label: key, Attributes: attrs})
+	}
+
+	for _, field := range canonicalTraceFields {
+		appendLabel(field.name, field.typ)
+	}
+	// Mapping + discovered keys have no known type — attributes stay {}.
+	for key := range mergedMapping {
+		appendLabel(key, "")
+	}
+	for _, d := range discovered {
+		appendLabel(d.Label, "")
+	}
+
+	return labels
 }
 
 func GetGroupedTraces(context *security.RequestContext, TraceQuery TracesV3Request) ([]TraceGroupingValues, error) {
@@ -1114,6 +1256,58 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
 	return source.QueryTraces(context, fetchTracesRequest)
+}
+
+// GetRootSpansByTrace resolves the trace source and returns one root span per trace for the
+// "By Traces" listing view. It mirrors GetTraces (provider resolution + label mapping) but
+// dispatches to QueryRootSpansByTrace.
+func GetRootSpansByTrace(context *security.RequestContext, fetchTracesRequest TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	if fetchTracesRequest.AccountId == "" {
+		return nil, fmt.Errorf("account_id is required")
+	}
+
+	traceProvider, integrationSource, err := GetLogsMetricsTracesProvider(context, fetchTracesRequest.AccountId, fetchTracesRequest.ProviderType, "traces", fetchTracesRequest.ProviderSource)
+	if err != nil {
+		return nil, err
+	}
+
+	if traceProvider == "" {
+		return nil, fmt.Errorf("GetRootSpansByTrace trace provider (trace_provider) is required")
+	}
+	source, err := getTraceSource(traceProvider, integrationSource)
+	if err != nil {
+		return nil, err
+	}
+	filteringMap := source.GetLabelMapping()
+	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
+
+	return source.QueryRootSpansByTrace(context, fetchTracesRequest)
+}
+
+// CountTracesByTrace resolves the trace source and returns the distinct-trace count for the
+// "By Traces" listing view. It mirrors CountTraces but dispatches to CountTracesByTrace.
+func CountTracesByTrace(context *security.RequestContext, fetchTracesRequest TracesV3Request) (common.OpenTelemetryTraceCount, error) {
+	if fetchTracesRequest.AccountId == "" {
+		return common.OpenTelemetryTraceCount{}, fmt.Errorf("account_id is required")
+	}
+
+	traceProvider, integrationSource, err := GetLogsMetricsTracesProvider(context, fetchTracesRequest.AccountId, fetchTracesRequest.ProviderType, "traces", fetchTracesRequest.ProviderSource)
+	if err != nil {
+		return common.OpenTelemetryTraceCount{}, err
+	}
+
+	if traceProvider == "" {
+		return common.OpenTelemetryTraceCount{}, fmt.Errorf("CountTracesByTrace trace provider (trace_provider) is required")
+	}
+
+	source, err := getTraceSource(traceProvider, integrationSource)
+	if err != nil {
+		return common.OpenTelemetryTraceCount{}, err
+	}
+	filteringMap := source.GetLabelMapping()
+	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
+
+	return source.CountTracesByTrace(context, fetchTracesRequest)
 }
 
 // GetTracesWithRawResult resolves the trace source and, when it is the otel ClickHouse source,
@@ -1358,6 +1552,10 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 		instant = v
 	}
 
+	// Cluster utilisation aggregations follow the picker range instead of a hardcoded
+	// 24h window. Harmless for other providers/kinds, which ignore these fields.
+	meta.RangeWindow, meta.Step, meta.RateWindow = promAggWindow(req.StartTime, req.EndTime)
+
 	// The helper functions return a fully initialized map, so we don't need to allocate one here.
 	var queries map[string]string
 	// swRequest carries SolarWinds-specific filter/groupBy params passed as FetchMetricsRequest.Request.
@@ -1542,6 +1740,13 @@ type RequestMetadata struct {
 	InternalIP       string
 	RequestedMetrics []string
 	Regex            bool
+	// Aggregation windows (Prometheus/MetricsQL duration literals) for cluster-level
+	// utilisation queries, derived from the picker range so the time filter actually
+	// adjusts the numbers. Empty for direct-constructed metadata (unit tests), where
+	// the query builder falls back to a 24h window.
+	RangeWindow string
+	Step        string
+	RateWindow  string
 }
 
 func parseRequestMetadata(reqMap map[string]any) (RequestMetadata, error) {
@@ -1827,6 +2032,34 @@ func buildPrometheusNodeQueries(meta RequestMetadata, metrics []string) map[stri
 	return queries
 }
 
+// promAggWindow derives the subquery range, step and inner-rate windows (as
+// Prometheus/MetricsQL duration literals) for cluster utilisation aggregations from
+// the picker's start/end (unix millis). The window follows the picker so the usage,
+// P50/P90/Max and the usage-trend sparkline reflect the selected range instead of a
+// hardcoded 24h. Falls back to 24h when the range is missing or invalid.
+func promAggWindow(startMs, endMs int64) (rangeStr, stepStr, rateStr string) {
+	rangeSec := (endMs - startMs) / 1000
+	if rangeSec <= 0 {
+		rangeSec = 24 * 3600
+	}
+	// ~300 sample points across the range, clamped so short ranges keep a 1m
+	// resolution and long ranges don't explode the subquery point count.
+	stepSec := rangeSec / 300
+	if stepSec < 60 {
+		stepSec = 60
+	}
+	if stepSec > 1800 {
+		stepSec = 1800
+	}
+	// Inner rate window: at least 5m (a few scrape intervals) and never finer than
+	// the step, so each sampled point covers its whole interval.
+	rateSec := stepSec
+	if rateSec < 300 {
+		rateSec = 300
+	}
+	return fmt.Sprintf("%ds", rangeSec), fmt.Sprintf("%ds", stepSec), fmt.Sprintf("%ds", rateSec)
+}
+
 func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[string]string {
 	queries := make(map[string]string)
 
@@ -1925,6 +2158,21 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		pvcFilter += ","
 	}
 
+	// Cluster-level aggregation windows, derived from the picker range (empty for
+	// unit-tested metadata -> fall back to a 24h window / 5m resolution).
+	rangeW := safeMeta.RangeWindow
+	if rangeW == "" {
+		rangeW = "24h"
+	}
+	stepW := safeMeta.Step
+	if stepW == "" {
+		stepW = "5m"
+	}
+	rateW := safeMeta.RateWindow
+	if rateW == "" {
+		rateW = "5m"
+	}
+
 	// --- 5. Build Queries ---
 	for _, metricKey := range metrics {
 		switch metricKey {
@@ -1980,26 +2228,39 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 			queries[metricKey] = fmt.Sprintf(`(sum(node_filesystem_size_bytes{ __CLUSTER__ mountpoint="/", instance=~"%s.*"}) - sum(node_filesystem_free_bytes{ __CLUSTER__ mountpoint="/", instance=~"%s.*"})) or (sum(kubelet_volume_stats_capacity_bytes{ __CLUSTER__ instance=~"%s.*"}) - sum(kubelet_volume_stats_available_bytes{ __CLUSTER__ instance=~"%s.*"})) or (sum(kubelet_volume_stats_capacity_bytes{ __CLUSTER__ instance=~"%s.*"}) - sum(kubelet_volume_stats_available_bytes{ __CLUSTER__ instance=~"%s.*"}))`, safeMeta.InternalIP, safeMeta.InternalIP, safeMeta.NodeName, safeMeta.NodeName, safeMeta.NodeIP, safeMeta.NodeIP)
 
 		// --- Node/Cluster Aggregations ---
+		// Usage / percentiles / peak are windowed by the picker range (rangeW) instead of a
+		// hardcoded 24h, so the time filter actually adjusts the numbers. The percentile/peak
+		// queries sum across the per-(node,core,mode) series FIRST, then aggregate over time.
+		// Summing each series' own time-percentile instead (the old form) added peaks that occur
+		// at different instants and produced values above physical capacity (P50/P90/Max >100%).
+		// Valid in both PromQL (prod) and VictoriaMetrics MetricsQL (dev).
 		case "cpu_real":
-			queries[metricKey] = `sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[24h])) or sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[24h]))`
+			queries[metricKey] = fmt.Sprintf(`sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s])) or sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))`, rangeW, rangeW)
 		case "cpu_total":
 			queries[metricKey] = `sum(machine_cpu_cores{__CLUSTER__}) or sum(node_resources_cpu_logical_cores{__CLUSTER__})`
 		case "mem_real":
 			queries[metricKey] = `sum(node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemAvailable_bytes{__CLUSTER__}) or sum(node_resources_memory_total_bytes{__CLUSTER__} - node_resources_memory_available_bytes{__CLUSTER__})`
 		case "mem_total":
 			queries[metricKey] = `sum(node_memory_MemTotal_bytes{__CLUSTER__}) or sum(node_resources_memory_total_bytes{__CLUSTER__})`
+		// cpu_usage_trend / mem_usage_trend feed the utilisation sparkline: fetched as a RANGE
+		// query so the relay evaluates them at each step across the picker window. CPU uses a
+		// short rate window (rateW) so spikes register instead of being averaged away.
+		case "cpu_usage_trend":
+			queries[metricKey] = fmt.Sprintf(`sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s])) or sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))`, rateW, rateW)
+		case "mem_usage_trend":
+			queries[metricKey] = `sum(node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemAvailable_bytes{__CLUSTER__}) or sum(node_resources_memory_total_bytes{__CLUSTER__} - node_resources_memory_available_bytes{__CLUSTER__})`
 		case "p90_mem":
 			queries[metricKey] = `quantile(0.9, node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemAvailable_bytes{__CLUSTER__}) or quantile(0.9, node_resources_memory_total_bytes{__CLUSTER__} - node_resources_memory_available_bytes{__CLUSTER__})`
 		case "p90_cpu":
-			queries[metricKey] = `sum(quantile_over_time(0.90, rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[24h])[24h:])) or sum(quantile_over_time(0.90, rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[24h])[24h:]))`
+			queries[metricKey] = fmt.Sprintf(`quantile_over_time(0.90, sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s]) or quantile_over_time(0.90, sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s])`, rateW, rangeW, stepW, rateW, rangeW, stepW)
 		case "p50_mem":
 			queries[metricKey] = `quantile(0.5, node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemAvailable_bytes{__CLUSTER__}) or quantile(0.5, node_resources_memory_total_bytes{__CLUSTER__} - node_resources_memory_available_bytes{__CLUSTER__})`
 		case "p50_cpu":
-			queries[metricKey] = `sum(quantile_over_time(0.50, rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[24h])[24h:])) or sum(quantile_over_time(0.50, rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[24h])[24h:]))`
+			queries[metricKey] = fmt.Sprintf(`quantile_over_time(0.50, sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s]) or quantile_over_time(0.50, sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s])`, rateW, rangeW, stepW, rateW, rangeW, stepW)
 		case "max_usage_mem":
-			queries[metricKey] = `max_over_time(sum(node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemFree_bytes{__CLUSTER__} - node_memory_Buffers_bytes{__CLUSTER__} - node_memory_Cached_bytes{__CLUSTER__})[24h:])`
+			queries[metricKey] = fmt.Sprintf(`max_over_time(sum(node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemFree_bytes{__CLUSTER__} - node_memory_Buffers_bytes{__CLUSTER__} - node_memory_Cached_bytes{__CLUSTER__})[%s:%s])`, rangeW, stepW)
 		case "max_usage_cpu":
-			queries[metricKey] = `sum(max_over_time(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[24h])[24h:])) or sum(max_over_time(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[24h])[24h:]))`
+			queries[metricKey] = fmt.Sprintf(`max_over_time(sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s]) or max_over_time(sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s])`, rateW, rangeW, stepW, rateW, rangeW, stepW)
 		case "replica_defined":
 			queries[metricKey] = fmt.Sprintf(`sum(kube_replicaset_spec_replicas{ __CLUSTER__ namespace="%s", replicaset=~"%s.*"})`, safeMeta.Namespace, safeMeta.Name)
 		case "replica_ready":

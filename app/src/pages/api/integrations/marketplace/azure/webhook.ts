@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import jwt, { type JwtPayload } from 'jsonwebtoken';
+import jwt from 'jsonwebtoken';
 
 const ISSUER = 'https://login.microsoftonline.com/common/v2.0';
 const JWKS_URI = `${ISSUER}/discovery/v2.0/keys`;
@@ -42,8 +42,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(401).json({ error: 'Invalid token' });
     }
     const requestBody = req.body;
-    const payload = jwt.verify(token, signingKey, { algorithms: ['RS256'], issuer: ISSUER }) as JwtPayload;
-    console.log('Received webhook payload:', payload, requestBody);
+    jwt.verify(token, signingKey, { algorithms: ['RS256'], issuer: ISSUER });
+    console.log('Received Azure marketplace webhook', { action: requestBody?.action, subscriptionId: requestBody?.subscriptionId });
     const response = await fetch(servicesEndpoint + '/marketplace/azure/webhook', {
       method: 'POST',
       headers: {
@@ -58,6 +58,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(500).json({ error: 'Internal Server Error' });
   } catch (err) {
     console.error('Error validating token', err);
-    return res.status(401).json({ error: 'Token verification failed', details: err });
+    return res.status(401).json({ error: 'Token verification failed' });
   }
 }

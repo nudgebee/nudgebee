@@ -17,6 +17,7 @@ import AutoOptimizePVRightSizingSingleConfiguration from '@components/autopilot/
 import Text from '@shared/format/Text';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { ds } from 'src/utils/colors';
+import { safeJSONParse } from 'src/utils/common';
 import { action } from 'src/utils/actionStyles';
 import AutoPilotSettingIcon from '@assets/application/auto-pilot-new.svg';
 import { DeleteIconRed as DeleteIcon } from '@assets';
@@ -122,7 +123,7 @@ const KubernetesPVCTable = ({ accountId }) => {
           }
         }
         if (typeof data === 'string') {
-          data = JSON.parse(data);
+          data = safeJSONParse(data) || [];
         }
         let allowedNamespace = getAllowedNamespaces(accountId);
         if (allowedNamespace != null && allowedNamespace.length > 0) {

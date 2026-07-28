@@ -799,6 +799,9 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 					ctx.GetMeter(),
 				)
 				cleanupCmd := fmt.Sprintf("rm -rf /tmp/code-analysis-%s-*", agentRequest.SessionId)
+				// SessionId is passed as the conversation_id arg: the workspace
+				// pod rejects empty conversation_id (validates non-empty + safe
+				// path charset) and would silently no-op the cleanup otherwise.
 				if _, cleanupErr := wm.ExecuteCommand(cleanupCtx, agentRequest.AccountId, agentRequest.SessionId, cleanupCmd, nil); cleanupErr != nil {
 					logger.Warn("code: workspace cleanup failed", "error", cleanupErr)
 				}
@@ -936,6 +939,26 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 			"completion_tokens", tu.CompletionTokens,
 			"conversation_id", query.ConversationId)
 	}
+	dao := core.GetConversationDao()
+
+	if dao == nil {
+		slog.Debug("code: skipping token usage tracking — conversation DAO unavailable")
+		return
+	}
+
+	// Cost at insert time — see trackTokenUsage rationale. Nil when the
+	// (provider, model) has no llm_model_pricing entry.
+	nonCachedPromptTokens := tu.PromptTokens - tu.CachedContentTokens
+	if nonCachedPromptTokens < 0 {
+		nonCachedPromptTokens = 0
+	}
+	var costUsd *float64
+	if cost, err := dao.GetConversationCost(provider, model, nonCachedPromptTokens, tu.CachedContentTokens, tu.CacheCreationTokens, tu.CompletionTokens, tu.ThinkingTokens); err == nil {
+		costUsd = &cost
+	} else {
+		slog.Debug("code: no pricing data for cost calc", "provider", provider, "model", model, "error", err)
+	}
+
 	// cache_ttl_minutes is no longer written — see trackTokenUsage rationale.
 	// Storage cost lives in llm_cache_lifecycle; per-call rows hold per-token
 	// costs only.
@@ -952,6 +975,7 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 		OutputTokens:        tu.CompletionTokens,
 		CachedInputTokens:   tu.CachedContentTokens,
 		CacheCreationTokens: tu.CacheCreationTokens,
+		CostUsd:             costUsd,
 		IsCacheHit:          tu.CachedContentTokens > 0,
 		LatencySeconds:      latencyPtr,
 		RequestStatus:       "success",
@@ -963,7 +987,7 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 		record.ThinkingTokens = &tt
 	}
 
-	if err := core.GetConversationDao().InsertTokenUsage(record); err != nil {
+	if err := dao.InsertTokenUsage(record); err != nil {
 		slog.Error("code: failed to insert token usage",
 			"error", err,
 			"conversation_id", query.ConversationId,
@@ -1603,8 +1627,8 @@ func noOpTerminalAnswer(responseStr string) (string, bool) {
 		return "", false
 	}
 
-	// Compose an explanatory answer from whatever findings the agent produced, so the
-	// user sees the reasoning (what already satisfies the request and where), not a
+	// Compose an explanatory message from whatever findings the agent produced, so a
+	// human sees the reasoning (what already satisfies the request and where), not a
 	// silent skip. Never hardcode a specific case — use the agent's own fields.
 	detail := firstNonEmptyField(resp, "pr_creation_reason", "description", "root_cause_analysis", "execution_summary")
 	var b strings.Builder
@@ -1613,7 +1637,18 @@ func noOpTerminalAnswer(responseStr string) (string, bool) {
 		b.WriteString("\n\n")
 		b.WriteString(detail)
 	}
-	return b.String(), true
+	message := b.String()
+
+	// Return a structured envelope rather than bare prose so programmatic callers
+	// (e.g. the api-server code-agent PR flow) key off execution_status == "no_op"
+	// instead of parsing the sentence, while humans still get the readable `message`.
+	// Preserve the orchestrator's original fields (execution_status, pr_creation_*).
+	resp["message"] = message
+	envelope, err := json.Marshal(resp)
+	if err != nil {
+		return message, true // fall back to prose if the envelope can't be marshaled
+	}
+	return string(envelope), true
 }
 
 // firstNonEmptyField returns the first non-empty string value among the given keys.

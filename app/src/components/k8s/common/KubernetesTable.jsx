@@ -1,14 +1,16 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import CustomTable from '@shared/tables/CustomTable';
 import { Box, Typography, Grid } from '@mui/material';
 import { Card } from '@ui/Card';
 import WidgetCard from '@ui/WidgetCard';
-import KubernetesPodsTable from '@components/k8s/details/KubernetesPods';
+import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import Chart from '@ui/Chart';
 import k8sApi from '@api1/kubernetes';
 import MarkDowns from '@shared/viewers/MarkDowns';
-import KubernetesEventsTable from '@components/events/KubernetesEvents';
+// Dynamic imports break circular deps: these detail components import KubernetesTable back.
+const KubernetesPodsTable = dynamic(() => import('@components/k8s/details/KubernetesPods'));
+const KubernetesEventsTable = dynamic(() => import('@components/events/KubernetesEvents'));
 import ListingLayout from '@ui/ListingLayout';
 import { Button as DsButton } from '@ui/Button';
 import zlib from 'zlib';
@@ -26,10 +28,11 @@ import {
   convertStringCase,
   formatDateForPlusMinusDuration,
   toSeverityLevel,
+  safeJSONParse,
 } from 'src/utils/common';
-import KubernetesServiceMap from '@components/k8s/details/KubernetesServiceMap';
+const KubernetesServiceMap = dynamic(() => import('@components/k8s/details/KubernetesServiceMap'));
 import { jsonrepair } from 'jsonrepair';
-import KubernetesDeploymentHistory from './KubernetesDeploymentHistory';
+const KubernetesDeploymentHistory = dynamic(() => import('./KubernetesDeploymentHistory'));
 import PropTypes from 'prop-types';
 import KubernetesSecurity from '@components/recommendations/KubernetesSecurity';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
@@ -47,7 +50,7 @@ import DownloadButton from '@shared/buttons/DownloadButton';
 import { DEFAULT_TITLE, getNubiIconUrl } from '@hooks/useTenantBranding';
 import Tooltip from '@ui/Tooltip';
 import ConversationPopup from '@components/llm/ConversationPopup';
-import KubernetesLogs from '@components/k8s/details/KubernetesLogs';
+const KubernetesLogs = dynamic(() => import('@components/k8s/details/KubernetesLogs'));
 import { FiArrowRight } from 'react-icons/fi';
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
@@ -250,7 +253,7 @@ export const TriageRuleEventsTable = ({ query, onOpenTicketForm }) => {
     return (
       <Box p={ds.space[4]}>
         <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-500)' }}>
-          No events matched by this rule in the selected time range.
+          No events matched by this rule in the last 30 days.
         </Typography>
       </Box>
     );
@@ -301,7 +304,7 @@ export const KubernetesEventLog = ({ query }) => {
     if (parsedData !== undefined) {
       let evidencesData = query.evidences;
       if (typeof evidencesData === 'string') {
-        evidencesData = JSON.parse(query.evidences);
+        evidencesData = safeJSONParse(query.evidences) || [];
       }
       gzObject = evidencesData
         .filter((item) => item.type === 'gz')
@@ -942,7 +945,7 @@ const KubernetesRelatedEventTable = ({ query, tableName }) => {
   if (evidencedata) {
     let evidencesData = query?.evidences;
     if (typeof evidencesData === 'string') {
-      evidencesData = JSON.parse(query.evidences);
+      evidencesData = safeJSONParse(query.evidences) || [];
     }
     const filterdata = evidencesData.filter((f) => f.type === 'table' && f.data.table_name.includes(tableName));
     if (filterdata && filterdata.length > 0) {
@@ -2620,7 +2623,7 @@ const KubernetesTable = ({
 
     // Process evidences if present
     if (rowData?.evidences) {
-      const evidencesData = typeof rowData.evidences === 'string' ? JSON.parse(rowData.evidences) : rowData.evidences;
+      const evidencesData = (typeof rowData.evidences === 'string' ? safeJSONParse(rowData.evidences) : rowData.evidences) || [];
 
       for (const evidence of evidencesData) {
         if (evidence?.type === 'table') {
@@ -2649,6 +2652,13 @@ const KubernetesTable = ({
     setRequiredTabs({ tabs });
   };
 
+  // Stable reference: checkForTabsWithData closes over expandedComponentFn/accountId/expandable
+  // which change rarely, but without stabilization the new function reference on every render
+  // defeats React.memo on ExpandableTableRow (areRowPropsEqual compares by ===).
+  const checkForTabsRef = useRef(checkForTabsWithData);
+  checkForTabsRef.current = checkForTabsWithData;
+  const stableCheckForTabsWithData = useCallback((rowData) => checkForTabsRef.current(rowData), []);
+
   return (
     <>
       <CustomTable
@@ -2662,7 +2672,7 @@ const KubernetesTable = ({
         sort={sort}
         onSortChange={onSortChange}
         totalRows={totalRows || data?.length}
-        checkForTabsWithData={onRowClick ? undefined : checkForTabsWithData}
+        checkForTabsWithData={onRowClick ? undefined : stableCheckForTabsWithData}
         showExpandable={showExpandable}
         loading={loading}
         errorMessage={errorMessage}

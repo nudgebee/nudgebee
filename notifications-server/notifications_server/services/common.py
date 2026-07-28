@@ -139,18 +139,31 @@ class CommonService:
         return {"data": channels}
 
     def get_discord_channels(self, messaging_platform):
-        """List text channels the Discord bot has access to across all guilds."""
+        """List text channels the Discord bot has access to across all guilds. An
+        empty list carries a hint (+ invite URL) so the UI can tell "bot not invited
+        to any server" apart from "bot lacks channel permissions"."""
         from notifications_server.clients.discord_client import DiscordClient
+        from notifications_server.services.discord.token_store import resolve_token
 
         if not messaging_platform:
             return {"data": []}
 
-        token = messaging_platform.token
+        token = resolve_token(messaging_platform)
         result = DiscordClient.channels_list(token)
         if not result.get("ok"):
             LOG.error("Failed to list Discord channels: %s", result.get("error"))
-            return {"data": []}
-        return {"data": [{"name": c["name"], "id": c["id"]} for c in result.get("channels", [])]}
+            return {"data": [], "error": result.get("error")}
+
+        channels = [{"name": c["name"], "id": c["id"]} for c in result.get("channels", [])]
+        response = {"data": channels}
+        if not channels:
+            invite_url = DiscordClient.invite_url(messaging_platform.bot_id) if messaging_platform.bot_id else None
+            if result.get("guild_count", 0) == 0:
+                response["hint"] = "bot_not_in_any_server"
+                response["invite_url"] = invite_url
+            else:
+                response["hint"] = "no_visible_channels"
+        return response
 
     def list_users(self, platform, tenant):
         try:
@@ -604,6 +617,132 @@ class CommonService:
             "success": True,
             "created": created,
             "message": "Channel created" if created else "Existing channel reused",
+            "data": data,
+        }
+
+    def add_channel_members(self, platform, tenant_id, channel_id, user_ids, team_id=None):
+        """Add one or more users to a channel/space on the given platform.
+
+        The structured {"success", "data"} / {"error"} shape mirrors
+        create_channel. On success, "data" carries per-user "added",
+        "already_members", and "failed" lists so a partial result is visible to
+        the caller. Adding a user who is already a member is idempotent success,
+        not an error.
+        """
+        try:
+            if not user_ids:
+                return {"error": {"message": "At least one user is required"}}
+            if platform == "google_chat":
+                return self._add_google_chat_members(tenant_id, channel_id, user_ids)
+            if platform == "slack":
+                return self._add_slack_members(tenant_id, team_id, channel_id, user_ids)
+            if platform == "ms_teams":
+                return self._add_ms_teams_members(tenant_id, team_id, user_ids)
+            return {"error": {"message": f"Platform {platform} is not supported yet"}}
+        except Exception:
+            # Mirrors create_channel: known errors return via the structured paths
+            # above; this branch only fires for unhandled bugs/infra failures whose
+            # str(e) text could leak internals without helping the caller.
+            LOG.exception("Error adding channel members")
+            return {"error": {"message": "Unexpected error while adding members"}}
+
+    def _add_slack_members(self, tenant_id, team_id, channel_id, user_ids):
+        messaging_platform = self._get_messaging_platform(tenant_id, team_id, "slack")
+        if not messaging_platform:
+            return {"error": {"message": f"No Slack installation found for tenant: {tenant_id}"}}
+
+        added = []
+        already_members = []
+        failed = []
+        # Invite one user at a time so a single failure (e.g. already-in-channel)
+        # doesn't reject the whole batch and results can be reported per user.
+        for user_id in user_ids:
+            try:
+                response = self.slack_app.client.conversations_invite(
+                    token=messaging_platform.token, channel_id=channel_id, users=user_id
+                )
+                if response.get("ok"):
+                    added.append(user_id)
+                else:
+                    error_msg = response.get("error", ERR_UNKNOWN)
+                    if error_msg in ("already_in_channel", "already_in_group"):
+                        already_members.append(user_id)
+                    else:
+                        failed.append({"user_id": user_id, "error": error_msg})
+            except SlackApiError as e:
+                error_msg = e.response.get("error", str(e))
+                if error_msg in ("already_in_channel", "already_in_group"):
+                    already_members.append(user_id)
+                else:
+                    LOG.error("Slack API error inviting %s to %s: %s", user_id, channel_id, error_msg)
+                    failed.append({"user_id": user_id, "error": error_msg})
+
+        return self._members_result("slack", channel_id, added, already_members, failed)
+
+    def _add_ms_teams_members(self, tenant_id, team_id, user_ids):
+        if not team_id:
+            return {"error": {"message": "team_id is required to add MS Teams members"}}
+
+        messaging_platform = self._get_messaging_platform(tenant_id, team_id, "ms_teams")
+        if not messaging_platform:
+            return {"error": {"message": f"No MS Teams installation found for tenant: {tenant_id}"}}
+
+        error = self._refresh_ms_teams_token(messaging_platform)
+        if error:
+            return {"error": {"message": error}}
+
+        result = MsTeamsClient.add_team_members(
+            access_token=messaging_platform.token,
+            team_id=team_id,
+            user_ids=user_ids,
+        )
+        return self._members_result(
+            "ms_teams",
+            team_id,
+            result.get("added", []),
+            result.get("already_members", []),
+            result.get("failed", []),
+            team_id=team_id,
+        )
+
+    def _add_google_chat_members(self, tenant_id, channel_id, user_ids):
+        if not GoogleChatAppClient.is_enabled():
+            return {"error": {"message": "Google Chat service account is not configured"}}
+
+        result = GoogleChatAppClient.add_members(channel_id, user_ids, tenant=tenant_id)
+        if not result.get("success"):
+            if result.get("reason") == "needs_authorization":
+                return {
+                    "error": {
+                        "message": "Google Chat app needs admin authorization "
+                        "(chat.memberships) before it can add members to spaces."
+                    }
+                }
+            return {
+                "error": {"message": f"Failed to add Google Chat members: {result.get('error') or 'unknown error'}"}
+            }
+        return self._members_result(
+            "google_chat",
+            result.get("channel_id", channel_id),
+            result.get("added", []),
+            result.get("already_members", []),
+            result.get("failed", []),
+        )
+
+    @staticmethod
+    def _members_result(platform, channel_id, added, already_members, failed, team_id=None):
+        data = {
+            "platform": platform,
+            "channel_id": channel_id,
+            "added": added,
+            "already_members": already_members,
+            "failed": failed,
+        }
+        if team_id:
+            data["team_id"] = team_id
+        return {
+            "success": True,
+            "message": f"Added {len(added)} member(s), {len(already_members)} already present, {len(failed)} failed",
             "data": data,
         }
 
@@ -2200,9 +2339,10 @@ class CommonService:
 
     def _send_test_discord(self, messaging_platform, channel_id, message):
         from notifications_server.clients.discord_client import DiscordClient
+        from notifications_server.services.discord.token_store import resolve_token
 
         try:
-            token = messaging_platform.token
+            token = resolve_token(messaging_platform)
             response = DiscordClient.chat_post(token=token, channel_id=channel_id, content=message)
             if not response.get("ok"):
                 return {"success": False, "platform": "discord", "error": response.get("error", "Unknown error")}

@@ -27,7 +27,15 @@ import {
 import SafeIcon from '@shared/icons/SafeIcon';
 
 // --- CONFIGURATION ---
-const DISABLED_PROVIDERS = new Set(['SPLUNK', 'SPLUNK_OBSERVABILITY_PLATFORM', 'SPLUNK_WEBHOOK', 'GRAFANA-TEMPO', 'BITBUCKET', 'LAST9']);
+const DISABLED_PROVIDERS = new Set([
+  'SPLUNK',
+  'SPLUNK_OBSERVABILITY_PLATFORM',
+  'SPLUNK_WEBHOOK',
+  'GRAFANA-TEMPO',
+  'BITBUCKET',
+  'LAST9',
+  'OPENOBSERVE',
+]);
 // Constants moved to top level for better organization
 const PROVIDERS = {
   CLOUD: ['K8S', 'AWS', 'AZURE', 'GCP', 'CLOUDFOUNDRY'],
@@ -235,7 +243,7 @@ const AccountCard = React.memo(({ cloud_provider = 'AWS', active = 0, disabled =
   const needsChannelMapping =
     isMessagingProvider &&
     active > 0 &&
-    (!activeClouds || activeClouds.length === 0 || activeClouds.some((account) => account.channels.length === 0));
+    (!activeClouds || activeClouds.length === 0 || activeClouds.some((account) => (account.channels?.length ?? 0) === 0));
   const isDisabled = DISABLED_PROVIDERS.has(cloud_provider);
 
   const id =
@@ -781,11 +789,18 @@ const Integrations = () => {
         return;
       }
 
-      // Slack / MS Teams integration installs supersede any legacy messaging_platforms
-      // entry for the same card (one install per tenant during the storage migration).
-      if (acc.type === 'slack' || acc.type === 'ms_teams') {
-        const cardKey = acc.type === 'ms_teams' ? 'MSTEAMS' : 'SLACK';
-        map[cardKey] = [{ ...acc, status, channels: [acc.name] }];
+      // Slack / MS Teams / Discord integration installs supersede legacy
+      // messaging_platforms entries for the same card; multiple installs of the same
+      // type accumulate. Seeding channels keeps the messaging badge check from reading
+      // .length on undefined.
+      if (acc.type === 'slack' || acc.type === 'ms_teams' || acc.type === 'discord') {
+        const cardKey = acc.type === 'ms_teams' ? 'MSTEAMS' : acc.type.toUpperCase();
+        // Clear legacy messaging_platforms entries (they carry a `platform` field) once,
+        // then append so multiple same-type integration installs are preserved.
+        if (!map[cardKey] || map[cardKey].some((item) => item.platform)) {
+          map[cardKey] = [];
+        }
+        map[cardKey].push({ ...acc, status, channels: [acc.name] });
         return;
       }
 

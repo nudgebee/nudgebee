@@ -8,6 +8,7 @@ import { Box } from '@mui/material';
 import { Card } from '@ui/Card';
 import { Button } from '@ui/Button';
 import Chart from '@ui/Chart';
+import { OverflowTooltip } from '@ui/Tooltip';
 import { seriesColor } from './palette';
 import { fmtCost, fmtPct } from '../format';
 import type { RankedSlice } from '../types';
@@ -130,7 +131,7 @@ export function BreakdownWidgets({ byModel, bySource, onSelectModel, onSelectSou
             externalTooltip
             onItemClick={onSelectModel}
           />
-          <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+          <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
             <Box
               sx={{
                 display: 'flex',
@@ -163,11 +164,8 @@ export function BreakdownWidgets({ byModel, bySource, onSelectModel, onSelectSou
                 }}
               >
                 <Box sx={{ width: 10, height: 10, borderRadius: 2, backgroundColor: seriesColor(s.key, i), flexShrink: 0 }} />
-                <Box
-                  component='span'
-                  sx={{ flex: 1, color: 'var(--ds-gray-700)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                >
-                  {s.key}
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <OverflowTooltip text={s.key} sx={{ color: 'var(--ds-gray-700)' }} />
                 </Box>
                 <Box component='span' sx={{ width: 44, textAlign: 'right', color: 'var(--ds-gray-600)', fontVariantNumeric: 'tabular-nums' }}>
                   {s.calls}

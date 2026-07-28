@@ -112,16 +112,22 @@ func (m nbCustomMCPTool) Description() string {
 
 func (m nbCustomMCPTool) InputSchema() ToolSchema {
 	if m.tool.InputSchema.Type == "" {
+		// REQUIRED:/OPTIONAL: prefixes on the descriptions predated the
+		// prompt-side schema renderer (agents/core/utils.go:renderInputSchema,
+		// PR #33820) and were the only way for the LLM to see per-field
+		// required/optional status. The renderer now emits that flag inline
+		// as "(<type>, required|optional)", so the prefixes are pure
+		// duplication and are dropped here.
 		return ToolSchema{
 			Type: ToolSchemaTypeObject,
 			Properties: map[string]ToolSchemaProperty{
 				"command": {
 					Type:        ToolSchemaTypeString,
-					Description: "REQUIRED: The specific MCP operation name to execute (e.g., 'search_code', 'get_repo'). See tool description for available commands.",
+					Description: "The specific MCP operation name to execute (e.g., 'search_code', 'get_repo'). See tool description for available commands.",
 				},
 				"args": {
 					Type:        ToolSchemaTypeObject,
-					Description: "OPTIONAL: A JSON object containing arguments for the specified 'command'. Structure depends on the command.",
+					Description: "A JSON object containing arguments for the specified 'command'. Structure depends on the command.",
 				},
 			},
 			Required: []string{"command"},

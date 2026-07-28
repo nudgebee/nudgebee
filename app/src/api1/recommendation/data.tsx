@@ -3514,13 +3514,16 @@ az storage account blob-service-properties update \\
 az vm deallocate \\
   --resource-group {{resource_group}} \\
   --name {{resource_name}}
-
+\`\`\`
+\`\`\`
 az network nic update \\
   --resource-group {{resource_group}} \\
   --name {{nic_name}} \\
   --accelerated-networking true
-
-az vm start \\
+\`\`\`
+Restart the VM (*Optional — skip if you want to start it yourself later*):
+\`\`\`
+[optional] az vm start \\
   --resource-group {{resource_group}} \\
   --name {{resource_name}}
 \`\`\``,
@@ -3670,12 +3673,15 @@ az vm extension set \\
 az vm deallocate \\
   --resource-group {{resource_group}} \\
   --name {{resource_name}}
-
+\`\`\`
+\`\`\`
 az vm convert \\
   --resource-group {{resource_group}} \\
   --name {{resource_name}}
-
-az vm start \\
+\`\`\`
+Restart the VM (*Optional — skip if you want to start it yourself later*):
+\`\`\`
+[optional] az vm start \\
   --resource-group {{resource_group}} \\
   --name {{resource_name}}
 \`\`\``,
@@ -4081,9 +4087,9 @@ az vmss update \\
         aws ec2 modify-instance-attribute --region {{region}} --instance-id {{INSTANCE_ID}} --instance-type '{"Value":"{{INSTANCE_TYPE}}"}'
 \`\`\`
 
-        - Run start-instances command (OSX/Linux/UNIX) to start the Amazon EC2 instance with the new instance type:
+        - Run start-instances command (OSX/Linux/UNIX) to start the Amazon EC2 instance with the new instance type (*Optional — skip if you want to start it yourself later*):
 \`\`\`
-        aws ec2 start-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
+        [optional] aws ec2 start-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 \`\`\`
 `,
       ],
@@ -6359,9 +6365,9 @@ az vmss create \\
       ],
       mitigations: [
         `**AWS CLI command to delete orphaned EBS volume:**
-        - Create Snapshot
+        - Create Snapshot (*Optional — take a backup before deleting*)
 \`\`\`
-        aws ec2 create-snapshot --region {{region}} --volume-id {{recommendation.volume_id}}        
+        [optional] aws ec2 create-snapshot --region {{region}} --volume-id {{recommendation.volume_id}}
 \`\`\`
 
         - Delete Volume
@@ -6519,8 +6525,13 @@ gcloud container node-pools update my-pool --cluster={{resource_name}} --node-ve
         `Stop the instance, change machine type, and restart:
 \`\`\`
 gcloud compute instances stop {{resource_name}} --zone=us-central1-a
+\`\`\`
+\`\`\`
 gcloud compute instances set-machine-type {{resource_name}} --machine-type=e2-standard-4 --zone=us-central1-a
-gcloud compute instances start {{resource_name}} --zone=us-central1-a
+\`\`\`
+Restart the instance (*Optional — skip if you want to start it yourself later*):
+\`\`\`
+[optional] gcloud compute instances start {{resource_name}} --zone=us-central1-a
 \`\`\`
 `,
       ],
@@ -6663,12 +6674,15 @@ az vm resize --resource-group {{resource_group}} --name {{resource_name}} --size
 \`\`\`
 gcloud compute instances stop {{instance_name}} \\
   --zone={{zone}}
-
+\`\`\`
+\`\`\`
 gcloud compute instances set-machine-type {{instance_name}} \\
   --zone={{zone}} \\
   --machine-type=n2-standard-4
-
-gcloud compute instances start {{instance_name}} \\
+\`\`\`
+Restart the instance (*Optional — skip if you want to start it yourself later*):
+\`\`\`
+[optional] gcloud compute instances start {{instance_name}} \\
   --zone={{zone}}
 \`\`\``,
       ],
@@ -6878,9 +6892,9 @@ aws ec2 stop-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 aws ec2 modify-instance-attribute --region {{region}} --instance-id {{INSTANCE_ID}} --instance-type '{"Value": "{{ALTERNATE_INSTANCE_TYPE}}"}'
 \`\`\`
 
-        - Start Instance
+        - Start Instance (*Optional — skip if you want to start it yourself later*)
 \`\`\`
-aws ec2 start-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
+[optional] aws ec2 start-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 \`\`\`
 
 `,
@@ -6922,9 +6936,9 @@ aws ec2 stop-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 aws ec2 modify-instance-attribute --region {{region}} --instance-id {{INSTANCE_ID}} --instance-type '{"Value":"{{INSTANCE_TYPE}}"}'
 \`\`\`
 
-        - Start Instance
+        - Start Instance (*Optional — skip if you want to start it yourself later*)
 \`\`\`
-aws ec2 start-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
+[optional] aws ec2 start-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 \`\`\`
 `,
       ],
@@ -6952,9 +6966,9 @@ aws ec2 stop-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 aws ec2 modify-instance-attribute --region {{region}} --instance-id {{INSTANCE_ID}} --instance-type '{"Value":"{{INSTANCE_TYPE}}"}'
 \`\`\`
 
-        - Start Instance
+        - Start Instance (*Optional — skip if you want to start it yourself later*)
 \`\`\`
-aws ec2 start-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
+[optional] aws ec2 start-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 \`\`\`
         `,
       ],
@@ -7482,8 +7496,13 @@ aws cloudwatch get-metric-statistics \\
         `Stop the instance, change its type, and restart:
 \`\`\`
 aws ec2 stop-instances --instance-ids {{INSTANCE_ID}}
+\`\`\`
+\`\`\`
 aws ec2 modify-instance-attribute --instance-id {{INSTANCE_ID}} --instance-type '{"Value":"{{INSTANCE_TYPE}}"}'
-aws ec2 start-instances --instance-ids {{INSTANCE_ID}}
+\`\`\`
+Restart the instance (*Optional — skip if you want to start it yourself later*):
+\`\`\`
+[optional] aws ec2 start-instances --instance-ids {{INSTANCE_ID}}
 \`\`\`
 `,
       ],
@@ -7761,8 +7780,13 @@ gcloud compute instances delete {{resource_name}} --zone=us-central1-a
         `Stop, resize, and restart:
 \`\`\`
 gcloud compute instances stop {{resource_name}} --zone=us-central1-a
+\`\`\`
+\`\`\`
 gcloud compute instances set-machine-type {{resource_name}} --machine-type=e2-medium --zone=us-central1-a
-gcloud compute instances start {{resource_name}} --zone=us-central1-a
+\`\`\`
+Restart the instance (optional — skip if you want to start it yourself later):
+\`\`\`
+[optional] gcloud compute instances start {{resource_name}} --zone=us-central1-a
 \`\`\`
 `,
       ],
@@ -7777,7 +7801,9 @@ gcloud compute instances start {{resource_name}} --zone=us-central1-a
       mitigations: [
         `Snapshot and delete the disk:
 \`\`\`
-gcloud compute disks snapshot {{resource_name}} --zone=us-central1-a --snapshot-names=my-disk-backup
+[optional] gcloud compute disks snapshot {{resource_name}} --zone=us-central1-a --snapshot-names=my-disk-backup
+\`\`\`
+\`\`\`
 gcloud compute disks delete {{resource_name}} --zone=us-central1-a
 \`\`\`
 `,
@@ -7923,7 +7949,9 @@ az network nic delete --name {{resource_name}} --resource-group {{resource_group
       mitigations: [
         `Create snapshot and delete disk:
 \`\`\`
-az snapshot create --name {{resource_name}}-snapshot --resource-group {{resource_group}} --source {{resource_name}}
+[optional] az snapshot create --name {{resource_name}}-snapshot --resource-group {{resource_group}} --source {{resource_name}}
+\`\`\`
+\`\`\`
 az disk delete --name {{resource_name}} --resource-group {{resource_group}}
 \`\`\`
 `,
@@ -8150,9 +8178,9 @@ az vm deallocate \\
   --name {{resource_name}}
 \`\`\`
 
-Or configure auto-shutdown to automatically deallocate during off-hours:
+Or configure auto-shutdown to automatically deallocate during off-hours (*Optional — an alternative to a one-off deallocate*):
 \`\`\`
-az vm auto-shutdown \\
+[optional] az vm auto-shutdown \\
   --resource-group {{resource_group}} \\
   --name {{resource_name}} \\
   --time 1900
@@ -8175,13 +8203,16 @@ az vm auto-shutdown \\
 az vm deallocate \\
   --resource-group {{resource_group}} \\
   --name {{resource_name}}
-
+\`\`\`
+\`\`\`
 az disk update \\
   --resource-group {{resource_group}} \\
   --name {{os_disk_name}} \\
   --sku StandardSSD_LRS
-
-az vm start \\
+\`\`\`
+Restart the VM (*Optional — skip if you want to start it yourself later*):
+\`\`\`
+[optional] az vm start \\
   --resource-group {{resource_group}} \\
   --name {{resource_name}}
 \`\`\``,
@@ -8226,9 +8257,9 @@ gcloud compute instances stop {{instance_name}} \\
   --zone={{zone}}
 \`\`\`
 
-Or set up an instance schedule for automatic start/stop:
+Or set up an instance schedule for automatic start/stop (*Optional — an alternative to a one-off stop*):
 \`\`\`
-gcloud compute resource-policies create instance-schedule {{schedule_name}} \\
+[optional] gcloud compute resource-policies create instance-schedule {{schedule_name}} \\
   --region={{region}} \\
   --vm-start-schedule='0 8 * * MON-FRI' \\
   --vm-stop-schedule='0 18 * * MON-FRI' \\
@@ -8251,12 +8282,15 @@ gcloud compute resource-policies create instance-schedule {{schedule_name}} \\
 \`\`\`
 gcloud compute instances stop {{instance_name}} \\
   --zone={{zone}}
-
+\`\`\`
+\`\`\`
 gcloud compute instances set-machine-type {{instance_name}} \\
   --zone={{zone}} \\
   --machine-type=e2-medium
-
-gcloud compute instances start {{instance_name}} \\
+\`\`\`
+Restart the instance (*Optional — skip if you want to start it yourself later*):
+\`\`\`
+[optional] gcloud compute instances start {{instance_name}} \\
   --zone={{zone}}
 \`\`\``,
       ],

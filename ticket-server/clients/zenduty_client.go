@@ -249,11 +249,12 @@ const (
 	ZenDutyStatusSuppressed   = 3
 )
 
-// ZenDuty Urgency Constants
+// ZenDuty Urgency Constants — ZenDuty urgency is binary: 0 = Low, 1 = High
+// (https://zenduty.com/docs/workflows/, trigger_data.urgency). There is no
+// medium and no value 2.
 const (
-	ZenDutyUrgencyLow    = 0
-	ZenDutyUrgencyMedium = 1
-	ZenDutyUrgencyHigh   = 2
+	ZenDutyUrgencyLow  = 0
+	ZenDutyUrgencyHigh = 1
 )
 
 // ListTeams fetches all teams from ZenDuty.
@@ -416,17 +417,14 @@ func (c *ZenDutyClient) ListIncidents(ctx context.Context, queryParams map[strin
 }
 
 // MapUrgencyFromString converts string urgency to ZenDuty numeric urgency.
+// ZenDuty urgency is binary, so "medium" and unknown values collapse to High —
+// the wire value ZenDuty was already receiving for them before the invented
+// 3-level scale was removed ("high" used to send an invalid 2).
 func MapUrgencyFromString(urgency string) int {
-	switch urgency {
-	case "high":
-		return ZenDutyUrgencyHigh
-	case "medium":
-		return ZenDutyUrgencyMedium
-	case "low":
+	if urgency == "low" {
 		return ZenDutyUrgencyLow
-	default:
-		return ZenDutyUrgencyMedium
 	}
+	return ZenDutyUrgencyHigh
 }
 
 // MapStatusToString converts ZenDuty numeric status to string.

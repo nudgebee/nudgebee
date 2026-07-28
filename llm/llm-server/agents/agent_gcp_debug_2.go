@@ -179,6 +179,7 @@ const gcpReactOutputFormat = `Choose the format based on the type of user reques
 **CRITICAL: Citation Format Rule**
 You MUST use the full markdown link format for EVERY reference: [Short Tool Name - ID](#task-ID).
 Example: ...found in [GCP - E1](#task-E1) and [Logs - E3](#task-E3).
+Exception: when citing an external resource that has its own real URL (e.g. a GitHub PR/issue link), use [Label](actual-url) with that real URL instead — never substitute a #task-ID anchor for it.
 
 **Resolution:**
 - Immediate fix: [specific command/action]
@@ -242,12 +243,9 @@ var gcpRewooExamples = []core.NBAgentPromptExample{
 func getGcpPlannerSupportedTools(ctx *security.RequestContext, accountId string) []toolcore.NBTool {
 	supportedToolNames := []string{GcpAgentName, getTicketAgentName(), WorkflowAgentName, GithubAgentName, WebSearchAgentName, RecommendationsAgentName, EventsAgentName, VisualizationAgentName, PostgresAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RedisAgentName, RabbitMQAgentName, KubectlAgentName, DelegateAgentToolName}
 
-	// The KG-backed V2 service_dependency_graph covers cloud (AWS/GCP/Azure)
-	// topology, not just K8s, so expose it to this orchestrator when V2 is active.
-	// V1 is K8s-only — gate on the V2 flag.
-	if config.Config.ServiceDependencyGraphV2Enabled {
-		supportedToolNames = append(supportedToolNames, ServiceDependencyGraph)
-	}
+	// The KG-backed service_dependency_graph covers cloud (AWS/GCP/Azure) topology,
+	// not just K8s. The V1 flag guard here went away with the V1 agent.
+	supportedToolNames = append(supportedToolNames, ServiceDependencyGraph)
 
 	// shell_execute is injected automatically by FilterAndInjectDefaultTools when enabled.
 	// It auto-injects cloud credentials based on account type.

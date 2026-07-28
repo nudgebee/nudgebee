@@ -167,6 +167,8 @@ const KubernetesDashboardIssues: React.FC<KubernetesTableProps> = ({ id, allClus
                     additionalContent={makeAccountClicklable(e?.account_id, e?.cluster)}
                     hideIcon={true}
                     cursorPointer
+                    showAutoEllipsis
+                    maxWidth='100%'
                     font={undefined}
                     region={undefined}
                     namespace={undefined}
@@ -186,6 +188,8 @@ const KubernetesDashboardIssues: React.FC<KubernetesTableProps> = ({ id, allClus
                       additionalContent={undefined}
                       hideIcon={true}
                       cursorPointer={false}
+                      showAutoEllipsis
+                      maxWidth='100%'
                       font={undefined}
                       region={undefined}
                       namespace={undefined}
@@ -197,7 +201,7 @@ const KubernetesDashboardIssues: React.FC<KubernetesTableProps> = ({ id, allClus
               });
               data.push({ text: e?.subject_namespace });
               data.push({ text: e?.finding_type });
-              data.push({ component: <Datetime baseDate={new Date()} value={e?.starts_at} /> });
+              data.push({ component: <Datetime baseDate={new Date()} value={e?.starts_at} sx={{ whiteSpace: 'nowrap' }} /> });
               data.push({ component: <SeverityIcon level={e?.priority} />, data: e?.priority });
               data.push({
                 component: (

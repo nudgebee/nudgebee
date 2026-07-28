@@ -10,6 +10,8 @@ import k8sApi from '@api1/kubernetes';
 import apiKubernetes1 from '@api1/kubernetes1';
 import apiIntegrations from '@api1/integrations';
 import homeApi from '@api1/home';
+import recommendationApi from '@api1/recommendation';
+import { formatRuleName } from '@components/optimise-new/utils';
 import { titleCaseForAggregationKey } from 'src/utils/common';
 import CopyableText from '@shared/CopyableText';
 import { STRUCTURED_FILTER_FIELDS, buildFilterExpression, parseFilterExpression } from '../utils/eventFilter';
@@ -244,6 +246,10 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   const [optimizationClusters, setOptimizationClusters] = useState<string[]>([]);
   const [k8sClusterOptions, setK8sClusterOptions] = useState<{ label: string; value: string }[]>([]);
   const [isLoadingK8sClusters, setIsLoadingK8sClusters] = useState(false);
+  // Distinct (category, rule_name) pairs sourced from the tenant's actual optimization
+  // recommendations, so the Rule Name dropdown always matches what Optimize Recommendations shows.
+  const [optimizationRulePairs, setOptimizationRulePairs] = useState<{ category: string; rule_name: string }[]>([]);
+  const [isLoadingOptimizationRules, setIsLoadingOptimizationRules] = useState(false);
 
   // Buffered trigger-config state. Edits go into `pendingTriggerConfig` instead
   // of straight to the parent; the header Save button flushes pending → parent and
@@ -483,12 +489,28 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     }
   };
 
+  const fetchOptimizationRuleOptions = async () => {
+    setIsLoadingOptimizationRules(true);
+    try {
+      const pairs = await recommendationApi.getDistinctOptimizationRules();
+      setOptimizationRulePairs(pairs || []);
+    } catch (error) {
+      console.error('Failed to fetch optimization rule options:', error);
+      setOptimizationRulePairs([]);
+    } finally {
+      setIsLoadingOptimizationRules(false);
+    }
+  };
+
   useEffect(() => {
     if (open && triggerType === 'event') {
       fetchEventFilterOptions();
     }
     if (open && (triggerType === 'event' || triggerType === 'optimization')) {
       fetchK8sClusterOptions();
+    }
+    if (open && triggerType === 'optimization') {
+      fetchOptimizationRuleOptions();
     }
   }, [open, triggerType, accountId]);
 
@@ -588,6 +610,33 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
       fetchWebhookIntegrationOptions();
     }
   }, [open, triggerType, accountId]);
+
+  // Rule Name options are derived from the tenant's real recommendation data (not a
+  // hardcoded list that silently misses new rules like `unused_pvc`). When a category is
+  // selected, scope the options to that category; otherwise show every distinct rule.
+  // Memoized because this component re-renders on every keystroke of its text fields.
+  const selectedOptimizationCategory = optimizationCategories[0] || '';
+  const selectedOptimizationRule = optimizationRuleNames[0] || '';
+  const optimizationRuleOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const options = optimizationRulePairs
+      .filter((pair) => !selectedOptimizationCategory || pair.category === selectedOptimizationCategory)
+      .filter((pair) => {
+        if (!pair.rule_name || seen.has(pair.rule_name)) {
+          return false;
+        }
+        seen.add(pair.rule_name);
+        return true;
+      })
+      .map((pair) => ({ label: formatRuleName(pair.rule_name), value: pair.rule_name }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    // Preserve an already-saved rule when editing a trigger, even if it isn't in the
+    // freshly fetched/filtered set, so the select doesn't render blank.
+    if (selectedOptimizationRule && !seen.has(selectedOptimizationRule)) {
+      options.push({ label: formatRuleName(selectedOptimizationRule), value: selectedOptimizationRule });
+    }
+    return options;
+  }, [optimizationRulePairs, selectedOptimizationCategory, selectedOptimizationRule]);
 
   if (!open || !selectedNode) {
     return null;
@@ -854,24 +903,14 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     }
   };
 
+  // Canonical recommendation categories, matching the Optimize Recommendations page
+  // (CATEGORY_FILTER_OPTIONS / WIDGET_CATEGORIES). Values must match the DB `category`
+  // verbatim — the backend matches the trigger's `categories` param against event.category.
   const OPTIMIZATION_CATEGORY_OPTIONS = [
-    { label: 'Pod Right Sizing', value: 'PodRightSizing' },
     { label: 'Right Sizing', value: 'RightSizing' },
-    { label: 'K8s Instance Recommendation', value: 'K8sInstanceRecommendation' },
-    { label: 'K8s Spot Recommendation', value: 'K8sSpotRecommendation' },
-    { label: 'Configuration', value: 'Configuration' },
-    { label: 'Security', value: 'Security' },
-    { label: 'K8s Missing Attribute', value: 'K8sMissingAttribute' },
-  ];
-
-  const OPTIMIZATION_RULE_NAME_OPTIONS = [
-    { label: 'Vertical Rightsize', value: 'vertical_rightsize' },
-    { label: 'Horizontal Rightsize', value: 'horizontal_rightsize' },
-    { label: 'PVC Rightsize', value: 'pvc_rightsize' },
-    { label: 'Continuous Rightsize', value: 'continuous_rightsize' },
-    { label: 'Replica Right Sizing', value: 'replica_right_sizing' },
-    { label: 'Spot Instance Recommendation', value: 'Spot instance recommendation' },
-    { label: 'Abandoned Resource', value: 'Abandoned resource' },
+    { label: 'Infra Upgrade', value: 'InfraUpgrade' },
+    { label: 'Config', value: 'Configuration' },
+    { label: 'Spot Instance', value: 'K8sSpotRecommendation' },
   ];
 
   const updateOptimizationTrigger = (updates: Partial<{ categories: string[]; rule_names: string[]; clusters: string[] }>) => {
@@ -939,7 +978,10 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
           const value = e.target.value || '';
           const newCategories = value ? [value] : [];
           setOptimizationCategories(newCategories);
-          updateOptimizationTrigger({ categories: newCategories });
+          // Rule options are scoped to the selected category, so clear any stale rule
+          // selection that no longer belongs to the newly chosen category.
+          setOptimizationRuleNames([]);
+          updateOptimizationTrigger({ categories: newCategories, rule_names: [] });
         }}
         placeholder='Select category'
         required={false}
@@ -969,7 +1011,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         required={false}
         error=''
         fieldType='dropdown'
-        options={OPTIMIZATION_RULE_NAME_OPTIONS}
+        options={optimizationRuleOptions}
         onSelect={() => {}}
         customRender={null}
         limitTags={0}
@@ -977,6 +1019,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         maxRows={1}
         minRows={1}
         maxLength={200}
+        isOptionsLoading={isLoadingOptimizationRules}
       />
 
       <Box

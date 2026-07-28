@@ -74,8 +74,6 @@ jest.mock('uuid', () => ({
   v4: jest.fn().mockReturnValueOnce('key-1').mockReturnValueOnce('key-2').mockReturnValue('key-n'),
 }));
 
-jest.mock('lodash/uniq', () => jest.fn((arr) => [...new Set(arr)]));
-
 import ShowPrometheusLineChart from '@shared/charts/ShowPrometheusLineChart';
 import { snackbar } from '@shared/snackbarService';
 

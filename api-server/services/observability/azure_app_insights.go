@@ -672,3 +672,22 @@ func (s *AzureAppInsightsSource) GetLabelMapping() map[string]string {
 func (s *AzureAppInsightsSource) GetSupportedOperators() []string {
 	return []string{"_eq", "_neq", "_contains", "_like"}
 }
+
+// QueryRootSpansByTrace returns one root span per trace for the "By Traces" view (see
+// queryRootSpansViaSpans): spans are fetched via QueryTraces and reduced to one root per trace.
+func (s *AzureAppInsightsTraceSource) QueryRootSpansByTrace(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	return queryRootSpansViaSpans(ctx, s, req)
+}
+
+// CountTracesByTrace returns -1 (estimate) for the "By Traces" view; distinct-trace counting is
+// not available cheaply for this provider, so the frontend estimates pagination.
+func (s *AzureAppInsightsTraceSource) CountTracesByTrace(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
+	return countTracesByTraceEstimate()
+}
+
+// QueryLabels returns backend-discovered trace label keys. AzureAppInsightsTraceSource has no generic
+// label-key discovery API, so it returns an empty list; FetchTraceLabels falls back to
+// the derived canonical + mapping label set. Implements TraceSource.QueryLabels.
+func (s *AzureAppInsightsTraceSource) QueryLabels(_ *security.RequestContext, _ FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
+	return []OutputTraceLabel{}, nil
+}

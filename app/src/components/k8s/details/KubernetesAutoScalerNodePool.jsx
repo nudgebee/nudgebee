@@ -226,7 +226,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
     }
 
     if (typeof data === 'string') {
-      data = JSON.parse(data);
+      data = safeJSONParse(data) || [];
     }
 
     if (data) {

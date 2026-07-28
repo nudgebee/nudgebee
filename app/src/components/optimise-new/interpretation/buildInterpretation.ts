@@ -106,7 +106,10 @@ const DIRECTION_VERB: Record<RightSizingSummary['direction'], string> = {
   none: 'Right-size',
 };
 
-function podRightSizing(summary: RightSizingSummary, savings: number): Pick<InterpretationData, 'verdict' | 'impact' | 'impactIsCost' | 'evidence'> {
+function podRightSizing(
+  summary: RightSizingSummary,
+  savings: number
+): Pick<InterpretationData, 'verdict' | 'impact' | 'impactIsCost' | 'evidence' | 'confidence' | 'observedWindow'> {
   const containerLabel = summary.containerCount > 1 ? `${summary.primary} (+${summary.containerCount - 1} more)` : summary.primary;
   const verdict = summary.changeText
     ? `${DIRECTION_VERB[summary.direction]} ${containerLabel}: ${summary.changeText}`
@@ -125,7 +128,14 @@ function podRightSizing(summary: RightSizingSummary, savings: number): Pick<Inte
     impact = 'Reliability & efficiency. No direct cost change.';
   }
 
-  return { verdict, impact, impactIsCost, evidence: summary.evidence.length ? summary.evidence : undefined };
+  return {
+    verdict,
+    impact,
+    impactIsCost,
+    evidence: summary.evidence.length ? summary.evidence : undefined,
+    confidence: summary.confidence,
+    observedWindow: summary.observedWindow,
+  };
 }
 
 function configVerdict(items: any[]): string {
@@ -227,6 +237,8 @@ export function buildInterpretation({
       return {
         verdict: r.verdict,
         serviceName: serviceName || undefined,
+        confidence: r.confidence,
+        observedWindow: r.observedWindow,
         whyNow,
         impact: r.impact,
         impactIsCost: r.impactIsCost,

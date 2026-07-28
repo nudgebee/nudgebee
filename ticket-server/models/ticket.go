@@ -1,6 +1,7 @@
 package models
 
 import (
+	"strings"
 	"time"
 )
 
@@ -99,12 +100,39 @@ type TicketFilter struct {
 }
 
 type UpdateFields struct {
-	Status      string   `json:"status,omitempty"`
-	Severity    string   `json:"severity,omitempty"`
-	Assignee    string   `json:"assignee,omitempty"`
+	Status   string `json:"status,omitempty"`
+	Severity string `json:"severity,omitempty"`
+	// Assignee is the legacy single-assignee field, still used by tickets.update.
+	Assignee string `json:"assignee,omitempty"`
+	// Assignees is the multi-assignee set used by tickets.assign. When set it
+	// takes precedence over Assignee. Platforms that only support a single
+	// assignee (Jira, ServiceNow) reject more than one entry.
+	Assignees   []string `json:"assignees,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Labels      []string `json:"labels,omitempty"`
 	ProjectKey  string   `json:"project_key,omitempty"`
+}
+
+// AssigneeList returns the effective, trimmed set of assignees for an update,
+// unifying the multi-assignee Assignees field with the legacy single Assignee.
+// Assignees takes precedence when non-empty.
+func (u UpdateFields) AssigneeList() []string {
+	source := u.Assignees
+	if len(source) == 0 && strings.TrimSpace(u.Assignee) != "" {
+		source = []string{u.Assignee}
+	}
+	out := make([]string, 0, len(source))
+	for _, a := range source {
+		if a = strings.TrimSpace(a); a != "" {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// HasAssignee reports whether the update carries at least one assignee.
+func (u UpdateFields) HasAssignee() bool {
+	return len(u.AssigneeList()) > 0
 }
 
 type TicketRequest struct {

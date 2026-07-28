@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/andygrunwald/go-jira"
 	"github.com/gin-gonic/gin"
 	"github.com/google/go-github/v67/github"
+	"github.com/lib/pq"
 	servicenowsdkgo "github.com/michaeldcanady/servicenow-sdk-go"
 	"github.com/michaeldcanady/servicenow-sdk-go/credentials"
 	tableapi "github.com/michaeldcanady/servicenow-sdk-go/table-api"
@@ -138,6 +140,24 @@ func LoadExistingConfig(id, tenant, name, tool string) (ExistingConfig, error) {
 	}
 
 	return result, nil
+}
+
+// ShouldRehydrateCredentials reports whether an edit should reload the password/
+// auth_type the frontend left blank. Gated on an id: a create is validated as
+// submitted, so a user-token GitHub config can't inherit a same-named App
+// integration's auth_type (both are type="github", differing only by auth_type).
+func ShouldRehydrateCredentials(id, password, authType string) bool {
+	return id != "" && (password == "" || authType == "")
+}
+
+// duplicateNameError maps a Postgres unique-violation on the integration name to a
+// user-facing "already exists" message; returns nil for any other error.
+func duplicateNameError(err error, name, tool string) error {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+		return fmt.Errorf("an integration named %q already exists for %s; choose a different name or edit the existing one", name, tool)
+	}
+	return nil
 }
 
 // QuickValidateCredentials performs a lightweight auth-only check for each tool.
@@ -863,6 +883,9 @@ func SaveTicketConfiguration(config models.TicketConfigurations, metadata []map[
 			WHERE id = $4 AND tenant_id = $5
 		`, config.Name, "enabled", config.CreatedBy, integrationID, config.Tenant)
 		if err != nil {
+			if dupErr := duplicateNameError(err, config.Name, config.Tool); dupErr != nil {
+				return response, dupErr
+			}
 			return response, fmt.Errorf("failed to update integration: %w", err)
 		}
 
@@ -943,6 +966,9 @@ func SaveTicketConfiguration(config models.TicketConfigurations, metadata []map[
 		RETURNING id
 	`, config.Tenant, config.Tool, "user", config.Name, "enabled", config.CreatedBy)
 	if err != nil {
+		if dupErr := duplicateNameError(err, config.Name, config.Tool); dupErr != nil {
+			return response, dupErr
+		}
 		slog.Error("Failed to insert integration", "error", err)
 		return response, err
 	}

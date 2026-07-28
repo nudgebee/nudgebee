@@ -35,6 +35,28 @@ type NBMultiCommandTool interface {
 	GetSubCommands() ([]NBToolCommand, error)
 }
 
+// MissingFieldsResponder lets a tool override the generic
+// "<tool>: missing required fields — <field> (<type>): <description>"
+// line the planner emits when schema-Required validation fails, without
+// changing the schema (so the LLM still sees the correct spec at call
+// time).
+//
+// The handler receives the request the LLM actually sent so it can
+// inspect misplaced content (e.g. narration text landing on Command
+// when Arguments["reasoning"] was required) and return a response that
+// names the specific misuse instead of the generic line.
+//
+// Return nil to fall back to the generic message.
+//
+// Implementers SHOULD add a compile-time interface check next to their
+// registration so a typo in the receiver-method name fails the build
+// instead of silently opting the tool out of the escape hatch:
+//
+//	var _ core.MissingFieldsResponder = (*myTool)(nil)
+type MissingFieldsResponder interface {
+	OnMissingRequiredFields(request NBToolCallRequest, missing []string) *NBToolResponse
+}
+
 type NBToolResposeType string
 
 const (
@@ -76,16 +98,21 @@ type NBToolResponse struct {
 	// observation text the UI renders stays byte-for-byte what the tool
 	// produced. Nil for tools that don't populate it.
 	Metadata *NBToolResponseMetadata `json:"metadata,omitempty"`
+	// SubAgentEvidence is a small, budget-bounded manifest of the concrete tool
+	// calls a sub-agent actually ran (set only for agent-type tools when the
+	// evidence feature is enabled). Kept OFF `Data` deliberately: it is rendered
+	// as a separate block after the observation and is exempt from scratchpad
+	// compression, so the distilled artifacts survive even when the raw
+	// observation is summarized as it ages. Empty for normal tools.
+	SubAgentEvidence string `json:"sub_agent_evidence,omitempty"`
 }
 
 // NBToolResponseMetadata is the typed seam for tool-execution metadata. New
 // fields land here without an interface change or DB migration (persisted as
 // one JSONB column on llm_conversation_tool_calls).
 type NBToolResponseMetadata struct {
-	// ExitStatus mirrors POSIX-style intent: 0 success, 1 failure, 2
-	// empty-but-successful (e.g. grep with no match). Not a literal shell
-	// exit code — it's derived from NBToolResponseStatus + empty-data check
-	// in the executor.
+	// ExitStatus mirrors POSIX intent: 1 failure, else 0 (empty-but-successful
+	// counts as success). Derived from NBToolResponseStatus in the executor.
 	ExitStatus int `json:"exit_status"`
 	// ExecutionDurationMs is wall-clock duration of the tool call in
 	// milliseconds. Clamped to 0 on negative input.
@@ -125,6 +152,9 @@ type ToolSchema struct {
 	Type       ToolSchemaType                `json:"type"`
 	Properties map[string]ToolSchemaProperty `json:"properties"`
 	Required   []string                      `json:"required,omitempty"`
+	// RequiredOneOf: each group needs ≥1 listed key present (non-null) — a
+	// shape-only anyOf subset for aliased fields (e.g. command/query).
+	RequiredOneOf [][]string `json:"required_one_of,omitempty"`
 }
 
 type ToolRequestType string

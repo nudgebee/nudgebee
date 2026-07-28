@@ -529,9 +529,9 @@ export async function getUserSuperAdminRole(userId: string): Promise<string | nu
   return response?.data?.data?.users_get_super_admin_role?.rows?.[0]?.role || null;
 }
 
-export async function updateUserAccountAccessed(authId: string, tenant: string) {
+export async function updateUserAccountAccessed(authId: string, tenant: string, tokenSha256?: string) {
   const response = await queryGraphQL(USER_UPDATE_ACCESSED_MUTATION, 'UserUpdateAccessed', {
-    object: { auth_id: authId, tenant_id: tenant },
+    object: { auth_id: authId, tenant_id: tenant, ...(tokenSha256 ? { token_sha256: tokenSha256 } : {}) },
   });
   return response.data;
 }

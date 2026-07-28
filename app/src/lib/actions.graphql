@@ -2047,6 +2047,18 @@ type Mutation {
 }
 
 type Mutation {
+  auth_delete_session(
+    object: auth_delete_session_input!
+  ): auth_delete_session_output
+}
+
+type Mutation {
+  auth_check_session(
+    object: auth_check_session_input!
+  ): auth_check_session_output
+}
+
+type Mutation {
   users_update_default_tenant(
     object: user_update_default_tenant_input!
   ): user_update_default_tenant_output
@@ -2442,6 +2454,19 @@ input user_update_accessed_input {
   auth_id: String
   username: String
   tenant_id: String!
+  token_sha256: String
+}
+
+input auth_delete_session_input {
+  user_id: String!
+  jti: String
+  expires_at: Int!
+}
+
+input auth_check_session_input {
+  user_id: String!
+  jti: String
+  iat: Int!
 }
 
 input user_create_auth_input {
@@ -5734,6 +5759,14 @@ type user_onboard_output {
 
 type user_update_accessed_output {
   updated: Int!
+}
+
+type auth_delete_session_output {
+  revoked: Boolean!
+}
+
+type auth_check_session_output {
+  revoked: Boolean!
 }
 
 type user_create_auth_output {
@@ -11651,6 +11684,72 @@ input WebhookSubjectMappingsSyncRequest {
 type WebhookSubjectMappingsSyncOutput {
   status: String!
   synced_count: Int!
+}
+
+# ---------------------------------------------------------------------------
+# Watch tasks — UI for the background-watch feature.
+#
+# Action-shape mirror of the previous raw llm_watch_tasks table queries so
+# the watches drawer works under RPC_BYPASS_HASURA=true (the bypass router
+# only routes registered actions, not arbitrary table queries). The React
+# component reads the same field set either way.
+# ---------------------------------------------------------------------------
+
+type Query {
+  ai_list_watches_by_conversation(request: AILlmWatchListRequest!): AILlmWatchListResponse
+}
+
+type Mutation {
+  ai_cancel_watch(request: AILlmWatchCancelRequest!): AILlmWatchCancelResponse
+}
+
+input AILlmWatchListRequest {
+  conversation_id: String!
+}
+
+input AILlmWatchCancelRequest {
+  watch_id: String!
+}
+
+type AILlmWatchListResponse {
+  data: AILlmWatchListData
+  err: Json
+}
+
+type AILlmWatchListData {
+  watches: [AILlmWatchRow!]!
+}
+
+type AILlmWatchRow {
+  id: String!
+  status: String!
+  source_kind: String!
+  predicate_kind: String!
+  predicate_expr: String!
+  predicate_negate: Boolean!
+  poll_interval_sec: Int!
+  max_duration_sec: Int!
+  poll_count: Int!
+  failure_count: Int!
+  next_poll_at: String!
+  last_poll_at: String
+  last_poll_result: String
+  final_result: String
+  error: String
+  expires_at: String!
+  created_at: String!
+  updated_at: String!
+}
+
+type AILlmWatchCancelResponse {
+  data: AILlmWatchCancelData
+  err: Json
+}
+
+type AILlmWatchCancelData {
+  affected_rows: Int!
+  watch_id: String
+  status: String
 }
 
 scalar Datetime

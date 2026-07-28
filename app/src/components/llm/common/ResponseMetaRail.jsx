@@ -69,6 +69,7 @@ const COUNT_LABELS = {
   tasks: ['task', 'tasks'],
   contexts: ['context', 'contexts'],
   memories: ['memory', 'memories'],
+  watches: ['watch', 'watches'],
 };
 
 const countItem = (key, tone, count, onClick) => {
@@ -87,33 +88,43 @@ const countItem = (key, tone, count, onClick) => {
 // Per-message egressfilter signal — a single chip summarising the events
 // the outbound filter emitted on this turn. One message can produce multiple
 // FilterEvents (the planner may make several LLM calls), so we surface a
-// count and pick the strongest mode for tone:
-//   - any "enforce" hit → 'critical' (the call was blocked)
-//   - else any "detect" hit → 'warning' (call went through but secrets detected)
+// count and pick the strongest mode for tone (enforce > redact > detect):
+//   - any "enforce" hit → 'critical' + "blocked" (the call was refused)
+//   - else any "redact" hit → 'warning' + "redacted" (call went through but the payload was mutated)
+//   - else any "detect" hit → 'warning' + "detected" (call went through, no action taken)
 //   - else nothing rendered
+//
 // Mode string compatibility: the Go backend uses "detect" as the canonical
-// mode string (renamed from "audit"); "audit" is kept as a legacy alias for
-// pre-rename rows. Without accepting "detect" here, the chip silently returns
-// null for every event and no chip renders even though metadata is present.
+// mode string (renamed from "audit" in PR #33187 — see docs/llm-egress-filter.md
+// §6) and added "redact" in the redact-mode PR. We accept:
+//   - "detect" (canonical) and "audit" (legacy alias, pre-#33187 rows)
+//   - "enforce"
+//   - "redact"
+// Without accepting each new backend mode string here, the chip silently
+// returns null for every event and no chip renders — same-shape lesson as
+// the audit→detect regression fixed in PR #33334.
+//
 // Tones must come from the design system's ChipTone union (see Chip.tsx) —
 // passing an unrecognised tone crashes the resolveColors call.
 //
-// Chip label says WHAT was caught ("secret blocked" / "secret detected"),
-// not just "flagged" — a reader shouldn't have to hover to know whether the
-// call was refused or merely noted. The tooltip then lists the rule ids that
-// fired and the audit ids so support can correlate against backend logs.
+// Chip label says WHAT was done ("secret blocked" / "secret redacted" /
+// "secret detected") so a reader doesn't have to hover to know whether the
+// call was refused, its payload rewritten, or merely noted. The tooltip
+// then lists the rule ids that fired and the audit ids so support can
+// correlate against backend logs.
 const egressfilterItem = (events) => {
   if (!Array.isArray(events) || events.length === 0) {
     return null;
   }
   const hasEnforce = events.some((e) => e?.mode === 'enforce');
+  const hasRedact = events.some((e) => e?.mode === 'redact');
   const hasDetect = events.some((e) => e?.mode === 'detect' || e?.mode === 'audit');
-  if (!hasEnforce && !hasDetect) {
+  if (!hasEnforce && !hasRedact && !hasDetect) {
     return null;
   }
 
   const tone = hasEnforce ? 'critical' : 'warning';
-  const verb = hasEnforce ? 'blocked' : 'detected';
+  const verb = hasEnforce ? 'blocked' : hasRedact ? 'redacted' : 'detected';
 
   // hit_count may be missing on a malformed event row; min 1 so the chip
   // never renders "0 secret blocked".
@@ -145,7 +156,8 @@ const egressfilterItem = (events) => {
   // ids for support correlation.
   const tooltipParts = [];
   if (ruleList) {
-    tooltipParts.push(`${hasEnforce ? 'Blocked' : 'Detected'}: ${ruleList}`);
+    const tooltipVerb = hasEnforce ? 'Blocked' : hasRedact ? 'Redacted' : 'Detected';
+    tooltipParts.push(`${tooltipVerb}: ${ruleList}`);
   }
   if (events.length > 1) {
     tooltipParts.push(`${totalHits} hit${totalHits === 1 ? '' : 's'} across ${events.length} calls`);
@@ -189,6 +201,14 @@ const buildItems = (props) => {
   if (filterItem) {
     items.push(filterItem);
   }
+  if (props.watchCount > 0 && props.onOpenWatches) {
+    // 'success' tone (green family) — visually separate from tasks/contexts/
+    // memories so the user clocks "this is a different category" at a glance.
+    // Watches imply forward-motion ("agent is still working"), which green
+    // carries well. MUST be a valid ChipTone (see Chip.tsx) — a raw hue like
+    // 'green' is not a tone and crashes TONE_PALETTE lookup.
+    items.push(countItem('watches', 'success', props.watchCount, props.onOpenWatches));
+  }
   if (props.duration) {
     // `boundary: true` swaps the trailing separator from `·` to `|` — visually distinguishes
     // "how long it took" from "when it happened".
@@ -221,9 +241,11 @@ const ResponseMetaRail = ({
   taskCount = 0,
   contextCount = 0,
   memoryCount = 0,
+  watchCount = 0,
   onOpenTasks,
   onOpenContexts,
   onOpenMemories,
+  onOpenWatches,
   messageTokenData,
   onTokenUsageHover,
   isFetchingTokenData,
@@ -236,9 +258,11 @@ const ResponseMetaRail = ({
     taskCount,
     contextCount,
     memoryCount,
+    watchCount,
     onOpenTasks,
     onOpenContexts,
     onOpenMemories,
+    onOpenWatches,
     messageTokenData,
     onTokenUsageHover,
     isFetchingTokenData,
@@ -281,9 +305,11 @@ ResponseMetaRail.propTypes = {
   taskCount: PropTypes.number,
   contextCount: PropTypes.number,
   memoryCount: PropTypes.number,
+  watchCount: PropTypes.number,
   onOpenTasks: PropTypes.func,
   onOpenContexts: PropTypes.func,
   onOpenMemories: PropTypes.func,
+  onOpenWatches: PropTypes.func,
   messageTokenData: PropTypes.any,
   onTokenUsageHover: PropTypes.func,
   isFetchingTokenData: PropTypes.bool,

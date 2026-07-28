@@ -31,7 +31,7 @@ func (t DatadogResourceSearchTool) GetType() core.NBToolType {
 }
 
 func (t DatadogResourceSearchTool) Description() string {
-	return `Searches for resources in Datadog.`
+	return `Searches Datadog resources. Input MUST be a JSON object: {"resource_type":"services|containers|apm_entities","query":"<search query>"}. Both fields required.`
 }
 
 func (t DatadogResourceSearchTool) InputSchema() core.ToolSchema {

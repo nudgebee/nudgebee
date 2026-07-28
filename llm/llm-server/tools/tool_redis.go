@@ -51,11 +51,18 @@ Be cautious when running commands that may impact performance, such as FLUSHALL,
 }
 
 func (m RedisExecuteTool) InputSchema() core.ToolSchema {
+	// 'command' is the sole carrier (no alias) so it's Required; 'instance' is
+	// read by Call() from the embedded JSON, declared here for the validator.
 	return core.ToolSchema{
-		Type: core.ToolSchemaTypeObject, Properties: map[string]core.ToolSchemaProperty{
+		Type: core.ToolSchemaTypeObject,
+		Properties: map[string]core.ToolSchemaProperty{
 			"command": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "JSON string with 'command' and 'instance' fields. 'instance' is the host to connect to.",
+				Description: "Redis command to execute (e.g. 'GET key', 'INFO').",
+			},
+			"instance": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Redis host/instance to connect to.",
 			},
 		},
 		Required: []string{"command"},
@@ -98,8 +105,10 @@ func (m RedisExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 			if response == "" {
 				response = err.Error()
 			}
+			// redis-cli --help lists CLI flags; interactive mode uses HELP <cmd>
+			// to list valid Redis commands.
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, "", "redis-cli", "redis-cli --help (or HELP <command> in interactive mode)"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}
@@ -134,8 +143,14 @@ func (m RedisExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 				responseData = responseData1
 			}
 		}
+		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
+		// non-string response, so the LLM always sees the failure reason
+		// rather than an empty envelope.
+		if responseData == "" {
+			responseData = err.Error()
+		}
 		return core.NBToolResponse{
-			Data:   responseData,
+			Data:   cliRecoveryEnvelope(responseData, "", "redis-cli", ""),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}

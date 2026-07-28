@@ -48,6 +48,14 @@ const AgentHealth = () => {
     namespace: '',
     prometheusRetentionTime: 0,
 
+    // per-feature failure reasons reported by the agent's health checks
+    prometheusError: '',
+    alertManagerError: '',
+    logsError: '',
+    tracesError: '',
+    opencostError: '',
+    nodeAgentError: '',
+
     // cloud accounts related
     isCloudEventsConnected: false,
     cloudEventsLastConnectedAt: '',
@@ -77,7 +85,7 @@ const AgentHealth = () => {
   const [proxyData, setProxyData] = useState([]);
   const [proxyAgentHealthData, setProxyAgentHealthData] = useState([]);
   const [proxyLoading, setProxyLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTab] = useState(null);
 
   const latestVersionsRef = useRef(latestVersions);
   const router = useRouter();
@@ -184,6 +192,12 @@ const AgentHealth = () => {
               nodeAgentCount: acc.connection_status?.nodeAgentCount ?? 0,
               namespace: acc.connection_status?.installationNamespace ?? '',
               prometheusRetentionTime: acc.connection_status?.prometheusRetentionTime ?? 0,
+              prometheusError: acc.connection_status?.prometheusConnectionError ?? '',
+              alertManagerError: acc.connection_status?.alertManagerConnectionError ?? '',
+              logsError: acc.connection_status?.logsConnectionError ?? '',
+              tracesError: acc.connection_status?.tracesConnectionError ?? '',
+              opencostError: acc.connection_status?.opencostConnectionError ?? '',
+              nodeAgentError: acc.connection_status?.nodeAgentConnectionError ?? '',
               agentUrl: acc.connection_status?.agentUrl,
               prometheusAdditionalLabels: acc.connection_status?.prometheusAdditionalLabels
                 ? JSON.stringify(acc.connection_status?.prometheusAdditionalLabels)
@@ -436,6 +450,17 @@ const AgentHealth = () => {
     ]);
   };
 
+  // Surface the agent's per-feature health-check failure reason next to a
+  // "Disconnected" status. Renders nothing when connected or no reason reported.
+  const renderReason = (disconnected, error) =>
+    disconnected && error ? (
+      <li>
+        <Typography component='span' color='error' variant='body2'>
+          Reason - {error}
+        </Typography>
+      </li>
+    ) : null;
+
   const paginatedScheduledJobsData = scheduledJobsData.slice(currentPage * recordsPerPage, (currentPage + 1) * recordsPerPage);
 
   const optionsToDisplay = {
@@ -494,10 +519,14 @@ const AgentHealth = () => {
                       <li>Data Retention - {getPrometheusRetentionTime(agentFeatures.prometheusRetentionTime)}</li>
                       <li>URL - {agentFeatures.prometheusUrl}</li>
                       <li>Additional Labels - {agentFeatures.prometheusAdditionalLabels}</li>
+                      {renderReason(!agentFeatures.isPrometheusConnected, agentFeatures.prometheusError)}
                     </ul>
                   </li>
                   <li>
                     <b>Alert Manager - </b> {agentFeatures.isAlertManagerConnected ? 'Connected' : 'Disconnected'}
+                    {!agentFeatures.isAlertManagerConnected && agentFeatures.alertManagerError && (
+                      <ul>{renderReason(true, agentFeatures.alertManagerError)}</ul>
+                    )}
                   </li>
                   <li>
                     <b>Logs - </b>
@@ -505,6 +534,7 @@ const AgentHealth = () => {
                       <li>Status - {agentFeatures.isLogsManagerConnected ? 'Connected' : 'Disconnected'}</li>
                       <li>Provider - {agentFeatures.logsProvider}</li>
                       <li>URL - {agentFeatures.logsProviderUrl}</li>
+                      {renderReason(!agentFeatures.isLogsManagerConnected, agentFeatures.logsError)}
                     </ul>
                   </li>
                   <li>
@@ -512,6 +542,7 @@ const AgentHealth = () => {
                     <ul>
                       <li>Status - {agentFeatures.isTracesManagerConnected ? 'Connected' : 'Disconnected'}</li>
                       <li>URL - {agentFeatures.tracesUrl}</li>
+                      {renderReason(!agentFeatures.isTracesManagerConnected, agentFeatures.tracesError)}
                     </ul>
                   </li>
                   <li>
@@ -526,10 +557,14 @@ const AgentHealth = () => {
                           : 'Disconnected'}
                       </li>
                       {agentFeatures.isOpenCostConnected && <li>URL - {agentFeatures.opencostUrl}</li>}
+                      {renderReason(!agentFeatures.isOpenCostConnected && !agentFeatures.isOpenCostServerSide, agentFeatures.opencostError)}
                     </ul>
                   </li>
                   <li>
                     <b>Node Agent - </b> {agentFeatures.isNodeAgentConnected ? 'Connected (' + agentFeatures.nodeAgentCount + ')' : 'Disconnected'}
+                    {!agentFeatures.isNodeAgentConnected && agentFeatures.nodeAgentError && (
+                      <ul>{renderReason(true, agentFeatures.nodeAgentError)}</ul>
+                    )}
                   </li>
                   <li>
                     <b>Agent Namespace - </b> {agentFeatures.namespace}

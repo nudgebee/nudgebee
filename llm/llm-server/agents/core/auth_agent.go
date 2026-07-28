@@ -34,6 +34,19 @@ func IsAgentToolAuthorizedToProcessRequest(ctx *security.RequestContext, agent N
 	}
 
 	if !found {
+		// Watch tools are globally injected via FilterAndInjectDefaultTools when
+		// WatchEnabled is on. Mirror that whitelist here so the auth check accepts
+		// them — otherwise the LLM emits a watch_resource action that gets rejected
+		// at dispatch time even though the tool was advertised in the prompt.
+		if config.Config.WatchEnabled && isWatchToolName(toolName) {
+			if t, ok := toolcore.GetNBTool(request.AccountId, toolName); ok {
+				found = true
+				tool = t
+			}
+		}
+	}
+
+	if !found {
 		// check if it's a client tool
 		for _, ct := range request.ClientTools {
 			if strings.EqualFold(ct.Name, toolName) {

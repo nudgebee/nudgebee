@@ -452,9 +452,23 @@ const KubernetesRightSizingPopupForm = ({
         if (res?.errors && res?.errors.length > 0) {
           handleGithubPRSuccessOrFail(`Failed to create Pull request ${parseHttpResponseBodyMessage(res)}`, 'error', '');
         } else if (res?.data && res?.data.length > 0) {
-          const parsedJson = JSON.parse(res?.data[0].pr);
-          const prURL = parsedJson.html_url;
-          handleGithubPRSuccessOrFail('Pull request created successfully.', 'success', prURL);
+          // The PR is raised asynchronously by the code agent — the initial
+          // response's `pr` field is only populated once that finishes, so it's
+          // normal for it to be absent here. Only attempt to parse it, and treat
+          // its absence as "still in progress" rather than a failure.
+          let prURL = '';
+          const prRaw = res.data[0]?.pr;
+          try {
+            const parsedPr = typeof prRaw === 'string' ? JSON.parse(prRaw) : prRaw;
+            prURL = parsedPr?.html_url || '';
+          } catch {
+            prURL = '';
+          }
+          handleGithubPRSuccessOrFail(
+            prURL ? 'Pull request created successfully.' : 'Raising pull request — it will appear shortly.',
+            'success',
+            prURL
+          );
           if (onClose) {
             onClose();
           }

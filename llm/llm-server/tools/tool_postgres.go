@@ -53,15 +53,29 @@ func (m PostgresExecuteTool) Description() string {
 }
 
 func (m PostgresExecuteTool) InputSchema() core.ToolSchema {
+	// 'command'/'query' are aliases (Call() prefers 'command'); RequiredOneOf
+	// enforces at least one without rejecting valid 'query'-keyed inputs.
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
 			"command": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "JSON string with 'command' (or 'query') and 'instance' fields. 'instance' is the host to connect to.",
+				Description: "Postgres SQL query to execute. Either 'command' or 'query' must be provided.",
+			},
+			"query": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Alias for 'command' — accepted at the top level for backward compatibility.",
+			},
+			"database": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Target Postgres database to run the query against.",
+			},
+			"instance": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Postgres host/instance to connect to.",
 			},
 		},
-		Required: []string{"command"},
+		RequiredOneOf: [][]string{{"command", "query"}},
 	}
 }
 
@@ -186,9 +200,17 @@ func (m PostgresExecuteTool) Call(nbRequestContext core.NbToolContext, input cor
 		}, err
 	}
 
-	data := response.(string)
+	// Guard the assertion (mirrors tool_mssql): a future ExecuteContainerJob
+	// path could return a non-string / nil response alongside a nil error,
+	// which an unguarded `response.(string)` would turn into a panic. A nil
+	// response falls through as an empty string rather than the literal
+	// "<nil>" that fmt.Sprintf would produce.
+	data, ok := response.(string)
+	if !ok && response != nil {
+		data = fmt.Sprintf("%v", response)
+	}
 	return core.NBToolResponse{
-		Data:   string(data),
+		Data:   data,
 		Type:   core.NBToolResponseTypeTable,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil
@@ -341,24 +363,13 @@ func (m PostgresExecuteTool) IdentifyConfig(ctx core.NbToolContext, input core.N
 // for kubectl_execute, but the relay error_hint envelope didn't extend to the
 // postgres path. This closes that gap.
 func wrapPostgresError(rawError string) string {
-	if rawError == "" {
-		return rawError
-	}
-	hint := postgresErrorHint(rawError)
-	if hint == "" {
-		return rawError
-	}
-	envelope := map[string]string{
-		"error_hint":     hint,
-		"original_error": rawError,
-	}
-	body, err := common.MarshalJson(envelope)
-	if err != nil {
-		// Marshal failure is exceptionally unlikely with two string fields;
-		// fall back to raw so the LLM still sees the underlying signal.
-		return rawError
-	}
-	return string(body)
+	// Prefer the postgres-specific hint; cliRecoveryEnvelope falls back to
+	// the generic "read the raw output before switching" nudge on unrecognized
+	// errors that still carry CLI signal. psql --help is the CLI flag list;
+	// `\?` covers meta-commands in interactive mode — either can help when
+	// syntax is the issue. Empty rawError and truly opaque errors pass
+	// through byte-for-byte.
+	return cliRecoveryEnvelope(rawError, postgresErrorHint(rawError), "psql", `psql --help (or \? in interactive mode)`)
 }
 
 // postgresErrorHint maps a raw postgres error string to an actionable hint

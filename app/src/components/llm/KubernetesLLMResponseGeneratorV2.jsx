@@ -33,6 +33,7 @@ import { ConversationTokenUsage } from './common/TokenUsageDisplay';
 import ConversationList from './ConversationListV2';
 import DynamicGreeting from './DynamicGreeting';
 import JumpToLatestPill from './common/JumpToLatestPill';
+import QuestionNavigator from './common/QuestionNavigator';
 import FollowupSheet from './common/FollowupSheet';
 import MessageStream from './MessageStream';
 import TroubleshootList from './TroubleshootList';
@@ -135,11 +136,6 @@ const KubernetesLLMResponseGenerator = ({
     }
   }, [sessionId, conversationId]);
 
-  // Check if we are in a chat screen context based on existence of EITHER ID
-  const isChatScreen = useMemo(
-    () => Boolean(router.query.session_id || router.query.conversation_id),
-    [router.query.session_id, router.query.conversation_id]
-  );
   const { selectedCluster, setSelectedCluster } = useData();
 
   const [uiState, uiDispatch] = useReducer(componentReducer, null, () => ({
@@ -202,7 +198,8 @@ const KubernetesLLMResponseGenerator = ({
     setSelectedConversation,
   } = useConversationManager();
   const { allAgents, enabledAgents, loadingAgents, allFunctions, refreshAgents } = useAgentConfiguration(accountId);
-  const { tokenUsageData, messageTokenData, fetchTokenUsage, resetTokenMetrics, getAgentTokenDataForMessage } = useTokenUsage(accountId);
+  const { tokenUsageData, messageTokenData, fetchTokenUsage, resetTokenMetrics, getAgentTokenDataForMessage, getReasoningForTool } =
+    useTokenUsage(accountId);
   const { suggestions: conversationSuggestions, fetchSuggestions, clearSuggestions } = useConversationSuggestions(accountId);
   const {
     allowStop,
@@ -233,6 +230,20 @@ const KubernetesLLMResponseGenerator = ({
   const isConversationInProgress = useMemo(
     () => conversationStatus === 'IN_PROGRESS' || !!currentlyProcessingQuestion,
     [conversationStatus, currentlyProcessingQuestion]
+  );
+
+  const isChatScreen = useMemo(
+    () => Boolean(router.query.session_id || router.query.conversation_id || currentlyProcessingQuestion),
+    [router.query.session_id, router.query.conversation_id, currentlyProcessingQuestion]
+  );
+
+  const navigatorQuestions = useMemo(
+    () =>
+      messages
+        .map((m, index) => ({ m, index }))
+        .filter(({ m }) => (m.tool ?? m.type) === 'question')
+        .map(({ m, index }) => ({ id: `task-card-${index}`, text: (m.text || '').trim() })),
+    [messages]
   );
 
   // Backend holds the parent conversationMessage in WAITING between a followup answer
@@ -352,7 +363,7 @@ const KubernetesLLMResponseGenerator = ({
         onSuccess: (llmSessionId) => {
           if (!popup) {
             // Standardize on session_id for new chats, clear conversation_id to avoid ambiguity
-            applyFiltersOnRouter(router, { session_id: llmSessionId, conversation_id: null });
+            applyFiltersOnRouter(router, { session_id: llmSessionId, conversation_id: null }, { shallow: true });
           }
           setSelectedSessionId(llmSessionId);
           setSelectedConversationId(''); // Reset conversationId as we have a fresh session
@@ -423,8 +434,7 @@ const KubernetesLLMResponseGenerator = ({
         // Pass both IDs to fetchConversation
         fetchConversation(selectedSessionId, selectedConversationId, 'selected', false);
       }
-    } else {
-      // New Chat Setup
+    } else if (!currentlyProcessingQuestion) {
       setMessages([]);
       if (textareaRef.current) {
         textareaRef.current.focus();
@@ -552,6 +562,34 @@ const KubernetesLLMResponseGenerator = ({
     }
   }, [queryPrefix, messages.length]);
 
+  // Open an existing conversation already at the bottom: when its history finishes loading,
+  // jump to the latest message instantly (behavior: 'auto'), once per session — so there's no
+  // visible top-to-bottom scroll after the shimmer. Skipped for a brand-new first query (keep
+  // the view on the user's question); the session is still marked handled so it won't snap to
+  // the bottom when that run later completes.
+  const autoScrolledSessionRef = useRef(null);
+  useEffect(() => {
+    if (messages.length === 0) {
+      return;
+    }
+    const currentSessionKey = selectedSessionId || selectedConversationId || '';
+    if (!currentSessionKey || autoScrolledSessionRef.current === currentSessionKey) {
+      return;
+    }
+    autoScrolledSessionRef.current = currentSessionKey;
+    if (currentlyProcessingQuestion) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      const el = scrollContainerRef.current;
+      if (el && el.scrollHeight > el.clientHeight + 4) {
+        el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+      } else if (typeof window !== 'undefined') {
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
+      }
+    });
+  }, [messages.length, selectedSessionId, selectedConversationId, currentlyProcessingQuestion]);
+
   useEffect(() => {
     if (messages.length > 0) {
       const timeoutId = setTimeout(() => {
@@ -564,29 +602,6 @@ const KubernetesLLMResponseGenerator = ({
       };
     }
   }, [messages]);
-
-  // Auto-scroll to bottom on chat open: when a session/conversation loads its messages for
-  // the first time, jump straight to the latest message — including in-progress conversations
-  // where the last message is a task (which the response-only effect above doesn't cover).
-  const autoScrolledSessionRef = useRef(null);
-  useEffect(() => {
-    if (messages.length === 0) {
-      return;
-    }
-    const currentSessionKey = selectedSessionId || selectedConversationId || '';
-    if (!currentSessionKey || autoScrolledSessionRef.current === currentSessionKey) {
-      return;
-    }
-    autoScrolledSessionRef.current = currentSessionKey;
-    requestAnimationFrame(() => {
-      const el = scrollContainerRef.current;
-      if (el && el.scrollHeight > el.clientHeight + 4) {
-        el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
-      } else if (typeof window !== 'undefined') {
-        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
-      }
-    });
-  }, [messages.length, selectedSessionId, selectedConversationId]);
 
   useEffect(() => {
     const runAutoCheck = async () => {
@@ -742,19 +757,30 @@ const KubernetesLLMResponseGenerator = ({
   // the workflow server-side (workflow_update tool) without restating the full definition,
   // so the JSON-gated onWorkflowGenerated path above misses those edits. The parent
   // reconciles by re-fetching and applying only if the server actually changed.
-  // Fire only on a real IN_PROGRESS -> COMPLETED transition so it doesn't fire on mount
-  // (an already-completed historical conversation) or on a session switch.
-  const prevConversationStatusRef = useRef(conversationStatus);
+  //
+  // Fire on the transition INTO COMPLETED *after* we observed the assistant actively
+  // working (IN_PROGRESS or WAITING for a clarification/approval). The previous guard
+  // required the immediately-preceding status to be exactly 'IN_PROGRESS', which silently
+  // dropped the signal whenever the polled status passed through any other value (e.g. a
+  // brief reset to '') before COMPLETED — leaving the editor canvas stale after an AI edit.
+  // The active-latch is reset on a session switch so opening a historical (already-completed)
+  // thread never fires this.
+  const assistantWasActiveRef = useRef(false);
+  const completionSessionRef = useRef(selectedSessionId);
   useEffect(() => {
-    if (
-      apiMode === 'workflow' &&
-      conversationStatus === 'COMPLETED' &&
-      prevConversationStatusRef.current === 'IN_PROGRESS' &&
-      onConversationComplete
-    ) {
+    if (apiMode !== 'workflow') {
+      return;
+    }
+    if (completionSessionRef.current !== selectedSessionId) {
+      completionSessionRef.current = selectedSessionId;
+      assistantWasActiveRef.current = false;
+    }
+    if (conversationStatus === 'IN_PROGRESS' || conversationStatus === 'WAITING') {
+      assistantWasActiveRef.current = true;
+    } else if (conversationStatus === 'COMPLETED' && assistantWasActiveRef.current && onConversationComplete) {
+      assistantWasActiveRef.current = false;
       onConversationComplete(selectedSessionId);
     }
-    prevConversationStatusRef.current = conversationStatus;
   }, [conversationStatus, apiMode, onConversationComplete, selectedSessionId]);
 
   const handleDropdownChange = useCallback(
@@ -865,11 +891,15 @@ const KubernetesLLMResponseGenerator = ({
   }, [conversationIdAtDb, conversationStatus, stopInvestigation, setConversationStatus, clearSuggestions]);
 
   const handleTokenUsageHover = useCallback(async () => {
-    // Only fetch if we haven't already fetched and we're not currently fetching
-    if (!isTokenDataFetched && !isFetchingTokenData && selectedSessionId) {
+    // Usage metrics resolve by either key — session_id (normal chats) or conversation_id
+    // (workflow/autopilot conversations are opened by conversation_id and have no session_id
+    // in the URL). The backend normalizes whichever is passed. Mirror the same fallback the
+    // rest of this component uses (e.g. fetchConversation, share id).
+    const usageKey = selectedSessionId || selectedConversationId;
+    if (!isTokenDataFetched && !isFetchingTokenData && usageKey) {
       setIsFetchingTokenData(true);
       try {
-        await fetchTokenUsage(selectedSessionId);
+        await fetchTokenUsage(usageKey);
         setIsTokenDataFetched(true);
       } catch (error) {
         console.error('Failed to fetch token usage:', error);
@@ -877,14 +907,26 @@ const KubernetesLLMResponseGenerator = ({
         setIsFetchingTokenData(false);
       }
     }
-  }, [isTokenDataFetched, isFetchingTokenData, selectedSessionId, fetchTokenUsage]);
+  }, [isTokenDataFetched, isFetchingTokenData, selectedSessionId, selectedConversationId, fetchTokenUsage]);
+
+  // For a conversation that isn't actively running, prefetch token usage (incl.
+  // reasoning) up front so the reasoning rows are ready the instant a tool is opened —
+  // no lazy hover/drawer-open wait. Gate on "not busy" (any settled state, not just an
+  // enumerated terminal list) and a loaded status, so we don't fetch mid-run or before
+  // the conversation has loaded. Runs once (same guard as the hover fetch).
+  useEffect(() => {
+    const isLoaded = conversationStatus && conversationStatus !== 'NOT_FOUND';
+    const usageKey = selectedSessionId || selectedConversationId;
+    if (!isSystemBusy && isLoaded && usageKey && !isTokenDataFetched && !isFetchingTokenData) {
+      handleTokenUsageHover();
+    }
+  }, [isSystemBusy, conversationStatus, selectedSessionId, selectedConversationId, isTokenDataFetched, isFetchingTokenData, handleTokenUsageHover]);
 
   const clusterDropdownContent = (
     <ClusterDropDown
       showStatusIndicator={true}
       headerStyle={true}
       showIndicator={true}
-      rounded={0}
       onChange={handleDropdownChange}
       noLabel
       onClusterDataLoaded={handleClusterData}
@@ -910,7 +952,7 @@ const KubernetesLLMResponseGenerator = ({
         sx={{
           display: popup ? 'flex' : 'grid',
           transition: 'grid-template-columns 0.3s ease-in-out',
-          gridTemplateColumns: '1fr',
+          gridTemplateColumns: 'minmax(0, 1fr)',
           ...(popup && {
             height: '100%',
             overflow: 'hidden',
@@ -1300,8 +1342,8 @@ const KubernetesLLMResponseGenerator = ({
                 display: 'flex',
                 position: 'relative',
                 flexDirection: 'column',
-                justifyContent: selectedSessionId == '' && selectedConversationId == '' && !popup && 'center',
-                ...(popup && selectedSessionId == '' && selectedConversationId == '' && { flex: 1 }),
+                justifyContent: selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion && !popup && 'center',
+                ...(popup && selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion && { flex: 1 }),
               }}
             >
               <Box
@@ -1309,15 +1351,16 @@ const KubernetesLLMResponseGenerator = ({
                 flexDirection={'column'}
                 position={'relative'}
                 sx={{
-                  mt: selectedSessionId == '' && selectedConversationId == '' && !popup ? ds.space.mul(1, 25) : 0,
+                  mt: selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion && !popup ? ds.space.mul(1, 25) : 0,
                   ...(popup &&
                     selectedSessionId == '' &&
-                    selectedConversationId == '' && {
+                    selectedConversationId == '' &&
+                    !currentlyProcessingQuestion && {
                       flex: 1,
                       pb: ds.space.mul(1, 5),
                     }),
                   '@media (max-width: 1280px)': {
-                    mt: selectedSessionId == '' && selectedConversationId == '' && !popup ? ds.space.mul(1, 15) : 0,
+                    mt: selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion && !popup ? ds.space.mul(1, 15) : 0,
                   },
                 }}
               >
@@ -1489,13 +1532,10 @@ const KubernetesLLMResponseGenerator = ({
                 )}
               </Box>
             </Box>
-            {/* Show shimmer when loading existing conversation OR first query on main page (not popup) */}
-            {((isConversationLoading && (selectedSessionId || selectedConversationId)) || (isConversationInProgress && messages.length === 0)) &&
-              !popup && <ConversationShimmer />}
+            {isConversationLoading && (selectedSessionId || selectedConversationId) && messages.length === 0 && !popup && <ConversationShimmer />}
 
-            {/* Show ConversationLoader for first query in popup/workflow builder only */}
-            {isConversationInProgress && messages.length === 0 && popup && (
-              <Box sx={{ mt: ds.space.mul(0, 5), width: '100%', minWidth: ds.space.mul(1, 100) }}>
+            {isConversationInProgress && messages.length === 0 && !(isConversationLoading && (selectedSessionId || selectedConversationId)) && (
+              <Box sx={{ mt: ds.space.mul(0, 5), width: '100%', minWidth: popup ? ds.space.mul(1, 100) : 0 }}>
                 <ConversationLoader query={currentlyProcessingQuestion} />
               </Box>
             )}
@@ -1558,6 +1598,7 @@ const KubernetesLLMResponseGenerator = ({
                 sessionId: selectedSessionId || selectedConversationId,
                 conversationId: conversationIdAtDb,
                 getAgentTokenDataForMessage,
+                getReasoningForTool,
                 messageTokenData,
                 handleTokenUsageHover,
                 isFetchingTokenData,
@@ -1568,6 +1609,19 @@ const KubernetesLLMResponseGenerator = ({
                 // when the sheet is rendered so we don't have two interactive entry points for
                 // the same question.
                 followupReadOnlyKey: showFollowupSheet ? activeFollowupKey : null,
+                // When a background watch transitions to a terminal state, the
+                // responder appends a markdown "Watch update" block to the parent
+                // message's `response` column on the server. The chip poller in
+                // MessageStream detects that transition and invokes this callback
+                // so we pull the fresh message bodies — without it, the block
+                // is in the DB but the UI keeps showing the pre-terminal copy
+                // until a hard refresh. fetchConversation is the same call used
+                // for initial chat load; it's idempotent.
+                onWatchTerminal: () => {
+                  if (selectedSessionId || selectedConversationId) {
+                    fetchConversation(selectedSessionId, selectedConversationId, 'selected', false);
+                  }
+                },
               }}
             />
 
@@ -1641,7 +1695,7 @@ const KubernetesLLMResponseGenerator = ({
               if (!isSystemBusy || messages.length === 0 || showFollowupSheet) {
                 return null;
               }
-              if (!(selectedSessionId !== '' || selectedConversationId !== '')) {
+              if (!(selectedSessionId !== '' || selectedConversationId !== '' || !!currentlyProcessingQuestion)) {
                 return null;
               }
               return (
@@ -1654,6 +1708,7 @@ const KubernetesLLMResponseGenerator = ({
               );
             })()}
           </Box>
+          <QuestionNavigator questions={navigatorQuestions} scrollContainerRef={scrollContainerRef} popup={popup} jumpOffset={popup ? 16 : 72} />
           {(selectedSessionId != '' || selectedConversationId != '' || !!currentlyProcessingQuestion) &&
           (conversationStatus !== 'NOT_FOUND' || queryPrefix) ? (
             <Box

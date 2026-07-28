@@ -43,7 +43,7 @@ import {
 import { Box, Typography } from '@mui/material';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
 import { useEventCloudFilter } from '@hooks/useCloudFilters';
-import EventClassifyModal from '@components/events/EventClassifyModal';
+import EventClassifyModal, { type ClassifyUpdate } from '@components/events/EventClassifyModal';
 import { CLASSIFICATION_OPTIONS, getTriageStatusTooltip } from '@api1/triage';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import { action } from 'src/utils/actionStyles';
@@ -209,18 +209,15 @@ const transformTableData = (
         },
         {
           component: (
-            <Tooltip variant='default' title={getTriageStatusTooltip(item.latest_nb_status)} placement='top'>
-              <Box>
-                <NBStatusBadge
-                  eventId={item.latest_event_id}
-                  currentStatus={item.latest_nb_status}
-                  onStatusChange={onStatusChange}
-                  onCreateTicket={() => onCreateTicket?.(item)}
-                  disabled={!canWrite}
-                  disableTooltip
-                />
-              </Box>
-            </Tooltip>
+            <NBStatusBadge
+              eventId={item.latest_event_id}
+              currentStatus={item.latest_nb_status}
+              onStatusChange={onStatusChange}
+              onCreateTicket={() => onCreateTicket?.(item)}
+              disabled={!canWrite}
+              disableSnoozeTooltip
+              tooltipTitle={getTriageStatusTooltip(item.latest_nb_status)}
+            />
           ),
         },
         {
@@ -258,7 +255,7 @@ const transformTableData = (
                 items={CLASSIFICATION_OPTIONS.map((option) => ({
                   id: option.value,
                   label: (
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)', whiteSpace: 'normal' }}>
                       <Typography sx={{ fontWeight: ds.weight.medium, fontSize: ds.text.small, lineHeight: '16px', color: ds.gray[700] }}>
                         {option.label}
                       </Typography>
@@ -549,11 +546,23 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     setDefaultClassification('');
   }, []);
 
-  const handleClassifySuccess = useCallback(() => {
-    handleClassifyClose();
-    // Trigger refetch by resetting page
-    setCurrentPage(1);
-  }, [handleClassifyClose]);
+  const handleClassifySuccess = useCallback(
+    (update: ClassifyUpdate) => {
+      handleClassifyClose();
+      setRawEventGroupings((prev) =>
+        prev.map((row) => {
+          if (row.latest_event_id !== update.eventId) return row;
+          return {
+            ...row,
+            ...(update.newStatus != null ? { latest_nb_status: update.newStatus } : {}),
+            ...(update.newPriority != null ? { latest_computed_priority: update.newPriority } : {}),
+            ...(update.snoozedUntil != null ? { latest_snoozed_until: update.snoozedUntil } : {}),
+          };
+        })
+      );
+    },
+    [handleClassifyClose]
+  );
 
   const closeTicketCreateForm = useCallback(() => {
     setIsTicketCreateFormOpen(false);

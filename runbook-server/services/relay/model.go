@@ -8,7 +8,7 @@ type ActionExecuteBody struct {
 	ActionParams map[string]any `json:"action_params"`
 	Origin       string         `json:"origin,omitempty"`
 	Timeout      time.Duration  `json:"timeout,omitempty"`
-	AgentType    string         `json:"-"`
+	AgentType    string         `json:"agent_type,omitempty"`
 }
 
 type RelayExecuteRequest struct {

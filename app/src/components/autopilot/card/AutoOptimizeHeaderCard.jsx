@@ -7,6 +7,7 @@ import PropTypes from 'prop-types';
 import k8sApi from '@api1/kubernetes';
 import Currency from '@shared/format/Currency';
 import { ds } from '@utils/colors';
+import { safeJSONParse } from '@utils/common';
 
 const TextWithValue = ({ title, value, valueSize = ds.text.small, valueColor = ds.gray[500], direction = 'row', updatedCard = false, sx = {} }) => {
   return (
@@ -138,7 +139,7 @@ const AutoPilotHeaderCard = ({
           }
         }
         if (typeof data === 'string') {
-          data = JSON.parse(data);
+          data = safeJSONParse(data);
         }
         let namespaces = data?.map((item) => item.metadata.namespace);
         setNamespaces([...new Set(namespaces)]);

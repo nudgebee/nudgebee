@@ -538,7 +538,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
           />
         </Box>
 
-        <Grid item xs={12} sx={{ mt: 1, mb: 1 }}>
+        <Grid item xs={12} id='aws-access-mode' sx={{ mt: 1, mb: 1 }}>
           <Typography variant='subtitle2' sx={{ mb: 0.5 }}>
             Access Mode
           </Typography>

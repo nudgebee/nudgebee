@@ -11,7 +11,7 @@ import CloudAccountEvents from '@components/cloudaccount/CloudAccountEvents';
 import { MENU_ITEMS, DataBlock, CustomText } from '@components/cloudaccount/common';
 import { usePagination } from '@hooks/usePagination';
 import TagsCell from '@components/cloudaccount/TagsCell';
-import type { ICustomTableRow } from '../ec2/Instances';
+import type { ICustomTableRow } from '../ec2/types';
 import { buildStateApiParams, getStateDropdownOptions } from '@components/cloudaccount/stateFilter';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -262,7 +262,7 @@ const CFAppDetails = ({ drilldownQuery }: { drilldownQuery: any }) => {
   };
 
   return (
-    <Box sx={{ backgroundColor: ds.background[100], borderRadius: ds.radius.md, p: ds.space[5] }}>
+    <Box sx={{ backgroundColor: ds.background[100], borderRadius: ds.radius.md, p: ds.space[5], border: `1px solid ${ds.gray[200]}` }}>
       {/* Top summary cards (like Stratos header) */}
       <Box sx={{ display: 'flex', gap: ds.space[3], mb: ds.space[5] }}>
         <Box sx={{ flex: 1, p: ds.space[3], backgroundColor: ds.background[200], borderRadius: ds.radius.md, border: `1px solid ${ds.gray[200]}` }}>
@@ -413,7 +413,7 @@ const CFInstanceStats = ({ drilldownQuery }: { drilldownQuery: any }) => {
 
   if (instanceStats.length === 0) {
     return (
-      <Box sx={{ p: ds.space[5], backgroundColor: ds.background[100], borderRadius: ds.radius.md }}>
+      <Box sx={{ p: ds.space[5], backgroundColor: ds.background[100], borderRadius: ds.radius.md, border: `1px solid ${ds.gray[200]}` }}>
         <Typography sx={{ color: ds.gray[600], fontSize: ds.text.body }}>
           No instance data available. Instance stats are collected during the next sync cycle.
         </Typography>
@@ -422,7 +422,7 @@ const CFInstanceStats = ({ drilldownQuery }: { drilldownQuery: any }) => {
   }
 
   return (
-    <Box sx={{ backgroundColor: ds.background[100], borderRadius: ds.radius.md, p: ds.space[4] }}>
+    <Box sx={{ backgroundColor: ds.background[100], borderRadius: ds.radius.md, p: ds.space[4], border: `1px solid ${ds.gray[200]}` }}>
       {/* Summary cards */}
       <Box sx={{ display: 'flex', gap: ds.space[4], mb: ds.space[4] }}>
         <Box sx={{ flex: 1, p: ds.space[3], backgroundColor: ds.background[200], borderRadius: ds.radius.md, border: `1px solid ${ds.gray[200]}` }}>

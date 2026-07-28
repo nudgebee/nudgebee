@@ -1,4 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import { createHash } from 'crypto';
 import { validateHashedPassword, encodeSessionJWT, encrypt } from '@lib/internal';
 import { updateUserAccountAccessed, getUserByUsernameAndAccountProviderAndCredential } from '@lib/UserService';
 
@@ -57,8 +58,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return;
   }
 
+  // Lazily backfill token_sha256 for tokens created before the column existed: we hold the
+  // plaintext secret here, so compute the same lowercase-hex sha256 the gateway resolves by.
+  // Piggybacks on the accessed-update; the handler COALESCEs, so it only writes when NULL.
+  const tokenSha256 = createHash('sha256').update(data.secret).digest('hex');
+
   //update last accessed
-  const userAccountAccessUpdated = await updateUserAccountAccessed(userAccount.id, userAccount.tenant_id);
+  const userAccountAccessUpdated = await updateUserAccountAccessed(userAccount.id, userAccount.tenant_id, tokenSha256);
 
   if (userAccountAccessUpdated.errors) {
     console.log('unable to update userAccountAccessUpdated', userAccountAccessUpdated.errors);

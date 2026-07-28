@@ -9,6 +9,17 @@
  * leading SafeIcon in its row. Panel width defaults to the trigger width with
  * a 220px floor; `popoverWidth` overrides it.
  *
+ * Option badge: an option's `badge` (string) renders as a small leading Label
+ * (info tone) between the icon and the label — a secondary tag on the LEFT,
+ * visually distinct from the neutral, right-aligned `type` chip. Use it to show
+ * a second dimension per row (e.g. a KG node's type on the left while the right
+ * chip shows its namespace/region). Optional; rows without it are unchanged.
+ *
+ * Option search: search matches an option's visible label plus an optional
+ * `searchText` field. Set `searchText` when the label is intentionally short but
+ * you still want the full text to be searchable (e.g. a row showing a node name
+ * while remaining searchable by its namespace/region).
+ *
  *
  *   API surface preserved verbatim from the legacy component (see the test at
  *   __tests__/components/common/FilterDropdownButton.test.jsx — covers this
@@ -39,6 +50,9 @@ import SafeIcon from '@shared/icons/SafeIcon';
 const VIRTUALIZATION_THRESHOLD = 200;
 const OPTION_HEIGHT = 36;
 const OVERSCAN_COUNT = 10;
+// Floor for the options panel so a narrow trigger (e.g. compact toolbar
+// filters) still opens a panel wide enough to read labels comfortably.
+const MIN_POPOVER_WIDTH = 220;
 
 // Field chrome scale — mirrors ds/Input so FilterDropdown triggers align
 // with Input rows when placed in a form/toolbar together.
@@ -156,7 +170,7 @@ OptionLabel.propTypes = {
   label: PropTypes.string,
 };
 
-const OptionItem = React.memo(function OptionItem({ opt, selected, multiple, onToggle, style }) {
+const OptionItem = React.memo(function OptionItem({ opt, selected, multiple, onToggle }) {
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
@@ -175,6 +189,7 @@ const OptionItem = React.memo(function OptionItem({ opt, selected, multiple, onT
         display: 'flex',
         alignItems: 'center',
         gap: ds.space.mul(0, 5),
+        height: `${OPTION_HEIGHT}px`,
         padding: 'var(--ds-overlay-item-padding-md)',
         margin: '0 var(--ds-overlay-item-margin-x)',
         borderRadius: 'var(--ds-overlay-item-radius)',
@@ -188,15 +203,22 @@ const OptionItem = React.memo(function OptionItem({ opt, selected, multiple, onT
         '&:hover': {
           backgroundColor: selected ? 'var(--ds-overlay-item-selected-bg)' : 'var(--ds-overlay-item-hover-bg)',
         },
-        ...style,
       }}
     >
       {multiple && <OverlayCheckbox checked={selected} />}
       {opt?.icon && <SafeIcon src={opt.icon} alt={opt?.type ?? ''} style={{ width: 16, height: 16, flexShrink: 0, objectFit: 'contain' }} />}
+      {opt?.badge && (
+        <Box sx={{ flexShrink: 0, maxWidth: '35%' }}>
+          <Label text={opt.badge} tone='info' maxWidth='100%' displayTooltip tooltipCharLimit={18} />
+        </Box>
+      )}
       <OptionLabel label={getLabel(opt)} />
       {opt?.type && (
-        <Box sx={{ ml: 'auto', flexShrink: 0 }}>
-          <Label text={opt.type} />
+        <Box sx={{ ml: 'auto', flexShrink: 0, maxWidth: '40%' }}>
+          {/* Label capitalizes by default; pass typeTextTransform='none' for
+              chips holding case-sensitive identifiers (k8s namespace, region,
+              vpc/resource id) so their casing is preserved verbatim. */}
+          <Label text={opt.type} textTransform={opt.typeTextTransform} maxWidth='100%' displayTooltip tooltipCharLimit={15} />
         </Box>
       )}
     </Box>
@@ -208,7 +230,6 @@ OptionItem.propTypes = {
   selected: PropTypes.bool,
   multiple: PropTypes.bool,
   onToggle: PropTypes.func,
-  style: PropTypes.object,
 };
 
 // Loading affordance: a short list of skeleton rows that mirror OptionItem's
@@ -394,14 +415,7 @@ function OptionsList({ isOptionsLoading, filteredOptions, multiple, isSelected, 
       {/* Selected section — always fully rendered (small count) */}
       {selectedOptions.length > 0 &&
         selectedOptions.map((opt, idx) => (
-          <OptionItem
-            key={`sel-${getOptionKey(opt, idx)}`}
-            opt={opt}
-            selected
-            multiple={multiple}
-            onToggle={handleToggle}
-            style={{ height: `${OPTION_HEIGHT}px` }}
-          />
+          <OptionItem key={`sel-${getOptionKey(opt, idx)}`} opt={opt} selected multiple={multiple} onToggle={handleToggle} />
         ))}
 
       {/* Unselected section — virtualized when large */}
@@ -410,16 +424,7 @@ function OptionsList({ isOptionsLoading, filteredOptions, multiple, isSelected, 
           <div style={{ height: virtualizedContent.topSpacerHeight }} aria-hidden='true' />
           {unselectedOptions.slice(virtualizedContent.startIndex, virtualizedContent.endIndex).map((opt, i) => {
             const idx = virtualizedContent.startIndex + i;
-            return (
-              <OptionItem
-                key={`unsel-${getOptionKey(opt, idx)}`}
-                opt={opt}
-                selected={false}
-                multiple={multiple}
-                onToggle={handleToggle}
-                style={{ height: `${OPTION_HEIGHT}px` }}
-              />
-            );
+            return <OptionItem key={`unsel-${getOptionKey(opt, idx)}`} opt={opt} selected={false} multiple={multiple} onToggle={handleToggle} />;
           })}
           <div style={{ height: virtualizedContent.bottomSpacerHeight }} aria-hidden='true' />
         </>
@@ -773,6 +778,10 @@ function FilterDropdownButton({
   const [anchorEl, setAnchorEl] = useState(null);
   const [search, setSearch] = useState('');
   const searchRef = useRef(null);
+  // Captured on open and left untouched on close so the panel doesn't visibly
+  // shrink to the {MIN_POPOVER_WIDTH}px floor while it fades out (anchorEl is already null
+  // during that exit transition, so deriving width from it live breaks this).
+  const triggerWidthRef = useRef(MIN_POPOVER_WIDTH);
   const open = Boolean(anchorEl);
 
   // Compute selected count and display text
@@ -821,9 +830,16 @@ function FilterDropdownButton({
   // Supports glob wildcards `*` (any sequence) and `?` (single char) — useful
   // for long index/label lists like `fluentk8s-prod-2026.04.03`. Plain queries
   // keep their existing case-insensitive substring semantics.
+  // Matches against the visible label plus an optional `opt.searchText`, so a
+  // caller can show a short label yet keep the full text searchable (e.g. a KG
+  // node row showing just the name while still matching on namespace/region).
   const filteredOptions = useMemo(() => {
     const q = search.trim();
     if (!q) return options;
+    const haystack = (opt) => {
+      const extra = typeof opt === 'object' && opt?.searchText ? ` ${opt.searchText}` : '';
+      return `${getLabel(opt)}${extra}`;
+    };
     const hasWildcard = /[*?]/.test(q);
     if (hasWildcard) {
       // Escape regex specials, then translate glob → regex.
@@ -833,13 +849,33 @@ function FilterDropdownButton({
         .replace(/\?/g, '.');
       try {
         const re = new RegExp(escaped, 'i');
-        return options.filter((opt) => re.test(getLabel(opt)));
+        return options.filter((opt) => re.test(haystack(opt)));
       } catch {
         // Fall through to substring match on regex compile failure.
       }
     }
     const lower = q.toLowerCase();
-    return options.filter((opt) => getLabel(opt).toLowerCase().includes(lower));
+    // Rank matches by relevance so an exact / prefix name match surfaces above
+    // rows that only match as a substring or via `searchText`
+    // (namespace/region). Without this the list keeps the source order, so e.g.
+    // searching "services-server" shows "nudgebee-services-server" before the
+    // exact "services-server". Stable within each tier (secondary sort on the
+    // original index) so order is otherwise preserved.
+    const ranked = [];
+    options.forEach((opt, i) => {
+      const label = getLabel(opt).toLowerCase();
+      const extra = typeof opt === 'object' && opt?.searchText ? String(opt.searchText).toLowerCase() : '';
+      const inLabel = label.includes(lower);
+      if (!inLabel && !extra.includes(lower)) return;
+      let rank;
+      if (label === lower) rank = 0;
+      else if (label.startsWith(lower)) rank = 1;
+      else if (inLabel) rank = 2;
+      else rank = 3;
+      ranked.push({ opt, rank, i });
+    });
+    ranked.sort((a, b) => a.rank - b.rank || a.i - b.i);
+    return ranked.map((r) => r.opt);
   }, [options, search]);
 
   // Check if an option is selected
@@ -858,29 +894,32 @@ function FilterDropdownButton({
     [multiple, value]
   );
 
-  const handleToggle = (opt) => {
-    if (!onSelect) return;
+  const handleToggle = useCallback(
+    (opt) => {
+      if (!onSelect) return;
 
-    if (multiple) {
-      const optVal = getValue(opt);
-      const currentArr = Array.isArray(value) ? value : [];
-      let newValue;
-      if (currentArr.some((v) => getValue(v) === optVal)) {
-        newValue = currentArr.filter((v) => getValue(v) !== optVal);
-      } else if (selectionWithinGroup && grouped) {
-        const optGroup = opt?.group || 'Other';
-        const sameGroupItems = currentArr.filter((v) => (v?.group || 'Other') === optGroup);
-        newValue = [...sameGroupItems, opt];
+      if (multiple) {
+        const optVal = getValue(opt);
+        const currentArr = Array.isArray(value) ? value : [];
+        let newValue;
+        if (currentArr.some((v) => getValue(v) === optVal)) {
+          newValue = currentArr.filter((v) => getValue(v) !== optVal);
+        } else if (selectionWithinGroup && grouped) {
+          const optGroup = opt?.group || 'Other';
+          const sameGroupItems = currentArr.filter((v) => (v?.group || 'Other') === optGroup);
+          newValue = [...sameGroupItems, opt];
+        } else {
+          newValue = [...currentArr, opt];
+        }
+        onSelect({ target: { value: newValue } }, newValue);
       } else {
-        newValue = [...currentArr, opt];
+        const newVal = opt?.value ?? opt;
+        onSelect({ target: { value: newVal } }, opt);
+        setAnchorEl(null);
       }
-      onSelect({ target: { value: newValue } }, newValue);
-    } else {
-      const newVal = opt?.value ?? opt;
-      onSelect({ target: { value: newVal } }, opt);
-      setAnchorEl(null);
-    }
-  };
+    },
+    [onSelect, multiple, value, selectionWithinGroup, grouped]
+  );
 
   const handleClear = (e) => {
     e.stopPropagation();
@@ -970,6 +1009,7 @@ function FilterDropdownButton({
           // Lets callers lazy-load options on first open instead of eagerly on
           // mount. Fired before opening so the loading state shows immediately.
           onOpen?.();
+          triggerWidthRef.current = e.currentTarget.clientWidth;
           setAnchorEl(e.currentTarget);
         }}
         onKeyDown={handleKeyDown}
@@ -1110,7 +1150,7 @@ function FilterDropdownButton({
               // Panel is never narrower than its trigger: a full-width form
               // trigger (e.g. workflow action sidebar fields) gets a matching
               // full-width panel; compact toolbar triggers keep the 220px floor.
-              width: popoverWidth ?? `${Math.max(220, anchorEl?.clientWidth || 0)}px`,
+              width: popoverWidth ?? `${Math.max(MIN_POPOVER_WIDTH, triggerWidthRef.current)}px`,
               overflow: 'hidden',
               transformOrigin: 'top left',
               animation: 'filterDropdownSlideIn var(--ds-overlay-enter-duration) var(--ds-overlay-enter-easing)',

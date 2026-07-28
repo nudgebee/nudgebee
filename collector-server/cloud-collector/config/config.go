@@ -92,12 +92,9 @@ type appConfig struct {
 	AzurePricingCacheTTL int  `mapstructure:"azure_pricing_cache_ttl_hours"`
 	AzurePricingFallback bool `mapstructure:"azure_pricing_fallback_enabled"`
 
-	// Azure Event Grid / Service Bus Configuration
-	// Event Grid events are delivered to Service Bus Queue, consumed by cloud-collector
-	CloudCollectorAzureServiceBusConnectionString string `mapstructure:"cloud_collector_azure_service_bus_connection_string"`
-	CloudCollectorAzureServiceBusNamespace        string `mapstructure:"cloud_collector_azure_service_bus_namespace"`
-	CloudCollectorAzureServiceBusQueueName        string `mapstructure:"cloud_collector_azure_service_bus_queue_name"`
-	CloudCollectorAzureEventRulesPath             string `mapstructure:"cloud_collector_azure_event_rules_path"`
+	// Azure Event Grid Configuration
+	// Event Grid events are delivered to the /process_azure_eventgrid_events webhook by api-server.
+	CloudCollectorAzureEventRulesPath string `mapstructure:"cloud_collector_azure_event_rules_path"`
 
 	// AWS Organization Onboarding - SQS queue for CF Custom Resource registration callbacks
 	CloudCollectorOrgRegistrationSqs string `mapstructure:"cloud_collector_org_registration_sqs"`
@@ -155,10 +152,6 @@ func init() {
 	viper.SetDefault("cloud_collector_server_db_max_connection", 50)
 	viper.SetDefault("cloud_collector_server_db_min_connection", 1)
 	viper.SetDefault("cloud_collector_server_db_idle_minutes", 10)
-	viper.SetDefault("cloud_collector_azure_service_bus_connection_string", "")
-
-	viper.SetDefault("cloud_collector_azure_service_bus_namespace", "")
-	viper.SetDefault("cloud_collector_azure_service_bus_queue_name", "")
 
 	// RabbitMQ defaults
 

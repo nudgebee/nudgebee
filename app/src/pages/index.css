@@ -3,6 +3,11 @@ body {
   font-family: var(--nb-font-primary, 'Roboto', sans-serif) !important;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* html { scrollbar-gutter: stable } already reserves the scrollbar's width, so
+     MUI's own scroll-lock padding-right compensation (added inline on body when a
+     Popover/Modal opens) is redundant and double-compensates, shifting content by
+     an extra, visible amount. Force it back to 0. */
+  padding-right: 0 !important;
 }
 .input-labels {
   font-size: 12px !important;
@@ -302,80 +307,91 @@ body {
 
 @font-face {
   font-family: 'Poppins';
-  src: url('../assets/fonts/Poppins/Poppins-Light.ttf');
+  src: url('../assets/fonts/Poppins/Poppins-Light.woff2') format('woff2'), url('../assets/fonts/Poppins/Poppins-Light.ttf') format('truetype');
   font-weight: 300;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Poppins';
-  src: url('../assets/fonts/Poppins/Poppins-Regular.ttf');
+  src: url('../assets/fonts/Poppins/Poppins-Regular.woff2') format('woff2'), url('../assets/fonts/Poppins/Poppins-Regular.ttf') format('truetype');
   font-weight: 400;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Poppins';
-  src: url('../assets/fonts/Poppins/Poppins-Medium.ttf');
+  src: url('../assets/fonts/Poppins/Poppins-Medium.woff2') format('woff2'), url('../assets/fonts/Poppins/Poppins-Medium.ttf') format('truetype');
   font-weight: 500;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Poppins';
-  src: url('../assets/fonts/Poppins/Poppins-SemiBold.ttf');
+  src: url('../assets/fonts/Poppins/Poppins-SemiBold.woff2') format('woff2'), url('../assets/fonts/Poppins/Poppins-SemiBold.ttf') format('truetype');
   font-weight: 600;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Poppins';
-  src: url('../assets/fonts/Poppins/Poppins-Bold.ttf');
+  src: url('../assets/fonts/Poppins/Poppins-Bold.woff2') format('woff2'), url('../assets/fonts/Poppins/Poppins-Bold.ttf') format('truetype');
   font-weight: 700;
   font-style: normal;
+  font-display: swap;
 }
 
 /* Roboto Font */
 @font-face {
   font-family: 'Roboto';
-  src: url('../assets/fonts/Roboto/Roboto-Thin.ttf');
+  src: url('../assets/fonts/Roboto/Roboto-Thin.woff2') format('woff2'), url('../assets/fonts/Roboto/Roboto-Thin.ttf') format('truetype');
   font-weight: 100;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Roboto';
-  src: url('../assets/fonts/Roboto/Roboto-Light.ttf');
+  src: url('../assets/fonts/Roboto/Roboto-Light.woff2') format('woff2'), url('../assets/fonts/Roboto/Roboto-Light.ttf') format('truetype');
   font-weight: 300;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Roboto';
-  src: url('../assets/fonts/Roboto/Roboto-Regular.ttf');
+  src: url('../assets/fonts/Roboto/Roboto-Regular.woff2') format('woff2'), url('../assets/fonts/Roboto/Roboto-Regular.ttf') format('truetype');
   font-weight: 400;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Roboto';
-  src: url('../assets/fonts/Roboto/Roboto-Medium.ttf');
+  src: url('../assets/fonts/Roboto/Roboto-Medium.woff2') format('woff2'), url('../assets/fonts/Roboto/Roboto-Medium.ttf') format('truetype');
   font-weight: 500;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Roboto';
-  src: url('../assets/fonts/Roboto/Roboto-Bold.ttf');
+  src: url('../assets/fonts/Roboto/Roboto-Bold.woff2') format('woff2'), url('../assets/fonts/Roboto/Roboto-Bold.ttf') format('truetype');
   font-weight: 700;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Roboto';
-  src: url('../assets/fonts/Roboto/Roboto-Black.ttf');
+  src: url('../assets/fonts/Roboto/Roboto-Black.woff2') format('woff2'), url('../assets/fonts/Roboto/Roboto-Black.ttf') format('truetype');
   font-weight: 900;
   font-style: normal;
+  font-display: swap;
 }
 
 code {
@@ -406,28 +422,36 @@ code {
 ::selection {
   background: #021a6f36;
 }
+html {
+  scrollbar-gutter: stable;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d0d0d0 transparent;
+}
 ::-webkit-scrollbar {
-  width: 10px;
+  width: 6px;
 }
 ::-webkit-scrollbar:horizontal {
-  height: 10px;
+  height: 6px;
 }
 
 /* Track */
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
-  border-radius: 8px;
+  background: transparent;
 }
 
 /* Handle */
 ::-webkit-scrollbar-thumb {
-  background: #d3d3d3;
-  border-radius: 10px;
+  background: #d0d0d0;
+  border-radius: 100px;
 }
 
 /* Handle on hover */
 ::-webkit-scrollbar-thumb:hover {
-  background: #c7c7c7;
+  background: #9f9f9f;
 }
 a {
   color: #0000ee;

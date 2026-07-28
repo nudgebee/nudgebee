@@ -1370,7 +1370,7 @@ const apiRecommendations = {
       });
       invalidateOptimisationSummaryRecommendations();
       return {
-        data: response?.data?.data?.recommendations_apply?.data,
+        data: response?.data?.data?.events_update_resolution?.data,
         errors: response?.data?.errors,
       };
     }
@@ -2073,6 +2073,11 @@ const apiRecommendations = {
       where.resolver_type = { _eq: data.resolverType };
       whereAgg.resolver_type = { _eq: data.resolverType };
     }
+
+    if (data.recommendationId) {
+      where.recommendation_id = { _eq: data.recommendationId };
+      whereAgg.recommendation_id = { _eq: data.recommendationId };
+    }
     const response = await queryGraphQL(GET_RECOMMENDATION_RESOLUTION, 'RecommendationResolution', {
       where,
       whereAgg,
@@ -2125,19 +2130,27 @@ const apiRecommendations = {
       },
     };
   },
-  async getDistinctRuleName() {
-    let query = `
-    query GetDistinctRuleNames {
-      recommendation_groupings_v2(where: {category: {_in: ["RightSizing", "InfraUpgrade"]}}, order_by: {column: "rule_name", order: asc}) {
+  // Returns the distinct (category, rule_name) pairs that actually exist in the
+  // tenant's optimization recommendation data. Used to populate filter dropdowns
+  // (e.g. the Optimization Trigger config) directly from real data instead of a
+  // hardcoded list that silently drifts as new rules are added on the backend.
+  async getDistinctOptimizationRules(): Promise<{ category: string; rule_name: string }[]> {
+    const query = `
+    query GetDistinctOptimizationRules {
+      recommendation_groupings_v2(where: {category: {_in: ["RightSizing", "InfraUpgrade", "Configuration", "K8sSpotRecommendation"]}}, group_by: ["category", "rule_name"]) {
         rows {
+          category
           rule_name
         }
       }
     }
     `;
 
-    const response = await queryGraphQL(query, 'GetDistinctRuleNames');
-    return response;
+    const response = await queryGraphQL(query, 'GetDistinctOptimizationRules');
+    const rows = response?.data?.data?.recommendation_groupings_v2?.rows || [];
+    return rows.filter(
+      (row: any): row is { category: string; rule_name: string } => typeof row?.category === 'string' && typeof row?.rule_name === 'string'
+    );
   },
   async exportRecommendations(params: any) {
     const mutation = `

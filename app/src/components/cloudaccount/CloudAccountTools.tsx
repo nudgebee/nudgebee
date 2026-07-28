@@ -15,14 +15,14 @@ import { TicketsIcon } from '@assets';
 import { getBrandingAsset } from '@hooks/useTenantBranding';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { getLast7Days } from '@lib/datetime';
-import type { ICustomTableRow } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/types';
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import Text from '@shared/format/Text';
 import { ds } from '@utils/colors';
 import Datetime from '@shared/format/Datetime';
 import { useCloudFilter } from '@hooks/useCloudFilters';
 import TicketLink from '@shared/links/TicketLink';
-import { toSeverityLevel } from '@utils/common';
+import { safeJSONParse, toSeverityLevel } from '@utils/common';
 
 const TABLE_COLUMNS = ['Message', 'Subject Name', 'Event', 'Principal', 'Severity', { name: 'Occurred time', sortEnabled: true }, ''];
 const TABLE_ID = 'cloudaccount-events';
@@ -239,10 +239,11 @@ const CloudAccountTools = (props: { accountId: string | undefined; serviceName: 
                     let evidences = drilldownQuery.event.evidences;
                     let evidencesData = [];
                     if (typeof evidences === 'string') {
-                      evidencesData = JSON.parse(evidences);
+                      evidencesData = safeJSONParse(evidences) || [];
                     }
                     if (evidencesData?.length > 0 && evidencesData[0].type == 'json') {
-                      evidencesData = JSON.parse(evidencesData[0].data);
+                      const inner = safeJSONParse(evidencesData[0].data);
+                      if (inner) evidencesData = inner;
                     }
                     return (
                       <div>

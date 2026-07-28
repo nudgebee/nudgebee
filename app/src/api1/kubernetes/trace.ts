@@ -25,6 +25,10 @@ interface TraceV2Params {
   traceId?: string | string[];
   fromWorkload?: boolean;
   cols: string[];
+  // When true, query the "By Traces" view: one root span per trace via the
+  // traces_by_trace_v3 / traces_by_trace_count_v3 actions. Aliased back to
+  // traces_list / traces_counts so the response shape is identical to span mode.
+  byTrace?: boolean;
 }
 
 const apiTrace = {
@@ -52,6 +56,7 @@ const apiTrace = {
       onlyCount,
       traceId,
       fromWorkload = false,
+      byTrace = false,
       cols = [
         'trace_id',
         'span_id',
@@ -179,13 +184,19 @@ const apiTrace = {
       },
     };
 
+    // "By Traces" mode hits traces_by_trace_v3 / traces_by_trace_count_v3, aliased to
+    // traces_list / traces_counts so the caller reads the same response keys as span mode.
+    const opName = byTrace ? 'TraceByTraceV3' : 'TraceV3';
+    const listField = byTrace ? 'traces_list: traces_by_trace_v3' : 'traces_list';
+    const countField = byTrace ? 'traces_counts: traces_by_trace_count_v3' : 'traces_counts';
+
     let TRACE_V3 = `
-        query TraceV3 {
-          traces_list(request: __WHERE__) {
+        query ${opName} {
+          ${listField}(request: __WHERE__) {
               __COLS__
-            
+
           }
-          traces_counts(request: __WHERE1__) {
+          ${countField}(request: __WHERE1__) {
             count
           }
         }
@@ -193,8 +204,8 @@ const apiTrace = {
 
     if (onlyCount) {
       TRACE_V3 = `
-        query TraceV3 {
-          traces_counts(request: __WHERE1__) {
+        query ${opName} {
+          ${countField}(request: __WHERE1__) {
             count
           }
         }
@@ -205,7 +216,7 @@ const apiTrace = {
       TRACE_V3.replaceAll('__WHERE1__', gqlStringify(trace_count_request))
         .replaceAll('__WHERE__', gqlStringify(trace_request))
         .replace('__COLS__', cols.join(' ')),
-      'TraceV3',
+      opName,
       {}
     );
     return response?.data?.data;

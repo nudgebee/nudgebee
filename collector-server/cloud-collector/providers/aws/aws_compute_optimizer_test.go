@@ -24,12 +24,43 @@ func TestMapCOFindingToSeverity(t *testing.T) {
 		{"NotOptimized", cotypes.FindingNotOptimized, providers.RecommendationSeverityLow},
 		{"empty finding", cotypes.Finding(""), providers.RecommendationSeverityLow},
 		{"unknown finding", cotypes.Finding("SomeFutureFinding"), providers.RecommendationSeverityLow},
+		// The GetEC2InstanceRecommendations API returns findings in
+		// SCREAMING_SNAKE_CASE, not the SDK's mixed-case enum values. These
+		// wire-format cases lock in the case-insensitive mapping.
+		{"wire OVER_PROVISIONED", cotypes.Finding("OVER_PROVISIONED"), providers.RecommendationSeverityMedium},
+		{"wire UNDER_PROVISIONED", cotypes.Finding("UNDER_PROVISIONED"), providers.RecommendationSeverityHigh},
+		{"wire OPTIMIZED", cotypes.Finding("OPTIMIZED"), providers.RecommendationSeverityLow},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := mapCOFindingToSeverity(tt.finding)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestNormCOFinding(t *testing.T) {
+	// The skip-guard in getEC2Recommendations relies on the wire-format
+	// "OPTIMIZED" normalizing to the same value as the SDK constant
+	// cotypes.FindingOptimized ("Optimized"). Without this, already-optimized
+	// instances leak through as bogus rightsize recommendations where the
+	// recommended instance type equals the current one.
+	tests := []struct {
+		name     string
+		finding  cotypes.Finding
+		optimize bool
+	}{
+		{"wire OPTIMIZED is skipped", cotypes.Finding("OPTIMIZED"), true},
+		{"sdk Optimized is skipped", cotypes.FindingOptimized, true},
+		{"wire OVER_PROVISIONED is kept", cotypes.Finding("OVER_PROVISIONED"), false},
+		{"wire UNDER_PROVISIONED is kept", cotypes.Finding("UNDER_PROVISIONED"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			skipped := normCOFinding(tt.finding) == normCOFinding(cotypes.FindingOptimized)
+			assert.Equal(t, tt.optimize, skipped)
 		})
 	}
 }

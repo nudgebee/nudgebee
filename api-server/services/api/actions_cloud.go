@@ -552,6 +552,27 @@ func handleCloudExecuteCommand(actionPayload *ActionRequest, c *gin.Context, ctx
 					resolutionStatus = models.RecommendationResolutionStatusSuccess
 					statusMessage = "Command Execution Succeeded"
 				}
+			} else if resolutionId != "" {
+				// The HTTP round-trip to the collector failed (e.g. the 280s client
+				// timeout on a slow command), but the collector runs the batch and
+				// writes its audit row BEFORE responding. Without reconciliation a
+				// slow-but-successful execution is reported as Failed here while the
+				// per-command audit the UI shows says SUCCESS. Read that persisted
+				// batch audit row (same Metastore the collector wrote) and, only on a
+				// definitive SUCCESS, promote to Success. Any query error / missing
+				// row leaves the Failed default untouched, so this can never turn a
+				// genuine failure into a success.
+				var auditStatus string
+				qErr := dbms.Db.QueryRow(
+					`SELECT event_status FROM audit
+					 WHERE transaction_id = $1 AND event_type = 'CLI_EXECUTE'
+					 ORDER BY event_time DESC LIMIT 1`,
+					resolutionId,
+				).Scan(&auditStatus)
+				if qErr == nil && auditStatus == "SUCCESS" {
+					resolutionStatus = models.RecommendationResolutionStatusSuccess
+					statusMessage = "Command Execution Succeeded"
+				}
 			}
 
 			if resolutionId != "" {

@@ -125,10 +125,12 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({ accountId
   const supportsFeature = logsCaps?.supports_log_groups ?? null;
 
   useEffect(() => {
+    if (supportsFeature === false) return;
     handleSubmit();
   }, [accountId, selectedNamespace, selectedDateRange.startDate, selectedDateRange.endDate, selectedWorkload]);
 
   useEffect(() => {
+    if (supportsFeature === false) return;
     if (!accountId || workloadName) {
       return;
     }
@@ -139,6 +141,7 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({ accountId
   }, [accountId]);
 
   useEffect(() => {
+    if (supportsFeature === false) return;
     if (!accountId || workloadNamespace) {
       return;
     }

@@ -66,7 +66,9 @@ func (t *NBLogTool) GetType() core.NBToolType {
 }
 
 func (t *NBLogTool) Description() string {
-	return "Executes a query and returns the result."
+	return `Executes a structured log query and returns matching log lines.
+		Input: a QueryBuilder JSON object whose "where" clause is built from field/operator conditions (use the special field "_body" to match message text); plus optional "index" (log index/pattern), "limit" (max lines), and a time window via start_time/end_time (RFC3339 or Unix) or range (e.g. '1h', '2d').
+		Example: {"where": {"_and": [{"kubernetes.namespace_name": {"_eq": "prod"}}, {"_body": {"_ilike": "error"}}]}, "limit": 200, "range": "1h"}`
 }
 
 func (t *NBLogTool) QueryLabels() []string {
@@ -225,6 +227,10 @@ func (t *NBLogTool) InputSchema() core.ToolSchema {
 			"index": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Elasticsearch index name or pattern to query (e.g., 'app-logs-*', 'nginx-access-*'). If not specified, the account's default index is used.",
+			},
+			"limit": {
+				Type:        core.ToolSchemaTypeInteger,
+				Description: "Optional maximum number of log lines to return.",
 			},
 		},
 		Required: []string{"command"},

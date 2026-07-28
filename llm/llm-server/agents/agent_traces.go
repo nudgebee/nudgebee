@@ -401,10 +401,11 @@ func (m TracesAgentTool) Call(nbRequestContext toolcore.NbToolContext, input too
 		}
 
 		return toolcore.NBToolResponse{
-			Data:       traceData,
-			Type:       toolcore.NBToolResponseTypeText,
-			Status:     toolcore.NBToolResponseStatusSuccess,
-			References: references,
+			Data:             traceData,
+			Type:             toolcore.NBToolResponseTypeText,
+			Status:           toolcore.NBToolResponseStatusSuccess,
+			References:       references,
+			SubAgentEvidence: core.BuildSubAgentEvidenceForTool(nbRequestContext.Ctx, TracesAgentName, resp.AgentStepResponse),
 		}, nil
 	}
 

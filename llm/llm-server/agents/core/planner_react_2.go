@@ -1118,6 +1118,7 @@ func reActCreatePrompt2(ctx *security.RequestContext, agentPrompt string, toolsI
 				"code_analysis_rules",
 				"security_rules",
 				"memory_consumption_rules",
+				"async_completion_rules",
 			},
 		),
 	}
@@ -1220,6 +1221,7 @@ func reActCreatePrompt2(ctx *security.RequestContext, agentPrompt string, toolsI
 		"code_analysis_rules":      prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
 		"security_rules":           prompts_repo.GetPrompt(prompts_repo.PromptSharedSecurityRules),
 		"memory_consumption_rules": "",
+		"async_completion_rules":   WatchAsyncCompletionRulesPrompt(),
 		// Kept for backward-compat: the DB-loaded v1 react_base prompt still uses this conditional.
 		"conversation_context_enabled": config.Config.ConversationContextEnabled,
 		// Human message template vars (dynamic — change per conversation/iteration)

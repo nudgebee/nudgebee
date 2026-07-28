@@ -146,18 +146,22 @@ func (w *TrackedToolWrapper) looksLikeToken(s string) bool {
 		return true
 	}
 
-	// Other long alphanumeric strings that might be tokens
-	if len(s) > 30 {
-		// Check if it's mostly alphanumeric/base64-like
-		alphanumCount := 0
-		for _, char := range s {
-			if (char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') ||
-				(char >= '0' && char <= '9') || char == '_' || char == '-' || char == '+' || char == '/' || char == '=' {
-				alphanumCount++
+	// Other high-entropy secrets: require a single contiguous run of >=32
+	// alphanumeric characters. Real tokens/keys have such a run; file paths and
+	// URLs do not — their separators (/ . - _ : space) break the value into
+	// short segments. The previous heuristic counted the whole-string ratio of
+	// alphanumeric-ish chars (including / - _ = +), which blanked legitimate
+	// repo_url / working_directory / file_path values wholesale. This keeps
+	// those readable while still catching a token embedded in another field.
+	run := 0
+	for _, char := range s {
+		if (char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') {
+			run++
+			if run >= 32 {
+				return true
 			}
-		}
-		if float64(alphanumCount)/float64(len(s)) > 0.8 {
-			return true
+		} else {
+			run = 0
 		}
 	}
 

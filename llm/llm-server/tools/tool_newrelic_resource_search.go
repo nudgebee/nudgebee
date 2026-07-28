@@ -28,7 +28,7 @@ func (t NewRelicResourceSearchTool) Name() string { return ToolNewRelicResourceS
 func (t NewRelicResourceSearchTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (t NewRelicResourceSearchTool) Description() string {
-	return `Searches for resources in New Relic. Supports searching for APM services, infrastructure hosts, and containers.`
+	return `Searches New Relic resources. Input: JSON {"resource_type":"apm_services|hosts|containers","query":"name:api-server"} — both fields required.`
 }
 
 func (t NewRelicResourceSearchTool) InputSchema() core.ToolSchema {

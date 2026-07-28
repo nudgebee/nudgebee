@@ -143,9 +143,10 @@ func (r K8sResourceSearchTool) Description() string {
 
 **Input:** JSON with the following fields:
 * resource_name (optional): Name of the resource to search for
-* resource_type (optional): Type of resource (pods, services, etc.)  
+* resource_type (optional): Type of resource (pods, services, etc.)
 * namespace (optional): Namespace to search in
-* search_type: Type of search - "fuzzy", "suggestions", or "namespace"
+* label_selector (optional): Kubernetes label selector, required when search_type is "label" (e.g. 'app=nginx,tier=frontend')
+* search_type: Type of search - one of "fuzzy", "suggestions", "namespace", or "label" ("label" requires label_selector)
 
 **Examples:**
 * Fuzzy resource type: {"resource_type": "podss", "search_type": "fuzzy"}

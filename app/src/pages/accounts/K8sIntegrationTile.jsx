@@ -19,6 +19,7 @@ import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import CustomSearch from '@shared/CustomSearch';
 import { Button as DsButton } from '@ui/Button';
+import { TourLauncher } from '@components/common/tour';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { action } from 'src/utils/actionStyles';
 import { getFeatures, updateFeatureFlagForAccount } from '@lib/UserService';
@@ -300,7 +301,7 @@ const K8sIntegrationTile = () => {
         if (logLabels && logLabels.length == 1) {
           const logLabelStr = logLabels[0].value;
           if (logLabelStr) {
-            const logLabelValues = JSON.parse(logLabelStr);
+            const logLabelValues = safeJSONParse(logLabelStr) || {};
             if (logLabelValues.pod) {
               setLogPodLabel(logLabelValues.pod);
             }
@@ -321,9 +322,11 @@ const K8sIntegrationTile = () => {
         }
         const abandonedResourceConfig = cloudAccountAttributes[selectedAccountId].filter((l) => l.name == 'abandoned_resource');
         if (abandonedResourceConfig && abandonedResourceConfig.length == 1) {
-          const abandonedResourceValue = JSON.parse(abandonedResourceConfig[0].value);
-          setNetworkThreshold(abandonedResourceValue.network_threshold);
-          setObservationDays(abandonedResourceValue.observation_days);
+          const abandonedResourceValue = safeJSONParse(abandonedResourceConfig[0].value);
+          if (abandonedResourceValue) {
+            setNetworkThreshold(abandonedResourceValue.network_threshold);
+            setObservationDays(abandonedResourceValue.observation_days);
+          }
         }
       }
       apiKubernetes1.listAnomalyTemplate().then((res) => {
@@ -909,9 +912,12 @@ const K8sIntegrationTile = () => {
           }
           actions={
             hasWriteAccess() ? (
-              <DsButton id='add-k8s-account' tone='primary' size='md' onClick={() => setOpenModal(true)} aria-label='Add K8s Account'>
-                Add K8s Account
-              </DsButton>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <TourLauncher tourId='connect-cluster' label='How to connect a cluster' />
+                <DsButton id='add-k8s-account' tone='primary' size='md' onClick={() => setOpenModal(true)} aria-label='Add K8s Account'>
+                  Add K8s Account
+                </DsButton>
+              </Box>
             ) : undefined
           }
         >

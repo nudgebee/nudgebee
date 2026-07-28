@@ -76,21 +76,24 @@ const AUTO_PAGINATE_THRESHOLD = 10;
 const TabPanel = (props) => {
   const { children, value, index, ...other } = props;
 
+  // Children here are entire drill-down panels (tables, filter bars, nav
+  // pagination, cards). Wrapping them in <Typography> renders a <p> that then
+  // contains <table>/<nav>/<ul>/<div> — invalid HTML nesting, so React logs
+  // validateDOMNesting warnings. TabPanel content is structural, not text —
+  // render children directly.
   return (
     <div role='tabpanel' hidden={value !== index} id={`table-tabpanel-${index}`} aria-labelledby={`table-tab-${index}`} {...other}>
-      {value === index && (
-        <Box sx={{ pt: 0.2 }}>
-          <Typography>{children}</Typography>
-        </Box>
-      )}
+      {value === index && <Box sx={{ pt: 0.2 }}>{children}</Box>}
     </div>
   );
 };
 
 TabPanel.propTypes = {
   children: PropTypes.node,
-  value: PropTypes.number,
-  index: PropTypes.number,
+  // value/index accept string or number — some tab configs identify tabs by
+  // semantic slugs ('evidence', 'audit-history') instead of numeric indices.
+  value: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+  index: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
 };
 
 const getCellTooltipText = (cell) => {
@@ -137,7 +140,10 @@ const buildCellAligns = (filteredHeaders, tableHeadingCenter, showUpdatedTable, 
 
 // Builds the resize-enabled Table sx: fixed layout, horizontal overflow, and sticky
 // first/last columns (first-column sticky is opt-in via stickyFirstColumn).
-const buildResizeTableSx = ({ totalTableWidth, isResizing, stickyFirstColumn }) => ({
+// Exported for direct unit testing — jsdom's CSS engine can't reliably assert
+// `:has()`-matched cascade results via getComputedStyle, so tests check the
+// generated sx object's shape instead of rendered styles.
+export const buildResizeTableSx = ({ totalTableWidth, isResizing, stickyFirstColumn }) => ({
   width: '100%',
   minWidth: totalTableWidth || '100%',
   tableLayout: 'fixed',
@@ -155,6 +161,27 @@ const buildResizeTableSx = ({ totalTableWidth, isResizing, stickyFirstColumn }) 
       zIndex: 1,
       background: 'var(--ds-background-100)',
     },
+    // A sticky cell with a real (non-auto) z-index is its own stacking context,
+    // and every row shares the same one — so a popover that overflows past its
+    // row's boundary (e.g. a DropdownMenu rendered without a portal) paints
+    // *behind* the next row's sticky cell instead of above it. While that
+    // row's popover is on screen, lift just that row's cell above its siblings.
+    //
+    // Matched via `.MuiModal-root:not(.MuiModal-hidden)` rather than
+    // `[aria-expanded="true"]` on the trigger: aria-expanded flips to false
+    // the instant React state changes, but MUI keeps the Menu mounted and
+    // visually closing (exit transition, ~150ms) for a bit after that — an
+    // aria-expanded-based rule would withdraw the escalation before the
+    // popover actually finishes animating out, flashing the bug on close.
+    // MUI only adds `.MuiModal-hidden` once the exit transition truly
+    // completes (`!open && exited`, see @mui/material/Modal/Modal.js), so
+    // `:not(.MuiModal-hidden)` stays true for the popover's whole visible
+    // lifetime. This also naturally avoids CustomTable's own row-expand
+    // chevron (`showExpandable`) — it's a plain IconButton + Collapse, not
+    // a Modal, so it can never match here.
+    'tbody tr:has(.MuiModal-root:not(.MuiModal-hidden)) td:first-of-type': {
+      zIndex: 10,
+    },
   }),
   'thead tr th:last-of-type': {
     position: 'sticky',
@@ -170,11 +197,17 @@ const buildResizeTableSx = ({ totalTableWidth, isResizing, stickyFirstColumn }) 
     zIndex: 1,
     background: 'var(--ds-background-100)',
   },
+  // See the stickyFirstColumn comment above — same fix for the last column,
+  // which is where ThreeDotsMenu/Action cells usually live.
+  'tbody tr:has(.MuiModal-root:not(.MuiModal-hidden)) td:last-of-type': {
+    zIndex: 10,
+  },
 });
 
 // Builds the legacy (non-resize) Table sx: per-expandable sticky last column plus
 // optional sticky column at stickyColumnIndex with viewport-aware offset.
-const buildLegacyTableSx = ({ showExpandable, stickyColumnIndex }) => ({
+// Exported for direct unit testing — see buildResizeTableSx's comment.
+export const buildLegacyTableSx = ({ showExpandable, stickyColumnIndex }) => ({
   'tbody tr td:last-of-type': {
     position: showExpandable && 'sticky',
     right: '0px',
@@ -186,6 +219,19 @@ const buildLegacyTableSx = ({ showExpandable, stickyColumnIndex }) => ({
       right: showExpandable ? ds.space.mul(0, 25) : '0px',
     },
   },
+  // Same escalation as buildResizeTableSx (see that comment for the full
+  // explanation, including why `.MuiModal-root:not(.MuiModal-hidden)` is
+  // matched instead of aria-expanded) — needed here too. This rule has no
+  // explicit baseline z-index, but `border-collapse: collapse` (set on this
+  // Table further down) is a known source of browser-specific stacking
+  // quirks for sticky <td>s, so a popover overflowing past its row can
+  // still end up painted behind the next row without an explicit
+  // escalation while it's on screen.
+  ...(stickyColumnIndex && {
+    [`tbody tr:has(.MuiModal-root:not(.MuiModal-hidden)) td:nth-of-type(${stickyColumnIndex})`]: {
+      zIndex: 10,
+    },
+  }),
 });
 
 const getDrillDownQuery = (row) => {
@@ -199,7 +245,9 @@ const getDrillDownQuery = (row) => {
 };
 
 export const ExpandedRowComponent = ({ row = [], tabOptions = [], isExpanded = false, tabPadding }) => {
-  const [tab, setTab] = useState(tabOptions[0]?.value || 0); // Set the default tab value
+  // Use ?? so a valid but falsy tab value (e.g. 0) isn't clobbered by the
+  // fallback. Falls back to 0 only when the first tab has no value at all.
+  const [tab, setTab] = useState(tabOptions[0]?.value ?? 0);
   // Sticky "has been opened" flag, flipped on synchronously during render so
   // the very first render with isExpanded=true already includes the inner
   // content — MUI Collapse then measures the correct expanded height up front
@@ -235,11 +283,20 @@ export const ExpandedRowComponent = ({ row = [], tabOptions = [], isExpanded = f
       <Box mb={ds.space[3]}>
         <Tabs padding={tabPadding} options={tabOptions} value={tab} onChange={handleChangeTab} />
       </Box>
-      {tabOptions.map((option, tabIndex) => (
-        <TabPanel key={option.key || ''} value={tab} index={tabIndex}>
-          {option.componentFn ? option.componentFn(option, getDrillDownQuery(row), row) : <></>}
-        </TabPanel>
-      ))}
+      {tabOptions.map((option, tabIndex) => {
+        // Prefer the tab option's own `value` (semantic slug like 'evidence')
+        // for both the React key and the TabPanel identity — falling back to
+        // the array index if the caller didn't provide one. Using `option.key
+        // || ''` for every option produced duplicate empty-string keys and
+        // broke MUI Tabs' value matching when values were strings but panels
+        // compared to numeric indices.
+        const tabId = option.value ?? tabIndex;
+        return (
+          <TabPanel key={tabId} value={tab} index={tabId}>
+            {option.componentFn ? option.componentFn(option, getDrillDownQuery(row), row) : <></>}
+          </TabPanel>
+        );
+      })}
     </Box>
   );
 };
@@ -1120,12 +1177,12 @@ const CustomTable = ({
                 }
                 return (
                   <TableCell
-                    key={head?.name || head}
+                    key={head?.name ?? head}
                     align={alignment || 'left'}
                     sx={resizeEnabled ? { position: 'relative', overflow: 'hidden' } : undefined}
                     width={thWidth}
-                    data-export-enabled={!!(head.name || head) && head.exportEnabled}
-                    data-export-data={head.name || head}
+                    data-export-enabled={!!(head.name ?? head) && head.exportEnabled}
+                    data-export-data={head.name ?? head}
                   >
                     {(sort?.name && head.name == sort?.name && head?.sortEnabled) || head?.sortEnabled ? (
                       <Box

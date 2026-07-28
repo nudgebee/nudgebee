@@ -880,6 +880,26 @@ func getAgentNameFromAgentId(agentId string) string {
 	return agentName
 }
 
+// attachTenantIDForEgressFilter attaches the security-context tenant id to
+// ctx so the egressfilter wrapper can resolve per-tenant overrides. Silently
+// leaves ctx untouched when the SecurityContext is nil, the tenant id is
+// empty, or the tenant id is not a valid UUID — in any of those cases,
+// egressfilter.Resolve falls back to env defaults (fail-open).
+func attachTenantIDForEgressFilter(ctx context.Context, sc *security.SecurityContext) context.Context {
+	if sc == nil {
+		return ctx
+	}
+	tid := sc.GetTenantId()
+	if tid == "" {
+		return ctx
+	}
+	parsed, err := uuid.Parse(tid)
+	if err != nil {
+		return ctx
+	}
+	return egressfilter.WithTenantID(ctx, parsed)
+}
+
 func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 	if rc == nil {
 		return nil, fmt.Errorf("retryContext is nil")
@@ -917,6 +937,15 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 
 	ctx, cancel := context.WithTimeout(previousContext, callTimeout)
 	defer cancel()
+
+	// Attach tenant id so egressfilter.Resolve() can look up per-tenant
+	// overrides on the LLM call path. See attachTenantIDForEgressFilter
+	// for the missing-tenant / parse-failure / missing-SC fallback rules.
+	ctx = attachTenantIDForEgressFilter(ctx, rc.ctx.GetSecurityContext())
+	// Attach the running agent's name so egressfilter surfaces it on the
+	// FilterEvent for dashboard queries (and to drive a future per-agent
+	// suppression policy phase). Empty agentName is a no-op.
+	ctx = egressfilter.WithAgentName(ctx, rc.agentName)
 
 	// Apply cache for current model (if enabled)
 	// This ensures cache is always correct for the current model, including fallback models
@@ -2613,6 +2642,30 @@ func trackTokenUsage(
 		}
 	}
 
+	// Best-effort tracking: if the conversation DAO is unavailable (e.g. the
+	// metastore DB is down, or in hermetic tests), skip silently rather than
+	// dereferencing a nil interface and panicking this background goroutine —
+	// which would otherwise crash the process.
+	dao := GetConversationDao()
+	if dao == nil {
+		ctx.GetLogger().Debug("llm: skipping token usage tracking — conversation DAO unavailable")
+		return
+	}
+
+	// Cost at insert time, using pricing as of now. Nil (not 0) when the
+	// (provider, model) has no llm_model_pricing entry, so readers can tell
+	// "unpriced" from "actually free" and fall back to a live pricing JOIN.
+	nonCachedInputTokens := tokenInfo.InputTokens - tokenInfo.CacheReadTokens
+	if nonCachedInputTokens < 0 {
+		nonCachedInputTokens = 0
+	}
+	var costUsd *float64
+	if cost, err := dao.GetConversationCost(provider, model, nonCachedInputTokens, tokenInfo.CacheReadTokens, tokenInfo.CacheCreationTokens, tokenInfo.OutputTokens, tokenInfo.ThinkingTokens); err == nil {
+		costUsd = &cost
+	} else {
+		ctx.GetLogger().Debug("trackTokenUsage: no pricing data for cost calc", "provider", provider, "model", model, "error", err)
+	}
+
 	// Create token usage record for new table.
 	// cache_ttl_minutes is NOT written — TTL was the wrong dimension for
 	// per-call cost (storage moved to llm_cache_lifecycle). Column will be
@@ -2630,6 +2683,7 @@ func trackTokenUsage(
 		OutputTokens:        tokenInfo.OutputTokens,
 		CachedInputTokens:   tokenInfo.CacheReadTokens,
 		CacheCreationTokens: tokenInfo.CacheCreationTokens,
+		CostUsd:             costUsd,
 		IsCacheHit:          tokenInfo.CacheReadTokens > 0,
 		CacheHitRate:        cacheHitRate,
 		RetryAttempt:        retryAttempt,
@@ -2670,16 +2724,6 @@ func trackTokenUsage(
 			tps := float64(tokenInfo.OutputTokens) / (float64(generationMs) / 1000.0)
 			record.TokensPerSecond = &tps
 		}
-	}
-
-	// Best-effort tracking: if the conversation DAO is unavailable (e.g. the
-	// metastore DB is down, or in hermetic tests), skip silently rather than
-	// dereferencing a nil interface and panicking this background goroutine —
-	// which would otherwise crash the process.
-	dao := GetConversationDao()
-	if dao == nil {
-		ctx.GetLogger().Debug("llm: skipping token usage tracking — conversation DAO unavailable")
-		return
 	}
 
 	// Insert into new token usage table

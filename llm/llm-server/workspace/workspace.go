@@ -472,6 +472,11 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 			{Name: "LLM_PROVIDER_API_VERSION", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "LLM_PROVIDER_API_VERSION", Optional: &optional}}},
 			{Name: "LLM_PROVIDER_API_TYPE", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "LLM_PROVIDER_API_TYPE", Optional: &optional}}},
 			{Name: "LLM_PROVIDER_MAX_RETRIES", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "LLM_PROVIDER_MAX_RETRIES", Optional: &optional}}},
+			// BASE_URL is the public frontend URL the code-analysis orchestrator uses
+			// to build PR/workflow links (e.g. "View Workflow"). It is non-sensitive,
+			// so it does not widen the blast radius the comment below guards against;
+			// without it the pod falls back to the prod default (app.nudgebee.com).
+			{Name: "BASE_URL", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "BASE_URL", Optional: &optional}}},
 			// NUDGEBEE_ENCRYPTION_KEY intentionally NOT mounted (B4).
 			// The workspace pod's decrypt path was dead code — llm-server
 			// already decrypts integration credentials upstream and sends

@@ -12,8 +12,13 @@ import (
 // Tool/Agent Constants
 const GithubAgentName = "github"
 
+// githubAgentDescription is the single source of truth for the agent/tool
+// description, reused by both the tool registration in init() and GetDescription()
+// so the two never drift.
+const githubAgentDescription = `Interacts with GitHub via the gh CLI for METADATA operations only — issues, PR review/merge state, workflow runs/logs, run artifacts (e.g. downloading a failed run's uploaded artifacts to triage the failure), releases, repo settings, branches, comments, and labels. Smart and self-discovering: handles its own repository and organization detection. DO NOT use this agent to read, analyze, or modify source code, or to raise PRs containing code changes — for any task involving source files in a Git repository (including PR creation that modifies code, bug fixes, refactors, or migrations), use 'agent_code_2' instead. Returns command results and summaries for automation, monitoring, or troubleshooting.`
+
 func init() {
-	toolDescription := `Interacts with GitHub via the gh CLI for METADATA operations only — issues, PR review/merge state, workflow runs/logs, releases, repo settings, branches, comments, and labels. Smart and self-discovering: handles its own repository and organization detection. DO NOT use this agent to read, analyze, or modify source code, or to raise PRs containing code changes — for any task involving source files in a Git repository (including PR creation that modifies code, bug fixes, refactors, or migrations), use 'agent_code_2' instead. Returns command results and summaries for automation, monitoring, or troubleshooting.`
+	toolDescription := githubAgentDescription
 	toolInput := "Natural Language query about Github resources or operations."
 	toolOutput := "Output of Github Cli tool"
 	core.RegisterNBAgentFactoryAndTool(GithubAgentName, func(accountId string) (core.NBAgent, error) {
@@ -40,7 +45,7 @@ func (a GithubAgent) GetNameAliases() []string {
 }
 
 func (a GithubAgent) GetDescription() string {
-	return `Interacts with GitHub via the gh CLI for METADATA operations only — issues, PR review/merge state, workflow runs/logs, releases, repo settings, branches, comments, and labels. Smart and self-discovering: handles its own repository and organization detection. DO NOT use this agent to read, analyze, or modify source code, or to raise PRs containing code changes — for any task involving source files in a Git repository (including PR creation that modifies code, bug fixes, refactors, or migrations), use 'agent_code_2' instead. Returns command results and summaries for automation, monitoring, or troubleshooting.`
+	return githubAgentDescription
 }
 
 func (a GithubAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
@@ -71,6 +76,7 @@ func (a GithubAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		" - When you need to view details of a workflow run (like logs), you often need a run ID. You can get the latest run ID and use it in another command in a single line. For example: `gh run view $(gh run list --workflow '<workflow-name>' --limit 1 --json id --jq '.[0].id') --log`",
 		" - Never use the pattern gh run job view; always use gh run view with either --job <job-id> or a single <run-id>, and reject any command that does not match those valid forms.",
 		" - When viewing logs for a failed workflow, prefer using the `--log-failed` flag to see only the logs from the failed steps. This is more efficient than fetching the full log with `--log`.",
+		" - **Run artifacts:** a failed run's log often doesn't show *why* it failed — the run's uploaded artifacts (test reports, DOM/error snapshots, network traces, screenshots, build output, etc.) frequently do. This tool runs in a shell workspace, so download and inspect them in the same call: `gh run download <run-id> --dir art` (add `--name <artifact>` for a specific one), then `find`/`unzip`/`grep`/`cat` the extracted files. E.g. a Playwright E2E failure ships `error-context.md` (a DOM snapshot showing whether an expected element rendered) and a `trace.zip` whose `trace.network` entry holds the request/response log — extract only what you need (`unzip <path>/trace.zip trace.network`), not the whole archive. If `gh run download` reports no artifacts or a 404, the artifacts have expired; say so rather than inferring the cause from the log.",
 		" - Use `--limit` arg in `list` operations, default limit in list operation is 50, which may cause missing data issues, especially applicable for `gh workflow list` and similar",
 		" - If a dedicated `gh` command doesn't support your goal, fall back to using `gh api` to make a direct GitHub REST API call. This is a powerful tool for advanced operations.",
 		"**Output Formatting and Data Processing:**",

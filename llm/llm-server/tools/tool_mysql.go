@@ -35,7 +35,7 @@ func (m MySQLExecuteTool) Description() string {
 		**Usage:**
 
 		* **Prioritize this tool:** Whenever you require information about mysql database to make decisions or provide accurate responses, use this tool. 
-		* **Input:** Provide a valid, read-only 'mysql query' as input. Do not include any other information.
+		* **Input:** Provide a valid, read-only MySQL query as a plain string, OR a JSON object {query, database?} to target a specific database.
 		* **Output:** The tool will return the output of the executed query.
 		* **Security:** This tool is strictly limited to read-only operations. It cannot modify any resources within the database. 
 
@@ -48,15 +48,25 @@ func (m MySQLExecuteTool) Description() string {
 }
 
 func (m MySQLExecuteTool) InputSchema() core.ToolSchema {
+	// 'command'/'query' are aliases (Call() prefers 'command'); RequiredOneOf
+	// enforces at least one without rejecting a 'query'-keyed input.
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
 			"command": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "mysql query to execute",
+				Description: "MySQL query to execute. Either 'command' or 'query' must be provided.",
+			},
+			"query": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Alias for 'command' — accepted at the top level for backward compatibility.",
+			},
+			"database": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Target MySQL database to run the query against.",
 			},
 		},
-		Required: []string{"command"},
+		RequiredOneOf: [][]string{{"command", "query"}},
 	}
 }
 
@@ -114,8 +124,10 @@ func (m MySQLExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 			if response == "" {
 				response = err.Error()
 			}
+			// mysql CLI uses --help for flags but its interactive help is \h;
+			// the model rarely runs the CLI directly, so lean on the SQL side.
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, "", "mysql", `mysql --help (or \h in interactive mode for SQL syntax)`),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}
@@ -138,13 +150,27 @@ func (m MySQLExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 				responseData = responseData1
 			}
 		}
+		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
+		// non-string response, so the LLM always sees the failure reason
+		// rather than an empty envelope.
+		if responseData == "" {
+			responseData = err.Error()
+		}
 		return core.NBToolResponse{
-			Data:   responseData,
+			Data:   cliRecoveryEnvelope(responseData, "", "mysql", ""),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
 
-	data := response.(string)
+	// Guard the assertion (mirrors tool_mssql): a future ExecuteContainerJob
+	// path could return a non-string / nil response alongside a nil error,
+	// which an unguarded `response.(string)` would turn into a panic. A nil
+	// response falls through as an empty string rather than the literal
+	// "<nil>" that fmt.Sprintf would produce.
+	data, ok := response.(string)
+	if !ok && response != nil {
+		data = fmt.Sprintf("%v", response)
+	}
 	return core.NBToolResponse{
 		Data:   data,
 		Type:   core.NBToolResponseTypeTable,

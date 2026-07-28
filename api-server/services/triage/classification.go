@@ -334,9 +334,6 @@ func loadEventByID(ctx context.Context, db *sqlx.DB, eventID, cloudAccountID str
 // and returns up to 5 sample titles, all in a single query.
 // If excludeStatus is non-empty, events already in that status are excluded (they don't need updating).
 func countExistingEventsWithFingerprint(ctx context.Context, db *sqlx.DB, fingerprint, cloudAccountID, excludeEventID, excludeStatus string) (int, []string, error) {
-	var count int
-	var sampleTitles []string
-
 	baseWhere := `fingerprint = $1 AND cloud_account_id = $2 AND id != $3`
 	args := []interface{}{fingerprint, cloudAccountID, excludeEventID}
 	if excludeStatus != "" {
@@ -344,20 +341,27 @@ func countExistingEventsWithFingerprint(ctx context.Context, db *sqlx.DB, finger
 		args = append(args, excludeStatus)
 	}
 
-	countQuery := `SELECT COUNT(*) FROM events WHERE ` + baseWhere
-	err := db.GetContext(ctx, &count, countQuery, args...)
+	// COUNT(*) OVER() is evaluated before LIMIT, giving the full match count in every returned row.
+	type countedTitle struct {
+		TotalCount int    `db:"total_count"`
+		Title      string `db:"title"`
+	}
+	query := `SELECT COUNT(*) OVER() AS total_count, title FROM events WHERE ` + baseWhere + ` ORDER BY starts_at DESC LIMIT 5`
+	var results []countedTitle
+	err := db.SelectContext(ctx, &results, query, args...)
 	if err != nil {
 		return 0, nil, err
 	}
 
-	sampleQuery := `SELECT title FROM events WHERE ` + baseWhere + ` ORDER BY starts_at DESC LIMIT 5`
-	err = db.SelectContext(ctx, &sampleTitles, sampleQuery, args...)
-	if err != nil {
-		slog.WarnContext(ctx, "Failed to get sample titles", "error", err)
-		sampleTitles = []string{}
+	if len(results) == 0 {
+		return 0, []string{}, nil
 	}
 
-	return count, sampleTitles, nil
+	sampleTitles := make([]string, len(results))
+	for i, r := range results {
+		sampleTitles[i] = r.Title
+	}
+	return results[0].TotalCount, sampleTitles, nil
 }
 
 // getTargetStatusForClassification determines target nb_status based on classification and scope

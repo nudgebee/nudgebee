@@ -373,3 +373,21 @@ func (s *OpenObserveTraceSource) QueryGroupedTracesCount(ctx *security.RequestCo
 func (s *OpenObserveTraceSource) QueryTracesHeatmap(ctx *security.RequestContext, req TracesHeatMapRequest) ([]common.OpenTelemetryTraceHeatMap, error) {
 	return nil, fmt.Errorf("QueryTracesHeatmap not implemented for OpenObserve")
 }
+
+// QueryLabels has no cheap backend label-key discovery API for OpenObserve, so it returns an
+// empty slice; FetchTraceLabels falls back to the derived canonical + mapping label set.
+func (s *OpenObserveTraceSource) QueryLabels(_ *security.RequestContext, _ FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
+	return []OutputTraceLabel{}, nil
+}
+
+// QueryRootSpansByTrace backs the "By Traces" listing; OpenObserve reduces its span result to
+// representative root spans via the shared helper.
+func (s *OpenObserveTraceSource) QueryRootSpansByTrace(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	return queryRootSpansViaSpans(ctx, s, req)
+}
+
+// CountTracesByTrace returns -1 (estimate) for the "By Traces" view; distinct-trace counting is
+// not available cheaply for OpenObserve, so the frontend estimates pagination.
+func (s *OpenObserveTraceSource) CountTracesByTrace(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
+	return countTracesByTraceEstimate()
+}

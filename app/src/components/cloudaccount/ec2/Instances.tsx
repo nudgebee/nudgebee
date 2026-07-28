@@ -1,5 +1,6 @@
 import { Box, Tooltip, Typography } from '@mui/material';
 import React, { useEffect, useState, type JSX } from 'react';
+import type { ICustomTableRow } from './types';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import apiCloudAccount from '@api1/cloud-account';
 import CloudAccountTable from '@components/cloudaccount/CloudAccountTable';
@@ -230,27 +231,6 @@ const INSTANCE_HEADER = [
   { name: 'Launch Time', width: '10%' },
   { name: '', width: '4%' },
 ];
-
-export interface ICustomTableRow {
-  component?: JSX.Element;
-  drilldownQuery?: {
-    podName?: any;
-    workloadName?: any;
-    namespaceName?: any;
-    cpuRecc?: string;
-    cpuReq?: string;
-    memoryReq?: string;
-    memoryRecc?: string;
-    resourceId?: any;
-    memLimit?: string | undefined;
-    cpuLimit?: any;
-    recommendation?: any;
-    recommenedationDetails?: any;
-    event?: any;
-  };
-  text?: any;
-  data?: any;
-}
 
 // Strip GCP resource URL down to its trailing segment (e.g. ".../zones/us-central1-c" -> "us-central1-c").
 const gcpTail = (s?: string): string => (s ? s.split('/').pop() || s : '');
@@ -791,6 +771,7 @@ const InstancesView = (props: {
                             backgroundColor: ds.background[100],
                             padding: ds.space[5],
                             borderRadius: ds.radius.md,
+                            border: `1px solid ${ds.gray[200]}`,
                           }}
                         >
                           {drilldownQuery.meta?.id && <DataBlock title={'Resource Id'} data={drilldownQuery.meta.id} />}
@@ -875,6 +856,7 @@ const InstancesView = (props: {
                           backgroundColor: ds.background[100],
                           padding: ds.space[5],
                           borderRadius: ds.radius.md,
+                          border: `1px solid ${ds.gray[200]}`,
                         }}
                       >
                         {drilldownQuery.meta.InstanceId && <DataBlock title={'Instance Id'} data={drilldownQuery.meta.InstanceId} />}

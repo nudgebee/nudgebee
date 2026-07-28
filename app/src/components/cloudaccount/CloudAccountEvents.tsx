@@ -17,7 +17,7 @@ import { ds } from 'src/utils/colors';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import HelpBeeModal from '@components/helpbee';
 import { getLast7Days } from '@lib/datetime';
-import type { ICustomTableRow } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/types';
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import Text from '@shared/format/Text';
 import Datetime from '@shared/format/Datetime';
@@ -30,7 +30,7 @@ import { hasReadAccess, hasWriteAccess } from '@lib/auth';
 import { TicketsIcon, dashboardIcon1 as ClassifyIcon, infoIcon } from '@assets';
 import ticketsApi from '@api1/tickets';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
-import EventClassifyModal from '@components/events/EventClassifyModal';
+import EventClassifyModal, { type ClassifyUpdate } from '@components/events/EventClassifyModal';
 import { toast as snackbar } from '@ui/Toast';
 import ScoreDisplay from '@shared/widgets/ScoreDisplay';
 import WorkflowIcon from '@assets/WorkflowIcon';
@@ -426,21 +426,18 @@ const CloudAccountEvents = (props: {
 
     rowData.push({
       component: (
-        <Tooltip variant='default' title={getTriageStatusTooltip(item?.nb_status || 'OPEN', item?.snoozed_until)} placement='top'>
-          <Box>
-            <NBStatusBadge
-              eventId={item.id}
-              currentStatus={item?.nb_status || 'OPEN'}
-              snoozedUntil={item?.snoozed_until}
-              onStatusChange={() => listCloudAccountEvents()}
-              onCreateTicket={() => {
-                setTicketData(item);
-                setIsTicketCreateFormOpen(true);
-              }}
-              disableTooltip
-            />
-          </Box>
-        </Tooltip>
+        <NBStatusBadge
+          eventId={item.id}
+          currentStatus={item?.nb_status || 'OPEN'}
+          snoozedUntil={item?.snoozed_until}
+          onStatusChange={() => listCloudAccountEvents()}
+          onCreateTicket={() => {
+            setTicketData(item);
+            setIsTicketCreateFormOpen(true);
+          }}
+          disableSnoozeTooltip
+          tooltipTitle={getTriageStatusTooltip(item?.nb_status || 'OPEN', item?.snoozed_until)}
+        />
       ),
       data: item?.nb_status,
     });
@@ -646,10 +643,22 @@ const CloudAccountEvents = (props: {
             setSelectedEvent(null);
           }}
           event={selectedEvent}
-          onSuccess={() => {
+          onSuccess={(update: ClassifyUpdate) => {
             setIsClassifyModalOpen(false);
             setSelectedEvent(null);
-            listCloudAccountEvents();
+            rawEventsRef.current = rawEventsRef.current.map((e: any) =>
+              e.id === update.eventId
+                ? {
+                    ...e,
+                    ...(update.newStatus != null ? { nb_status: update.newStatus } : {}),
+                    ...(update.newPriority != null ? { computed_priority: update.newPriority } : {}),
+                    ...(update.snoozedUntil != null ? { snoozed_until: update.snoozedUntil } : {}),
+                  }
+                : e
+            );
+            if (buildRowDataRef.current) {
+              setEvents(buildRowDataRef.current(rawEventsRef.current, ticketReferenceMapRef.current));
+            }
           }}
         />
       )}

@@ -114,11 +114,11 @@ const apiNotifications = {
     try {
       const response = await queryGraphQL(LIST_INSTALLED_NOTIFICATION_TOOLS, 'ListInstalledNotificationTools');
       const platforms = response?.data?.data?.messagingplatforms_list?.data || [];
-      // Slack/MS Teams may live in the integrations table now; surface them so the
-      // rule builder's platform toggles light up. Integration installs win (one per tenant).
+      // Slack/MS Teams/Discord may live in the integrations table now; surface them so
+      // the rule builder's platform toggles light up. Integration installs win (one per tenant).
       let integrationPlatforms: any[] = [];
       try {
-        const res: any = await apiIntegrations.listIntegrations({ type: ['slack', 'ms_teams'], limit: 50 });
+        const res: any = await apiIntegrations.listIntegrations({ type: ['slack', 'ms_teams', 'discord'], limit: 50 });
         const rows = res?.data?.data?.integrations_list?.rows || [];
         integrationPlatforms = rows.map((r: any) => ({ id: r.id, platform: r.type }));
       } catch {

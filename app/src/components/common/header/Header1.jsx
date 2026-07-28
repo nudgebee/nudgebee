@@ -1,10 +1,12 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import { headerMenuExtras } from '@lib/authHooks';
 import Box from '@mui/material/Box';
 import { Typography } from '@mui/material';
 import DOMPurify from 'dompurify';
 import { ds } from 'src/utils/colors';
 import { Button as DsButton } from '@ui/Button';
+import Chip from '@ui/Chip';
 import DsTooltip from '@ui/Tooltip';
 import { Divider as DsDivider } from '@ui/Divider';
 import { Banner } from '@ui/Banner';
@@ -43,11 +45,19 @@ import IconButton from '@mui/material/IconButton';
 import ClusterDropdown from '@shared/navigation/ClusterDropDown';
 import { useSession } from 'next-auth/react';
 import { DropdownMenu } from '@ui/DropdownMenu';
+import GuidesMenu from '@components/onboarding/GuidesMenu';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
-import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
-import JiraAccountModal from '@components/integrations/modal/JiraAccountModal';
-import GithubAccountModal from '@components/integrations/modal/GithubAccountModal';
-import ServiceNowAccountModal from '@components/integrations/modal/ServiceNowAccountModal';
+// All four modals are click-gated inside the "Connect Account" dropdown, which
+// is only exposed on admin pages. But this Header is rendered by the global
+// PageLayout on every authenticated route, so importing the modals statically
+// pulled their full transitive tree (form libs, MUI, api1 modules) into the
+// shared layout chunk on every page — including /home, where none of it is
+// used. next/dynamic + the mount latches below keep that code out of the
+// initial bundle and fetch it on first open instead.
+const K8sAccountModal = dynamic(() => import('@components/integrations/modal/K8sAccountModal'), { ssr: false });
+const JiraAccountModal = dynamic(() => import('@components/integrations/modal/JiraAccountModal'), { ssr: false });
+const GithubAccountModal = dynamic(() => import('@components/integrations/modal/GithubAccountModal'), { ssr: false });
+const ServiceNowAccountModal = dynamic(() => import('@components/integrations/modal/ServiceNowAccountModal'), { ssr: false });
 import { Select } from '@ui/Select';
 import apiAppGrouping from '@api1/application-groupings';
 import BackButton from '@components/common/buttons/BackButton';
@@ -56,6 +66,10 @@ import apiAccount from '@api1/account';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 import { docsUrl } from '@lib/externalUrls';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import CampaignOutlinedIcon from '@mui/icons-material/CampaignOutlined';
+import CustomDrawer from '@shared/CustomDrawer';
+import ProductUpdatesDrawerContent from '@shared/widgets/ProductUpdatesDrawerContent';
+import { useProductUpdates } from '@hooks/useProductUpdates';
 
 const Header1 = ({ showBorder = false }) => {
   const { data } = useSession({ required: true });
@@ -66,15 +80,66 @@ const Header1 = ({ showBorder = false }) => {
   selectedClusterRef.current = selectedCluster;
   const isAlertOpen = useRef(false);
 
+  const productUpdates = useProductUpdates();
+  const { markAllSeen: markProductUpdatesSeen } = productUpdates;
+  const [updatesDrawerOpen, setUpdatesDrawerOpen] = useState(false);
+  const [updatesSeenSnapshot, setUpdatesSeenSnapshot] = useState(null);
+  const openProductUpdates = () => {
+    // Snapshot the pre-open high-water-mark so the drawer can still flag "New"
+    // items on the entries the user is about to view. Advancing the mark is
+    // handled by the effect below, not here — see its comment for why.
+    setUpdatesSeenSnapshot(productUpdates.lastSeenAt);
+    setUpdatesDrawerOpen(true);
+  };
+
+  // Advance the "last seen" high-water-mark whenever the drawer is open.
+  // Calling markAllSeen inside the click handler is racy: the badge renders
+  // before the initial fetch resolves (unreadCount computes optimistically
+  // against a null high-water-mark), so a quick click lands while `updates`
+  // is still empty and markAllSeen no-ops on its own guard. Running it from
+  // an effect keyed on `markProductUpdatesSeen`'s identity — which changes
+  // when `newestPublishedAt` becomes non-null — retries the write once data
+  // has loaded, so the badge persists as cleared across reloads.
+  useEffect(() => {
+    if (updatesDrawerOpen) {
+      markProductUpdatesSeen();
+    }
+  }, [updatesDrawerOpen, markProductUpdatesSeen]);
+
   const [anchorActiveTab, setAnchorActiveTab] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMsg, setSnackbarMsg] = useState('');
   const [showReloadNotification, setShowReloadNotification] = useState(false);
   const [reloadMsg, setReloadMsg] = useState('');
   const [showK8sAccountModal, setShowK8sAccountModal] = useState(false);
+  const [guidesOpen, setGuidesOpen] = useState(false);
   const [showJiraAccountModal, setShowJiraAccountModal] = useState(false);
   const [showGitHubAccountModal, setShowGitHubAccountModal] = useState(false);
   const [showServiceNowAccountModal, setShowServiceNowAccountModal] = useState(false);
+  // Mount latches for the dynamically-imported modals above. A dynamic modal
+  // only fetches its chunk once it is actually rendered, so we latch on first
+  // open (chunk fetches then), then stay mounted so the `openModal` prop keeps
+  // driving the show/hide transition as before.
+  const [k8sModalMounted, setK8sModalMounted] = useState(false);
+  const [jiraModalMounted, setJiraModalMounted] = useState(false);
+  const [githubModalMounted, setGithubModalMounted] = useState(false);
+  const [serviceNowModalMounted, setServiceNowModalMounted] = useState(false);
+  const handleOpenK8sModal = useCallback(() => {
+    setK8sModalMounted(true);
+    setShowK8sAccountModal(true);
+  }, []);
+  const handleOpenJiraModal = useCallback(() => {
+    setJiraModalMounted(true);
+    setShowJiraAccountModal(true);
+  }, []);
+  const handleOpenGithubModal = useCallback(() => {
+    setGithubModalMounted(true);
+    setShowGitHubAccountModal(true);
+  }, []);
+  const handleOpenServiceNowModal = useCallback(() => {
+    setServiceNowModalMounted(true);
+    setShowServiceNowAccountModal(true);
+  }, []);
   const [activeGroup, setActiveGroup] = useState({ label: ' ', value: ' ' });
   const [allAppGroupNames, setAllAppGroupNames] = useState([{}]);
   const [groupId, setGroupId] = useState(router.query.groupId ?? '');
@@ -152,6 +217,11 @@ const Header1 = ({ showBorder = false }) => {
   const buildHelpMenuItems = () => {
     const close = () => {};
     const items = [
+      {
+        label: 'Browse guides',
+        icon: <SafeIcon src={HelpOutlineDarkIcon} alt='Guides' />,
+        onSelect: () => setGuidesOpen(true),
+      },
       {
         label: 'Documentation',
         icon: <SafeIcon src={DocumentationIcon} alt='Documentation' />,
@@ -575,10 +645,12 @@ const Header1 = ({ showBorder = false }) => {
 
   return (
     <>
-      <K8sAccountModal openModal={showK8sAccountModal} handleClose={() => setShowK8sAccountModal(false)} />
-      <JiraAccountModal openModal={showJiraAccountModal} handleClose={() => setShowJiraAccountModal(false)} />
-      <GithubAccountModal openModal={showGitHubAccountModal} handleClose={() => setShowGitHubAccountModal(false)} />
-      <ServiceNowAccountModal openModal={showServiceNowAccountModal} handleClose={() => setShowServiceNowAccountModal(false)} />
+      {k8sModalMounted && <K8sAccountModal openModal={showK8sAccountModal} handleClose={() => setShowK8sAccountModal(false)} />}
+      {jiraModalMounted && <JiraAccountModal openModal={showJiraAccountModal} handleClose={() => setShowJiraAccountModal(false)} />}
+      {githubModalMounted && <GithubAccountModal openModal={showGitHubAccountModal} handleClose={() => setShowGitHubAccountModal(false)} />}
+      {serviceNowModalMounted && (
+        <ServiceNowAccountModal openModal={showServiceNowAccountModal} handleClose={() => setShowServiceNowAccountModal(false)} />
+      )}
       {snackbarOpen && (
         <Banner
           tone='warning'
@@ -740,22 +812,22 @@ const Header1 = ({ showBorder = false }) => {
                       {
                         label: 'Kubernetes',
                         icon: <OuK8sIcon width={18} height={18} />,
-                        onSelect: () => setShowK8sAccountModal(true),
+                        onSelect: handleOpenK8sModal,
                       },
                       {
                         label: 'Jira',
                         icon: <JiraIcon width={18} height={18} />,
-                        onSelect: () => setShowJiraAccountModal(true),
+                        onSelect: handleOpenJiraModal,
                       },
                       {
                         label: 'Github',
                         icon: <GithubIcon width={18} height={18} />,
-                        onSelect: () => setShowGitHubAccountModal(true),
+                        onSelect: handleOpenGithubModal,
                       },
                       {
                         label: 'ServiceNow',
                         icon: <SafeIcon src={ServiceNowIcon} alt='servicenow' width={18} height={18} />,
-                        onSelect: () => setShowServiceNowAccountModal(true),
+                        onSelect: handleOpenServiceNowModal,
                       },
                       {
                         label: 'Slack',
@@ -823,7 +895,7 @@ const Header1 = ({ showBorder = false }) => {
                       )
                     }
                   >
-                    <SafeIcon alt={`Ask ${assistantName}`} src={nubiIconLightUrl} height={22} width={22} />
+                    <SafeIcon alt={`Ask ${assistantName}`} src={nubiIconLightUrl} height={26} width={26} />
                     <Typography
                       className='nubi-text'
                       sx={{
@@ -845,6 +917,7 @@ const Header1 = ({ showBorder = false }) => {
                 )}
                 {anchorActiveTab.showActiveCluster && (
                   <Box
+                    id='global-cluster-filter'
                     sx={{
                       // Height aligned with ds/Button size='md' (32px) so the cluster
                       // picker sits flush next to the "detail view" button. Border,
@@ -934,7 +1007,13 @@ const Header1 = ({ showBorder = false }) => {
                       }
                       target='_blank'
                     >
-                      <DsButton tone='secondary' size='md' icon={<SafeIcon src={ExternalLinkIcon} alt='redirect' />} iconPlacement='start'>
+                      <DsButton
+                        id='cluster-detail-view'
+                        tone='secondary'
+                        size='md'
+                        icon={<SafeIcon src={ExternalLinkIcon} alt='redirect' />}
+                        iconPlacement='start'
+                      >
                         detail view
                       </DsButton>
                     </Link>
@@ -956,6 +1035,41 @@ const Header1 = ({ showBorder = false }) => {
               </Box>
               <DsDivider orientation='vertical' sx={{ minHeight: ds.space.mul(0, 16), marginLeft: 0, marginRight: 0 }} />
               <Box sx={{ display: 'flex', flexDirection: 'row', gap: ds.space[2] }}>
+                <Box sx={{ position: 'relative', display: 'inline-flex' }}>
+                  <DsButton
+                    composition='icon-only'
+                    tone='secondary'
+                    size='md'
+                    tooltip='Product Updates'
+                    tooltipPlacement='bottom'
+                    aria-label='Product Updates'
+                    icon={<CampaignOutlinedIcon fontSize='small' />}
+                    onClick={openProductUpdates}
+                    data-testid='product-updates-trigger'
+                  />
+                  {productUpdates.unreadCount > 0 && (
+                    <Box
+                      aria-hidden
+                      sx={{
+                        position: 'absolute',
+                        // Superscript: lift above the icon's top-right corner.
+                        top: '-6px',
+                        right: '-6px',
+                        pointerEvents: 'none',
+                      }}
+                    >
+                      <Chip
+                        variant='count'
+                        size='micro'
+                        tone='critical'
+                        solid
+                        count={productUpdates.unreadCount}
+                        // White ring so the count chip reads as a distinct superscript, not part of the icon.
+                        sx={{ boxShadow: '0 0 0 1.5px var(--ds-background-100)' }}
+                      />
+                    </Box>
+                  )}
+                </Box>
                 <DsButton
                   composition='icon-only'
                   tone='secondary'
@@ -987,6 +1101,22 @@ const Header1 = ({ showBorder = false }) => {
           </Box>
         </Box>
       </Box>
+      <CustomDrawer
+        open={updatesDrawerOpen}
+        onClose={() => setUpdatesDrawerOpen(false)}
+        title='Product Updates'
+        width='420px'
+        resizable={false}
+        variant='default'
+      >
+        <ProductUpdatesDrawerContent
+          updates={productUpdates.updates}
+          loading={productUpdates.loading}
+          error={productUpdates.error}
+          seenAt={updatesSeenSnapshot}
+        />
+      </CustomDrawer>
+      <GuidesMenu open={guidesOpen} onClose={() => setGuidesOpen(false)} />
     </>
   );
 };

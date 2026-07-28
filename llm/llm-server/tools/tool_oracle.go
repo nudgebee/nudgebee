@@ -54,12 +54,18 @@ func (m OracleExecuteTool) Description() string {
 }
 
 func (m OracleExecuteTool) InputSchema() core.ToolSchema {
+	// 'command'/'query' are aliases (Call() prefers 'command'); RequiredOneOf
+	// enforces at least one without rejecting a 'query'-keyed input.
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
 			"command": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Oracle SQL SELECT query to execute. Do NOT use USE statements — use the 'database' parameter instead.",
+				Description: "Oracle SQL SELECT query to execute. Either 'command' or 'query' must be provided. Do NOT use USE statements — use the 'database' parameter instead.",
+			},
+			"query": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Alias for 'command' — accepted at the top level for backward compatibility.",
 			},
 			"database": {
 				Type:        core.ToolSchemaTypeString,
@@ -70,7 +76,7 @@ func (m OracleExecuteTool) InputSchema() core.ToolSchema {
 				Description: "Target Oracle instance/environment name (e.g. 'prod', 'dev') when multiple configs exist.",
 			},
 		},
-		Required: []string{"command"},
+		RequiredOneOf: [][]string{{"command", "query"}},
 	}
 }
 
@@ -150,8 +156,9 @@ func (m OracleExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 			if response == "" {
 				response = err.Error()
 			}
+			// sqlplus uses `-H` (uppercase H), NOT `--help`.
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, "", "sqlplus", "sqlplus -H"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}
@@ -174,13 +181,27 @@ func (m OracleExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 				responseData = responseData1
 			}
 		}
+		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
+		// non-string response, so the LLM always sees the failure reason
+		// rather than an empty envelope.
+		if responseData == "" {
+			responseData = err.Error()
+		}
 		return core.NBToolResponse{
-			Data:   responseData,
+			Data:   cliRecoveryEnvelope(responseData, "", "oracle", ""),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
 
-	data := response.(string)
+	// Guard the assertion (mirrors tool_mssql): a future ExecuteContainerJob
+	// path could return a non-string / nil response alongside a nil error,
+	// which an unguarded `response.(string)` would turn into a panic. A nil
+	// response falls through as an empty string rather than the literal
+	// "<nil>" that fmt.Sprintf would produce.
+	data, ok := response.(string)
+	if !ok && response != nil {
+		data = fmt.Sprintf("%v", response)
+	}
 	return core.NBToolResponse{
 		Data:   data,
 		Type:   core.NBToolResponseTypeTable,

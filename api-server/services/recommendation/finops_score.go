@@ -331,7 +331,8 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 				WHEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace'
 				WHEN r.recommendation -> 'metadata' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'metadata' ->> 'namespace'
 				ELSE r.recommendation ->> 'namespace'
-			END AS resource_k8s_namespace
+			END AS resource_k8s_namespace,
+			r.resource_id
 		FROM recommendation r
 		LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
 		WHERE r.status = 'Open'`)
@@ -354,10 +355,11 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 	}
 	var batch []scoreRow
 
-	// Blast-radius annotation: resolve each k8s recommendation to its
-	// knowledge-graph workload and stamp a safety band into the breakdown JSONB.
-	// Always on -- cost is bounded (non-k8s recs are skipped, and results are
-	// memoized per workload so each is resolved + traversed at most once per run).
+	// Blast-radius annotation: resolve each recommendation to its knowledge-graph
+	// node — a k8s workload by (namespace, name), or a cloud resource by resource_id —
+	// and stamp a safety band into the breakdown JSONB. Always on; cost is bounded
+	// (recs whose resource isn't in the graph are skipped, and results are memoized
+	// per resource so each is resolved + traversed at most once per run).
 	kgService := core.NewService(ctx, ctx.GetLogger(), dbms)
 	impactCache := map[string]*recommendationImpact{}
 
@@ -374,8 +376,9 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 			createdAt         *time.Time
 			resourceName      *string
 			resourceNamespace *string
+			resourceID        *string
 		)
-		if err := rows.Scan(&id, &tenantID, &cloudAccountID, &category, &ruleName, &severity, &estimatedSavings, &createdAt, &resourceName, &resourceNamespace); err != nil {
+		if err := rows.Scan(&id, &tenantID, &cloudAccountID, &category, &ruleName, &severity, &estimatedSavings, &createdAt, &resourceName, &resourceNamespace, &resourceID); err != nil {
 			ctx.GetLogger().Error("error scanning recommendation row", "error", err)
 			errCount++
 			continue
@@ -391,16 +394,20 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 		if cloudAccountID != nil {
 			accountID = *cloudAccountID
 		}
-		// Identity comes from the cloud_resourses join above; annotate no-ops
-		// when it's absent (non-k8s recs, or workloads not in the graph).
-		ns, name := "", ""
+		// Identity comes from the cloud_resourses join above; annotate no-ops when it
+		// resolves to no graph node (k8s workload or cloud resource absent from the
+		// graph, or an account-level rec with a null resource_id).
+		ns, name, resID := "", "", ""
 		if resourceNamespace != nil {
 			ns = *resourceNamespace
 		}
 		if resourceName != nil {
 			name = *resourceName
 		}
-		annotateBreakdownWithImpact(kgService, tenantID, accountID, ns, name, result.Breakdown, impactCache)
+		if resourceID != nil {
+			resID = *resourceID
+		}
+		annotateBreakdownWithImpact(kgService, tenantID, accountID, ns, name, resID, result.Breakdown, impactCache)
 
 		breakdownJSON, err := json.Marshal(result.Breakdown)
 		if err != nil {

@@ -1,7 +1,8 @@
-/* Google Fonts Import */
-/* Open Sans is loaded for tenant branding (some tenants map it to --ds-font-sans/display);
-   default theme still resolves to Roboto/Poppins, so this is additive only. */
-@import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700&family=Poppins:wght@400;500;600&family=Roboto:wght@300;400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap');
+/* Google Fonts are loaded via <link rel="preconnect"> + <link rel="stylesheet"> in
+   src/pages/_document.tsx, not a render-blocking CSS @import here. A CSS @import forces
+   the browser to download+parse this stylesheet before it can even discover the font
+   request, serializing it into the critical path (~1.7s render-block in Lighthouse).
+   The families (Open Sans for tenant branding; Roboto/Poppins/Roboto Mono) are unchanged. */
 
 /* ========================================
    NUDGEBEE TYPOGRAPHY UTILITY CLASSES

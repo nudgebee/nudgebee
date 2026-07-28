@@ -35,7 +35,10 @@ knowledge_graph/
 │   ├── publisher.go, consumer.go    consumer holds 1-hour per-tenant lock
 │   └── types.go                     KGUpdateMessage
 ├── models/filters.go
-└── integration_test.go   # End-to-end build/save/query
+└── test/                 # E2E test suite (package test) + testdata/
+    ├── e2e_*_test.go     Tier A (JSON→graph goldens), Tier B (DB-gated), mocked-infra
+    ├── integration_test.go   phase build/save/query + shared fixture loaders
+    └── testdata/e2e/     per-scenario input JSON + golden.json
 ```
 
 **Outside this tree (related):**
@@ -154,4 +157,5 @@ V2 uses the **ReWOO** planner. V1 and V2 are **mutually exclusive at init time**
 ## Tests
 
 - Unit: `*_test.go` alongside source. Run with `make test` from `api-server/services`.
-- Integration: [integration_test.go](integration_test.go), `core/*_integration_test.go`. Some are gated by `TEST_ACCOUNT` env var (real cloud creds). See [TESTING.md](TESTING.md).
+- E2E suite: [test/](test/) (`package test`) — Tier A golden diffs (JSON→graph, no DB, always run), Tier B DB-gated read/tombstone/orchestrator tests, and mocked-infra fake-collector tiers. Fixtures under [test/testdata/e2e/](test/testdata/). Run: `go test ./knowledge_graph/test/` from `api-server/services` (add `DATABASE_URL=...` to exercise Tier B; refresh goldens with `-update`).
+- Integration: [test/integration_test.go](test/integration_test.go), `core/*_integration_test.go`. Some are gated by `TEST_ACCOUNT` env var (real cloud creds). See [TESTING.md](TESTING.md).

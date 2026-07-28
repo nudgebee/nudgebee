@@ -133,6 +133,7 @@ type ConversationMessage struct {
 	UserID          uuid.UUID          `json:"user_id" db:"user_id"`
 	MessageType     string             `json:"message_type" db:"message_type"`
 	UpdatedAt       *time.Time         `json:"updated_at" db:"updated_at"`
+	RespondedAt     *time.Time         `json:"responded_at,omitempty" db:"responded_at"`
 	Status          ConversationStatus `json:"status" db:"status"`
 	WorkerName      *string            `json:"worker_name" db:"worker_name"`
 	AgentName       *string            `json:"agent_name" db:"agent_name"`
@@ -267,6 +268,8 @@ type IConversationDao interface {
 	GetConversationCost(provider string, model string, nonCachedInputTokens, cachedInputTokens, cacheCreationTokens, outputTokens, thinkingTokens int) (float64, error)
 	GetConversationCosts(models []string) (map[string]modelPricing, error)
 	GetConversationTokenUsageDetailed(conversationId, accountId string) ([]TokenUsageDetailedRecord, error)
+	GetConversationToolCallAgents(conversationId string) ([]ToolCallAgent, error)
+	ResolveSessionId(idOrSessionId string) string
 	GetConversationLifecycleStorageCost(conversationId string, tenantId string) (float64, error)
 	GetConversationToolCallsStats(conversationId, accountId string) (ToolCallsStats, error)
 	GetConversationTimeBreakdown(conversationId, accountId string) (TimeBreakdown, error)
@@ -356,20 +359,24 @@ type TokenUsageRecord struct {
 	OutputTokens        int
 	CachedInputTokens   int
 	CacheCreationTokens int
-	IsCacheHit          bool
-	CacheHitRate        *float64 // Nullable
-	RetryAttempt        int
-	FallbackFromModel   *string  // Nullable - immediate previous model
-	FallbackChain       *string  // Nullable - JSON array of all fallback models
-	LatencySeconds      *float64 // Nullable
-	RequestStatus       string   // 'success' or 'failure'
-	ErrorMessage        *string  // Nullable
-	ContentLength       *int     // Nullable
-	StopReason          *string  // Nullable
-	CacheTTLMinutes     *int     // Nullable - cache TTL in minutes at time of request
-	PromptMessages      *string  // Nullable - serialized prompt messages JSON (when LLM trace is enabled)
-	ResponseContent     *string  // Nullable - full LLM response text (when LLM trace is enabled)
-	ThinkingTokens      *int     // Nullable - Gemini 2.5+ hidden chain-of-thought tokens (usage.ThoughtsTokenCount). NULL when 0/unavailable.
+	// CostUsd is the USD cost of this call, computed via GetConversationCost at
+	// insert time. Nil when the (provider, model) has no llm_model_pricing entry —
+	// distinguishes "not priced" from "$0" for readers, which fall back to a live pricing JOIN when nil.
+	CostUsd           *float64
+	IsCacheHit        bool
+	CacheHitRate      *float64 // Nullable
+	RetryAttempt      int
+	FallbackFromModel *string  // Nullable - immediate previous model
+	FallbackChain     *string  // Nullable - JSON array of all fallback models
+	LatencySeconds    *float64 // Nullable
+	RequestStatus     string   // 'success' or 'failure'
+	ErrorMessage      *string  // Nullable
+	ContentLength     *int     // Nullable
+	StopReason        *string  // Nullable
+	CacheTTLMinutes   *int     // Nullable - cache TTL in minutes at time of request
+	PromptMessages    *string  // Nullable - serialized prompt messages JSON (when LLM trace is enabled)
+	ResponseContent   *string  // Nullable - full LLM response text (when LLM trace is enabled)
+	ThinkingTokens    *int     // Nullable - Gemini 2.5+ hidden chain-of-thought tokens (usage.ThoughtsTokenCount). NULL when 0/unavailable.
 	// Streaming-latency breakdown. ttft_ms / itl_ms_avg / tokens_per_second
 	// are NULL on non-streaming or legacy rows. was_streaming is FALSE on new
 	// non-streaming rows and NULL only on legacy rows pre-V722.
@@ -1370,8 +1377,15 @@ func (chat *ConversationDao) SaveConversationMessage(id, conversationId, account
 }
 
 func (chat *ConversationDao) UpdateConversationMessage(id, response string, status ConversationStatus) error {
-	query := `UPDATE llm_conversation_messages SET response = $2, updated_at = now(), status = $3, worker_name = $4 WHERE id = $1`
-	_, err := chat.dbManager.Db.Exec(query, id, response, string(status), config.Config.ServerName)
+	// Stamp responded_at — the turn's foreground answer-completion time — the first time it
+	// reaches a terminal state. Uses the DB clock (now()), consistent with updated_at and
+	// immune to app/DB clock drift. A non-terminal write clears it, so a retried/recovered
+	// message (reset to IN_PROGRESS) re-stamps fresh instead of keeping a stale value;
+	// COALESCE keeps it write-once within a single terminal run. Post-response background
+	// jobs (memory/summary/suggestions) go through other DAOs and never touch it.
+	isTerminal := IsTerminalConversationStatus(status)
+	query := `UPDATE llm_conversation_messages SET response = $2, updated_at = now(), status = $3, worker_name = $4, responded_at = CASE WHEN $5::boolean THEN COALESCE(responded_at, now()) ELSE NULL END WHERE id = $1`
+	_, err := chat.dbManager.Db.Exec(query, id, response, string(status), config.Config.ServerName, isTerminal)
 	if err != nil {
 		return fmt.Errorf("history: failed to update message: %w", err)
 	}
@@ -1609,7 +1623,9 @@ func (chat *ConversationDao) CleanupConversationMessage(id, accountId string) er
 		return fmt.Errorf("history: failed to remove agent call: %w", err)
 	}
 
-	messageQuery := `UPDATE llm_conversation_messages SET response = $2, updated_at = now(), status = $3, worker_name = $4 WHERE id = $1`
+	// Clear responded_at too: this resets the message for a retry/re-run, so the prior run's
+	// answer-completion time must not linger and shadow the new run's.
+	messageQuery := `UPDATE llm_conversation_messages SET response = $2, updated_at = now(), status = $3, worker_name = $4, responded_at = NULL WHERE id = $1`
 	_, err = chat.dbManager.Db.Exec(messageQuery, id, "", string(ConversationStatusInProgress), config.Config.ServerName)
 	if err != nil {
 		return fmt.Errorf("history: failed to update message: %w", err)
@@ -1618,7 +1634,7 @@ func (chat *ConversationDao) CleanupConversationMessage(id, accountId string) er
 }
 
 func (chat *ConversationDao) GetConversationMessage(id, accountId, conversationId string) (ConversationMessage, error) {
-	query := `select id, conversation_id, message, created_at, response, role, account_id, user_id, message_type, updated_at, status, worker_name, agent_name, message_config, message_context, suggestions, llm_provider, llm_model from llm_conversation_messages WHERE id = $1 and conversation_id = $2 and account_id = $3`
+	query := `select id, conversation_id, message, created_at, response, role, account_id, user_id, message_type, updated_at, responded_at, status, worker_name, agent_name, message_config, message_context, suggestions, llm_provider, llm_model from llm_conversation_messages WHERE id = $1 and conversation_id = $2 and account_id = $3`
 	row := chat.dbManager.Db.QueryRowx(query, id, conversationId, accountId)
 	if row == nil || row.Err() != nil {
 		return ConversationMessage{}, fmt.Errorf("history: failed to get message: %w", row.Err())
@@ -1632,8 +1648,8 @@ func (chat *ConversationDao) GetConversationMessage(id, accountId, conversationI
 }
 
 func (chat *ConversationDao) ListConversationMessages(status ConversationStatus, workerName string, conversationId string, deadWorker bool) ([]ConversationMessage, error) {
-	query := `select id, conversation_id, message, created_at, response, role, account_id, 
-				user_id, message_type, updated_at, status, worker_name, agent_name,
+	query := `select id, conversation_id, message, created_at, response, role, account_id,
+				user_id, message_type, updated_at, responded_at, status, worker_name, agent_name,
 				message_config, message_context, suggestions, llm_provider, llm_model
 			  from llm_conversation_messages WHERE true
 			`
@@ -1676,6 +1692,9 @@ func (chat *ConversationDao) ListConversationMessages(status ConversationStatus,
 			return []ConversationMessage{}, fmt.Errorf("history: failed to scan message: %w", err)
 		}
 		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return []ConversationMessage{}, fmt.Errorf("history: rows iteration error listing messages: %w", err)
 	}
 	return messages, nil
 }
@@ -2416,7 +2435,8 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 			t.llm_model as ModelName,
 			t.llm_provider as ModelProviderName,
 			COALESCE(t.message_id::text, '') as MessageId,
-			t.conversation_id::text as ConversationId
+			t.conversation_id::text as ConversationId,
+			t.cost_usd as CostUsd
 		FROM llm_conversation_token_usage t
 		INNER JOIN llm_conversations c ON c.id = t.conversation_id
 		WHERE c.session_id = $1 AND c.account_id = $2::uuid;`
@@ -2444,6 +2464,7 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 		ModelProviderName   sql.NullString
 		MessageId           string
 		ConversationId      string
+		CostUsd             sql.NullFloat64
 	}
 
 	groups := make(map[string]*TokenMetrics)
@@ -2459,8 +2480,15 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 		if nonCached < 0 {
 			nonCached = 0
 		}
+
+		// Prefer the cost persisted at insert time (reconciles with every other
+		// cost surface — see cost_usd column comment). Legacy rows written before
+		// that column existed, or calls with no matching pricing entry at insert
+		// time, fall back to a live recompute here.
 		var cost float64
-		if call.ModelProviderName.Valid && call.ModelName.Valid {
+		if call.CostUsd.Valid {
+			cost = call.CostUsd.Float64
+		} else if call.ModelProviderName.Valid && call.ModelName.Valid {
 			key := call.ModelProviderName.String + ":" + call.ModelName.String
 			if pricing, ok := pricingMap[key]; ok {
 				cost = CalculateTotalCost(
@@ -2558,6 +2586,7 @@ type TokenUsageDetailedRecord struct {
 	ThinkingTokens      int
 	RequestStatus       string
 	LatencySeconds      sql.NullFloat64
+	CreatedAt           time.Time
 }
 
 // GetConversationTokenUsageDetailed returns all individual token usage records for detailed analysis
@@ -2576,7 +2605,8 @@ func (chat *ConversationDao) GetConversationTokenUsageDetailed(conversationId, a
 			COALESCE(t.cache_creation_tokens, 0) as CacheCreationTokens,
 			COALESCE(t.thinking_tokens, 0) as ThinkingTokens,
 			t.request_status as RequestStatus,
-			t.latency_seconds as LatencySeconds
+			t.latency_seconds as LatencySeconds,
+			t.created_at as CreatedAt
 		FROM llm_conversation_token_usage t
 		INNER JOIN llm_conversations c ON c.id = t.conversation_id
 		WHERE c.session_id = $1 AND c.account_id = $2::uuid
@@ -2608,6 +2638,75 @@ func (chat *ConversationDao) GetConversationTokenUsageDetailed(conversationId, a
 		return nil, err
 	}
 	return records, nil
+}
+
+// ToolCallAgent links a tool call to the agent that issued it and when it ran, so
+// each agent's reasoning calls can be time-split onto the specific tool call they
+// produced. No db tags — sqlx's default mapper lowercases field names to match the
+// lowercased column aliases, matching the other detailed-record queries in this file.
+type ToolCallAgent struct {
+	ToolCallID string
+	AgentID    string
+	CreatedAt  time.Time
+}
+
+// ResolveSessionId normalizes a usage-metrics lookup key. The metrics queries all match on
+// session_id, but callers may pass a conversation id instead (e.g. workflow/autopilot
+// conversations are opened by conversation_id, which differs from their wf__… session_id).
+// If the value matches a conversation's id, that conversation's session_id is returned;
+// otherwise the value is assumed to already be a session_id and returned unchanged.
+func (chat *ConversationDao) ResolveSessionId(idOrSessionId string) string {
+	// Only a conversation id is a UUID; a non-UUID value (e.g. a wf__… workflow session id)
+	// can never match a conversation id, so skip the query entirely — saving a round-trip.
+	// Matching on the parsed uuid (not id::text) keeps the primary-key index in play.
+	id, err := uuid.Parse(idOrSessionId)
+	if err != nil {
+		return idOrSessionId
+	}
+	var sessionId string
+	if err := chat.dbManager.Db.Get(&sessionId,
+		`SELECT session_id FROM llm_conversations WHERE id = $1 LIMIT 1`, id); err != nil || sessionId == "" {
+		return idOrSessionId
+	}
+	return sessionId
+}
+
+// GetConversationToolCallAgents returns the tool_call_id, agent_id and created_at for
+// each tool call in a conversation (looked up by session_id, matching the other
+// usage-metric queries), ordered chronologically for time-based reasoning attribution.
+func (chat *ConversationDao) GetConversationToolCallAgents(conversationId string) ([]ToolCallAgent, error) {
+	query := `
+		SELECT tc.id::text as ToolCallID, tc.agent_id::text as AgentID, tc.created_at as CreatedAt
+		FROM llm_conversation_tool_calls tc
+		INNER JOIN llm_conversations c ON c.id = tc.conversation_id
+		WHERE c.session_id = $1 AND tc.agent_id IS NOT NULL
+		ORDER BY tc.created_at ASC;`
+
+	rows, err := chat.dbManager.Db.Queryx(query, conversationId)
+	if err != nil {
+		slog.Error("executing tool call agents query", "error", err)
+		return nil, err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Error("Failed to close rows", "error", err)
+		}
+	}()
+
+	pairs := []ToolCallAgent{}
+	for rows.Next() {
+		var pair ToolCallAgent
+		if err := rows.StructScan(&pair); err != nil {
+			slog.Error("Scan error", "error", err)
+			return nil, err
+		}
+		pairs = append(pairs, pair)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("tool call agents rows iteration error", "error", err)
+		return nil, err
+	}
+	return pairs, nil
 }
 
 // ToolCallsStats represents tool call statistics for a conversation
@@ -2925,7 +3024,8 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			content_length, stop_reason, cache_ttl_minutes,
 			prompt_messages, response_content,
 			thinking_tokens,
-			ttft_ms, itl_ms_avg, tokens_per_second, was_streaming
+			ttft_ms, itl_ms_avg, tokens_per_second, was_streaming,
+			cost_usd
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8,
@@ -2936,7 +3036,8 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			$21, $22, $23,
 			$24, $25,
 			$26,
-			$27, $28, $29, $30
+			$27, $28, $29, $30,
+			$31
 		)
 	`
 
@@ -2952,6 +3053,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 		record.PromptMessages, record.ResponseContent,
 		record.ThinkingTokens,
 		record.TTFTMs, record.ITLMsAvg, record.TokensPerSecond, record.WasStreaming,
+		record.CostUsd,
 	)
 
 	if err != nil {
@@ -2972,6 +3074,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 				record.PromptMessages, record.ResponseContent,
 				record.ThinkingTokens,
 				record.TTFTMs, record.ITLMsAvg, record.TokensPerSecond, record.WasStreaming,
+				record.CostUsd,
 			)
 			if retryErr != nil {
 				return fmt.Errorf("failed to insert token usage (retry without agent_id): %w", retryErr)

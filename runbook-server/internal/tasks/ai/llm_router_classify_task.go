@@ -76,7 +76,10 @@ func (t *LLMRouterClassifyTask) Execute(taskCtx types.TaskContext, params map[st
 	}
 
 	requestContext := taskCtx.GetNewRequestContext()
-	resp, err := llm.ProcessRequest(requestContext, applyWorkflowTrace(taskCtx, llm.LLMRequest{
+	// Classification is a one-shot prompt whose answer must not be skewed by
+	// prior conversation history, so it always uses the per-execution session
+	// scope and does not expose the session_scope parameter.
+	resp, err := llm.ProcessRequest(requestContext, applyWorkflowTrace(taskCtx, sessionScopeExecution, llm.LLMRequest{
 		Message:      "@llm " + sb.String(),
 		AccountId:    taskCtx.GetAccountID(),
 		LlmProvider:  modelProvider,

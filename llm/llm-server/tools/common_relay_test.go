@@ -340,6 +340,83 @@ func TestGetRelayCommandResponseData_NilData(t *testing.T) {
 	assert.Contains(t, err.Error(), "data1 field not found")
 }
 
+// TestGetRelayCommandResponseData_MalformedShapes asserts that a relay
+// findings envelope whose inner types don't match expectations degrades to an
+// empty result instead of panicking. Before the assertions were comma-ok
+// guarded, each of these shapes triggered
+// "interface conversion: interface {} is ..." and aborted the agent run.
+func TestGetRelayCommandResponseData_MalformedShapes(t *testing.T) {
+	cases := []struct {
+		name      string
+		relayResp map[string]any
+	}{
+		{
+			name: "finding is not a map",
+			relayResp: map[string]any{
+				"data": map[string]any{"findings": []any{"not-a-map"}},
+			},
+		},
+		{
+			name: "evidence is not an array",
+			relayResp: map[string]any{
+				"data": map[string]any{"findings": []any{
+					map[string]any{"evidence": "not-an-array"},
+				}},
+			},
+		},
+		{
+			name: "evidence element is not a map",
+			relayResp: map[string]any{
+				"data": map[string]any{"findings": []any{
+					map[string]any{"evidence": []any{"not-a-map"}},
+				}},
+			},
+		},
+		{
+			name: "evidence data is not a string",
+			relayResp: map[string]any{
+				"data": map[string]any{"findings": []any{
+					map[string]any{"evidence": []any{
+						map[string]any{"data": 42},
+					}},
+				}},
+			},
+		},
+		{
+			name: "inner response element is not a map",
+			relayResp: map[string]any{
+				"data": map[string]any{"findings": []any{
+					map[string]any{"evidence": []any{
+						map[string]any{"data": `["not-a-map"]`},
+					}},
+				}},
+			},
+		},
+		{
+			name: "inner response data is not a string",
+			relayResp: map[string]any{
+				"data": map[string]any{"findings": []any{
+					map[string]any{"evidence": []any{
+						map[string]any{"data": `[{"data": 42}]`},
+					}},
+				}},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got map[string]any
+			var err error
+			assert.NotPanics(t, func() {
+				got, err = getRelayCommandResponseData(tc.relayResp)
+			})
+			assert.NoError(t, err)
+			assert.Empty(t, got)
+		})
+	}
+}
+
 // TestClickhouseRawModeCommandRewrite verifies that ExecuteContainerJob with
 // raw=true rewrites the workspace shim's `clickhouse-client` form to the
 // `clickhouse client` subcommand form before sending to the relay.

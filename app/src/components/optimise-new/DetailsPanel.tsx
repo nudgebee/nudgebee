@@ -6,15 +6,23 @@ import { ds } from 'src/utils/colors';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import DragHandleIcon from '@mui/icons-material/DragHandle';
 import ConfirmationNumberOutlinedIcon from '@mui/icons-material/ConfirmationNumberOutlined';
+import TipsAndUpdatesOutlinedIcon from '@mui/icons-material/TipsAndUpdatesOutlined';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
+import ShieldOutlinedIcon from '@mui/icons-material/ShieldOutlined';
+import SystemUpdateAltOutlinedIcon from '@mui/icons-material/SystemUpdateAlt';
+import BuildOutlinedIcon from '@mui/icons-material/BuildOutlined';
 import TicketLink from '@shared/links/TicketLink';
 import PRLink from '@shared/links/PRLink';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import { Label } from '@ui/Label';
+import { Card } from '@ui/Card';
+import { CollapsableCard } from '@ui/CollapsableCard';
 import recommendationApi from '@api1/recommendation';
 import { interpolateMitigations } from '@api1/recommendation/data';
 import { formatRuleName } from './utils';
 import { safetyBandTone, safetyBandLabel, getImpactSummary } from './safetyBand';
-import ApplyMitigationModal from '@components/cloudaccount/ApplyMitigationModal';
+import ApplyMitigationModal, { stripOptionalMarkers } from '@components/cloudaccount/ApplyMitigationModal';
 import { hasWriteAccess } from '@lib/auth';
 import InterpretationPanel from './interpretation/InterpretationPanel';
 import { buildInterpretation } from './interpretation/buildInterpretation';
@@ -24,9 +32,26 @@ import ConfigIssuesList, { summarizeConfigIssues, LEVEL_TONE, LEVEL_NAME } from 
 interface DetailsPanelProps {
   fullRecommendation: any;
   accounts?: Record<string, { name: string; cloud_provider: string; account_access?: string }>;
+  /** Switches the parent panel to the Evidence tab (usage-trend chart/table). */
+  onViewEvidence?: () => void;
+  /** Fired after a mitigation command run completes, so the History tab's
+   * CommandExecutionHistory (kept mounted alongside this tab) can refresh. */
+  onMitigationExecuted?: () => void;
 }
 
 const RESOLVED_STATUSES = new Set(['Closed', 'Dismissed', 'Archive']);
+
+// Shared section heading — one mid-tier type treatment for every Details section
+// ("Recommendations", "Remediation Steps", "Metadata", …). Sits clearly below the
+// 20px panel title and above the 11px slot eyebrows. Optional right-aligned action.
+const SectionHeading = ({ children, action }: { children: ReactNode; action?: ReactNode }) => (
+  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[2], mb: ds.space[3] }}>
+    <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.gray[700], letterSpacing: '-0.01em' }}>
+      {children}
+    </Typography>
+    {action}
+  </Box>
+);
 
 // SafetyRow — a label + value/chip pair for the Blast Radius & Safety section.
 const SafetyRow = ({ label, children }: { label: string; children: ReactNode }) => (
@@ -36,67 +61,121 @@ const SafetyRow = ({ label, children }: { label: string; children: ReactNode }) 
   </Box>
 );
 
+// How many impacted workloads to show before collapsing behind a "Show all"
+// toggle — the backend caps the list at 50, too many to render inline.
+const DEP_COLLAPSE_LIMIT = 6;
+
 // BlastRadiusSection surfaces the knowledge-graph safety band + impact rollup.
 // Renders nothing until a recommendation carries the data (k8s recs once impact
 // scoring is enabled), so it's a no-op for everything else.
 const BlastRadiusSection = ({ rec }: { rec: any }) => {
   const band = rec?.safety_band as string | undefined;
   const impact = getImpactSummary(rec);
+  const [showAllDeps, setShowAllDeps] = useState(false);
   const hasImpactData = !!(
     impact &&
     (impact.dependent_count != null || impact.production_dependents != null || impact.coverage_confidence || impact.safety_reason)
   );
   if (!band && !hasImpactData) return null;
   return (
-    <>
-      <Divider />
-      <Box>
-        <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
-          Blast Radius &amp; Safety
-        </Typography>
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
-          {band && (
-            <SafetyRow label='Safety'>
-              <Label size='sm' tone={safetyBandTone(band)} dot>
-                {safetyBandLabel(band)}
-              </Label>
-            </SafetyRow>
-          )}
-          {impact?.dependent_count != null && (
-            <SafetyRow label='Dependent services'>
-              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.semibold }}>
-                {impact.dependent_count}
-                {impact.truncated ? '+' : ''}
-              </Typography>
-            </SafetyRow>
-          )}
-          {impact?.production_dependents != null && impact.production_dependents > 0 && (
-            <SafetyRow label='Production dependents'>
-              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.semibold }}>
-                {impact.production_dependents}
-              </Typography>
-            </SafetyRow>
-          )}
-          {impact?.coverage_confidence && (
-            <SafetyRow label='Graph coverage'>
-              <Label
-                size='sm'
-                tone={impact.coverage_confidence === 'high' ? 'success' : impact.coverage_confidence === 'low' ? 'warning' : 'neutral'}
-              >
-                {safetyBandLabel(impact.coverage_confidence)}
-              </Label>
-            </SafetyRow>
-          )}
-          {impact?.safety_reason && (
-            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], lineHeight: 1.6, mt: ds.space[1] }}>{impact.safety_reason}</Typography>
-          )}
+    <Card
+      elevation='flat'
+      size='sm'
+      data-testid='blast-radius-safety'
+      header={
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+          <ShieldOutlinedIcon sx={{ fontSize: '18px', color: ds.gray[500] }} />
+          <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
+            Blast Radius &amp; Safety
+          </Typography>
         </Box>
+      }
+    >
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
+        {band && (
+          <SafetyRow label='Safety'>
+            <Label size='sm' tone={safetyBandTone(band)} dot>
+              {safetyBandLabel(band)}
+            </Label>
+          </SafetyRow>
+        )}
+        {impact?.dependent_count != null && (
+          <SafetyRow label='Dependent services'>
+            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.semibold }}>
+              {impact.dependent_count}
+              {impact.truncated ? '+' : ''}
+            </Typography>
+          </SafetyRow>
+        )}
+        {impact?.production_dependents != null && impact.production_dependents > 0 && (
+          <SafetyRow label='Production dependents'>
+            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.semibold }}>
+              {impact.production_dependents}
+            </Typography>
+          </SafetyRow>
+        )}
+        {impact?.coverage_confidence && (
+          <SafetyRow label='Graph coverage'>
+            <Label size='sm' tone={impact.coverage_confidence === 'high' ? 'success' : impact.coverage_confidence === 'low' ? 'warning' : 'neutral'}>
+              {safetyBandLabel(impact.coverage_confidence)}
+            </Label>
+          </SafetyRow>
+        )}
+        {impact?.safety_reason && (
+          <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], lineHeight: 1.6, mt: ds.space[1] }}>{impact.safety_reason}</Typography>
+        )}
+        {impact?.dependents && impact.dependents.length > 0 && (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], mt: ds.space[1] }}>
+            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium }}>Impacted workloads</Typography>
+            {(showAllDeps ? impact.dependents : impact.dependents.slice(0, DEP_COLLAPSE_LIMIT)).map((dep, i) => {
+              const id = dep.namespace ? `${dep.namespace}/${dep.name}` : dep.name;
+              return (
+                <Box key={`${id}-${i}`} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[2] }}>
+                  <Typography
+                    title={id}
+                    sx={{
+                      fontFamily: 'var(--ds-font-mono)',
+                      fontSize: ds.text.small,
+                      color: ds.gray[700],
+                      minWidth: 0,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {id}
+                  </Typography>
+                  {dep.environment && (
+                    <Label size='sm' tone='neutral'>
+                      {dep.environment}
+                    </Label>
+                  )}
+                </Box>
+              );
+            })}
+            {impact.dependents.length > DEP_COLLAPSE_LIMIT && (
+              <Typography
+                onClick={() => setShowAllDeps((v) => !v)}
+                sx={{
+                  fontSize: ds.text.small,
+                  color: ds.blue[600],
+                  fontWeight: ds.weight.medium,
+                  cursor: 'pointer',
+                  mt: ds.space[1],
+                  '&:hover': { textDecoration: 'underline' },
+                }}
+              >
+                {showAllDeps ? 'Show less' : `Show all ${impact.dependents.length}`}
+              </Typography>
+            )}
+          </Box>
+        )}
       </Box>
-    </>
+    </Card>
   );
 };
 
-const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelProps) => {
+const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, onMitigationExecuted }: DetailsPanelProps) => {
   const [details, setDetails] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
@@ -149,10 +228,11 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
   const insight = getRecommendationInsight(category, ruleName, recData, rec);
 
   return (
-    <Box sx={{ p: `${ds.space[4]} 20px`, display: 'flex', flexDirection: 'column', gap: ds.space[4] }}>
+    <Box sx={{ p: ds.space[5], display: 'flex', flexDirection: 'column', gap: ds.space[5] }}>
       {/* Interpretation — verdict / why / impact / risk, re-framed from the
           resolved title, description and insight (replaces the generic blurb). */}
       <InterpretationPanel
+        onViewEvidence={onViewEvidence}
         {...buildInterpretation({
           category,
           ruleName,
@@ -166,8 +246,10 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
         })}
       />
 
-      {/* Blast Radius & Safety — knowledge-graph impact + safety band */}
-      <BlastRadiusSection rec={rec} />
+      {/* Blast Radius & Safety — knowledge-graph impact + safety band. Keyed by
+          rec id so the "Show all" toggle state resets when the persistent detail
+          drawer swaps to a different recommendation (it isn't remounted). */}
+      <BlastRadiusSection key={rec?.id} rec={rec} />
 
       {/* Recommendation Summary — key "what changes" data from JSONB */}
       <RecommendationSummary recData={recData} category={category} ruleName={ruleName} />
@@ -178,10 +260,8 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
         <>
           <Divider />
           <Box>
-            <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
-              Recommendations
-            </Typography>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <SectionHeading>Recommendations</SectionHeading>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
               {details.recommendations.slice(1).map((step: string, idx: number) => (
                 <Box key={step.substring(0, 60)} sx={{ display: 'flex', gap: ds.space[2], alignItems: 'flex-start' }}>
                   <Typography
@@ -205,83 +285,74 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
 
       {/* Remediation Steps — from catalog mitigations (interpolated) */}
       {mitigations && mitigations.length > 0 && (
-        <>
-          <Divider />
-          <Box>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: ds.space[2] }}>
-              <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>Remediation Steps</Typography>
-              <ApplyMitigationModal
-                markdowns={mitigations.join('\n\n')}
-                accountId={rec?.account_id}
-                recommendationId={rec?.id}
-                canExecute={canExecuteCommand}
+        <SummaryCard
+          title='Remediation Steps'
+          icon={<BuildOutlinedIcon sx={{ fontSize: '18px', color: ds.gray[500] }} />}
+          data-testid='remediation-steps'
+          action={
+            <ApplyMitigationModal
+              markdowns={mitigations.join('\n\n')}
+              accountId={rec?.account_id}
+              recommendationId={rec?.id}
+              canExecute={canExecuteCommand}
+              onExecuted={onMitigationExecuted}
+            />
+          }
+        >
+          {alternateOptions.length > 0 && (
+            <Box sx={{ mb: ds.space[3], maxWidth: 360 }}>
+              <DsSelect
+                id='details-alternate-instance-type-selector'
+                label='Target Instance Type'
+                options={alternateOptions}
+                value={selectedAlternateType}
+                onChange={(v) => setSelectedAlternateType(v)}
+                clearable={false}
               />
             </Box>
-            {alternateOptions.length > 0 && (
-              <Box sx={{ mb: ds.space[3], maxWidth: 360 }}>
-                <DsSelect
-                  id='details-alternate-instance-type-selector'
-                  label='Target Instance Type'
-                  options={alternateOptions}
-                  value={selectedAlternateType}
-                  onChange={(v) => setSelectedAlternateType(v)}
-                  clearable={false}
-                />
-              </Box>
-            )}
-            <Box
-              sx={{
-                p: ds.space.mul(0, 5),
-                borderRadius: ds.radius.lg,
-                backgroundColor: ds.gray[100],
-                border: `1px solid ${ds.gray[200]}`,
-                '& pre': { fontSize: ds.text.caption, whiteSpace: 'pre-wrap', wordBreak: 'break-all' },
-                '& code': { fontSize: ds.text.caption },
-              }}
-            >
-              {mitigations.map((step: string) => (
-                <MarkDowns
-                  key={step.substring(0, 60)}
-                  data={step}
-                  sx={{ fontSize: ds.text.small, lineHeight: 1.6, color: ds.gray[500] }}
-                  allowExecutable={undefined}
-                  onLinkClick={undefined}
-                />
-              ))}
-            </Box>
+          )}
+          <Box
+            sx={{
+              '& pre': { fontSize: ds.text.caption, whiteSpace: 'pre-wrap', wordBreak: 'break-all' },
+              '& code': { fontSize: ds.text.caption },
+            }}
+          >
+            {mitigations.map((step: string) => (
+              <MarkDowns
+                key={step.substring(0, 60)}
+                data={stripOptionalMarkers(step)}
+                sx={{ fontSize: ds.text.small, lineHeight: 1.6, color: ds.gray[500] }}
+                allowExecutable={undefined}
+                onLinkClick={undefined}
+              />
+            ))}
           </Box>
-        </>
+        </SummaryCard>
       )}
 
       {/* Resource-level remediation — JSONB fallback (only when no catalog mitigations) */}
       {(!mitigations || mitigations.length === 0) && remediation && (
-        <>
-          <Divider />
-          <Box>
-            <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>Remediation</Typography>
-            <Box sx={{ p: ds.space.mul(0, 5), borderRadius: ds.radius.lg, backgroundColor: ds.green[100], border: `1px solid ${ds.green[200]}` }}>
-              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], lineHeight: 1.6 }}>{remediation}</Typography>
-              {remediationUrl && (
-                <Box
-                  component='a'
-                  href={remediationUrl}
-                  target='_blank'
-                  rel='noopener noreferrer'
-                  sx={{
-                    fontSize: ds.text.small,
-                    color: ds.blue[600],
-                    display: 'block',
-                    mt: ds.space[2],
-                    textDecoration: 'none',
-                    '&:hover': { textDecoration: 'underline' },
-                  }}
-                >
-                  View remediation guide →
-                </Box>
-              )}
+        <SummaryCard title='Remediation' icon={<BuildOutlinedIcon sx={{ fontSize: '18px', color: ds.gray[500] }} />} data-testid='remediation'>
+          <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], lineHeight: 1.6 }}>{remediation}</Typography>
+          {remediationUrl && (
+            <Box
+              component='a'
+              href={remediationUrl}
+              target='_blank'
+              rel='noopener noreferrer'
+              sx={{
+                fontSize: ds.text.small,
+                color: ds.blue[600],
+                display: 'block',
+                mt: ds.space[2],
+                textDecoration: 'none',
+                '&:hover': { textDecoration: 'underline' },
+              }}
+            >
+              View remediation guide →
             </Box>
-          </Box>
-        </>
+          )}
+        </SummaryCard>
       )}
 
       {/* Compliance */}
@@ -289,8 +360,8 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
         <>
           <Divider />
           <Box>
-            <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>Compliance</Typography>
-            <Box sx={{ display: 'flex', gap: ds.space.mul(0, 3), flexWrap: 'wrap' }}>
+            <SectionHeading>Compliance</SectionHeading>
+            <Box sx={{ display: 'flex', gap: ds.space[2], flexWrap: 'wrap' }}>
               {details.compliances.map((c: string) => (
                 <Label key={c} size='sm' tone='neutral'>
                   {c}
@@ -306,7 +377,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
         <>
           <Divider />
           <Box>
-            <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>References</Typography>
+            <SectionHeading>References</SectionHeading>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
               {details.references.map((url: string) => (
                 <Box
@@ -336,10 +407,8 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
         <>
           <Divider />
           <Box>
-            <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
-              Linked Items
-            </Typography>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space.mul(0, 3) }}>
+            <SectionHeading>Linked Items</SectionHeading>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
               {rec.ticket && (
                 <Box
                   sx={{
@@ -377,21 +446,23 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
       )}
 
       {/* Metadata */}
-      <Divider />
-      <Box>
-        <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>Metadata</Typography>
-        <Box
-          sx={{
-            backgroundColor: ds.gray[100],
-            borderRadius: ds.radius.lg,
-            p: ds.space.mul(0, 5),
-            border: `1px solid ${ds.gray[200]}`,
-          }}
+      <Box data-testid='recommendation-metadata'>
+        <CollapsableCard
+          defaultOpen={false}
+          elevation='flat'
+          header={
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+              <InfoOutlinedIcon sx={{ fontSize: '18px', color: ds.gray[500] }} />
+              <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
+                Metadata
+              </Typography>
+            </Box>
+          }
         >
           <MetaRow label='ID' value={rec.id} mono />
           <MetaRow label='Rule' value={ruleName} />
           <MetaRow label='Account' value={accountName || rec.account_id} />
-        </Box>
+        </CollapsableCard>
       </Box>
     </Box>
   );
@@ -400,7 +471,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
 // ─── MetaRow helper ───
 
 const MetaRow = ({ label, value, mono }: { label: string; value?: string; mono?: boolean }) => (
-  <Box sx={{ display: 'flex', justifyContent: 'space-between', py: ds.space[1], gap: ds.space[3] }}>
+  <Box sx={{ display: 'flex', justifyContent: 'space-between', py: ds.space[2], gap: ds.space[3] }}>
     <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], whiteSpace: 'nowrap' }}>{label}</Typography>
     <Typography
       sx={{
@@ -418,68 +489,116 @@ const MetaRow = ({ label, value, mono }: { label: string; value?: string; mono?:
   </Box>
 );
 
+const SummaryCard = ({
+  title,
+  icon,
+  action,
+  children,
+  'data-testid': testId,
+}: {
+  title: string;
+  icon?: ReactNode;
+  action?: ReactNode;
+  children: ReactNode;
+  'data-testid'?: string;
+}) => (
+  <Card
+    elevation='flat'
+    variant='accent'
+    tone='warning'
+    size='sm'
+    data-testid={testId}
+    header={
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+        {icon}
+        <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
+          {title}
+        </Typography>
+        {action && (
+          <>
+            <Box sx={{ flex: 1 }} />
+            {action}
+          </>
+        )}
+      </Box>
+    }
+  >
+    {children}
+  </Card>
+);
+
 // ─── Recommendation Summary — renders key "what to change" data from JSONB ───
 
 const K8sRightSizingSummary = ({ recData }: { recData: any }) => {
   const containers = extractContainerData(recData);
   if (containers.length === 0) return null;
   return (
-    <>
-      <Divider />
-      <Box>
-        <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
-          Recommended Resource Changes
-        </Typography>
-        <TableContainer
-          sx={{
-            borderRadius: ds.radius.lg,
-            border: `1px solid ${ds.gray[200]}`,
-            '& .MuiTableCell-root': { px: ds.space.mul(0, 5), py: ds.space[2], fontSize: ds.text.small, borderColor: ds.gray[200] },
-          }}
-        >
-          <Table size='small'>
-            <TableHead>
-              <TableRow sx={{ backgroundColor: ds.blue[100] }}>
-                <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: `${ds.text.caption} !important` }}>
-                  Container
+    <Card
+      variant='accent'
+      tone='warning'
+      size='sm'
+      data-testid='recommended-resource-changes'
+      header={
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+          <TipsAndUpdatesOutlinedIcon sx={{ fontSize: '18px', color: ds.yellow[600] }} />
+          <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
+            Recommended Resource Changes
+          </Typography>
+          <Box sx={{ flex: 1 }} />
+          <Label size='sm' tone='neutral'>
+            {containers.length} {containers.length === 1 ? 'container' : 'containers'}
+          </Label>
+        </Box>
+      }
+    >
+      <TableContainer
+        sx={{
+          borderRadius: ds.radius.lg,
+          border: `1px solid ${ds.gray[200]}`,
+          backgroundColor: ds.background[100],
+          '& .MuiTableCell-root': { px: ds.space[3], py: ds.space[2], fontSize: ds.text.small, borderColor: ds.gray[200] },
+        }}
+      >
+        <Table size='small'>
+          <TableHead>
+            <TableRow sx={{ backgroundColor: ds.gray[100] }}>
+              <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: `${ds.text.caption} !important` }}>Container</TableCell>
+              <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: `${ds.text.caption} !important` }}>
+                CPU Request
+              </TableCell>
+              <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: `${ds.text.caption} !important` }}>
+                Memory Request
+              </TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {containers.map(({ containerName, cpu, memory }) => (
+              <TableRow key={containerName} sx={{ '&:last-child td': { borderBottom: 'none' } }}>
+                <TableCell>
+                  <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.medium, fontFamily: ds.font.mono }}>
+                    {containerName}
+                  </Typography>
                 </TableCell>
-                <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: `${ds.text.caption} !important` }}>
-                  CPU Request
+                <TableCell>
+                  {cpu ? (
+                    <ResourceChangeCell current={cpu.allocated?.request} recommended={cpu.recommended?.request} isMem={false} />
+                  ) : (
+                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>{'—'}</Typography>
+                  )}
                 </TableCell>
-                <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: `${ds.text.caption} !important` }}>
-                  Memory Request
+                <TableCell>
+                  {memory ? (
+                    <ResourceChangeCell current={memory.allocated?.request} recommended={memory.recommended?.request} isMem />
+                  ) : (
+                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>{'—'}</Typography>
+                  )}
                 </TableCell>
               </TableRow>
-            </TableHead>
-            <TableBody>
-              {containers.map(({ containerName, cpu, memory }) => (
-                <TableRow key={containerName} sx={{ '&:last-child td': { borderBottom: 'none' } }}>
-                  <TableCell>
-                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.medium, fontStyle: 'italic' }}>
-                      {containerName}
-                    </Typography>
-                  </TableCell>
-                  <TableCell>
-                    {cpu ? (
-                      <ResourceChangeCell current={cpu.allocated?.request} recommended={cpu.recommended?.request} isMem={false} />
-                    ) : (
-                      <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>{'—'}</Typography>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {memory ? (
-                      <ResourceChangeCell current={memory.allocated?.request} recommended={memory.recommended?.request} isMem />
-                    ) : (
-                      <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>{'—'}</Typography>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </Box>
-    </>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Card>
   );
 };
 
@@ -490,12 +609,12 @@ const CloudRightSizingSummary = ({ recData }: { recData: any }) => {
   const recommendedPrice = recData.recommended_price ?? s.targetPrice;
   const targetSpec = formatCloudTargetSpec(s);
   return (
-    <>
-      <Divider />
+    <SummaryCard
+      title='Recommended Changes'
+      icon={<TipsAndUpdatesOutlinedIcon sx={{ fontSize: '18px', color: ds.yellow[600] }} />}
+      data-testid='cloud-recommended-changes'
+    >
       <Box>
-        <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
-          Recommended Changes
-        </Typography>
         {/* Instance-type comparison (alternate/generation) or single recommended target (underutilized). */}
         {(s.currentInstance || s.targetInstance) && (
           <Box
@@ -549,7 +668,7 @@ const CloudRightSizingSummary = ({ recData }: { recData: any }) => {
           s.targetPrice != null && <SummaryRow label='On-Demand Rate (recommended)' value={`$${Number(s.targetPrice).toFixed(4)}/hr`} />
         )}
       </Box>
-    </>
+    </SummaryCard>
   );
 };
 
@@ -558,31 +677,31 @@ const InfraUpgradeSummary = ({ recData }: { recData: any }) => {
   const recommendedVer = recData.recommended_version || recData.recommended_api_version || recData.replacement_api || recData.latestVersion || '';
   if (!currentVer && !recommendedVer) return null;
   return (
-    <>
-      <Divider />
-      <Box>
-        <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>Version Change</Typography>
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: ds.space[3],
-            p: ds.space[3],
-            backgroundColor: ds.blue[100],
-            borderRadius: ds.radius.lg,
-            border: `1px solid ${ds.blue[200]}`,
-            justifyContent: 'center',
-          }}
-        >
-          {currentVer && <InstanceBadge label='Current' value={currentVer} variant='error' />}
-          {currentVer && recommendedVer && <ArrowForwardIcon sx={{ fontSize: ds.text.title, color: ds.blue[700] }} />}
-          {recommendedVer && <InstanceBadge label='Recommended' value={recommendedVer} variant='success' />}
-        </Box>
-        {recData.chartName && <SummaryRow label='Chart' value={recData.chartName} />}
-        {recData.kind && <SummaryRow label='Kind' value={recData.kind} />}
-        {recData.name && <SummaryRow label='Resource' value={recData.name} />}
+    <SummaryCard
+      title='Version Change'
+      icon={<SystemUpdateAltOutlinedIcon sx={{ fontSize: '18px', color: ds.gray[500] }} />}
+      data-testid='version-change'
+    >
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: ds.space[3],
+          p: ds.space[3],
+          backgroundColor: ds.blue[100],
+          borderRadius: ds.radius.lg,
+          border: `1px solid ${ds.blue[200]}`,
+          justifyContent: 'center',
+        }}
+      >
+        {currentVer && <InstanceBadge label='Current' value={currentVer} variant='error' />}
+        {currentVer && recommendedVer && <ArrowForwardIcon sx={{ fontSize: ds.text.title, color: ds.blue[700] }} />}
+        {recommendedVer && <InstanceBadge label='Recommended' value={recommendedVer} variant='success' />}
       </Box>
-    </>
+      {recData.chartName && <SummaryRow label='Chart' value={recData.chartName} />}
+      {recData.kind && <SummaryRow label='Kind' value={recData.kind} />}
+      {recData.name && <SummaryRow label='Resource' value={recData.name} />}
+    </SummaryCard>
   );
 };
 
@@ -595,29 +714,16 @@ const SecuritySummary = ({ recData }: { recData: any }) => {
   const ruleDescription = recData.rule_description || '';
   if (!vulnId && !severity && !ruleId && !recData.Title) return null;
   return (
-    <>
-      <Divider />
-      <Box>
-        <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>Finding Summary</Typography>
-        <Box
-          sx={{
-            backgroundColor: ds.gray[100],
-            borderRadius: ds.radius.lg,
-            p: ds.space.mul(0, 5),
-            border: `1px solid ${ds.gray[200]}`,
-          }}
-        >
-          {vulnId && <SummaryRow label='Vulnerability' value={vulnId} />}
-          {ruleId && <SummaryRow label='Rule ID' value={ruleId} />}
-          {ruleDescription && <SummaryRow label='Rule' value={ruleDescription} />}
-          {severity && <SummaryRow label='Severity' value={severity.toUpperCase?.()} />}
-          {image && <SummaryRow label='Image' value={image} />}
-          {fixVersion && <SummaryRow label='Fix Version' value={fixVersion} highlight />}
-          {recData.ServiceName && <SummaryRow label='Service' value={recData.ServiceName} />}
-          {recData.Compliance?.Status && <SummaryRow label='Compliance' value={recData.Compliance.Status} />}
-        </Box>
-      </Box>
-    </>
+    <SummaryCard title='Finding Summary' icon={<ShieldOutlinedIcon sx={{ fontSize: '18px', color: ds.gray[500] }} />} data-testid='finding-summary'>
+      {vulnId && <SummaryRow label='Vulnerability' value={vulnId} />}
+      {ruleId && <SummaryRow label='Rule ID' value={ruleId} />}
+      {ruleDescription && <SummaryRow label='Rule' value={ruleDescription} />}
+      {severity && <SummaryRow label='Severity' value={severity.toUpperCase?.()} />}
+      {image && <SummaryRow label='Image' value={image} />}
+      {fixVersion && <SummaryRow label='Fix Version' value={fixVersion} highlight />}
+      {recData.ServiceName && <SummaryRow label='Service' value={recData.ServiceName} />}
+      {recData.Compliance?.Status && <SummaryRow label='Compliance' value={recData.Compliance.Status} />}
+    </SummaryCard>
   );
 };
 
@@ -625,26 +731,26 @@ const ConfigurationSummary = ({ recData }: { recData: any }) => {
   if (Array.isArray(recData)) {
     const summary = summarizeConfigIssues(recData);
     return (
-      <>
-        <Divider />
-        <Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: ds.space[2], gap: ds.space[2], flexWrap: 'wrap' }}>
-            <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>Findings ({recData.length})</Typography>
-            {summary.hasLevels && (
-              <Box sx={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                {[3, 2, 1].map((lv) =>
-                  summary.levelCounts[lv] > 0 ? (
-                    <Label key={lv} size='sm' tone={LEVEL_TONE[lv]}>
-                      {summary.levelCounts[lv]} {LEVEL_NAME[lv]}
-                    </Label>
-                  ) : null
-                )}
-              </Box>
-            )}
-          </Box>
-          <ConfigIssuesList items={recData} />
-        </Box>
-      </>
+      <SummaryCard
+        title={`Findings (${recData.length})`}
+        icon={<InfoOutlinedIcon sx={{ fontSize: '18px', color: ds.gray[500] }} />}
+        data-testid='configuration-findings'
+        action={
+          summary.hasLevels ? (
+            <Box sx={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              {[3, 2, 1].map((lv) =>
+                summary.levelCounts[lv] > 0 ? (
+                  <Label key={lv} size='sm' tone={LEVEL_TONE[lv]}>
+                    {summary.levelCounts[lv]} {LEVEL_NAME[lv]}
+                  </Label>
+                ) : null
+              )}
+            </Box>
+          ) : null
+        }
+      >
+        <ConfigIssuesList items={recData} />
+      </SummaryCard>
     );
   }
   const recommendedTags: string[] = Array.isArray(recData.recommended_tags) ? recData.recommended_tags : [];
@@ -652,39 +758,28 @@ const ConfigurationSummary = ({ recData }: { recData: any }) => {
   const hasFields = recData.alarm_type || recData.instance_type || recData.load_balancer_name || recData.region || recommendedTags.length > 0;
   if (!hasFields) return null;
   return (
-    <>
-      <Divider />
-      <Box>
-        <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
-          Configuration Summary
-        </Typography>
-        <Box
-          sx={{
-            backgroundColor: ds.gray[100],
-            borderRadius: ds.radius.lg,
-            p: ds.space.mul(0, 5),
-            border: `1px solid ${ds.gray[200]}`,
-          }}
-        >
-          {recData.alarm_type && <SummaryRow label='Alarm Type' value={recData.alarm_type} />}
-          {recData.instance_type && <SummaryRow label='Instance Type' value={recData.instance_type} />}
-          {recData.load_balancer_name && <SummaryRow label='Load Balancer' value={recData.load_balancer_name} />}
-          {recData.region && <SummaryRow label='Region' value={recData.region} />}
-          {recommendedTags.length > 0 && (
-            <Box sx={{ mt: ds.space.mul(0, 3) }}>
-              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], mb: ds.space[1] }}>Recommended Tags</Typography>
-              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1] }}>
-                {recommendedTags.map((tag: string) => (
-                  <Label key={tag} size='sm' tone='warning'>
-                    {tag}
-                  </Label>
-                ))}
-              </Box>
-            </Box>
-          )}
+    <SummaryCard
+      title='Configuration Summary'
+      icon={<SettingsOutlinedIcon sx={{ fontSize: '18px', color: ds.gray[500] }} />}
+      data-testid='configuration-summary'
+    >
+      {recData.alarm_type && <SummaryRow label='Alarm Type' value={recData.alarm_type} />}
+      {recData.instance_type && <SummaryRow label='Instance Type' value={recData.instance_type} />}
+      {recData.load_balancer_name && <SummaryRow label='Load Balancer' value={recData.load_balancer_name} />}
+      {recData.region && <SummaryRow label='Region' value={recData.region} />}
+      {recommendedTags.length > 0 && (
+        <Box sx={{ mt: ds.space.mul(0, 3) }}>
+          <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], mb: ds.space[1] }}>Recommended Tags</Typography>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1] }}>
+            {recommendedTags.map((tag: string) => (
+              <Label key={tag} size='sm' tone='warning'>
+                {tag}
+              </Label>
+            ))}
+          </Box>
         </Box>
-      </Box>
-    </>
+      )}
+    </SummaryCard>
   );
 };
 
@@ -721,24 +816,11 @@ const RecommendationSummary = ({ recData, category, ruleName }: { recData: any; 
     .slice(0, 6);
   if (scalarEntries.length === 0) return null;
   return (
-    <>
-      <Divider />
-      <Box>
-        <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>Summary</Typography>
-        <Box
-          sx={{
-            backgroundColor: ds.gray[100],
-            borderRadius: ds.radius.lg,
-            p: ds.space.mul(0, 5),
-            border: `1px solid ${ds.gray[200]}`,
-          }}
-        >
-          {scalarEntries.map(([key, value]) => (
-            <SummaryRow key={key} label={key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())} value={String(value)} />
-          ))}
-        </Box>
-      </Box>
-    </>
+    <SummaryCard title='Summary' icon={<InfoOutlinedIcon sx={{ fontSize: '18px', color: ds.gray[500] }} />} data-testid='recommendation-summary'>
+      {scalarEntries.map(([key, value]) => (
+        <SummaryRow key={key} label={key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())} value={String(value)} />
+      ))}
+    </SummaryCard>
   );
 };
 
@@ -805,17 +887,17 @@ const ResourceChangeCell = ({ current, recommended, isMem }: { current: number |
 
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3), flexWrap: 'nowrap' }}>
-      <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], whiteSpace: 'nowrap' }}>{fmt(current)}</Typography>
+      <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], whiteSpace: 'nowrap' }}>{fmt(current)}</Typography>
       {isChanged ? (
-        <ArrowForwardIcon sx={{ fontSize: ds.text.bodyLg, color: ds.green[600], flexShrink: 0 }} />
+        <ArrowForwardIcon sx={{ fontSize: ds.text.bodyLg, color: ds.gray[400], flexShrink: 0 }} />
       ) : (
-        <DragHandleIcon sx={{ fontSize: ds.text.bodyLg, color: ds.gray[500], flexShrink: 0 }} />
+        <DragHandleIcon sx={{ fontSize: ds.text.bodyLg, color: ds.gray[400], flexShrink: 0 }} />
       )}
       <Typography
         sx={{
           fontSize: ds.text.small,
           fontWeight: isChanged ? ds.weight.semibold : ds.weight.regular,
-          color: isChanged ? ds.green[600] : ds.gray[700],
+          color: ds.gray[700],
           whiteSpace: 'nowrap',
         }}
       >
