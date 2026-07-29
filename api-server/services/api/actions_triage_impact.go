@@ -411,13 +411,14 @@ type windowRow struct {
 func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID string, rootTime time.Time, seed triage.AlertIdentity, dependsOn map[string][]string) gin.H {
 	windowMeta := gin.H{"lead_in_s": 7200, "core_s": 7200, "impact_s": 7200}
 	empty := gin.H{
-		"root_identity": triage.SubjectKey(seed),
-		"same_incident": []tierItem{},
-		"cause":         gin.H{"config_changes": []tierItem{}, "upstream": []tierItem{}},
-		"impact":        []tierItem{},
-		"chronic":       []tierItem{},
-		"window":        windowMeta,
-		"truncated":     false,
+		"root_identity":    triage.SubjectKey(seed),
+		"same_incident":    []tierItem{},
+		"cause":            gin.H{"config_changes": []tierItem{}, "upstream": []tierItem{}},
+		"impact":           []tierItem{},
+		"chronic":          []tierItem{},
+		"window":           windowMeta,
+		"truncated":        false,
+		"seed_occurrences": 1,
 	}
 	if db == nil || accountID == "" {
 		return empty
@@ -448,11 +449,17 @@ func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID
 		count int
 		src   map[string]bool
 	}
+	seedOccurrences := 1 // the seed row itself, which is never part of wr
+
 	seen := map[ckey]int{}
 	var items []citem
 	for _, r := range wr {
 		tier, ok := tiers[r.id.ID]
 		if !ok {
+			continue
+		}
+		if tier == triage.TierCore && isSeedRefiring(seed, r.id) {
+			seedOccurrences++
 			continue
 		}
 		k := ckey{tier, triage.SubjectKey(r.id), r.id.AggregationKey}
@@ -494,14 +501,31 @@ func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID
 	}
 
 	return gin.H{
-		"root_identity": triage.SubjectKey(seed),
-		"same_incident": sameIncident,
-		"cause":         gin.H{"config_changes": configChanges, "upstream": upstream},
-		"impact":        impact,
-		"chronic":       chronic,
-		"window":        windowMeta,
-		"truncated":     truncated,
+		"root_identity":    triage.SubjectKey(seed),
+		"same_incident":    sameIncident,
+		"cause":            gin.H{"config_changes": configChanges, "upstream": upstream},
+		"impact":           impact,
+		"chronic":          chronic,
+		"window":           windowMeta,
+		"truncated":        truncated,
+		"seed_occurrences": seedOccurrences,
 	}
+}
+
+// isSeedRefiring reports whether a window row is a later firing of the seed's OWN alert
+// rather than a different alert on the same subject.
+//
+// The seed's row is excluded from the window fetch by id, but a re-firing an hour later
+// is a separate row with a separate id. Left in, it renders under "more alerts on
+// <service>" carrying the exact title of the alert the viewer already has open — the
+// panel claims two more alerts on checkout, and one of them IS checkout's alert.
+//
+// Identity is (subject, aggregation_key): the aggregation key is the alert rule, so the
+// same rule on the same workload is the same alert. A row is NOT matched when the seed
+// has no aggregation key — that would swallow every core row on the seed's subject.
+func isSeedRefiring(seed, cand triage.AlertIdentity) bool {
+	return seed.AggregationKey != "" && cand.AggregationKey == seed.AggregationKey &&
+		triage.SubjectKey(cand) == triage.SubjectKey(seed)
 }
 
 // windowFetchLimit bounds the window fetch; hitting it sets assembly.truncated.

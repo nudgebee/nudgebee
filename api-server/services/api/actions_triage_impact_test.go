@@ -92,3 +92,48 @@ func TestScopeAndNormalizeDropsEmptyNames(t *testing.T) {
 		t.Fatalf("expected only the named dependent, got %+v", got)
 	}
 }
+
+// A later firing of the seed's own alert is a separate events row with a separate id, so
+// the window fetch's `id <> seed` filter does not remove it. Left in the core tier it
+// renders under "more alerts on <service>" with the title of the alert already open —
+// observed on demo/checkout, where the panel offered "2 more alerts on checkout" and one
+// of them was the OtelDemoGRPCClientErrorRate alert being viewed, re-fired 89 minutes on.
+func TestIsSeedRefiring(t *testing.T) {
+	seed := triage.AlertIdentity{
+		SubjectNamespace: "demo", SubjectOwner: "checkout", SubjectName: "checkout",
+		AggregationKey: "OtelDemoGRPCClientErrorRate",
+	}
+	cases := []struct {
+		name string
+		cand triage.AlertIdentity
+		want bool
+	}{
+		{"same rule on the same workload is the seed re-firing",
+			triage.AlertIdentity{SubjectNamespace: "demo", SubjectOwner: "checkout", AggregationKey: "OtelDemoGRPCClientErrorRate"}, true},
+		{"same rule reported against a ReplicaSet-suffixed name still normalizes to the seed",
+			triage.AlertIdentity{SubjectNamespace: "demo", SubjectName: "checkout-6b9kfmn4p2", AggregationKey: "OtelDemoGRPCClientErrorRate"}, true},
+		{"a different rule on the same workload is a genuinely different alert",
+			triage.AlertIdentity{SubjectNamespace: "demo", SubjectOwner: "checkout", AggregationKey: "OtelDemoGRPCErrorRate"}, false},
+		{"the same rule on another workload is not the seed",
+			triage.AlertIdentity{SubjectNamespace: "demo", SubjectOwner: "product-catalog", AggregationKey: "OtelDemoGRPCClientErrorRate"}, false},
+	}
+	for _, tc := range cases {
+		if got := isSeedRefiring(seed, tc.cand); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// With no aggregation key there is no rule identity to compare, so nothing may be
+	// folded away — otherwise every core row on the seed's subject would vanish. The
+	// candidates are distinct rows on the seed's own subject, which is the case that
+	// would actually disappear if the guard were dropped.
+	keylessSeed := triage.AlertIdentity{ID: "seed", SubjectNamespace: "demo", SubjectOwner: "checkout"}
+	for _, cand := range []triage.AlertIdentity{
+		{ID: "other-keyless", SubjectNamespace: "demo", SubjectOwner: "checkout"},
+		{ID: "other-keyed", SubjectNamespace: "demo", SubjectOwner: "checkout", AggregationKey: "OtelDemoGRPCErrorRate"},
+	} {
+		if isSeedRefiring(keylessSeed, cand) {
+			t.Errorf("a seed with no aggregation key must not match %q", cand.ID)
+		}
+	}
+}

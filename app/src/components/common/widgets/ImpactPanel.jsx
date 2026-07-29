@@ -351,6 +351,13 @@ const ImpactPanel = ({ eventId, prefetched }) => {
             : ''}
           .
         </Typography>
+        {/* Re-firings of the alert you already have open. The backend keeps them out of
+            the core tier so they don't read as separate alerts on the same service. */}
+        {a.seed_occurrences > 1 && (
+          <Typography sx={{ fontSize: 12, color: 'var(--ds-gray-500)', mb: 0.25 }}>
+            This alert fired {a.seed_occurrences} times in the window.
+          </Typography>
+        )}
 
         <TierSection
           tierKey='core'

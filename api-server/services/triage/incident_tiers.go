@@ -37,8 +37,17 @@ const (
 )
 
 const (
-	// CauseLeadInSeconds bounds the cause window to [root-2h, root].
+	// CauseLeadInSeconds bounds the cause window to [root-2h, root+CauseLagGraceSeconds].
 	CauseLeadInSeconds = -2 * 60 * 60
+	// CauseLagGraceSeconds extends the cause window past the root, for alerts on an
+	// upstream dependency only. A dependency's own alert routinely fires slightly AFTER
+	// its caller's: the caller's client-side error-rate rule trips as soon as calls start
+	// failing, while the callee's server-side rule needs a further evaluation interval to
+	// cross threshold. With a strict "at or before the root" bound the actual cause fell
+	// out of both lanes — it is not a dependent (so not impact) and not before the root
+	// (so not cause) — and the incident rendered with an empty cause section. Config
+	// changes keep the strict bound: a deploy after the root did not cause it.
+	CauseLagGraceSeconds = 5 * 60
 	// chronicExpectedMin: expected occurrences in the window at/above which an alert
 	// "was going to be here anyway" and is folded as chronic.
 	chronicExpectedMin = 1.0
@@ -181,10 +190,20 @@ func AssembleTiers(seed AlertIdentity, candidates []AlertIdentity, dependsOn map
 			continue
 		}
 
-		// Alert on an upstream dependency, at/before the root: candidate cause.
-		if contains(upstream, ek) && e.TsOffsetS <= 0 {
-			out[e.ID] = foldIfChronic(TierCause, chronic)
-			continue
+		// Alert on an upstream dependency, in the cause window: candidate cause. The
+		// window runs to CauseLagGraceSeconds past the root, not to the root itself —
+		// see the constant. A candidate wired in BOTH directions keeps the strict bound
+		// so the impact rule below still claims it: for a mutual pair timing is the only
+		// separator, and extending the cause window would silently relabel impact as cause.
+		if contains(upstream, ek) {
+			lateBound := CauseLagGraceSeconds
+			if contains(downstream, ek) {
+				lateBound = 0
+			}
+			if e.TsOffsetS <= lateBound {
+				out[e.ID] = foldIfChronic(TierCause, chronic)
+				continue
+			}
 		}
 
 		// Alert on a downstream dependent, at/after the root: candidate impact.
