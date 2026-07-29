@@ -620,6 +620,28 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 
 	logs, err := source.QueryLogs(ctx, fetchLogRequest)
 
+	// Resolve the query that was actually used so callers (UI, LLM, runbooks) can show
+	// it — including on the empty-result diagnosis early-returns below, not just the
+	// success path. fetchLogRequest.Query holds the raw query or the GetQuery result set
+	// above. Providers that consume the where-clause natively emit no query string, so
+	// fall back to the canonical where JSON.
+	usedQuery := fetchLogRequest.Query
+	if usedQuery == "" && hasWhereData(fetchLogRequest.QueryRequest.Where) {
+		if b, mErr := json.Marshal(fetchLogRequest.QueryRequest.Where); mErr == nil {
+			usedQuery = string(b)
+		}
+	}
+
+	// Resolve the provider for the result. The canonical (v2) path sends an empty
+	// LogProvider and lets us resolve the account default, so fall back to the
+	// resolved default provider when the request didn't name one.
+	provider := fetchLogRequest.LogProvider
+	if provider == "" {
+		if resolved, _, _, perr := getLogsMetricsTracesProviderWithIntegration(ctx, fetchLogRequest.AccountId, "", "logs", fetchLogRequest.LogProviderSource); perr == nil {
+			provider = resolved
+		}
+	}
+
 	// A query that matched nothing — or that failed with a backend error — is frequently
 	// caused by a mistyped label NAME (e.g. "service_nam") or a mistyped label VALUE (e.g.
 	// namespace="prodd"). Some backends silently return zero rows for an unknown label/value
@@ -649,7 +671,7 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 
 		if verr := validateReferencedLabels(ctx, source, fetchLogRequest, referencedLabels, filteringMap); verr != nil {
 			outcome = "unknown_label_name"
-			return FetchLogsResult{Logs: []OutputLog{}, Provider: fetchLogRequest.LogProvider, Suggestion: verr.Error()}, nil
+			return FetchLogsResult{Logs: []OutputLog{}, Query: usedQuery, Provider: provider, Suggestion: verr.Error()}, nil
 		}
 		// Value suggestions only apply to a query that ran cleanly but matched nothing.
 		// On a backend error the empty result isn't a "wrong value" signal — the value-set
@@ -658,7 +680,7 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		if err == nil && len(logs) == 0 {
 			if verr := validateReferencedLabelValues(ctx, source, fetchLogRequest, referencedValues); verr != nil {
 				outcome = "unknown_label_value"
-				return FetchLogsResult{Logs: []OutputLog{}, Provider: fetchLogRequest.LogProvider, Suggestion: verr.Error()}, nil
+				return FetchLogsResult{Logs: []OutputLog{}, Query: usedQuery, Provider: provider, Suggestion: verr.Error()}, nil
 			}
 		}
 	}
@@ -667,26 +689,6 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	}
 	normalizeOutputLogLabels(logs, filteringMap)
 
-	// Resolve the query that was actually used so callers (UI, LLM, runbooks)
-	// can show it. fetchLogRequest.Query holds the raw query or the GetQuery
-	// result set above. Providers that consume the where-clause natively emit
-	// no query string, so fall back to the canonical where JSON.
-	usedQuery := fetchLogRequest.Query
-	if usedQuery == "" && hasWhereData(fetchLogRequest.QueryRequest.Where) {
-		if b, mErr := json.Marshal(fetchLogRequest.QueryRequest.Where); mErr == nil {
-			usedQuery = string(b)
-		}
-	}
-
-	// Resolve the provider for the result. The canonical (v2) path sends an empty
-	// LogProvider and lets us resolve the account default, so fall back to the
-	// resolved default provider when the request didn't name one.
-	provider := fetchLogRequest.LogProvider
-	if provider == "" {
-		if resolved, _, _, perr := getLogsMetricsTracesProviderWithIntegration(ctx, fetchLogRequest.AccountId, "", "logs", fetchLogRequest.LogProviderSource); perr == nil {
-			provider = resolved
-		}
-	}
 	return FetchLogsResult{Logs: logs, Query: usedQuery, Provider: provider}, nil
 }
 
