@@ -178,6 +178,23 @@ func TestComputeLogoID_Workload(t *testing.T) {
 			properties: map[string]interface{}{"kind": "Deployment", "language": "typescript"},
 			want:       "nodejs",
 		},
+		{
+			// Regression: GetPrimaryLanguage (traces/ebpf enrichment) falls back to returning
+			// a raw, unclassified app.Type tag verbatim when it isn't a recognized language —
+			// e.g. "http" (a protocol tag) or "Service" (a kind tag) — and that value lands in
+			// properties["language"] on the matched k8s Workload node. "http" happens to collide
+			// with LangTypeIcon's unrelated externalservice/http icon case, so trusting it
+			// verbatim renders the wrong (external-service globe) icon on a real Deployment.
+			// A non-language value must be ignored and fall through to kind instead.
+			name:       "non-language value in the language property falls back to kind, not passed through",
+			properties: map[string]interface{}{"kind": "Deployment", "language": "http"},
+			want:       "deployment",
+		},
+		{
+			name:       "another non-language value (Service) falls back to kind",
+			properties: map[string]interface{}{"kind": "Deployment", "language": "Service"},
+			want:       "deployment",
+		},
 	}
 
 	for _, tt := range tests {

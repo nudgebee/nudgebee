@@ -696,17 +696,33 @@ func extractNodeLocation(properties map[string]interface{}) string {
 	return ""
 }
 
-// languageLogoID normalizes a backend canonical language name to the logo_id expected by LangTypeIcon.jsx.
-// LangTypeIcon lowercases before matching, so keys here must align with its switch cases.
+// knownLanguageLogoIDs are the language keys LangTypeIcon.jsx actually renders. Anything
+// outside this set is not a language — most commonly a non-language app.Type tag (e.g. "http",
+// "Service") that GetPrimaryLanguage falls back to returning verbatim when it can't classify it,
+// which then lands in properties["language"] on the node. Passing that through unchecked used to
+// collide with an unrelated icon key (languageLogoID("http") == "http", which LangTypeIcon
+// renders as the external-service globe) — the "wrong logo" failure mode.
+var knownLanguageLogoIDs = map[string]bool{
+	"go": true, "golang": true, "python": true, "java": true,
+	"nodejs": true, "ruby": true, "dotnet": true, "php": true,
+}
+
+// languageLogoID normalizes a backend canonical language name to the logo_id expected by
+// LangTypeIcon.jsx, or "" if lang isn't a language LangTypeIcon has an icon for (see
+// knownLanguageLogoIDs) — callers must treat "" as "no match" and fall through, the same
+// contract as engineLogoID.
 func languageLogoID(lang string) string {
-	switch strings.ToLower(lang) {
+	normalized := strings.ToLower(lang)
+	switch normalized {
 	case "javascript", "typescript", "js", "ts":
 		return "nodejs" // LangTypeIcon has 'nodejs', not 'javascript'
 	case "c#", "csharp":
 		return "dotnet" // LangTypeIcon has 'dotnet', not 'c#'
-	default:
-		return strings.ToLower(lang) // golang, python, java, ruby, php pass through as-is
 	}
+	if knownLanguageLogoIDs[normalized] {
+		return normalized
+	}
+	return ""
 }
 
 // resolveServiceLogoID resolves the logo_id from service_name, handling AWS special cases where
@@ -798,7 +814,9 @@ func ComputeLogoID(nodeType NodeType, source string, properties map[string]inter
 	// node is never left without a logo.
 	if nodeType == NodeTypeWorkload {
 		if lang := getNodeProp(properties, "language"); lang != "" {
-			return languageLogoID(lang)
+			if logo := languageLogoID(lang); logo != "" {
+				return logo
+			}
 		}
 		switch kind := strings.ToLower(getNodeProp(properties, "kind")); kind {
 		case "deployment", "statefulset", "daemonset", "job", "cronjob":
@@ -835,7 +853,9 @@ func ComputeLogoID(nodeType NodeType, source string, properties map[string]inter
 
 	// 4. Programming language — normalize to LangTypeIcon-compatible keys
 	if lang := getNodeProp(properties, "language"); lang != "" {
-		return languageLogoID(lang)
+		if logo := languageLogoID(lang); logo != "" {
+			return logo
+		}
 	}
 
 	// 5. Node-type fallback
