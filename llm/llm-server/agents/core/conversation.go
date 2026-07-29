@@ -1161,7 +1161,9 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	// with a graceful clarification instead of invoking the agent. The user's
 	// message and this response are still saved via the normal update path
 	// below, so the exchange appears in chat history.
-	if strings.TrimSpace(strings.ReplaceAll(strings.ToLower(request.Query), strings.ToLower("@"+agent.GetName()), "")) == "" {
+	// Parse rather than strip "@"+agent.GetName(): the typed name may be an ALIAS
+	// (e.g. "@k8s_debug" -> k8s_orchestrator) that a name-based strip would miss.
+	if _, rest := common.ParseAgentMention(request.Query); rest == "" {
 		ctx.GetLogger().Info("conversation: empty query after stripping agent mention, returning clarification", "agent", agent.GetName())
 		agentResponse = NBAgentResponse{
 			Response:  []string{emptyQueryClarifications[rand.IntN(len(emptyQueryClarifications))]},

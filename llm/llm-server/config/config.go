@@ -323,6 +323,11 @@ type appConfig struct {
 	AsyncRefWorkerCount           int  `mapstructure:"llm_server_async_ref_worker_count"`
 	PlannerParallelExecEnabled    bool `mapstructure:"llm_server_planner_parallel_exec_enabled"`
 
+	// DropExtraAgentMentions controls what happens to a repeated leading mention
+	// run ("@a @b q") in the query handed to the agent. false (default) keeps the
+	// extras -> "@b q"; true drops them -> "q". Routing always uses the first mention.
+	DropExtraAgentMentions bool `mapstructure:"llm_server_drop_extra_agent_mentions"`
+
 	LlmServerCodeAgentImage           string `mapstructure:"llm_server_agent_codeagent_image"`
 	LlmServerCodeAgentNamespace       string `mapstructure:"llm_server_agent_codeagent_namespace"`
 	LlmServerCodeAgentSecret          string `mapstructure:"llm_server_agent_codeagent_secret"`
@@ -943,6 +948,7 @@ func init() {
 	viper.SetDefault("llm_server_workspace_resource_request_memory", "256Mi")
 	viper.SetDefault("llm_server_shell_tool_enabled", true)
 	viper.SetDefault("llm_server_log_agent_v2_enabled", false)
+	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
 	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
 	// k8s_orchestrator mode: delegating (v1, default) | direct (v2) | lean (experimental).
 	viper.SetDefault("llm_server_k8s_orchestrator_mode", "delegating")

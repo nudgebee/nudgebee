@@ -3,7 +3,6 @@ package agents
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
@@ -41,11 +40,10 @@ func (a AgentCostOptimizer) GetSupportedTools(ctx *security.RequestContext) []to
 	return []toolcore.NBTool{}
 }
 
-// Execute profiles the target conversation, runs the optimizer, and returns a
-// markdown report. The target session id is the query (a leading @mention, if
-// any, is stripped). Account scope comes from the chat request (already authed).
+// Execute profiles the target conversation -> markdown report. Query = target session id
+// (executeAgent already stripped any @mention); account scope from the authed request.
 func (a AgentCostOptimizer) Execute(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
-	sessionID := stripLeadingMention(request.Query)
+	sessionID := request.Query
 	if sessionID == "" {
 		return core.NBAgentResponse{
 			Response:       []string{"Provide the conversation's session id to analyze (e.g. `@cost_optimizer <session_id>`)."},
@@ -80,20 +78,6 @@ func (a AgentCostOptimizer) Execute(ctx *security.RequestContext, request core.N
 		ConversationId: request.ConversationId,
 		Status:         core.ConversationStatusCompleted,
 	}, nil
-}
-
-// stripLeadingMention drops a leading "@agent_name" token and trims the rest, so
-// "@cost_optimizer <id>" and "<id>" both yield the bare id.
-func stripLeadingMention(q string) string {
-	q = strings.TrimSpace(q)
-	if strings.HasPrefix(q, "@") {
-		if i := strings.IndexAny(q, " \t\n"); i >= 0 {
-			q = strings.TrimSpace(q[i+1:])
-		} else {
-			q = "" // only a mention, no id
-		}
-	}
-	return q
 }
 
 func init() {

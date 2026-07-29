@@ -229,10 +229,14 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		}, errors.New("conversation terminated")
 	}
 
-	// remove leading @agent mention from the actual query as its causing
-	// confusions to agent. Use the shared helper so cleaning is consistent
-	// with title generation (see common.StripLeadingAgentMention).
-	request.Query = common.StripLeadingAgentMention(request.Query)
+	// Remove the routed-to @agent mention from the query. By default only the FIRST
+	// mention is dropped so a "@a @b q" run keeps "@b q" for the agent; set
+	// DropExtraAgentMentions to strip every leading mention ("q").
+	if config.Config.DropExtraAgentMentions {
+		request.Query = common.StripLeadingAgentMention(request.Query)
+	} else {
+		request.Query = common.StripFirstAgentMention(request.Query)
+	}
 
 	// Stamp the agent's declared model category onto the context so every LLM
 	// call it makes resolves the category-specific model. Sub-operations may

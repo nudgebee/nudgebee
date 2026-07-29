@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -182,9 +183,10 @@ func (l RouterAgent) Execute(ctx *security.RequestContext, request core.NBAgentR
 	plannerAgent := GetDebugAgentName(request.AccountId)
 	// check for @<agent> in the start and return agent
 	// observed during testing, that pure llm solution failes sometimes because of history && other data
-	if strings.HasPrefix(strings.TrimSpace(request.Query), "@") {
-		chain := strings.Fields(request.Query)[0]
-		return core.NBAgentResponse{Response: []string{strings.TrimPrefix(chain, "@")}}, nil
+	// Only the FIRST mention routes ("@a @b q" -> a); trailing punctuation isn't
+	// part of the name ("@a, q" -> a). See common.ParseAgentMention.
+	if name, _ := common.ParseAgentMention(request.Query); name != "" {
+		return core.NBAgentResponse{Response: []string{name}}, nil
 	}
 
 	// try to route to previous agent if its not router agent
