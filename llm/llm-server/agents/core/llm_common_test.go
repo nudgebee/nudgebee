@@ -8,6 +8,8 @@ import (
 
 	"testing"
 
+	"nudgebee/llm/config"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/tmc/langchaingo/llms"
 )
@@ -282,4 +284,126 @@ func TestGetDetailedTokenInfo_CacheReadHandling_ProviderConventions(t *testing.T
 			assert.Equal(t, tc.wantCacheRead, info.CacheReadTokens)
 		})
 	}
+}
+
+// TestResolveThinkingBudget guards the per-ModelTier thinking-token cap and its
+// global-override precedence.
+func TestResolveThinkingBudget(t *testing.T) {
+	origGlobal := config.Config.LlmProviderThinkingBudget
+	origReasoning := config.Config.LlmThinkingBudgetReasoning
+	origRetrieval := config.Config.LlmThinkingBudgetRetrieval
+	origSummary := config.Config.LlmThinkingBudgetSummary
+	t.Cleanup(func() {
+		config.Config.LlmProviderThinkingBudget = origGlobal
+		config.Config.LlmThinkingBudgetReasoning = origReasoning
+		config.Config.LlmThinkingBudgetRetrieval = origRetrieval
+		config.Config.LlmThinkingBudgetSummary = origSummary
+	})
+
+	config.Config.LlmThinkingBudgetReasoning = 16000
+	config.Config.LlmThinkingBudgetRetrieval = 8000
+	config.Config.LlmThinkingBudgetSummary = 4000
+
+	tests := []struct {
+		name         string
+		globalBudget int
+		tier         ModelTier
+		want         int
+	}{
+		{"reasoning tier uses its own budget", -1, ModelTierReasoning, 16000},
+		{"retrieval tier uses its own budget", -1, ModelTierRetrieval, 8000},
+		{"summary tier uses its own budget", -1, ModelTierSummary, 4000},
+		{"empty tier falls back to retrieval (matches agentModelCategory default)", -1, "", 8000},
+		{"unrecognized tier falls back to retrieval", -1, ModelTier("bogus"), 8000},
+		{"global override wins over reasoning tier", 5000, ModelTierReasoning, 5000},
+		{"global override wins over retrieval tier", 5000, ModelTierRetrieval, 5000},
+		{"global override of 0 is respected — disables thinking, not treated as unset", 0, ModelTierReasoning, 0},
+		{"negative global override does not override", -1, ModelTierReasoning, 16000},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config.Config.LlmProviderThinkingBudget = tc.globalBudget
+			got := resolveThinkingBudget(tc.tier)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestResolveThinkingBudget_TierUncapped guards the tier-scoped "0" semantic: a
+// per-tier budget of 0 means that tier is uncapped (-1), unlike the global
+// override's 0, which means "disable thinking".
+func TestResolveThinkingBudget_TierUncapped(t *testing.T) {
+	origGlobal := config.Config.LlmProviderThinkingBudget
+	origReasoning := config.Config.LlmThinkingBudgetReasoning
+	t.Cleanup(func() {
+		config.Config.LlmProviderThinkingBudget = origGlobal
+		config.Config.LlmThinkingBudgetReasoning = origReasoning
+	})
+
+	config.Config.LlmProviderThinkingBudget = -1 // no global override
+	config.Config.LlmThinkingBudgetReasoning = 0 // this tier deliberately left uncapped
+
+	got := resolveThinkingBudget(ModelTierReasoning)
+	assert.Equal(t, -1, got, "a tier budget of 0 (uncapped) must resolve to -1 (no override), not 0 (which would mean 'disable thinking')")
+}
+
+// optionCapturingLLMModel records the fully resolved CallOptions so a test can
+// assert on exactly what got sent.
+type optionCapturingLLMModel struct {
+	lastOptions llms.CallOptions
+}
+
+func (m *optionCapturingLLMModel) GenerateContent(_ context.Context, _ []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	combined := llms.CallOptions{}
+	for _, opt := range options {
+		opt(&combined)
+	}
+	m.lastOptions = combined
+	return newFakeContentResponse("ok", "stop"), nil
+}
+
+func (m *optionCapturingLLMModel) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
+	resp, err := m.GenerateContent(ctx, []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, prompt)}, options...)
+	if err != nil {
+		return "", err
+	}
+	return resp.Choices[0].Content, nil
+}
+
+// TestThinkingBudget_SkippedWhenCallerSetExplicitLevel guards that the
+// auto-applied ThinkingBudget does not fire for callers that already set an
+// explicit ThinkingLevel — only auto-defaulted calls should get capped.
+func TestThinkingBudget_SkippedWhenCallerSetExplicitLevel(t *testing.T) {
+	origProvider := config.Config.LlmProvider
+	origModel := config.Config.LlmModel
+	origReasoning := config.Config.LlmThinkingBudgetReasoning
+	config.Config.LlmProvider = "googleai"
+	config.Config.LlmModel = "gemini-3-flash-preview"
+	config.Config.LlmThinkingBudgetReasoning = 16000
+	t.Cleanup(func() {
+		config.Config.LlmProvider = origProvider
+		config.Config.LlmModel = origModel
+		config.Config.LlmThinkingBudgetReasoning = origReasoning
+	})
+
+	messages := []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "summarize this")}
+
+	t.Run("explicit caller-set level: no budget applied, level preserved", func(t *testing.T) {
+		fake := &optionCapturingLLMModel{}
+		withFakeLLMModel(t, fake)
+		_, err := GenerateAndTrackLLMContent(gemini3ReasoningContext(), "", "", "", "", "summary_agent", false, messages, true, WithThinkingLevel(ThinkingLevelFastTask))
+		assert.NoError(t, err)
+		_, hasBudget := fake.lastOptions.Metadata["ThinkingBudget"]
+		assert.False(t, hasBudget, "explicit caller-set ThinkingLevel must not get a ThinkingBudget applied on top")
+		assert.Equal(t, ThinkingLevelFastTask, fake.lastOptions.Metadata["ThinkingLevel"])
+	})
+
+	t.Run("no explicit level: budget auto-applied (this fix's actual target)", func(t *testing.T) {
+		fake := &optionCapturingLLMModel{}
+		withFakeLLMModel(t, fake)
+		_, err := GenerateAndTrackLLMContent(gemini3ReasoningContext(), "", "", "", "", "logs", false, messages, true)
+		assert.NoError(t, err)
+		assert.Equal(t, 16000, fake.lastOptions.Metadata["ThinkingBudget"])
+	})
 }

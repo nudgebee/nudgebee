@@ -134,6 +134,11 @@ func (l *LogAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
 
+// GetModelCategory explicitly opts into Retrieval, matching agentModelCategory's default for untagged agents.
+func (l *LogAgent) GetModelCategory() core.ModelTier {
+	return core.ModelTierRetrieval
+}
+
 func (l *LogAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	l.toolsOnce.Do(func() {
 		l.tools = l.buildToolList(ctx)

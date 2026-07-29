@@ -438,7 +438,7 @@ func updateOpenAnomalyTracking(dbms *database.DatabaseManager, oa OpenSpendAnoma
 
 func updateOpenAnomalyEvent(dbms *database.DatabaseManager, oa OpenSpendAnomaly, accountName, cloudProvider, accountId string, cfg spendAnomalyConfig) {
 	evidences := buildSpendEvidences(dbms, &Anomaly{
-		Id:           fmt.Sprintf("%d", oa.ID),
+		Id:           oa.ID,
 		AccountId:    oa.AccountID,
 		Tenant:       oa.Tenant,
 		Name:         oa.Name,
@@ -486,7 +486,7 @@ func updateOpenAnomalyEvent(dbms *database.DatabaseManager, oa OpenSpendAnomaly,
 		SubjectName:      oa.Name,
 		SubjectNamespace: namespace,
 		Evidences:        evidences,
-		FindingId:        fmt.Sprintf("%d", oa.ID),
+		FindingId:        oa.ID,
 		AggregationKey:   "CostAnomaly",
 		Description:      description,
 		SubjectType:      "cloud_account",
@@ -574,7 +574,7 @@ func resolveAnomalyEvent(dbms *database.DatabaseManager, oa OpenSpendAnomaly, ac
 	}
 
 	evidences := buildSpendEvidences(dbms, &Anomaly{
-		Id:           fmt.Sprintf("%d", oa.ID),
+		Id:           oa.ID,
 		AccountId:    oa.AccountID,
 		Tenant:       oa.Tenant,
 		Name:         oa.Name,
@@ -607,7 +607,7 @@ func resolveAnomalyEvent(dbms *database.DatabaseManager, oa OpenSpendAnomaly, ac
 		SubjectName:      oa.Name,
 		SubjectNamespace: namespace,
 		Evidences:        evidences,
-		FindingId:        fmt.Sprintf("%d", oa.ID),
+		FindingId:        oa.ID,
 		AggregationKey:   "CostAnomaly",
 		Description:      description,
 		SubjectType:      "cloud_account",

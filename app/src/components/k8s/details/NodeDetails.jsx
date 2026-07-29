@@ -354,6 +354,7 @@ const NodeDetails = ({ node }) => {
               dateTime={{ startTime: getSpecificTime(60), endTime: new Date().getTime() }}
               queryFromProps={JSON.stringify({ namespaceName: workloadScope.namespace, workloadName: workloadScope.name })}
               showPolling={false}
+              nubiAboveModal
             />
           </Box>
         )}
@@ -364,7 +365,12 @@ const NodeDetails = ({ node }) => {
         )}
         {workloadScope && tab === TAB_LOG_GROUP && (
           <Box sx={{ padding: 'var(--ds-space-4)' }}>
-            <KubernetesLogsPattern accountId={accountId} workloadName={workloadScope.name} workloadNamespace={workloadScope.namespace} />
+            <KubernetesLogsPattern
+              accountId={accountId}
+              workloadName={workloadScope.name}
+              workloadNamespace={workloadScope.namespace}
+              nubiAboveModal
+            />
           </Box>
         )}
       </Box>

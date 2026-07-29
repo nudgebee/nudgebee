@@ -724,6 +724,9 @@ const KubernetesServiceMap = ({ accountId, appName, namespaceName, dateRange, sh
         handleClose={() => setSelectedNode({})}
         title={`Node Details: ${selectedNode?.Id?.name || ''}`}
         contentStyles={{ padding: 0, height: '600px' }}
+        // The Logs / Log Group tabs open the Ask-Nubi overlay outside this Dialog's DOM;
+        // without this, the focus trap steals every keystroke from the chat input.
+        disableEnforceFocus
       >
         <NodeDetails node={selectedNode} />
       </Modal>

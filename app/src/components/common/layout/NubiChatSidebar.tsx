@@ -1,4 +1,4 @@
-import { Box, IconButton, Typography, Tooltip } from '@mui/material';
+import { Box, IconButton, Typography, Tooltip, useTheme } from '@mui/material';
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import SafeIcon from '@shared/icons/SafeIcon';
@@ -44,6 +44,12 @@ interface NubiChatSidebarProps {
   // straight on that historical conversation instead of a fresh session.
   urlConversationId?: string;
   urlSessionId?: string;
+  // Set when the opener lives inside a MUI Dialog (e.g. the Node Details modal's Logs tab).
+  // The overlay portal and the Dialog are both body-level siblings, so the default z-index
+  // (1000) loses to theme.zIndex.modal (1300) and the panel renders behind the modal. This
+  // lifts the overlay one step above the modal layer. The host Modal must also pass
+  // `disableEnforceFocus`, or the Dialog's focus trap steals every keystroke from the chat input.
+  aboveModal?: boolean;
 }
 
 const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
@@ -67,8 +73,11 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
   onConversationComplete,
   urlConversationId = '',
   urlSessionId = '',
+  aboveModal = false,
 }) => {
+  const theme = useTheme();
   const { assistantName, nubiIconUrl } = useTenantBranding();
+  const overlayZIndex = aboveModal ? theme.zIndex.modal + 1 : 1000;
   // Self-managed session id used only when the parent does not pass a conversationId.
   // Derive the effective sessionId synchronously from props so it never lags one render
   // behind context.data.conversationId — a lag would let the child mount with a stale id,
@@ -148,7 +157,7 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
         top: topOffset,
         [position]: 0,
         height: `calc(100vh - ${topOffset})`,
-        zIndex: 1000,
+        zIndex: overlayZIndex,
       };
     }
     // Fixed mode - part of layout flow with sticky positioning
@@ -171,7 +180,7 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
         position: 'fixed',
         top: `calc(${topOffset} + var(--ds-space-4))`,
         [position]: 'var(--ds-space-4)',
-        zIndex: 1000,
+        zIndex: overlayZIndex,
         width: ds.space.mul(0, 14),
         height: ds.space.mul(0, 14),
       }}

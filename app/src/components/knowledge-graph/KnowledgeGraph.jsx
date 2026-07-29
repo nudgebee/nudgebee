@@ -2012,6 +2012,7 @@ const ServiceMapContent = () => {
         handleClose={() => setSelectedNodeDetails(EMPTY_SELECTED_DETAILS)}
         title={`Node Details: ${selectedNodeDetails?.properties?.name || selectedNodeDetails?.unique_key || selectedNodeDetails?.name || ''}`}
         contentStyles={{ padding: 0, height: ds.space.mul(0, 300) }}
+        disableEnforceFocus
       >
         {isNodeDetailsLoading ? (
           <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>

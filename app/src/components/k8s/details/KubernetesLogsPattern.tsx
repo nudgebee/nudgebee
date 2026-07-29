@@ -89,9 +89,17 @@ interface KubernetesLogsPatternProps {
   accountId: string;
   workloadName?: string;
   workloadNamespace?: string;
+  // Set when this component is rendered inside a MUI Dialog (Node Details modal),
+  // so the Ask-Nubi overlay stacks above the dialog instead of behind it.
+  nubiAboveModal?: boolean;
 }
 
-const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({ accountId, workloadName = '', workloadNamespace = '' }) => {
+const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
+  accountId,
+  workloadName = '',
+  workloadNamespace = '',
+  nubiAboveModal = false,
+}) => {
   const router = useRouter();
   const k8sGroupingLogs = 'k8sGroupingLogs';
 
@@ -418,6 +426,7 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({ accountId
         position='right'
         mode='overlay'
         width='500px'
+        aboveModal={nubiAboveModal}
       />
       <TicketCreatePopupForm
         open={isTicketCreateFormOpen}

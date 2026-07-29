@@ -72,6 +72,14 @@ export interface ModalProps {
    * ignored. Default `true`. (NDialog parity.)
    */
   backdropClickClose?: boolean;
+  /**
+   * Relax MUI Dialog's focus trap. Required when the modal's content opens
+   * an overlay portaled outside the Dialog DOM (e.g. NubiChatSidebar with
+   * `aboveModal`) — with the trap active, every keystroke in that overlay's
+   * inputs gets yanked back into the Dialog. Leave `false` unless needed;
+   * the trap is an a11y win for self-contained modals.
+   */
+  disableEnforceFocus?: boolean;
 
   // ── Chrome ───────────────────────────────────────────────────────
   /** MUI breakpoint controlling max width. Default `'sm'`. */
@@ -161,6 +169,7 @@ export function Modal({
   handleClose,
   onClose,
   backdropClickClose = true,
+  disableEnforceFocus = false,
   width = 'sm',
   maxHeight,
   title,
@@ -278,6 +287,7 @@ export function Modal({
       aria-describedby='alert-dialog-description'
       fullWidth
       maxWidth={width}
+      disableEnforceFocus={disableEnforceFocus}
       TransitionComponent={ModalTransition}
       sx={{
         ...sx,
