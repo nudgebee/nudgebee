@@ -22,6 +22,11 @@ import (
 	toolscore "nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 
+	// Enterprise-Edition packages register their hooks in init(). Blank-import
+	// triggers registration; absent these imports the corresponding OSS hooks
+	// stay nil and behavior matches the OSS edition.
+	_ "nudgebee/llm/ee/scrubbing" // installs core.LLMModelDecorator (PII scrub)
+
 	"github.com/Cyprinus12138/otelgin"
 	"github.com/gin-contrib/pprof"
 	"go.opentelemetry.io/otel"

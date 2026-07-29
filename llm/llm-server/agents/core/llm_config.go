@@ -199,10 +199,23 @@ func GetLLMModel(provider string, modelName string, agentName string, appendAgen
 	}
 
 	if err == nil && model != nil {
-		// Master switch gates the entire egressfilter subsystem. When off, we skip
-		// the WrapModel call entirely — no decorator, no metric emission, no
-		// payload serialization, zero overhead. Per-detector flags below only
-		// matter once the master is on. See docs/pii-secret-scrubbing.md.
+		// Layer 1 (innermost — runs LAST before the real model): optional EE
+		// PII/PHI scrub + rehydrate. ee/scrubbing installs the decorator via
+		// init() against the LLMModelDecorator hook — see ee_registry.go. nil
+		// = no decoration, OSS behavior, zero cost.
+		if LLMModelDecorator != nil {
+			model = LLMModelDecorator(model)
+		}
+		// Layer 2 (outermost — runs FIRST on outbound payload): OSS egress
+		// filter. Master switch gates the entire egressfilter subsystem. When
+		// off, we skip the WrapModel call entirely — no decorator, no metric
+		// emission, no payload serialization, zero overhead. Per-detector
+		// flags below only matter once the master is on. See
+		// docs/pii-secret-scrubbing.md.
+		//
+		// Wrapping order is deliberate: egressfilter inspects the raw outbound
+		// text BEFORE the scrub decorator rewrites secrets to [REDACTED_*],
+		// so its credential gate sees what the caller actually produced.
 		if config.Config.LlmServerEgressFilterEnabled {
 			model = egressfilter.WrapModel(
 				model,

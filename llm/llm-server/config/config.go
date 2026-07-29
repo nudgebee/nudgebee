@@ -105,6 +105,36 @@ type appConfig struct {
 	RAGServerUrl      string `mapstructure:"rag_server_url"`
 	RAGServerToken    string `mapstructure:"rag_server_token"`
 
+	// PII detector within the egressfilter family. When enabled, every
+	// outgoing LLM prompt is PII/PHI-scrubbed (reversible) and every response
+	// rehydrated, per-call, in the model-client wrapper installed by
+	// GetLLMModel. This is the PII sibling of the secrets detector above; it
+	// shares the egressfilter master switch (LlmServerEgressFilterEnabled) so
+	// ops reason about one "outbound payload inspection" family, not two.
+	//
+	// Gating: the wrapper is installed only when BOTH the master switch AND
+	// PIIEnabled are true. PIIEnabled defaults false (introduces a runtime
+	// dependency on ml-k8s-server); flipping it on is an explicit ops
+	// decision. NER is opt-in for the same reasons it is on the scrubber
+	// itself — fuzzy on ops text. Secrets stay owned by the egressfilter
+	// secrets detector, so the PII scrub request never sets scrub_secrets.
+	LlmServerEgressFilterPIIEnabled        bool `mapstructure:"llm_server_egressfilter_pii_enabled"`
+	LlmServerEgressFilterPIINerEnabled     bool `mapstructure:"llm_server_egressfilter_pii_ner_enabled"`
+	LlmServerEgressFilterPIITimeoutSeconds int  `mapstructure:"llm_server_egressfilter_pii_timeout_seconds"`
+	// Outage policy for the PII scrubber. Same vocabulary as the secrets
+	// detector's mode (which owns "detect" / "enforce" / future "redact"),
+	// so ops reason about one word across the family:
+	//   - "detect"  (default) — scrubber up: scrub-and-forward; scrubber down:
+	//                forward RAW to the LLM (fail-OPEN, availability wins).
+	//   - "enforce" — scrubber up: scrub-and-forward; scrubber down:
+	//                return an error (fail-CLOSED, no raw PII to the LLM
+	//                under any circumstance). For regulated tenants
+	//                (HIPAA / GDPR) where a bypass is unacceptable.
+	// Any unrecognized value is treated as "detect" so a typo can never
+	// silently escalate a tenant to fail-closed and break traffic.
+	LlmServerEgressFilterPIIMode string `mapstructure:"llm_server_egressfilter_pii_mode"`
+	MLK8sServerURL               string `mapstructure:"ml_k8s_server_url"`
+
 	// LLM specific configs
 	LlmProvider               string `mapstructure:"llm_provider"`
 	LlmModel                  string `mapstructure:"llm_model_name"`
@@ -803,6 +833,11 @@ func init() {
 	viper.SetDefault("logs_stream_to_fetch", 5)
 	viper.SetDefault("rag_server_url", "http://127.0.0.1:9999")
 	viper.SetDefault("rag_server_token", "")
+	viper.SetDefault("llm_server_egressfilter_pii_enabled", false)
+	viper.SetDefault("llm_server_egressfilter_pii_ner_enabled", false)
+	viper.SetDefault("llm_server_egressfilter_pii_timeout_seconds", 10)
+	viper.SetDefault("llm_server_egressfilter_pii_mode", "detect")
+	viper.SetDefault("ml_k8s_server_url", "http://ml-k8s-server:9999")
 	viper.SetDefault("llm_server_db_max_connection", 150)
 	viper.SetDefault("llm_server_db_min_connection", 1)
 	viper.SetDefault("llm_server_db_idle_minutes", 10)

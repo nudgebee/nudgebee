@@ -6,6 +6,12 @@ import (
 	"sync"
 )
 
+// DetectorSecrets is the value written into FilterEvent.Detector by this
+// package. Sibling of DetectorPII. Kept as a named constant so consumers
+// reading the merged metadata.egressfilter[] array can discriminate against
+// it without re-declaring the string literal.
+const DetectorSecrets = "secrets"
+
 // FilterEvent is the structured record the wrapper emits whenever a Scan
 // returns hits. One FilterEvent per outbound LLM call (no event when the
 // Scan is clean). Callers attach a reporter via WithFilterEventReporter
@@ -40,6 +46,13 @@ type FilterEvent struct {
 	// AuditID correlates the event with the structured log line emitted at
 	// detection time. Format: "egress-<12 lowercase hex>".
 	AuditID string `json:"audit_id"`
+
+	// Detector identifies which family produced this event. Always
+	// "secrets" for events built by this package; sibling detectors (e.g.
+	// the EE PII scrubber's PIIScrubEvent) marshal a different value here.
+	// Consumers iterating the merged metadata.egressfilter[] array switch
+	// on this field to pick per-detector rendering / policy.
+	Detector string `json:"detector"`
 
 	// Mode is the operator-configured mode for this call — "detect"
 	// (forwarded with a log line), "enforce" (blocked, error returned), or
@@ -88,6 +101,7 @@ type FilterEvent struct {
 func newFilterEvent(auditID string, mode Mode, payloadBytes int, r Result, agentName string) FilterEvent {
 	return FilterEvent{
 		AuditID:      auditID,
+		Detector:     DetectorSecrets,
 		Mode:         mode,
 		PayloadBytes: payloadBytes,
 		Hits:         r.Hits,

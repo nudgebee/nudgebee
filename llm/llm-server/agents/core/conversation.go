@@ -11,8 +11,10 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	toolcore "nudgebee/llm/tools/core"
@@ -749,6 +751,41 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		return NBAgentResponse{}, common.ErrorBadRequest("conversation: unable to complete request, Please try again later")
 	}
 
+	// Attach the egressfilter event reporter for the duration of this turn.
+	// The wrapper invokes the callback once per outbound LLM call that
+	// produces hits; we accumulate them under egressFilterEvents and write
+	// the slice to the message's metadata column at the finalize step.
+	//
+	// A single message can produce multiple LLM calls (planner thinks, tool
+	// runs, planner thinks again, ...) so events is a slice, not a single
+	// value. Mutated under egressFilterEventsMu because the wrapper may be
+	// called from multiple goroutines under parallel plan execution.
+	var (
+		egressFilterEvents   []egressfilter.FilterEvent
+		egressFilterEventsMu sync.Mutex
+	)
+	ctx.SetContext(egressfilter.WithFilterEventReporter(ctx.GetContext(), func(e egressfilter.FilterEvent) {
+		egressFilterEventsMu.Lock()
+		egressFilterEvents = append(egressFilterEvents, e)
+		egressFilterEventsMu.Unlock()
+	}))
+
+	// Sibling reporter for the EE PII scrubber (ee/scrubbing). Same
+	// accumulate-per-turn / persist-at-message-end shape as egressfilter;
+	// both slices merge into the SAME metadata.egressfilter[] JSONB array
+	// below, discriminated by each event's `detector` field ("secrets" vs
+	// "pii"). No-op unless the EE wrapper is installed AND a call actually
+	// tokenized something.
+	var (
+		piiScrubEvents   []egressfilter.PIIScrubEvent
+		piiScrubEventsMu sync.Mutex
+	)
+	ctx.SetContext(egressfilter.WithPIIScrubEventReporter(ctx.GetContext(), func(e egressfilter.PIIScrubEvent) {
+		piiScrubEventsMu.Lock()
+		piiScrubEvents = append(piiScrubEvents, e)
+		piiScrubEventsMu.Unlock()
+	}))
+
 	var agentResponse NBAgentResponse
 	var executeErr error
 	ctx.GetLogger().Info("conversation: processing request", "query", lo.Substring(request.Query, 0, 50), "agent_id", request.AgentId, "message_id", request.MessageId, "query_config", request.QueryConfig, "conversation_context", request.ConversationContext)
@@ -1250,6 +1287,37 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		if err != nil {
 			ctx.GetLogger().Error("conversation: unable to save AI response to DB at router", "error", err)
 			return NBAgentResponse{}, err
+		}
+
+		// Snapshot the egressfilter events captured during this turn under a
+		// lock so we don't race with the reporter (the wrapper may still be
+		// invoked from in-flight planner goroutines until they unwind).
+		egressFilterEventsMu.Lock()
+		eventsSnapshot := append([]egressfilter.FilterEvent(nil), egressFilterEvents...)
+		egressFilterEventsMu.Unlock()
+		piiScrubEventsMu.Lock()
+		piiSnapshot := append([]egressfilter.PIIScrubEvent(nil), piiScrubEvents...)
+		piiScrubEventsMu.Unlock()
+		// Secrets (egressfilter) and PII (scrubber) are sibling detectors in
+		// the "outbound payload inspection" family — they share the same JSONB
+		// slot under `metadata.egressfilter[]`, and consumers switch on each
+		// event's `detector` field ("secrets" vs "pii"). One array, N detector
+		// types — capped at one key even if we add more detectors later
+		// (prompt-injection, jailbreak, ...).
+		if total := len(eventsSnapshot) + len(piiSnapshot); total > 0 {
+			combined := make([]any, 0, total)
+			for _, e := range eventsSnapshot {
+				combined = append(combined, e)
+			}
+			for _, e := range piiSnapshot {
+				combined = append(combined, e)
+			}
+			metadata := map[string]any{"egressfilter": combined}
+			if mdErr := GetConversationDao().UpdateConversationMessageMetadata(request.MessageId, metadata); mdErr != nil {
+				ctx.GetLogger().Warn("conversation: unable to persist message metadata",
+					"error", mdErr, "message_id", request.MessageId,
+					"secrets_events", len(eventsSnapshot), "pii_events", len(piiSnapshot))
+			}
 		}
 
 		err = GetConversationDao().UpdateConversationStatus(request.ConversationId, status)
