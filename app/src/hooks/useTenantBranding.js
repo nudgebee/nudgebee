@@ -67,9 +67,15 @@ export const useBrandingConfig = () => {
     nubiIconUrl: DEFAULT_NUBI_ICON,
     nubiIconLightUrl: DEFAULT_NUBI_ICON_LIGHT,
     loaderUrl: DEFAULT_LOADER_URL,
-    signinImageUrl: DEFAULT_SIGNIN_IMAGE,
+    // Empty (not DEFAULT_SIGNIN_IMAGE) to mirror app_config's `signinImageUrl ?? ''`
+    // for the default tenant: signin/signup then fall back to the bundled
+    // NBIconSignIn asset rather than the page logo.
+    signinImageUrl: '',
     signinLeftImageUrl: '',
     carouselSlides: null,
+    theme: null,
+    colorTokens: null,
+    fontRemap: null,
     relayUrl: DEFAULT_RELAY_URL,
     k8sCollectorUrl: DEFAULT_K8S_COLLECTOR_URL,
     signingPublicKey: DEFAULT_SIGNING_PUBLIC_KEY,
@@ -92,7 +98,11 @@ export const useBrandingConfig = () => {
     });
   }, []);
 
-  return { ...(config || defaults), loading };
+  // Merge defaults UNDER the fetched config so any field the config omits falls
+  // back to its Nudgebee default per-field. The branding apparatus is EE-only:
+  // in OSS (and EE without a custom branding file) /api/public/app_config returns
+  // only the non-branding runtime fields, so the branding fields must default here.
+  return { ...defaults, ...(config || {}), loading };
 };
 
 /**
