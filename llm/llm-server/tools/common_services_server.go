@@ -214,7 +214,7 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		// an actionable error naming the mistyped label instead of a silent empty
 		// result, so it can self-correct. Only meaningful on this canonical path,
 		// which sends the structured where-clause services-server validates.
-		ValidateRequest: true,
+		ValidateRequest: false,
 	}
 
 	// Escape hatch: a pinned provider (env var or per-request override) may have no
