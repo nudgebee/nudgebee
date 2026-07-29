@@ -3024,6 +3024,8 @@ actions:
       - role: tenant_admin_readonly
       - role: account_admin
       - role: tenant_admin
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
     comment: get feedback submitted by user via session id
   - name: log_group
     definition:

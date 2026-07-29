@@ -15,7 +15,11 @@ func CreateConversationAiFeedback(context *security.RequestContext, feedbackRequ
 		return data, fmt.Errorf("unauthorized")
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(feedbackRequest.CloudAccountId, security.SecurityAccessTypeCreate) {
+	// Feedback is an annotation on a conversation the user is already viewing,
+	// so it's gated on Read access (the same level required to view the
+	// conversation) rather than Create — otherwise read-only roles could see
+	// the conversation but not react to it.
+	if !context.GetSecurityContext().HasAccountAccess(feedbackRequest.CloudAccountId, security.SecurityAccessTypeRead) {
 		return data, fmt.Errorf("unauthorized")
 	}
 
