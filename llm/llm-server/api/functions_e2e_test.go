@@ -379,7 +379,7 @@ func TestFunctions_InvokeFunction(t *testing.T) {
 	err := core.DeleteConversationBySession(sessionId, accountId, userId)
 	assert.Nil(t, err)
 
-	defaultAgent, ok := core.GetNBAgent(sc, agents.AgentK8sDebugName, accountId, core.AgentStatusEnabled)
+	defaultAgent, ok := core.GetNBAgent(sc, agents.AgentK8sOrchestratorName, accountId, core.AgentStatusEnabled)
 	if !ok {
 		t.Fatal("default agent not found")
 	}

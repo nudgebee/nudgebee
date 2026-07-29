@@ -21,6 +21,18 @@ func RegisterNBAgentFactory(agent string, agentFactory func(accountId string) (N
 	nbSystemAgents[strings.ToLower(agent)] = agentFactory
 }
 
+// RegisterNBAgentFactoryWithAliases registers a system-agent factory under its
+// primary name plus one or more legacy alias names, so an agent renamed in place
+// keeps resolving under its former name. GetNBAgent does exact-name lookup, so a
+// renamed agent (e.g. "aws_debug" → "aws_orchestrator") would otherwise stop
+// resolving for stored conversation history and explicit @old_name invocations.
+func RegisterNBAgentFactoryWithAliases(agent string, agentFactory func(accountId string) (NBAgent, error), aliases ...string) {
+	RegisterNBAgentFactory(agent, agentFactory)
+	for _, alias := range aliases {
+		RegisterNBAgentFactory(alias, agentFactory)
+	}
+}
+
 func NewToolFromAgent(agent NBAgent) toolcore.NBTool {
 	return &nbAgentTool{name: agent.GetName(), description: agent.GetDescription(), input: "Refer description for inputs", output: "Refer description for inputs", agent: agent, toolType: toolcore.NBToolTypeAgent}
 }
@@ -320,7 +332,7 @@ func ExecuteAgentToolCall(nbRequestContext toolcore.NbToolContext, agent NBAgent
 		// metrics, traces, logs, and logs_default append their own name to this
 		// list so the sub-agent's executor can union it with its own KB lookups
 		// — feeding the existing lazy <skill-lists> + load_skills flow inside
-		// ReAct/ReWoo planners rather than reinventing skill injection.
+		// ReAct planners rather than reinventing skill injection.
 		InheritSkillsFromAgents: nbRequestContext.InheritSkillsFromAgents,
 		// Propagate the top-level question and the question-aware skill selection
 		// computed once at top-level entry. Sub-agents must trust the parent's

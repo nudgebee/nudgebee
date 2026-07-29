@@ -41,7 +41,7 @@ func TestConversationalAgent(t *testing.T) {
 			},
 		}
 	for _, tc := range testCases {
-		k8sDebugAgent := newK8sDebugAgent(tc.AccountId)
+		k8sDebugAgent := newK8sOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -130,7 +130,7 @@ func TestConversationalAgentMultiMessagesWithPreviousContext(t *testing.T) {
 	assert.Nil(t, err)
 
 	for _, tc := range testCases {
-		k8sDebug := newK8sDebugAgent(tc.AccountId)
+		k8sDebug := newK8sOrchestratorAgent(tc.AccountId)
 
 		resp, err := core.HandleConversationSessionRequest(sc, k8sDebug, tc.UserId, tc.AccountId, tc.SessionId, tc.Query)
 
@@ -165,7 +165,7 @@ func TestConversationalAgentModelConfigRoundTrip(t *testing.T) {
 	sessionId := "rtt-modelcfg-" + uuid.NewString()
 	t.Logf("session_id=%s account=%s user=%s — open this in the UI after the test runs", sessionId, accountId, userId)
 
-	k8sDebugAgent := newK8sDebugAgent(accountId)
+	k8sDebugAgent := newK8sOrchestratorAgent(accountId)
 
 	// Round 1: blanket model on the very first turn — creates the conversation.
 	// Queries are k8s-shaped so the k8s_debug agent actually plans + executes
@@ -261,7 +261,7 @@ func TestGemini25SingleQuestion(t *testing.T) {
 	sessionId := "probe-" + model + "-" + uuid.NewString()
 	t.Logf("model=%s session_id=%s", model, sessionId)
 
-	resp, err := core.HandleConversationSessionRequest(sc, newK8sDebugAgent(accountId), userId, accountId, sessionId,
+	resp, err := core.HandleConversationSessionRequest(sc, newK8sOrchestratorAgent(accountId), userId, accountId, sessionId,
 		"Hi there, what can you help me with?",
 		core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{LlmProvider: "googleai", LlmModelName: model}))
 	require.NoError(t, err, "chat call failed")

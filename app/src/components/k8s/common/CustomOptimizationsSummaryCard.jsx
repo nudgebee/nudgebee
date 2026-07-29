@@ -27,7 +27,7 @@ const CustomOptimizationsSummaryCard = ({ clusterSummary, accountId, loading = f
       }
       route = `${route}#${fragment}`;
     } else if (navigate === 'auto-pilot') {
-      route = `/auto-pilot?accountId=${id}`;
+      route = `/automation?accountId=${id}`;
     }
     return route;
   };

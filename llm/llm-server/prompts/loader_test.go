@@ -222,7 +222,6 @@ func TestAllCategories_SampleLoad(t *testing.T) {
 		category PromptCategory
 	}{
 		{"k8s_debug", CategoryAgents},
-		{"rewoo_2_base", CategoryPlanners},
 		{"kubectl_classify", CategoryTools},
 		{"event_analyzer", CategoryUtilities},
 	}
@@ -497,7 +496,6 @@ func TestProcessIncludes_V2PromptFilesResolve(t *testing.T) {
 		contains string
 	}{
 		{"react_base", "You are Nubi"},
-		{"rewoo_solver", "You are Nubi"},
 		{"response_formatter", "You are Nubi"},
 		{"response_formatter_slack", "teammate on Slack"},
 	}

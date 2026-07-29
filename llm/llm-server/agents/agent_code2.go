@@ -599,7 +599,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 
 	// Resolve operator-authored skills mapped to the code agent and forward them to
 	// the stateless code-analysis service, which has no skills DB of its own. Unlike
-	// the in-process ReAct/ReWoo planners — which lazily load_skills mid-loop and so
+	// the in-process ReAct planners — which lazily load_skills mid-loop and so
 	// only pull a skill body when the task needs it — code-analysis receives skill
 	// bodies up front over HTTP. Forwarding every mapped skill would bloat every
 	// downstream code-analysis prompt and dilute relevance, so we always run

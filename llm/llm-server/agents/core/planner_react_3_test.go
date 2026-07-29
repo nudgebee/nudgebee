@@ -21,12 +21,20 @@ import (
 // template variable that was never declared (both would fail Format).
 func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool) string {
 	t.Helper()
+	return renderReact3BaseWithRoles(t, notebookEnabled, hypothesisModeEnabled, false, false)
+}
+
+// renderReact3BaseWithRoles is renderReact3Base with the orchestrator/executor
+// role-overlay gates exposed, mirroring resolveReact3RoleModes outputs.
+func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnabled, orchestratorMode, executorMode bool) string {
+	t.Helper()
 	base := prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactBase3)
 	assert.NotEmpty(t, base, "embedded react_3 base prompt must load")
 
 	vars := []string{
 		"tool_names", "tool_descriptions", "workspace_enabled", "shell_tool_enabled",
 		"delegate_agent_enabled", "notebook_enabled", "hypothesis_mode_enabled",
+		"orchestrator_mode", "executor_mode",
 		"conversation_context_enabled", "context_management_rules", "time_handling_rules",
 		"data_protection_rules", "code_analysis_rules", "security_rules",
 		"memory_consumption_rules", "async_completion_rules",
@@ -40,6 +48,8 @@ func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool)
 		"delegate_agent_enabled":       false,
 		"notebook_enabled":             notebookEnabled,
 		"hypothesis_mode_enabled":      hypothesisModeEnabled,
+		"orchestrator_mode":            orchestratorMode,
+		"executor_mode":                executorMode,
 		"conversation_context_enabled": false,
 		"context_management_rules":     "",
 		"time_handling_rules":          "",
@@ -92,6 +102,223 @@ func TestReAct3HypothesisModeFence(t *testing.T) {
 		assert.NotContains(t, out, notebookHeader)
 		assert.NotContains(t, out, hypothesisHeader)
 	})
+}
+
+// TestReAct3RoleOverlayFence verifies the orchestrator/executor role overlays
+// are mutually exclusive and both absent when the feature is off, so the
+// legacy prompt is unchanged for deployments that haven't opted in.
+func TestReAct3RoleOverlayFence(t *testing.T) {
+	const contractHeader = "ANSWER CONTRACT — DEFINE \"DONE\" BEFORE ACTING"
+	const executorHeader = "SCOPED SUB-TASK REPORTING"
+	const thoughtException = "Exception: on the FIRST step of a task"
+	const safetyClaimsHeader = "SAFETY & COMPLETION CLAIMS"
+	const perMessageContract = "EVERY qualifying user message"
+
+	t.Run("orchestrator: answer contract + thought exception, no executor block", func(t *testing.T) {
+		out := renderReact3BaseWithRoles(t, true, true, true, false)
+		assert.Contains(t, out, contractHeader)
+		assert.Contains(t, out, thoughtException)
+		assert.Contains(t, out, "## Answer Contract", "notebook-enabled orchestrator records the contract in the notebook")
+		assert.Contains(t, out, "hypothesis completion gate below", "hypothesis-mode orchestrator links contract to the hypothesis gate")
+		assert.Contains(t, out, safetyClaimsHeader, "unconditional safety-claims rule must render for orchestrators")
+		assert.Contains(t, out, perMessageContract, "contract must be framed per user message, not per conversation")
+		assert.NotContains(t, out, executorHeader)
+	})
+
+	t.Run("orchestrator without notebook: contract present, no notebook reference", func(t *testing.T) {
+		out := renderReact3BaseWithRoles(t, false, false, true, false)
+		assert.Contains(t, out, contractHeader)
+		assert.Contains(t, out, safetyClaimsHeader)
+		assert.NotContains(t, out, "## Answer Contract")
+		assert.NotContains(t, out, "hypothesis completion gate below")
+	})
+
+	t.Run("executor: reporting block only, no contract or thought exception", func(t *testing.T) {
+		out := renderReact3BaseWithRoles(t, true, false, false, true)
+		assert.Contains(t, out, executorHeader)
+		assert.NotContains(t, out, contractHeader)
+		assert.NotContains(t, out, thoughtException)
+		assert.NotContains(t, out, safetyClaimsHeader)
+	})
+
+	t.Run("feature off: neither overlay renders (legacy prompt)", func(t *testing.T) {
+		out := renderReact3BaseWithRoles(t, true, true, false, false)
+		assert.NotContains(t, out, contractHeader)
+		assert.NotContains(t, out, executorHeader)
+		assert.NotContains(t, out, thoughtException)
+		assert.NotContains(t, out, safetyClaimsHeader)
+	})
+}
+
+// TestReAct3AnswerContractNudge verifies the deterministic contract
+// enforcement in buildScratchpad: with orchestrator mode on, a turn that has
+// run 2+ tool actions while the notebook lacks an `## Answer Contract`
+// section gets a system nudge; trivial turns, sub-agents, contract-carrying
+// notebooks, and flag-off deployments do not.
+func TestReAct3AnswerContractNudge(t *testing.T) {
+	prev := config.Config.LlmServerReact3OrchestratorModeEnabled
+	defer func() { config.Config.LlmServerReact3OrchestratorModeEnabled = prev }()
+
+	step := func(id string) NBAgentPlannerToolActionStep {
+		return NBAgentPlannerToolActionStep{
+			Action:      NBAgentPlannerToolAction{Tool: "kubectl", ToolInput: "get pods", Log: "checking", ToolID: id},
+			Observation: "ok",
+			Status:      ToolStatusSuccess,
+		}
+	}
+	twoSteps := []NBAgentPlannerToolActionStep{step("t1"), step("t2")}
+	const nudgeMarker = "ANSWER CONTRACT MISSING"
+
+	config.Config.LlmServerReact3OrchestratorModeEnabled = true
+
+	t.Run("orchestrator, 2+ steps, no contract: nudge fires", func(t *testing.T) {
+		planner := &NBReActPlanner3{request: NBAgentRequest{AgentId: "a1", ParentAgentId: ""}}
+		assert.Contains(t, planner.buildScratchpad(twoSteps), nudgeMarker)
+	})
+
+	t.Run("contract present in notebook: no nudge", func(t *testing.T) {
+		planner := &NBReActPlanner3{
+			request:  NBAgentRequest{AgentId: "a1", ParentAgentId: ""},
+			Notebook: "## Answer Contract\n- [ ] sub-question 1\n\n## Scope\n...",
+		}
+		assert.NotContains(t, planner.buildScratchpad(twoSteps), nudgeMarker)
+	})
+
+	t.Run("contract header with different casing: no nudge", func(t *testing.T) {
+		// LLM outputs vary casing; the check is case-insensitive, matching
+		// analyzeNotebook's section scans.
+		planner := &NBReActPlanner3{
+			request:  NBAgentRequest{AgentId: "a1", ParentAgentId: ""},
+			Notebook: "## ANSWER CONTRACT\n- [ ] sub-question 1",
+		}
+		assert.NotContains(t, planner.buildScratchpad(twoSteps), nudgeMarker)
+	})
+
+	t.Run("single step (trivial turn): no nudge", func(t *testing.T) {
+		planner := &NBReActPlanner3{request: NBAgentRequest{AgentId: "a1", ParentAgentId: ""}}
+		assert.NotContains(t, planner.buildScratchpad([]NBAgentPlannerToolActionStep{step("t1")}), nudgeMarker)
+	})
+
+	t.Run("resumed conversation: prior turns' steps don't count toward the threshold", func(t *testing.T) {
+		// Two historical steps from earlier turns, none yet this turn — a
+		// trivial follow-up must not be nudged for a contract.
+		planner := &NBReActPlanner3{
+			request:            NBAgentRequest{AgentId: "a1", ParentAgentId: ""},
+			turnStartStepIndex: 2,
+		}
+		assert.NotContains(t, planner.buildScratchpad(twoSteps), nudgeMarker)
+
+		// Once the CURRENT turn accumulates 2+ steps on top of the history,
+		// the nudge fires again.
+		fourSteps := append(append([]NBAgentPlannerToolActionStep{}, twoSteps...), step("t3"), step("t4"))
+		assert.Contains(t, planner.buildScratchpad(fourSteps), nudgeMarker)
+	})
+
+	t.Run("sub-agent: no nudge", func(t *testing.T) {
+		planner := &NBReActPlanner3{request: NBAgentRequest{AgentId: "a2", ParentAgentId: "a1"}}
+		assert.NotContains(t, planner.buildScratchpad(twoSteps), nudgeMarker)
+	})
+
+	t.Run("feature off: no nudge", func(t *testing.T) {
+		config.Config.LlmServerReact3OrchestratorModeEnabled = false
+		defer func() { config.Config.LlmServerReact3OrchestratorModeEnabled = true }()
+		planner := &NBReActPlanner3{request: NBAgentRequest{AgentId: "a1", ParentAgentId: ""}}
+		assert.NotContains(t, planner.buildScratchpad(twoSteps), nudgeMarker)
+	})
+}
+
+// TestResolveReact3RoleModes verifies the role gates: mutually exclusive by
+// ParentAgentId, and both false when the feature flag is off.
+func TestResolveReact3RoleModes(t *testing.T) {
+	prev := config.Config.LlmServerReact3OrchestratorModeEnabled
+	defer func() { config.Config.LlmServerReact3OrchestratorModeEnabled = prev }()
+
+	topLevel := NBAgentRequest{AgentId: "a1", ParentAgentId: ""}
+	selfParent := NBAgentRequest{AgentId: "a1", ParentAgentId: "a1"}
+	subAgent := NBAgentRequest{AgentId: "a2", ParentAgentId: "a1"}
+
+	config.Config.LlmServerReact3OrchestratorModeEnabled = true
+	for name, req := range map[string]NBAgentRequest{"empty parent": topLevel, "self parent": selfParent} {
+		orch, exec := resolveReact3RoleModes(req)
+		assert.True(t, orch, "%s must resolve as orchestrator", name)
+		assert.False(t, exec, "%s must not resolve as executor", name)
+	}
+	orch, exec := resolveReact3RoleModes(subAgent)
+	assert.False(t, orch, "sub-agent must not resolve as orchestrator")
+	assert.True(t, exec, "sub-agent must resolve as executor")
+
+	config.Config.LlmServerReact3OrchestratorModeEnabled = false
+	for name, req := range map[string]NBAgentRequest{"top-level": topLevel, "sub-agent": subAgent} {
+		orch, exec := resolveReact3RoleModes(req)
+		assert.False(t, orch, "%s: orchestrator overlay must be off when feature disabled", name)
+		assert.False(t, exec, "%s: executor overlay must be off when feature disabled", name)
+	}
+}
+
+// TestOrchestratorDeepThinking verifies the elevated thinking level is scoped
+// to the orchestrator's direction-setting calls: first plan call of a turn and
+// post-critique refinement passes — never sub-agents or mid-loop iterations.
+func TestOrchestratorDeepThinking(t *testing.T) {
+	prevEnabled := config.Config.LlmServerReact3OrchestratorModeEnabled
+	prevLevel := config.Config.LlmServerReact3OrchestratorThinkingLevel
+	defer func() {
+		config.Config.LlmServerReact3OrchestratorModeEnabled = prevEnabled
+		config.Config.LlmServerReact3OrchestratorThinkingLevel = prevLevel
+	}()
+	config.Config.LlmServerReact3OrchestratorModeEnabled = true
+	config.Config.LlmServerReact3OrchestratorThinkingLevel = "medium"
+
+	orchestrator := &NBReActPlanner3{request: NBAgentRequest{AgentId: "a1", ParentAgentId: ""}}
+	subAgent := &NBReActPlanner3{request: NBAgentRequest{AgentId: "a2", ParentAgentId: "a1"}}
+
+	assert.True(t, orchestrator.orchestratorDeepThinking(true), "orchestrator first plan call of the turn")
+	assert.False(t, orchestrator.orchestratorDeepThinking(false), "orchestrator mid-loop iteration")
+	orchestrator.refinementAttempts = 1
+	assert.True(t, orchestrator.orchestratorDeepThinking(false), "orchestrator post-critique refinement pass")
+
+	assert.False(t, subAgent.orchestratorDeepThinking(true), "executor sub-agent never gets the override")
+
+	config.Config.LlmServerReact3OrchestratorThinkingLevel = ""
+	orchestrator.refinementAttempts = 0
+	assert.False(t, orchestrator.orchestratorDeepThinking(true), "empty level disables the override")
+
+	config.Config.LlmServerReact3OrchestratorThinkingLevel = "medium"
+	config.Config.LlmServerReact3OrchestratorModeEnabled = false
+	assert.False(t, orchestrator.orchestratorDeepThinking(true), "feature flag off disables the override")
+}
+
+// TestResolveOrchestratorThinkingLevel verifies the override is elevate-only:
+// it applies only when configured above the model's dynamic default (or the
+// global LlmProviderThinkingLevel override), and never lowers thinking.
+func TestResolveOrchestratorThinkingLevel(t *testing.T) {
+	prevOrch := config.Config.LlmServerReact3OrchestratorThinkingLevel
+	prevGlobal := config.Config.LlmProviderThinkingLevel
+	defer func() {
+		config.Config.LlmServerReact3OrchestratorThinkingLevel = prevOrch
+		config.Config.LlmProviderThinkingLevel = prevGlobal
+	}()
+	config.Config.LlmProviderThinkingLevel = ""
+	config.Config.LlmServerReact3OrchestratorThinkingLevel = "medium"
+
+	// gemini-3 pro defaults to "low" → medium elevates.
+	assert.Equal(t, "medium", resolveOrchestratorThinkingLevel("gemini-3-pro-preview"))
+	// gemini-3 flash defaults to "medium" → override is not an elevation, skip.
+	assert.Equal(t, "", resolveOrchestratorThinkingLevel("gemini-3-flash-preview"))
+	// No dynamic default (non-thinking-level model) → override applies; the
+	// central clamp + provider layer ignore it where unsupported.
+	assert.Equal(t, "medium", resolveOrchestratorThinkingLevel("claude-sonnet-4"))
+
+	// Global override already at/above the orchestrator level → never lower.
+	config.Config.LlmProviderThinkingLevel = "high"
+	assert.Equal(t, "", resolveOrchestratorThinkingLevel("gemini-3-pro-preview"))
+	// Global override below the orchestrator level → elevate past it.
+	config.Config.LlmProviderThinkingLevel = "low"
+	assert.Equal(t, "medium", resolveOrchestratorThinkingLevel("gemini-3-pro-preview"))
+
+	// Invalid configured level → disabled.
+	config.Config.LlmProviderThinkingLevel = ""
+	config.Config.LlmServerReact3OrchestratorThinkingLevel = "turbo"
+	assert.Equal(t, "", resolveOrchestratorThinkingLevel("gemini-3-pro-preview"))
 }
 
 // renderReactCritiquer renders the embedded react critiquer prompt with the
@@ -832,7 +1059,7 @@ func TestReAct3BuildScratchpad_CompressionGatedByWindow(t *testing.T) {
 		assert.Contains(t, scratchpad, "OBS-MARKER-00")
 		assert.Contains(t, scratchpad, strings.Repeat("x", 700))
 		// And nothing should have been marked compressed.
-		assert.Empty(t, collectCompressionEvents(steps, false, 0), "no compression should occur under budget")
+		assert.Empty(t, collectCompressionEvents(steps, false), "no compression should occur under budget")
 	})
 
 	t.Run("over budget compresses older observations", func(t *testing.T) {
@@ -841,7 +1068,7 @@ func TestReAct3BuildScratchpad_CompressionGatedByWindow(t *testing.T) {
 		planner := &NBReActPlanner3{}
 		_ = planner.buildScratchpad(steps)
 
-		events := collectCompressionEvents(steps, true /*windowPressureActive*/, 0)
+		events := collectCompressionEvents(steps, true /*windowPressureActive*/)
 		assert.NotEmpty(t, events, "older observations should be compressed when over budget")
 		// Every event in this scenario is window-pressure (no refinement set).
 		for _, e := range events {
@@ -850,24 +1077,55 @@ func TestReAct3BuildScratchpad_CompressionGatedByWindow(t *testing.T) {
 		}
 	})
 
-	t.Run("pre-refinement steps compress even under budget", func(t *testing.T) {
-		// Pre-refinement steps must always be compressed to keep a refined
-		// investigation focused — independent of window pressure. Post-refinement
-		// steps stay full while under budget.
+	t.Run("under budget: no compression (#33897)", func(t *testing.T) {
+		// Post-#33897: window pressure is the only compression trigger. The
+		// refinement-focus path (compress-all-pre-rejection-steps regardless
+		// of size) was removed after 7d of prod data showed it fired 103 times
+		// with 0 window-pressure events — over half of those on sub-1KB
+		// observations where the LLM summarization cost exceeded byte savings.
+		// The LLM leans on critique feedback text (not observation truncation)
+		// to redirect attention on small conversations.
 		config.Config.LlmServerAgentMaxScratchpadChars = 5_000_000 // under budget → compression inactive
 		steps := makeSteps()
-		planner := &NBReActPlanner3{postRefinementToolIndex: 6}
+		planner := &NBReActPlanner3{compressionTracker: NewCompressionTracker()}
 		_ = planner.buildScratchpad(steps)
 
-		events := collectCompressionEvents(steps, false /*no window pressure*/, 6)
-		assert.NotEmpty(t, events, "pre-refinement steps must compress regardless of window pressure")
-		// Every event in this scenario classifies as refinement-focus.
-		for _, e := range events {
-			assert.Equal(t, compressionCauseRefinementFocus, e.cause,
-				"compression under budget but with refinement index set should classify as refinement-focus")
+		for i := range steps {
+			assert.Empty(t, steps[i].CompressedObservation,
+				"step %d must stay full under budget — no compression trigger fires below window pressure (#33897)", i)
 		}
-		for i := 6; i < len(steps); i++ {
-			assert.Empty(t, steps[i].CompressedObservation, "post-refinement step %d should stay full under budget", i)
+		assert.False(t, planner.compressionTracker.windowPressureActive,
+			"under budget the tracker must not stamp window pressure")
+	})
+
+	t.Run("over budget: older steps compressed, last-10 window stays full (#33897)", func(t *testing.T) {
+		// Under real window pressure the recent-window rule kicks in: the last
+		// recentStepsFullContext (10) steps stay full, everything older gets
+		// compressed. Post-#33897 there's no special-case for a
+		// postRefinementToolIndex — the recent-window rule alone decides.
+		config.Config.LlmServerAgentMaxScratchpadChars = 200 // tiny budget forces compression
+		steps := makeSteps()
+		planner := &NBReActPlanner3{compressionTracker: NewCompressionTracker()}
+		_ = planner.buildScratchpad(steps)
+
+		// makeSteps produces 15 steps. Under pressure the last 10 (indices 5-14)
+		// stay full, and the older ones (0-4) get compressed.
+		totalSteps := len(steps)
+		if !assert.GreaterOrEqual(t, totalSteps, recentStepsFullContext,
+			"test requires >recentStepsFullContext steps for the recent-window to have an effect") {
+			return
+		}
+		for i := 0; i < totalSteps-recentStepsFullContext; i++ {
+			assert.NotEmpty(t, steps[i].CompressedObservation,
+				"older step %d must be compressed under window pressure", i)
+		}
+		assert.True(t, planner.compressionTracker.windowPressureActive)
+
+		events := collectCompressionEvents(steps, true)
+		assert.NotEmpty(t, events)
+		for _, e := range events {
+			assert.Equal(t, compressionCauseWindowPressure, e.cause,
+				"post-#33897 the only real cause is window pressure")
 		}
 	})
 
@@ -949,9 +1207,8 @@ func TestReAct3BuildScratchpadParallelActions(t *testing.T) {
 
 func TestReAct3MarshalUnmarshal(t *testing.T) {
 	planner := &NBReActPlanner3{
-		Notebook:                "Some important findings here",
-		refinementAttempts:      1,
-		postRefinementToolIndex: 3,
+		Notebook:           "Some important findings here",
+		refinementAttempts: 1,
 	}
 
 	data, err := planner.Marshal()
@@ -963,7 +1220,27 @@ func TestReAct3MarshalUnmarshal(t *testing.T) {
 
 	assert.Equal(t, "Some important findings here", planner2.Notebook)
 	assert.Equal(t, 1, planner2.refinementAttempts)
-	assert.Equal(t, 3, planner2.postRefinementToolIndex)
+}
+
+// TestReAct3UnmarshalDropsLegacyPostRefinementToolIndex is a rollback-safety
+// guard: state blobs persisted by pre-#33897 binaries contained a
+// PostRefinementToolIndex field. Post-#33897 Unmarshal must silently ignore
+// that key rather than error, so old state deserializes cleanly onto the new
+// binary. Uses a hand-authored JSON blob so the test doesn't depend on the
+// old struct still existing in Go source.
+func TestReAct3UnmarshalDropsLegacyPostRefinementToolIndex(t *testing.T) {
+	legacyState := []byte(`{
+		"notebook": "legacy notebook",
+		"refinementAttempts": 2,
+		"postRefinementToolIndex": 5,
+		"notebookUpdateCount": 3
+	}`)
+	planner := &NBReActPlanner3{}
+	err := planner.Unmarshal(legacyState)
+	assert.NoError(t, err, "legacy state with PostRefinementToolIndex must unmarshal cleanly")
+	assert.Equal(t, "legacy notebook", planner.Notebook)
+	assert.Equal(t, 2, planner.refinementAttempts)
+	assert.Equal(t, 3, planner.notebookUpdateCount)
 }
 
 // --- XML Robustness Tests ---

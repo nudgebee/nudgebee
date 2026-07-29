@@ -50,6 +50,11 @@ const nextConfig = {
         destination: '/investigate?source=cloud',
         permanent: true,
       },
+      {
+        source: '/auto-pilot',
+        destination: '/automation',
+        permanent: true,
+      },
     ];
   },
   async rewrites() {

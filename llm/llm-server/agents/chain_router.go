@@ -214,7 +214,7 @@ func getTicketAgentName() string {
 func getAgent(ctx *security.RequestContext, agent string, accountId string) (core.NBAgent, bool) {
 	var agentName string
 	switch strings.ToLower(agent) {
-	case "investigatechain", "investigate", "troubleshoot", "investigateagent", AgentK8sDebugName, aws.AgentAwsDebugName:
+	case "investigatechain", "investigate", "troubleshoot", "investigateagent", AgentK8sOrchestratorName, aws.AgentAwsOrchestratorName, "k8s_debug", "aws_debug":
 		agentName = GetDebugAgentName(accountId)
 	case "postgreschain", "postgres_debug", "postgresagent", PostgresAgentName:
 		agentName = PostgresAgentName

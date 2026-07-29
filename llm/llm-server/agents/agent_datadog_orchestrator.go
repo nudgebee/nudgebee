@@ -9,54 +9,58 @@ import (
 )
 
 const (
-	AgentDatadogDebugName = "datadog_debug"
+	AgentDatadogOrchestratorName = "datadog_orchestrator"
 )
 
 func init() {
-	core.RegisterNBAgentFactoryAndTool(AgentDatadogDebugName, func(accountId string) (core.NBAgent, error) {
-		return NewDatadogDebugAgent(accountId), nil
+	core.RegisterNBAgentFactoryAndTool(AgentDatadogOrchestratorName, func(accountId string) (core.NBAgent, error) {
+		return NewDatadogOrchestratorAgent(accountId), nil
 	}, "An agent specialized in troubleshooting and debugging issues using Datadog Observability tool", "Provide a natural language query describing the Issue to be debugged.", "Markdown response with debugging steps and findings.")
+	// Legacy-name alias so stored history / @datadog_debug invocations still resolve.
+	core.RegisterNBAgentFactory("datadog_debug", func(accountId string) (core.NBAgent, error) {
+		return NewDatadogOrchestratorAgent(accountId), nil
+	})
 }
 
-type DatadogDebugAgent struct {
+type DatadogOrchestratorAgent struct {
 	accountId string
 }
 
-func NewDatadogDebugAgent(accountId string) core.NBAgent {
-	return &DatadogDebugAgent{
+func NewDatadogOrchestratorAgent(accountId string) core.NBAgent {
+	return &DatadogOrchestratorAgent{
 		accountId: accountId,
 	}
 }
 
-func (a *DatadogDebugAgent) GetName() string {
-	return AgentDatadogDebugName
+func (a *DatadogOrchestratorAgent) GetName() string {
+	return AgentDatadogOrchestratorName
 }
 
-func (a *DatadogDebugAgent) GetNameAliases() []string {
-	return []string{"datadog debug", "dd_debug"}
+func (a *DatadogOrchestratorAgent) GetNameAliases() []string {
+	return []string{"datadog debug", "dd_debug", "datadog_debug"}
 }
 
-func (a *DatadogDebugAgent) GetDescription() string {
+func (a *DatadogOrchestratorAgent) GetDescription() string {
 	return "An agent specialized in troubleshooting and debugging issues within Datadog environments, providing step-by-step XML plans."
 }
 
-func (a *DatadogDebugAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
+func (a *DatadogOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	return getDatadogPlannerSupportedTools(ctx, a.accountId)
 }
 
-func (a *DatadogDebugAgent) GetPlannerType() core.AgentPlannerType {
-	return core.AgentPlannerTypeReWoo
+func (a *DatadogOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
+	return core.AgentPlannerTypeOrchestrating
 }
 
-func (a *DatadogDebugAgent) GetModelCategory() core.ModelTier {
+func (a *DatadogOrchestratorAgent) GetModelCategory() core.ModelTier {
 	return core.ModelTierReasoning
 }
 
-func (a *DatadogDebugAgent) GetCacheScope() core.CacheScope {
+func (a *DatadogOrchestratorAgent) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
 }
 
-func (a *DatadogDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+func (a *DatadogOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	toolUsage := map[string][]string{
 		DatadogLogAgentName: {
 			"Use this tool to search Datadog logs based on a natural language query.",
@@ -214,7 +218,7 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 
 	summary, err := toolcore.GetAccountConfigSummary(ctx, accountId)
 	if err != nil {
-		slog.Error("agent: failed to get account config summary", "error", err, "agent", AgentDatadogDebugName)
+		slog.Error("agent: failed to get account config summary", "error", err, "agent", AgentDatadogOrchestratorName)
 	}
 
 	tools := make([]toolcore.NBTool, 0, len(supportedToolNames))
@@ -222,7 +226,7 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 		tool, found := toolcore.GetNBTool(accountId, toolName)
 		if found {
 			if !toolcore.IsToolConfigured(ctx, accountId, tool, summary) {
-				slog.Warn("skipping tool as not configured", "tool", tool.Name(), "agent", AgentDatadogDebugName)
+				slog.Warn("skipping tool as not configured", "tool", tool.Name(), "agent", AgentDatadogOrchestratorName)
 				continue
 			}
 			tools = append(tools, tool)

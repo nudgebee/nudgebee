@@ -804,7 +804,7 @@ func (m LoadSkillsTool) ParseSkillName(input core.NBToolCallRequest) string {
 		}
 	}
 
-	// Fallback 2: Check input.Command (for ReWoo or natural language calls)
+	// Fallback 2: Check input.Command (for natural language calls)
 	if skillName == "" && input.Command != "" {
 		skillName = input.Command
 		// Handle common prefixes like "skill_name:" or "skill_name="

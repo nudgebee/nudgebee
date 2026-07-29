@@ -156,7 +156,7 @@ Strategy:
 	}
 	// resource_search is an AgentPlannerTypeCustom agent and bypasses the
 	// executor's basePrompt → systemMessage path, so the lazy <skill-lists> +
-	// load_skills flow used by ReAct/ReWoo planners cannot reach this LLM call.
+	// load_skills flow used by ReAct planners cannot reach this LLM call.
 	// The executor eagerly loads the active mapped skills (own ∪ inherited,
 	// narrowed to the question-aware selection when LlmServerSkillSelectionTopK
 	// is enabled) into request.SkillsContext for us — prepend it as a system

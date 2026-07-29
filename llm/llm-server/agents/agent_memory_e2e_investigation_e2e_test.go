@@ -91,7 +91,7 @@ func TestInvestigation_NudgebeeNamespaceHealth_EndToEnd(t *testing.T) {
 	require.NoError(t, err)
 
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	k8sAgent := newK8sDebugAgent(accountID)
+	k8sAgent := newK8sOrchestratorAgent(accountID)
 
 	stats := []string{}
 	for i, q := range investigationNudgebeeHealthQueries {
@@ -148,7 +148,7 @@ func TestInvestigation_LLMServerWithPrefUpdate_EndToEnd(t *testing.T) {
 	require.NoError(t, err)
 
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	k8sAgent := newK8sDebugAgent(accountID)
+	k8sAgent := newK8sOrchestratorAgent(accountID)
 
 	// Phase 1 — turns 1..4 with preferred_log_source=loki.
 	phase1 := investigationLLMServerHealthQueries[:4]

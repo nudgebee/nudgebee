@@ -37,7 +37,7 @@ func TestK8sAgent_ShellToolUsage(t *testing.T) {
 
 	for _, tc := range testCases {
 		sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
-		k8sAgent := newK8sDebugAgent(tc.AccountId)
+		k8sAgent := newK8sOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)

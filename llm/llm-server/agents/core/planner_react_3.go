@@ -45,16 +45,29 @@ type NBReActPlanner3 struct {
 		feedback string
 		answer   string
 	}
-	postRefinementToolIndex int
-	tools                   []toolcore.NBTool
-	enableCritique          bool
-	Notebook                string
+	tools          []toolcore.NBTool
+	enableCritique bool
+	Notebook       string
 
 	// hypothesisModeEnabled mirrors the prompt-build gate (top-level +
 	// notebook-enabled investigation orchestrator). Carried on the planner so
 	// runCritique can fence the hypothesis completion-gate checks to the same
 	// scope the system prompt uses, without recomputing the gate inline.
 	hypothesisModeEnabled bool
+
+	// planCallCount counts Plan() invocations on this in-memory instance. A
+	// fresh instance is built (and prior state unmarshalled) per user message,
+	// so 0 identifies the direction-setting first reasoning call of the turn —
+	// intermediateSteps can't be used for this, since resumed conversations
+	// carry prior turns' steps. Deliberately NOT serialized.
+	planCallCount int
+
+	// turnStartStepIndex is len(intermediateSteps) at the first Plan() call of
+	// the current user message. Resumed conversations carry prior turns' steps,
+	// so per-turn counters (e.g. the answer-contract nudge's non-triviality
+	// threshold) must subtract this baseline instead of using the raw step
+	// count. Transient like planCallCount — NOT serialized.
+	turnStartStepIndex int
 
 	// Notebook telemetry — for visibility into whether the agent is
 	// actually exercising the notebook discipline the prompt asks for.
@@ -66,8 +79,7 @@ type NBReActPlanner3 struct {
 	notebookStaleWarningsLog int // count of stale-notebook warnings emitted
 
 	// notebookAgentID is the llm_conversation_agent row id used to
-	// persist the notebook to the DB (mirrors how rewoo stores its
-	// generated plan). Created lazily on the first update; subsequent
+	// persist the notebook to the DB. Created lazily on the first update; subsequent
 	// updates patch the same row so the UI sees a single notebook
 	// entry that evolves over the course of the investigation.
 	notebookAgentID string
@@ -95,11 +107,9 @@ type NBReActPlanner3 struct {
 }
 
 // notebookDummyAgent is the agent name used when persisting the
-// react_3 notebook to llm_conversation_agent. It mirrors how rewoo
-// uses plannerDummyTool ("planner") for its generated plan record.
-// This row is written via the DAO only — it never enters the
-// action queue or scratchpad, so there is no risk of the executor
-// trying to invoke it as a real tool.
+// react_3 notebook to llm_conversation_agent. This row is written
+// via the DAO only — it never enters the action queue or scratchpad,
+// so there is no risk of the executor trying to invoke it as a real tool.
 const notebookDummyAgent = "notebook"
 
 // isNotebookToolName returns true when toolName is a hallucinated variant
@@ -162,12 +172,64 @@ func (o *NBReActPlanner3) notebookSectionEnabled() bool {
 // consistent across buildScratchpad and processNotebookUpdate.
 const notebookStaleTurnThreshold = 2
 
+// answerContractHeader is the notebook section the orchestrator overlay
+// requires for non-trivial asks; buildScratchpad nudges when it is missing.
+const answerContractHeader = "## Answer Contract"
+
+// answerContractNudgeMinSteps is the tool-action count at which a turn
+// counts as non-trivial by evidence for answer-contract enforcement.
+const answerContractNudgeMinSteps = 2
+
 // isTopLevelAgent returns true when this planner instance is the
 // top-level orchestrator (not a sub-agent like postgres or gcp).
 // Sub-agents have a ParentAgentId pointing to the orchestrator;
 // top-level agents either have it empty or self-referencing.
 func (o *NBReActPlanner3) isTopLevelAgent() bool {
 	return o.request.ParentAgentId == "" || o.request.ParentAgentId == o.request.AgentId
+}
+
+// orchestratorDeepThinking reports whether the current LLM call is one of the
+// orchestrator's direction-setting calls that warrants the elevated thinking
+// level: the first reasoning call of a turn (where the answer contract and
+// investigation plan are laid down) or a post-critique refinement pass.
+// Always false for executor sub-agents, when orchestrator mode is disabled,
+// or when no override level is configured.
+func (o *NBReActPlanner3) orchestratorDeepThinking(firstPlanCallOfTurn bool) bool {
+	if !config.Config.LlmServerReact3OrchestratorModeEnabled ||
+		config.Config.LlmServerReact3OrchestratorThinkingLevel == "" ||
+		!o.isTopLevelAgent() {
+		return false
+	}
+	return firstPlanCallOfTurn || o.refinementAttempts > 0
+}
+
+// thinkingLevelRank orders thinking levels for elevate-only comparisons.
+// Unknown/empty levels rank 0 (below every real level).
+var thinkingLevelRank = map[string]int{"minimal": 1, "low": 2, "medium": 3, "high": 4}
+
+// resolveOrchestratorThinkingLevel returns the thinking level to apply to an
+// orchestrator direction-setting call, or "" to leave the call on the standard
+// resolution path. Elevate-only: thinking level is otherwise resolved
+// dynamically per model/tier (GetLlmDefaultThinkingLevel, optionally overridden
+// globally by LlmProviderThinkingLevel), so the orchestrator override applies
+// only when it is strictly ABOVE that baseline — it must never lower thinking
+// on deployments whose resolution already lands higher. Model-compatibility
+// clamping still happens centrally in GenerateAndTrackLLMContent, and the
+// provider layer ignores ThinkingLevel on models that don't accept it.
+func resolveOrchestratorThinkingLevel(model string) string {
+	orch := strings.ToLower(config.Config.LlmServerReact3OrchestratorThinkingLevel)
+	orchRank, ok := thinkingLevelRank[orch]
+	if !ok {
+		return ""
+	}
+	baseline := GetLlmDefaultThinkingLevel(model)
+	if config.Config.LlmProviderThinkingLevel != "" {
+		baseline = config.Config.LlmProviderThinkingLevel
+	}
+	if thinkingLevelRank[strings.ToLower(baseline)] >= orchRank {
+		return ""
+	}
+	return orch
 }
 
 // notebookStaleInfo returns whether the notebook is stale and how many
@@ -207,7 +269,6 @@ func (o *NBReActPlanner3) Marshal() ([]byte, error) {
 	state := map[string]any{
 		"notebook":                 o.Notebook,
 		"refinementAttempts":       o.refinementAttempts,
-		"postRefinementToolIndex":  o.postRefinementToolIndex,
 		"notebookUpdateCount":      o.notebookUpdateCount,
 		"notebookLastUpdateTurn":   o.notebookLastUpdateTurn,
 		"notebookFirstUpdateTurn":  o.notebookFirstUpdateTurn,
@@ -222,7 +283,6 @@ func (o *NBReActPlanner3) Unmarshal(data []byte) error {
 	var state struct {
 		Notebook                 string `json:"notebook"`
 		RefinementAttempts       int    `json:"refinementAttempts"`
-		PostRefinementToolIndex  int    `json:"postRefinementToolIndex"`
 		NotebookUpdateCount      int    `json:"notebookUpdateCount"`
 		NotebookLastUpdateTurn   *int   `json:"notebookLastUpdateTurn"`
 		NotebookFirstUpdateTurn  *int   `json:"notebookFirstUpdateTurn"`
@@ -235,7 +295,10 @@ func (o *NBReActPlanner3) Unmarshal(data []byte) error {
 	}
 	o.Notebook = state.Notebook
 	o.refinementAttempts = state.RefinementAttempts
-	o.postRefinementToolIndex = state.PostRefinementToolIndex
+	// Any legacy PostRefinementToolIndex in the state blob is ignored — the
+	// refinement-focus compression path was removed in #33897, so the field
+	// has no runtime consumer. Old state deserializes cleanly (unknown JSON
+	// keys are dropped by common.UnmarshalJson).
 	o.notebookUpdateCount = state.NotebookUpdateCount
 	o.notebookStaleWarningsLog = state.NotebookStaleWarningsLog
 	o.notebookAgentID = state.NotebookAgentID
@@ -256,12 +319,11 @@ func (o *NBReActPlanner3) Unmarshal(data []byte) error {
 
 // buildScratchpad constructs the XML-formatted history of tool calls and observations
 // for the LLM. It groups parallel actions (multiple actions from the same iteration)
-// together under a single thought, and applies semantic compression to older steps.
+// together under a single thought, and applies semantic compression to older steps
+// ONLY when the scratchpad approaches the model's context window. Below the activation
+// threshold every step keeps its full observation (subject to the per-observation hard
+// cap).
 //
-// postRefinementToolIndex controls compression granularity, NOT filtering:
-// steps before the index are always compressed (truncated), steps after get full context
-// up to the recent-steps window. This ensures the LLM always sees ALL tool observations
-// (even from before critique rejection) while keeping token usage manageable.
 // resolveMaxContextTokens returns the resolved model context window (tokens) for this
 // planner's request, or 0 when it can't be determined. Used to gate scratchpad
 // compression on real window pressure rather than a flat step count.
@@ -294,12 +356,10 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 	compressionActive := totalObsBytes > activationChars
 
 	// Stash the gating decision on the tracker so SaveCompressionVisibility
-	// can classify each event's cause (window-pressure vs refinement-focus)
-	// instead of defaulting to the misleading "context window" wording on the
-	// card. postRefinementToolIndex carries the always-on path; without this
-	// plumbing a 4-step / 7-KB conversation that hit the refinement-focused
-	// compression path was reported as "compressed to fit context window".
-	o.compressionTracker.SetCompressionContext(compressionActive, o.postRefinementToolIndex)
+	// classifies the event correctly. Refinement-focus compression was removed
+	// in #33897 — window pressure is now the only compression trigger, so the
+	// tracker no longer needs a postRefinementToolIndex.
+	o.compressionTracker.SetCompressionContext(compressionActive)
 
 	// Parallel prewarm: fire LLM summarizations for non-recent steps concurrently to
 	// avoid a sequential latency spike — but only when compression will actually run.
@@ -314,11 +374,12 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 	for i < len(intermediateSteps) {
 		step := intermediateSteps[i]
 		stepIndex++
-		// Steps before postRefinementToolIndex are ALWAYS compressed (pre-refinement —
-		// keep the refined investigation focused), independent of window pressure.
-		// Post-refinement steps keep full observations while compression is inactive
-		// (scratchpad well under the window), and otherwise use the recent-window heuristic.
-		isRecent := i >= o.postRefinementToolIndex && (!compressionActive || (totalSteps-stepIndex) < recentStepsFullContext)
+		// Compression gate (issue #33897): NOTHING is compressed until the scratchpad
+		// approaches the model's context window (compressionActive). Once it does, the
+		// last recentStepsFullContext (10) steps stay full — everything older gets
+		// compressed. Below the threshold, all steps stay full: the LLM leans on the
+		// critique feedback text to redirect attention, not observation truncation.
+		isRecent := !compressionActive || (totalSteps-stepIndex) < recentStepsFullContext
 
 		// Detect parallel group: consecutive steps with the same Log (thought).
 		// When react_3 emits multiple actions, they all share the same thought.
@@ -393,6 +454,29 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 		}
 	}
 
+	// Deterministic answer-contract enforcement (orchestrator mode): once the
+	// CURRENT turn has run 2+ tool actions it is non-trivial by evidence, so a
+	// missing `## Answer Contract` notebook section means the overlay's
+	// contract instruction was skipped. Same lesson as the stale-notebook
+	// nudge above — prompt-only guidance proved insufficient (dev A/B
+	// 2026-07-05: k8s_debug ran a 4-step "cross validate everything" review
+	// and finalized with no contract recorded, then declared a config-only
+	// state "safe"). The count is per-turn (steps since turnStartStepIndex),
+	// NOT the raw conversation-wide step total — resumed conversations carry
+	// prior turns' steps, and nudging a trivial follow-up would contradict the
+	// prompt's "simple lookups skip the contract" carve-out.
+	turnSteps := totalSteps - o.turnStartStepIndex
+	if orchestratorMode, _ := resolveReact3RoleModes(o.request); orchestratorMode &&
+		o.notebookSectionEnabled() && turnSteps >= answerContractNudgeMinSteps &&
+		!strings.Contains(strings.ToLower(o.Notebook), strings.ToLower(answerContractHeader)) {
+		history.WriteString("\n<system_nudge>")
+		fmt.Fprintf(&history, "⚠ ANSWER CONTRACT MISSING — This request has already taken %d tool actions, so it is non-trivial, ", turnSteps)
+		fmt.Fprintf(&history, "but your notebook has no `%s` section. ", answerContractHeader)
+		history.WriteString("In your NEXT <update_notebook>, add it: decompose the user's CURRENT request into sub-questions and note the evidence that closes each. ")
+		history.WriteString("Do NOT emit <final_answer> while a sub-question is unresolved, and never declare the operation safe/complete on declared-state evidence alone — cite behavioral evidence (logs, metrics, live probes).")
+		history.WriteString("</system_nudge>\n")
+	}
+
 	scratchpad := ""
 	if history.Len() > 0 {
 		scratchpad = fmt.Sprintf("<scratchpad>\n%s</scratchpad>", history.String())
@@ -411,7 +495,7 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 		// no way to reach SetCompressionContext itself; without this stamp the
 		// visibility card lands as "cause not classified" — production-observed
 		// 2026-07-01 06:06 UTC on convo 650ba57d.
-		o.compressionTracker.SetCompressionContext(true, o.postRefinementToolIndex)
+		o.compressionTracker.SetCompressionContext(true)
 		scratchpad = o.compressScratchpad(scratchpad, hardCapChars, intermediateSteps)
 	}
 	return scratchpad
@@ -671,7 +755,7 @@ func (o *NBReActPlanner3) prewarmSummaries(intermediateSteps []NBAgentPlannerToo
 	for i < len(intermediateSteps) {
 		step := intermediateSteps[i]
 		stepIndex++
-		isRecent := i >= o.postRefinementToolIndex && (totalSteps-stepIndex) < recentStepsFullContext
+		isRecent := (totalSteps - stepIndex) < recentStepsFullContext
 
 		groupEnd := i + 1
 		for groupEnd < len(intermediateSteps) &&
@@ -942,8 +1026,7 @@ func (o *NBReActPlanner3) processNotebookUpdate(output string, turnIdx int) {
 		stats := analyzeNotebook(notebookContent)
 
 		// Persist the notebook to the DB so the UI can render it as
-		// a dedicated agent entry that evolves each turn — same
-		// pattern as rewoo's plan record.
+		// a dedicated agent entry that evolves each turn.
 		o.persistNotebook(notebookContent, turnIdx, stats)
 
 		if logger != nil {
@@ -1466,6 +1549,12 @@ func (o *NBReActPlanner3) Plan(
 	o.refinementAttempts = 0
 	o.refinementData = nil
 
+	firstPlanCallOfTurn := o.planCallCount == 0
+	o.planCallCount++
+	if firstPlanCallOfTurn {
+		o.turnStartStepIndex = len(intermediateSteps)
+	}
+
 	var lastErr error
 	isSummaryToolUsed := len(intermediateSteps) > 0 && strings.EqualFold(intermediateSteps[len(intermediateSteps)-1].Action.Tool, o.summaryToolName)
 
@@ -1571,6 +1660,18 @@ func (o *NBReActPlanner3) Plan(
 			provider := GetLLMProvider(o.ctx, o.request.AccountId, o.nbAgent.GetName(), true, o.request.ConversationId)
 			model := GetLLMModelName(o.ctx, o.request.AccountId, provider, o.nbAgent.GetName(), true, o.request.ConversationId)
 
+			// Depth is bought once per turn, where the plan is decided: the
+			// orchestrator's direction-setting calls (first reasoning call of
+			// the turn, and post-critique refinement passes) get an elevated
+			// thinking level — elevate-only, so the dynamic per-model/tier
+			// resolution stays in charge whenever it already thinks harder.
+			// Executor sub-agents and mid-loop iterations keep the default.
+			if o.orchestratorDeepThinking(firstPlanCallOfTurn) {
+				if lvl := resolveOrchestratorThinkingLevel(model); lvl != "" {
+					callOptions = append(callOptions, WithThinkingLevel(lvl))
+				}
+			}
+
 			if !IsOpenAIModelWithoutStopSupport(provider, model) {
 				callOptions = append(callOptions, llms.WithStopWords([]string{"<observation>"}))
 			}
@@ -1639,9 +1740,11 @@ func (o *NBReActPlanner3) Plan(
 				return nil, finish, nil
 			}
 
-			// Answer rejected — refine
+			// Answer rejected — refine. Prior to #33897 this also stamped a
+			// postRefinementToolIndex so subsequent scratchpad builds could force-
+			// compress pre-refinement observations; that path is removed —
+			// window pressure is now the only compression trigger.
 			o.refinementAttempts++
-			o.postRefinementToolIndex = len(intermediateSteps)
 			logger.Info("reactagent3: answer rejected by critique, refining", "feedback", feedback, "attempt", o.refinementAttempts)
 			o.refinementData = append(o.refinementData, struct {
 				feedback string
@@ -1960,6 +2063,23 @@ func resolveHypothesisModeEnabled(request NBAgentRequest, agent NBAgent) bool {
 	return ResolveAgentNotebookEnabled(agent) && isTopLevel
 }
 
+// resolveReact3RoleModes returns the role prompt-overlay gates for the react_3
+// planner. The same planner (and base prompt) serves two opposite jobs: the
+// top-level orchestrator, which owns the completeness of the final answer, and
+// executor sub-agents, which run a scoped brief fast. The orchestrator overlay
+// adds the answer contract + completion self-check; the executor overlay adds
+// the stay-in-brief / surface-anomalies reporting rule. At most one of the two
+// returns true; both are false when the feature flag is off, rendering the
+// prompt byte-identical to the pre-split behavior. Role is stable for a given
+// agent instance, so the cached system prefix is not busted per request.
+func resolveReact3RoleModes(request NBAgentRequest) (orchestratorMode, executorMode bool) {
+	if !config.Config.LlmServerReact3OrchestratorModeEnabled {
+		return false, false
+	}
+	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
+	return isTopLevel, !isTopLevel
+}
+
 // reActCreatePrompt3 builds the chat prompt template for the react_3 planner.
 func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsIn []toolcore.NBTool, conversationContext string, previousMessages []prompts.MessageFormatter, request NBAgentRequest, agent NBAgent) (prompts.ChatPromptTemplate, []toolcore.NBTool) {
 	tools := make([]toolcore.NBTool, len(toolsIn))
@@ -1978,6 +2098,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	// agent role, so the cached system prefix is not busted per request.
 	notebookEnabled := ResolveAgentNotebookEnabled(agent)
 	hypothesisModeEnabled := resolveHypothesisModeEnabled(request, agent)
+	orchestratorMode, executorMode := resolveReact3RoleModes(request)
 
 	// Only declare template variables actually referenced in planner_react_3_base.txt.
 	// Dynamic vars (history, conversation_context, input, scratchpad) are in the human
@@ -1994,6 +2115,8 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 				"delegate_agent_enabled",
 				"notebook_enabled",
 				"hypothesis_mode_enabled",
+				"orchestrator_mode",
+				"executor_mode",
 				"conversation_context_enabled",
 				"context_management_rules",
 				"time_handling_rules",
@@ -2118,6 +2241,8 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"delegate_agent_enabled":       HasDelegateAgentTool(tools),
 		"notebook_enabled":             notebookEnabled,
 		"hypothesis_mode_enabled":      hypothesisModeEnabled,
+		"orchestrator_mode":            orchestratorMode,
+		"executor_mode":                executorMode,
 		"conversation_context_enabled": config.Config.ConversationContextEnabled,
 		"context_management_rules":     prompts_repo.GetPrompt(prompts_repo.PromptContextContinuity),
 		"time_handling_rules":          prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),

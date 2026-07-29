@@ -36,54 +36,45 @@ The server supports multiple LLM providers, offers a framework for building spec
 
 The server employs a sophisticated hierarchical agent architecture, allowing for complex, multi-layered reasoning and task execution.
 
-*   **Planner-Based Agents:** The core of the agent framework is planner-based. Agents are driven by planners that generate a sequence of actions to achieve a goal. The system primarily uses two types of planners:
-    *   **ReWOO (Reasoning WithOut Observation) Planner:** Used by top-level "manager" agents (e.g., `k8s_debug`). This planner generates a complete, multi-step plan in advance, including dependencies and conditional logic. This is ideal for orchestrating complex investigations.
-    *   **ReAct (Reason+Act) Planner:** Used by lower-level "tool" agents. This planner operates in a step-by-step loop (Reason -> Act -> Observe), making it well-suited for executing specific, stateful tasks.
+*   **ReAct3 Planner:** A single planner drives every non-tool/non-custom/non-classification agent — the iterative think → act → observe → think loop, with parallel action batches when steps are independent. Lives in `agents/core/planner_react_3.go`.
 
-*   **Hierarchical Structure:** A key design pattern is that agents can be used as tools by other agents. This creates a hierarchy:
-    1.  A top-level **ReWOO agent** receives a user query and creates a high-level plan.
-    2.  The "tools" in this plan are often other, more specialized **ReAct agents**.
-    3.  The ReAct agent then executes its task by using primitive tools that interact with the external world (e.g., running a shell command or querying an API).
+*   **Agent-Declared Intent, Not Implementation:** Each agent declares a planner *type* — `Orchestrating` for top-level "manager" agents, `ReAct` for task executors. The type expresses intent (does this agent orchestrate multi-tool work?); the executor picks the implementation (ReAct3). This mirrors the `ModelTier` pattern where an agent asks for `reasoning` or `retrieval` and config decides the model.
 
-*   **Accuracy & Reliability Features:** To ensure robust operation, the agent framework includes several advanced mechanisms:
-    *   **Pre-Execution Plan Critique:** Before a ReWOO plan is executed, it is reviewed by a specialized critiquer agent to catch logical flaws, invalid dependencies, or semantic misunderstandings, preventing the execution of flawed plans.
-    *   **Failure Reflection:** ReAct agents are equipped with a reflection mechanism. When a primitive tool call fails, the agent enters a reflection state to analyze the error and intelligently decide on a corrective action, rather than failing or retrying blindly.
-    *   **Dynamic Few-Shot Prompting:** The framework supports Retrieval-Augmented Generation (RAG) to dynamically pull relevant examples from a memory store, providing the planner with a strong template for the current task.
+*   **Hierarchical Structure:** Agents can be used as tools by other agents:
+    1.  A top-level **Orchestrating agent** (e.g. `k8s_orchestrator`, `aws_orchestrator`) receives a user query.
+    2.  Its ReAct3 loop calls specialized **sub-agents** (also ReAct3) as tools.
+    3.  Sub-agents execute primitive tools (shell commands, cloud APIs).
+
+*   **Accuracy & Reliability Features:**
+    *   **Notebook Discipline:** ReAct3 maintains a per-message notebook of hypotheses with resolved status (SUPPORTED / REFUTED / INCONCLUSIVE) and evidence chain. Drives hypothesis-first RCA over guess-first pattern-matching.
+    *   **Answer Critique:** For top-level investigation queries, a critiquer LLM reviews the final answer before returning. Rejects shallow / status-only / manual-instruction responses. Sub-agents are exempt (avoid slowing them down).
+    *   **Failure Reflection:** On tool failure the agent reflects on the error and picks a different approach, not a blind retry.
+    *   **Dynamic Few-Shot Prompting:** RAG pulls relevant examples from a memory store to seed the planner.
 
 
 ### Agent Types
 
-*   **ReWOO Agents:** 
-    *   Designed for high-level orchestration and complex problem-solving.
-    *   Generate comprehensive plans with multiple steps, dependencies, and conditional logic.
-    *   Utilize the ReWOO planner to reason about the entire task before execution.
-    *   Often serve as "manager" agents that coordinate the actions of lower-level agents.
-    *   Components:
-        *   **Planner:** Generates a detailed plan based on the user's query and available tools.
-        *   **Plan Critiquer:** Reviews the generated plan for logical consistency and feasibility before execution.
-        *   **Planner Executor:** Executes the plan step-by-step, invoking lower-level agents or primitive tools as needed.
-        *   **Solver:** Once plan execution is complete, synthesizes the final response to the user.
-        *   **Critiquer:** Reviews final response, provides feedback for improvement to planner.
+*   **Orchestrating Agents** (`AgentPlannerTypeOrchestrating`):
+    *   Top-level coordinators — `k8s_orchestrator`, `aws_orchestrator`, `gcp_orchestrator`, `azure_orchestrator`, `datadog_orchestrator`.
+    *   Delegate to specialized sub-agents via ReAct3.
+    *   Persisted as `"orchestrating"` in `llm_agents.executor_type` (migration V777; V779 backfilled any stragglers and dropped the legacy `"rewoo"` value from the CHECK constraint).
 
-*  **React Agents:**
-    *   Focused on executing specific tasks or actions.
-    *   Operate in a loop of reasoning, acting, and observing results.
-    *   Use the ReAct planner to make decisions based on the current state and observations.
-    *   Typically serve as "tool" agents that perform defined operations.
-    *   Components:
-        *   **Planner:** Determines the next action based on the current context and observations.
-        *   **Executor:** Carries out the chosen action using primitive tools.
-        *   **Reflection:** If tool execution failed, then reflects on the error to decide next steps.
+*   **ReAct Agents** (`AgentPlannerTypeReAct`):
+    *   Task-focused executors — `prometheus`, `postgres`, `promql`, `traces`, `elastic`, etc.
+    *   Same ReAct3 runtime as Orchestrating agents.
 
-*  **Custom Agents:**
-    *   While ReWOO and ReAct are the primary agent types, the framework allows for custom agents tailored to very specific logic or workflows which are not easily expressed in the planner formats.
+*   **Tool Agents** (`AgentPlannerTypeTool`): single-shot tool-call agents; no iteration loop.
+
+*   **Custom Agents** (`AgentPlannerTypeCustom`): implement their own `Execute()` and never touch a planner. User-defined agents fall here.
+
+*   **Classification / Conversational Agents:** specialized loops for classification and open-ended dialogue.
 
 
 ## Planner Prompt Structure & LLM Caching
 
 See [docs/caching.md](docs/caching.md) for the full documentation on:
 - Cache scopes (Global, Account, Conversation) and TTLs
-- ReWOO and ReAct planner message layouts (system vs human messages)
+- ReAct3 planner message layout (system vs human messages)
 - Rules for where to place new prompt content
 - How to declare cache scope for new agents
 - Google AI provider system message handling
@@ -145,7 +136,7 @@ Key configuration areas to pay attention to:
     *   `RAG_SERVER_URL`
     *   `CLOUD_COLLECTOR_SERVER_URL`
 *   **Agent & Tool Behavior:**
-    *   `LLM_SERVER_AGENT_REWOO_MAX_ITERATIONS`, `LLM_SERVER_AGENT_MAX_LOGLINES`, etc.
+    *   `LLM_SERVER_AGENT_REACT_MAX_ITERATIONS`, `LLM_SERVER_AGENT_MAX_LOGLINES`, etc.
 
 Create a `.env` file with your specific settings:
 ```env
@@ -221,12 +212,14 @@ Contributions to the LLM Server are welcome! Please follow these general guideli
 The LLM Server uses a modular design for APIs (`api/`), agents (`agents/`), tools (`tools/`), and LLM clients (`llms/`).
 
 ### Development Conventions
-- **Hierarchical Agent Architecture**: 
-  1. **ReWOO Agents (Reasoning Without Observation)**: Top-level orchestration. Generate multi-step plans with critique before execution. 
-  2. **ReAct Agents (Reason + Act)**: Task execution agents. Use Reasoning → Act → Observe loop with reflection for intelligent failure recovery.
+- **Hierarchical Agent Architecture**:
+  1. **Orchestrating Agents**: Top-level coordinators (`k8s_orchestrator`, `aws_orchestrator`, etc.). Declare `AgentPlannerTypeOrchestrating`; run under ReAct3 at runtime.
+  2. **ReAct Agents**: Task-focused executors (`prometheus`, `postgres`, etc.). Declare `AgentPlannerTypeReAct`; also run under ReAct3.
+  A single planner (`planner_react_3.go`) drives both. The declared type expresses intent, not implementation.
 - **Accuracy & Reliability Features**:
-  - **Plan Critique**: ReWOO plans are reviewed by a critiquer agent to prevent logical flaws.
-  - **Failure Reflection**: ReAct agents reflect on tool errors to decide corrective actions.
+  - **Notebook Discipline**: ReAct3 maintains a per-message hypothesis notebook with resolved status; drives hypothesis-first RCA.
+  - **Answer Critique**: Top-level investigation queries get an LLM critique of the final answer before it's returned. Sub-agents and non-investigation queries are exempt.
+  - **Failure Reflection**: Agents reflect on tool errors and try alternative approaches instead of blind retry.
   - **RAG-based Prompting**: Dynamically retrieves context-aware examples for planners.
 - **Agent Development**: 
   1. Create a file in `agents/` (e.g., `agent_my_agent.go`).

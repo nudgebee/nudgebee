@@ -18,16 +18,15 @@ const compressionVisibilityToolName = "context_compression"
 // compression summary record per (conversation, message, agent) tuple.
 const compressionVisibilityToolID = "compression_summary"
 
-// Compression cause classifications surfaced in the visibility card so the
-// reader can tell window-pressure compression (the headline "approached the
-// context window" case) apart from the always-on pre-refinement compression
-// that fires every time a critique rejection bumps postRefinementToolIndex.
-// Pre-#33083, the card title hardcoded the window-pressure phrasing, leading
-// to confusing reports of "compressed to fit the context window" on
-// 4-step / 7-KB conversations whose only cause was refinement-focus.
+// Compression cause classifications surfaced in the visibility card. Window
+// pressure is the only real trigger post-#33897 (the always-on refinement-focus
+// path was removed after 7d of prod data showed 0 window events and 103 refinement
+// events, ~53% of which were net-negative compressing sub-1KB observations).
+// compressionCauseRefinementFocus is retained as a deprecated const so any old
+// downstream consumer or telemetry alias doesn't break — no code path emits it.
 const (
 	compressionCauseWindowPressure  = "window_pressure"
-	compressionCauseRefinementFocus = "refinement_focus"
+	compressionCauseRefinementFocus = "refinement_focus" // deprecated: kept for downstream label compatibility only
 	compressionCauseUnknown         = "unknown"
 
 	// compressionEventOriginalPreviewBytes bounds how much of the pre-compression
@@ -42,14 +41,13 @@ const (
 // to the conversation DB. It avoids redundant DB writes when the set of
 // compressed steps hasn't changed between scratchpad builds.
 //
-// It also carries the most recent (windowPressureActive, postRefinementToolIndex)
-// observation from buildScratchpad so SaveCompressionVisibility can classify
-// each compression event's cause without re-deriving it. SetCompressionContext
-// is called once per buildScratchpad pass; the tracker keeps the latest values.
+// It also carries the most recent windowPressureActive observation from
+// buildScratchpad so SaveCompressionVisibility can classify each compression
+// event's cause without re-deriving it. SetCompressionContext is called once
+// per buildScratchpad pass; the tracker keeps the latest value.
 type CompressionTracker struct {
-	lastReportedCount       int
-	windowPressureActive    bool
-	postRefinementToolIndex int
+	lastReportedCount    int
+	windowPressureActive bool
 }
 
 // NewCompressionTracker creates a tracker for deduplicating compression visibility saves.
@@ -57,15 +55,14 @@ func NewCompressionTracker() *CompressionTracker {
 	return &CompressionTracker{}
 }
 
-// SetCompressionContext records the gating signals from the most recent
+// SetCompressionContext records the gating signal from the most recent
 // buildScratchpad pass so SaveCompressionVisibility can classify each event.
-// Safe on a nil receiver (no-op) for ReWOO/test callers that may pass nil.
-func (t *CompressionTracker) SetCompressionContext(windowPressureActive bool, postRefinementToolIndex int) {
+// Safe on a nil receiver (no-op) for test callers that may pass nil.
+func (t *CompressionTracker) SetCompressionContext(windowPressureActive bool) {
 	if t == nil {
 		return
 	}
 	t.windowPressureActive = windowPressureActive
-	t.postRefinementToolIndex = postRefinementToolIndex
 }
 
 // compressionEvent describes a single step's compression for the visibility summary.
@@ -81,15 +78,13 @@ type compressionEvent struct {
 }
 
 // collectCompressionEvents scans steps and returns events for all steps that
-// have been compressed (i.e. have a non-empty CompressedObservation). Each
-// event is classified by cause using the planner-supplied gating signals:
-//   - step index < postRefinementToolIndex → refinement-focus (always-on)
-//   - else, windowPressureActive → window-pressure
-//   - else → unknown (defensive — shouldn't happen post-#33083 unless a new
-//     compression path lands without updating SetCompressionContext)
-func collectCompressionEvents(steps []NBAgentPlannerToolActionStep, windowPressureActive bool, postRefinementToolIndex int) []compressionEvent {
+// have been compressed (i.e. have a non-empty CompressedObservation). Post-#33897
+// the only real cause is window pressure; unknown is retained as a defensive
+// fallback in case a new compression path lands without updating
+// SetCompressionContext.
+func collectCompressionEvents(steps []NBAgentPlannerToolActionStep, windowPressureActive bool) []compressionEvent {
 	var events []compressionEvent
-	for i, step := range steps {
+	for _, step := range steps {
 		if step.CompressedObservation == "" {
 			continue
 		}
@@ -98,10 +93,7 @@ func collectCompressionEvents(steps []NBAgentPlannerToolActionStep, windowPressu
 			method = "llm_summary"
 		}
 		cause := compressionCauseUnknown
-		switch {
-		case i < postRefinementToolIndex:
-			cause = compressionCauseRefinementFocus
-		case windowPressureActive:
+		if windowPressureActive {
 			cause = compressionCauseWindowPressure
 		}
 		events = append(events, compressionEvent{
@@ -121,9 +113,8 @@ func collectCompressionEvents(steps []NBAgentPlannerToolActionStep, windowPressu
 // causeCounts aggregates compression events by cause. Used both for the
 // human-readable summary line and for title classification.
 type causeCounts struct {
-	window     int
-	refinement int
-	unknown    int
+	window  int
+	unknown int
 }
 
 func tallyCauses(events []compressionEvent) causeCounts {
@@ -132,8 +123,6 @@ func tallyCauses(events []compressionEvent) causeCounts {
 		switch e.cause {
 		case compressionCauseWindowPressure:
 			c.window++
-		case compressionCauseRefinementFocus:
-			c.refinement++
 		default:
 			c.unknown++
 		}
@@ -185,7 +174,7 @@ func formatCompressionSummary(events []compressionEvent) string {
 		totalOriginal, totalCompressed, reduction)
 	fmt.Fprintf(&sb, "Methods: %d LLM summaries, %d byte truncations", llmCount, truncCount)
 	counts := tallyCauses(events)
-	fmt.Fprintf(&sb, "\nCauses: %d window-pressure, %d refinement-focus", counts.window, counts.refinement)
+	fmt.Fprintf(&sb, "\nCauses: %d window-pressure", counts.window)
 	if counts.unknown > 0 {
 		fmt.Fprintf(&sb, ", %d unknown", counts.unknown)
 	}
@@ -213,18 +202,16 @@ func SaveCompressionVisibility(
 		return
 	}
 
-	// Tracker carries the gating signals from the most recent buildScratchpad
+	// Tracker carries the gating signal from the most recent buildScratchpad
 	// pass. When absent (one-shot callers or older code paths), default to
 	// "unknown" classification — better to surface the ambiguity on the card
 	// than to silently claim window pressure was the cause.
 	windowPressureActive := false
-	postRefinementIdx := 0
 	if tracker != nil {
 		windowPressureActive = tracker.windowPressureActive
-		postRefinementIdx = tracker.postRefinementToolIndex
 	}
 
-	events := collectCompressionEvents(steps, windowPressureActive, postRefinementIdx)
+	events := collectCompressionEvents(steps, windowPressureActive)
 	if len(events) == 0 {
 		return
 	}
@@ -274,20 +261,14 @@ func SaveCompressionVisibility(
 	}
 }
 
-// compressionCardCopy produces the UI card title + description, tuned to the
-// cause mix. Mixed-cause cards lead with the dominant cause and append the
-// other count rather than running everything together — easier to skim.
+// compressionCardCopy produces the UI card title + description. Post-#33897,
+// window pressure is the only real classification; unknown is retained as a
+// defensive fallback for future compression paths.
 func compressionCardCopy(total int, c causeCounts) (title, description string) {
 	switch {
-	case c.window > 0 && c.refinement == 0 && c.unknown == 0:
+	case c.window > 0 && c.unknown == 0:
 		title = fmt.Sprintf("Compressed %d older observation(s) — scratchpad near model context window", total)
 		description = "Older tool observations were summarized or truncated because the scratchpad approached the model's context window. Recent observations are kept in full."
-	case c.refinement > 0 && c.window == 0 && c.unknown == 0:
-		title = fmt.Sprintf("Compressed %d older observation(s) — kept refined investigation focused", total)
-		description = "After the critique asked for a refined answer, observations from before the refinement were summarized so the next pass stays focused on the refined investigation. This happens regardless of context-window usage."
-	case c.window > 0 && c.refinement > 0:
-		title = fmt.Sprintf("Compressed %d older observation(s) — %d window-pressure, %d refinement-focus", total, c.window, c.refinement)
-		description = "Some observations were compressed because the scratchpad approached the model's context window; others were compressed because a critique-driven refinement pushed older steps out of focus. Recent observations are kept in full."
 	default:
 		title = fmt.Sprintf("Compressed %d older observation(s) — cause not classified", total)
 		description = "Compression fired but the cause was not classified (a new compression path may have been added without updating the visibility tracker). See the per-event summary below."

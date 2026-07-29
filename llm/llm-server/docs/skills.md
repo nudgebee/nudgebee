@@ -9,7 +9,7 @@ Two agent families consume skills via two different mechanisms, because they run
 ```
  User Query
    → Executor Entry (top-level stamps OriginalQuery + optional SelectedSkillIds)
-   ├─ ReAct / ReWoo agent
+   ├─ ReAct / Orchestrating agent (both run under ReAct3)
    │    → injectKBContext:
    │         ├─ manual KBs: <skill-lists> (names+descriptions from DB)
    │         └─ integration KBs: parallel RAG search (module: "knowledge_base")
@@ -63,13 +63,13 @@ llm_kb_agent_mappings
 
 ## Execution paths
 
-### Path A — Lazy `load_skills` (ReAct / ReWoo planners)
+### Path A — Lazy `load_skills` (ReAct3 planner)
 
-This is the existing, designed path for any agent whose planner runs a tool-execution loop.
+This is the existing, designed path for any agent whose planner runs a tool-execution loop — i.e. every Orchestrating and ReAct agent, all executing via ReAct3.
 
 1. **`injectKBContext`** (`agents/core/executor.go`) fetches active mapped KBs for the union of `agent.GetName()` + any inherited ancestor names. For **manual** KBs it renders **names and descriptions** from the DB. For **integration** KBs (detected via `kb.KBType == "integration"`), it runs a parallel RAG search with the user's query (`module: "knowledge_base"`, top 3 results) and appends **previews** — title, source, and first 2-3 lines of each RAG result — to the same `<skill-lists>` block. The RAG preview fetch has a 5-second timeout. The combined list is prepended as an `Instructions` item on `basePrompt`.
 2. **`FilterAndInjectDefaultTools`** (`agents/core/utils.go`) sees the `<skill-lists>` marker in the rendered system message and auto-injects the `load_skills` tool into the agent's toolset. No per-agent configuration.
-3. The planner (ReAct or ReWoo) executes normally. The LLM reads the skill list — which now contains both manual skill names and RAG-sourced previews — decides which entries look relevant, and calls `load_skills(name)` when it wants the full body.
+3. The ReAct3 planner executes normally. The LLM reads the skill list — which now contains both manual skill names and RAG-sourced previews — decides which entries look relevant, and calls `load_skills(name)` when it wants the full body.
 4. **`LoadSkillsTool`** (`tools/skills.go`) resolves the requested name through a three-tier lookup:
    - **DB exact match** → fetches `kb.data` from `llm_knowledgebases` (cached in `CacheNamespaceLlmSkillContent`).
    - **DB fuzzy match** → ILIKE substring search if exact match fails.

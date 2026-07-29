@@ -28,7 +28,7 @@ type plannerExecutorCallbackHandler struct {
 var toolCallFailedResponse = []string{"[]", "", "{}", "null", "none", toolcore.ErrUnableToFetchData.Error(), "no data found", `{"result":[]}`}
 
 // internalAdditionalDetailsKeys names the AdditionalDetails entries that are
-// part of the in-process plumbing — sub-agent routing, ReWOO orchestration,
+// part of the in-process plumbing — sub-agent routing, orchestration,
 // follow-up handoff, client-tool waiting/resume — and have no business landing
 // in the persisted metadata column. Anything NOT in this set is treated as
 // tool-surfaced telemetry the downstream consumers (ai_aggregate_tool_usage,

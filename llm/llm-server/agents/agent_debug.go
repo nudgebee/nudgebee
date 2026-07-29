@@ -16,7 +16,7 @@ func GetDebugAgentName(accountId string) string {
 	plannerAgent := accountDebugAgentMap[accountId]
 	accountDebugAgentMapMutex.RUnlock()
 
-	defaultAgentName := AgentK8sDebugName
+	defaultAgentName := AgentK8sOrchestratorName
 
 	if plannerAgent == "" {
 		plannerAgent = defaultAgentName
@@ -43,11 +43,11 @@ func GetDebugAgentName(accountId string) string {
 			}
 			planner := defaultAgentName
 			if strings.EqualFold(cloudProvider, "aws") {
-				planner = aws.AgentAwsDebugName
+				planner = aws.AgentAwsOrchestratorName
 			} else if strings.EqualFold(cloudProvider, "gcp") {
-				planner = AgentGcpDebugName
+				planner = AgentGcpOrchestratorName
 			} else if strings.EqualFold(cloudProvider, "azure") {
-				planner = AgentAzureDebugName
+				planner = AgentAzureOrchestratorName
 			}
 			accountDebugAgentMapMutex.Lock()
 			accountDebugAgentMap[accountId] = planner

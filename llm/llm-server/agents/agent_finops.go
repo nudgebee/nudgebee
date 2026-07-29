@@ -61,7 +61,7 @@ func (a *FinOpsAgent) GetDescription() string {
 }
 
 func (a *FinOpsAgent) GetPlannerType() core.AgentPlannerType {
-	// Declared as ReAct; auto-upgrades to ReAct3 when LlmServerReAct3Enabled is true.
+	// Declared as ReAct; executor always routes ReAct → ReAct3 at runtime.
 	return core.AgentPlannerTypeReAct
 }
 

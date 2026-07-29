@@ -274,7 +274,7 @@ func TestGetPromptTemplateForReWoo(t *testing.T) {
 		},
 	}
 
-	promptTemplate := GetPromptTemplate(p, mockReq, AgentPlannerTypeReWoo)
+	promptTemplate := GetPromptTemplate(p, mockReq, AgentPlannerTypeOrchestrating)
 	promptString, err := promptTemplate.Format(map[string]any{"input": mockReq.Query})
 	assert.NoError(t, err)
 
@@ -311,7 +311,7 @@ func TestGetPromptTemplate_ImageInstructions_ReWoo(t *testing.T) {
 		Instructions: []string{"Debug Kubernetes issues"},
 	}
 
-	promptTemplate := GetPromptTemplate(p, mockReq, AgentPlannerTypeReWoo)
+	promptTemplate := GetPromptTemplate(p, mockReq, AgentPlannerTypeOrchestrating)
 	promptString, err := promptTemplate.Format(map[string]any{"input": mockReq.Query})
 	assert.NoError(t, err)
 

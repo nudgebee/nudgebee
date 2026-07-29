@@ -869,7 +869,7 @@ const automationFromCodeTour: TourDef = {
   title: 'Create an automation from code',
   module: 'Automations',
   description: 'Import an automation by pasting its JSON or YAML definition.',
-  route: '/auto-pilot',
+  route: '/automation',
   // The "Create Automation" button is write-gated (hasWriteAccess(accountId)).
   requires: 'write',
   steps: [
@@ -915,7 +915,7 @@ const automationWithAiTour: TourDef = {
   title: 'Generate an automation with AI',
   module: 'Automations',
   description: 'Describe what you want in plain language and let AI draft the automation.',
-  route: '/auto-pilot',
+  route: '/automation',
   requires: 'write',
   // The "Ask AI" card is enabled by the WORKFLOWS feature flag.
   requiresFeature: 'WORKFLOWS',
@@ -963,7 +963,7 @@ const automationFromTemplateTour: TourDef = {
   title: 'Use an automation template',
   module: 'Automations',
   description: 'Start from a pre-built automation for a common scenario.',
-  route: '/auto-pilot',
+  route: '/automation',
   requires: 'write',
   // The "From a template" card is enabled by the WORKFLOW_TEMPLATES flag.
   requiresFeature: 'WORKFLOW_TEMPLATES',
@@ -1020,7 +1020,7 @@ const automationFromScratchTour: TourDef = {
   title: 'Build an automation from scratch',
   module: 'Automations',
   description: 'Open the builder and pick a starting trigger for a blank automation.',
-  route: '/auto-pilot',
+  route: '/automation',
   requires: 'write',
   steps: [
     {

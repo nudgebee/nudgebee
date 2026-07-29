@@ -30,7 +30,7 @@ func TestAwsAgentReWoo_S3BucketPublic(t *testing.T) {
 
 	for _, tc := range tests {
 
-		awsDebugAgentent := newAwsDebugAgent(tc.AccountId)
+		awsDebugAgentent := newAwsOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -63,7 +63,7 @@ func TestAwsAgentReWoo_CostBreakDown(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		awsDebugAgentent := newAwsDebugAgent(tc.AccountId)
+		awsDebugAgentent := newAwsOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -96,7 +96,7 @@ func TestAwsAgentReWoo_ECSDetails(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		awsDebugAgentent := newAwsDebugAgent(tc.AccountId)
+		awsDebugAgentent := newAwsOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -129,7 +129,7 @@ func TestAwsAgentReWoo_CloudCost(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		awsDebugAgentent := newAwsDebugAgent(tc.AccountId)
+		awsDebugAgentent := newAwsOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -166,7 +166,7 @@ func TestAWSInvestigation(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		awsDebugAgentent := newAwsDebugAgent(tc.AccountId)
+		awsDebugAgentent := newAwsOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -199,7 +199,7 @@ func TestAWSInvestigationKubectlInvocation(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		awsDebugAgentent := newAwsDebugAgent(tc.AccountId)
+		awsDebugAgentent := newAwsOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)

@@ -8,21 +8,6 @@ import (
 	"nudgebee/llm/config"
 )
 
-//go:embed planner_rewoo_2_base.txt
-var plannerRewoo2Base string
-
-//go:embed planner_rewoo_solver.txt
-var plannerRewooSolver string
-
-//go:embed planner_rewoo_2_classifier.txt
-var plannerRewoo2Classifier string
-
-//go:embed planner_rewoo_2_reviewer.txt
-var plannerRewoo2Reviewer string
-
-//go:embed prompt_rewoo_critiquer.txt
-var promptRewooCritiquer string
-
 //go:embed title_generation_agent.txt
 var titleGenerationAgent string
 
@@ -41,17 +26,11 @@ var logAnalysisCodeDiffGenerateRequest string
 //go:embed planner_react_followup_base.txt
 var plannerReActBaseFollowup string
 
-//go:embed planner_react_base_2.txt
-var plannerReactBase2 string
-
 //go:embed planner_react_3_base.txt
 var plannerReactBase3 string
 
 //go:embed suggestions_base.txt
 var suggestionBase string
-
-//go:embed prompt_rewoo_plan_critiquer.txt
-var promptRewooPlanCritiquer string
 
 //go:embed planner_react_critiquer.txt
 var plannerReactCritiquer string
@@ -100,9 +79,6 @@ var executorResponseFormatterSlack string
 
 //go:embed tool_config_auto_selection.txt
 var toolConfigAutoSelection string
-
-//go:embed agent_aws_debug_2.txt
-var agentAwsDebug2 string
 
 //go:embed agent_aws_debug_react.txt
 var agentAwsDebugReact string
@@ -189,13 +165,6 @@ var agentKgUsage string
 //go:embed cost_optimization_analysis.txt
 var costOptimizationAnalysis string
 
-const PromptPlannerRewoo2Base = "planner_rewoo_2_base"
-const PromptPlannerRewooSolver = "planner_rewoo_solver"
-const PromptPlannerRewoo2Classifier = "planner_rewoo_2_classifier"
-const PromptPlannerRewoo2Reviewer = "planner_rewoo_2_reviewer"
-const PromptPlannerRewooCritiquer = "planner_rewoo_critiquer"
-const PromptPlannerRewooPlanCritiquer = "prompt_rewoo_plan_critiquer"
-
 const PromptExecutor_response_formatter = "executor_response_formatter"
 const PromptEventAnalyzerBase = "event_analyzer_base"
 const PromptTitleGeneration = "title-generation-agent"
@@ -203,7 +172,6 @@ const PromptLogAnalysisFileExtractor = "log_analysis_file_extractor"
 const PromptLogAnalysisCodeDiffGenerateRequest = "log_analysis_codediff_generate_request"
 const PromptConversationSuggestion = "conversation_suggestion"
 const PromptPlannerReActBaseFollowup = "planner_react_base_followup"
-const PromptPlannerReactBase2 = "planner_react_base_2"
 const PromptPlannerReactBase3 = "planner_react_base_3"
 const PromptPlannerReactCritiquer = "planner_react_critiquer"
 
@@ -222,7 +190,6 @@ const PromptSummarizationSecurity = "summarization_security"
 const PromptUnifiedContextMemory = "unified_context_memory"
 const PromptExecutorResponseFormatterSlack = "executor_response_formatter_slack"
 const PromptToolConfigAutoSelection = "tool_config_auto_selection"
-const PromptAgentAwsDebug2 = "agent_aws_debug_2"
 const PromptAgentAwsDebugReact = "agent_aws_debug_react"
 const PromptAgentGcpDebugReact = "agent_gcp_debug_react"
 const PromptAgentAzureDebugReact = "agent_azure_debug_react"
@@ -261,18 +228,6 @@ const PromptCostOptimization = "cost_optimization_analysis"
 func GetPrompt(module string, args ...any) string {
 	data := ""
 	switch module {
-	case PromptPlannerRewoo2Base:
-		data = plannerRewoo2Base
-	case PromptPlannerRewooSolver:
-		data = plannerRewooSolver
-	case PromptPlannerRewoo2Classifier:
-		data = plannerRewoo2Classifier
-	case PromptPlannerRewoo2Reviewer:
-		data = plannerRewoo2Reviewer
-	case PromptPlannerRewooCritiquer:
-		data = promptRewooCritiquer
-	case PromptPlannerRewooPlanCritiquer:
-		data = promptRewooPlanCritiquer
 	case PromptPlannerReActBaseFollowup:
 		data = plannerReActBaseFollowup
 
@@ -286,8 +241,6 @@ func GetPrompt(module string, args ...any) string {
 		data = logAnalysisFileExtractor
 	case PromptLogAnalysisCodeDiffGenerateRequest:
 		data = logAnalysisCodeDiffGenerateRequest
-	case PromptPlannerReactBase2:
-		data = plannerReactBase2
 	case PromptPlannerReactBase3:
 		data = plannerReactBase3
 	case PromptPlannerReactCritiquer:
@@ -324,8 +277,6 @@ func GetPrompt(module string, args ...any) string {
 		data = executorResponseFormatterSlack
 	case PromptToolConfigAutoSelection:
 		data = toolConfigAutoSelection
-	case PromptAgentAwsDebug2:
-		data = agentAwsDebug2
 	case PromptAgentAwsDebugReact:
 		data = agentAwsDebugReact
 	case PromptAgentGcpDebugReact:

@@ -401,7 +401,7 @@ func TestConstructScratchPad_BudgetCompressionSetsCompressedObservation(t *testi
 
 	// Verify collectCompressionEvents can now see them (this is what SaveCompressionVisibility uses).
 	// Pass windowPressureActive=true since this scenario IS the window-pressure path.
-	events := collectCompressionEvents(steps, true, 0)
+	events := collectCompressionEvents(steps, true)
 	assert.Equal(t, compressedCount, len(events), "collectCompressionEvents should find all compressed steps")
 	for _, e := range events {
 		assert.Equal(t, "truncated", e.method)

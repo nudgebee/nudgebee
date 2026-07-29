@@ -373,7 +373,7 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
   };
 
   const goToWorkflowsPage = useCallback(() => {
-    router.push(`/auto-pilot?accountId=${accountId}#workflow`);
+    router.push(`/automation?accountId=${accountId}`);
   }, [router, accountId]);
 
   const goToExecution = useCallback(

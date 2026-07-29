@@ -36,7 +36,7 @@ const WorkflowPage = () => {
   // Read-only users cannot create new workflows — bounce them back to the list.
   useEffect(() => {
     if (router.isReady && isNewWorkflow && !canEdit) {
-      router.replace(`/auto-pilot?accountId=${accountIdStr ?? ''}#workflow`);
+      router.replace(`/automation?accountId=${accountIdStr ?? ''}`);
     }
   }, [router.isReady, isNewWorkflow, canEdit, accountIdStr, router]);
 

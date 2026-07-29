@@ -375,7 +375,7 @@ func handleMemoryUpdate(ctx *security.RequestContext, request NBAgentRequest, fa
 }
 
 // retrieveAndBuildMemoryNotebook retrieves relevant memories and builds a structured notebook.
-// For ReWoo/ReAct planners on investigation/retrieval tasks the full memory set is returned.
+// For ReAct planners on investigation/retrieval tasks the full memory set is returned.
 // For all other planners only user_preference memories are injected so agents can respect
 // known user preferences (e.g. output format, namespace choices) without the overhead of
 // a full knowledge-base lookup.
@@ -386,7 +386,7 @@ func handleMemoryUpdate(ctx *security.RequestContext, request NBAgentRequest, fa
 func retrieveAndBuildMemoryNotebook(ctx *security.RequestContext, request NBAgentRequest, agent NBAgent, convFacts []string) string {
 	isRetrievalTask := IsDataRetrievalOrActionRequest(request.Query)
 	isInvestigationTask := IsInvestigationRequestTask(request.Query) || request.ConversationSource == ConversationSourceInvestigation
-	isSupportedPlanner := agent.GetPlannerType() == AgentPlannerTypeReWoo || isReActStylePlanner(agent.GetPlannerType())
+	isSupportedPlanner := agent.GetPlannerType() == AgentPlannerTypeOrchestrating || isReActStylePlanner(agent.GetPlannerType())
 
 	if isSupportedPlanner && (isInvestigationTask || isRetrievalTask) {
 		// Use FindSimilarMemories (not RetrieveRelevantMemories) so use_count is only

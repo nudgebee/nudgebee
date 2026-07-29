@@ -792,7 +792,7 @@ export default function KubernetesEventsSummary({ accountId }) {
                     tone='secondary'
                     size='xs'
                     onClick={() => {
-                      router.push(`/auto-pilot?accountId=${accountId}`);
+                      router.push(`/automation?accountId=${accountId}`);
                     }}
                   >
                     View all

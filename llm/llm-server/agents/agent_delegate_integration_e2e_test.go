@@ -49,7 +49,7 @@ Use a specialist to deep-dive into the database performance if needed.`,
 	for _, tc := range testCases {
 		t.Run(tc.Name, func(t *testing.T) {
 			sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
-			k8sAgent := newK8sDebugAgent(tc.AccountId)
+			k8sAgent := newK8sOrchestratorAgent(tc.AccountId)
 
 			// Verify delegate_agent is in the supported tools
 			tools := k8sAgent.GetSupportedTools(sc)
@@ -133,7 +133,7 @@ These are independent problems. Investigate both in parallel.`,
 	for _, tc := range testCases {
 		t.Run(tc.Name, func(t *testing.T) {
 			sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
-			k8sAgent := newK8sDebugAgent(tc.AccountId)
+			k8sAgent := newK8sOrchestratorAgent(tc.AccountId)
 
 			err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 			assert.Nil(t, err)

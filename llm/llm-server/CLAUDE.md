@@ -54,7 +54,7 @@ curl http://localhost:9999/health                                          # Hea
 curl -H "Authorization: <token>" http://localhost:9999/agents              # List agents
 curl -X POST http://localhost:9999/agent/invoke \
      -H "Authorization: <token>" -H "Content-Type: application/json" \
-     -d '{"agent":"k8s_debug","query":"Check pod status","accountId":"<id>"}'
+     -d '{"agent":"k8s_orchestrator","query":"Check pod status","accountId":"<id>"}'
 ```
 
 ### Troubleshooting
@@ -133,7 +133,7 @@ Import graph is clean: `agents/core/` → `tools/core/` (one-way). No circular d
 
 ### Agent Architecture
 
-Two-tier system: ReWOO (plan-then-execute) agents handle top-level orchestration, ReAct (reason-act-observe) agents handle task execution. See **Execution Flow** below.
+Two-tier system: **Orchestrating** agents (declared type `AgentPlannerTypeOrchestrating`) handle top-level orchestration; **ReAct** agents handle task execution. Both are executed by the ReAct3 planner (iterative reasoning with parallel action support) — the declared type is intent (does this agent orchestrate multi-tool work?), not implementation. See **Execution Flow** below.
 
 ### Agent Registration Pattern
 
@@ -149,7 +149,7 @@ func init() {
 func (a *MyAgent) GetName() string                    { return "<agent_name>" }
 func (a *MyAgent) GetDescription() string             { return "..." }
 func (a *MyAgent) GetPlannerType() core.AgentPlannerType {
-    return core.AgentPlannerTypeReAct // or AgentPlannerTypeReWOO
+    return core.AgentPlannerTypeReAct // or AgentPlannerTypeOrchestrating
 }
 func (a *MyAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool { ... }
 func (a *MyAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt { ... }
@@ -224,7 +224,7 @@ Agent-specific: `agent_aws.txt`, `agent_k8s_debug.txt`, etc. — each agent load
 
 ### Prompt Message Structure & Caching
 
-See [docs/caching.md](docs/caching.md) for the full message layout of both ReWOO and ReAct planners, cache scope definitions, and rules for where to place new prompt content (system vs human messages).
+See [docs/caching.md](docs/caching.md) for the ReAct3 planner message layout, cache scope definitions, and rules for where to place new prompt content (system vs human messages).
 
 ### Testing & Evaluation
 
@@ -233,21 +233,20 @@ See [docs/caching.md](docs/caching.md) for the full message layout of both ReWOO
 - Loading priority: experiment config → account override → global DB config → embedded file
 - **Prompts must not contain literal "TODO"** — enforced by `TestPromptContent_NoTODOMarkers`
 
-## The `_2` Suffix Convention
+## The `_2` and `_3` Suffixes on Planners
 
-`_2` means v2. For planners, v2 is the only version — `planner_react_2.go` and `planner_rewoo_2.go` (no v1 files exist). The executor routes directly to `NewReActAgent2()` and `NewReWooAgent2()`.
+The runtime has exactly one planner: **`planner_react_3.go`** (the ReAct3 planner — iterative reasoning with parallel action execution). The executor routes every non-tool/non-custom/non-classification agent to `NewReActAgent3()`. The older `planner_react_2.go` and `planner_rewoo_2.go` have been deleted; symbols they hosted that ReAct3 still needs live in `planner_react_shared.go`.
 
-For agents, both versions may coexist:
+For agent files, `_2` / `V2` suffixes mark genuinely versioned agents where both versions still coexist:
 
 | Component | v1 | v2 | Active? |
 |-----------|----|----|---------|
-| Planners | Never shipped | `planner_react_2.go`, `planner_rewoo_2.go` | v2 only |
-| AWS | `agent_aws.go` (direct CLI) | `agent_aws_debug_2.go` (orchestrator) | Both active |
-| K8s | None | `agent_k8s_debug_2.go` | v2 only |
-| GCP/Azure | None | `agent_gcp_debug_2.go`, `agent_azure_debug_2.go` | v2 only |
+| Planner runtime | — | `planner_react_3.go` | Only planner at runtime |
 | Tickets | `agent_tickets.go` | `agent_tickets_V2.go` | Both; v2 opt-in via `TicketV2Enabled` |
 
-**Rule: new code always uses v2 planners. Never create v1 variants.**
+The domain orchestrators — `agent_k8s_orchestrator.go`, `agent_aws_orchestrator.go`, `agent_gcp_orchestrator.go`, `agent_azure_orchestrator.go`, `agent_datadog_orchestrator.go` — declare `Orchestrating` and run under ReAct3. They were renamed from `*_debug` (which itself dropped a vestigial `_2`); the old `*_debug` names stay registered as back-compat aliases (`RegisterNBAgentFactoryWithAliases`) so stored history and `@*_debug` invocations keep resolving. Note `agent_aws.go` is a *distinct* sub-agent (direct CLI), not the AWS orchestrator.
+
+**Rule: new code targets ReAct3. There is no v1/v2 planner choice to make.**
 
 ### Deprecated Patterns
 
@@ -267,7 +266,7 @@ ExecutePlannerWorkerPool = common.NewWorkerPool("execute_planner", config.Config
 
 ### Parallel Plan Execution
 
-Controlled by `PlannerRewooParallelExecEnabled` + `LLMServerAgentReWooMaxParallel`. Implementation in `executor_planner.go:737-1050`: builds dependency graph → semaphore limits concurrency → submits nodes with zero pending deps → results via channel → early termination on terminal responses.
+Controlled by `PlannerParallelExecEnabled` + `LLMServerAgentMaxParallel` (they gate ReAct3's parallel action batches). Implementation in `executor_planner.go:737-1050`: builds dependency graph → semaphore limits concurrency → submits nodes with zero pending deps → results via channel → early termination on terminal responses.
 
 ### Memory Thresholds
 
@@ -316,16 +315,14 @@ How a user request flows through the system, from API entry to final response.
 ```
 User (UI/API)
   → LLM Server (Go) — api/chains.go, POST /v1/completions/chat
-  → Agent Router — selects agent (aws_debug, k8s_debug, etc.)
-  → ReWOO Classifier — decides: direct answer or multi-step plan
-  → ReWOO Planner — generates XML plan with steps, tools, dependencies
-  → Plan Critiquer — validates plan (up to 3 regen attempts)
-  → Executor Loop — runs each step, respects dependency order
-      → Sub-Agents (ReAct) — e.g. aws, aws_observability
+  → Agent Router — selects agent (aws_orchestrator, k8s_orchestrator, etc.)
+  → ReAct3 Planner (planner_react_3.go) — iterative think → act → observe loop,
+    with parallel action batches when steps are independent
+      → Sub-Agents — e.g. aws, aws_observability (also ReAct3)
           → Tool Execution — aws_execute, kubectl, etc.
               → Relay Server → Workspace Pod — runs actual CLI commands
-  → ReWOO Solver — compiles all observations into final answer
-  → Critiquer — quality gate, rejects shallow/incomplete answers
+  → Answer Critiquer (top-level investigation queries only) — quality gate,
+    rejects shallow/incomplete answers
   → Response Formatter — markdown, 5-Whys, citations for UI
 ```
 
@@ -335,27 +332,27 @@ Request arrives at `POST /v1/completions/chat` via an RPC action handler dispatc
 
 ### 2. Agent Selection (`api/chains.go` ~line 301)
 
-Explicit (`@aws_debug` in query) or implicit (Router Agent infers via LLM). Agent lookup via `core.GetNBAgent(name, accountId)`. Each agent defines its planner type, tools, and system prompt path.
+Explicit (`@aws_orchestrator` in query) or implicit (Router Agent infers via LLM). Agent lookup via `core.GetNBAgent(name, accountId)`. Each agent declares a planner type (`Orchestrating` / `ReAct` / `Tool` / `Custom` / `Classification` / `Conversational`), tools, and system prompt path. Everything except `Tool` / `Custom` / `Classification` runs via ReAct3.
 
 ### 3. System Prompt Assembly
 
-Two parts combined: agent-specific prompt (domain expertise, investigation methodology) + ReWOO planner base (plan format rules, tool list, constraints like max 40 steps, time macros).
+Two parts combined: agent-specific prompt (domain expertise, investigation methodology) + ReAct3 base (`planner_react_3_base.txt`, iteration/notebook rules, tool list, time macros).
 
-### 4. ReWOO Classifier
+### 4. ReAct3 Loop
 
-LLM classifies query as `direct` (answer without tools) or `plan` (requires tool calls). Returns XML with `<thought>` and `<decision>`.
+The planner iterates: think → emit one or more `<action>` calls → observe results → think again → … until it emits `<finish>` or hits the iteration cap. Independent actions in the same iteration execute in parallel (gated by `PlannerParallelExecEnabled`).
 
-### 5. Plan Generation & Critique
+### 5. Notebook Discipline
 
-LLM generates structured XML plan where each `<step>` has `<id>`, `<tool>`, `<query>`, optional `<dependency>`, `<reason>`. Dependencies form a DAG — independent steps can run in parallel. A critiquer LLM validates against: query relevance, logical soundness, dependency integrity, tool usage validity, troubleshooting depth. Fails → regenerate (up to 3 times).
+ReAct3 maintains an in-conversation notebook (persisted per message) with the model's hypotheses, resolved status, and evidence chain. Kept fresh across turns; drives hypothesis-driven RCA.
 
 ### 6. Executor Loop (`agents/core/executor_planner.go`)
 
-Iterates through plan steps respecting dependency order: check dependencies → evaluate conditions → build query context from previous outputs → call sub-agent → persist to DB → add observation to execution context.
+Runs each planner iteration: dispatches actions, applies dependency and condition gates, persists results to DB, feeds observations back to the planner for the next iteration.
 
-### 7. Sub-Agent Execution — ReAct Loop (`agents/core/planner_react_2.go`)
+### 7. Sub-Agent Execution (`agents/core/planner_react_3.go`)
 
-Each plan step invokes a sub-agent: LLM generates `<thought>` + `<action>`, tool executes, LLM reflects on observation → acts again or emits `<finish>`. On failure, reflects and tries alternative approach (not blind retry).
+Each action invokes a sub-agent, which runs its own ReAct3 loop with its own tool set. Failures are reflected on and retried with a different approach rather than blindly re-run.
 
 ### 8. Tool Execution on Workspace Pod
 
@@ -385,7 +382,7 @@ All configuration in `config/config.go` via environment variables.
 **LLM Provider:** `LLM_PROVIDER`, `LLM_MODEL_NAME`, `LLM_PROVIDER_REGION`, `LLM_PROVIDER_API_KEY`, `LLM_PROVIDER_API_ENDPOINT`
 **Database:** `LLM_SERVER_DB_URL` (PostgreSQL)
 **RabbitMQ:** `RABBIT_MQ_HOST`, `RABBIT_MQ_USERNAME`, `RABBIT_MQ_PASSWORD`, `RABBIT_MQ_TROUBLESHOOT_EXCHANGE`
-**Agent Behavior:** `LLM_SERVER_AGENT_REWOO_MAX_ITERATIONS`, `LLM_SERVER_AGENT_REACT_MAX_ITERATIONS`, `LLM_SERVER_AGENT_MAX_LOGLINES`, `PLANNER_REWOO_PARALLEL_EXEC_ENABLED`
+**Agent Behavior:** `LLM_SERVER_AGENT_REACT_MAX_ITERATIONS` (default 50), `LLM_SERVER_REACT_CRITIQUE_ENABLED` (default true), `LLM_SERVER_AGENT_MAX_LOGLINES`, `LLM_SERVER_PLANNER_PARALLEL_EXEC_ENABLED` (gates ReAct3 parallel action batches), `LLM_SERVER_AGENT_MAX_PARALLEL` (parallel action concurrency limit)
 **External Services:** `SERVICE_API_SERVER_URL`, `RAG_SERVER_URL`, `CLOUD_COLLECTOR_SERVER_URL`, `RELAY_SERVER_ENDPOINT`
 
 ## Key Integrations
@@ -428,8 +425,7 @@ chore(deps): bump github.com/gin-contrib/pprof (#27311)
 
 **Modifying planner logic:**
 - Executor loop: `agents/core/executor_planner.go`
-- ReWOO planning: `agents/core/planner_rewoo_2.go`
-- ReAct loop: `agents/core/planner_react_2.go`
+- ReAct3 loop (all runtime planning): `agents/core/planner_react_3.go`
 
 **Adding an LLM provider:**
 1. Create client in `llms/<provider>/`, implement provider interface
@@ -441,7 +437,7 @@ chore(deps): bump github.com/gin-contrib/pprof (#27311)
 - **Always wrap errors** with `fmt.Errorf("context: %w", err)`. Never bare `return err`.
 - **Use `ctx.GetLogger()`** for logging in business logic, not raw `slog` calls.
 - **Do not modify files in `agents/prompts_repo/` without explicit instruction.** Prompt changes affect all agents and require careful testing.
-- **Do not change core planner logic** (`executor_planner.go`, `planner_rewoo_2.go`, `planner_react_2.go`) for agent-specific bugs. Fix at the agent level first.
+- **Do not change core planner logic** (`executor_planner.go`, `planner_react_3.go`) for agent-specific bugs. Fix at the agent level first.
 - **Never hardcode credentials, account IDs, or API keys.** Use `config/config.go` and environment variables.
 - **Never log sensitive data** (tokens, credentials, PII).
 - **Agents must be stateless** between invocations. No shared mutable state.

@@ -1426,7 +1426,7 @@ func ListActiveAgentSkillCandidates(sc *security.RequestContext, accountId strin
 //
 // This is intended for agents whose planner type is AgentPlannerTypeCustom — those
 // agents implement their own Execute() and bypass the executor's systemMessage path,
-// so the lazy load_skills tool flow used by ReAct/ReWoo planners never reaches them.
+// so the lazy load_skills tool flow used by ReAct planners never reaches them.
 // For such agents we eagerly inline the skill content (instead of just names and
 // descriptions). Returns "" / nil when no active skills match.
 // escapeCDATA makes a string safe to inline inside a `<![CDATA[...]]>` section
@@ -1499,8 +1499,8 @@ func renderSkillsBlock(rows []agentSkillRow) (string, []NBToolResponseReference)
 // — which always loads an agent's own-name skills regardless of the question-aware
 // selection — this loader honours the id set verbatim, narrowing own and inherited
 // skills alike. It backs the code-analysis forward path: that service is stateless
-// and receives skill bodies up front over HTTP, so (unlike the in-process ReAct/
-// ReWoo planners, which can lazily load_skills mid-loop) the forwarded set must be
+// and receives skill bodies up front over HTTP, so (unlike the in-process ReAct
+// planners, which can lazily load_skills mid-loop) the forwarded set must be
 // pre-narrowed to exactly the query-relevant skills. An empty id set returns
 // "" / nil — "nothing relevant to the question" forwards no skills.
 func LoadAgentSkillContentsByIDs(sc *security.RequestContext, accountId string, ids []string) (string, []NBToolResponseReference, error) {

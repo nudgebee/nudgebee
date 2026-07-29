@@ -768,7 +768,7 @@ describe('getDynamicPath (via SideDrawerButton clicks)', () => {
     });
     const workflowBtn = document.getElementById('auto-pilot-sidenavbutton');
     fireEvent.click(workflowBtn);
-    expect(mockPush).toHaveBeenCalledWith('/auto-pilot?accountId=acc-777');
+    expect(mockPush).toHaveBeenCalledWith('/automation?accountId=acc-777');
   });
 
   it('navigates general path with KubernetesDetails from query', async () => {
@@ -788,7 +788,7 @@ describe('getDynamicPath (via SideDrawerButton clicks)', () => {
     });
     const workflowBtn = document.getElementById('auto-pilot-sidenavbutton');
     fireEvent.click(workflowBtn);
-    expect(mockPush).toHaveBeenCalledWith('/auto-pilot?accountId=k8s-details-abc');
+    expect(mockPush).toHaveBeenCalledWith('/automation?accountId=k8s-details-abc');
   });
 
   it('navigates to plain path when no accountId in query or URL', async () => {
@@ -808,7 +808,7 @@ describe('getDynamicPath (via SideDrawerButton clicks)', () => {
     });
     const workflowBtn = document.getElementById('auto-pilot-sidenavbutton');
     fireEvent.click(workflowBtn);
-    expect(mockPush).toHaveBeenCalledWith('/auto-pilot');
+    expect(mockPush).toHaveBeenCalledWith('/automation');
   });
 
   it('handles troubleshoot tab2 (kg fragment) with window.location.assign', async () => {

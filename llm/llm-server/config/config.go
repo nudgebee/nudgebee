@@ -169,8 +169,7 @@ type appConfig struct {
 	LlmModelLite string `mapstructure:"llm_model_lite_name"`
 
 	// Agent specific configs
-	LLMServerAgentReWooMaxIterations          int `mapstructure:"llm_server_agent_rewoo_max_iterations"`
-	LLMServerAgentReWooMaxParallel            int `mapstructure:"llm_server_agent_rewoo_max_parallel"`
+	LLMServerAgentMaxParallel                 int `mapstructure:"llm_server_agent_max_parallel"`
 	LLMServerAgentReActMaxIterations          int `mapstructure:"llm_server_agent_react_max_iterations"`
 	LLMServerAgentReActSubAgentMaxIterations  int `mapstructure:"llm_server_agent_react_sub_agent_max_iterations"`
 	LLMServerAgentPromqlMaxIterations         int `mapstructure:"llm_server_agent_promql_max_iterations"`
@@ -296,12 +295,10 @@ type appConfig struct {
 	// AsyncApiTimeoutSeconds caps the time allowed for asynchronous API requests.
 	AsyncApiTimeoutSeconds int `mapstructure:"llm_server_async_api_timeout_seconds"`
 	// AsyncOperationTimeoutSeconds caps the time allowed for individual asynchronous background operations.
-	AsyncOperationTimeoutSeconds      int  `mapstructure:"llm_server_async_operation_timeout_seconds"`
-	AsyncPlanExecutionWorkerCount     int  `mapstructure:"llm_server_async_plan_execution_worker_count"`
-	AsyncRefWorkerCount               int  `mapstructure:"llm_server_async_ref_worker_count"`
-	PlannerRewooParallelExecEnabled   bool `mapstructure:"llm_server_planner_rewoo_parallel_exec_enabled"`
-	PlannerRewooInvestigationMaxSteps int  `mapstructure:"llm_server_planner_rewoo_investigation_max_steps"`
-	PlannerRewooInfoMaxSteps          int  `mapstructure:"llm_server_planner_rewoo_info_max_steps"`
+	AsyncOperationTimeoutSeconds  int  `mapstructure:"llm_server_async_operation_timeout_seconds"`
+	AsyncPlanExecutionWorkerCount int  `mapstructure:"llm_server_async_plan_execution_worker_count"`
+	AsyncRefWorkerCount           int  `mapstructure:"llm_server_async_ref_worker_count"`
+	PlannerParallelExecEnabled    bool `mapstructure:"llm_server_planner_parallel_exec_enabled"`
 
 	LlmServerCodeAgentImage           string `mapstructure:"llm_server_agent_codeagent_image"`
 	LlmServerCodeAgentNamespace       string `mapstructure:"llm_server_agent_codeagent_namespace"`
@@ -406,8 +403,6 @@ type appConfig struct {
 	// DistillationRedistillInterval defines how many conversation turns occur between redistillation of context.
 	DistillationRedistillInterval int  `mapstructure:"distillation_redistill_interval"`
 	LlmServerReActCritiqueEnabled bool `mapstructure:"llm_server_react_critique_enabled"`
-	LlmServerReAct3Enabled        bool `mapstructure:"llm_server_react3_enabled"`
-	LlmServerRewooToReact3Enabled bool `mapstructure:"llm_server_rewoo_to_react3_enabled"`
 	// LlmServerThinkToolEnabled gates injection of the `think` tool into the
 	// six orchestrator agents (k8s / aws / azure / gcp / datadog / finops).
 	// Default flipped to false 2026-07-12 after 30d prod data showed the
@@ -425,6 +420,20 @@ type appConfig struct {
 	// PR deletes the tool + all injection sites entirely.
 	// Rollback: set LLM_SERVER_THINK_TOOL_ENABLED=true in the env.
 	LlmServerThinkToolEnabled bool `mapstructure:"llm_server_think_tool_enabled"`
+	// LlmServerReact3OrchestratorModeEnabled gates the react_3 role-split prompt
+	// overlays: top-level planner instances get the orchestrator overlay (answer
+	// contract, deliberate first-iteration thought, completion self-check) while
+	// sub-agents get the executor overlay (stay in brief, surface anomalies as
+	// notes). Off = both overlays absent, prompt identical to pre-split behavior.
+	LlmServerReact3OrchestratorModeEnabled bool `mapstructure:"llm_server_react3_orchestrator_mode_enabled"`
+	// LlmServerReact3OrchestratorThinkingLevel is the thinking level applied to
+	// the orchestrator's direction-setting LLM calls (first plan call of a turn
+	// and post-critique refinement passes). Elevate-only: thinking level is
+	// otherwise resolved dynamically per model/tier, and this override applies
+	// only when it is above that baseline — it never lowers thinking. Executor
+	// sub-agents and mid-loop iterations always keep the dynamic resolution.
+	// Empty disables the override.
+	LlmServerReact3OrchestratorThinkingLevel string `mapstructure:"llm_server_react3_orchestrator_thinking_level"`
 	// KGToolsEnabled gates Knowledge Graph tools (kg_list_nodes, kg_list_path) on
 	// the service_dependency_graph agent, enabling static topology + CALLS queries
 	// alongside runtime metrics. Defaults to false — enable per-tenant for canary first.
@@ -438,7 +447,7 @@ type appConfig struct {
 	// At top-level entry the executor scores every active KB mapped to the agent
 	// (or any inherited ancestor) against the user's question and keeps only the top
 	// K. Both the eager-inline path used by custom-planner agents and the lazy
-	// <skill-lists> + load_skills path used by ReAct/ReWoo planners are narrowed to
+	// <skill-lists> + load_skills path used by ReAct planners are narrowed to
 	// the same selection, which propagates unchanged through delegated sub-agents.
 	// 0 (default) preserves the legacy "show every mapped skill" behaviour.
 	LlmServerSkillSelectionTopK int `mapstructure:"llm_server_skill_selection_top_k"`
@@ -469,6 +478,10 @@ type appConfig struct {
 	// observations only kicks in as the scratchpad approaches the window. Gating on the real
 	// window — instead of a flat step count — stops compression from firing on small
 	// conversations. Default 0.75; values <=0 or >=1 fall back to the default.
+	//
+	// Same gate governs the refinement-focus compression path (#33897): when the critiquer
+	// rejects an answer, pre-refinement observations are prioritized (compressed FIRST
+	// under pressure) but no compression fires unless this activation threshold is crossed.
 	LlmServerScratchpadCompressionActivationFraction float64 `mapstructure:"llm_server_scratchpad_compression_activation_fraction"`
 	// LlmServerSubAgentEvidenceEnabled attaches a small, budget-bounded manifest of the
 	// concrete tool calls a sub-agent actually ran (tool + input + short output digest) to
@@ -703,10 +716,11 @@ func init() {
 	viper.SetDefault("llm_server_db_max_connection", 150)
 	viper.SetDefault("llm_server_db_min_connection", 1)
 	viper.SetDefault("llm_server_db_idle_minutes", 10)
-	viper.SetDefault("llm_server_agent_react_max_iterations", 10)
+	// 50 (up from 10) is the value the deleted ReWoo→ReAct3 upgrade used to set;
+	// baking it in preserves that behavior now that orchestrating agents always run as ReAct3.
+	viper.SetDefault("llm_server_agent_react_max_iterations", 50)
 	viper.SetDefault("llm_server_agent_react_sub_agent_max_iterations", 10)
-	viper.SetDefault("llm_server_agent_rewoo_max_iterations", 10)
-	viper.SetDefault("llm_server_agent_rewoo_max_parallel", 4)
+	viper.SetDefault("llm_server_agent_max_parallel", 4)
 	viper.SetDefault("llm_server_agent_promql_max_iterations", 4)
 	viper.SetDefault("llm_server_agent_observability_max_iterations", 7)
 	viper.SetDefault("llm_server_agent_observability_timeout_seconds", 180)
@@ -714,8 +728,6 @@ func init() {
 	viper.SetDefault("llm_server_agent_series_match_cache_ttl_minutes", 30)
 	viper.SetDefault("llm_server_agent_promql_max_tool_response_chars", 4000)
 	viper.SetDefault("llm_server_agent_prometheus_max_inline_data_points", 5) // reduced from 10; above this threshold raw values are replaced with a stats summary to avoid context bloat
-	viper.SetDefault("llm_server_planner_rewoo_investigation_max_steps", 6)
-	viper.SetDefault("llm_server_planner_rewoo_info_max_steps", 1)
 
 	viper.SetDefault("llm_server_agent_max_loglines", 100)
 	viper.SetDefault("llm_server_log_provider_override", "")
@@ -824,7 +836,7 @@ func init() {
 	viper.SetDefault("llm_server_sync_dead_worker_count", 3)
 	viper.SetDefault("llm_server_sync_dead_queue_size", 50)
 
-	viper.SetDefault("llm_server_planner_rewoo_parallel_exec_enabled", true)
+	viper.SetDefault("llm_server_planner_parallel_exec_enabled", true)
 
 	viper.SetDefault("CLOUD_COLLECTOR_SERVER_URL", "http://127.0.0.1:8000")
 	viper.SetDefault("CLOUD_COLLECTOR_SERVER_TOKEN", "")
@@ -912,9 +924,11 @@ func init() {
 	viper.SetDefault("distillation_redistill_interval", 6)
 	viper.SetDefault("enable_llm_reference_title_generation", false)
 	viper.SetDefault("llm_server_slack_compact_response", false)
-	viper.SetDefault("llm_server_react_critique_enabled", false)
-	viper.SetDefault("llm_server_react3_enabled", true)
-	viper.SetDefault("llm_server_rewoo_to_react3_enabled", true)
+	// react_critique defaults to true: the ReWoo→ReAct3 upgrade (now permanent)
+	// used to flip this on at boot; baking it in preserves that behavior.
+	viper.SetDefault("llm_server_react_critique_enabled", true)
+	viper.SetDefault("llm_server_react3_orchestrator_mode_enabled", false)
+	viper.SetDefault("llm_server_react3_orchestrator_thinking_level", "medium")
 	// Flipped false 2026-07-12 — see LlmServerThinkToolEnabled docstring.
 	// Any env that wants the tool back sets LLM_SERVER_THINK_TOOL_ENABLED=true
 	// (env override still wins over SetDefault).
@@ -1120,14 +1134,6 @@ func init() {
 		if namespace != "" {
 			Config.LlmServerCodeAgentNamespace = namespace
 		}
-	}
-	// if max iteractions are default && react3 is enabled then use 50 as max iteractions
-	if Config.LlmServerRewooToReact3Enabled && Config.LLMServerAgentReActMaxIterations <= 10 {
-		Config.LLMServerAgentReActMaxIterations = 50
-	}
-
-	if Config.LlmServerRewooToReact3Enabled {
-		Config.LlmServerReActCritiqueEnabled = true
 	}
 }
 

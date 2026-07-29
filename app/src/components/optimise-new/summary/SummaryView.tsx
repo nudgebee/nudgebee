@@ -475,7 +475,7 @@ const SummaryView = () => {
                       </Box>{' '}
                       more issues this week
                     </Typography>
-                    <Button tone='link' size='sm' href='/auto-pilot' id='top3-open-autopilot'>
+                    <Button tone='link' size='sm' href='/automation' id='top3-open-autopilot'>
                       Open Autopilot queue →
                     </Button>
                   </Box>

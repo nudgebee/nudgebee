@@ -16,7 +16,7 @@ func TestCollectCompressionEvents_NoCompressed(t *testing.T) {
 			Observation: "some output",
 		},
 	}
-	events := collectCompressionEvents(steps, false, 0)
+	events := collectCompressionEvents(steps, false)
 	assert.Empty(t, events)
 }
 
@@ -38,7 +38,7 @@ func TestCollectCompressionEvents_MixedMethods(t *testing.T) {
 		},
 	}
 
-	events := collectCompressionEvents(steps, true /*windowPressureActive*/, 0)
+	events := collectCompressionEvents(steps, true /*windowPressureActive*/)
 	assert.Len(t, events, 2)
 
 	assert.Equal(t, "E1", events[0].toolID)
@@ -62,7 +62,7 @@ func TestCollectCompressionEvents_EmptyToolID(t *testing.T) {
 			CompressedObservation: "[summarized from 3000 chars] Summary.",
 		},
 	}
-	events := collectCompressionEvents(steps, true, 0)
+	events := collectCompressionEvents(steps, true)
 	assert.Len(t, events, 1)
 	assert.Equal(t, "", events[0].toolID)
 	assert.Equal(t, "kubectl_execute", events[0].toolName)
@@ -78,7 +78,7 @@ func TestFormatCompressionSummary(t *testing.T) {
 		},
 		{
 			toolID: "E2", toolName: "kubectl_execute", originalLen: 500, compressedLen: 120,
-			method: "truncated", cause: compressionCauseRefinementFocus,
+			method: "truncated", cause: compressionCauseWindowPressure,
 			originalPreview: "yyyyy",
 			compressedText:  "[output truncated — 500 chars] yyy",
 		},
@@ -94,10 +94,9 @@ func TestFormatCompressionSummary(t *testing.T) {
 	assert.Contains(t, summary, "reduction")
 	// Cause classification + previews must surface so reviewers can judge what was dropped.
 	assert.Contains(t, summary, compressionCauseWindowPressure)
-	assert.Contains(t, summary, compressionCauseRefinementFocus)
 	assert.Contains(t, summary, "before: raw kubectl output start")
 	assert.Contains(t, summary, "after:  [summarized from 10000 chars]")
-	assert.Contains(t, summary, "Causes: 1 window-pressure, 1 refinement-focus")
+	assert.Contains(t, summary, "Causes: 2 window-pressure")
 }
 
 func TestFormatCompressionSummary_FallsBackToToolName(t *testing.T) {
@@ -125,7 +124,7 @@ func TestCompressionTracker_DeduplicatesSaves(t *testing.T) {
 		},
 	}
 
-	events := collectCompressionEvents(steps, true, 0)
+	events := collectCompressionEvents(steps, true)
 	assert.Len(t, events, 2)
 
 	// Simulate what SaveCompressionVisibility does: check tracker, update count.
@@ -133,7 +132,7 @@ func TestCompressionTracker_DeduplicatesSaves(t *testing.T) {
 	tracker.lastReportedCount = len(events)
 
 	// Second call with same steps: should be deduped.
-	events2 := collectCompressionEvents(steps, true, 0)
+	events2 := collectCompressionEvents(steps, true)
 	assert.Equal(t, len(events2), tracker.lastReportedCount) // same count → skip
 }
 
@@ -155,7 +154,7 @@ func TestCompressionTracker_DetectsNewCompression(t *testing.T) {
 		},
 	}
 
-	events := collectCompressionEvents(steps, true, 0)
+	events := collectCompressionEvents(steps, true)
 	assert.Len(t, events, 2)
 	assert.NotEqual(t, len(events), tracker.lastReportedCount) // 2 != 1 → should save
 }
@@ -211,44 +210,28 @@ func TestSaveCompressionVisibility_SkipsWhenNoEvents(t *testing.T) {
 	SaveCompressionVisibility(nil, NBAgentRequest{}, steps, NewCompressionTracker())
 }
 
-// TestCollectCompressionEvents_ClassifiesCausesByIndex pins the cause
-// classifier — the entire reason the (windowPressureActive,
-// postRefinementToolIndex) plumbing exists. A 4-step run where the first 2
-// steps are pre-refinement and the last 2 are post-refinement + under window
-// pressure must produce: 2 refinement-focus events + 2 window-pressure events.
-// Pre-this-change, every event was implicitly labelled "window pressure" by
-// the card title regardless of why it actually fired (production convo
-// 23a9d9fc-fa49-48af-abcf-9a19d7229088 was the smoking gun: 4 steps / 7 KB
-// triggered a "stay within context window" card on a 1M-token model).
-func TestCollectCompressionEvents_ClassifiesCausesByIndex(t *testing.T) {
+// TestCollectCompressionEvents_ClassifiesAsWindowPressure pins the cause
+// classifier — post-#33897, window pressure is the only real cause. A run
+// with every compressed step under window pressure must classify all events
+// as window-pressure.
+func TestCollectCompressionEvents_ClassifiesAsWindowPressure(t *testing.T) {
 	steps := []NBAgentPlannerToolActionStep{
-		{ // index 0 — pre-refinement
+		{
 			Action:                NBAgentPlannerToolAction{Tool: "shell_execute", ToolID: "E1"},
 			Observation:           strings.Repeat("a", 5000),
-			CompressedObservation: "[summarized from 5000 chars] pre-refinement A",
+			CompressedObservation: "[summarized from 5000 chars] A",
 		},
-		{ // index 1 — pre-refinement
+		{
 			Action:                NBAgentPlannerToolAction{Tool: "shell_execute", ToolID: "E2"},
 			Observation:           strings.Repeat("b", 5000),
-			CompressedObservation: "[summarized from 5000 chars] pre-refinement B",
-		},
-		{ // index 2 — post-refinement, under window pressure
-			Action:                NBAgentPlannerToolAction{Tool: "shell_execute", ToolID: "E3"},
-			Observation:           strings.Repeat("c", 5000),
-			CompressedObservation: "[summarized from 5000 chars] post-refinement C",
-		},
-		{ // index 3 — post-refinement, under window pressure
-			Action:                NBAgentPlannerToolAction{Tool: "shell_execute", ToolID: "E4"},
-			Observation:           strings.Repeat("d", 5000),
-			CompressedObservation: "[summarized from 5000 chars] post-refinement D",
+			CompressedObservation: "[summarized from 5000 chars] B",
 		},
 	}
-	events := collectCompressionEvents(steps, true /*postRefinementToolIndex*/, 2)
-	assert.Len(t, events, 4)
-	assert.Equal(t, compressionCauseRefinementFocus, events[0].cause)
-	assert.Equal(t, compressionCauseRefinementFocus, events[1].cause)
-	assert.Equal(t, compressionCauseWindowPressure, events[2].cause)
-	assert.Equal(t, compressionCauseWindowPressure, events[3].cause)
+	events := collectCompressionEvents(steps, true)
+	assert.Len(t, events, 2)
+	for _, e := range events {
+		assert.Equal(t, compressionCauseWindowPressure, e.cause)
+	}
 }
 
 // TestCollectCompressionEvents_UnknownWhenNoSignal locks the defensive default:
@@ -264,14 +247,15 @@ func TestCollectCompressionEvents_UnknownWhenNoSignal(t *testing.T) {
 			CompressedObservation: "[summarized from 1000 chars] s",
 		},
 	}
-	events := collectCompressionEvents(steps, false /*no window pressure*/, 0 /*no refinement*/)
+	events := collectCompressionEvents(steps, false /*no window pressure*/)
 	assert.Len(t, events, 1)
 	assert.Equal(t, compressionCauseUnknown, events[0].cause)
 }
 
-// TestCompressionCardCopy_TitlesByCause pins the title/description picker —
-// the user-facing fix. Each cause flavor gets a distinct title so a reviewer
-// can immediately tell why a card fired without reading the per-event summary.
+// TestCompressionCardCopy_TitlesByCause pins the title/description picker.
+// Post-#33897, window pressure is the only real cause; unknown is a
+// defensive fallback for future compression paths that forget to stamp
+// SetCompressionContext.
 func TestCompressionCardCopy_TitlesByCause(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -286,20 +270,6 @@ func TestCompressionCardCopy_TitlesByCause(t *testing.T) {
 			total:         3,
 			titleContains: "scratchpad near model context window",
 			descrContains: "approached the model's context window",
-		},
-		{
-			name:          "all refinement",
-			counts:        causeCounts{refinement: 2},
-			total:         2,
-			titleContains: "kept refined investigation focused",
-			descrContains: "regardless of context-window usage",
-		},
-		{
-			name:          "mixed window + refinement leads with both counts",
-			counts:        causeCounts{window: 1, refinement: 4},
-			total:         5,
-			titleContains: "1 window-pressure, 4 refinement-focus",
-			descrContains: "Some observations",
 		},
 		{
 			name:          "unknown cause flags itself",
@@ -320,21 +290,18 @@ func TestCompressionCardCopy_TitlesByCause(t *testing.T) {
 
 // TestCompressionTracker_SetCompressionContext is a tiny but load-bearing
 // test: the tracker is the seam through which buildScratchpad hands its
-// gating decisions to SaveCompressionVisibility. A regression here re-introduces
-// the "always window pressure" mislabel bug.
+// gating decision to SaveCompressionVisibility.
 func TestCompressionTracker_SetCompressionContext(t *testing.T) {
 	tracker := NewCompressionTracker()
-	tracker.SetCompressionContext(true, 7)
+	tracker.SetCompressionContext(true)
 	assert.True(t, tracker.windowPressureActive)
-	assert.Equal(t, 7, tracker.postRefinementToolIndex)
 
 	// Subsequent call overrides — this is intentional, the tracker reflects
 	// the MOST RECENT buildScratchpad pass, not a history of passes.
-	tracker.SetCompressionContext(false, 0)
+	tracker.SetCompressionContext(false)
 	assert.False(t, tracker.windowPressureActive)
-	assert.Equal(t, 0, tracker.postRefinementToolIndex)
 
 	// nil receiver is a no-op — used by tests / ReWOO callers that pass nil.
 	var nilTracker *CompressionTracker
-	assert.NotPanics(t, func() { nilTracker.SetCompressionContext(true, 5) })
+	assert.NotPanics(t, func() { nilTracker.SetCompressionContext(true) })
 }

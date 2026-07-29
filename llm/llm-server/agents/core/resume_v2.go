@@ -411,8 +411,8 @@ func bubbleUpIfSiblingsDone(ctx *security.RequestContext, req NBAgentRequest, ch
 	// regenerating the plan and re-prompting for approval in a loop (#31997).
 	//
 	// This mirrors the non-resume executor, which already finalizes on a nested
-	// sub-agent's IsTerminal everywhere — ReAct loop (executor_planner.go ~922),
-	// ReWOO parallel exec (~1345), and waiting-tool resume (~3301). The V2 bubble-up
+	// sub-agent's IsTerminal everywhere — the ReAct loop and parallel exec paths in
+	// executor_planner.go, and waiting-tool resume. The V2 bubble-up
 	// was the one path that forgot the terminal short-circuit; this restores parity.
 	// Placed AFTER the waitingCount>0 guard above so a still-waiting parallel sibling
 	// is never stranded — we only short-circuit once no sibling needs user input.

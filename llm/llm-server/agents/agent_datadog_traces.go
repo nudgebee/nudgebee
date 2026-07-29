@@ -127,7 +127,7 @@ func (d DatadogTracesAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct // This agent uses ReAct
 }
 
-// UpdateToolResponseForPlanner is used by a planner agent (like DatadogDebugAgent)
+// UpdateToolResponseForPlanner is used by a planner agent (like DatadogOrchestratorAgent)
 // to process the output of this agent before feeding it back to the planner's LLM.
 // This method summarizes the trace data JSON response.
 func (d DatadogTracesAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlannerToolAction, toolResponse string) string {

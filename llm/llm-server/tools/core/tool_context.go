@@ -171,7 +171,7 @@ type NbToolContext struct {
 	// InheritSkillsFromAgents is the chain of ancestor agent names whose mapped KBs
 	// should be merged into the sub-agent's <skill-lists>. Custom-planner delegators
 	// append their own name to this slice when constructing the NbToolContext for a
-	// sub-agent so the lazy load_skills mechanism in ReAct/ReWoo planners can find
+	// sub-agent so the lazy load_skills mechanism in ReAct planners can find
 	// the parent's skills. Sub-agents reached via ExecuteAgentToolCall rebuild any
 	// eager SkillsContext fresh from this list, so SkillsContext itself is not
 	// carried on this struct.

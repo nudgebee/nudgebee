@@ -41,7 +41,7 @@ func TestGcpAgentReWoo_GCSBucketPublic(t *testing.T) {
 			t.Skip("TEST_GCP_ACCOUNT environment variable is not set, skipping test.")
 		}
 
-		gcpDebugAgent := newGcpDebugAgent(tc.AccountId)
+		gcpDebugAgent := newGcpOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -79,7 +79,7 @@ func TestGcpAgentReWoo_BillingExport(t *testing.T) {
 		if tc.AccountId == "" {
 			t.Skip("TEST_GCP_ACCOUNT environment variable is not set, skipping test.")
 		}
-		gcpDebugAgent := newGcpDebugAgent(tc.AccountId)
+		gcpDebugAgent := newGcpOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -117,7 +117,7 @@ func TestGcpAgentReWoo_GCEInstanceDetails(t *testing.T) {
 		if tc.AccountId == "" {
 			t.Skip("TEST_GCP_ACCOUNT environment variable is not set, skipping test.")
 		}
-		gcpDebugAgent := newGcpDebugAgent(tc.AccountId)
+		gcpDebugAgent := newGcpOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)

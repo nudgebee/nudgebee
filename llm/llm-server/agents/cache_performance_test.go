@@ -24,10 +24,10 @@ func TestAgentToolDiscoveryPerformance(t *testing.T) {
 
 	// Use the public constructor (unexported but accessible via type alias or interface if available,
 	// here we use the concrete type directly as we are in the same package)
-	// But wait, newK8sDebugAgent returns interface.
+	// But wait, newK8sOrchestratorAgent returns interface.
 	// We can cast it or just call GetSupportedTools.
 
-	agent := newK8sDebugAgent(testAccountId)
+	agent := newK8sOrchestratorAgent(testAccountId)
 
 	t.Run("Benchmark_GetSupportedTools_Caching", func(t *testing.T) {
 		// 1. Invalidate Cache
