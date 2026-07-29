@@ -1894,6 +1894,45 @@ func (s *Service) MarkStaleEdgesInactive() (int64, error) {
 	return rowsAffected, nil
 }
 
+// MarkStaleExternalServiceNodesInactive flips is_active=false on ExternalService
+// nodes whose updated_at is older than KGEdgeStaleAfterDays. These are
+// flow-source leaves: a peer name a caller stopped calling, or a pod-name
+// ExternalService that has since been superseded once the caller resolves to
+// its real workload. markInactiveNodes only tombstones InfraAuthoritativeNodeTypes
+// (ExternalService is non-infra), and nb.CleanupData never deletes nodes, so
+// without this sweep these leaves accumulate as orphans indefinitely.
+//
+// Mirrors MarkStaleEdgesInactive: it shares the same "not re-stamped for N days"
+// threshold (SaveNodes bumps updated_at on every re-observation), leaves
+// updated_at untouched as the retention anchor, and is tenant-agnostic. A node
+// that starts being observed again is re-activated by SaveNodes' upsert.
+func (s *Service) MarkStaleExternalServiceNodesInactive() (int64, error) {
+	staleDays := config.Config.KGEdgeStaleAfterDays
+	if staleDays <= 0 {
+		staleDays = 7
+	}
+	query := `
+		UPDATE knowledge_graph_node
+		SET is_active = false
+		WHERE is_active = true
+		  AND level = 'Tenant'
+		  AND node_type = $2
+		  AND updated_at < NOW() - ($1 * interval '1 day')
+	`
+	result, err := s.dbManager.Exec(query, staleDays, string(NodeTypeExternalService))
+	if err != nil {
+		return 0, fmt.Errorf("failed to mark stale external service nodes inactive: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf(errRowsAffected, err)
+	}
+	s.logger.Info("kg: marked stale external service nodes inactive",
+		"rows", rowsAffected,
+		"stale_days", staleDays)
+	return rowsAffected, nil
+}
+
 // GetGraph retrieves a knowledge graph from a specific source
 func (s *Service) GetGraph(reqCtx *security.RequestContext, req *QueryRequest) (*QueryResponse, error) {
 	if req.Source == "" {
