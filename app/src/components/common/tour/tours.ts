@@ -10,6 +10,25 @@
  * / data-testid that already ships in the product. If you retarget a flow,
  * update the selector here in the same change.
  */
+import { getAssistantName, getBrandTitle } from '@hooks/useTenantBranding';
+
+/**
+ * Resolves the `{brand}` and `{assistant}` tokens in tour copy to the tenant's
+ * brand and assistant names.
+ *
+ * Tour text carries tokens rather than product names so a white-label deploy
+ * doesn't tell its users to install someone else's agent, or point them at an
+ * assistant under a name their UI never shows. `{assistant}` is separate from
+ * `{brand}` because the two differ per tenant — the assistant is labelled from
+ * `assistantName`, not the product name. The tokens can't be interpolated
+ * where the strings are declared: this
+ * module is evaluated at import time, before `/api/public/app_config` has
+ * resolved, so the literals would bake in the fallbacks. Every surface that
+ * renders tour copy passes it through here at render time instead — see
+ * `TourProvider`, `GuidesMenu`, `TourLauncher`, `FirstLoginTour`,
+ * `SectionFirstVisitTour`.
+ */
+export const brandText = (text: string): string => text.replaceAll('{brand}', getBrandTitle()).replaceAll('{assistant}', getAssistantName());
 
 export type TourSide = 'top' | 'right' | 'bottom' | 'left';
 export type TourAlign = 'start' | 'center' | 'end';
@@ -194,7 +213,7 @@ const connectClusterTour: TourDef = {
   id: 'connect-cluster',
   title: 'Connect a K8s Cluster',
   module: 'Accounts',
-  description: 'Add a Kubernetes cluster and install the Nudgebee agent.',
+  description: 'Add a Kubernetes cluster and install the {brand} agent.',
   route: '/accounts/account-form?cloudProvider=K8S',
   // Same as create-user: the "Add K8s Account" button is gated on hasWriteAccess().
   requires: 'write',
@@ -213,7 +232,7 @@ const connectClusterTour: TourDef = {
     {
       element: '#k8sName',
       title: 'Name this cluster',
-      description: 'A unique, descriptive name to identify this Kubernetes account in Nudgebee.',
+      description: 'A unique, descriptive name to identify this Kubernetes account in {brand}.',
       side: 'bottom',
       align: 'start',
     },
@@ -318,7 +337,7 @@ const appOverviewTour: TourDef = {
   description: 'A quick tour of the app — the sidebar and the header controls.',
   route: '/home',
   welcome: {
-    title: '🎉 Welcome to Nudgebee 🎉',
+    title: '🎉 Welcome to {brand} 🎉',
     description:
       "Run, troubleshoot, and optimize everything in one place. Here's a quick tour of the sidebar so you know where to find what — it takes under a minute.",
   },
@@ -514,14 +533,14 @@ const investigationsTour: TourDef = {
   id: 'investigations',
   title: 'Explore Investigations',
   module: 'Troubleshoot',
-  description: 'Tour the automatic and manual root-cause analyses Nudgebee keeps for your incidents.',
+  description: 'Tour the automatic and manual root-cause analyses {brand} keeps for your incidents.',
   route: '/troubleshoot',
   steps: [
     {
       element: '[id="anchor-tab-Investigations"]',
       title: 'Root-cause investigations',
       description:
-        'Every root-cause analysis lands here — the ones Nudgebee runs automatically when an incident fires, and the ones you start yourself. Let’s look at both.',
+        'Every root-cause analysis lands here — the ones {brand} runs automatically when an incident fires, and the ones you start yourself. Let’s look at both.',
       side: 'bottom',
       align: 'start',
       // Make sure we're on the Investigations view before pointing at its sub-tabs.
@@ -533,7 +552,7 @@ const investigationsTour: TourDef = {
       element: '#tab-auto-investigated',
       title: 'Auto Investigated',
       description:
-        'When a significant incident fires, Nudgebee investigates it on its own — correlating pods, logs, metrics, and the service map into a root cause. We’ll open that list.',
+        'When a significant incident fires, {brand} investigates it on its own — correlating pods, logs, metrics, and the service map into a root cause. We’ll open that list.',
       side: 'bottom',
       align: 'start',
       // Ensure the Auto listing is the one shown for the next step.
@@ -544,7 +563,7 @@ const investigationsTour: TourDef = {
     {
       element: '#autoInvestigatedTable',
       title: 'Automatic root-cause analyses',
-      description: 'Each row is an incident Nudgebee analysed for you. Open one for the full root cause, the evidence behind it, and the timeline.',
+      description: 'Each row is an incident {brand} analysed for you. Open one for the full root cause, the evidence behind it, and the timeline.',
       side: 'top',
       align: 'center',
       optional: true,
@@ -552,7 +571,7 @@ const investigationsTour: TourDef = {
     {
       element: '#tab-manual-investigated',
       title: 'Manual Investigated',
-      description: 'These are the deep-dives you kick off yourself from Ask Nudgebee. We’ll open that list.',
+      description: 'These are the deep-dives you kick off yourself from Ask {assistant}. We’ll open that list.',
       side: 'bottom',
       align: 'start',
       // Switch to the Manual listing for the final step.
@@ -563,7 +582,7 @@ const investigationsTour: TourDef = {
     {
       element: '#manualInvestigatedTable',
       title: 'Your manual investigations',
-      description: 'Every analysis you started in Ask Nudgebee is saved here — reopen any session to pick up exactly where you left off.',
+      description: 'Every analysis you started in Ask {assistant} is saved here — reopen any session to pick up exactly where you left off.',
       side: 'top',
       align: 'center',
       optional: true,
@@ -610,7 +629,7 @@ const knowledgeGraphTour: TourDef = {
       element: '#kg-canvas',
       title: 'Your live service map',
       description:
-        'Every node is a service, workload, or cloud resource; every edge is a real dependency Nudgebee discovered between them. Drag to pan, scroll to zoom.',
+        'Every node is a service, workload, or cloud resource; every edge is a real dependency {brand} discovered between them. Drag to pan, scroll to zoom. Too many nodes to draw? The filters come next.',
       side: 'top',
       align: 'center',
     },
@@ -687,7 +706,7 @@ const connectAwsTour: TourDef = {
     {
       element: '#account-name',
       title: 'Name this account',
-      description: 'A display name to identify this AWS account in Nudgebee.',
+      description: 'A display name to identify this AWS account in {brand}.',
       side: 'bottom',
       align: 'start',
     },
@@ -695,7 +714,7 @@ const connectAwsTour: TourDef = {
       element: '#aws-access-mode',
       title: 'Access mode',
       description:
-        'Standard grants the permissions Nudgebee needs to act (create CloudWatch alarms, track events, run remediations). Read-Only limits it to reading — those active features become unavailable.',
+        'Standard grants the permissions {brand} needs to act (create CloudWatch alarms, track events, run remediations). Read-Only limits it to reading — those active features become unavailable.',
       side: 'bottom',
       align: 'start',
     },
@@ -703,7 +722,7 @@ const connectAwsTour: TourDef = {
       element: '#connect-aws-console-btn',
       title: '1-click CloudFormation (recommended)',
       description:
-        'The easiest path: this launches a pre-filled CloudFormation stack in the AWS console. Create the stack and Nudgebee auto-detects the account when it finishes — no keys to copy. Or use the tabs above to connect manually.',
+        'The easiest path: this launches a pre-filled CloudFormation stack in the AWS console. Create the stack and {brand} auto-detects the account when it finishes — no keys to copy. Or use the tabs above to connect manually.',
       side: 'top',
       align: 'start',
     },
@@ -720,7 +739,7 @@ const connectAwsTour: TourDef = {
     {
       element: '#aws-role-arn',
       title: 'IAM Role ARN',
-      description: 'The ARN of the cross-account role Nudgebee assumes to read your account, e.g. arn:aws:iam::123456789012:role/NudgebeeRole.',
+      description: 'The ARN of the cross-account role {brand} assumes to read your account, e.g. arn:aws:iam::123456789012:role/NudgebeeRole.',
       side: 'bottom',
       align: 'start',
     },
@@ -751,7 +770,7 @@ const connectAwsTour: TourDef = {
     {
       element: '#aws-secret-access-key',
       title: 'Secret Access Key',
-      description: 'The secret half of the key pair. Nudgebee stores it encrypted at rest.',
+      description: 'The secret half of the key pair. {brand} stores it encrypted at rest.',
       side: 'bottom',
       align: 'start',
     },
@@ -808,21 +827,21 @@ const connectGcpTour: TourDef = {
     {
       element: '#account-name',
       title: 'Name this account',
-      description: 'A display name to identify this Google Cloud account in Nudgebee.',
+      description: 'A display name to identify this Google Cloud account in {brand}.',
       side: 'bottom',
       align: 'start',
     },
     {
       element: '#service-account-key',
       title: 'Paste your service-account key',
-      description: 'Paste the full JSON key for your GCP service account — Nudgebee uses it to read your projects’ resources.',
+      description: 'Paste the full JSON key for your GCP service account — {brand} uses it to read your projects’ resources.',
       side: 'top',
       align: 'start',
     },
     {
       element: '#check-permissions-btn',
       title: 'Check permissions',
-      description: 'Optional. Verify the service account has the IAM permissions Nudgebee needs before you continue.',
+      description: 'Optional. Verify the service account has the IAM permissions {brand} needs before you continue.',
       side: 'top',
       align: 'center',
       optional: true,
@@ -830,7 +849,7 @@ const connectGcpTour: TourDef = {
     {
       element: '#next-step1',
       title: 'On to projects',
-      description: 'Click Next — we’ll open the Projects step. In a real setup Nudgebee discovers the projects this key can access.',
+      description: 'Click Next — we’ll open the Projects step. In a real setup {brand} discovers the projects this key can access.',
       side: 'top',
       align: 'end',
       // Preview: the modal advances the stepper without creating anything.
@@ -853,7 +872,7 @@ const connectGcpTour: TourDef = {
       element: '#billing-project-id',
       title: 'Billing export',
       description:
-        'Finally, point Nudgebee at your BigQuery billing export — project, dataset, and table — so it can pull GCP cost data. That’s the whole flow; close this window when you’re done exploring.',
+        'Finally, point {brand} at your BigQuery billing export — project, dataset, and table — so it can pull GCP cost data. That’s the whole flow; close this window when you’re done exploring.',
       side: 'bottom',
       align: 'start',
     },
@@ -894,7 +913,7 @@ const connectAzureTour: TourDef = {
     {
       element: '#account-name',
       title: 'Name this account',
-      description: 'A display name to identify this Azure account in Nudgebee.',
+      description: 'A display name to identify this Azure account in {brand}.',
       side: 'right',
       align: 'start',
     },
@@ -908,7 +927,7 @@ const connectAzureTour: TourDef = {
     {
       element: '#client-id',
       title: 'Application (client) ID',
-      description: 'The client ID of the service principal Nudgebee uses — App registrations > your app > Overview.',
+      description: 'The client ID of the service principal {brand} uses — App registrations > your app > Overview.',
       side: 'right',
       align: 'start',
     },
@@ -922,7 +941,7 @@ const connectAzureTour: TourDef = {
     {
       element: '#next-to-subscriptions',
       title: 'On to subscriptions',
-      description: 'Click Next — we’ll open the Subscriptions step. In a real setup Nudgebee lists the subscriptions these credentials can read.',
+      description: 'Click Next — we’ll open the Subscriptions step. In a real setup {brand} lists the subscriptions these credentials can read.',
       side: 'top',
       align: 'end',
       // Preview: the modal advances the stepper without creating anything.
@@ -994,7 +1013,7 @@ const automationFromCodeTour: TourDef = {
     {
       element: '#wf-code-format-tabs',
       title: 'Paste JSON or YAML',
-      description: 'Paste or edit the definition, switching between the JSON and YAML formats here. Nudgebee validates it as you type.',
+      description: 'Paste or edit the definition, switching between the JSON and YAML formats here. {brand} validates it as you type.',
       side: 'bottom',
       align: 'start',
     },
@@ -1152,7 +1171,7 @@ const automationFromScratchTour: TourDef = {
     {
       element: '#wf-builder-trigger-option-webhook-card',
       title: 'Webhook',
-      description: 'Kick it off from an external system via an HTTP endpoint Nudgebee gives you.',
+      description: 'Kick it off from an external system via an HTTP endpoint {brand} gives you.',
       side: 'bottom',
       align: 'center',
     },
@@ -1173,7 +1192,7 @@ const automationFromScratchTour: TourDef = {
     {
       element: '#wf-builder-trigger-option-optimization-card',
       title: 'Optimization',
-      description: 'Run whenever Nudgebee surfaces a new optimization recommendation. Pick any trigger to drop it on the canvas and start building.',
+      description: 'Run whenever {brand} surfaces a new optimization recommendation. Pick any trigger to drop it on the canvas and start building.',
       side: 'bottom',
       align: 'center',
     },
@@ -1306,7 +1325,7 @@ const optimizeTour: TourDef = {
     {
       element: '#anchor-tab-auto-optimize',
       title: 'Automate it',
-      description: 'Let Nudgebee apply right-sizing continuously instead of one row at a time, with approvals if you want a human in the loop.',
+      description: 'Let {brand} apply right-sizing continuously instead of one row at a time, with approvals if you want a human in the loop.',
       side: 'bottom',
       align: 'start',
     },
@@ -1392,7 +1411,7 @@ const optimizeSummaryTour: TourDef = {
     {
       element: '#top3-open-autopilot',
       title: 'Start with the top 3',
-      description: 'Nudgebee picks the three findings worth your time first. Open the Autopilot queue to let automations handle the repetitive ones.',
+      description: '{brand} picks the three findings worth your time first. Open the Autopilot queue to let automations handle the repetitive ones.',
       side: 'top',
       align: 'end',
       // Only renders once findings have loaded and there are more than the top 3.
@@ -1530,13 +1549,13 @@ const optimizeAutoOptimizeTour: TourDef = {
   id: 'optimize-auto-optimize',
   title: 'Optimize: Auto Optimize',
   module: 'Optimize',
-  description: 'Let Nudgebee apply right-sizing for you — the automations, and the approvals queue.',
+  description: 'Let {brand} apply right-sizing for you — the automations, and the approvals queue.',
   route: '/optimise',
   steps: [
     {
       element: '#anchor-tab-auto-optimize',
       title: 'The Auto Optimize tab',
-      description: 'Instead of applying recommendations one at a time, let Nudgebee keep workloads right-sized continuously. Let’s open it.',
+      description: 'Instead of applying recommendations one at a time, let {brand} keep workloads right-sized continuously. Let’s open it.',
       side: 'bottom',
       align: 'start',
       onBeforeNext: () => {
@@ -1605,7 +1624,7 @@ const optimizeAutoOptimizeTour: TourDef = {
     {
       element: '#create-auto-optimize',
       title: 'Create an automation',
-      description: 'Set up continuous, horizontal, vertical, or volume right-sizing. Pick a type and Nudgebee walks you through the scope.',
+      description: 'Set up continuous, horizontal, vertical, or volume right-sizing. Pick a type and {brand} walks you through the scope.',
       side: 'left',
       align: 'end',
       // Write-gated (hasWriteAccess on the current account), so read-only users
@@ -1652,7 +1671,7 @@ const llmAnalyserTour: TourDef = {
     {
       element: '#anchor-tab-llm-analyser',
       title: 'The LLM Analyser',
-      description: 'Every LLM call Nudgebee’s agents make, priced and broken down. Let’s open it.',
+      description: 'Every LLM call {brand}’s agents make, priced and broken down. Let’s open it.',
       side: 'bottom',
       align: 'start',
       onBeforeNext: () => {
@@ -1717,8 +1736,7 @@ const llmAnalyserTour: TourDef = {
     {
       element: '#tab-agents',
       title: 'Agents',
-      description:
-        'Which of Nudgebee’s agents are doing the spending, and how slow they are — the place to look when cost climbs without more users.',
+      description: 'Which of {brand}’s agents are doing the spending, and how slow they are — the place to look when cost climbs without more users.',
       side: 'bottom',
       align: 'start',
       optional: true,
@@ -1730,7 +1748,7 @@ const llmAnalyserTour: TourDef = {
  * "Optimize: AI Gateway" deep-dive. Same gating story as the LLM Analyser, on the
  * sibling UI_ENABLE_LLM_GATEWAY toggle — see llmAnalyserTour's docblock.
  *
- * The Analyser covers Nudgebee's own agent traffic; the Gateway covers your BYO-token
+ * The Analyser covers {brand}'s own agent traffic; the Gateway covers your BYO-token
  * traffic forwarded through it, which is why they're separate guides.
  *
  * Anchors (all pre-existing):
@@ -1747,14 +1765,14 @@ const aiGatewayTour: TourDef = {
   id: 'ai-gateway',
   title: 'Optimize: the AI Gateway',
   module: 'Optimize',
-  description: 'Route your own LLM traffic through Nudgebee — and see every request, model, and user.',
+  description: 'Route your own LLM traffic through {brand} — and see every request, model, and user.',
   route: '/optimise',
   requiresUiFeature: 'llmGateway',
   steps: [
     {
       element: '#anchor-tab-ai-gateway',
       title: 'The AI Gateway',
-      description: 'Point your own apps at Nudgebee’s gateway and it prices, logs, and attributes every LLM call they make. Let’s open it.',
+      description: 'Point your own apps at {brand}’s gateway and it prices, logs, and attributes every LLM call they make. Let’s open it.',
       side: 'bottom',
       align: 'start',
       onBeforeNext: () => {
@@ -1854,14 +1872,14 @@ const ticketsTour: TourDef = {
   id: 'tickets-overview',
   title: 'Explore Tickets',
   module: 'Tickets',
-  description: 'Track every ticket raised from Nudgebee — and find the one you need with filters.',
+  description: 'Track every ticket raised from {brand} — and find the one you need with filters.',
   route: '/tickets',
   steps: [
     {
       element: '[id="anchor-tab-All Tickets"]',
       title: 'All your tickets',
       description:
-        'Every ticket raised from Nudgebee — from an incident, a recommendation, or by hand — kept in sync with the tool it lives in, like Jira or ServiceNow.',
+        'Every ticket raised from {brand} — from an incident, a recommendation, or by hand — kept in sync with the tool it lives in, like Jira or ServiceNow.',
       side: 'bottom',
       align: 'start',
       // Re-assert the All Tickets tab so the tour works when launched from
@@ -2054,7 +2072,7 @@ const cloudTour: TourDef = {
     {
       element: '#anchor-tab-Monitoring',
       title: 'Alerts, logs, and metrics',
-      description: 'Wire up alert manager and query this account’s cloud logs and metrics without leaving Nudgebee.',
+      description: 'Wire up alert manager and query this account’s cloud logs and metrics without leaving {brand}.',
       side: 'bottom',
       align: 'start',
     },

@@ -11,7 +11,7 @@
  */
 import * as React from 'react';
 import { driver } from 'driver.js';
-import { TOURS, type TourStepDef } from './tours';
+import { TOURS, brandText, type TourStepDef } from './tours';
 
 type DriverInstance = ReturnType<typeof driver>;
 
@@ -151,8 +151,8 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
       d.highlight({
         element: el,
         popover: {
-          title: step.title,
-          description: step.description,
+          title: brandText(step.title),
+          description: brandText(step.description),
           side: step.side ?? 'bottom',
           align: step.align ?? 'start',
           progressText: `${i + 1 + progressOffset} of ${totalSteps}`,

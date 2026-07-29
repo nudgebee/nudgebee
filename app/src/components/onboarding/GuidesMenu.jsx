@@ -6,7 +6,7 @@ import SearchInput from '@ui/SearchInput';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { HelpOutlineDarkIcon } from '@assets';
 import { fetchFeatureFlagsForTenant } from '@lib/auth';
-import { TOURS, canAccessTour, useLaunchGuide } from '@components/common/tour';
+import { TOURS, brandText, canAccessTour, useLaunchGuide } from '@components/common/tour';
 import { ds } from 'src/utils/colors';
 
 /**
@@ -42,7 +42,9 @@ const GuidesMenu = ({ open, onClose }) => {
       if (!q) {
         return true;
       }
-      return `${t.title} ${t.description || ''} ${t.module}`.toLowerCase().includes(q);
+      return brandText(`${t.title} ${t.description || ''} ${t.module}`)
+        .toLowerCase()
+        .includes(q);
     });
     const byModule = {};
     visible.forEach((t) => {
@@ -98,9 +100,9 @@ const GuidesMenu = ({ open, onClose }) => {
                     <SafeIcon src={HelpOutlineDarkIcon} alt='' width={16} height={16} />
                   </Box>
                   <Box sx={{ minWidth: 0 }}>
-                    <Typography sx={{ fontSize: ds.text.body, fontWeight: 500, color: ds.gray[700] }}>{tour.title}</Typography>
+                    <Typography sx={{ fontSize: ds.text.body, fontWeight: 500, color: ds.gray[700] }}>{brandText(tour.title)}</Typography>
                     {tour.description && (
-                      <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], lineHeight: 1.4 }}>{tour.description}</Typography>
+                      <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], lineHeight: 1.4 }}>{brandText(tour.description)}</Typography>
                     )}
                   </Box>
                 </Box>

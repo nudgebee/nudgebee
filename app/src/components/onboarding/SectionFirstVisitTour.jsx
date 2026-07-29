@@ -10,7 +10,8 @@ import apiUser, {
   PREFERENCE_CLOUD_TOUR_SEEN,
 } from '@api1/user';
 import { fetchFeatureFlagsForTenant } from '@lib/auth';
-import { useTour, TOURS, canAccessTour } from '@components/common/tour';
+import { useTour, TOURS, brandText, canAccessTour } from '@components/common/tour';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 import TourWelcomeDialog from './TourWelcomeDialog';
 
 /**
@@ -43,7 +44,7 @@ export const SECTION_TOURS = [
     welcome: {
       title: 'Investigations',
       description:
-        'This tab holds every root-cause analysis — the ones Nudgebee runs automatically when incidents fire, and the ones you start yourself. Here’s a quick tour.',
+        'This tab holds every root-cause analysis — the ones {brand} runs automatically when incidents fire, and the ones you start yourself. Here’s a quick tour.',
     },
   },
   {
@@ -90,7 +91,7 @@ export const SECTION_TOURS = [
     welcome: {
       title: 'Welcome to Tickets',
       description:
-        'Every ticket raised from Nudgebee lives here, in sync with Jira, ServiceNow, or wherever it came from. Here’s a quick tour of finding the one you need.',
+        'Every ticket raised from {brand} lives here, in sync with Jira, ServiceNow, or wherever it came from. Here’s a quick tour of finding the one you need.',
     },
   },
   {
@@ -134,6 +135,11 @@ export function matchesSection(section, pathname, fragment) {
 const SectionFirstVisitTour = () => {
   const router = useRouter();
   const { start, isActive } = useTour();
+  // Subscribed for the re-render, not the value: brandText() reads the brand
+  // name from a non-reactive module cache, and the branding fetch may resolve
+  // after this dialog has already mounted. Without this, a slow
+  // /api/public/app_config would leave the fallback name on screen.
+  useBrandingConfig();
   const [pending, setPending] = useState(null);
   const [flagsReady, setFlagsReady] = useState(false);
   // Offer each view at most once per session, so Snooze (which leaves the flag
@@ -230,7 +236,13 @@ const SectionFirstVisitTour = () => {
   }
 
   return (
-    <TourWelcomeDialog open title={pending.welcome.title} description={pending.welcome.description} onStart={handleStart} onSnooze={handleSnooze} />
+    <TourWelcomeDialog
+      open
+      title={brandText(pending.welcome.title)}
+      description={brandText(pending.welcome.description)}
+      onStart={handleStart}
+      onSnooze={handleSnooze}
+    />
   );
 };
 

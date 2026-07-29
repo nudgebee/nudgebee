@@ -4,7 +4,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import { HelpOutlineDarkIcon } from '@assets';
 import { useLaunchGuide } from './useLaunchGuide';
 import { canAccessTour } from './tourAccess';
-import { TOURS } from './tours';
+import { TOURS, brandText } from './tours';
 
 /**
  * Reusable contextual guide launcher — the "How to …" ghost button dropped next
@@ -29,7 +29,7 @@ const TourLauncher = ({ tourId, label, tone = 'ghost', size = 'md', showIcon = t
       icon={showIcon ? <SafeIcon src={HelpOutlineDarkIcon} alt='' width={16} height={16} /> : undefined}
       onClick={() => launch(tourId)}
     >
-      {label || `How to: ${tour.title}`}
+      {label || `How to: ${brandText(tour.title)}`}
     </Button>
   );
 };
