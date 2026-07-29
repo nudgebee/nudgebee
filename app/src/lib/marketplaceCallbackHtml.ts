@@ -1,11 +1,13 @@
-import loadBrandingFile from '@lib/loadBrandingFile';
+import { resolveServerBranding } from '@lib/serverBranding';
 
 // Marketplace callback pages render standalone (outside the React tree),
 // so CSS variables from useThemeProvider are not available. We inline the
 // tenant's colorTokens into a <style> block so var() references resolve and
-// the page picks up partner branding from theme.json.
+// the page picks up partner branding. Sourced from the server branding
+// provider (EE-only); empty in OSS, where the page renders with neutral
+// defaults.
 function brandingStyleBlock(): string {
-  const tokens = loadBrandingFile()?.colorTokens || {};
+  const tokens = resolveServerBranding()?.colorTokens || {};
   const decls = Object.entries(tokens)
     .map(([k, v]) => `${k}: ${v};`)
     .join(' ');

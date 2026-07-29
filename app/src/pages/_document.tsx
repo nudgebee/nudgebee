@@ -1,12 +1,12 @@
 import { Html, Head, Main, NextScript } from 'next/document';
 import { getCriticalCssTokens } from '@hooks/useThemeProvider';
-import loadBrandingFile from '@lib/loadBrandingFile';
+import { resolveServerBranding } from '@lib/serverBranding';
 
 export default function Document() {
   const criticalCss = getCriticalCssTokens();
-  const brandingFile = loadBrandingFile();
-  const faviconUrl = brandingFile?.faviconUrl || '/favicon.ico';
-  const title = brandingFile?.title || 'Nudgebee';
+  const branding = resolveServerBranding();
+  const faviconUrl = branding?.faviconUrl || '/favicon.ico';
+  const title = branding?.title || 'Nudgebee';
 
   return (
     <Html lang='en'>

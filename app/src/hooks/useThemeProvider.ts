@@ -2,50 +2,8 @@ import { useMemo, useEffect, useState } from 'react';
 import type { Theme } from '@mui/material';
 import { createDynamicTheme } from 'src/theme/createDynamicTheme';
 import { DEFAULT_CSS_TOKENS } from 'src/styles/defaultTokens';
+import { resolveServerBranding } from '@lib/serverBranding';
 import { useBrandingConfig } from './useTenantBranding';
-
-// Server-side only: load branding file color tokens once for SSR critical CSS.
-let _ssrBrandingTokens: Record<string, string> | null = null;
-let _ssrBrandingLoaded = false;
-// Throttle retries after a failed read (see loadBrandingFile.js): a persistently
-// misconfigured TENANT_BRANDING_FILE must not run a blocking fs.readFileSync on every
-// SSR request and stall the event loop. Transient failures self-heal within the window.
-let _ssrLastAttemptMs = 0;
-const SSR_BRANDING_RETRY_COOLDOWN_MS = 10_000;
-
-function loadSSRBrandingTokens(): Record<string, string> | null {
-  if (typeof window !== 'undefined') return null;
-  if (_ssrBrandingLoaded) return _ssrBrandingTokens;
-
-  const now = Date.now();
-  if (now - _ssrLastAttemptMs < SSR_BRANDING_RETRY_COOLDOWN_MS) return _ssrBrandingTokens;
-  _ssrLastAttemptMs = now;
-
-  const filePath = process.env.TENANT_BRANDING_FILE;
-  // No branding configured — cache the (permanent) miss and return defaults.
-  if (!filePath) {
-    _ssrBrandingLoaded = true;
-    return null;
-  }
-
-  try {
-    // Dynamic require to avoid bundling fs into client
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const fs = require('fs');
-    const path = require('path');
-    const resolvedPath = filePath.startsWith('/') ? filePath : path.join(process.cwd(), 'public', filePath);
-    const raw = fs.readFileSync(resolvedPath, 'utf-8');
-    const data = JSON.parse(raw);
-    _ssrBrandingTokens = data?.colorTokens || null;
-    _ssrBrandingLoaded = true; // cache only a successful read
-  } catch {
-    // Branding file configured but not readable yet (e.g. the branding volume not
-    // visible to this module's first caller). Do NOT cache — leave _ssrBrandingLoaded
-    // false so a later SSR render retries instead of latching defaults for the whole
-    // process lifetime (the color FOUC / bee-favicon flash). Falls back to defaults now.
-  }
-  return _ssrBrandingTokens;
-}
 
 /**
  * Hook that provides a dynamic MUI theme and applies CSS variable overrides
@@ -217,7 +175,9 @@ export function getCriticalCssTokens(): string {
     '--ds-green-500',
   ];
 
-  const brandingTokens = loadSSRBrandingTokens();
+  // SSR branding tokens come from the optional server branding provider
+  // (EE-only). In OSS this is null, so critical CSS is the neutral defaults.
+  const brandingTokens = resolveServerBranding()?.colorTokens || null;
   const tokens = brandingTokens ? { ...DEFAULT_CSS_TOKENS, ...brandingTokens } : DEFAULT_CSS_TOKENS;
 
   const declarations = criticalKeys

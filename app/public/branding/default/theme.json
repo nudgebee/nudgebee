@@ -1,0 +1,13 @@
+{
+  "title": "Nudgebee",
+  "assistantName": "nubi",
+  "logoUrl": "/branding/default/logo.svg",
+  "faviconUrl": "/favicon.ico",
+  "nubiIconUrl": "/branding/default/nubi-icon.svg",
+  "nubiIconLightUrl": "/branding/default/nubi-icon-light.svg",
+  "helpbeeIconUrl": "/branding/default/helpbee-icon.svg",
+  "troubleshootBeeUrl": "/branding/default/troubleshoot_empty_state.png",
+  "optimizeBeeUrl": "/branding/default/optimize_empty_state.png",
+  "k8sBeeUrl": "/branding/default/k8s-bee.svg",
+  "newUserBeeUrl": "/branding/default/new-user-bee.svg"
+}
