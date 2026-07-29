@@ -81,13 +81,14 @@ func TestGcpLeanAgent(t *testing.T) {
 }
 
 // TestGcpLeanReducedCore pins the reduced cloud core: the lean agent preloads the gcloud
-// CLI + SDG + events + recommendations + delegate + search_tools, and drops the specialist
-// agents (databases, kubectl, the gcp sub-agent) — reached on-demand via search_tools.
+// CLI + SDG + events + resource_search + recommendations + delegate + search_tools, and drops
+// the specialist agents (databases, kubectl, the gcp sub-agent) — reached on-demand via search_tools.
 func TestGcpLeanReducedCore(t *testing.T) {
 	names := cloudLeanCoreToolNames(tools.ToolExecuteGcpCliCommand)
 	assert.Contains(t, names, tools.ToolExecuteGcpCliCommand)
 	assert.Contains(t, names, SearchToolsToolName)
 	assert.Contains(t, names, ServiceDependencyGraph)
+	assert.Contains(t, names, ResourceSearchAgentName) // cross-cloud inventory search, mirrors k8s lean core
 	assert.Contains(t, names, DelegateAgentToolName)
 	// Specialists are dropped from context (reached via search_tools + delegate_agent).
 	assert.NotContains(t, names, GcpAgentName)

@@ -260,18 +260,20 @@ func getAwsPlannerSupportedTools(ctx *security.RequestContext, accountId, agentN
 		"aws_observability",
 		tools.ToolExecuteAwsCliCommand,
 		getAwsTicketAgentName(),
-		"github",          // GithubAgentName
-		"websearch",       // SearchAgentName
-		"recommendations", // RecommendationsAgentName
-		"events",          // EventsAgentName
-		"visualizer",      // VisualizationAgentName
-		"postgres",        // PostgresAgentName
-		"mysql",           // MySQLAgentName
-		"mssql",           // MSSQLAgentName
-		"oracle",          // OracleAgentName
-		"redis",           // RedisAgentName
-		"rabbitmq",        // RabbitMQAgentName
-		"kubectl",         // KubectlAgentName
+		"github",                // GithubAgentName
+		"websearch",             // SearchAgentName
+		"recommendations",       // RecommendationsAgentName
+		"events",                // EventsAgentName
+		"visualizer",            // VisualizationAgentName
+		"postgres",              // PostgresAgentName
+		"mysql",                 // MySQLAgentName
+		"mssql",                 // MSSQLAgentName
+		"oracle",                // OracleAgentName
+		"redis",                 // RedisAgentName
+		"rabbitmq",              // RabbitMQAgentName
+		"kubectl",               // KubectlAgentName
+		WorkflowAgentName,       // parity with GCP/k8s; account-gated by IsToolConfigured
+		ResourceSearchAgentName, // cross-cloud inventory search, parity with k8s
 		tools.ToolIncidentAssembly,
 		DelegateAgentToolName,
 		tools.SearchSkillsToolName, // Search knowledge bases by query (#34819)
@@ -287,6 +289,16 @@ func getAwsPlannerSupportedTools(ctx *security.RequestContext, accountId, agentN
 	// not just K8s, so expose it to this orchestrator. The old V1 variant that
 	// was K8s-only has been removed; the V2 flag guard here went with it.
 	supportedToolNames = append(supportedToolNames, ServiceDependencyGraph)
+
+	// Cross-cutting extras, parity with the k8s orchestrator — flag-gated on the same
+	// switches, so they only surface where already enabled account-wide. (think is already
+	// injected at the tail of this function, so it is intentionally not repeated here.)
+	if config.Config.RemediationAgentEnabled {
+		supportedToolNames = append(supportedToolNames, RemediationAgentName)
+	}
+	if core.IsAgentsFollowupEnabled() {
+		supportedToolNames = append(supportedToolNames, FollowupAgentName)
+	}
 
 	// shell_execute is injected automatically by FilterAndInjectDefaultTools when enabled.
 	// It auto-injects cloud credentials based on account type.

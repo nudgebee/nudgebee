@@ -29,9 +29,13 @@ func cloudLeanCoreToolNames(cliToolName string) []string {
 		cliToolName,
 		ServiceDependencyGraph,
 		EventsAgentName,
+		ResourceSearchAgentName,
 		RecommendationsAgentName,
 		DelegateAgentToolName,
 		SearchToolsToolName,
+	}
+	if config.Config.RemediationAgentEnabled {
+		names = append(names, RemediationAgentName)
 	}
 	if config.Config.LlmServerShellToolEnabled {
 		names = append(names, toolcore.ToolExecuteShellCommand)

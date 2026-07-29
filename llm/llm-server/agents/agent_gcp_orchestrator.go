@@ -233,7 +233,7 @@ func renderGcpDebugReactPrompt(useGcpCliDirect bool) string {
 }
 
 func getGcpPlannerSupportedTools(ctx *security.RequestContext, accountId, agentName string, useGcpCliDirect bool) []toolcore.NBTool {
-	supportedToolNames := []string{getTicketAgentName(), WorkflowAgentName, GithubAgentName, WebSearchAgentName, RecommendationsAgentName, EventsAgentName, VisualizationAgentName, PostgresAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RedisAgentName, RabbitMQAgentName, KubectlAgentName, DelegateAgentToolName, tools.ToolIncidentAssembly, tools.SearchSkillsToolName}
+	supportedToolNames := []string{getTicketAgentName(), WorkflowAgentName, GithubAgentName, WebSearchAgentName, RecommendationsAgentName, EventsAgentName, VisualizationAgentName, PostgresAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RedisAgentName, RabbitMQAgentName, KubectlAgentName, ResourceSearchAgentName, DelegateAgentToolName, tools.ToolIncidentAssembly, tools.SearchSkillsToolName}
 
 	// v1 (delegating) routes GCP resource inspection through the `gcp` sub-agent;
 	// v2 (direct) holds gcloud_execute and drops the sub-agent hop.
@@ -246,6 +246,16 @@ func getGcpPlannerSupportedTools(ctx *security.RequestContext, accountId, agentN
 	// The KG-backed service_dependency_graph covers cloud (AWS/GCP/Azure) topology,
 	// not just K8s. The V1 flag guard here went away with the V1 agent.
 	supportedToolNames = append(supportedToolNames, ServiceDependencyGraph)
+
+	// Cross-cutting extras, parity with the k8s orchestrator — flag-gated on the same
+	// switches, so they only surface where already enabled account-wide. (think is already
+	// injected at the tail of this function, so it is intentionally not repeated here.)
+	if config.Config.RemediationAgentEnabled {
+		supportedToolNames = append(supportedToolNames, RemediationAgentName)
+	}
+	if core.IsAgentsFollowupEnabled() {
+		supportedToolNames = append(supportedToolNames, FollowupAgentName)
+	}
 
 	// shell_execute is injected automatically by FilterAndInjectDefaultTools when enabled.
 	// It auto-injects cloud credentials based on account type.

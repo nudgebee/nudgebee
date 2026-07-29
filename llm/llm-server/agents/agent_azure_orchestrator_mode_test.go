@@ -88,6 +88,7 @@ func TestAzureLeanReducedCore(t *testing.T) {
 	assert.Contains(t, names, tools.ToolExecuteAzureCliCommand)
 	assert.Contains(t, names, SearchToolsToolName)
 	assert.Contains(t, names, ServiceDependencyGraph)
+	assert.Contains(t, names, ResourceSearchAgentName) // cross-cloud inventory search, mirrors k8s lean core
 	assert.Contains(t, names, DelegateAgentToolName)
 	// Specialists are dropped from context (reached via search_tools + delegate_agent).
 	assert.NotContains(t, names, AzureAgentName)
