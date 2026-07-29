@@ -300,6 +300,15 @@ func gcloudErrorHint(rawError string) string {
 			"Wrap the --format value in single quotes so the shell passes it through unchanged: " +
 			"`--format='table(name,status,version)'` or `--format='value(name)'`. " +
 			"Correct this command rather than dropping --format entirely — gcloud needs the format spec to produce structured output."
+	case strings.Contains(lower, "requires a non-empty projection"):
+		// Projection-requiring formats (`table`, `csv`, `value`) fail at the
+		// gcloud layer when no column list is provided. Distinct from the
+		// parens-shell class above; the model often lands here after
+		// "fixing" the shell error by dropping the parens.
+		return "The specified `--format` requires an explicit column list (projection) — this applies to `table`, `csv`, and `value`. " +
+			"Either switch to `--format=json` for parseable output, or specify the columns in single quotes: " +
+			"`--format='table(name,status,version)'` (same shape for `csv` and `value`). " +
+			"Do NOT drop --format entirely — pick one of these shapes."
 	case strings.Contains(lower, "has not been used in project") && strings.Contains(lower, "before or it is disabled"),
 		strings.Contains(lower, "permission_denied") && strings.Contains(lower, "api has not been used"):
 		// Per-project API enablement. The model tends to retry across every

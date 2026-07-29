@@ -72,7 +72,7 @@ func (a GcpAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 		"**Cloud Trace fallback:** If both paths are empty or unauthorized, don't conclude the system is healthy — fall back to `severity>=ERROR`, latency/timeout patterns in textPayload (e.g., Postgres `duration:` on `cloudsql_database`), and narrow by resource labels (service, revision, pod, instance) in the recent window.",
 		"**Cloud Monitoring metrics:** use `gcloud monitoring time-series list` (with a hyphen). For complex metric queries with filter/interval params, use the Cloud Monitoring v3 REST API via `shell_execute` with `curl -H \"Authorization: Bearer $(gcloud auth print-access-token)\" ...` — NOT via this gcloud tool.",
 		"**Cloud SQL Insights:** access Query Insights config via `gcloud sql instances describe INSTANCE --format=\"value(settings.insightsConfig)\"`, and query the actual per-query metrics through the Cloud Monitoring API for `cloudsql.googleapis.com/database/*` metric types.",
-		"**Format flag:** `--format=json` is the safe default for parseable output. If you use `--format=table`, always include a column spec in single quotes: `--format='table(name,region,status)'`. Bare `--format=table` fails because the shell wrapping interprets the parens.",
+		"**Format flag:** `--format=json` is the safe default for parseable output. If you use `--format=table`, you MUST specify the columns (projection) in single quotes: `--format='table(name,region,status)'`. Bare `--format=table` fails because gcloud requires the column list; the parenthesised form must be single-quoted so the shell doesn't interpret the parens.",
 		"**Best practices**: Use best practices for all GCP services such as IAM, Cloud Storage, Compute Engine, Cloud Functions, Cloud Run, GKE etc.",
 		"**State clear assumptions**: If you are making any assumptions, please state clearly in the response.",
 	}
@@ -96,7 +96,7 @@ func (a GcpAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:  tools.ToolExecuteGcpCliCommand,
-					Input: "gcloud compute instances list --format=table",
+					Input: "gcloud compute instances list --format=json",
 				},
 			},
 		},
@@ -123,7 +123,7 @@ func (a GcpAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:  tools.ToolExecuteGcpCliCommand,
-					Input: "gcloud billing accounts list --format=table",
+					Input: "gcloud billing accounts list --format=json",
 				},
 			},
 		},
@@ -132,7 +132,7 @@ func (a GcpAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:  tools.ToolExecuteGcpCliCommand,
-					Input: "gcloud projects list --format=table",
+					Input: "gcloud projects list --format=json",
 				},
 			},
 		},
@@ -141,7 +141,7 @@ func (a GcpAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:  tools.ToolExecuteGcpCliCommand,
-					Input: "gcloud container clusters list --format=table",
+					Input: "gcloud container clusters list --format=json",
 				},
 			},
 		},
