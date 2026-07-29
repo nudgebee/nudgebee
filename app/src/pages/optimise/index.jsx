@@ -1,12 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
+import dynamic from 'next/dynamic';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import ErrorBoundary from '@shared/ErrorBoundary';
-import OptimizeNewPage from '@components/optimise-new/OptimizeNewPage';
 import SummaryView from '@components/optimise-new/summary/SummaryView';
-import ResolutionsView from '@components/optimise-new/ResolutionsView';
-import CostAnalyser from '@components/llm/cost-analyser/CostAnalyser';
-import GatewayUsage from '@components/llm/gateway-usage/GatewayUsage';
-import AutoOptimizeTabs from '@components/autopilot/tables/AutoOptimizeTabs';
 import { useRouter } from 'next/router';
 import {
   OptimizeSummaryIcon,
@@ -24,6 +20,13 @@ import { Button as DsButton } from '@ui/Button';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { ds } from '@utils/colors';
+
+// Only one tab is visible at a time; lazy-load the rest to cut initial JS.
+const OptimizeNewPage = dynamic(() => import('@components/optimise-new/OptimizeNewPage'), { ssr: false });
+const ResolutionsView = dynamic(() => import('@components/optimise-new/ResolutionsView'), { ssr: false });
+const AutoOptimizeTabs = dynamic(() => import('@components/autopilot/tables/AutoOptimizeTabs'), { ssr: false });
+const CostAnalyser = dynamic(() => import('@components/llm/cost-analyser/CostAnalyser'), { ssr: false });
+const GatewayUsage = dynamic(() => import('@components/llm/gateway-usage/GatewayUsage'), { ssr: false });
 
 export async function getServerSideProps() {
   return {
