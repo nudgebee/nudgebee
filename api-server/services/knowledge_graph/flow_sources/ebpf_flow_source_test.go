@@ -343,3 +343,31 @@ func TestEbpfFlowSource_GetApplicationName(t *testing.T) {
 		})
 	}
 }
+
+// TestEbpfFlowSource_ResolvesBarePodNameViaSourceNamespace mirrors the eBPF
+// upstream default branch: it resolves a bare pod hostname to its owning
+// Workload using the calling app node's namespace before creating an
+// ExternalService. A namespace miss is fail-safe (refuses -> external).
+func TestEbpfFlowSource_ResolvesBarePodNameViaSourceNamespace(t *testing.T) {
+	redisMaster := makeWorkloadNode("StatefulSet", "redis-master", "redis", "k8s-dev")
+	resolver := resolverWithPodNames([]struct {
+		namespace string
+		name      string
+		node      *core.DbNode
+	}{
+		{"redis", "redis-master-0", redisMaster},
+	})
+
+	// The calling app node (sourceNode) lives in namespace "redis".
+	sourceNode := makeWorkloadNode("Deployment", "checkout", "redis", "k8s-dev")
+	got, ok := resolver.ResolvePodName(stringProp(sourceNode, "namespace"), "redis-master-0")
+	if !ok || got.Properties["name"] != "redis-master" {
+		t.Errorf("eBPF bare pod-name resolution failed: got %v ok=%v", got, ok)
+	}
+
+	// A caller whose namespace has no such pod must refuse -> ExternalService.
+	other := makeWorkloadNode("Deployment", "web", "payments", "k8s-dev")
+	if _, ok := resolver.ResolvePodName(stringProp(other, "namespace"), "redis-master-0"); ok {
+		t.Errorf("eBPF resolution must refuse when the caller namespace has no such pod")
+	}
+}

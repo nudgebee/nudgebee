@@ -476,6 +476,17 @@ func (s *EbpfFlowSource) processK8sAccount(
 					// ExternalService that bloats "what does this workload call?".
 					continue
 				default:
+					// Bare pod hostname (e.g. a StatefulSet ordinal like
+					// "redis-master-0") -> its owning Workload, scoped to the
+					// calling app's namespace, before falling back to an orphan
+					// ExternalService. A namespace miss is fail-safe:
+					// ResolvePodName returns false and we create the external
+					// node as before (never a wrong-namespace merge).
+					if node, ok := podIPResolver.ResolvePodName(stringProp(sourceNode, "namespace"), upstreamID.Name); ok {
+						upstreamNode = node
+						skipNodeSearch = true
+						break
+					}
 					upstreamNode = s.createExternalServiceNode(*upstreamID, req.TenantID, account)
 					if upstreamNode == nil {
 						// Empty name, raw IP, or pod-like name — drop the edge so

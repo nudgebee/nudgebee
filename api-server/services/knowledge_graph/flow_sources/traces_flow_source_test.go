@@ -501,3 +501,50 @@ func TestNormalizeCallTargetName(t *testing.T) {
 // - service map conversion: service_map_converter_test.go (to be added)
 //
 // Integration tests for the full flow should be added to knowledge_graph/integration_test.go
+
+// TestTracesFlowSource_ResolvesBarePodNameToWorkload is the flow-source golden
+// for the StatefulSet-ordinal gap: normalizeCallTargetName's string heuristic
+// leaves "redis-master-0" unchanged (isPodName requires a 5-char pod ID), so
+// tryMatchExternalService must resolve it authoritatively (namespace-scoped) to
+// the owning Workload before minting an opaque ExternalService leaf.
+func TestTracesFlowSource_ResolvesBarePodNameToWorkload(t *testing.T) {
+	logger := slog.Default()
+	source := NewTracesFlowSource(logger)
+
+	// The redis-master StatefulSet Workload already exists in the graph (k8s source).
+	redisMaster := &core.DbNode{
+		UniqueKey: "k8s:acct1:redis:Workload::redis-master",
+		NodeType:  core.NodeTypeWorkload,
+		Properties: map[string]interface{}{
+			"name":      "redis-master",
+			"kind":      "StatefulSet",
+			"namespace": "redis",
+		},
+		CloudAccountID: "acct1",
+	}
+	source.InitializeNodeMatcher([]*core.DbNode{redisMaster})
+
+	// Pod-name index as both sources (kube_pod_info + k8s_pods) would build it.
+	resolver := resolverWithPodNames([]struct {
+		namespace string
+		name      string
+		node      *core.DbNode
+	}{
+		{"redis", "redis-master-0", redisMaster},
+	})
+
+	// Caller in namespace "redis" -> resolves to the StatefulSet, not an ExternalService.
+	got := source.tryMatchExternalService("redis-master-0", "ExternalService", "acct1", "redis", resolver)
+	if got == nil {
+		t.Fatalf("expected redis-master-0 to resolve to the redis-master StatefulSet, got nil (would create an ExternalService)")
+	}
+	if got.UniqueKey != redisMaster.UniqueKey {
+		t.Errorf("expected %q, got %q", redisMaster.UniqueKey, got.UniqueKey)
+	}
+
+	// Caller in a namespace with no such pod: no pod match, and no DNS/name match
+	// either -> nil, so the caller falls back to an ExternalService (status quo).
+	if miss := source.tryMatchExternalService("redis-master-0", "ExternalService", "acct1", "payments", resolver); miss != nil {
+		t.Errorf("bare pod name unknown in caller ns must NOT match, got %q", miss.UniqueKey)
+	}
+}

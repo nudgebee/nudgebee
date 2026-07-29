@@ -445,8 +445,12 @@ func (s *TracesFlowSource) processK8sAccount(
 				default:
 					matchName := normalizeCallTargetName(targetName, targetKind)
 
-					// First try to match by name/kind to existing nodes
-					upstreamNode = s.tryMatchExternalService(matchName, targetKind, account.CloudAccountID)
+					// First try to match by name/kind to existing nodes. The
+					// caller is sourceNode, so its namespace scopes bare
+					// pod-name resolution (StatefulSet ordinals the string
+					// heuristic above leaves unchanged).
+					upstreamNode = s.tryMatchExternalService(matchName, targetKind, account.CloudAccountID,
+						stringProp(sourceNode, "namespace"), podIPResolver)
 					if upstreamNode == nil {
 						// No match found - create external service node
 						upstreamNode = s.createExternalServiceNode(matchName, targetKind, req.TenantID, account)
@@ -531,8 +535,11 @@ func (s *TracesFlowSource) processK8sAccount(
 				default:
 					matchName := normalizeCallTargetName(downstreamName, downstreamKind)
 
-					// First try to match by name/kind to existing nodes
-					downstreamNode = s.tryMatchExternalService(matchName, downstreamKind, account.CloudAccountID)
+					// First try to match by name/kind to existing nodes. The
+					// caller (this downstream) has no known namespace here, so
+					// pod-name resolution falls back to global-unique.
+					downstreamNode = s.tryMatchExternalService(matchName, downstreamKind, account.CloudAccountID,
+						"", podIPResolver)
 					if downstreamNode == nil {
 						// No match found - create external service node
 						downstreamNode = s.createExternalServiceNode(matchName, downstreamKind, req.TenantID, account)
@@ -1227,14 +1234,27 @@ func isReplicaSetHashName(name string) bool {
 
 // tryMatchExternalService attempts to match an external service to existing nodes
 func (s *TracesFlowSource) tryMatchExternalService(
-	name, kind, k8sAccountID string,
+	name, kind, k8sAccountID, callerNamespace string,
+	podIPResolver *PodIPResolver,
 ) *core.DbNode {
+	// Bare pod hostname (e.g. a StatefulSet ordinal like "redis-master-0") ->
+	// its owning Workload, resolved authoritatively from kube_pod_info/k8s_pods
+	// and scoped to the caller's namespace. normalizeCallTargetName's string
+	// heuristic (isPodName) doesn't recognize StatefulSet ordinals, so those
+	// names arrive here unchanged; this resolves them before the generic name
+	// match falls through to minting an orphan ExternalService.
+	if podIPResolver != nil {
+		if node, ok := podIPResolver.ResolvePodName(callerNamespace, name); ok {
+			return node
+		}
+	}
+
 	matcher := s.GetNodeMatcher()
 	if matcher == nil {
 		return nil
 	}
 
-	// First, try to match K8s internal DNS names
+	// Then, try to match K8s internal DNS names
 	if node := s.matchK8sInternalDNSToNode(name, k8sAccountID); node != nil {
 		s.logger.Debug("matched external service via K8s DNS parsing",
 			"name", name,
