@@ -1,4 +1,4 @@
-name: llm-gateway-dev-GKE CI
+name: llm-gateway CI
 
 on:
   workflow_dispatch:
@@ -6,13 +6,21 @@ on:
     branches: ["main"]
     paths:
       - llm/gateway/**
-      - .github/workflows/llm-gateway-dev-gke.yaml
+      - .github/workflows/llm-gateway.yaml
       - deploy/kubernetes/llm-gateway/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint-and-test:
     name: Go Lint + Test
-    runs-on: [self-hosted, X64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v3
@@ -38,9 +46,11 @@ jobs:
         with:
           version: v2.11.3
           working-directory: llm/gateway
+          only-new-issues: true
           args: --timeout 10m
 
-      # -race needs cgo + a C compiler; the self-hosted image is minimal.
+      # -race needs cgo + a C compiler. Ensure gcc is present before the
+      # race-enabled run (idempotent on the hosted runner image).
       - name: Install C toolchain (for -race)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc libc6-dev
 
