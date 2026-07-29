@@ -47,6 +47,12 @@ LOG = logging.getLogger(__name__)
 ADAPTIVE_CARD_SCHEMA_KEY = "$schema"
 ADAPTIVE_CARD_SCHEMA_URL = "http://adaptivecards.io/schemas/adaptive-card.json"
 
+# Slack invite errors that describe the channel or the bot's access to it rather
+# than the invited user. They fail identically for every user in the batch, so
+# they are reported once as a channel-level error instead of being pinned on each
+# user_id — "not_in_channel" in particular means the *bot* is not in the channel.
+SLACK_CHANNEL_LEVEL_INVITE_ERRORS = ("not_in_channel", "channel_not_found", "is_archived", "missing_scope")
+
 # Error message constants
 ERR_UNKNOWN = "Unknown error"
 ERR_TOKEN_REFRESH_FAILED = "Token refresh failed"
@@ -673,19 +679,21 @@ class CommonService:
                 )
                 if response.get("ok"):
                     added.append(user_id)
-                else:
-                    error_msg = response.get("error", ERR_UNKNOWN)
-                    if error_msg in ("already_in_channel", "already_in_group"):
-                        already_members.append(user_id)
-                    else:
-                        failed.append({"user_id": user_id, "error": error_msg})
+                    continue
+                error_msg = response.get("error", ERR_UNKNOWN)
             except SlackApiError as e:
                 error_msg = e.response.get("error", str(e))
-                if error_msg in ("already_in_channel", "already_in_group"):
-                    already_members.append(user_id)
-                else:
-                    LOG.error("Slack API error inviting %s to %s: %s", user_id, channel_id, error_msg)
-                    failed.append({"user_id": user_id, "error": error_msg})
+
+            if error_msg in ("already_in_channel", "already_in_group"):
+                already_members.append(user_id)
+            elif error_msg in SLACK_CHANNEL_LEVEL_INVITE_ERRORS:
+                # Not this user's problem — every remaining invite would fail the
+                # same way, so stop and surface it as an actionable channel error.
+                LOG.error("Slack invite to %s blocked at channel level: %s", channel_id, error_msg)
+                return self._check_error_msg(error_msg, "channels:manage or groups:write")
+            else:
+                LOG.error("Slack API error inviting %s to %s: %s", user_id, channel_id, error_msg)
+                failed.append({"user_id": user_id, "error": error_msg})
 
         return self._members_result("slack", channel_id, added, already_members, failed)
 

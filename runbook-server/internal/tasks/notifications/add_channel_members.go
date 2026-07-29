@@ -2,6 +2,9 @@ package notifications
 
 import (
 	"errors"
+	"fmt"
+	"strings"
+
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/notification"
 )
@@ -56,6 +59,9 @@ func (t *AddChannelMembersTask) Execute(taskCtx types.TaskContext, params map[st
 
 	requestContext := taskCtx.GetNewRequestContext()
 	resp, err := notification.AddChannelMembers(requestContext, request)
+	if err != nil {
+		return nil, err
+	}
 
 	return map[string]any{
 		"provider":        resp.Platform,
@@ -64,7 +70,23 @@ func (t *AddChannelMembersTask) Execute(taskCtx types.TaskContext, params map[st
 		"added":           resp.Added,
 		"already_members": resp.AlreadyMembers,
 		"failed":          resp.Failed,
-	}, err
+	}, noMembersAddedError(resp)
+}
+
+// noMembersAddedError reports the case where nobody was added and nobody was
+// already a member: the step did nothing, so it must not report success. A
+// partial failure still succeeds — the "failed" list carries it. Callers drop
+// the result when an error is returned, so the reasons travel in the message.
+func noMembersAddedError(resp notification.AddChannelMembersResponse) error {
+	if len(resp.Added) > 0 || len(resp.AlreadyMembers) > 0 || len(resp.Failed) == 0 {
+		return nil
+	}
+
+	reasons := make([]string, 0, len(resp.Failed))
+	for _, f := range resp.Failed {
+		reasons = append(reasons, fmt.Sprintf("%s: %s", f.UserID, f.Error))
+	}
+	return fmt.Errorf("no users were added to %s: %s", resp.ChannelID, strings.Join(reasons, ", "))
 }
 
 // toStringSlice coerces a schema "array" value into a []string. It accepts a

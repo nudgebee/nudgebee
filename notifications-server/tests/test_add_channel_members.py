@@ -8,7 +8,9 @@ invites the given users and returns per-user "added", "already_members", and
 
 Covered here at the service layer (no live engine — the install lookup and the
 platform clients are monkeypatched):
-  * Slack       — per-user invite + already_in_channel handling + no-install error
+  * Slack       — per-user invite + already_in_channel handling + no-install error,
+                  plus channel-level errors (not_in_channel/is_archived) surfacing
+                  as one actionable error instead of a per-user failure
   * MS Teams    — team_id required + client result passthrough
   * Google Chat — add-members + needs_authorization surfacing + not-configured error
 """
@@ -93,6 +95,67 @@ def test_slack_reports_failed_user(monkeypatch, svc):
 
     assert result["data"]["added"] == []
     assert result["data"]["failed"] == [{"user_id": "U1", "error": "user_not_found"}]
+
+
+def test_slack_not_in_channel_is_a_channel_error_not_a_user_failure(monkeypatch, svc):
+    """ "not_in_channel" means the *bot* is not in the channel, so it must surface
+    as an actionable channel-level error rather than being pinned on each user."""
+    monkeypatch.setattr(svc, "_get_messaging_platform", lambda *a, **k: _Install())
+
+    calls = []
+
+    class _Client:
+        def conversations_invite(self, *, token, channel_id, users):
+            calls.append(users)
+            return {"ok": False, "error": "not_in_channel"}
+
+    svc.slack_app = type("App", (), {"client": _Client()})()
+
+    result = svc.add_channel_members(platform="slack", tenant_id="t1", channel_id="C1", user_ids=["U1", "U2"])
+
+    assert "error" in result
+    assert "not in the channel" in result["error"]["message"].lower()
+    # No per-user "failed" entry blaming the user for a bot-membership problem.
+    assert "data" not in result
+    # Bails out on the first user instead of burning a call per user.
+    assert calls == ["U1"]
+
+
+def test_slack_channel_level_error_from_api_exception(monkeypatch, svc):
+    """The same classification applies when slack_sdk raises instead of returning."""
+    monkeypatch.setattr(svc, "_get_messaging_platform", lambda *a, **k: _Install())
+
+    class _Resp(dict):
+        pass
+
+    class _Client:
+        def conversations_invite(self, *, token, channel_id, users):
+            raise common.SlackApiError("archived", _Resp(error="is_archived"))
+
+    svc.slack_app = type("App", (), {"client": _Client()})()
+
+    result = svc.add_channel_members(platform="slack", tenant_id="t1", channel_id="C1", user_ids=["U1"])
+
+    assert "error" in result
+    assert "archived" in result["error"]["message"].lower()
+
+
+def test_slack_per_user_failure_does_not_stop_the_batch(monkeypatch, svc):
+    """A genuine per-user error stays per-user: the rest of the batch still runs."""
+    monkeypatch.setattr(svc, "_get_messaging_platform", lambda *a, **k: _Install())
+
+    class _Client:
+        def conversations_invite(self, *, token, channel_id, users):
+            if users == "U1":
+                return {"ok": False, "error": "user_is_restricted"}
+            return {"ok": True}
+
+    svc.slack_app = type("App", (), {"client": _Client()})()
+
+    result = svc.add_channel_members(platform="slack", tenant_id="t1", channel_id="C1", user_ids=["U1", "U2"])
+
+    assert result["data"]["added"] == ["U2"]
+    assert result["data"]["failed"] == [{"user_id": "U1", "error": "user_is_restricted"}]
 
 
 def test_slack_no_installation_returns_error(monkeypatch, svc):
