@@ -436,7 +436,7 @@ const PageLayout = ({ children }) => {
                     pageFlags.isInvestigate || pageFlags.isOptimize || pageFlags.isTroubleshoot || pageFlags.isAgentic
                       ? colors.background.home
                       : pageFlags.isAskNudgebee
-                      ? colors.background.askAssistantPage
+                      ? colors.background.askNudgebeePage
                       : colors.background.pages,
                   ...styles.body,
                   position: 'relative',

@@ -17,7 +17,7 @@
   --nb-color-secondary-default: #374151;
   --nb-color-secondary-dark: #9f9f9f;
   --nb-color-tertiary: #737373;
-  --nb-color-brand-main: #facf39;
+  --nb-color-nudgebee-main: #facf39;
   --nb-color-success: #16a34a;
   --nb-color-error: #dc2626;
   --nb-color-error-hover: #b91c1c;
@@ -96,10 +96,10 @@
   --nb-text-low: #aea124;
   --nb-text-sidebar: #1b2d4a;
   --nb-text-tertiary-medium: #d0d0d0;
-  --nb-text-ask-assistant-welcome: #314e7d;
-  --nb-text-ask-assistant-username: #3b71c8;
-  --nb-text-assistant-response: #064b8f;
-  --nb-text-assistant-suggestion: #4b5563;
+  --nb-text-ask-nudgebee-welcome: #314e7d;
+  --nb-text-ask-nudgebee-username: #3b71c8;
+  --nb-text-nudgebee-response: #064b8f;
+  --nb-text-nudgebee-suggestion: #4b5563;
   --nb-text-response-list: #4a5568;
   --nb-text-search-placeholder: #c2c6cf;
   --nb-text-purple-label: #7b1fa2;
@@ -134,7 +134,7 @@
   --nb-bg-sidebar: #1b2d4a;
   --nb-bg-secondary-dark: #9f9f9f;
   --nb-bg-home: #ffffff;
-  --nb-bg-ask-assistant-page: #ffffff;
+  --nb-bg-ask-nudgebee-page: #ffffff;
   --nb-bg-pages: #fcfcfc;
   --nb-bg-active-button-color: #d9d9d933;
   --nb-bg-primary-light: #bfdbfe;
@@ -241,8 +241,8 @@
   --nb-border-autocomplete-option: #e0e0e0;
   --nb-border-value-with-left-border: #16243e;
   --nb-border-conversation-card: #6a7485;
-  --nb-border-assistant-suggestion: #e5e7eb;
-  --nb-border-assistant-suggestion-hover: #d1d5db;
+  --nb-border-nudgebee-suggestion: #e5e7eb;
+  --nb-border-nudgebee-suggestion-hover: #d1d5db;
   --nb-border-warning: #f59e0b;
 
   /* ── Button Colors ── */

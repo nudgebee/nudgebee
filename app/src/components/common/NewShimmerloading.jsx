@@ -38,7 +38,7 @@ const ShimmerLoading = () => {
             width: '16px',
             height: '16px',
             borderRadius: '50%',
-            backgroundColor: colors.brandMain,
+            backgroundColor: colors.nudgebeeMain,
             animation: 'pulse 2s ease-in-out infinite',
           },
           '@keyframes ripple': {

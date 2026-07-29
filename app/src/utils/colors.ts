@@ -7,7 +7,7 @@ interface Colors {
     dark: string;
   };
   tertiary: string;
-  brandMain: string;
+  nudgebeeMain: string;
   success: string;
   error: string;
   errorHover: string;
@@ -101,10 +101,10 @@ interface Colors {
     low: string;
     sideBar: string;
     tertiarymedium: string;
-    askAssistantWelcomeText: string;
-    askAssistantUserName: string;
-    assistantResponse: string;
-    assistantSuggestionText: string;
+    askNudgebeeWelcomeText: string;
+    askNudgebeeUserName: string;
+    nudgebeeResponse: string;
+    nudgebeeSuggestionText: string;
     responseList: string;
     searchPlaceholder: string;
     purpleLabel: string;
@@ -144,7 +144,7 @@ interface Colors {
     secondaryDark: string;
     home: string;
     pages: string;
-    askAssistantPage: string;
+    askNudgebeePage: string;
     activeButtonColor: string;
     primaryLight: string;
     primaryLightest: string;
@@ -249,8 +249,8 @@ interface Colors {
     autocompleteOption: string;
     valueWithLeftBorder: string;
     conversationCard: string;
-    assistantSuggestion: string;
-    assistantSuggestionHover: string;
+    nudgebeeSuggestion: string;
+    nudgebeeSuggestionHover: string;
     warning: string;
     warningLight: string;
   };
@@ -288,7 +288,7 @@ export const colors: Colors = {
     dark: 'var(--nb-color-secondary-dark)',
   },
   tertiary: 'var(--nb-color-tertiary)',
-  brandMain: 'var(--nb-color-brand-main)',
+  nudgebeeMain: 'var(--nb-color-nudgebee-main)',
   success: 'var(--nb-color-success)',
   error: 'var(--nb-color-error)',
   errorHover: 'var(--nb-color-error-hover)',
@@ -381,10 +381,10 @@ export const colors: Colors = {
     low: 'var(--nb-text-low)',
     sideBar: 'var(--nb-text-sidebar)',
     tertiarymedium: 'var(--nb-text-tertiary-medium)',
-    askAssistantWelcomeText: 'var(--nb-text-ask-assistant-welcome)',
-    askAssistantUserName: 'var(--nb-text-ask-assistant-username)',
-    assistantResponse: 'var(--nb-text-assistant-response)',
-    assistantSuggestionText: 'var(--nb-text-assistant-suggestion)',
+    askNudgebeeWelcomeText: 'var(--nb-text-ask-nudgebee-welcome)',
+    askNudgebeeUserName: 'var(--nb-text-ask-nudgebee-username)',
+    nudgebeeResponse: 'var(--nb-text-nudgebee-response)',
+    nudgebeeSuggestionText: 'var(--nb-text-nudgebee-suggestion)',
     responseList: 'var(--nb-text-response-list)',
     searchPlaceholder: 'var(--nb-text-search-placeholder)',
     purpleLabel: 'var(--nb-text-purple-label)',
@@ -425,7 +425,7 @@ export const colors: Colors = {
     sideBar: 'var(--nb-bg-sidebar)',
     secondaryDark: 'var(--nb-bg-secondary-dark)',
     home: 'var(--nb-bg-home)',
-    askAssistantPage: 'var(--nb-bg-ask-assistant-page)',
+    askNudgebeePage: 'var(--nb-bg-ask-nudgebee-page)',
     pages: 'var(--nb-bg-pages)',
     activeButtonColor: 'var(--nb-bg-active-button-color)',
     primaryLight: 'var(--nb-bg-primary-light)',
@@ -530,8 +530,8 @@ export const colors: Colors = {
     autocompleteOption: 'var(--nb-border-autocomplete-option)',
     valueWithLeftBorder: 'var(--nb-border-value-with-left-border)',
     conversationCard: 'var(--nb-border-conversation-card)',
-    assistantSuggestion: 'var(--nb-border-assistant-suggestion)',
-    assistantSuggestionHover: 'var(--nb-border-assistant-suggestion-hover)',
+    nudgebeeSuggestion: 'var(--nb-border-nudgebee-suggestion)',
+    nudgebeeSuggestionHover: 'var(--nb-border-nudgebee-suggestion-hover)',
     warning: 'var(--nb-border-warning)',
     warningLight: 'var(--nb-border-warning-light)',
   },
@@ -573,7 +573,7 @@ export const rawColors: Colors = {
     dark: 'var(--ds-gray-400)',
   },
   tertiary: 'var(--ds-gray-600)',
-  brandMain: 'var(--ds-yellow-500)',
+  nudgebeeMain: 'var(--ds-yellow-500)',
   success: 'var(--ds-green-500)',
   error: 'var(--ds-red-600)',
   errorHover: 'var(--ds-red-700)',
@@ -667,10 +667,10 @@ export const rawColors: Colors = {
     low: 'var(--ds-yellow-700)',
     sideBar: 'var(--ds-brand-600)',
     tertiarymedium: 'var(--ds-brand-200)',
-    askAssistantWelcomeText: 'var(--ds-brand-500)',
-    askAssistantUserName: 'var(--ds-blue-500)',
-    assistantResponse: 'var(--ds-blue-700)',
-    assistantSuggestionText: 'var(--ds-brand-500)',
+    askNudgebeeWelcomeText: 'var(--ds-brand-500)',
+    askNudgebeeUserName: 'var(--ds-blue-500)',
+    nudgebeeResponse: 'var(--ds-blue-700)',
+    nudgebeeSuggestionText: 'var(--ds-brand-500)',
     responseList: 'var(--ds-brand-500)',
     searchPlaceholder: 'var(--ds-brand-200)',
     purpleLabel: 'var(--ds-purple-600)',
@@ -709,7 +709,7 @@ export const rawColors: Colors = {
     sideBar: 'var(--ds-brand-600)',
     secondaryDark: 'var(--ds-gray-400)',
     home: 'var(--ds-background-100)',
-    askAssistantPage: 'var(--ds-background-100)',
+    askNudgebeePage: 'var(--ds-background-100)',
     pages: 'var(--ds-background-300)',
     activeButtonColor: '#D9D9D933',
     primaryLight: 'var(--ds-blue-300)',
@@ -815,8 +815,8 @@ export const rawColors: Colors = {
     autocompleteOption: 'var(--ds-gray-300)',
     valueWithLeftBorder: 'var(--ds-brand-700)',
     conversationCard: 'var(--ds-brand-400)',
-    assistantSuggestion: 'var(--ds-brand-150)',
-    assistantSuggestionHover: 'var(--ds-brand-200)',
+    nudgebeeSuggestion: 'var(--ds-brand-150)',
+    nudgebeeSuggestionHover: 'var(--ds-brand-200)',
     warning: 'var(--ds-amber-400)',
     warningLight: 'var(--ds-yellow-300)',
   },
