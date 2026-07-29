@@ -308,8 +308,11 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	// description with no Alertmanager labels block (typical for vmalert →
 	// Zenduty). The /api/incidents/{id}/alerts/ endpoint exposes the clean
 	// alertname (entity_id) and the upstream source name (integration_object.name)
-	// that the webhook does not. Cached per incident; fails soft on any API error.
-	enrichWithZendutyAPI(sc, &alert, incident.UniqueID)
+	// that the webhook does not, and the alert-payload endpoint recovers the raw
+	// Alertmanager label set (namespace/pod/deployment/...) that makes subject
+	// resolution deterministic. incident.Summary selects the right alert out of a
+	// collated incident. Cached per incident; fails soft on any API error.
+	enrichWithZendutyAPI(sc, &alert, incident.UniqueID, incident.Summary)
 
 	// Fingerprint: prefer Zenduty's stable IncidentKey (its documented dedup key).
 	// When absent — the norm, since the parser does not populate it — leave it

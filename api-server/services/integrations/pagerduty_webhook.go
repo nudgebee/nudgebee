@@ -3654,6 +3654,7 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 			"destination_workload_name", // Istio/service mesh (most specific)
 			"src_workload_name",         // Some mesh alerts
 			"deployment",                // K8s Deployment (trigger.py priority 1)
+			"k8s_deployment_name",       // Same, as emitted by kube-state-metrics-derived rules
 			"daemonset",                 // K8s DaemonSet (trigger.py priority 2)
 			"statefulset",               // K8s StatefulSet (trigger.py priority 3)
 		}
@@ -3887,9 +3888,83 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 		}
 	}
 
+	// Mesh and Alertmanager labels frequently name the ReplicaSet
+	// ("cloud-collector-server-64945c7bc6") rather than the workload
+	// ("cloud-collector-server"), and k8s_workloads only stores the latter — so
+	// none of core.MatchWorkloadAndEnrich's predicates match. Offer the owning
+	// name as an additional candidate; the matcher tries EventSubjectName first,
+	// so a workload genuinely named with a hash-shaped suffix still wins.
+	if owner := stripPodTemplateHash(parsedPayload.EventSubjectName); owner != parsedPayload.EventSubjectName {
+		addWorkloadCandidate(labels, owner)
+	}
+
 	if parsedPayload.EventSubjectName == "" {
 		labels["nb_subject_resolution"] = "unresolved"
 	}
+}
+
+// addWorkloadCandidate appends to the comma-separated list
+// core.MatchWorkloadAndEnrich tries after EventSubjectName. The label is
+// consumed during matching and never persisted.
+func addWorkloadCandidate(labels map[string]string, name string) {
+	if labels == nil || name == "" {
+		return
+	}
+	const key = "nb_workload_candidates"
+	existing := labels[key]
+	if existing == "" {
+		labels[key] = name
+		return
+	}
+	for _, c := range strings.Split(existing, ",") {
+		if strings.TrimSpace(c) == name {
+			return
+		}
+	}
+	labels[key] = existing + "," + name
+}
+
+// k8sHashAlphabet is the alphabet Kubernetes uses for pod-template-hash and pod
+// name suffixes (rand.SafeEncodeString): digits and consonants only, with the
+// vowels and 0/1/3 removed so the generator never produces words. That absence
+// is what makes a hash suffix reliably separable from a real name segment —
+// "cloud-collector-server-64945c7bc6" strips, while "otel-collector-collector"
+// and "redis-master" do not, because their last segments contain vowels.
+//
+// knowledge_graph/core.ExtractPodOwner solves a nearby problem but is not
+// reusable here: it gates on IsAlphanumeric + length alone, so any 8-10 char
+// segment reads as a hash and "otel-deployment-collector-collector" (a real
+// workload) would be truncated to "otel-deployment-collector". It also guesses
+// an owner kind and reads a trailing integer as a StatefulSet ordinal. This path
+// needs the opposite bias — strip only when the suffix is certainly generated —
+// because a wrong candidate can pin the alert on an unrelated workload.
+const k8sHashAlphabet = "bcdfghjklmnpqrstvwxz2456789"
+
+func looksLikePodTemplateHash(s string) bool {
+	if len(s) < 5 || len(s) > 10 {
+		return false
+	}
+	for _, r := range s {
+		if !strings.ContainsRune(k8sHashAlphabet, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// stripPodTemplateHash reduces a ReplicaSet or pod name to its owning workload
+// name. Removes at most two trailing hash segments, covering both
+// "<deploy>-<template-hash>" and "<deploy>-<template-hash>-<pod-suffix>".
+// Returns the input unchanged when no segment is certainly a generated hash.
+func stripPodTemplateHash(name string) string {
+	for range 2 {
+		idx := strings.LastIndex(name, "-")
+		if idx <= 0 || !looksLikePodTemplateHash(name[idx+1:]) {
+			break
+		}
+		name = name[:idx]
+	}
+	return name
 }
 
 // isPrometheusScrapeJob reports whether a `job`/`nb_alert_job` label value names
