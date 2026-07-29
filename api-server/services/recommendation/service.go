@@ -934,8 +934,26 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		return err
 	}
 
-	// Open recommendations that are in progress and have failed resolutions
-	_, err = dbms.Db.Exec("update recommendation set status = $1 where status = $2 and id in (select recommendation_id from recommendation_resolution where status = $3)", models.RecommendationStatusOpen, models.RecommendationStatusInProgress, models.RecommendationResolutionStatusFailed)
+	// Settle in-progress recommendations against their most recent resolution once
+	// it reaches a terminal state: closed when it succeeded, re-opened for another
+	// attempt when it failed. The pull request webhook and the followup cron retire
+	// a resolution row directly, so the per-resolution loop below — which only
+	// reads InProgress rows — never sees those outcomes. The most recent
+	// resolution decides; an earlier failed attempt must not re-open a
+	// recommendation whose retry has since landed.
+	_, err = dbms.Db.Exec(`
+		UPDATE recommendation r
+		SET status = CASE WHEN latest.status = $1 THEN $2 ELSE $3 END, updated_at = NOW()
+		FROM (
+			SELECT DISTINCT ON (rr.recommendation_id) rr.recommendation_id, rr.status
+			FROM recommendation_resolution rr
+			JOIN recommendation rec ON rec.id = rr.recommendation_id
+			WHERE rec.status = $4
+			ORDER BY rr.recommendation_id, rr.created_at DESC NULLS LAST
+		) latest
+		WHERE r.id = latest.recommendation_id AND r.status = $4 AND latest.status <> $5`,
+		models.RecommendationResolutionStatusSuccess, models.RecommendationStatusClosed, models.RecommendationStatusOpen,
+		models.RecommendationStatusInProgress, models.RecommendationResolutionStatusInProgress)
 	if err != nil {
 		ctx.GetLogger().Error("error updating recommendation status", "error", err)
 	}
@@ -1052,15 +1070,10 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 			return err
 		}
 
-		// update recommendation if issue is resolved
-		recommendationStatus := recommendation.Status
-		switch status {
-		case models.RecommendationResolutionStatusSuccess:
-			recommendationStatus = models.RecommendationStatusClosed
-		case models.RecommendationResolutionStatusFailed:
-			recommendationStatus = models.RecommendationStatusDismissed
-		}
-		if recommendation.Status != recommendationStatus {
+		// Close the recommendation only once the resolution actually succeeded. A
+		// failed one was reset to Open above so it can be retried; closing it here
+		// undid that reset and dropped the work permanently.
+		if status == models.RecommendationResolutionStatusSuccess && recommendation.Status != models.RecommendationStatusClosed {
 			_, err = dbms.Db.Exec("UPDATE recommendation SET status = $2, updated_at = $3 WHERE id = $1", recommendation.Id, models.RecommendationStatusClosed, time.Now().UTC().Format(time.RFC3339))
 			if err != nil {
 				ctx.GetLogger().Error("error updating recommendation", "error", err)
