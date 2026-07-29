@@ -1846,10 +1846,8 @@ const Investigate = () => {
       {isK8s && isUpdateEvent && (
         <UpdateEvent
           selectedEvent={row}
-          handlePopupClose={() => {
-            setIsUpdateEvent(false);
-            loadData(row.id);
-          }}
+          handlePopupClose={() => setIsUpdateEvent(false)}
+          onUpdated={() => loadData(row.id)}
           isUpdateEvent={isUpdateEvent}
         />
       )}
