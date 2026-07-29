@@ -947,7 +947,7 @@ func init() {
 	viper.SetDefault("llm_server_workspace_resource_request_cpu", "250m")
 	viper.SetDefault("llm_server_workspace_resource_request_memory", "256Mi")
 	viper.SetDefault("llm_server_shell_tool_enabled", true)
-	viper.SetDefault("llm_server_log_agent_v2_enabled", false)
+	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
 	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
 	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
 	// k8s_orchestrator mode: delegating (v1, default) | direct (v2) | lean (experimental).
