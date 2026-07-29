@@ -86,7 +86,7 @@ func (l *K8sLeanAgent) IsWatchCapable() bool             { return true }
 func (l *K8sLeanAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	// Lean now preloads only the reduced core (kubectl_execute + logs/events/metrics/
 	// traces/resource_search/SDG/recommendations + delegate_agent + search_tools),
-	// shared with @k8s_orchestrator_trim, instead of the full ~28-tool specialist set.
+	// instead of the full ~28-tool specialist set.
 	// Every specialist (databases, helm, cloud CLIs, …) is dropped from context and
 	// reached on-demand via search_tools + delegate_agent. This is the tool-context
 	// reduction applied to the lean prompt (the "minimal prompt × reduced surface" cell).

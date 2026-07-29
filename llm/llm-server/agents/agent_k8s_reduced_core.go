@@ -12,12 +12,11 @@ import (
 	"github.com/samber/lo"
 )
 
-// The reduced k8s core tool set is the on-demand-reach-back preloaded set shared by BOTH
-// @k8s_orchestrator_trim (heavy prompt) and the lean orchestrator (minimal prompt). It
-// lives in this stable file — not in agent_k8s_orchestrator_trim.go — because the trim
-// agent is an experimental eval handle slated for deletion once the reduction question is
-// settled, whereas the lean orchestrator is the production default. Keeping the helper
-// here decouples the prod path from the experimental agent's lifecycle.
+// The reduced k8s core tool set is the on-demand-reach-back preloaded set used by the
+// lean orchestrator (the production default): the core investigation tools plus
+// search_tools + delegate_agent for reaching specialists on demand, instead of preloading
+// the full specialist set. (It was previously also shared with the experimental
+// @k8s_orchestrator_trim eval handle, since removed.)
 
 // trimmedK8sCoreToolNames is the lean preloaded set. The conditional tail mirrors
 // the production orchestrator's exactly (remediation/shell/memory/followup) so the
