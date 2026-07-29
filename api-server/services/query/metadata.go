@@ -4477,7 +4477,6 @@ var table_metadata = map[string]TableDefinition{
 			AND kw.cloud_resource_id = r.resource_id
 		WHERE
 			r.status = 'Open'
-			AND category = 'RightSizing'
 			AND rule_name = 'pod_right_sizing'
 		GROUP BY
 			kw.name,

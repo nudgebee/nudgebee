@@ -264,7 +264,7 @@ query get_security_severity_groupings {
 
 export const K8S_OPTIMIZE_SUMMARY_INFOGRAPHICS = `
 query K8sOptimizeSummaryInfographics($accountId: String, $startDate: Datetime, $endDate: Datetime) {
-  workload_rightsize: recommendation_groupings_v2(where: {account_id: {_eq: $accountId}, category: {_in: ["RightSizing"]}, rule_name: {_in: ["pod_right_sizing"]}, status: {_in: ["Open", "InProgress"]}}) {
+  workload_rightsize: recommendation_groupings_v2(where: {account_id: {_eq: $accountId}, rule_name: {_in: ["pod_right_sizing"]}, status: {_in: ["Open", "InProgress"]}}) {
     rows {
       count
       sum_estimated_savings
@@ -311,6 +311,11 @@ query K8sOptimizeSummaryInfographics($accountId: String, $startDate: Datetime, $
     }
   }
   count_optimize_recommendations: recommendation_groupings_v2(where: {account_id: {_eq: $accountId}, category: {_in: ["K8sSpotRecommendation","RightSizing"]},status: {_in: ["Open", "InProgress"]}}) {
+    rows {
+      count
+    }
+  }
+  count_unset_request_recommendations: recommendation_groupings_v2(where: {account_id: {_eq: $accountId}, category: {_in: ["Configuration"]}, rule_name: {_in: ["pod_right_sizing"]}, status: {_in: ["Open", "InProgress"]}}) {
     rows {
       count
     }
@@ -2020,7 +2025,11 @@ const apiRecommendations = {
         },
         spends_aggregate: { aggregate: { sum: { amount: response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount } } },
         count_recommendations: response?.data?.data?.count_recommendations?.rows[0]?.count,
-        count_optimize_recommendations: response?.data?.data?.count_optimize_recommendations?.rows[0]?.count,
+        // requests-unset pod recs live under Configuration but stay part of the
+        // optimize headline count
+        count_optimize_recommendations:
+          (response?.data?.data?.count_optimize_recommendations?.rows?.[0]?.count ?? 0) +
+          (response?.data?.data?.count_unset_request_recommendations?.rows?.[0]?.count ?? 0),
       },
     };
   },

@@ -50,6 +50,13 @@ class RecommendationTabs(Enum):
         return cls[key].value
 
 
+def _tab_for_category(category: str) -> int:
+    try:
+        return RecommendationTabs.get_value(category.upper())
+    except KeyError:
+        return RecommendationTabs.RIGHTSIZING.value
+
+
 def _format_status_text(status: str) -> str:
     lower = status.lower()
     if lower == "open":
@@ -143,7 +150,7 @@ def get_gchat_recommendation_template(params: RecommendationParams, max_items: i
 
     view_all_url = (
         f"{public_ip()}/kubernetes/details/{params.account_id}"
-        f"?tab={RecommendationTabs.get_value(params.category.upper())}"
+        f"?tab={_tab_for_category(params.category)}"
         f"&accountId={params.account_id}"
     )
     affected_suffix = (

@@ -1425,11 +1425,16 @@ def get_existing_resource(cloud_account_id, report, tenant):
 
 
 def archive_existing_recommendation(cloud_account_id, tenant):
+    # pod_right_sizing rows live under RightSizing or Configuration (requests-unset
+    # workloads); sweep both so a workload whose category flips between scans
+    # cannot leave a stale Open row behind under the old category.
     update_to_archieve = (
-        "update recommendation set status = %s where tenant_id = %s and cloud_account_id = %s and category = %s and"
-        " rule_name = %s and status not in  ('Closed', 'InProgress')"
+        "update recommendation set status = %s where tenant_id = %s and cloud_account_id = %s and"
+        " category = ANY(%s) and rule_name = %s and status not in  ('Closed', 'InProgress')"
     )
-    database.run_query(update_to_archieve, ["Archive", tenant, cloud_account_id, "RightSizing", "pod_right_sizing"])
+    database.run_query(
+        update_to_archieve, ["Archive", tenant, cloud_account_id, ["RightSizing", "Configuration"], "pod_right_sizing"]
+    )
 
 
 def handle_krr_score(cloud_account_id, score, tenant):

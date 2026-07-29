@@ -220,7 +220,7 @@ const buildContainerPatch = (containerName: string, entries: any[], workloadType
 
 export const buildKubectlCommand = (rec: any): string => {
   const recData = safeParseJSON(rec.recommendation);
-  const isPodRightSizing = rec.category === 'RightSizing' && rec.rule_name === 'pod_right_sizing';
+  const isPodRightSizing = rec.rule_name === 'pod_right_sizing';
 
   if (!isPodRightSizing || !recData || typeof recData !== 'object') {
     return `# Recommendation ID: ${rec.id}\n# Category: ${rec.category}\n# Rule: ${rec.rule_name}`;
@@ -324,6 +324,9 @@ export const getRecommendationBrief = (rec: any): string => {
   if (!jsonb) return '';
   const data = safeParseJSON(jsonb);
   if (typeof data === 'string') return data;
+  // pod_right_sizing payloads keep the KRR shape under either category
+  // (requests-unset rows live under Configuration)
+  if (rec.rule_name === 'pod_right_sizing') return getRightSizingBrief(data);
   switch (rec.category || '') {
     case 'RightSizing':
       return getRightSizingBrief(data);

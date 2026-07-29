@@ -1000,7 +1000,7 @@ const SUMMARY_HIDDEN_FIELDS = new Set([
 const RecommendationSummary = ({ recData, category, ruleName }: { recData: any; category: string; ruleName: string }) => {
   if (!recData || typeof recData !== 'object') return null;
 
-  if (category === 'RightSizing' && ruleName === 'pod_right_sizing') return <K8sRightSizingSummary recData={recData} />;
+  if (ruleName === 'pod_right_sizing') return <K8sRightSizingSummary recData={recData} />;
   if (category === 'RightSizing' && !Array.isArray(recData)) return <CloudRightSizingSummary recData={recData} />;
   if (category === 'InfraUpgrade' || category === 'K8sVersionUpgrade') return <InfraUpgradeSummary recData={recData} />;
   if (category === 'Security') return <SecuritySummary recData={recData} />;
@@ -1271,6 +1271,9 @@ function getRecommendationInsight(category: string, ruleName: string, recData: a
   const savings = rec.estimated_savings || 0;
   const savingsText = Math.round(savings) >= 1 ? ` Estimated savings: ~$${savings.toFixed(0)}/month.` : '';
 
+  // pod_right_sizing rows live under Configuration when requests are unset,
+  // but the KRR-derived insight still applies
+  if (ruleName === 'pod_right_sizing') return getRightSizingInsight(ruleName, recData, savingsText);
   if (category === 'RightSizing') return getRightSizingInsight(ruleName, recData, savingsText);
   if (category === 'Configuration')
     return 'A configuration best practice violation has been detected. Misconfigurations can lead to reliability issues, security gaps, or unexpected costs. Addressing this aligns your infrastructure with industry best practices and reduces operational risk.';

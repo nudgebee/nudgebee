@@ -302,7 +302,6 @@ const getTicketSourceFromCloudProvider = (cloudProvider: string | undefined): st
 interface RowActionsProps {
   rowId: string;
   rec: any;
-  category: string;
   ticketId: string;
   assistantName: string | undefined;
   onAskNubi: (rec: any) => void;
@@ -311,9 +310,9 @@ interface RowActionsProps {
   onCopyCli: (rec: any) => void;
 }
 
-const RowActions = memo(({ rowId, rec, category, ticketId, assistantName, onAskNubi, onResolve, onCreateTicket, onCopyCli }: RowActionsProps) => {
-  const showResolve = category === 'RightSizing' && rec.rule_name === 'pod_right_sizing' && hasWriteAccess(rec.account_id);
-  const showCopyCli = category === 'RightSizing' && rec.rule_name === 'pod_right_sizing';
+const RowActions = memo(({ rowId, rec, ticketId, assistantName, onAskNubi, onResolve, onCreateTicket, onCopyCli }: RowActionsProps) => {
+  const showResolve = rec.rule_name === 'pod_right_sizing' && hasWriteAccess(rec.account_id);
+  const showCopyCli = rec.rule_name === 'pod_right_sizing';
 
   const menuItems: Array<{ label: string; icon: React.ReactNode; onSelect: () => void; disabled?: boolean; id?: string }> = [
     {
@@ -971,7 +970,7 @@ const OptimizeNewPage = () => {
     if (rec.estimated_savings) {
       description += `**Estimated Savings**: $${rec.estimated_savings.toFixed(2)}/mo\n`;
     }
-    if (rec.category === 'RightSizing' && rec.rule_name === 'pod_right_sizing' && rec.recommendation) {
+    if (rec.rule_name === 'pod_right_sizing' && rec.recommendation) {
       const parsedRecData = safeParseJSON(rec.recommendation);
       for (const [containerName, entries] of Object.entries(parsedRecData)) {
         if (!Array.isArray(entries)) continue;
@@ -1191,7 +1190,6 @@ const OptimizeNewPage = () => {
               <RowActions
                 rowId={row.id}
                 rec={row.rec}
-                category={row.category}
                 ticketId={row.ticketId}
                 assistantName={assistantName}
                 onAskNubi={askNubiAboutRec}

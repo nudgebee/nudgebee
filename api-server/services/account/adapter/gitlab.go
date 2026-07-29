@@ -475,7 +475,7 @@ func (g *gitlabAdapter) ApplyRecommendation(ctx AccountAdapterContext, request A
 		"provider_config", request.ProviderConfig)
 
 	switch {
-	case request.Recommendation.Category == "RightSizing" && request.Recommendation.RuleName == "pod_right_sizing":
+	case request.Recommendation.RuleName == "pod_right_sizing":
 		if request.Resource.Id == "" {
 			return ApplyRecommendationResponse{}, fmt.Errorf("rule is not supported for empty resource id")
 		}

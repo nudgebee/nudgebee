@@ -46,6 +46,9 @@ const CATEGORY_MAPPERS: Record<string, (rule: string) => CategoryMapping> = {
 };
 
 function mapCategoryAndSubCategory(apiCategory: string, ruleName: string): CategoryMapping {
+  // pod_right_sizing keeps its sizing presentation under either API category
+  // (requests-unset rows live under Configuration)
+  if (ruleName === 'pod_right_sizing') return mapRightSizing(ruleName);
   const mapper = CATEGORY_MAPPERS[apiCategory];
   return mapper ? mapper(ruleName || '') : { category: 'security_config', subCategory: 'critical_config' };
 }

@@ -215,6 +215,7 @@ def archive_existing_krr_recommendations(
     recommendations: List[RecommendationData],
     namespace_filter: Optional[str] = None,
     resource_names_filter: Optional[List[str]] = None,
+    kept_categories_by_object_id: Optional[Dict[str, str]] = None,
 ) -> None:
     """Archive stale KRR recommendations that no longer correspond to a live workload.
 
@@ -230,6 +231,13 @@ def archive_existing_krr_recommendations(
       - Namespace-only run: reconcile within that namespace.
       - resource_names run: the scan only covers specific requested resources, so absence
         does NOT mean deletion — fall back to refreshing just the targeted resources.
+
+    kept_categories_by_object_id maps each account_object_id about to be (re)written to
+    its intended category. pod_right_sizing rows live under RightSizing or Configuration
+    (requests-unset workloads), and category is part of the upsert conflict key — so when
+    a workload's category flips between scans the insert misses the old row. A second
+    sweep archives kept workloads' rows stored under the other category, in both flip
+    directions.
     """
     if not tenant_id or not account_id:
         raise ValueError("archive_existing_krr_recommendations: tenant_id and account_id are required")
@@ -284,7 +292,7 @@ def archive_existing_krr_recommendations(
                 SET status = 'Archive'
                 WHERE tenant_id = :tenant_id
                 AND cloud_account_id = :account_id
-                AND category = 'RightSizing'
+                AND category IN ('RightSizing', 'Configuration')
                 AND rule_name = 'pod_right_sizing'
                 AND status NOT IN ('Closed', 'InProgress', 'Archive')
                 {scope_clause}
@@ -300,6 +308,37 @@ def archive_existing_krr_recommendations(
                     f"Archived {rows_updated} stale KRR recommendations "
                     f"(scope={scope_label}, kept={len(kept_object_ids)})"
                 )
+
+            # Kept workloads whose stored category differs from the intended one:
+            # the row about to be written has a different conflict key, so archive
+            # the stale-category twin. Keys on explicit object ids from this scan,
+            # so it is inherently scope-safe and never touches the row being
+            # written (its category matches).
+            if kept_categories_by_object_id:
+                sweep_query = text("""
+                    UPDATE recommendation r
+                    SET status = 'Archive'
+                    FROM unnest(:kept_ids ::text[], :kept_categories ::text[]) AS k(object_id, category)
+                    WHERE r.tenant_id = :tenant_id
+                    AND r.cloud_account_id = :account_id
+                    AND r.rule_name = 'pod_right_sizing'
+                    AND r.category IN ('RightSizing', 'Configuration')
+                    AND r.status NOT IN ('Closed', 'InProgress', 'Archive')
+                    AND r.account_object_id = k.object_id
+                    AND r.category <> k.category
+                """)
+                sweep_params = {
+                    "tenant_id": tenant_id,
+                    "account_id": account_id,
+                    "kept_ids": list(kept_categories_by_object_id.keys()),
+                    "kept_categories": list(kept_categories_by_object_id.values()),
+                }
+                with engine.connect() as conn:
+                    result = conn.execute(sweep_query, sweep_params)
+                    conn.commit()
+                    if result.rowcount:
+                        span.set_attribute("krr.category_flipped_recommendations", result.rowcount)
+                        ctx_logger.info(f"Archived {result.rowcount} KRR recommendations under a stale category")
 
         except Exception as e:
             span.set_attribute("krr.archive_error", str(e))
@@ -590,16 +629,11 @@ def store_krr_recommendations_to_db(
             # Get existing resource mappings - same as collector-server
             resource_map = get_existing_resources(account_id, tenant_id, recommendations)
 
-            # Reconcile: archive stale recs for workloads that vanished from this scan,
-            # scoped to what the scan was exhaustive over (account / namespace / specific
-            # resources). The insert below re-opens the workloads still present.
-            archive_existing_krr_recommendations(
-                account_id, tenant_id, recommendations, namespace_filter, resource_names_filter
-            )
-
             engine = DatabaseEngine.get_engine()
 
-            # Generate recommendations using same logic as collector-server
+            # Generate recommendations using same logic as collector-server. Built
+            # before the archive pass so it can reconcile stored categories against
+            # the ones about to be written.
             recommendations_to_insert = {}
 
             for rec in recommendations:
@@ -682,6 +716,21 @@ def store_krr_recommendations_to_db(
                     recommendations_to_insert[resource_id] = recommendation
 
             ctx_logger.info(f"Generated {len(recommendations_to_insert)} recommendation records for database insertion")
+
+            # Reconcile: archive stale recs for workloads that vanished from this scan,
+            # scoped to what the scan was exhaustive over (account / namespace / specific
+            # resources), plus kept workloads whose stored category no longer matches the
+            # one about to be written. The insert below re-opens the workloads still present.
+            archive_existing_krr_recommendations(
+                account_id,
+                tenant_id,
+                recommendations,
+                namespace_filter,
+                resource_names_filter,
+                kept_categories_by_object_id={
+                    row["account_object_id"]: row["category"] for row in recommendations_to_insert.values()
+                },
+            )
 
             # Insert recommendations using same approach as collector-server
             with tracer.start_as_current_span("insert_recommendations") as insert_span:

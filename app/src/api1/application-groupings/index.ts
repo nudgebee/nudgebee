@@ -141,7 +141,7 @@ export const GET_APPLICATION_EVENTS = `
 
 export const GET_K8S_CLUSTER_SUMMARY_DATA = `
 query get_k8s_cluster_summary_data($accountId: String) {
-  right_sizing_recommendations: recommendation_groupings_v2(where: {account_id: {_eq: $accountId}, status:{_in:["Open", "InProgress"]}, category: {_in: ["RightSizing"] }, rule_name:{_eq:"pod_right_sizing"} , __WHERE__ }
+  right_sizing_recommendations: recommendation_groupings_v2(where: {account_id: {_eq: $accountId}, status:{_in:["Open", "InProgress"]}, rule_name:{_eq:"pod_right_sizing"} , __WHERE__ }
   ){
     rows{
       count

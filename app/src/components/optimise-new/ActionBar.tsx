@@ -31,7 +31,7 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
   const category = rec.category || '';
   const ruleName = rec.rule_name || '';
   const accountId = rec.account_id || '';
-  const isK8sRightSizing = category === 'RightSizing' && ruleName === 'pod_right_sizing';
+  const isK8sRightSizing = ruleName === 'pod_right_sizing';
   const isReplicaRightSizing = category === 'RightSizing' && ruleName === 'replica_right_sizing';
   const isPVResize = category === 'RightSizing' && ruleName === 'pv_rightsize';
   const isUnusedPVC = category === 'RightSizing' && ruleName === 'unused_pvc';

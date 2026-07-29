@@ -287,6 +287,12 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 			resolutionType = models.RecommendationResolutionTypeDeploymentChange
 		case "EventResolution":
 			resolutionType = models.RecommendationEventResolutionType
+		case "Configuration":
+			// requests-unset pod recs live under Configuration but apply the
+			// same way as any other pod_right_sizing rec
+			if recommendationRequest.Recommendation.RuleName == "pod_right_sizing" {
+				resolutionType = models.RecommendationResolutionTypeDeploymentChange
+			}
 		}
 	case "aws", "azure", "gcp":
 		// For cloud providers, use CloudResource for all recommendation types

@@ -833,7 +833,9 @@ const apiKubernetes1 = {
     const query: any = {};
     query.account_id = { _eq: accountId };
     query.status = { _in: ['Open', 'InProgress'] };
-    query.category = { _eq: 'RightSizing' };
+    // requests-unset pod recs live under Configuration but still count as
+    // rightsizing work for the workload badge
+    query._or = [{ category: { _eq: 'RightSizing' } }, { rule_name: { _eq: 'pod_right_sizing' } }];
     query.account_object_id = { _in: accountObjectIds.map((aOId) => aOId.replaceAll('___', '/').replace(/(?<![_])__(?![_])/g, '-')) };
     const response = await queryGraphQL(RECOMMENDATION_WORKLOAD_COUNT.replace('__WHERE__', gqlStringify(query)), 'RecommendationWorkloadCount', {});
     return response;

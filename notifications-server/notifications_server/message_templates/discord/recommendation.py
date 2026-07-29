@@ -13,7 +13,7 @@ from notifications_server.message_templates.discord.embed_utils import clamp_emb
 from notifications_server.message_templates.slack.recommendation import (
     RecommendationParams,
     RecommendationSummary,
-    RecommendationTabs,
+    _tab_for_category,
 )
 
 RECOMMENDATION_COLOR = 3066993  # green (#2ecc71)
@@ -71,7 +71,7 @@ def _append_grouped_recs(lines: List[str], recommendations: List[RecommendationS
 
 
 def get_discord_recommendation_template(params: RecommendationParams) -> Dict[str, Any]:
-    tab = RecommendationTabs.get_value(params.category.upper())
+    tab = _tab_for_category(params.category)
     account_url = f"{public_ip()}/kubernetes/details/{params.account_id}?utm=discord"
     view_all_url = (
         f"{public_ip()}/kubernetes/details/{params.account_id}?accountId={params.account_id}&utm=discord#{tab}"

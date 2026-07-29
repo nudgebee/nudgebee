@@ -590,20 +590,22 @@ func (d *OptimizerDao) GetRecommendations(ctx context.Context, accountID, tenant
 func (d *OptimizerDao) GetFullRecommendationsForOptimizerCategory(ctx context.Context, accountID uuid.UUID, category string) ([]model.RecommendationWithResource, error) {
 
 	recommendationRuleName := category
-	recommendationCategory := category
+	recommendationCategories := []string{category}
 	switch category {
 	case "vertical_rightsize":
 		recommendationRuleName = "pod_right_sizing"
-		recommendationCategory = "RightSizing"
+		// requests-unset pod recs are stored under Configuration but remain
+		// vertical-rightsize targets
+		recommendationCategories = []string{"RightSizing", "Configuration"}
 	case "horizontal_rightsize":
 		recommendationRuleName = "replica_right_sizing"
-		recommendationCategory = "RightSizing"
+		recommendationCategories = []string{"RightSizing"}
 	case "pvc_rightsize":
 		recommendationRuleName = "pv_rightsize"
-		recommendationCategory = "RightSizing"
+		recommendationCategories = []string{"RightSizing"}
 	case "continuous_rightsize":
 		recommendationRuleName = "continuous_rightsize"
-		recommendationCategory = "RightSizing"
+		recommendationCategories = []string{"RightSizing"}
 	}
 
 	query := `
@@ -617,7 +619,7 @@ func (d *OptimizerDao) GetFullRecommendationsForOptimizerCategory(ctx context.Co
 			LEFT JOIN cloud_resourses cr ON r.resource_id = cr.id
 			WHERE r.cloud_account_id = $1
 			AND cr.status = 'Active'
-			AND r.category = $2
+			AND r.category = ANY($2)
 			AND r.rule_name = $3
 			AND r.status = 'Open'
 			AND r.is_dismissed = false
@@ -650,7 +652,7 @@ func (d *OptimizerDao) GetFullRecommendationsForOptimizerCategory(ctx context.Co
 		UpdatedBy            *uuid.UUID `db:"updated_by"`
 	}
 
-	if err := d.db.SelectContext(ctx, &dbRecs, query, accountID, recommendationCategory, recommendationRuleName); err != nil {
+	if err := d.db.SelectContext(ctx, &dbRecs, query, accountID, pq.Array(recommendationCategories), recommendationRuleName); err != nil {
 		return nil, err
 	}
 
