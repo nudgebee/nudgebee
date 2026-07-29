@@ -28,10 +28,10 @@ func TestOrchestrators_IncludeSearchSkillsTool(t *testing.T) {
 			return getSupportedTools(sc, testAccountId, "k8s_debug", KubectlAgentName)
 		}},
 		{"gcp_orchestrator", func() []toolcore.NBTool {
-			return getGcpPlannerSupportedTools(sc, testAccountId)
+			return getGcpPlannerSupportedTools(sc, testAccountId, "gcp_orchestrator", false)
 		}},
 		{"azure_orchestrator", func() []toolcore.NBTool {
-			return getAzurePlannerSupportedTools(sc, testAccountId)
+			return getAzurePlannerSupportedTools(sc, testAccountId, "azure_orchestrator", false)
 		}},
 		{"aws_orchestrator", func() []toolcore.NBTool {
 			return getAwsPlannerSupportedTools(sc, testAccountId, "aws_orchestrator", false)

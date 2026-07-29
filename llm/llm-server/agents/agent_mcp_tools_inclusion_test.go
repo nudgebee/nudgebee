@@ -46,13 +46,13 @@ func TestAllAgents_IncludeMCPIntegrationTools(t *testing.T) {
 		{
 			name: "gcp_debug",
 			getTools: func() []toolcore.NBTool {
-				return getGcpPlannerSupportedTools(sc, testAccountId)
+				return getGcpPlannerSupportedTools(sc, testAccountId, "gcp_orchestrator", false)
 			},
 		},
 		{
 			name: "azure_debug",
 			getTools: func() []toolcore.NBTool {
-				return getAzurePlannerSupportedTools(sc, testAccountId)
+				return getAzurePlannerSupportedTools(sc, testAccountId, "azure_orchestrator", false)
 			},
 		},
 		{

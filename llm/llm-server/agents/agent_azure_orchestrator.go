@@ -10,40 +10,82 @@ import (
 	tocore "nudgebee/llm/tools/core"
 	"sort"
 	"strings"
+	"text/template"
 )
 
 const (
+	// AgentAzureOrchestratorName is the name for the Azure debug agent
 	AgentAzureOrchestratorName = "azure_orchestrator"
+	// AgentAzureOrchestrator2Name is the always-direct eval handle (invocable by @name only).
+	AgentAzureOrchestrator2Name = "azure_orchestrator_2"
+)
+
+// AzureOrchestratorMode* are the values of config llm_server_azure_orchestrator_mode,
+// the boot-time knob for what the router-selected azure_orchestrator runs.
+const (
+	AzureOrchestratorModeDelegating = "delegating" // v1: delegate Azure resource CLI to the `azure` sub-agent (default)
+	AzureOrchestratorModeDirect     = "direct"     // v2: hold azure_execute and run the az CLI directly
+	AzureOrchestratorModeLean       = "lean"       // EXPERIMENTAL: minimal principle-level prompt + direct azure_execute
 )
 
 func init() {
 	core.RegisterNBAgentFactoryWithAliases(AgentAzureOrchestratorName, func(accountId string) (core.NBAgent, error) {
 		return newAzureOrchestratorAgent(accountId), nil
 	}, "azure_debug")
+
+	// Explicit always-direct eval handle (see AgentAzureOrchestrator2Name). Same
+	// implementation, distinct name → distinct cache key, invocable by @name only.
+	core.RegisterNBAgentFactoryWithAliases(AgentAzureOrchestrator2Name, func(accountId string) (core.NBAgent, error) {
+		return newAzureOrchestratorAgentNamed(accountId, AgentAzureOrchestrator2Name, true), nil
+	}, "azure_debug_2")
 }
 
-// AzureOrchestratorAgent is an agent that helps debug Azure issues.
+// AzureOrchestratorAgent is an agent that helps debug Azure issues. useAzureCliDirect
+// selects v2 (hold azure_execute, run the CLI directly) vs v1 (delegate to the `azure`
+// sub-agent); it drives both the tool set and the prompt's {{if .use_azure_cli_direct}}.
 type AzureOrchestratorAgent struct {
 	accountId            string
+	name                 string
+	useAzureCliDirect    bool
 	clusterSnapshot      map[string][]string
 	clusterSnapshotFound bool
 }
 
-// newAzureOrchestratorAgent creates a new AzureOrchestratorAgent.
-// The factory will provide accountId.
+// newAzureOrchestratorAgent is the primary, router-selected agent. Its behavior is
+// chosen by config.AzureOrchestratorMode (boot-time; rollback = change + redeploy).
+// Unknown/empty mode falls back to delegating (v1), the safe default.
 func newAzureOrchestratorAgent(accountId string) core.NBAgent {
+	switch strings.ToLower(strings.TrimSpace(config.Config.AzureOrchestratorMode)) {
+	case AzureOrchestratorModeLean:
+		return newAzureLeanAgentNamed(accountId, AgentAzureOrchestratorName)
+	case AzureOrchestratorModeDirect:
+		return newAzureOrchestratorAgentNamed(accountId, AgentAzureOrchestratorName, true)
+	default:
+		return newAzureOrchestratorAgentNamed(accountId, AgentAzureOrchestratorName, false)
+	}
+}
+
+// newAzureOrchestratorAgentNamed is the shared constructor. name drives identity and the
+// cache key (so the primary and the eval handle stay isolated); useAzureCliDirect drives
+// the az CLI tool and the prompt's {{if .use_azure_cli_direct}} branch.
+func newAzureOrchestratorAgentNamed(accountId, name string, useAzureCliDirect bool) core.NBAgent {
 	return &AzureOrchestratorAgent{
-		accountId: accountId,
+		accountId:         accountId,
+		name:              name,
+		useAzureCliDirect: useAzureCliDirect,
 	}
 }
 
 // GetName returns the name of the agent.
 func (a *AzureOrchestratorAgent) GetName() string {
-	return AgentAzureOrchestratorName
+	return a.name
 }
 
 // GetNameAliases returns aliases for the agent name.
 func (a *AzureOrchestratorAgent) GetNameAliases() []string {
+	if a.name == AgentAzureOrchestrator2Name {
+		return []string{"azure debug 2", "microsoft_azure_debug_2", "azure_debug_2"}
+	}
 	return []string{"azure debug", "microsoft_azure_debug", "azure_debug"}
 }
 
@@ -53,7 +95,7 @@ func (a *AzureOrchestratorAgent) GetDescription() string {
 }
 
 func (a *AzureOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
-	return getAzurePlannerSupportedTools(ctx, a.accountId)
+	return getAzurePlannerSupportedTools(ctx, a.accountId, a.GetName(), a.useAzureCliDirect)
 }
 
 func (a *AzureOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
@@ -72,9 +114,12 @@ func (a *AzureOrchestratorAgent) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
 }
 
-// GetSystemPrompt returns the system prompt for the agent.
+// GetSystemPrompt returns the system prompt for the agent. useAzureCliDirect drives the
+// prompt's {{if .use_azure_cli_direct}} blocks: run azure_execute directly (v2) vs route
+// Azure resource work through the `azure` sub-agent (v1). All routing guidance lives in the
+// prompt file (gated by that flag), not appended here, so the two variants can't drift.
 func (a *AzureOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentAzureDebugReact)
+	promptText := renderAzureDebugReactPrompt(a.useAzureCliDirect)
 	instructions := strings.Split(promptText, "\n")
 
 	if !a.clusterSnapshotFound {
@@ -100,14 +145,26 @@ func (a *AzureOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, q
 	}
 
 	constraints := []string{
-		"Sub-agent `azure` executes CLI commands internally - describe WHAT to investigate in natural language",
 		"Investigation ONLY - DIAGNOSE and PROPOSE remediation, NEVER execute infrastructure changes",
 		"Config issues (wrong DNS, bad endpoint, misconfigured env var) look like network or connectivity issues but are NOT - always validate OS/app config inside the resource before blaming Azure infrastructure",
-		"If a sub-agent returns 'not found' or empty, investigation ends there - do not fabricate next steps",
+	}
+	if a.useAzureCliDirect {
+		constraints = append(constraints,
+			"Run Azure resource inspection with azure_execute directly (write the actual `az ...` CLI)",
+			"If a resource is 'not found', investigation ends there - do not fabricate next steps")
+	} else {
+		constraints = append(constraints,
+			"Sub-agent `azure` executes CLI commands internally - describe WHAT to investigate in natural language",
+			"If a sub-agent returns 'not found' or empty, investigation ends there - do not fabricate next steps")
+	}
+
+	role := "a senior Azure SRE and cloud infrastructure expert specializing in deep investigation and root cause analysis"
+	if a.useAzureCliDirect {
+		role = "a senior Azure SRE and cloud infrastructure expert that runs the az CLI directly via azure_execute, specializing in deep investigation and root cause analysis"
 	}
 
 	return core.NBAgentPrompt{
-		Role:         "a senior Azure SRE and cloud infrastructure expert specializing in deep investigation and root cause analysis",
+		Role:         role,
 		Instructions: instructions,
 		Constraints:  constraints,
 		// ToolUsage intentionally omitted: the planner already renders each tool's
@@ -155,10 +212,39 @@ Exception: when citing an external resource that has its own real URL (e.g. a Gi
 **FOR ALL OTHER QUERIES** (generation, listing, explanation, how-to, etc.):
 Answer the user's question directly in clear markdown. Do NOT use the investigation format above. Use code blocks, tables, or bullet points as appropriate for the content.`
 
+// renderAzureDebugReactPrompt renders the shared agent_azure_debug_react prompt for both Azure
+// orchestrators. useAzureCliDirect drives the {{if .use_azure_cli_direct}} blocks in the prompt
+// file: false = delegate Azure resource CLI to the `azure` sub-agent (v1), true = hold and run
+// azure_execute directly (v2). Keeping all routing guidance in the prompt (gated by that flag)
+// means the two variants cannot drift apart. On any parse/execute error the raw prompt is
+// returned so the agent retains its full instructions.
+func renderAzureDebugReactPrompt(useAzureCliDirect bool) string {
+	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentAzureDebugReact)
+	tmplData := map[string]any{"use_azure_cli_direct": useAzureCliDirect}
+	t, err := template.New("azure_debug").Option("missingkey=zero").Parse(promptText)
+	if err != nil {
+		slog.Error("failed to parse azure_debug prompt template, using raw prompt", "error", err)
+		return promptText
+	}
+	var buf strings.Builder
+	if err := t.Execute(&buf, tmplData); err != nil {
+		slog.Error("failed to execute azure_debug prompt template, using raw prompt", "error", err)
+		return promptText
+	}
+	return buf.String()
+}
+
 // getAzurePlannerSupportedTools returns tools relevant to Azure debugging.
-// For this agent, it's primarily the "azure" tool (AzureAgentName).
-func getAzurePlannerSupportedTools(ctx *security.RequestContext, accountId string) []tocore.NBTool {
-	supportedToolNames := []string{AzureAgentName, getTicketAgentName(), WorkflowAgentName, GithubAgentName, WebSearchAgentName, RecommendationsAgentName, EventsAgentName, VisualizationAgentName, PostgresAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RedisAgentName, RabbitMQAgentName, KubectlAgentName, DelegateAgentToolName, tools.ToolIncidentAssembly, tools.SearchSkillsToolName}
+func getAzurePlannerSupportedTools(ctx *security.RequestContext, accountId, agentName string, useAzureCliDirect bool) []tocore.NBTool {
+	supportedToolNames := []string{getTicketAgentName(), WorkflowAgentName, GithubAgentName, WebSearchAgentName, RecommendationsAgentName, EventsAgentName, VisualizationAgentName, PostgresAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RedisAgentName, RabbitMQAgentName, KubectlAgentName, DelegateAgentToolName, tools.ToolIncidentAssembly, tools.SearchSkillsToolName}
+
+	// v1 (delegating) routes Azure resource inspection through the `azure` sub-agent;
+	// v2 (direct) holds azure_execute and drops the sub-agent hop.
+	if useAzureCliDirect {
+		supportedToolNames = append(supportedToolNames, tools.ToolExecuteAzureCliCommand)
+	} else {
+		supportedToolNames = append(supportedToolNames, AzureAgentName)
+	}
 
 	// The KG-backed service_dependency_graph covers cloud (AWS/GCP/Azure) topology,
 	// not just K8s. The V1 flag guard here went away with the V1 agent.
@@ -169,7 +255,7 @@ func getAzurePlannerSupportedTools(ctx *security.RequestContext, accountId strin
 
 	summary, err := tocore.GetAccountConfigSummary(ctx, accountId)
 	if err != nil {
-		slog.Error("agent: failed to get account config summary", "error", err, "agent", AgentAzureOrchestratorName)
+		slog.Error("agent: failed to get account config summary", "error", err, "agent", agentName)
 	}
 
 	tools := make([]tocore.NBTool, 0, len(supportedToolNames))
@@ -177,12 +263,12 @@ func getAzurePlannerSupportedTools(ctx *security.RequestContext, accountId strin
 		tool, found := tocore.GetNBTool(accountId, toolName)
 		if found {
 			if !tocore.IsToolConfigured(ctx, accountId, tool, summary) {
-				slog.Warn("skipping tool as not configured", "tool", tool.Name(), "agent", AgentAzureOrchestratorName)
+				slog.Warn("skipping tool as not configured", "tool", tool.Name(), "agent", agentName)
 				continue
 			}
 			tools = append(tools, tool)
 		} else {
-			slog.Warn("Azure Debug Planner: Tool not found in registry", "toolName", toolName, "accountId", accountId)
+			slog.Warn("Azure Debug Planner: Tool not found in registry", "toolName", toolName, "accountId", accountId, "agent", agentName)
 		}
 	}
 

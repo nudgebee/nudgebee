@@ -225,9 +225,6 @@ type appConfig struct {
 	LlmServerAgentPromqlMaxToolRespChars        int `mapstructure:"llm_server_agent_promql_max_tool_response_chars"`
 	LlmServerAgentPrometheusMaxInlineDataPoints int `mapstructure:"llm_server_agent_prometheus_max_inline_data_points"`
 	LLMServerAgentMaxLogLines                   int `mapstructure:"llm_server_agent_max_loglines"`
-	// Dev-only. Set to "k8s" / "loki" / etc. to bypass per-account routing.
-	// Empty (default) preserves the DB-configured provider.
-	LLMServerLogProviderOverride string `mapstructure:"llm_server_log_provider_override"`
 	// Dev-only. Set to "jaeger" / "chronosphere" / etc. to bypass per-account trace
 	// provider routing on the canonical (v2) path. Empty (default) lets services-server
 	// resolve the account's default trace provider.
@@ -415,6 +412,22 @@ type appConfig struct {
 	// "delegating". The @aws_orchestrator_2 (always direct) and @aws_orchestrator_lean
 	// (always lean) eval handles are unaffected — they exist for side-by-side A/B.
 	AwsOrchestratorMode string `mapstructure:"llm_server_aws_orchestrator_mode"`
+	// GcpOrchestratorMode selects what the router-selected gcp_orchestrator runs.
+	// Boot-time, per-deploy (rollback = change + redeploy). One of:
+	//   "delegating" (default) — v1: route GCP resource CLI through the `gcp` sub-agent
+	//   "direct"               — v2: hold `gcloud_execute` and run the gcloud CLI directly
+	//   "lean"                 — EXPERIMENTAL: minimal principle-level prompt + direct gcloud_execute
+	// Unknown/empty falls back to "delegating". The @gcp_orchestrator_2 (always direct) and
+	// @gcp_orchestrator_lean (always lean) eval handles are unaffected — they exist for side-by-side A/B.
+	GcpOrchestratorMode string `mapstructure:"llm_server_gcp_orchestrator_mode"`
+	// AzureOrchestratorMode selects what the router-selected azure_orchestrator runs.
+	// Boot-time, per-deploy (rollback = change + redeploy). One of:
+	//   "delegating" (default) — v1: route Azure resource CLI through the `azure` sub-agent
+	//   "direct"               — v2: hold `azure_execute` and run the az CLI directly
+	//   "lean"                 — EXPERIMENTAL: minimal principle-level prompt + direct azure_execute
+	// Unknown/empty falls back to "delegating". The @azure_orchestrator_2 (always direct) and
+	// @azure_orchestrator_lean (always lean) eval handles are unaffected — they exist for side-by-side A/B.
+	AzureOrchestratorMode string `mapstructure:"llm_server_azure_orchestrator_mode"`
 	// TraceAgentV2Enabled gates the canonical, provider-independent traces agent
 	// (TracesDefaultAgentV2). Global per-deploy toggle; default false.
 	TraceAgentV2Enabled                    bool   `mapstructure:"llm_server_trace_agent_v2_enabled"`
@@ -684,6 +697,64 @@ type appConfig struct {
 	MemoryCacheTTLSeconds   int    `mapstructure:"llm_memory_cache_ttl_seconds"`
 	MemoryProjectionWorkers int    `mapstructure:"llm_memory_projection_workers"`
 
+	// RAG projection for memory. When enabled, the memory module writes each
+	// row into rag-server (in addition to Postgres) via an async outbox
+	// worker, and Compose queries rag-server for query-relevance ranking
+	// before falling back to the static ranker. Default off — flag OFF means
+	// pre-flag behaviour is preserved everywhere. See docs/memory-rag-integration.md.
+	MemoryRagEnabled             bool `mapstructure:"llm_memory_rag_enabled"`
+	MemoryRagTimeoutMs           int  `mapstructure:"llm_memory_rag_timeout_ms"`
+	MemoryRagOverfetchMultiplier int  `mapstructure:"llm_memory_rag_overfetch_multiplier"`
+	// MemoryRerankEnabled turns on the llm-server-side LLM rerank of memory RAG
+	// candidates. When on, each hybrid layer's cosine candidates are reordered/
+	// filtered by a fast, non-thinking retrieval-tier LLM call (cacheable static
+	// prompt) before hydration — collapsing topically-similar-but-irrelevant hits
+	// that cosine alone can't separate. Default off (pre-flag behaviour: cosine
+	// order only). Fail-open: any rerank miss keeps the cosine order.
+	MemoryRerankEnabled bool `mapstructure:"llm_memory_rerank_enabled"`
+	// MemoryRerankMinScore is an optional COARSE cosine pre-filter applied before
+	// the LLM rerank: candidates whose normalized similarity (0..1) is below it
+	// are dropped cheaply, shrinking the LLM rerank's input and cutting obvious
+	// low-cosine tail without an LLM call. Default 0.8. It is blunt — cosine can't
+	// separate same-domain candidates (which cluster high, ~0.85; that's the
+	// reranker's job), so this removes only clearly-lower-scoring hits; the LLM
+	// rerank still does the fine relevance filtering on the survivors. 0 disables
+	// it. Fail-open: if the floor would leave fewer than 2 candidates it is skipped
+	// and the full set reranked, so it can't starve the reranker. Composes ahead
+	// of a future rag-side cross-encoder stage.
+	MemoryRerankMinScore float64 `mapstructure:"llm_memory_rerank_min_score"`
+	// MemoryRerank{WSimilarity,WRelevancy,WDecay} weight the three signals blended
+	// into a pattern's final combined score after the LLM rerank: RAG cosine
+	// similarity, the LLM-emitted relevancy (0..1), and the decayed pattern score.
+	// Only the signals present for a row are used and their weights are
+	// renormalized to sum to 1 (e.g. the static path has no similarity), so the
+	// combined score stays on a 0..1 scale regardless of which signals exist.
+	MemoryRerankWSimilarity float64 `mapstructure:"llm_memory_rerank_w_similarity"`
+	MemoryRerankWRelevancy  float64 `mapstructure:"llm_memory_rerank_w_relevancy"`
+	MemoryRerankWDecay      float64 `mapstructure:"llm_memory_rerank_w_decay"`
+	// MemoryRerankThreshold drops patterns whose final combined score is below it,
+	// after the rerank and before the top-N cap. Only applied when
+	// MemoryRerankEnabled is on (it's part of the rerank feature; with rerank off
+	// the combined score has no relevancy term, so filtering is skipped). Default
+	// 0.6 — trims the low-relevance tail while keeping decay/similarity-strong
+	// rows. 0 disables it even when rerank is on. Fail-open: never blanks a layer
+	// that had candidates (keeps the single best row if all would be filtered).
+	MemoryRerankThreshold float64 `mapstructure:"llm_memory_rerank_threshold"`
+	// MemoryInjectEnabled is path A: when on, the query-dependent layers
+	// (patterns/decisions/collective/inferred-prefs) are fetched (RAG-hybrid) +
+	// reranked and injected into the prompt at assembly time, before the
+	// orchestrator runs. When off, only the always-on ambient core (soul,
+	// explicit prefs, session) is injected. Default false — the ambient core is
+	// the baseline; the heavier query-dependent layers are opt-in per env.
+	MemoryInjectEnabled bool `mapstructure:"llm_memory_inject_enabled"`
+	// MemoryToolEnabled is path B: when on, the on-demand `memory` tool is enabled
+	// so agents can search memory via keywords (plain DB fetch, no RAG/rerank).
+	// Independent of MemoryInjectEnabled — either, both, or neither. Default off.
+	MemoryToolEnabled            bool `mapstructure:"llm_memory_tool_enabled"`
+	MemoryRagProjectorBatchSize  int  `mapstructure:"llm_memory_rag_projector_batch_size"`
+	MemoryRagProjectorIntervalMs int  `mapstructure:"llm_memory_rag_projector_interval_ms"`
+	MemoryRagProjectorWorkers    int  `mapstructure:"llm_memory_rag_projector_workers"`
+
 	// Phase 2 layer toggles
 	MemoryLayerPatternsEnabled   bool `mapstructure:"llm_memory_layer_patterns_enabled"`
 	MemoryLayerDecisionsEnabled  bool `mapstructure:"llm_memory_layer_decisions_enabled"`
@@ -715,24 +786,21 @@ type appConfig struct {
 	MemoryMaintenancePreferencesSchedule     string `mapstructure:"llm_memory_maintenance_preferences_schedule"`
 	MemoryMaintenancePatternsSchedule        string `mapstructure:"llm_memory_maintenance_patterns_schedule"`
 	MemoryMaintenanceEventsRotateSchedule    string `mapstructure:"llm_memory_maintenance_events_rotate_schedule"`
-	// MemoryMaintenancePartitionSchedule drives memory_partition_maint, which
-	// creates llm_memory_events partitions ahead of month rollover. Runs
-	// regardless of MemoryMaintenanceEnabled — see maintenance.Register.
-	MemoryMaintenancePartitionSchedule string `mapstructure:"llm_memory_maintenance_partition_schedule"`
-	// MemoryEventsPartitionMonthsAhead is how many months beyond the current
-	// one memory_partition_maint provisions. Doubles as the outage budget:
-	// the job can fail for this many months before a write is rejected.
-	MemoryEventsPartitionMonthsAhead    int    `mapstructure:"llm_memory_events_partition_months_ahead"`
-	MemoryMaintenanceCollectiveSchedule string `mapstructure:"llm_memory_maintenance_collective_schedule"`
-	MemoryMaintenanceSoulSchedule       string `mapstructure:"llm_memory_maintenance_soul_schedule"`
-	MemoryMaintenanceDecisionsSchedule  string `mapstructure:"llm_memory_maintenance_decisions_schedule"`
+	MemoryMaintenanceCollectiveSchedule      string `mapstructure:"llm_memory_maintenance_collective_schedule"`
+	MemoryMaintenanceSoulSchedule            string `mapstructure:"llm_memory_maintenance_soul_schedule"`
+	MemoryMaintenanceDecisionsSchedule       string `mapstructure:"llm_memory_maintenance_decisions_schedule"`
 	// MemoryMaintenancePatternsExtractSchedule drives the cross-conversation
 	// pattern-extract job. Daily cadence
 	// keeps the LLM bill bounded while still catching new recurrences within
 	// a day of the second observation.
 	MemoryMaintenancePatternsExtractSchedule string `mapstructure:"llm_memory_maintenance_patterns_extract_schedule"`
-	MemoryMaintenancePreferencesDecayDays    int    `mapstructure:"llm_memory_maintenance_preferences_decay_days"`
-	MemoryMaintenancePatternsRetireDays      int    `mapstructure:"llm_memory_maintenance_patterns_retire_days"`
+	// MemoryMaintenanceRagSweepSchedule drives the memory-v2 RAG
+	// tombstone sweeper — hourly by default. See
+	// memory/maintenance/patterns_rag_ttl_sweeper.go.
+	MemoryMaintenanceRagSweepSchedule     string `mapstructure:"llm_memory_maintenance_rag_sweep_schedule"`
+	MemoryMaintenanceRagSweepBatch        int    `mapstructure:"llm_memory_maintenance_rag_sweep_batch"`
+	MemoryMaintenancePreferencesDecayDays int    `mapstructure:"llm_memory_maintenance_preferences_decay_days"`
+	MemoryMaintenancePatternsRetireDays   int    `mapstructure:"llm_memory_maintenance_patterns_retire_days"`
 	// MemoryMaintenancePatternsFadingDays / StaleDays drive the
 	// active → fading → stale lifecycle that RunPatternsConsolidate writes
 	// onto llm_memory_patterns.decay_state. The UI's filter chips read this
@@ -741,14 +809,6 @@ type appConfig struct {
 	MemoryMaintenancePatternsFadingDays  int `mapstructure:"llm_memory_maintenance_patterns_fading_days"`
 	MemoryMaintenancePatternsStaleDays   int `mapstructure:"llm_memory_maintenance_patterns_stale_days"`
 	MemoryMaintenanceEventsRetentionDays int `mapstructure:"llm_memory_maintenance_events_retention_days"`
-
-	// OSS-forward: kept for the pre-memory2 migration shim in
-	// llm/llm-server/memory/migration.go (Phase 1 legacy → Shadow → Dual →
-	// Cutover → Retired). EE prod removed these when the full memory2 module
-	// landed; OSS retains them until the memory2 consumer path is picked.
-	// Bind to LLM_MEMORY_MIGRATION_MODE / LLM_MEMORY_SHADOW_SAMPLE_FRACTION.
-	MemoryMigrationMode        string  `mapstructure:"llm_memory_migration_mode"`
-	MemoryShadowSampleFraction float64 `mapstructure:"llm_memory_shadow_sample_fraction"`
 
 	// Productivity dashboard tunables. The "Time Saved" widget compares each
 	// completed investigation's AI runtime against a flat per-task manual
@@ -855,7 +915,6 @@ func init() {
 	viper.SetDefault("llm_server_agent_prometheus_max_inline_data_points", 5) // reduced from 10; above this threshold raw values are replaced with a stats summary to avoid context bloat
 
 	viper.SetDefault("llm_server_agent_max_loglines", 100)
-	viper.SetDefault("llm_server_log_provider_override", "")
 	viper.SetDefault("llm_server_trace_provider_override", "")
 	viper.SetDefault("llm_server_agent_max_sqlrows", 10)
 	viper.SetDefault("llm_server_agent_max_tracesrows", 10)
@@ -1012,18 +1071,14 @@ func init() {
 	viper.SetDefault("llm_server_workspace_resource_request_cpu", "250m")
 	viper.SetDefault("llm_server_workspace_resource_request_memory", "256Mi")
 	viper.SetDefault("llm_server_shell_tool_enabled", true)
-	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
+	viper.SetDefault("llm_server_log_agent_v2_enabled", false)
 	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
 	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
-	// k8s/aws orchestrator mode: lean (default) | delegating (v1) | direct (v2).
-	// Lean = reduced tool core + minimal prompt + search_tools reach-back. Run as the
-	// dev/QA default with no regression: caches normally on gemini, same call count as
-	// delegating, critiqued under the standard gate (lean does NOT disable critique —
-	// it is governed by llm_server_react_critique_enabled, same as the heavy agent).
-	// Rollback = set the mode back to delegating + redeploy. An unknown/typo value
-	// falls back to delegating. Deployments that set the env explicitly are unaffected.
-	viper.SetDefault("llm_server_k8s_orchestrator_mode", "lean")
-	viper.SetDefault("llm_server_aws_orchestrator_mode", "lean")
+	// k8s_orchestrator mode: delegating (v1, default) | direct (v2) | lean (experimental).
+	viper.SetDefault("llm_server_k8s_orchestrator_mode", "delegating")
+	viper.SetDefault("llm_server_aws_orchestrator_mode", "delegating")
+	viper.SetDefault("llm_server_gcp_orchestrator_mode", "delegating")
+	viper.SetDefault("llm_server_azure_orchestrator_mode", "delegating")
 	viper.SetDefault("llm_server_workspace_port", 8080)
 	viper.SetDefault("llm_server_workspace_local_url", "") // e.g. http://localhost:8080 for local dev
 	viper.SetDefault("llm_server_workspace_file_max_download_bytes", 5*1024*1024)
@@ -1149,8 +1204,35 @@ func init() {
 	// Avoids the prior trap where turning the module on yielded no
 	// observable effect because each per-layer write/read gate still
 	// required its own opt-in.
-	viper.SetDefault("llm_memory_module_enabled", false)
+	viper.SetDefault("llm_memory_module_enabled", true)
 	viper.SetDefault("llm_memory_compose_enabled", true)
+	// Logs agent latency improvement (#34712). Defaults OFF so the change is
+	// inert on merge; flip via env per-tenant to validate.
+	viper.SetDefault("llm_logs_standard_grep_enabled", false)
+	// RAG projection defaults — flag OFF preserves pre-flag behaviour. The
+	// timeout is per Compose read (Slice 2); the overfetch multiplier is how
+	// many candidates the RAG query asks for relative to the target per-kind
+	// cap (Slice 2). The projector-worker knobs govern the outbox drain loop
+	// added in Slice 1: batch size = SKIP LOCKED LIMIT, interval = idle-tick
+	// between drains, worker count = hash-shard fanout for per-row ordering.
+	viper.SetDefault("llm_memory_rag_enabled", true)
+	viper.SetDefault("llm_memory_rerank_enabled", false)
+	viper.SetDefault("llm_memory_rerank_min_score", 0.8)
+	// Combined-score weights (similarity / relevancy / decay) and the post-rerank
+	// filter threshold. Threshold defaults to 0 (off) so an unchanged deployment
+	// filters nothing; weights emphasise query-match (similarity+relevancy) over
+	// freshness (decay) and are renormalized per-row over whichever signals exist.
+	viper.SetDefault("llm_memory_rerank_w_similarity", 0.35)
+	viper.SetDefault("llm_memory_rerank_w_relevancy", 0.45)
+	viper.SetDefault("llm_memory_rerank_w_decay", 0.20)
+	viper.SetDefault("llm_memory_rerank_threshold", 0.6)
+	viper.SetDefault("llm_memory_inject_enabled", false)
+	viper.SetDefault("llm_memory_tool_enabled", false)
+	viper.SetDefault("llm_memory_rag_timeout_ms", 800)
+	viper.SetDefault("llm_memory_rag_overfetch_multiplier", 3)
+	viper.SetDefault("llm_memory_rag_projector_batch_size", 50)
+	viper.SetDefault("llm_memory_rag_projector_interval_ms", 1000)
+	viper.SetDefault("llm_memory_rag_projector_workers", 4)
 	viper.SetDefault("llm_memory_layer_soul_enabled", true)
 	viper.SetDefault("llm_memory_layer_preferences_enabled", true)
 	viper.SetDefault("llm_memory_tenant_allowlist", "")
@@ -1171,25 +1253,28 @@ func init() {
 	viper.SetDefault("llm_memory_session_max_tokens", 400)
 	viper.SetDefault("llm_memory_session_idle_minutes", 30)
 
-	viper.SetDefault("llm_memory_maintenance_enabled", false)
+	viper.SetDefault("llm_memory_maintenance_enabled", true)
 	viper.SetDefault("llm_memory_maintenance_session_expire_schedule", "*/30 * * * *")
 	viper.SetDefault("llm_memory_maintenance_session_distill_schedule", "*/30 * * * *")
 	viper.SetDefault("llm_memory_maintenance_session_distill_batch_size", 50)
 	viper.SetDefault("llm_memory_maintenance_preferences_schedule", "0 3 * * *")
 	viper.SetDefault("llm_memory_maintenance_patterns_schedule", "0 4 * * *")
 	viper.SetDefault("llm_memory_maintenance_events_rotate_schedule", "0 2 * * *")
-	// 01:00 — ahead of the 02:00 rotate, so a partition is never created and
-	// dropped within the same cycle.
-	viper.SetDefault("llm_memory_maintenance_partition_schedule", "0 1 * * *")
-	viper.SetDefault("llm_memory_events_partition_months_ahead", 3)
 	viper.SetDefault("llm_memory_maintenance_collective_schedule", "0 5 * * *")
 	viper.SetDefault("llm_memory_maintenance_soul_schedule", "0 6 * * 0")
 	viper.SetDefault("llm_memory_maintenance_decisions_schedule", "0 7 * * 0")
 	viper.SetDefault("llm_memory_maintenance_patterns_extract_schedule", "0 5 * * *")
+	// RAG tombstone sweep — hourly on the hour. Small batches so a single
+	// pass never floods rag-server; the partial index keeps the scan cheap.
+	viper.SetDefault("llm_memory_maintenance_rag_sweep_schedule", "0 * * * *")
+	viper.SetDefault("llm_memory_maintenance_rag_sweep_batch", 100)
 	viper.SetDefault("llm_memory_maintenance_preferences_decay_days", 60)
-	viper.SetDefault("llm_memory_maintenance_patterns_retire_days", 30)
+	// Decay ladder: active -> fading (14d) -> stale (30d) -> retired (60d).
+	// Must be strictly increasing; a shorter retire than stale would retire a
+	// pattern before it can go stale.
 	viper.SetDefault("llm_memory_maintenance_patterns_fading_days", 14)
-	viper.SetDefault("llm_memory_maintenance_patterns_stale_days", 60)
+	viper.SetDefault("llm_memory_maintenance_patterns_stale_days", 30)
+	viper.SetDefault("llm_memory_maintenance_patterns_retire_days", 60)
 	viper.SetDefault("llm_memory_maintenance_events_retention_days", 90)
 
 	viper.SetDefault("llm_productivity_manual_baseline_minutes", 25)

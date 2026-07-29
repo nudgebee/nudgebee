@@ -10,35 +10,80 @@ import (
 	toolcore "nudgebee/llm/tools/core"
 	"sort"
 	"strings"
+	"text/template"
 )
 
 const (
+	// AgentGcpOrchestratorName is the name for the GCP debug agent
 	AgentGcpOrchestratorName = "gcp_orchestrator"
+	// AgentGcpOrchestrator2Name is the always-direct eval handle (invocable by @name only).
+	AgentGcpOrchestrator2Name = "gcp_orchestrator_2"
+)
+
+// GcpOrchestratorMode* are the values of config llm_server_gcp_orchestrator_mode,
+// the boot-time knob for what the router-selected gcp_orchestrator runs.
+const (
+	GcpOrchestratorModeDelegating = "delegating" // v1: delegate GCP resource CLI to the `gcp` sub-agent (default)
+	GcpOrchestratorModeDirect     = "direct"     // v2: hold gcloud_execute and run the gcloud CLI directly
+	GcpOrchestratorModeLean       = "lean"       // EXPERIMENTAL: minimal principle-level prompt + direct gcloud_execute
 )
 
 func init() {
 	core.RegisterNBAgentFactoryWithAliases(AgentGcpOrchestratorName, func(accountId string) (core.NBAgent, error) {
 		return newGcpOrchestratorAgent(accountId), nil
 	}, "gcp_debug")
+
+	// Explicit always-direct eval handle (see AgentGcpOrchestrator2Name). Same
+	// implementation, distinct name → distinct cache key, invocable by @name only.
+	core.RegisterNBAgentFactoryWithAliases(AgentGcpOrchestrator2Name, func(accountId string) (core.NBAgent, error) {
+		return newGcpOrchestratorAgentNamed(accountId, AgentGcpOrchestrator2Name, true), nil
+	}, "gcp_debug_2")
 }
 
+// GcpOrchestratorAgent is an agent that helps debug GCP issues. useGcpCliDirect
+// selects v2 (hold gcloud_execute, run the CLI directly) vs v1 (delegate to the `gcp`
+// sub-agent); it drives both the tool set and the prompt's {{if .use_gcp_cli_direct}}.
 type GcpOrchestratorAgent struct {
 	accountId            string
+	name                 string
+	useGcpCliDirect      bool
 	clusterSnapshot      map[string][]string
 	clusterSnapshotFound bool
 }
 
+// newGcpOrchestratorAgent is the primary, router-selected agent. Its behavior is
+// chosen by config.GcpOrchestratorMode (boot-time; rollback = change + redeploy).
+// Unknown/empty mode falls back to delegating (v1), the safe default.
 func newGcpOrchestratorAgent(accountId string) core.NBAgent {
+	switch strings.ToLower(strings.TrimSpace(config.Config.GcpOrchestratorMode)) {
+	case GcpOrchestratorModeLean:
+		return newGcpLeanAgentNamed(accountId, AgentGcpOrchestratorName)
+	case GcpOrchestratorModeDirect:
+		return newGcpOrchestratorAgentNamed(accountId, AgentGcpOrchestratorName, true)
+	default:
+		return newGcpOrchestratorAgentNamed(accountId, AgentGcpOrchestratorName, false)
+	}
+}
+
+// newGcpOrchestratorAgentNamed is the shared constructor. name drives identity and the
+// cache key (so the primary and the eval handle stay isolated); useGcpCliDirect drives
+// the gcloud CLI tool and the prompt's {{if .use_gcp_cli_direct}} branch.
+func newGcpOrchestratorAgentNamed(accountId, name string, useGcpCliDirect bool) core.NBAgent {
 	return &GcpOrchestratorAgent{
-		accountId: accountId,
+		accountId:       accountId,
+		name:            name,
+		useGcpCliDirect: useGcpCliDirect,
 	}
 }
 
 func (a *GcpOrchestratorAgent) GetName() string {
-	return AgentGcpOrchestratorName
+	return a.name
 }
 
 func (a *GcpOrchestratorAgent) GetNameAliases() []string {
+	if a.name == AgentGcpOrchestrator2Name {
+		return []string{"gcp debug 2", "google_cloud_debug_2", "gcp_debug_2"}
+	}
 	return []string{"gcp debug", "google_cloud_debug", "gcp_debug"}
 }
 
@@ -47,7 +92,7 @@ func (a *GcpOrchestratorAgent) GetDescription() string {
 }
 
 func (a *GcpOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	return getGcpPlannerSupportedTools(ctx, a.accountId)
+	return getGcpPlannerSupportedTools(ctx, a.accountId, a.GetName(), a.useGcpCliDirect)
 }
 
 func (a *GcpOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
@@ -66,8 +111,12 @@ func (a *GcpOrchestratorAgent) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
 }
 
+// GetSystemPrompt returns the system prompt for the agent. useGcpCliDirect drives the
+// prompt's {{if .use_gcp_cli_direct}} blocks: run gcloud_execute directly (v2) vs route GCP
+// resource work through the `gcp` sub-agent (v1). All routing guidance lives in the prompt
+// file (gated by that flag), not appended here, so the two variants can't drift.
 func (a *GcpOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentGcpDebugReact)
+	promptText := renderGcpDebugReactPrompt(a.useGcpCliDirect)
 	instructions := strings.Split(promptText, "\n")
 
 	if !a.clusterSnapshotFound {
@@ -93,15 +142,27 @@ func (a *GcpOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, que
 	}
 
 	constraints := []string{
-		"Focus on data collection - prioritize data-gathering tools like `gcp`, `prometheus`, `docs`, or `search`.",
 		"If a tool execution fails due to permissions or errors, state the error and propose a different approach.",
 		"If a command to list resources repeatedly returns empty, assume it's a permission issue and suggest the necessary permissions.",
 		"Always verify that your actions directly address the user's question.",
 	}
+	if a.useGcpCliDirect {
+		constraints = append(constraints,
+			"Run GCP resource inspection with gcloud_execute directly (write the actual `gcloud ...` / `gsutil ...` CLI)",
+			"If a resource is 'not found', investigation ends there - don't fabricate next steps")
+	} else {
+		constraints = append(constraints,
+			"Focus on data collection - prioritize data-gathering tools like `gcp`, `prometheus`, `docs`, or `search`.")
+	}
 	outputFormat := gcpReactOutputFormat
 
+	role := "a highly skilled DevOps, SRE and Software Development expert"
+	if a.useGcpCliDirect {
+		role = "a highly skilled DevOps, SRE and Software Development expert that runs the gcloud CLI directly via gcloud_execute"
+	}
+
 	return core.NBAgentPrompt{
-		Role:         "a highly skilled DevOps, SRE and Software Development expert",
+		Role:         role,
 		Instructions: instructions,
 		Constraints:  constraints,
 		// ToolUsage intentionally omitted: the planner already renders each tool's
@@ -149,8 +210,38 @@ Exception: when citing an external resource that has its own real URL (e.g. a Gi
 **FOR ALL OTHER QUERIES** (generation, listing, explanation, how-to, etc.):
 Answer the user's question directly in clear markdown. Do NOT use the investigation format above. Use code blocks, tables, or bullet points as appropriate for the content.`
 
-func getGcpPlannerSupportedTools(ctx *security.RequestContext, accountId string) []toolcore.NBTool {
-	supportedToolNames := []string{GcpAgentName, getTicketAgentName(), WorkflowAgentName, GithubAgentName, WebSearchAgentName, RecommendationsAgentName, EventsAgentName, VisualizationAgentName, PostgresAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RedisAgentName, RabbitMQAgentName, KubectlAgentName, DelegateAgentToolName, tools.ToolIncidentAssembly, tools.SearchSkillsToolName}
+// renderGcpDebugReactPrompt renders the shared agent_gcp_debug_react prompt for both GCP
+// orchestrators. useGcpCliDirect drives the {{if .use_gcp_cli_direct}} blocks in the prompt
+// file: false = delegate GCP resource CLI to the `gcp` sub-agent (v1), true = hold and run
+// gcloud_execute directly (v2). Keeping all routing guidance in the prompt (gated by that
+// flag) means the two variants cannot drift apart. On any parse/execute error the raw prompt
+// is returned so the agent retains its full instructions.
+func renderGcpDebugReactPrompt(useGcpCliDirect bool) string {
+	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentGcpDebugReact)
+	tmplData := map[string]any{"use_gcp_cli_direct": useGcpCliDirect}
+	t, err := template.New("gcp_debug").Option("missingkey=zero").Parse(promptText)
+	if err != nil {
+		slog.Error("failed to parse gcp_debug prompt template, using raw prompt", "error", err)
+		return promptText
+	}
+	var buf strings.Builder
+	if err := t.Execute(&buf, tmplData); err != nil {
+		slog.Error("failed to execute gcp_debug prompt template, using raw prompt", "error", err)
+		return promptText
+	}
+	return buf.String()
+}
+
+func getGcpPlannerSupportedTools(ctx *security.RequestContext, accountId, agentName string, useGcpCliDirect bool) []toolcore.NBTool {
+	supportedToolNames := []string{getTicketAgentName(), WorkflowAgentName, GithubAgentName, WebSearchAgentName, RecommendationsAgentName, EventsAgentName, VisualizationAgentName, PostgresAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RedisAgentName, RabbitMQAgentName, KubectlAgentName, DelegateAgentToolName, tools.ToolIncidentAssembly, tools.SearchSkillsToolName}
+
+	// v1 (delegating) routes GCP resource inspection through the `gcp` sub-agent;
+	// v2 (direct) holds gcloud_execute and drops the sub-agent hop.
+	if useGcpCliDirect {
+		supportedToolNames = append(supportedToolNames, tools.ToolExecuteGcpCliCommand)
+	} else {
+		supportedToolNames = append(supportedToolNames, GcpAgentName)
+	}
 
 	// The KG-backed service_dependency_graph covers cloud (AWS/GCP/Azure) topology,
 	// not just K8s. The V1 flag guard here went away with the V1 agent.
@@ -161,7 +252,7 @@ func getGcpPlannerSupportedTools(ctx *security.RequestContext, accountId string)
 
 	summary, err := toolcore.GetAccountConfigSummary(ctx, accountId)
 	if err != nil {
-		slog.Error("agent: failed to get account config summary", "error", err, "agent", AgentGcpOrchestratorName)
+		slog.Error("agent: failed to get account config summary", "error", err, "agent", agentName)
 	}
 
 	tools := make([]toolcore.NBTool, 0, len(supportedToolNames))
@@ -169,12 +260,12 @@ func getGcpPlannerSupportedTools(ctx *security.RequestContext, accountId string)
 		tool, found := toolcore.GetNBTool(accountId, toolName)
 		if found {
 			if !toolcore.IsToolConfigured(ctx, accountId, tool, summary) {
-				slog.Warn("skipping tool as not configured", "tool", tool.Name(), "agent", AgentGcpOrchestratorName)
+				slog.Warn("skipping tool as not configured", "tool", tool.Name(), "agent", agentName)
 				continue
 			}
 			tools = append(tools, tool)
 		} else {
-			slog.Warn("GCP Debug Planner: Tool not found in registry", "toolName", toolName, "accountId", accountId)
+			slog.Warn("GCP Debug Planner: Tool not found in registry", "toolName", toolName, "accountId", accountId, "agent", agentName)
 		}
 	}
 

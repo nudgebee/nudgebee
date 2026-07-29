@@ -71,6 +71,12 @@ var agentK8sLean string
 //go:embed agent_aws_lean.txt
 var agentAwsLean string
 
+//go:embed agent_gcp_lean.txt
+var agentGcpLean string
+
+//go:embed agent_azure_lean.txt
+var agentAzureLean string
+
 //go:embed summarization_security.txt
 var summarizationSecurity string
 
@@ -193,6 +199,8 @@ const PromptMemoryExtractor = "memory_extractor"
 const PromptAgentK8sDebugReact = "agent_k8s_debug_react"
 const PromptAgentK8sLean = "agent_k8s_lean"
 const PromptAgentAwsLean = "agent_aws_lean"
+const PromptAgentGcpLean = "agent_gcp_lean"
+const PromptAgentAzureLean = "agent_azure_lean"
 const PromptSummarizationSecurity = "summarization_security"
 const PromptUnifiedContextMemory = "unified_context_memory"
 const PromptExecutorResponseFormatterSlack = "executor_response_formatter_slack"
@@ -284,6 +292,10 @@ func GetPrompt(module string, args ...any) string {
 		data = agentK8sLean
 	case PromptAgentAwsLean:
 		data = agentAwsLean
+	case PromptAgentGcpLean:
+		data = agentGcpLean
+	case PromptAgentAzureLean:
+		data = agentAzureLean
 	case PromptSummarizationSecurity:
 		data = summarizationSecurity
 	case PromptUnifiedContextMemory:
