@@ -31,7 +31,8 @@ export interface ServerBrandingData {
   theme?: Record<string, unknown> | null;
   colorTokens?: Record<string, string> | null;
   // True when the active brand is NOT the Nudgebee house brand — suppresses
-  // Nudgebee mascots (e.g. the bee loader). OSS defaults to true.
+  // Nudgebee mascots (e.g. the bee loader). OSS defaults to false (app_config
+  // hardcodes it) so the Nudgebee mascots show.
   isWhiteLabel?: boolean;
   // Optional tenant font remap: [{ family, src, weight?, style? }]. Re-points
   // hardcoded font-family names at a brand font via @font-face injected
