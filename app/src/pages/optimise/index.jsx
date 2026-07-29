@@ -8,7 +8,15 @@ import CostAnalyser from '@components/llm/cost-analyser/CostAnalyser';
 import GatewayUsage from '@components/llm/gateway-usage/GatewayUsage';
 import AutoOptimizeTabs from '@components/autopilot/tables/AutoOptimizeTabs';
 import { useRouter } from 'next/router';
-import { OptimizeSummaryIcon, RecommendationIcon, RecommendationResolutionIcon, LLMConsumptionIcon, IntegrationsIcon, AutomateBlue, BetaIcon } from '@assets';
+import {
+  OptimizeSummaryIcon,
+  RecommendationIcon,
+  RecommendationResolutionIcon,
+  LLMConsumptionIcon,
+  IntegrationsIcon,
+  AutomateBlue,
+  BetaIcon,
+} from '@assets';
 import { hasReadAccess, hasWriteAccess } from '@lib/auth';
 import { useData } from '@context/DataContext';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
