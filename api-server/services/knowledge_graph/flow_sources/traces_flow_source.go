@@ -1541,6 +1541,7 @@ func (s *TracesFlowSource) inferNodeType(kind string, appType []string) (core.No
 		"Runner":          core.NodeTypeWorkload,
 		"Database":        core.NodeTypeDatabase,
 		"ExternalService": core.NodeTypeExternalService,
+		"Node":            core.NodeTypeNode, // K8s worker node (see applicationKindFor in traces/service_map.go)
 	}
 
 	// Default for unknown kinds: NodeTypeService (logical OTel service).

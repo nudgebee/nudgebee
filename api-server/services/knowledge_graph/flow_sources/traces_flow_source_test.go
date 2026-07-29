@@ -3,8 +3,89 @@ package flow_sources
 import (
 	"log/slog"
 	"nudgebee/services/knowledge_graph/core"
+	"nudgebee/services/traces"
 	"testing"
 )
+
+// A K8s Node observed via host-network/kubelet-level traffic (e.g. a
+// Prometheus node-metrics scrape) arrives from traces/service_map.go with
+// Kind="Node" (see applicationKindFor there) — inferNodeType must map that to
+// NodeTypeNode so isK8sAuthoritativeType correctly defers to the
+// k8s_source-authoritative Node instead of fabricating a stand-alone Service
+// node (nb-34880-class bug: KG node misclassification).
+func TestTracesFlowSource_InferNodeType_Node(t *testing.T) {
+	logger := slog.Default()
+	source := NewTracesFlowSource(logger)
+
+	nodeType, _ := source.inferNodeType("Node", nil)
+	if nodeType != core.NodeTypeNode {
+		t.Errorf("inferNodeType(%q, nil) = %v, want %v", "Node", nodeType, core.NodeTypeNode)
+	}
+}
+
+// createNodeForServiceApplication must not fabricate a stand-alone node for a
+// Kind="Node" application — k8s_source is the single source of truth for
+// Node/Namespace/Cluster (see isK8sAuthoritativeType in ebpf_flow_source.go).
+// Callers fall back to matchServiceApplicationToNode, which reuses the real
+// node if one exists, and drop the edge otherwise.
+func TestTracesFlowSource_CreateNodeForServiceApplication_SkipsNode(t *testing.T) {
+	logger := slog.Default()
+	source := NewTracesFlowSource(logger)
+
+	app := &traces.ServiceApplication{
+		Id: traces.ServiceApplicationId{
+			Name:      "gke-example-cluster-node-pool-a1b2c3d4-xy9z",
+			Kind:      "Node",
+			Namespace: "node",
+		},
+	}
+
+	node := source.createNodeForServiceApplication(app, "tenant-1", core.K8sAccount{CloudAccountID: "account1"})
+	if node != nil {
+		t.Errorf("createNodeForServiceApplication() = %+v, want nil (k8s-authoritative type)", node)
+	}
+}
+
+// End-to-end proof of the fix's intended outcome: a Kind="Node" application
+// must be resolved to the real, k8s_source-authoritative Node node (matched
+// by name — Node objects have no "namespace" property, so Strategy 1's
+// namespace+name match can't apply here, only Strategy 2's name-only match),
+// not left to fabricate a phantom Service node.
+func TestTracesFlowSource_MatchServiceApplicationToNode_Node(t *testing.T) {
+	logger := slog.Default()
+	source := NewTracesFlowSource(logger)
+
+	const nodeName = "gke-example-cluster-node-pool-a1b2c3d4-xy9z"
+	existingNodes := []*core.DbNode{
+		{
+			UniqueKey:      "k8s:account1::Node::" + nodeName,
+			NodeType:       core.NodeTypeNode,
+			Properties:     map[string]interface{}{"name": nodeName},
+			CloudAccountID: "account1",
+			Source:         "k8s",
+		},
+	}
+	source.InitializeNodeMatcher(existingNodes)
+
+	app := &traces.ServiceApplication{
+		Id: traces.ServiceApplicationId{
+			Name:      nodeName,
+			Kind:      "Node",
+			Namespace: "node",
+		},
+	}
+
+	node, err := source.matchServiceApplicationToNode(app, "account1")
+	if err != nil {
+		t.Fatalf("matchServiceApplicationToNode() error = %v, want a match against the existing Node", err)
+	}
+	if node == nil {
+		t.Fatalf("matchServiceApplicationToNode() = nil, nil, want a match against the existing Node")
+	}
+	if node.UniqueKey != existingNodes[0].UniqueKey {
+		t.Errorf("matchServiceApplicationToNode() matched %q, want %q", node.UniqueKey, existingNodes[0].UniqueKey)
+	}
+}
 
 func TestNewTracesFlowSource(t *testing.T) {
 	logger := slog.Default()

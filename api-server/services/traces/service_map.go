@@ -13,6 +13,29 @@ import (
 	"time"
 )
 
+// workloadNamespaceSentinelNode is the literal workload_namespace value the
+// trace pipeline uses when a span's source/destination is the K8s Node itself
+// (host-network / kubelet-level traffic, e.g. a Prometheus node-metrics
+// scrape) rather than a namespaced application — Node objects are
+// cluster-scoped and have no real namespace. Mirrors the "node" kind
+// ebpf_flow_source.go's inferNodeType already recognizes; traces' raw span
+// rows carry no equivalent Kind column, so this Namespace-based sentinel is
+// the only signal available here.
+const workloadNamespaceSentinelNode = "node"
+
+// applicationKindFor returns the ServiceApplicationId.Kind for a workload
+// identified only by name+namespace, honoring the sentinel above. Without
+// this, every such workload defaulted to the literal "Service" kind — so a
+// GKE node observed this way was misclassified as an application-level
+// Service node instead of matching (or falling back to) the real,
+// k8s_source-authoritative Node.
+func applicationKindFor(namespace string) string {
+	if namespace == workloadNamespaceSentinelNode {
+		return "Node"
+	}
+	return "Service"
+}
+
 type TraceServiceMapBuilder struct {
 	spans          []TraceSpan
 	config         *ServiceMapConfig
@@ -412,7 +435,7 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 	for _, stats := range serviceStats {
 		appId := ServiceApplicationId{
 			Name:      stats.ServiceName,
-			Kind:      "Service",
+			Kind:      applicationKindFor(stats.Namespace),
 			Namespace: stats.Namespace,
 		}
 
@@ -903,7 +926,7 @@ func (t *TraceServiceMapBuilder) createExternalServiceApplications(dependencyMap
 				downstream := DownstreamLink{
 					Id: ServiceApplicationId{
 						Name:      dependentService,
-						Kind:      "Service",
+						Kind:      applicationKindFor(stats.Namespace),
 						Namespace: stats.Namespace,
 					},
 					Status:       t.getLinkStatusCode(errorRate),
