@@ -433,7 +433,7 @@ const AskNudgebeeLayout = ({
                   router.pathname == '/home' || router.pathname.includes('/investigate')
                     ? colors.background.home
                     : isAskNudgebeePage
-                    ? colors.background.askNudgebeePage
+                    ? colors.background.askAssistantPage
                     : colors.background.pages,
                 ...styles.body,
                 position: 'relative',

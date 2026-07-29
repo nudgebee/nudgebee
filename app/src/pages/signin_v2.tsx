@@ -38,7 +38,7 @@ const AuthMethodButton: React.FC<AuthMethodButtonProps> = ({ title, subtitle, on
       onClick={onClick}
       sx={{
         borderRadius: '8px',
-        border: `1px solid ${colors.border.nudgebeeSuggestion}`,
+        border: `1px solid ${colors.border.assistantSuggestion}`,
         backgroundColor: colors.background.white,
         color: colors.text.secondary,
         fontSize: '14px',
@@ -510,7 +510,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
           '& .MuiOutlinedInput-root': {
             borderRadius: '8px',
             backgroundColor: colors.background.white,
-            borderColor: helperText.ldapUsername ? colors.border.error : colors.border.nudgebeeSuggestion,
+            borderColor: helperText.ldapUsername ? colors.border.error : colors.border.assistantSuggestion,
           },
           '& .MuiFormHelperText-root': {
             color: colors.errorText,
@@ -555,7 +555,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
           '& .MuiOutlinedInput-root': {
             borderRadius: '8px',
             backgroundColor: colors.background.white,
-            borderColor: helperText.ldapPassword ? colors.border.error : colors.border.nudgebeeSuggestion,
+            borderColor: helperText.ldapPassword ? colors.border.error : colors.border.assistantSuggestion,
           },
           '& .MuiFormHelperText-root': {
             color: colors.errorText,
@@ -659,7 +659,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
           '& .MuiOutlinedInput-root': {
             borderRadius: '8px',
             backgroundColor: colors.background.white,
-            borderColor: helperText.credsEmail ? colors.border.error : colors.border.nudgebeeSuggestion,
+            borderColor: helperText.credsEmail ? colors.border.error : colors.border.assistantSuggestion,
           },
           '& .MuiFormHelperText-root': {
             color: colors.errorText,
@@ -704,7 +704,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
           '& .MuiOutlinedInput-root': {
             borderRadius: '8px',
             backgroundColor: colors.background.white,
-            borderColor: helperText.credsPassword ? colors.border.error : colors.border.nudgebeeSuggestion,
+            borderColor: helperText.credsPassword ? colors.border.error : colors.border.assistantSuggestion,
           },
           '& .MuiFormHelperText-root': {
             color: colors.errorText,
@@ -824,7 +824,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
       {(otherIconProviders.length > 0 || samlEnabled) && emailProvider && (
         <Box sx={{ my: 3 }}>
           <Divider
-            sx={{ color: colors.text.tertiarymedium, fontSize: '12px', '&::before, &::after': { borderColor: colors.border.nudgebeeSuggestion } }}
+            sx={{ color: colors.text.tertiarymedium, fontSize: '12px', '&::before, &::after': { borderColor: colors.border.assistantSuggestion } }}
           >
             OR
           </Divider>
@@ -865,7 +865,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
       {emailProvider && ldapProvider && (
         <Box sx={{ my: 3 }}>
           <Divider
-            sx={{ color: colors.text.tertiarymedium, fontSize: '12px', '&::before, &::after': { borderColor: colors.border.nudgebeeSuggestion } }}
+            sx={{ color: colors.text.tertiarymedium, fontSize: '12px', '&::before, &::after': { borderColor: colors.border.assistantSuggestion } }}
           >
             OR
           </Divider>
@@ -901,7 +901,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
       {ldapProvider && teleportProvider && (
         <Box sx={{ my: 3 }}>
           <Divider
-            sx={{ color: colors.text.tertiarymedium, fontSize: '12px', '&::before, &::after': { borderColor: colors.border.nudgebeeSuggestion } }}
+            sx={{ color: colors.text.tertiarymedium, fontSize: '12px', '&::before, &::after': { borderColor: colors.border.assistantSuggestion } }}
           >
             OR
           </Divider>
@@ -936,7 +936,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
       {(otherIconProviders.length > 0 || samlEnabled || ldapProvider || teleportProvider || emailProvider) && credentialsProvider && (
         <Box sx={{ my: 3 }}>
           <Divider
-            sx={{ color: colors.text.tertiarymedium, fontSize: '12px', '&::before, &::after': { borderColor: colors.border.nudgebeeSuggestion } }}
+            sx={{ color: colors.text.tertiarymedium, fontSize: '12px', '&::before, &::after': { borderColor: colors.border.assistantSuggestion } }}
           >
             OR
           </Divider>

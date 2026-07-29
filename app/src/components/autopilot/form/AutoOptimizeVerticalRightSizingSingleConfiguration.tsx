@@ -1148,7 +1148,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: '16px', my: '30px' }}>
             <Box sx={{ display: 'flex', gap: '16px', flexDirection: 'row' }}>
               <Box sx={{ flex: 1 }}>
-                <Box sx={{ mb: '10px', borderLeft: `2px solid ${colors.nudgebeeMain}`, padding: '0px 10px' }}>
+                <Box sx={{ mb: '10px', borderLeft: `2px solid ${colors.brandMain}`, padding: '0px 10px' }}>
                   <Typography sx={{ fontSize: '14px', color: colors.text.secondary, fontWeight: 600 }}>CPU</Typography>
                 </Box>
                 <Box
@@ -1208,7 +1208,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
                 </Box>
               </Box>
               <Box sx={{ flex: 1 }}>
-                <Box sx={{ mb: '10px', borderLeft: `2px solid ${colors.nudgebeeMain}`, padding: '0px 10px' }}>
+                <Box sx={{ mb: '10px', borderLeft: `2px solid ${colors.brandMain}`, padding: '0px 10px' }}>
                   <Typography sx={{ fontSize: '14px', color: colors.text.secondary, fontWeight: 600 }}>Memory</Typography>
                 </Box>
                 <Box
