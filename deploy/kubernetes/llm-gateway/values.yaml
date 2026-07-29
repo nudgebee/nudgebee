@@ -1,0 +1,84 @@
+# Default values for llm-gateway.
+replicaCount: 2 # multi-replica by default — rate-limit/routing state is shared (Redis/DB)
+
+image:
+  repository: nudgebee-llm-gateway-server
+  pullPolicy: IfNotPresent
+  tag: 'latest'
+
+global:
+  image:
+    registry: 'ghcr.io/nudgebee'
+  imagePullSecrets: []
+
+nameOverride: ''
+fullnameOverride: ''
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ''
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 8000
+
+# No plain env by default: the app's own defaults cover PORT (8000),
+# GATEWAY_AUTH_MODE (user_auths), and GATEWAY_METERING_SINK (postgres); global
+# config (CACHE_PROVIDER, LOG_LEVEL, …) and all secrets (DB URL, provider keys,
+# Redis) come from the shared `nudgebee` secret via envFrom. Override per
+# environment only when you need a non-default (e.g. GATEWAY_METERING_SINK=clickhouse).
+env: {}
+
+# The gateway is ingress-facing (bypasses Next.js) on a DEDICATED SUBDOMAIN. The
+# streaming annotations are REQUIRED — without them nginx buffers SSE and applies
+# short timeouts, breaking token streaming and long LLM calls.
+ingress:
+  enabled: true
+  className: 'nginx'
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: 'off'
+    nginx.ingress.kubernetes.io/proxy-request-buffering: 'off'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '3600'
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '3600'
+    nginx.ingress.kubernetes.io/proxy-body-size: '32m'
+  # Set the dedicated subdomain per environment, e.g. ai.nudgebee.com.
+  hosts: []
+  # - host: ai.nudgebee.com
+  #   paths:
+  #     - path: /
+  #       pathType: Prefix
+  tls: []
+  # - secretName: llm-gateway-tls
+  #   hosts: [ai.nudgebee.com]
+
+secretName: 'nudgebee'
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+
+# Optional Postgres readiness gate before the gateway starts. The gateway itself
+# degrades gracefully (async sink, static routing) if the DB is momentarily down,
+# so this is best-effort.
+initCheckEnabled: false
+initImages:
+  postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine'
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+annotations: {}

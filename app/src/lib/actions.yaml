@@ -658,6 +658,38 @@ actions:
       - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
+  - name: llm_gateway_aggregate_usage
+    definition:
+      kind: synchronous
+      handler: '{{LLM_GATEWAY_URL}}/rpc/usage/aggregate'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_GATEWAY_ACTION_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: llm_gateway_list_requests
+    definition:
+      kind: synchronous
+      handler: '{{LLM_GATEWAY_URL}}/rpc/usage/requests'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_GATEWAY_ACTION_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
   - name: ai_get_gc
     definition:
       kind: "synchronous"

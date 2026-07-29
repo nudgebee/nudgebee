@@ -1,0 +1,104 @@
+package routing
+
+import "sort"
+
+// Input is what the edge knows about a request when routing is resolved.
+type Input struct {
+	Provider string // addressed provider (anthropic|openai|gemini) — the "lane"
+	Model    string // requested model or an alias/tier token
+	TenantID string
+	UserID   string
+}
+
+// Engine holds the compiled rule set and resolves requests to decisions.
+// Rules are grouped by tenant (each list sorted by priority asc); global rules
+// (TenantID=="") are evaluated after tenant-specific ones.
+type Engine struct {
+	byTenant map[string][]Rule
+	global   []Rule
+}
+
+// NewEngine compiles rules into an Engine. Rules must already be validated
+// (see Validate); NewEngine only groups and sorts them.
+func NewEngine(rules []Rule) *Engine {
+	e := &Engine{byTenant: map[string][]Rule{}}
+	for _, r := range rules {
+		if !r.Enabled {
+			continue
+		}
+		if r.TenantID == "" {
+			e.global = append(e.global, r)
+		} else {
+			e.byTenant[r.TenantID] = append(e.byTenant[r.TenantID], r)
+		}
+	}
+	byPriority := func(rs []Rule) { sort.SliceStable(rs, func(i, j int) bool { return rs[i].Priority < rs[j].Priority }) }
+	byPriority(e.global)
+	for _, rs := range e.byTenant {
+		byPriority(rs)
+	}
+	return e
+}
+
+// Resolve returns the routing decision for a request: the first matching rule
+// (tenant-specific before global, then priority), or passthrough when none match.
+// P1 is endpoint-scoped: the resolved provider is always the addressed provider.
+func (e *Engine) Resolve(in Input) Decision {
+	d := Decision{
+		RequestedProvider: in.Provider,
+		RequestedModel:    in.Model,
+		ResolvedProvider:  in.Provider,
+		ResolvedModel:     in.Model,
+		Reason:            ReasonPassthrough,
+	}
+	if e == nil {
+		return d
+	}
+	for _, r := range e.candidates(in.TenantID) {
+		if !r.Match.matches(in) {
+			continue
+		}
+		d.RuleID = r.ID
+		if r.Target.Model != "" {
+			d.ResolvedModel = r.Target.Model
+		}
+		// P1: target.Provider is validated same-family, so resolved provider stays
+		// the addressed one; cross-provider is P2.
+		d.Fallbacks = r.Target.Fallbacks
+		d.Strategy = r.Target.Affinity
+		if d.ResolvedModel != d.RequestedModel {
+			d.Reason = ReasonAlias // tier is a labelled alias; rule id disambiguates
+		} else {
+			d.Reason = ReasonLoadBalance // same model, but a rule selected a key/pool/fallback set
+		}
+		return d
+	}
+	return d
+}
+
+// candidates returns tenant rules followed by global rules (both priority-sorted).
+func (e *Engine) candidates(tenantID string) []Rule {
+	tenant := e.byTenant[tenantID]
+	if len(tenant) == 0 {
+		return e.global
+	}
+	out := make([]Rule, 0, len(tenant)+len(e.global))
+	out = append(out, tenant...)
+	out = append(out, e.global...)
+	return out
+}
+
+// matches reports whether the request satisfies the rule's conditions. Empty
+// fields are wildcards.
+func (m Match) matches(in Input) bool {
+	if m.Provider != "" && m.Provider != in.Provider {
+		return false
+	}
+	if m.Model != "" && m.Model != in.Model {
+		return false
+	}
+	if m.UserID != "" && m.UserID != in.UserID {
+		return false
+	}
+	return true
+}

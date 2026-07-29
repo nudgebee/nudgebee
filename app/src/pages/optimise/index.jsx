@@ -5,9 +5,18 @@ import OptimizeNewPage from '@components/optimise-new/OptimizeNewPage';
 import SummaryView from '@components/optimise-new/summary/SummaryView';
 import ResolutionsView from '@components/optimise-new/ResolutionsView';
 import CostAnalyser from '@components/llm/cost-analyser/CostAnalyser';
+import GatewayUsage from '@components/llm/gateway-usage/GatewayUsage';
 import AutoOptimizeTabs from '@components/autopilot/tables/AutoOptimizeTabs';
 import { useRouter } from 'next/router';
-import { OptimizeSummaryIcon, RecommendationIcon, RecommendationResolutionIcon, LLMConsumptionIcon, AutomateBlue, BetaIcon } from '@assets';
+import {
+  OptimizeSummaryIcon,
+  RecommendationIcon,
+  RecommendationResolutionIcon,
+  LLMConsumptionIcon,
+  IntegrationsIcon,
+  AutomateBlue,
+  BetaIcon,
+} from '@assets';
 import { hasReadAccess, hasWriteAccess } from '@lib/auth';
 import { useData } from '@context/DataContext';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
@@ -20,11 +29,12 @@ export async function getServerSideProps() {
   return {
     props: {
       enableLlmAnalyser: process.env.UI_ENABLE_LLM_ANALYSER === 'true',
+      enableLlmGateway: process.env.UI_ENABLE_LLM_GATEWAY === 'true',
     },
   };
 }
 
-const Optimise = ({ enableLlmAnalyser }) => {
+const Optimise = ({ enableLlmAnalyser, enableLlmGateway }) => {
   const router = useRouter();
   const { selectedCluster } = useData();
   const [activeTab, setActiveTab] = useState(null);
@@ -76,8 +86,22 @@ const Optimise = ({ enableLlmAnalyser }) => {
             icon: LLMConsumptionIcon,
             iconSize: 18,
           },
+        // AI Gateway usage — sibling analytics surface to the LLM Analyser, but over
+        // all BYO-token traffic forwarded through the gateway (its own query API), not
+        // agent conversations. Independently flag-gated for staged rollout. No
+        // tabOptions, so its value need not equal its array index (see note above).
+        isMounted &&
+          enableLlmGateway &&
+          hasReadAccess(selectedCluster?.value) && {
+            name: 'AI Gateway',
+            id: 'ai-gateway',
+            fragment: 'ai-gateway',
+            value: 5,
+            icon: IntegrationsIcon,
+            iconSize: 18,
+          },
       ].filter(Boolean),
-    [isMounted, enableLlmAnalyser, selectedCluster?.value]
+    [isMounted, enableLlmAnalyser, enableLlmGateway, selectedCluster?.value]
   );
 
   useEffect(() => {
@@ -166,6 +190,7 @@ const Optimise = ({ enableLlmAnalyser }) => {
             />
           )}
           {activeTab === 4 && <CostAnalyser />}
+          {activeTab === 5 && <GatewayUsage />}
         </ErrorBoundary>
       )}
     </>
