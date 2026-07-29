@@ -1077,6 +1077,47 @@ def generate_recommendation_summary(recommendation: dict):
         return f"CIS-{recommendation['account_object_id']} {description}"
 
 
+def _has_allocated_request(entry):
+    """True iff this KRR content entry carries a real allocated request.
+
+    None (unset), a missing key, "?" (KRR's NaN placeholder) and 0 all count as
+    NOT set — matching the truthiness test process_resource_recommendation uses,
+    which keeps the invariant "fully unset => estimated_savings == 0".
+    """
+    if not isinstance(entry, dict):
+        return False
+    allocated = entry.get("allocated")
+    if not isinstance(allocated, dict):
+        return False
+    request = allocated.get("request")
+    if isinstance(request, bool):
+        return False
+    return isinstance(request, (int, float)) and request > 0
+
+
+def classify_pod_right_sizing_category(merged_content):
+    """Category for a pod_right_sizing row, from its merged workload payload.
+
+    merged_content is the workload-level JSONB shape {container: [entry, ...]}.
+    A workload where no container has any cpu/memory request set is a
+    best-practice finding ("set requests"), not a cost one, so it lands under
+    Configuration; any set request keeps the row under RightSizing. Keep in
+    sync with the twin in ml-k8s-server vertical_rightsizing/__init__.py and
+    with the backfill migration's SQL predicate.
+    """
+    if not isinstance(merged_content, dict):
+        return "RightSizing"
+    saw_entry = False
+    for entries in merged_content.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            saw_entry = True
+            if _has_allocated_request(entry):
+                return "RightSizing"
+    return "Configuration" if saw_entry else "RightSizing"
+
+
 def generate_krr_recommendation(cloud_account_id, report, resource_map, tenant):
     recommendations = {}
     settings = get_recommendation_settings(cloud_account_id, "pod_right_sizing")
@@ -1099,6 +1140,10 @@ def generate_krr_recommendation(cloud_account_id, report, resource_map, tenant):
             recommendations[resource_id[0]] = recommendation
         else:
             recommendations[resource_id[0]] = recommendation
+    # Classify on the MERGED payload — a per-container pass would let the last
+    # container win for mixed workloads.
+    for row in recommendations.values():
+        row["category"] = classify_pod_right_sizing_category(json.loads(row["recommendation"]))
     return recommendations
 
 

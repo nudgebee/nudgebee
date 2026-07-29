@@ -161,6 +161,47 @@ def get_severity(priority: float) -> str:
         return "Low"
 
 
+def _has_allocated_request(entry: Any) -> bool:
+    """True iff this KRR content entry carries a real allocated request.
+
+    None (unset), a missing key, "?" (KRR's NaN placeholder) and 0 all count as
+    NOT set — matching the truthiness test calculate_container_savings uses,
+    which keeps the invariant "fully unset => estimated_savings == 0".
+    """
+    if not isinstance(entry, dict):
+        return False
+    allocated = entry.get("allocated")
+    if not isinstance(allocated, dict):
+        return False
+    request = allocated.get("request")
+    if isinstance(request, bool):
+        return False
+    return isinstance(request, (int, float)) and request > 0
+
+
+def classify_pod_right_sizing_category(merged_content: Any) -> str:
+    """Category for a pod_right_sizing row, from its merged workload payload.
+
+    merged_content is the workload-level JSONB shape {container: [entry, ...]}.
+    A workload where no container has any cpu/memory request set is a
+    best-practice finding ("set requests"), not a cost one, so it lands under
+    Configuration; any set request keeps the row under RightSizing. Keep in
+    sync with the twin in collector-server/k8s-collector event_handler.py and
+    with the backfill migration's SQL predicate.
+    """
+    if not isinstance(merged_content, dict):
+        return "RightSizing"
+    saw_entry = False
+    for entries in merged_content.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            saw_entry = True
+            if _has_allocated_request(entry):
+                return "RightSizing"
+    return "Configuration" if saw_entry else "RightSizing"
+
+
 def calculate_container_savings(
     content: List[Dict[str, Any]], cpu_cost_per_hour: float, memory_cost_per_hour: float
 ) -> float:
@@ -714,6 +755,11 @@ def store_krr_recommendations_to_db(
                     recommendations_to_insert[resource_id] = recommendation
                 else:
                     recommendations_to_insert[resource_id] = recommendation
+
+            # Classify on the MERGED payload — a per-container pass would let the
+            # last container win for mixed workloads.
+            for row in recommendations_to_insert.values():
+                row["category"] = classify_pod_right_sizing_category(json.loads(row["recommendation"]))
 
             ctx_logger.info(f"Generated {len(recommendations_to_insert)} recommendation records for database insertion")
 
