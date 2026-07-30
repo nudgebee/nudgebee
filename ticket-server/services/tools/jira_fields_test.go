@@ -39,7 +39,7 @@ func TestNormalizeJiraFieldType(t *testing.T) {
 		{name: "custom select", fieldKey: "customfield_3", schema: customSchema("select", "option"), want: "select", wantOK: true},
 		{name: "custom radiobuttons", fieldKey: "customfield_4", schema: customSchema("radiobuttons", "option"), want: "select", wantOK: true},
 		{name: "custom multiselect", fieldKey: "customfield_5", schema: customSchema("multiselect", "array"), want: "multiselect", wantOK: true},
-		{name: "custom multicheckboxes keeps legacy name", fieldKey: "customfield_6", schema: customSchema("multicheckboxes", "array"), want: "multicheckboxes", wantOK: true},
+		{name: "custom multicheckboxes normalizes to multiselect", fieldKey: "customfield_6", schema: customSchema("multicheckboxes", "array"), want: "multiselect", wantOK: true},
 		{name: "custom labels", fieldKey: "customfield_7", schema: customSchema("labels", "array"), want: "array", wantOK: true},
 		{name: "custom float", fieldKey: "customfield_8", schema: customSchema("float", "number"), want: "number", wantOK: true},
 		{name: "custom datepicker", fieldKey: "customfield_9", schema: customSchema("datepicker", "date"), want: "datepicker", wantOK: true},
@@ -146,9 +146,11 @@ func TestEncodeJiraAdditionalFields(t *testing.T) {
 			}},
 		},
 		{
-			name: "multicheckboxes legacy {id} elements are idempotent",
-			in:   map[string]interface{}{"customfield_103": []interface{}{map[string]interface{}{"id": "7"}}},
-			want: map[string]interface{}{"customfield_103": []interface{}{map[string]interface{}{"id": "7"}}},
+			name: "multicheckboxes type from stale cached meta still encodes",
+			in:   map[string]interface{}{"customfield_103": []interface{}{"7", map[string]interface{}{"id": "8"}}},
+			want: map[string]interface{}{"customfield_103": []interface{}{
+				map[string]interface{}{"id": "7"}, map[string]interface{}{"id": "8"},
+			}},
 		},
 		{
 			name: "custom labels field unwraps legacy maps to bare strings",
