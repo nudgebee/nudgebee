@@ -4,19 +4,23 @@ import { LoginPage } from "../../../pages/LoginPage";
 
 export class MonitoringTabLocator extends ClusterDetailsLocators {
 
-    // Monitoring dropdown id's
-    readonly OptimizedropdownSummary: Locator;
-    readonly MonitoringDropdownQueryLogs: Locator;
-    readonly MonitoringDropdownLogGroups: Locator;
-    readonly MonitoringDropdownServicemap: Locator;
-    readonly MonitoringDropdownTraces: Locator;
-    readonly MonitoringDropdownTraceGroup: Locator;
-    readonly MonitoringDropdownCrossZone: Locator;
-    readonly MonitoringDropdownQueryMertics: Locator;
+    // Child sub-tab ids under the "Monitoring" section. For each tab the
+    // horizontal strip — GAMMA — uses `#<id>` and the anchor dropdown — BETA —
+    // uses `#dropdown-<id>`, so clickTab can fall back from GAMMA to BETA.
+    readonly MonitoringDropdownQueryLogs = "query-log";
+    readonly MonitoringDropdownLogGroups = "log-groups";
+    readonly MonitoringDropdownServicemap = "service-map";
+    readonly MonitoringDropdownTraces = "Traces";
+    readonly MonitoringDropdownTraceGroup = "trace-grouping";
+    readonly MonitoringDropdownCrossZone = "trace-cross-zon";
+    readonly MonitoringDropdownQueryMertics = "prom-query";
+    readonly MonitoringDropdownSLo = "slo";
+    readonly MonitoringDropdownGrafana = "grafana";
+
+    // Kept as Locators: the AlertManager helper drives these directly with its
+    // own hover/retry logic.
     readonly MonitoringDropdownAlertManager: Locator;
     readonly MonitoringDropdownAlertSilence: Locator;
-    readonly MonitoringDropdownSLo: Locator;
-    readonly MonitoringDropdownGrafana: Locator;
 
     // SLO configuration locators
     // Dialog-scoped to avoid clashing with the namespace filter on the SLO list page.
@@ -34,37 +38,66 @@ export class MonitoringTabLocator extends ClusterDetailsLocators {
     constructor(page: Page) {
         super(page);
 
-        // Monitoring dropdown id's
-        this.OptimizedropdownSummary = page.locator('#dropdown-summary');
-        this.MonitoringDropdownQueryLogs = page.locator('#dropdown-query-log');
-        this.MonitoringDropdownLogGroups = page.locator('#dropdown-log-groups');
-        this.MonitoringDropdownServicemap = page.locator('#dropdown-service-map');
-        this.MonitoringDropdownTraces = page.locator('#dropdown-Traces');
-        this.MonitoringDropdownTraceGroup = page.locator('#dropdown-trace-grouping');
-        this.MonitoringDropdownCrossZone = page.locator('#dropdown-trace-cross-zon');
-        this.MonitoringDropdownQueryMertics = page.locator('#dropdown-prom-query');
         this.MonitoringDropdownAlertManager = page.locator('#dropdown-alert-manager');
         this.MonitoringDropdownAlertSilence = page.locator('#dropdown-silence-alert-manager');
-        this.MonitoringDropdownSLo = page.locator('#dropdown-slo');
-        this.MonitoringDropdownGrafana = page.locator('#dropdown-grafana');
 
         this.RunQueryButton = page.getByRole('button', { name: 'Run Query' });
 
         this.AddSLOConfigBtn = page.locator('#add-slo-config-btn');
-        this.SloNamespaceDropdownBtn = page.locator('[role="dialog"] #auto-complete-namespace');
-        this.SloWorkloadDropdownBtn = page.locator('[role="dialog"] #auto-complete-workload');
+        this.SloNamespaceDropdownBtn = page.locator('[role="dialog"] #slo-namespace');
+        this.SloWorkloadDropdownBtn = page.locator('[role="dialog"] #slo-workload');
         this.SloAvailabilityObjectiveInput = page.locator('[role="dialog"] #slo-availability-objective');
         this.SloLatencyObjectiveInput = page.locator('[role="dialog"] #slo-latency-objective');
-        this.SloLatencyThresholdBtn = page.locator('[role="dialog"] #auto-complete-duration');
-        this.SloDialogSubmitBtn = page.locator('[role="dialog"] #submit');
-        this.SloDialogCancelBtn = page.locator('[role="dialog"] #cancel');
+        this.SloLatencyThresholdBtn = page.locator('[role="dialog"] #duration');
+        this.SloDialogSubmitBtn = page.locator('[role="dialog"] #slo-submit-btn');
+        this.SloDialogCancelBtn = page.locator('[role="dialog"] #slo-cancel-btn');
     }
 
-    async navigateToMonitoringTab() {
+    // Step 1 — open the "Monitoring" section.
+    // Click the ALPHA anchor tab and verify the url hash became #monitoring.
+    // Retry the whole click up to 3 times — the redirect must succeed.
+    async navigateToMonitoringTab(maxRetries = 3): Promise<void> {
         await this.openClusterFromConfig();
-        await this.page.waitForURL(/\/kubernetes\/details\/.*#summary/);
-        await this.AnchorTabMonitoring.waitFor({ state: "visible" });
-        await this.AnchorTabMonitoring.click();
+        await this.page.waitForURL(/\/kubernetes\/details\/[^/?#]+/, { timeout: 30000 });
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            await this.AnchorTabMonitoring.waitFor({ state: "visible", timeout: 15000 });
+            await this.AnchorTabMonitoring.click();
+            // Move mouse away so the hover-opened dropdown backdrop doesn't intercept clicks.
+            await this.page.mouse.move(0, 0);
+
+            await this.page.waitForURL(/#monitoring/, { timeout: 5000 }).catch(() => {});
+            if (/#monitoring/.test(this.page.url())) return;
+
+            console.warn(`[MonitoringTabLocator] navigateToMonitoringTab attempt ${attempt}/${maxRetries} failed — URL: ${this.page.url()}`);
+            await this.page.waitForTimeout(1500);
+        }
+        throw new Error(
+            `[MonitoringTabLocator] Failed to open Monitoring section after ${maxRetries} attempts. Current URL: ${this.page.url()}`
+        );
+    }
+
+    // Step 2 — click a child sub-tab by id.
+    // Plan A: click the GAMMA tab in the horizontal strip (`#<id>`).
+    // Plan B (fallback): if GAMMA isn't visible, hover ALPHA to open the BETA
+    // dropdown and click its item (`#dropdown-<id>`).
+    async clickTab(sectionId: string): Promise<void> {
+        const gammaTab = this.page.locator(`[id="${sectionId}"]`);
+        const betaItem = this.page.locator(`[id="dropdown-${sectionId}"]`);
+
+        try {
+            await gammaTab.waitFor({ state: "visible", timeout: 5000 });
+            await gammaTab.click();
+            await this.page.mouse.move(0, 0);
+            return;
+        } catch {
+            // Fall back to the BETA dropdown below.
+        }
+
+        await this.AnchorTabMonitoring.hover();
+        await betaItem.waitFor({ state: "visible", timeout: 5000 });
+        await betaItem.click();
+        await this.page.mouse.move(0, 0);
     }
 
     async setupMonitoringPage() {

@@ -407,7 +407,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   const [selectedWorkload, setSelectedWorkload] = useState(router?.query?.eventSubjectName ?? '');
   const [selectedAggregationKey, setSelectedAggregationKey] = useState<any[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string[]>(() => {
-    const raw = accountId || (router.query.accountId as string);
+    const raw = accountId || (router.query.accountIds as string);
     return raw ? raw.split(',').filter(Boolean) : [];
   });
   const [selectedStatus, setSelectedStatus] = useState<string>('');
@@ -467,13 +467,13 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   const isWorkloadFilterVisible = !isTroubleshootPage;
 
   useEffect(() => {
-    const raw = accountId || (router.query.accountId as string);
+    const raw = accountId || (router.query.accountIds as string);
     const next = raw ? raw.split(',').filter(Boolean) : [];
     setSelectedAccountId((prev) => {
       if (prev.length === next.length && prev.every((id, i) => id === next[i])) return prev;
       return next;
     });
-  }, [accountId, router.query.accountId]);
+  }, [accountId, router.query.accountIds]);
 
   useEffect(() => {
     setSelectedAggregationKey((prev) => {
@@ -619,7 +619,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
           title='Triage Status'
           desc="Your team's response to this issue. Update it as you investigate, escalate, or resolve. To handle matching issues automatically, go to"
           linkText='Triage Rules →'
-          linkUrl='/troubleshoot#triage-rules'
+          linkUrl='/troubleshoot#all-events/triage-rules'
           placement='top'
         >
           <Box component='span' sx={{ cursor: 'default', display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
@@ -979,7 +979,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     const ids = (value || []).map((v: any) => v.value);
     setSelectedAccountId(ids);
     setCurrentPage(1);
-    applyFiltersOnRouter(router, { accountId: ids.join(',') });
+    applyFiltersOnRouter(router, { accountIds: ids.join(',') });
   };
 
   const onSourceFilterChange = (_e: any, value: any[]) => {

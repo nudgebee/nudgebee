@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { MonitoringTabLocator } from "../Monitoring/MonitoringTabLocator";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
@@ -12,12 +12,10 @@ test("API testing Cluster Details->Monitoring-> Trace Group", async ({ page }, t
   await loginPage.doFullLogin();
   await locators.navigateToMonitoringTab();
 
-  await expect(locators.MonitoringDropdownTraceGroup).toBeVisible();
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.MonitoringDropdownTraceGroup.click();
+      await locators.clickTab(locators.MonitoringDropdownTraceGroup);
     },
     {
       testName: testInfo.title,

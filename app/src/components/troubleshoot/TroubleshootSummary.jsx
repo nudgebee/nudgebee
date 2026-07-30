@@ -130,9 +130,9 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
     return { startDate, endDate, previousStartDate: getLast24Hrs(startDate), previousEndDate: startDate };
   }, [range]);
   // Scope the summary cards to the same account selection the Events list uses
-  // (the shared `accountId` URL query param). Without this the cards rolled up
+  // (the shared `accountIds` URL query param). Without this the cards rolled up
   // across ALL accounts while the list was account-scoped, inflating the counts.
-  const accountIdParam = router.query.accountId;
+  const accountIdParam = router.query.accountIds;
   const accountIds = useMemo(() => (accountIdParam ? String(accountIdParam).split(',').filter(Boolean) : []), [accountIdParam]);
   const [eventInfographics, setEventInfographics] = useState({
     loading: false,
@@ -162,60 +162,65 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
   });
 
   useEffect(() => {
-    // Only fetch event stats when type='events' (default)
-    if (type === 'events') {
-      setEventInfographics((prev) => ({
-        ...prev,
-        loading: true,
-      }));
+    // Events-only: this effect is scoped to accountIds, so it must not re-run
+    // (and re-fetch) for the investigations view, which doesn't filter by account.
+    if (type !== 'events') return;
 
-      apiKubernetes1
-        .eventComparsion({
-          startDate: resolvedRange.startDate.toISOString(),
-          endDate: resolvedRange.endDate.toISOString(),
-          previousStartDate: resolvedRange.previousStartDate.toISOString(),
-          previousEndDate: resolvedRange.previousEndDate.toISOString(),
-          accountId: accountIds,
-        })
-        .then((res) => {
-          const cur = res?.data?.data?.current?.rows?.[0] || {};
-          const prev = res?.data?.data?.previous?.rows?.[0] || {};
-          const pct = (c, p) => (p === 0 ? (c > 0 ? 100 : 0) : Math.round(((c - p) / p) * 100));
+    setEventInfographics((prev) => ({
+      ...prev,
+      loading: true,
+    }));
 
-          const current = cur.event_count || 0;
-          const previous = prev.event_count || 0;
-          const newIssues = cur.count_new_issues || 0;
-          const newIssuesPrev = prev.count_new_issues || 0;
-          const newIssueEvents = cur.count_new_issue_events || 0;
-          const highSev = cur.count_priority_high || 0;
-          const highSevPrev = prev.count_priority_high || 0;
-          const attention = res?.data?.data?.current_attention?.rows?.[0]?.event_count || 0;
-          const attentionPrev = res?.data?.data?.previous_attention?.rows?.[0]?.event_count || 0;
+    apiKubernetes1
+      .eventComparsion({
+        startDate: resolvedRange.startDate.toISOString(),
+        endDate: resolvedRange.endDate.toISOString(),
+        previousStartDate: resolvedRange.previousStartDate.toISOString(),
+        previousEndDate: resolvedRange.previousEndDate.toISOString(),
+        accountId: accountIds,
+      })
+      .then((res) => {
+        const cur = res?.data?.data?.current?.rows?.[0] || {};
+        const prev = res?.data?.data?.previous?.rows?.[0] || {};
+        const pct = (c, p) => (p === 0 ? (c > 0 ? 100 : 0) : Math.round(((c - p) / p) * 100));
 
-          setEventInfographics({
-            loading: false,
-            current,
-            previous,
-            diff: pct(current, previous),
-            attention,
-            attentionPrev,
-            attentionDiff: pct(attention, attentionPrev),
-            newIssues,
-            newIssuesPrev,
-            newIssuesDiff: pct(newIssues, newIssuesPrev),
-            newIssueEvents,
-            highSev,
-            highSevPrev,
-            highSevDiff: pct(highSev, highSevPrev),
-          });
-        })
-        .catch((err) => {
-          console.error('Failed to fetch event infographics:', err);
-          setEventInfographics((prev) => ({ ...prev, loading: false }));
+        const current = cur.event_count || 0;
+        const previous = prev.event_count || 0;
+        const newIssues = cur.count_new_issues || 0;
+        const newIssuesPrev = prev.count_new_issues || 0;
+        const newIssueEvents = cur.count_new_issue_events || 0;
+        const highSev = cur.count_priority_high || 0;
+        const highSevPrev = prev.count_priority_high || 0;
+        const attention = res?.data?.data?.current_attention?.rows?.[0]?.event_count || 0;
+        const attentionPrev = res?.data?.data?.previous_attention?.rows?.[0]?.event_count || 0;
+
+        setEventInfographics({
+          loading: false,
+          current,
+          previous,
+          diff: pct(current, previous),
+          attention,
+          attentionPrev,
+          attentionDiff: pct(attention, attentionPrev),
+          newIssues,
+          newIssuesPrev,
+          newIssuesDiff: pct(newIssues, newIssuesPrev),
+          newIssueEvents,
+          highSev,
+          highSevPrev,
+          highSevDiff: pct(highSev, highSevPrev),
         });
-    }
+      })
+      .catch((err) => {
+        console.error('Failed to fetch event infographics:', err);
+        setEventInfographics((prev) => ({ ...prev, loading: false }));
+      });
+  }, [type, resolvedRange, accountIds]);
 
-    // Only fetch investigation stats when type='investigations'
+  useEffect(() => {
+    // Investigations-only: deliberately excludes accountIds — the underlying
+    // RPCs roll up across every account this session can read and don't accept
+    // an account filter, so this must not re-fetch when the account filter changes.
     if (type === 'investigations') {
       setInvestigateInfographics((prev) => ({
         ...prev,
@@ -314,7 +319,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
           });
         });
     }
-  }, [type, tab, resolvedRange, accountIdParam]);
+  }, [type, tab, resolvedRange]);
 
   const last24hPill = (
     <Typography

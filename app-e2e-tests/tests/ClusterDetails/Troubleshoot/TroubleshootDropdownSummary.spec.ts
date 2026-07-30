@@ -1,21 +1,20 @@
 import { test } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
-import { MonitoringTabLocator } from "../Monitoring/MonitoringTabLocator";
+import { TroubleshootTabLocator } from "./TroubleshootTabLocator";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
 
-test("API testing Cluster Details->Monitoring-> Traces", async ({ page }, testInfo) => {
+test("Graphql testing Cluster Details->Troubleshoot-> Summary", async ({ page }, testInfo) => {
   test.setTimeout(120000);
 
   const loginPage = new LoginPage(page);
-  const locators = new MonitoringTabLocator(page);
-
+  const locators = new TroubleshootTabLocator(page);
   await loginPage.doFullLogin();
-  await locators.navigateToMonitoringTab();
-
+  await locators.openClusterFromConfig();
+  await locators.navigateToTroubleshootTab();
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.clickTab(locators.MonitoringDropdownTraces);
+      await locators.clickTab(locators.TroubleshootdropdownSummary);
     },
     {
       testName: testInfo.title,

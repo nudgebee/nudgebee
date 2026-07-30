@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { MonitoringTabLocator } from "../Monitoring/MonitoringTabLocator";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
@@ -12,12 +12,10 @@ test("API testing Cluster Details->Monitoring-> Service Map", async ({ page }, t
   await loginPage.doFullLogin();
   await locators.navigateToMonitoringTab();
 
-  await expect(locators.MonitoringDropdownServicemap).toBeVisible();
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.MonitoringDropdownServicemap.click();
+      await locators.clickTab(locators.MonitoringDropdownServicemap);
     },
     {
       testName: testInfo.title,

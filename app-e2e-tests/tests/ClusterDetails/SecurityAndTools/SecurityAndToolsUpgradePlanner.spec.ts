@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { SecurityAndToolsTabLocator } from "./SecurityAndToolsTabLocator";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
@@ -12,12 +12,10 @@ test("API testing Cluster Details->Security And Tools-> Upgrade Planner", async 
   await loginPage.doFullLogin();
   await locators.navigateToSecurityAndToolsTab();
 
-  await expect(locators.UpgradePlannerDropdown).toBeVisible();
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.UpgradePlannerDropdown.click();
+      await locators.clickTab(locators.UpgradePlannerDropdown);
     },
     {
       testName: testInfo.title,

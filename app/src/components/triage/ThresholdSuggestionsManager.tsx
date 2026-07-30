@@ -123,14 +123,14 @@ const ThresholdSuggestionsManager: React.FC<ThresholdSuggestionsManagerProps> = 
   const [selectedSource, setSelectedSource] = useState<string>('');
   const [selectedConfidence, setSelectedConfidence] = useState<string>('');
   const [selectedAccountFilter, setSelectedAccountFilter] = useState<string[]>(() => {
-    const raw = router.query.accountId as string;
+    const raw = router.query.accountIds as string;
     return raw ? raw.split(',').filter(Boolean) : [];
   });
 
   useEffect(() => {
-    const raw = router.query.accountId as string;
+    const raw = router.query.accountIds as string;
     setSelectedAccountFilter(raw ? raw.split(',').filter(Boolean) : []);
-  }, [router.query.accountId]);
+  }, [router.query.accountIds]);
 
   // Show only the sources that match the selected account(s)' platform. The
   // single-account view scopes to `provider`; the multi-account view derives
@@ -355,7 +355,7 @@ const ThresholdSuggestionsManager: React.FC<ThresholdSuggestionsManagerProps> = 
                 const ids = (Array.isArray(items) ? items : []).map((v: any) => v.value);
                 setSelectedAccountFilter(ids);
                 setCurrentPage(0);
-                applyFiltersOnRouter(router, { accountId: ids.join(',') });
+                applyFiltersOnRouter(router, { accountIds: ids.join(',') });
               }}
             />
           )}

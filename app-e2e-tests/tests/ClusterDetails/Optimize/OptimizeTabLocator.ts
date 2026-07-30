@@ -89,37 +89,60 @@ export class OptimizeTabLocator extends ClusterDetailsLocators {
         await this.page.waitForTimeout(3000);
     }
 
+    // Open the Optimize section, then select a child sub-tab. Mirrors the other
+    // ClusterDetails section locators: ALPHA anchor (retry + verify) then a
+    // GAMMA-strip / BETA-dropdown child click.
     async gotoOptimizeSection(section: OptimizeSection, maxRetries = 3): Promise<void> {
-        const sectionDropdownId: Record<OptimizeSection, string> = {
-            'summary':                    '#dropdown-summary',
-            'right-sizing':               '#dropdown-right-sizing',
-            'auto-scaler':                '#dropdown-auto-scaler',
-            'unused-volume':              '#dropdown-unused-volume',
-            'best-practices':             '#dropdown-best-practices',
-            'abandoned-resources':        '#dropdown-abandoned-resources',
-            'pv-rightsizing':             '#dropdown-pv-rightsizing',
-            'replica-rightsizing':        '#dropdown-replica-rightsizing',
-            'spot-recommendation':        '#dropdown-spot-recommendation',
-            'recommendation-resolution':  '#dropdown-recommendation-resolution-status',
-        };
+        await this.navigateToOptimizeTab(maxRetries);
+        // Most section fragments equal their tab dom id; recommendation-resolution
+        // is the exception — its dom id carries a "-status" suffix.
+        const elementId = section === OptimizeSections.recommendationResolution
+            ? 'recommendation-resolution-status'
+            : section;
+        await this.clickTab(elementId);
+    }
+
+    // Step 1 — open the "Optimize" section.
+    // Click the ALPHA anchor tab and verify the url hash became #optimize.
+    // Retry the whole click up to 3 times — the redirect must succeed.
+    async navigateToOptimizeTab(maxRetries = 3): Promise<void> {
+        await this.page.waitForURL(/\/kubernetes\/details\/[^/?#]+/, { timeout: 30000 }).catch(() => {});
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             await this.OptimizeTab.waitFor({ state: 'visible', timeout: 15000 });
-            await this.OptimizeTab.hover();
+            await this.OptimizeTab.click();
+            // Move mouse away so the hover-opened dropdown backdrop doesn't intercept clicks.
+            await this.page.mouse.move(0, 0);
 
-            const dropdownItem = this.page.locator(sectionDropdownId[section]);
-            await dropdownItem.waitFor({ state: 'visible', timeout: 10000 });
-            await dropdownItem.click();
+            await this.page.waitForURL(/#optimize/, { timeout: 5000 }).catch(() => {});
+            if (/#optimize/.test(this.page.url())) return;
 
-            await this.page.waitForURL(`**#optimize/${section}`, { timeout: 15000 }).catch(() => {});
-            await this.page.getByAltText("Loading...").waitFor({ state: "hidden", timeout: 30000 }).catch(() => {});
-
-            const currentUrl = this.page.url();
-            if (currentUrl.includes(`#optimize/${section}`)) return;
-
-            console.warn(`[OptimizeTabLocator] gotoOptimizeSection attempt ${attempt}/${maxRetries} failed — URL: ${currentUrl}`);
+            console.warn(`[OptimizeTabLocator] navigateToOptimizeTab attempt ${attempt}/${maxRetries} failed — URL: ${this.page.url()}`);
             await this.page.waitForTimeout(1500);
         }
-        throw new Error(`[OptimizeTabLocator] Failed to navigate to #optimize/${section} after ${maxRetries} attempts. Current URL: ${this.page.url()}`);
+        throw new Error(`[OptimizeTabLocator] Failed to open Optimize section after ${maxRetries} attempts. Current URL: ${this.page.url()}`);
+    }
+
+    // Step 2 — click a child sub-tab by id.
+    // Plan A: click the GAMMA tab in the horizontal strip (id `<id>`).
+    // Plan B (fallback): if GAMMA isn't visible, hover ALPHA to open the BETA
+    // dropdown and click its item (id `dropdown-<id>`).
+    async clickTab(sectionId: string): Promise<void> {
+        const gammaTab = this.page.locator(`[id="${sectionId}"]`);
+        const betaItem = this.page.locator(`[id="dropdown-${sectionId}"]`);
+
+        try {
+            await gammaTab.waitFor({ state: 'visible', timeout: 5000 });
+            await gammaTab.click();
+            await this.page.mouse.move(0, 0);
+            return;
+        } catch {
+            // Fall back to the BETA dropdown below.
+        }
+
+        await this.OptimizeTab.hover();
+        await betaItem.waitFor({ state: 'visible', timeout: 5000 });
+        await betaItem.click();
+        await this.page.mouse.move(0, 0);
     }
 }

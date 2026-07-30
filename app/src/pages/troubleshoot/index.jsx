@@ -1,16 +1,15 @@
 import KnowledgeGraphServiceMapWrapper from '@components/KnowledgeGraph';
-import AnchorComponent from '@shared/navigation/AnchorComponent';
+import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import KubernetesEventsTable, { TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY } from '@components/events/KubernetesEvents';
 import KubernetesGroupedEventsTable from '@components/k8s/details/groupedevents/KubernetesGroupedEventsTable';
 import TroubleshootSummary from '@components/troubleshoot/TroubleshootSummary';
 import { Box } from '@mui/material';
 import { useState, useEffect } from 'react';
-import ToggleButtons from '@components/workflow/NewToggleButtons';
 import AutoInvestigated from '@components/troubleshoot/AutoInvestigated';
 import ManualInvestigated from '@components/troubleshoot/ManualInvestigated';
 import EventResolutions from '@components/troubleshoot/EventResolutions';
-import CustomTabs from '@shared/CustomTabs';
+import Tabs from '@shared/navigation/Tabs';
 import {
   AllEventsIcon,
   GroupedEventsIcon,
@@ -28,34 +27,69 @@ import { useRouter } from 'next/router';
 import { clearPersistedFilters } from '@hooks/usePersistedFilters';
 import { getLast24Hrs } from '@lib/datetime';
 
-const renderEventContent = (activeToggle) => {
-  switch (activeToggle) {
-    case 'event-resolutions':
-      return <EventResolutions />;
-    case 'threshold-suggestions':
-      return <ThresholdSuggestionsManager />;
-    case 'triage-rules':
-      return <TriageRulesManager />;
-    case 'event_type':
-    case 'app':
-    case 'fingerprint':
-      return <KubernetesGroupedEventsTable isTroubleshootPage={true} groupEventType={activeToggle} />;
-    default:
-      return <KubernetesEventsTable isTroubleshootPage={true} />;
-  }
-};
+// Single source of truth for every tab/sub-tab this page renders, mirroring the
+// tab/sub-tab config in [KubernetesDetails].jsx: each top-level entry carries
+// `value` (-> selectedTab) and `fragment` (top-level hash segment), plus a
+// nested `tabOptions` array whose own `value`/`fragment` drive selectedSubTab
+// and the `parent/child` URL hash. Static (module scope, not component state)
+// since — unlike KubernetesDetails' tabOptions — nothing here needs runtime
+// mutation (counts, disabled flags, etc). Knowledge Graph is enabled by
+// default for every tenant (opt-out via the TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH
+// feature flag is enforced server-side by the nightly build cron), so its tab
+// is always shown.
+const filterOptions = [
+  {
+    name: 'All Events',
+    fragment: 'all-events',
+    value: 0,
+    icon: AllEventsIcon,
+    tabOptions: [
+      { value: 0, text: 'Triage Inbox', fragment: 'fingerprint', icon: PodErrorsIcon, id: 'tab-fingerprint' },
+      { value: 1, text: 'Events', fragment: 'all', icon: AllEventsIcon, id: 'tab-all-events' },
+      { value: 2, text: 'Events group by type', fragment: 'event-type', icon: GroupedEventsIcon, id: 'tab-event-type' },
+      { value: 3, text: 'Events group by app', fragment: 'event-app', icon: GroupedEventsIcon, id: 'tab-event-app' },
+      { value: 4, text: 'Triage Rules', fragment: 'triage-rules', icon: AlertManagerIcon, id: 'tab-triage-rules' },
+      { value: 5, text: 'Alert Tuning', fragment: 'threshold-suggestions', icon: AlertManagerIcon, id: 'tab-threshold-suggestions' },
+      { value: 6, text: 'Event Resolutions', fragment: 'event-resolutions', icon: RecommendationResolutionIcon, id: 'tab-event-resolutions' },
+    ],
+  },
+  {
+    name: 'Investigations',
+    fragment: 'investigations',
+    value: 1,
+    icon: SearchBlueIcon,
+    tabOptions: [
+      { value: 0, text: 'Auto Investigated', fragment: 'auto-investigated', icon: AutomateBlue, id: 'tab-auto-investigated' },
+      { value: 1, text: 'Manual Investigated', fragment: 'manual-investigated', icon: ManualTriggerIconBlue, id: 'tab-manual-investigated' },
+    ],
+  },
+  {
+    name: 'Knowledge Graph',
+    fragment: 'kg',
+    value: 2,
+    icon: ServiceMapsIcon,
+    iconSize: 16,
+  },
+];
+
+// AnchorComponent renders its own sub-tab bar whenever a filterOptions entry
+// carries `tabOptions` (see AnchorComponent.jsx). This page renders its own
+// sub-tab row instead — with the summary widget cards sandwiched in between —
+// so strip `tabOptions` before handing the list to AnchorComponent to avoid a
+// duplicate second tab row. It only needs the plain fragment/value pairs to
+// highlight the correct top-level pill.
+const anchorFilterOptions = filterOptions.map(({ tabOptions: _tabOptions, ...rest }) => rest);
 
 const TroubleshootPage = () => {
-  // selectedFilter is the parent-tab selection: 0 = All Events, 1 = Investigations,
-  // 2 = Knowledge Graph. Investigations was promoted from a NewToggleButtons sub-tab
-  // inside "All Events" to its own top-level AnchorComponent tab.
-  const [selectedFilter, setSelectedFilter] = useState(null);
-  const [activeToggleGroupedEvents, setActiveToggleGroupedEvents] = useState('fingerprint');
-  const [activeTab, setActiveTab] = useState('events');
-  const [investigationTab, setInvestigationTab] = useState('auto');
+  // selectedTab is the parent-tab selection (0 = All Events, 1 = Investigations,
+  // 2 = Knowledge Graph); selectedSubTab indexes into that parent's own
+  // tabOptions above. Investigations was promoted from a NewToggleButtons
+  // sub-tab inside "All Events" to its own top-level AnchorComponent tab.
+  const [selectedTab, setSelectedTab] = useState(null);
+  const [selectedSubTab, setSelectedSubTab] = useState(null);
   // Bumped on each summary-widget click so the Events tab remounts and re-reads
   // the URL filters even when it is already the active tab. Kept separate from
-  // the grouped tabs' own router writes so their internal filtering never forces
+  // the sub-tabs' own router writes so their internal filtering never forces
   // a remount.
   const [widgetNonce, setWidgetNonce] = useState(0);
   // One 24h window, frozen at page load, shared by the summary cards and the
@@ -103,186 +137,121 @@ const TroubleshootPage = () => {
     // first click mounted against the stale (empty) query and applied nothing
     // — only the second click, after the query had landed, "worked". Deferring
     // the state updates until the push resolves removes that race.
-    router.push({ pathname: '/troubleshoot', query: rangedQuery, hash: 'all' }, undefined, { shallow: true }).then(() => {
-      setSelectedFilter(0);
-      setActiveTab('events');
-      setActiveToggleGroupedEvents('all');
+    router.push({ pathname: '/troubleshoot', query: rangedQuery, hash: 'all-events/all' }, undefined, { shallow: true }).then(() => {
+      setSelectedTab(0);
+      setSelectedSubTab(1); // 'all' — the flat Events sub-tab
       setWidgetNonce((n) => n + 1);
     });
   };
 
-  const baseFilterOptions = [
-    {
-      name: 'All Events',
-      fragment: 'all-events',
-      value: 0,
-      disabled: false,
-      icon: AllEventsIcon,
-      options: [],
-    },
-  ];
-
-  // Knowledge Graph is enabled by default for every tenant (opt-out via the
-  // TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH feature flag is enforced server-side by
-  // the nightly build cron), so the tab is always shown here.
-  const filterOptions = [
-    ...baseFilterOptions,
-    {
-      name: 'Knowledge Graph',
-      fragment: 'kg',
-      value: 1,
-      disabled: false,
-      betaIcon: false,
-      icon: ServiceMapsIcon,
-      iconSize: 16,
-    },
-  ];
-
-  const tabOptions = [
-    { value: 'fingerprint', text: 'Triage Inbox', fragment: 'fingerprint', icon: PodErrorsIcon },
-    { value: 'all', text: 'Events', fragment: 'all', icon: AllEventsIcon },
-    { value: 'event_type', text: 'Events group by type', fragment: 'event-type', icon: GroupedEventsIcon },
-    { value: 'app', text: 'Events group by app', fragment: 'event-app', icon: GroupedEventsIcon },
-    { value: 'triage-rules', text: 'Triage Rules', fragment: 'triage-rules', icon: AlertManagerIcon },
-    { value: 'threshold-suggestions', text: 'Alert Tuning', fragment: 'threshold-suggestions', icon: AlertManagerIcon },
-    { value: 'event-resolutions', text: 'Event Resolutions', fragment: 'event-resolutions', icon: RecommendationResolutionIcon },
-  ];
-
-  const investigationTabOptions = [
-    {
-      value: 'auto',
-      text: 'Auto Investigated',
-      fragment: 'auto-investigated',
-      icon: AutomateBlue,
-    },
-    {
-      value: 'manual',
-      text: 'Manual Investigated',
-      fragment: 'manual-investigated',
-      icon: ManualTriggerIconBlue,
-    },
-  ];
-
+  // Re-derive tab + sub-tab from the URL hash on every navigation — mount,
+  // browser back/forward, or any in-app link that changes the hash while this
+  // page stays mounted. Deliberately reactive (not mount-only): AnchorComponent
+  // never sees this page's tabOptions (see anchorFilterOptions above), so its
+  // own onChangeFilter callback can only ever report subVal=0 and fires a
+  // render late — wiring state through it clobbered the sub-tab back to 0 on
+  // every top-level transition, e.g. hitting Back after drilling into a
+  // sub-tab. Resolving the full parent/child hash here instead, on every
+  // change, keeps this the single source of truth for both values.
   useEffect(() => {
+    // Rewrite the URL to the canonical `parent/child` hash whenever we fall
+    // back to a default sub-tab, so the address bar always matches what's
+    // actually rendered (a refresh, or a copied/shared link, reproduces the
+    // same view). Declared inside the effect so it isn't a stale-closure
+    // dependency concern.
+    const replaceHash = (hash) => {
+      router.replace({ pathname: router.pathname, query: router.query, hash }, undefined, { shallow: true });
+    };
+
     const hash = router.asPath.split('#')[1];
-    if (!hash || !filterOptions.length) {
-      setSelectedFilter(0);
+    if (!hash) {
+      setSelectedTab(0);
+      setSelectedSubTab(0);
       return;
     }
-    const fragment = hash;
-    const filter = filterOptions.find((option) => option.fragment === fragment);
-    if (filter) {
-      setSelectedFilter(filter.value);
+    const decoded = decodeURIComponent(hash);
+    const [fragment, subFragment] = decoded.split('/');
+
+    // Unknown top-level fragment (stale/typo'd link) — fall back to All Events
+    // and canonicalize the URL to match.
+    const parent = filterOptions.find((option) => option.fragment === fragment);
+    if (!parent) {
+      setSelectedTab(0);
+      setSelectedSubTab(0);
+      replaceHash(`${filterOptions[0].fragment}/${filterOptions[0].tabOptions[0].fragment}`);
+      return;
+    }
+    setSelectedTab(parent.value);
+
+    // Resolve the sub-tab from subFragment when present (a top-level-only hash,
+    // e.g. a pill click, never appends one). Either way — missing or an unknown
+    // fragment (stale/typo'd link) — fall back to that parent's first sub-tab
+    // rather than leaving a numerically-coincidental leftover value from
+    // whichever tab was active before (selectedSubTab is shared across
+    // parents), and canonicalize the URL to match.
+    const subTab = subFragment ? (parent.tabOptions || []).find((tab) => tab.fragment === subFragment) : null;
+    if (subTab) {
+      setSelectedSubTab(subTab.value);
     } else {
-      const groupEvent = tabOptions.find((tab) => tab.fragment === fragment);
-      if (groupEvent) {
-        setActiveTab('events');
-        setActiveToggleGroupedEvents(groupEvent.value);
-      } else {
-        const invTab = investigationTabOptions.find((tab) => tab.fragment === fragment);
-        if (invTab) {
-          setActiveTab('investigations');
-          setInvestigationTab(invTab.value);
-        } else {
-          setSelectedFilter(0);
-        }
+      setSelectedSubTab(0);
+      if (!!subFragment && parent.tabOptions?.[0]) {
+        replaceHash(`${parent.fragment}/${parent.tabOptions[0].fragment}`);
       }
     }
   }, [router.asPath]);
-  // Need to handle toggleGroupedEvents' fragment with router.asPath
-
-  const toggleOptions = [
-    { value: 'events', label: 'Events', icon: AllEventsIcon },
-    { value: 'investigations', label: 'Investigations', icon: SearchBlueIcon },
-  ];
-
-  const handleRouting = (tab) => {
-    let fragment = '';
-    if (tab === 'investigations') {
-      fragment = investigationTabOptions.find((option) => option.value === investigationTab)?.fragment || 'auto-investigated';
-    } else {
-      fragment = tabOptions.find((option) => option.value === activeToggleGroupedEvents)?.fragment || 'fingerprint';
-    }
-    router.push(`/troubleshoot#${fragment}`, undefined, { shallow: true });
-  };
-
-  const handleActiveTabChange = (value) => {
-    setActiveTab(value);
-    handleRouting(value);
-  };
 
   return (
     <>
-      <AnchorComponent
-        manageRoute={true}
-        filterOptions={filterOptions}
-        onChangeFilter={(val) => {
-          if (val === 0 || val === 1) {
-            setSelectedFilter(val);
-          }
-        }}
-      />
+      {/* onChangeFilter deliberately omitted — AnchorComponent only owns the
+          top-level pill highlight here (see anchorFilterOptions above), so
+          its callback can't resolve the sub-tab; the effect above is the
+          single source of truth for both selectedTab and selectedSubTab. */}
+      <AnchorComponent manageRoute={true} filterOptions={anchorFilterOptions} />
 
-      {selectedFilter === 0 && (
-        <div style={{ margin: '0px 40px' }}>
-          <Box
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              padding: '8px 0',
-              marginTop: '16px',
-            }}
-          >
-            <ToggleButtons options={toggleOptions} activeValue={activeTab} width='500px' size='large' onChange={handleActiveTabChange} />
+      {selectedTab === 0 && (
+        <div style={{ margin: '0px var(--ds-space-6)' }}>
+          <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', alignItems: 'center', marginTop: 'var(--ds-space-4)' }}>
+            <TroubleshootSummary range={summaryRange} onWidgetFilter={applyWidgetFilter} />
           </Box>
-
-          {activeTab === 'events' && (
-            <>
-              <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', alignItems: 'center' }}>
-                <TroubleshootSummary range={summaryRange} onWidgetFilter={applyWidgetFilter} />
-              </Box>
-              <Box id='troubleshoot-event-tabs' sx={{ marginBottom: '8px' }}>
-                <CustomTabs
-                  value={activeToggleGroupedEvents}
-                  onChange={(newValue) => setActiveToggleGroupedEvents(newValue)}
-                  options={{
-                    value: 1,
-                    tabOptions: tabOptions,
-                  }}
-                  variant='secondary'
-                  smallSize={true}
-                  ariaLabel='Event grouping options'
-                />
-              </Box>
-              <ErrorBoundary key={`${activeToggleGroupedEvents}-${widgetNonce}`}>{renderEventContent(activeToggleGroupedEvents)}</ErrorBoundary>
-            </>
-          )}
-
-          {activeTab === 'investigations' && (
-            <>
-              <TroubleshootSummary type='investigations' tab={investigationTab} range={summaryRange} />
-              <Box sx={{ marginBottom: '8px' }}>
-                <CustomTabs
-                  value={investigationTab}
-                  smallSize={true}
-                  onChange={(value) => setInvestigationTab(value)}
-                  options={{
-                    value: 1,
-                    tabOptions: investigationTabOptions,
-                  }}
-                />
-              </Box>
-              <ErrorBoundary key={investigationTab}>
-                {investigationTab === 'auto' && <AutoInvestigated />}
-                {investigationTab === 'manual' && <ManualInvestigated />}
-              </ErrorBoundary>
-            </>
-          )}
+          <Box id='troubleshoot-event-tabs' sx={{ marginBottom: 'var(--ds-space-2)' }}>
+            <Tabs
+              value={selectedSubTab}
+              onChange={setSelectedSubTab}
+              options={filterOptions[0]}
+              variant='secondary'
+              smallSize={true}
+              ariaLabel='Event grouping options'
+            />
+          </Box>
+          <ErrorBoundary key={`${selectedSubTab}-${widgetNonce}`}>
+            {selectedSubTab === 0 && <KubernetesGroupedEventsTable isTroubleshootPage={true} groupEventType='fingerprint' />}
+            {selectedSubTab === 1 && <KubernetesEventsTable isTroubleshootPage={true} />}
+            {selectedSubTab === 2 && <KubernetesGroupedEventsTable isTroubleshootPage={true} groupEventType='event_type' />}
+            {selectedSubTab === 3 && <KubernetesGroupedEventsTable isTroubleshootPage={true} groupEventType='app' />}
+            {selectedSubTab === 4 && <TriageRulesManager />}
+            {selectedSubTab === 5 && <ThresholdSuggestionsManager />}
+            {selectedSubTab === 6 && <EventResolutions />}
+          </ErrorBoundary>
         </div>
       )}
 
-      {selectedFilter === 1 && (
-        <div style={{ margin: '20px' }}>
+      {selectedTab === 1 && (
+        <div style={{ margin: '0px var(--ds-space-6)' }}>
+          <Box sx={{ marginTop: 'var(--ds-space-4)' }}>
+            <TroubleshootSummary type='investigations' tab={selectedSubTab === 1 ? 'manual' : 'auto'} range={summaryRange} />
+          </Box>
+          <Box sx={{ marginBottom: 'var(--ds-space-2)' }}>
+            <Tabs value={selectedSubTab} smallSize={true} onChange={setSelectedSubTab} options={filterOptions[1]} />
+          </Box>
+          <ErrorBoundary key={selectedSubTab}>
+            {selectedSubTab === 0 && <AutoInvestigated />}
+            {selectedSubTab === 1 && <ManualInvestigated />}
+          </ErrorBoundary>
+        </div>
+      )}
+
+      {selectedTab === 2 && (
+        <div style={{ margin: 'var(--ds-space-4)' }}>
           <ErrorBoundary>
             <KnowledgeGraphServiceMapWrapper />
           </ErrorBoundary>

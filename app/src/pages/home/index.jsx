@@ -871,7 +871,12 @@ const renderContent = (title, accountId, cloudProvider, noData = false) => {
                     Cluster
                   </Button>{' '}
                   or check out the{' '}
-                  <Button tone='secondary' size='xs' href={`/troubleshoot?accountId=${accountId}`} trailingAccent={<ArrowForwardIcon />}>
+                  <Button
+                    tone='secondary'
+                    size='xs'
+                    href={`/troubleshoot?accountId=${accountId}&accountIds=${accountId}`}
+                    trailingAccent={<ArrowForwardIcon />}
+                  >
                     Troubleshooting
                   </Button>{' '}
                   for specific issues.
@@ -2247,7 +2252,9 @@ const Home = () => {
               size='xs'
               icon={<KeyboardArrowRightIcon />}
               iconPlacement='end'
-              onClick={() => window.open(`/troubleshoot?accountId=${selectedCluster?.value || ''}`, '_blank')}
+              onClick={() =>
+                window.open(`/troubleshoot?accountId=${selectedCluster?.value || ''}&accountIds=${selectedCluster?.value || ''}`, '_blank')
+              }
             >
               View all issues
             </Button>

@@ -405,7 +405,10 @@ const appOverviewTour: TourDef = {
  *                                  positioned so we can't wrap it without breaking
  *                                  layout — anchor the tab itself)
  *   #troubleshoot-event-tabs → the event-grouping sub-tabs (All Events view)
- *   #tab-all                 → the "Events" sub-tab (Tabs renders id=`tab-<value>`)
+ *   #tab-all-events          → the "Events" sub-tab (explicit `id` set on that
+ *                              tabOptions entry in troubleshoot/index.jsx, since
+ *                              Tabs' default id=`tab-<value>` uses a numeric,
+ *                              position-dependent value there)
  *   #all-events              → the flat Events list (KubernetesEvents ListingLayout)
  *   #auto-complete-filter-sort-by → the Sort By control in the Events toolbar
  *                                   (FilterDropdown prefixes its id; optional)
@@ -442,7 +445,7 @@ const troubleshootTour: TourDef = {
       align: 'start',
       // Open the flat Events list so the column step lands on the rich table.
       onBeforeNext: () => {
-        document.querySelector<HTMLElement>('#tab-all')?.click();
+        document.querySelector<HTMLElement>('#tab-all-events')?.click();
       },
     },
     {

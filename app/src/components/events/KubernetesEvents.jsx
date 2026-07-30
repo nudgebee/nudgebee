@@ -146,7 +146,7 @@ const DEFAULT_TABLE_COLUMNS = [
         title='Triage Status'
         desc="Your team's response to this issue. Update it as you investigate, escalate, or resolve. To handle matching issues automatically, go to"
         linkText='Triage Rules →'
-        linkUrl='/troubleshoot#triage-rules'
+        linkUrl='/troubleshoot#all-events/triage-rules'
         placement='top'
       >
         <Box component='span' sx={{ cursor: 'default', display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
@@ -373,7 +373,7 @@ const KubernetesEventsTable = ({
             title='Triage Status'
             desc="Your team's response to this issue. Update it as you investigate, escalate, or resolve. To handle matching issues automatically, go to"
             linkText='Triage Rules →'
-            linkUrl='/troubleshoot#triage-rules'
+            linkUrl='/troubleshoot#all-events/triage-rules'
             placement='top'
           >
             <Box component='span' sx={{ cursor: 'default', display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
@@ -398,7 +398,7 @@ const KubernetesEventsTable = ({
 
   // Selections — precedence: explicit prop / defaultQuery > URL query > persisted > built-in default
   const [selectedAccountId, setSelectedAccountId] = useState(() => {
-    const raw = accountId || router.query.accountId;
+    const raw = accountId || router.query.accountIds;
     if (raw) return String(raw).split(',').filter(Boolean);
     if (Array.isArray(persisted?.accountId) && persisted.accountId.length > 0) return persisted.accountId;
     return [];
@@ -545,14 +545,14 @@ const KubernetesEventsTable = ({
     // Only sync from an explicit external source (prop or URL). If neither is
     // set, leave selectedAccountId as-is — it may have come from persisted
     // storage on mount, and there's nothing here to override it with.
-    const raw = accountId || router.query.accountId;
+    const raw = accountId || router.query.accountIds;
     if (!raw) return;
     const next = String(raw).split(',').filter(Boolean);
     setSelectedAccountId((prev) => {
       if (prev.length === next.length && prev.every((id, i) => id === next[i])) return prev;
       return next;
     });
-  }, [accountId, router.query.accountId]);
+  }, [accountId, router.query.accountIds]);
 
   // Once the real accounts list has loaded, drop any cached/URL account ids
   // that no longer exist (deleted account, revoked access). Without this,
@@ -564,7 +564,7 @@ const KubernetesEventsTable = ({
     const pruned = selectedAccountId.filter((id) => validIds.has(id));
     if (pruned.length === selectedAccountId.length) return;
     setSelectedAccountId(pruned);
-    applyFiltersOnRouter(router, { accountId: pruned.join(',') });
+    applyFiltersOnRouter(router, { accountIds: pruned.join(',') });
     writePersistedFilters(persistKey, { accountId: pruned });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accounts, selectedAccountId]);
@@ -642,7 +642,7 @@ const KubernetesEventsTable = ({
     const ids = (value || []).map((v) => v.value);
     setSelectedAccountId(ids);
     setCurrentPage(0);
-    applyFiltersOnRouter(router, { accountId: ids.join(',') });
+    applyFiltersOnRouter(router, { accountIds: ids.join(',') });
     writePersistedFilters(persistKey, { accountId: ids });
   };
 
