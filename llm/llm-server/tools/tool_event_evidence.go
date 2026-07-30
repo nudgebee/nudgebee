@@ -167,7 +167,10 @@ func (t GetEventEvidenceTool) Call(nbRequestContext core.NbToolContext, input co
 	evidenceType := argString("evidence_type")
 
 	// Fetch the event using the same pattern as EvidenceInsightsTool.getEventData()
-	eventTool := EventsExecuteTool{}
+	// FullEvidence: the drill-down modes (filter's grep, summary's pattern
+	// mining) must operate on the complete log body, not the scratchpad-lean
+	// truncation; raw mode is bounded by the per-observation scratchpad cap.
+	eventTool := EventsExecuteTool{FullEvidence: true}
 	toolCtx := core.NewNbToolContext(
 		nbRequestContext.Ctx, eventTool,
 		nbRequestContext.AccountId, nbRequestContext.UserId,

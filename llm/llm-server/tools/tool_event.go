@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 	"nudgebee/llm/events"
 	"nudgebee/llm/tools/core"
 	"regexp"
@@ -143,6 +144,12 @@ func resolveEventsViewPlaceholders(view, accountId string, skipDateFilter bool) 
 }
 
 type EventsExecuteTool struct {
+	// FullEvidence preserves the complete collected log body on the processed
+	// row instead of gutting it to mined error lines / a 500-byte tail. Set by
+	// programmatic single-event consumers (the event analyzer, the evidence
+	// drill-down tool); the interactive events agent keeps the lean default so
+	// query results stay scratchpad-sized.
+	FullEvidence bool
 }
 
 func (m EventsExecuteTool) Name() string {
@@ -168,6 +175,30 @@ func (m EventsExecuteTool) InputSchema() core.ToolSchema {
 		},
 		Required: []string{"command"},
 	}
+}
+
+// errorLogSeverities marks the log-entry severities extracted into
+// ErrorLogData so error/warning lines stay available to the investigation
+// prompt even when the full log body is too large to inline.
+var errorLogSeverities = map[string]bool{
+	"ERROR":    true,
+	"CRITICAL": true,
+	"FATAL":    true,
+	"WARNING":  true,
+	"WARN":     true,
+}
+
+// formatErrorLogLine renders a log-evidence entry as
+// "<timestamp>\t<SEVERITY>\t<message>" when its severity marks it as an
+// error/warning line; the bool reports whether it did.
+func formatErrorLogLine(entry map[string]any, message string) (string, bool) {
+	sev, _ := entry["severity"].(string)
+	sev = strings.ToUpper(strings.TrimSpace(sev))
+	if !errorLogSeverities[sev] {
+		return "", false
+	}
+	ts, _ := entry["timestamp"].(string)
+	return strings.TrimSpace(ts) + "\t" + sev + "\t" + message, true
 }
 
 func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int, messagesMap map[string][]map[string]string) map[string]any {
@@ -441,6 +472,13 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 								if dataMap, ok := result.(map[string]any); ok && dataMap["message"] != nil {
 									if bodyStr, ok := dataMap["message"].(string); ok {
 										investigateData.LogData = investigateData.LogData + "\n" + bodyStr
+										// Same bound the raw-text miner honours, so listing
+										// queries (many rows) stay scratchpad-sized.
+										if len(investigateData.ErrorLogData) < config.Config.LLMServerAgentMaxLogLines {
+											if errorLine, isError := formatErrorLogLine(dataMap, bodyStr); isError {
+												investigateData.ErrorLogData = append(investigateData.ErrorLogData, errorLine)
+											}
+										}
 									}
 								}
 							}
@@ -450,8 +488,14 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 					}
 
 				}
+				// Carry the enricher's pattern digest (top log templates with
+				// counts + level breakdown) so the investigation prompt can
+				// surface it — it is far denser signal than the raw log body.
+				if summary, ok := evidence.AdditionalInfo["log_summary"]; ok && summary != nil {
+					investigateData.LogSummary = summary
+				}
 
-			} else if evidence.Type == "api_traces_enricher_v2" {
+			} else if evidence.Type == "api_traces_enricher_v2" || (evidence.Type == "json" && evidence.AdditionalInfo != nil && evidence.AdditionalInfo["action_name"] == "traces") {
 				investigateData.Traces.Data = evidence.Data
 				if stringData, ok := evidence.Data.(string); ok {
 					tracesMap := map[string]any{}
@@ -617,18 +661,22 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 			}
 		}
 
-		if investigateData.LogData != "" {
-			errorLines := GetErrorLinesFromLogStringOrDefault(investigateData.LogData, true)
-			investigateData.ErrorLogData = errorLines
+		// Per-entry severity extraction (formatErrorLogLine) already filled
+		// ErrorLogData when the evidence carried structured severities; only
+		// fall back to mining the raw text when it did not.
+		if investigateData.LogData != "" && len(investigateData.ErrorLogData) == 0 {
+			investigateData.ErrorLogData = GetErrorLinesFromLogStringOrDefault(investigateData.LogData, true)
 		}
 
 		// only send full data if overall count is 1, else use error lines as normally this results in very huge data
-		if c != 1 || len(investigateData.ErrorLogData) > 0 {
-			investigateData.LogData = ""
-		}
+		if !m.FullEvidence {
+			if c != 1 || len(investigateData.ErrorLogData) > 0 {
+				investigateData.LogData = ""
+			}
 
-		if c == 1 && len(investigateData.LogData) > 0 && len(investigateData.LogData) > 500 {
-			investigateData.LogData = lo.Substring(investigateData.LogData, -500, 500)
+			if c == 1 && len(investigateData.LogData) > 0 && len(investigateData.LogData) > 500 {
+				investigateData.LogData = lo.Substring(investigateData.LogData, -500, 500)
+			}
 		}
 
 		data["evidences"] = investigateData

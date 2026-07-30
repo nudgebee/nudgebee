@@ -19,6 +19,8 @@ import (
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
+	"nudgebee/llm/workspace"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1374,37 +1376,39 @@ func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request
 	return response, nil
 }
 
-// maxInvestigationEvidenceBytes caps how much collected evidence (logs +
-// insights) is inlined into the investigation prompt. The event's evidence is
-// already gathered on the Event object (populated by the events tool's evidence
-// enrichment), so surfacing it lets the investigation reach a verdict instead of
-// reporting "insufficient" for data the event actually carries. The cap bounds
-// token cost the same way maxAnnotationRCAFormatBytes does for rca_format.
-const maxInvestigationEvidenceBytes = 6000
+// maxInvestigationEvidenceBytes caps how much collected evidence is inlined
+// into the investigation prompt. The event's evidence is already gathered on
+// the Event object (populated by the events tool's evidence enrichment), so
+// surfacing it lets the investigation reach a verdict instead of reporting
+// "insufficient" for data the event actually carries. The cap bounds token
+// cost the same way maxAnnotationRCAFormatBytes does for rca_format.
+const maxInvestigationEvidenceBytes = 12000
 
-// buildInvestigationEvidenceContext renders the log lines and insight messages
-// already collected on the event into a compact markdown block for the
-// investigation prompt. Returns "" when no usable evidence is present.
+// maxErrorLogLinesBytes bounds the extracted error/warning log lines section;
+// middle-truncated so both the first and last errors of the window survive.
+const maxErrorLogLinesBytes = 4096
+
+// maxLogPatternCount bounds how many enricher log-pattern templates are
+// rendered into the prompt digest.
+const maxLogPatternCount = 10
+
+// buildInvestigationEvidenceContext renders the evidence already collected on
+// the event into a compact markdown block for the investigation prompt.
+// Sections are ordered dense-signal-first with per-section budgets: insights,
+// then the enricher's pattern digest, then extracted error lines, and the raw
+// log body only with whatever budget remains. Previously the raw body came
+// first under a single head-truncation cap, which silently deleted the
+// insights whenever logs were large — the failure behind the wrong RCA on
+// event 15d3e867, where 481KB of access-log noise consumed the entire budget
+// and the "deployment 35 minutes before the event" insight never reached the
+// agent. Returns "" when no usable evidence is present.
 func buildInvestigationEvidenceContext(ev events.InvestigateData) string {
 	var b strings.Builder
 
-	// Log lines: LogData holds the (capped) log body; ErrorLogData holds the
-	// extracted error lines when the events tool cleared LogData in favour of
-	// them (see EventsExecuteTool.processRowWithMessages). Prefer whichever is
-	// populated so the source IPs / error messages reach the agent.
-	logText := strings.TrimSpace(ev.LogData)
-	if logText == "" && len(ev.ErrorLogData) > 0 {
-		logText = strings.TrimSpace(strings.Join(ev.ErrorLogData, "\n"))
-	}
-	if logText != "" {
-		b.WriteString("### Collected Logs\n```\n")
-		b.WriteString(logText)
-		b.WriteString("\n```\n\n")
-	}
-
-	// Insight messages summarise the metric / trace / alert / dependency findings
-	// the enrichers attached to the event. They are short, high-signal strings —
-	// the primary evidence for metric alerts that carry no logs.
+	// 1. Insight messages summarise the metric / trace / alert / dependency
+	// findings the enrichers attached to the event. Short, pre-ranked,
+	// highest signal per byte — always first so a large log body can never
+	// push them past the cap.
 	if insights := collectEvidenceInsights(ev); len(insights) > 0 {
 		b.WriteString("### Collected Insights\n")
 		for _, msg := range insights {
@@ -1412,9 +1416,136 @@ func buildInvestigationEvidenceContext(ev events.InvestigateData) string {
 			b.WriteString(msg)
 			b.WriteString("\n")
 		}
+		b.WriteString("\n")
+	}
+
+	// 2. The log enricher's pattern digest: top templates with counts plus
+	// the severity breakdown.
+	if digest := renderLogPatternDigest(ev.LogSummary); digest != "" {
+		b.WriteString("### Log Patterns\n")
+		b.WriteString(digest)
+		b.WriteString("\n")
+	}
+
+	// 3. Extracted error/warning lines (see formatErrorLogLine in the events
+	// tool). Middle-truncated so the start and end of the window both survive.
+	if len(ev.ErrorLogData) > 0 {
+		if errText := strings.TrimSpace(strings.Join(ev.ErrorLogData, "\n")); errText != "" {
+			b.WriteString("### Error Log Lines\n```\n")
+			b.WriteString(core.TruncateMiddle(errText, maxErrorLogLinesBytes/2, maxErrorLogLinesBytes/2))
+			b.WriteString("\n```\n\n")
+		}
+	}
+
+	// 4. The raw log body, only if it fits the remaining budget. When it does
+	// not, the caller saves it to the conversation workspace instead and the
+	// prompt points the agent at that file.
+	if logText := strings.TrimSpace(ev.LogData); logText != "" {
+		remaining := maxInvestigationEvidenceBytes - b.Len()
+		if remaining > 512 {
+			b.WriteString("### Collected Logs\n```\n")
+			if len(logText) > remaining {
+				b.WriteString(core.TruncateMiddle(logText, remaining/2, remaining/2))
+			} else {
+				b.WriteString(logText)
+			}
+			b.WriteString("\n```\n\n")
+		}
 	}
 
 	return strings.TrimSpace(b.String())
+}
+
+// saveEvidenceLogsToWorkspace persists the event's collected log evidence to
+// the analysis conversation's workspace when it is too large to inline, and
+// returns the prompt note pointing the agent at the file. Best-effort: returns
+// "" for small/absent logs or on save failure (the inline digest built by
+// buildInvestigationEvidenceContext still covers the evidence). Mirrors
+// saveLogsToWorkspace in the log-fetch agent; local because the evidence body
+// is already plain line-per-message text.
+//
+// sessionId is the analysis session ("event-<fingerprint>"), not the
+// conversation UUID. The workspace scopes both saved files and shell execution
+// to a per-conversation directory keyed by the conversation UUID, so the file
+// must be saved under the UUID the agent's shell_execute will run in — saving
+// under the session string lands it in a directory the agent never sees. The
+// conversation row exists by this point: Step 1 (summary) created it.
+func saveEvidenceLogsToWorkspace(ctx *security.RequestContext, accountId, sessionId, eventId string, event events.Event) string {
+	logText := strings.TrimSpace(event.Evidences.LogData)
+	if len(logText) <= maxInvestigationEvidenceBytes {
+		return ""
+	}
+	conv, convErr := core.GetConversationDao().GetConversationBySession(accountId, sessionId)
+	if convErr != nil || conv.ID == uuid.Nil {
+		ctx.GetLogger().Warn("analyzer: cannot resolve conversation for evidence log save", "error", convErr, "session_id", sessionId)
+		return ""
+	}
+	filename := fmt.Sprintf("evidence_logs_%s.txt", eventId)
+	wm := workspace.NewWorkspaceManager()
+	if err := wm.SaveFile(ctx, accountId, conv.ID.String(), filename, logText); err != nil {
+		ctx.GetLogger().Warn("analyzer: failed to save evidence logs to workspace", "error", err, "file", filename, "event_id", eventId)
+		return ""
+	}
+	ctx.GetLogger().Info("analyzer: evidence logs saved to workspace", "file", filename, "bytes", len(logText), "event_id", eventId)
+	window := ""
+	if event.StartsAt != nil {
+		window = fmt.Sprintf(" for the incident window (%s → %s)", common.FormatPresentationTime(event.StartsAt), formatWindowEnd(event.EndsAt))
+	}
+	return fmt.Sprintf("## Stored Log Evidence\nThe full logs already collected%s are saved in your workspace at `%s` (one log line per row). Grep this file first (e.g. `grep -iE \"error|timeout|fail\" %s | head -40`) before fetching live logs — logs fetched live at analysis time include activity from after the incident window.", window, filename, filename)
+}
+
+// formatWindowEnd renders an incident-window end for the prompt: a still-firing
+// occurrence has no end yet, and "ongoing" reads better to the model than the
+// generic "unknown" the shared formatter falls back to.
+func formatWindowEnd(t *time.Time) string {
+	if t == nil {
+		return "ongoing"
+	}
+	return common.FormatPresentationTime(t)
+}
+
+// renderLogPatternDigest renders the log enricher's pattern summary (top
+// templates with counts and the severity-level breakdown) as markdown.
+// Returns "" when the summary is absent or not the expected shape.
+func renderLogPatternDigest(summary any) string {
+	m, ok := summary.(map[string]any)
+	if !ok {
+		return ""
+	}
+	var b strings.Builder
+	if lb, ok := m["level_breakdown"].(map[string]any); ok && len(lb) > 0 {
+		levels := make([]string, 0, len(lb))
+		for level := range lb {
+			levels = append(levels, level)
+		}
+		sort.Strings(levels)
+		b.WriteString("Level breakdown:")
+		for _, level := range levels {
+			fmt.Fprintf(&b, " %s=%v", level, lb[level])
+		}
+		b.WriteString("\n")
+	}
+	patterns, _ := m["log_patterns"].([]any)
+	for i, pAny := range patterns {
+		if i >= maxLogPatternCount {
+			break
+		}
+		p, ok := pAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		template, _ := p["template"].(string)
+		if strings.TrimSpace(template) == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "- %v× `%s`\n", p["count"], template)
+		if example, ok := p["example"].(string); ok && example != "" {
+			b.WriteString("  e.g. `")
+			b.WriteString(core.TruncateHead(example, 300))
+			b.WriteString("`\n")
+		}
+	}
+	return b.String()
 }
 
 // collectEvidenceInsights gathers de-duplicated, non-empty insight messages from
@@ -1463,7 +1594,10 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 	}
 
 	// do rootcause analysis
-	eventAnalsysisPrompt := prompts_repo.GetPrompt(prompts_repo.PromptEventInvestigation, request.EventId, eventDefinition, event.Title, event.Description, event.Labels, common.FormatPresentationTime(event.UpdatedAt), event.Source, response.Summary)
+	// Arg order must match the %s placeholders in event_investigation.txt:
+	// id, definition, title, description, labels, time, window start, window
+	// end, source, summary.
+	eventAnalsysisPrompt := prompts_repo.GetPrompt(prompts_repo.PromptEventInvestigation, request.EventId, eventDefinition, event.Title, event.Description, event.Labels, common.FormatPresentationTime(event.UpdatedAt), common.FormatPresentationTime(event.StartsAt), formatWindowEnd(event.EndsAt), event.Source, response.Summary)
 
 	// Add account context (cloud provider) to help the LLM tailor its output
 	if cloudProvider := agents.GetCloudProviderForAccount(request.AccountId); cloudProvider != "" {
@@ -1873,6 +2007,17 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		if hasInvestigation {
 			ctx.GetLogger().Info("analyzer: recovered investigation from conversation history", "session_id", parentConversationId)
 		} else {
+			// When the collected log evidence is too large to inline, persist
+			// it to the analysis conversation's workspace so the agent can
+			// grep the full incident-window logs instead of re-fetching live
+			// logs at analysis time (live fetches see the analyzer's own
+			// runtime, which is how event 15d3e867 blamed post-window errors
+			// the pipeline itself produced). Done only on this branch — the
+			// one that actually runs the agent — so re-polls and recovered
+			// investigations never touch the workspace.
+			if fileNote := saveEvidenceLogsToWorkspace(ctx, request.AccountId, parentConversationId, request.EventId, eventData); fileNote != "" {
+				eventAnalsysisPrompt = eventAnalsysisPrompt + "\n\n" + fileNote
+			}
 			rootcauseAnalysis, err := core.HandleConversationSessionRequest(ctx, rootcauseAgent, request.UserId, request.AccountId, parentConversationId, eventAnalsysisPrompt, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels}), core.ConversationSessionRequestWitAdditionalSystemPrompt(accountPrompt), core.ConversationSessionRequestWithEnableCritique(true))
 
 			if err != nil {
@@ -2636,7 +2781,10 @@ func getEventData(ctx *security.RequestContext, request EventAnalysisRequest) (e
 		return events.Event{}, fmt.Errorf("invalid account_id format")
 	}
 
-	eventTool := tools.EventsExecuteTool{}
+	// FullEvidence keeps the complete collected log body on the row — the
+	// analyzer inlines a digest and saves the full body to the conversation
+	// workspace, so it must not receive the scratchpad-lean truncation.
+	eventTool := tools.EventsExecuteTool{FullEvidence: true}
 	toolCtx := toolcore.NewNbToolContext(ctx, eventTool, request.AccountId, request.UserId, uuid.NewString(), uuid.NewString(), uuid.NewString(), "", []llms.MessageContent{}, "", toolcore.NBQueryConfig{}, "")
 	data, err := eventTool.Call(toolCtx, toolcore.NBToolCallRequest{
 		Command: fmt.Sprintf(`select * from events where id = '%s' and cloud_account_id = '%s'`, request.EventId, request.AccountId),
