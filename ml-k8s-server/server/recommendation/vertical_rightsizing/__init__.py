@@ -35,7 +35,7 @@ class RecommendationData:
     name: str
     kind: str
     container: str
-    priority: float
+    priority: int
     content: List[Dict[str, Any]]
 
 
@@ -149,14 +149,25 @@ def round_resource_value(value, resource: ResourceType) -> Optional[float]:
     return max(rounded, minimal)
 
 
-def get_severity(priority: float) -> str:
-    """Convert priority to severity level."""
-    if priority >= 0.8:
+def get_severity(priority: int) -> str:
+    """Map a scan priority to a recommendation severity.
+
+    priority is the 0-4 integer from scan_severity_to_priority (CRITICAL=4,
+    WARNING=3, OK=2, GOOD=1, UNKNOWN=0), NOT a normalized 0-1 score. Every
+    returned value must exist in recommendation_severity_type, which the
+    severity column references via recommendation_severity_fkey.
+
+    UNKNOWN outranks GOOD deliberately: a scan we could not compute still
+    warrants a look, whereas a GOOD one is already right-sized.
+    """
+    if priority >= 4:
         return "Critical"
-    elif priority >= 0.6:
+    elif priority == 3:
         return "High"
-    elif priority >= 0.4:
+    elif priority == 2:
         return "Medium"
+    elif priority == 1:
+        return "Info"
     else:
         return "Low"
 
@@ -798,7 +809,8 @@ def store_krr_recommendations_to_db(
                         DO UPDATE SET
                             recommendation = EXCLUDED.recommendation,
                             estimated_savings = EXCLUDED.estimated_savings,
-                            status = EXCLUDED.status
+                            status = EXCLUDED.status,
+                            severity = EXCLUDED.severity
                     """)
 
                     # Batch execute: pass entire list so SQLAlchemy sends one
