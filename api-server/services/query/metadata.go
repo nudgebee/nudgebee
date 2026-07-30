@@ -2886,7 +2886,19 @@ var table_metadata = map[string]TableDefinition{
 							-- Per-resource recommendations: one primary per (resource, category) wins.
 							WHEN r.resource_id IS NOT NULL THEN r.resource_id::text
 							-- Azure-shaped fallback (kept while Azure ingestion still relies on it).
-							WHEN r.recommendation->>'recommendation_type_id' IS NOT NULL
+							-- Gated on cloud_provider FIRST so the jsonb tests are only reached for
+							-- Azure rows. Without the gate every non-Azure row that falls through the
+							-- branches above detoasts the recommendation jsonb up to four times just
+							-- to conclude it is not Azure — and on a K8s-heavy tenant that is nearly
+							-- every row (545161 K8s / 488 GCP / 352 AWS rows reach this branch on dev,
+							-- and NONE of them carry recommendation_type_id; only Azure does, 891/976).
+							-- Measured on one account (118377 rows): 8594ms -> 915ms, shared buffers
+							-- 518400 -> 55244. LOWER() because the provider column is free-form mixed
+							-- case (dev holds 'K8s', 'GCP', 'OpenAi', ...); an exact-match gate would
+							-- silently disable the Azure branch in any environment storing it
+							-- differently, marking every Azure row primary. It costs nothing:
+							-- cloud_accounts is one indexed row here and buffer counts are identical.
+							WHEN LOWER(ca.cloud_provider) = 'azure' AND r.recommendation->>'recommendation_type_id' IS NOT NULL
 								THEN r.cloud_account_id::text || ':'
 									|| COALESCE(r.recommendation->>'recommendation_type_id', '') || ':'
 									|| COALESCE(r.recommendation->>'ext_subid', r.recommendation->>'subscription_id', '') || ':'
@@ -4704,7 +4716,11 @@ var table_metadata = map[string]TableDefinition{
 								PARTITION BY
 									CASE
 										WHEN r.resource_id IS NOT NULL THEN r.resource_id::text
-										WHEN r.recommendation->>'recommendation_type_id' IS NOT NULL
+										-- Azure-shaped fallback, gated on cloud_provider first: see the
+										-- sibling generator above. Reaching the jsonb tests for non-Azure
+										-- rows detoasts the recommendation jsonb up to four times per
+										-- row to conclude it is not Azure.
+										WHEN LOWER(ca.cloud_provider) = 'azure' AND r.recommendation->>'recommendation_type_id' IS NOT NULL
 											THEN r.cloud_account_id::text || ':'
 												|| COALESCE(r.recommendation->>'recommendation_type_id', '') || ':'
 												|| COALESCE(r.recommendation->>'ext_subid', r.recommendation->>'subscription_id', '') || ':'
