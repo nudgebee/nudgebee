@@ -54,6 +54,15 @@ func (t *TicketsEscalateTask) Execute(taskCtx types.TaskContext, params map[stri
 		return nil, err
 	}
 
+	if taskCtx.IsDryRun() {
+		taskCtx.GetLogger().Info("Dry Run: skipping ticket escalation")
+		return map[string]any{
+			"ticket_id": ticketId,
+			"status":    "dry_run",
+			"message":   "Dry run: ticket escalation skipped",
+		}, nil
+	}
+
 	request := ticket.EscalateTicketRequest{
 		TicketId:         ticketId,
 		IntegrationId:    integrationId,

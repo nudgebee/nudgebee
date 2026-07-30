@@ -80,6 +80,15 @@ func (t *TicketsUpdateTask) Execute(taskCtx types.TaskContext, params map[string
 		return nil, errors.New("at least one of status, severity, assignee, description, or labels must be provided")
 	}
 
+	if taskCtx.IsDryRun() {
+		taskCtx.GetLogger().Info("Dry Run: skipping ticket update")
+		return map[string]any{
+			"ticket_id": ticketId,
+			"status":    "dry_run",
+			"message":   "Dry run: ticket update skipped",
+		}, nil
+	}
+
 	request := ticket.UpdateTicketRequest{
 		TicketId:      ticketId,
 		IntegrationId: integrationId,
