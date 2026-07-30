@@ -110,7 +110,7 @@ func sanitizeErrorForUser(err error) string {
 // silently run on the expensive Reasoning-tier (pro) model. Stamping every
 // agent — Retrieval by default — confines the pro tier to the orchestrators
 // that explicitly opt into Reasoning.
-func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent) *security.RequestContext {
+func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) *security.RequestContext {
 	if ctx == nil {
 		return nil
 	}
@@ -123,12 +123,31 @@ func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent) *security.
 		goCtx = context.Background()
 	}
 	return security.NewRequestContext(
-		context.WithValue(goCtx, ContextKeyModelTier, agentModelCategory(agent)),
+		context.WithValue(goCtx, ContextKeyModelTier, resolveModelTier(agent, request)),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
+}
+
+// resolveModelTier returns the model tier stamped for this turn. By default it is
+// the agent's declared category (agentModelCategory). When query model-downshift is
+// enabled, a TOP-LEVEL plain-retrieval turn on a Reasoning-tier orchestrator is
+// downshifted Reasoning → Summary: a query needs tool orchestration + formatting,
+// not deep causal reasoning, so it runs on the cheaper/faster Summary-tier model.
+// It keys off isTopLevelPlainRetrievalTurn — the SAME signal as the lean prompt
+// variant — so tier + prompt variant + (model-keyed) cache slot stay consistent.
+// Investigations and sub-agents (isTopLevelPlainRetrievalTurn == false, or a non-
+// Reasoning base) keep their tier, so this only ever shifts the top-level query case.
+func resolveModelTier(agent NBAgent, request NBAgentRequest) ModelTier {
+	base := agentModelCategory(agent)
+	if config.Config.LlmServerReact3QueryModelDownshiftEnabled &&
+		base == ModelTierReasoning &&
+		isTopLevelPlainRetrievalTurn(request) {
+		return ModelTierSummary
+	}
+	return base
 }
 
 // promptVariantForRequest returns promptVariantLean for a top-level plain-retrieval
@@ -140,23 +159,37 @@ func promptVariantForRequest(request NBAgentRequest) string {
 	if !config.Config.LlmServerReact3QueryLeanPromptEnabled {
 		return ""
 	}
+	if isTopLevelPlainRetrievalTurn(request) {
+		return promptVariantLean
+	}
+	return ""
+}
+
+// isTopLevelPlainRetrievalTurn reports whether this is a TOP-LEVEL, non-investigation
+// ("query" / plain-retrieval) turn. It is the single classification that drives BOTH
+// the lean prompt variant (promptVariantForRequest) and the query model downshift
+// (resolveModelTier), each behind its own flag — so tier, prompt variant, and cache
+// slot always agree on the same signal. Uses OriginalQuery (the user's verbatim
+// top-level question, falling back to Query) so a delegated sub-agent brief never
+// drives the shape; sub-agents and investigation turns are false. A degenerate/empty
+// query is false (keep the full prompt + Reasoning tier rather than stripping either
+// on an unknown query).
+func isTopLevelPlainRetrievalTurn(request NBAgentRequest) bool {
 	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
 	if !isTopLevel {
-		return ""
+		return false
 	}
 	query := request.OriginalQuery
 	if query == "" {
 		query = request.Query
 	}
 	if query == "" {
-		// Degenerate/malformed request — fall back to the full prompt rather than
-		// stripping the investigation machinery on an unknown query.
-		return ""
+		return false
 	}
 	if IsInvestigationRequestTask(query) || request.ConversationSource == ConversationSourceInvestigation {
-		return ""
+		return false
 	}
-	return promptVariantLean
+	return true
 }
 
 // applyPromptVariant stamps ContextKeyPromptVariant with the turn's prompt shape.
@@ -242,7 +275,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// call it makes resolves the category-specific model. Sub-operations may
 	// override per call. See applyAgentModelTier for why a category-less agent
 	// must RESET (not inherit) the tier.
-	ctx = applyAgentModelTier(ctx, agent)
+	ctx = applyAgentModelTier(ctx, agent, request)
 
 	// Stamp the prompt variant (lean vs full) for this turn so the prompt build
 	// (planner) and the cache key read one source of truth and never drift.

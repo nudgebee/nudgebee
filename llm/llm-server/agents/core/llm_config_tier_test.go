@@ -109,13 +109,13 @@ func TestApplyAgentModelTier_ResetsInheritedTier(t *testing.T) {
 
 	// A category-less tool agent must NOT inherit the parent's Reasoning tier;
 	// it is stamped with the Retrieval default instead.
-	resetCtx := applyAgentModelTier(parentCtx, catTestAgent{})
+	resetCtx := applyAgentModelTier(parentCtx, catTestAgent{}, NBAgentRequest{})
 	assert.Equal(t, ModelTierRetrieval, modelTierFromContext(resetCtx),
 		"category-less agent overrides the inherited tier → Retrieval default")
 
 	// A categorised agent stamps its own tier even over an inherited one.
 	for _, tier := range []ModelTier{ModelTierReasoning, ModelTierRetrieval, ModelTierSummary} {
-		got := applyAgentModelTier(parentCtx, catTestCategorisedAgent{category: tier})
+		got := applyAgentModelTier(parentCtx, catTestCategorisedAgent{category: tier}, NBAgentRequest{})
 		assert.Equal(t, tier, modelTierFromContext(got),
 			"declared category %s must be stamped onto the context", tier)
 	}
@@ -123,8 +123,8 @@ func TestApplyAgentModelTier_ResetsInheritedTier(t *testing.T) {
 	// Defensive guards: must not panic on a nil ctx or a zero-value
 	// RequestContext whose internal context.Context is nil (e.g. planner stubs).
 	assert.NotPanics(t, func() {
-		assert.Nil(t, applyAgentModelTier(nil, catTestAgent{}))
-		zero := applyAgentModelTier(&security.RequestContext{}, catTestCategorisedAgent{category: ModelTierReasoning})
+		assert.Nil(t, applyAgentModelTier(nil, catTestAgent{}, NBAgentRequest{}))
+		zero := applyAgentModelTier(&security.RequestContext{}, catTestCategorisedAgent{category: ModelTierReasoning}, NBAgentRequest{})
 		assert.Equal(t, ModelTierReasoning, modelTierFromContext(zero),
 			"zero-value ctx falls back to context.Background() and still stamps the tier")
 	})
@@ -156,7 +156,7 @@ func TestApplyAgentModelTier_E2E_CategoryLessResolvesRetrievalNotPro(t *testing.
 
 	// The fix: a category-less agent is stamped the Retrieval default → resolves
 	// the retrieval-tier model, not the inherited pro model.
-	fixedCtx := applyAgentModelTier(parentCtx, catTestAgent{})
+	fixedCtx := applyAgentModelTier(parentCtx, catTestAgent{}, NBAgentRequest{})
 	resFixed, err := ResolveLLMConfig(fixedCtx, "", "kubectl", "")
 	assert.NoError(t, err)
 	assert.Equal(t, "qwen-retrieval", resFixed.Model,
@@ -165,7 +165,7 @@ func TestApplyAgentModelTier_E2E_CategoryLessResolvesRetrievalNotPro(t *testing.
 
 	// A genuinely reasoning-tier agent still opts into pro — the fix does not
 	// downgrade agents that declare the category.
-	catCtx := applyAgentModelTier(parentCtx, catTestCategorisedAgent{category: ModelTierReasoning})
+	catCtx := applyAgentModelTier(parentCtx, catTestCategorisedAgent{category: ModelTierReasoning}, NBAgentRequest{})
 	resCat, err := ResolveLLMConfig(catCtx, "", "kubectl", "")
 	assert.NoError(t, err)
 	assert.Equal(t, "gemini-3.1-pro-preview", resCat.Model,
