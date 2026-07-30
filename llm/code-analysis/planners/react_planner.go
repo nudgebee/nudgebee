@@ -144,6 +144,17 @@ type ReActPlanner struct {
 	// knows exactly what was elided and how to re-fetch it.
 	toolMsgMeta []toolMsgMeta
 
+	// stubbedObs holds indices into toolMsgMeta of Tool messages already SENT
+	// in stubbed form. Monotonic per Plan() run — the pressure gate may only
+	// ADD entries, never remove: un-stubbing a previously-stubbed message
+	// rewrites the sent prefix mid-history, which invalidates Gemini's
+	// implicit prompt cache from that point (measured 58-62% hit rate on
+	// aging-heavy runs vs 79-87% without). Keyed by meta index, not message
+	// index, so the set survives compaction (meta indices are append-only;
+	// entries for compacted-away messages just go unreferenced). Lazy-init so
+	// directly-constructed test planners work.
+	stubbedObs map[int]bool
+
 	// Deduplication tracking
 	executedCallHashes map[string]int // hash -> execution count
 	mu                 sync.Mutex     // Guards executedCallHashes and other shared state
@@ -432,7 +443,7 @@ func NewReActPlanner(llmClient *llm.Client, tools []core.NBTool, maxIterations i
 		analysisLoopCount:           0,
 		maxAnalysisLoops:            3, // Force submit after 3 detected loops
 		submitRetryCount:            0,
-		maxSubmitRetries:            2,                    // Allow 2 retries for submit_analysis
+		maxSubmitRetries:            3,                    // Matches the orchestrator's maxInloopRejects: the gate must be able to reject 3 times (then release for honest failure handling) before the planner gives up — at 2 the planner killed the run one reject early
 		consecutiveToolFailures:     make(map[string]int), // Circuit breaker tracking
 		maxConsecutiveFailures:      defaultMaxConsecutiveFailures,
 		maxObservationLines:         500,
@@ -689,6 +700,7 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 	// instead of stomping on a shared one.
 	p.genaiSession = llm.NewGenAISession()
 	p.toolMsgMeta = nil
+	p.stubbedObs = nil
 	p.lastReflectedStep = 0
 
 	// Initialize step tracking and reset submit_analysis data
@@ -2073,15 +2085,22 @@ func stubObservation(tool, desc, content string) string {
 // append time) and suffix-aligned, so a head-side compaction that removed early
 // messages cannot misattribute steps. Anything unmapped counts as NOT distilled
 // — never drop what we can't prove was preserved.
+// The function runs in two phases and mutates p.stubbedObs (single goroutine
+// per Plan(), same model as the toolMsgMeta appends):
+//
+//	Phase 1 (unconditional): messages whose meta index is already in
+//	p.stubbedObs are re-sent stubbed, bypassing the watermark early-out, the
+//	pressure gate and the recent-K exemption — once a stub has been sent, the
+//	sent bytes must never flip back (stubObservation is deterministic, so the
+//	replay is byte-stable and cache-friendly).
+//
+//	Phase 2 (gated as before): NEW stubs are admitted only when a reflection
+//	has distilled facts, the Tool count exceeds the recent-K window, and the
+//	prompt — measured POST-sticky, which gives natural hysteresis — is at or
+//	above the aging budget.
 func (p *ReActPlanner) ageOldObservations(messages []llms.MessageContent) []llms.MessageContent {
-	if p.recentObservationWindow <= 0 || p.lastReflectedStep <= 0 {
-		return messages
-	}
-	// Pressure gate: below the budget the prompt is small enough that raw
-	// context is strictly better — aging is a no-op and normal runs are
-	// byte-identical to aging-off. Above it, the O(N^2) resend is what both
-	// costs and rots; stubbing distilled-old observations bounds the tail.
-	if p.agingBudgetTokens > 0 && estimateMessageTokens(messages) < p.agingBudgetTokens {
+	if p.recentObservationWindow <= 0 {
+		// Aging disabled: the sticky set can never become non-empty.
 		return messages
 	}
 	var toolIdx []int
@@ -2090,52 +2109,83 @@ func (p *ReActPlanner) ageOldObservations(messages []llms.MessageContent) []llms
 			toolIdx = append(toolIdx, i)
 		}
 	}
-	if len(toolIdx) <= p.recentObservationWindow {
+	if len(toolIdx) == 0 {
 		return messages
-	}
-	oldEnough := make(map[int]bool, len(toolIdx)-p.recentObservationWindow)
-	for _, idx := range toolIdx[:len(toolIdx)-p.recentObservationWindow] {
-		oldEnough[idx] = true
 	}
 	// Suffix-align recorded metadata with the Tool messages present: the last
 	// len(toolIdx) records correspond 1:1 to the last len(toolIdx) Tool
 	// messages even if earlier messages were compacted away.
 	align := len(p.toolMsgMeta) - len(toolIdx)
-	metaOfToolMsg := func(j int) toolMsgMeta { // j = ordinal among Tool messages
+	metaIdxOfToolMsg := func(j int) int { // j = ordinal among Tool messages
 		k := align + j
 		if k < 0 || k >= len(p.toolMsgMeta) {
-			return toolMsgMeta{} // unmapped -> not provably distilled
+			return -1 // unmapped -> not provably distilled, never stubbed
 		}
-		return p.toolMsgMeta[k]
+		return k
 	}
-	ordinal := make(map[int]int, len(toolIdx)) // message index -> ordinal
-	for j, idx := range toolIdx {
-		ordinal[idx] = j
-	}
-	out := make([]llms.MessageContent, len(messages))
-	for i, m := range messages {
-		if !oldEnough[i] {
-			out[i] = m
-			continue
-		}
-		meta := metaOfToolMsg(ordinal[i])
-		if meta.maxStep <= 0 || meta.maxStep > p.lastReflectedStep {
-			out[i] = m // not yet distilled into the ledger — keep raw
-			continue
-		}
+
+	stubToolMsg := func(m llms.MessageContent, desc string) llms.MessageContent {
 		newParts := make([]llms.ContentPart, 0, len(m.Parts))
 		for _, part := range m.Parts {
 			if tr, ok := part.(llms.ToolCallResponse); ok {
 				newParts = append(newParts, llms.ToolCallResponse{
 					ToolCallID: tr.ToolCallID,
 					Name:       tr.Name,
-					Content:    stubObservation(tr.Name, meta.desc, tr.Content),
+					Content:    stubObservation(tr.Name, desc, tr.Content),
 				})
 			} else {
 				newParts = append(newParts, part)
 			}
 		}
-		out[i] = llms.MessageContent{Role: m.Role, Parts: newParts}
+		return llms.MessageContent{Role: m.Role, Parts: newParts}
+	}
+
+	// Phase 1 — replay existing stubs unconditionally.
+	out := make([]llms.MessageContent, len(messages))
+	copy(out, messages)
+	stickyCount := 0
+	for j, idx := range toolIdx {
+		if k := metaIdxOfToolMsg(j); k >= 0 && p.stubbedObs[k] {
+			out[idx] = stubToolMsg(messages[idx], p.toolMsgMeta[k].desc)
+			stickyCount++
+		}
+	}
+
+	// Phase 2 — admit NEW stubs only under the original gates.
+	if p.lastReflectedStep <= 0 || len(toolIdx) <= p.recentObservationWindow {
+		return out
+	}
+	// Pressure gate: below the budget the prompt is small enough that raw
+	// context is strictly better. Above it, the O(N^2) resend is what both
+	// costs and rots; stubbing distilled-old observations bounds the tail.
+	// Measured on the sticky-applied copy: once existing stubs push the
+	// prompt under budget, no further stubs are added and the bytes freeze.
+	if p.agingBudgetTokens > 0 && estimateMessageTokens(out) < p.agingBudgetTokens {
+		return out
+	}
+	newStubs := 0
+	for j, idx := range toolIdx[:len(toolIdx)-p.recentObservationWindow] {
+		k := metaIdxOfToolMsg(j)
+		if k < 0 || p.stubbedObs[k] {
+			continue // unmapped, or already handled in phase 1
+		}
+		meta := p.toolMsgMeta[k]
+		if meta.maxStep <= 0 || meta.maxStep > p.lastReflectedStep {
+			continue // not yet distilled into the ledger — keep raw
+		}
+		if p.stubbedObs == nil {
+			p.stubbedObs = make(map[int]bool)
+		}
+		p.stubbedObs[k] = true
+		out[idx] = stubToolMsg(messages[idx], meta.desc)
+		newStubs++
+	}
+	if newStubs > 0 && p.logger != nil {
+		p.logger.Log(common.EventPlanningProgress, "Observation aging admitted new stubs", map[string]any{
+			"sticky_count":     stickyCount,
+			"new_stubs":        newStubs,
+			"estimated_tokens": estimateMessageTokens(out),
+		})
 	}
 	return out
 }
@@ -3167,6 +3217,18 @@ func (p *ReActPlanner) isRetriableSubmitError(errorMsg string) bool {
 // generateRetryGuidance provides specific guidance for fixing submit_analysis errors
 func (p *ReActPlanner) generateRetryGuidance(step Step) string {
 	errorLower := strings.ToLower(step.Error)
+
+	if strings.Contains(errorLower, "build verification failed") {
+		// The gate rejection already carries the verbatim build evidence in
+		// step.Error/Observation — the retry must FIX THE CODE, not reshape
+		// the payload. The generic required-fields fallback below actively
+		// misleads here.
+		return `
+🔄 RETRY INSTRUCTION: Build verification failed on your changes — the errors are shown verbatim above.
+
+1. Fix exactly those errors in the code (file_view the failing locations, then replace). Iterate on your CURRENT changes — do not start over and do not revert unrelated work.
+2. Then call submit_analysis again with your fields updated only where the fix changed them (files_modified, execution_summary). Do not restate or reshape the rest of the payload.`
+	}
 
 	if strings.Contains(errorLower, "title is required") || strings.Contains(errorLower, "missing analysis title") {
 		return `

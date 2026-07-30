@@ -83,6 +83,7 @@ RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     aws-cli \
     python3 \
     py3-pip \
+    py3-pyflakes \
     bash
 
 # Install Google Cloud SDK

@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -221,8 +222,17 @@ func main() {
 	go toolscore.StartIntegrationKBSync(syncCtx)
 	slog.Info("main: started integration KB sync background thread")
 
-	// Clean up stale workspace pods on startup
+	// Clean up stale workspace pods on startup, and keep sweeping periodically:
+	// the lazy-create path never re-checks a healthy pod's image, so without
+	// this a long-lived workspace pod serves a stale code-agent image
+	// indefinitely (no failure ever routes it through CreateWorkspace).
 	go workspace.CleanupStaleWorkspaces(syncCtx)
+	if err := common.NewLeaderIntervalJob("workspace_stale_sweep", func() error {
+		workspace.CleanupStaleWorkspaces(syncCtx)
+		return nil
+	}, 5*time.Minute); err != nil {
+		slog.Warn("main: failed to register workspace stale sweep job", "error", err)
+	}
 
 	// Periodically delete never-used and stale long-term memories.
 	go core.StartMemoryTTLCleanup(syncCtx)

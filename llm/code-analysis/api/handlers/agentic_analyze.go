@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"nudgebee/code-analysis-agent/agents"
 	"nudgebee/code-analysis-agent/common"
@@ -104,8 +105,14 @@ type AgenticAnalyzeRequest struct {
 	// Mode controls whether the agent is allowed to mutate code. "explore"
 	// (default) is read-only Q&A / RCA; "fix" enables the CodeFixerAgent and
 	// PR creation. When unset, RaisePR is used as a back-compat fallback.
-	Mode             string `json:"mode,omitempty"`
-	RaisePR          bool   `json:"raise_pr,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+	RaisePR bool   `json:"raise_pr,omitempty"`
+	// BaseDiff is an optional unified diff previously produced for this SAME
+	// fix (e.g. an earlier propose-mode run's git_diff). The fix pipeline
+	// verifies it against the current code and adapts it instead of
+	// re-deriving the fix from scratch. May arrive truncated; treated as
+	// authoritative intent, never blindly applied.
+	BaseDiff         string `json:"base_diff,omitempty"`
 	EventId          string `json:"event_id,omitempty"`
 	RecommendationId string `json:"recommendation_id,omitempty"`
 	// WorkflowId is the originating workflow definition id. When set, the PR
@@ -300,8 +307,65 @@ type TokenUsage struct {
 	CompletionTokens    int    `json:"completion_tokens"`
 	TotalTokens         int    `json:"total_tokens"`
 	CachedContentTokens int    `json:"cached_content_tokens"`
+	ThinkingTokens      int    `json:"thinking_tokens"`
 	Model               string `json:"model"`
 	Provider            string `json:"provider"`
+	// Calls carries one record per LLM API call so the consumer can price
+	// each call at its own long-context tier — pricing the run aggregate
+	// tiers nearly every run into Gemini's >200K surcharge (see llm-server
+	// recordCodeAnalysisTokenUsage). Omitted when the client was shared and
+	// the slice cannot be attributed to this request alone.
+	Calls        []llm.TokenUsageCall `json:"calls,omitempty"`
+	CallsDropped int                  `json:"calls_dropped,omitempty"`
+}
+
+// collectTokenUsage assembles the response token usage from the run client:
+// the aggregate as a delta from the pre-analysis snapshot, plus the per-call
+// records. Returns nil when nothing was spent.
+func collectTokenUsage(client *llm.Client, tokensBefore *llm.TokenUsage, logger *common.Logger) *TokenUsage {
+	if client == nil {
+		return nil
+	}
+	tokensAfter := client.SnapshotTokenUsage()
+	delta := llm.TokenUsageDelta(tokensBefore, tokensAfter)
+	if delta.TotalTokens <= 0 {
+		return nil
+	}
+	tu := &TokenUsage{
+		PromptTokens:        delta.PromptTokens,
+		CompletionTokens:    delta.CompletionTokens,
+		TotalTokens:         delta.TotalTokens,
+		CachedContentTokens: delta.CachedContentTokens,
+		ThinkingTokens:      delta.ThinkingTokens,
+		Model:               delta.Model,
+		Provider:            delta.Provider,
+	}
+	// Per-call records are attributable to this request only when the client
+	// started this request at zero (fresh per-request client — the normal
+	// case). A non-zero snapshot means a shared client whose slice mixes
+	// requests: omit calls so the consumer falls back to the aggregate row
+	// rather than double-counting.
+	if tokensBefore == nil || tokensBefore.TotalTokens == 0 {
+		tu.Calls, tu.CallsDropped = client.SnapshotCalls()
+	} else if logger != nil {
+		logger.Log(common.EventAnalysisComplete, "Shared LLM client detected — omitting per-call usage records", map[string]any{
+			"tokens_before": tokensBefore.TotalTokens,
+		})
+	}
+	if logger != nil {
+		logger.Log(common.EventAnalysisComplete, "Token usage collected for final response", map[string]any{
+			"total_tokens":          delta.TotalTokens,
+			"prompt_tokens":         delta.PromptTokens,
+			"completion_tokens":     delta.CompletionTokens,
+			"cached_content_tokens": delta.CachedContentTokens,
+			"thinking_tokens":       delta.ThinkingTokens,
+			"call_records":          len(tu.Calls),
+			"calls_dropped":         tu.CallsDropped,
+			"model":                 delta.Model,
+			"provider":              delta.Provider,
+		})
+	}
+	return tu
 }
 
 type ToolInvocation struct {
@@ -519,7 +583,7 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 
 	// PR followup mode — route to PRFollowupAgent instead of orchestrator
 	if req.Followup && req.PRURL != "" {
-		return ah.performFollowupAnalysis(ctx, cfg, client, req, logger, resolvedCreds)
+		return ah.performFollowupAnalysis(ctx, cfg, client, tokensBefore, req, logger, resolvedCreds)
 	}
 
 	// Configure all agents with the logger
@@ -626,6 +690,7 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 		EnableQueryRefinement: true,
 		Mode:                  req.Mode,
 		RaisePR:               req.RaisePR,
+		BaseDiff:              req.BaseDiff,
 		EventId:               req.EventId,
 		RecommendationId:      req.RecommendationId,
 		Skills:                req.Skills,
@@ -760,32 +825,9 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 	logger.AnalysisComplete(agentResponse, len(toolInvocations))
 	logger.FinalAnswer(agentResponse, "agent")
 
-	// Collect per-request token usage by computing delta from the pre-analysis snapshot.
-	// For a fresh per-request client the delta equals the total; for the shared
-	// default client it isolates THIS analysis's contribution.
-	var tokenUsage *TokenUsage
-	if client != nil {
-		tokensAfter := client.SnapshotTokenUsage()
-		delta := llm.TokenUsageDelta(tokensBefore, tokensAfter)
-		if delta.TotalTokens > 0 {
-			tokenUsage = &TokenUsage{
-				PromptTokens:        delta.PromptTokens,
-				CompletionTokens:    delta.CompletionTokens,
-				TotalTokens:         delta.TotalTokens,
-				CachedContentTokens: delta.CachedContentTokens,
-				Model:               delta.Model,
-				Provider:            delta.Provider,
-			}
-			logger.Log(common.EventAnalysisComplete, "Token usage collected for final response", map[string]any{
-				"total_tokens":          delta.TotalTokens,
-				"prompt_tokens":         delta.PromptTokens,
-				"completion_tokens":     delta.CompletionTokens,
-				"cached_content_tokens": delta.CachedContentTokens,
-				"model":                 delta.Model,
-				"provider":              delta.Provider,
-			})
-		}
-	}
+	// Collect per-request token usage (aggregate delta + per-call records) from
+	// the pre-analysis snapshot.
+	tokenUsage := collectTokenUsage(client, tokensBefore, logger)
 
 	response := &AgenticAnalyzeResponse{
 		Success:         true,
@@ -1300,6 +1342,18 @@ func (ah *AgenticAnalyzeHandler) normalizeAndValidateRequest(req *AgenticAnalyze
 		log.Printf("WARN: Request has empty logs - analysis will be code-only (tenant=%s, repo=%s)", req.Tenant, req.GitRepository.URL)
 	}
 
+	// Cap the base diff; never reject — a truncated or malformed diff still
+	// works as a free-form hint the prompts label accordingly. Back the cut
+	// off to a rune boundary so a multi-byte character is never split.
+	const maxBaseDiffBytes = 128 * 1024
+	if len(req.BaseDiff) > maxBaseDiffBytes {
+		cut := maxBaseDiffBytes
+		for cut > 0 && !utf8.RuneStart(req.BaseDiff[cut]) {
+			cut--
+		}
+		req.BaseDiff = req.BaseDiff[:cut] + "\n[base_diff truncated]"
+	}
+
 	return nil
 }
 
@@ -1759,7 +1813,7 @@ type ToolTrackable interface {
 
 // performFollowupAnalysis handles PR followup mode — routes to PRFollowupAgent
 // to address CI failures and review comments on existing PRs/MRs.
-func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cfg *config.Config, client *llm.Client, req AgenticAnalyzeRequest, logger *common.Logger, resolvedCreds *credentials.ResolvedCredentials) (*AgenticAnalyzeResponse, error) {
+func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cfg *config.Config, client *llm.Client, tokensBefore *llm.TokenUsage, req AgenticAnalyzeRequest, logger *common.Logger, resolvedCreds *credentials.ResolvedCredentials) (*AgenticAnalyzeResponse, error) {
 	startTime := time.Now()
 
 	prNumber, err := agents.ParsePRNumber(req.PRURL)
@@ -1897,5 +1951,8 @@ func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cf
 			URL:    req.GitRepository.URL,
 			Branch: branch,
 		},
+		// Followup runs previously reported no usage at all — every followup
+		// looked free in llm_conversation_token_usage.
+		TokenUsage: collectTokenUsage(client, tokensBefore, logger),
 	}, nil
 }

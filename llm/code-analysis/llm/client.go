@@ -27,11 +27,16 @@ type Client struct {
 	config      *config.Config
 	logger      *common.Logger
 	tokenUsage  *TokenUsage
-	tokenMu     sync.Mutex // protects tokenUsage
+	tokenMu     sync.Mutex // protects tokenUsage, calls, callsDropped
 	// usageParent, when set, receives a copy of every usage delta so a derived
 	// per-role client's spend still lands in the run client's cumulative totals
 	// (the analysis handler snapshots those for the final response and billing).
 	usageParent *Client
+	// calls retains one record per LLM API call so billing can be priced
+	// per call (Gemini's >200K long-context surcharge applies per request —
+	// pricing a run's aggregate would tier almost every run into it).
+	calls        []TokenUsageCall
+	callsDropped int
 }
 
 type TokenUsage struct {
@@ -39,9 +44,32 @@ type TokenUsage struct {
 	CompletionTokens    int    `json:"completion_tokens"`
 	TotalTokens         int    `json:"total_tokens"`
 	CachedContentTokens int    `json:"cached_content_tokens"`
+	ThinkingTokens      int    `json:"thinking_tokens"`
 	Model               string `json:"model"`
 	Provider            string `json:"provider"`
 }
+
+// TokenUsageCall is one LLM API call's usage, stamped with the model/provider
+// of the client that made the call — tier clients (router/fixer/review) differ
+// from the run model, and per-call attribution must keep the real one.
+type TokenUsageCall struct {
+	PromptTokens        int     `json:"prompt_tokens"`
+	CompletionTokens    int     `json:"completion_tokens"`
+	TotalTokens         int     `json:"total_tokens"`
+	CachedContentTokens int     `json:"cached_content_tokens,omitempty"`
+	ThinkingTokens      int     `json:"thinking_tokens,omitempty"`
+	LatencySeconds      float64 `json:"latency_seconds,omitempty"`
+	Model               string  `json:"model"`
+	Provider            string  `json:"provider"`
+	// Estimated marks char/4 fallback numbers (non-genai providers) as opposed
+	// to provider-reported usage.
+	Estimated bool `json:"estimated,omitempty"`
+}
+
+// maxCallRecords bounds the per-run call slice; runs are ≤ ~150 calls, the cap
+// is a defensive backstop. Oldest records are dropped and counted so the
+// consumer can reconcile against the aggregate.
+const maxCallRecords = 1000
 
 type Provider string
 
@@ -167,6 +195,44 @@ func isTransientError(err error) bool {
 	return false
 }
 
+// NewUsageRecorder returns a Client with no provider backend — only the
+// usage-recording plumbing works. For tests of usage collection outside this
+// package; any generation call on it fails with "not initialized".
+func NewUsageRecorder(model, provider string) *Client {
+	cfg := &config.Config{}
+	cfg.LLM.Model = model
+	cfg.LLM.Provider = provider
+	return &Client{config: cfg}
+}
+
+// estimateUsage char/4-estimates prompt and completion tokens for providers
+// whose responses carry no usage metadata (langchaingo paths). Counts text,
+// tool-call arguments AND tool observations — in a ReAct conversation the
+// observations dominate the prompt, so text-only counting severely
+// undercounts (mirrors planners' estimateMessageTokens).
+func estimateUsage(messages []llms.MessageContent, resp *llms.ContentResponse) (prompt, completion int) {
+	var totalInputLength int
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			switch p := part.(type) {
+			case llms.TextContent:
+				totalInputLength += len(p.Text)
+			case llms.ToolCall:
+				if p.FunctionCall != nil {
+					totalInputLength += len(p.FunctionCall.Name) + len(p.FunctionCall.Arguments)
+				}
+			case llms.ToolCallResponse:
+				totalInputLength += len(p.Content)
+			}
+		}
+	}
+	prompt = totalInputLength / 4
+	if resp != nil && len(resp.Choices) > 0 {
+		completion = len(resp.Choices[0].Content) / 4
+	}
+	return prompt, completion
+}
+
 // GenerateContentNoRetry performs a single LLM call with no transient-error
 // retry loop. Use this for best-effort, non-fatal calls where a 30+ second
 // retry chain would waste more time than retrying the whole task. The
@@ -181,11 +247,19 @@ func (c *Client) GenerateContentNoRetry(ctx context.Context, messages []llms.Mes
 		llms.WithTemperature(0.1),
 	}
 	opts = append(opts, options...)
+	callStart := time.Now()
 	resp, err := c.llm.GenerateContent(ctx, messages, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("LLM generation (no-retry) failed (provider=%s, model=%s): %w",
 			c.config.LLM.Provider, c.config.LLM.Model, err)
 	}
+	prompt, completion := estimateUsage(messages, resp)
+	c.RecordCallUsage(TokenUsageCall{
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		LatencySeconds:   time.Since(callStart).Seconds(),
+		Estimated:        true,
+	})
 	return resp, nil
 }
 
@@ -216,8 +290,10 @@ func (c *Client) GenerateContent(ctx context.Context, messages []llms.MessageCon
 
 	var response *llms.ContentResponse
 	var err error
+	var attemptStart time.Time
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		attemptStart = time.Now()
 		response, err = c.llm.GenerateContent(ctx, messages, opts...)
 
 		if err == nil {
@@ -283,26 +359,13 @@ func (c *Client) GenerateContent(ctx context.Context, messages []llms.MessageCon
 
 	// Track comprehensive usage (langchaingo doesn't expose detailed token usage yet)
 	// For now, we'll estimate based on request and response content
-
-	// Estimate prompt tokens from input messages
-	var totalInputLength int
-	for _, msg := range messages {
-		for _, part := range msg.Parts {
-			if textPart, ok := part.(llms.TextContent); ok {
-				totalInputLength += len(textPart.Text)
-			}
-		}
-	}
-	estimatedPromptTokens := totalInputLength / 4
-
-	// Estimate completion tokens from response content
-	var estimatedCompletionTokens int
-	if len(response.Choices) > 0 {
-		estimatedCompletionTokens = len(response.Choices[0].Content) / 4
-	}
-
-	// Update cumulative usage under lock
-	c.addTokenUsage(estimatedPromptTokens, estimatedCompletionTokens, 0, 0)
+	estimatedPromptTokens, estimatedCompletionTokens := estimateUsage(messages, response)
+	c.RecordCallUsage(TokenUsageCall{
+		PromptTokens:     estimatedPromptTokens,
+		CompletionTokens: estimatedCompletionTokens,
+		LatencySeconds:   time.Since(attemptStart).Seconds(),
+		Estimated:        true,
+	})
 
 	if c.logger != nil {
 		snapshot := c.SnapshotTokenUsage()
@@ -346,6 +409,7 @@ func (c *Client) SnapshotTokenUsage() *TokenUsage {
 		CompletionTokens:    c.tokenUsage.CompletionTokens,
 		TotalTokens:         c.tokenUsage.TotalTokens,
 		CachedContentTokens: c.tokenUsage.CachedContentTokens,
+		ThinkingTokens:      c.tokenUsage.ThinkingTokens,
 		Model:               c.config.LLM.Model,
 		Provider:            c.config.LLM.Provider,
 	}
@@ -359,7 +423,7 @@ func (c *Client) ShareUsageWith(parent *Client) {
 		return
 	}
 	// Refuse any link that would close a cycle (directly or through the chain):
-	// addTokenUsage recurses through usageParent, and a cycle would overflow the
+	// appendCall recurses through usageParent, and a cycle would overflow the
 	// stack. Locks are taken one node at a time, never nested — no deadlock.
 	for curr := parent; curr != nil; {
 		if curr == c {
@@ -375,32 +439,79 @@ func (c *Client) ShareUsageWith(parent *Client) {
 	c.usageParent = parent
 }
 
-// addTokenUsage adds token counts to the cumulative total under lock.
-func (c *Client) addTokenUsage(promptTokens, completionTokens, totalTokens, cachedTokens int) {
+// RecordCallUsage is the single entry point for usage capture: it stamps
+// attribution from the CALLING client's config (unless already set), then
+// appends the record locally and up the usageParent chain, also accumulating
+// the aggregate totals on every node it visits.
+func (c *Client) RecordCallUsage(call TokenUsageCall) {
+	if call.Model == "" {
+		call.Model = c.config.LLM.Model
+	}
+	if call.Provider == "" {
+		call.Provider = c.config.LLM.Provider
+	}
+	if call.TotalTokens == 0 {
+		call.TotalTokens = call.PromptTokens + call.CompletionTokens + call.ThinkingTokens
+	}
+	c.appendCall(call)
+}
+
+// appendCall accumulates the aggregate and retains the record under lock, then
+// recurses up the parent chain (record already stamped; each node applies its
+// own cap independently). Locks are taken one node at a time, never nested.
+func (c *Client) appendCall(call TokenUsageCall) {
 	c.tokenMu.Lock()
 	if c.tokenUsage == nil {
 		c.tokenUsage = &TokenUsage{}
 	}
-	c.tokenUsage.PromptTokens += promptTokens
-	c.tokenUsage.CompletionTokens += completionTokens
-	if totalTokens > 0 {
-		c.tokenUsage.TotalTokens += totalTokens
+	c.tokenUsage.PromptTokens += call.PromptTokens
+	c.tokenUsage.CompletionTokens += call.CompletionTokens
+	c.tokenUsage.TotalTokens += call.TotalTokens
+	c.tokenUsage.CachedContentTokens += call.CachedContentTokens
+	c.tokenUsage.ThinkingTokens += call.ThinkingTokens
+	if len(c.calls) >= maxCallRecords {
+		copy(c.calls, c.calls[1:])
+		c.calls[len(c.calls)-1] = call
+		c.callsDropped++
 	} else {
-		c.tokenUsage.TotalTokens += promptTokens + completionTokens
+		c.calls = append(c.calls, call)
 	}
-	c.tokenUsage.CachedContentTokens += cachedTokens
 	parent := c.usageParent
 	c.tokenMu.Unlock()
 
 	if parent != nil {
-		parent.addTokenUsage(promptTokens, completionTokens, totalTokens, cachedTokens)
+		parent.appendCall(call)
 	}
+}
+
+// SnapshotCalls returns a copy of the retained per-call records plus the
+// number dropped by the cap.
+func (c *Client) SnapshotCalls() ([]TokenUsageCall, int) {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	out := make([]TokenUsageCall, len(c.calls))
+	copy(out, c.calls)
+	return out, c.callsDropped
+}
+
+// addTokenUsage adds token counts to the cumulative total. Kept as a thin
+// wrapper over RecordCallUsage so legacy call sites and tests also produce
+// per-call records.
+func (c *Client) addTokenUsage(promptTokens, completionTokens, totalTokens, cachedTokens int) {
+	c.RecordCallUsage(TokenUsageCall{
+		PromptTokens:        promptTokens,
+		CompletionTokens:    completionTokens,
+		TotalTokens:         totalTokens,
+		CachedContentTokens: cachedTokens,
+	})
 }
 
 func (c *Client) ResetTokenUsage() {
 	c.tokenMu.Lock()
 	defer c.tokenMu.Unlock()
 	c.tokenUsage = &TokenUsage{}
+	c.calls = nil
+	c.callsDropped = 0
 }
 
 // TokenUsageDelta computes the difference between the current usage and a previous snapshot.
@@ -416,6 +527,7 @@ func TokenUsageDelta(before, after *TokenUsage) *TokenUsage {
 		CompletionTokens:    after.CompletionTokens - before.CompletionTokens,
 		TotalTokens:         after.TotalTokens - before.TotalTokens,
 		CachedContentTokens: after.CachedContentTokens - before.CachedContentTokens,
+		ThinkingTokens:      after.ThinkingTokens - before.ThinkingTokens,
 		Model:               after.Model,
 		Provider:            after.Provider,
 	}

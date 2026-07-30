@@ -709,7 +709,11 @@ func (w *workspaceManager) TerminateWorkspace(ctx *security.RequestContext, acco
 }
 
 // CleanupStaleWorkspaces deletes workspace pods running an outdated image.
-// Called on startup to ensure all workspaces use the current code-agent image.
+// Called on startup AND on a periodic leader schedule: the lazy-create path is
+// optimistic (a healthy pod's image is never re-checked), so without the
+// periodic sweep a long-lived pod keeps serving a stale image until its first
+// API failure — observed to delay code-analysis fixes by nearly two weeks.
+// Deleted pods are recreated lazily by CreateWorkspace on next use.
 func CleanupStaleWorkspaces(ctx context.Context) {
 	if !config.Config.LlmServerWorkspaceEnabled {
 		return
@@ -747,9 +751,12 @@ func CleanupStaleWorkspaces(ctx context.Context) {
 		if podImage == "" || podImage != currentImage {
 			slog.Info("workspace: deleting stale workspace pod", "pod", pod.Name, "pod_image", podImage, "current_image", currentImage)
 			gracePeriod := int64(0)
-			_ = clientset.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{
+			if err := clientset.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{
 				GracePeriodSeconds: &gracePeriod,
-			})
+			}); err != nil && !errors.IsNotFound(err) {
+				slog.Warn("workspace: failed to delete stale workspace pod; it keeps serving the old image until the next sweep",
+					"pod", pod.Name, "error", err)
+			}
 		}
 	}
 }

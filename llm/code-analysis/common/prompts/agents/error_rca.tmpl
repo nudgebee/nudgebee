@@ -39,6 +39,20 @@ PROHIBITED:
 - If a real defect exists, set `requires_fix=true` and populate `implementation_instructions` so CodeFixerAgent can apply the change.
 - ALREADY-PRESENT CHECK (do this before proposing any change): verify the intended change is not **already present in the repository in any equivalent form** — existing code, a configuration that already covers it, or a prior change already merged (search commits/history and the relevant files, don't assume). If an equivalent already exists, the correct outcome is a NO-OP: set `requires_fix=false` and `description` MUST explain what already satisfies the request and where you found it (file / symbol / prior change). Do NOT author a duplicate or near-duplicate of something that already exists.
 - If after investigation no code change is warranted, set `requires_fix=false` and explain in `description`. Do NOT invent a fix.
+{{if .BaseDiff}}
+
+<proposed-change>
+A fix for this exact request was already drafted earlier (possibly from a slightly older snapshot of the code). Your job is to VERIFY it against the current code and adapt it — NOT to re-derive the fix from scratch.
+- Open ONLY the files the diff touches; confirm each hunk's surrounding context still matches.
+- If the code has drifted, adapt the change to achieve the same intent.
+- Emit implementation_instructions that apply the (adapted) diff. Keep exploration minimal.
+- The diff may be truncated; treat it as authoritative intent, not a patch to apply blindly.
+
+```diff
+{{.BaseDiff}}
+```
+</proposed-change>
+{{end}}
 {{end}}
 </mode>
 

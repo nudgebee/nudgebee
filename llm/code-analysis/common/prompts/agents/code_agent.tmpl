@@ -50,6 +50,20 @@ PROHIBITED:
 - If a real defect or change target exists, set `requires_fix=true` and provide `implementation_instructions` so CodeFixerAgent can apply it.
 - If after investigation you conclude no code change is warranted (e.g., the user's premise is wrong), set `requires_fix=false` and explain in `description`. Do NOT invent a fix to satisfy the request.
 - **SURGICAL CHANGES**: Only change lines directly required by the fix. Do NOT modify adjacent code, improve unrelated logic, or clean up surrounding code.
+{{if .BaseDiff}}
+
+<proposed-change>
+A fix for this exact request was already drafted earlier (possibly from a slightly older snapshot of the code). Your job is to VERIFY it against the current code and adapt it — NOT to re-derive the fix from scratch.
+- Open ONLY the files the diff touches; confirm each hunk's surrounding context still matches.
+- If the code has drifted, adapt the change to achieve the same intent.
+- Emit implementation_instructions that apply the (adapted) diff. Keep exploration minimal.
+- The diff may be truncated; treat it as authoritative intent, not a patch to apply blindly.
+
+```diff
+{{.BaseDiff}}
+```
+</proposed-change>
+{{end}}
 {{end}}
 </mode>
 

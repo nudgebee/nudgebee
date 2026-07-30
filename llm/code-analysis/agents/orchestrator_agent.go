@@ -49,8 +49,11 @@ type NBAgentRequest struct {
 	EnableQueryRefinement bool           `json:"enable_query_refinement"`
 	Mode                  string         `json:"mode,omitempty"`
 	RaisePR               bool           `json:"raise_pr,omitempty"`
-	EventId               string         `json:"event_id,omitempty"`
-	RecommendationId      string         `json:"recommendation_id,omitempty"`
+	// BaseDiff is an optional unified diff previously produced for this same
+	// fix; the fix pipeline verifies and adapts it instead of re-deriving.
+	BaseDiff         string `json:"base_diff,omitempty"`
+	EventId          string `json:"event_id,omitempty"`
+	RecommendationId string `json:"recommendation_id,omitempty"`
 	// Skills carries operator-authored skills mapped to the code agent, already
 	// rendered as a <skills> block by llm-server. code-analysis has no DB of its
 	// own, so skills are resolved upstream and forwarded here for prompt injection.
@@ -489,6 +492,13 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 				"observation_length": len(rcaObservations),
 			})
 		}
+	}
+
+	// A prior diff for this same fix (propose-mode rerun) goes to the fixer as
+	// an apply-and-adapt base — the specialist prompt carries it too, but the
+	// fixer needs the hunks verbatim to edit against.
+	if sessionCtx.BaseDiff != "" {
+		factsData["_base_diff"] = sessionCtx.BaseDiff
 	}
 
 	if filePath, ok := factsData["file_path"].(string); ok && filePath != "" {
@@ -955,6 +965,7 @@ func (a *OrchestratorAgent) createSessionContext(request NBAgentRequest) (*sessi
 		AccountID:        accountID,
 		BuildConfig:      buildConfig,
 		Mode:             request.EffectiveMode(),
+		BaseDiff:         request.BaseDiff,
 		SkillsContext:    request.Skills,
 		RunMemory:        planners.NewRunMemory(), // shared across all phases of this run; not persisted
 	}, nil

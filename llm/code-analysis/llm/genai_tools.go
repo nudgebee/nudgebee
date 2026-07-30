@@ -278,6 +278,7 @@ func (c *Client) GenerateStructuredJSON(ctx context.Context, messages []llms.Mes
 	if systemInstruction != nil {
 		cfg.SystemInstruction = systemInstruction
 	}
+	callStart := time.Now()
 	resp, err := c.genaiClient.Models.GenerateContent(ctx, c.config.LLM.Model, history, cfg)
 	if err != nil {
 		return "", fmt.Errorf("structured generation failed (model=%s): %w", c.config.LLM.Model, err)
@@ -286,12 +287,14 @@ func (c *Client) GenerateStructuredJSON(ctx context.Context, messages []llms.Mes
 		return "", fmt.Errorf("structured generation returned no candidates")
 	}
 	if resp.UsageMetadata != nil {
-		c.addTokenUsage(
-			int(resp.UsageMetadata.PromptTokenCount),
-			int(resp.UsageMetadata.CandidatesTokenCount),
-			int(resp.UsageMetadata.TotalTokenCount),
-			int(resp.UsageMetadata.CachedContentTokenCount),
-		)
+		c.RecordCallUsage(TokenUsageCall{
+			PromptTokens:        int(resp.UsageMetadata.PromptTokenCount),
+			CompletionTokens:    int(resp.UsageMetadata.CandidatesTokenCount),
+			TotalTokens:         int(resp.UsageMetadata.TotalTokenCount),
+			CachedContentTokens: int(resp.UsageMetadata.CachedContentTokenCount),
+			ThinkingTokens:      int(resp.UsageMetadata.ThoughtsTokenCount),
+			LatencySeconds:      time.Since(callStart).Seconds(),
+		})
 	}
 	var b strings.Builder
 	for _, part := range resp.Candidates[0].Content.Parts {
@@ -412,7 +415,9 @@ func (c *Client) generateContentWithGenAI(
 	var resp *genai.GenerateContentResponse
 	var err error
 
+	var attemptStart time.Time
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		attemptStart = time.Now()
 		resp, err = c.genaiClient.Models.GenerateContent(ctx, c.config.LLM.Model, history, genaiConfig)
 		if err == nil {
 			break
@@ -466,14 +471,17 @@ func (c *Client) generateContentWithGenAI(
 	// Convert response to langchaingo format
 	contentResp := convertGenAIResponse(resp)
 
-	// Track token usage under lock
+	// Track token usage under lock. Latency covers the successful attempt only
+	// (backoff sleeps excluded) — per-call rows should reflect provider time.
 	if resp.UsageMetadata != nil {
-		c.addTokenUsage(
-			int(resp.UsageMetadata.PromptTokenCount),
-			int(resp.UsageMetadata.CandidatesTokenCount),
-			int(resp.UsageMetadata.TotalTokenCount),
-			int(resp.UsageMetadata.CachedContentTokenCount),
-		)
+		c.RecordCallUsage(TokenUsageCall{
+			PromptTokens:        int(resp.UsageMetadata.PromptTokenCount),
+			CompletionTokens:    int(resp.UsageMetadata.CandidatesTokenCount),
+			TotalTokens:         int(resp.UsageMetadata.TotalTokenCount),
+			CachedContentTokens: int(resp.UsageMetadata.CachedContentTokenCount),
+			ThinkingTokens:      int(resp.UsageMetadata.ThoughtsTokenCount),
+			LatencySeconds:      time.Since(attemptStart).Seconds(),
+		})
 
 		// Per-call token + context-accumulation breakdown. The genai path
 		// captures real per-call usage but historically only the run total was
@@ -491,6 +499,8 @@ func (c *Client) generateContentWithGenAI(
 			fields["cached_content_tokens"] = cached
 			fields["output_tokens"] = int(resp.UsageMetadata.CandidatesTokenCount)
 			fields["total_tokens"] = int(resp.UsageMetadata.TotalTokenCount)
+			fields["thinking_tokens"] = int(resp.UsageMetadata.ThoughtsTokenCount)
+			fields["latency_seconds"] = time.Since(attemptStart).Seconds()
 			fields["fresh_input_tokens"] = pt - cached
 			if pt > 0 {
 				fields["cache_hit_pct"] = 100 * cached / pt

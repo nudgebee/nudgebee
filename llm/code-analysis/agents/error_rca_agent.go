@@ -235,6 +235,7 @@ func (a *ErrorRCAAgent) buildAuditorPrompt(sessionCtx *session.SessionContext) (
 		"Mode":          mode,
 		"IsExploreMode": mode == "explore",
 		"IsFixMode":     mode == "fix",
+		"BaseDiff":      sessionCtx.BaseDiff,
 		"Skills":        sessionCtx.SkillsContext,
 	}
 

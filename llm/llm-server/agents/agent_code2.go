@@ -118,13 +118,17 @@ JSON format (all fields except 'query' are optional):
   "target_branch": "prod",
   "namespace": "default",
   "workload": "my-deployment",
-  "raise_pr": false
+  "mode": "explore",
+  "raise_pr": false,
+  "base_diff": ""
 }
 
 Plain text format:
 "Analyze why the service is crashing and create a PR to fix it"
 
-The 'query' field (or plain text) is REQUIRED and describes the analytical task. Use this when simple shell commands are insufficient for diagnosing an issue. Set 'target_branch' to the branch the PR should be opened against (e.g. 'prod', 'main', 'release/1.x'); when omitted, the repository default branch is used.`
+The 'query' field (or plain text) is REQUIRED and describes the analytical task. Use this when simple shell commands are insufficient for diagnosing an issue. Set 'target_branch' to the branch the PR should be opened against (e.g. 'prod', 'main', 'release/1.x'); when omitted, the repository default branch is used.
+
+Each call runs a full (expensive) analysis — decide the intended outcome first and make ONE call: question → 'mode': 'explore' (default); code change without a PR → 'mode': 'fix' with 'raise_pr': false (implements the fix and returns its 'git_diff', no PR); code change with a PR → 'raise_pr': true. When a previous call in this conversation already returned a 'git_diff' for the same fix and a PR is now wanted, pass that diff in 'base_diff' with 'raise_pr': true — the pipeline verifies and re-applies it instead of re-deriving the fix.`
 	toolOutput := "Structured JSON containing: 'root_cause' (summary), 'affected_files' (array with paths/line numbers), 'suggested_fixes' (remediation steps), 'analysis_details' (comprehensive explanation), 'source_details' (repo and commit), and optional 'pr_url' if raise_pr was enabled."
 
 	codeAnalyzerFactory := func(accountId string) (core.NBAgent, error) {
@@ -794,6 +798,12 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		analyzeRequest["agent_id"] = request.Agent
 	}
 
+	// Cap mirrors the observation limit — the parent can never legitimately
+	// hold a bigger diff than it was shown.
+	if baseDiff := strings.TrimSpace(request.BaseDiff); baseDiff != "" {
+		analyzeRequest["base_diff"] = core.TruncateMiddle(baseDiff, 48*1024, 16*1024)
+	}
+
 	if skillsBlock != "" {
 		analyzeRequest["skills"] = skillsBlock
 	}
@@ -984,6 +994,25 @@ type codeAnalysisTokenUsage struct {
 	ThinkingTokens      int // Gemini ThoughtsTokenCount — billed at output rate, otherwise silently $0
 	Model               string
 	Provider            string
+	// Calls, when present, carries one record per LLM API call of the run so
+	// each row is priced at its own long-context tier — pricing the run
+	// aggregate (1M+ prompt tokens summed over ~50 calls) tiers nearly every
+	// run into Gemini's >200K surcharge and ~doubles reported cost.
+	Calls        []codeAnalysisTokenUsageCall
+	CallsDropped int
+}
+
+// codeAnalysisTokenUsageCall is one LLM API call's usage within a run.
+type codeAnalysisTokenUsageCall struct {
+	PromptTokens        int
+	CompletionTokens    int
+	TotalTokens         int
+	CachedContentTokens int
+	CacheCreationTokens int
+	ThinkingTokens      int
+	LatencySeconds      float64
+	Model               string
+	Provider            string
 }
 
 // codeAnalysisResult bundles the agent response with optional token usage data.
@@ -1027,7 +1056,55 @@ func parseTokenUsageMap(tuRaw map[string]any) *codeAnalysisTokenUsage {
 	if v, ok := tuRaw["provider"].(string); ok {
 		tu.Provider = v
 	}
+	if rawCalls, ok := tuRaw["calls"].([]any); ok {
+		for _, rc := range rawCalls {
+			cm, ok := rc.(map[string]any)
+			if !ok {
+				continue
+			}
+			tu.Calls = append(tu.Calls, parseTokenUsageCallMap(cm))
+		}
+	}
+	if v, ok := tuRaw["calls_dropped"].(float64); ok {
+		tu.CallsDropped = int(v)
+	}
 	return tu
+}
+
+// parseTokenUsageCallMap extracts one per-call usage record. Same key set as
+// the aggregate plus latency_seconds; missing/mistyped fields default to zero.
+func parseTokenUsageCallMap(cm map[string]any) codeAnalysisTokenUsageCall {
+	call := codeAnalysisTokenUsageCall{}
+	if v, ok := cm["prompt_tokens"].(float64); ok {
+		call.PromptTokens = int(v)
+	}
+	if v, ok := cm["completion_tokens"].(float64); ok {
+		call.CompletionTokens = int(v)
+	}
+	if v, ok := cm["total_tokens"].(float64); ok {
+		call.TotalTokens = int(v)
+	}
+	if v, ok := cm["cached_content_tokens"].(float64); ok {
+		call.CachedContentTokens = int(v)
+	}
+	if v, ok := cm["cache_creation_tokens"].(float64); ok {
+		call.CacheCreationTokens = int(v)
+	}
+	if v, ok := cm["thinking_tokens"].(float64); ok {
+		call.ThinkingTokens = int(v)
+	} else if v, ok := cm["thoughts_token_count"].(float64); ok {
+		call.ThinkingTokens = int(v)
+	}
+	if v, ok := cm["latency_seconds"].(float64); ok {
+		call.LatencySeconds = v
+	}
+	if v, ok := cm["model"].(string); ok {
+		call.Model = v
+	}
+	if v, ok := cm["provider"].(string); ok {
+		call.Provider = v
+	}
+	return call
 }
 
 // codeAnalysisThinkingModelPattern matches Gemini families that produce
@@ -1269,9 +1346,16 @@ func asJSONString(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 
-// recordCodeAnalysisTokenUsage inserts a token usage record for code-analysis work.
+// recordCodeAnalysisTokenUsage inserts token usage record(s) for code-analysis
+// work. When the service reported per-call records, one row is inserted per
+// LLM call so each is priced at its own long-context tier — pricing the run
+// aggregate (1M+ prompt tokens summed across ~50 calls) trips Gemini's >200K
+// surcharge on every component and ~doubles reported cost (the per-row
+// mandate is documented on GetConversationTokenUsage). Without per-call
+// records (older pod image), the previous single-aggregate-row behavior is
+// kept unchanged.
 func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTokenUsage, latency float64) {
-	if tu == nil || tu.TotalTokens == 0 {
+	if tu == nil || (tu.TotalTokens == 0 && len(tu.Calls) == 0) {
 		return
 	}
 
@@ -1289,8 +1373,7 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 		agentUUID = &query.AgentId
 	}
 
-	latencyPtr := &latency
-	// Defensive: if the model is in the thinking class but the Python service
+	// Defensive: if the model is in the thinking class but the service
 	// didn't emit `thinking_tokens`, cost will silently undercount by
 	// output_rate × thinking_tokens. Warn so the gap is visible while the
 	// cross-service emission catches up (#30262 sub-item).
@@ -1309,22 +1392,104 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 		return
 	}
 
-	// Cost at insert time — see trackTokenUsage rationale. Nil when the
-	// (provider, model) has no llm_model_pricing entry.
-	nonCachedPromptTokens := tu.PromptTokens - tu.CachedContentTokens
+	if len(tu.Calls) == 0 {
+		latencyPtr := &latency
+		record := buildCodeAnalysisUsageRecord(query, agentUUID, dao, provider, model,
+			tu.PromptTokens, tu.CachedContentTokens, tu.CacheCreationTokens, tu.CompletionTokens, tu.ThinkingTokens, latencyPtr)
+		if err := dao.InsertTokenUsage(record); err != nil {
+			slog.Error("code: failed to insert token usage",
+				"error", err,
+				"conversation_id", query.ConversationId,
+				"message_id", query.MessageId,
+				"account_id", query.AccountId,
+			)
+		}
+		return
+	}
+
+	if tu.CallsDropped > 0 {
+		slog.Warn("code: code-analysis dropped per-call usage records at its cap; a residual row reconciles the difference",
+			"calls_dropped", tu.CallsDropped, "conversation_id", query.ConversationId)
+	}
+
+	// Component sums over inserted calls, to reconcile against the aggregate.
+	var sumPrompt, sumCached, sumCreation, sumCompletion, sumThinking int
+	for i, call := range tu.Calls {
+		if call.PromptTokens == 0 && call.CompletionTokens == 0 && call.ThinkingTokens == 0 {
+			continue
+		}
+		callProvider := call.Provider
+		if callProvider == "" {
+			callProvider = provider
+		}
+		callModel := call.Model
+		if callModel == "" {
+			callModel = model
+		}
+		var latencyPtr *float64
+		if call.LatencySeconds > 0 {
+			l := call.LatencySeconds
+			latencyPtr = &l
+		}
+		record := buildCodeAnalysisUsageRecord(query, agentUUID, dao, callProvider, callModel,
+			call.PromptTokens, call.CachedContentTokens, call.CacheCreationTokens, call.CompletionTokens, call.ThinkingTokens, latencyPtr)
+		err := dao.InsertTokenUsage(record)
+		// The FK retry inside InsertTokenUsage nils record.AgentID when the
+		// agent row is missing — propagate BEFORE the error check (the record
+		// is mutated even when the retry itself fails) so subsequent rows skip
+		// the doomed exec instead of repeating it per call.
+		agentUUID = record.AgentID
+		if err != nil {
+			slog.Error("code: failed to insert per-call token usage",
+				"error", err, "call_index", i,
+				"conversation_id", query.ConversationId,
+				"message_id", query.MessageId,
+			)
+			continue
+		}
+		sumPrompt += call.PromptTokens
+		sumCached += call.CachedContentTokens
+		sumCreation += call.CacheCreationTokens
+		sumCompletion += call.CompletionTokens
+		sumThinking += call.ThinkingTokens
+	}
+
+	// Residual row: only when the aggregate exceeds the recorded calls (cap
+	// drop or version skew) — keeps SUM(rows) == aggregate for billing.
+	resPrompt := max(0, tu.PromptTokens-sumPrompt)
+	resCached := max(0, tu.CachedContentTokens-sumCached)
+	resCreation := max(0, tu.CacheCreationTokens-sumCreation)
+	resCompletion := max(0, tu.CompletionTokens-sumCompletion)
+	resThinking := max(0, tu.ThinkingTokens-sumThinking)
+	if resPrompt > 0 || resCached > 0 || resCreation > 0 || resCompletion > 0 || resThinking > 0 {
+		record := buildCodeAnalysisUsageRecord(query, agentUUID, dao, provider, model,
+			resPrompt, resCached, resCreation, resCompletion, resThinking, nil)
+		if err := dao.InsertTokenUsage(record); err != nil {
+			slog.Error("code: failed to insert residual token usage row",
+				"error", err, "conversation_id", query.ConversationId)
+		}
+	}
+}
+
+// buildCodeAnalysisUsageRecord assembles one llm_conversation_token_usage row
+// with cost computed at insert time from THIS row's own token counts — the
+// long-context tier switch inside GetConversationCost then applies per call,
+// as billed by the provider. cache_ttl_minutes is no longer written — see
+// trackTokenUsage rationale; storage cost lives in llm_cache_lifecycle.
+func buildCodeAnalysisUsageRecord(query core.NBAgentRequest, agentUUID *string, dao core.IConversationDao,
+	provider, model string, promptTokens, cachedTokens, creationTokens, completionTokens, thinkingTokens int,
+	latencySeconds *float64) *core.TokenUsageRecord {
+	nonCachedPromptTokens := promptTokens - cachedTokens
 	if nonCachedPromptTokens < 0 {
 		nonCachedPromptTokens = 0
 	}
 	var costUsd *float64
-	if cost, err := dao.GetConversationCost(provider, model, nonCachedPromptTokens, tu.CachedContentTokens, tu.CacheCreationTokens, tu.CompletionTokens, tu.ThinkingTokens); err == nil {
+	if cost, err := dao.GetConversationCost(provider, model, nonCachedPromptTokens, cachedTokens, creationTokens, completionTokens, thinkingTokens); err == nil {
 		costUsd = &cost
 	} else {
 		slog.Debug("code: no pricing data for cost calc", "provider", provider, "model", model, "error", err)
 	}
 
-	// cache_ttl_minutes is no longer written — see trackTokenUsage rationale.
-	// Storage cost lives in llm_cache_lifecycle; per-call rows hold per-token
-	// costs only.
 	record := &core.TokenUsageRecord{
 		ConversationID:      query.ConversationId,
 		MessageID:           query.MessageId,
@@ -1334,30 +1499,22 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 		UserID:              query.UserId,
 		LLMProvider:         provider,
 		LLMModel:            model,
-		InputTokens:         tu.PromptTokens,
-		OutputTokens:        tu.CompletionTokens,
-		CachedInputTokens:   tu.CachedContentTokens,
-		CacheCreationTokens: tu.CacheCreationTokens,
+		InputTokens:         promptTokens,
+		OutputTokens:        completionTokens,
+		CachedInputTokens:   cachedTokens,
+		CacheCreationTokens: creationTokens,
 		CostUsd:             costUsd,
-		IsCacheHit:          tu.CachedContentTokens > 0,
-		LatencySeconds:      latencyPtr,
+		IsCacheHit:          cachedTokens > 0,
+		LatencySeconds:      latencySeconds,
 		RequestStatus:       "success",
 	}
 	// Thinking tokens stored only when non-zero — distinguishes "model didn't
 	// think" from "service didn't emit it". Mirrors trackTokenUsage:2159-2162.
-	if tu.ThinkingTokens > 0 {
-		tt := tu.ThinkingTokens
+	if thinkingTokens > 0 {
+		tt := thinkingTokens
 		record.ThinkingTokens = &tt
 	}
-
-	if err := dao.InsertTokenUsage(record); err != nil {
-		slog.Error("code: failed to insert token usage",
-			"error", err,
-			"conversation_id", query.ConversationId,
-			"message_id", query.MessageId,
-			"account_id", query.AccountId,
-		)
-	}
+	return record
 }
 
 func newCodeAgent(accountId string) CodeAgent2 {
@@ -1410,6 +1567,7 @@ func (l CodeAgent2) GetSystemPrompt(ctx *security.RequestContext, query core.NBA
 		"If 'raise_pr' is enabled, the system will automatically create a pull request (GitHub) or merge request (GitLab) with the proposed fixes after review.",
 		"You have access to Git repositories (GitHub and GitLab) and can analyze code across multiple languages and frameworks.",
 		"Provide structured analysis results including: root cause summary, affected files/lines, suggested fixes, and reproduction steps if available.",
+		"If an earlier code_analyzer call in this conversation already returned a 'git_diff' for the same fix and a PR is now wanted, call again with 'raise_pr': true and pass that diff in 'base_diff' — the fix pipeline verifies and re-applies it against current code instead of re-deriving the whole fix (a full re-analysis costs hundreds of thousands of tokens).",
 	}
 	constraints := []string{
 		"Requires Git repository access via configured credentials (token or GitHub/GitLab App).",
@@ -1425,7 +1583,7 @@ func (l CodeAgent2) GetSystemPrompt(ctx *security.RequestContext, query core.NBA
 		Constraints:  constraints,
 		Examples:     examples,
 		OutputFormat: "Structured JSON with analysis results, root causes, affected code locations, and optional PR details",
-		Variables:    []string{"query", "errors", "git_repo", "git_commit", "target_branch", "event_id"},
+		Variables:    []string{"query", "errors", "git_repo", "git_commit", "target_branch", "base_diff", "event_id"},
 	}
 }
 
@@ -1441,7 +1599,13 @@ type CodeAgent2Request struct {
 	// Mode explicitly selects "explore" (read-only) or "fix". When set it wins
 	// over RaisePr, enabling "propose" mode (mode=fix, raise_pr=false): generate
 	// and return a diff without opening a PR. Empty → derived from RaisePr.
-	Mode             string `json:"mode"`
+	Mode string `json:"mode"`
+	// BaseDiff is an optional unified diff previously produced for the SAME
+	// fix (e.g. a propose-mode run's git_diff earlier in this conversation).
+	// The fix pipeline verifies it against current code and adapts it instead
+	// of re-deriving the fix from scratch — a "fix then raise PR" sequence
+	// costs a verification pass, not a full second analysis.
+	BaseDiff         string `json:"base_diff"`
 	EventId          string `json:"event_id"`
 	RecommendationId string `json:"recommendation_id"`
 	WorkflowId       string `json:"workflow_id"` // Originating workflow definition id; forwarded so a raised PR links back to the workflow.
@@ -3142,6 +3306,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	logger.Info("code followup: executing via workspace", "account_id", query.AccountId, "pr_url", request.PRURL)
 
 	// POST /analyze — code-analysis returns 202 with analysis_id
+	followupStart := time.Now()
 	respBytes, err := wm.CallAPIOrLazyCreate(ctx, query.AccountId, "POST", "/analyze", nil, analyzeRequest)
 	if err != nil {
 		return core.NBAgentResponse{}, fmt.Errorf("workspace /analyze followup call failed: %w", err)
@@ -3150,12 +3315,14 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	var asyncResp map[string]any
 	if err := json.Unmarshal(respBytes, &asyncResp); err != nil {
 		result := extractAgentResponseWithTokenUsage(respBytes)
+		go recordCodeAnalysisTokenUsage(query, result.TokenUsage, time.Since(followupStart).Seconds())
 		return core.NBAgentResponse{Response: []string{result.AgentResponse}}, nil
 	}
 
 	// Sync response (backward compat)
 	if _, hasResult := asyncResp["agent_response"]; hasResult {
 		result := extractAgentResponseWithTokenUsage(respBytes)
+		go recordCodeAnalysisTokenUsage(query, result.TokenUsage, time.Since(followupStart).Seconds())
 		return core.NBAgentResponse{Response: []string{result.AgentResponse}}, nil
 	}
 
@@ -3238,6 +3405,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 			}
 			logger.Info("code followup: analysis completed", "analysis_id", analysisID)
 			caResult := extractAgentResponseWithTokenUsage(resultBytes)
+			go recordCodeAnalysisTokenUsage(query, caResult.TokenUsage, time.Since(followupStart).Seconds())
 			return core.NBAgentResponse{Response: []string{caResult.AgentResponse}}, nil
 		case "failed":
 			errMsg, _ := statusResp["error"].(string)
