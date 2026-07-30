@@ -145,6 +145,21 @@ async function _callConversationV3(opts: {
   if (opts.since) request.since = opts.since;
   const rawResponse = await queryGraphQL(GET_LLM_CONVERSATION_V3_QUERY, 'AiGetConversationV3', { request }, undefined, opts.signal);
   const payload = rawResponse?.data?.data?.ai_get_conversation_v3 ?? null;
+
+  if (payload?.conversation?.status === 'COMPLETED') {
+    const critiques = await api.listConversationCritiques({
+      accountId: opts.accountId,
+      conversationId: payload.conversation.id,
+    });
+    // Ride along on the same object that becomes rawConversationRef.current in
+    // useLLMInvestigationControl.js, so the "download conversation JSON" button
+    // (KubernetesLLMRequestResponseV2.jsx:handleDownloadConversation) includes it
+    // without a separate fetch.
+    if (rawResponse?.data?.data) {
+      rawResponse.data.data.critiques = critiques?.data ?? [];
+    }
+  }
+
   return { rawResponse, payload };
 }
 
@@ -1587,6 +1602,46 @@ const api = {
       };
     } catch (error) {
       console.error('failed to list references-', error);
+      return { data: [], errors: [error] };
+    }
+  },
+  // Per-conversation critique rows (llm_conversation_agent_critiques)
+  async listConversationCritiques({ accountId, conversationId, messageId }: { accountId: string; conversationId?: string; messageId?: string }) {
+    if (accountId === 'demo') return null;
+    const CRITIQUES_LIST = `
+    query CritiquesList($where: LlmConversationAgentCritiquesWhereRequest) {
+      critiques_list(where: $where) {
+        rows {
+          id
+          conversation_id
+          message_id
+          account_id
+          agent_name
+          critiqued_content
+          input
+          critique_type
+          feedback
+          decision
+          created_at
+        }
+      }
+    }
+    `;
+    try {
+      const where: any = { account_id: { _eq: accountId } };
+      if (conversationId) {
+        where.conversation_id = { _eq: conversationId };
+      }
+      if (messageId) {
+        where.message_id = { _eq: messageId };
+      }
+      const response = await queryGraphQL(CRITIQUES_LIST, 'CritiquesList', { where });
+      return {
+        data: response?.data?.data?.critiques_list?.rows || [],
+        errors: response?.data?.errors || [],
+      };
+    } catch (error) {
+      console.error('failed to list critiques-', error);
       return { data: [], errors: [error] };
     }
   },

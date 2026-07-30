@@ -3595,6 +3595,83 @@ var table_metadata = map[string]TableDefinition{
 			},
 		},
 	},
+	// llm_conversation_agent_critiques has no tenant_id column of its own —
+	// joined in from llm_conversations so the usual tenant/account scoping
+	// still applies.
+	"llm_conversation_agent_critiques_v2": {
+		Type:                Derived,
+		Source:              database.Metastore,
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "account_id",
+		Name:                "llm_conversation_agent_critiques_v2",
+		Def: `(
+			SELECT
+				cr.id::text as id,
+				cr.conversation_id::text as conversation_id,
+				cr.message_id::text as message_id,
+				cr.account_id::text as account_id,
+				c.tenant_id::text as tenant_id,
+				cr.agent_name,
+				cr.critiqued_content,
+				cr.input,
+				cr.critique_type,
+				cr.feedback,
+				cr.decision,
+				cr.created_at
+			FROM llm_conversation_agent_critiques cr
+			JOIN llm_conversations c ON c.id = cr.conversation_id
+		) as llm_conversation_agent_critiques_v2`,
+		Columns: map[string]ColumnDefinition{
+			"id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "id",
+			},
+			"conversation_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "conversation_id",
+			},
+			"message_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "message_id",
+			},
+			"account_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "account_id",
+			},
+			"tenant_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "tenant_id",
+			},
+			"agent_name": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "agent_name",
+			},
+			"critiqued_content": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "critiqued_content",
+			},
+			"input": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "input",
+			},
+			"critique_type": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "critique_type",
+			},
+			"feedback": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "feedback",
+			},
+			"decision": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "decision",
+			},
+			"created_at": {
+				Type: ColumnDefinitionTypeDatetime,
+				Def:  "created_at",
+			},
+		},
+	},
 	"k8s_workloads_v2": {
 		Type:                Normal,
 		Source:              database.Metastore,
@@ -9376,6 +9453,7 @@ var tableAliases = map[string]string{
 	// llm_* → ai_* migration (table queries). ai_get_conversation_detail (non-polling)
 	// was dead code in main and dropped — only the polling variant is still used.
 	"ai_get_conversation_detail_polling": "llm_conversation_detail_polling_v2",
+	"critiques_list":                     "llm_conversation_agent_critiques_v2",
 	"ai_aggregate_conversations":         "llm_conversation_groupings_v2",
 	"ai_list_functions":                  "llm_functions_v2",
 	"ai_list_agent_installations":        "llm_agents_installation_v2",
