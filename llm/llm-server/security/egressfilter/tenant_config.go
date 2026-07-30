@@ -59,16 +59,25 @@ type TenantConfig struct {
 	compiledCustomRules []compiledCustomRule
 }
 
-// EffectivePIIEnabled returns the PII-enabled decision for this tenant,
-// falling back to envEnabled when the tenant hasn't set an explicit value.
-// Nil receiver is safe — returns envEnabled (no tenant row → inherit env).
+// EffectivePIIEnabled returns whether PII scrubbing should run for this
+// tenant. Semantics changed 2026-07-30 to per-tenant opt-in: only an
+// explicit tenant TRUE turns PII on. Nil receiver, nil PIIEnabled, or
+// explicit FALSE all mean "off".
 //
-// Wrapper (ee/scrubbing) uses this to gate the per-request scrub path once
-// the process-level master is already known to be on. The env master is a
-// hard gate; this helper is only meaningful when it's true.
-func (t *TenantConfig) EffectivePIIEnabled(envEnabled bool) bool {
+// Rationale: PII carries HIPAA/GDPR-shaped data-handling concerns and a
+// runtime cost. Operators enable the wrapper at the process level to signal
+// "the infrastructure is available"; individual tenants opt in when they
+// want their data scrubbed. Previously the wrapper defaulted to on for
+// tenants whose row was NULL — bad UX for the "provision it, let accounts
+// decide" model the platform actually wants.
+//
+// The env master switch (LLM_SERVER_EGRESSFILTER_PII_ENABLED) still gates
+// whether the wrapper is installed at all; this helper only runs when the
+// env is on. When the wrapper is not installed, PII is trivially off for
+// everyone regardless of tenant config.
+func (t *TenantConfig) EffectivePIIEnabled() bool {
 	if t == nil || t.PIIEnabled == nil {
-		return envEnabled
+		return false
 	}
 	return *t.PIIEnabled
 }

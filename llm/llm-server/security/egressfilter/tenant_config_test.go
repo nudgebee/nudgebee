@@ -266,22 +266,26 @@ func TestApplyTenantOverrides_FailsClosedOnBadOffsets(t *testing.T) {
 func ptrBool(v bool) *bool { return &v }
 
 func TestEffectivePIIEnabled(t *testing.T) {
-	// nil receiver → inherit env
+	// 2026-07-30 semantics: per-tenant opt-in. Only an explicit TRUE turns
+	// PII on. Nil / missing / explicit false all mean off. Env doesn't
+	// factor into this helper anymore (env is a hard gate at wrapper
+	// install time; if the wrapper is running, this call decides).
+
+	// Nil receiver (no row / no tenant) → off.
 	var nilCfg *TenantConfig
-	assert.True(t, nilCfg.EffectivePIIEnabled(true))
-	assert.False(t, nilCfg.EffectivePIIEnabled(false))
+	assert.False(t, nilCfg.EffectivePIIEnabled())
 
-	// tenant unset (PIIEnabled == nil) → inherit env
+	// Tenant row exists but PIIEnabled is nil (tenant hasn't opted in) → off.
 	tcfg := &TenantConfig{}
-	assert.True(t, tcfg.EffectivePIIEnabled(true))
+	assert.False(t, tcfg.EffectivePIIEnabled(), "tenant that hasn't touched PII stays off")
 
-	// tenant explicit true → override env off
+	// Explicit true → on.
 	tcfg.PIIEnabled = ptrBool(true)
-	assert.True(t, tcfg.EffectivePIIEnabled(false))
+	assert.True(t, tcfg.EffectivePIIEnabled())
 
-	// tenant explicit false → override env on (the primary tenant opt-out shape)
+	// Explicit false → off.
 	tcfg.PIIEnabled = ptrBool(false)
-	assert.False(t, tcfg.EffectivePIIEnabled(true))
+	assert.False(t, tcfg.EffectivePIIEnabled())
 }
 
 func TestEffectivePIIMode(t *testing.T) {
