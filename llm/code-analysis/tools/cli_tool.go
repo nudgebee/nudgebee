@@ -29,6 +29,7 @@ var blockedSearchPaths = map[string]struct{}{
 }
 
 type CLITool struct {
+	repoScopeGuard
 	workspaceDir         string
 	timeout              time.Duration
 	githubToken          string
@@ -229,6 +230,12 @@ func (t *CLITool) Execute(ctx context.Context, input map[string]any) core.NBTool
 				"Failed to create working directory",
 			)
 		}
+	}
+
+	// Refuse to report on another repository's pull requests. Resolved here, not
+	// at construction, because workingDir is only final at this point.
+	if blocked, reason := t.checkCommand(commandToExecute, workingDir); blocked {
+		return core.CreateErrorResponse(reason, reason)
 	}
 
 	// Set timeout

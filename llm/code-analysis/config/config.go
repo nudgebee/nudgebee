@@ -80,6 +80,12 @@ type LLMConfig struct {
 	EmbeddingModel string `mapstructure:"llm_provider_embedding_model"`
 }
 
+// DefaultAutomationCommentMarkers is the shipped value of
+// AgentConfig.AutomationCommentMarkers. It covers jimschubert/labeler, the one
+// PAT-driven automation in this repo; everything else that comments on a PR in
+// practice is a GitHub App and is excluded by author type instead.
+const DefaultAutomationCommentMarkers = "<!-- Labeler (https://github.com/jimschubert/labeler) -->"
+
 type AgentConfig struct {
 	ReActMaxIterations int           `mapstructure:"react_max_iterations"`
 	MaxLogLines        int           `mapstructure:"max_log_lines"`
@@ -104,6 +110,22 @@ type AgentConfig struct {
 	ModelRouter string `mapstructure:"model_router"`
 	ModelFixer  string `mapstructure:"model_fixer"`
 	ModelReview string `mapstructure:"model_review"`
+	// AutomationCommentMarkers is a comma-separated list of substrings that mark
+	// a PR comment as written by repo automation rather than a human reviewer.
+	//
+	// Most automation (dependabot, renovate, codecov, sonarcloud, github-actions)
+	// is a GitHub App and is already excluded by its "Bot" author type, which
+	// needs no configuration. This list exists only for the residue: automation
+	// driven by a workflow using a *human* personal access token, which GitHub
+	// reports as that human. The default covers jimschubert/labeler, which this
+	// repo runs that way; operators whose repos run something similar should add
+	// its marker here.
+	//
+	// Prefer a marker the tool itself emits — typically a leading HTML comment —
+	// over anything a human might plausibly type, so real review feedback is
+	// never silenced. Override via AGENT_AUTOMATION_COMMENT_MARKERS. Markers
+	// containing a comma cannot be expressed.
+	AutomationCommentMarkers string `mapstructure:"automation_comment_markers"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -173,6 +195,7 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("agent.model_router", "")
 	viper.SetDefault("agent.model_fixer", "")
 	viper.SetDefault("agent.model_review", "")
+	viper.SetDefault("agent.automation_comment_markers", DefaultAutomationCommentMarkers)
 
 	// Load secrets file if it exists (e.g., secrets.yaml or secrets.json)
 	// This file should contain sensitive information and should not be committed to VCS.
@@ -214,6 +237,7 @@ func LoadConfig() (*Config, error) {
 	_ = viper.BindEnv("agent.model_router", "AGENT_MODEL_ROUTER")
 	_ = viper.BindEnv("agent.model_fixer", "AGENT_MODEL_FIXER")
 	_ = viper.BindEnv("agent.model_review", "AGENT_MODEL_REVIEW")
+	_ = viper.BindEnv("agent.automation_comment_markers", "AGENT_AUTOMATION_COMMENT_MARKERS")
 	_ = viper.BindEnv("llm_provider", "LLM_PROVIDER")
 	_ = viper.BindEnv("llm_model_name", "LLM_MODEL_NAME")
 	// Also support LLM_MODEL for backward compatibility

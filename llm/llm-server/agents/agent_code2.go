@@ -1808,6 +1808,24 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 	}
 
 	ctx.GetLogger().Info("code: using git provider", "provider", provider, "repo", repoUrl)
+
+	// A second fix request in the same conversation is a retry, not a new bug.
+	// Amend the PR we already opened instead of cutting another branch and
+	// opening a duplicate. Routed through the followup path, which checks out
+	// the PR's head branch and commits there; request.Query — the caller's
+	// "the previous fix was rejected because …" instruction — is forwarded to
+	// the workspace as the prompt, so the retry's intent is not lost.
+	if codeAgentRequest.RaisePr && !codeAgentRequest.Followup {
+		if prURL, prBranch := findOpenPRForRequest(ctx, query, codeAgentRequest.GitRepo); prURL != "" {
+			ctx.GetLogger().Info("code: reusing the open PR this conversation already raised",
+				"pr_url", prURL, "pr_branch", prBranch, "repo", codeAgentRequest.GitRepo)
+			codeAgentRequest.Followup = true
+			codeAgentRequest.PRURL = prURL
+			codeAgentRequest.PRBranch = prBranch
+			return l.executeFollowup(ctx, query, codeAgentRequest)
+		}
+	}
+
 	finalOutput := ""
 
 	if config.Config.LlmServerWorkspaceEnabled {
@@ -2152,6 +2170,80 @@ func trackPRInResolution(ctx *security.RequestContext, query core.NBAgentRequest
 
 	ctx.GetLogger().Info("code: PR resolution row created for lifecycle tracking",
 		"pr_url", prURL, "event_id", eventId, "conversation_id", query.ConversationId)
+}
+
+// findOpenPRForRequest returns the url and head branch of a PR that this same
+// conversation (or event) already opened against gitRepo and that is still
+// open. Returns two empty strings when there is none.
+//
+// code_analyzer keeps no state between calls: nothing stopped an orchestrator
+// that reviewed its own fix and asked again from getting a fresh clone, a fresh
+// fix/<slug>-<unix-ts> branch, and a second PR for the same bug. That is how
+// PRs #35092 and #35094 came to fix one missing integrationId sixteen minutes
+// apart — while #35092's own followup agent was fixing it on the other branch.
+// The resolution rows trackPRInResolution writes are the memory we were
+// missing, so read them back before opening anything new.
+//
+// Fails open: any lookup error returns no PR, so a retry still produces a fix
+// rather than nothing.
+func findOpenPRForRequest(ctx *security.RequestContext, query core.NBAgentRequest, gitRepo string) (string, string) {
+	if gitRepo == "" {
+		return "", ""
+	}
+
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		ctx.GetLogger().Warn("code: cannot check for an existing open PR", "error", err)
+		return "", ""
+	}
+
+	// Same anchor the writer uses, so we read back exactly what it wrote. An
+	// event-anchored request that failed to resolve must NOT fall back to the
+	// conversation id — see resolvePRTrackingEventId.
+	anchorId, hadEventAnchor := resolvePRTrackingEventId(ctx, dbms.Db, query)
+	if anchorId == "" {
+		if hadEventAnchor {
+			return "", ""
+		}
+		anchorId = query.ConversationId
+	}
+	if anchorId == "" {
+		return "", ""
+	}
+
+	var row struct {
+		PRURL    string `db:"pr_url"`
+		PRBranch string `db:"pr_branch"`
+	}
+	// The lifecycle states below mirror the cron's own selection in
+	// api-server/services/account/adapter/pr_lifecycle.go. 'addressing' is
+	// included because a followup already in flight is still an open PR to
+	// amend, not a reason to open a second one.
+	err = dbms.Db.Get(&row,
+		`SELECT COALESCE(data->>'pr_url', '')    AS pr_url,
+		        COALESCE(data->>'pr_branch', '') AS pr_branch
+		   FROM event_resolution
+		  WHERE event_id = $1
+		    AND type = 'PullRequest'
+		    AND status = 'InProgress'
+		    AND pr_lifecycle_state IN ('created', 'needs_followup', 'addressing')
+		    AND data->>'repo_url' = $2
+		  ORDER BY created_at DESC
+		  LIMIT 1`,
+		anchorId, gitRepo,
+	)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			ctx.GetLogger().Warn("code: existing-PR lookup failed", "error", err, "anchor_id", anchorId)
+		}
+		return "", ""
+	}
+	// A row with no branch recorded is useless for amending — we would not know
+	// what to check out. Treat it as no PR and let a new one be opened.
+	if row.PRURL == "" || row.PRBranch == "" {
+		return "", ""
+	}
+	return row.PRURL, row.PRBranch
 }
 
 // prTrackingEventLookup is the narrow DB interface resolvePRTrackingEventId

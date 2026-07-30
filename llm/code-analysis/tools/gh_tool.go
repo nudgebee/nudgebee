@@ -14,6 +14,7 @@ import (
 )
 
 type GHTool struct {
+	repoScopeGuard
 	workspaceDir         string
 	githubToken          string
 	restrictPROperations bool
@@ -128,6 +129,13 @@ func (t *GHTool) Execute(ctx context.Context, input map[string]any) core.NBToolR
 	// Use repository helper for working directory injection and discovery
 	repoHelper := NewRepositoryHelper()
 	repoDir := repoHelper.GetWorkingDirectoryWithInjection(input, t.workspaceDir)
+
+	// Refuse to report on another repository's pull requests. The same guard runs
+	// in the cli tool; both are needed, since the specialist agents hold both and
+	// `gh api repos/o/r/pulls/1` is the shortest path to the wrong answer.
+	if blocked, reason := t.checkCommand(ghCommandForScopeCheck(args), repoDir); blocked {
+		return core.CreateErrorResponse(reason, reason)
+	}
 
 	// `gh pr edit` resolves the PR via a GraphQL query that includes Projects
 	// (classic). On orgs where classic projects are disabled this query returns
