@@ -1246,8 +1246,15 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	agentResponseContent := ""
 	if len(agentResponse.Response) > 0 {
 		agentResponseContent = agentResponse.Response[0]
-		if agentResponse.Status == ConversationStatusWaiting || agentResponse.Status == ConversationStatusWaitingForClientTool {
+		switch agentResponse.Status {
+		case ConversationStatusWaiting, ConversationStatusWaitingForClientTool:
 			status = agentResponse.Status
+		case ConversationStatusFailed:
+			// The agent itself reported failure (e.g. executeAgentPlanner packaged an
+			// error into Response) even when executeErr comes back nil. Without this,
+			// a failed turn's raw error text gets persisted as if it were a genuine
+			// COMPLETED answer.
+			status = ConversationStatusFailed
 		}
 	} else {
 		status = ConversationStatusFailed

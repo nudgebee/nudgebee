@@ -695,7 +695,8 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 			return NBAgentResponse{}, err
 		}
 	} else {
-		nbAgentPlanner, err := createAgentPlanner(ctx, agent, request, systemMessage, messageHistoryFomatter, initialNotebook)
+		var nbAgentPlanner NBAgentPlanner
+		nbAgentPlanner, err = createAgentPlanner(ctx, agent, request, systemMessage, messageHistoryFomatter, initialNotebook)
 		if err != nil {
 			// Try to update DB, but don't let a DB error mask the original error
 			dbErr := GetConversationDao().UpdateConversationAgentResponse(agentId.String(), err.Error(), AgentExecutionStatusFail, "", "unable to create plan", "", "")
