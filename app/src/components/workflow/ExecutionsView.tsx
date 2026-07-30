@@ -931,6 +931,7 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
           selectedExecution={selectedExecution}
           getDuration={getDuration}
           copyToClipboard={copyToClipboard}
+          accountId={accountId}
         />
       );
     }

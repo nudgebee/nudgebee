@@ -1,11 +1,12 @@
 import React, { useMemo } from 'react';
+import { useRouter } from 'next/router';
 import { Box, Typography } from '@mui/material';
 import { Button } from '@ui/Button';
 import { ContentCopy, Schedule, Input as InputIcon } from '@mui/icons-material';
-import { colors } from 'src/utils/colors';
-import { workflowUserIcon, workflowCalendarIcon, workflowWebhookIcon } from '@assets';
+import { ds } from 'src/utils/colors';
+import { workflowUserIcon, workflowCalendarIcon, workflowWebhookIcon, InvestigateHomeIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
-import CustomLabels from '@shared/widgets/CustomLabels';
+import { Label } from '@ui/Label';
 import Datetime from '@shared/format/Datetime';
 import JsonTreeView from '@shared/viewers/JsonTreeView';
 import type { Node } from 'reactflow';
@@ -21,11 +22,14 @@ interface TriggerDetailsPanelProps {
   } | null;
   getDuration: (startTime: string, endTime?: string) => string;
   copyToClipboard: (text: string, label: string) => void;
+  // Page account id — fallback for the Investigate link when the event payload omits cloud_account_id.
+  accountId?: string;
 }
 
-// Trigger type display config — reuses TriggerNode colors (#F97316 orange, #FFF7ED light orange)
-const TRIGGER_COLOR = '#F97316';
-const TRIGGER_BG = '#FFF7ED';
+// Trigger type display config — shared amber palette with TriggerNode (badge + icon-container).
+// Alpha tints (gradient/border) are applied at use-sites via color-mix() since DS tokens are fully opaque.
+const TRIGGER_COLOR = 'var(--ds-amber-500)';
+const TRIGGER_BG = 'var(--ds-amber-100)';
 
 const TRIGGER_META: Record<string, { label: string; icon: any; iconIsImage?: boolean }> = {
   manual: { label: 'Manual', icon: workflowUserIcon, iconIsImage: true },
@@ -58,8 +62,8 @@ const formatLegacyEventType = (raw: unknown): string => {
 // Mono style for code-like values in detail rows
 const MONO_STYLE = {
   fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-  backgroundColor: colors.background.tertiaryLightestestest,
-  border: `1px solid ${colors.border.secondaryLight}`,
+  backgroundColor: ds.background[200],
+  border: `1px solid ${ds.gray[200]}`,
   borderRadius: 'var(--ds-radius-md)',
   padding: 'var(--ds-space-2) var(--ds-space-3)',
 };
@@ -75,7 +79,7 @@ const DetailRow = ({ label, value, mono }: { label: string; value: React.ReactNo
         sx={{
           fontSize: 'var(--ds-text-caption)',
           fontWeight: 'var(--ds-font-weight-semibold)',
-          color: colors.text.tertiary,
+          color: ds.gray[600],
           textTransform: 'uppercase',
           letterSpacing: '0.04em',
         }}
@@ -86,7 +90,7 @@ const DetailRow = ({ label, value, mono }: { label: string; value: React.ReactNo
         <Typography
           sx={{
             fontSize: 'var(--ds-text-body)',
-            color: colors.text.secondary,
+            color: ds.gray[700],
             wordBreak: 'break-word',
             ...(mono ? MONO_STYLE : {}),
           }}
@@ -150,7 +154,7 @@ const EventConfig = ({ params }: { params: any }) => {
                     sx={{
                       fontSize: 'var(--ds-text-caption)',
                       fontWeight: 'var(--ds-font-weight-semibold)',
-                      color: colors.text.tertiary,
+                      color: ds.gray[600],
                       textTransform: 'uppercase',
                       letterSpacing: '0.04em',
                     }}
@@ -160,9 +164,9 @@ const EventConfig = ({ params }: { params: any }) => {
                   <Box
                     sx={{
                       fontSize: 'var(--ds-text-small)',
-                      color: colors.text.secondary,
-                      backgroundColor: colors.background.tertiaryLightestestest,
-                      border: `1px solid ${colors.border.secondaryLight}`,
+                      color: ds.gray[700],
+                      backgroundColor: ds.background[200],
+                      border: `1px solid ${ds.gray[200]}`,
                       borderRadius: 'var(--ds-radius-md)',
                       padding: 'var(--ds-space-1) var(--ds-space-2)',
                     }}
@@ -193,13 +197,31 @@ const INPUT_SECTION_LABELS: Record<string, string> = {
   event: 'Event Data',
 };
 
-const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({ triggerNode, executionData, selectedExecution, getDuration, copyToClipboard }) => {
+const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({
+  triggerNode,
+  executionData,
+  selectedExecution,
+  getDuration,
+  copyToClipboard,
+  accountId,
+}) => {
+  const router = useRouter();
   const triggerData = triggerNode.data;
   const triggerType: string = triggerData?.trigger?.type || triggerData?.triggerType || 'manual';
   const triggerParams = triggerData?.trigger?.params || triggerData?.triggerParams || {};
   const triggerLabel = triggerData?.label || 'Trigger';
   const executionInputs = executionData?.inputs;
   const triggeredBy = executionData?.triggered_by || selectedExecution?.triggered_by;
+
+  // Investigate link — mirrors the backend event-id resolution (executor.go extractEventIDFromInputs):
+  // the triggering event is nested under inputs.event, keyed by `id` (fallback `event_id`).
+  const eventObj = executionInputs && typeof executionInputs === 'object' ? (executionInputs as any).event : undefined;
+  const eventId: string | undefined = eventObj?.id || eventObj?.event_id;
+  const investigateAccountId: string | undefined = eventObj?.cloud_account_id || accountId;
+  const investigateHref =
+    triggerType === 'event' && eventId && investigateAccountId
+      ? `/investigate?id=${encodeURIComponent(eventId)}&accountId=${encodeURIComponent(investigateAccountId)}`
+      : undefined;
 
   const meta = TRIGGER_META[triggerType] || TRIGGER_META.manual;
   const hasConfig = triggerType !== 'manual' && Object.keys(triggerParams).length > 0;
@@ -236,8 +258,8 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({ triggerNode, 
               width: '36px',
               height: '36px',
               borderRadius: 'var(--ds-radius-lg)',
-              background: `linear-gradient(135deg, ${TRIGGER_COLOR}18 0%, ${TRIGGER_COLOR}30 100%)`,
-              border: `1.5px solid ${TRIGGER_COLOR}40`,
+              background: `linear-gradient(135deg, color-mix(in srgb, ${TRIGGER_COLOR} 9%, transparent) 0%, color-mix(in srgb, ${TRIGGER_COLOR} 19%, transparent) 100%)`,
+              border: `1.5px solid color-mix(in srgb, ${TRIGGER_COLOR} 25%, transparent)`,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -254,7 +276,7 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({ triggerNode, 
               sx={{
                 fontWeight: 'var(--ds-font-weight-semibold)',
                 fontSize: 'var(--ds-text-body-lg)',
-                color: colors.text.secondary,
+                color: ds.gray[700],
                 fontFamily: 'Poppins, sans-serif',
                 letterSpacing: '-0.01em',
                 overflow: 'hidden',
@@ -272,7 +294,7 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({ triggerNode, 
                   fontWeight: 'var(--ds-font-weight-semibold)',
                   color: TRIGGER_COLOR,
                   backgroundColor: TRIGGER_BG,
-                  border: `1px solid ${TRIGGER_COLOR}30`,
+                  border: `1px solid color-mix(in srgb, ${TRIGGER_COLOR} 19%, transparent)`,
                   borderRadius: 'var(--ds-radius-sm)',
                   padding: 'var(--ds-space-1) var(--ds-space-2)',
                   textTransform: 'uppercase',
@@ -283,9 +305,30 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({ triggerNode, 
               </Box>
             </Box>
           </Box>
+          {investigateHref && (
+            <Button
+              id='trigger-investigate-btn'
+              composition='icon+text'
+              tone='secondary'
+              size='xs'
+              href={investigateHref}
+              // Client-side nav to avoid a full reload; keep href so modifier-clicks
+              // (cmd/ctrl/middle) still open the investigation in a new tab.
+              onClick={(e) => {
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) {
+                  return;
+                }
+                e.preventDefault();
+                router.push(investigateHref);
+              }}
+              icon={<SafeIcon src={InvestigateHomeIcon} width={13} height={13} />}
+            >
+              Investigation
+            </Button>
+          )}
           {selectedExecution && (
             <Box sx={{ flexShrink: 0 }} data-testid='trigger-panel-status-badge'>
-              <CustomLabels text={selectedExecution.status.toUpperCase()} />
+              <Label text={selectedExecution.status.toUpperCase()} />
             </Box>
           )}
         </Box>
@@ -301,9 +344,9 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({ triggerNode, 
               gap: 'var(--ds-space-4)',
               flexWrap: 'wrap',
               padding: 'var(--ds-space-3) var(--ds-space-4)',
-              backgroundColor: colors.background.tertiaryLightestestest,
+              backgroundColor: ds.background[200],
               borderRadius: 'var(--ds-radius-lg)',
-              border: `1px solid ${colors.border.secondaryLight}`,
+              border: `1px solid ${ds.gray[200]}`,
               mb: 'var(--ds-space-4)',
             }}
           >
@@ -313,14 +356,14 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({ triggerNode, 
                   sx={{
                     fontSize: 'var(--ds-text-caption)',
                     fontWeight: 'var(--ds-font-weight-semibold)',
-                    color: colors.text.tertiary,
+                    color: ds.gray[600],
                     textTransform: 'uppercase',
                     letterSpacing: '0.04em',
                   }}
                 >
                   Triggered by
                 </Typography>
-                <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: colors.text.secondary }}>
+                <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: ds.gray[700] }}>
                   {triggeredBy}
                 </Typography>
               </Box>
@@ -331,14 +374,14 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({ triggerNode, 
                   sx={{
                     fontSize: 'var(--ds-text-caption)',
                     fontWeight: 'var(--ds-font-weight-semibold)',
-                    color: colors.text.tertiary,
+                    color: ds.gray[600],
                     textTransform: 'uppercase',
                     letterSpacing: '0.04em',
                   }}
                 >
                   Started
                 </Typography>
-                <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: colors.text.secondary }}>
+                <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: ds.gray[700] }}>
                   <Datetime value={selectedExecution.start_time} />
                 </Typography>
               </Box>
@@ -348,14 +391,14 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({ triggerNode, 
                 sx={{
                   fontSize: 'var(--ds-text-caption)',
                   fontWeight: 'var(--ds-font-weight-semibold)',
-                  color: colors.text.tertiary,
+                  color: ds.gray[600],
                   textTransform: 'uppercase',
                   letterSpacing: '0.04em',
                 }}
               >
                 Duration
               </Typography>
-              <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: colors.text.secondary }}>
+              <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: ds.gray[700] }}>
                 {getDuration(selectedExecution.start_time as string, selectedExecution.close_time)}
               </Typography>
             </Box>
@@ -366,12 +409,12 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({ triggerNode, 
         {hasConfig && (
           <Box sx={{ mb: 'var(--ds-space-4)' }} data-testid='trigger-config-section'>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', mb: 'var(--ds-space-3)' }}>
-              <Schedule sx={{ fontSize: 'var(--ds-text-body-lg)', color: colors.text.secondaryDark }} />
+              <Schedule sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.gray[400] }} />
               <Typography
                 sx={{
                   fontSize: 'var(--ds-text-small)',
                   fontWeight: 'var(--ds-font-weight-semibold)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   fontFamily: 'Poppins, sans-serif',
                 }}
               >
@@ -383,7 +426,7 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({ triggerNode, 
                 padding: 'var(--ds-space-4)',
                 backgroundColor: 'white',
                 borderRadius: 'var(--ds-radius-lg)',
-                border: `1px solid ${colors.border.secondaryLight}`,
+                border: `1px solid ${ds.gray[200]}`,
               }}
             >
               {renderTriggerConfig()}
@@ -396,12 +439,12 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({ triggerNode, 
           <Box>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 'var(--ds-space-3)' }}>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
-                <InputIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: colors.text.secondaryDark }} />
+                <InputIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.gray[400] }} />
                 <Typography
                   sx={{
                     fontSize: 'var(--ds-text-small)',
                     fontWeight: 'var(--ds-font-weight-semibold)',
-                    color: colors.text.secondary,
+                    color: ds.gray[700],
                     fontFamily: 'Poppins, sans-serif',
                   }}
                 >
@@ -419,7 +462,7 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({ triggerNode, 
               />
             </Box>
             <Box data-testid='trigger-inputs-display'>
-              <JsonTreeView data={executionInputs} defaultExpanded={2} maxHeight='400px' fontSize='12px' />
+              <JsonTreeView data={executionInputs} defaultExpanded={2} maxHeight='400px' fontSize='var(--ds-text-small)' />
             </Box>
           </Box>
         )}
@@ -430,7 +473,7 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({ triggerNode, 
             data-testid='trigger-empty-state'
             sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', py: 6, gap: 'var(--ds-space-2)' }}
           >
-            <Typography sx={{ fontSize: 'var(--ds-text-body)', color: colors.text.secondaryDark }}>
+            <Typography sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400] }}>
               {EMPTY_STATE_MESSAGES[triggerType] || 'No trigger details available for this execution.'}
             </Typography>
           </Box>
