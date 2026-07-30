@@ -9,6 +9,7 @@ import (
 	"nudgebee/llm/agents"
 	"nudgebee/llm/agents/core"
 	_ "nudgebee/llm/agents/signoz"
+	"nudgebee/llm/audit"
 	"nudgebee/llm/budget"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
@@ -518,6 +519,34 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 					}, nil))
 					return
 				}
+			}
+		}
+
+		// Audit follow-up answers only, and only for web sources. Emit strictly
+		// when a follow-up is actually pending (the agent is 'waiting') — a normal
+		// send that merely carries agent_id/message_id has no pending follow-up and
+		// must not be logged as an answer. Gating on web source also lets non-web
+		// follow-ups skip the DB lookup entirely.
+		if !isNewConversation && (request.AgentId != "" || request.MessageId != "") && isWebChatSource(source) {
+			if info, perr := core.GetPendingFollowupInfo(request.AgentId, request.AccountId, request.ConversationId); perr != nil {
+				logger.Warn("chat audit: failed to load pending followup info", "error", perr, "agent_id", request.AgentId)
+			} else if info != nil {
+				// Consistent shape across follow-up events: query = originating user
+				// question, response = the user's answer, followup_type = the kind of
+				// follow-up (so credential/config selections stay filterable).
+				chatState := map[string]any{
+					"query":         truncateQueryForAudit(info.Query),
+					"response":      truncateQueryForAudit(request.Query),
+					"followup_type": info.FollowupType,
+				}
+				chatEventType := audit.EventTypeChatClarificationRespond
+				if info.IsToolConfirmation {
+					chatEventType = audit.EventTypeChatToolConfirmationRespond
+					chatState["tool_name"] = info.ToolName
+					chatState["command"] = truncateQueryForAudit(info.Command)
+					chatState["decision"] = toolConfirmationDecision(request.Query)
+				}
+				emitChatActionAudit(agentContext, chatEventType, audit.EventActionUpdate, request.AccountId, request.UserId, request.ConversationId, request.SessionId, source, nil, chatState)
 			}
 		}
 

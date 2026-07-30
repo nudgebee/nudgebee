@@ -142,7 +142,7 @@ func (h *CustomJSONHandler) Handle(ctx context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	allAttrs := h.collectAttrs(r)
+	allAttrs := dedupeAttrs(h.collectAttrs(r))
 	preMsg, postMsg := h.partitionAttrs(allAttrs)
 	traceID, spanID, otherPreMsg := h.extractTraceAndSpan(preMsg)
 
@@ -171,6 +171,27 @@ func (h *CustomJSONHandler) collectAttrs(r slog.Record) [][2]string {
 		})
 	}
 	return allAttrs
+}
+
+// dedupeAttrs collapses attributes sharing a key to the last value at the key's first position, preventing duplicate-key JSON when a key (e.g. user_id) is attached twice along the logger chain.
+func dedupeAttrs(allAttrs [][2]string) [][2]string {
+	// Linear scan, not a map: this runs on every log line and attribute lists
+	// are tiny (a handful of context keys), so a scan beats a per-line map alloc.
+	deduped := make([][2]string, 0, len(allAttrs))
+	for _, kv := range allAttrs {
+		found := false
+		for i := range deduped {
+			if deduped[i][0] == kv[0] {
+				deduped[i][1] = kv[1]
+				found = true
+				break
+			}
+		}
+		if !found {
+			deduped = append(deduped, kv)
+		}
+	}
+	return deduped
 }
 
 // partitionAttrs splits attributes into preMsg and postMsg.

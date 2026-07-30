@@ -262,6 +262,116 @@ func FollowupRequestForMultipleToolConfigs(ctx *security.RequestContext, query N
 	return FollowupRequest{}, nil
 }
 
+// PendingFollowupInfo describes the followup an agent is currently waiting on,
+// used to enrich chat-action audits with consistent semantics across followup
+// types: Query is always the originating user question, and the tool fields are
+// populated only when the followup is a tool-confirmation.
+type PendingFollowupInfo struct {
+	// FollowupType is the kind of followup pending (text/single_select/
+	// tool_config/tool_confirmation/…), recorded so security-relevant selections
+	// (e.g. picking a cloud credential via tool_config) are filterable in audits.
+	FollowupType string
+	// IsToolConfirmation is true when the pending followup is the user
+	// authorizing/declining a write/destructive tool action.
+	IsToolConfirmation bool
+	ToolName           string
+	ToolId             string
+	// Command is the operation the user is being asked to approve (tool-confirmation only), recorded so the audit shows what was accepted.
+	Command string
+	// Query is the originating user question that raised the followup, recorded so an audit reader has the "why" behind the answer.
+	Query string
+}
+
+// GetPendingFollowupInfo returns details of the followup the given agent is
+// waiting on, or nil when it isn't waiting on one. It's a read-only lookup
+// mirroring HandleFollowupResponse's resolution: Query comes from the followup's
+// stored request context for any followup type, and the tool fields are filled
+// only for tool-confirmation followups.
+func GetPendingFollowupInfo(agentId, accountId, conversationId string) (*PendingFollowupInfo, error) {
+	if agentId == "" {
+		return nil, nil
+	}
+	dao := GetConversationDao()
+	agents, err := dao.ListConversationAgents("", agentId)
+	if err != nil {
+		return nil, fmt.Errorf("GetPendingFollowupInfo: failed to list agents for %s: %w", agentId, err)
+	}
+	if len(agents) == 0 {
+		return nil, nil
+	}
+	agent := agents[0]
+	if !strings.EqualFold(string(agent.Status), string(AgentExecutionStatusWaiting)) || agent.FollowupMessageID == uuid.Nil {
+		return nil, nil
+	}
+	followupMessage, err := dao.GetConversationMessage(agent.FollowupMessageID.String(), accountId, conversationId)
+	if err != nil {
+		return nil, fmt.Errorf("GetPendingFollowupInfo: failed to load followup message %s: %w", agent.FollowupMessageID, err)
+	}
+
+	info := &PendingFollowupInfo{}
+
+	// Originating user question — message_context is the marshaled NBAgentRequest
+	// captured when the followup was raised. Best-effort; leave empty if unreadable.
+	if followupMessage.MessageContext != nil {
+		var reqCtx struct {
+			Query string `json:"query"`
+		}
+		if err := common.UnmarshalJson([]byte(*followupMessage.MessageContext), &reqCtx); err == nil {
+			info.Query = strings.TrimSpace(reqCtx.Query)
+		}
+	}
+
+	// Followup type + tool-confirmation specifics.
+	if followupMessage.MessageConfig != nil {
+		var followupReq FollowupRequest
+		if err := common.UnmarshalJson([]byte(*followupMessage.MessageConfig), &followupReq); err == nil {
+			info.FollowupType = string(followupReq.FollowupType)
+			if followupReq.FollowupType == FollowupTypeToolConfirmation {
+				info.IsToolConfirmation = true
+				info.ToolName = followupReq.ToolName
+				info.ToolId = followupReq.ToolId
+				// Confirmation prompt is "Tool(x) is trying to ... Command - <cmd>"; take
+				// the tail and unwrap a JSON-wrapped command so the audit shows the bare command.
+				command := followupReq.Question
+				if idx := strings.LastIndex(command, "Command - "); idx != -1 {
+					command = command[idx+len("Command - "):]
+				}
+				info.Command = unwrapCommand(command)
+			}
+		}
+	}
+
+	return info, nil
+}
+
+// unwrapCommand returns the bare command from a confirmation-prompt tail. Tool
+// inputs are often JSON like {"command":"…"} or {"query":"…"}; unwrap a
+// well-known key (or a single string value) so the audit shows the raw command
+// rather than a JSON blob.
+func unwrapCommand(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if !strings.HasPrefix(trimmed, "{") {
+		return trimmed
+	}
+	m := map[string]any{}
+	if err := common.UnmarshalJson([]byte(trimmed), &m); err != nil {
+		return trimmed
+	}
+	for _, k := range []string{"command", "query"} {
+		if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	if len(m) == 1 {
+		for _, v := range m {
+			if v, ok := v.(string); ok {
+				return strings.TrimSpace(v)
+			}
+		}
+	}
+	return trimmed
+}
+
 func GenerateFollowup(ctx *security.RequestContext, query NBAgentRequest, followupRequest FollowupRequest) (uuid.UUID, error) {
 	// store followup question in context
 

@@ -231,9 +231,30 @@ export const AuditsTable = () => {
         console.error(e);
       }
       return <Text placement='top' marginBottom='0px' value={platform} showAutoEllipsis />;
-    } else if (item.event_category == 'NOTIFICATIONS CHAT ACTIONS') {
+    } else if (item.event_category == 'NOTIFICATIONS_CHAT_ACTIONS') {
       // Target is a cloud account ID, show the account name
       return <Text placement='top' marginBottom='0px' value={targetName} showAutoEllipsis />;
+    } else if (item.event_category == 'CHAT_ACTIONS') {
+      // Target is a chat conversation. Show its session id with an "open in Ask
+      // Nudgebee" deep link (relative URL, so it resolves to the right host per
+      // env). Fall back to the conversation id as plain text for older rows that
+      // don't carry a session id.
+      let sessionId = '';
+      try {
+        // event_attr is usually a JSON string, but tolerate a pre-parsed object too.
+        const attr = typeof item.event_attr === 'string' ? JSON.parse(item.event_attr) : item.event_attr;
+        sessionId = attr?.session_id || '';
+      } catch (e) {
+        console.error(e);
+      }
+      if (!sessionId) {
+        return <Text placement='top' marginBottom='0px' value={item.event_target} showAutoEllipsis />;
+      }
+      return (
+        <Link href={`/ask-nudgebee?accountId=${item.account_id}&session_id=${sessionId}`} openInNew maxWidth='120px'>
+          {sessionId}
+        </Link>
+      );
     }
 
     return <Text placement='top' marginBottom='0px' value={targetName} showAutoEllipsis />;
@@ -348,6 +369,16 @@ export const AuditsTable = () => {
       return <Text value={`Messaging Platform For ${formatActionNameForAuditMessage(data?.platform)} Updated`} showAutoEllipsis />;
     } else if (item.event_type == 'INTEGRATION_UPDATE') {
       return <Text value={`Integration ${data.name ? `With Name ${data.name} ` : ''}Updated`} showAutoEllipsis />;
+    } else if (item.event_type == 'CHAT_CLARIFICATION_RESPOND') {
+      // event_state: { query: originating question, response: user's answer, followup_type }.
+      const answer = data.response || '';
+      const isConfig = data.followup_type === 'tool_config' || data.followup_type === 'account_select';
+      const label = isConfig ? 'Selected config' : 'Answered a follow-up';
+      return <Text value={`${label}${answer ? `: ${answer}` : ''}`} showAutoEllipsis />;
+    } else if (item.event_type == 'CHAT_TOOL_CONFIRMATION_RESPOND') {
+      const verbByDecision = { approved: 'Approved', rejected: 'Rejected' };
+      const verb = verbByDecision[data.decision] || 'Responded to';
+      return <Text value={`${verb} a tool action${data.tool_name ? ` (${data.tool_name})` : ''}`} showAutoEllipsis />;
     }
     const updateName = data.name || data.account_name || data.job_name || data.action_name || '';
     return (
@@ -395,6 +426,9 @@ export const AuditsTable = () => {
         integrationName = item.event_prev_state || name || '';
       }
       return <Text value={`Integration ${integrationName ? `With Name ${integrationName} ` : ''}Deleted`} showAutoEllipsis />;
+    }
+    if (item.event_type == 'CHAT_CONVERSATION_DELETE') {
+      return <Text value={`Deleted a conversation`} showAutoEllipsis />;
     }
     const value = `${capitalize(normalizeAuditCategory(item.event_category))} ${name ? `With Name ${name} ` : ''} Deleted`;
     return <Text value={value} showAutoEllipsis />;
