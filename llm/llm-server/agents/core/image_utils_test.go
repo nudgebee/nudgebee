@@ -3,15 +3,18 @@ package core
 import (
 	"context"
 	"encoding/base64"
+	"log/slog"
 	"net"
 	"net/url"
 	"strings"
 	"testing"
 
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
+	"nudgebee/llm/security"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -25,14 +28,6 @@ var (
 
 func pngBase64() string  { return base64.StdEncoding.EncodeToString(pngHeader) }
 func jpegBase64() string { return base64.StdEncoding.EncodeToString(jpegHeader) }
-
-// enableImageSupport sets the feature flag for the duration of the test and restores it after.
-func enableImageSupport(t *testing.T) {
-	t.Helper()
-	prev := config.Config.LlmServerImageSupportEnabled
-	config.Config.LlmServerImageSupportEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerImageSupportEnabled = prev })
-}
 
 func TestValidateImages_Empty(t *testing.T) {
 	assert.NoError(t, ValidateImages(context.Background(), nil))
@@ -330,10 +325,7 @@ func TestValidateImages_MIMEMismatch(t *testing.T) {
 // --- Phase 3: Vision Detection Tests ---
 
 func TestIsVisionCapableModel_DefaultDenyList(t *testing.T) {
-	assert.True(t, IsVisionCapableModel("bedrock", "anthropic.claude-sonnet-4-20250514-v1:0"))
-	assert.True(t, IsVisionCapableModel("openai", "gpt-4o"))
-	assert.True(t, IsVisionCapableModel("googleai", "gemini-2.0-flash"))
-
+	// Regex-denied models are never vision-capable, regardless of DB state.
 	assert.False(t, IsVisionCapableModel("openai", "gpt-3.5-turbo"))
 	assert.False(t, IsVisionCapableModel("bedrock", "claude-2.1"))
 	assert.False(t, IsVisionCapableModel("bedrock", "claude-instant-v1"))
@@ -342,25 +334,47 @@ func TestIsVisionCapableModel_DefaultDenyList(t *testing.T) {
 	assert.False(t, IsVisionCapableModel("bedrock", "cohere.command-light-text-v14"))
 }
 
+// TestIsVisionCapableModel_UnconfirmedModelsDefaultDeny documents the
+// default-deny posture: a model not on the deny-list is still NOT
+// vision-capable absent an explicit llm_model_pricing.supports_image_input
+// row. Absence from the deny-list is not evidence of vision support.
+func TestIsVisionCapableModel_UnconfirmedModelsDefaultDeny(t *testing.T) {
+	assert.False(t, IsVisionCapableModel("bedrock", "anthropic.claude-sonnet-4-20250514-v1:0"))
+	assert.False(t, IsVisionCapableModel("openai", "gpt-4o"))
+	assert.False(t, IsVisionCapableModel("googleai", "gemini-2.0-flash"))
+}
+
 func TestIsVisionCapableModel_CaseInsensitive(t *testing.T) {
 	assert.False(t, IsVisionCapableModel("openai", "GPT-3.5-turbo"))
 	assert.False(t, IsVisionCapableModel("bedrock", "Claude-2"))
 }
 
-// TestIsVisionCapableModel_AnchoredPatterns ensures the deny-list does not
-// accidentally classify future vision-capable variants whose names share a
-// substring with an old non-vision model. The biggest historical footgun was
-// the bare "cohere" prefix that blanket-rejected every Cohere model.
+// TestIsVisionCapableModel_AnchoredPatterns ensures the deny-list regexes do
+// not accidentally match a model whose name shares a substring with an old
+// non-vision model. The biggest historical footgun was the bare "cohere"
+// prefix that blanket-rejected every Cohere model. Checked directly against
+// the compiled patterns (not IsVisionCapableModel) since overall vision
+// capability now also depends on DB state — this test isolates regex
+// correctness from that (see TestIsVisionCapableModel_UnconfirmedModelsDefaultDeny).
 func TestIsVisionCapableModel_AnchoredPatterns(t *testing.T) {
+	regexes := compileVisionDenyPatterns(defaultNonVisionPatterns)
+	deniedByRegex := func(model string) bool {
+		for _, re := range regexes {
+			if re.MatchString(model) {
+				return true
+			}
+		}
+		return false
+	}
 	// New Cohere models like command-r/r-plus must not be blanket-rejected
-	assert.True(t, IsVisionCapableModel("bedrock", "cohere.command-r-plus-v1"), "cohere command-r should be vision-capable")
-	assert.True(t, IsVisionCapableModel("bedrock", "cohere.embed-english-v3"), "cohere embed should not be blocked")
+	assert.False(t, deniedByRegex("cohere.command-r-plus-v1"), "cohere command-r should not match the deny-list")
+	assert.False(t, deniedByRegex("cohere.embed-english-v3"), "cohere embed should not match the deny-list")
 	// gpt-4 (with vision) and gpt-4-turbo must not be caught by gpt-4-base pattern
-	assert.True(t, IsVisionCapableModel("openai", "gpt-4"), "gpt-4 should be vision-capable")
-	assert.True(t, IsVisionCapableModel("openai", "gpt-4-turbo-2024-04-09"), "gpt-4-turbo should be vision-capable")
+	assert.False(t, deniedByRegex("gpt-4"), "gpt-4 should not match the deny-list")
+	assert.False(t, deniedByRegex("gpt-4-turbo-2024-04-09"), "gpt-4-turbo should not match the deny-list")
 	// claude-3 / claude-4 must not be caught by claude-2 pattern
-	assert.True(t, IsVisionCapableModel("bedrock", "anthropic.claude-3-opus-20240229-v1:0"), "claude-3 should be vision-capable")
-	assert.True(t, IsVisionCapableModel("bedrock", "anthropic.claude-sonnet-4-5"), "claude-4 should be vision-capable")
+	assert.False(t, deniedByRegex("anthropic.claude-3-opus-20240229-v1:0"), "claude-3 should not match the deny-list")
+	assert.False(t, deniedByRegex("anthropic.claude-sonnet-4-5"), "claude-4 should not match the deny-list")
 }
 
 func TestHasImageParts_NoImages(t *testing.T) {
@@ -462,19 +476,6 @@ func TestImageAttachmentToContentPart_AutoDetectMIME(t *testing.T) {
 	assert.Equal(t, "image/png", bc.MIMEType)
 }
 
-func TestAppendImagesToLastHumanMessage_DisabledByFeatureFlag(t *testing.T) {
-	// Feature flag is false by default — images should NOT be appended
-	config.Config.LlmServerImageSupportEnabled = false
-	mcList := []llms.MessageContent{
-		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "query"}}},
-	}
-	images := []ImageAttachment{
-		{Data: pngBase64(), MIMEType: "image/png"},
-	}
-	result := AppendImagesToLastHumanMessage(mcList, images)
-	assert.Len(t, result[0].Parts, 1) // unchanged — image not appended
-}
-
 func TestAppendImagesToLastHumanMessage_NoImages(t *testing.T) {
 	mcList := []llms.MessageContent{
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "hello"}}},
@@ -485,7 +486,6 @@ func TestAppendImagesToLastHumanMessage_NoImages(t *testing.T) {
 }
 
 func TestAppendImagesToLastHumanMessage_AppendsToLastHuman(t *testing.T) {
-	enableImageSupport(t)
 	mcList := []llms.MessageContent{
 		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: "system"}}},
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "query"}}},
@@ -503,7 +503,6 @@ func TestAppendImagesToLastHumanMessage_AppendsToLastHuman(t *testing.T) {
 }
 
 func TestAppendImagesToLastHumanMessage_NoHumanMessage(t *testing.T) {
-	enableImageSupport(t)
 	mcList := []llms.MessageContent{
 		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: "system"}}},
 	}
@@ -517,7 +516,6 @@ func TestAppendImagesToLastHumanMessage_NoHumanMessage(t *testing.T) {
 }
 
 func TestAppendImagesToLastHumanMessage_MultipleHumanMessages(t *testing.T) {
-	enableImageSupport(t)
 	mcList := []llms.MessageContent{
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "first"}}},
 		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{llms.TextContent{Text: "response"}}},
@@ -604,4 +602,151 @@ func TestGenerateImageDescriptionsAsync_NoDAO(t *testing.T) {
 	}
 	// Should not panic even with nil DAO
 	GenerateImageDescriptionsAsync(nil, request)
+}
+
+// --- parseImageContextResponse ---
+
+func TestParseImageContextResponse_TaggedFormat(t *testing.T) {
+	content := "<summary>\nPod foo-bar is CrashLoopBackOff.\n</summary>\n" +
+		"<descriptions>\n1. Screenshot of pod status showing CrashLoopBackOff.\n" +
+		"2. Grafana graph showing a CPU spike at 14:02.\n</descriptions>"
+
+	summary, descs := parseImageContextResponse(content)
+	assert.Equal(t, "Pod foo-bar is CrashLoopBackOff.", summary)
+	assert.Equal(t, []string{
+		"Screenshot of pod status showing CrashLoopBackOff.",
+		"Grafana graph showing a CPU spike at 14:02.",
+	}, descs)
+}
+
+func TestParseImageContextResponse_NoTags_FallsBackToWholeContent(t *testing.T) {
+	content := "  Just a plain untagged response.  "
+	summary, descs := parseImageContextResponse(content)
+	assert.Equal(t, "Just a plain untagged response.", summary)
+	assert.Nil(t, descs)
+}
+
+func TestParseImageContextResponse_SummaryOnly_NoDescriptions(t *testing.T) {
+	content := "<summary>Only a summary here.</summary>"
+	summary, descs := parseImageContextResponse(content)
+	assert.Equal(t, "Only a summary here.", summary)
+	assert.Nil(t, descs)
+}
+
+func TestParseImageContextResponse_CaseInsensitiveTags(t *testing.T) {
+	content := "<SUMMARY>Upper case tags.</SUMMARY>\n<Descriptions>\n1. one image.\n</Descriptions>"
+	summary, descs := parseImageContextResponse(content)
+	assert.Equal(t, "Upper case tags.", summary)
+	assert.Equal(t, []string{"one image."}, descs)
+}
+
+// --- contentHashForImage ---
+
+func TestContentHashForImage_MatchesComputeContentHash(t *testing.T) {
+	raw := pngBase64()
+	img := ImageAttachment{Data: raw}
+	assert.Equal(t, computeContentHash([]byte(raw)), contentHashForImage(img))
+
+	urlImg := ImageAttachment{URL: "https://example.com/img.png"}
+	assert.Equal(t, computeContentHash([]byte("https://example.com/img.png")), contentHashForImage(urlImg))
+
+	assert.Equal(t, "", contentHashForImage(ImageAttachment{}))
+}
+
+// --- saveImageDescriptions ---
+
+// mockAttachmentDAO is a minimal hand-written IAttachmentDAO for testing
+// saveImageDescriptions without a real database.
+type mockAttachmentDAO struct {
+	attachments []ConversationAttachment
+	updated     map[string]string
+	loadErr     error
+	updateErr   error
+}
+
+func (m *mockAttachmentDAO) SaveAttachments(messageID, conversationID, accountID string, images []ImageAttachment) ([]uuid.UUID, error) {
+	return nil, nil
+}
+func (m *mockAttachmentDAO) LoadAttachments(messageID, accountID string) ([]ConversationAttachment, error) {
+	return m.attachments, m.loadErr
+}
+func (m *mockAttachmentDAO) LoadAttachmentDescriptions(messageIDs []string, accountID string) (map[string][]AttachmentDescription, error) {
+	return nil, nil
+}
+func (m *mockAttachmentDAO) UpdateAttachmentDescription(attachmentID, accountID, description string) error {
+	if m.updateErr != nil {
+		return m.updateErr
+	}
+	if m.updated == nil {
+		m.updated = make(map[string]string)
+	}
+	m.updated[attachmentID] = description
+	return nil
+}
+func (m *mockAttachmentDAO) PurgeExpiredAttachments(retentionDays int) (int64, error) {
+	return 0, nil
+}
+
+func testRequestContext() *security.RequestContext {
+	return security.NewRequestContext(context.Background(), nil, slog.Default(), nil, nil)
+}
+
+func TestSaveImageDescriptions_WritesMatchingAttachmentsByContentHash(t *testing.T) {
+	old := attachmentDAO
+	defer func() { attachmentDAO = old }()
+
+	img1 := ImageAttachment{Data: pngBase64(), MIMEType: "image/png"}
+	img2 := ImageAttachment{URL: "https://example.com/img.png", MIMEType: "image/png"}
+	att1ID, att2ID := uuid.New(), uuid.New()
+
+	mock := &mockAttachmentDAO{
+		attachments: []ConversationAttachment{
+			{ID: att1ID, ContentHash: contentHashForImage(img1)},
+			{ID: att2ID, ContentHash: contentHashForImage(img2)},
+		},
+	}
+	attachmentDAO = mock
+
+	request := NBAgentRequest{MessageId: "msg-1", AccountId: "acc-1", Images: []ImageAttachment{img1, img2}}
+	saveImageDescriptions(testRequestContext(), request, []string{"first image desc", "second image desc"})
+
+	require.Len(t, mock.updated, 2)
+	assert.Equal(t, "first image desc", mock.updated[att1ID.String()])
+	assert.Equal(t, "second image desc", mock.updated[att2ID.String()])
+}
+
+func TestSaveImageDescriptions_CountMismatch_NoWrites(t *testing.T) {
+	old := attachmentDAO
+	defer func() { attachmentDAO = old }()
+
+	img1 := ImageAttachment{Data: pngBase64(), MIMEType: "image/png"}
+	mock := &mockAttachmentDAO{
+		attachments: []ConversationAttachment{{ID: uuid.New(), ContentHash: contentHashForImage(img1)}},
+	}
+	attachmentDAO = mock
+
+	request := NBAgentRequest{MessageId: "msg-1", AccountId: "acc-1", Images: []ImageAttachment{img1}}
+	// Two descriptions for one image — mismatch, must defer to async fallback.
+	saveImageDescriptions(testRequestContext(), request, []string{"a", "b"})
+
+	assert.Empty(t, mock.updated)
+}
+
+func TestSaveImageDescriptions_SkipsAttachmentThatAlreadyHasDescription(t *testing.T) {
+	old := attachmentDAO
+	defer func() { attachmentDAO = old }()
+
+	img1 := ImageAttachment{Data: pngBase64(), MIMEType: "image/png"}
+	existing := "already described"
+	mock := &mockAttachmentDAO{
+		attachments: []ConversationAttachment{
+			{ID: uuid.New(), ContentHash: contentHashForImage(img1), Description: &existing},
+		},
+	}
+	attachmentDAO = mock
+
+	request := NBAgentRequest{MessageId: "msg-1", AccountId: "acc-1", Images: []ImageAttachment{img1}}
+	saveImageDescriptions(testRequestContext(), request, []string{"new description"})
+
+	assert.Empty(t, mock.updated, "must not overwrite an existing description")
 }

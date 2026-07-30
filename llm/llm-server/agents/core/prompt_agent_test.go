@@ -294,7 +294,6 @@ func TestGetPromptTemplateForReWoo(t *testing.T) {
 }
 
 func TestGetPromptTemplate_ImageInstructions_ReWoo(t *testing.T) {
-	enableImageSupport(t)
 	mockReq := NBAgentRequest{
 		Query:          "What's wrong with this pod?",
 		AccountId:      uuid.NewString(),
@@ -324,7 +323,6 @@ func TestGetPromptTemplate_ImageInstructions_ReWoo(t *testing.T) {
 }
 
 func TestGetPromptTemplate_ImageInstructions_ReAct(t *testing.T) {
-	enableImageSupport(t)
 	mockReq := NBAgentRequest{
 		Query:          "Check this error screenshot",
 		AccountId:      uuid.NewString(),

@@ -415,8 +415,8 @@ class SlackSettings(BaseSettings):
     followup_options_threshold: int = Field(
         25, validation_alias=AliasChoices("FOLLOWUP_OPTIONS_THRESHOLD", "followup_options_threshold")
     )
-    # Always on. The llm-server's LLM_SERVER_IMAGE_SUPPORT_ENABLED remains the
-    # source of truth and re-validates every image.
+    # Always on. llm-server always accepts image attachments and
+    # re-validates every image itself (no toggle to keep in sync with).
     image_max_per_message: int = Field(
         4, validation_alias=AliasChoices("SLACK_IMAGE_MAX_PER_MESSAGE", "slack_image_max_per_message")
     )

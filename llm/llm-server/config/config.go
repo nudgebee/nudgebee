@@ -301,9 +301,8 @@ type appConfig struct {
 	LlmServerMaxToolErrorOutputLen int `mapstructure:"llm_server_max_tool_error_output_len"`
 
 	// Image attachment support
-	LlmServerImageSupportEnabled bool    `mapstructure:"llm_server_image_support_enabled"`
-	LlmServerImageMaxPerMessage  int     `mapstructure:"llm_server_image_max_per_message"`
-	LlmServerImageMaxSizeMB      float64 `mapstructure:"llm_server_image_max_size_mb"`
+	LlmServerImageMaxPerMessage int     `mapstructure:"llm_server_image_max_per_message"`
+	LlmServerImageMaxSizeMB     float64 `mapstructure:"llm_server_image_max_size_mb"`
 
 	ServerName string `mapstructure:"llm_server_name"`
 	// ServerHeartBeatFrequncySecond defines how often the server sends a heartbeat to indicate it is alive.
@@ -1138,7 +1137,6 @@ func init() {
 	viper.SetDefault("llm_server_kg_get_node_enabled", false)
 	viper.SetDefault("llm_server_evaluation_enabled", false)
 	viper.SetDefault("llm_server_auto_identify_account_enabled", false)
-	viper.SetDefault("llm_server_image_support_enabled", false)
 
 	viper.SetDefault("llm_server_message_termination_cache_ttl_seconds", 15)
 	viper.SetDefault("llm_server_message_terminated_cache_ttl_minutes", 10)

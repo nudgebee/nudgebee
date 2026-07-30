@@ -560,7 +560,7 @@ func GetPromptTemplate(p NBAgentPrompt, query NBAgentRequest, plannerType AgentP
 	}
 
 	// Inject image analysis instructions when the current turn has images
-	if len(query.Images) > 0 && IsImageSupportEnabled() {
+	if len(query.Images) > 0 {
 		if plannerType == AgentPlannerTypeReAct {
 			sb.WriteString("<image_analysis_instructions>\n")
 		} else {

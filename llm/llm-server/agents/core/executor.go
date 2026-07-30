@@ -369,10 +369,22 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		request.PreviousState = previousState
 	}
 
+	// Images attached but no configured model (main or lite) can process them:
+	// don't let the agent loose on tool-calling investigation driven by a query
+	// it can't actually ground in the image content — answer directly instead.
+	// Checked once here and reused below; ExtractImageContext would otherwise
+	// redundantly reach the same conclusion internally and no-op.
+	imagesUnsupportedByModel := false
+	if len(request.Images) > 0 {
+		if _, ok := resolveVisionCapableTier(config.Config.LlmProvider); !ok {
+			imagesUnsupportedByModel = true
+		}
+	}
+
 	// Extract actionable context from attached images before planning.
 	// This enriches vague queries like "can you investigate" with concrete details
 	// (service names, error codes, metric values) visible in the screenshots.
-	if len(request.Images) > 0 && IsImageSupportEnabled() {
+	if len(request.Images) > 0 && !imagesUnsupportedByModel {
 		request.Query = ExtractImageContext(ctx, request)
 	}
 
@@ -630,7 +642,13 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	ctx.GetLogger().Info("agentexecutor: executing agent planner", "agent", agent.GetName(), "query_len", len(request.Query), "hasState", request.PreviousState != "", "refinement_duration", time.Since(refinementStart).String(), "total_setup_duration", time.Since(start).String())
 
 	var response NBAgentPlannerExecutorResponse
-	if customAgent, ok := agent.(NBCustomAgent); ok && agent.GetPlannerType() == AgentPlannerTypeCustom {
+	if imagesUnsupportedByModel {
+		response = NBAgentPlannerExecutorResponse{
+			Status:     AgentExecutionStatusSuccess,
+			Response:   "The current model doesn't support image attachments, so I can't view the image(s) you attached. Please describe what's shown — error messages, resource names, metric values, or the issue you're seeing — and I'll help investigate.",
+			IsTerminal: true,
+		}
+	} else if customAgent, ok := agent.(NBCustomAgent); ok && agent.GetPlannerType() == AgentPlannerTypeCustom {
 		// Restore state for stateful custom agents (e.g., WorkflowBuilder multi-stage flow)
 		if previousAgentState != "" {
 			type statefulAgent interface {
@@ -878,7 +896,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 
 	// Generate image descriptions asynchronously for follow-up context.
 	// Fires for completed and waiting turns so history replay has image context on resume.
-	if len(request.Images) > 0 && IsImageSupportEnabled() &&
+	if len(request.Images) > 0 &&
 		agentResponse.Status != ConversationStatusFailed &&
 		agentResponse.Status != ConversationStatusTerminated {
 		GenerateImageDescriptionsAsync(ctx, request)

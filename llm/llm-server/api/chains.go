@@ -213,14 +213,6 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		if len(request.Images) > 0 {
-			if !core.IsImageSupportEnabled() {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
-					common.Error{
-						Message: "api: image attachments are not enabled",
-					},
-				}))
-				return
-			}
 			if err := core.ValidateImages(c.Request.Context(), request.Images); err != nil {
 				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
 					common.Error{

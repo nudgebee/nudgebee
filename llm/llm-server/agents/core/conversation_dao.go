@@ -267,6 +267,7 @@ type IConversationDao interface {
 	GetConversationTokenUsage(conversationId, accountId string) ([]TokenMetrics, error)
 	GetConversationCost(provider string, model string, nonCachedInputTokens, cachedInputTokens, cacheCreationTokens, outputTokens, thinkingTokens int) (float64, error)
 	GetConversationCosts(models []string) (map[string]modelPricing, error)
+	GetImageSupportCatalog() (map[string]bool, error)
 	GetConversationTokenUsageDetailed(conversationId, accountId string) ([]TokenUsageDetailedRecord, error)
 	GetConversationToolCallAgents(conversationId string) ([]ToolCallAgent, error)
 	ResolveSessionId(idOrSessionId string) string
@@ -854,6 +855,17 @@ func GetConversationDao() IConversationDao {
 		dbManager: dbManager2,
 	}
 
+	return conversationDao
+}
+
+// PeekConversationDao returns the currently-set conversation DAO singleton,
+// or nil if none has been established yet. Unlike GetConversationDao, it
+// never triggers a fresh DB connection attempt — for best-effort, nice-to-have
+// lookups that must not pay (or block on) a first-time connection cost just
+// to check something optional.
+func PeekConversationDao() IConversationDao {
+	conversationDaoMutex.Lock()
+	defer conversationDaoMutex.Unlock()
 	return conversationDao
 }
 
@@ -2528,6 +2540,38 @@ func (chat *ConversationDao) GetConversationCosts(models []string) (map[string]m
 		return nil, err
 	}
 	return pricingMap, nil
+}
+
+// GetImageSupportCatalog returns the explicit vision-capability verdicts recorded
+// in llm_model_pricing.supports_image_input, keyed by "provider:model". Rows
+// where the column is NULL are omitted — callers must treat a missing key as
+// "unknown", not "false", and fall back to their own default heuristic.
+func (chat *ConversationDao) GetImageSupportCatalog() (map[string]bool, error) {
+	rows, err := chat.dbManager.Db.Queryx(`SELECT provider_name, model_name, supports_image_input
+		FROM llm_model_pricing
+		WHERE supports_image_input IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("GetImageSupportCatalog: query failed: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Error("Failed to close rows", "error", err)
+		}
+	}()
+
+	catalog := make(map[string]bool)
+	for rows.Next() {
+		var provider, model string
+		var supportsImage bool
+		if err := rows.Scan(&provider, &model, &supportsImage); err != nil {
+			return nil, fmt.Errorf("GetImageSupportCatalog: scan failed: %w", err)
+		}
+		catalog[provider+":"+model] = supportsImage
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return catalog, nil
 }
 
 func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId string) ([]TokenMetrics, error) {

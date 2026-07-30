@@ -219,10 +219,10 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		defaultProvider := core.GetLLMProvider(agentContext, request.AccountId, "", false, "")
 		defaultModel := core.GetLLMModelName(agentContext, request.AccountId, defaultProvider, "", false, "")
 
-		// Build response. image_support advertises the server's runtime image
-		// capability + limits so the UI can gate the attach affordance and
-		// enforce limits client-side instead of guessing (the flag defaults
-		// off and was previously invisible to clients).
+		// Build response. image_support advertises the server's image limits
+		// so the UI can enforce them client-side instead of guessing. Image
+		// support itself is always on — "enabled" is kept for API
+		// compatibility with clients already reading it.
 		response := map[string]any{
 			"models": models,
 			"default": map[string]string{
@@ -230,7 +230,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 				"model":    defaultModel,
 			},
 			"image_support": map[string]any{
-				"enabled":            core.IsImageSupportEnabled(),
+				"enabled":            true,
 				"max_per_message":    core.GetImageMaxPerMessage(),
 				"max_size_mb":        core.GetImageMaxSizeMB(),
 				"allowed_mime_types": core.GetAllowedImageMIMETypes(),

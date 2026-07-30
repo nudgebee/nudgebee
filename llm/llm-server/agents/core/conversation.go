@@ -1077,7 +1077,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		markConversationActive(ctx, conversation.ID.String(), conversation.Status, "new turn", true)
 
 		// Save image attachments (non-fatal: message is saved even if attachment storage fails)
-		if len(request.Images) > 0 && IsImageSupportEnabled() {
+		if len(request.Images) > 0 {
 			dao := GetAttachmentDAO()
 			if dao != nil {
 				_, attachErr := dao.SaveAttachments(request.MessageId, conversation.ID.String(), request.AccountId, request.Images)
