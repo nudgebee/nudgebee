@@ -123,6 +123,11 @@ type Configuration struct {
 	BodyMaxBytes            int64 `mapstructure:"gateway_body_max_bytes"`
 	BodyTTLHours            int   `mapstructure:"gateway_body_ttl_hours"`
 	BodyCleanupIntervalMins int   `mapstructure:"gateway_body_cleanup_interval_minutes"`
+	// BodyPurgeGraceHours is how long past a body's expiry the row is kept before it
+	// is HARD-deleted (irreversible; this is the step that reclaims storage). The same
+	// cleanup loop soft-deletes at expiry, then purges rows past expiry+grace. The grace
+	// is a safety buffer on an irreversible delete. 0 = purge as soon as expired.
+	BodyPurgeGraceHours int `mapstructure:"gateway_body_purge_grace_hours"`
 
 	// Capture — session correlation + structure-only attributes.
 	// SessionHeader: request header a client sets to group requests into a
@@ -233,6 +238,7 @@ var keyDefaults = map[string]any{
 	"gateway_body_max_bytes":                1048576, // 1 MiB per body
 	"gateway_body_ttl_hours":                168,     // 7 days
 	"gateway_body_cleanup_interval_minutes": 60,
+	"gateway_body_purge_grace_hours":        24, // hard-delete this long after expiry
 	"otel_traces_exporter":                  "",
 	"otel_metrics_exporter":                 "",
 
