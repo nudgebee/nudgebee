@@ -5234,6 +5234,7 @@ input ListAIMemoryRequest {
   account_id: String!
   conversation_id: String
   message_id: String
+  message_ids: [String]
   limit: Int
   offset: Int
   memory_type: String
@@ -5280,6 +5281,7 @@ input ListAIReferencesRequest {
   account_id: String!
   conversation_id: String
   message_id: String
+  message_ids: [String]
   agent_id: String
   limit: Int
   offset: Int

@@ -296,7 +296,7 @@ func runTest(t *testing.T, agent core.NBAgent, tc k8sTestCase) core.NBAgentRespo
 func waitForMemory(t *testing.T, accountId string, keywords []string, attempts int, interval time.Duration) (core.LongTermMemory, bool) {
 	t.Helper()
 	for i := 0; i < attempts; i++ {
-		memories, err := core.GetConversationDao().ListLongTermMemories(accountId, "", "", "", "", 50, 0)
+		memories, err := core.GetConversationDao().ListLongTermMemories(accountId, "", nil, "", "", 50, 0)
 		if err == nil {
 			for _, m := range memories {
 				if containsAll(m.Content, keywords) {
@@ -315,7 +315,7 @@ func waitForMemory(t *testing.T, accountId string, keywords []string, attempts i
 // contains every keyword in `keywords`.
 func countMemoriesMatching(t *testing.T, accountId string, keywords []string) int {
 	t.Helper()
-	memories, err := core.GetConversationDao().ListLongTermMemories(accountId, "", "", "", "", 50, 0)
+	memories, err := core.GetConversationDao().ListLongTermMemories(accountId, "", nil, "", "", 50, 0)
 	assert.Nil(t, err)
 	count := 0
 	for _, m := range memories {

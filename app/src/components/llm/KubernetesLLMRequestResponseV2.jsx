@@ -36,6 +36,15 @@ const KubernetesLLMRequestResponse = (props) => {
   const [referencesAnchorEl, setReferencesAnchorEl] = useState(null);
 
   useEffect(() => {
+    // MessageStream batch-fetches feedback for every response in the conversation via
+    // useMessageAdditionalData and passes the result down as `feedback` — skip the per-card
+    // network call entirely in that case (feedbackManagedExternally is only ever passed
+    // from that path). Other callers (LLMConversationWithTabs, investigate.jsx) don't pass
+    // it and keep fetching their own single session's feedback as before.
+    if (props.feedbackManagedExternally) {
+      setSentFeedback(props.feedback ?? {});
+      return;
+    }
     if (props.toolCall.type == 'response') {
       apiAskNudgebee
         .getFeedbackForSessionId({
@@ -57,7 +66,7 @@ const KubernetesLLMRequestResponse = (props) => {
           }
         });
     }
-  }, [props.toolCall.id]);
+  }, [props.toolCall.id, props.feedbackManagedExternally, props.feedback]);
 
   const onPageChange = (page, limit) => {
     setCurrentPage(page - 1);
@@ -1354,6 +1363,12 @@ KubernetesLLMRequestResponse.propTypes = {
   selectedModel: PropTypes.object,
   followupReadOnlyKey: PropTypes.string,
   conversationJson: PropTypes.object,
+  feedback: PropTypes.shape({
+    submitted: PropTypes.bool,
+    isPositive: PropTypes.bool,
+    message: PropTypes.string,
+  }),
+  feedbackManagedExternally: PropTypes.bool,
 };
 
 export default KubernetesLLMRequestResponse;

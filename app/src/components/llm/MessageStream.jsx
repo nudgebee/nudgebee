@@ -441,6 +441,8 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
                 onNavigateToTask={handleNavigateToTask}
                 groupIndex={groupIndex}
                 responseMeta={responseMeta}
+                feedback={additionalData[response.id]?.feedback}
+                feedbackManagedExternally
               />
             )}
           </React.Fragment>

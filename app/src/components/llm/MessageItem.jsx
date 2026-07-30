@@ -133,6 +133,12 @@ const MessageItem = ({
   onNavigateToTask,
   groupIndex,
   responseMeta,
+  // Batched feedback for this response, pre-fetched once for the whole conversation by
+  // MessageStream's useMessageAdditionalData, plus the flag saying so — forwarded as-is
+  // to KubernetesLLMRequestResponseV2, which skips its own getFeedbackForSessionId call
+  // per card when set.
+  feedback,
+  feedbackManagedExternally,
   // Tasks-timeline nesting: >0 shifts the row right and deepens the dot shade so
   // child/sub-agent tasks read as nested. Default 0 keeps the main message stream
   // (which doesn't pass it) rendered flat, unchanged.
@@ -563,6 +569,8 @@ const MessageItem = ({
                   onOpenToolDetails={onOpenToolDetails}
                   onNavigateToTask={onNavigateToTask}
                   groupIndex={groupIndex}
+                  feedback={feedback}
+                  feedbackManagedExternally={feedbackManagedExternally}
                 />
               ) : null
             }
@@ -659,6 +667,12 @@ MessageItem.propTypes = {
     onTokenUsageHover: PropTypes.func,
     isFetchingTokenData: PropTypes.bool,
   }),
+  feedback: PropTypes.shape({
+    submitted: PropTypes.bool,
+    isPositive: PropTypes.bool,
+    message: PropTypes.string,
+  }),
+  feedbackManagedExternally: PropTypes.bool,
 };
 
 export default MessageItem;

@@ -30,8 +30,12 @@ type memoryListRequest struct {
 	Offset         int    `json:"offset"`
 	ConversationId string `json:"conversation_id"`
 	MessageId      string `json:"message_id"`
-	MemoryType     string `json:"memory_type"`
-	Query          string `json:"query"`
+	// MessageIds batches multiple message ids into one call (e.g. the frontend's
+	// per-conversation batch fetch). Takes precedence over MessageId when both are set;
+	// MessageId stays for existing single-message callers.
+	MessageIds []string `json:"message_ids"`
+	MemoryType string   `json:"memory_type"`
+	Query      string   `json:"query"`
 }
 
 type memoryDeleteRequest struct {
@@ -117,7 +121,12 @@ func memoryList(c *gin.Context, context *security.RequestContext, payload map[st
 		return
 	}
 
-	memories, err := core.GetConversationDao().ListLongTermMemories(request.AccountId, request.ConversationId, request.MessageId, request.MemoryType, request.Query, request.Limit, request.Offset)
+	messageIds := request.MessageIds
+	if len(messageIds) == 0 && request.MessageId != "" {
+		messageIds = []string{request.MessageId}
+	}
+
+	memories, err := core.GetConversationDao().ListLongTermMemories(request.AccountId, request.ConversationId, messageIds, request.MemoryType, request.Query, request.Limit, request.Offset)
 	if err != nil {
 		slog.Error("memory: failed to list", "error", err, "account_id", request.AccountId)
 		c.JSON(500, buildApiResponse(nil, []error{

@@ -736,9 +736,17 @@ const api = {
   },
   async getFeedbackForSessionId(data: FeedbackForSessionRequest) {
     if (data.account_id === 'demo') return null;
+    // `session_id` throughout this call (and the ai_list_conversation_feedback.session_id
+    // column it filters on) is actually a per-message id, not a conversation/session id —
+    // single callers pass a message id (e.g. KubernetesLLMRequestResponseV2's toolCall.id),
+    // and the batched caller (useMessageAdditionalData) passes an array of message ids.
+    // No `limit` here — a batched call (session_id as an array) needs one row per message, and
+    // a limit applies to the whole result set rather than per session_id. Rows come back
+    // ordered by updated_at desc, so we keep only the first (latest) row per session_id below
+    // to preserve the "one row per message" contract single callers rely on.
     const GET_FEEBACK_FOR_SESSION_ID = `
         query LLMFeedback {
-          ai_list_conversation_feedback(where: __WHERE__, order_by: {column: "updated_at", order: desc}, limit: 1) {
+          ai_list_conversation_feedback(where: __WHERE__, order_by: {column: "updated_at", order: desc}) {
             rows {
               useful
               updated_at
@@ -757,6 +765,15 @@ const api = {
       query.session_id = { _eq: data.session_id };
     }
     const response = await queryGraphQL(GET_FEEBACK_FOR_SESSION_ID.replace('__WHERE__', gqlStringify(query)), 'LLMFeedback', {});
+    const feedbackResult = response?.data?.data?.ai_list_conversation_feedback;
+    if (feedbackResult && Array.isArray(feedbackResult.rows)) {
+      const seenSessionIds = new Set();
+      feedbackResult.rows = feedbackResult.rows.filter((row: any) => {
+        if (seenSessionIds.has(row.session_id)) return false;
+        seenSessionIds.add(row.session_id);
+        return true;
+      });
+    }
     return response;
   },
   async saveConversation(data: SaveConversationRequest) {
@@ -1525,7 +1542,7 @@ const api = {
       throw err;
     }
   },
-  async listMemory(accountId: string, conversationId?: string, messageId?: string, memoryType?: string, query?: string) {
+  async listMemory(accountId: string, conversationId?: string, messageId?: string, memoryType?: string, query?: string, messageIds?: string[]) {
     if (accountId === 'demo') return null;
     const LIST_MEMORY = `
     query ListMemory($request: ListAIMemoryRequest!) {
@@ -1555,7 +1572,9 @@ const api = {
       if (conversationId) {
         request.conversation_id = conversationId;
       }
-      if (messageId) {
+      if (messageIds?.length) {
+        request.message_ids = messageIds;
+      } else if (messageId) {
         request.message_id = messageId;
       }
       if (memoryType) {
@@ -1576,7 +1595,17 @@ const api = {
       return { data: [], errors: [error] };
     }
   },
-  async listReferences({ accountId, messageId, conversationId }: { accountId: string; messageId?: string; conversationId?: string }) {
+  async listReferences({
+    accountId,
+    messageId,
+    messageIds,
+    conversationId,
+  }: {
+    accountId: string;
+    messageId?: string;
+    messageIds?: string[];
+    conversationId?: string;
+  }) {
     if (accountId === 'demo') return null;
     const LIST_REFERENCES = `
     query AiListReferences($request: ListAIReferencesRequest!) {
@@ -1605,11 +1634,15 @@ const api = {
     try {
       const request: any = {
         account_id: accountId,
+        limit: 100,
+        offset: 0,
       };
       if (conversationId) {
         request.conversation_id = conversationId;
       }
-      if (messageId) {
+      if (messageIds?.length) {
+        request.message_ids = messageIds;
+      } else if (messageId) {
         request.message_id = messageId;
       }
       const response = await queryGraphQL(LIST_REFERENCES, 'AiListReferences', {

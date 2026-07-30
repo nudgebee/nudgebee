@@ -36,8 +36,12 @@ type ConversationReferenceListApiRequest struct {
 	AccountId      string `json:"account_id" mapstructure:"required" validate:"required"`
 	ConversationId string `json:"conversation_id"`
 	MessageId      string `json:"message_id"`
-	AgentId        string `json:"agent_id"`
-	Limit          int    `json:"limit"`
+	// MessageIds batches multiple message ids into one call (e.g. the frontend's
+	// per-conversation batch fetch). Takes precedence over MessageId when both are set;
+	// MessageId stays for existing single-message callers.
+	MessageIds []string `json:"message_ids"`
+	AgentId    string   `json:"agent_id"`
+	Limit      int      `json:"limit"`
 }
 
 func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
@@ -504,7 +508,12 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			request.Limit = 100
 		}
 
-		references, err := core.GetConversationDao().ListAgentReferences(request.AccountId, request.ConversationId, request.MessageId, request.AgentId, request.Limit)
+		messageIds := request.MessageIds
+		if len(messageIds) == 0 && request.MessageId != "" {
+			messageIds = []string{request.MessageId}
+		}
+
+		references, err := core.GetConversationDao().ListAgentReferences(request.AccountId, request.ConversationId, messageIds, request.AgentId, request.Limit)
 		if err != nil {
 			logger.Error("api: error listing references", "error", err)
 			c.JSON(500, buildApiResponse(nil, []error{

@@ -296,7 +296,7 @@ type IConversationDao interface {
 	GetCritiqueList(filter CritiqueFilter, limit, offset int) (CritiqueList, error)
 	SaveLongTermMemory(accountId, conversationId, messageId, content string, memoryType MemoryType) (string, error)
 	LoadLongTermMemories(accountId string, query string, limit int) ([]string, error)
-	ListLongTermMemories(accountId string, conversationId string, messageId string, memoryType string, query string, limit int, offset int) ([]LongTermMemory, error)
+	ListLongTermMemories(accountId string, conversationId string, messageIds []string, memoryType string, query string, limit int, offset int) ([]LongTermMemory, error)
 	DeleteLongTermMemory(id, accountId string) error
 	UpdateMessageProductivityMetrics(messageId string, classification string, successfulTasks int) error
 	GetSuccessfulToolCallsCountByMessage(messageId string) (int, error)
@@ -314,7 +314,7 @@ type IConversationDao interface {
 	// determined to actually be surfaced to the agent.
 	IncrementMemoryUsage(accountId string, memories []LongTermMemory)
 	SaveAgentReferences(accountId, conversationId, messageId, agentId string, references []AgentReference) error
-	ListAgentReferences(accountId, conversationId, messageId, agentId string, limit int) ([]ConversationReference, error)
+	ListAgentReferences(accountId, conversationId string, messageIds []string, agentId string, limit int) ([]ConversationReference, error)
 	SaveConversationContextReference(accountId, conversationId, messageId string, unifiedExtraction *LlmUnifiedExtraction) error
 }
 
@@ -415,7 +415,7 @@ type TokenUsageRecord struct {
 	TaskType  *string // Top-level turn classification (query/investigation). NULL for sub-agent calls.
 }
 
-func (chat *ConversationDao) ListAgentReferences(accountId, conversationId, messageId, agentId string, limit int) ([]ConversationReference, error) {
+func (chat *ConversationDao) ListAgentReferences(accountId, conversationId string, messageIds []string, agentId string, limit int) ([]ConversationReference, error) {
 	// Memory-v2 hydration notes:
 	//   * patterns/decisions/collective/preferences JOIN their own layer table
 	//     by UUID and project a subject-first display string so the UI's
@@ -524,9 +524,9 @@ func (chat *ConversationDao) ListAgentReferences(accountId, conversationId, mess
 		args = append(args, conversationId)
 		argCounter++
 	}
-	if messageId != "" {
-		query += fmt.Sprintf(" AND r.message_id = $%d::text", argCounter)
-		args = append(args, messageId)
+	if len(messageIds) > 0 {
+		query += fmt.Sprintf(" AND r.message_id = ANY($%d::text[])", argCounter)
+		args = append(args, pq.Array(messageIds))
 		argCounter++
 	}
 	if agentId != "" {
@@ -535,8 +535,27 @@ func (chat *ConversationDao) ListAgentReferences(accountId, conversationId, mess
 		argCounter++
 	}
 
-	query += fmt.Sprintf(" ORDER BY r.created_at DESC LIMIT $%d", argCounter)
-	args = append(args, limit)
+	if len(messageIds) > 1 {
+		// Batched calls (useMessageAdditionalData fetches several newly-completed
+		// message_ids in one call) need a per-message_id cap, not one flat LIMIT
+		// across the whole batch — otherwise a message with more-recently-created
+		// rows can crowd another message's rows out of the result entirely. The
+		// single-message_id / no-filter path below is left as a flat LIMIT
+		// (unchanged) since PARTITION BY only matters once more than one
+		// message_id is in play.
+		query = fmt.Sprintf(`
+			SELECT id, account_id, conversation_id, message_id, agent_id, reference_id, reference_type, metadata, created_at, content, used, used_by_agent
+			FROM (
+				SELECT ranked.*, ROW_NUMBER() OVER (PARTITION BY ranked.message_id ORDER BY ranked.created_at DESC) AS rn
+				FROM (%s) ranked
+			) numbered
+			WHERE rn <= $%d
+			ORDER BY created_at DESC`, query, argCounter)
+		args = append(args, limit)
+	} else {
+		query += fmt.Sprintf(" ORDER BY r.created_at DESC LIMIT $%d", argCounter)
+		args = append(args, limit)
+	}
 
 	rows, err := chat.dbManager.Db.Queryx(query, args...)
 	if err != nil {
@@ -3495,7 +3514,7 @@ func (chat *ConversationDao) SaveLongTermMemory(accountId, conversationId, messa
 	return id, nil
 }
 
-func (chat *ConversationDao) ListLongTermMemories(accountId string, conversationId string, messageId string, memoryType string, searchQuery string, limit int, offset int) ([]LongTermMemory, error) {
+func (chat *ConversationDao) ListLongTermMemories(accountId string, conversationId string, messageIds []string, memoryType string, searchQuery string, limit int, offset int) ([]LongTermMemory, error) {
 	query := `
 	SELECT id, account_id, conversation_id, message_id, content, memory_type, use_count, last_used_at, created_at
 	FROM llm_conversation_memory
@@ -3510,9 +3529,9 @@ func (chat *ConversationDao) ListLongTermMemories(accountId string, conversation
 		argCounter++
 	}
 
-	if messageId != "" {
-		query += fmt.Sprintf(" AND message_id = $%d", argCounter)
-		args = append(args, messageId)
+	if len(messageIds) > 0 {
+		query += fmt.Sprintf(" AND message_id = ANY($%d)", argCounter)
+		args = append(args, pq.Array(messageIds))
 		argCounter++
 	}
 
@@ -3528,8 +3547,28 @@ func (chat *ConversationDao) ListLongTermMemories(accountId string, conversation
 		argCounter++
 	}
 
-	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d;", argCounter, argCounter+1)
-	args = append(args, limit, offset)
+	if len(messageIds) > 1 {
+		// Batched calls (useMessageAdditionalData fetches several newly-completed
+		// message_ids in one call) need a per-message_id cap, not one flat LIMIT
+		// across the whole batch — otherwise a message with more-recently-created
+		// rows can crowd another message's rows out of the result entirely.
+		// Offset doesn't have a coherent meaning against a per-message-ranked set
+		// and no caller passes one alongside a multi-id batch today, so it's not
+		// applied in this branch. The single-message_id / no-filter path below
+		// (offset included) is left as a flat LIMIT, unchanged.
+		query = fmt.Sprintf(`
+			SELECT id, account_id, conversation_id, message_id, content, memory_type, use_count, last_used_at, created_at
+			FROM (
+				SELECT ranked.*, ROW_NUMBER() OVER (PARTITION BY ranked.message_id ORDER BY ranked.created_at DESC) AS rn
+				FROM (%s) ranked
+			) numbered
+			WHERE rn <= $%d
+			ORDER BY created_at DESC`, query, argCounter)
+		args = append(args, limit)
+	} else {
+		query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d;", argCounter, argCounter+1)
+		args = append(args, limit, offset)
+	}
 
 	rows, err := chat.dbManager.Db.Queryx(query, args...)
 	if err != nil {
