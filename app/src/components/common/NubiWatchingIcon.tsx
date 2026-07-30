@@ -1,0 +1,74 @@
+import React from 'react';
+
+// Round Nubi icon (geometry verbatim from public/branding/default/nubi-icon.svg)
+// with only the eyes animated via the shared `.nb-nubi` "watching" state — eyes
+// glance around + blink. Used for the global chat launcher, which wants the round
+// icon rather than the teardrop-bodied NubiAnimation mascot (that stays for the
+// Loader). Nudgebee mascot — callers must gate on branding before rendering.
+
+const NAVY = '#1B2D4A';
+const HONEY = '#FACF39';
+
+interface NubiWatchingIconProps {
+  /** Rendered width & height. Number = px. */
+  size?: number | string;
+  /** When set, exposed to screen readers as an image with this label; otherwise decorative. */
+  ariaLabel?: string;
+}
+
+const NubiWatchingIcon: React.FC<NubiWatchingIconProps> = ({ size = 34, ariaLabel }) => (
+  <span className='nb-nubi s-watching'>
+    <svg
+      viewBox='0 0 202 207'
+      style={{ width: size, height: size }}
+      xmlns='http://www.w3.org/2000/svg'
+      role={ariaLabel ? 'img' : undefined}
+      aria-label={ariaLabel}
+      aria-hidden={ariaLabel ? undefined : true}
+    >
+      <path d='M161.3 25H155.4V61.8H161.3V25Z' fill='white' />
+      <path
+        d='M97.5 195.801C144.168 195.801 182 159.536 182 114.801C182 70.0657 144.168 33.8008 97.5 33.8008C50.8319 33.8008 13 70.0657 13 114.801C13 159.536 50.8319 195.801 97.5 195.801Z'
+        fill={NAVY}
+      />
+      <path
+        d='M162 167C161.313 167.863 160.511 168.654 159.824 169.444C159.595 169.66 159.366 169.948 159.137 170.163C157.189 172.104 155.242 173.973 153.295 175.699C152.608 176.274 151.921 176.777 151.348 177.352C150.203 178.215 149.057 179.078 147.912 179.941C146.308 181.163 144.59 182.241 142.872 183.319C112.749 185.548 82.6255 185.548 52.5022 183.391C50.7841 182.385 48.9515 181.235 47.2335 180.084C45.9736 179.222 44.7137 178.287 43.4537 177.352C42.7665 176.849 42.0793 176.274 41.3921 175.771C39.2159 174.045 37.1542 172.176 35.0925 170.235C34.8634 170.019 34.6344 169.732 34.2907 169.516C33.489 168.725 32.8018 167.935 32 167.144C75.1806 171.098 118.476 171.098 162 167.144V167Z'
+        fill={HONEY}
+      />
+      <path
+        d='M85.3008 56H108.201C136.601 56 159.701 79.1 159.701 107.5V109C159.701 137.4 136.601 160.5 108.201 160.5H82.3008C55.5008 160.5 33.8008 138.8 33.8008 112V107.5C33.8008 79.1 56.9008 56 85.3008 56Z'
+        fill='white'
+      />
+      <g className='n-eyes'>
+        <path
+          className='n-eye'
+          d='M81.3004 99.3992C81.3004 95.1466 77.853 91.6992 73.6004 91.6992C69.3478 91.6992 65.9004 95.1466 65.9004 99.3992V108.899C65.9004 113.152 69.3478 116.599 73.6004 116.599C77.853 116.599 81.3004 113.152 81.3004 108.899V99.3992Z'
+          fill={NAVY}
+        />
+        <path
+          className='n-eye'
+          d='M126.4 99.3992C126.4 95.1466 122.953 91.6992 118.7 91.6992C114.447 91.6992 111 95.1466 111 99.3992V108.899C111 113.152 114.447 116.599 118.7 116.599C122.953 116.599 126.4 113.152 126.4 108.899V99.3992Z'
+          fill={NAVY}
+        />
+      </g>
+      <path
+        d='M86.3008 136.301C93.7008 141.801 101.001 141.701 108.201 136.301'
+        fill='none'
+        stroke={NAVY}
+        strokeWidth='6'
+        strokeMiterlimit='10'
+        strokeLinecap='round'
+      />
+      <path
+        d='M159.5 30C165.851 30 171 25.0751 171 19C171 12.9249 165.851 8 159.5 8C153.149 8 148 12.9249 148 19C148 25.0751 153.149 30 159.5 30Z'
+        fill={HONEY}
+      />
+      <path
+        d='M181.8 76.1992H181.7C173.527 76.1992 166.9 82.8254 166.9 90.9992V126.699C166.9 134.873 173.527 141.499 181.7 141.499H181.8C189.974 141.499 196.6 134.873 196.6 126.699V90.9992C196.6 82.8254 189.974 76.1992 181.8 76.1992Z'
+        fill={HONEY}
+      />
+    </svg>
+  </span>
+);
+
+export default NubiWatchingIcon;

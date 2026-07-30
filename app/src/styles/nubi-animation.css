@@ -76,6 +76,37 @@
 }
 
 /* =========================================================
+   WATCHING — idle: eyes glance around (watching you) + blink
+   ========================================================= */
+.nb-nubi.s-watching .n-eyes {
+  animation: nb-nubi-eyes-watch 5s ease-in-out infinite;
+}
+.nb-nubi.s-watching .n-eye {
+  animation: nb-nubi-blink 3.4s ease-in-out infinite;
+}
+@keyframes nb-nubi-eyes-watch {
+  0%,
+  12% {
+    transform: translate(0, 0);
+  }
+  26%,
+  36% {
+    transform: translate(-6px, -1.5px);
+  }
+  50%,
+  60% {
+    transform: translate(6px, 1.5px);
+  }
+  74%,
+  84% {
+    transform: translate(0, 3.5px);
+  }
+  100% {
+    transform: translate(0, 0);
+  }
+}
+
+/* =========================================================
    THINKING — eyes wander up, antenna pulses, thought dots
    ========================================================= */
 .nb-nubi.s-thinking .n-body {

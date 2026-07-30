@@ -14,6 +14,8 @@ import { AppErrorBoundary } from '@shared/ErrorBoundary';
 import { DataProvider } from '@context/DataContext';
 import { Toast as SnackbarComponent } from '@ui/Toast';
 import { TourProvider } from '@components/common/tour';
+import { NubiGlobalChatProvider } from '@context/NubiGlobalChatContext';
+import NubiGlobalChat from '@components/llm/NubiGlobalChat';
 import 'swiper/css/bundle';
 import '../styles/CustomSwiperCarousel.css';
 import 'driver.js/dist/driver.css';
@@ -85,10 +87,13 @@ export default function App({ Component, pageProps }: AppProps<{ session: Sessio
             ) : (
               <DataProvider>
                 <TourProvider>
-                  <PageLayout>
-                    <Component {...pageProps} />
-                    <SnackbarComponent />
-                  </PageLayout>
+                  <NubiGlobalChatProvider>
+                    <PageLayout>
+                      <Component {...pageProps} />
+                      <SnackbarComponent />
+                    </PageLayout>
+                    <NubiGlobalChat />
+                  </NubiGlobalChatProvider>
                 </TourProvider>
               </DataProvider>
             )}

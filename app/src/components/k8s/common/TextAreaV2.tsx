@@ -171,6 +171,8 @@ interface AutoSuggestTextareaProps {
   onTierModelsSelect?: (picks: TierModelMap | null) => void;
   popupInitial?: boolean;
   imageSupport?: ImageSupport;
+  externalAgentsLoading?: boolean;
+  submitOnModEnter?: boolean;
 }
 
 interface ModelPickerPopoverProps {
@@ -532,6 +534,8 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
     onTierModelsSelect,
     popupInitial = false,
     imageSupport,
+    externalAgentsLoading = false,
+    submitOnModEnter = false,
   },
   forwardedRef
 ) {
@@ -728,6 +732,13 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
   }, [value]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (submitOnModEnter && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      if (!(isFollowUp && allowStop) && text.trim() && buttonProperties.enable) {
+        handleSend();
+      }
+      return;
+    }
     if (showSuggestions) {
       const currentList = suggestionsTrigger === 'call' ? filteredFunctions : filteredSuggestions;
       switch (e.key) {
@@ -818,17 +829,6 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
           }}
           disabled={disabled}
         />
-        <Typography
-          sx={{
-            fontSize: 'var(--ds-text-caption)',
-            color: text.length >= maxLength * 0.9 ? ds.amber[700] : ds.gray[700],
-            textAlign: 'right',
-            mt: ds.space[0],
-          }}
-          data-testid='ask-nudgebee-prompt-char-counter'
-        >
-          {text.length.toLocaleString()} / {maxLength.toLocaleString()}
-        </Typography>
 
         {showSuggestions && (
           <Popper
@@ -1072,7 +1072,6 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
             gap: 'var(--ds-space-2)',
             mt: 'var(--ds-space-1)',
             pt: 'var(--ds-space-1)',
-            borderTop: `1px solid var(--ds-gray-200)`,
           }}
         >
           {imagesEnabled && (
@@ -1175,9 +1174,13 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
                 </Box>
               </>
             ) : suggestionsAt.length === 0 ? (
-              <Tooltip title='You can add an agent in Settings' variant='default' placement='top'>
-                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400] }}>No agent connected</Typography>
-              </Tooltip>
+              externalAgentsLoading ? (
+                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400], fontStyle: 'italic' }}>Loading agents...</Typography>
+              ) : (
+                <Tooltip title='You can add an agent in Settings' variant='default' placement='top'>
+                  <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400] }}>No agent connected</Typography>
+                </Tooltip>
+              )
             ) : (
               <>
                 <Typography sx={{ fontSize: 'var(--ds-text-caption)' }}>Agent</Typography>
@@ -1200,6 +1203,19 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
             />
           )}
           <Box sx={{ flex: 1 }} />
+          {text.length >= maxLength * 0.8 && (
+            <Typography
+              sx={{
+                fontSize: 'var(--ds-text-caption)',
+                color: text.length >= maxLength * 0.9 ? ds.amber[700] : ds.gray[700],
+                mr: 'var(--ds-space-2)',
+                whiteSpace: 'nowrap',
+              }}
+              data-testid='ask-nudgebee-prompt-char-counter'
+            >
+              {text.length.toLocaleString()} / {maxLength.toLocaleString()}
+            </Typography>
+          )}
           {/* Submit / Stop button */}
           <Button
             id='set-config-btn'

@@ -77,6 +77,9 @@ const resolveInitialWidth = (raw) => {
   if (raw.endsWith('%') && typeof window !== 'undefined') {
     return Math.round((parseFloat(raw) / 100) * window.innerWidth);
   }
+  if (raw.endsWith('vw') && typeof window !== 'undefined') {
+    return Math.round((parseFloat(raw) / 100) * window.innerWidth);
+  }
   const n = parseFloat(raw);
   return Number.isFinite(n) ? n : 880;
 };
@@ -102,6 +105,20 @@ const useDrawerResize = (defaultWidth, storageKey = STORAGE_KEY, enabled = true)
   const isResizingRef = useRef(false);
   const widthRef = useRef(width);
   const storageKeyRef = useRef(storageKey);
+
+  // Reset the width only when `defaultWidth` actually changes — not on mount
+  // (which would clobber the persisted width) and not on StrictMode's throwaway
+  // remount. A mount-flag ref can't express this: it survives the remount, so
+  // the second run falls through and overwrites the persisted width with the
+  // default. Comparing the value itself is correct in all three cases.
+  const prevDefaultWidthRef = useRef(defaultWidth);
+  useEffect(() => {
+    if (prevDefaultWidthRef.current === defaultWidth) {
+      return;
+    }
+    prevDefaultWidthRef.current = defaultWidth;
+    setWidth(resolveInitialWidth(defaultWidth));
+  }, [defaultWidth]);
 
   useEffect(() => {
     widthRef.current = width;
@@ -233,7 +250,7 @@ DrawerHeader.propTypes = {
   onClose: PropTypes.func.isRequired,
 };
 
-const MODERN_INSET = 16;
+const MODERN_INSET = 10;
 const MODERN_RADIUS = 10;
 
 const CustomDrawer = ({

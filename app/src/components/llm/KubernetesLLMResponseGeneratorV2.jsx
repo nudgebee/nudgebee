@@ -11,6 +11,7 @@ import { Button } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';
 import SettingsModal from '@components/llm/SettingsModal';
 import { useData } from '@context/DataContext';
+import { useOptionalNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { useAgentConfiguration } from '@hooks/useAgentConfiguration';
 import { useClusterInsights } from '@hooks/useClusterInsights';
 import { useConversationManager } from '@hooks/useConversationManager';
@@ -31,7 +32,9 @@ import { isCompleteWorkflowDefinition } from './utils/isCompleteWorkflowDefiniti
 import ConversationShimmer from './common/ConversationShimmer';
 import { ConversationTokenUsage } from './common/TokenUsageDisplay';
 import ConversationList from './ConversationListV2';
+import ConversationListDrawer from './ConversationListDrawer';
 import DynamicGreeting from './DynamicGreeting';
+import NubiWelcome from './NubiWelcome';
 import JumpToLatestPill from './common/JumpToLatestPill';
 import QuestionNavigator from './common/QuestionNavigator';
 import FollowupSheet from './common/FollowupSheet';
@@ -95,6 +98,8 @@ const getInitials = (name) => {
   return first + last;
 };
 
+const NOOP = () => {};
+
 const KubernetesLLMResponseGenerator = ({
   accountId,
   query = '',
@@ -111,9 +116,15 @@ const KubernetesLLMResponseGenerator = ({
   workflowDefinition = null,
   onWorkflowGenerated = undefined, // callback(workflowJson) when workflow build completes
   onConversationComplete = undefined, // callback(sessionId) on every terminal turn in workflow mode (fires even when the assistant mutated the workflow server-side without echoing JSON)
+  newChatSignal = undefined,
+  historySignal = undefined,
+  historyButtonRef = undefined,
+  drawerIsOpen = true,
 }) => {
   const router = useRouter();
   const { assistantName, baseTitle } = useTenantBranding();
+  const nubiGlobalChat = useOptionalNubiGlobalChat();
+  const reportWipActivity = nubiGlobalChat?.reportWipActivity ?? NOOP;
 
   const previousAccountIdRef = useRef(accountId);
   // Separate refs for separate IDs
@@ -147,18 +158,41 @@ const KubernetesLLMResponseGenerator = ({
 
   const { selectedCluster, setSelectedCluster } = useData();
 
-  const [uiState, uiDispatch] = useReducer(componentReducer, null, () => ({
-    generateQuestionText: queryPrefix || '',
-    isConversationListVisible: false,
-    collapsedObj: {},
-    openSettingsModal: false,
-    showFullText: false,
-    // Distinct State for Session ID and Conversation ID
-    selectedSessionId: router.query.session_id || sessionId || '',
-    selectedConversationId: router.query.conversation_id || conversationId || '',
-    isTokenDataFetched: false,
-    isFetchingTokenData: false,
-  }));
+  const [uiState, uiDispatch] = useReducer(componentReducer, null, () => {
+    let restoredSessionId = router.query.session_id || sessionId || '';
+    if (popup && typeof window !== 'undefined' && !restoredSessionId) {
+      const stored = localStorage.getItem('nubi_selected_conversation_id');
+      if (stored) {
+        restoredSessionId = stored;
+      }
+    }
+
+    return {
+      generateQuestionText: queryPrefix || '',
+      isConversationListVisible: false,
+      collapsedObj: {},
+      openSettingsModal: false,
+      showFullText: false,
+      // Distinct State for Session ID and Conversation ID
+      selectedSessionId: restoredSessionId,
+      selectedConversationId: router.query.conversation_id || conversationId || '',
+      isTokenDataFetched: false,
+      isFetchingTokenData: false,
+    };
+  });
+
+  useEffect(() => {
+    if (!popup || !drawerIsOpen) {
+      return;
+    }
+
+    if (!selectedSessionId && typeof window !== 'undefined') {
+      const stored = localStorage.getItem('nubi_selected_conversation_id');
+      if (stored) {
+        setSelectedSessionId(stored);
+      }
+    }
+  }, [popup, drawerIsOpen, selectedSessionId, setSelectedSessionId]);
 
   // Auto-open conversation list when navigating with ?status=WAITING
   useEffect(() => {
@@ -331,6 +365,9 @@ const KubernetesLLMResponseGenerator = ({
       setGenerateQuestionText('');
       setConversationStatus('');
       clearSuggestions();
+      if (popup) {
+        reportWipActivity();
+      }
 
       // Add optimistic question message immediately so user sees their question right away.
       // Skip for workflow mode: handleWorkflowGeneration appends the question itself via
@@ -374,6 +411,8 @@ const KubernetesLLMResponseGenerator = ({
           if (!popup) {
             // Standardize on session_id for new chats, clear conversation_id to avoid ambiguity
             applyFiltersOnRouter(router, { session_id: llmSessionId, conversation_id: null }, { shallow: true });
+          } else {
+            localStorage.setItem('nubi_selected_conversation_id', llmSessionId);
           }
           setSelectedSessionId(llmSessionId);
           setSelectedConversationId(''); // Reset conversationId as we have a fresh session
@@ -405,6 +444,7 @@ const KubernetesLLMResponseGenerator = ({
       startInvestigation,
       setConversationStatus,
       clearSuggestions,
+      reportWipActivity,
     ]
   );
 
@@ -432,17 +472,21 @@ const KubernetesLLMResponseGenerator = ({
       // Load Existing Chat
       const hasUrlId = router.query.session_id || router.query.conversation_id;
 
-      if (!popup && !currentlyProcessingQuestion && hasUrlId) {
-        // Verify user has access to the account before loading conversation
-        if (accountId && !hasReadAccess(accountId)) {
-          snackbar.error('You do not have permission to access this conversation');
-          uiDispatch({ type: 'CLEAR_CONVERSATION' });
-          applyFiltersOnRouter(router, { session_id: '', conversation_id: '' });
-          return;
+      if ((!popup && hasUrlId) || (popup && (selectedSessionId || selectedConversationId))) {
+        if (!currentlyProcessingQuestion) {
+          // Verify user has access to the account before loading conversation
+          if (accountId && !hasReadAccess(accountId)) {
+            snackbar.error('You do not have permission to access this conversation');
+            uiDispatch({ type: 'CLEAR_CONVERSATION' });
+            if (!popup) {
+              applyFiltersOnRouter(router, { session_id: '', conversation_id: '' });
+            }
+            return;
+          }
+          setGenerateQuestionText('');
+          // Pass both IDs to fetchConversation
+          fetchConversation(selectedSessionId, selectedConversationId, 'selected', false);
         }
-        setGenerateQuestionText('');
-        // Pass both IDs to fetchConversation
-        fetchConversation(selectedSessionId, selectedConversationId, 'selected', false);
       }
     } else if (!currentlyProcessingQuestion) {
       setMessages([]);
@@ -860,11 +904,47 @@ const KubernetesLLMResponseGenerator = ({
     previousConversationStatusRef.current = '';
     if (!popup) {
       applyFiltersOnRouter(router, { session_id: '', conversation_id: '' });
+    } else {
+      localStorage.removeItem('nubi_selected_conversation_id');
     }
     setTimeout(() => {
       textareaRef.current?.focus();
     }, 0);
   }, [popup, router, setMessages, setConversationStatus, setCurrentlyProcessingQuestion, clearSuggestions, resetInvestigationState]);
+
+  const prevNewChatSignalRef = useRef(newChatSignal);
+  useEffect(() => {
+    if (newChatSignal === undefined || prevNewChatSignalRef.current === newChatSignal) {
+      return;
+    }
+    prevNewChatSignalRef.current = newChatSignal;
+    handleNewChat();
+  }, [newChatSignal, handleNewChat]);
+
+  const prevHistorySignalRef = useRef(historySignal);
+  useEffect(() => {
+    if (historySignal === undefined || prevHistorySignalRef.current === historySignal) {
+      return;
+    }
+    prevHistorySignalRef.current = historySignal;
+    setIsConversationListVisible(true);
+  }, [historySignal, setIsConversationListVisible]);
+
+  useEffect(() => {
+    if (popup && !drawerIsOpen) {
+      setIsConversationListVisible(false);
+    }
+  }, [drawerIsOpen, popup, setIsConversationListVisible]);
+
+  useEffect(() => {
+    if (!popup || !drawerIsOpen || currentlyProcessingQuestion) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      textareaRef.current?.focus();
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [popup, drawerIsOpen, currentlyProcessingQuestion]);
 
   const ConversationHeaderData = useMemo(
     () => ({
@@ -883,6 +963,8 @@ const KubernetesLLMResponseGenerator = ({
         setCurrentlyProcessingQuestion(null);
         if (!popup) {
           applyFiltersOnRouter(router, { session_id: index, conversation_id: null });
+        } else {
+          localStorage.setItem('nubi_selected_conversation_id', index);
         }
         setMessages([]);
         clearSuggestions();
@@ -968,6 +1050,7 @@ const KubernetesLLMResponseGenerator = ({
       />
       <Box
         sx={{
+          position: popup ? 'relative' : 'static',
           display: popup ? 'flex' : 'grid',
           transition: 'grid-template-columns 0.3s ease-in-out',
           gridTemplateColumns: 'minmax(0, 1fr)',
@@ -977,32 +1060,46 @@ const KubernetesLLMResponseGenerator = ({
           }),
         }}
       >
-        <ConversationList
-          accountId={accountId}
-          onSelectConversation={handleSelectConversation}
-          selectedId={selectedSessionId || selectedConversationId}
-          isConversationListVisible={isConversationListVisible}
-          triggerHandleNewChat={() => handleNewChat()}
-          handleShare={handleShare}
-          likedConversations={likedConversations}
-          setLikedConversations={setLikedConversations}
-          savingStates={savingStates}
-          handleLike={(id, starred) => handleLike(id, starred, selectedSessionId || selectedConversationId)}
-          activeFilter={activeFilter}
-          setSelectedConversation={setSelectedConversation}
-          rawConversations={rawConversations}
-          setRawConversations={setRawConversations}
-          onCollapseConversationList={() => setIsConversationListVisible(false)}
-        />
+        {popup ? (
+          <ConversationListDrawer
+            accountId={accountId}
+            onSelectConversation={handleSelectConversation}
+            selectedId={selectedSessionId || selectedConversationId}
+            isVisible={isConversationListVisible}
+            onClose={() => setIsConversationListVisible(false)}
+            handleLike={(id, starred) => handleLike(id, starred, selectedSessionId || selectedConversationId)}
+            likedConversations={likedConversations}
+            setLikedConversations={setLikedConversations}
+            triggerButtonRef={historyButtonRef}
+          />
+        ) : (
+          <ConversationList
+            accountId={accountId}
+            onSelectConversation={handleSelectConversation}
+            selectedId={selectedSessionId || selectedConversationId}
+            isConversationListVisible={isConversationListVisible}
+            triggerHandleNewChat={() => handleNewChat()}
+            handleShare={handleShare}
+            likedConversations={likedConversations}
+            setLikedConversations={setLikedConversations}
+            savingStates={savingStates}
+            handleLike={(id, starred) => handleLike(id, starred, selectedSessionId || selectedConversationId)}
+            activeFilter={activeFilter}
+            setSelectedConversation={setSelectedConversation}
+            rawConversations={rawConversations}
+            setRawConversations={setRawConversations}
+            onCollapseConversationList={() => setIsConversationListVisible(false)}
+          />
+        )}
 
         <Box
           sx={{
             position: 'relative',
             width: '100%',
+            height: popup ? '100%' : 'auto',
             ...(popup && {
               display: 'flex',
               flexDirection: 'column',
-              height: '100%',
               overflow: 'hidden',
               boxSizing: 'border-box',
             }),
@@ -1317,7 +1414,7 @@ const KubernetesLLMResponseGenerator = ({
               overflowY: popup ? 'auto' : isChatScreen ? 'auto' : 'hidden',
               overflowX: 'hidden',
               position: 'relative',
-              mx: 'auto',
+              mx: popup ? 0 : 'auto',
               maxWidth: popup ? '100%' : '60%',
               mb: popup ? 0 : isChatScreen ? ds.space.mul(1, 40) : 0,
               px: popup ? ds.space.mul(1, 5) : 0,
@@ -1331,9 +1428,9 @@ const KubernetesLLMResponseGenerator = ({
               }),
               ...(!popup && {
                 minHeight: '100vh',
+                transform: isConversationListVisible ? 'translateX(125px)' : 'translateX(0)',
+                transition: 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
               }),
-              transform: isConversationListVisible ? 'translateX(125px)' : 'translateX(0)',
-              transition: 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
 
               '&::-webkit-scrollbar': {
                 display: isConversationInProgress ? 'none' : 'block',
@@ -1375,7 +1472,7 @@ const KubernetesLLMResponseGenerator = ({
                     selectedConversationId == '' &&
                     !currentlyProcessingQuestion && {
                       flex: 1,
-                      pb: ds.space.mul(1, 5),
+                      pb: ds.space[1],
                     }),
                   '@media (max-width: 1280px)': {
                     mt: selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion && !popup ? ds.space.mul(1, 15) : 0,
@@ -1391,7 +1488,7 @@ const KubernetesLLMResponseGenerator = ({
                       marginX: 'auto',
                       ...(popup && {
                         mb: ds.space[3],
-                        mt: ds.space.mul(1, 15),
+                        mt: 'auto',
                       }),
                     }}
                   >
@@ -1400,6 +1497,7 @@ const KubernetesLLMResponseGenerator = ({
                       className={`poppins-font animated-box`}
                       style={{ animationDelay: '0.1s', letterSpacing: '-0.6px', fontWeight: 'var(--ds-font-weight-medium)' }}
                     />
+                    {popup && <NubiWelcome assistantName={assistantName} />}
                   </Box>
                 )}
                 {selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion ? (
@@ -1493,6 +1591,7 @@ const KubernetesLLMResponseGenerator = ({
                           onTierModelsSelect={setSelectedTierModels}
                           imageSupport={imageSupport}
                           isFollowUp={popup}
+                          submitOnModEnter
                           buttonProperties={{
                             show: true,
                             enable: !isConversationLoading,
@@ -1550,7 +1649,7 @@ const KubernetesLLMResponseGenerator = ({
                 )}
               </Box>
             </Box>
-            {isConversationLoading && (selectedSessionId || selectedConversationId) && messages.length === 0 && !popup && <ConversationShimmer />}
+            {isConversationLoading && (selectedSessionId || selectedConversationId) && messages.length === 0 && <ConversationShimmer popup={popup} />}
 
             {isConversationInProgress && messages.length === 0 && !(isConversationLoading && (selectedSessionId || selectedConversationId)) && (
               <Box sx={{ mt: ds.space.mul(0, 5), width: '100%', minWidth: popup ? ds.space.mul(1, 100) : 0 }}>
@@ -1822,7 +1921,7 @@ const KubernetesLLMResponseGenerator = ({
                   <AutoSuggestTextarea
                     functionSuggestions={allFunctions}
                     ref={textareaRef}
-                    fontSize='var(--ds-text-body-lg)'
+                    fontSize='var(--ds-text-body)'
                     fontWeight='var(--ds-font-weight-regular)'
                     value={generateQuestionText}
                     placeholder='Ask a question...'
@@ -1836,6 +1935,7 @@ const KubernetesLLMResponseGenerator = ({
                     selectedModel={selectedModel}
                     onModelSelect={setSelectedModel}
                     imageSupport={imageSupport}
+                    externalAgentsLoading={loadingAgents}
                     buttonProperties={{
                       show: true,
                       enable: !isConversationLoading && !isConversationInProgress,
@@ -1848,6 +1948,7 @@ const KubernetesLLMResponseGenerator = ({
                     }}
                     chatScreen={false}
                     popupInitial={popup && !!queryPrefix && messages.length === 0}
+                    submitOnModEnter
                     isFollowUp={true}
                     // Show Stop only when there's something genuinely actionable to stop:
                     // either the user has an in-flight question they initiated this session
@@ -1917,6 +2018,10 @@ KubernetesLLMResponseGenerator.propTypes = {
   apiMode: PropTypes.oneOf(['investigate', 'workflow']),
   workflowId: PropTypes.string,
   workflowDefinition: PropTypes.object,
+  newChatSignal: PropTypes.number,
+  historySignal: PropTypes.number,
+  historyButtonRef: PropTypes.object,
+  drawerIsOpen: PropTypes.bool,
 };
 
 export default KubernetesLLMResponseGenerator;
