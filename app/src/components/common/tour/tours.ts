@@ -1219,10 +1219,13 @@ const automationFromScratchTour: TourDef = {
  *   #anchor-tab-summary|recommendations|resolutions|auto-optimize
  *                          → AnchorComponent renders id=`anchor-tab-<opt.id>`
  *   #optimize-card-savings → the "Total Savings" WidgetCard
- *   [data-testid="severity-summary-bar"] → the severity filter chips
+ *   [data-testid="severity-summary-bar"] → the category + severity chip bar (the
+ *                                          category FilterDropdown became chips in
+ *                                          this bar in PR #34425, so there is no
+ *                                          separate category step)
  *   [data-testid="top-issues-bar"]       → Top Issues band (data-dependent, so
  *                                          optional: absent when there are none)
- *   #auto-complete-optimize-account-filter / -category-filter
+ *   #auto-complete-optimize-account-filter
  *                          → FilterDropdown rewrites `id` to `auto-complete-<id>`
  *   #optimize-search       → the search input
  *   #optimize-recommendations-table → the recommendations table (renders even
@@ -1264,8 +1267,9 @@ const optimizeTour: TourDef = {
     },
     {
       element: '[data-testid="severity-summary-bar"]',
-      title: 'Filter by severity',
-      description: 'Each chip filters the list to that severity. Start with Critical and High — that’s where the money and the risk usually are.',
+      title: 'Filter by category & severity',
+      description:
+        'One chip bar, two levers — Category narrows to the kind of change you’re ready to make (Right Sizing, Config, Spot…), Severity to how urgent it is. Start with Critical and High — that’s where the money and the risk usually are.',
       side: 'bottom',
       align: 'start',
     },
@@ -1283,13 +1287,6 @@ const optimizeTour: TourDef = {
       element: '#auto-complete-optimize-account-filter',
       title: 'Scope to an account',
       description: 'Narrow the list to a single cloud account or cluster.',
-      side: 'bottom',
-      align: 'start',
-    },
-    {
-      element: '#auto-complete-optimize-category-filter',
-      title: 'Filter by category',
-      description: 'Right Sizing, Infra Upgrade, Config, Spot Instances — pick the kind of change you’re ready to make.',
       side: 'bottom',
       align: 'start',
     },

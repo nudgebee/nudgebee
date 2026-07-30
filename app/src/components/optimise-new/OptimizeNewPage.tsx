@@ -1211,6 +1211,7 @@ const OptimizeNewPage = () => {
       {/* Summary widgets */}
       <Box sx={{ display: 'flex', gap: ds.space[3], mt: ds.space[4] }}>
         <WidgetCard
+          id='optimize-card-savings'
           sx={{
             flex: 1,
             minWidth: 0,
