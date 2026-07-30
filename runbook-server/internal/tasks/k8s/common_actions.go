@@ -99,7 +99,7 @@ func HandleGitOpsOrTicket(
 			resolverType = "AutoRunbook"
 		}
 
-		result := map[string]any{}
+		result := copyMap(baseResult)
 		if resolverType == "AutoOptimize" {
 			resolutionID, err := service.RecommendationResolve(taskCtx.GetNewRequestContext(), service.RecommendationResolutionRequest{
 				AccountID:        accountID,
@@ -141,7 +141,6 @@ func HandleGitOpsOrTicket(
 			if err != nil {
 				return nil, false, fmt.Errorf("failed to create pull request: %w", err)
 			}
-			result := copyMap(baseResult)
 			result["status"] = "pr_created"
 			result["resolution_id"] = resolutionID
 			result["description"] = description
