@@ -122,6 +122,26 @@ from (
 ) as e
 `
 
+// resolveEventsViewPlaceholders substitutes the __DATE_FILTER__ and
+// __ACCOUNT_ID__ placeholders in an events view template. When skipDateFilter
+// is true, the date filter clause is stripped entirely instead of being
+// substituted (used for direct ID lookups, so older events stay accessible).
+func resolveEventsViewPlaceholders(view, accountId string, skipDateFilter bool) string {
+	if skipDateFilter {
+		view = strings.ReplaceAll(view, " AND starts_at >= '__DATE_FILTER__'", "")
+	} else if strings.Contains(view, "__DATE_FILTER__") {
+		last30days := time.Now().AddDate(0, 0, -30)
+		daysStr := last30days.Format("2006-01-02")
+		view = strings.ReplaceAll(view, "__DATE_FILTER__", daysStr)
+	}
+
+	if accountId != "" {
+		view = strings.ReplaceAll(view, "__ACCOUNT_ID__", accountId)
+	}
+
+	return view
+}
+
 type EventsExecuteTool struct {
 }
 
@@ -752,18 +772,7 @@ func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 		eventsView1 = eventsViewWithId
 	}
 
-	if isIdLookup {
-		// skip date filter for direct ID lookups so older events are still accessible
-		eventsView1 = strings.ReplaceAll(eventsView1, " AND starts_at >= '__DATE_FILTER__'", "")
-	} else if strings.Contains(eventsView1, "__DATE_FILTER__") {
-		last30days := time.Now().AddDate(0, 0, -30)
-		daysStr := last30days.Format("2006-01-02")
-		eventsView1 = strings.ReplaceAll(eventsView1, "__DATE_FILTER__", daysStr)
-	}
-
-	if nbRequestContext.AccountId != "" {
-		eventsView1 = strings.ReplaceAll(eventsView1, "__ACCOUNT_ID__", nbRequestContext.AccountId)
-	}
+	eventsView1 = resolveEventsViewPlaceholders(eventsView1, nbRequestContext.AccountId, isIdLookup)
 
 	input.Command = strings.TrimSuffix(input.Command, ";")
 	input.Command = fixBareTimestamps(input.Command)

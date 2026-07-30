@@ -213,6 +213,14 @@ func getTicketAgentName() string {
 	return TicketsAgentName
 }
 
+// getEventsAgentName returns the appropriate events agent name based on the feature flag.
+func getEventsAgentName() string {
+	if config.Config.EventsV2Enabled {
+		return EventsV2AgentName
+	}
+	return EventsAgentName
+}
+
 func getAgent(ctx *security.RequestContext, agent string, accountId string) (core.NBAgent, bool) {
 	var agentName string
 	switch strings.ToLower(agent) {
@@ -233,10 +241,11 @@ func getAgent(ctx *security.RequestContext, agent string, accountId string) (cor
 	case "recommendationschain", "recommendation", "recommendationsagent", RecommendationsAgentName:
 		agentName = RecommendationsAgentName
 	case "eventschain", "event", "eventchain", EventsAgentName:
-		agentName = EventsAgentName
+		agentName = getEventsAgentName()
 	case FinOpsAgentName, "finopschain", "finopsagent", "cost", "spend":
 		agentName = FinOpsAgentName
-
+	case EventsV2AgentName:
+		agentName = EventsV2AgentName
 	case "ticket", "jira", "bugs", "issues", "ticketagent", "ticketmaster", "create_ticket", "ticket_create", TicketsAgentName:
 		agentName = getTicketAgentName()
 	case TicketsV2AgentName:

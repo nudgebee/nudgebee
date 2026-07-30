@@ -649,6 +649,12 @@ type appConfig struct {
 	MaxMemoryFactsPerConversation int     `mapstructure:"max_memory_facts_per_conversation"`
 	ProductivityMetricsEnabled    bool    `mapstructure:"llm_server_productivity_metrics_enabled"`
 	TicketV2Enabled               bool    `mapstructure:"llm_server_ticket_v2_enabled"`
+	// EventsV2Enabled gates the events_v2 agent (deterministic structured
+	// tools fronting raw SQL — see docs/architecture-decisions.md). Unlike
+	// TicketV2Enabled, this does not redirect any existing alias to v2 —
+	// events_v2 isn't wired into generic "events" routing — it's a pure kill
+	// switch on whether an explicit @events_v2 mention resolves. Default false.
+	EventsV2Enabled bool `mapstructure:"llm_server_events_v2_enabled"`
 	// FollowupResumeV2Enabled routes followup submissions through the clean
 	// single-entry resume path (#28141) that uses conv-level locking and
 	// looks up the agent's correct message_id from DB instead of trusting
@@ -1179,6 +1185,7 @@ func init() {
 	viper.SetDefault("llm_server_productivity_metrics_enabled", false)
 
 	viper.SetDefault("llm_server_ticket_v2_enabled", true)
+	viper.SetDefault("llm_server_events_v2_enabled", false)
 
 	viper.SetDefault("llm_server_followup_resume_v2_enabled", true)
 
