@@ -300,7 +300,8 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 	}
 
 	sc := ctx.GetSecurityContext()
-	if sc == nil || !sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if sc == nil || (!sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!grantedRun(sc, request.AccountId, moduleAiMisc)) {
 		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 		return
 	}
@@ -369,7 +370,8 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 		return
 	}
 	sc := ctx.GetSecurityContext()
-	if sc == nil || !sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if sc == nil || (!sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!granted(sc, request.AccountId, moduleAiMisc, "Read", "Write")) {
 		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 		return
 	}
@@ -481,7 +483,8 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	// write (create) access on that account. HasAccountAccess is per-account, so this blocks the
 	// cross-account case where a user holds write on one account but only read on the target.
 	sc := ctx.GetSecurityContext()
-	if sc == nil || !sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) {
+	if sc == nil || (!sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
+		!grantedRun(sc, request.AccountId, moduleAiMisc)) {
 		c.JSON(403, buildApiResponse(nil, []error{errors.New("remediation: write access is required to run remediation commands")}))
 		return
 	}

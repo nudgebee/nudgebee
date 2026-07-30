@@ -1,4 +1,4 @@
-import { queryGraphQL } from '@lib/HttpService';
+import { queryGraphQL, unwrapGraphQL } from '@lib/HttpService';
 import { getUserById, getUsers, getUserGroups, getUserGroup, getUserGroupUsers, createUserGroup } from '@lib/UserService';
 import cache from '@lib/cache';
 
@@ -167,9 +167,19 @@ mutation UpsertUserGroupAccountNamespaceRoles($data:auth_k8saccount_namespace_gr
 }
 `;
 
-export const UPSERT_USER_TENANT_ACCOUNT_ROLES = `
-mutation UpsertUserTenantAccountRoles($data:auth_tenant_group_roles_upsert_one_input) {
-  tenant_group_roles_upsert_one: userroles_upsert_group(role:$auth_tenant_group_roles_upsert_one_input) {
+// The group mutations below route their result through unwrapGraphQL
+// (@lib/HttpService): queryGraphQL resolves rather than rejects on a
+// GraphQL-level error, and these previously swallowed the failure (returning
+// the error as a value), reporting a successful save after the write had
+// actually been rejected upstream.
+
+// Sets (or clears, with role: "") a group's tenant-level built-in role, without
+// touching name/description. usergroup_update also accepts a `role`, but its
+// name/description columns are unconditional overwrites — calling it to change
+// only the role blanks both. Use this action for role-only saves.
+export const UPSERT_USER_GROUP_TENANT_ROLE = `
+mutation UpsertUserGroupTenantRole($data: auth_tenant_group_roles_upsert_one_input!) {
+  userroles_upsert_group(role: $data) {
     status
   }
 }
@@ -393,39 +403,31 @@ const apiUser = {
       data: response,
     };
   },
+  // role: '' clears the group's tenant role (backend DELETEs the group_roles row).
+  upsertGroupTenantRole: async function ({ group_id, role }) {
+    const response = await queryGraphQL(UPSERT_USER_GROUP_TENANT_ROLE, 'UpsertUserGroupTenantRole', {
+      data: { group_id, role: role ?? '' },
+    });
+    return unwrapGraphQL(response, 'Failed to update tenant role')?.userroles_upsert_group;
+  },
   upsertGroupAccountRoles: async function (data) {
-    try {
-      let response = await queryGraphQL(UPSERT_USER_GROUP_ACCOUNT_ROLES, 'UpsertUserGroupAccountRoles', { data: data });
-      return {
-        data: response.data,
-      };
-    } catch (err) {
-      return err;
-    }
+    const response = await queryGraphQL(UPSERT_USER_GROUP_ACCOUNT_ROLES, 'UpsertUserGroupAccountRoles', { data: data });
+    unwrapGraphQL(response, 'Failed to update account roles');
+    return { data: response.data };
   },
   upsertGroupAccountNamespaceRoles: async function (data) {
-    try {
-      let response = await queryGraphQL(UPSERT_USER_GROUP_ACCOUNT_NAMESPACE_ROLES, 'UpsertUserGroupAccountNamespaceRoles', { data: data });
-      return {
-        data: response.data,
-      };
-    } catch (err) {
-      return err;
-    }
+    const response = await queryGraphQL(UPSERT_USER_GROUP_ACCOUNT_NAMESPACE_ROLES, 'UpsertUserGroupAccountNamespaceRoles', { data: data });
+    unwrapGraphQL(response, 'Failed to update namespace roles');
+    return { data: response.data };
   },
   manageGroupUsers: async function (data) {
-    try {
-      let response = await queryGraphQL(MANAGE_GROUP_USERS, 'ManageGroupUsers', {
-        group_id: data.group_id,
-        add_usernames: data.add_usernames || [],
-        remove_usernames: data.remove_usernames || [],
-      });
-      return {
-        data: response,
-      };
-    } catch (err) {
-      return err;
-    }
+    const response = await queryGraphQL(MANAGE_GROUP_USERS, 'ManageGroupUsers', {
+      group_id: data.group_id,
+      add_usernames: data.add_usernames || [],
+      remove_usernames: data.remove_usernames || [],
+    });
+    unwrapGraphQL(response, 'Failed to update group members');
+    return { data: response };
   },
   updateUser: async function (data) {
     try {
@@ -491,7 +493,7 @@ const apiUser = {
       description: request.description,
       role: request.role,
     });
-    return response.data.data.usergroup_update;
+    return unwrapGraphQL(response, 'Failed to update group')?.usergroup_update;
   },
   getAllRoles: async function (_request) {
     const response = await queryGraphQL(GET_ALL_TENANT_ROLES, 'getAllRoles');

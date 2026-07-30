@@ -378,7 +378,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		// Check if user has access to account
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!granted(agentContext.GetSecurityContext(), request.AccountId, moduleAiMisc, "Read", "Write", "Execute") {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -1053,8 +1054,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			request.UserId = agentContext.GetSecurityContext().GetUserId()
 		}
 
-		// Check if user has access to account
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		// Check if user has access to account — honor a dynamic-RBAC
+		// ai_conversations:Read grant in addition to built-in account roles
+		// (ai_list_conversation_suggestions classifies to ai_conversations).
+		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -1135,7 +1138,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiMisc) {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -1231,7 +1235,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		// Check if user has access to account
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiGeneration) {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -1308,7 +1313,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		// Call the HasAccess method
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiGeneration) {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -1399,7 +1405,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		// Check if user has access to account
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiGeneration) {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -1602,7 +1609,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		// Check if user has access to account
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiGeneration) {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -2602,7 +2610,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!granted(agentContext.GetSecurityContext(), request.AccountId, moduleAiConversations, "Read", "Write") {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -2691,7 +2700,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!granted(agentContext.GetSecurityContext(), request.AccountId, moduleAiConversations, "Read", "Write") {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}

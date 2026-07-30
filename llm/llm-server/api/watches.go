@@ -118,7 +118,10 @@ func handleWatchesApi(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		sc := agentContext.GetSecurityContext()
 		authorized := make([]watch.Watch, 0, len(watches))
 		for _, w := range watches {
-			if sc.HasAccountAccess(w.AccountID.String(), security.SecurityAccessTypeRead) {
+			// Honor a dynamic-RBAC ai_conversations:Read grant, not just built-in
+			// account roles — otherwise a pure custom-role reader passes the gateway
+			// but every row is filtered out here, returning an empty list.
+			if sc.CanReadAccountData(w.AccountID.String(), "ai_conversations") {
 				authorized = append(authorized, w)
 			}
 		}
@@ -198,7 +201,8 @@ func handleWatchesApi(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 			actionError(c, 500, "api: failed to cancel watch")
 			return
 		}
-		if !agentContext.GetSecurityContext().HasAccountAccess(existing.AccountID.String(), security.SecurityAccessTypeUpdate) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(existing.AccountID.String(), security.SecurityAccessTypeUpdate) &&
+			!grantedRun(agentContext.GetSecurityContext(), existing.AccountID.String(), moduleAiMisc) {
 			actionError(c, 403, errorUserAccessMessage)
 			return
 		}

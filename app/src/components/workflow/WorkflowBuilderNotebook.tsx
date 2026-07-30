@@ -106,7 +106,7 @@ import { useWorkflowHistory } from './hooks/useWorkflowHistory';
 import { useWorkflowClipboard } from './hooks/useWorkflowClipboard';
 import { useWorkflowShortcuts } from './hooks/useWorkflowShortcuts';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { hasFeatureAccess, hasWriteAccess } from '@lib/auth';
+import { hasFeatureAccess, hasPermission, hasWriteAccess } from '@lib/auth';
 import { Modal } from '@ui/Modal';
 import Text from '@shared/format/Text';
 
@@ -350,7 +350,10 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   const isNewWorkflow = (workflowId === 'new' || mode === 'create') && !isTransitioningFromCreateToEdit;
 
   // Read-only users cannot mutate workflows — gate all mutation surfaces below.
-  const canEdit = hasWriteAccess(accountId);
+  // A dynamic-RBAC `workflows:Write` grant also authorizes editing: such users
+  // hold no built-in account role, so hasWriteAccess alone falsely locks them out
+  // even though the gateway and runbook-server both admit their mutations.
+  const canEdit = hasWriteAccess(accountId) || hasPermission('workflows', 'Write');
 
   // Workflow-specific state
   const [workflowData, setWorkflowData] = useState<WorkflowData | null>(null);

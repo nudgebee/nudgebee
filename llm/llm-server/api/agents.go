@@ -60,8 +60,8 @@ func agentListAgent(c *gin.Context, context *security.RequestContext, payload ma
 		return
 	}
 
-	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(accountIdPayload, security.SecurityAccessTypeRead) {
+	// Check if user has access to account (built-in role or an ai_agents custom grant)
+	if !context.GetSecurityContext().CanReadAccountData(accountIdPayload, "ai_agents") {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
@@ -103,7 +103,8 @@ func agentCreateAgent(c *gin.Context, context *security.RequestContext, payload 
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiAgents) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
@@ -149,7 +150,8 @@ func agentDeleteAgent(c *gin.Context, context *security.RequestContext, payload 
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(accountIdPayload, security.SecurityAccessTypeDelete) {
+	if !context.GetSecurityContext().HasAccountAccess(accountIdPayload, security.SecurityAccessTypeDelete) &&
+		!grantedWrite(context.GetSecurityContext(), accountIdPayload, moduleAiAgents) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
@@ -205,7 +207,8 @@ func agentUpdateAgent(c *gin.Context, context *security.RequestContext, payload 
 		return
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiAgents) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
@@ -263,7 +266,8 @@ func createAgentExtension(c *gin.Context, context *security.RequestContext, payl
 		return
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiAgents) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
@@ -316,7 +320,8 @@ func updateAgentExtension(c *gin.Context, context *security.RequestContext, payl
 		return
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiAgents) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
@@ -369,7 +374,8 @@ func deleteAgentExtension(c *gin.Context, context *security.RequestContext, payl
 		return
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiAgents) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,

@@ -4,24 +4,24 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 
 // Components
-import KubernetesTable2 from '@components/k8s/common/KubernetesTable2';
+import KubernetesTable from '@components/k8s/common/KubernetesTable';
 import Datetime from '@shared/format/Datetime';
 import SeverityIcon from '@ui/SeverityIcon';
 import ListingLayout from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
-import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
+import DownloadButton from '@shared/buttons/DownloadButton';
 import { ds } from 'src/utils/colors';
 import Text from '@shared/format/Text';
 import Tooltip from '@ui/Tooltip';
 
 // DS v2 / component-new
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
-import NewIssueChip from '@shared/widgets/NewIssueChip';
+import Chip from '@ui/Chip';
 import ScoreDisplay from '@shared/widgets/ScoreDisplay';
-import CustomTicketLink from '@shared/CustomTicketLink';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
 import PriorityPinControl from '@shared/widgets/PriorityPinControl';
+import TicketLink from '@shared/links/TicketLink';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { snackbar } from '@shared/snackbarService';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu } from '@ui/DropdownMenu';
@@ -33,7 +33,7 @@ import k8sApi from '@api1/kubernetes';
 import apiUser from '@api1/user';
 import ticketsApi from '@api1/tickets';
 import { applyFiltersOnRouter } from '@lib/router';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, hasPermission } from '@lib/auth';
 import {
   convertToReadableFormat,
   titleCaseForAggregationKey,
@@ -84,14 +84,17 @@ const getNBStatusDisplay = (nbStatus: string) => {
 };
 
 // Menu items for ThreeDotsMenu — disableTicket flips when a ticket already
-// exists for this fingerprint; canWrite gates both modification actions for
-// read-only users (e.g. tenant_admin_readonly).
-const getMenuItems = (disableTicket: boolean, canWrite: boolean) => [
+// exists for this fingerprint; canWrite gates the other modification actions for
+// read-only users (e.g. tenant_admin_readonly); canCreateTicket gates Create
+// Ticket specifically (account write OR the tickets:Write grant). ThreeDotsMenu
+// items can't show a hover tooltip when disabled, so the required grant is named
+// inline in the label instead.
+const getMenuItems = (disableTicket: boolean, canWrite: boolean, canCreateTicket: boolean) => [
   {
     icon: TicketsIcon,
-    label: 'Create Ticket',
+    label: canCreateTicket ? 'Create Ticket' : 'Create Ticket · requires tickets:Write',
     id: 'create-ticket',
-    disabled: disableTicket || !canWrite,
+    disabled: disableTicket || !canCreateTicket,
     iconBlack: true,
   },
   {
@@ -170,6 +173,9 @@ const transformTableData = (
     // require write access on the row's account. Read-only users
     // (tenant_admin_readonly, account_admin_readonly) see them disabled.
     const canWrite = hasWriteAccess(item.account_id);
+    // Creating a ticket needs write access to the row's account OR the tickets:Write
+    // custom-role grant (tickets_create → tickets:Write).
+    const canCreateTicket = canWrite || hasPermission('tickets', 'Write');
 
     // Columns based on type
     if (groupEventType === 'fingerprint') {
@@ -188,11 +194,23 @@ const transformTableData = (
             <Box>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                 <Text showAutoEllipsis value={item.subject_name} style={{ fontWeight: 'var(--ds-font-weight-medium)' }} />
-                {item.is_new_issue && <NewIssueChip firstSeenAt={item.fingerprint_first_seen_at} />}
+                {item.is_new_issue && (
+                  <Tooltip
+                    title={`First seen: ${
+                      item.fingerprint_first_seen_at ? new Date(item.fingerprint_first_seen_at).toLocaleString() : 'within 7 days'
+                    }`}
+                  >
+                    <span>
+                      <Chip variant='tag' tone='success' size='xs' data-testid='new-issue-chip'>
+                        NEW
+                      </Chip>
+                    </span>
+                  </Tooltip>
+                )}
               </Box>
               {isTroubleshootPage && <Text value={`acc: ${accountName}`} secondaryText showAutoEllipsis />}
               {item.subject_namespace && <Text value={`${namespaceLabel}: ${item.subject_namespace}`} secondaryText showAutoEllipsis />}
-              {hasExistingTicket && <CustomTicketLink ticketURL={existingTicket?.url} ticketID={existingTicket?.ticket_id} />}
+              {hasExistingTicket && <TicketLink ticketURL={existingTicket?.url} ticketID={existingTicket?.ticket_id} />}
             </Box>
           ),
           drilldownQuery: commonDrilldown,
@@ -225,8 +243,8 @@ const transformTableData = (
             <NBStatusBadge
               eventId={item.latest_event_id}
               currentStatus={item.latest_nb_status}
-              onStatusChange={(newStatus) => onStatusChange?.(item.latest_event_id, newStatus)}
-              onCreateTicket={() => onCreateTicket?.(item)}
+              onStatusChange={(newStatus, snoozedUntil) => onStatusChange?.(item.latest_event_id, newStatus, snoozedUntil)}
+              onCreateTicket={!hasExistingTicket ? () => onCreateTicket?.(item) : undefined}
               disabled={!canWrite}
               disableSnoozeTooltip
               tooltipTitle={getTriageStatusTooltip(item.latest_nb_status, item.latest_snoozed_until)}
@@ -278,7 +296,12 @@ const transformTableData = (
                   onSelect: () => onClassify?.(item, option.value),
                 }))}
               />
-              <ThreeDotsMenu sx={{ ...action.primary }} menuItems={getMenuItems(hasExistingTicket, canWrite)} data={item} onMenuClick={onMenuClick} />
+              <ThreeDotsMenu
+                sx={{ ...action.primary }}
+                menuItems={getMenuItems(hasExistingTicket, canWrite, canCreateTicket)}
+                data={item}
+                onMenuClick={onMenuClick}
+              />
             </Box>
           ),
         },
@@ -417,7 +440,10 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   });
 
   const [selectedNamespace, setSelectedNamespace] = useState(router?.query?.namespace ?? router?.query?.eventNamespace ?? null);
-  const [selectedWorkload, setSelectedWorkload] = useState(router?.query?.eventSubjectName ?? '');
+  const [selectedWorkload, setSelectedWorkload] = useState<string>(() => {
+    const param = router?.query?.eventSubjectName;
+    return (Array.isArray(param) ? param[0] : param) ?? '';
+  });
   const [selectedAggregationKey, setSelectedAggregationKey] = useState<any[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string[]>(() => {
     const raw = accountId || (router.query.accountIds as string);
@@ -454,6 +480,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       disabledFilters: ['subjectType', ...(isTroubleshootPage && !selectedAccountId.length ? ['workload', 'namespace'] : [])],
       resource_ids: [],
       selectedNamespace,
+      selectedWorkload,
       startTime: new Date(selectedDateRange.startDate).toISOString(),
       endTime: new Date(selectedDateRange.endDate).toISOString(),
     });
@@ -777,7 +804,6 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   }, [groupEventType, isTroubleshootPage]);
 
   // 3. Main Data Fetching
-
   const fetchTableData = useCallback(async () => {
     if (!selectedAccountId.length && !isTroubleshootPage) {
       return;
@@ -993,9 +1019,8 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   const onNamespaceFilterChange = (e: any) => {
     const val = e?.target?.value;
     setSelectedNamespace(val);
-    setSelectedWorkload('');
     setCurrentPage(1);
-    applyFiltersOnRouter(router, { eventNamespace: val, eventSubjectName: '' });
+    applyFiltersOnRouter(router, { eventNamespace: val });
   };
 
   const onWorkloadFilterChange = (e: any) => {
@@ -1041,42 +1066,6 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   const onServiceNamesFilterChange = (e: any) => {
     setSelectedServiceName(e?.target?.value || '');
     setCurrentPage(1);
-  };
-
-  // CSV export — mirrors the v1 DownloadButton DOM-scrape contract
-  // (data-export-enabled, data-export-data) used by KubernetesTable2 cells.
-  const handleDownloadCsv = () => {
-    const oTable = document.getElementById(componentId);
-    if (!oTable) {
-      snackbar.error('Nothing to export — table not ready.');
-      return;
-    }
-    const escape = (s: any) => `"${(s == null ? '' : String(s)).replace(/"/g, '""').replace(/[\r\n]+/g, ' ')}"`;
-    let csv = '';
-    const headerRows = oTable.querySelectorAll('thead tr');
-    const headerRow = headerRows?.[headerRows.length - 1];
-    if (headerRow) {
-      csv +=
-        [...headerRow.children]
-          .filter((th) => th.getAttribute('data-export-enabled') !== 'false')
-          .map((th) => escape((th as HTMLElement).innerText))
-          .join(',') + '\r\n';
-    }
-    const bodyRows = oTable.querySelectorAll('tbody tr') || [];
-    for (const tr of Array.from(bodyRows)) {
-      const cells = [...tr.children].filter((td) => td.getAttribute('data-export-enabled') === 'true');
-      if (cells.length === 0) continue;
-      csv += cells.map((td) => escape(td.getAttribute('data-export-data') ?? (td as HTMLElement).innerText)).join(',') + '\r\n';
-    }
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${componentId}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
   };
 
   /**
@@ -1262,16 +1251,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
                   handleDateRangeChange(selection)
                 }
               />
-              <DsButton
-                tone='secondary'
-                size='sm'
-                composition='icon-only'
-                icon={<FileDownloadOutlinedIcon />}
-                aria-label='Download events as CSV'
-                tooltip='Download as CSV'
-                id='triage-inbox-download'
-                onClick={handleDownloadCsv}
-              />
+              <DownloadButton id='triage-inbox-download' size='sm' onClick={() => ({ tableId: componentId, fileName: `${componentId}.csv` })} />
             </Box>
           }
         >
@@ -1292,7 +1272,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
           ))}
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
-          <KubernetesTable2
+          <KubernetesTable
             id={componentId}
             headers={headers}
             loading={loading}

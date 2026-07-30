@@ -261,7 +261,8 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		}
 
 		// Check if user has access to account
-		if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!granted(context.GetSecurityContext(), request.AccountId, moduleAiRca, "Read", "Write") {
 			c.JSON(403, buildApiResponse(nil, []error{
 				errors.New(errorUserAccessMessage),
 			}))
@@ -299,7 +300,8 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 			return
 		}
 
-		if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!granted(context.GetSecurityContext(), request.AccountId, moduleAiRca, "Read", "Write") {
 			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -355,7 +357,8 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		}
 
 		// Require write access to update format
-		if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
+		if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
+			!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiRca) {
 			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -445,7 +448,8 @@ func processEventAnalysis(c *gin.Context, tracer trace.Tracer, meter metric.Mete
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!granted(context.GetSecurityContext(), request.AccountId, moduleAiGeneration, "Read", "Write") {
 		c.JSON(403, buildApiResponse(nil, []error{
 			errors.New(errorUserAccessMessage),
 		}))

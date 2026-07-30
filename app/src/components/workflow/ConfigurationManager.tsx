@@ -14,7 +14,7 @@ import { ToggleGroup } from '@ui/ToggleGroup';
 import { Banner } from '@ui/Banner';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import apiWorkflow from '@api1/workflow';
-import { hasWriteAccess, isTenantAdmin } from '@lib/auth';
+import { hasPermission, hasWriteAccess, isTenantAdmin } from '@lib/auth';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { DeleteIconRed, EditNewIcon } from '@assets';
 import { ds } from 'src/utils/colors';
@@ -49,7 +49,9 @@ interface Config {
 
 const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountOptions, open, onClose }) => {
   const [accountId, setAccountId] = useState<string>(accountOptions.length === 1 ? accountOptions[0].value : '');
-  const canEdit = hasWriteAccess(accountId);
+  // Add/Edit/Delete: a built-in write role, or a dynamic-RBAC config:Write grant.
+  // config:Read deliberately does NOT unlock these — it is read-only.
+  const canEdit = hasWriteAccess(accountId) || hasPermission('config', 'Write');
   // Only tenant_admin can view or write tenant-scoped configs.
   const canAccessTenantScope = isTenantAdmin();
   const [configs, setConfigs] = useState<Config[]>([]);

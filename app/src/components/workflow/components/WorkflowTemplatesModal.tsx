@@ -366,6 +366,15 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
   const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
   const router = useRouter();
 
+  // Event context the template list is filtered by (source / alert name), shown
+  // as labels under the modal title so it's obvious why the list is narrowed.
+  const contextChips = useMemo(() => {
+    const chips: { key: string; label: string; value: string }[] = [];
+    (eventSources || []).filter(Boolean).forEach((s) => chips.push({ key: `source-${s}`, label: 'Source', value: s }));
+    (alertNames || []).filter(Boolean).forEach((a) => chips.push({ key: `alert-${a}`, label: 'Alert', value: a }));
+    return chips;
+  }, [eventSources, alertNames]);
+
   // Union of labels across the loaded templates, for the filter chip row.
   const availableLabels = useMemo(() => {
     const set = new Set<string>();
@@ -468,6 +477,20 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
           maxHeight: `calc(85vh - ${ds.space.mul(2, 10)})`,
         }}
       >
+        {/* Event context (source / alert name) the list is filtered by */}
+        {contextChips.length > 0 && (
+          <Box
+            id='wf-template-event-context'
+            sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 'var(--ds-space-2)', mb: 'var(--ds-space-3)' }}
+          >
+            {contextChips.map((chip) => (
+              <Chip key={chip.key} variant='tag' size='xs' tone='subtle' displayTooltip tooltipCharLimit={60}>
+                {`${chip.label}: ${chip.value}`}
+              </Chip>
+            ))}
+          </Box>
+        )}
+
         {/* Category Tabs */}
         <Box id='wf-template-categories' sx={{ mb: 'var(--ds-space-2)' }}>
           <Tabs

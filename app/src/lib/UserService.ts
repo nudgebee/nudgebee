@@ -843,6 +843,49 @@ export async function getAccountByTenant(tenantId: string) {
   };
 }
 
+// Resolve a user's effective dynamic-RBAC custom-role grants ("<module>:<class>"
+// keys) for a tenant, plus whether the CUSTOM_ROLES feature is enabled for that
+// tenant at all. Used at session build to bake both into the JWT so the
+// rpcGateway gate and the UI gating can work without a per-request DB hit. Runs
+// server-side (synthetic admin context) during NextAuth callbacks.
+const RESOLVE_CUSTOM_PERMISSIONS_QUERY = `
+query ResolveCustomPermissions($userId: String!, $tenantId: String!) {
+  customroles_list_user_permissions(user_id: $userId, tenant_id: $tenantId) {
+    permissions
+    enabled
+  }
+}`;
+
+export type ResolvedCustomPermissions = {
+  permissions: string[];
+  // false whenever the feature is off for the tenant, the customroles_* action
+  // isn't part of this build (OSS), or the resolve failed — all of which must
+  // leave the UI on its built-in-role behavior rather than gate anything.
+  enabled: boolean;
+};
+
+export async function resolveUserCustomPermissions(userId: string, tenantId: string): Promise<ResolvedCustomPermissions> {
+  const off: ResolvedCustomPermissions = { permissions: [], enabled: false };
+  if (!userId || !tenantId) return off;
+  try {
+    const response = await queryGraphQL(RESOLVE_CUSTOM_PERMISSIONS_QUERY, 'ResolveCustomPermissions', {
+      userId,
+      tenantId,
+    });
+    // queryGraphQL surfaces gateway/GraphQL failures in response.data.errors
+    // (it does not throw). Route them through the catch so a failed resolve is
+    // logged rather than silently read as "user has zero custom grants".
+    if (response?.data?.errors) {
+      throw new Error(response.data.errors?.[0]?.message || 'GraphQL error resolving custom permissions');
+    }
+    const result = response?.data?.data?.customroles_list_user_permissions;
+    return { permissions: result?.permissions || [], enabled: !!result?.enabled };
+  } catch (err) {
+    console.log('unable to resolve custom permissions for user', userId, err);
+    return off;
+  }
+}
+
 export async function getCloudAccountAttr(accountId: string) {
   const response = await queryGraphQL(ACCOUNT_ATTRS, 'CloudAccountAttrs', {
     cloud_acc_id: accountId,

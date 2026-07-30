@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
-	"nudgebee/llm/security"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -96,7 +95,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_models") {
 			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -196,7 +195,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_models") {
 			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -290,7 +289,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
 			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -424,7 +423,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
 			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -494,7 +493,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
 			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}

@@ -1623,14 +1623,14 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
         >
           <FilterDropdown
             label='Namespace'
-            options={namespaceFilter.map((o) => ({ value: o, label: o }))}
+            options={namespaceFilter?.map((o) => ({ value: o, label: o })) || []}
             value={selectedNamespace}
             onSelect={onNamespaceFilterChange}
             disabled={disableOptions}
           />
           <FilterDropdown
             label='Workload Type'
-            options={workloadTypeFilter.map((o) => ({ value: o, label: o }))}
+            options={workloadTypeFilter?.map((o) => ({ value: o, label: o })) || []}
             value={selectedWorkloadType}
             onSelect={onWorkloadTypeFilterChange}
             disabled={disableOptions}

@@ -442,7 +442,7 @@ func HandleConversationAgentDetailApi(ctx *security.RequestContext, request Conv
 	if request.ConversationId == "" || request.AccountId == "" || request.AgentId == "" {
 		return AgentDetail{}, fmt.Errorf("HandleConversationAgentDetailApi: conversation_id, account_id and agent_id are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_agents") {
 		return AgentDetail{}, fmt.Errorf("HandleConversationAgentDetailApi: forbidden account_id")
 	}
 	return GetConversationDao().GetConversationAgentDetail(request.ConversationId, request.AccountId, request.AgentId, request.ModelCallId)

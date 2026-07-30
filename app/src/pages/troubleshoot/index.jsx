@@ -5,7 +5,7 @@ import KubernetesEventsTable, { TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY } from '@
 import KubernetesGroupedEventsTable from '@components/k8s/details/groupedevents/KubernetesGroupedEventsTable';
 import TroubleshootSummary from '@components/troubleshoot/TroubleshootSummary';
 import { Box, CircularProgress } from '@mui/material';
-import { useState, useEffect } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import AutoInvestigated from '@components/troubleshoot/AutoInvestigated';
 import ManualInvestigated from '@components/troubleshoot/ManualInvestigated';
 import EventResolutions from '@components/troubleshoot/EventResolutions';
@@ -26,6 +26,7 @@ import ThresholdSuggestionsManager from '@components/triage/ThresholdSuggestions
 import { useRouter } from 'next/router';
 import { clearPersistedFilters } from '@hooks/usePersistedFilters';
 import { getLast24Hrs } from '@lib/datetime';
+import { isGrantsOnlyUser, hasPermission, missingPermissionMessage } from '@lib/auth';
 
 // Knowledge Graph pulls in reactflow and only renders under the third tab, so a
 // static import shipped the graph bundle in this page's chunk for every visitor
@@ -90,8 +91,8 @@ const filterOptions = [
 // sub-tab row instead — with the summary widget cards sandwiched in between —
 // so strip `tabOptions` before handing the list to AnchorComponent to avoid a
 // duplicate second tab row. It only needs the plain fragment/value pairs to
-// highlight the correct top-level pill.
-const anchorFilterOptions = filterOptions.map(({ tabOptions: _tabOptions, ...rest }) => rest);
+// highlight the correct top-level pill. The per-user disabled flags for the
+// Investigations / Knowledge Graph tabs are stamped inside the component below.
 
 const TroubleshootPage = () => {
   // selectedTab is the parent-tab selection (0 = All Events, 1 = Investigations,
@@ -117,6 +118,27 @@ const TroubleshootPage = () => {
     return { startDate, endDate, previousStartDate: getLast24Hrs(startDate), previousEndDate: startDate };
   });
   const router = useRouter();
+
+  // Gate the Investigations and Knowledge Graph tabs on the permission backing
+  // each tab's primary API: Investigations reads ai_list_conversations
+  // (→ ai_conversations:Read); Knowledge Graph reads kg_get_complete_graph
+  // (→ kg:Read). Only grants-only custom-role users are gated — tenant-wide
+  // admins and any account user keep access (their role authorizes the API); a
+  // grants-only user lacking the grant sees the tab disabled (not hidden) with a
+  // request-access tooltip. All Events (value 0) is never gated.
+  const grantsOnlyUser = isGrantsOnlyUser();
+  const canAccessInvestigations = !grantsOnlyUser || hasPermission('ai_conversations', 'Read');
+  const canAccessKg = !grantsOnlyUser || hasPermission('kg', 'Read');
+
+  const anchorFilterOptions = useMemo(
+    () =>
+      filterOptions.map(({ tabOptions: _tabOptions, ...rest }) => {
+        const disabled = (rest.value === 1 && !canAccessInvestigations) || (rest.value === 2 && !canAccessKg);
+        const requiredPermission = rest.value === 1 ? 'ai_conversations:Read' : 'kg:Read';
+        return { ...rest, disabled, disabledTooltip: disabled ? missingPermissionMessage(requiredPermission) : undefined };
+      }),
+    [canAccessInvestigations, canAccessKg]
+  );
 
   // Drill-down from a summary widget: open the flat Events list filtered by the
   // widget's metric. The Events table (KubernetesEvents) reads eventPriority /
@@ -185,10 +207,13 @@ const TroubleshootPage = () => {
     const decoded = decodeURIComponent(hash);
     const [fragment, subFragment] = decoded.split('/');
 
-    // Unknown top-level fragment (stale/typo'd link) — fall back to All Events
-    // and canonicalize the URL to match.
+    // Unknown top-level fragment (stale/typo'd link) — or a permission-gated tab
+    // the user can't access (a bookmarked/deep-linked #investigations or #kg) —
+    // fall back to All Events and canonicalize the URL, so a disabled tab can't
+    // be reached by URL and 403 on its API.
     const parent = filterOptions.find((option) => option.fragment === fragment);
-    if (!parent) {
+    const gated = parent && ((parent.value === 1 && !canAccessInvestigations) || (parent.value === 2 && !canAccessKg));
+    if (!parent || gated) {
       setSelectedTab(0);
       setSelectedSubTab(0);
       replaceHash(`${filterOptions[0].fragment}/${filterOptions[0].tabOptions[0].fragment}`);
@@ -211,7 +236,7 @@ const TroubleshootPage = () => {
         replaceHash(`${parent.fragment}/${parent.tabOptions[0].fragment}`);
       }
     }
-  }, [router.asPath]);
+  }, [router.asPath, canAccessInvestigations, canAccessKg]);
 
   return (
     <>

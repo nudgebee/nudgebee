@@ -24,6 +24,7 @@ import {
   deleteUserAuth,
   updateUserStatus,
   getAccountByTenant,
+  resolveUserCustomPermissions,
   onboardUser,
   updateUserAccountAccessedByUsername,
   updateTenantUser,
@@ -51,6 +52,8 @@ export interface NudgebeeUser extends AdapterUser {
   namespacedReadOnlyAccountIds?: string[];
   k8sNamespaces?: any;
   hasMultipleTenantAccess?: boolean;
+  // Dynamic-RBAC custom-role grants ("<module>:<class>"). Additive to roles.
+  permissions?: string[];
 }
 
 export interface NudgebeeSession extends Session {
@@ -66,6 +69,12 @@ export interface NudgebeeSession extends Session {
   hasMultipleTenantAccess?: boolean;
   isSuperAdmin?: boolean;
   isSuperAdminReadonly?: boolean;
+  // Dynamic-RBAC custom-role grants ("<module>:<class>"). Read by hasPermission().
+  permissions?: string[];
+  // Whether the tenant has the CUSTOM_ROLES feature enabled. False means the
+  // whole dynamic-RBAC layer is off and every UI gate must behave exactly as it
+  // did before the feature existed. Read by isCustomRolesEnabled().
+  customRolesEnabled?: boolean;
   // License tier from services-server. Used by EE-bundle components to
   // self-gate at render time — needed when the EE bundle is present in
   // the monorepo build but the deployment is configured as a non-saas tier.
@@ -1279,6 +1288,14 @@ function getSessionUpdateSeconds() {
   return expiration;
 }
 
+// How stale a session's baked-in dynamic-RBAC grant set may get before the jwt
+// callback re-resolves it from the database. Bounds two things: how long a
+// revoked grant (or a CUSTOM_ROLES switch flipped off) keeps being honored by the
+// gateway, and how long a newly granted permission takes to appear without a
+// re-login. Small enough to be operationally sane, large enough that the
+// /api/auth/session poll doesn't turn into a per-minute RPC per tab.
+const PERMISSIONS_REFRESH_MS = 5 * 60 * 1000;
+
 export const authOptions: NextAuthOptions = {
   adapter: GQLAdapter(),
   session: {
@@ -1328,8 +1345,41 @@ export const authOptions: NextAuthOptions = {
           // registerTokenEnricher; default is a no-op).
           const userId = (user?.id || token?.id || token?.sub) as string;
           await enrichAuthToken(token as Record<string, unknown>, userId);
+
+          // Dynamic-RBAC: resolve the user's custom-role grants for the active
+          // tenant and bake them into the token so the gateway gate can check
+          // them without a per-request DB hit. token.tenant is set by the
+          // jwtUpdateTokenFor* helpers above. `customRolesEnabled` carries the
+          // tenant's CUSTOM_ROLES feature state so the UI can tell "feature off"
+          // (keep the built-in-role behavior untouched) from "no grants held".
+          const resolved = await resolveUserCustomPermissions(userId, (token.tenant as any)?.id);
+          token.permissions = resolved.permissions;
+          token.customRolesEnabled = resolved.enabled;
+          token.permissionsResolvedAt = Date.now();
         }
         await jwtUpdateTokenOnUpdateTrigger(token, session, trigger);
+        // Tenant switch changes the effective grant set — re-resolve.
+        if (trigger === 'update' && token.id && (token.tenant as any)?.id) {
+          const reresolved = await resolveUserCustomPermissions(token.id as string, (token.tenant as any).id);
+          token.permissions = reresolved.permissions;
+          token.customRolesEnabled = reresolved.enabled;
+          token.permissionsResolvedAt = Date.now();
+        } else if (!user && token.id && (token.tenant as any)?.id) {
+          // Bounded refresh on an existing session. Grants and the CUSTOM_ROLES
+          // switch itself live in the database, but the gateway reads them off the
+          // JWT — without this they would be frozen at login, so a revoked grant
+          // (or the whole feature being turned off) would keep working for as long
+          // as the user stayed signed in, and a newly granted one would need a
+          // re-login. Rate-limited to PERMISSIONS_REFRESH_MS because this callback
+          // also runs on every /api/auth/session poll.
+          const resolvedAt = typeof token.permissionsResolvedAt === 'number' ? token.permissionsResolvedAt : 0;
+          if (Date.now() - resolvedAt > PERMISSIONS_REFRESH_MS) {
+            const refreshed = await resolveUserCustomPermissions(token.id as string, (token.tenant as any).id);
+            token.permissions = refreshed.permissions;
+            token.customRolesEnabled = refreshed.enabled;
+            token.permissionsResolvedAt = Date.now();
+          }
+        }
         return token;
       } catch (error) {
         console.log('jwt, unable to handle jwt token ', error);
@@ -1364,6 +1414,8 @@ export const authOptions: NextAuthOptions = {
             nudgeBeeSession.k8sNamespaces = token.k8sNamespaces;
           }
           nudgeBeeSession.hasMultipleTenantAccess = !!token.hasMultipleTenantAccess;
+          nudgeBeeSession.permissions = (token.permissions as string[]) ?? [];
+          nudgeBeeSession.customRolesEnabled = !!token.customRolesEnabled;
         }
         const licenseDetails = await getLicenseDetails();
         nudgeBeeSession.tier = licenseDetails.tier;

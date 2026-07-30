@@ -10,6 +10,20 @@ jest.mock('next-auth/react', () => ({
 const mockHasWriteAccess = jest.fn();
 jest.mock('@lib/auth', () => ({
   hasWriteAccess: (...args) => mockHasWriteAccess(...args),
+  // Dynamic-RBAC helpers the component also calls. `canManage` replaced the
+  // component's hasWriteAccess() gate, so it has to answer from the same mock —
+  // hard-coding it true makes the "only when user has write access" case
+  // unfalsifiable.
+  canManage: (...args) => mockHasWriteAccess(...args),
+  // Feature-off answers: this suite asserts the built-in tenant-admin behavior.
+  isTenantWideRole: () => true,
+  hasPermission: () => false,
+}));
+
+// TourLauncher needs a <TourProvider> ancestor and throws without one. It rides
+// along in the write-gated toolbar and is not what this suite tests.
+jest.mock('@components/common/tour', () => ({
+  TourLauncher: () => null,
 }));
 
 jest.mock('@api1/user', () => ({

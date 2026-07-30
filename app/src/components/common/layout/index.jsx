@@ -12,7 +12,7 @@ import { renderSlot } from '@lib/slots';
 
 // Internal Imports
 import { LayoutHeaderActionSlot } from '@shared/layout/LayoutHeaderActionSlot';
-import { getUserSession, withAuth, hasReadAccess } from '@lib/auth';
+import { getUserSession, withAuth, hasAdminSurfaceAccess, isGrantsOnlyUser, hasPermission, missingPermissionMessage } from '@lib/auth';
 import {
   homeIcon1,
   KubernetesClusterIcon,
@@ -32,10 +32,12 @@ import SectionFirstVisitTour from '@components/onboarding/SectionFirstVisitTour'
 import Tooltip from '@ui/Tooltip';
 import TenantSettings from '@shared/settings/TenantSettings';
 import ApiTokens from '@shared/settings/ApiTokens';
-import { snackbar } from '@shared/snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 import { tenantSwitcher } from '@lib/tenantSwitcherService';
+import { useData } from '@context/DataContext';
 import { createGetMenuItem, generateMenuItems } from './UserMenuItems';
-import { colors, ds } from 'src/utils/colors';
+import NubiBrainNav from './NubiBrainNav';
+import { ds } from 'src/utils/colors';
 import { isRenderedInIframe } from 'src/utils/common';
 
 const COLLAPSED_WIDTH = 76;
@@ -118,6 +120,14 @@ const SideDrawerButton = ({ open = false, item = {}, onClick, handleDrawerOpen }
   // NOTE: destinationPath memoization removed. Logic moved to handleLinkClick.
 
   const handleLinkClick = (e) => {
+    // 0. Permission-disabled item: swallow the click entirely (no navigate, no
+    // drawer-open). The Button also carries pointer-events:none, but a keyboard
+    // Enter still fires onClick, so guard here too.
+    if (item.disabled) {
+      e.preventDefault();
+      return;
+    }
+
     // 1. If sidebar is closed and item has sub-items, just open drawer
     if (!open && haveSubItems) {
       e.preventDefault();
@@ -147,42 +157,60 @@ const SideDrawerButton = ({ open = false, item = {}, onClick, handleDrawerOpen }
     router.push(targetPath);
   };
 
+  // Base button. When the item is permission-disabled it's greyed and made
+  // non-interactive; the Tooltip below still fires because the hover is caught
+  // by the wrapping <span> (the Button itself has pointer-events:none).
+  const navButton = (
+    <Button
+      component={Link}
+      // Disabled items shouldn't advertise a real href to assistive tech / hover.
+      href={item.disabled ? '#' : item.path || '#'}
+      onClick={handleLinkClick}
+      className={isActive ? 'active-nav' : undefined}
+      aria-label={item.text}
+      aria-disabled={item.disabled || undefined}
+      id={item?.id}
+      sx={
+        item.disabled ? { ...(isActive ? styles.activeButton : {}), opacity: 0.4, pointerEvents: 'none' } : isActive ? styles.activeButton : undefined
+      }
+    >
+      {isActive && <Box sx={styles.activeIndicator} />}
+
+      <Box sx={styles.iconContainer}>
+        <Box sx={styles.iconWrapper}>
+          <SafeIcon src={item.icon} alt={item.text} fill style={{ objectFit: 'contain' }} />
+        </Box>
+
+        <Typography sx={styles.iconLabel}>{item.text}</Typography>
+      </Box>
+
+      {open && (
+        <Box component='span' sx={styles.openTextContainer}>
+          <span>{item.text}</span>
+          <span className='sub-text'>{item.subText}</span>
+        </Box>
+      )}
+
+      {open && haveSubItems && <KeyboardArrowDownRounded sx={{ height: 10, transition: 'all 0.2s ease' }} />}
+    </Button>
+  );
+
   return (
     <React.Fragment>
       {/* We keep item.path here for semantic HTML, but override the click */}
-      <Button
-        component={Link}
-        href={item.path || '#'}
-        onClick={handleLinkClick}
-        sx={isActive ? styles.activeButton : undefined}
-        aria-label={item.text}
-        id={item?.id}
-      >
-        {isActive && <Box sx={styles.activeIndicator} />}
-
-        <Box sx={styles.iconContainer}>
-          <Box sx={styles.iconWrapper}>
-            <SafeIcon src={item.icon} alt={item.text} fill style={{ objectFit: 'contain' }} />
-          </Box>
-
-          <Typography sx={styles.iconLabel}>{item.text}</Typography>
-        </Box>
-
-        {open && (
-          <Box component='span' sx={styles.openTextContainer}>
-            <span>{item.text}</span>
-            <span className='sub-text'>{item.subText}</span>
-          </Box>
-        )}
-
-        {open && haveSubItems && <KeyboardArrowDownRounded sx={{ height: 10, transition: 'all 0.2s ease' }} />}
-      </Button>
+      {item.disabled && item.disabledTooltip ? (
+        <Tooltip title={item.disabledTooltip} placement='right'>
+          <span style={{ display: 'block' }}>{navButton}</span>
+        </Tooltip>
+      ) : (
+        navButton
+      )}
       {haveSubItems && (
         <Collapse in={open}>
           <Box className='collapsable'>
             {item.subItems?.map((sub, idx) => (
               <Button key={`${sub.text}-${idx}`} onClick={() => onClick(sub.path)} className={`menu-item sub-item`}>
-                <Box sx={{ width: '20px', height: '20px', position: 'relative' }}>
+                <Box sx={{ width: ds.space.mul(1, 5), height: ds.space.mul(1, 5), position: 'relative' }}>
                   <SafeIcon priority={true} src={sub.icon} alt={sub.text} fill style={{ objectFit: 'contain' }} />
                 </Box>
                 {open && (
@@ -219,6 +247,7 @@ const PageLayout = ({ children }) => {
 
   // Derived Values
   const session = getUserSession();
+  const { selectedCluster } = useData();
   const { baseTitle, logoUrl: brandingLogoUrl, faviconUrl: brandingFaviconUrl, loading: brandingLoading } = useTenantBranding();
 
   // Logo: derived inline from branding. The `!brandingLoading` gate on the <img> below holds the
@@ -236,26 +265,51 @@ const PageLayout = ({ children }) => {
   }, []);
 
   const menuItems = useMemo(() => {
+    // `module` is the dynamic-RBAC permission module (permissionCatalog.ts) that
+    // backs each product area — it drives the disabled-icon gating below. Home is
+    // gated on `insights` (its landing surfaces account insights). b-Cortex/
+    // Settings/Nudgebee (rendered separately) carry none.
     const items = [
-      { path: '/home', icon: homeIcon1, text: 'Home', id: 'home-sidenavbutton' },
+      { path: '/home', icon: homeIcon1, text: 'Home', id: 'home-sidenavbutton', module: 'insights' },
       {
         path: '/troubleshoot',
         activePaths: ['/investigate', '/agentHealth'],
         icon: troubleshootIcon1,
         text: 'Troubleshoot',
         id: 'troubleshoot-sidenavbutton',
+        module: 'events',
       },
-      { path: '/optimise', icon: WhiteOptimizeIcon, text: 'Optimize', id: 'optimize-sidenavbutton' },
-      { path: '/kubernetes', icon: KubernetesClusterIcon, text: 'Clusters', haveSubItems: true, id: 'clusters-sidenavbutton' },
-      { path: '/cloud-account', icon: CloudAccountIcon, text: 'Cloud', haveSubItems: true, id: 'cloud-sidenavbutton' },
-      { path: '/automation', icon: WorkflowIconWhite, text: 'Automations', id: 'auto-pilot-sidenavbutton' },
-      { path: '/tickets', icon: ticketsIcon1, text: 'Tickets', id: 'tickets-sidenavbutton' },
+      { path: '/automation', icon: WorkflowIconWhite, text: 'Automations', id: 'auto-pilot-sidenavbutton', module: 'workflows' },
+      { path: '/optimise', icon: WhiteOptimizeIcon, text: 'Optimize', id: 'optimize-sidenavbutton', module: 'recommendations' },
+      { path: '/kubernetes', icon: KubernetesClusterIcon, text: 'Clusters', haveSubItems: true, id: 'clusters-sidenavbutton', module: 'k8s' },
+      { path: '/cloud-account', icon: CloudAccountIcon, text: 'Cloud', haveSubItems: true, id: 'cloud-sidenavbutton', module: 'cloud' },
+      { path: '/tickets', icon: ticketsIcon1, text: 'Tickets', id: 'tickets-sidenavbutton', module: 'tickets' },
     ];
-    if (hasReadAccess()) {
+    if (hasAdminSurfaceAccess()) {
       items.push({ path: '/user-management', activePaths: ['/accounts'], icon: AdminIcon, text: 'Admin', id: 'admin-sidenav' });
     }
-    return items;
-  }, []);
+
+    // Per-module nav gating applies ONLY to grants-only custom-role users — those
+    // whose access comes purely from dynamic-RBAC grants, with no tenant-wide role
+    // and no account access. Tenant admins and any account user keep every icon
+    // (these product areas are account-scoped and theirs by role). For a grants-only
+    // user, an icon they lack `<module>:Read` for renders disabled (greyed) with a
+    // request-access tooltip rather than being hidden, so the capability stays
+    // discoverable. Admin is already gated by its own hasAdminSurfaceAccess() push.
+    //
+    // Demo bypass: the shared `demo` account (`value === 'demo'`) is the
+    // unrestricted product showcase — when it's the selected account, every icon
+    // stays enabled regardless of grants, so the demo is never hobbled. The whole
+    // block is also inert while the tenant's CUSTOM_ROLES feature is off (see
+    // isGrantsOnlyUser), so the nav looks exactly as it did pre-dynamic-RBAC.
+    if (!isGrantsOnlyUser(selectedCluster?.value)) return items;
+    return items.map((item) =>
+      item.module && !hasPermission(item.module, 'Read')
+        ? { ...item, disabled: true, disabledTooltip: missingPermissionMessage(`${item.module}:Read`) }
+        : item
+    );
+    // selectedCluster?.value re-evaluates the demo bypass on account switch.
+  }, [selectedCluster?.value]);
 
   // Route/Page Type Detection
   const pageFlags = useMemo(
@@ -360,6 +414,7 @@ const PageLayout = ({ children }) => {
                   <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', marginTop: 'var(--ds-space-3)' }}>
                     <Link href={homeUrl} passHref>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
+                      {/* oxlint-disable nextjs/no-img-element -- dynamic branding URL; next/image requires static domain allowlist */}
                       {!brandingLoading && (
                         <img
                           src={logoSrc}
@@ -367,9 +422,10 @@ const PageLayout = ({ children }) => {
                           aria-label={baseTitle}
                           width={50}
                           height={40}
-                          style={{ maxWidth: '50px', maxHeight: '40px', objectFit: 'contain' }}
+                          style={{ maxWidth: ds.space.mul(0, 25), maxHeight: ds.space.mul(1, 10), objectFit: 'contain' }}
                         />
                       )}
+                      {/* oxlint-enable nextjs/no-img-element */}
                     </Link>
                   </Box>
                   <Box sx={styles.separator} />
@@ -388,7 +444,16 @@ const PageLayout = ({ children }) => {
                   <SectionFirstVisitTour />
 
                   <Box sx={styles.userMenuContainer}>
+                    <Box sx={{ mb: 'var(--ds-space-3)' }}>
+                      <NubiBrainNav surface='dark' />
+                    </Box>
                     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                      <IconButton id='account-setting' onClick={(e) => setAnchorElUser(e.currentTarget)} size='small'>
+                        <Box>
+                          <SafeIcon alt='Settings Icon' src={ProfileOutlineIcon} width={16} height={16} />
+                        </Box>
+                      </IconButton>
+
                       {getUserSession()?.tenant?.name && (
                         <Tooltip title={getUserSession()?.tenant?.name} placement='right'>
                           <Typography
@@ -396,8 +461,8 @@ const PageLayout = ({ children }) => {
                             sx={{
                               fontSize: 'var(--ds-text-caption)',
                               fontWeight: 'var(--ds-font-weight-semibold)',
-                              color: colors.text.white,
-                              maxWidth: '48px',
+                              color: ds.background[100],
+                              maxWidth: ds.space.mul(1, 12),
                               textAlign: 'center',
                               mb: 'var(--ds-space-1)',
                             }}
@@ -406,11 +471,6 @@ const PageLayout = ({ children }) => {
                           </Typography>
                         </Tooltip>
                       )}
-                      <IconButton id='account-setting' onClick={(e) => setAnchorElUser(e.currentTarget)} size='small'>
-                        <Box>
-                          <SafeIcon alt='Settings Icon' src={ProfileOutlineIcon} width={16} height={16} />
-                        </Box>
-                      </IconButton>
                       <Menu
                         id='menu-appbar'
                         sx={{ '.css-1xyun6z-MuiPaper-root-MuiPopover-paper-MuiMenu-paper': { left: '62px !important' } }}
@@ -420,7 +480,21 @@ const PageLayout = ({ children }) => {
                         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
                         open={Boolean(anchorElUser)}
                         onClose={() => setAnchorElUser(null)}
-                        slotProps={{ paper: { sx: { minWidth: 360, maxWidth: 360, maxHeight: 'none' } } }}
+                        slotProps={{
+                          paper: {
+                            sx: {
+                              minWidth: 360,
+                              maxWidth: 360,
+                              maxHeight: 'none',
+                              outline: 'none',
+                              border: 'none',
+                              borderRadius: 'var(--ds-overlay-radius)',
+                              boxShadow: 'var(--ds-overlay-shadow)',
+                              backgroundColor: 'var(--ds-overlay-bg)',
+                            },
+                          },
+                        }}
+                        MenuListProps={{ sx: { outline: 'none', py: 'var(--ds-overlay-padding-y)' } }}
                       >
                         {avatarSubMenu.map((setting) => getMenuItem(setting))}
                       </Menu>
@@ -443,16 +517,16 @@ const PageLayout = ({ children }) => {
                   px: open ? ds.space.mul(1, 16) : pageFlags.isAskNudgebee || pageFlags.isAskNudgebeeV2 ? 0 : ds.space.mul(1, 10),
                   backgroundColor:
                     pageFlags.isOptimize || pageFlags.isTroubleshoot || pageFlags.isAgentic
-                      ? colors.background.home
+                      ? ds.background[100]
                       : pageFlags.isAskNudgebee
-                      ? colors.background.askNudgebeePage
-                      : colors.background.pages,
+                      ? ds.background[100]
+                      : ds.background[300],
                   ...styles.body,
                   position: 'relative',
-                  paddingBottom: isPaddedLayout ? '12px' : '0px',
+                  paddingBottom: isPaddedLayout ? ds.space[3] : 0,
                 }}
               >
-                <Container maxWidth='1800px' style={{ paddingInline: 0 }}>
+                <Container maxWidth={false} sx={{ maxWidth: ds.space.mul(0, 900) }} style={{ paddingInline: 0 }}>
                   <ErrorBoundary resetKey={router.asPath}>{children}</ErrorBoundary>
                 </Container>
               </Box>
@@ -474,7 +548,7 @@ const styles = {
     backgroundColor: 'var(--ds-sidebar-bg, var(--ds-brand-600))',
     minHeight: '100vh',
     transition: 'all ease 0.2s',
-    boxShadow: '2px 0 2px 0 rgba(0,0,0,0.25)',
+    boxShadow: `${ds.space[0]} 0 ${ds.space[0]} 0 color-mix(in srgb, ${ds.gray[700]} 25%, transparent)`,
     display: 'flex',
     justifyContent: 'start',
     alignItems: 'center',
@@ -489,7 +563,7 @@ const styles = {
       flexDirection: 'column',
       justifyContent: 'center',
       alignItems: 'center',
-      gap: 'var(--ds-space-1)',
+      gap: 'var(--ds-space-0)',
       overflow: 'hidden',
       top: 0,
       height: '100vh',
@@ -501,42 +575,43 @@ const styles = {
     },
     '& button': {
       py: 'var(--ds-space-4)',
-      width: '76px',
-      height: '60px',
+      width: ds.space.mul(1, 19),
+      height: ds.space.mul(1, 15),
       display: 'flex',
       justifyContent: 'center',
       textAlign: 'left',
       borderRadius: 0,
+      transition: 'background-color 0.2s ease',
       '@media (max-width:1535px)': {
         py: 'var(--ds-space-2)',
         height: ds.space.mul(1, 13),
       },
-      '&:hover': {
-        backgroundColor: colors.secondary.default,
+      '&:not(.active-nav):hover': {
+        backgroundColor: 'rgba(0, 0, 0, 0.3)',
       },
       '&.menu-item': {
         borderBottom: 'none',
         justifyContent: 'flex-start',
         gap: 'var(--ds-space-3)',
         borderRadius: 'var(--ds-radius-xl)',
-        color: colors.text.secondaryDark,
-        fontSize: 13,
-        lineHeight: '15px',
+        color: ds.gray[400],
+        fontSize: 'var(--ds-text-small)',
+        lineHeight: ds.space.mul(0, 8),
         fontWeight: 'var(--ds-font-weight-semibold)',
         textTransform: 'none',
         '&.sub-item': { pl: 'var(--ds-space-6)' },
-        '& .sub-text': { fontSize: 8, color: colors.text.tertiary },
+        '& .sub-text': { fontSize: 'var(--ds-text-caption)', color: ds.gray[600] },
         svg: {
-          minHeight: '20px',
-          minWidth: '20px',
-          height: '20px',
-          width: '20px',
-          '&.color-switching-icon': { path: { fill: colors.switchIconColor } },
+          minHeight: ds.space.mul(1, 5),
+          minWidth: ds.space.mul(1, 5),
+          height: ds.space.mul(1, 5),
+          width: ds.space.mul(1, 5),
+          '&.color-switching-icon': { path: { fill: ds.brand[500] } },
         },
         '&.selected': {
-          backgroundColor: colors.secondary.default,
-          color: colors.white,
-          svg: { '&.color-switching-icon': { path: { fill: colors.white } } },
+          backgroundColor: ds.brand[500],
+          color: ds.background[100],
+          svg: { '&.color-switching-icon': { path: { fill: ds.background[100] } } },
         },
       },
     },
@@ -549,24 +624,24 @@ const styles = {
     flexDirection: 'column',
   },
   activeButton: {
-    background: colors.background.activeButtonColor,
+    background: ds.gray.alpha[200],
   },
   activeIndicator: {
-    width: '4px',
+    width: ds.space[1],
     height: '100%',
     position: 'absolute',
     left: 0,
-    background: 'var(--nb-color-sidebar-indicator)',
+    background: ds.yellow[500],
   },
   iconContainer: {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
-    gap: '0px',
+    gap: 0,
   },
   iconWrapper: {
-    width: '22px',
-    height: '22px',
+    width: ds.space.mul(0, 10),
+    height: ds.space.mul(0, 10),
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -578,12 +653,12 @@ const styles = {
   },
   iconLabel: {
     paddingTop: 'var(--ds-space-3)',
-    lineHeight: '4px',
+    lineHeight: ds.space[1],
     textTransform: 'capitalize',
     fontFamily: 'Roboto',
     fontWeight: 'var(--ds-font-weight-regular)',
-    fontSize: 'var(--ds-text-caption)',
-    color: colors.text.white,
+    fontSize: '10px',
+    color: ds.background[100],
     '@media (max-width:1535px)': {
       fontSize: '10px',
     },
@@ -595,19 +670,19 @@ const styles = {
     whiteSpace: 'nowrap',
   },
   separator: {
-    width: '46px',
-    marginY: '4px',
+    width: ds.space.mul(0, 23),
+    marginY: ds.space[1],
     height: '0.5px',
-    background: colors.background.white,
+    background: ds.background[100],
     display: 'list-item',
     '::marker': { content: '""' },
   },
   subSeparator: {
-    width: '46px',
-    marginY: '4px',
+    width: ds.space.mul(0, 23),
+    marginY: ds.space[1],
     height: '0.25px',
     opacity: '50%',
-    background: colors.background.secondaryDark,
+    background: ds.gray[400],
     display: 'list-item',
     '::marker': { content: '""' },
   },
@@ -615,7 +690,7 @@ const styles = {
     marginTop: 'auto',
     paddingBottom: 'var(--ds-space-2)',
     '& button': {
-      height: '20px',
+      height: ds.space.mul(1, 5),
       py: 'var(--ds-space-4)',
     },
   },

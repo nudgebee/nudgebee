@@ -66,6 +66,14 @@ jest.mock('@lib/auth', () => ({
   },
   isTenantAdmin: jest.fn(() => false),
   hasReadAccess: jest.fn(() => false),
+  hasAdminSurfaceAccess: jest.fn(() => false),
+  // Nav gating: default to "not a grants-only user" so no product icon is
+  // disabled, preserving the all-icons-enabled baseline (which is also what a
+  // deployment with the CUSTOM_ROLES feature off always sees). Tests exercising
+  // the disabled state override this and hasPermission.
+  isGrantsOnlyUser: jest.fn(() => false),
+  hasPermission: jest.fn(() => false),
+  missingPermissionMessage: jest.fn((p) => `You need the "${p}" permission. Ask an admin to grant it.`),
 }));
 
 const mockGetUserSession = require('@lib/auth').getUserSession;
@@ -236,6 +244,11 @@ jest.mock('@shared/layout/UserMenuItems', () => ({
 jest.mock('src/utils/common', () => ({
   isRenderedInIframe: jest.fn(() => false),
   snakeToTitleCase: jest.fn((s) => s),
+}));
+
+// Mock DataContext — PageLayout reads selectedCluster (demo-account nav bypass).
+jest.mock('@context/DataContext', () => ({
+  useData: () => ({ selectedCluster: {} }),
 }));
 
 // Mock colors

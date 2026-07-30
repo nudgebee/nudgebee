@@ -241,7 +241,7 @@ func GetTraceServiceMap(context *security.RequestContext, request TraceServiceMa
 		return nil, fmt.Errorf("unauthorized")
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountID, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().CanReadAccountData(request.AccountID, "traces") {
 		return nil, fmt.Errorf("unauthorized")
 	}
 

@@ -11,7 +11,7 @@ import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
 import CustomTable from '@shared/tables/CustomTable';
 import { Label } from '@ui/Label';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, canManage } from '@lib/auth';
 import { Stack, Typography } from '@mui/material';
 import { useEffect, useMemo, useState } from 'react';
 import { snakeToTitleCase, toKebabCase } from 'src/utils/common';
@@ -192,7 +192,7 @@ const TicketingIntegrationTile = ({ tool, displayName, cloudProvider, AccountMod
             </Stack>
           }
           actions={
-            hasWriteAccess() ? (
+            canManage('integrations', 'Write') ? (
               <DsButton
                 id={`add-${toKebabCase(displayName)}-account-btn`}
                 tone='primary'

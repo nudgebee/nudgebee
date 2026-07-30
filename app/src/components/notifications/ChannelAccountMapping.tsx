@@ -13,7 +13,7 @@ import { toast as snackbar } from '@ui/Toast';
 import apiNotifications from '@api1/notification';
 import apiDashboard from '@api1/home';
 import apiAccount from '@api1/account';
-import { hasWriteAccess } from '@lib/auth';
+import { canManage } from '@lib/auth';
 import { ds } from 'src/utils/colors';
 
 interface ChannelAccountMappingProps {
@@ -158,7 +158,7 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
   }, [isConfigured, loadMappings]);
 
   const getMenuItems = () => {
-    if (!hasWriteAccess()) return [];
+    if (!canManage('messagingplatforms', 'Write')) return [];
     return [
       { label: 'Delete', id: 'delete' },
       { label: 'Edit', id: 'edit' },
@@ -416,7 +416,7 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
         <ListingLayout id={`${provider}-channel-account-mappings`}>
           <ListingLayout.Toolbar
             actions={
-              hasWriteAccess() ? (
+              canManage('messagingplatforms', 'Write') ? (
                 <DsButton id='add-mapping-btn' tone='primary' size='md' onClick={() => setOpenModal(true)}>
                   Add Mapping
                 </DsButton>

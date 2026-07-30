@@ -66,6 +66,12 @@ const (
 	EventTypeRoleAccountUpdate EventType = "ROLE_ACCOUNT_UPDATE"
 	EventTypeRoleAccountDelete EventType = "ROLE_ACCOUNT_DELETE"
 
+	// Dynamic-RBAC custom roles (tenant-defined permission bundles).
+	EventTypeCustomRoleCreate EventType = "CUSTOM_ROLE_CREATE"
+	EventTypeCustomRoleUpdate EventType = "CUSTOM_ROLE_UPDATE"
+	EventTypeCustomRoleDelete EventType = "CUSTOM_ROLE_DELETE"
+	EventTypeCustomRoleAssign EventType = "CUSTOM_ROLE_ASSIGN"
+
 	EventTypeUserLogin       EventType = "USER_AUTH_LOGIN"
 	EventTypeUserLoginCreate EventType = "USER_AUTH_CREATE"
 	EventTypeUserLoginDelete EventType = "USER_AUTH_DELETE"

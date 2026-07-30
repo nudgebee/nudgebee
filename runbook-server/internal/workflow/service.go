@@ -493,8 +493,16 @@ func normalizeWebhookTriggers(workflowID string, wf *model.Workflow) {
 }
 
 func (s *Service) CreateWorkflow(ctx *security.RequestContext, accountId string, wf model.Workflow) (string, string, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
-		return "", "", common.ErrorUnauthorized("account not accessible")
+	// Authorize the create: the built-in account-role path (unchanged — the only
+	// path in OSS and for built-in roles), OR a workflows:Write custom grant. The
+	// grant alone is sufficient, matching every other workflow operation: reads go
+	// through CanReadAccountData and the mutations below through canWriteWorkflows,
+	// so requiring built-in Read on top here would make create the one write a
+	// pure custom-role holder could not perform.
+	sc := ctx.GetSecurityContext()
+	if !sc.HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canWriteWorkflows(sc, accountId) {
+		return "", "", common.ErrorUnauthorized("not allowed to create workflows on this account")
 	}
 
 	wf.CreatedBy = ctx.GetSecurityContext().GetUserId()
@@ -937,7 +945,8 @@ func (s *Service) resolveLiveExecution(ctx context.Context, id string) (model.Wo
 }
 
 func (s *Service) ExecuteWorkflow(ctx *security.RequestContext, accountId, id string, triggerType model.WorkflowTrigger, inputs map[string]any) (string, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return "", common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -997,7 +1006,8 @@ func (s *Service) ExecuteWorkflow(ctx *security.RequestContext, accountId, id st
 //   - Writes no workflow_versions row and never touches the live pointer.
 //   - Trigger type is forced to manual.
 func (s *Service) TriggerWorkflowFromDraft(ctx *security.RequestContext, accountId, id string, inputs map[string]any) (string, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return "", common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -1243,7 +1253,8 @@ func (s *Service) FanOutWebhookEvent(ctx *security.RequestContext, integrationNa
 }
 
 func (s *Service) RetriggerWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string, inputs map[string]any) (string, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return "", common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -1396,7 +1407,8 @@ func (s *Service) RetriggerWorkflowExecution(ctx *security.RequestContext, accou
 }
 
 func (s *Service) DryRunWorkflow(ctx *security.RequestContext, accountId string, request model.DryRunWorkflowRequest) (model.DryRunWorkflowResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return model.DryRunWorkflowResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -1516,7 +1528,8 @@ func (s *Service) DryRunWorkflow(ctx *security.RequestContext, accountId string,
 // with the workflow ID and execution ID for polling. The caller should use
 // GetDetailedWorkflowExecution to poll for the result.
 func (s *Service) DryRunWorkflowAsync(ctx *security.RequestContext, accountId string, request model.DryRunWorkflowRequest) (string, string, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return "", "", common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -1723,15 +1736,24 @@ type AccountScope struct {
 func ResolveAccountScope(ctx *security.RequestContext, requested []string) (AccountScope, error) {
 	sc := ctx.GetSecurityContext()
 
-	readable := sc.ListAccountIds()
+	// Built-in account scope UNION the accounts a dynamic-RBAC workflows grant
+	// reaches. ListAccountIds() alone is empty for a pure custom-role holder, so
+	// every tenant-level listing would answer "no accessible accounts" for exactly
+	// the users the grant was created for.
+	readable := readableWorkflowAccounts(sc)
 	if len(readable) == 0 {
 		return AccountScope{}, common.ErrorUnauthorized("no accessible accounts")
 	}
 
+	// A tenant-global workflows grant reads the whole tenant, so it earns the same
+	// drop-the-per-account-predicate shortcut as a built-in tenant read role. An
+	// account-scoped grant must NOT: its accounts stay enumerated.
+	tenantWide := sc.HasTenantAccess(security.SecurityAccessTypeRead) || hasTenantWideWorkflowsGrant(sc)
+
 	if len(requested) == 0 {
 		return AccountScope{
 			AccountIDs: readable,
-			TenantWide: sc.HasTenantAccess(security.SecurityAccessTypeRead),
+			TenantWide: tenantWide,
 		}, nil
 	}
 
@@ -1740,7 +1762,7 @@ func ResolveAccountScope(ctx *security.RequestContext, requested []string) (Acco
 		if accountId == "" {
 			continue
 		}
-		if !sc.HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+		if !sc.CanReadAccountData(accountId, workflowsModule) {
 			continue
 		}
 		scoped = append(scoped, accountId)
@@ -1753,7 +1775,7 @@ func ResolveAccountScope(ctx *security.RequestContext, requested []string) (Acco
 	// none — the account filter's per-provider "Select All" makes that a click
 	// away, and on a large tenant enumerating the result would blow the
 	// downstream filter-size cap for no reason.
-	if len(scoped) == len(readable) && sc.HasTenantAccess(security.SecurityAccessTypeRead) {
+	if len(scoped) == len(readable) && tenantWide {
 		return AccountScope{AccountIDs: scoped, TenantWide: true}, nil
 	}
 
@@ -1883,7 +1905,7 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, workflo
 }
 
 func (s *Service) GetWorkflow(ctx *security.RequestContext, accountId, id string) (*model.Workflow, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -1987,7 +2009,8 @@ func (s *Service) updateWorkflowInternal(ctx *security.RequestContext, accountId
 	if accountId == "" || id == "" {
 		return model.Workflow{}, fmt.Errorf("tenantId, accountId, id are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return model.Workflow{}, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -2142,7 +2165,7 @@ func (s *Service) updateWorkflowInternal(ctx *security.RequestContext, accountId
 // Caveats: templated `workflow_name` values (`{{ ... }}`) can't be resolved
 // statically and are excluded — UI should note that the list is best-effort.
 func (s *Service) ListWorkflowCallers(ctx *security.RequestContext, accountId, id string) (model.ListWorkflowCallersResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return model.ListWorkflowCallersResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 	tenantID := ctx.GetSecurityContext().GetTenantId()
@@ -2175,7 +2198,8 @@ func (s *Service) ListWorkflowCallers(ctx *security.RequestContext, accountId, i
 }
 
 func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id string) error {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeDelete) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeDelete) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 	// Retrieve the workflow to check for schedule triggers
@@ -2287,7 +2311,8 @@ func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id str
 }
 
 func (s *Service) UpdateWorkflowStatus(ctx *security.RequestContext, accountId, id string, status model.WorkflowStatus) error {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -2375,7 +2400,7 @@ func (s *Service) ListWorkflowExecutions(ctx *security.RequestContext, accountId
 	if accountId == "" || workflowId == "" {
 		return model.ListWorkflowExecutionResponse{}, fmt.Errorf("tenantId, accountId, and workflowId are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return model.ListWorkflowExecutionResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -2532,7 +2557,7 @@ func (s *Service) ListWorkflowExecutionsForEvent(ctx *security.RequestContext, a
 	if accountId == "" || eventId == "" {
 		return model.ListWorkflowExecutionResponse{}, fmt.Errorf("accountId and eventId are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return model.ListWorkflowExecutionResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -2630,7 +2655,7 @@ func (s *Service) GetDetailedWorkflowExecution(ctx *security.RequestContext, acc
 	if accountId == "" || workflowId == "" || executionId == "" {
 		return nil, fmt.Errorf("tenantId, accountId, workflowId, executionId are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3095,7 +3120,8 @@ func (s *Service) CompleteApprovalTaskFromUI(ctx *security.RequestContext, accou
 		return common.ErrorBadRequest("status is required")
 	}
 
-	if !ctx.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountID) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3160,7 +3186,8 @@ func (s *Service) fetchApprovalIMContext(ctx context.Context, workflowID, runID,
 }
 
 func (s *Service) CancelWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string) error {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3182,7 +3209,8 @@ func (s *Service) CancelWorkflowExecution(ctx *security.RequestContext, accountI
 }
 
 func (s *Service) PauseWorkflow(ctx *security.RequestContext, accountId, id string) error {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3222,7 +3250,8 @@ func (s *Service) PauseWorkflow(ctx *security.RequestContext, accountId, id stri
 }
 
 func (s *Service) ResumeWorkflow(ctx *security.RequestContext, accountId, id string) error {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3432,7 +3461,12 @@ func (s *Service) newIsolatedTaskContext(ctx *security.RequestContext, accountId
 }
 
 func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType string, params map[string]any) (any, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	// Built-in account role, or a dynamic-RBAC workflows:Execute grant (Write
+	// covers it too). A pure custom-role holder has no built-in account role, so
+	// the role check alone would 401 the Task Runner the gateway already admitted.
+	sc := ctx.GetSecurityContext()
+	if !sc.HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canRunWorkflows(sc, accountId) {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3494,7 +3528,7 @@ func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType 
 }
 
 func (s *Service) ListMCPTools(ctx *security.RequestContext, accountId string, params map[string]any) (any, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3509,7 +3543,8 @@ func (s *Service) ListMCPTools(ctx *security.RequestContext, accountId string, p
 }
 
 func (s *Service) ValidateWorkflow(ctx *security.RequestContext, accountId string, wf model.Workflow) error {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canInspectWorkflows(ctx.GetSecurityContext(), accountId) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -4317,7 +4352,7 @@ func (s *Service) CountWorkflows(ctx *security.RequestContext, req model.Workflo
 
 // CountWorkflowExecutions counts workflow executions with optional filters using Temporal's CountWorkflow API.
 func (s *Service) CountWorkflowExecutions(ctx *security.RequestContext, req model.WorkflowExecutionCountRequest) (model.WorkflowExecutionCountResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountID, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(req.AccountID, "workflows") {
 		return model.WorkflowExecutionCountResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -4393,7 +4428,7 @@ func (s *Service) ListWorkflowVersions(ctx *security.RequestContext, accountId, 
 	if accountId == "" || id == "" {
 		return nil, fmt.Errorf("accountId and id are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 	if _, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id); err != nil {
@@ -4410,7 +4445,7 @@ func (s *Service) GetWorkflowVersion(ctx *security.RequestContext, accountId, id
 	if accountId == "" || id == "" || versionNumber <= 0 {
 		return nil, fmt.Errorf("accountId, id, version_number are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 	if _, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id); err != nil {
@@ -4437,7 +4472,8 @@ func (s *Service) RestoreWorkflowVersion(ctx *security.RequestContext, accountId
 	if accountId == "" || id == "" || versionNumber <= 0 {
 		return model.Workflow{}, fmt.Errorf("accountId, id, version_number are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return model.Workflow{}, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -4507,7 +4543,8 @@ func (s *Service) PublishWorkflow(ctx *security.RequestContext, accountId, id st
 	if accountId == "" || id == "" {
 		return nil, fmt.Errorf("accountId and id are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 	if status == "" {
@@ -4597,7 +4634,8 @@ func (s *Service) SetLiveWorkflowVersion(ctx *security.RequestContext, accountId
 	if accountId == "" || id == "" || versionNumber <= 0 {
 		return nil, fmt.Errorf("accountId, id, version_number are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 	target, err := s.store.GetWorkflowVersion(ctx.GetContext(), id, versionNumber)
@@ -4647,7 +4685,8 @@ func (s *Service) UpdateWorkflowVersionMetadata(ctx *security.RequestContext, ac
 	if accountId == "" || id == "" || versionNumber <= 0 {
 		return nil, fmt.Errorf("accountId, id, version_number are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 	if _, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id); err != nil {
@@ -4692,7 +4731,8 @@ func (s *Service) UpdateWorkflowVersionStatus(ctx *security.RequestContext, acco
 	if accountId == "" || id == "" || versionNumber <= 0 {
 		return nil, fmt.Errorf("accountId, id, version_number are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 	validStatuses := map[model.WorkflowStatus]struct{}{
@@ -4750,7 +4790,8 @@ func (s *Service) DeleteWorkflowVersion(ctx *security.RequestContext, accountId,
 	if accountId == "" || id == "" || versionNumber <= 0 {
 		return fmt.Errorf("accountId, id, version_number are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 	tenantId := ctx.GetSecurityContext().GetTenantId()

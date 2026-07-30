@@ -4,7 +4,7 @@ import { writeIcon } from '@assets';
 import { TourLauncher } from '@components/common/tour';
 import apiUserManagement from '@api1/user';
 import { useSession } from 'next-auth/react';
-import { hasWriteAccess } from '@lib/auth';
+import { canManage, isTenantWideRole, hasPermission } from '@lib/auth';
 import UserModal from './modal/UserModal';
 import { Label } from '@ui/Label';
 import Datetime from '@shared/format/Datetime';
@@ -151,7 +151,7 @@ const AllUsers = () => {
             {
               component: (
                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
-                  {hasWriteAccess() && currentUser.user.email != user.username ? (
+                  {canManage('users', 'Write') && currentUser.user.email != user.username ? (
                     <DsButton
                       tone='ghost'
                       composition='icon-only'
@@ -192,6 +192,12 @@ const AllUsers = () => {
 
   const selectedStatusOption = statusOptions.find((o) => o.value === selectedStatus) ?? null;
 
+  // The user-drilldown "Groups" tab renders group data, so it's gated by the
+  // same usergroups:Read permission as the top-level Groups tab (tenant-wide
+  // admins always qualify). Without it the tab is hidden rather than showing an
+  // empty "No Data Available" for a section the user can't read.
+  const canReadGroups = isTenantWideRole() || hasPermission('usergroups', 'Read');
+
   return (
     <>
       <UserModal
@@ -222,7 +228,7 @@ const AllUsers = () => {
       <ListingLayout id='box-all-users'>
         <ListingLayout.Toolbar
           actions={
-            hasWriteAccess() ? (
+            canManage('users', 'Write') ? (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <TourLauncher tourId='create-user' label='How to add a user' />
                 <DsButton id='new-user' tone='primary' size='md' onClick={() => setAddUserModalVisible(true)}>
@@ -280,18 +286,25 @@ const AllUsers = () => {
             id='all-users'
             pageNumber={currentPage + 1}
             expandable={{
+              // `value` must equal the tab's array index (TabPanel matches by
+              // index) — so Integration profiles shifts to 0 when the
+              // usergroups-gated Groups tab is hidden.
               tabs: [
-                {
-                  text: 'Groups',
-                  value: 0,
-                  key: 'groups',
-                  componentFn: (option, query) => {
-                    return <UserGroup groupNames={query.groupNames.length ? query.groupNames : null} onUserUpdate={fetchUsers} />;
-                  },
-                },
+                ...(canReadGroups
+                  ? [
+                      {
+                        text: 'Groups',
+                        value: 0,
+                        key: 'groups',
+                        componentFn: (option, query) => {
+                          return <UserGroup groupNames={query.groupNames.length ? query.groupNames : null} onUserUpdate={fetchUsers} />;
+                        },
+                      },
+                    ]
+                  : []),
                 {
                   text: 'Integration profiles',
-                  value: 1,
+                  value: canReadGroups ? 1 : 0,
                   key: 'integration-profiles',
                   componentFn: (option, query) => (
                     <ListingLayout id='box-user-integration-profiles'>

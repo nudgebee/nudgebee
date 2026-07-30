@@ -159,7 +159,8 @@ func extractWorkspacePayloadAndContext(c *gin.Context, tracer trace.Tracer, mete
 	}
 
 	accountId, _ := payload["account_id"].(string)
-	if accountId != "" && !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if accountId != "" && !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) &&
+		!granted(ctx.GetSecurityContext(), accountId, moduleAiMisc, "Read", "Write") {
 		return nil, nil, "", errors.New(errorUserAccessMessage)
 	}
 

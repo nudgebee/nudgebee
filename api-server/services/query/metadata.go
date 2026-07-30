@@ -81,7 +81,21 @@ type TableDefinition struct {
 	TenantIdColumnName  string
 	AccountIdColumnName string
 	NamespaceColumnName string
-	UpdateFilters       func(ctx *security.RequestContext, request QueryRequest) (QueryRequest, error)
+	// PermissionModule opts a table into dynamic-RBAC reads: a non-admin holding a
+	// custom-role Read grant on this module reads the whole tenant's rows (tenant_id
+	// filter only, no account restriction) — or, when the grant is account-scoped
+	// (V798), only the granted accounts (via the ScopedAccountIdsForModule branch in
+	// service.go, available when the table also has AccountIdColumnName). Set on
+	// tenant-catalog tables (accounts/audits/notifications/integrations) AND on the
+	// operational modules the product has deliberately made grantable tenant-wide
+	// (events, tickets, ai_*, recommendations, insights, k8s — see the RBAC entries
+	// in docs/architecture-decisions.md). Setting it on an account-scoped table
+	// intentionally lets a tenant-global grant read cross-account rows, so add it
+	// only for a module meant to be a tenant-level read persona; leaving it empty
+	// keeps the table strictly built-in-role-gated. Module values must match
+	// classifyAction in app/src/lib/permissionCatalog.ts.
+	PermissionModule string
+	UpdateFilters    func(ctx *security.RequestContext, request QueryRequest) (QueryRequest, error)
 	// TenantWideReadable makes tenant-wide rows (account_id IS NULL) visible to
 	// account-scoped roles. When true, the account-id restriction injected for
 	// those roles becomes `account_id IN (...) OR account_id IS NULL` instead of
@@ -765,6 +779,12 @@ var table_metadata = map[string]TableDefinition{
 		Type:   Normal,
 		Source: database.Metastore,
 		Name:   "k8s_cluster_groupings_v2",
+		// Cluster catalog/summary backs the cluster picker — an accounts:Read
+		// (or Write) grant reads it tenant-wide, the same accounts-catalog
+		// exception as accounts_list/agent health. Per-cluster operational data
+		// (pods/workloads/metrics) stays k8s-gated. Kept in sync with
+		// permissionCatalog.ts MODULE_OVERRIDES.
+		PermissionModule: "accounts",
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			accountFilter := extractFilterSQL(&request, "account_id", "ksn.cloud_account_id")
 			// Build matching filters for workload and pod subqueries using same account
@@ -891,6 +911,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_metrics_groupings_v2": {
+		PermissionModule:    "k8s",
 		Type:                Aggregate,
 		Source:              getSource("k8s_metrics_groupings_v2"),
 		Def:                 "cloud_resource_metrics",
@@ -1156,8 +1177,12 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"event_groupings_v2": {
-		Type:   Aggregate,
-		Source: getSource("event_groupings_v2"),
+		// events:Read (or Write) reads the events surface tenant-wide — same
+		// query-engine mechanism as audits/notifications/accounts-catalog. See
+		// the [2026-07] events data-widening entry in docs/architecture-decisions.md.
+		PermissionModule: "events",
+		Type:             Aggregate,
+		Source:           getSource("event_groupings_v2"),
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			if requestReferencesColumns(request, fingerprintDependentColumns) {
 				return "events LEFT JOIN event_duplicates ed ON ed.event_id = events.id AND ed.cloud_account_id = events.cloud_account_id", request, nil
@@ -1466,8 +1491,12 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"events_v2": {
-		Type:   Normal,
-		Source: getSource("events_v2"),
+		// events:Read (or Write) reads the events surface tenant-wide — same
+		// query-engine mechanism as audits/notifications/accounts-catalog. See
+		// the [2026-07] events data-widening entry in docs/architecture-decisions.md.
+		PermissionModule: "events",
+		Type:             Normal,
+		Source:           getSource("events_v2"),
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			needsPr := requestReferencesColumns(request, prDependentColumns)
 			needsFingerprint := requestReferencesColumns(request, fingerprintDependentColumns)
@@ -2183,6 +2212,7 @@ var table_metadata = map[string]TableDefinition{
 		Name:                "audits_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
+		PermissionModule:    "audits",
 		UpdateFilters: func(ctx *security.RequestContext, request QueryRequest) (QueryRequest, error) {
 			if binaryClause, ok := request.Where.Binary["username"]; ok {
 				if usernameAny, ok := binaryClause[Eq]; ok {
@@ -2271,6 +2301,7 @@ var table_metadata = map[string]TableDefinition{
 		Name:                "audits_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
+		PermissionModule:    "audits",
 		UpdateFilters: func(ctx *security.RequestContext, request QueryRequest) (QueryRequest, error) {
 			if binaryClause, ok := request.Where.Binary["username"]; ok {
 				if usernameAny, ok := binaryClause[Eq]; ok {
@@ -2770,9 +2801,14 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"recommendation_groupings_v2": {
-		Type:   Aggregate,
-		Source: database.Metastore,
-		Name:   "recommendation_groupings_v2",
+		// recommendations:Read (or Write) reads recommendations tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. See the [2026-07] Troubleshoot cross-module data-widening entry
+		// in docs/architecture-decisions.md.
+		PermissionModule: "recommendations",
+		Type:             Aggregate,
+		Source:           database.Metastore,
+		Name:             "recommendation_groupings_v2",
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			// Push down these filters into the subquery so the planner can use
 			// idx_recommendation_tenant_account_status(tenant_id, cloud_account_id, status, category, rule_name)
@@ -3040,6 +3076,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:             database.Metastore,
 		Name:               "integrations_all_accounts",
 		TenantIdColumnName: "tenant_id",
+		PermissionModule:   "integrations",
 		Def: `(
 			WITH accounts AS (
 				SELECT
@@ -3232,8 +3269,13 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"recommendation_security_groupings_v2": {
-		Type:   Aggregate,
-		Source: database.Metastore,
+		// recommendations:Read (or Write) reads recommendations tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. See the [2026-07] Troubleshoot cross-module data-widening entry
+		// in docs/architecture-decisions.md.
+		PermissionModule: "recommendations",
+		Type:             Aggregate,
+		Source:           database.Metastore,
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			// Extract filters before building the query. Status and severity filters go
 			// inside the LATERAL (referencing rec2.*) so the planner can use the partial
@@ -3579,6 +3621,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"llm_conversation_feedback_v2": {
+		// ai_conversations:Read (or Write) reads AI conversations tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. See the [2026-07] Ask-Nudgebee data-widening entry in
+		// docs/architecture-decisions.md.
+		PermissionModule:    "ai_conversations",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		Def:                 "llm_conversation_feedback",
@@ -3722,6 +3769,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_workloads_v2": {
+		PermissionModule:    "k8s",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 "k8s_workloads",
@@ -3826,6 +3874,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_pods_v2": {
+		PermissionModule:    "k8s",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 "k8s_pods",
@@ -3938,6 +3987,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_namespaces_v2": {
+		PermissionModule:    "k8s",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 "k8s_namespaces",
@@ -4010,6 +4060,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_workload_groupings_v2": {
+		PermissionModule:    "k8s",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		Def:                 "k8s_workloads",
@@ -4126,6 +4177,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_pod_groupings_v2": {
+		PermissionModule:    "k8s",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		Def:                 "k8s_pods",
@@ -4223,6 +4275,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_namespace_groupings_v2": {
+		PermissionModule:    "k8s",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		Def:                 "k8s_namespaces",
@@ -4284,8 +4337,9 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_workloads_cloud_account_monitoring_v2": {
-		Type:   Normal,
-		Source: database.Metastore,
+		PermissionModule: "k8s",
+		Type:             Normal,
+		Source:           database.Metastore,
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			// Push down account_id filter into the event_count CTE to avoid full scan of events table (61GB)
 			eventAccountFilter := extractFilterSQL(&request, "account_id", "e2.cloud_account_id")
@@ -4471,8 +4525,9 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_workloads_cloud_account_monitoring_recommendations_v2": {
-		Type:   Normal,
-		Source: database.Metastore,
+		PermissionModule: "k8s",
+		Type:             Normal,
+		Source:           database.Metastore,
 		Def: `(SELECT
 			kw.name as workload_name,
 			kw.namespace,
@@ -4647,8 +4702,13 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"recommendations_v2": {
-		Type:   Normal,
-		Source: database.Metastore,
+		// recommendations:Read (or Write) reads recommendations tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. See the [2026-07] Troubleshoot cross-module data-widening entry
+		// in docs/architecture-decisions.md.
+		PermissionModule: "recommendations",
+		Type:             Normal,
+		Source:           database.Metastore,
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			pushdownFilters := extractFilterSQL(&request, "account_id", "r.cloud_account_id")
 			pushdownFilters += extractFilterSQL(&request, "status", "r.status")
@@ -5865,7 +5925,10 @@ var table_metadata = map[string]TableDefinition{
 		Type:               Derived,
 		Source:             database.Metastore,
 		TenantIdColumnName: "tenant_id",
-		Name:               "admin_get_users_by_tenant_v2",
+		// Tenant-scoped user directory — a users:Read (or Write) custom grant
+		// authorizes this tenant-wide read.
+		PermissionModule: "users",
+		Name:             "admin_get_users_by_tenant_v2",
 		Def: `(
 			SELECT
 				u.id::text as id,
@@ -5954,7 +6017,10 @@ var table_metadata = map[string]TableDefinition{
 		Type:               Aggregate,
 		Source:             database.Metastore,
 		TenantIdColumnName: "tenant_id",
-		Name:               "admin_get_users_grouping_by_tenant_v2",
+		// Aggregate companion of the tenant-scoped user directory — same
+		// users:Read (or Write) grant authorizes the tenant-wide read.
+		PermissionModule: "users",
+		Name:             "admin_get_users_grouping_by_tenant_v2",
 		Def: `(
 			SELECT
 				u.id::text as id,
@@ -6002,7 +6068,10 @@ var table_metadata = map[string]TableDefinition{
 		Type:               Derived,
 		Source:             database.Metastore,
 		TenantIdColumnName: "tenant_id",
-		Name:               "admin_get_user_groups_v2",
+		// Tenant-scoped groups directory — a usergroups:Read (or Write) grant
+		// authorizes this tenant-wide read.
+		PermissionModule: "usergroups",
+		Name:             "admin_get_user_groups_v2",
 		Def: `(
 			SELECT
 				ug.id::text as id,
@@ -6072,6 +6141,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:               Aggregate,
 		Source:             database.Metastore,
 		TenantIdColumnName: "tenant_id",
+		PermissionModule:   "usergroups",
 		Name:               "admin_get_user_groups_grouping_v2",
 		Def: `(
 			SELECT
@@ -6116,10 +6186,12 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"admin_get_notification_rules_v2": {
-		Type:               Derived,
-		Source:             database.Metastore,
-		TenantIdColumnName: "tenant_id",
-		Name:               "admin_get_notification_rules_v2",
+		Type:                Derived,
+		Source:              database.Metastore,
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "account_id",
+		PermissionModule:    "notifications",
+		Name:                "admin_get_notification_rules_v2",
 		Def: `(
 			SELECT
 					nr.id::text as id,
@@ -6235,10 +6307,12 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"admin_get_notification_rules_grouping_v2": {
-		Type:               Aggregate,
-		Source:             database.Metastore,
-		TenantIdColumnName: "tenant_id",
-		Name:               "admin_notification_rules_grouping_v2",
+		Type:                Aggregate,
+		Source:              database.Metastore,
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "account_id",
+		PermissionModule:    "notifications",
+		Name:                "admin_notification_rules_grouping_v2",
 		Def: `(
 			SELECT
 				nr.id::text as id,
@@ -6310,6 +6384,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:               Derived,
 		Source:             database.Metastore,
 		TenantIdColumnName: "tenant_id",
+		PermissionModule:   "integrations",
 		Name:               "admin_get_integrations_v2",
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			// Extract optional config_value_name and config_value_value filters
@@ -6486,6 +6561,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:               Aggregate,
 		Source:             database.Metastore,
 		TenantIdColumnName: "tenant_id",
+		PermissionModule:   "integrations",
 		Name:               "admin_get_integrations_grouping_v2",
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			// Mirror the cloud_account_id pushdown from admin_get_integrations_v2
@@ -6550,7 +6626,15 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "id",
-		Name:                "get_cloud_accounts_v2",
+		// Deliberate exception to the "account-scoped tables get no
+		// PermissionModule" rule: the accounts *catalog* (names/ids/status/
+		// provider) is tenant-level metadata backing the account/cluster pickers
+		// app-wide, so an accounts:Read custom grant enumerates all tenant
+		// accounts. Per-account operational data (k8s/metrics/spend) stays
+		// built-in-role-gated — those tables carry no PermissionModule. See
+		// docs/architecture-decisions.md (RBAC v1 — scoped data-widening).
+		PermissionModule: "accounts",
+		Name:             "get_cloud_accounts_v2",
 		Def: `(
 			SELECT
 				ca.account_name,
@@ -6681,7 +6765,10 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "id",
-		Name:                "get_cloud_accounts_grouping_v2",
+		// Aggregate companion of get_cloud_accounts_v2 — same accounts-catalog
+		// exception: an accounts:Read (or Write) grant reads it tenant-wide.
+		PermissionModule: "accounts",
+		Name:             "get_cloud_accounts_grouping_v2",
 		Def: `(
 			SELECT
 				ca.id::text AS id,
@@ -6960,6 +7047,10 @@ var table_metadata = map[string]TableDefinition{
 		Name:                "get_agent_health_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
+		// Per-account agent connectivity status — surfaced with the accounts
+		// catalog, so an accounts:Read (or Write) grant reads it tenant-wide.
+		// Kept in sync with permissionCatalog.ts MODULE_OVERRIDES (agents_list_health).
+		PermissionModule: "accounts",
 		Def: `(
 			SELECT
 				id::text as id,
@@ -7028,6 +7119,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"event_rules_v2": {
+		// events:Read (or Write) reads the events surface tenant-wide — same
+		// query-engine mechanism as audits/notifications/accounts-catalog. See
+		// the [2026-07] events data-widening entry in docs/architecture-decisions.md.
+		PermissionModule:    "events",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 "event_rules",
@@ -7063,6 +7158,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"event_rules_groupings_v2": {
+		// events:Read (or Write) reads the events surface tenant-wide — same
+		// query-engine mechanism as audits/notifications/accounts-catalog. See
+		// the [2026-07] events data-widening entry in docs/architecture-decisions.md.
+		PermissionModule:    "events",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		Def:                 "event_rules",
@@ -7175,6 +7274,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"insight_v2": {
+		// insights:Read (or Write) reads cluster insights tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. Backs the Ask-Nudgebee cluster-insights cards. See the
+		// [2026-07] Ask-Nudgebee data-widening entry in docs/architecture-decisions.md.
+		PermissionModule:    "insights",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 "insight",
@@ -7219,9 +7323,13 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"tickets_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "tickets_v2",
+		// tickets:Read (or Write) reads tickets tenant-wide — dynamic-RBAC custom
+		// grant, same query-engine mechanism as the events tables. See the
+		// [2026-07] Troubleshoot cross-module data-widening entry in docs/architecture-decisions.md.
+		PermissionModule: "tickets",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "tickets_v2",
 		Def: `(SELECT t.*,
 			u.display_name AS created_by_display_name
 			FROM tickets t
@@ -7353,6 +7461,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_nodes_v2": {
+		PermissionModule:    "k8s",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 "k8s_nodes",
@@ -7391,6 +7500,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_nodes_groupings_v2": {
+		PermissionModule:    "k8s",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		Def:                 "k8s_nodes",
@@ -7412,9 +7522,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"cloud_resource_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "cloud_resource_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "cloud_resource_v2",
+		PermissionModule: "cloud",
 		Def: `(SELECT cr.*,
 			ca.account_name as account_name,
 			cr.resourse_id as resource_id,
@@ -7693,6 +7804,7 @@ var table_metadata = map[string]TableDefinition{
 	"cloud_resource_groupings_v2": {
 		Type:                Aggregate,
 		Source:              database.Metastore,
+		PermissionModule:    "cloud",
 		Def:                 "cloud_resourses",
 		Name:                "cloud_resource_groupings_v2",
 		TenantIdColumnName:  "tenant_id",
@@ -7732,9 +7844,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"cloud_resources_list_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "cloud_resources_list_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "cloud_resources_list_v2",
+		PermissionModule: "cloud",
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			baseQuery := `(
 				SELECT cr.region, cr.resourse_id, cr.service_name, cr.status, cr.name, cr.id,
@@ -7978,9 +8091,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"cloud_resource_attributes_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "cloud_resource_attributes_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "cloud_resource_attributes_v2",
+		PermissionModule: "cloud",
 		Def: `(SELECT cra.*,
 			cr.id as resource_uuid,
 			cr.arn as resource_arn,
@@ -8022,6 +8136,10 @@ var table_metadata = map[string]TableDefinition{
 		Type:   Derived,
 		Source: database.Metastore,
 		Name:   "notification_channel_account_mapping_v2",
+		// Channel↔account mapping is Message Platform config — a messagingplatforms
+		// Read (or Write) custom grant authorizes this tenant-wide read. Kept in
+		// sync with permissionCatalog.ts MODULE_OVERRIDES for the same actions.
+		PermissionModule: "messagingplatforms",
 		Def: `(SELECT ncam.*,
 			ca.account_name as account_name,
 			ca.cloud_provider as cloud_provider,
@@ -8367,9 +8485,13 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"event_resolution_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "event_resolution_v2",
+		// events:Read (or Write) reads the events surface tenant-wide — same
+		// query-engine mechanism as audits/notifications/accounts-catalog. See
+		// the [2026-07] events data-widening entry in docs/architecture-decisions.md.
+		PermissionModule: "events",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "event_resolution_v2",
 		// event_id is polymorphic: for event-backed resolutions it is an events.id,
 		// for AI-investigation-raised resolutions (e.g. agent rightsizing PRs) it is an
 		// llm_conversations.id. Tenant/account are COALESCEd across both joins so
@@ -8418,6 +8540,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"event_resolution_groupings_v2": {
+		// events:Read (or Write) reads the events surface tenant-wide — same
+		// query-engine mechanism as audits/notifications/accounts-catalog. See
+		// the [2026-07] events data-widening entry in docs/architecture-decisions.md.
+		PermissionModule:    "events",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		Def:                 "(SELECT er.*, COALESCE(e.tenant, c.tenant_id) as tenant_id, COALESCE(e.cloud_account_id, c.account_id) as account_id, COALESCE(e.cloud_account_id, c.account_id) as event_cloud_account_id FROM event_resolution er LEFT JOIN events e ON e.id = er.event_id LEFT JOIN llm_conversations c ON c.id = er.event_id) as er_agg",
@@ -8462,6 +8588,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"llm_functions_v2": {
+		// ai_functions:Read (or Write) reads AI functions tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. See the [2026-07] Ask-Nudgebee data-widening entry in
+		// docs/architecture-decisions.md.
+		PermissionModule:    "ai_functions",
 		Type:                Normal,
 		Def:                 "llm_functions",
 		Name:                "llm_functions_v2",
@@ -8486,6 +8617,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"llm_conversation_list_v2": {
+		// ai_conversations:Read (or Write) reads AI conversations tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. See the [2026-07] Troubleshoot cross-module data-widening entry
+		// in docs/architecture-decisions.md.
+		PermissionModule:    "ai_conversations",
 		Type:                Derived,
 		Source:              database.Metastore,
 		TenantIdColumnName:  "tenant_id",
@@ -8846,6 +8982,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"llm_conversation_detail_polling_v2": {
+		// ai_conversations:Read (or Write) reads AI conversations tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. Backs the Ask-Nudgebee open-conversation poller. See the
+		// [2026-07] Ask-Nudgebee data-widening entry in docs/architecture-decisions.md.
+		PermissionModule:    "ai_conversations",
 		Type:                Derived,
 		Source:              database.Metastore,
 		TenantIdColumnName:  "tenant_id",
@@ -8986,6 +9127,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"llm_conversation_groupings_v2": {
+		// ai_conversations:Read (or Write) reads AI conversations tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. See the [2026-07] Troubleshoot cross-module data-widening entry
+		// in docs/architecture-decisions.md.
+		PermissionModule:    "ai_conversations",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		TenantIdColumnName:  "tenant_id",
@@ -9180,6 +9326,7 @@ var table_metadata = map[string]TableDefinition{
 		Def:                 "feature_flag",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
+		PermissionModule:    "featureflags",
 		// Tenant-wide feature flags (account_id IS NULL) must be readable by
 		// account-scoped users; otherwise b-Cortex tabs show "not enabled for
 		// your tenant" for Account Admin/Readonly roles (#34510).
@@ -9262,6 +9409,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:                Derived,
 		Source:              database.Metastore,
 		Name:                "cloud_account_attrs_v2",
+		PermissionModule:    "cloud",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
 		Def: `(
@@ -9291,6 +9439,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:             database.Metastore,
 		Name:               "usergroup_users_v2",
 		TenantIdColumnName: "tenant_id",
+		PermissionModule:   "usergroups",
 		Def: `(
 			SELECT
 				ugu.id::text as id,
@@ -9344,6 +9493,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:             database.Metastore,
 		Name:               "usergroup_users_grouping_v2",
 		TenantIdColumnName: "tenant_id",
+		PermissionModule:   "usergroups",
 		Def: `(
 			SELECT
 				ugu.id::text as id,
@@ -9567,6 +9717,25 @@ func GetTableMetadata(name string) (TableDefinition, bool) {
 	}
 	def, ok := table_metadata[lower]
 	return def, ok
+}
+
+// AccountScopableModules returns the set of dynamic-RBAC modules that own at
+// least one query-engine table carrying BOTH a PermissionModule and a per-account
+// column (AccountIdColumnName). These are the only modules for which an
+// account-scoped custom grant can be honored: the query engine's
+// account-restriction block filters reads by AccountIdColumnName, so a module
+// whose PermissionModule table has no account column (tenant-catalog tables like
+// notifications) cannot be scoped to an account. Derived from table_metadata so
+// the customrole write-path guard can never drift from the actual enforcement
+// surface. See query/service.go's scoped-grant branch.
+func AccountScopableModules() map[string]bool {
+	out := make(map[string]bool)
+	for _, def := range table_metadata {
+		if def.PermissionModule != "" && def.AccountIdColumnName != "" {
+			out[def.PermissionModule] = true
+		}
+	}
+	return out
 }
 
 func getColumnTypeFromClickhouseType(chType string) ColumnDefinitionType {

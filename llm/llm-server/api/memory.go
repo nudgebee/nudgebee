@@ -70,7 +70,8 @@ func memoryCreate(c *gin.Context, context *security.RequestContext, payload map[
 		mType = core.MemoryTypeUserPreference
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiMemory) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{Message: errorMemoryUserAccessMessage},
 		}))
@@ -109,7 +110,7 @@ func memoryList(c *gin.Context, context *security.RequestContext, payload map[st
 		request.Limit = 20
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_memory") {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{Message: errorMemoryUserAccessMessage},
 		}))
@@ -149,7 +150,8 @@ func memoryDelete(c *gin.Context, context *security.RequestContext, payload map[
 		return
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiMemory) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{Message: errorMemoryUserAccessMessage},
 		}))

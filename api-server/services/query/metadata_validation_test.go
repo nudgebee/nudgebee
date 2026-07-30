@@ -123,6 +123,27 @@ func TestSecurityColumnsAreNotAggregated(t *testing.T) {
 	}
 }
 
+func TestNotificationRuleTablesUseAccountScopedSecurityMetadata(t *testing.T) {
+	for _, name := range []string{"admin_get_notification_rules_v2", "admin_get_notification_rules_grouping_v2"} {
+		t.Run(name, func(t *testing.T) {
+			def, ok := table_metadata[name]
+			assert.True(t, ok, "table %s should exist", name)
+			assert.Equal(t, "account_id", def.AccountIdColumnName, "table %s should declare the account_id security column", name)
+			assert.Equal(t, "notifications", def.PermissionModule, "table %s should map to the notifications permission module", name)
+		})
+	}
+}
+
+func TestIntegrationTablesUseTenantScopedPermissionMetadata(t *testing.T) {
+	for _, name := range []string{"integrations_get_all_accounts", "admin_get_integrations_v2", "admin_get_integrations_grouping_v2"} {
+		t.Run(name, func(t *testing.T) {
+			def, ok := table_metadata[name]
+			assert.True(t, ok, "table %s should exist", name)
+			assert.Equal(t, "integrations", def.PermissionModule, "table %s should map to the integrations permission module", name)
+		})
+	}
+}
+
 // TestAggregateTablesHaveAggregatedColumns validates that every Aggregate table
 // has at least one IsAggregated column.
 func TestAggregateTablesHaveAggregatedColumns(t *testing.T) {
@@ -258,4 +279,31 @@ func TestTableCount(t *testing.T) {
 	count := len(table_metadata)
 	assert.Greater(t, count, 50, "Expected at least 50 tables in table_metadata, got %d", count)
 	t.Logf("Total tables in table_metadata: %d", count)
+}
+
+// TestAccountScopableModulesPinned pins the exact set of modules a custom grant
+// can be account-scoped to (V778 scope-on-grant): modules whose query-engine
+// PermissionModule table carries a per-account column. This is the AUTHORITY the
+// customrole write-path guard uses; the role-editor UI mirrors it as
+// ACCOUNT_SCOPABLE_MODULES in app/src/lib/permissionCatalog.ts. If this set
+// changes (a scopable PermissionModule table is added/removed), update that FE
+// constant to keep the picker in sync.
+func TestAccountScopableModulesPinned(t *testing.T) {
+	got := AccountScopableModules()
+	want := map[string]bool{
+		"accounts":           true,
+		"ai_conversations":   true,
+		"ai_functions":       true,
+		"audits":             true,
+		"cloud":              true,
+		"events":             true,
+		"featureflags":       true,
+		"insights":           true,
+		"k8s":                true,
+		"messagingplatforms": true,
+		"notifications":      true,
+		"recommendations":    true,
+		"tickets":            true,
+	}
+	assert.Equal(t, want, got, "account-scopable module set changed — sync app/src/lib/permissionCatalog.ts ACCOUNT_SCOPABLE_MODULES")
 }

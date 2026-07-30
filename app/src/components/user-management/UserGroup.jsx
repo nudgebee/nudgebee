@@ -4,7 +4,7 @@ import CustomTable from '@shared/tables/CustomTable2';
 import { Box, Typography, List, ListItem, ListItemText } from '@mui/material';
 import { writeIcon } from '@assets';
 import GroupModal from './modal/GroupModal';
-import { hasWriteAccess } from '@lib/auth';
+import { canManage } from '@lib/auth';
 import UserGroupUsers from './UserGroupUsers';
 import Datetime from '@shared/format/Datetime';
 import Text from '@shared/format/Text';
@@ -117,7 +117,7 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
             {
               component: (
                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
-                  {hasWriteAccess() ? (
+                  {canManage('usergroups', 'Write') ? (
                     <DsButton
                       tone='ghost'
                       composition='icon-only'
@@ -269,7 +269,7 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
         {!isDrilldown && (
           <ListingLayout.Toolbar
             actions={
-              hasWriteAccess() ? (
+              canManage('usergroups', 'Write') ? (
                 <DsButton id='new-user-group' tone='primary' size='md' onClick={handleAddGroupModal}>
                   Add User Group
                 </DsButton>

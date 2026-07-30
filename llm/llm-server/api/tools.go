@@ -59,7 +59,8 @@ func toolListTool(c *gin.Context, context *security.RequestContext, payload map[
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(accountIdPayload, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().HasAccountAccess(accountIdPayload, security.SecurityAccessTypeRead) &&
+		!granted(context.GetSecurityContext(), accountIdPayload, moduleAiTools, "Read", "Write") {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
@@ -113,7 +114,8 @@ func toolCreateTool(c *gin.Context, context *security.RequestContext, payload ma
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiTools) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
@@ -179,7 +181,8 @@ func toolDeleteTool(c *gin.Context, context *security.RequestContext, payload ma
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(accountIdPayload, security.SecurityAccessTypeDelete) {
+	if !context.GetSecurityContext().HasAccountAccess(accountIdPayload, security.SecurityAccessTypeDelete) &&
+		!grantedWrite(context.GetSecurityContext(), accountIdPayload, moduleAiTools) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
@@ -235,7 +238,8 @@ func toolUpdateTool(c *gin.Context, context *security.RequestContext, payload ma
 		return
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiTools) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
@@ -375,7 +379,8 @@ func handleToolsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		}
 
 		// Check if user has access to account
-		if !context.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+		if !context.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) &&
+			!granted(context.GetSecurityContext(), accountId, moduleAiTools, "Read", "Write") {
 			c.JSON(403, buildApiResponse(nil, []error{
 				common.Error{
 					Message: errorUserAccessMessage,

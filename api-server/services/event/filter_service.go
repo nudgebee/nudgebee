@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
+	"slices"
 	"sync"
 
 	"github.com/lib/pq"
@@ -411,15 +412,30 @@ func validateFilterRequest(req GetEventFilterValuesRequest) error {
 func getAccessibleAccountIDs(ctx *security.RequestContext, requestedAccountID *string) ([]string, error) {
 	sc := ctx.GetSecurityContext()
 
-	// If specific account requested, verify access
+	// A tenant-wide events:Read (or Write, which implies Read) custom-role grant
+	// reads events across every account in the tenant — the same relaxation the
+	// query engine applies via PermissionModule="events" (query/service.go). A
+	// pure custom-role user holds no built-in account role, so ListAccountIds()
+	// is empty for them; without this they'd hit "no accessible accounts found".
+	hasEventsGrant := sc.HasPermission("events", "Read") || sc.HasPermission("events", "Write")
+
+	// If specific account requested, verify access.
 	if requestedAccountID != nil && *requestedAccountID != "" {
-		if !sc.HasAccountAccess(*requestedAccountID, security.SecurityAccessTypeRead) {
-			return nil, fmt.Errorf("access denied to account: %s", *requestedAccountID)
+		if sc.HasAccountAccess(*requestedAccountID, security.SecurityAccessTypeRead) {
+			return []string{*requestedAccountID}, nil
 		}
-		return []string{*requestedAccountID}, nil
+		// The events grant authorizes any account within the caller's tenant.
+		if hasEventsGrant && slices.Contains(sc.GetAccountIds(), *requestedAccountID) {
+			return []string{*requestedAccountID}, nil
+		}
+		return nil, fmt.Errorf("access denied to account: %s", *requestedAccountID)
 	}
 
-	// Return all accessible accounts
+	// No specific account: aggregate across the accessible accounts. The events
+	// grant reads tenant-wide; otherwise scope to the built-in role's accounts.
+	if hasEventsGrant {
+		return sc.GetAccountIds(), nil
+	}
 	return sc.ListAccountIds(), nil
 }
 

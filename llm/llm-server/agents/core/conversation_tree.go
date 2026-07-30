@@ -510,7 +510,7 @@ func HandleConversationTreeApi(ctx *security.RequestContext, request Conversatio
 	if request.ConversationId == "" || request.AccountId == "" {
 		return ConversationTree{}, fmt.Errorf("HandleConversationTreeApi: conversation_id and account_id are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
 		return ConversationTree{}, fmt.Errorf("HandleConversationTreeApi: forbidden account_id")
 	}
 	return GetConversationDao().GetConversationTree(request.ConversationId, request.AccountId)

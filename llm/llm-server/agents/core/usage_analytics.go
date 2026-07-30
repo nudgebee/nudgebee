@@ -880,6 +880,12 @@ func HandleUsageMetricsApi(ctx *security.RequestContext, request UsageMetricsReq
 func resolveAccessibleAccounts(ctx *security.RequestContext, requested []string) ([]string, error) {
 	sec := ctx.GetSecurityContext()
 	if len(requested) == 0 {
+		// A tenant-global ai_conversations grant reads across the tenant;
+		// ListAccountIds() is the built-in account scope and is empty for a pure
+		// custom-role holder, which would silently produce an empty dashboard.
+		if sec.HasPermission("ai_conversations", "Read") || sec.HasPermission("ai_conversations", "Write") {
+			return sec.GetAccountIds(), nil
+		}
 		return sec.ListAccountIds(), nil
 	}
 	allowed := make([]string, 0, len(requested))
@@ -887,7 +893,7 @@ func resolveAccessibleAccounts(ctx *security.RequestContext, requested []string)
 		if id == "" {
 			continue
 		}
-		if !sec.HasAccountAccess(id, security.SecurityAccessTypeRead) {
+		if !sec.CanReadAccountData(id, "ai_conversations") {
 			return nil, fmt.Errorf("resolveAccessibleAccounts: forbidden account_id %s", id)
 		}
 		allowed = append(allowed, id)

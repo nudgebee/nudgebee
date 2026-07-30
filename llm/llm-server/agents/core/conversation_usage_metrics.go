@@ -106,7 +106,10 @@ type AgentMetrics struct {
 }
 
 func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request ConversationUsageMetricsRequest) (ConversationUsageMetricsResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	// Honor a dynamic-RBAC ai_conversations:Read grant, not just built-in account
+	// roles — this per-conversation usage view is part of the conversation read
+	// surface (classifier maps ai_get_conversation_usage_metrics → ai_conversations).
+	if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
 		return ConversationUsageMetricsResponse{}, fmt.Errorf("HandleConversationUsageMetricsApi: forbidden account_id")
 	}
 

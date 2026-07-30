@@ -1,6 +1,47 @@
 import type { NextRouter } from 'next/router';
 import { v5 } from 'uuid';
 
+// Order-insensitive equality for two string lists. Used by dirty-checks that
+// compare a picker's current selection against a baseline where the order the
+// ids arrive in is not meaningful. Element-wise on the sorted lists so it is
+// correct even when a list carries duplicates — a length + Set-size heuristic
+// is NOT (['x','y'] vs ['x','x'] both collapse to size 2).
+export const sameIdSet = (a: readonly string[], b: readonly string[]): boolean => {
+  if (a.length !== b.length) return false;
+  const x = [...a].sort();
+  const y = [...b].sort();
+  return x.every((v, i) => v === y[i]);
+};
+
+// Maps a quick-link URL fragment to the dynamic-RBAC permission module that
+// gates it. Nav fragments are coarser than the permission modules — a single
+// `monitoring/*` area spans logs / metrics / traces / events, and the backend
+// gates each separately — so the sub-fragment decides. Anything unrecognized
+// falls back to `cloud`, the cloud-resource surfaces (ec2/rds/s3/ecs/vm/sql/
+// blob/services) that make up the rest of the quick-link set.
+//
+// Shared by every surface that renders permission-gated quick links (the Home
+// page and the Kubernetes cluster summary today). It lives here rather than
+// beside either caller because the two copies must not drift: a fragment that
+// resolves to different modules in different places would gate the same link
+// inconsistently. Module names must match `classifyAction` in
+// @lib/permissionCatalog — both sides resolve the same key.
+export const moduleForFragment = (fragment: string = ''): string => {
+  const [area, sub = ''] = fragment.split('/');
+  if (area === 'monitoring') {
+    if (sub === 'logs' || sub === 'cloud-logs') return 'logs';
+    if (sub === 'query') return 'metrics';
+    if (sub === 'traces' || sub === 'service-map') return 'traces';
+    if (sub === 'groups') return 'events';
+    return 'k8s';
+  }
+  if (area === 'kubernetes') return 'k8s';
+  if (area === 'security') return 'security';
+  if (area === 'events') return 'events';
+  if (area === 'optimize') return 'recommendations';
+  return 'cloud';
+};
+
 // Event aggregation_keys that are excluded from the Troubleshoot dashboard
 // (widgets + lists) only. These are low-signal records (e.g. K8s config-change
 // audit entries) that the backend still triages, but which we do not want

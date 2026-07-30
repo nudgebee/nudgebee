@@ -1,11 +1,11 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import dynamic from 'next/dynamic';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import k8sApi from '@api1/kubernetes';
 import { useData } from '@context/DataContext';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, isGrantsOnlyUser, hasPermission, missingPermissionMessage } from '@lib/auth';
 import LogsIcon from '@assets/kubernetes/logs-icon.svg';
 import { Box, Typography } from '@mui/material';
 import { ToggleGroup } from '@ui/ToggleGroup';
@@ -189,6 +189,43 @@ GrafanaIframe.propTypes = {
   accountId: PropTypes.any,
 };
 
+// Dynamic-RBAC: the default module whose `Read` grant backs each top-level tab,
+// keyed by the tab's `value`. Every sub-tab inherits its parent's module unless
+// SUBTAB_MODULE_OVERRIDES re-homes it. Grounded in each surface's primary api1
+// action (the "gate a tab on its primary action" method): Summary/Apps & Infra
+// read the k8s_* tables (k8s), Optimize reads recommendations, Troubleshoot
+// reads events, Monitoring's log surfaces read logs, Security reads the scans.
+const TAB_REQUIRED_MODULE = {
+  0: 'k8s',
+  1: 'recommendations',
+  2: 'events',
+  3: 'k8s',
+  4: 'logs',
+  5: 'security',
+};
+
+// Sub-tabs whose primary api1 action classifies to a different module than their
+// parent tab's default, keyed by `${tabValue}:${subTabId}`. This is what lets a
+// user with e.g. only `traces:Read` open Monitoring (its Traces sub-tabs stay
+// enabled) while the log/metric/SLO sub-tabs they can't reach show disabled —
+// and, on Troubleshoot, disables just the Anomaly / Service Criticality sub-tabs
+// for users without those grants. Modules come from classifyAction on each
+// action: anomalies_list_v2→anomalies, workload_list_criticality→workload,
+// metrics_list→metrics, alertmanager_list_actions→alertmanager,
+// traces_*→traces, slo_report_observation_v2→slo. (Grafana is gated separately
+// on write access in the init effect below.)
+const SUBTAB_MODULE_OVERRIDES = {
+  '2:anomaly': 'anomalies',
+  '2:service-criticality': 'workload',
+  '4:prom-query': 'metrics',
+  '4:alert-manager': 'alertmanager',
+  '4:service-map': 'traces',
+  '4:Traces': 'traces',
+  '4:trace-grouping': 'traces',
+  '4:trace-cross-zon': 'traces',
+  '4:slo': 'slo',
+};
+
 const KubernetesDetails = () => {
   const router = useRouter();
   const { selectedCluster } = useData();
@@ -345,6 +382,58 @@ const KubernetesDetails = () => {
   ]);
   const [aggregationKeyCount, setAggregationKeyCount] = useState({});
 
+  // Dynamic-RBAC: gate tabs on the permission backing each surface. Only
+  // grants-only custom-role users (no built-in tenant/account role, no account
+  // grants) are gated — tenant-wide admins and account users keep every tab,
+  // since their role authorizes the underlying APIs. Backend re-authorizes each
+  // call, so this is advisory UI only.
+  const grantsOnlyUser = isGrantsOnlyUser();
+  // Module that a given sub-tab's content reads (override, else parent default).
+  const subTabModule = (tabValue, subTab) => SUBTAB_MODULE_OVERRIDES[`${tabValue}:${subTab.id}`] ?? TAB_REQUIRED_MODULE[tabValue];
+  const canAccessSubTab = (tabValue, subTab) => {
+    const requiredModule = subTabModule(tabValue, subTab);
+    return !requiredModule || !grantsOnlyUser || hasPermission(requiredModule, 'Read');
+  };
+  // A top-level tab is reachable if the user can open at least one of its
+  // (visible) sub-tabs; a tab with no sub-tabs (Summary) falls back to its own
+  // module. This keeps Monitoring open for a traces-only user even though its
+  // log/metric sub-tabs are gated.
+  const canAccessTab = (option) => {
+    if (!grantsOnlyUser) return true;
+    const visibleSubTabs = (option.tabOptions || []).filter((subTab) => !subTab.hidden);
+    if (visibleSubTabs.length === 0) {
+      const requiredModule = TAB_REQUIRED_MODULE[option.value];
+      return !requiredModule || hasPermission(requiredModule, 'Read');
+    }
+    return visibleSubTabs.some((subTab) => canAccessSubTab(option.value, subTab));
+  };
+  // First sub-tab of a tab the user can open (undefined for a tab with no
+  // sub-tabs, or when none are reachable). Used to redirect away from a gated
+  // default/deep-linked sub-tab so, e.g., a traces-only user opening Monitoring
+  // lands on Traces instead of the gated Query Log.
+  const firstAllowedSubTab = (option) => (option.tabOptions || []).find((subTab) => !subTab.hidden && canAccessSubTab(option.value, subTab));
+
+  // Stamp `disabled` on the sub-tabs the user can't reach (AnchorComponent greys
+  // them in both the dropdown and the sub-tab bar) and `disabled` +
+  // `disabledTooltip` on any top-level tab with no reachable sub-tab. Preserves
+  // each tab's own metadata (counts, hidden flags).
+  const anchorFilterOptions = useMemo(() => {
+    if (!grantsOnlyUser) return tabOptions;
+    return tabOptions.map((option) => {
+      const next = { ...option };
+      if (option.tabOptions) {
+        next.tabOptions = option.tabOptions.map((subTab) => (canAccessSubTab(option.value, subTab) ? subTab : { ...subTab, disabled: true }));
+      }
+      if (!canAccessTab(option)) {
+        next.disabled = true;
+        next.disabledTooltip = missingPermissionMessage(`${TAB_REQUIRED_MODULE[option.value]}:Read`);
+      }
+      return next;
+    });
+    // The helpers above are pure functions of the session (grantsOnlyUser) + tabOptions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabOptions, grantsOnlyUser]);
+
   useEffect(() => {
     const init = async () => {
       const grafana = selectedCluster?.agent?.connection_status?.grafanaEnabled || false;
@@ -391,11 +480,15 @@ const KubernetesDetails = () => {
 
     const handleClusterDataFetch = () => {
       k8sApi.getk8ClusterData(kubeId).then((res) => {
-        if (res.errors) {
+        if (res?.data) {
+          // Render whatever loaded. A per-section failure (e.g. missing
+          // recommendation:Read) no longer blanks the whole dashboard — the
+          // sections that succeeded still show, and we name the ones that didn't.
+          setClusterSummary(res.data);
+        } else {
           snackbar.error('Failed to load cluster data');
-          return;
+          setClusterSummary({});
         }
-        setClusterSummary(res.data);
       });
     };
 
@@ -647,23 +740,56 @@ const KubernetesDetails = () => {
   }, [selectedCluster]);
 
   useEffect(() => {
+    // First tab the current user can actually open. For grants-only custom-role
+    // users a tab may be disabled (see anchorFilterOptions); everyone else lands
+    // on Summary. Used for the default landing and as the deep-link fallback so
+    // we never open a disabled tab (its APIs would 403).
+    const fallback = tabOptions.find((option) => canAccessTab(option)) ?? tabOptions[0];
+    const canonicalizeToFallback = () => {
+      setSelectedTab(fallback.value);
+      if (fallback.value !== 0) {
+        router.replace({ pathname: router.pathname, query: router.query, hash: fallback.fragment }, undefined, { shallow: true });
+      }
+    };
+
     const hash = router.asPath.split('#')[1];
     if (!hash || !tabOptions.length) {
-      setSelectedTab(0);
+      canonicalizeToFallback();
       return;
     }
     const [fragment, subFragment] = hash.split('/');
     const filter = tabOptions.find((option) => option.fragment === fragment);
-    if (filter) {
+    // Unknown fragment, or a permission-gated tab reached by deep link, falls
+    // back to the first accessible tab and canonicalizes the URL — a disabled
+    // tab can't be reached by URL.
+    if (filter && canAccessTab(filter)) {
       setSelectedTab(filter.value);
-      if (!subFragment) return;
-      const subTab = (filter?.tabOptions || []).find((tab) => tab.fragment === subFragment);
-      if (subTab) {
-        setSelectedSubTab(subTab.value);
+      const requested = subFragment ? (filter.tabOptions || []).find((tab) => tab.fragment === subFragment) : null;
+      // Open the requested sub-tab when the user can reach it.
+      if (requested && canAccessSubTab(filter.value, requested)) {
+        setSelectedSubTab(requested.value);
+        return;
+      }
+      // No sub in the URL and the default sub-tab is reachable → leave it (keeps
+      // the clean `#tab` URL for the common case).
+      const defaultSubTab = (filter.tabOptions || []).find((tab) => tab.value === 0);
+      if (!subFragment && (!defaultSubTab || canAccessSubTab(filter.value, defaultSubTab))) {
+        return;
+      }
+      // Gated deep-link (e.g. #events/anomaly) or a gated default sub-tab (a
+      // traces-only user opening Monitoring) → open the first reachable sub-tab
+      // and canonicalize the URL so the sub-tab bar highlights it.
+      const allowed = firstAllowedSubTab(filter);
+      if (allowed) {
+        setSelectedSubTab(allowed.value);
+        router.replace({ pathname: router.pathname, query: router.query, hash: `${filter.fragment}/${allowed.fragment}` }, undefined, {
+          shallow: true,
+        });
       }
     } else {
-      setSelectedTab(0);
+      canonicalizeToFallback();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -673,10 +799,26 @@ const KubernetesDetails = () => {
         p='var(--ds-space-1) var(--ds-space-5) 0px var(--ds-space-5)'
         tabPadding='var(--ds-space-1) var(--ds-space-3) 0px var(--ds-space-3)'
         options={tabOptions[selectedTab]?.options || []}
-        filterOptions={tabOptions}
+        filterOptions={anchorFilterOptions}
         showGroupedTabs={true}
         onChangeFilter={(val, subTabVal) => {
           setSelectedTab(val);
+          // Selecting a tab lands on its sub-tab 0; if that sub-tab is gated for
+          // the current user (e.g. a traces-only user opening Monitoring, whose
+          // Query Log sub-tab is gated), redirect to the first reachable sub-tab
+          // via the URL so both the sub-tab bar and the body stay in sync.
+          const option = tabOptions.find((o) => o.value === val);
+          const target = (option?.tabOptions || []).find((s) => s.value === subTabVal);
+          if (option && target && !canAccessSubTab(val, target)) {
+            const allowed = firstAllowedSubTab(option);
+            if (allowed) {
+              setSelectedSubTab(allowed.value);
+              router.replace({ pathname: router.pathname, query: router.query, hash: `${option.fragment}/${allowed.fragment}` }, undefined, {
+                shallow: true,
+              });
+              return;
+            }
+          }
           setSelectedSubTab(subTabVal);
         }}
         showCustomRounded={(selectedSubTab === 8 && selectedTab === 1) || (selectedSubTab === 4 && selectedTab === 2)}

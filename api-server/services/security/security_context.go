@@ -59,6 +59,20 @@ type SecurityContext struct {
 	k8sUser         map[string]string
 	k8sGroup        map[string][]string
 	k8sNamespaces   map[string][]string
+	// customPermissions is the set of dynamic-RBAC custom-role grants the user
+	// holds, keyed "<module>:<class>" (e.g. "notifications:Write"). Resolved from
+	// custom_role_assignments → custom_role_permissions (direct + via groups).
+	// Additive to the built-in roles; never widens data scope (operation-surface
+	// only). See HasPermission / CanManage.
+	customPermissions map[string]bool
+	// scopedCustomPermissions holds custom-role grants scoped to a specific
+	// account, keyed accountId -> ("<module>:<class>" -> true). Populated from
+	// custom_role_permissions rows whose entity_type='account' (V798 scope-on-
+	// grant). A permission for account X is granted iff it is in customPermissions
+	// (tenant-global) OR in scopedCustomPermissions[X]. See HasScopedPermission.
+	// Additive; never widens data scope (the built-in HasAccountAccess still gates
+	// which accounts exist).
+	scopedCustomPermissions map[string]map[string]bool
 	// isServerInternal marks contexts constructed by NewSecurityContextForSuperAdmin
 	// for synthetic server-side calls (e.g. NextAuth callbacks). It can only be
 	// set inside this package — never derived from a user's role string — so a
@@ -67,28 +81,32 @@ type SecurityContext struct {
 }
 
 type scPub struct {
-	TenantId         string
-	AccountIds       []string
-	UserId           string
-	Roles            []string
-	ScopedEntityIds  map[string][]string
-	K8sUser          map[string]string
-	K8sGroup         map[string][]string
-	K8sNamespaces    map[string][]string
-	IsServerInternal bool
+	TenantId                string
+	AccountIds              []string
+	UserId                  string
+	Roles                   []string
+	ScopedEntityIds         map[string][]string
+	K8sUser                 map[string]string
+	K8sGroup                map[string][]string
+	K8sNamespaces           map[string][]string
+	CustomPermissions       map[string]bool
+	ScopedCustomPermissions map[string]map[string]bool
+	IsServerInternal        bool
 }
 
 func (sc *SecurityContext) MarshalJSON() ([]byte, error) {
 	data := scPub{
-		TenantId:         sc.tenantId,
-		AccountIds:       sc.accountIds,
-		UserId:           sc.userId,
-		Roles:            sc.roles,
-		ScopedEntityIds:  sc.scopedEntityIds,
-		K8sUser:          sc.k8sUser,
-		K8sGroup:         sc.k8sGroup,
-		K8sNamespaces:    sc.k8sNamespaces,
-		IsServerInternal: sc.isServerInternal,
+		TenantId:                sc.tenantId,
+		AccountIds:              sc.accountIds,
+		UserId:                  sc.userId,
+		Roles:                   sc.roles,
+		ScopedEntityIds:         sc.scopedEntityIds,
+		K8sUser:                 sc.k8sUser,
+		K8sGroup:                sc.k8sGroup,
+		K8sNamespaces:           sc.k8sNamespaces,
+		CustomPermissions:       sc.customPermissions,
+		ScopedCustomPermissions: sc.scopedCustomPermissions,
+		IsServerInternal:        sc.isServerInternal,
 	}
 
 	j, err := common.MarshalJson(data)
@@ -112,6 +130,8 @@ func (sc *SecurityContext) UnmarshalJSON(data []byte) error {
 	sc.k8sUser = scPub1.K8sUser
 	sc.k8sGroup = scPub1.K8sGroup
 	sc.k8sNamespaces = scPub1.K8sNamespaces
+	sc.customPermissions = scPub1.CustomPermissions
+	sc.scopedCustomPermissions = scPub1.ScopedCustomPermissions
 	sc.isServerInternal = scPub1.IsServerInternal
 	return nil
 }
@@ -122,6 +142,16 @@ func (sc *SecurityContext) GetTenantId() string {
 
 func (sc *SecurityContext) GetUserId() string {
 	return sc.userId
+}
+
+// GetAccountIds returns every account id in the caller's tenant (the tenant
+// membership set, populated for every user regardless of role). Distinct from
+// ListAccountIds, which returns only the accounts a built-in account/namespace
+// role is scoped to (empty for a pure custom-role user). Handlers that read
+// tenant-wide under a custom-role grant use this as the account set — mirroring
+// the PermissionModule tenant-wide skip in the query engine.
+func (sc *SecurityContext) GetAccountIds() []string {
+	return sc.accountIds
 }
 
 func (sc *SecurityContext) GetRoles() []string {
@@ -154,6 +184,132 @@ func (sc *SecurityContext) IsTenantAdmin() bool {
 
 func (sc *SecurityContext) IsTenantReadAdmin() bool {
 	return slices.Contains(sc.roles, AUTH_TENANT_READ_ADMIN_ROLE)
+}
+
+// HasPermission reports whether the user holds a dynamic-RBAC custom-role grant
+// for the given (module, class), e.g. HasPermission("notifications", "Write").
+// module/class MUST be the normalized values produced by
+// app/src/lib/permissionCatalog.ts — both sides resolve the same key.
+// This is purely additive: it never widens data scope (HasAccountAccess /
+// ListAccountIds are unchanged) — it only answers "may this operation run".
+func (sc *SecurityContext) HasPermission(module string, class string) bool {
+	if sc.customPermissions == nil {
+		return false
+	}
+	return sc.customPermissions[module+":"+class]
+}
+
+// HasScopedPermission answers "does the holder have a custom-role grant for
+// (module, class) that applies to accountId" — true if a tenant-global grant
+// (HasPermission) exists OR an account-scoped grant for accountId exists.
+// This is the check account-scoped resource handlers use additively alongside
+// HasAccountAccess (the built-in path). It grants the OPERATION only; the
+// caller is still responsible for any data-scope requirement (custom roles
+// never widen which accounts a user can see).
+func (sc *SecurityContext) HasScopedPermission(accountId string, module string, class string) bool {
+	// A tenant-global grant covers every account IN THE CALLER'S TENANT. The
+	// membership check is load-bearing: unlike HasAccountAccess (whose first act
+	// is this same check), a grant carries no account of its own, so without it any
+	// account id the request supplies — including one belonging to another tenant —
+	// would authorize. accountIds is every cloud_account of the context's tenant,
+	// populated for every user regardless of role, so this never narrows an
+	// in-tenant grant.
+	if sc.HasPermission(module, class) && slices.Contains(sc.accountIds, accountId) {
+		return true
+	}
+	if sc.scopedCustomPermissions == nil {
+		return false
+	}
+	// Account-scoped grants are in-tenant by construction — the resolver reads them
+	// from custom_role_assignments rows filtered by the context's tenant.
+	perAccount, ok := sc.scopedCustomPermissions[accountId]
+	if !ok {
+		return false
+	}
+	return perAccount[module+":"+class]
+}
+
+// GetCustomPermissions returns the holder's TENANT-GLOBAL custom-role grant keys
+// ("<module>:<class>"). Used to bake the set into the session at login so the
+// gateway gate can check it without a per-request DB hit.
+func (sc *SecurityContext) GetCustomPermissions() []string {
+	keys := make([]string, 0, len(sc.customPermissions))
+	for k := range sc.customPermissions {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// ScopedPermissionPrefix marks an account-scoped grant key baked into the
+// session (e.g. "scoped:events:Read"). The gateway honors a scoped key ONLY for
+// /rpc/query routes (the query engine enforces the specific account downstream);
+// the account dimension is intentionally dropped from the session key. Keep in
+// lockstep with the constant of the same value in app/src/lib/rpcGateway.ts.
+const ScopedPermissionPrefix = "scoped:"
+
+// GetScopedPermissionKeys returns the DEDUPED union of account-scoped custom
+// grant keys ("<module>:<class>") the holder carries across every scoped account.
+// Baked into the session (prefixed with ScopedPermissionPrefix) so the gateway
+// can admit a scoped grant for /rpc/query reads without knowing the specific
+// account — the query engine restricts the read to the granted accounts
+// (ScopedAccountIdsForModule). Additive; never widens data scope.
+func (sc *SecurityContext) GetScopedPermissionKeys() []string {
+	seen := map[string]bool{}
+	keys := []string{}
+	for _, perms := range sc.scopedCustomPermissions {
+		for k := range perms {
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+	}
+	return keys
+}
+
+// CanManage gates a non-privilege tenant-config operation. It preserves the
+// existing tenant-admin behavior and additively accepts a matching custom-role
+// grant. NOTE: do NOT use this for privilege-administration handlers (role /
+// group / user-role assignment) — those must stay IsTenantAdmin()-only so a
+// custom role can never be used to escalate its own privileges.
+func (sc *SecurityContext) CanManage(module string, class string) bool {
+	return sc.IsTenantAdmin() || sc.HasPermission(module, class)
+}
+
+// CanReadAccountData reports whether the caller may READ data for accountId in
+// `module` — via a built-in account role (HasAccountAccess read) OR a
+// dynamic-RBAC custom grant for the module (Read, or Write which implies Read).
+// Account-scoped via HasScopedPermission; never widens which accounts exist.
+// Use in account-scoped read handlers so a pure custom-role user (whose built-in
+// account scope is empty, so HasAccountAccess/ListAccountIds return nothing) can
+// still read the data their custom grant authorizes — mirroring the query
+// engine's PermissionModule skip.
+func (sc *SecurityContext) CanReadAccountData(accountId string, module string) bool {
+	return sc.HasAccountAccess(accountId, SecurityAccessTypeRead) ||
+		sc.HasScopedPermission(accountId, module, "Read") ||
+		sc.HasScopedPermission(accountId, module, "Write")
+}
+
+// ScopedAccountIdsForModule returns the account ids for which the holder has an
+// account-scoped custom-role grant (Read or Write, since Write implies Read) for
+// `module`. Empty when the user holds no scoped grant for the module. The query
+// engine uses this to restrict a scoped-grant read to exactly the granted
+// accounts — the account-scoped analog of ListAccountIds for built-in roles.
+// Additive: never widens which accounts exist (the returned ids are only ever
+// intersected into an account filter). Order is unspecified.
+func (sc *SecurityContext) ScopedAccountIdsForModule(module string) []string {
+	if sc.scopedCustomPermissions == nil {
+		return nil
+	}
+	readKey := module + ":Read"
+	writeKey := module + ":Write"
+	out := []string{}
+	for accountId, perms := range sc.scopedCustomPermissions {
+		if perms[readKey] || perms[writeKey] {
+			out = append(out, accountId)
+		}
+	}
+	return out
 }
 
 // HasScopedRole reports whether the user holds `role` scoped to `entityId`
@@ -517,6 +673,21 @@ func NewSecurityContext(tenantId string, userId string) (*SecurityContext, error
 		scopedEntityIds[role] = lo.Uniq(ids)
 	}
 
+	// Dynamic-RBAC custom-role grants — resolved only when the tenant has the
+	// CUSTOM_ROLES feature enabled. With the feature off both maps stay empty,
+	// which makes every custom-grant gate in the product inert and leaves
+	// authorization identical to the built-in roles resolved above; the
+	// custom_role_* tables are not even touched, so a database that has not run
+	// the custom-role migrations still builds a context. See CustomRolesEnabled.
+	customPermissions := map[string]bool{}
+	scopedCustomPermissions := map[string]map[string]bool{}
+	if CustomRolesEnabled(tenantId) {
+		customPermissions, scopedCustomPermissions, err = resolveCustomGrants(dbms, tenantId, userId)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	k8sUsers := map[string]string{}
 	k8sGroups := map[string][]string{}
 	rows4, err := dbms.Db.Queryx(`select name, value from user_attrs where "user" = $1 and (name like $2 or name like $3)`, userId, "k8s_user:"+tenantId+":%", "k8s_group:"+tenantId+":%")
@@ -578,7 +749,7 @@ func NewSecurityContext(tenantId string, userId string) (*SecurityContext, error
 		}
 	}
 
-	sc := SecurityContext{tenantId: tenantId, userId: userId, roles: roles, accountIds: accountIds, scopedEntityIds: scopedEntityIds, k8sUser: k8sUsers, k8sGroup: k8sGroups, k8sNamespaces: k8sNamespaces}
+	sc := SecurityContext{tenantId: tenantId, userId: userId, roles: roles, accountIds: accountIds, scopedEntityIds: scopedEntityIds, k8sUser: k8sUsers, k8sGroup: k8sGroups, k8sNamespaces: k8sNamespaces, customPermissions: customPermissions, scopedCustomPermissions: scopedCustomPermissions}
 	scdata, err := common.MarshalJson(&sc)
 	if err != nil {
 		slog.Error("Failed to marshal security context", "error", err)

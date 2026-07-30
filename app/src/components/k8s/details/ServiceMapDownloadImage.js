@@ -87,6 +87,11 @@ function ServiceMapDownloadImage() {
       // Reuse the cached font CSS when it still covers the fonts in use,
       // instead of re-fetching every font file (~100 requests) each click.
       fontEmbedCSS: cachedFontEmbedCSS || undefined,
+      // When font embedding failed (a cross-origin stylesheet throws
+      // "Cannot access rules" on cssRules access), skip fonts entirely so
+      // toPng doesn't re-run the same failing embed and reject the download.
+      // The image still renders with system-font fallback.
+      skipFonts: !cachedFontEmbedCSS,
     })
       .then(downloadImage)
       .catch((error) => {

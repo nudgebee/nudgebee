@@ -1369,42 +1369,54 @@ const apiKubernetes = {
         }),
       ]);
 
-      const hasErrors = clusterRes?.data?.errors || recommendationRes?.data?.errors || spendRes?.data?.errors || eventRes?.data?.errors;
-      if (!hasErrors) {
-        const cluster = clusterRes?.data?.data?.k8s_cluster_groupings?.rows?.[0];
-        const recommendation = recommendationRes?.data?.data?.recommendation_aggregate?.rows?.[0];
-        const spendData = spendRes?.data?.data;
-        const currentMonthSpend = spendData?.spends_aggregate?.rows?.[0]?.spend_amount || 0;
-        const lastMonthSpend = spendData?.lm_spends_aggregate?.rows?.[0]?.spend_amount || 0;
-        const yearlySpend = spendData?.yearly_spends_aggregate?.rows?.[0]?.spend_amount || 0;
-        const recommendedSaving = recommendation?.sum_estimated_savings || 0;
-        const nodeCount = cluster?.node_count ?? 0;
-        const spotCount = cluster?.node_spot_count ?? 0;
+      // Each of the four queries is independently permission-gated (e.g. the
+      // recommendation aggregate needs recommendation:Read). Rather than blanking
+      // the whole dashboard when one is denied, build the summary from whatever
+      // succeeded and report the failed sections so the page can render partial
+      // data and name exactly which permission/section failed.
+      const sections = [
+        { section: 'Recommendations', res: recommendationRes },
+        { section: 'Cost', res: spendRes },
+        { section: 'Events', res: eventRes },
+        { section: 'Cluster', res: clusterRes },
+      ];
+      const errors = sections
+        .filter((s) => s.res?.data?.errors?.length)
+        .map((s) => ({ section: s.section, message: s.res.data.errors[0]?.message || `Failed to load ${s.section}` }));
 
-        return {
-          data: {
-            cluster_data: {
-              node_count: nodeCount,
-              spot_node_count: spotCount,
-              ondemand_node_count: nodeCount - spotCount,
-              pod_status_counts: cluster?.pod_status_counts ? JSON.parse(cluster.pod_status_counts) : {},
-              workload_type_counts: cluster?.workload_type_counts ? JSON.parse(cluster.workload_type_counts) : {},
-              event: eventRes?.data?.data?.events?.rows,
-            },
-            last_month_spend: lastMonthSpend,
-            current_month_spend: currentMonthSpend,
-            current_month_projected_spend: getBudgetExpectedMonthlyExpense(currentMonthSpend),
-            recommended_saving: recommendedSaving,
-            yearly_recommendation_saving: recommendedSaving * 12,
-            total_recommendations: recommendation?.count || 0,
-            current_month_avg_daily_cost: currentMonthSpend / currentDate.getDate(),
-            last_month_avg_daily_cost: lastMonthSpend / getEndOfMonth(lastMonthStart).getDate(),
-            current_year_spend: yearlySpend,
-            current_year_projected_spend: getExpectedYearlyExpense(getBudgetExpectedMonthlyExpense(currentMonthSpend), yearlySpend),
+      const cluster = clusterRes?.data?.data?.k8s_cluster_groupings?.rows?.[0];
+      const recommendation = recommendationRes?.data?.data?.recommendation_aggregate?.rows?.[0];
+      const spendData = spendRes?.data?.data;
+      const currentMonthSpend = spendData?.spends_aggregate?.rows?.[0]?.spend_amount || 0;
+      const lastMonthSpend = spendData?.lm_spends_aggregate?.rows?.[0]?.spend_amount || 0;
+      const yearlySpend = spendData?.yearly_spends_aggregate?.rows?.[0]?.spend_amount || 0;
+      const recommendedSaving = recommendation?.sum_estimated_savings || 0;
+      const nodeCount = cluster?.node_count ?? 0;
+      const spotCount = cluster?.node_spot_count ?? 0;
+
+      return {
+        data: {
+          cluster_data: {
+            node_count: nodeCount,
+            spot_node_count: spotCount,
+            ondemand_node_count: nodeCount - spotCount,
+            pod_status_counts: cluster?.pod_status_counts ? JSON.parse(cluster.pod_status_counts) : {},
+            workload_type_counts: cluster?.workload_type_counts ? JSON.parse(cluster.workload_type_counts) : {},
+            event: eventRes?.data?.data?.events?.rows,
           },
-        };
-      }
-      return { errors: hasErrors };
+          last_month_spend: lastMonthSpend,
+          current_month_spend: currentMonthSpend,
+          current_month_projected_spend: getBudgetExpectedMonthlyExpense(currentMonthSpend),
+          recommended_saving: recommendedSaving,
+          yearly_recommendation_saving: recommendedSaving * 12,
+          total_recommendations: recommendation?.count || 0,
+          current_month_avg_daily_cost: currentMonthSpend / currentDate.getDate(),
+          last_month_avg_daily_cost: lastMonthSpend / getEndOfMonth(lastMonthStart).getDate(),
+          current_year_spend: yearlySpend,
+          current_year_projected_spend: getExpectedYearlyExpense(getBudgetExpectedMonthlyExpense(currentMonthSpend), yearlySpend),
+        },
+        ...(errors.length ? { errors } : {}),
+      };
     } catch (error) {
       console.log('Your Error is', error);
       return error;

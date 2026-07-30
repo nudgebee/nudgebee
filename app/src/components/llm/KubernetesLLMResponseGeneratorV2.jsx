@@ -18,7 +18,7 @@ import { useConversationManager } from '@hooks/useConversationManager';
 import { useConversationSuggestions } from '@hooks/useConversationSuggestions';
 import { useLLMInvestigationControl } from '@hooks/useLLMInvestigationControl';
 import { useTokenUsage } from '@hooks/useTokenUsage';
-import { getUserSession, hasReadAccess } from '@lib/auth';
+import { getUserSession, hasReadAccess, hasPermission } from '@lib/auth';
 import { applyFiltersOnRouter } from '@lib/router';
 import { Avatar, Box, CircularProgress, Divider, Typography } from '@mui/material';
 import { useRouter } from 'next/router';
@@ -476,8 +476,12 @@ const KubernetesLLMResponseGenerator = ({
 
       if ((!popup && hasUrlId) || (popup && (selectedSessionId || selectedConversationId))) {
         if (!currentlyProcessingQuestion) {
-          // Verify user has access to the account before loading conversation
-          if (accountId && !hasReadAccess(accountId)) {
+          // Verify user has access to the account before loading conversation.
+          // Mirror the backend gate for ai_get_conversation_v3 (CanReadAccountData
+          // → HasAccountAccess OR an ai_conversations Read/Write custom grant):
+          // hasReadAccess only sees built-in-role account lists, so without this a
+          // pure custom-role holder is falsely blocked here before the fetch runs.
+          if (accountId && !hasReadAccess(accountId) && !hasPermission('ai_conversations', 'Read') && !hasPermission('ai_conversations', 'Write')) {
             snackbar.error('You do not have permission to access this conversation');
             uiDispatch({ type: 'CLEAR_CONVERSATION' });
             if (!popup) {

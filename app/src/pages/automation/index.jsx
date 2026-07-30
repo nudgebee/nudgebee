@@ -4,7 +4,7 @@ import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import { withAccountGuard } from '@shared/AccountGuard';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import { useRouter } from 'next/router';
-import { getUserSession } from '@lib/auth';
+import { getUserSession, hasPermission, missingPermissionMessage } from '@lib/auth';
 import { AutomateBlue, PlayCircleIcon, dashboardIcon1 } from '@assets';
 import WorkflowListing from '@components/workflow/WorkflowListing';
 import TaskRunner from '@components/workflow/TaskRunner';
@@ -14,6 +14,9 @@ const Automation = () => {
   const router = useRouter();
   const session = getUserSession();
   const isAdmin = session?.roles?.includes('tenant_admin') || session?.roles?.includes('account_admin');
+  // Task Runner executes workflow tasks. Reachable by built-in admins, or by a
+  // dynamic-RBAC holder of workflows:Execute (or workflows:Write, which covers it).
+  const canRunTasks = isAdmin || hasPermission('workflows', 'Execute') || hasPermission('workflows', 'Write');
 
   const [selectedFilter, setSelectedFilter] = React.useState(0);
 
@@ -22,7 +25,15 @@ const Automation = () => {
   // silently change which tab everyone lands on.
   const filterOptions = [
     { name: 'Automations', id: 'automations', value: 0, fragment: 'automations', icon: AutomateBlue },
-    { name: 'Task Runner', id: 'task-runner', value: 1, fragment: 'task-runner', disabled: !isAdmin, icon: PlayCircleIcon },
+    {
+      name: 'Task Runner',
+      id: 'task-runner',
+      value: 1,
+      fragment: 'task-runner',
+      disabled: !canRunTasks,
+      disabledTooltip: missingPermissionMessage('workflows:Execute'),
+      icon: PlayCircleIcon,
+    },
     { name: 'Executions', id: 'executions', value: 2, fragment: 'executions', icon: dashboardIcon1 },
   ];
 
@@ -41,8 +52,12 @@ const Automation = () => {
     <>
       <AnchorComponent
         manageRoute={true}
-        filterOptions={filterOptions.filter((opt) => !opt.disabled)}
+        filterOptions={filterOptions}
         onChangeFilter={(val) => {
+          // AnchorComponent resolves the tab from the URL hash without consulting
+          // `disabled`, so a deep link to #task-runner would select an unreachable
+          // tab and render nothing. Ignore those selections here.
+          if (filterOptions.find((opt) => opt.value === val)?.disabled) return;
           setSelectedFilter(val);
         }}
       />
@@ -51,7 +66,7 @@ const Automation = () => {
           {/* Tenant-level: each tab resolves its own accounts. The listing and
               Executions carry an Account filter; Task Runner an account picker. */}
           {selectedFilter === 0 && <WorkflowListing />}
-          {selectedFilter === 1 && isAdmin && <TaskRunner />}
+          {selectedFilter === 1 && canRunTasks && <TaskRunner />}
           {selectedFilter === 2 && <ExecutionDashboard />}
         </ErrorBoundary>
       </Box>

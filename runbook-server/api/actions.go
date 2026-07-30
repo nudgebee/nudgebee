@@ -888,19 +888,40 @@ func (s *Server) handleSaveConfig(c *gin.Context, sc *security.RequestContext, a
 	c.JSON(http.StatusOK, gin.H{"id": id})
 }
 
+// configPermissionModule is the dynamic-RBAC module the config_* actions
+// classify to (see app/src/lib/permissionCatalog.ts — `config_list` →
+// `config:Read`). Keep in lockstep with that classifier.
+const configPermissionModule = "config"
+
+// canReadTenantConfigs reports whether the caller may see tenant-scoped config
+// rows: a built-in tenant read role, or a tenant-global `config:Read` custom
+// grant (`config:Write` implies read). Account-scoped grants are deliberately
+// not consulted — a tenant-scoped row belongs to no account.
+func canReadTenantConfigs(sc *security.RequestContext) bool {
+	return sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead) ||
+		sc.GetSecurityContext().HasPermission(configPermissionModule, "Read") ||
+		sc.GetSecurityContext().HasPermission(configPermissionModule, "Write")
+}
+
 // configAccountScope reads the optional account_id arg and returns:
 //   - the *string to pass to ConfigService (nil when tenant-scoped)
 //   - whether the caller is authorized to read at that scope
 //   - whether the caller is authorized to write at that scope
+//
+// Both flags accept a dynamic-RBAC `config:<Class>` grant in addition to the
+// built-in roles: a pure custom-role holder has no built-in tenant/account role,
+// so the role checks alone would 401 a caller the gateway already admitted.
 func configAccountScope(sc *security.RequestContext, args map[string]any) (*string, bool, bool) {
 	accountID, _ := args["account_id"].(string)
 	if accountID == "" {
-		hasRead := sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead)
-		hasWrite := sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeUpdate)
+		hasRead := canReadTenantConfigs(sc)
+		hasWrite := sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeUpdate) ||
+			sc.GetSecurityContext().HasPermission(configPermissionModule, "Write")
 		return nil, hasRead, hasWrite
 	}
-	hasRead := sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeRead)
-	hasWrite := sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeUpdate)
+	hasRead := sc.GetSecurityContext().CanReadAccountData(accountID, configPermissionModule)
+	hasWrite := sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) ||
+		sc.GetSecurityContext().HasScopedPermission(accountID, configPermissionModule, "Write")
 	acc := accountID
 	return &acc, hasRead, hasWrite
 }
@@ -939,7 +960,7 @@ func (s *Server) handleGetConfig(c *gin.Context, sc *security.RequestContext, ar
 	// when querying via an account scope (the service merges tenant rows into
 	// account-scoped lookups). Return 404 rather than 401 to avoid leaking key
 	// existence.
-	if config.IsTenantScoped() && !sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead) {
+	if config.IsTenantScoped() && !canReadTenantConfigs(sc) {
 		c.JSON(http.StatusNotFound, buildApiResponse(nil, []error{fmt.Errorf("config not found")}))
 		return
 	}
@@ -988,7 +1009,7 @@ func (s *Server) handleListConfigs(c *gin.Context, sc *security.RequestContext, 
 	// Callers without tenant read access must never see tenant-scoped rows.
 	// The service merges tenant rows into account-scoped lookups for tenant
 	// admins; strip them here for everyone else.
-	if !sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead) {
+	if !canReadTenantConfigs(sc) {
 		filtered := configs[:0]
 		for _, cfg := range configs {
 			if cfg.IsTenantScoped() {

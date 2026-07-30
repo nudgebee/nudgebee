@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 import { parse, type InputObjectTypeDefinitionNode, type ObjectTypeDefinitionNode, type TypeNode } from 'graphql';
+import { classifyAction, permissionKey } from '@lib/permissionCatalog';
 
 // Routing table for /api/rpc — the local app/src/lib/actions.yaml file
 // next to this module is now the sole source of truth (RPC's metadata
@@ -32,6 +33,17 @@ export type RpcRoute = {
   // ACTION_API_SERVER_TOKEN for services-server, LLM_SERVER_TOKEN for
   // llm-server, etc.).
   headers: Array<{ name: string; valueFromEnv: string }>;
+  // Dynamic-RBAC permission key (`<module>:<Read|Write|Execute>`) derived from
+  // the action name via classifyAction(). A custom role grants this action
+  // iff the holder's permission set contains this key. undefined when the
+  // action can't be classified — the gate then fails closed (only built-in
+  // roles in allowedRoles can invoke it). See permissionCatalog.ts.
+  permission?: string;
+  // actions.yaml `comment:` — a human-readable description of what the action
+  // does. Optional (roughly 40% of actions carry one). Surfaced by
+  // /api/permissions/catalog so the role editor can explain what a grant
+  // actually allows; the raw action name is the fallback.
+  comment?: string;
 };
 
 type ActionsYaml = {
@@ -44,6 +56,7 @@ type ActionsYaml = {
       headers?: Array<{ name?: string; value_from_env?: string }>;
     };
     permissions?: Array<{ role?: string }>;
+    comment?: string;
   }>;
 };
 
@@ -92,12 +105,15 @@ export function loadRpcRoutes(): Record<string, RpcRoute> {
     if (headers.length === 0) {
       missingHeaders.push(action.name);
     }
+    const classification = classifyAction(action.name);
     out[action.name] = {
       handler: action.definition.handler,
       forwardClientHeaders: !!action.definition.forward_client_headers,
       allowedRoles,
       tenantAgnostic: !!action.definition.tenant_agnostic,
       headers,
+      permission: classification ? permissionKey(classification.module, classification.class) : undefined,
+      comment: typeof action.comment === 'string' && action.comment.trim() ? action.comment.trim() : undefined,
     };
   }
   // The gateway no longer has a silent fallback for X-ACTION-TOKEN — every

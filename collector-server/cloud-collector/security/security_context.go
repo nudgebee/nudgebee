@@ -45,6 +45,15 @@ type SecurityContext struct {
 	isServerInternal bool
 }
 
+// scPub is cloud-collector's LEGACY (v1) SecurityContext wire shape: flat
+// per-role account slices (AccountAdminIds/AccountReadOnlyAdminIds), no
+// ScopedEntityIds / K8sNamespaces / CustomPermissions. This is intentionally
+// NOT the api-server v2 contract: cloud-collector never deserializes an
+// api-server SecurityContext (its NewSecurityContext builds a local context
+// from x-tenant-id/x-user-id headers), so it is exempt from the v2 wire
+// contract enforced by security_context_wire_test.go in api-server /
+// llm-server / runbook-server. Do NOT add v2 fields here piecemeal — that
+// creates false parity without giving collector real scoped resolution.
 type scPub struct {
 	TenantId                string
 	AccountIds              []string
