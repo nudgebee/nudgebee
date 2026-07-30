@@ -103,6 +103,10 @@ function shouldAuthenticate(body: any) {
 
 function handleErrorResponse(error: any, res: NextApiResponse, traceParent: string) {
   console.error('Slack install error:', error);
+  if (res.headersSent) {
+    if (!res.writableEnded) res.end();
+    return;
+  }
   res.status(500).setHeader('traceparent', traceParent).json({
     code: 'internal_error',
     error: 'Internal Server Error',
