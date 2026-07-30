@@ -113,6 +113,10 @@ func TestReAct3RoleOverlayFence(t *testing.T) {
 	const thoughtException = "Exception: on the FIRST step of a task"
 	const safetyClaimsHeader = "SAFETY & COMPLETION CLAIMS"
 	const perMessageContract = "EVERY qualifying user message"
+	const targetResolution = "Resolve the request's concrete targets before investigating"
+	const anomalyReconciliation = "Reconcile every anomaly your sub-agents surfaced"
+	const requeryThin = "Re-query thin sub-agent answers"
+	const evidenceReporting = "include the decisive evidence behind your finding"
 
 	t.Run("orchestrator: answer contract + thought exception, no executor block", func(t *testing.T) {
 		out := renderReact3BaseWithRoles(t, true, true, true, false)
@@ -122,6 +126,10 @@ func TestReAct3RoleOverlayFence(t *testing.T) {
 		assert.Contains(t, out, "hypothesis completion gate below", "hypothesis-mode orchestrator links contract to the hypothesis gate")
 		assert.Contains(t, out, safetyClaimsHeader, "unconditional safety-claims rule must render for orchestrators")
 		assert.Contains(t, out, perMessageContract, "contract must be framed per user message, not per conversation")
+		assert.Contains(t, out, targetResolution, "orchestrator must be told to resolve locator/subject pointers to concrete entities before investigating")
+		assert.Contains(t, out, anomalyReconciliation, "orchestrator must reconcile sub-agent-surfaced anomalies before finalizing")
+		assert.Contains(t, out, requeryThin, "orchestrator must re-query thin sub-agent answers instead of concluding from them")
+		assert.NotContains(t, out, evidenceReporting, "sender-side evidence-reporting rule belongs to the executor overlay, not the orchestrator")
 		assert.NotContains(t, out, executorHeader)
 	})
 
@@ -136,9 +144,11 @@ func TestReAct3RoleOverlayFence(t *testing.T) {
 	t.Run("executor: reporting block only, no contract or thought exception", func(t *testing.T) {
 		out := renderReact3BaseWithRoles(t, true, false, false, true)
 		assert.Contains(t, out, executorHeader)
+		assert.Contains(t, out, evidenceReporting, "executor must report the decisive evidence behind its finding, not a bare conclusion")
 		assert.NotContains(t, out, contractHeader)
 		assert.NotContains(t, out, thoughtException)
 		assert.NotContains(t, out, safetyClaimsHeader)
+		assert.NotContains(t, out, requeryThin, "re-query rule is orchestrator-side, must not render for executors")
 	})
 
 	t.Run("feature off: neither overlay renders (legacy prompt)", func(t *testing.T) {
@@ -147,6 +157,10 @@ func TestReAct3RoleOverlayFence(t *testing.T) {
 		assert.NotContains(t, out, executorHeader)
 		assert.NotContains(t, out, thoughtException)
 		assert.NotContains(t, out, safetyClaimsHeader)
+		assert.NotContains(t, out, targetResolution)
+		assert.NotContains(t, out, anomalyReconciliation)
+		assert.NotContains(t, out, requeryThin)
+		assert.NotContains(t, out, evidenceReporting)
 	})
 }
 
