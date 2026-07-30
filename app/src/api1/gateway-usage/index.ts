@@ -329,6 +329,9 @@ export interface GatewaySession {
   providers: string[];
   first_seen: string; // RFC3339 UTC
   last_seen: string;
+  /** Short preview of the opening user message. Empty unless body-capture is on AND
+   * the viewer may see it (own session, or a tenant admin) — PHI-gated. */
+  first_message: string;
 }
 
 export interface GatewaySessionList {

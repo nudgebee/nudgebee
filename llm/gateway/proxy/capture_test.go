@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"nudgebee/llm-gateway/config"
@@ -12,6 +13,34 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestFirstUserMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"openai string content", `{"messages":[{"role":"system","content":"sys"},{"role":"user","content":"what is up"}]}`, "what is up"},
+		{"anthropic text blocks", `{"messages":[{"role":"user","content":[{"type":"text","text":"hello"},{"type":"text","text":"there"}]}]}`, "hello there"},
+		{"gemini contents/parts", `{"contents":[{"role":"user","parts":[{"text":"gem question"}]}]}`, "gem question"},
+		{"gemini roleless", `{"contents":[{"parts":[{"text":"no role"}]}]}`, "no role"},
+		{"whitespace collapsed", "{\"messages\":[{\"role\":\"user\",\"content\":\"line1\\n\\n   line2\"}]}", "line1 line2"},
+		{"wrapper tokens kept raw", `{"messages":[{"role":"user","content":"<session> hi"}]}`, "<session> hi"},
+		{"no user message", `{"messages":[{"role":"system","content":"sys"}]}`, ""},
+		{"no messages field", `{"model":"x"}`, ""},
+		{"invalid json", `garbage`, ""},
+		{"empty", ``, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, firstUserMessage([]byte(c.body)))
+		})
+	}
+
+	// Length cap: 300-rune content is truncated to firstMessageMaxLen runes.
+	long := `{"messages":[{"role":"user","content":"` + strings.Repeat("a", 300) + `"}]}`
+	assert.Len(t, []rune(firstUserMessage([]byte(long))), firstMessageMaxLen)
+}
 
 func withCapture(t *testing.T, on bool) {
 	t.Helper()

@@ -402,6 +402,89 @@ func modelFromPath(provider schemas.ModelProvider, path string) string {
 	return rest
 }
 
+// firstMessageMaxLen caps the stored opening-message preview (a short recognizer for
+// the Sessions tab, not the full prompt — keeps the structure-only spirit + the column small).
+const firstMessageMaxLen = 200
+
+// firstUserMessage extracts a short RAW preview of the request's first user message —
+// the opening question shown on the Sessions tab. Handles Anthropic/OpenAI string or
+// array (text-block) content and Gemini parts. Whitespace is collapsed to one line and
+// the text is length-capped; wrapper tokens (e.g. <session>) are deliberately NOT
+// stripped (they are client scaffolding, tool-specific). Empty when none is found.
+func firstUserMessage(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var r struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Contents []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if json.Unmarshal(body, &r) != nil {
+		return ""
+	}
+	var text string
+	for _, m := range r.Messages {
+		if m.Role == "user" {
+			text = messageContentText(m.Content)
+			break
+		}
+	}
+	if text == "" {
+		for _, ct := range r.Contents {
+			if ct.Role == "user" || ct.Role == "" {
+				for _, p := range ct.Parts {
+					if p.Text != "" {
+						text = p.Text
+						break
+					}
+				}
+				if text != "" {
+					break
+				}
+			}
+		}
+	}
+	text = strings.Join(strings.Fields(text), " ") // collapse whitespace to one line
+	if rs := []rune(text); len(rs) > firstMessageMaxLen {
+		text = string(rs[:firstMessageMaxLen])
+	}
+	return text
+}
+
+// messageContentText renders message content — a plain string, or an array of
+// {type,text} blocks (Anthropic) — to text.
+func messageContentText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) == nil {
+		parts := make([]string, 0, len(blocks))
+		for _, b := range blocks {
+			if b.Type == "text" && b.Text != "" {
+				parts = append(parts, b.Text)
+			}
+		}
+		return strings.Join(parts, " ")
+	}
+	return ""
+}
+
 // bodyMetadataUserID extracts Anthropic's metadata.user_id from a request body.
 func bodyMetadataUserID(body []byte) string {
 	if len(body) == 0 {

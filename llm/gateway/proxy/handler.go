@@ -532,20 +532,21 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	if record && bodyCaptureAllowed(rm.identity.TenantID) {
 		now := time.Now().UTC()
 		h.bodyLog.Record(metering.BodyLog{
-			ID:           uuid.NewString(),
-			RequestID:    rm.reqID,
-			CreatedAt:    now,
-			ExpiresAt:    now.Add(metering.TTL()),
-			TenantID:     rm.identity.TenantID,
-			UserID:       rm.identity.UserID,
-			SessionID:    rm.sessionID,
-			Provider:     string(rm.provider),
-			Model:        rm.model,
-			Method:       rm.method,
-			Path:         rm.path,
-			StatusCode:   status,
-			RequestBody:  metering.CapBody(rm.body),
-			ResponseBody: metering.CapBody(respBody),
+			ID:               uuid.NewString(),
+			RequestID:        rm.reqID,
+			CreatedAt:        now,
+			ExpiresAt:        now.Add(metering.TTL()),
+			TenantID:         rm.identity.TenantID,
+			UserID:           rm.identity.UserID,
+			SessionID:        rm.sessionID,
+			Provider:         string(rm.provider),
+			Model:            rm.model,
+			Method:           rm.method,
+			Path:             rm.path,
+			StatusCode:       status,
+			RequestBody:      metering.CapBody(rm.body),
+			ResponseBody:     metering.CapBody(respBody),
+			FirstUserMessage: firstUserMessage(rm.body),
 		})
 	}
 }
