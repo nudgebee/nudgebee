@@ -1080,10 +1080,10 @@ func init() {
 	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
 	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
 	// k8s_orchestrator mode: delegating (v1, default) | direct (v2) | lean (experimental).
-	viper.SetDefault("llm_server_k8s_orchestrator_mode", "delegating")
-	viper.SetDefault("llm_server_aws_orchestrator_mode", "delegating")
-	viper.SetDefault("llm_server_gcp_orchestrator_mode", "delegating")
-	viper.SetDefault("llm_server_azure_orchestrator_mode", "delegating")
+	viper.SetDefault("llm_server_k8s_orchestrator_mode", "lean")
+	viper.SetDefault("llm_server_aws_orchestrator_mode", "lean")
+	viper.SetDefault("llm_server_gcp_orchestrator_mode", "lean")
+	viper.SetDefault("llm_server_azure_orchestrator_mode", "lean")
 	viper.SetDefault("llm_server_workspace_port", 8080)
 	viper.SetDefault("llm_server_workspace_local_url", "") // e.g. http://localhost:8080 for local dev
 	viper.SetDefault("llm_server_workspace_file_max_download_bytes", 5*1024*1024)

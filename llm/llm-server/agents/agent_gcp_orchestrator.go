@@ -23,9 +23,9 @@ const (
 // GcpOrchestratorMode* are the values of config llm_server_gcp_orchestrator_mode,
 // the boot-time knob for what the router-selected gcp_orchestrator runs.
 const (
-	GcpOrchestratorModeDelegating = "delegating" // v1: delegate GCP resource CLI to the `gcp` sub-agent (default)
+	GcpOrchestratorModeDelegating = "delegating" // v1: delegate GCP resource CLI to the `gcp` sub-agent (fallback for unknown mode)
 	GcpOrchestratorModeDirect     = "direct"     // v2: hold gcloud_execute and run the gcloud CLI directly
-	GcpOrchestratorModeLean       = "lean"       // EXPERIMENTAL: minimal principle-level prompt + direct gcloud_execute
+	GcpOrchestratorModeLean       = "lean"       // minimal principle-level prompt + direct gcloud_execute (now the DEFAULT)
 )
 
 func init() {
@@ -53,7 +53,8 @@ type GcpOrchestratorAgent struct {
 
 // newGcpOrchestratorAgent is the primary, router-selected agent. Its behavior is
 // chosen by config.GcpOrchestratorMode (boot-time; rollback = change + redeploy).
-// Unknown/empty mode falls back to delegating (v1), the safe default.
+// The configured default is "lean" (llm_server_*_orchestrator_mode); an
+// unknown/typo value falls back to delegating (v1).
 func newGcpOrchestratorAgent(accountId string) core.NBAgent {
 	switch strings.ToLower(strings.TrimSpace(config.Config.GcpOrchestratorMode)) {
 	case GcpOrchestratorModeLean:

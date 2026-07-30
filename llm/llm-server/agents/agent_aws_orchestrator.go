@@ -28,7 +28,7 @@ const (
 const (
 	AwsOrchestratorModeDelegating = "delegating" // v1: delegate AWS resource CLI to the `aws` sub-agent (fallback for unknown mode)
 	AwsOrchestratorModeDirect     = "direct"     // v2: hold aws_execute and run the AWS CLI directly
-	AwsOrchestratorModeLean       = "lean"       // minimal principle-level prompt + direct aws_execute — the DEFAULT
+	AwsOrchestratorModeLean       = "lean"       // minimal principle-level prompt + direct aws_execute (now the DEFAULT)
 )
 
 func init() {
@@ -56,7 +56,8 @@ type AwsOrchestratorAgent struct {
 
 // newAwsOrchestratorAgent is the primary, router-selected agent. Its behavior is
 // chosen by config.AwsOrchestratorMode (boot-time; rollback = change + redeploy).
-// Unknown/empty mode falls back to delegating (v1), the safe default.
+// The configured default is "lean" (llm_server_*_orchestrator_mode); an
+// unknown/typo value falls back to delegating (v1).
 func newAwsOrchestratorAgent(accountId string) core.NBAgent {
 	switch strings.ToLower(strings.TrimSpace(config.Config.AwsOrchestratorMode)) {
 	case AwsOrchestratorModeLean:
@@ -145,6 +146,10 @@ func (a *AwsOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, que
 		instructions = append(instructions, "**Full Shell Capabilities:**")
 		instructions = append(instructions, "The execution environment supports a full shell. You can use pipes (`|`), redirection, and standard Linux utilities (`grep`, `awk`, `sed`, `jq`, `sort`, `uniq`) in your planned queries.")
 		instructions = append(instructions, "Encourage the use of these tools to filter and process output directly in the command line for efficiency.")
+	}
+
+	if n := memoryNudgeIfEnabled(); n != "" {
+		instructions = append(instructions, n)
 	}
 
 	constraints := []string{
@@ -260,20 +265,18 @@ func getAwsPlannerSupportedTools(ctx *security.RequestContext, accountId, agentN
 		"aws_observability",
 		tools.ToolExecuteAwsCliCommand,
 		getAwsTicketAgentName(),
-		"github",                // GithubAgentName
-		"websearch",             // SearchAgentName
-		"recommendations",       // RecommendationsAgentName
-		"events",                // EventsAgentName
-		"visualizer",            // VisualizationAgentName
-		"postgres",              // PostgresAgentName
-		"mysql",                 // MySQLAgentName
-		"mssql",                 // MSSQLAgentName
-		"oracle",                // OracleAgentName
-		"redis",                 // RedisAgentName
-		"rabbitmq",              // RabbitMQAgentName
-		"kubectl",               // KubectlAgentName
-		WorkflowAgentName,       // parity with GCP/k8s; account-gated by IsToolConfigured
-		ResourceSearchAgentName, // cross-cloud inventory search, parity with k8s
+		"github",          // GithubAgentName
+		"websearch",       // SearchAgentName
+		"recommendations", // RecommendationsAgentName
+		"events",          // EventsAgentName
+		"visualizer",      // VisualizationAgentName
+		"postgres",        // PostgresAgentName
+		"mysql",           // MySQLAgentName
+		"mssql",           // MSSQLAgentName
+		"oracle",          // OracleAgentName
+		"redis",           // RedisAgentName
+		"rabbitmq",        // RabbitMQAgentName
+		"kubectl",         // KubectlAgentName
 		tools.ToolIncidentAssembly,
 		DelegateAgentToolName,
 		tools.SearchSkillsToolName, // Search knowledge bases by query (#34819)
@@ -289,16 +292,7 @@ func getAwsPlannerSupportedTools(ctx *security.RequestContext, accountId, agentN
 	// not just K8s, so expose it to this orchestrator. The old V1 variant that
 	// was K8s-only has been removed; the V2 flag guard here went with it.
 	supportedToolNames = append(supportedToolNames, ServiceDependencyGraph)
-
-	// Cross-cutting extras, parity with the k8s orchestrator — flag-gated on the same
-	// switches, so they only surface where already enabled account-wide. (think is already
-	// injected at the tail of this function, so it is intentionally not repeated here.)
-	if config.Config.RemediationAgentEnabled {
-		supportedToolNames = append(supportedToolNames, RemediationAgentName)
-	}
-	if core.IsAgentsFollowupEnabled() {
-		supportedToolNames = append(supportedToolNames, FollowupAgentName)
-	}
+	supportedToolNames = appendMemoryToolName(supportedToolNames)
 
 	// shell_execute is injected automatically by FilterAndInjectDefaultTools when enabled.
 	// It auto-injects cloud credentials based on account type.

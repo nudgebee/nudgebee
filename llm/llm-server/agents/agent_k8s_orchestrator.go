@@ -21,13 +21,20 @@ import (
 
 const AgentK8sOrchestratorName = "k8s_orchestrator"
 
-// AgentK8sOrchestrator2Name is an explicit, @-invocable handle that always runs the
+// AgentK8sOrchestratorDirectName is an explicit, @-invocable handle that always runs the
 // direct-kubectl (v2) behavior regardless of the configured K8sOrchestratorMode. The
-// router never selects it; it exists so v1 (the flag-gated default) and v2 can be
-// invoked side by side — `@k8s_orchestrator` vs `@k8s_orchestrator_2` — for live eval
-// on the same deployment without a config flip. Both names share ONE implementation;
-// only (name, mode) differ, and the distinct name gives it a distinct cache key.
-const AgentK8sOrchestrator2Name = "k8s_orchestrator_2"
+// router selects it via ResolveK8sOrchestratorOverride when per-request /
+// env mode is "direct", and can also be invoked via `@k8s_orchestrator_direct` (or
+// the legacy alias `@k8s_orchestrator_2`) for live eval alongside `@k8s_orchestrator`.
+// Both names share ONE implementation; only (name, useKubectlDirect) differ.
+const AgentK8sOrchestratorDirectName = "k8s_orchestrator_direct"
+
+// AgentK8sOrchestratorDelegatingName is the always-delegating (v1) handle. Symmetric
+// to AgentK8sOrchestratorDirectName (always-direct v2). Registered separately
+// from the primary AgentK8sOrchestratorName so per-request
+// K8sOrchestratorMode="delegating" can force v1 regardless of what env has
+// selected for the primary handle (native / direct / lean).
+const AgentK8sOrchestratorDelegatingName = "k8s_orchestrator_delegating"
 
 func init() {
 	core.RegisterNBAgentFactoryWithAliases(AgentK8sOrchestratorName, func(accountId string) (core.NBAgent, error) {
@@ -42,18 +49,36 @@ func init() {
 		InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorName)
 	})
 
-	// Explicit always-direct eval handle (see AgentK8sOrchestrator2Name). Same
+	// Explicit always-direct eval handle (see AgentK8sOrchestratorDirectName). Same
 	// implementation, distinct name → distinct cache key, invocable by @name only.
-	core.RegisterNBAgentFactoryWithAliases(AgentK8sOrchestrator2Name, func(accountId string) (core.NBAgent, error) {
-		return newK8sOrchestrator2Agent(accountId), nil
-	}, "k8s_debug_2")
+	// Legacy aliases k8s_orchestrator_2 / k8s_debug_2 kept so existing stored
+	// conversation history + @-invocations keep resolving after the rename.
+	core.RegisterNBAgentFactoryWithAliases(AgentK8sOrchestratorDirectName, func(accountId string) (core.NBAgent, error) {
+		return newK8sOrchestratorDirectAgent(accountId), nil
+	}, "k8s_orchestrator_2", "k8s_debug_2", "k8s_debug_direct")
 	core.RegisterAgentCacheInvalidator(func(accountId string, agentName string) {
-		if agentName == "" || agentName == AgentK8sOrchestrator2Name {
-			InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestrator2Name)
+		if agentName == "" || agentName == AgentK8sOrchestratorDirectName {
+			InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorDirectName)
 		}
 	})
 	toolcore.RegisterToolCacheInvalidator(func(accountId string) {
-		InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestrator2Name)
+		InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorDirectName)
+	})
+
+	// Explicit always-delegating (v1) handle (see AgentK8sOrchestratorDelegatingName).
+	// Mirrors AgentK8sOrchestratorDirectName — same implementation, useKubectlDirect
+	// set to false, distinct cache key. Enables per-request "delegating" to
+	// force v1 even when env selects a different variant for the primary.
+	core.RegisterNBAgentFactoryWithAliases(AgentK8sOrchestratorDelegatingName, func(accountId string) (core.NBAgent, error) {
+		return newK8sOrchestratorDelegatingAgent(accountId), nil
+	}, "k8s_debug_delegating")
+	core.RegisterAgentCacheInvalidator(func(accountId string, agentName string) {
+		if agentName == "" || agentName == AgentK8sOrchestratorDelegatingName {
+			InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorDelegatingName)
+		}
+	})
+	toolcore.RegisterToolCacheInvalidator(func(accountId string) {
+		InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorDelegatingName)
 	})
 
 	common.CacheSubscribe("agent_invalidation", func(message string) {
@@ -70,7 +95,7 @@ func init() {
 const (
 	K8sOrchestratorModeDelegating = "delegating" // v1: delegate kubectl to the sub-agent (fallback for unknown mode)
 	K8sOrchestratorModeDirect     = "direct"     // v2: hold kubectl_execute, run kubectl directly
-	K8sOrchestratorModeLean       = "lean"       // reduced tool core + minimal prompt — the DEFAULT (critique unchanged)
+	K8sOrchestratorModeLean       = "lean"       // reduced tool core + minimal prompt — the DEFAULT (validated no regression)
 	K8sOrchestratorModeNative     = "native"     // K8s-native: kubectl-first, no cloud/NL-wrapper sub-agents (see agent_k8s_orchestrator_native.go)
 )
 
@@ -86,15 +111,24 @@ func newK8sOrchestratorAgent(accountId string) core.NBAgent {
 		return newK8sLeanAgentNamed(accountId, AgentK8sOrchestratorName)
 	case K8sOrchestratorModeDirect:
 		return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestratorName, true)
+	case K8sOrchestratorModeNative:
+		return newK8sNativeAgentNamed(accountId, AgentK8sOrchestratorName)
 	default:
 		return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestratorName, false)
 	}
 }
 
-// newK8sOrchestrator2Agent is the always-direct eval handle (see AgentK8sOrchestrator2Name):
+// newK8sOrchestratorDirectAgent is the always-direct eval handle (see AgentK8sOrchestratorDirectName):
 // v2 behavior regardless of the flag, for live side-by-side comparison against the primary.
-func newK8sOrchestrator2Agent(accountId string) core.NBAgent {
-	return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestrator2Name, true)
+func newK8sOrchestratorDirectAgent(accountId string) core.NBAgent {
+	return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestratorDirectName, true)
+}
+
+// newK8sOrchestratorDelegatingAgent is the always-delegating eval handle (see
+// AgentK8sOrchestratorDelegatingName): v1 behaviour (kubectl sub-agent) regardless
+// of env, symmetric to newK8sOrchestratorDirectAgent.
+func newK8sOrchestratorDelegatingAgent(accountId string) core.NBAgent {
+	return newK8sOrchestratorAgentNamed(accountId, AgentK8sOrchestratorDelegatingName, false)
 }
 
 // newK8sOrchestratorAgentMode builds the primary-named agent in an explicit kubectl
@@ -125,8 +159,12 @@ func (l *K8sOrchestratorAgent) GetName() string {
 }
 
 func (a *K8sOrchestratorAgent) GetNameAliases() []string {
-	if a.name == AgentK8sOrchestrator2Name {
-		return []string{"Debugger2", "k8s_debug_2"}
+	switch a.name {
+	case AgentK8sOrchestratorDelegatingName:
+		return []string{"Debugger (Delegating)", "k8s_debug_delegating"}
+	case AgentK8sOrchestratorDirectName:
+		// Legacy aliases kept for back-compat after the rename.
+		return []string{"Debugger (Direct)", "k8s_debug_direct", "k8s_orchestrator_2", "k8s_debug_2"}
 	}
 	return []string{"Debugger", "k8s_debug"}
 }
@@ -190,6 +228,7 @@ func renderK8sDebugReactPrompt(ctx *security.RequestContext, query core.NBAgentR
 		"code_analysis_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
 		"time_handling_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),
 		"use_kubectl_direct":    useKubectlDirect,
+		"memory_nudge":          memoryNudgeIfEnabled(),
 	}
 	// Render conditional blocks ({{if .remediation_enabled}}, {{.data_protection_rules}}, etc.).
 	// Two-pass strategy:
@@ -305,17 +344,33 @@ func InvalidateAgentSupportedToolsCache(accountId string, agentName string) {
 	agentSupportedToolsCacheInstance.delete(accountId, agentName)
 }
 
-// The enterprise release can add the on-demand memory tool to orchestrators.
-// That tool is outside the OSS boundary, so the OSS reconciliation keeps the
-// shared call sites inert instead of exposing a tool that is not registered.
-func appendMemoryToolName(names []string) []string { return names }
-
-// See appendMemoryToolName. OSS has no enterprise memory-tool prompt nudge.
-func memoryNudgeIfEnabled() string { return "" }
-
 // getSupportedTools builds the k8s orchestrator tool list. kubectlTool is the first
 // base tool: KubectlAgentName for the delegating orchestrator, or
 // tools.ToolExecuteKubectlCommand for the direct orchestrator that runs kubectl itself.
+// appendMemoryToolName adds the on-demand memory tool (path B) to a tool-name
+// list when LLM_MEMORY_TOOL_ENABLED is set, so every top-level orchestrator
+// (k8s + cloud) exposes it consistently. Independent of the RAG-inject path.
+func appendMemoryToolName(names []string) []string {
+	if config.Config.MemoryToolEnabled {
+		return append(names, core.ToolMemory)
+	}
+	return names
+}
+
+// memoryToolNudge tells an orchestrator to consult the on-demand memory tool
+// early. A tool description alone doesn't reliably drive call ordering (the model
+// reads it as "what the tool does", not "when to call it"), so the ordering hint
+// lives in the system prompt instead.
+const memoryToolNudge = "**Check memory first:** When investigating a named service, pod, or workload, call the `memory` tool with keywords (service/pod name + symptom) as an early step — before running live tools — to recall this user's known recurring patterns, past root causes, and preferences for that resource. Use relevant hits to focus the investigation; if nothing relevant returns, proceed normally. Call it at most once."
+
+// memoryNudgeIfEnabled returns the memory-first nudge when path B is on, else "".
+func memoryNudgeIfEnabled() string {
+	if config.Config.MemoryToolEnabled {
+		return memoryToolNudge
+	}
+	return ""
+}
+
 func getSupportedTools(ctx *security.RequestContext, accountId string, agentName string, kubectlTool string) []toolcore.NBTool {
 	var staticTools []toolcore.NBTool
 
@@ -347,6 +402,9 @@ func getSupportedTools(ctx *security.RequestContext, accountId string, agentName
 			if config.Config.LlmServerThinkToolEnabled {
 				baseTools = append(baseTools, tools.ThinkToolName)
 			}
+
+			// On-demand memory tool (path B), gated by LLM_MEMORY_TOOL_ENABLED.
+			baseTools = appendMemoryToolName(baseTools)
 
 			toolNames = baseTools
 		}

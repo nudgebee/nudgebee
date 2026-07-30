@@ -23,9 +23,9 @@ const (
 // AzureOrchestratorMode* are the values of config llm_server_azure_orchestrator_mode,
 // the boot-time knob for what the router-selected azure_orchestrator runs.
 const (
-	AzureOrchestratorModeDelegating = "delegating" // v1: delegate Azure resource CLI to the `azure` sub-agent (default)
+	AzureOrchestratorModeDelegating = "delegating" // v1: delegate Azure resource CLI to the `azure` sub-agent (fallback for unknown mode)
 	AzureOrchestratorModeDirect     = "direct"     // v2: hold azure_execute and run the az CLI directly
-	AzureOrchestratorModeLean       = "lean"       // EXPERIMENTAL: minimal principle-level prompt + direct azure_execute
+	AzureOrchestratorModeLean       = "lean"       // minimal principle-level prompt + direct azure_execute (now the DEFAULT)
 )
 
 func init() {
@@ -53,7 +53,8 @@ type AzureOrchestratorAgent struct {
 
 // newAzureOrchestratorAgent is the primary, router-selected agent. Its behavior is
 // chosen by config.AzureOrchestratorMode (boot-time; rollback = change + redeploy).
-// Unknown/empty mode falls back to delegating (v1), the safe default.
+// The configured default is "lean" (llm_server_*_orchestrator_mode); an
+// unknown/typo value falls back to delegating (v1).
 func newAzureOrchestratorAgent(accountId string) core.NBAgent {
 	switch strings.ToLower(strings.TrimSpace(config.Config.AzureOrchestratorMode)) {
 	case AzureOrchestratorModeLean:
