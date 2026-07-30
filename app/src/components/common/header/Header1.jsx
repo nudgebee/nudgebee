@@ -41,7 +41,7 @@ import { useRouter } from 'next/router';
 import { useData } from '@context/DataContext';
 import { hasWriteAccess } from '@lib/auth';
 import apiKubernetes from '@api1/kubernetes';
-import IconButton from '@mui/material/IconButton';
+import apiUser from '@api1/user';
 import ClusterDropdown from '@shared/navigation/ClusterDropDown';
 import GlobalPageSearch from '@shared/navigation/GlobalPageSearch';
 import { useSession } from 'next-auth/react';
@@ -75,7 +75,7 @@ import { useProductUpdates } from '@hooks/useProductUpdates';
 const Header1 = ({ showBorder = false }) => {
   const { data } = useSession({ required: true });
   const router = useRouter();
-  const { assistantName, baseTitle, nubiIconUrl, nubiIconLightUrl } = useTenantBranding();
+  const { assistantName, baseTitle, nubiIconUrl } = useTenantBranding();
   const { selectedCluster, allCluster } = useData();
   const selectedClusterRef = useRef(selectedCluster);
   selectedClusterRef.current = selectedCluster;
@@ -254,14 +254,12 @@ const Header1 = ({ showBorder = false }) => {
         icon: HomeIconBlue,
         showActiveCluster: true,
         clusterDetailButton: true,
-        showAskNudgebee: true,
       },
       {
         name: 'Cluster Overview',
         route: '/kubernetes',
         icon: ClusterIconBlue,
         showActiveCluster: false,
-        showAskNudgebee: false,
         connectClusterButton: true,
       },
       {
@@ -269,7 +267,6 @@ const Header1 = ({ showBorder = false }) => {
         route: '/kubernetes/details/',
         icon: ClusterIconBlue,
         showActiveCluster: true,
-        showAskNudgebee: true,
       },
       {
         name: 'Agent Details',
@@ -291,7 +288,6 @@ const Header1 = ({ showBorder = false }) => {
         icon: TroubleshootIconBlue,
         showActiveCluster: false,
         clusterDetailButton: false,
-        showAskNudgebee: false,
       },
       {
         name: 'Troubleshoot',
@@ -300,7 +296,6 @@ const Header1 = ({ showBorder = false }) => {
         showActiveCluster: true,
         disableDropdown: true,
         connectAccountButton: false,
-        showAskNudgebee: true,
         showBackButton: true,
       },
       {
@@ -309,7 +304,6 @@ const Header1 = ({ showBorder = false }) => {
         icon: OptimiseIconBlue,
         showActiveCluster: false,
         clusterDetailButton: false,
-        showAskNudgebee: false,
       },
       {
         name: 'Optimize',
@@ -317,7 +311,6 @@ const Header1 = ({ showBorder = false }) => {
         icon: OptimiseIconBlue,
         showActiveCluster: false,
         clusterDetailButton: false,
-        showAskNudgebee: false,
       },
       {
         name: 'Automation',
@@ -325,7 +318,6 @@ const Header1 = ({ showBorder = false }) => {
         icon: WorkflowIconBlue,
         clusterDetailButton: true,
         showActiveCluster: true,
-        showAskNudgebee: true,
       },
       {
         name: 'Auto Pilot',
@@ -333,7 +325,6 @@ const Header1 = ({ showBorder = false }) => {
         icon: AutopilotIconBlue,
         clusterDetailButton: false,
         showActiveCluster: false,
-        showAskNudgebee: true,
         showBackButton: true,
       },
       {
@@ -342,14 +333,12 @@ const Header1 = ({ showBorder = false }) => {
         icon: AutopilotIconBlue,
         clusterDetailButton: false,
         showActiveCluster: false,
-        showAskNudgebee: true,
       },
       {
         name: 'Tickets',
         route: '/tickets',
         icon: TicketIconBlue,
         showActiveCluster: false,
-        showAskNudgebee: false,
         connectAccountButton: false,
       },
       {
@@ -357,7 +346,6 @@ const Header1 = ({ showBorder = false }) => {
         route: '/user-management',
         icon: AdminIconBlue,
         showActiveCluster: false,
-        showAskNudgebee: false,
         connectAccountButton: true,
       },
       {
@@ -383,7 +371,6 @@ const Header1 = ({ showBorder = false }) => {
         showActiveCluster: true,
         disableDropdown: true,
         connectAccountButton: false,
-        showAskNudgebee: true,
         showBackButton: true,
       },
       {
@@ -399,7 +386,6 @@ const Header1 = ({ showBorder = false }) => {
             : '',
         showActiveCluster: true,
         connectAccountButton: false,
-        showAskNudgebee: true,
       },
       {
         name: 'Application Group',
@@ -437,7 +423,6 @@ const Header1 = ({ showBorder = false }) => {
         name: 'Pod Details',
         route: '/kubernetes/podDetails/[PodDetails]',
         icon: PodsIcon,
-        showAskNudgebee: true,
         showBackButton: true,
       },
       {
@@ -450,7 +435,6 @@ const Header1 = ({ showBorder = false }) => {
         route: '/workflow',
         icon: WorkflowIconBlue,
         showActiveCluster: true,
-        showAskNudgebee: false,
         connectClusterButton: false,
         showBackButton: true,
       },
@@ -459,11 +443,16 @@ const Header1 = ({ showBorder = false }) => {
         route: '/agentic/optimize',
         icon: OptimiseIconBlue,
         showActiveCluster: false,
-        showAskNudgebee: false,
       },
     ];
     return baseOptions;
   }, [selectedCluster]);
+
+  // Fold any legacy per-cluster K8s-agent banner keys into the consolidated
+  // user-preferences object once per mount.
+  useEffect(() => {
+    apiUser.migrateLegacyK8sAgentSnackbarPrefs();
+  }, []);
 
   useEffect(() => {
     setSnackbarOpen(false);
@@ -473,8 +462,7 @@ const Header1 = ({ showBorder = false }) => {
       return;
     }
 
-    const hasClosed = localStorage.getItem(`latest-${selectedCluster.value}-K8sAgentSnackbar`);
-    if (hasClosed && hasClosed == 'false') {
+    if (apiUser.isK8sAgentSnackbarDismissed(selectedCluster.value)) {
       return;
     }
 
@@ -486,7 +474,6 @@ const Header1 = ({ showBorder = false }) => {
       if (cluster?.agent?.status === 'NOT_CONNECTED') {
         setSnackbarOpen(true);
         setSnackbarMsg(`The ${baseTitle} Agent is not connected.`);
-        localStorage.setItem(`latest-${cluster.value}-K8sAgentSnackbar`, 'true');
       } else if (res.data?.nudgebee_list_versions && res.data?.nudgebee_list_versions?.agent_version_latest != cluster.agent?.version) {
         let snackMessage = '';
         let disconnectedService = [];
@@ -508,7 +495,6 @@ const Header1 = ({ showBorder = false }) => {
           snackMessage = snackMessage + ` The ${disconnectedService.join(', ')} services are disconnected.`;
         }
         setSnackbarMsg(snackMessage);
-        localStorage.setItem(`latest-${cluster.value}-K8sAgentSnackbar`, 'true');
       }
     });
   }, [selectedCluster]);
@@ -533,7 +519,6 @@ const Header1 = ({ showBorder = false }) => {
         connectAccountButton: matchedTab.connectAccountButton,
         showGroupingDropdown: matchedTab.showGroupingDropdown,
         clusterDetailButton: matchedTab.clusterDetailButton,
-        showAskNudgebee: matchedTab.showAskNudgebee ?? false,
         showBackButton: matchedTab.showBackButton ?? false,
       });
     } else {
@@ -643,7 +628,7 @@ const Header1 = ({ showBorder = false }) => {
 
   const handleCloseSnackbar = () => {
     setSnackbarOpen(false);
-    localStorage.setItem(`latest-${selectedCluster.value}-K8sAgentSnackbar`, 'false');
+    apiUser.setK8sAgentSnackbarDismissed(selectedCluster?.value, true);
   };
 
   const handleClusterData = (clusterOption) => {
@@ -774,14 +759,14 @@ const Header1 = ({ showBorder = false }) => {
           <Box
             sx={{
               display: 'grid',
-              // Fixed 20/30/50 split (heading / search / right-side actions) instead of
-              // content-driven (auto) tracks — chosen for a consistent search-box width
-              // across pages over the previous behavior, where a busy right-side column
-              // (e.g. Home's cluster picker + buttons) shrank the search column on some
-              // pages. Trade-off: unlike auto/minmax, these tracks don't grow for content
-              // that needs more room — a long account name or extra header actions can
-              // clip or overflow their 20%/50% share instead of pushing the grid wider.
-              gridTemplateColumns: '20% 30% 50%',
+              // Content-based outer columns (heading / right-side actions) so a short
+              // heading or a light actions column doesn't waste a fixed share of the
+              // header, with the search column absorbing whatever space is left over
+              // (and centering its own content within that flexible track — see its
+              // own justifyContent below). Trade-off vs. the earlier fixed 20/40/40
+              // split: the search column's width now varies with how busy the other
+              // two columns are on a given page, instead of staying constant everywhere.
+              gridTemplateColumns: 'auto 1fr auto',
               alignItems: 'center',
               background: ds.background[100],
               height: ds.space.mul(0, 28),
@@ -789,7 +774,7 @@ const Header1 = ({ showBorder = false }) => {
               gap: ds.space[3],
             }}
           >
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: ds.space[2] }}>
               {anchorActiveTab.showBackButton && <BackButton />}
               <Box sx={{ display: 'flex', alignItems: 'center' }}>
                 {anchorActiveTab.icon && (
@@ -804,8 +789,8 @@ const Header1 = ({ showBorder = false }) => {
                 </Typography>
               </Box>
             </Box>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], justifyContent: 'flex-end', flex: 1 }}>
-              <GlobalPageSearch />
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], justifyContent: 'center', flex: 1 }}>
+              <GlobalPageSearch hasClusterDropdown={anchorActiveTab.showActiveCluster} />
             </Box>
             <Box display={'flex'} alignItems={'center'} justifyContent={'flex-end'} gap={ds.space[3]}>
               <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: ds.space[2] }}>
@@ -872,85 +857,6 @@ const Header1 = ({ showBorder = false }) => {
                       },
                     ]}
                   />
-                )}
-                {anchorActiveTab.showAskNudgebee && (
-                  // Fixed-footprint wrapper sized to the button's collapsed (icon-only)
-                  // state, position: relative so the IconButton inside can be positioned
-                  // absolute — its hover-expand (fit-content width growing as .nubi-text's
-                  // maxWidth opens up) then overlays leftward over the search box instead
-                  // of growing this flex row's width and shoving the cluster picker /
-                  // detail-view button / notification icons to the right on every hover.
-                  <Box sx={{ position: 'relative', width: ds.space.mul(0, 16), height: ds.space.mul(0, 16), flexShrink: 0 }}>
-                    <IconButton
-                      size='small'
-                      aria-label={`Ask ${assistantName}`}
-                      sx={{
-                        // Brand-navy gradient — tokenised across the brand-* scale so the
-                        // pill restains brand-tone consistency with primary DsButtons but
-                        // keeps its bespoke gradient + hover-expand affordance (no DS
-                        // equivalent for this pattern).
-                        background: `linear-gradient(120deg, ${ds.brand[500]} 0%, ${ds.brand[500]} 28%, ${ds.brand[500]} 85%, ${ds.brand[500]} 100%)`,
-                        borderRadius: ds.radius.lg,
-                        position: 'absolute',
-                        top: 0,
-                        right: 0,
-                        zIndex: 2,
-                        height: ds.space.mul(0, 16),
-                        width: 'fit-content',
-                        padding: `0 0 0 ${ds.space[2]}`,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: ds.space[2],
-                        overflow: 'hidden',
-                        transition: 'transform 0.3s ease, box-shadow 0.3s ease',
-                        '&:hover': {
-                          transform: 'scale(1)',
-                          '& img, & svg': {
-                            animation: 'popSmooth 1.5s infinite ease-in-out',
-                            filter: 'brightness(1.5) contrast(1.3) saturate(1.2)',
-                          },
-                          '& .nubi-text': {
-                            opacity: 1,
-                            maxWidth: ds.space.mul(0, 100),
-                            marginRight: ds.space[2],
-                          },
-                        },
-                        '@keyframes popSmooth': {
-                          '0%, 100%': { transform: 'scale(1)' },
-                          '50%': { transform: 'scale(1.2)' },
-                        },
-                      }}
-                      onClick={() =>
-                        router.push(
-                          `/ask-nudgebee?accountId=${
-                            router?.query?.accountId ||
-                            router?.query?.KubernetesDetails ||
-                            router?.query?.CloudAccountDetails ||
-                            selectedCluster?.value
-                          }`
-                        )
-                      }
-                    >
-                      <SafeIcon alt={`Ask ${assistantName}`} src={nubiIconLightUrl} height={26} width={26} />
-                      <Typography
-                        className='nubi-text'
-                        sx={{
-                          color: ds.background[100],
-                          fontSize: ds.text.small,
-                          opacity: 0,
-                          maxWidth: 0,
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          transition: 'opacity 0.3s ease, max-width 0.3s ease, margin 0.3s ease',
-                        }}
-                      >
-                        <Box component='span' fontWeight={ds.weight.medium}>
-                          {assistantName}:
-                        </Box>{' '}
-                        how can I assist you?
-                      </Typography>
-                    </IconButton>
-                  </Box>
                 )}
                 {anchorActiveTab.showActiveCluster && (
                   <Box

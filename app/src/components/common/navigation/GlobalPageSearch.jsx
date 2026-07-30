@@ -18,27 +18,33 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import { useSession } from 'next-auth/react';
+import { v4 as uuidv4 } from 'uuid';
 import Box from '@mui/material/Box';
 import { Typography, Popover, InputBase, Fade } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import { ds } from '@utils/colors';
 import Chip from '@ui/Chip';
 import Divider from '@ui/Divider';
-import { Label } from '@ui/Label';
 import CustomTooltip from '@ui/Tooltip';
+import { Button as DsButton } from '@ui/Button';
+import { toast as snackbar } from '@ui/Toast';
 import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { useData } from '@context/DataContext';
-import { hasReadAccess } from '@lib/auth';
+import { hasReadAccess, isUiFeatureEnabled } from '@lib/auth';
+import { useTenantBranding } from '@hooks/useTenantBranding';
 import apiUser, { PREFERENCE_LAST_ACCOUNT_ID } from '@api1/user';
+import apiAskNudgebee from '@api1/ask-nudgebee';
+import homeApi from '@api1/home';
+import { transformClusters } from '@shared/layout/UpdateDataContext';
 import AdminIconBlue from '@assets/header/AdminIconBlue.icon.svg';
 import OptimiseIconBlue from '@assets/header/OptimiseIconBlue.icon.svg';
 import TicketIconBlue from '@assets/header/TicketIconBlue.icon.svg';
 import TroubleshootIconBlue from '@assets/header/TroubleshootIconBlue.icon.svg';
-import { AutomateBlue } from '@assets';
+import { AutomateBlue, AgentIconBlue } from '@assets';
 import {
   navSearchPages,
-  automationSearchFragments,
+  accountScopedSearchFragments,
   k8sDetailsSearchFragments,
   awsDetailsSearchFragments,
   azureDetailsSearchFragments,
@@ -55,7 +61,7 @@ import {
 const OPTION_HEIGHT = 36;
 const OVERSCAN_COUNT = 10;
 const VIRTUALIZATION_THRESHOLD = 200;
-const MAX_LIST_HEIGHT = 420;
+const MAX_LIST_HEIGHT = 380;
 const POPOVER_WIDTH = ds.space.mul(0, 340);
 
 // Icon shown per header-search row: the parent page's icon (same icons the
@@ -63,6 +69,7 @@ const POPOVER_WIDTH = ds.space.mul(0, 340);
 const NAV_SEARCH_GROUP_ICON = {
   Troubleshoot: TroubleshootIconBlue,
   Automation: AutomateBlue,
+  'Agent Health': AgentIconBlue,
   Optimize: OptimiseIconBlue,
   Tickets: TicketIconBlue,
   Admin: AdminIconBlue,
@@ -75,16 +82,71 @@ const NAV_SEARCH_KEYBOARD_HINTS = [{ keys: ['↑', '↓'], label: 'Navigate' }];
 
 const searchKeyChipSx = {
   fontFamily: 'var(--ds-font-mono)',
-  fontSize: 'var(--ds-text-caption)',
+  fontSize: `${ds.space.mul(0, 5)}`,
   color: 'var(--ds-gray-500)',
-  backgroundColor: 'var(--ds-gray-100)',
   border: '1px solid var(--ds-gray-200)',
   borderRadius: 'var(--ds-radius-sm)',
   padding: `${ds.space[0]} ${ds.space.mul(0, 3)}`,
 };
 
+// Pinned above the results list — deliberately OUTSIDE OptionsList's own
+// scrollbox, so it never scrolls out of view, and shown regardless of result
+// count (including zero results — see pinnedRowVisible below). Contextual
+// copy on the left ("Ask {assistantName} anything", swapping to "...about
+// '{query}'" once something's typed), a solid primary button on the right
+// that's always just the short "Ask {assistantName}" label.
+const AskAiPinnedRow = ({ assistantName, nubiIconUrl, query, onClick, loading, highlighted = false }) => (
+  <Box
+    id='global-search-ask-ai-row'
+    sx={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 'var(--ds-space-4)',
+      padding: `${ds.space.mul(0, 3)} ${ds.space.mul(0, 6)}`,
+      margin: `0 ${ds.space.mul(0, 5)} var(--ds-space-2) ${ds.space.mul(0, 5)}`,
+      backgroundColor: 'var(--ds-background-200)',
+      borderRadius: 'var(--ds-overlay-item-radius)',
+      // Same keyboard-nav ring OptionItem rows use, so ArrowUp/ArrowDown
+      // landing here reads identically to landing on a result row.
+      boxShadow: highlighted ? 'inset 0 0 0 1.5px var(--ds-blue-400)' : 'none',
+      transition: 'box-shadow var(--ds-motion-micro) var(--ds-motion-ease)',
+    }}
+  >
+    <Typography
+      sx={{
+        fontSize: 'var(--ds-text-body)',
+        color: 'var(--ds-gray-600)',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {query ? (
+        <>
+          Ask {assistantName} about &ldquo;{query}&rdquo;
+        </>
+      ) : (
+        <>Ask {assistantName} anything</>
+      )}
+    </Typography>
+    <DsButton
+      id='global-search-ask-ai-top'
+      tone='primary'
+      size='sm'
+      icon={<SafeIcon src={nubiIconUrl} alt='' width={14} height={14} />}
+      onClick={onClick}
+      loading={loading}
+      sx={{ flexShrink: 0 }}
+    >
+      Ask {assistantName}
+    </DsButton>
+  </Box>
+);
+
 const GlobalSearchFooterHints = ({ mentionMode = false }) => (
   <Box
+    id='global-search-footer-hints'
     sx={{
       display: 'flex',
       alignItems: 'center',
@@ -133,13 +195,9 @@ const AccountMentionChip = ({ account }) => (
   </Chip>
 );
 
-// ds/FilterDropdown.jsx's own `type` chip (which OptionItem below is ported
-// from) defaults to a 15-char tooltip-truncation limit and a 40%-of-row max
-// width — both sized for short region/namespace chips, too narrow for a full
-// path like "/aws/optimize/recommendation-resolution". Every nav-search row
-// needs the wider path-sized limits below, so OptionItem applies these
-// directly instead of the FilterDropdown defaults.
-const NAV_SEARCH_PATH_CHAR_LIMIT = 50;
+// Max width for the row's trailing path text — wide enough for a full path
+// like "/aws/optimize/recommendation-resolution" without colliding with the
+// account-name chip on rows that have one.
 const NAV_SEARCH_PATH_MAX_WIDTH = '60%';
 
 // Search rows for one provider's detail-page tabs (K8s/AWS/Azure/GCP), or []
@@ -164,26 +222,28 @@ const navSearchProviderItems = (fragments, provider, accountId, basePath) =>
       })
     : [];
 
-// Search rows for the Automation page's tabs, or [] if no account is
-// resolvable yet — same shape/contract as navSearchProviderItems above, kept
-// as its own function (not folded into it) since Automation isn't tied to a
-// single cloud provider (any connected account works) and its route carries
-// the account as a `?accountId=` query param rather than a `{basePath}/{id}`
-// path segment (see src/pages/automation/index.jsx).
-const navSearchAutomationItems = (fragments, accountId) =>
+// Search rows for pages whose tabs need an accountId but aren't tied to a
+// single cloud provider (any connected account works) — Automation and Agent
+// Health today, see accountScopedSearchFragments' own doc comment in
+// navSearchPages.ts. Same shape/contract as navSearchProviderItems above,
+// kept as its own function (not folded into it) since these routes carry the
+// account as a `?accountId=` query param rather than a `{basePath}/{id}`
+// path segment. Each entry supplies its own basePath/group since the array
+// now spans more than one page.
+const navSearchAccountScopedItems = (fragments, accountId) =>
   accountId
     ? fragments.map((entry) => {
-        const path = `/automation?accountId=${accountId}#${entry.fragment}`;
+        const path = `${entry.basePath}?accountId=${accountId}#${entry.fragment}`;
         return {
           label: entry.label,
-          icon: NAV_SEARCH_GROUP_ICON.Automation,
+          icon: NAV_SEARCH_GROUP_ICON[entry.group],
           type: `/${entry.slug}`,
           value: path,
           path,
           accountId,
-          group: 'Automation',
+          group: entry.group,
           acronym: pathAcronym(entry.slug),
-          searchText: `Automation ${entry.slug} ${pathAcronym(entry.slug)}`,
+          searchText: `${entry.group} ${entry.slug} ${pathAcronym(entry.slug)}`,
         };
       })
     : [];
@@ -207,13 +267,15 @@ const SCOPED_SEARCH_PROVIDER_CONFIG = {
 // current single resolved account.
 const ACCOUNT_SCOPED_SEARCH_PATH_RE = /^\/(?:kubernetes\/details|cloud-account\/details)\/([^/#]+)#/;
 
-// Matches an Automation search value stamped by navSearchAutomationItems
-// (`/automation?accountId={accountId}#{fragment}`) and captures the
-// accountId — used to re-resolve a recent pick against allCluster (see
+// Matches a search value stamped by navSearchAccountScopedItems
+// (`{basePath}?accountId={accountId}#{fragment}`) and captures the accountId
+// — used to re-resolve a recent pick against allCluster (see
 // resolveRecentOption below), same reasoning as ACCOUNT_SCOPED_SEARCH_PATH_RE
 // above: a recent value's account isn't necessarily whichever one
-// automationAccountId currently resolves to.
-const AUTOMATION_SCOPED_SEARCH_PATH_RE = /^\/automation\?accountId=([^#]+)#/;
+// defaultAccountId currently resolves to. The alternation must list every
+// basePath used in accountScopedSearchFragments (navSearchPages.ts) — add a
+// new one there when adding a new basePath.
+const ACCOUNT_SCOPED_QUERY_SEARCH_PATH_RE = /^\/(?:automation|agentHealth)\?accountId=([^#]+)#/;
 
 // Same provider-order + connection-status + alphabetical sort ClusterDropDown
 // itself uses (CustomDropdown.jsx's groupedOptions, groupByCloudProvider mode)
@@ -325,23 +387,6 @@ const navSearchStaticItems = navSearchPages.map((page) => {
 
 // --- Result-list chrome (trimmed port of ds/FilterDropdown.jsx, single-select only) ---
 
-const ChevronIcon = ({ open = false }) => (
-  <svg
-    width='12'
-    height='12'
-    viewBox='0 0 10 10'
-    fill='none'
-    style={{
-      opacity: 0.3,
-      transition: 'transform 0.2s ease',
-      transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
-      flexShrink: 0,
-    }}
-  >
-    <path d='M2 3.5L5 6.5L8 3.5' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' strokeLinejoin='round' />
-  </svg>
-);
-
 // Option-row label that truncates with an ellipsis and shows a tooltip with
 // the full text *only when clipped*. Open state is controlled so we can
 // force-close on scroll: otherwise scrolling the option list moves the
@@ -431,10 +476,8 @@ const OptionItem = React.memo(function OptionItem({ opt, highlighted = false, na
         <Box sx={{ flexShrink: 0, maxWidth: '30%' }}>
           {/* Chip has no CSS truncation of its own (whiteSpace: 'nowrap', no
               overflow: hidden) — a long account name would otherwise spill
-              past this 30% slot and collide with the path chip. displayTooltip
-              shortens the actual text (not just visually), same fix the
-              `type` Label chip below already uses for the same row-crowding
-              problem. */}
+              past this 30% slot and collide with the path text. displayTooltip
+              shortens the actual text (not just visually) to fit. */}
           <Chip
             variant='tag'
             tone='info'
@@ -448,11 +491,20 @@ const OptionItem = React.memo(function OptionItem({ opt, highlighted = false, na
         </Box>
       )}
       {opt?.type && (
-        <Box sx={{ ml: 'auto', flexShrink: 0, maxWidth: NAV_SEARCH_PATH_MAX_WIDTH }}>
-          {/* Label capitalizes by default; every opt.type here is a slash-joined
-              path (case-sensitive), so textTransform is forced off. */}
-          <Label text={opt.type} textTransform='none' maxWidth='100%' displayTooltip tooltipCharLimit={NAV_SEARCH_PATH_CHAR_LIMIT} />
-        </Box>
+        <Typography
+          sx={{
+            ml: 'auto',
+            flexShrink: 0,
+            maxWidth: NAV_SEARCH_PATH_MAX_WIDTH,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            fontSize: 'var(--ds-text-caption)',
+            color: 'var(--ds-gray-500)',
+          }}
+        >
+          {opt.type}
+        </Typography>
       )}
     </Box>
   );
@@ -467,6 +519,10 @@ const startsNewSection = (opt, prevOpt) => !!opt?.sectionLabel && opt.sectionLab
 function SectionCaption({ label }) {
   return (
     <Box
+      // Stable per-label id (only ever 'Suggested Pages' / 'Recents') so the
+      // global-search guide tour can spotlight each section without reaching
+      // into row internals.
+      id={`global-search-section-${label.toLowerCase().replace(/\s+/g, '-')}`}
       sx={{
         padding: 'var(--ds-overlay-item-padding-md)',
         margin: '0 var(--ds-overlay-item-margin-x)',
@@ -499,7 +555,7 @@ const scrollboxSx = {
 
 // Flat, virtualized-when-large result list. No "selected" section (this box
 // never has a `value`) and no group headers — see the file-level comment.
-function OptionsList({ filteredOptions, highlightedIndex, onSelect }) {
+function OptionsList({ filteredOptions, highlightedIndex, onSelect, mentionMode }) {
   const navActive = highlightedIndex >= 0;
   const scrollRef = useRef(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -543,13 +599,25 @@ function OptionsList({ filteredOptions, highlightedIndex, onSelect }) {
   }, [highlightedIndex]);
 
   if (filteredOptions.length === 0) {
+    // AskAiPinnedRow above already explains "no match, ask nubi about X" for
+    // every non-mention case (it's visible whenever !mentionMode) — showing
+    // this text too there would just repeat it. It's only mentionMode (no
+    // account matches the typed "@partial-name") where the pinned row is
+    // hidden and this text is the sole indicator.
     return (
-      <Box sx={scrollboxSx}>
-        <Typography
-          sx={{ padding: `${ds.space[4]} ${ds.space.mul(0, 7)}`, fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-500)', textAlign: 'center' }}
-        >
-          No results found
-        </Typography>
+      <Box id='global-search-options-list' data-mention-mode={mentionMode ? 'true' : 'false'} sx={scrollboxSx}>
+        {mentionMode && (
+          <Typography
+            sx={{
+              padding: `${ds.space[4]} ${ds.space.mul(0, 7)}`,
+              fontSize: 'var(--ds-text-body)',
+              color: 'var(--ds-gray-500)',
+              textAlign: 'center',
+            }}
+          >
+            No results found
+          </Typography>
+        )}
       </Box>
     );
   }
@@ -570,7 +638,7 @@ function OptionsList({ filteredOptions, highlightedIndex, onSelect }) {
   };
 
   return (
-    <Box ref={scrollRef} onScroll={handleScroll} sx={scrollboxSx}>
+    <Box id='global-search-options-list' data-mention-mode={mentionMode ? 'true' : 'false'} ref={scrollRef} onScroll={handleScroll} sx={scrollboxSx}>
       {useVirtualization ? (
         <>
           <div style={{ height: virtualizedContent.topSpacerHeight }} aria-hidden='true' />
@@ -608,10 +676,40 @@ const GlobalSearchPopoverTransition = React.forwardRef(function GlobalSearchPopo
   );
 });
 
-export default function GlobalPageSearch() {
+export default function GlobalPageSearch({ hasClusterDropdown = true }) {
   const { data } = useSession();
   const router = useRouter();
-  const { selectedCluster, allCluster, setSelectedCluster } = useData();
+  const { selectedCluster, allCluster, setSelectedCluster, setAllCluster } = useData();
+  const { assistantName, nubiIconUrl } = useTenantBranding();
+
+  // allCluster is deliberately NOT a dependency (or read in the guard) here —
+  // this effect itself calls setAllCluster, and transformClusters returns a
+  // new array reference every time, so an allCluster dependency would
+  // re-trigger this same effect on its own write and loop forever. Keying
+  // only on hasClusterDropdown means this fires once per page that has no
+  // ClusterDropdown, which is what we want. setAllCluster IS included below —
+  // it's stable (wrapped in useCallback with an empty dep array in
+  // DataContext.jsx) so it never actually changes, but listing it keeps this
+  // effect honest for exhaustive-deps instead of needing a disable comment.
+  useEffect(() => {
+    if (hasClusterDropdown || allCluster?.length > 0) {
+      return;
+    }
+    let active = true;
+    homeApi
+      .getCloudAccounts('', false, true)
+      .then((res) => {
+        if (active) {
+          setAllCluster(transformClusters(res));
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to fetch cloud accounts:', err);
+      });
+    return () => {
+      active = false;
+    };
+  }, [hasClusterDropdown, setAllCluster]);
 
   // Resolves "an account of this provider" for the details-page search
   // entries below: the current cluster if it matches, else the last account
@@ -639,8 +737,10 @@ export default function GlobalPageSearch() {
   const azureSearchAccountId = useMemo(() => resolveSearchAccountId('Azure'), [resolveSearchAccountId]);
   const gcpSearchAccountId = useMemo(() => resolveSearchAccountId('GCP'), [resolveSearchAccountId]);
 
-  // Navigates to a search result. K8s/AWS/Azure/GCP results carry `accountId`
-  // for whichever account resolveSearchAccountId picked. ClusterDropDown
+  // Navigates to a search result or an Ask-AI hand-off. K8s/AWS/Azure/GCP
+  // search results carry `accountId` for whichever account
+  // resolveSearchAccountId picked; handleAskAi below passes its own resolved
+  // accountId (e.g. a "@account" scoped pick) the same way. ClusterDropDown
   // (mounted in the header alongside this component) self-heals the URL back
   // toward its own selectedCluster whenever its local clusterValue is unset —
   // which happens on first mount and on any hard/first navigation for a
@@ -756,13 +856,28 @@ export default function GlobalPageSearch() {
   // isAdmin) — only tenant_admin/account_admin can see that tab there, so a
   // non-admin shouldn't be able to jump to it via search either.
   const canAccessTaskRunner = !!(data?.roles?.includes('tenant_admin') || data?.roles?.includes('account_admin'));
+  // Same gate user-management's Billing tab uses (billingFilter.tsx's
+  // shouldShow) — it's only registered into userManagementFilters(session) for
+  // SaaS-tier tenants, so a non-SaaS tenant's search shouldn't offer it either
+  // (canAccessAdmin alone isn't enough — that only checks nav-level admin access).
+  const canAccessBilling = data?.tier === 'saas';
+  // Same two gates optimise/index.jsx's own LLM Analyser/AI Gateway tabs use:
+  // isUiFeatureEnabled reads the deployment's UI_ENABLE_LLM_ANALYSER/
+  // UI_ENABLE_LLM_GATEWAY env vars off the session (per-deployment, not a
+  // tenant feature flag — see auth.tsx's isUiFeatureEnabled doc comment), and
+  // hasReadAccess(selectedCluster?.value) mirrors the page's own per-account
+  // check.
+  const canAccessLlmAnalyser = isUiFeatureEnabled('llmAnalyser') && hasReadAccess(selectedCluster?.value);
+  const canAccessAiGateway = isUiFeatureEnabled('llmGateway') && hasReadAccess(selectedCluster?.value);
 
-  // Automation isn't provider-scoped (no K8s/AWS/Azure/GCP concept), so its
-  // search entries can't reuse resolveSearchAccountId's per-provider cache.
-  // Falls back in the same order ClusterDropDown.jsx uses when it resolves
-  // an account with no prior URL/selectedCluster to go on: the cached last
-  // account (any provider), else the first connected account.
-  const automationSearchAccountId = useMemo(() => {
+  // Provider-agnostic "some account" resolution — used by Automation/Agent
+  // Health's search entries (no K8s/AWS/Azure/GCP concept to key
+  // resolveSearchAccountId's per-provider cache off of) and by handleAskAi's
+  // own accountId fallback
+  // chain below. Falls back in the same order ClusterDropDown.jsx uses when it
+  // resolves an account with no prior URL/selectedCluster to go on: the
+  // cached last account (any provider), else the first connected account.
+  const defaultAccountId = useMemo(() => {
     if (selectedCluster?.value) {
       return selectedCluster.value;
     }
@@ -784,32 +899,41 @@ export default function GlobalPageSearch() {
       if (opt.label === 'Task Runner' && !canAccessTaskRunner) {
         return false;
       }
+      if (opt.label === 'Billing' && !canAccessBilling) {
+        return false;
+      }
+      if (opt.label === 'LLM Analyser' && !canAccessLlmAnalyser) {
+        return false;
+      }
+      if (opt.label === 'AI Gateway' && !canAccessAiGateway) {
+        return false;
+      }
       return true;
     },
-    [canAccessAdmin, canAccessTaskRunner]
+    [canAccessAdmin, canAccessTaskRunner, canAccessBilling, canAccessLlmAnalyser, canAccessAiGateway]
   );
 
-  const automationNavItems = useMemo(
-    () => (hasOpenedSearch ? navSearchAutomationItems(automationSearchFragments, automationSearchAccountId) : []),
-    [hasOpenedSearch, automationSearchAccountId]
+  const accountScopedNavItems = useMemo(
+    () => (hasOpenedSearch ? navSearchAccountScopedItems(accountScopedSearchFragments, defaultAccountId) : []),
+    [hasOpenedSearch, defaultAccountId]
   );
 
   const navSearchItems = useMemo(
     () => [
       ...navSearchStaticItems.filter(isNavSearchItemVisible),
-      ...automationNavItems.filter(isNavSearchItemVisible),
+      ...accountScopedNavItems.filter(isNavSearchItemVisible),
       ...k8sNavItems,
       ...awsNavItems,
       ...azureNavItems,
       ...gcpNavItems,
     ],
-    [isNavSearchItemVisible, automationNavItems, k8sNavItems, awsNavItems, azureNavItems, gcpNavItems]
+    [isNavSearchItemVisible, accountScopedNavItems, k8sNavItems, awsNavItems, azureNavItems, gcpNavItems]
   );
 
   // Re-resolves one recent value into a full display option. A static page's
-  // value is always in navSearchStaticItems. An Automation or provider-detail
+  // value is always in navSearchStaticItems. An Automation/Agent Health or provider-detail
   // value carries its accountId in the value itself — that account isn't
-  // necessarily the current automationSearchAccountId/provider's single
+  // necessarily the current defaultAccountId/provider's single
   // resolved account (for providers, the @mention picker also lets you pick
   // and search within ANY connected account, not just the resolved one), so
   // navSearchItems alone (built for just the currently-resolved account) can't
@@ -823,13 +947,13 @@ export default function GlobalPageSearch() {
       if (staticMatch) {
         return isNavSearchItemVisible(staticMatch) ? staticMatch : null;
       }
-      const automationMatch = AUTOMATION_SCOPED_SEARCH_PATH_RE.exec(value);
-      if (automationMatch) {
-        const [, accountId] = automationMatch;
+      const accountScopedQueryMatch = ACCOUNT_SCOPED_QUERY_SEARCH_PATH_RE.exec(value);
+      if (accountScopedQueryMatch) {
+        const [, accountId] = accountScopedQueryMatch;
         if (!allCluster?.some((c) => c.value === accountId)) {
           return null;
         }
-        const match = navSearchAutomationItems(automationSearchFragments, accountId).find((opt) => opt.value === value);
+        const match = navSearchAccountScopedItems(accountScopedSearchFragments, accountId).find((opt) => opt.value === value);
         return match && isNavSearchItemVisible(match) ? match : null;
       }
       const match = ACCOUNT_SCOPED_SEARCH_PATH_RE.exec(value);
@@ -884,18 +1008,18 @@ export default function GlobalPageSearch() {
   // Once an account is picked, results are scoped to just that account's
   // provider detail pages — reuses the same navSearchProviderItems helper the
   // unscoped per-provider lists above already use, so accountId/path/icon
-  // wiring stays identical. Automation isn't provider-specific (any connected
-  // account works there), so it's appended after the provider's own pages
-  // rather than gated behind a cloud_provider match, same filter (Admin/Task
-  // Runner) as the unscoped list.
+  // wiring stays identical. Automation/Agent Health aren't provider-specific
+  // (any connected account works there), so they're appended after the
+  // provider's own pages rather than gated behind a cloud_provider match,
+  // same filter (Admin/Task Runner/Billing) as the unscoped list.
   const scopedSearchItems = useMemo(() => {
     if (!scopedAccount) {
       return [];
     }
     const config = SCOPED_SEARCH_PROVIDER_CONFIG[scopedAccount.cloud_provider?.toUpperCase()];
     const providerItems = config ? navSearchProviderItems(config.fragments, config.label, scopedAccount.value, config.basePath) : [];
-    const automationItems = navSearchAutomationItems(automationSearchFragments, scopedAccount.value).filter(isNavSearchItemVisible);
-    return [...providerItems, ...automationItems];
+    const accountScopedItems = navSearchAccountScopedItems(accountScopedSearchFragments, scopedAccount.value).filter(isNavSearchItemVisible);
+    return [...providerItems, ...accountScopedItems];
   }, [scopedAccount, isNavSearchItemVisible]);
 
   // The full (unfiltered) option list for whichever mode is active — mirrors
@@ -1024,6 +1148,20 @@ export default function GlobalPageSearch() {
     ? 'Search pages… (type @ to scope by account)'
     : 'Search pages…';
 
+  // Only offered once a typed query has actually come up empty, and never in
+  // mention mode — picking an account, not asking a question, is that mode's
+  // only action (see GlobalSearchFooterHints' own mentionMode guard above).
+  const askAiEmptyQuery = !mentionMode && filteredOptions.length === 0 && search.trim() ? search.trim() : null;
+
+  // Whether AskAiPinnedRow is actually on screen — same condition its own
+  // render guard uses below. Visible whenever we're not mid @account-pick,
+  // regardless of result count (the empty state no longer carries its own
+  // CTA, so this is the one place that does). Claims keyboard-nav index 0
+  // ahead of every filteredOptions row, which then shift down by one, so
+  // ArrowUp from the first result lands on it and Enter asks the AI instead
+  // of selecting a page.
+  const pinnedRowVisible = !mentionMode;
+
   const handleBackspaceWhenEmpty = useCallback(() => {
     if (scopedAccount) {
       setScopedAccount(null);
@@ -1033,6 +1171,7 @@ export default function GlobalPageSearch() {
   // --- Trigger/popover state (mirrors ds/FilterDropdown.jsx's own) ---
   const [anchorEl, setAnchorEl] = useState(null);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  const [askingAi, setAskingAi] = useState(false);
   const searchRef = useRef(null);
   const triggerRef = useRef(null);
   const open = Boolean(anchorEl);
@@ -1060,6 +1199,59 @@ export default function GlobalPageSearch() {
       setAnchorEl(null);
     },
     [mentionMode, navigateToSearchResult, data?.tenant?.id]
+  );
+
+  // "Ask {assistantName}" — the search box's AI hand-off. Reuses the same
+  // aiGenerateInvestigate + session_id flow the home page's own "Ask nubi" input
+  // already drives (home/index.jsx's handleGenerateInvestigation): create a
+  // session, submit the typed text as the first question, then land on that
+  // conversation. An empty query (persistent footer button with nothing typed)
+  // just opens a fresh chat instead of submitting nothing. No resolvable account
+  // (e.g. before any cluster/account has loaded) falls back to a bare /ask-nudgebee
+  // rather than silently doing nothing.
+  const handleAskAi = useCallback(
+    async (rawQuery) => {
+      if (askingAi) {
+        return;
+      }
+      const query = (rawQuery || '').trim();
+      // A deliberate "@account" pick takes priority over the page's own account
+      // context — the user explicitly scoped the search to it, so the question
+      // should go there too, not wherever the current page happens to be.
+      const accountId =
+        scopedAccount?.value ||
+        router?.query?.accountId ||
+        router?.query?.KubernetesDetails ||
+        router?.query?.CloudAccountDetails ||
+        defaultAccountId;
+      if (!query || !accountId) {
+        setAnchorEl(null);
+        setSearch('');
+        const path = accountId ? `/ask-nudgebee?accountId=${accountId}` : '/ask-nudgebee';
+        navigateToSearchResult(path, accountId);
+        return;
+      }
+      setAskingAi(true);
+      const sessionId = uuidv4();
+      try {
+        const res = await apiAskNudgebee.aiGenerateInvestigate({ account_id: accountId, query, session_id: sessionId });
+        const response = res?.data?.data?.ai_execute_investigation ?? {};
+        if (!response?.data?.query) {
+          snackbar.error("Can't process your request right now.");
+          return;
+        }
+        setAnchorEl(null);
+        setSearch('');
+        const path = `/ask-nudgebee?accountId=${accountId}&session_id=${sessionId}`;
+        navigateToSearchResult(path, accountId);
+      } catch (error) {
+        console.error('Failed to start AI investigation:', error);
+        snackbar.error("Can't process your request right now.");
+      } finally {
+        setAskingAi(false);
+      }
+    },
+    [askingAi, router, defaultAccountId, scopedAccount, navigateToSearchResult]
   );
 
   // Fires once per popover open, before it actually opens: lazily builds the
@@ -1150,29 +1342,42 @@ export default function GlobalPageSearch() {
       // ArrowUp/ArrowDown navigation + Enter-to-select the highlighted row.
       // Gated on `open` so these keys still behave normally (e.g. page
       // scroll) when the trigger button has focus but the panel is closed.
-      if (!open || filteredOptions.length === 0) {
+      // AskAiPinnedRow, when visible, claims index 0 ahead of every result —
+      // filteredOptions rows shift down by one accordingly. It's now visible
+      // even with zero results, so navCount (not filteredOptions.length) is
+      // what decides whether there's anything to navigate at all.
+      const navCount = filteredOptions.length + (pinnedRowVisible ? 1 : 0);
+      if (!open || navCount === 0) {
         return;
       }
       switch (e.key) {
         case 'ArrowDown':
           e.preventDefault();
-          setHighlightedIndex((i) => Math.min(filteredOptions.length - 1, i + 1));
+          setHighlightedIndex((i) => Math.min(navCount - 1, i + 1));
           break;
         case 'ArrowUp':
           e.preventDefault();
           setHighlightedIndex((i) => Math.max(0, i - 1));
           break;
         case 'Enter':
-          if (highlightedIndex >= 0 && filteredOptions[highlightedIndex]) {
-            e.preventDefault();
-            handleOptionSelect(filteredOptions[highlightedIndex]);
+          if (highlightedIndex < 0) {
+            break;
+          }
+          e.preventDefault();
+          if (pinnedRowVisible && highlightedIndex === 0) {
+            handleAskAi(search);
+          } else {
+            const optIndex = pinnedRowVisible ? highlightedIndex - 1 : highlightedIndex;
+            if (filteredOptions[optIndex]) {
+              handleOptionSelect(filteredOptions[optIndex]);
+            }
           }
           break;
         default:
           break;
       }
     },
-    [open, filteredOptions, highlightedIndex, handleOptionSelect]
+    [open, filteredOptions, highlightedIndex, handleOptionSelect, pinnedRowVisible, handleAskAi, search]
   );
 
   return (
@@ -1188,7 +1393,10 @@ export default function GlobalPageSearch() {
       sx={{
         position: 'relative',
         width: '100%',
-        maxWidth: '80%',
+        maxWidth: '60%',
+        '@media (max-width: 1300px)': {
+          maxWidth: '70%',
+        },
         // top is a fixed offset (not 50%) so the panel's top edge stays put as its
         // height changes with the result count — true vertical centering would
         // re-center around a shrinking/growing box, making the top edge visibly
@@ -1196,7 +1404,7 @@ export default function GlobalPageSearch() {
         // uses translateX; there's no translateY left to do.
         '& .MuiPopover-paper': {
           position: 'fixed !important',
-          top: `${ds.space.mul(0, 60)} !important`,
+          top: `${ds.space.mul(0, 50)} !important`,
           left: '50% !important',
           // Static resting transform, matching the keyframe's own 100% value
           // — kept OUTSIDE the animation (see `forwards` note below) so it's
@@ -1224,44 +1432,109 @@ export default function GlobalPageSearch() {
         },
       }}
     >
+      {/* Outer pill shell — widened from the old single-button trigger to make
+          room for the Ask AI avatar on the right, now that the standalone
+          gradient "Ask nubi" button next to this search box (formerly in
+          Header1.jsx) has been folded into this component instead. */}
       <Box
-        component='button'
-        type='button'
-        id='auto-complete-global-page-search'
-        ref={triggerRef}
-        onClick={(e) => openSearch(e.currentTarget)}
-        onKeyDown={handleKeyDown}
         sx={{
-          display: 'inline-flex',
+          display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 'var(--ds-space-2)',
-          minWidth: '150px',
+          width: '100%',
+          minWidth: '260px',
           height: ds.space.mul(0, 18),
-          padding: '0 var(--ds-space-3)',
-          fontFamily: 'inherit',
-          fontSize: 'var(--ds-text-small)',
-          fontWeight: 'var(--ds-font-weight-regular)',
-          lineHeight: 1.4,
-          color: 'var(--ds-gray-700)',
           backgroundColor: 'var(--ds-background-100)',
           border: '1px solid var(--ds-gray-300)',
           borderRadius: 'var(--ds-radius-md)',
-          outline: 'none',
-          cursor: 'pointer',
-          transition: 'border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease',
-          whiteSpace: 'nowrap',
           boxSizing: 'border-box',
-          '&:hover': { borderColor: 'var(--ds-gray-400)', backgroundColor: 'var(--ds-background-200)' },
-          '&:focus-visible': { borderColor: 'var(--ds-blue-500)', boxShadow: '0 0 0 3px var(--ds-blue-100)' },
+          overflow: 'hidden',
+          transition: 'border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease',
+          '&:hover': { borderColor: 'var(--ds-gray-400)' },
+          '&:focus-within': { borderColor: 'var(--ds-blue-500)', boxShadow: '0 0 0 3px var(--ds-blue-100)' },
           ...(open && { borderColor: 'var(--ds-blue-500)', boxShadow: '0 0 0 3px var(--ds-blue-100)' }),
-          width: '100%',
-          maxWidth: '80%',
-          pl: ds.space[6],
         }}
       >
-        <span style={{ color: 'var(--ds-gray-600)', fontWeight: 'var(--ds-font-weight-regular)', flex: 1, textAlign: 'left' }}>Search pages…</span>
-        <ChevronIcon open={open} />
+        <Box
+          component='button'
+          type='button'
+          id='auto-complete-global-page-search'
+          ref={triggerRef}
+          onClick={(e) => openSearch(e.currentTarget)}
+          onKeyDown={handleKeyDown}
+          sx={{
+            flex: 1,
+            minWidth: 0,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 'var(--ds-space-2)',
+            height: '100%',
+            padding: '0 var(--ds-space-3)',
+            fontFamily: 'inherit',
+            fontSize: 'var(--ds-text-small)',
+            fontWeight: 'var(--ds-font-weight-regular)',
+            lineHeight: 1.4,
+            color: 'var(--ds-gray-700)',
+            background: 'none',
+            border: 'none',
+            outline: 'none',
+            cursor: 'pointer',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <SearchIcon sx={{ fontSize: 16, color: 'var(--ds-gray-400)', flexShrink: 0 }} />
+          <span
+            style={{
+              color: 'var(--ds-gray-600)',
+              fontWeight: 'var(--ds-font-weight-regular)',
+              flex: 1,
+              textAlign: 'left',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            Search pages or just ask…
+          </span>
+          <Box component='kbd' sx={searchKeyChipSx}>
+            Ctrl/⌘
+          </Box>
+          <Box component='kbd' sx={searchKeyChipSx}>
+            K
+          </Box>
+        </Box>
+
+        <Box sx={{ width: '1px', height: ds.space.mul(0, 10), backgroundColor: 'var(--ds-gray-200)', flexShrink: 0 }} />
+
+        {/* Ask AI avatar — a direct shortcut to /ask-nudgebee, distinct from the
+            trigger button beside it (which opens page search). Same plain
+            white circle-badge treatment as the nubi icon on the home page's
+            own "Ask nubi" input (home/index.jsx) — no gradient, no motion. */}
+        <CustomTooltip title={`Ask ${assistantName}`} placement='bottom'>
+          <Box
+            component='button'
+            type='button'
+            id='global-search-trigger-ask-ai'
+            aria-label={`Ask ${assistantName}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleAskAi('');
+            }}
+            sx={{
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 22,
+              height: 22,
+              margin: `0 ${ds.space[2]}`,
+              border: 'none',
+              cursor: 'pointer',
+              backgroundColor: 'var(--ds-background-100)',
+              overflow: 'hidden',
+            }}
+          >
+            <SafeIcon src={nubiIconUrl} alt='' width={22} height={22} />
+          </Box>
+        </CustomTooltip>
       </Box>
 
       <Popover
@@ -1308,6 +1581,7 @@ export default function GlobalPageSearch() {
             }}
           />
           <InputBase
+            id='global-search-input'
             inputRef={searchRef}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -1337,13 +1611,21 @@ export default function GlobalPageSearch() {
                   handleOptionSelect(filteredOptions[0]);
                 }
               }
+              // A query that matches no page is a dead end otherwise — hand it
+              // straight to the AI assistant, same as clicking AskAiPinnedRow above.
+              // Gated on highlightedIndex < 0 — when the pinned row itself is
+              // arrow-highlighted (index 0), handleKeyDown's own Enter case above
+              // already calls handleAskAi; without this guard both would fire.
+              if (e.key === 'Enter' && highlightedIndex < 0 && askAiEmptyQuery) {
+                e.preventDefault();
+                handleAskAi(askAiEmptyQuery);
+              }
             }}
             sx={{
               width: '100%',
               fontSize: 'var(--ds-text-body)',
               color: 'var(--ds-gray-700)',
               border: '1px solid var(--ds-gray-200)',
-              backgroundColor: 'var(--ds-gray-100)',
               borderRadius: ds.radius.md,
               padding: `${ds.space.mul(0, 3)} ${ds.space.mul(0, 5)} ${ds.space.mul(0, 3)} ${ds.space.mul(0, 14)}`,
               transition: 'all 0.15s ease',
@@ -1358,48 +1640,29 @@ export default function GlobalPageSearch() {
           />
         </Box>
 
-        <OptionsList filteredOptions={filteredOptions} highlightedIndex={highlightedIndex} onSelect={handleOptionSelect} />
+        {/* Hidden only while mid @account-pick — otherwise always shown, including
+            with zero results, since the empty state no longer has its own CTA. */}
+        {pinnedRowVisible && (
+          <AskAiPinnedRow
+            assistantName={assistantName}
+            nubiIconUrl={nubiIconUrl}
+            query={search.trim()}
+            onClick={() => handleAskAi(search)}
+            loading={askingAi}
+            highlighted={highlightedIndex === 0}
+          />
+        )}
+
+        <OptionsList
+          filteredOptions={filteredOptions}
+          highlightedIndex={pinnedRowVisible ? highlightedIndex - 1 : highlightedIndex}
+          onSelect={handleOptionSelect}
+          mentionMode={mentionMode}
+        />
 
         <Divider sx={{ marginTop: 0, marginBottom: 0 }} />
         <GlobalSearchFooterHints mentionMode={mentionMode} />
       </Popover>
-
-      {/* Leading search icon, matching the one shown inside the open popover's own
-          search input — pointerEvents: 'none' so it doesn't block the trigger click. */}
-      <SearchIcon
-        sx={{
-          position: 'absolute',
-          left: ds.space.mul(0, 5),
-          top: '50%',
-          transform: 'translateY(-50%)',
-          fontSize: 16,
-          color: 'var(--ds-gray-400)',
-          pointerEvents: 'none',
-        }}
-      />
-      {/* Overlaid, not part of the trigger button's own layout — pointerEvents:
-          'none' lets clicks fall through to the button underneath so the whole
-          trigger area (including under this hint) still opens the search. Sits at
-          a fixed offset clear of the trigger's own chevron icon. */}
-      <Box
-        sx={{
-          position: 'absolute',
-          right: '30%',
-          top: '50%',
-          transform: 'translateY(-50%)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--ds-space-1)',
-          pointerEvents: 'none',
-        }}
-      >
-        <Box component='kbd' sx={searchKeyChipSx}>
-          Ctrl/⌘
-        </Box>
-        <Box component='kbd' sx={searchKeyChipSx}>
-          K
-        </Box>
-      </Box>
     </Box>
   );
 }

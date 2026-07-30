@@ -20,8 +20,10 @@ jest.mock('next-auth/react', () => ({
 }));
 
 const mockHasReadAccess = jest.fn().mockReturnValue(true);
+const mockIsUiFeatureEnabled = jest.fn().mockReturnValue(false);
 jest.mock('@lib/auth', () => ({
   hasReadAccess: (...args) => mockHasReadAccess(...args),
+  isUiFeatureEnabled: (...args) => mockIsUiFeatureEnabled(...args),
 }));
 
 const mockSetSelectedCluster = jest.fn();
@@ -50,21 +52,41 @@ jest.mock('@api1/user', () => ({
   PREFERENCE_LAST_ACCOUNT_ID: 'last_account',
 }));
 
-const openSearch = () => fireEvent.click(screen.getByText('Search pages…'));
+const mockAiGenerateInvestigate = jest.fn();
+jest.mock('@api1/ask-nudgebee', () => ({
+  __esModule: true,
+  default: {
+    aiGenerateInvestigate: (...args) => mockAiGenerateInvestigate(...args),
+  },
+}));
+
+jest.mock('uuid', () => ({
+  v4: jest.fn(() => 'test-uuid-1234'),
+}));
+
+const openSearch = () => fireEvent.click(screen.getByText('Search pages or just ask…'));
 const getSearchInput = () => screen.getByPlaceholderText(/search pages/i);
 
 describe('GlobalPageSearch', () => {
+  let mockWindowOpen;
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetLastAccountIdForProvider.mockReturnValue(null);
     mockGetRecentPageSearches.mockReturnValue([]);
     mockDataContextValue = { selectedCluster: null, allCluster: [], setSelectedCluster: mockSetSelectedCluster };
     mockHasReadAccess.mockReturnValue(true);
+    mockIsUiFeatureEnabled.mockReturnValue(false);
+    mockWindowOpen = jest.spyOn(window, 'open').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    mockWindowOpen.mockRestore();
   });
 
   it('renders the trigger with the Ctrl/Cmd+K hint', () => {
     render(<GlobalPageSearch />);
-    expect(screen.getByText('Search pages…')).toBeInTheDocument();
+    expect(screen.getByText('Search pages or just ask…')).toBeInTheDocument();
     expect(screen.getByText('K')).toBeInTheDocument();
   });
 
@@ -188,5 +210,82 @@ describe('GlobalPageSearch', () => {
     expect(mockPush).toHaveBeenCalledWith('/cloud-account/details/aws-1#summary');
     expect(mockSetSelectedCluster).toHaveBeenCalledWith({ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' });
     expect(mockSetLastAccountIdForProvider).toHaveBeenCalledWith('AWS', 'aws-1', 'tenant-1');
+  });
+
+  describe('Ask AI hand-off', () => {
+    const getPinnedAskAiButton = (container) => container.querySelector('#global-search-ask-ai-top');
+
+    it('shows a persistent Ask AI entry pinned above the results', () => {
+      const { container } = render(<GlobalPageSearch />);
+      openSearch();
+      expect(screen.getByText('Ask nubi anything')).toBeInTheDocument();
+      expect(getPinnedAskAiButton(container)).toBeInTheDocument();
+    });
+
+    it('hides the pinned Ask AI entry while scoping by @account', () => {
+      mockDataContextValue = {
+        selectedCluster: null,
+        allCluster: [{ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' }],
+        setSelectedCluster: mockSetSelectedCluster,
+      };
+      const { container } = render(<GlobalPageSearch />);
+      openSearch();
+      fireEvent.change(getSearchInput(), { target: { value: '@' } });
+      expect(getPinnedAskAiButton(container)).not.toBeInTheDocument();
+    });
+
+    it('shows contextual "Ask nubi about" copy on the pinned row, with no redundant message in the empty results body, when the typed query matches no page', () => {
+      const { container } = render(<GlobalPageSearch />);
+      openSearch();
+      fireEvent.change(getSearchInput(), { target: { value: 'zzzznotarealpage' } });
+      expect(screen.getByText('Ask nubi about “zzzznotarealpage”')).toBeInTheDocument();
+      // The pinned row above already explains the empty result — a plain
+      // "No results found" underneath it would just repeat the same thing.
+      expect(screen.queryByText('No results found')).not.toBeInTheDocument();
+      // Stays visible (not just its copy) even with zero results — it's the
+      // sole Ask AI entry point now that the empty state has none of its own.
+      expect(getPinnedAskAiButton(container)).toBeInTheDocument();
+    });
+
+    it('falls back to a plain "No results found" message when @-mentioning matches no account (pinned row is hidden there)', () => {
+      mockDataContextValue = {
+        selectedCluster: null,
+        allCluster: [{ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' }],
+        setSelectedCluster: mockSetSelectedCluster,
+      };
+      render(<GlobalPageSearch />);
+      openSearch();
+      fireEvent.change(getSearchInput(), { target: { value: '@zzzznotarealaccount' } });
+      expect(screen.getByText('No results found')).toBeInTheDocument();
+    });
+
+    it('submits the query, then navigates to the seeded conversation, when the pinned Ask AI button is clicked', async () => {
+      mockAiGenerateInvestigate.mockResolvedValue({ data: { data: { ai_execute_investigation: { data: { query: 'zzzznotarealpage' } } } } });
+      mockDataContextValue = {
+        selectedCluster: { value: 'aws-1', cloud_provider: 'AWS' },
+        allCluster: [{ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' }],
+        setSelectedCluster: mockSetSelectedCluster,
+      };
+      const { container } = render(<GlobalPageSearch />);
+      openSearch();
+      fireEvent.change(getSearchInput(), { target: { value: 'zzzznotarealpage' } });
+      fireEvent.click(getPinnedAskAiButton(container));
+      expect(mockAiGenerateInvestigate).toHaveBeenCalledWith({
+        account_id: 'aws-1',
+        query: 'zzzznotarealpage',
+        session_id: 'test-uuid-1234',
+      });
+      await waitFor(() =>
+        expect(mockWindowOpen).toHaveBeenCalledWith('/ask-nudgebee?accountId=aws-1&session_id=test-uuid-1234', '_blank', 'noopener')
+      );
+    });
+
+    it('opens a blank chat in a new tab from the pinned button when no account is resolvable', () => {
+      const { container } = render(<GlobalPageSearch />);
+      openSearch();
+      fireEvent.click(getPinnedAskAiButton(container));
+      expect(mockWindowOpen).toHaveBeenCalledWith('/ask-nudgebee', '_blank', 'noopener');
+      expect(mockAiGenerateInvestigate).not.toHaveBeenCalled();
+    });
   });
 });

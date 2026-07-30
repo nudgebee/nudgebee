@@ -112,6 +112,12 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Optimize', label: 'Optimize Resolutions', path: '/optimise#resolutions' },
   { group: 'Optimize', label: 'Auto Optimize - Optimizations', path: '/optimise#auto-optimize/optimizations' },
   { group: 'Optimize', label: 'Auto Optimize - Approvals', path: '/optimise#auto-optimize/approvals' },
+  // Both gated in GlobalPageSearch.jsx by isUiFeatureEnabled (the deployment's
+  // UI_ENABLE_LLM_ANALYSER / UI_ENABLE_LLM_GATEWAY env vars, read off the
+  // session — see optimise/index.jsx's getServerSideProps) plus
+  // hasReadAccess(selectedCluster?.value), same two gates the tab itself uses.
+  { group: 'Optimize', label: 'LLM Analyser', path: '/optimise#cost-analyser' },
+  { group: 'Optimize', label: 'AI Gateway', path: '/optimise#ai-gateway' },
 
   { group: 'Tickets', label: 'All Tickets', path: '/tickets#tickets' },
   { group: 'Tickets', label: 'All Tickets - Assigned to me', path: '/tickets#assigned-me' },
@@ -122,27 +128,43 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Admin', label: 'Notifications', path: '/user-management#notifications' },
   { group: 'Admin', label: 'Integrations', path: '/user-management#integrations' },
   { group: 'Admin', label: 'Ownership', path: '/user-management#ownership' },
+  // SaaS-tier only — registered dynamically via registerUserManagementFilter
+  // in src/ee/components/billingFilter.tsx (shouldShow: tier === 'saas'),
+  // not a static baseFilters entry in user-management/index.jsx. Gated in
+  // search by GlobalPageSearch.jsx's own canAccessBilling check (mirroring
+  // the Task Runner role gate) so a non-SaaS tenant doesn't see a row that
+  // leads to a tab that was never registered for their session.
+  { group: 'Admin', label: 'Billing', path: '/user-management#billing' },
 ];
 
-// Automation (/automation) tabs, kept separate from navSearchPages above for
-// the same reason as k8sDetailsSearchFragments below — the route needs an
-// accountId the caller must resolve at render time. Unlike the K8s/cloud
-// detail pages, that accountId isn't scoped to a single cloud provider (any
-// connected account works), and the route itself carries it as a
-// `?accountId=` query param rather than a path segment (see
-// src/pages/automation/index.jsx), so `fragment` is appended after
-// `/automation?accountId={accountId}#`. `label` is the hardcoded row title
+// Tabs of pages whose route needs an accountId the caller must resolve at
+// render time, but — unlike the K8s/cloud detail pages below — aren't scoped
+// to a single cloud provider (any connected account works), and carry the
+// accountId as a `?accountId=` query param rather than a path segment. Each
+// entry names its own `basePath` and `group` (rather than this being one
+// page's array) since more than one such page now shares this shape —
+// currently /automation (src/pages/automation/index.jsx) and /agentHealth
+// (src/pages/agentHealth.jsx). `fragment` is appended after
+// `{basePath}?accountId={accountId}#`. `label` is the hardcoded row title
 // shown to the user; `slug` is the slash-joined path used for the row's `type`
-// chip, its searchText, and its acronym.
-export interface AutomationSearchFragment {
+// chip, its searchText, and its acronym; `group` picks the row's icon via
+// NAV_SEARCH_GROUP_ICON in GlobalPageSearch.jsx. Adding a new basePath here
+// also means adding it to ACCOUNT_SCOPED_QUERY_SEARCH_PATH_RE's alternation
+// in GlobalPageSearch.jsx.
+export interface AccountScopedSearchFragment {
   label: string;
   slug: string;
   fragment: string;
+  basePath: string;
+  group: string;
 }
 
-export const automationSearchFragments: AutomationSearchFragment[] = [
-  { label: 'Automations', slug: 'automation/automations', fragment: 'automations' },
-  { label: 'Task Runner', slug: 'automation/task-runner', fragment: 'task-runner' },
+export const accountScopedSearchFragments: AccountScopedSearchFragment[] = [
+  { label: 'Automations', slug: 'automation/automations', fragment: 'automations', basePath: '/automation', group: 'Automation' },
+  { label: 'Task Runner', slug: 'automation/task-runner', fragment: 'task-runner', basePath: '/automation', group: 'Automation' },
+  { label: 'Executions', slug: 'automation/executions', fragment: 'executions', basePath: '/automation', group: 'Automation' },
+  { label: 'Agent', slug: 'agent-health/agent', fragment: 'agent', basePath: '/agentHealth', group: 'Agent Health' },
+  { label: 'Proxy Agent', slug: 'agent-health/proxy-agent', fragment: 'proxy-agent', basePath: '/agentHealth', group: 'Agent Health' },
 ];
 
 // Kubernetes Details (/kubernetes/details/[KubernetesDetails]) tabs, kept
@@ -398,4 +420,61 @@ export const gcpDetailsSearchFragments: GcpDetailsSearchFragment[] = [
   { label: 'Cloud Storage Optimize', slug: 'gcp/cloud-storage/optimize', fragment: 'cloud-storage/optimize' },
   { label: 'Cloud Storage Events', slug: 'gcp/cloud-storage/events', fragment: 'cloud-storage/events' },
   { label: 'Cloud Storage Instances', slug: 'gcp/cloud-storage/instances', fragment: 'cloud-storage/instances' },
+];
+
+// Tabs/sub-tabs that exist in page source today but are NOT represented
+// anywhere above. Every entry here needs its own reason so a reviewer can
+// tell "known exclusion" apart from "someone forgot to register this" — see
+// "Keeping Global Search in sync" in app/CLAUDE.md. Audited 2026-07-28;
+// re-check this list whenever a page's tab structure changes.
+export const navSearchIgnoredFragments: string[] = [
+  // Cloud Account Details (AWS/Azure/GCP) — account-wide Security/Tools tabs
+  // are `disabled: true` in baseOptions, src/pages/cloud-account/details/
+  // [CloudAccountDetails].jsx (~line 176). Confirmed intentional.
+  'aws/security',
+  'aws/tools',
+  'azure/security',
+  'azure/tools',
+  'gcp/security',
+  'gcp/tools',
+
+  // /kubernetes — the K8s accounts landing page (distinct from a single
+  // cluster's /kubernetes/details/{id}, already covered by
+  // k8sDetailsSearchFragments above). src/pages/kubernetes/index.jsx.
+  // NOT confirmed intentional — no `disabled` flag on either tab; likely just
+  // never added when this page was built.
+  '/kubernetes#overview',
+  '/kubernetes#groups',
+
+  // /auto-pilot/task/{taskId} — src/pages/auto-pilot/task/[TaskDetails].jsx.
+  // Needs a runtime taskId like the provider detail pages above, so it would
+  // need its own `autoPilotTaskSearchFragments`-style array, not a static path.
+  // NOT confirmed intentional.
+  'auto-pilot/task#tasks',
+  'auto-pilot/task#details',
+
+  // CloudFoundry Cloud Account Details tabs (cfOptions in
+  // [CloudAccountDetails].jsx) — unlike AWS/Azure/GCP, there is no
+  // `cloudFoundryDetailsSearchFragments` array at all yet. Flagged here as a
+  // block rather than case-by-case since it's a whole provider missing, not
+  // a one-off tab — worth a deliberate decision rather than silent exclusion.
+  'cloudfoundry/cf-apps/instances',
+  'cloudfoundry/cf-apps/events',
+  'cloudfoundry/cf-organizations/instances',
+  'cloudfoundry/cf-organizations/events',
+  'cloudfoundry/cf-spaces/instances',
+  'cloudfoundry/cf-spaces/events',
+  'cloudfoundry/cf-routes/instances',
+
+  // /home — src/pages/home/index.jsx. No fragment/tabOptions of its own (just
+  // shortcut cards linking into fragments already registered elsewhere); it's
+  // the default landing page, so nothing to search for in the first place.
+  // Confirmed intentional.
+  '/home',
+
+  // /ask-nudgebee — src/pages/ask-nudgebee/index.jsx. No tabs of its own, and
+  // already has a dedicated pinned "Ask AI" entry point built into
+  // GlobalPageSearch.jsx (see the ask-nudgebee avatar/button there), separate
+  // from the navSearchPages row list. Confirmed intentional.
+  '/ask-nudgebee',
 ];
