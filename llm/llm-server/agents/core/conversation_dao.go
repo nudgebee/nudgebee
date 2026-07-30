@@ -410,6 +410,9 @@ type TokenUsageRecord struct {
 	ITLMsAvg        *float64 // Average inter-token latency in ms ((latency_ms - ttft_ms) / output_tokens). float to preserve sub-ms precision on fast models.
 	TokensPerSecond *float64 // Steady-state output throughput.
 	WasStreaming    *bool    // Whether the call streamed (≥1 chunk observed).
+	// Tier-experiment attribution (V836). Both NULL on legacy rows.
+	ModelTier *string // Resolved ModelTier this call ran on (reasoning/retrieval/summary). NULL when unstamped.
+	TaskType  *string // Top-level turn classification (query/investigation). NULL for sub-agent calls.
 }
 
 func (chat *ConversationDao) ListAgentReferences(accountId, conversationId, messageId, agentId string, limit int) ([]ConversationReference, error) {
@@ -3200,7 +3203,8 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			prompt_messages, response_content,
 			thinking_tokens,
 			ttft_ms, itl_ms_avg, tokens_per_second, was_streaming,
-			cost_usd
+			cost_usd,
+			model_tier, task_type
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8,
@@ -3212,7 +3216,8 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			$24, $25,
 			$26,
 			$27, $28, $29, $30,
-			$31
+			$31,
+			$32, $33
 		)
 	`
 
@@ -3229,6 +3234,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 		record.ThinkingTokens,
 		record.TTFTMs, record.ITLMsAvg, record.TokensPerSecond, record.WasStreaming,
 		record.CostUsd,
+		record.ModelTier, record.TaskType,
 	)
 
 	if err != nil {
@@ -3250,6 +3256,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 				record.ThinkingTokens,
 				record.TTFTMs, record.ITLMsAvg, record.TokensPerSecond, record.WasStreaming,
 				record.CostUsd,
+				record.ModelTier, record.TaskType,
 			)
 			if retryErr != nil {
 				return fmt.Errorf("failed to insert token usage (retry without agent_id): %w", retryErr)

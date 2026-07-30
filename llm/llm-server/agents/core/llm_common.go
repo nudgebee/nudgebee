@@ -170,7 +170,53 @@ const (
 	// together — a lean prompt and a full prompt land in distinct cache slots
 	// instead of thrashing one.
 	ContextKeyPromptVariant LLMContextKey = "prompt_variant"
+	// ContextKeyTaskType carries the top-level turn classification (taskTypeQuery /
+	// taskTypeInvestigation) that drives prompt-variant and tier selection. Stamped
+	// once per turn in applyAgentModelTier and persisted on the token-usage row so
+	// query-vs-investigation traffic can be segmented — and classifier misses
+	// audited — in post-run review, independent of any tier flag. Absent for
+	// sub-agent calls (not top-level, not classified).
+	ContextKeyTaskType LLMContextKey = "task_type"
 )
+
+// Top-level turn classifications stamped on ContextKeyTaskType. Kept short since
+// they land verbatim in the llm_conversation_token_usage.task_type column.
+const (
+	taskTypeQuery         = "query"
+	taskTypeInvestigation = "investigation"
+)
+
+// taskTypeFromContext returns the ContextKeyTaskType value on ctx, or "" when
+// unset (a sub-agent call, or a turn stamped before this instrumentation existed).
+func taskTypeFromContext(ctx *security.RequestContext) string {
+	if ctx == nil {
+		return ""
+	}
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		return ""
+	}
+	v, _ := goCtx.Value(ContextKeyTaskType).(string)
+	return v
+}
+
+// tierAttributionForRecord returns the (model_tier, task_type) pointers for a
+// token-usage row, read from the request context. Each is nil when unstamped —
+// model_tier on legacy/uninstrumented call paths, task_type additionally on every
+// sub-agent call (only top-level turns are classified). nil → NULL, which keeps
+// "legacy row" distinguishable from a real tier.
+func tierAttributionForRecord(ctx *security.RequestContext) (modelTier *string, taskType *string) {
+	if ctx == nil {
+		return nil, nil
+	}
+	if t := string(modelTierFromContext(ctx)); t != "" {
+		modelTier = &t
+	}
+	if tt := taskTypeFromContext(ctx); tt != "" {
+		taskType = &tt
+	}
+	return
+}
 
 // promptVariantLean marks the lean (investigation-overlays-dropped) orchestrator
 // prompt. It is used both as the ContextKeyPromptVariant value and as the cache
@@ -2691,6 +2737,7 @@ func recordTokenUsageFailure(
 		ErrorMessage:      &errMsg,
 		CacheTTLMinutes:   &cacheTTL,
 	}
+	record.ModelTier, record.TaskType = tierAttributionForRecord(ctx)
 
 	bgCtx := security.NewRequestContext(context.Background(), ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 	insertFn := func() {
@@ -2873,6 +2920,7 @@ func trackTokenUsage(
 		PromptMessages:      promptMessagesJSON,
 		ResponseContent:     responseContent,
 	}
+	record.ModelTier, record.TaskType = tierAttributionForRecord(ctx)
 
 	// Thinking tokens (Gemini 2.5+ thinking models). Stored only when non-zero
 	// so non-thinking-model rows stay NULL — distinguishes "model didn't think"

@@ -215,6 +215,52 @@ func applyPromptVariant(ctx *security.RequestContext, request NBAgentRequest) *s
 	)
 }
 
+// classifyTaskType labels a TOP-LEVEL turn as taskTypeQuery (plain retrieval) or
+// taskTypeInvestigation (RCA), or "" for a sub-agent / degenerate request. It is
+// the flag-free classification behind promptVariantForRequest (same top-level +
+// IsInvestigationRequestTask signal), split out so it can be persisted on every
+// token-usage row regardless of whether the lean-prompt / tier-downshift flags are
+// on — that is what makes query-vs-investigation segmentation and classifier-miss
+// audits possible in post-run review.
+func classifyTaskType(request NBAgentRequest) string {
+	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
+	if !isTopLevel {
+		return ""
+	}
+	query := request.OriginalQuery
+	if query == "" {
+		query = request.Query
+	}
+	if query == "" {
+		return ""
+	}
+	if IsInvestigationRequestTask(query) || request.ConversationSource == ConversationSourceInvestigation {
+		return taskTypeInvestigation
+	}
+	return taskTypeQuery
+}
+
+// applyTaskTypeAttribution stamps ContextKeyTaskType so the token-usage writer can
+// persist the turn classification. Sibling of applyPromptVariant; ALWAYS (re)stamps
+// so a sub-agent invoked with the parent's context resolves to "" (unclassified)
+// rather than inheriting the parent's label.
+func applyTaskTypeAttribution(ctx *security.RequestContext, request NBAgentRequest) *security.RequestContext {
+	if ctx == nil {
+		return nil
+	}
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		goCtx = context.Background()
+	}
+	return security.NewRequestContext(
+		context.WithValue(goCtx, ContextKeyTaskType, classifyTaskType(request)),
+		ctx.GetSecurityContext(),
+		ctx.GetLogger(),
+		ctx.GetTracer(),
+		ctx.GetMeter(),
+	)
+}
+
 func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) (NBAgentResponse, error) {
 	// --- Metrics: record start time
 	start := time.Now()
@@ -282,6 +328,11 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// No-op unless the query-lean prompt is enabled AND this is a top-level
 	// plain-retrieval turn — sub-agents and investigations keep the full prompt.
 	ctx = applyPromptVariant(ctx, request)
+
+	// Stamp the turn classification (query / investigation / "") so the token-usage
+	// writer can persist task_type for post-run tier/quality segmentation. Flag-free
+	// and side-effect-free — attribution only, does not change model or prompt.
+	ctx = applyTaskTypeAttribution(ctx, request)
 
 	// get history and use it as context - PARALLELIZED
 	var messageHistoryFomatter []prompts.MessageFormatter
