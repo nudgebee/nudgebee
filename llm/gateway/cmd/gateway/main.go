@@ -79,6 +79,18 @@ func providerCreds() []engine.ProviderCredsConfig {
 	// case to self-hosted avoids a spurious "configured but unusable" warning for a plain
 	// base-URL override on an api-key provider that has no key set.
 	c := config.Config
+	// Vertex operator project: prefer the explicit llm_provider_project_id, then fall back
+	// to the GCP env convention (GOOGLE_CLOUD_PROJECT / GCLOUD_PROJECT) — matching how
+	// llm-server resolves the Vertex project, so a single env drives both services. This is
+	// operator-only; a tenant's project always comes from its own integration config.
+	projectID := c.LlmProviderProjectId
+	if projectID == "" {
+		if p := os.Getenv("GOOGLE_CLOUD_PROJECT"); p != "" {
+			projectID = p
+		} else if p := os.Getenv("GCLOUD_PROJECT"); p != "" {
+			projectID = p
+		}
+	}
 	if c.LlmProviderApiKey != "" || c.LlmProviderAccessKey != "" || c.LlmProviderSecretKey != "" ||
 		(c.LlmProviderApiEndpoint != "" && engine.SupportsEndpointOperator(c.LlmProvider)) ||
 		engine.SupportsKeylessOperator(c.LlmProvider) {
@@ -90,6 +102,7 @@ func providerCreds() []engine.ProviderCredsConfig {
 			AccessKey:    c.LlmProviderAccessKey,
 			SecretKey:    c.LlmProviderSecretKey,
 			SessionToken: c.LlmProviderSessionToken,
+			ProjectID:    projectID,
 		})
 	}
 

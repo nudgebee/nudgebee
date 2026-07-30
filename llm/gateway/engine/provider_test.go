@@ -175,6 +175,59 @@ func TestBuildTenantKey_Azure(t *testing.T) {
 	assert.False(t, ok2, "tenant azure without a static api-key must not borrow the pod's managed identity")
 }
 
+func TestBuildCred_Vertex(t *testing.T) {
+	// Operator Vertex with a service-account JSON: project + region + creds on the key.
+	provider, cred, ok := buildCred(ProviderCredsConfig{
+		Provider: "vertex", ProjectID: "my-proj", Region: "us-central1", APIKey: `{"type":"service_account"}`,
+	})
+	require.True(t, ok)
+	assert.Equal(t, schemas.Vertex, provider)
+	require.NotNil(t, cred.key.VertexKeyConfig)
+	assert.Equal(t, "my-proj", cred.key.VertexKeyConfig.ProjectID.Val)
+	assert.Equal(t, "us-central1", cred.key.VertexKeyConfig.Region.Val)
+	assert.Equal(t, `{"type":"service_account"}`, cred.key.VertexKeyConfig.AuthCredentials.Val)
+
+	// Operator keyless (ADC / Workload Identity): project + region, no creds → usable.
+	_, cred2, ok2 := buildCred(ProviderCredsConfig{Provider: "vertex", ProjectID: "my-proj", Region: "us-central1"})
+	require.True(t, ok2, "operator vertex may run keyless via ADC / Workload Identity")
+	require.NotNil(t, cred2.key.VertexKeyConfig)
+	assert.Empty(t, cred2.key.VertexKeyConfig.AuthCredentials.Val, "keyless: no service-account JSON")
+
+	// Project and region are both required.
+	_, _, okNoProj := buildCred(ProviderCredsConfig{Provider: "vertex", Region: "us-central1"})
+	assert.False(t, okNoProj, "vertex without a project is not usable")
+	_, _, okNoRegion := buildCred(ProviderCredsConfig{Provider: "vertex", ProjectID: "my-proj"})
+	assert.False(t, okNoRegion, "vertex without a region is not usable")
+
+	// Whitespace is trimmed: padded project/region/creds are cleaned, and a whitespace-only
+	// credential is treated as keyless (not a broken cred).
+	_, cred3, ok3 := buildCred(ProviderCredsConfig{
+		Provider: "vertex", ProjectID: "  my-proj  ", Region: "  us-central1\n", APIKey: "   ",
+	})
+	require.True(t, ok3)
+	assert.Equal(t, "my-proj", cred3.key.VertexKeyConfig.ProjectID.Val)
+	assert.Equal(t, "us-central1", cred3.key.VertexKeyConfig.Region.Val)
+	assert.Empty(t, cred3.key.VertexKeyConfig.AuthCredentials.Val, "whitespace-only creds → keyless")
+}
+
+func TestBuildTenantKey_Vertex(t *testing.T) {
+	// Tenant Vertex BYO: project + region + static service-account JSON → structured key.
+	provider, key, ok := BuildTenantKey(ProviderCredsConfig{
+		Provider: "vertex", ProjectID: "t-proj", Region: "us-central1", APIKey: `{"type":"service_account"}`,
+	})
+	require.True(t, ok)
+	assert.Equal(t, schemas.Vertex, provider)
+	assert.Equal(t, "vertex-tenant", key.ID)
+	require.NotNil(t, key.VertexKeyConfig)
+	assert.Equal(t, "t-proj", key.VertexKeyConfig.ProjectID.Val)
+	assert.Equal(t, `{"type":"service_account"}`, key.VertexKeyConfig.AuthCredentials.Val)
+
+	// SECURITY: tenant Vertex with project+region but NO service-account JSON must be
+	// rejected — keyless would use the pod's ADC (the operator's identity), not the tenant's.
+	_, _, ok2 := BuildTenantKey(ProviderCredsConfig{Provider: "vertex", ProjectID: "t-proj", Region: "us-central1"})
+	assert.False(t, ok2, "tenant vertex without static creds must not borrow the pod's ADC identity")
+}
+
 func TestBuildCred_SelfHosted(t *testing.T) {
 	// Ollama/vLLM/SGL are reached by base URL with an optional bearer token.
 	// Endpoint set, no key → usable (empty Value); endpoint carried on the cred.

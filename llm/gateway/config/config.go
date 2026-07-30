@@ -56,6 +56,7 @@ type Configuration struct {
 	LlmProviderAccessKey    string `mapstructure:"llm_provider_access_key"`
 	LlmProviderSecretKey    string `mapstructure:"llm_provider_secret_key"`
 	LlmProviderSessionToken string `mapstructure:"llm_provider_session_token"`
+	LlmProviderProjectId    string `mapstructure:"llm_provider_project_id"` // vertex GCP project
 
 	// Metastore (Postgres): virtual keys, identity, pricing catalog.
 	GatewayDBURL        string `mapstructure:"gateway_db_url"`
@@ -200,6 +201,7 @@ var keyDefaults = map[string]any{
 	"llm_provider_access_key":               "",
 	"llm_provider_secret_key":               "",
 	"llm_provider_session_token":            "",
+	"llm_provider_project_id":               "",
 	"gateway_db_url":                        "",
 	"gateway_db_max_connections":            20,
 	"gateway_db_min_connections":            2,
