@@ -218,6 +218,23 @@ class DatadogMetricsService(MetricsService):
         cpu_pods = cpu_by_container.get(object.container, {})
         mem_pods = mem_by_container.get(object.container, {})
 
+        # Pre-convert raw points to numpy arrays once per pod to avoid
+        # redundant np.array() calls across the 5+ CPU and 2+ memory metrics.
+        cpu_arrays: Dict[str, np.ndarray] = {}
+        cpu_cores: Dict[str, np.ndarray] = {}
+        for pod_name, points in cpu_pods.items():
+            if len(points) == 0:
+                continue
+            arr = np.array(points, dtype=np.float64)
+            cpu_arrays[pod_name] = arr
+            cpu_cores[pod_name] = arr[:, 1] / 1e9
+
+        mem_arrays: Dict[str, np.ndarray] = {}
+        for pod_name, points in mem_pods.items():
+            if len(points) == 0:
+                continue
+            mem_arrays[pod_name] = np.array(points, dtype=np.float64)
+
         # Build the result dict matching the strategy's expected metric keys
         result: Dict[str, PodsTimeData] = {}
 
@@ -225,51 +242,33 @@ class DatadogMetricsService(MetricsService):
             if metric_name.startswith("cpu_percentile_"):
                 percentile = float(metric_name.replace("cpu_percentile_", ""))
                 pods_data: PodsTimeData = {}
-                for pod_name, points in cpu_pods.items():
-                    if len(points) == 0:
-                        continue
-                    arr = np.array(points, dtype=np.float64)
-                    # Datadog kubernetes.cpu.usage.total is in nanocores -> convert to cores
-                    cpu_values = arr[:, 1] / 1e9
-                    p_val = float(np.percentile(cpu_values, percentile))
-                    # Return as single-row [[timestamp, percentile_value]]
+                for pod_name, arr in cpu_arrays.items():
+                    p_val = float(np.percentile(cpu_cores[pod_name], percentile))
                     pods_data[pod_name] = np.array([[arr[-1, 0], p_val]], dtype=np.float64)
                 result[metric_name] = pods_data
 
             elif metric_name == "MaxMemoryLoader":
                 pods_data = {}
-                for pod_name, points in mem_pods.items():
-                    if len(points) == 0:
-                        continue
-                    arr = np.array(points, dtype=np.float64)
+                for pod_name, arr in mem_arrays.items():
                     max_val = float(np.max(arr[:, 1]))
-                    # Return as single-row [[timestamp, max_memory_bytes]]
                     pods_data[pod_name] = np.array([[arr[-1, 0], max_val]], dtype=np.float64)
                 result[metric_name] = pods_data
 
             elif metric_name == "CPUAmountLoader":
                 pods_data = {}
-                for pod_name, points in cpu_pods.items():
-                    if len(points) == 0:
-                        continue
-                    arr = np.array(points, dtype=np.float64)
+                for pod_name, arr in cpu_arrays.items():
                     count = float(len(arr))
                     pods_data[pod_name] = np.array([[arr[-1, 0], count]], dtype=np.float64)
                 result[metric_name] = pods_data
 
             elif metric_name == "MemoryAmountLoader":
                 pods_data = {}
-                for pod_name, points in mem_pods.items():
-                    if len(points) == 0:
-                        continue
-                    arr = np.array(points, dtype=np.float64)
+                for pod_name, arr in mem_arrays.items():
                     count = float(len(arr))
                     pods_data[pod_name] = np.array([[arr[-1, 0], count]], dtype=np.float64)
                 result[metric_name] = pods_data
 
             elif metric_name == "MaxOOMKilledMemoryLoader":
-                # OOM kill data is not available from Datadog metrics API
-                # The strategy handles empty dicts gracefully
                 result[metric_name] = {}
 
             else:
