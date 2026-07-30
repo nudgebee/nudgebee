@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"nudgebee/runbook/internal/tasks/safehttp"
 	"nudgebee/runbook/internal/tasks/types"
 	"time"
 )
@@ -54,8 +55,8 @@ func (t *NtpTask) Execute(taskCtx types.TaskContext, params map[string]any) (any
 
 	address := net.JoinHostPort(host, port)
 
-	dialer := net.Dialer{Timeout: timeout}
-	conn, err := dialer.DialContext(taskCtx.GetContext(), "udp", address)
+	dialContext := safehttp.NewSafeDialContext(timeout)
+	conn, err := dialContext(taskCtx.GetContext(), "udp", address)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to ntp server: %w", err)
 	}

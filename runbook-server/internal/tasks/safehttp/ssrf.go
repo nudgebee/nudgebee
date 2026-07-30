@@ -129,6 +129,43 @@ func NewSafeDialContext(dialTimeout time.Duration) func(ctx context.Context, net
 	return d.DialContext
 }
 
+// ResolveSafeIP resolves a hostname (or parses a literal IP) and returns a
+// validated IP address string. Use this for external commands (ping,
+// traceroute) where NewSafeDialContext cannot be used. By returning the
+// resolved IP for the caller to pass to the command, the DNS rebinding
+// (TOCTOU) window between validation and use is closed.
+func ResolveSafeIP(host string) (string, error) {
+	if host == "" {
+		return "", fmt.Errorf("empty host")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if IsRestrictedIP(ip) {
+			return "", fmt.Errorf("host %s is a restricted IP", host)
+		}
+		return host, nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return "", fmt.Errorf("unable to resolve host %q: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return "", fmt.Errorf("host %q resolved to zero addresses", host)
+	}
+	var firstIPv4 net.IP
+	for _, ip := range ips {
+		if IsRestrictedIP(ip) {
+			return "", fmt.Errorf("host resolves to restricted IP %s", ip)
+		}
+		if firstIPv4 == nil && ip.To4() != nil {
+			firstIPv4 = ip
+		}
+	}
+	if firstIPv4 != nil {
+		return firstIPv4.String(), nil
+	}
+	return ips[0].String(), nil
+}
+
 // SafeCheckRedirect validates each redirect target before the HTTP client
 // follows it. Catches the case where a public URL 302s into an internal IP.
 // Wire into http.Client.CheckRedirect alongside NewSafeDialContext.

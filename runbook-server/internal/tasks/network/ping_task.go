@@ -2,6 +2,7 @@ package network
 
 import (
 	"fmt"
+	"nudgebee/runbook/internal/tasks/safehttp"
 	"nudgebee/runbook/internal/tasks/types"
 	"os/exec"
 	"regexp"
@@ -41,6 +42,11 @@ func (t *PingTask) Execute(taskCtx types.TaskContext, params map[string]any) (an
 	if strings.HasPrefix(host, "-") {
 		return nil, fmt.Errorf("invalid host format: cannot start with '-'")
 	}
+	safeIP, err := safehttp.ResolveSafeIP(host)
+	if err != nil {
+		return nil, fmt.Errorf("host failed safety validation: %w", err)
+	}
+	host = safeIP
 
 	count := 3
 	if c, ok := params["count"].(float64); ok {
