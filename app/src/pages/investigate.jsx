@@ -259,6 +259,10 @@ const Investigate = () => {
   const { startGeneration, cancelGeneration } = useCardGeneration();
   const isMountedRef = useRef(true);
   const pendingTimeoutsRef = useRef([]);
+  // Latest-ref so card callbacks wired once (at card generation) always invoke
+  // the current handleGenerateRCA closure instead of a stale render's row/state.
+  // Assigned below, right after handleGenerateRCA is defined.
+  const handleGenerateRCARef = useRef(null);
   const { selectedCluster, allCluster, setAllCluster } = useData();
   const { assistantName } = useTenantBranding();
 
@@ -292,6 +296,8 @@ const Investigate = () => {
           status: response.status,
           summary: response.summary,
           analysis: response.analysis,
+          outdated: response.outdated,
+          format_source: response.format_source,
         };
         card.insightData = card.insightData.filter((i) => i.message !== 'RCA is underway — check back shortly for results');
         card.insightData.push({ message: 'RCA report is ready', severity: 'Info' });
@@ -1335,6 +1341,9 @@ const Investigate = () => {
         if (card.setDataUpdateCallback) {
           card.setDataUpdateCallback(handleCardDataUpdate);
         }
+        if (card.id === 'RCACard' && hasWriteAccess(router.query.accountId)) {
+          card.onRegenerate = () => handleGenerateRCARef.current(true);
+        }
         trackTimeout(() => {
           safeSetState(setCurrentInvestigation, card);
         }, 1);
@@ -1591,13 +1600,16 @@ const Investigate = () => {
   };
 
   // Memoized: avoids re-running 3 regexes on every render (was called 5× inline with same args)
-  const handleGenerateRCA = () => {
-    apiKubernetes.generateRCA(id, router.query.accountId, true).then((response) => {
+  const handleGenerateRCA = (regenerate = false) => {
+    apiKubernetes.generateRCA(id, router.query.accountId, true, regenerate).then((response) => {
       if (response?.status) {
         const responseStatus = response.status.toUpperCase();
         const rcaCard = new RCACard();
         rcaCard.event = row;
         rcaCard.renderContent = true;
+        if (hasWriteAccess(router.query.accountId)) {
+          rcaCard.onRegenerate = () => handleGenerateRCARef.current(true);
+        }
 
         if (responseStatus === RCA_STATUS.COMPLETED) {
           // Already completed (re-trigger of existing RCA) — show results directly
@@ -1606,6 +1618,8 @@ const Investigate = () => {
             status: response.status,
             summary: response.summary,
             analysis: response.analysis,
+            outdated: response.outdated,
+            format_source: response.format_source,
           };
           rcaCard.insightData = [{ message: 'RCA report is ready', severity: 'Info' }];
         } else if (responseStatus === RCA_STATUS.FAILED) {
@@ -1635,6 +1649,7 @@ const Investigate = () => {
       }
     });
   };
+  handleGenerateRCARef.current = handleGenerateRCA;
 
   useEffect(() => {
     hasFeatureAccess('GENERATE_RCA').then((res) => {
@@ -2068,7 +2083,7 @@ const Investigate = () => {
                               value={1}
                             />
                             {!isGeneratingCards && matchedOptions.some((option) => option?.id === 'RCACard') && (
-                              <Tab label='RCA' {...a11yProps(2)} value={2} />
+                              <Tab label='RCA Report' {...a11yProps(2)} value={2} />
                             )}
                           </Tabs>
                         </Box>
@@ -2165,7 +2180,7 @@ const Investigate = () => {
                               <Button
                                 tone='secondary'
                                 size='xs'
-                                onClick={handleGenerateRCA}
+                                onClick={() => handleGenerateRCA()}
                                 disabled={!generateRcaVisible || isRcaPolling}
                                 data-testid='generate-rca-btn'
                               >

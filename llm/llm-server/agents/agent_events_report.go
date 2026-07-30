@@ -72,9 +72,7 @@ func (m AgentEventRCAReport) getEvidenceAnalysis(ctx *security.RequestContext, r
 	return data.Data, nil
 }
 
-const DefaultRCAFormat = `<<Event RCA Report Format>>
----------------------------------
-# 📝 Root Cause Analysis (RCA) Report
+const DefaultRCAFormat = `# 📝 Root Cause Analysis (RCA) Report
 
 ## 📊 Event Summary
 Provide a brief description of the event, including:

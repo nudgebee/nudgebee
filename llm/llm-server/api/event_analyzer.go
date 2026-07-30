@@ -105,13 +105,20 @@ type EventAnalysisResponse struct {
 	// StatusReason carries the failure detail for a FAILED analysis. Empty
 	// for non-failed states. UI uses this to render an inline reason next to
 	// the "Failed" badge instead of leaving users guessing why a run failed.
-	StatusReason        string              `json:"status_reason,omitempty"`
-	TaskStatuses        map[string]string   `json:"task_statuses,omitempty"`
-	CodeAnalysisEnabled bool                `json:"code_analysis_enabled"`
-	RcaEnabled          bool                `json:"rca_enabled"`
-	FileDetails         EventLogFileDetails `json:"file_details"`
-	SourceDetails       map[string]any      `json:"source_details"`
-	SourceUpdates       map[string]any      `json:"source_updates"`
+	StatusReason        string            `json:"status_reason,omitempty"`
+	TaskStatuses        map[string]string `json:"task_statuses,omitempty"`
+	CodeAnalysisEnabled bool              `json:"code_analysis_enabled"`
+	RcaEnabled          bool              `json:"rca_enabled"`
+	// Outdated is set on a COMPLETED RCA response when any of its input rows
+	// (summary, investigation, log analysis) was updated after the RCA report
+	// was generated — i.e. the report no longer reflects the latest findings.
+	Outdated bool `json:"outdated,omitempty"`
+	// FormatSource reports which RCA format level would apply for this event:
+	// "rule" (rca_format annotation), "account" (settings editor) or "default".
+	FormatSource  string              `json:"format_source,omitempty"`
+	FileDetails   EventLogFileDetails `json:"file_details"`
+	SourceDetails map[string]any      `json:"source_details"`
+	SourceUpdates map[string]any      `json:"source_updates"`
 
 	// Additional fields for code analysis
 	Title          string            `json:"title,omitempty"`
@@ -559,6 +566,16 @@ func executeEventAnalysis(ctx *security.RequestContext, c *gin.Context, request 
 				response.Commits = response2.Commits
 				response.AutomatedFixPR = response2.AutomatedFixPR
 			}
+		}
+	}
+
+	if analysisType == events.AnalysisTypeRCA && existingAnalysis != nil {
+		// Reports stored before the scaffolding fix still carry the template
+		// header — strip at read time so they render clean without a regenerate.
+		response.Analysis = stripRCAFormatScaffolding(response.Analysis)
+		response.Summary = stripRCAFormatScaffolding(response.Summary)
+		if strings.EqualFold(response.Status, string(events.AnalysisStatusCompleted)) {
+			enrichRCAResponseMetadata(ctx, eventAnalysisRepo, eventInfo.Fingerprint, eventInfo.AggregationKey, accountId, existingAnalysis.UpdatedAt, &response)
 		}
 	}
 
@@ -1064,6 +1081,56 @@ func getAgentResponseFromConversation(ctx *security.RequestContext, sessionId st
 	return "", false
 }
 
+// stripRCAFormatScaffolding removes the template's scaffolding header — a
+// leading `<<...>>` marker line plus an optional dashed separator — that models
+// echo verbatim from the format block. Left in place, the marker renders as a
+// stray `<>` heading in the UI (the inner `<...>` is sanitized away as an
+// unknown HTML tag and the dashed line promotes the leftover to a heading).
+func stripRCAFormatScaffolding(report string) string {
+	trimmed := strings.TrimLeft(report, " \t\r\n")
+	if !strings.HasPrefix(trimmed, "<<") {
+		return report
+	}
+	firstLine, rest, found := strings.Cut(trimmed, "\n")
+	if !found || !strings.HasSuffix(strings.TrimRight(firstLine, " \t\r"), ">>") {
+		return report
+	}
+	rest = strings.TrimLeft(rest, " \t\r\n")
+	// Drop a separator line made only of dashes, if present.
+	if sepLine, afterSep, sepFound := strings.Cut(rest, "\n"); sepFound {
+		sep := strings.TrimRight(sepLine, " \t\r")
+		if len(sep) >= 3 && strings.Count(sep, "-") == len(sep) {
+			rest = strings.TrimLeft(afterSep, " \t\r\n")
+		}
+	}
+	return rest
+}
+
+// enrichRCAResponseMetadata fills the RCA-only response fields: whether the
+// completed report is stale relative to its inputs, and which format level
+// (rule / account / default) applies to this event.
+func enrichRCAResponseMetadata(ctx *security.RequestContext, repo *events.EventAnalysisRepository, fingerprint, aggKey, accountId string, rcaUpdatedAt time.Time, response *EventAnalysisResponse) {
+	if !rcaUpdatedAt.IsZero() {
+		inputTypes := []events.EventAnalysisType{events.AnalysisTypeSummary, events.AnalysisTypeInvestigation, events.AnalysisTypeLog}
+		latestInput, err := repo.GetLatestAnalysisUpdatedAt(ctx, fingerprint, aggKey, accountId, inputTypes)
+		if err != nil {
+			ctx.GetLogger().Warn("analyzer: unable to check RCA staleness", "error", err)
+		} else if latestInput.After(rcaUpdatedAt) {
+			response.Outdated = true
+		}
+	}
+
+	response.FormatSource = "default"
+	if accountFormat, err := repo.GetAccountRCAFormat(ctx, accountId); err == nil && accountFormat != "" {
+		response.FormatSource = "account"
+	}
+	if _, annotations, err := repo.GetEventRuleDefinition(ctx, accountId, aggKey); err == nil && annotations != nil {
+		if format, ok := annotations["rca_format"].(string); ok && format != "" && len(format) <= maxAnnotationRCAFormatBytes {
+			response.FormatSource = "rule"
+		}
+	}
+}
+
 func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request EventRCAAnalysisRequest) (EventAnalysisResponse, error) {
 	dbManager, dbErr := common.GetDatabaseManager(common.Metastore)
 	if dbErr != nil {
@@ -1283,6 +1350,7 @@ func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request
 	}
 
 	if hasResponse {
+		rcaResponse = stripRCAFormatScaffolding(rcaResponse)
 		ctx.GetLogger().Debug("analyzer: saving RCA report to database")
 		// Save the response to the database
 		err = eventAnalysisRepo.SaveEventRCAAnalysis(ctx, response.EventId, eventFingerprint, request.AccountId, eventAggregationKey, rcaResponse)

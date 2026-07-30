@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"nudgebee/llm/common"
@@ -65,6 +66,11 @@ type EventAnalysis struct {
 	// surfaced to the UI so users see *why* a run failed instead of an opaque
 	// "Failed" badge.
 	StatusReason string
+	// UpdatedAt is the row's last-touch timestamp. Used to detect a stale RCA
+	// report: the RCA is derived from the summary/investigation/log rows, so an
+	// input row newer than the RCA row means the report no longer reflects the
+	// latest findings.
+	UpdatedAt time.Time
 }
 
 // GetEventInfo fetches basic event details (ID, fingerprint, aggregation key) from the database.
@@ -105,7 +111,7 @@ func (r *EventAnalysisRepository) GetEventInfo(ctx *security.RequestContext, eve
 
 // GetEventAnalysis fetches an existing analysis from the database.
 func (r *EventAnalysisRepository) GetEventAnalysis(ctx *security.RequestContext, fingerprint, aggKey, accountId string, analysisType EventAnalysisType) (*EventAnalysis, error) {
-	sqlQuery := `SELECT analysis, status, event_id, summary, status_reason FROM event_log_analysis WHERE event_fingerprint = $1 and cloud_account_id = $2 and event_aggregation_key = $3 and analysis_type = $4;`
+	sqlQuery := `SELECT analysis, status, event_id, summary, status_reason, updated_at FROM event_log_analysis WHERE event_fingerprint = $1 and cloud_account_id = $2 and event_aggregation_key = $3 and analysis_type = $4;`
 	rows, err := r.dbManager.Db.Queryx(sqlQuery, fingerprint, accountId, aggKey, analysisType)
 	if err != nil {
 		ctx.GetLogger().Warn("analyzer: failed to get log_analysis from database", "error", err)
@@ -118,8 +124,9 @@ func (r *EventAnalysisRepository) GetEventAnalysis(ctx *security.RequestContext,
 	}()
 
 	var analysis, status, relatedEventId, summary, statusReason sql.NullString
+	var updatedAt sql.NullTime
 	if rows.Next() {
-		if err := rows.Scan(&analysis, &status, &relatedEventId, &summary, &statusReason); err != nil {
+		if err := rows.Scan(&analysis, &status, &relatedEventId, &summary, &statusReason, &updatedAt); err != nil {
 			ctx.GetLogger().Warn("analyzer: failed to scan analysis from database", "error", err)
 			return nil, err
 		}
@@ -129,6 +136,7 @@ func (r *EventAnalysisRepository) GetEventAnalysis(ctx *security.RequestContext,
 			Summary:        summary.String,
 			RelatedEventId: relatedEventId.String,
 			StatusReason:   statusReason.String,
+			UpdatedAt:      updatedAt.Time,
 		}, nil
 	}
 	if err := rows.Err(); err != nil {
@@ -228,6 +236,27 @@ func (r *EventAnalysisRepository) SaveEventRCAAnalysis(ctx *security.RequestCont
 		return err
 	}
 	return nil
+}
+
+// GetLatestAnalysisUpdatedAt returns the newest updated_at across the given
+// analysis types for one event identity, in a single query. Returns the zero
+// time when no matching rows exist.
+func (r *EventAnalysisRepository) GetLatestAnalysisUpdatedAt(ctx *security.RequestContext, fingerprint, aggKey, accountId string, analysisTypes []EventAnalysisType) (time.Time, error) {
+	if len(analysisTypes) == 0 {
+		return time.Time{}, nil
+	}
+	placeholders := make([]string, len(analysisTypes))
+	args := []any{fingerprint, accountId, aggKey}
+	for i, aType := range analysisTypes {
+		placeholders[i] = fmt.Sprintf("$%d", i+4)
+		args = append(args, aType)
+	}
+	query := fmt.Sprintf(`SELECT MAX(updated_at) FROM event_log_analysis WHERE event_fingerprint = $1 AND cloud_account_id = $2 AND event_aggregation_key = $3 AND analysis_type IN (%s);`, strings.Join(placeholders, ", "))
+	var latest sql.NullTime
+	if err := r.dbManager.Db.Get(&latest, query, args...); err != nil {
+		return time.Time{}, fmt.Errorf("GetLatestAnalysisUpdatedAt: failed to query max updated_at: %w", err)
+	}
+	return latest.Time, nil
 }
 
 // GetEventRuleDefinition fetches the rule definition and annotations for a given aggregation key.

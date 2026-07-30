@@ -4003,12 +4003,12 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       error: response?.data?.errors,
     };
   },
-  async generateRCA(eventId: string, accountId: string, generate = false) {
+  async generateRCA(eventId: string, accountId: string, generate = false, regenerate = false) {
     try {
       if (accountId === 'demo') return null;
       const query = `
-        query getRcaForEvent($account_id:String!, $event_id:String!, $generate: Boolean!) {
-          ai_get_rca(account_id: $account_id, event_id: $event_id, generate: $generate) {
+        query getRcaForEvent($account_id:String!, $event_id:String!, $generate: Boolean!, $regenerate: Boolean!) {
+          ai_get_rca(account_id: $account_id, event_id: $event_id, generate: $generate, regenerate: $regenerate) {
             data
           }
         }
@@ -4017,6 +4017,7 @@ query k8s_event_groupings($limit:Int,$offset:Int){
         account_id: accountId,
         event_id: eventId,
         generate: generate,
+        regenerate: regenerate,
       });
       return response?.data?.data?.ai_get_rca?.data || null; // Return null if no data
     } catch (error) {
