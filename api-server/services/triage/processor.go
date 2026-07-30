@@ -67,9 +67,16 @@ func ProcessEvent(ctx context.Context, db *sqlx.DB, event *models.Event) error {
 		slog.ErrorContext(ctx, "Failed to compute score", "error", err, "event_id", event.Id)
 		// Continue processing - don't fail entire triage on scoring error
 	} else {
-		// Apply score adjustment from rules if present
-		if ruleResult != nil && ruleResult.ScoreAdjustment != nil {
+		// Apply score adjustment from rules if present. A human override (per-event correction
+		// or class priority_pin) is ABSOLUTE — additive scoring rules must NOT move it, or a
+		// broad +N/-N rule would silently undo the human's pin. ResolveScore already chose the
+		// final number; respect it.
+		if ruleResult != nil && ruleResult.ScoreAdjustment != nil && !IsHumanAuthority(result) {
 			result.Score = clamp(result.Score+ruleResult.ScoreAdjustment.Adjustment, 0, 100)
+			// Re-assert the LLM verdict's priority band: an additive rule must not push the score
+			// past the ceiling the model chose (a dev disk alert capped at P1 must not land at P0).
+			// No-op for legacy-scored events (no band in factors).
+			result.Score = clampToBand(result.Score, result.Factors)
 			result.Priority = scoreToPriority(result.Score)
 			slog.InfoContext(ctx, "Applied score adjustment from rule",
 				"event_id", event.Id,

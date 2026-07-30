@@ -101,8 +101,11 @@ const apiDashboard = {
       cache.set(cacheKeyWithDemo, dataWithDemo, 60 * 60);
       return dataWithDemo;
     } catch (err) {
-      console.log('getWidget1Query Error is', err);
-      return err;
+      // Return an empty list (not the Error object) so callers that do accounts.map() don't
+      // crash the page on a backend hiccup; the cache is not written here, so the next call
+      // retries fresh.
+      console.log('getCloudAccounts error:', err);
+      return [];
     }
   },
 

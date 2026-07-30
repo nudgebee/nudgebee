@@ -3,6 +3,7 @@ import { styled } from '@mui/material/styles';
 import LinearProgress, { linearProgressClasses } from '@mui/material/LinearProgress';
 import { Box, Typography, Popover } from '@mui/material';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import PersonOutlineOutlinedIcon from '@mui/icons-material/PersonOutlineOutlined';
 import PropTypes from 'prop-types';
 import { ds } from 'src/utils/colors';
 
@@ -39,6 +40,29 @@ const getTierName = (tier) => {
   }
 };
 
+// "control_plane" -> "Control Plane", "escalating" -> "Escalating".
+const titleCase = (s) =>
+  s
+    ? String(s)
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, (c) => c.toUpperCase())
+    : '';
+
+const envLabel = (env) => {
+  if (env === 'prod') {
+    return 'Production';
+  }
+  if (env === 'non_prod' || env === 'non-prod') {
+    return 'Non-Production';
+  }
+  return 'Default';
+};
+
+// Shared styles for the breakdown label/value rows.
+const rowSx = { display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
+const labelSx = { fontSize: ds.text.small, color: ds.gray[600] };
+const valueSx = { fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[700] };
+
 const ScoreDisplay = ({ score, priority: _priority, scoreFactors, confidence }) => {
   const [anchorEl, setAnchorEl] = useState(null);
   const open = Boolean(anchorEl);
@@ -57,7 +81,11 @@ const ScoreDisplay = ({ score, priority: _priority, scoreFactors, confidence }) 
     return scoreFactors || {};
   }, [scoreFactors]);
 
-  const actualConfidence = factors.confidence !== undefined ? factors.confidence : confidence;
+  const isHuman = factors.scoring_path === 'human_override' || (typeof factors.authority === 'string' && factors.authority.startsWith('human:'));
+  const isLLM = !isHuman && factors.scoring_path === 'llm_verdict';
+  const correctionScope = factors.authority === 'human:class' ? 'this alert class' : 'this alert';
+  const actualConfidence =
+    factors.verdict_confidence !== undefined ? factors.verdict_confidence : factors.confidence !== undefined ? factors.confidence : confidence;
 
   if (score === null || score === undefined) {
     return <Typography sx={{ color: ds.gray[400], fontSize: ds.text.small, textAlign: 'center' }}>-</Typography>;
@@ -88,7 +116,15 @@ const ScoreDisplay = ({ score, priority: _priority, scoreFactors, confidence }) 
             },
           }}
         />
-        <InfoOutlinedIcon sx={{ fontSize: ds.text.small, color: ds.gray[400] }} />
+        {isHuman ? (
+          <PersonOutlineOutlinedIcon
+            data-testid='score-corrected-icon'
+            titleAccess='Manually corrected'
+            sx={{ fontSize: ds.text.small, color: ds.blue?.[500] || ds.gray[600] }}
+          />
+        ) : (
+          <InfoOutlinedIcon sx={{ fontSize: ds.text.small, color: ds.gray[400] }} />
+        )}
       </Box>
 
       <Popover
@@ -112,39 +148,154 @@ const ScoreDisplay = ({ score, priority: _priority, scoreFactors, confidence }) 
             <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>Priority Score</Typography>
           </Box>
 
+          {isHuman ? (
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: ds.space[1],
+                mb: ds.space[2],
+                px: ds.space[2],
+                py: ds.space[1],
+                borderRadius: ds.radius.sm,
+                backgroundColor: ds.blue?.[100] || ds.gray[100],
+              }}
+            >
+              <PersonOutlineOutlinedIcon sx={{ fontSize: ds.text.small, color: ds.blue?.[500] || ds.gray[600] }} />
+              <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.blue?.[600] || ds.gray[700] }}>
+                Corrected by a human — overrides the model for {correctionScope}
+              </Typography>
+            </Box>
+          ) : null}
+
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>Severity</Typography>
-              <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[700] }}>
-                {factors.base_severity >= 50 ? 'High' : factors.base_severity >= 25 ? 'Medium' : 'Low'}
-              </Typography>
-            </Box>
+            {isHuman ? (
+              <>
+                <Box sx={rowSx}>
+                  <Typography sx={labelSx}>Set priority</Typography>
+                  <Typography sx={valueSx}>{factors.corrected_priority || _priority}</Typography>
+                </Box>
 
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>Service Tier</Typography>
-              <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[700] }}>
-                {getTierName(factors.service_tier)}
-              </Typography>
-            </Box>
+                {factors.category || factors.intrinsic || factors.reasoning ? (
+                  <Box
+                    sx={{
+                      mt: ds.space[1],
+                      pt: ds.space[1],
+                      borderTop: `1px solid ${ds.gray[200]}`,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: ds.space[1],
+                    }}
+                  >
+                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontStyle: 'italic' }}>Model had suggested</Typography>
+                    {factors.category ? (
+                      <Box sx={rowSx}>
+                        <Typography sx={labelSx}>Category</Typography>
+                        <Typography sx={valueSx}>{factors.category}</Typography>
+                      </Box>
+                    ) : null}
+                    {factors.intrinsic ? (
+                      <Box sx={rowSx}>
+                        <Typography sx={labelSx}>Severity</Typography>
+                        <Typography sx={valueSx}>{titleCase(factors.intrinsic)}</Typography>
+                      </Box>
+                    ) : null}
+                    {factors.reasoning ? (
+                      <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600], lineHeight: 1.4 }}>{factors.reasoning}</Typography>
+                    ) : null}
+                  </Box>
+                ) : null}
+              </>
+            ) : isLLM ? (
+              <>
+                {factors.reasoning ? (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], mb: ds.space[1] }}>
+                    <Typography sx={labelSx}>Why</Typography>
+                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], lineHeight: 1.4 }}>{factors.reasoning}</Typography>
+                  </Box>
+                ) : null}
 
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>Environment</Typography>
-              <Typography
-                sx={{
-                  fontSize: ds.text.small,
-                  fontWeight: ds.weight.medium,
-                  color: factors.env_multiplier < 1 ? ds.gray[400] : ds.gray[700],
-                }}
-              >
-                {factors.env_multiplier === 1 ? 'Production' : factors.env_multiplier === 0.3 ? 'Non-Production' : 'Default'}
-              </Typography>
-            </Box>
+                {factors.category ? (
+                  <Box sx={rowSx}>
+                    <Typography sx={labelSx}>Category</Typography>
+                    <Typography sx={valueSx}>{factors.category}</Typography>
+                  </Box>
+                ) : null}
 
-            {factors.duplicate_penalty > 0 && (
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>Duplicate</Typography>
-                <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.red[500] }}>Yes (score reduced)</Typography>
-              </Box>
+                <Box sx={rowSx}>
+                  <Typography sx={labelSx}>Severity</Typography>
+                  <Typography sx={valueSx}>{titleCase(factors.intrinsic)}</Typography>
+                </Box>
+
+                {factors.blast ? (
+                  <Box sx={rowSx}>
+                    <Typography sx={labelSx}>Blast radius</Typography>
+                    <Typography sx={valueSx}>{titleCase(factors.blast)}</Typography>
+                  </Box>
+                ) : null}
+
+                <Box sx={rowSx}>
+                  <Typography sx={labelSx}>Environment</Typography>
+                  <Typography sx={valueSx}>{envLabel(factors.env_category)}</Typography>
+                </Box>
+
+                {factors.recurrence_semantics && factors.recurrence_semantics !== 'neutral' ? (
+                  <Box sx={rowSx}>
+                    <Typography sx={labelSx}>Recurrence</Typography>
+                    <Typography sx={valueSx}>{titleCase(factors.recurrence_semantics)}</Typography>
+                  </Box>
+                ) : null}
+
+                {factors.band ? (
+                  <Box sx={rowSx}>
+                    <Typography sx={labelSx}>Priority band</Typography>
+                    <Typography sx={valueSx}>{factors.band}</Typography>
+                  </Box>
+                ) : null}
+
+                {factors.correlation_type ? (
+                  <Box sx={rowSx}>
+                    <Typography sx={labelSx}>Correlation</Typography>
+                    <Typography sx={valueSx}>{titleCase(factors.correlation_type)}</Typography>
+                  </Box>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>Severity</Typography>
+                  <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[700] }}>
+                    {factors.base_severity >= 50 ? 'High' : factors.base_severity >= 25 ? 'Medium' : 'Low'}
+                  </Typography>
+                </Box>
+
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>Service Tier</Typography>
+                  <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[700] }}>
+                    {getTierName(factors.service_tier)}
+                  </Typography>
+                </Box>
+
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>Environment</Typography>
+                  <Typography
+                    sx={{
+                      fontSize: ds.text.small,
+                      fontWeight: ds.weight.medium,
+                      color: factors.env_multiplier < 1 ? ds.gray[400] : ds.gray[700],
+                    }}
+                  >
+                    {factors.env_multiplier === 1 ? 'Production' : factors.env_multiplier === 0.3 ? 'Non-Production' : 'Default'}
+                  </Typography>
+                </Box>
+
+                {factors.duplicate_penalty > 0 && (
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>Duplicate</Typography>
+                    <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.red[500] }}>Yes (score reduced)</Typography>
+                  </Box>
+                )}
+              </>
             )}
 
             {(() => {

@@ -1662,6 +1662,10 @@ func collectStoredMetricValues(ctx context.Context, db *sqlx.DB, fingerprint, ac
 		return nil
 	}
 
+	if err := rows.Err(); err != nil {
+		slog.WarnContext(ctx, "error iterating stored metric value rows", "error", err)
+	}
+
 	return values
 }
 

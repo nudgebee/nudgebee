@@ -191,6 +191,17 @@ type appConfig struct {
 	FeatureEventAutoAiSummaryEnabled bool   `mapstructure:"feature_event_auto_ai_summary_enabled"`
 	ServerName                       string `mapstructure:"services_server_name"`
 
+	// Triage scoring: when true, ComputeScore uses the LLM-verdict-per-class + deterministic
+	// policy path instead of the legacy severity*env formula. Default off (legacy formula).
+	FeatureLLMTriageScoringEnabled bool `mapstructure:"feature_llm_triage_scoring_enabled"`
+	// When true (and scoring enabled), compute the new score in SHADOW: record it in
+	// score_factors for comparison but keep the legacy score/priority authoritative.
+	FeatureLLMTriageScoringShadow bool `mapstructure:"feature_llm_triage_scoring_shadow"`
+	// When true, a served signal-class verdict minted under an older classificationPromptVersion is
+	// lazily re-minted on serve (the stale verdict keeps serving until replaced; pinned classes are
+	// never re-minted). Default off — enable per-tenant once a mint budget is in place.
+	FeatureLLMTriageRemintEnabled bool `mapstructure:"feature_llm_triage_remint_enabled"`
+
 	// Webhook execution mode - true for async (default), false for sync (useful for tests)
 	WebhookAsyncExecution bool `mapstructure:"webhook_async_execution"`
 

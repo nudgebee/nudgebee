@@ -33,6 +33,7 @@ import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import EventClassifyModal, { type ClassifyUpdate } from '@components/events/EventClassifyModal';
 import { toast as snackbar } from '@ui/Toast';
 import ScoreDisplay from '@shared/widgets/ScoreDisplay';
+import PriorityPinControl from '@shared/widgets/PriorityPinControl';
 import WorkflowIcon from '@assets/WorkflowIcon';
 import Tooltip from '@ui/Tooltip';
 import TicketLink from '@shared/links/TicketLink';
@@ -402,12 +403,21 @@ const CloudAccountEvents = (props: {
 
     rowData.push({
       component: (
-        <ScoreDisplay
-          score={item.computed_score}
-          priority={item.computed_priority}
-          scoreFactors={item.score_factors}
-          confidence={item.score_confidence != null ? parseFloat(item.score_confidence) : undefined}
-        />
+        <Box display='flex' alignItems='center' gap={ds.space[1]}>
+          <ScoreDisplay
+            score={item.computed_score}
+            priority={item.computed_priority}
+            scoreFactors={item.score_factors}
+            confidence={item.score_confidence != null ? parseFloat(item.score_confidence) : undefined}
+          />
+          <PriorityPinControl
+            eventId={item.id}
+            accountId={item.account_id || props.accountId}
+            currentPriority={item.computed_priority}
+            canWrite={hasWriteAccess(item.account_id || props.accountId)}
+            onChanged={listCloudAccountEvents}
+          />
+        </Box>
       ),
       data: item.computed_priority,
     });

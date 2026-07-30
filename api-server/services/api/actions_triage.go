@@ -120,6 +120,13 @@ func handleTriageAction(h *ActionRequest, c *gin.Context, tracer *trace.Tracer, 
 		handleEventRevertThresholdSuggestion(h, c, ctx)
 	case "event_get_recurrence_info":
 		handleEventGetRecurrenceInfo(h, c, ctx)
+	// Workload criticality (Service Criticality review screen)
+	case "workload_list_criticality":
+		handleWorkloadListCriticality(h, c, ctx)
+	case "workload_upsert_criticality":
+		handleWorkloadUpsertCriticality(h, c, ctx)
+	case "workload_delete_criticality":
+		handleWorkloadDeleteCriticality(h, c, ctx)
 	default:
 		c.JSON(400, common.ErrorActionBadRequest(fmt.Sprintf("unknown action: %s", actionName)))
 	}
@@ -607,8 +614,13 @@ func handleEventClassify(h *ActionRequest, c *gin.Context, ctx *security.Request
 
 	c.JSON(http.StatusOK, response)
 
-	// Publish audit event
-	if err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{{
+	// Publish audit event(s). Surface corrected_priority + apply_scope in EventAttr (not just
+	// EventState) so the audit feed is filterable by a priority change, not only by classification.
+	classifyAttr := map[string]any{"event_id": eventID, "classification": classification, "apply_scope": applyScope}
+	if req.CorrectedPriority != nil {
+		classifyAttr["corrected_priority"] = *req.CorrectedPriority
+	}
+	audits := []audit.Audit{{
 		TenantId:      tenantID,
 		UserId:        userID,
 		AccountId:     *ev.CloudAccountId,
@@ -620,8 +632,36 @@ func handleEventClassify(h *ActionRequest, c *gin.Context, ctx *security.Request
 		EventTarget:   "event_classification",
 		EventAction:   audit.EventActionCreate,
 		EventStatus:   audit.EventStatusSuccess,
-		EventAttr:     map[string]any{"event_id": eventID, "classification": classification},
-	}}}); err != nil {
+		EventAttr:     classifyAttr,
+	}}
+
+	// A corrected priority with non-this_event scope auto-creates a priority_pin rule inside
+	// ClassifyEvent (not via the normal rule-create handler). Emit a matching TriageRuleCreate
+	// audit so the auto-created pin shows up in the Triage Rules audit trail, not only in
+	// triage_correction_log. CorrectedPriority being set is what makes the created rule a pin.
+	if response != nil && response.RuleCreated && response.RuleID != nil && req.CorrectedPriority != nil {
+		audits = append(audits, audit.Audit{
+			TenantId:      tenantID,
+			UserId:        userID,
+			AccountId:     *ev.CloudAccountId,
+			EventTime:     time.Now(),
+			EventCategory: audit.EventCategoryTriage,
+			EventType:     audit.EventTypeTriageRuleCreate,
+			EventState:    req,
+			EventActor:    audit.EventActorApiService,
+			EventTarget:   "triage_rule",
+			EventAction:   audit.EventActionCreate,
+			EventStatus:   audit.EventStatusSuccess,
+			EventAttr: map[string]any{
+				"rule_id":           *response.RuleID,
+				"rule_type":         triage.RuleTypePriorityPin,
+				"priority":          *req.CorrectedPriority,
+				"auto_created_from": "classify",
+			},
+		})
+	}
+
+	if err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: audits}); err != nil {
 		ctx.GetLogger().Error("failed to create audit event", "error", err)
 	}
 }

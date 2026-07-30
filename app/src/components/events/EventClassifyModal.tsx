@@ -38,6 +38,13 @@ interface EventClassifyModalProps {
   defaultClassification?: string;
 }
 
+const PRIORITY_OPTIONS = [
+  { value: 'P0', label: 'P0 — Critical' },
+  { value: 'P1', label: 'P1 — High' },
+  { value: 'P2', label: 'P2 — Medium' },
+  { value: 'P3', label: 'P3 — Low' },
+];
+
 const EventClassifyModal: React.FC<EventClassifyModalProps> = ({ open, handleClose, event, onSuccess, defaultClassification }) => {
   // Form state
   const [classification, setClassification] = useState<string>('');
@@ -46,6 +53,9 @@ const EventClassifyModal: React.FC<EventClassifyModalProps> = ({ open, handleClo
   const [applyScope, setApplyScope] = useState<string>('this_event');
   const [applyUntilDate, setApplyUntilDate] = useState<Date | null>(null);
   const [linkedEventId, setLinkedEventId] = useState<string>('');
+  // '' means "leave the computed priority as-is"; P0..P3 pins it (per-event or, with
+  // this_fingerprint scope, the whole alert class) so the model can't override it next time.
+  const [correctedPriority, setCorrectedPriority] = useState<string>('');
 
   // Preview state
   const [preview, setPreview] = useState<ClassifyPreviewResponse | null>(null);
@@ -67,6 +77,7 @@ const EventClassifyModal: React.FC<EventClassifyModalProps> = ({ open, handleClo
       setApplyScope('this_event');
       setApplyUntilDate(null);
       setLinkedEventId('');
+      setCorrectedPriority('');
       setPreview(null);
       setDuplicates([]);
     }
@@ -133,6 +144,7 @@ const EventClassifyModal: React.FC<EventClassifyModalProps> = ({ open, handleClo
     setClassification(e.target.value);
     setReasonCode(''); // Reset reason code when classification changes
     setLinkedEventId('');
+    setCorrectedPriority('');
   };
 
   const handleSubmit = async () => {
@@ -155,6 +167,7 @@ const EventClassifyModal: React.FC<EventClassifyModalProps> = ({ open, handleClo
         classification: classification as ClassifyEventInput['classification'],
         reason_code: reasonCode,
         reason_text: reasonText || undefined,
+        corrected_priority: correctedPriority || undefined,
         apply_scope: applyScope as ClassifyEventInput['apply_scope'],
         apply_until_hours: applyScope === 'time_limited' ? applyUntilHours : undefined,
         linked_event_id: classification === 'duplicate' ? linkedEventId : undefined,
@@ -304,6 +317,29 @@ const EventClassifyModal: React.FC<EventClassifyModalProps> = ({ open, handleClo
           </BlockWithHeading>
         )}
 
+        {/* Correct Priority — for real alerts that were mis-prioritized. Pinning is authoritative:
+            the model will not override it again. this_event pins this alert; this_fingerprint pins
+            the whole alert class. */}
+        {classification && (classification === 'true_positive' || classification === 'benign_positive') && (
+          <BlockWithHeading number={3} heading='Correct Priority (Optional)' isExpandable={false}>
+            <Box sx={{ width: ds.space.mul(0, 140) }}>
+              <Select
+                id='corrected-priority'
+                label='Set Priority'
+                value={correctedPriority}
+                options={PRIORITY_OPTIONS}
+                onChange={(next) => setCorrectedPriority(next)}
+                placeholder='No change'
+              />
+            </Box>
+            {correctedPriority && (
+              <Typography variant='caption' sx={{ color: ds.gray[600], mt: ds.space[2], display: 'block' }}>
+                {`NudgeBee will keep this alert at ${correctedPriority} and won't re-score it automatically.`}
+              </Typography>
+            )}
+          </BlockWithHeading>
+        )}
+
         {/* Duplicate Selection */}
         {classification === 'duplicate' && (
           <BlockWithHeading number={3} heading='Select Original Event' isExpandable={false}>
@@ -316,9 +352,9 @@ const EventClassifyModal: React.FC<EventClassifyModalProps> = ({ open, handleClo
           </BlockWithHeading>
         )}
 
-        {/* Apply Scope - Only for classifications that support rules */}
-        {classification && (classification === 'false_positive' || classification === 'duplicate') && (
-          <BlockWithHeading number={classification === 'duplicate' ? 4 : 3} heading='Apply To' isExpandable={false}>
+        {/* Apply Scope - for rule-backed classifications and any priority correction */}
+        {classification && (classification === 'false_positive' || classification === 'duplicate' || correctedPriority) && (
+          <BlockWithHeading number={4} heading='Apply To' isExpandable={false}>
             <RadioGroup value={applyScope} onChange={(e) => setApplyScope(e.target.value)}>
               {APPLY_SCOPE_OPTIONS.map((option) => (
                 <Box key={option.value} mb={ds.space[2]}>

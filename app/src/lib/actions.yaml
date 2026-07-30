@@ -2101,6 +2101,44 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: Get triage rules for an account
+  - name: workload_list_criticality
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/triage'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: List workloads with resolved criticality (Service Criticality review screen)
+  - name: workload_upsert_criticality
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/triage'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: Set an operator override for a workload's criticality
+  - name: workload_delete_criticality
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/triage'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: Remove an operator override, reverting to the derived criticality
   - name: event_groupings_v2
     definition:
       kind: "synchronous"

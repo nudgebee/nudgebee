@@ -31,6 +31,8 @@ import { getNubiIconUrl, useTenantBranding, DEFAULT_TITLE } from '@hooks/useTena
 import CubeIcon from '@assets/kubernetes/cube-icon.svg';
 import { Label } from '@ui/Label';
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
+import ScoreDisplay from '@shared/widgets/ScoreDisplay';
+import PriorityPinControl from '@shared/widgets/PriorityPinControl';
 import apiRecommendations from '@api1/recommendation';
 import apiTriage from '@api1/triage';
 import { hasReadAccess, hasWriteAccess, hasFeatureAccess } from '@lib/auth';
@@ -2052,6 +2054,29 @@ const Investigate = () => {
                       <Label text={row?.priority || '-'} margin='0' width={ds.space.mul(0, 21)} />
                     </Box>
                   </Box>
+
+                  {row?.computed_score !== null && row?.computed_score !== undefined && (
+                    <Box
+                      sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}
+                    >
+                      <Text value={'Triage Score'} secondaryText />
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+                        <ScoreDisplay
+                          score={row?.computed_score}
+                          priority={row?.computed_priority}
+                          scoreFactors={row?.score_factors}
+                          confidence={row?.score_confidence}
+                        />
+                        <PriorityPinControl
+                          eventId={row?.id}
+                          accountId={row?.cloud_account_id || router.query.accountId}
+                          currentPriority={row?.computed_priority}
+                          canWrite={hasWriteAccess(router.query.accountId)}
+                          onChanged={() => loadData(row?.id)}
+                        />
+                      </Box>
+                    </Box>
+                  )}
 
                   <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}>
                     <Text value={'Triage Status'} secondaryText />

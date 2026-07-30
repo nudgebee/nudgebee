@@ -8,7 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"nudgebee/services/config"
 	"nudgebee/services/internal/database/models"
+	"nudgebee/services/tenant"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -64,8 +66,73 @@ const (
 // action='adjust_score') and applied by processor.go after ComputeScore.
 // Tenants edit or override them via the existing triage rules UI.
 
-// ComputeScore calculates the priority score for an event
+// ComputeScore calculates the priority score for an event. It dispatches between the
+// LLM-verdict-per-class path (feature-flagged) and the legacy severity*env formula. In
+// shadow mode the new score is recorded in score_factors for comparison while the legacy
+// score stays authoritative.
+//
+// The occurrenceNumber, correlationType, and correlationScore params are pre-fetched by
+// processor.go (detectAndRecordDuplicate / detectAndRecordCorrelations) and passed in so
+// computeLegacyScore can derive its duplicate penalty and correlation adjustment without
+// re-querying — eliminates the per-event N+1 fingerprinted in OSS issue #286.
 func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurrenceNumber int, correlationType string, correlationScore float64) (*ScoreResult, error) {
+	// Human overrides are authoritative and bypass the machine score entirely. This MUST be
+	// the first check so a per-event correction or a class priority_pin is never overwritten by
+	// the LLM/legacy verdict on re-score (events upsert on recurrence and re-run ComputeScore).
+	// It applies in both legacy and LLM modes, and even in shadow mode (a human correction is
+	// not a "shadow" — it is the answer). The additive scoring-rule pass in processor.go checks
+	// IsHumanAuthority and skips when set.
+	if override := resolveHumanOverride(ctx, db, event); override != nil {
+		return override, nil
+	}
+
+	if !llmTriageScoringEnabled(event) {
+		return computeLegacyScore(ctx, db, event, occurrenceNumber, correlationType, correlationScore)
+	}
+
+	llmResult, llmErr := ComputeScoreLLM(ctx, db, event)
+
+	if !config.Config.FeatureLLMTriageScoringShadow {
+		if llmErr != nil || llmResult == nil {
+			slog.WarnContext(ctx, "LLM triage scoring failed; falling back to legacy",
+				"event_id", event.Id, "error", llmErr)
+			return computeLegacyScore(ctx, db, event, occurrenceNumber, correlationType, correlationScore)
+		}
+		return llmResult, nil
+	}
+
+	// Shadow: legacy authoritative, attach the LLM result to factors for comparison.
+	legacy, err := computeLegacyScore(ctx, db, event, occurrenceNumber, correlationType, correlationScore)
+	if err != nil {
+		return legacy, err
+	}
+	if llmErr == nil && llmResult != nil && legacy != nil {
+		legacy.Factors["shadow_llm_score"] = llmResult.Score
+		legacy.Factors["shadow_llm_priority"] = llmResult.Priority
+		legacy.Factors["shadow_llm_factors"] = llmResult.Factors
+	}
+	return legacy, nil
+}
+
+// llmTriageScoringEnabled reports whether the LLM-assisted scoring path is active for this event's
+// tenant. The primary gate is the per-tenant TRIAGE_LLM_SCORING feature flag (toggled in Tenant
+// Settings; default off, enabled tenant-by-tenant). The global config flag stays as a force-on-all
+// override (local testing / a global kill-switch). IsFeatureExplicitlyEnabled nil-guards its
+// context and caches per (feature, tenant), so this stays cheap on the hot path.
+func llmTriageScoringEnabled(event *models.Event) bool {
+	if config.Config.FeatureLLMTriageScoringEnabled {
+		return true
+	}
+	if event == nil || event.Tenant == nil || *event.Tenant == "" {
+		return false
+	}
+	return tenant.IsFeatureExplicitlyEnabled(nil, *event.Tenant, tenant.FEATURE_TRIAGE_LLM_SCORING)
+}
+
+// computeLegacyScore is the original severity*env scoring formula. Takes
+// occurrenceNumber/correlationType/correlationScore from the caller so it can compute
+// the duplicate penalty and correlation adjustment in-process — no per-event DB lookup.
+func computeLegacyScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurrenceNumber int, correlationType string, correlationScore float64) (*ScoreResult, error) {
 	factors := make(map[string]interface{})
 	var factorCount int
 
@@ -178,7 +245,8 @@ func getBaseSeverity(priority *string) int {
 	}
 }
 
-// Environment cache for getEnvironmentMultiplier
+// Environment cache shared by getEnvironmentMultiplier (legacy path) and
+// getEnvironmentCategory (LLM path) via getAccountEnv.
 type envCacheEntry struct {
 	env       string
 	expiresAt time.Time
@@ -190,28 +258,31 @@ var (
 	envCacheTTL = 5 * time.Minute
 )
 
-// getEnvironmentMultiplier fetches the environment multiplier from cloud_accounts
-func getEnvironmentMultiplier(ctx context.Context, db *sqlx.DB, cloudAccountID string) float64 {
+// getAccountEnv returns the cloud account's raw account_env value, cached for
+// envCacheTTL. The legacy multiplier path and the LLM category path both read
+// this same column, so they share one cache and one query — avoiding a second
+// uncached per-event lookup on the hot path. Returns ("", false) when the
+// account id is empty or the lookup fails (errors are not cached, so a transient
+// failure is retried on the next event rather than pinned for the whole TTL).
+func getAccountEnv(ctx context.Context, db *sqlx.DB, cloudAccountID string) (string, bool) {
 	if cloudAccountID == "" {
-		return EnvMultiplierDefault
+		return "", false
 	}
+
 	envCacheMu.RLock()
 	if entry, found := envCache[cloudAccountID]; found && time.Now().Before(entry.expiresAt) {
 		envCacheMu.RUnlock()
-		return parseEnvMultiplier(entry.env)
+		return entry.env, true
 	}
 	envCacheMu.RUnlock()
 
-	query := `SELECT account_env FROM cloud_accounts WHERE id = $1`
-
 	var accountEnv string
-	err := db.GetContext(ctx, &accountEnv, query, cloudAccountID)
-	if err != nil {
+	if err := db.GetContext(ctx, &accountEnv, `SELECT account_env FROM cloud_accounts WHERE id = $1`, cloudAccountID); err != nil {
 		slog.DebugContext(ctx, "Failed to get account_env, using default",
 			"cloud_account_id", cloudAccountID,
 			"error", err,
 		)
-		return EnvMultiplierDefault
+		return "", false
 	}
 
 	envCacheMu.Lock()
@@ -221,7 +292,16 @@ func getEnvironmentMultiplier(ctx context.Context, db *sqlx.DB, cloudAccountID s
 	}
 	envCacheMu.Unlock()
 
-	return parseEnvMultiplier(accountEnv)
+	return accountEnv, true
+}
+
+// getEnvironmentMultiplier fetches the environment multiplier from cloud_accounts
+func getEnvironmentMultiplier(ctx context.Context, db *sqlx.DB, cloudAccountID string) float64 {
+	env, ok := getAccountEnv(ctx, db, cloudAccountID)
+	if !ok {
+		return EnvMultiplierDefault
+	}
+	return parseEnvMultiplier(env)
 }
 
 func parseEnvMultiplier(accountEnv string) float64 {

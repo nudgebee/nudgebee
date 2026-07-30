@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -407,6 +408,28 @@ func MatchesRuleWithOccurrence(event *models.Event, rule *TriageRule, occurrence
 	}
 
 	return true
+}
+
+// getEventOccurrenceNumber returns the occurrence number for an event from event_duplicates
+// Returns 0 if not found (meaning event hasn't been processed for duplicates or is the first)
+func getEventOccurrenceNumber(ctx context.Context, db *sqlx.DB, eventID, fingerprint, cloudAccountID string) int {
+	query := `
+		SELECT occurrence_number
+		FROM event_duplicates
+		WHERE event_id = $1
+		  AND fingerprint = $2
+		  AND cloud_account_id = $3
+		LIMIT 1
+	`
+
+	var occurrenceNumber int
+	err := db.GetContext(ctx, &occurrenceNumber, query, eventID, fingerprint, cloudAccountID)
+	if err != nil {
+		// Not found or error - return 0 (will be treated as first occurrence)
+		return 0
+	}
+
+	return occurrenceNumber
 }
 
 // ApplyTriageRuleActions applies the rule actions to an event
@@ -844,6 +867,15 @@ func CreateTriageRule(ctx context.Context, db *sqlx.DB, req CreateTriageRuleRequ
 		return nil, err
 	}
 
+	// A priority_pin rule is meaningless without a valid pinned priority — reject early rather
+	// than store a rule resolvePriorityPin will silently ignore.
+	if req.RuleType == RuleTypePriorityPin {
+		av, err := ParseActionValue(req.ActionValue)
+		if err != nil || av == nil || av.Priority == nil || !isValidPriority(*av.Priority) {
+			return nil, fmt.Errorf("priority_pin rule requires action_value.priority of P0, P1, P2, or P3")
+		}
+	}
+
 	ruleID := uuid.New().String()
 
 	priority := 200 // Default for account rules
@@ -890,6 +922,30 @@ func CreateTriageRule(ctx context.Context, db *sqlx.DB, req CreateTriageRuleRequ
 		return nil, err
 	}
 
+	ClearTriageRulesCache()
+
+	// Record provenance for a class-level pin (append-only; best-effort — never fail rule creation
+	// on a logging error). Per-event corrections are logged atomically in ClassifyEvent instead.
+	if rule.RuleType == RuleTypePriorityPin {
+		if av, perr := ParseActionValue(rule.ActionValue); perr == nil && av != nil && av.Priority != nil {
+			pinned := strings.ToUpper(strings.TrimSpace(*av.Priority))
+			if logErr := insertCorrectionLog(ctx, db, correctionLogEntry{
+				TenantID:       tenantID,
+				CloudAccountID: cloudAccountID,
+				NewPriority:    &pinned,
+				Source:         "human_class_pin",
+				Authority:      authorityHumanClass,
+				RuleID:         &rule.ID,
+				CorrectedBy:    userID,
+				Reason:         req.Description,
+			}); logErr != nil {
+				slog.WarnContext(ctx, "failed to write class-pin correction log", "rule_id", rule.ID, "error", logErr)
+			}
+		}
+	}
+
+	// Invalidate the in-process LoadMatchingRules cache so the new rule is visible to
+	// CheckTriageRules on the very next event without waiting for the TTL refresh.
 	ClearTriageRulesCache()
 	return rule, nil
 }
@@ -1092,7 +1148,8 @@ func PreviewTriageRule(ctx context.Context, db *sqlx.DB, req RulePreviewRequest,
 
 	// Determine new status based on rule type and action
 	var newStatus string
-	if req.RuleType == RuleTypeScoring {
+	if req.RuleType == RuleTypeScoring || req.RuleType == RuleTypePriorityPin {
+		// Neither changes nb_status; a pin only sets computed_priority/score.
 		newStatus = NBStatusNoChange
 	} else if req.Action == ActionDrop {
 		newStatus = NBStatusDropped
@@ -1114,6 +1171,11 @@ func ApplyRuleToExistingEvents(ctx context.Context, db *sqlx.DB, rule *TriageRul
 	// For scoring rules, adjust scores instead of changing status
 	if rule.RuleType == RuleTypeScoring {
 		return applyScoreAdjustmentToExistingEvents(ctx, db, rule, cloudAccountID)
+	}
+
+	// For priority_pin rules, set computed_priority/score absolutely (not nb_status).
+	if rule.RuleType == RuleTypePriorityPin {
+		return applyPriorityPinToExistingEvents(ctx, db, rule, cloudAccountID)
 	}
 
 	// Determine target status
@@ -1273,7 +1335,20 @@ func applyScoreAdjustmentToExistingEvents(ctx context.Context, db *sqlx.DB, rule
 	if rule.MatchLabels != nil && *rule.MatchLabels != "" {
 		conditions += fmt.Sprintf(" AND labels @> $%d::jsonb", argIndex)
 		args = append(args, *rule.MatchLabels)
+		argIndex++
 	}
+
+	// Human-override guard: never let an additive scoring rule clobber an event a human has
+	// explicitly corrected per-event. The live ComputeScore path re-asserts the override on each
+	// recurrence, but a per-event correction may never recur (event resolved) — a bulk UPDATE here
+	// would clobber it permanently. Exclude such events (closes the bulk-bypass half of hole #2).
+	conditions += fmt.Sprintf(` AND NOT EXISTS (
+				SELECT 1 FROM event_classification ec
+				WHERE ec.event_id = events.id
+				  AND ec.corrected_priority IS NOT NULL
+				  AND ec.classified_by <> $%d
+			)`, argIndex)
+	args = append(args, systemUserID)
 
 	query := fmt.Sprintf(`
 		WITH new_scores AS (
@@ -1311,6 +1386,116 @@ func applyScoreAdjustmentToExistingEvents(ctx context.Context, db *sqlx.DB, rule
 		"adjustment", adjustment,
 	)
 
+	return int(rowsAffected), nil
+}
+
+// applyPriorityPinToExistingEvents sets computed_priority/computed_score ABSOLUTELY for existing
+// events matching a priority_pin rule. Unlike a scoring rule it does not add to the current score;
+// it pins to priorityToMinScore(P). It excludes events that already carry a more-specific per-event
+// human correction (precedence: human:event > human:class), and only touches active events.
+func applyPriorityPinToExistingEvents(ctx context.Context, db *sqlx.DB, rule *TriageRule, cloudAccountID string) (int, error) {
+	if cloudAccountID == "" {
+		return 0, nil
+	}
+	av, err := ParseActionValue(rule.ActionValue)
+	if err != nil || av == nil || av.Priority == nil || strings.TrimSpace(*av.Priority) == "" {
+		slog.InfoContext(ctx, "priority_pin rule has no priority in action_value, skipping apply to existing", "rule_id", rule.ID)
+		return 0, nil
+	}
+	pinned := strings.ToUpper(strings.TrimSpace(*av.Priority))
+	score := priorityToMinScore(pinned)
+
+	conditions := ""
+	args := []interface{}{score, pinned, cloudAccountID}
+	argIndex := 4
+
+	if rule.MatchFingerprint != nil && *rule.MatchFingerprint != "" {
+		conditions += fmt.Sprintf(" AND fingerprint = $%d", argIndex)
+		args = append(args, *rule.MatchFingerprint)
+		argIndex++
+	}
+	if rule.MatchAlertname != nil && *rule.MatchAlertname != "" {
+		conditions += fmt.Sprintf(" AND aggregation_key ~ $%d", argIndex)
+		args = append(args, *rule.MatchAlertname)
+		argIndex++
+	}
+	if rule.MatchNamespace != nil && *rule.MatchNamespace != "" {
+		conditions += fmt.Sprintf(" AND subject_namespace ~ $%d", argIndex)
+		args = append(args, *rule.MatchNamespace)
+		argIndex++
+	}
+	if rule.MatchService != nil && *rule.MatchService != "" {
+		conditions += fmt.Sprintf(" AND subject_owner ~ $%d", argIndex)
+		args = append(args, *rule.MatchService)
+		argIndex++
+	}
+	if rule.MatchSource != nil && *rule.MatchSource != "" {
+		conditions += fmt.Sprintf(" AND source = $%d", argIndex)
+		args = append(args, *rule.MatchSource)
+		argIndex++
+	}
+	if rule.MatchPriority != nil && *rule.MatchPriority != "" {
+		conditions += fmt.Sprintf(" AND priority = $%d", argIndex)
+		args = append(args, *rule.MatchPriority)
+		argIndex++
+	}
+	if rule.MatchFindingType != nil && *rule.MatchFindingType != "" {
+		conditions += fmt.Sprintf(" AND finding_type = $%d", argIndex)
+		args = append(args, *rule.MatchFindingType)
+		argIndex++
+	}
+	if rule.MatchLabels != nil && *rule.MatchLabels != "" {
+		conditions += fmt.Sprintf(" AND labels @> $%d::jsonb", argIndex)
+		args = append(args, *rule.MatchLabels)
+		argIndex++
+	}
+
+	// Don't override a more-specific per-event human correction.
+	conditions += fmt.Sprintf(` AND NOT EXISTS (
+			SELECT 1 FROM event_classification ec
+			WHERE ec.event_id = events.id
+			  AND ec.corrected_priority IS NOT NULL
+			  AND ec.classified_by <> $%d
+		)`, argIndex)
+	args = append(args, systemUserID)
+
+	// Tag score_factors on every pinned event (merge, not clobber) so the whole class shows the
+	// "corrected by human" provenance — not just the representative event the correction was made
+	// on. authority=human:class so the UI renders the class-pin badge. Casts are required: bare
+	// params inside jsonb_build_object (variadic "any") otherwise fail type inference (42P08).
+	ruleIDIndex := argIndex + 1
+	args = append(args, rule.ID)
+
+	query := fmt.Sprintf(`
+		UPDATE events
+		SET computed_score = $1,
+		    computed_priority = $2,
+		    score_factors = COALESCE(score_factors, '{}'::jsonb) || jsonb_build_object(
+		        'manual_correction', true,
+		        'scoring_path', 'human_override',
+		        'authority', 'human:class',
+		        'priority', $2::text,
+		        'final_score', $1::int,
+		        'winning_rule_id', $%d::text
+		    ),
+		    score_confidence = 1.0,
+		    updated_at = NOW()
+		WHERE cloud_account_id = $3
+		  AND nb_status IN ('OPEN', 'ACKNOWLEDGED', 'INVESTIGATING')
+		  %s
+	`, ruleIDIndex, conditions)
+
+	result, err := db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("failed to apply priority pin to existing events: %w", err)
+	}
+	rowsAffected, _ := result.RowsAffected()
+
+	slog.InfoContext(ctx, "Applied priority_pin rule to existing events",
+		"rule_id", rule.ID,
+		"events_updated", rowsAffected,
+		"pinned_priority", pinned,
+	)
 	return int(rowsAffected), nil
 }
 

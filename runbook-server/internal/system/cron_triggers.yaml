@@ -205,6 +205,21 @@
     num_retries: 0
     timeout_seconds: 600
   comment: Build knowledge graph from filters daily at 23:30 UTC
+- name: Workload Criticality Discovery
+  webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
+  schedule: '0 1 * * *'
+  payload:
+    action:
+      name: Workload Criticality Discovery
+    input:
+      request: {}
+  headers:
+    - name: X-ACTION-TOKEN
+      value_from_env: ACTION_API_SERVER_TOKEN
+  retry_conf:
+    num_retries: 0
+    timeout_seconds: 600
+  comment: Sweep all workloads and refresh derived criticality nightly, after the knowledge-graph build
 - name: cloud-account-webhook-sync
   webhook: '{{CLOUD_COLLECTOR_SERVER_URL}}/rpc/rpc-cron'
   schedule: '0 2 * * *'
