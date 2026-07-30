@@ -358,6 +358,21 @@ temporal:
     # migrations still work. Re-enable ad hoc for tctl debugging:
     #   helm upgrade ... --set temporal.admintools.enabled=true
     enabled: false
+  shims:
+    # Disabled: the chart's dockerize / temporal-elasticsearch-tool shims exist
+    # only for Temporal 1.29 images ("Set to false if using Temporal 1.30 or
+    # higher" per the subchart values); we run 1.31.2, and with elasticsearch
+    # disabled nothing mounts them. Keeping them enabled also breaks upgrades
+    # from chart 1.3.0: with schema.useHelmHooks=true the shims ConfigMap was
+    # created as a pre-install/pre-upgrade hook (hooks carry no Helm ownership
+    # metadata and its delete policy leaves it behind), so once useHelmHooks
+    # went false the same ConfigMap re-rendered as a normal resource and every
+    # upgrade failed with `ConfigMap "temporal-shims" exists and cannot be
+    # imported into the current release: invalid ownership metadata`. With both
+    # shims off the ConfigMap is not rendered at all, so the orphan is simply
+    # ignored (inert leftover, safe to delete by hand).
+    dockerize: false
+    elasticsearchTool: false
   schema:
     # Run schema setup/update as a normal Job, NOT a Helm hook.
     #
