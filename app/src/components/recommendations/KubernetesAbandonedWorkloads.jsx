@@ -552,7 +552,7 @@ const KubernetesAbandonedWorkloads = ({ enabledSummary = true, enabledFilters = 
   const onAccountFilterChange = (e) => {
     setSelectedAccountId(e.target.value);
     setPage(0);
-    applyFiltersOnRouter(router, { accountId: e.target.value });
+    applyFiltersOnRouter(router, { accountIds: e.target.value });
   };
 
   return (

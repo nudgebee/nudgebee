@@ -32,14 +32,14 @@ const EventResolutions = () => {
   const [loading, setLoading] = useState(false);
   const [accounts, setAccounts] = useState([]);
   const [selectedAccountId, setSelectedAccountId] = useState(() => {
-    const raw = router.query.accountId;
+    const raw = router.query.accountIds;
     return raw ? String(raw).split(',').filter(Boolean) : [];
   });
 
   useEffect(() => {
-    const raw = router.query.accountId;
+    const raw = router.query.accountIds;
     setSelectedAccountId(raw ? String(raw).split(',').filter(Boolean) : []);
-  }, [router.query.accountId]);
+  }, [router.query.accountIds]);
   const [selectedStatus, setSelectedStatus] = useState('');
   const [selectedType, setSelectedType] = useState('');
   const [selectedResolver, setSelectedResolver] = useState('');
@@ -337,7 +337,7 @@ const EventResolutions = () => {
         const ids = (value || []).map((v) => v.value);
         setSelectedAccountId(ids);
         setCurrentPage(0);
-        applyFiltersOnRouter(router, { accountId: ids.join(',') });
+        applyFiltersOnRouter(router, { accountIds: ids.join(',') });
       },
       label: 'Account',
       value: accounts

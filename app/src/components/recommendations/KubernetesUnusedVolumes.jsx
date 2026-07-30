@@ -342,7 +342,7 @@ const KubernetesUnusedVolumes = ({ isOptimisePage = false, resourceIds, groupNam
   const onAccountFilterChange = (e) => {
     setSelectedAccountId(e.target.value);
     setPage(0);
-    applyFiltersOnRouter(router, { accountId: e.target.value });
+    applyFiltersOnRouter(router, { accountIds: e.target.value });
   };
 
   const heading = props.heading === undefined ? 'Unused Volumes' : props.heading;

@@ -46,7 +46,7 @@ const ManualInvestigated = () => {
   const [loading, setLoading] = useState(false);
   const [accounts, setAccounts] = useState([]);
   const [selectedAccountId, setSelectedAccountId] = useState(() => {
-    const raw = router.query.accountId;
+    const raw = router.query.accountIds;
     return raw ? String(raw).split(',').filter(Boolean) : [];
   });
   const [selectedStatus, setSelectedStatus] = useState('');
@@ -72,9 +72,9 @@ const ManualInvestigated = () => {
   const tableId = 'manualInvestigatedTable';
 
   useEffect(() => {
-    const raw = router.query.accountId;
+    const raw = router.query.accountIds;
     setSelectedAccountId(raw ? String(raw).split(',').filter(Boolean) : []);
-  }, [router.query.accountId]);
+  }, [router.query.accountIds]);
 
   useEffect(() => {
     const raw = router.query.userId;
@@ -272,7 +272,7 @@ const ManualInvestigated = () => {
             const ids = (value || []).map((v) => v.value);
             setSelectedAccountId(ids);
             setCurrentPage(0);
-            applyFiltersOnRouter(router, { accountId: ids.join(',') });
+            applyFiltersOnRouter(router, { accountIds: ids.join(',') });
           }}
           data-testid='manual-investigated-account-filter'
         />

@@ -74,7 +74,7 @@ const TABLE_COLUMNS = [
         title='Triage Status'
         desc="Your team's response to this issue. Update it as you investigate, escalate, or resolve. To handle matching issues automatically, go to"
         linkText='Triage Rules →'
-        linkUrl='/troubleshoot#triage-rules'
+        linkUrl='/troubleshoot#all-events/triage-rules'
         placement='top'
       >
         <Box component='span' sx={{ cursor: 'default', display: 'inline-flex', alignItems: 'center', gap: ds.space[1] }}>

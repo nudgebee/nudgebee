@@ -76,7 +76,7 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
   const [selectedStatus, setSelectedStatus] = useState<string>('');
   const [includeSystemRules, setIncludeSystemRules] = useState(true);
   const [selectedAccountFilter, setSelectedAccountFilter] = useState<string[]>(() => {
-    const raw = router.query.accountId as string;
+    const raw = router.query.accountIds as string;
     return raw ? raw.split(',').filter(Boolean) : [];
   });
 
@@ -98,9 +98,9 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
   const totalCount = filteredRules.length;
 
   useEffect(() => {
-    const raw = router.query.accountId as string;
+    const raw = router.query.accountIds as string;
     setSelectedAccountFilter(raw ? raw.split(',').filter(Boolean) : []);
-  }, [router.query.accountId]);
+  }, [router.query.accountIds]);
 
   // Modal state
   const [isRuleModalOpen, setIsRuleModalOpen] = useState(false);
@@ -562,7 +562,7 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
                 const ids = (Array.isArray(items) ? items : []).map((v: any) => v.value);
                 setSelectedAccountFilter(ids);
                 setCurrentPage(0);
-                applyFiltersOnRouter(router, { accountId: ids.join(',') });
+                applyFiltersOnRouter(router, { accountIds: ids.join(',') });
               }}
             />
           )}
