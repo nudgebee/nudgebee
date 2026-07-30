@@ -410,6 +410,28 @@ func MatchesRuleWithOccurrence(event *models.Event, rule *TriageRule, occurrence
 	return true
 }
 
+// getEventOccurrenceNumber returns the occurrence number for an event from event_duplicates
+// Returns 0 if not found (meaning event hasn't been processed for duplicates or is the first)
+func getEventOccurrenceNumber(ctx context.Context, db *sqlx.DB, eventID, fingerprint, cloudAccountID string) int {
+	query := `
+		SELECT occurrence_number
+		FROM event_duplicates
+		WHERE event_id = $1
+		  AND fingerprint = $2
+		  AND cloud_account_id = $3
+		LIMIT 1
+	`
+
+	var occurrenceNumber int
+	err := db.GetContext(ctx, &occurrenceNumber, query, eventID, fingerprint, cloudAccountID)
+	if err != nil {
+		// Not found or error - return 0 (will be treated as first occurrence)
+		return 0
+	}
+
+	return occurrenceNumber
+}
+
 // ApplyTriageRuleActions applies the rule actions to an event
 // Only applies the winning rule type's actions based on priority:
 // Suppression > Classification > Scoring
