@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -62,7 +63,7 @@ func TestNBLogToolV2_Call_EmptyResult(t *testing.T) {
 
 	t.Run("prefers services-server suggestion over the generic message", func(t *testing.T) {
 		cleanup := startLogsStub(t, http.StatusOK,
-			`{"logs":[],"query":"","provider":"loki","suggestion":"no logs matched: value \"prodd\" for label \"namespace\" not found; closest valid value(s): [prod]"}`)
+			`{"logs":[],"query":"{namespace=~\".+\"}","provider":"loki","suggestion":"no logs matched: value \"prodd\" for label \"namespace\" not found; closest valid value(s): [prod]"}`)
 		defer cleanup()
 
 		tool := &NBLogToolV2{accountId: "acc-1", logProvider: logProvider}
@@ -71,10 +72,24 @@ func TestNBLogToolV2_Call_EmptyResult(t *testing.T) {
 		assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
 		assert.Contains(t, resp.Data, "closest valid value(s): [prod]")
 		assert.NotContains(t, resp.Data, NoLogsFoundPrefix)
+
+		// The real backend query/provider services-server executed must still be
+		// extractable from Data even on a zero-row result — this is what
+		// FetchLogsAgentV2's executedLogQuery/providerFromLogs read to show the
+		// real query instead of falling back to the LLM's canonical where-clause.
+		var doc struct {
+			Metadata struct {
+				Query    string `json:"query"`
+				Provider string `json:"provider"`
+			} `json:"metadata"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(resp.Data), &doc))
+		assert.Equal(t, `{namespace=~".+"}`, doc.Metadata.Query)
+		assert.Equal(t, "loki", doc.Metadata.Provider)
 	})
 
 	t.Run("falls back to the generic message when services-server has no suggestion", func(t *testing.T) {
-		cleanup := startLogsStub(t, http.StatusOK, `{"logs":[],"query":"","provider":"loki"}`)
+		cleanup := startLogsStub(t, http.StatusOK, `{"logs":[],"query":"{namespace=~\".+\"}","provider":"loki"}`)
 		defer cleanup()
 
 		tool := &NBLogToolV2{accountId: "acc-1", logProvider: logProvider}
@@ -82,5 +97,15 @@ func TestNBLogToolV2_Call_EmptyResult(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
 		assert.Contains(t, resp.Data, NoLogsFoundPrefix)
+
+		var doc struct {
+			Metadata struct {
+				Query    string `json:"query"`
+				Provider string `json:"provider"`
+			} `json:"metadata"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(resp.Data), &doc))
+		assert.Equal(t, `{namespace=~".+"}`, doc.Metadata.Query)
+		assert.Equal(t, "loki", doc.Metadata.Provider)
 	})
 }
