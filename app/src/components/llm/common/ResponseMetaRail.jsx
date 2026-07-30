@@ -195,6 +195,69 @@ const egressfilterItem = (events) => {
   };
 };
 
+// Per-message PII scrubbing signal — sibling of egressfilterItem for the EE
+// ee/scrubbing wrapper. PIIScrubEvent has a different shape from FilterEvent
+// (no `mode` — the wrapper always tokenizes reversibly; the detect/enforce
+// distinction lives on outage policy, not per-event). We show `N PII
+// scrubbed` with a warning tone and a tooltip listing distinct categories
+// detected (`EMAIL, PERSON`) + audit ids for support correlation.
+// Deliberately does NOT surface payload_bytes or agent_name in the chip —
+// those are for dashboards, not the message rail.
+const piiScrubItem = (events) => {
+  if (!Array.isArray(events) || events.length === 0) {
+    return null;
+  }
+  const piiEvents = events.filter((e) => e?.detector === 'pii');
+  if (piiEvents.length === 0) {
+    return null;
+  }
+
+  const totalHits = Math.max(
+    1,
+    piiEvents.reduce((n, e) => n + (Number(e?.hit_count) || 0), 0)
+  );
+
+  // Distinct categories across all PII events, sorted for stable rendering.
+  const catSet = new Set();
+  piiEvents.forEach((e) => {
+    if (Array.isArray(e?.categories)) {
+      e.categories.forEach((c) => c && catSet.add(String(c)));
+    }
+  });
+  const catList = Array.from(catSet).sort().join(', ');
+
+  // Dedupe audit ids — two PII events on the same message could carry the
+  // same id (retries, or a badly-behaved caller emitting duplicates), and
+  // "scrub-abc, scrub-abc" is confusing noise in the tooltip.
+  const auditIds = Array.from(new Set(piiEvents.map((e) => e?.audit_id).filter(Boolean))).join(', ');
+
+  const tooltipParts = [];
+  if (catList) {
+    tooltipParts.push(`Scrubbed: ${catList}`);
+  }
+  if (piiEvents.length > 1) {
+    tooltipParts.push(`${totalHits} value${totalHits === 1 ? '' : 's'} across ${piiEvents.length} calls`);
+  }
+  if (auditIds) {
+    tooltipParts.push(`Audit: ${auditIds}`);
+  }
+  const label = totalHits === 1 ? 'PII scrubbed' : 'PII values scrubbed';
+  const tooltip = tooltipParts.join('. ') || label;
+
+  return {
+    key: 'pii',
+    node: (
+      <Tooltip title={tooltip} placement='top'>
+        <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center' }}>
+          <Chip variant='count' tone='warning' count={totalHits} aria-label={tooltip} size='xs'>
+            {label}
+          </Chip>
+        </Box>
+      </Tooltip>
+    ),
+  };
+};
+
 const buildItems = (props) => {
   const items = [];
   // Token-usage widget always renders for response messages — the widget itself shows a
@@ -214,6 +277,14 @@ const buildItems = (props) => {
   const filterItem = egressfilterItem(props.egressfilterEvents);
   if (filterItem) {
     items.push(filterItem);
+  }
+  // PII chip renders alongside (or in place of) the secrets chip. The two are
+  // independent — a turn can trigger secrets only, PII only, both, or
+  // neither. Order: secrets then PII so the higher-severity/policy chip
+  // (secrets, which can carry an 'enforce' verdict) reads first left-to-right.
+  const piiItem = piiScrubItem(props.egressfilterEvents);
+  if (piiItem) {
+    items.push(piiItem);
   }
   if (props.watchCount > 0 && props.onOpenWatches) {
     // 'success' tone (green family) — visually separate from tasks/contexts/
@@ -340,4 +411,6 @@ ResponseMetaRail.propTypes = {
 };
 
 export default ResponseMetaRail;
-export { egressfilterItem as __egressfilterItemForTest };
+
+// Exported for unit tests only. Not part of the public component API.
+export { egressfilterItem as __egressfilterItemForTest, piiScrubItem as __piiScrubItemForTest };

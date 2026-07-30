@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -35,9 +36,60 @@ import (
 
 // egressConfigRequest is the wire shape for egressfilter_update. TenantId on
 // the wire is ignored — tenant is always the authenticated tenant.
+//
+// PII fields follow the same tri-state pattern as the admin PATCH surface:
+// field absent → leave the DB value; field present with a value → replace;
+// field present but null → clear back to inherit-env. The custom
+// UnmarshalJSON captures the top-level key set into presentKeys so the
+// merge step can distinguish absent from null (a plain *bool zeroes both).
 type egressConfigRequest struct {
 	Mode    *string `json:"mode"`
 	Enabled *bool   `json:"enabled"`
+
+	// PII sibling detector (V827 backend + this action).
+	PIIEnabled            *bool     `json:"pii_enabled"`
+	PIIMode               *string   `json:"pii_mode"`
+	PIINerEnabled         *bool     `json:"pii_ner_enabled"`
+	PIIDisabledCategories *[]string `json:"pii_disabled_categories"`
+
+	presentKeys map[string]struct{} `json:"-"`
+}
+
+// UnmarshalJSON captures the set of top-level keys the caller included in
+// the request body. See patchBody.UnmarshalJSON in egressfilter_tenant.go
+// for the same trick — needed to tell absent from explicit-null for the
+// nullable PII fields.
+func (r *egressConfigRequest) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	present := make(map[string]struct{}, len(raw))
+	for k := range raw {
+		present[k] = struct{}{}
+	}
+	type alias egressConfigRequest
+	var tmp alias
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	*r = egressConfigRequest(tmp)
+	r.presentKeys = present
+	return nil
+}
+
+func (r *egressConfigRequest) isPresent(key string) bool {
+	_, ok := r.presentKeys[key]
+	return ok
+}
+
+// piiCategoriesForUI is the closed set the UI's category picker offers.
+// Mirrors validPIICategories on the admin surface (egressfilter_tenant.go).
+var piiCategoriesForUI = map[string]struct{}{
+	"EMAIL":    {},
+	"PERSON":   {},
+	"PHONE":    {},
+	"LOCATION": {},
 }
 
 // egressPatternUpsertRequest is the wire shape for egressfilter_upsert_pattern.
@@ -55,33 +107,77 @@ type egressPatternDeleteRequest struct {
 }
 
 const (
-	errorEgressTenantRequired  = "egressfilter: unable to identify tenant"
-	errorEgressInvalidMode     = "egressfilter: mode must be one of: detect, enforce, redact"
-	errorEgressInvalidPayload  = "egressfilter: invalid payload, action.name is required"
-	errorEgressUnsupported     = "egressfilter: invalid payload, unsupported action"
-	errorEgressPatternIDReq    = "egressfilter: pattern id is required"
-	errorEgressPatternNotFound = "egressfilter: pattern not found"
+	errorEgressTenantRequired   = "egressfilter: unable to identify tenant"
+	errorEgressInvalidMode      = "egressfilter: mode must be one of: detect, enforce, redact"
+	errorEgressInvalidPayload   = "egressfilter: invalid payload, action.name is required"
+	errorEgressUnsupported      = "egressfilter: invalid payload, unsupported action"
+	errorEgressPatternIDReq     = "egressfilter: pattern id is required"
+	errorEgressPatternNotFound  = "egressfilter: pattern not found"
+	errorEgressInvalidPIIMode   = "egressfilter: pii_mode must be one of: detect, enforce (or null to inherit env default)"
+	errorEgressInvalidPIICatFmt = "egressfilter: pii_disabled_categories contains unknown value: %s (allowed: EMAIL, PERSON, PHONE, LOCATION)"
+	errorEgressTooManyPIICats   = "egressfilter: pii_disabled_categories exceeds max entries (8)"
+	maxPIIDisabledCategoriesRPC = 8
 )
 
 // egressConfigResponse is the read shape returned by every handler. It carries
 // the tenant's effective mode/enabled and custom patterns plus read-only
 // platform context so the UI can render env defaults and disable controls when
 // the subsystem is off at the env level.
-func egressConfigResponse(mode egressfilter.Mode, enabled, hasOverride bool, patterns []egressfilter.CustomRule) gin.H {
+func egressConfigResponse(cfg *egressfilter.TenantConfig, mode egressfilter.Mode, enabled, hasOverride bool, patterns []egressfilter.CustomRule) gin.H {
 	if patterns == nil {
 		patterns = []egressfilter.CustomRule{}
+	}
+	// Serialize the PII fields off cfg (may be nil for env-defaults response).
+	// Nullable bools go out as JSON null when unset, so the UI can distinguish
+	// "inherit env" from "explicit false" without a second flag.
+	var (
+		piiEnabled    any = nil
+		piiNerEnabled any = nil
+		piiMode       string
+		piiCats       []string
+	)
+	if cfg != nil {
+		if cfg.PIIEnabled != nil {
+			piiEnabled = *cfg.PIIEnabled
+		}
+		if cfg.PIINerEnabled != nil {
+			piiNerEnabled = *cfg.PIINerEnabled
+		}
+		piiMode = cfg.PIIMode
+		piiCats = cfg.PIIDisabledCategories
+	}
+	if piiCats == nil {
+		piiCats = []string{}
 	}
 	return gin.H{
 		"mode":            string(mode),
 		"enabled":         enabled,
 		"has_override":    hasOverride,
 		"custom_patterns": patterns,
+		// PII tenant values (nullable → inherit env when null).
+		"pii_enabled":             piiEnabled,
+		"pii_mode":                piiMode,
+		"pii_ner_enabled":         piiNerEnabled,
+		"pii_disabled_categories": piiCats,
 		// Read-only platform context (from env), so the UI can explain when a
 		// tenant setting has no effect.
-		"master_enabled":   config.Config.LlmServerEgressFilterEnabled,
-		"secrets_enabled":  config.Config.LlmServerEgressFilterSecretsEnabled,
-		"env_default_mode": string(egressfilter.ParseMode(config.Config.LlmServerEgressFilterSecretsMode)),
+		"master_enabled":       config.Config.LlmServerEgressFilterEnabled,
+		"secrets_enabled":      config.Config.LlmServerEgressFilterSecretsEnabled,
+		"env_default_mode":     string(egressfilter.ParseMode(config.Config.LlmServerEgressFilterSecretsMode)),
+		"env_pii_enabled":      config.Config.LlmServerEgressFilterPIIEnabled,
+		"env_pii_ner_enabled":  config.Config.LlmServerEgressFilterPIINerEnabled,
+		"env_pii_default_mode": envPIIMode(),
 	}
+}
+
+// envPIIMode normalizes the process-level PII mode string to a UI-friendly
+// value ("detect" default when unset or unrecognized).
+func envPIIMode() string {
+	m := strings.ToLower(strings.TrimSpace(config.Config.LlmServerEgressFilterPIIMode))
+	if m == "enforce" {
+		return "enforce"
+	}
+	return "detect"
 }
 
 // tenantUUIDFromContext resolves the authenticated tenant as a uuid.UUID.
@@ -148,11 +244,11 @@ func egressConfigGet(c *gin.Context, context *security.RequestContext) {
 
 	if cfg == nil {
 		envMode := egressfilter.ParseMode(config.Config.LlmServerEgressFilterSecretsMode)
-		c.JSON(200, buildApiResponse(egressConfigResponse(envMode, config.Config.LlmServerEgressFilterSecretsEnabled, false, nil), nil))
+		c.JSON(200, buildApiResponse(egressConfigResponse(nil, envMode, config.Config.LlmServerEgressFilterSecretsEnabled, false, nil), nil))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(egressConfigResponse(cfg.Mode, cfg.Enabled, true, patternsFromCfg(cfg)), nil))
+	c.JSON(200, buildApiResponse(egressConfigResponse(cfg, cfg.Mode, cfg.Enabled, true, patternsFromCfg(cfg)), nil))
 }
 
 // egressConfigUpdate sets the tenant's mode and/or enabled flag. It is a
@@ -185,7 +281,7 @@ func egressConfigUpdate(c *gin.Context, context *security.RequestContext, payloa
 	if err := persistTenantConfig(c, cfg); err != nil {
 		return // response already written
 	}
-	c.JSON(200, buildApiResponse(egressConfigResponse(cfg.Mode, cfg.Enabled, true, patternsFromCfg(cfg)), nil))
+	c.JSON(200, buildApiResponse(egressConfigResponse(cfg, cfg.Mode, cfg.Enabled, true, patternsFromCfg(cfg)), nil))
 }
 
 // egressPatternUpsert creates or updates one custom detection pattern. The
@@ -251,7 +347,7 @@ func egressPatternUpsert(c *gin.Context, context *security.RequestContext, paylo
 	if err := persistTenantConfig(c, cfg); err != nil {
 		return
 	}
-	c.JSON(200, buildApiResponse(egressConfigResponse(cfg.Mode, cfg.Enabled, true, rules), nil))
+	c.JSON(200, buildApiResponse(egressConfigResponse(cfg, cfg.Mode, cfg.Enabled, true, rules), nil))
 }
 
 // egressPatternDelete removes one custom pattern by id. Deleting an unknown id
@@ -308,7 +404,7 @@ func egressPatternDelete(c *gin.Context, context *security.RequestContext, paylo
 		}
 		hasOverride = true
 	}
-	c.JSON(200, buildApiResponse(egressConfigResponse(cfg.Mode, cfg.Enabled, hasOverride, kept), nil))
+	c.JSON(200, buildApiResponse(egressConfigResponse(cfg, cfg.Mode, cfg.Enabled, hasOverride, kept), nil))
 }
 
 // egressClearOverride drops the tenant's override row entirely, so the next
@@ -326,7 +422,7 @@ func egressClearOverride(c *gin.Context, context *security.RequestContext) {
 	}
 	egressfilter.InvalidateTenantConfig(tenantID)
 	envMode := egressfilter.ParseMode(config.Config.LlmServerEgressFilterSecretsMode)
-	c.JSON(200, buildApiResponse(egressConfigResponse(envMode, config.Config.LlmServerEgressFilterSecretsEnabled, false, nil), nil))
+	c.JSON(200, buildApiResponse(egressConfigResponse(nil, envMode, config.Config.LlmServerEgressFilterSecretsEnabled, false, nil), nil))
 }
 
 // --- Shared handler helpers --------------------------------------------------
@@ -373,12 +469,17 @@ func setCustomRules(cfg *egressfilter.TenantConfig, rules []egressfilter.CustomR
 	return nil
 }
 
-// mergeEgressConfigUpdate applies the supplied mode/enabled onto cfg in place.
-// Only fields the caller set (non-nil) are touched, so a partial update
-// preserves everything else on the row — allowlist, disabled_rules,
-// custom_rules. Returns an error (and leaves cfg unmodified) when the mode
-// string is invalid. Pure and DB-free so it is unit-testable without the
-// auth/context stack.
+// mergeEgressConfigUpdate applies the supplied mode/enabled + PII overrides
+// onto cfg in place. Only fields the caller set (non-nil, and — for the
+// nullable PII fields — present in the JSON body) are touched. Returns an
+// error (and leaves cfg unmodified for the field that failed) when a mode
+// string or category is invalid. Pure and DB-free so it is unit-testable
+// without the auth/context stack.
+//
+// Tri-state semantics for the PII fields:
+//   - request key absent           → leave cfg field unchanged
+//   - request key present, non-null → replace cfg field with value
+//   - request key present, null    → clear cfg field back to "inherit env"
 func mergeEgressConfigUpdate(cfg *egressfilter.TenantConfig, request egressConfigRequest) error {
 	if request.Mode != nil {
 		mode, ok := parseEgressMode(*request.Mode)
@@ -390,7 +491,78 @@ func mergeEgressConfigUpdate(cfg *egressfilter.TenantConfig, request egressConfi
 	if request.Enabled != nil {
 		cfg.Enabled = *request.Enabled
 	}
+	if request.isPresent("pii_enabled") {
+		cfg.PIIEnabled = request.PIIEnabled // nil = clear
+	}
+	if request.isPresent("pii_ner_enabled") {
+		cfg.PIINerEnabled = request.PIINerEnabled // nil = clear
+	}
+	if request.isPresent("pii_mode") {
+		if request.PIIMode == nil {
+			cfg.PIIMode = "" // clear
+		} else {
+			normalized, ok := parseEgressPIIMode(*request.PIIMode)
+			if !ok {
+				return errors.New(errorEgressInvalidPIIMode)
+			}
+			cfg.PIIMode = normalized
+		}
+	}
+	if request.isPresent("pii_disabled_categories") {
+		if request.PIIDisabledCategories == nil {
+			cfg.PIIDisabledCategories = nil // clear (DAO coerces to '{}')
+		} else {
+			normalized, err := parseEgressPIICategories(*request.PIIDisabledCategories)
+			if err != nil {
+				return err
+			}
+			cfg.PIIDisabledCategories = normalized
+		}
+	}
 	return nil
+}
+
+// parseEgressPIIMode validates + normalizes the PII mode string. Accepts
+// "detect" or "enforce"; empty string clears to "inherit env" (kept as-is
+// in cfg.PIIMode = ""). Any other value is rejected loudly, mirroring the
+// admin-surface's parsePIIMode.
+func parseEgressPIIMode(raw string) (string, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	switch trimmed {
+	case "", "detect", "enforce":
+		return trimmed, true
+	default:
+		return "", false
+	}
+}
+
+// parseEgressPIICategories uppercases + dedupes + closed-set-validates the
+// input. Empty input → nil (cleared). Unknown category → error with the
+// allowed set in the message.
+func parseEgressPIICategories(in []string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		v := strings.ToUpper(strings.TrimSpace(raw))
+		if v == "" {
+			continue
+		}
+		if _, ok := piiCategoriesForUI[v]; !ok {
+			return nil, fmt.Errorf(errorEgressInvalidPIICatFmt, raw)
+		}
+		if _, dup := seen[v]; dup {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	if len(out) > maxPIIDisabledCategoriesRPC {
+		return nil, errors.New(errorEgressTooManyPIICats)
+	}
+	return out, nil
 }
 
 // parseEgressMode validates an admin-supplied mode string. Unlike

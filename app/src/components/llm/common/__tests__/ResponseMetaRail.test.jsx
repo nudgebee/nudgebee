@@ -12,7 +12,7 @@
 //
 // Precedence for tone / verb: enforce > redact > detect.
 
-import { __egressfilterItemForTest as egressfilterItem } from '@components/llm/common/ResponseMetaRail';
+import { __egressfilterItemForTest as egressfilterItem, __piiScrubItemForTest as piiScrubItem } from '@components/llm/common/ResponseMetaRail';
 
 // Reach into the returned React element to pull the Chip's count prop.
 // Structure is <Tooltip><Box><Chip count={N}>label</Chip></Box></Tooltip>.
@@ -134,5 +134,107 @@ describe('egressfilterItem', () => {
     ]);
     expect(item).not.toBeNull();
     expect(chipCount(item)).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PII chip (sibling of the secrets chip; reads detector==='pii' entries from
+// the same metadata.egressfilter[] array).
+// ---------------------------------------------------------------------------
+
+describe('piiScrubItem', () => {
+  const piiEvent = (overrides = {}) => ({
+    detector: 'pii',
+    audit_id: 'scrub-abc123',
+    hit_count: 1,
+    categories: ['EMAIL'],
+    reversible: true,
+    ...overrides,
+  });
+
+  it('returns null on empty / missing input', () => {
+    expect(piiScrubItem(undefined)).toBeNull();
+    expect(piiScrubItem(null)).toBeNull();
+    expect(piiScrubItem([])).toBeNull();
+  });
+
+  it('returns null when the array has no pii entries (secrets-only turn)', () => {
+    const item = piiScrubItem([{ detector: 'secrets', mode: 'detect', hit_count: 3, rule_ids: ['a'] }]);
+    expect(item).toBeNull();
+  });
+
+  it('renders a chip for a single PII event, count from hit_count', () => {
+    const item = piiScrubItem([piiEvent({ hit_count: 2, categories: ['EMAIL', 'PERSON'] })]);
+    expect(item).not.toBeNull();
+    expect(item.key).toBe('pii');
+    expect(chipCount(item)).toBe(2);
+  });
+
+  it('label singular vs plural on total hits', () => {
+    const one = piiScrubItem([piiEvent({ hit_count: 1 })]);
+    expect(one.node.props.children.props.children.props.children).toBe('PII scrubbed');
+    const many = piiScrubItem([piiEvent({ hit_count: 3 })]);
+    expect(many.node.props.children.props.children.props.children).toBe('PII values scrubbed');
+  });
+
+  it('sums hit_count across multiple PII events and dedupes categories', () => {
+    const item = piiScrubItem([
+      piiEvent({ audit_id: 'scrub-a', hit_count: 2, categories: ['EMAIL', 'PERSON'] }),
+      piiEvent({ audit_id: 'scrub-b', hit_count: 4, categories: ['PERSON', 'PHONE'] }),
+    ]);
+    expect(item).not.toBeNull();
+    expect(chipCount(item)).toBe(6);
+    // Tooltip is on the outer Tooltip element as `title`.
+    expect(item.node.props.title).toContain('EMAIL');
+    expect(item.node.props.title).toContain('PERSON');
+    expect(item.node.props.title).toContain('PHONE');
+    // Cross-call scope line only appears when >1 event.
+    expect(item.node.props.title).toContain('across 2 calls');
+    // Audit ids present.
+    expect(item.node.props.title).toContain('scrub-a');
+    expect(item.node.props.title).toContain('scrub-b');
+  });
+
+  it('IGNORES secrets entries when computing counts (mixed array)', () => {
+    // The whole point of the polymorphic-array design: the PII chip must
+    // never count secrets hit_count, and vice-versa.
+    const item = piiScrubItem([
+      { detector: 'secrets', mode: 'enforce', hit_count: 100, rule_ids: ['aws-access-key-id'] },
+      piiEvent({ hit_count: 2, categories: ['EMAIL'] }),
+    ]);
+    expect(item).not.toBeNull();
+    expect(chipCount(item)).toBe(2);
+  });
+
+  it('missing hit_count on a PII event falls back to min 1', () => {
+    // Defensive: a malformed row without hit_count still renders a chip
+    // (rather than "0 PII scrubbed") so the audit trail stays visible.
+    const item = piiScrubItem([piiEvent({ hit_count: undefined })]);
+    expect(chipCount(item)).toBe(1);
+  });
+
+  it('missing categories does not crash the tooltip', () => {
+    // Defensive: `categories` absent → we skip the "Scrubbed: ..." line
+    // and fall back to just the audit-id line (still useful for support).
+    const item = piiScrubItem([piiEvent({ categories: undefined })]);
+    expect(item).not.toBeNull();
+    expect(item.node.props.title).toContain('scrub-abc123');
+    expect(item.node.props.title).not.toContain('Scrubbed:');
+  });
+
+  it('dedupes duplicate audit_ids in the tooltip (Gemini review)', () => {
+    // Two events sharing an audit id (retries, or a badly-behaved caller
+    // emitting duplicates) must not render as "scrub-x, scrub-x" — one
+    // occurrence in the tooltip is enough.
+    const item = piiScrubItem([
+      piiEvent({ audit_id: 'scrub-dup', hit_count: 1 }),
+      piiEvent({ audit_id: 'scrub-dup', hit_count: 1 }),
+      piiEvent({ audit_id: 'scrub-other', hit_count: 1 }),
+    ]);
+    expect(item).not.toBeNull();
+    const title = item.node.props.title;
+    // 'scrub-dup' appears exactly once (dedupe worked), 'scrub-other' also once.
+    expect(title.match(/scrub-dup/g)?.length).toBe(1);
+    expect(title.match(/scrub-other/g)?.length).toBe(1);
   });
 });

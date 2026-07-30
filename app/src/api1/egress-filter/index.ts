@@ -41,6 +41,14 @@ function unwrap<T>(response: any, action: string): T | null {
 export type EgressFilterMode = 'detect' | 'enforce' | 'redact';
 export const EGRESS_FILTER_MODES: EgressFilterMode[] = ['detect', 'enforce', 'redact'];
 
+/** PII scrubber mode — subset of secrets modes (no redact today). */
+export type PIIMode = 'detect' | 'enforce';
+export const PII_MODES: PIIMode[] = ['detect', 'enforce'];
+
+/** Closed set of PII categories the ml-k8s /scrub API emits. */
+export type PIICategory = 'EMAIL' | 'PERSON' | 'PHONE' | 'LOCATION';
+export const PII_CATEGORIES: PIICategory[] = ['EMAIL', 'PERSON', 'PHONE', 'LOCATION'];
+
 /** One tenant-defined custom detection pattern. Action on match follows the tenant mode. */
 export interface EgressCustomPattern {
   id: string; // server-assigned; empty when creating
@@ -55,10 +63,24 @@ export interface EgressFilterConfig {
   /** True when a per-tenant override row exists; false = env defaults in effect. */
   has_override: boolean;
   custom_patterns: EgressCustomPattern[];
+
+  // --- PII sibling detector (tri-state: null = inherit env; otherwise explicit) ---
+  /** null → inherit env_pii_enabled; true/false → explicit override */
+  pii_enabled: boolean | null;
+  /** '' → inherit env_pii_default_mode; 'detect' / 'enforce' → explicit */
+  pii_mode: '' | PIIMode;
+  /** null → inherit env_pii_ner_enabled */
+  pii_ner_enabled: boolean | null;
+  /** Categories whose tokens the wrapper un-scrubs before egress. Empty = scrub all. */
+  pii_disabled_categories: PIICategory[];
+
   // Read-only platform context (from llm-server env).
   master_enabled: boolean; // whole egress subsystem on/off at the platform level
   secrets_enabled: boolean; // secret detector on/off at the platform level
   env_default_mode: EgressFilterMode; // mode applied when no tenant override exists
+  env_pii_enabled: boolean; // process-level PII master (hard gate — false = wrapper never installed)
+  env_pii_ner_enabled: boolean;
+  env_pii_default_mode: PIIMode;
 }
 
 /** Get the current tenant's egress-filter config (+ platform context). */
@@ -72,11 +94,28 @@ export async function getEgressFilterConfig(signal?: AbortSignal): Promise<Egres
   return unwrap<EgressFilterConfig>(response, 'egressfilter_get');
 }
 
-/** Update the current tenant's egress-filter mode and/or enabled flag. */
-export async function updateEgressFilterConfig(
-  input: { mode?: EgressFilterMode; enabled?: boolean },
-  signal?: AbortSignal
-): Promise<EgressFilterConfig | null> {
+/**
+ * Update the current tenant's egress-filter config.
+ *
+ * PII fields follow tri-state semantics matching the backend:
+ *   - field absent    → leave existing DB value
+ *   - field non-null  → replace with value
+ *   - field explicit `null` → clear back to "inherit env"
+ *
+ * The absent-vs-null distinction is preserved on the wire because we send
+ * the input object verbatim (JSON.stringify keeps explicit-null keys).
+ * TypeScript's `undefined` fields are elided by JSON.stringify → absent.
+ */
+export interface UpdateEgressFilterInput {
+  mode?: EgressFilterMode;
+  enabled?: boolean;
+  // Nullable overrides — pass explicit null to clear back to inherit-env.
+  pii_enabled?: boolean | null;
+  pii_mode?: PIIMode | null;
+  pii_ner_enabled?: boolean | null;
+  pii_disabled_categories?: PIICategory[] | null;
+}
+export async function updateEgressFilterConfig(input: UpdateEgressFilterInput, signal?: AbortSignal): Promise<EgressFilterConfig | null> {
   const query = `mutation UpdateEgressFilterConfig($request: json!) {
     egressfilter_update(request: $request) {
       data
