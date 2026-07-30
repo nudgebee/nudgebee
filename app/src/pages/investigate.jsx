@@ -1950,7 +1950,6 @@ const Investigate = () => {
               setTicketData(r);
               setIsTicketCreateFormOpen(true);
             }}
-            onPriorityChanged={loadData}
             onResetState={resetState}
             collapsed={sidebarCollapsed}
             onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}

@@ -63,7 +63,7 @@ const rowSx = { display: 'flex', justifyContent: 'space-between', alignItems: 'c
 const labelSx = { fontSize: ds.text.small, color: ds.gray[600] };
 const valueSx = { fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[700] };
 
-const ScoreDisplay = ({ score, priority: _priority, scoreFactors, confidence }) => {
+const ScoreDisplay = ({ score, priority: _priority, scoreFactors, confidence, children }) => {
   const [anchorEl, setAnchorEl] = useState(null);
   const open = Boolean(anchorEl);
 
@@ -88,7 +88,16 @@ const ScoreDisplay = ({ score, priority: _priority, scoreFactors, confidence }) 
     factors.verdict_confidence !== undefined ? factors.verdict_confidence : factors.confidence !== undefined ? factors.confidence : confidence;
 
   if (score === null || score === undefined) {
-    return <Typography sx={{ color: ds.gray[400], fontSize: ds.text.small, textAlign: 'center' }}>-</Typography>;
+    const dash = <Typography sx={{ color: ds.gray[400], fontSize: ds.text.small, textAlign: 'center' }}>-</Typography>;
+    if (!children) {
+      return dash;
+    }
+    return (
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+        {dash}
+        {children}
+      </Box>
+    );
   }
 
   const scoreColor = getScoreColor(score);
@@ -97,8 +106,6 @@ const ScoreDisplay = ({ score, priority: _priority, scoreFactors, confidence }) 
     <>
       <Box
         data-testid='score-display'
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={handleMouseLeave}
         sx={{
           display: 'flex',
           alignItems: 'center',
@@ -106,25 +113,32 @@ const ScoreDisplay = ({ score, priority: _priority, scoreFactors, confidence }) 
           cursor: 'default',
         }}
       >
-        <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: scoreColor }}>{score}</Typography>
-        <ScoreProgress
-          variant='determinate'
-          value={score}
-          sx={{
-            '& .MuiLinearProgress-bar': {
-              backgroundColor: scoreColor,
-            },
-          }}
-        />
-        {isHuman ? (
-          <PersonOutlineOutlinedIcon
-            data-testid='score-corrected-icon'
-            titleAccess='Manually corrected'
-            sx={{ fontSize: ds.text.small, color: ds.blue?.[500] || ds.gray[600] }}
+        {/* Hover regions are scoped to score/bar and the icon (not the whole row) so the
+            children slot — e.g. the priority pin dropdown — doesn't trigger the popover. */}
+        <Box onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+          <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: scoreColor }}>{score}</Typography>
+          <ScoreProgress
+            variant='determinate'
+            value={score}
+            sx={{
+              '& .MuiLinearProgress-bar': {
+                backgroundColor: scoreColor,
+              },
+            }}
           />
-        ) : (
-          <InfoOutlinedIcon sx={{ fontSize: ds.text.small, color: ds.gray[400] }} />
-        )}
+        </Box>
+        {children}
+        <Box onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} sx={{ display: 'flex', alignItems: 'center' }}>
+          {isHuman ? (
+            <PersonOutlineOutlinedIcon
+              data-testid='score-corrected-icon'
+              titleAccess='Manually corrected'
+              sx={{ fontSize: ds.text.small, color: ds.blue?.[500] || ds.gray[600] }}
+            />
+          ) : (
+            <InfoOutlinedIcon sx={{ fontSize: ds.text.small, color: ds.gray[400] }} />
+          )}
+        </Box>
       </Box>
 
       <Popover
@@ -139,6 +153,7 @@ const ScoreDisplay = ({ score, priority: _priority, scoreFactors, confidence }) 
             borderRadius: ds.radius.md,
             boxShadow: `0 4px 20px ${ds.gray.alpha[300]}`,
             minWidth: ds.space.mul(0, 140),
+            maxWidth: ds.space.mul(0, 180),
           },
         }}
         disableRestoreFocus
@@ -329,6 +344,7 @@ ScoreDisplay.propTypes = {
   priority: PropTypes.string,
   scoreFactors: PropTypes.oneOfType([PropTypes.string, PropTypes.object]),
   confidence: PropTypes.number,
+  children: PropTypes.node,
 };
 
 export default ScoreDisplay;

@@ -1,5 +1,5 @@
 import React from 'react';
-import { DropdownMenu } from '@ui/DropdownMenu';
+import { DropdownMenu, type DropdownMenuAlign } from '@ui/DropdownMenu';
 import { Button as DsButton } from '@ui/Button';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import { snackbar } from '@shared/snackbarService';
@@ -69,6 +69,7 @@ export interface PriorityPinControlProps {
   onChanged?: (newPriority: string | null, newScore?: number | null, newFactors?: Record<string, unknown> | unknown) => void;
   /** Pin scope. Defaults to the whole alert class ('this_fingerprint'). */
   scope?: 'this_event' | 'this_fingerprint';
+  align?: DropdownMenuAlign;
 }
 
 /**
@@ -85,6 +86,7 @@ const PriorityPinControl: React.FC<PriorityPinControlProps> = ({
   canWrite = false,
   onChanged,
   scope = 'this_fingerprint',
+  align = 'start',
 }) => {
   if (!canWrite || !eventId || !accountId) {
     return null;
@@ -125,7 +127,7 @@ const PriorityPinControl: React.FC<PriorityPinControlProps> = ({
 
   return (
     <DropdownMenu
-      align='start'
+      align={align}
       minWidth={180}
       trigger={
         <DsButton

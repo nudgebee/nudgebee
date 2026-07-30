@@ -35,7 +35,6 @@ function InvestigateSidebar({
   isCloud,
   onPodClick,
   onCreateTicket,
-  onPriorityChanged,
   onResetState,
   collapsed,
   onToggleCollapse,
@@ -234,14 +233,25 @@ function InvestigateSidebar({
                     priority={row?.computed_priority}
                     scoreFactors={row?.score_factors}
                     confidence={row?.score_confidence}
-                  />
-                  <PriorityPinControl
-                    eventId={row?.id}
-                    accountId={row?.cloud_account_id || router.query.accountId}
-                    currentPriority={row?.computed_priority}
-                    canWrite={hasWriteAccess(router.query.accountId)}
-                    onChanged={() => onPriorityChanged(row?.id)}
-                  />
+                  >
+                    <PriorityPinControl
+                      eventId={row?.id}
+                      accountId={row?.cloud_account_id || router.query.accountId}
+                      currentPriority={row?.computed_priority}
+                      currentScore={row?.computed_score}
+                      currentScoreFactors={row?.score_factors}
+                      canWrite={hasWriteAccess(router.query.accountId)}
+                      onChanged={(newPriority, newScore, newFactors) => {
+                        onRowChange?.((prev) => ({
+                          ...prev,
+                          computed_priority: newPriority,
+                          computed_score: newScore,
+                          score_factors: newFactors,
+                        }));
+                      }}
+                      align='end'
+                    />
+                  </ScoreDisplay>
                 </Box>
               </Box>
             )}
@@ -801,7 +811,6 @@ InvestigateSidebar.propTypes = {
   isCloud: PropTypes.bool,
   onPodClick: PropTypes.func,
   onCreateTicket: PropTypes.func,
-  onPriorityChanged: PropTypes.func,
   onResetState: PropTypes.func,
   collapsed: PropTypes.bool,
   onToggleCollapse: PropTypes.func,
