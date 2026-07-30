@@ -3,6 +3,7 @@ package egressfilter
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,13 +24,93 @@ type TenantConfig struct {
 	Allowlist     []string  `db:"allowlist"     json:"allowlist"`       // additive on env allowlist
 	CustomRules   []byte    `db:"custom_rules"  json:"custom_rules"`    // raw JSONB; no admin-API surface yet
 	DisabledRules []string  `db:"disabled_rules" json:"disabled_rules"` // additive; disables env-loaded rules per tenant
-	UpdatedAt     time.Time `db:"updated_at"    json:"updated_at"`
+
+	// --- PII sibling detector overrides (V827, PR #31514 follow-up) ------------
+	//
+	// All three "*Enabled" and "Mode" fields are tri-state: nil / empty means
+	// "inherit env"; non-nil / non-empty means "explicit tenant override".
+	// Distinguishing NULL from FALSE matters here because env default is FALSE
+	// (ml-k8s dependency) — a flat bool defaulting FALSE would silently
+	// disable PII for every existing tenant row even when env is on.
+	//
+	// The env-off case is a HARD gate (see ee/scrubbing: wrapper is not
+	// installed at all when LLM_SERVER_EGRESSFILTER_PII_ENABLED=false).
+	// Tenant overrides only take effect when the env master is on.
+
+	// PIIEnabled: nil = inherit env; non-nil = explicit tenant enable/disable.
+	PIIEnabled *bool `db:"pii_enabled"  json:"pii_enabled,omitempty"`
+	// PIIMode: "" = inherit env; "detect" / "enforce" = explicit tenant mode.
+	// Same vocabulary as the secrets Mode above so ops reason about one
+	// enum across the family.
+	PIIMode string `db:"pii_mode"     json:"pii_mode,omitempty"`
+	// PIINerEnabled: nil = inherit env; non-nil = explicit.
+	PIINerEnabled *bool `db:"pii_ner_enabled" json:"pii_ner_enabled,omitempty"`
+	// PIIDisabledCategories: token category names (EMAIL, PERSON, PHONE,
+	// LOCATION) whose tokens the wrapper drops from the /scrub mapping
+	// before rewriting messages. Empty = scrub all categories.
+	PIIDisabledCategories []string `db:"pii_disabled_categories" json:"pii_disabled_categories,omitempty"`
+
+	UpdatedAt time.Time `db:"updated_at"    json:"updated_at"`
 
 	// compiledCustomRules holds the tenant's enabled custom patterns compiled
 	// for the scan path. Populated by Resolve after a load (not by the DAO, not
 	// serialized) so the compile cost is paid once per cache entry, not per LLM
 	// call. Unexported: the scan path reads it via scanCustomRules.
 	compiledCustomRules []compiledCustomRule
+}
+
+// EffectivePIIEnabled returns the PII-enabled decision for this tenant,
+// falling back to envEnabled when the tenant hasn't set an explicit value.
+// Nil receiver is safe — returns envEnabled (no tenant row → inherit env).
+//
+// Wrapper (ee/scrubbing) uses this to gate the per-request scrub path once
+// the process-level master is already known to be on. The env master is a
+// hard gate; this helper is only meaningful when it's true.
+func (t *TenantConfig) EffectivePIIEnabled(envEnabled bool) bool {
+	if t == nil || t.PIIEnabled == nil {
+		return envEnabled
+	}
+	return *t.PIIEnabled
+}
+
+// EffectivePIIMode returns the PII outage-policy string ("detect" /
+// "enforce") for this tenant, falling back to envMode when the tenant
+// hasn't set an explicit value. Empty envMode is treated as "detect"
+// (fail-open) so ops don't need to worry about a missing env producing
+// an unknown mode.
+func (t *TenantConfig) EffectivePIIMode(envMode string) string {
+	if t == nil || t.PIIMode == "" {
+		if envMode == "" {
+			return "detect"
+		}
+		return envMode
+	}
+	return t.PIIMode
+}
+
+// EffectivePIINerEnabled returns the NER-enabled decision for this tenant,
+// falling back to envEnabled when the tenant hasn't set an explicit value.
+func (t *TenantConfig) EffectivePIINerEnabled(envEnabled bool) bool {
+	if t == nil || t.PIINerEnabled == nil {
+		return envEnabled
+	}
+	return *t.PIINerEnabled
+}
+
+// IsPIICategoryDisabled reports whether the given category is in this
+// tenant's disabled-categories set. Case-insensitive (categories are
+// stored uppercased). Nil receiver / empty set → false.
+func (t *TenantConfig) IsPIICategoryDisabled(category string) bool {
+	if t == nil || len(t.PIIDisabledCategories) == 0 {
+		return false
+	}
+	up := strings.ToUpper(strings.TrimSpace(category))
+	for _, c := range t.PIIDisabledCategories {
+		if strings.ToUpper(strings.TrimSpace(c)) == up {
+			return true
+		}
+	}
+	return false
 }
 
 // tenantIDContextKey is the context key under which the agent layer

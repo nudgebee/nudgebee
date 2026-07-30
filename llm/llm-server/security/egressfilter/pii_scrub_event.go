@@ -90,6 +90,39 @@ func NewPIIScrubEvent(mapping map[string]string, reversible bool, payloadBytes i
 	}
 }
 
+// FilterPIIMappingByCategory splits a /scrub mapping into two subsets keyed by
+// whether the token's category is in disabledCategories:
+//   - kept    : tokens whose category is NOT disabled — proceed to scrub.
+//   - unscrub : tokens whose category IS disabled — the wrapper uses these
+//     to Rehydrate() the disabled-category tokens back to real
+//     values in the scrubbed pieces BEFORE sending to the LLM.
+//
+// Empty disabledCategories → (mapping, nil), zero allocation. Case-insensitive
+// comparison; whitespace is trimmed on category names.
+//
+// The audit trail (PIIScrubEvent) should be built from `kept` — the count
+// and categories reflect what was actually protected, not what /scrub tried
+// to tokenize before the tenant filter ran.
+func FilterPIIMappingByCategory(mapping map[string]string, disabledCategories []string) (kept, unscrub map[string]string) {
+	if len(disabledCategories) == 0 {
+		return mapping, nil
+	}
+	disabledSet := make(map[string]struct{}, len(disabledCategories))
+	for _, c := range disabledCategories {
+		disabledSet[strings.ToUpper(strings.TrimSpace(c))] = struct{}{}
+	}
+	kept = make(map[string]string, len(mapping))
+	unscrub = make(map[string]string)
+	for token, value := range mapping {
+		if _, dis := disabledSet[piiTokenCategory(token)]; dis {
+			unscrub[token] = value
+		} else {
+			kept[token] = value
+		}
+	}
+	return
+}
+
 // piiTokenCategory extracts "EMAIL" from "[EMAIL_1]". Returns "" for anything
 // not shaped like a "[TYPE_n]" reversible token (e.g. a fixed "[REDACTED_*]"
 // placeholder, which never appears in the reversible mapping anyway).
