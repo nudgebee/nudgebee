@@ -72,13 +72,14 @@ func extractRequestAttributes(_ schemas.ModelProvider, body []byte) map[string]a
 		return nil
 	}
 	var r struct {
-		Model       string            `json:"model"`
-		MaxTokens   *int              `json:"max_tokens"`
-		Temperature *float64          `json:"temperature"`
-		TopP        *float64          `json:"top_p"`
-		Stream      bool              `json:"stream"`
-		System      json.RawMessage   `json:"system"`
-		Messages    []json.RawMessage `json:"messages"`
+		Model       string          `json:"model"`
+		MaxTokens   *int            `json:"max_tokens"`
+		Temperature *float64        `json:"temperature"`
+		TopP        *float64        `json:"top_p"`
+		Stream      bool            `json:"stream"`
+		System      json.RawMessage `json:"system"`
+		Messages    []toolMessage   `json:"messages"`
+		Contents    []geminiContent `json:"contents"`
 		Tools       []struct {
 			Name     string   `json:"name"` // Anthropic
 			Function struct { // OpenAI
@@ -115,6 +116,18 @@ func extractRequestAttributes(_ schemas.ModelProvider, body []byte) map[string]a
 		attrs["tool_names"] = names
 		attrs["tool_count"] = len(names)
 	}
+	// Tool CALLS + failures (structure-only, names not arguments). Read from the
+	// conversation tail already parsed above — no cross-request correlation, no second
+	// body parse, and works even when the response is streamed (the request is always
+	// fully buffered).
+	if called, failed := toolActivityFromParsed(r.Messages, r.Contents); len(called) > 0 {
+		attrs["called_tools"] = called
+		attrs["called_count"] = len(called)
+		if len(failed) > 0 {
+			attrs["failed_tools"] = failed
+			attrs["failed_count"] = len(failed)
+		}
+	}
 	if len(attrs) == 0 {
 		return nil
 	}
@@ -146,6 +159,139 @@ func toolNames(tools []struct {
 		}
 	}
 	return names
+}
+
+// toolBlock is one content block of an Anthropic message, reduced to the tool fields:
+// a tool_use (assistant call: id+name) or a tool_result (user outcome: tool_use_id +
+// is_error). Non-tool blocks (text, image) leave these zero-valued.
+type toolBlock struct {
+	Type      string `json:"type"`
+	ID        string `json:"id"`          // tool_use: the call id
+	Name      string `json:"name"`        // tool_use: the tool name
+	ToolUseID string `json:"tool_use_id"` // tool_result: which call this answers
+	IsError   bool   `json:"is_error"`    // tool_result: the failure signal
+}
+
+// contentBlocks parses an Anthropic-style message `content` (an array of blocks) into
+// toolBlocks. Returns nil for string content (OpenAI/plain text) — no blocks to read.
+func contentBlocks(raw json.RawMessage) []toolBlock {
+	if len(raw) == 0 {
+		return nil
+	}
+	var blocks []toolBlock
+	if json.Unmarshal(raw, &blocks) == nil {
+		return blocks
+	}
+	return nil
+}
+
+// toolMessage is one messages[] entry (Anthropic/OpenAI) reduced to the tool fields:
+// its role, the raw content (parsed lazily, only for the tail messages), and OpenAI's
+// assistant tool_calls. Content stays json.RawMessage so the bulk of the transcript is
+// never deeply parsed.
+type toolMessage struct {
+	Role      string          `json:"role"`
+	Content   json.RawMessage `json:"content"`
+	ToolCalls []struct {      // OpenAI assistant tool calls
+		ID       string `json:"id"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	} `json:"tool_calls"`
+}
+
+// geminiContent is one contents[] entry (Gemini) reduced to functionCall names.
+type geminiContent struct {
+	Role  string `json:"role"`
+	Parts []struct {
+		FunctionCall *struct {
+			Name string `json:"name"`
+		} `json:"functionCall"`
+	} `json:"parts"`
+}
+
+// toolActivityFromParsed reads structure-only tool CALL + failure signal from an
+// already-parsed conversation tail — names only, never arguments or results. Each
+// request carries the growing transcript, so the most recent assistant turn holds the
+// calls (Anthropic tool_use / OpenAI tool_calls / Gemini functionCall) and the following
+// user turn holds their results (Anthropic tool_result{is_error}); pairing them here
+// needs no cross-request correlation and works even when the response is streamed. Only
+// the LAST assistant turn is counted, so each call is counted exactly once across the
+// transcript. Anthropic yields calls AND failures (is_error is a clean bool);
+// OpenAI/Gemini yield calls only (they carry no structured tool-error flag).
+func toolActivityFromParsed(messages []toolMessage, contents []geminiContent) (called, failed []string) {
+	// messages[] shape (Anthropic + OpenAI): last assistant turn = calls, last user turn
+	// = their results.
+	lastAssistant, lastUser := -1, -1
+	for i, m := range messages {
+		switch m.Role {
+		case "assistant":
+			lastAssistant = i
+		case "user":
+			lastUser = i
+		}
+	}
+	idName := map[string]string{} // tool_use_id -> name, to attribute a failure to a tool
+	if lastAssistant >= 0 {
+		m := messages[lastAssistant]
+		for _, tc := range m.ToolCalls { // OpenAI
+			if tc.Function.Name != "" {
+				called = append(called, tc.Function.Name)
+				if tc.ID != "" {
+					idName[tc.ID] = tc.Function.Name
+				}
+			}
+		}
+		for _, blk := range contentBlocks(m.Content) { // Anthropic
+			if blk.Type == "tool_use" && blk.Name != "" {
+				called = append(called, blk.Name)
+				if blk.ID != "" {
+					idName[blk.ID] = blk.Name
+				}
+			}
+		}
+	}
+	if lastUser >= 0 { // Anthropic tool_result outcomes
+		for _, blk := range contentBlocks(messages[lastUser].Content) {
+			if blk.Type == "tool_result" && blk.IsError {
+				if name := idName[blk.ToolUseID]; name != "" {
+					failed = append(failed, name)
+				}
+			}
+		}
+	}
+
+	// contents[] shape (Gemini): last model turn's functionCall names (calls only).
+	if len(called) == 0 {
+		lastModel := -1
+		for i, c := range contents {
+			if c.Role == "model" {
+				lastModel = i
+			}
+		}
+		if lastModel >= 0 {
+			for _, p := range contents[lastModel].Parts {
+				if p.FunctionCall != nil && p.FunctionCall.Name != "" {
+					called = append(called, p.FunctionCall.Name)
+				}
+			}
+		}
+	}
+	return called, failed
+}
+
+// extractToolActivity parses a raw request body then delegates to toolActivityFromParsed.
+// The hot path (extractRequestAttributes) reuses its single unmarshal and does NOT call
+// this; it exists for direct unit testing.
+func extractToolActivity(body []byte) (called, failed []string) {
+	var r struct {
+		Messages []toolMessage   `json:"messages"`
+		Contents []geminiContent `json:"contents"`
+	}
+	if json.Unmarshal(body, &r) != nil {
+		return nil, nil
+	}
+	return toolActivityFromParsed(r.Messages, r.Contents)
 }
 
 // extractResponseAttributes pulls structure-only metadata from a unary response

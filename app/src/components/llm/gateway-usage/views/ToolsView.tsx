@@ -1,12 +1,14 @@
 /**
- * ToolsView — the AI Gateway's Tools sub-tab (Phase 1).
+ * ToolsView — the AI Gateway's Tools sub-tab.
  *
- * Shows the tools each request OFFERED to the model (its declared tool set, from
- * `attributes.actual.tool_names`): how often each was made available and the
- * request latency. Which tools were actually CALLED, and tool failures, need
- * response-body parsing and land in a later phase — hence the note. Per-tool
- * cost/tokens are intentionally not shown (a request can offer several tools, so
- * attributing its cost to one would double-count).
+ * Per tool: how often it was OFFERED (declared tool set, `attributes.actual.
+ * tool_names`), how often it was actually CALLED (`called_tools`), and how many
+ * calls FAILED (`failed_tools`) with the resulting failure rate — the calls/failures
+ * are extracted from the conversation tail at capture (no response parsing needed).
+ * Failures are Anthropic-only (its tool_result carries a clean is_error; OpenAI/Gemini
+ * expose no structured tool-error flag), so a tool with calls but 0 failures on those
+ * providers means "not measured", not "never failed". Per-tool cost/tokens are omitted
+ * (a request can offer several tools, so attributing its cost to one would double-count).
  */
 import * as React from 'react';
 import { Box, CircularProgress } from '@mui/material';
@@ -28,6 +30,13 @@ interface ToolsViewProps {
 
 const numCell = { fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', fontVariantNumeric: 'tabular-nums' } as const;
 
+/** failureRate formats failures/calls as a percentage (e.g. "3.8%"); empty when no calls. */
+function failureRate(failures: number, calls: number): string {
+  if (!calls) return '';
+  const pct = (failures / calls) * 100;
+  return `${pct % 1 === 0 ? pct.toFixed(0) : pct.toFixed(1)}%`;
+}
+
 export function ToolsView({ metrics, loading, error, onSelectTool }: ToolsViewProps) {
   const tools = metrics?.tools ?? [];
 
@@ -41,17 +50,34 @@ export function ToolsView({ metrics, loading, error, onSelectTool }: ToolsViewPr
   }
 
   const headers = [
-    { name: 'Tool', width: '38%', component: <HeaderLabel label='Tool' info='A tool the caller offered to the model in the request.' /> },
-    { name: 'Models', width: '30%', component: <HeaderLabel label='Models' info='The distinct models that offered this tool.' /> },
+    { name: 'Tool', width: '26%', component: <HeaderLabel label='Tool' info='A tool the caller offered to the model in the request.' /> },
+    { name: 'Models', width: '22%', component: <HeaderLabel label='Models' info='The distinct models that offered this tool.' /> },
     {
       name: 'Requests',
-      width: '16%',
+      width: '13%',
       align: 'right' as const,
       component: <HeaderLabel label='Requests' info='Number of requests that offered this tool.' />,
     },
     {
+      name: 'Calls',
+      width: '13%',
+      align: 'right' as const,
+      component: <HeaderLabel label='Calls' info='Times the model actually invoked this tool.' />,
+    },
+    {
+      name: 'Failures',
+      width: '13%',
+      align: 'right' as const,
+      component: (
+        <HeaderLabel
+          label='Failures'
+          info='Calls whose result was an error. Anthropic only (tool_result.is_error); OpenAI/Gemini expose no error flag, so 0 there means not measured.'
+        />
+      ),
+    },
+    {
       name: 'Avg latency',
-      width: '16%',
+      width: '13%',
       align: 'right' as const,
       component: <HeaderLabel label='Avg latency' info='Average request latency when this tool was offered.' />,
     },
@@ -90,6 +116,14 @@ export function ToolsView({ metrics, loading, error, onSelectTool }: ToolsViewPr
       ),
     },
     { component: <Box sx={{ ...numCell, textAlign: 'right' }}>{t.requests.toLocaleString()}</Box> },
+    { component: <Box sx={{ ...numCell, textAlign: 'right' }}>{(t.calls ?? 0).toLocaleString()}</Box> },
+    {
+      component: (
+        <Box sx={{ ...numCell, textAlign: 'right', color: (t.failures ?? 0) > 0 ? 'var(--ds-red-600)' : 'var(--ds-gray-500)' }}>
+          {(t.failures ?? 0) > 0 ? `${t.failures.toLocaleString()} (${failureRate(t.failures, t.calls)})` : '—'}
+        </Box>
+      ),
+    },
     { component: <Box sx={{ ...numCell, textAlign: 'right' }}>{fmtDuration((t.avg_latency_seconds ?? 0) * 1000)}</Box> },
   ]);
 
@@ -106,8 +140,8 @@ export function ToolsView({ metrics, loading, error, onSelectTool }: ToolsViewPr
           lineHeight: 1.5,
         }}
       >
-        These are the tools each request <b>offered</b> to the model (its declared tool set), and how often. Which tools the model actually{' '}
-        <b>called</b>, and tool <b>failures</b>, are coming in a later update.
+        Per tool: how often it was <b>offered</b> to the model, how often it was actually <b>called</b>, and how many calls <b>failed</b>. Failures
+        are Anthropic-only (its tool result carries an error flag); on OpenAI/Gemini a 0 means not measured, not never-failed.
       </Box>
 
       {tools.length === 0 ? (

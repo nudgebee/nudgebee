@@ -74,6 +74,10 @@ export interface GatewayBreakdowns {
 export interface GatewayToolRow {
   tool: string;
   requests: number;
+  /** Times the tool was actually invoked (from the conversation tail). */
+  calls: number;
+  /** Calls whose result was an error (Anthropic tool_result.is_error; OpenAI/Gemini carry no error flag). */
+  failures: number;
   avg_latency_seconds: number;
   /** Distinct models that offered this tool. */
   models: string[];
