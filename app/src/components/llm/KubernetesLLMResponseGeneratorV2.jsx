@@ -181,19 +181,6 @@ const KubernetesLLMResponseGenerator = ({
     };
   });
 
-  useEffect(() => {
-    if (!popup || !drawerIsOpen) {
-      return;
-    }
-
-    if (!selectedSessionId && typeof window !== 'undefined') {
-      const stored = localStorage.getItem('nubi_selected_conversation_id');
-      if (stored) {
-        setSelectedSessionId(stored);
-      }
-    }
-  }, [popup, drawerIsOpen, selectedSessionId, setSelectedSessionId]);
-
   // Auto-open conversation list when navigating with ?status=WAITING
   useEffect(() => {
     if (!router.isReady) {
@@ -226,6 +213,21 @@ const KubernetesLLMResponseGenerator = ({
   const setSelectedConversationId = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'selectedConversationId', payload }), []);
   const setIsTokenDataFetched = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'isTokenDataFetched', payload }), []);
   const setIsFetchingTokenData = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'isFetchingTokenData', payload }), []);
+
+  // Must stay below the uiState destructure and the setters above: a dependency
+  // array is evaluated during render, so listing them any earlier is a TDZ throw.
+  useEffect(() => {
+    if (!popup || !drawerIsOpen) {
+      return;
+    }
+
+    if (!selectedSessionId && typeof window !== 'undefined') {
+      const stored = localStorage.getItem('nubi_selected_conversation_id');
+      if (stored) {
+        setSelectedSessionId(stored);
+      }
+    }
+  }, [popup, drawerIsOpen, selectedSessionId, setSelectedSessionId]);
 
   const isNewChat = useMemo(() => !selectedSessionId && !selectedConversationId, [selectedSessionId, selectedConversationId]);
   const { troubleShootData, optimizationData } = useClusterInsights(accountId);
