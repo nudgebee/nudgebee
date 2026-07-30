@@ -50,6 +50,12 @@ const ConversationList = ({
   const pollingTimeoutRef = useRef(null);
   const loadingRef = useRef(false);
   const scrollContainerRef = useRef(null);
+  // Bumped whenever the query identity changes (account / filter / sources / visibility / search).
+  // A response — or a poll reschedule — from an older epoch is dropped, otherwise an in-flight
+  // "All" request resolves into the freshly cleared "Mine" list.
+  const requestEpochRef = useRef(0);
+  const inFlightEpochRef = useRef(-1);
+  const lastQueryIdentityRef = useRef(null);
   const PAGE_SIZE = 20;
   const router = useRouter();
 
@@ -154,7 +160,10 @@ const ConversationList = ({
   };
 
   const fetchConversations = (source = 'polling') => {
-    if (loadingRef.current) return;
+    const epoch = requestEpochRef.current;
+    // Dedupe only against a request from the same epoch — a request left over from the
+    // previous filter must not swallow the new filter's fetch.
+    if (loadingRef.current && inFlightEpochRef.current === epoch) return;
     if (source == 'on-enter') {
       setRawConversations([]);
       setPage(0);
@@ -163,6 +172,7 @@ const ConversationList = ({
       latestLastRecordedAtRef.current = '';
     }
     loadingRef.current = true;
+    inFlightEpochRef.current = epoch;
     setLoading(true);
     const query = {
       account_id: accountId,
@@ -191,6 +201,9 @@ const ConversationList = ({
     apiAskNudgebee
       .llmConversationHistory(query)
       .then((res) => {
+        // Stale response from a filter the user has already left — dropping it keeps
+        // other users' conversations out of the "Mine" list.
+        if (epoch !== requestEpochRef.current) return;
         const llmConversations = res?.data?.data?.llm_conversations ?? [];
         // The All-tab initial load calls fetchConversations('polling') with an empty
         // latestLastRecordedAtRef, so use that as the marker for "first fetch" rather
@@ -218,8 +231,14 @@ const ConversationList = ({
         }
       })
       .finally(() => {
-        loadingRef.current = false;
-        setLoading(false);
+        // Only the newest request owns the loading flags.
+        if (inFlightEpochRef.current === epoch) {
+          loadingRef.current = false;
+          setLoading(false);
+        }
+        // A stale request must not reschedule a poll: its closure still carries the
+        // previous filter, and the effect cleanup has already run for it.
+        if (epoch !== requestEpochRef.current) return;
         const shouldPollForFilter =
           activeFilter === 'All' || (activeFilter === 'Mine' && (selectedChip === 'All' || selectedChip === 'UserInvestigation'));
         if (source === 'polling' && shouldPollForFilter && isConversationListVisible && searchText === '') {
@@ -366,16 +385,25 @@ const ConversationList = ({
       clearTimeout(pollingTimeoutRef.current);
     }
 
+    // 1b. Invalidate whatever is already in flight — its response belongs to the
+    // filter the user just left.
+    requestEpochRef.current += 1;
+
     // 2. STOP if the list is not visible.
     // This prevents API calls and polling when the drawer is closed.
     if (!isConversationListVisible) {
       return;
     }
 
-    // 3. STOP if the user is currently searching (has text in the box).
-    // We don't want to poll 'All' or auto-fetch while the user is typing a specific query.
-    // The fetch will be triggered manually by the 'onEnterPress' in SearchInput.
-    if (searchText !== '') {
+    // 3. STOP if only the search box changed.
+    // We don't want to poll 'All' or auto-fetch while the user is typing a specific query;
+    // that fetch is triggered manually by the 'onEnterPress' in SearchInput. A filter /
+    // account / source change still has to refetch, otherwise switching to 'Mine' mid-search
+    // leaves the previous filter's rows on screen.
+    const queryIdentity = JSON.stringify([accountId, activeFilter, selectedSources, filterMine]);
+    const queryIdentityChanged = queryIdentity !== lastQueryIdentityRef.current;
+    lastQueryIdentityRef.current = queryIdentity;
+    if (searchText !== '' && !queryIdentityChanged) {
       return;
     }
 
