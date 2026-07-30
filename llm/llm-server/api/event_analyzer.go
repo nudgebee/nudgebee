@@ -2059,31 +2059,33 @@ func isGitIntegrationConfigured(accountId string) bool {
 	return count > 0
 }
 
-func analyzeLogsAndUpdateResponse(ctx *security.RequestContext, request EventAnalysisRequest, response EventAnalysisResponse, logs string, parentConversationId string, eventAnalysisRepo *events.EventAnalysisRepository, eventData events.Event, parsedLabels map[string]any, investigationContext string, dbManager *common.DatabaseManager) (EventAnalysisResponse, error) {
-	if !isGitIntegrationConfigured(request.AccountId) {
-		ctx.GetLogger().Info("analyzer: skipping code analysis - no github/gitlab integration configured", "account_id", request.AccountId)
-		response.Status = string(events.AnalysisStatusCompleted)
-		return response, nil
-	}
+// workloadOwnerKinds are the subject_owner_kind values for which SubjectOwner is
+// the stable workload name recorded in k8s_workloads. Excludes replicaset (the
+// owner name carries a pod-template hash), pod, and runner.
+var workloadOwnerKinds = map[string]bool{
+	"deployment":  true,
+	"statefulset": true,
+	"daemonset":   true,
+	"rollout":     true,
+	"job":         true,
+}
 
-	llm := agents.CodeAgent2{}
-
-	// Include eventId in the configuration to be used by the LogAnalysisAgent
-	eventConfig := toolcore.NBQueryConfig{
-		EventId: request.EventId,
-	}
-
-	// Set namespace and workload from event data or labels
+// resolveEventWorkload determines the namespace and owning workload for an event
+// so downstream code analysis can look up source-code annotations. Returns empty
+// strings when no strategy resolves.
+func resolveEventWorkload(ctx *security.RequestContext, eventData events.Event, parsedLabels map[string]any) (string, string) {
 	var namespace, workload string
 	subjectType := strings.ToLower(eventData.SubjectType)
 
 	// Strategy 1: Use SubjectOwner and SubjectNamespace directly from event data.
-	// Skip for pods — SubjectOwner may be a ReplicaSet name; later strategies resolve the stable workload name.
-	if subjectType != "pod" && eventData.SubjectOwner != "" && eventData.SubjectNamespace != "" {
+	// For pods this is only safe when SubjectOwnerKind names a stable workload
+	// kind — a pod's owner may otherwise be a ReplicaSet (hash-suffixed name).
+	if eventData.SubjectOwner != "" && eventData.SubjectNamespace != "" &&
+		(subjectType != "pod" || workloadOwnerKinds[strings.ToLower(eventData.SubjectOwnerKind)]) {
 		workload = eventData.SubjectOwner
 		namespace = eventData.SubjectNamespace
 		ctx.GetLogger().Info("using subject owner and namespace from event data",
-			"namespace", namespace, "workload", workload)
+			"namespace", namespace, "workload", workload, "subject_owner_kind", eventData.SubjectOwnerKind)
 	}
 
 	// Strategy 2: For deployment/statefulset events, SubjectName IS the workload name
@@ -2122,6 +2124,26 @@ func analyzeLogsAndUpdateResponse(ctx *security.RequestContext, request EventAna
 			}
 		}
 	}
+
+	return namespace, workload
+}
+
+func analyzeLogsAndUpdateResponse(ctx *security.RequestContext, request EventAnalysisRequest, response EventAnalysisResponse, logs string, parentConversationId string, eventAnalysisRepo *events.EventAnalysisRepository, eventData events.Event, parsedLabels map[string]any, investigationContext string, dbManager *common.DatabaseManager) (EventAnalysisResponse, error) {
+	if !isGitIntegrationConfigured(request.AccountId) {
+		ctx.GetLogger().Info("analyzer: skipping code analysis - no github/gitlab integration configured", "account_id", request.AccountId)
+		response.Status = string(events.AnalysisStatusCompleted)
+		return response, nil
+	}
+
+	llm := agents.CodeAgent2{}
+
+	// Include eventId in the configuration to be used by the LogAnalysisAgent
+	eventConfig := toolcore.NBQueryConfig{
+		EventId: request.EventId,
+	}
+
+	// Set namespace and workload from event data or labels
+	namespace, workload := resolveEventWorkload(ctx, eventData, parsedLabels)
 
 	// Add namespace and workload to the event config if they were found
 	if namespace != "" && workload != "" {

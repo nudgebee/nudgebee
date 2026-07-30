@@ -123,6 +123,7 @@ type Event struct {
 	SubjectNamespace string          `json:"subject_namespace,omitempty"`
 	SubjectNode      string          `json:"subject_node,omitempty"`
 	SubjectOwner     string          `json:"subject_owner,omitempty"`
+	SubjectOwnerKind string          `json:"subject_owner_kind,omitempty"`
 	EndsAt           *time.Time      `json:"ends_at,omitempty"`
 	StartsAt         *time.Time      `json:"starts_at,omitempty"`
 	Fingerprint      string          `json:"fingerprint,omitempty"`
