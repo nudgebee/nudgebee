@@ -1,0 +1,15 @@
+// Config for the use-before-declaration (TDZ) gate — see scripts/check-tdz.js.
+// Turns on checkJs so .js/.jsx files are analysed too, and turns everything
+// else down: the gate reads only TS2448/TS2454/TS2729 out of the output and
+// ignores the rest, so strictness here would just cost time.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "checkJs": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "noFallthroughCasesInSwitch": false,
+    "incremental": false,
+    "noEmit": true
+  }
+}
