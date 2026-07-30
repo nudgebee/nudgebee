@@ -112,13 +112,27 @@ const countItem = (key, tone, count, onClick) => {
 // call was refused, its payload rewritten, or merely noted. The tooltip
 // then lists the rule ids that fired and the audit ids so support can
 // correlate against backend logs.
+//
+// Polymorphic array (PR #31514): `metadata.egressfilter[]` now holds events
+// from every outbound-inspection detector in the family (secrets +
+// EE PII scrubber), discriminated by each entry's `detector` field
+// ("secrets" / "pii"). This chip owns ONLY the secrets slice — PII gets its
+// own chip in a follow-up. We filter first so hit_count sums and rule_ids
+// tooltips never accidentally include PII entries (which have no `mode` /
+// `rule_ids` and would silently corrupt the tallies).
+// Legacy compat: rows persisted before the `detector` field landed lack
+// the key; absent === "secrets" so historical events keep rendering.
 const egressfilterItem = (events) => {
   if (!Array.isArray(events) || events.length === 0) {
     return null;
   }
-  const hasEnforce = events.some((e) => e?.mode === 'enforce');
-  const hasRedact = events.some((e) => e?.mode === 'redact');
-  const hasDetect = events.some((e) => e?.mode === 'detect' || e?.mode === 'audit');
+  const secretEvents = events.filter((e) => e?.detector === 'secrets' || !e?.detector);
+  if (secretEvents.length === 0) {
+    return null;
+  }
+  const hasEnforce = secretEvents.some((e) => e?.mode === 'enforce');
+  const hasRedact = secretEvents.some((e) => e?.mode === 'redact');
+  const hasDetect = secretEvents.some((e) => e?.mode === 'detect' || e?.mode === 'audit');
   if (!hasEnforce && !hasRedact && !hasDetect) {
     return null;
   }
@@ -130,7 +144,7 @@ const egressfilterItem = (events) => {
   // never renders "0 secret blocked".
   const totalHits = Math.max(
     1,
-    events.reduce((n, e) => n + (Number(e?.hit_count) || 0), 0)
+    secretEvents.reduce((n, e) => n + (Number(e?.hit_count) || 0), 0)
   );
   const noun = totalHits === 1 ? 'secret' : 'secrets';
   const label = `${noun} ${verb}`;
@@ -139,14 +153,14 @@ const egressfilterItem = (events) => {
   // Deduped because the same rule firing on multiple LLM calls would
   // otherwise repeat in the list.
   const ruleSet = new Set();
-  events.forEach((e) => {
+  secretEvents.forEach((e) => {
     if (Array.isArray(e?.rule_ids)) {
       e.rule_ids.forEach((r) => r && ruleSet.add(r));
     }
   });
   const ruleList = Array.from(ruleSet).join(', ');
 
-  const auditIds = events
+  const auditIds = secretEvents
     .map((e) => e?.audit_id)
     .filter(Boolean)
     .join(', ');
@@ -159,8 +173,8 @@ const egressfilterItem = (events) => {
     const tooltipVerb = hasEnforce ? 'Blocked' : hasRedact ? 'Redacted' : 'Detected';
     tooltipParts.push(`${tooltipVerb}: ${ruleList}`);
   }
-  if (events.length > 1) {
-    tooltipParts.push(`${totalHits} hit${totalHits === 1 ? '' : 's'} across ${events.length} calls`);
+  if (secretEvents.length > 1) {
+    tooltipParts.push(`${totalHits} hit${totalHits === 1 ? '' : 's'} across ${secretEvents.length} calls`);
   }
   if (auditIds) {
     tooltipParts.push(`Audit: ${auditIds}`);
