@@ -272,6 +272,21 @@ type IConversationDao interface {
 	UpdateConversationAgentThought(agentId, thought string) error
 	GetConversationAgentInput(agentId, accountId string) (string, error)
 	SaveConversationToolCall(conversationID, accountID, userID, messageId, agenId, toolId, toolName, toolArgs, thought, toolArgsSql, toolResult string, status toolcore.NBToolResponseStatus, toolType toolcore.NBToolType, childAgentId *string, references []toolcore.NBToolResponseReference, metadata []byte, memoryRefs []byte) error
+	// FinalizeInFlightToolCalls flips any tool_calls for the given message that are
+	// still 'in_progress' to 'error' with a canned response. Used by handleConversationRequest's
+	// finalize-on-exit defer to prevent tool_call rows from being stranded when the
+	// planner turn panics or exits before the normal callback path runs. Returns nil
+	// when there are no in-flight rows for the message (idempotent).
+	FinalizeInFlightToolCalls(messageId string) error
+	// MarkMessageFailedOnPanic performs the three-way finalize (message + in-flight
+	// tool calls + conversation status) as a single ctx-cancellable operation. Used
+	// by the panic-recovery defer in handleConversationRequest so a DB hang can't
+	// leak the caller's goroutine holding a DB connection indefinitely — bound the
+	// caller's context and every underlying Exec is cancellable. Non-atomic across
+	// the three tables (independent tables, no transaction needed); each failure
+	// is logged and processing continues so a partial finalize is still better than
+	// none. Safe to pass empty messageId or conversationId — that half is skipped.
+	MarkMessageFailedOnPanic(ctx context.Context, messageId, conversationId, panicResponse string) error
 	TerminateConversation(context *security.RequestContext, accountId, conversationId string) error
 	CountWaitingSubAgents(parentAgentId, messageId string) (int, error)
 	MarkInProgressConversationAsKilled() error
@@ -2118,6 +2133,62 @@ func (chat *ConversationDao) SaveConversationToolCall(conversationID, accountID,
 		return fmt.Errorf("history: error inserting tool call: %w", err)
 	}
 	return nil
+}
+
+// FinalizeInFlightToolCalls flips any tool_calls for the given message that are
+// still 'in_progress' to 'error'. Called by handleConversationRequest's
+// finalize-on-exit defer so a planner-turn panic (or any abnormal exit before
+// planner_callback_handler runs) doesn't leave rows stranded — otherwise the
+// only cleanup is the batch job in MarkInProgressConversationAsKilled (>=1h).
+// Idempotent: no matching rows → no rows updated → returns nil.
+func (chat *ConversationDao) FinalizeInFlightToolCalls(messageId string) error {
+	query := `UPDATE llm_conversation_tool_calls
+		SET status = 'error',
+		    response = COALESCE(NULLIF(response, ''), 'Tool call did not finalize — parent turn exited abnormally.'),
+		    updated_at = now()
+		WHERE message_id = $1 AND status = 'in_progress'`
+	_, err := chat.dbManager.Db.Exec(query, messageId)
+	if err != nil {
+		return fmt.Errorf("history: failed to finalize in-flight tool calls: %w", err)
+	}
+	return nil
+}
+
+// MarkMessageFailedOnPanic is the ctx-cancellable path used by the panic-recovery
+// defer in handleConversationRequest. Uses ExecContext throughout so a caller-
+// supplied ctx timeout unblocks the SQL driver on hang — no leaked goroutine,
+// no held DB connection past the caller's budget. Each underlying UPDATE is
+// logged on failure and processing continues (non-atomic across three tables
+// on purpose — a partial finalize is still better than none). Empty messageId
+// or conversationId skips that half.
+func (chat *ConversationDao) MarkMessageFailedOnPanic(ctx context.Context, messageId, conversationId, panicResponse string) error {
+	// Collect every UPDATE error, not just the first — the caller logs the return
+	// value in a single line, so silently dropping later failures would hide real
+	// signal (e.g. message update succeeded but the conversation flip failed —
+	// worth knowing when triaging why a message shows FAILED but its parent
+	// conversation is still IN_PROGRESS). errors.Join preserves all of them.
+	var errs []error
+	if messageId != "" {
+		msgQuery := `UPDATE llm_conversation_messages SET updated_at = now(), status = $2, response = $3 WHERE id::text = $1`
+		if _, err := chat.dbManager.Db.ExecContext(ctx, msgQuery, messageId, string(ConversationStatusFailed), panicResponse); err != nil {
+			errs = append(errs, fmt.Errorf("history: MarkMessageFailedOnPanic: message update failed: %w", err))
+		}
+		tcQuery := `UPDATE llm_conversation_tool_calls
+			SET status = 'error',
+			    response = COALESCE(NULLIF(response, ''), 'Tool call did not finalize — parent turn exited abnormally.'),
+			    updated_at = now()
+			WHERE message_id = $1 AND status = 'in_progress'`
+		if _, err := chat.dbManager.Db.ExecContext(ctx, tcQuery, messageId); err != nil {
+			errs = append(errs, fmt.Errorf("history: MarkMessageFailedOnPanic: tool-call cleanup failed: %w", err))
+		}
+	}
+	if conversationId != "" {
+		convQuery := `UPDATE llm_conversations SET updated_at = now(), status = $2 WHERE id::text = $1`
+		if _, err := chat.dbManager.Db.ExecContext(ctx, convQuery, conversationId, string(ConversationStatusFailed)); err != nil {
+			errs = append(errs, fmt.Errorf("history: MarkMessageFailedOnPanic: conversation update failed: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (chat *ConversationDao) GetConversationToolCallChildAgentId(conversationId, agenId, toolId string) string {

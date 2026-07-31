@@ -178,38 +178,46 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 		Context: input.Context,
 	}
 	resp, err := core.ExecuteAgentToolCall(ctx, dynamicAgent, subInput)
-	if err != nil {
-		ctx.Ctx.GetLogger().Error("delegate_agent: sub-agent execution failed", "error", err)
-		return toolcore.NBToolResponse{
-			Status: toolcore.NBToolResponseStatusError,
-			Data:   fmt.Sprintf("Sub-agent execution failed: %s", err.Error()),
-		}, nil
-	}
 
-	// Use the canonical "agent_id" key the planner-callback persistence layer reads
-	// (see planner_callback_handler.go and factory_agent.go). Writing the previous
-	// "delegate_agent_id" key meant child_agent_id was never populated for delegate
-	// calls, breaking call-tree reconstruction.
+	// Build additionalDetails ONCE, upfront, so every return path below (including
+	// the early err != nil path) carries agent_id. Without agent_id, the parent's
+	// tool_call row is saved with child_agent_id = null and the UI cannot recurse
+	// into the delegated sub-agent's tool calls — orphaned children get mis-nested
+	// under the neighbouring tool. resp.AgentId is set by executeAgent at the end
+	// of its normal execution path (executor.go:984, `AgentId: agentId.String()`),
+	// so it's populated for terminal success/failure/waiting statuses. Early-error
+	// paths (agent lookup failure, terminated conversation, invalid state) return
+	// zero-value NBAgentResponse with an empty AgentId — the conditional set below
+	// filters those out so we never write an empty string as agent_id.
 	//
 	// Per-call execution metadata is appended so the parent agent (and downstream
 	// debugging/analytics) can see how the sub-agent spent its budget — without it,
 	// a vague summary is indistinguishable from a real investigation that just found
-	// nothing.
-	//
-	// iterations_used counts external tool calls only (LLM reasoning steps filtered),
-	// to match the "tool call budget" framing the sub-agent's system prompt presents.
-	// total_steps retains the raw ReAct step count for debugging. budget_exhausted is
-	// surfaced explicitly because iterations_used can be < iteration_budget even when
-	// the sub-agent was force-terminated by the step cap (LLM steps count against the
-	// cap but not against iterations_used).
+	// nothing. iterations_used counts external tool calls only (LLM reasoning steps
+	// filtered), to match the "tool call budget" framing the sub-agent's system
+	// prompt presents. total_steps retains the raw ReAct step count for debugging.
+	// budget_exhausted is surfaced explicitly because iterations_used can be <
+	// iteration_budget even when the sub-agent was force-terminated by the step cap
+	// (LLM steps count against the cap but not against iterations_used).
 	toolsUsed := collectToolsUsed(resp.AgentStepResponse)
 	totalSteps := len(resp.AgentStepResponse)
 	additionalDetails := map[string]any{
-		"agent_id":         resp.AgentId,
 		"iteration_budget": maxIter,
 		"iterations_used":  sumHistogram(toolsUsed),
 		"total_steps":      totalSteps,
 		"budget_exhausted": totalSteps >= maxIter,
+	}
+	// Only set agent_id when it carries a real value. resp.AgentId is populated
+	// upfront by ExecuteAgentToolCall (via SaveConversationAgent) before the
+	// sub-agent runs, so it's typically non-empty even on error — but a failure
+	// early enough (ctx cancel during the record insert, validation reject) can
+	// leave it as "". planner_callback_handler.go:214 already guards `!= ""`
+	// before writing child_agent_id, so writing an empty string here would be
+	// harmless today; skipping it explicitly makes the wrapper self-consistent
+	// (never emit meaningless metadata) and keeps that safety property from
+	// depending on the downstream guard staying in place across refactors.
+	if resp.AgentId != "" {
+		additionalDetails[core.NBToolCallAdditionalDetailsAgentId] = resp.AgentId
 	}
 	if len(toolsUsed) > 0 {
 		additionalDetails["tools_used"] = toolsUsed
@@ -219,7 +227,49 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 	// chronological steps. This wrapper bypasses factory_agent's generic path,
 	// so without this a delegated sub-agent drops its evidence at the boundary.
 	// Keyed by the delegated agent's name so the log line is greppable per target.
+	// Built BEFORE the err != nil check so partial steps executed before the
+	// failure are still surfaced to the parent — otherwise a mid-run sub-agent
+	// crash gives the parent no visibility into what actually ran.
 	subAgentEvidence := core.BuildSubAgentEvidenceForTool(ctx.Ctx, dynamicAgent.GetName(), resp.AgentStepResponse)
+
+	if err != nil {
+		ctx.Ctx.GetLogger().Error("delegate_agent: sub-agent execution failed", "error", err)
+		return toolcore.NBToolResponse{
+			Status:            toolcore.NBToolResponseStatusError,
+			Data:              fmt.Sprintf("Sub-agent execution failed: %s", err.Error()),
+			IsTerminal:        resp.IsTerminal,
+			AdditionalDetails: additionalDetails,
+			SubAgentEvidence:  subAgentEvidence,
+		}, nil
+	}
+
+	// A delegated sub-agent that hits a followup gate (confirmation for a write
+	// tool, clarification question) returns ConversationStatusWaiting with a
+	// populated FollowupRequest. Without a branch here, the check at the
+	// len(resp.Response) > 0 point below would silently convert Waiting to
+	// Success and drop the FollowupRequest — the user is never asked, and the
+	// parent orchestrator sees the destructive/interactive operation as complete
+	// even though the sub-agent stopped short. Mirror factory_agent.go's generic
+	// wrapper here so the callback layer emits the followup to the UI. Note:
+	// resume routing for delegated followups is a separate concern (needs the
+	// dynamic sub-agent to be reconstructable from persisted state); until that
+	// lands, PR-β blocks write/interactive tools inside delegations at spawn time.
+	if resp.Status == core.ConversationStatusWaiting {
+		additionalDetails[core.NBToolCallAdditionalDetailsFollowupRequest] = resp.FollowupRequest
+		additionalDetails[core.NBToolCallAdditionalDetailsQuery] = resp.Query
+		data := ""
+		if len(resp.Response) > 0 {
+			data = resp.Response[0]
+		}
+		return toolcore.NBToolResponse{
+			Data:              data,
+			Status:            toolcore.NBToolResponseStatusWaiting,
+			Type:              toolcore.NBToolResponseTypeText,
+			IsTerminal:        resp.IsTerminal,
+			AdditionalDetails: additionalDetails,
+			SubAgentEvidence:  subAgentEvidence,
+		}, nil
+	}
 
 	if resp.Status == core.ConversationStatusFailed {
 		responseData := "Sub-agent failed to provide a response."
@@ -230,7 +280,9 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 			Data:              responseData,
 			Status:            toolcore.NBToolResponseStatusError,
 			Type:              toolcore.NBToolResponseTypeText,
+			IsTerminal:        resp.IsTerminal,
 			AdditionalDetails: additionalDetails,
+			SubAgentEvidence:  subAgentEvidence,
 		}, nil
 	}
 
@@ -239,6 +291,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 			Data:              resp.Response[0],
 			Status:            toolcore.NBToolResponseStatusSuccess,
 			Type:              toolcore.NBToolResponseTypeText,
+			IsTerminal:        resp.IsTerminal,
 			AdditionalDetails: additionalDetails,
 			SubAgentEvidence:  subAgentEvidence,
 		}, nil
@@ -251,6 +304,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 				Data:              resp.AgentStepResponse[i].Response.Content,
 				Status:            toolcore.NBToolResponseStatusSuccess,
 				Type:              toolcore.NBToolResponseTypeText,
+				IsTerminal:        resp.IsTerminal,
 				AdditionalDetails: additionalDetails,
 				SubAgentEvidence:  subAgentEvidence,
 			}, nil
@@ -261,6 +315,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 		Data:              "Sub-agent completed but produced no output.",
 		Status:            toolcore.NBToolResponseStatusError,
 		Type:              toolcore.NBToolResponseTypeText,
+		IsTerminal:        resp.IsTerminal,
 		AdditionalDetails: additionalDetails,
 	}, nil
 }

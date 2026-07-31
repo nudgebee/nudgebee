@@ -35,6 +35,14 @@ var emptyQueryClarifications = []string{
 	"You rang? Just let me know what you'd like me to look into.",
 }
 
+// finalizeOnPanicDBBudget caps how long the panic-recovery defer in
+// handleConversationRequest waits for DB cleanup (message + tool-calls + conversation
+// status flips to FAILED). Beyond this, the defer propagates the panic without
+// waiting so a hung DB can't turn a panic into a permanent worker-goroutine zombie.
+// 5s is generous for three point updates on indexed columns; if we ever see this
+// budget tripping in production, the DB is the real problem to fix.
+const finalizeOnPanicDBBudget = 5 * time.Second
+
 var conversationAsyncTaskWorkerPool *common.WorkerPool
 
 func init() {
@@ -775,6 +783,71 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		ctx.GetLogger().Info("conversation: validation failed", "error", err.Error(), "agent", agent.GetName())
 		return NBAgentResponse{}, common.ErrorBadRequest("conversation: unable to complete request, Please try again later")
 	}
+
+	// Finalize-on-panic: without this, a panic inside executeAgent (or any
+	// downstream sub-agent) unwinds the worker goroutine without reaching the
+	// save-back path at ~line 1268, leaving the message row stuck IN_PROGRESS
+	// until MarkInProgressConversationAsKilled runs (>=1h). Panic-only on purpose
+	// — normal errors reach the executeErr branch at ~line 1237 which flips
+	// status FAILED via the existing save-back; adding a general non-panic branch
+	// here would risk racing legitimate WAITING transitions on abnormal exits.
+	// Idempotent under a race with save-back: UpdateConversationMessage overwrites
+	// unconditionally, and FinalizeInFlightToolCalls is UPDATE ... WHERE status = 'in_progress'.
+	// Cost on happy path is a single defer registration (~30ns); the closure body
+	// only runs on panic. Re-throws so the worker goroutine still logs the panic.
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		// Resolve logger defensively. The whole point of this defer is to make
+		// the process survive an unexpected panic in the executor chain — the
+		// worst outcome would be a nested nil-panic inside our recover block
+		// (masks the original panic, may crash the worker without any log).
+		// ctx is non-nil in production (constructed by handleRequestExecution in
+		// api/chains.go), but a test caller could pass nil, and ctx.GetLogger()
+		// could theoretically return nil for a partially-initialised request
+		// context. Falling back to slog.Default() (guaranteed non-nil) removes
+		// both risks for the cost of one nil check.
+		logger := slog.Default()
+		if ctx != nil {
+			if l := ctx.GetLogger(); l != nil {
+				logger = l
+			}
+		}
+		// Resolve agent name defensively — `agent` is an interface parameter and
+		// the panic could originate from anywhere in the call chain, including a
+		// path where a caller passed a nil agent (rare — most callers construct
+		// the agent before invoking us — but a nil-deref inside a recover block
+		// masks the original panic and is much harder to debug).
+		agentName := ""
+		if agent != nil {
+			agentName = agent.GetName()
+		}
+		messageId := request.MessageId
+		conversationId := request.ConversationId
+		logger.Error("conversation: panic in handleConversationRequest — finalizing message as FAILED before re-throw",
+			"panic", r, "agent", agentName, "message_id", messageId, "conversation_id", conversationId)
+
+		// DB cleanup uses a ctx-cancellable path (MarkMessageFailedOnPanic uses
+		// ExecContext internally) with a hard budget, so a hung DB connection
+		// unblocks the SQL driver at the deadline — no leaked goroutine holding
+		// a pool slot indefinitely, no zombie worker. dao is checked for nil to
+		// avoid a nested panic in early-startup / test contexts where the
+		// singleton isn't set.
+		if dao := GetConversationDao(); dao != nil {
+			finalizeCtx, cancel := context.WithTimeout(context.Background(), finalizeOnPanicDBBudget)
+			if err := dao.MarkMessageFailedOnPanic(finalizeCtx, messageId, conversationId,
+				fmt.Sprintf("execution panicked: %v", r)); err != nil {
+				logger.Error("conversation: finalize-on-panic DB update failed",
+					"error", err, "message_id", messageId, "conversation_id", conversationId)
+			}
+			cancel()
+		} else {
+			logger.Error("conversation: finalize-on-panic — GetConversationDao returned nil, cannot finalize DB state")
+		}
+		panic(r)
+	}()
 
 	// Attach the egressfilter event reporter for the duration of this turn.
 	// The wrapper invokes the callback once per outbound LLM call that

@@ -96,6 +96,17 @@ const nbToolCallAdditionalDatailsMessageId = "message_id"
 const nbToolCallAdditionalDatailsQuery = "query"
 const nbToolCallAdditionalDatailsFollowupRequest = "followup_request"
 
+// Exported aliases for bespoke sub-agent-as-tool wrappers (agent_delegate.go,
+// agent_log.go) that build their own AdditionalDetails maps outside this package
+// and must use the same keys the callback persistence layer expects. Value-identical
+// to the unexported constants above; kept in sync so a single rename would catch both.
+const (
+	NBToolCallAdditionalDetailsAgentId         = nbToolCallAdditionalDatailsAgentId
+	NBToolCallAdditionalDetailsMessageId       = nbToolCallAdditionalDatailsMessageId
+	NBToolCallAdditionalDetailsQuery           = nbToolCallAdditionalDatailsQuery
+	NBToolCallAdditionalDetailsFollowupRequest = nbToolCallAdditionalDatailsFollowupRequest
+)
+
 type AgentTool interface {
 	toolcore.NBTool
 	GetAgent(ctx *security.RequestContext) NBAgent
