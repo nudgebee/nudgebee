@@ -367,6 +367,14 @@ func (t Trigger) Validate(sl validator.StructLevel) {
 			sl.ReportError(t.Params, "params", "Params", "cron_invalid", "")
 			return
 		}
+		// Parse here rather than letting Temporal be the first thing that reads
+		// the expression: schedule registration happens after the workflow row
+		// is committed, so a cron Temporal rejects used to leave a scheduleless
+		// workflow behind while the API reported a failure.
+		if err := ValidateCronExpression(cronStr); err != nil {
+			sl.ReportError(t.Params, "params", "Params", "cron_syntax_invalid", "")
+			return
+		}
 		if overlapVal, ok := t.Params["overlap_policy"]; ok {
 			overlapStr, ok := overlapVal.(string)
 			if !ok {

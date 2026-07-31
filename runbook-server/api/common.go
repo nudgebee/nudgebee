@@ -86,6 +86,16 @@ func formatValidationError(err error) string {
 			messages = append(messages, fmt.Sprintf("%s must be 'v1'", field))
 		case "workflowtrigger":
 			messages = append(messages, fmt.Sprintf("%s has an invalid trigger type", field))
+		case "cron_missing":
+			messages = append(messages, "schedule trigger is missing a cron expression")
+		case "cron_invalid":
+			messages = append(messages, "schedule trigger cron expression must be a non-empty string")
+		case "cron_syntax_invalid":
+			messages = append(messages, "schedule trigger cron expression is not valid (expected 5 fields: minute hour day-of-month month day-of-week)")
+		case "overlap_policy_invalid_type", "overlap_policy_invalid_value":
+			messages = append(messages, "schedule trigger overlap policy must be one of: Skip, BufferOne, BufferAll, CancelOther, TerminateOther, AllowAll")
+		case "catchup_window_invalid_type", "catchup_window_invalid_duration":
+			messages = append(messages, "schedule trigger catchup window must be a Go duration (e.g. 60s, 5m, 1h)")
 		case "min":
 			// e.g. `tasks` / `triggers` are `min=1` slices — "min" alone reads as
 			// a truncated/cryptic tag, so spell out the constraint by field kind.

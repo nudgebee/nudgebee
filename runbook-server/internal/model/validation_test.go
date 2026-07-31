@@ -220,6 +220,51 @@ func TestValidateWorkflow(t *testing.T) {
 		assert.Contains(t, err.Error(), "cron_invalid")
 	})
 
+	t.Run("Schedule trigger cron syntax", func(t *testing.T) {
+		scheduleWorkflow := func(cronExpr string) model.Workflow {
+			return model.Workflow{
+				Name: "test-workflow",
+				Definition: model.WorkflowDefinition{
+					Version: "v1",
+					Triggers: []model.Trigger{
+						{Type: model.WorkflowTriggerSchedule, Params: map[string]any{"cron": cronExpr}},
+					},
+					Tasks: []model.Task{
+						{ID: "task1", Type: "http_request"},
+					},
+				},
+			}
+		}
+
+		accepted := []string{
+			"0 9 * * 1-5",
+			"*/15 * * * *",
+			"0 0,12 1 */2 *",
+			"@every 1h",
+			"@daily",
+			"CRON_TZ=Asia/Kolkata 0 9 * * *",
+			"TZ=UTC 0 9 * * *",
+		}
+		for _, expr := range accepted {
+			assert.NoError(t, model.ValidateWorkflow(scheduleWorkflow(expr)), "expected %q to be accepted", expr)
+		}
+
+		rejected := []string{
+			"not a cron",
+			"99 * * * *",
+			"0 9 * *",
+			"0 9 * * * *",
+			"* * * * 9",
+			"CRON_TZ=Asia/Kolkata",
+		}
+		for _, expr := range rejected {
+			err := model.ValidateWorkflow(scheduleWorkflow(expr))
+			if assert.Error(t, err, "expected %q to be rejected", expr) {
+				assert.Contains(t, err.Error(), "cron_syntax_invalid", "expected %q to fail cron syntax validation", expr)
+			}
+		}
+	})
+
 	t.Run("Valid webhook trigger params", func(t *testing.T) {
 		wf := model.Workflow{
 			Name: "test-workflow",

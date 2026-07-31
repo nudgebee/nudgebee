@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"regexp" // Add this import
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/robfig/cron"
 )
 
 var validate *validator.Validate
@@ -242,6 +244,35 @@ func ValidateDuration(fl validator.FieldLevel) bool {
 	}
 	_, err := time.ParseDuration(durationStr)
 	return err == nil
+}
+
+// ValidateCronExpression parses a Temporal-compatible cron expression and
+// returns an error if Temporal would reject it. Called before the workflow is
+// persisted so an unparseable schedule can no longer leave a workflow row
+// behind with no Temporal schedule attached to it.
+//
+// Temporal accepts an optional `CRON_TZ=<tz>` / `TZ=<tz>` prefix that
+// robfig/cron does not, so it is stripped before parsing. The timezone name
+// itself is left for Temporal to validate.
+func ValidateCronExpression(expr string) error {
+	spec := strings.TrimSpace(expr)
+	for _, prefix := range []string{"CRON_TZ=", "TZ="} {
+		if !strings.HasPrefix(spec, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(spec, prefix)
+		tz, remainder, found := strings.Cut(rest, " ")
+		if !found || tz == "" {
+			return fmt.Errorf("cron expression %q has a %s prefix with no schedule after it", expr, prefix)
+		}
+		spec = strings.TrimSpace(remainder)
+		break
+	}
+
+	if _, err := cron.ParseStandard(spec); err != nil {
+		return fmt.Errorf("invalid cron expression %q: %w", expr, err)
+	}
+	return nil
 }
 
 // ValidateWorkflowTrigger is a custom validator for WorkflowTrigger.

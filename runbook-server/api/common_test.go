@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/go-playground/validator/v10"
+
+	"nudgebee/runbook/internal/model"
 )
 
 // newTestValidator mirrors the production validator's json-tag naming
@@ -20,6 +22,33 @@ func newTestValidator() *validator.Validate {
 		return name
 	})
 	return v
+}
+
+// The message the RPC layer returns for a workflow whose schedule trigger
+// carries a cron Temporal would reject. Before #34996 this never surfaced:
+// validation passed, the row was committed, and the failure only appeared as
+// "failed to create workflow: ... Invalid schedule spec" after the fact.
+func TestFormatValidationError_ScheduleTrigger(t *testing.T) {
+	wf := model.Workflow{
+		Name: "invalid-cron-workflow",
+		Definition: model.WorkflowDefinition{
+			Version: "v1",
+			Triggers: []model.Trigger{
+				{Type: model.WorkflowTriggerSchedule, Params: map[string]any{"cron": "99 * * * *"}},
+			},
+			Tasks: []model.Task{{ID: "task1", Type: "core.print"}},
+		},
+	}
+
+	err := model.ValidateWorkflow(wf)
+	if err == nil {
+		t.Fatalf("expected an invalid cron to fail validation, got nil")
+	}
+
+	want := "schedule trigger cron expression is not valid (expected 5 fields: minute hour day-of-month month day-of-week)"
+	if got := formatValidationError(err); got != want {
+		t.Errorf("formatValidationError() = %q, want %q", got, want)
+	}
 }
 
 func TestFormatValidationError_Min(t *testing.T) {

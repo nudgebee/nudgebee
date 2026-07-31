@@ -2,9 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Typography } from '@mui/material';
 import { Button } from '@ui/Button';
 import CheckIcon from '@mui/icons-material/Check';
-import { FormCard, FormField } from '@shared/NewReusabeFormComponents';
+import { FormCard, FormField } from '@shared/forms/FormComponents';
 import type { Node } from 'reactflow';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import CloseIcon from '@mui/icons-material/Close';
 import k8sApi from '@api1/kubernetes';
 import apiKubernetes1 from '@api1/kubernetes1';
@@ -13,9 +13,11 @@ import homeApi from '@api1/home';
 import recommendationApi from '@api1/recommendation';
 import { formatRuleName } from '@components/optimise-new/utils';
 import { titleCaseForAggregationKey } from 'src/utils/common';
-import CopyableText from '@shared/CopyableText';
+import CopyButton from '@shared/buttons/CopyButton';
 import { STRUCTURED_FILTER_FIELDS, buildFilterExpression, parseFilterExpression } from '../utils/eventFilter';
 import { DOCS_BASE_URL, docsUrl } from '@lib/externalUrls';
+import { validateCron } from '@utils/cron';
+import ScheduleBuilder from './ScheduleBuilder';
 
 interface IntegrationConfigValue {
   name: string;
@@ -361,8 +363,10 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
       setManualInputs(JSON.stringify(buildWorkflowInputDefaults(), null, 2));
     }
 
-    // Clear all errors
-    setCronError('');
+    // Clear all errors. Cron is the exception: a stored expression can be
+    // invalid (workflows saved before cron was validated), so surface it now
+    // rather than waiting for the user to touch the field.
+    setCronError(triggerType === 'schedule' && params.cron ? validateCron(params.cron).error || '' : '');
     setOverlapPolicyError('');
     setCatchupWindowError('');
     setIntegrationNameError('');
@@ -399,9 +403,19 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
 
   const handleSave = useCallback(() => {
     if (!selectedNode || !pendingTriggerConfig) return;
+    // An invalid cron used to reach the API, which persisted the workflow and
+    // only then failed registering the Temporal schedule (#34996). Stop it here
+    // as well as server-side so the user gets the error inline.
+    if (triggerType === 'schedule') {
+      const { valid, error } = validateCron(cronExpression);
+      if (!valid) {
+        setCronError(error || 'Invalid cron expression');
+        return;
+      }
+    }
     onSave(selectedNode.id, pendingTriggerConfig);
     setCommittedSnapshot(JSON.stringify(pendingTriggerConfig));
-  }, [selectedNode, pendingTriggerConfig, onSave]);
+  }, [selectedNode, pendingTriggerConfig, onSave, triggerType, cronExpression]);
 
   const requestClose = useCallback(() => {
     if (!isDirty || !pendingTriggerConfig) {
@@ -646,7 +660,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     if (isLoadingWebhookInfo) {
       return (
         <Box sx={{ mt: 2, p: 2, textAlign: 'center' }}>
-          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondaryDark }}>Loading webhook information...</Typography>
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400] }}>Loading webhook information...</Typography>
         </Box>
       );
     }
@@ -658,16 +672,16 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
           sx={{
             mt: 2,
             p: 2,
-            backgroundColor: colors.background.primaryLightest,
-            borderRadius: 1,
-            border: `1px solid ${colors.border.vertical}`,
+            backgroundColor: ds.blue[100],
+            borderRadius: ds.radius.sm,
+            border: `1px solid ${ds.gray[200]}`,
           }}
         >
           <Typography
             sx={{
               fontSize: 'var(--ds-text-body)',
               fontWeight: 'var(--ds-font-weight-medium)',
-              color: colors.text.secondary,
+              color: ds.gray[700],
               mb: 1,
             }}
           >
@@ -678,18 +692,18 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
               display: 'flex',
               alignItems: 'flex-start',
               gap: 1,
-              backgroundColor: colors.background.white,
+              backgroundColor: ds.background[100],
               padding: 'var(--ds-space-2) var(--ds-space-3)',
               borderRadius: 'var(--ds-radius-sm)',
-              border: `1px solid ${colors.border.secondary}`,
+              border: `1px solid ${ds.brand[200]}`,
               mb: 1,
             }}
           >
-            <CopyableText copyableText={webhookUrl} />
+            <CopyButton text={webhookUrl} />
             <Typography
               sx={{
                 fontSize: 'var(--ds-text-small)',
-                color: colors.text.secondaryDark,
+                color: ds.gray[400],
                 wordBreak: 'break-all',
                 flex: 1,
               }}
@@ -697,7 +711,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
               {webhookUrl}
             </Typography>
           </Box>
-          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondaryDark }}>
+          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400] }}>
             Integration: <strong>{webhookIntegrationInfo.integrationName}</strong>
           </Typography>
         </Box>
@@ -714,16 +728,16 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         sx={{
           mt: 2,
           p: 2,
-          backgroundColor: colors.background.primaryLightest,
-          borderRadius: 1,
-          border: `1px solid ${colors.border.vertical}`,
+          backgroundColor: ds.blue[100],
+          borderRadius: ds.radius.sm,
+          border: `1px solid ${ds.gray[200]}`,
         }}
       >
         <Typography
           sx={{
             fontSize: 'var(--ds-text-body)',
             fontWeight: 'var(--ds-font-weight-medium)',
-            color: colors.text.secondary,
+            color: ds.gray[700],
             mb: 1,
           }}
         >
@@ -732,7 +746,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         <Typography
           sx={{
             fontSize: 'var(--ds-text-small)',
-            color: colors.text.secondaryDark,
+            color: ds.gray[400],
             lineHeight: 1.5,
             mb: 1,
           }}
@@ -746,8 +760,8 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
             margin: 0,
             mb: 1,
             padding: 'var(--ds-space-2) var(--ds-space-3)',
-            backgroundColor: colors.background.white,
-            border: `1px solid ${colors.border.secondary}`,
+            backgroundColor: ds.background[100],
+            border: `1px solid ${ds.brand[200]}`,
             borderRadius: 'var(--ds-radius-sm)',
             fontSize: 'var(--ds-text-caption)',
             lineHeight: 1.4,
@@ -755,7 +769,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
             overflowX: 'auto',
-            color: colors.text.secondary,
+            color: ds.gray[700],
           }}
         >
           {JSON.stringify(EVENT_PAYLOAD_SAMPLE, null, 2)}
@@ -763,7 +777,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         <Typography
           sx={{
             fontSize: 'var(--ds-text-small)',
-            color: colors.text.secondaryDark,
+            color: ds.gray[400],
             lineHeight: 1.5,
             mb: 1,
           }}
@@ -779,7 +793,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
             href={EVENT_PAYLOAD_DOCS_URL}
             target='_blank'
             rel='noopener noreferrer'
-            style={{ textDecoration: 'none', color: colors.text.primary, fontWeight: 'var(--ds-font-weight-medium)' }}
+            style={{ textDecoration: 'none', color: ds.blue[500], fontWeight: 'var(--ds-font-weight-medium)' }}
           >
             Full schema → {DOCS_HOSTNAME}
           </a>
@@ -863,7 +877,8 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
 
   const handleCronChange = (value: string) => {
     setCronExpression(value);
-    setCronError('');
+    const { valid, error } = validateCron(value);
+    setCronError(valid ? '' : error || 'Invalid cron expression');
     if (triggerType === 'schedule') {
       updateScheduleTrigger({ cron: value.trim() });
     }
@@ -957,7 +972,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         placeholder='Select cluster'
         required={false}
         error=''
-        fieldType='dropdown'
+        fieldType='select'
         options={k8sClusterOptions}
         groupByCloudProvider={true}
         onSelect={() => {}}
@@ -986,7 +1001,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         placeholder='Select category'
         required={false}
         error=''
-        fieldType='dropdown'
+        fieldType='select'
         options={OPTIMIZATION_CATEGORY_OPTIONS}
         onSelect={() => {}}
         customRender={null}
@@ -1010,7 +1025,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         placeholder='Select rule name'
         required={false}
         error=''
-        fieldType='dropdown'
+        fieldType='select'
         options={optimizationRuleOptions}
         onSelect={() => {}}
         customRender={null}
@@ -1026,16 +1041,16 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         sx={{
           mt: 2,
           p: 2,
-          backgroundColor: colors.background.primaryLightest,
-          borderRadius: 1,
-          border: `1px solid ${colors.border.vertical}`,
+          backgroundColor: ds.blue[100],
+          borderRadius: ds.radius.sm,
+          border: `1px solid ${ds.gray[200]}`,
         }}
       >
         <Typography
           sx={{
             fontSize: 'var(--ds-text-body)',
             fontWeight: 'var(--ds-font-weight-medium)',
-            color: colors.text.secondary,
+            color: ds.gray[700],
             mb: 1,
           }}
         >
@@ -1044,7 +1059,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         <Typography
           sx={{
             fontSize: 'var(--ds-text-small)',
-            color: colors.text.secondaryDark,
+            color: ds.gray[400],
             lineHeight: 1.5,
           }}
           component='div'
@@ -1052,9 +1067,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
           • This workflow triggers when a new optimization recommendation is created
           <br />• Use the filters above to narrow which recommendations trigger this workflow
           <br />• The recommendation data is available in the workflow as{' '}
-          <code
-            style={{ backgroundColor: colors.background.white, padding: 'var(--ds-space-1) var(--ds-space-1)', borderRadius: 'var(--ds-radius-sm)' }}
-          >
+          <code style={{ backgroundColor: ds.background[100], padding: 'var(--ds-space-1) var(--ds-space-1)', borderRadius: 'var(--ds-radius-sm)' }}>
             event
           </code>
           <br />• Leave all filters empty to trigger on any recommendation
@@ -1082,13 +1095,13 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     <Box
       sx={{
         position: 'absolute',
-        top: '32px',
-        right: '16px',
+        top: ds.space[6],
+        right: ds.space[4],
         width: '580px',
         height: 'calc(100vh - 110px)',
         backgroundColor: 'white',
         zIndex: 150,
-        border: '3px solid rgb(170, 144, 235)',
+        border: '3px solid var(--ds-purple-300)',
         borderRadius: 'var(--ds-radius-xl)',
         display: 'flex',
         flexDirection: 'column',
@@ -1101,14 +1114,14 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
           borderBottom: '1px solid var(--ds-brand-150)',
           borderTop: '1px solid var(--ds-brand-150)',
           borderRadius: 'var(--ds-radius-xl) var(--ds-radius-xl) 0 0',
-          backgroundColor: colors.background.primaryLightest,
+          backgroundColor: ds.blue[100],
           display: 'flex',
           flexDirection: 'row',
           justifyContent: 'space-between',
           alignItems: 'center',
         }}
       >
-        <Typography sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary }}>
+        <Typography sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700] }}>
           Trigger Configuration - {triggerType?.charAt(0).toUpperCase() + triggerType?.slice(1)}
         </Typography>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -1119,7 +1132,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
               tone='primary'
               size='sm'
               composition='text+icon'
-              icon={<CheckIcon sx={{ fontSize: 16 }} />}
+              icon={<CheckIcon sx={{ fontSize: ds.text.title }} />}
               onClick={handleSave}
             >
               Save
@@ -1147,29 +1160,13 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
             number={1}
             columns={1}
           >
-            <FormField
-              label='Cron Expression'
-              description='Define the schedule using cron format (minute hour day month weekday)'
-              value={cronExpression}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleCronChange(e.target.value)}
-              placeholder='0 9 * * 1-5'
-              required={true}
-              error={cronError}
-              fieldType='textfield'
-              maxRows={1}
-              minRows={1}
-              maxLength={100}
-              onSelect={() => {}}
-              customRender={null}
-              limitTags={0}
-              minWidth='50%'
-            />
+            <ScheduleBuilder value={cronExpression} onChange={handleCronChange} error={cronError} />
 
             <Box
               sx={{
                 p: 0.5,
                 backgroundColor: 'var(--ds-yellow-200)',
-                borderRadius: 1,
+                borderRadius: ds.radius.sm,
                 border: '1px solid var(--ds-amber-400)',
                 display: 'flex',
                 alignItems: 'flex-start',
@@ -1201,7 +1198,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
               placeholder='Skip'
               required={false}
               error={overlapPolicyError}
-              fieldType='dropdown'
+              fieldType='select'
               options={[
                 { label: 'Skip (Default)', value: 'Skip' },
                 { label: 'Buffer One', value: 'BufferOne' },
@@ -1242,80 +1239,6 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
               limitTags={0}
               minWidth='50%'
             />
-
-            <Box
-              sx={{
-                mt: 2,
-                p: 2,
-                backgroundColor: colors.background.primaryLightest,
-                borderRadius: 1,
-                border: `1px solid ${colors.border.vertical}`,
-              }}
-            >
-              <Typography
-                sx={{
-                  fontSize: 'var(--ds-text-body)',
-                  fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
-                  mb: 1,
-                }}
-              >
-                Common Cron Examples:
-              </Typography>
-              <Typography
-                sx={{
-                  fontSize: 'var(--ds-text-small)',
-                  color: colors.text.secondaryDark,
-                  lineHeight: 1.5,
-                }}
-                component='div'
-              >
-                •{' '}
-                <code
-                  style={{
-                    backgroundColor: colors.background.white,
-                    padding: 'var(--ds-space-1) var(--ds-space-1)',
-                    borderRadius: 'var(--ds-radius-sm)',
-                  }}
-                >
-                  0 9 * * 1-5
-                </code>{' '}
-                - Every weekday at 9:00 AM
-                <br />•{' '}
-                <code
-                  style={{
-                    backgroundColor: colors.background.white,
-                    padding: 'var(--ds-space-1) var(--ds-space-1)',
-                    borderRadius: 'var(--ds-radius-sm)',
-                  }}
-                >
-                  */15 * * * *
-                </code>{' '}
-                - Every 15 minutes
-                <br />•{' '}
-                <code
-                  style={{
-                    backgroundColor: colors.background.white,
-                    padding: 'var(--ds-space-1) var(--ds-space-1)',
-                    borderRadius: 'var(--ds-radius-sm)',
-                  }}
-                >
-                  0 0 * * 0
-                </code>{' '}
-                - Every Sunday at midnight
-                <br />•{' '}
-                <code
-                  style={{
-                    backgroundColor: colors.background.white,
-                    padding: 'var(--ds-space-1) var(--ds-space-1)',
-                    borderRadius: 'var(--ds-radius-sm)',
-                  }}
-                >
-                  0 12 1 * *
-                </code>{' '}
-                - First day of every month at noon
-              </Typography>
-            </Box>
           </FormCard>
         ) : triggerType === 'webhook' ? (
           <FormCard title='Webhook Configuration' description='Configure webhook integration for this automation' icon={null} number={1} columns={1}>
@@ -1323,28 +1246,20 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
               label='Webhook Integration'
               description='Pick an existing workflow webhook integration'
               value={integrationName}
-              onSelect={
-                ((_e: any, opt: any) => {
-                  const selected = (opt && typeof opt === 'object' ? opt.value : opt) ?? '';
-                  setIntegrationName(selected);
-                  setIntegrationNameError('');
-                  if (selected && validateIntegrationName(selected, setIntegrationNameError)) {
-                    updateWebhookTrigger({ integration_name: selected.trim() });
-                  }
-                }) as unknown as (value: any) => void
-              }
+              onChange={(e: any) => {
+                const selected = e?.target?.value ?? '';
+                setIntegrationName(selected);
+                setIntegrationNameError('');
+                if (selected && validateIntegrationName(selected, setIntegrationNameError)) {
+                  updateWebhookTrigger({ integration_name: selected.trim() });
+                }
+              }}
               placeholder={isLoadingWebhookOptions ? 'Loading…' : 'Select a workflow webhook'}
               required={true}
               error={integrationNameError}
-              fieldType='autocomplete'
+              fieldType='select'
               options={webhookIntegrationOptions}
-              multiple={false}
-              customRender={null}
-              limitTags={1}
               minWidth='50%'
-              maxRows={1}
-              minRows={1}
-              maxLength={200}
               isOptionsLoading={isLoadingWebhookOptions}
             />
 
@@ -1372,18 +1287,18 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
               sx={{
                 mt: 1,
                 p: 1.5,
-                backgroundColor: colors.background.primaryLightest,
-                borderRadius: 1,
-                border: `1px solid ${colors.border.vertical}`,
+                backgroundColor: ds.blue[100],
+                borderRadius: ds.radius.sm,
+                border: `1px solid ${ds.gray[200]}`,
               }}
             >
-              <Typography sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondaryDark, lineHeight: 1.5 }}>
+              <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], lineHeight: 1.5 }}>
                 Need a new webhook? Create one in the{' '}
                 <a
                   href={WORKFLOW_WEBHOOK_INTEGRATIONS_URL}
                   target='_blank'
                   rel='noopener noreferrer'
-                  style={{ color: colors.text.primary, fontWeight: 'var(--ds-font-weight-medium)', textDecoration: 'none' }}
+                  style={{ color: ds.blue[500], fontWeight: 'var(--ds-font-weight-medium)', textDecoration: 'none' }}
                 >
                   Integrations tab → Workflow Webhook ↗
                 </a>
@@ -1409,7 +1324,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                     placeholder='Select event type'
                     required={false}
                     error={eventFilterError}
-                    fieldType='dropdown'
+                    fieldType='select'
                     options={aggregationKeyOptions}
                     onSelect={() => {}}
                     customRender={null}
@@ -1429,7 +1344,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                     placeholder='Select cluster'
                     required={false}
                     error=''
-                    fieldType='dropdown'
+                    fieldType='select'
                     options={k8sClusterOptions}
                     groupByCloudProvider={true}
                     onSelect={() => {}}
@@ -1450,7 +1365,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                     placeholder='Select namespace'
                     required={false}
                     error=''
-                    fieldType='dropdown'
+                    fieldType='select'
                     options={namespaceOptions}
                     onSelect={() => {}}
                     customRender={null}
@@ -1470,7 +1385,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                     placeholder='Select source'
                     required={false}
                     error=''
-                    fieldType='dropdown'
+                    fieldType='select'
                     options={sourceOptions}
                     onSelect={() => {}}
                     customRender={null}
@@ -1490,7 +1405,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                     placeholder='Select priority'
                     required={false}
                     error=''
-                    fieldType='dropdown'
+                    fieldType='select'
                     options={PRIORITY_OPTIONS}
                     onSelect={() => {}}
                     customRender={null}
@@ -1507,14 +1422,12 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                     sx={{
                       mt: 1,
                       p: 1.5,
-                      backgroundColor: colors.background.white,
-                      borderRadius: 1,
-                      border: `1px solid ${colors.border.secondary}`,
+                      backgroundColor: ds.background[100],
+                      borderRadius: ds.radius.sm,
+                      border: `1px solid ${ds.brand[200]}`,
                     }}
                   >
-                    <Typography
-                      sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondaryDark, fontFamily: 'monospace', wordBreak: 'break-all' }}
-                    >
+                    <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400], fontFamily: 'monospace', wordBreak: 'break-all' }}>
                       {eventFilter}
                     </Typography>
                   </Box>
@@ -1542,10 +1455,18 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
 
             <Typography
               id='wf-trigger-cfg-filter-mode-toggle-btn'
+              role='button'
+              tabIndex={0}
               onClick={() => setIsAdvancedFilter(!isAdvancedFilter)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setIsAdvancedFilter(!isAdvancedFilter);
+                }
+              }}
               sx={{
                 fontSize: 'var(--ds-text-small)',
-                color: colors.text.primary,
+                color: ds.blue[500],
                 cursor: 'pointer',
                 mt: 1,
                 '&:hover': { textDecoration: 'underline' },
@@ -1588,16 +1509,16 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
               sx={{
                 mt: 2,
                 p: 2,
-                backgroundColor: colors.background.primaryLightest,
-                borderRadius: 1,
-                border: `1px solid ${colors.border.vertical}`,
+                backgroundColor: ds.blue[100],
+                borderRadius: ds.radius.sm,
+                border: `1px solid ${ds.gray[200]}`,
               }}
             >
               <Typography
                 sx={{
                   fontSize: 'var(--ds-text-body)',
                   fontWeight: 'var(--ds-font-weight-medium)',
-                  color: colors.text.secondary,
+                  color: ds.gray[700],
                   mb: 1,
                 }}
               >
@@ -1606,7 +1527,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
               <Typography
                 sx={{
                   fontSize: 'var(--ds-text-small)',
-                  color: colors.text.secondaryDark,
+                  color: ds.gray[400],
                   lineHeight: 1.5,
                 }}
                 component='div'
@@ -1616,7 +1537,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                 <br />• Example:{' '}
                 <code
                   style={{
-                    backgroundColor: colors.background.white,
+                    backgroundColor: ds.background[100],
                     padding: 'var(--ds-space-1) var(--ds-space-1)',
                     borderRadius: 'var(--ds-radius-sm)',
                   }}
@@ -1626,7 +1547,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                 <br />• Leave empty{' '}
                 <code
                   style={{
-                    backgroundColor: colors.background.white,
+                    backgroundColor: ds.background[100],
                     padding: 'var(--ds-space-1) var(--ds-space-1)',
                     borderRadius: 'var(--ds-radius-sm)',
                   }}
@@ -1646,7 +1567,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
             <Typography
               sx={{
                 fontSize: 'var(--ds-text-body-lg)',
-                color: colors.text.secondaryDark,
+                color: ds.gray[400],
                 fontStyle: 'italic',
               }}
             >

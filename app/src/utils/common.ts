@@ -522,13 +522,6 @@ export const checkForZero = (value: number) => {
   return value;
 };
 
-export const isCronValid = (freq: string) => {
-  const cronregex = new RegExp(
-    /^(\*|(\d|1\d|2\d|3\d|4\d|5\d)|\*\/(\d|1\d|2\d|3\d|4\d|5\d)) (\*|(\d|1\d|2[0-3])|\*\/(\d|1\d|2[0-3])) (\*|([1-9]|1\d|2\d|3[0-1])|\*\/([1-9]|1\d|2\d|3[0-1])) (\*|([1-9]|1[0-2])|\*\/([1-9]|1[0-2])) (\*|([0-6])|\*\/([0-6]))$/
-  );
-  return cronregex.test(freq);
-};
-
 export const isAlertNameValid = (name: string) => {
   const alertNameRegex = new RegExp(/^[a-zA-Z0-9](?:[a-zA-Z0-9\s]*[a-zA-Z0-9])?$/);
   return alertNameRegex.test(name);
