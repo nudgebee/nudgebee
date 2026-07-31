@@ -89,7 +89,11 @@ def call_llm(
     conversation_id=None,
     agent_id=None,
     message_id=None,
-    log_provider_override=None,
+    k8s_orchestrator_mode=None,
+    llm_config_source=None,
+    llm_provider=None,
+    llm_model_name=None,
+    llm_tier_models=None,
     timeout=LLM_POLL_TIMEOUT,
     poll_interval=LLM_POLL_INTERVAL,
     on_submit: Optional[Callable[[str], None]] = None,
@@ -121,12 +125,26 @@ def call_llm(
     }
     if use_async:
         payload["async"] = True
-    # Pin the log backend for this request (e.g. "k8s" forces kubectl logs).
-    # Rides the chat-scoped ``config`` object as the llm-server's NBQueryConfig
-    # field, same carrier as tool_configs above.
-    if log_provider_override:
+    # Pin the K8s orchestrator variant for this request (e.g. "native"
+    # selects k8s_orchestrator_native). Rides the chat-scoped ``config``
+    # object as the llm-server's NBQueryConfig.K8sOrchestratorMode field,
+    # same carrier as tool_configs above.
+    if k8s_orchestrator_mode:
         config = dict(config or {})
-        config["log_provider_override"] = log_provider_override
+        config["k8s_orchestrator_mode"] = k8s_orchestrator_mode
+    # Pin which configured LLM slot the run resolves through, and optionally
+    # the model itself. Same carrier and the same llm-server semantics as the
+    # chat UI: blanket provider+model and per-tier picks are mutually
+    # exclusive, while the config source is orthogonal to both.
+    if llm_config_source or llm_provider or llm_model_name or llm_tier_models:
+        config = dict(config or {})
+        if llm_config_source:
+            config["llm_config_source"] = llm_config_source
+        if llm_tier_models:
+            config["llm_tier_models"] = llm_tier_models
+        elif llm_provider and llm_model_name:
+            config["llm_provider"] = llm_provider
+            config["llm_model_name"] = llm_model_name
     if config:
         payload["config"] = config
     if conversation_id:

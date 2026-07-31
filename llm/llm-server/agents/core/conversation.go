@@ -725,7 +725,32 @@ func markConversationActive(ctx *security.RequestContext, conversationId string,
 
 // Tier wins when both are supplied; DAO failures are logged, not propagated
 // (sticky-config write is best-effort and must not abort the chat turn).
-func applyConversationModelConfig(ctx *security.RequestContext, dao IConversationDao, conversationId, llmProvider, llmModel string, llmTierOverrides ConversationTierOverrides) {
+//
+// llmConfigSource is handled outside the switch: pinning a config slot is
+// independent of picking a model, so it persists whichever of the two branches
+// below applies — or neither.
+func applyConversationModelConfig(ctx *security.RequestContext, dao IConversationDao, conversationId, llmProvider, llmModel string, llmTierOverrides ConversationTierOverrides, llmConfigSource string, llmConfigReset bool) {
+	// A reset drops everything and takes no other write: the picker sends it
+	// only when nothing is selected, so there is nothing to persist after it.
+	if llmConfigReset {
+		if uerr := dao.ClearConversationModelConfig(conversationId); uerr != nil {
+			ctx.GetLogger().Warn("conversation: failed to clear llm model configuration", "error", uerr)
+			return
+		}
+		InvalidateConversationOverrideCache(conversationId)
+		ctx.GetLogger().Info("conversation: cleared sticky llm model configuration")
+		return
+	}
+
+	if llmConfigSource != "" {
+		if uerr := dao.UpdateConversationConfigSource(conversationId, llmConfigSource); uerr != nil {
+			ctx.GetLogger().Warn("conversation: failed to update pinned llm config source", "error", uerr)
+		} else {
+			InvalidateConversationOverrideCache(conversationId)
+			ctx.GetLogger().Info("conversation: updated sticky llm config source", "config_source", llmConfigSource)
+		}
+	}
+
 	switch {
 	case llmTierOverrides.HasAny():
 		if uerr := dao.UpdateConversationTierOverrides(conversationId, llmTierOverrides); uerr != nil {
@@ -811,7 +836,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		if llmTierOverrides.Picks == nil {
 			llmTierOverrides.Picks = make(map[string]TierModelPick)
 		}
-		llmTierOverrides.Picks[tier] = TierModelPick{Provider: p.Provider, Model: p.Model}
+		llmTierOverrides.Picks[tier] = TierModelPick{Provider: p.Provider, Model: p.Model, ConfigSource: p.ConfigSource}
 	}
 	if llmTierOverrides.HasAny() {
 		ctx.GetLogger().Info("conversation: overriding per-tier models from request config", "tier_count", len(llmTierOverrides.Picks))
@@ -827,8 +852,6 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		}
 
 		if conversation.ID != uuid.Nil {
-			applyConversationModelConfig(ctx, GetConversationDao(), request.ConversationId, llmProvider, llmModel, llmTierOverrides)
-
 			if conversation.AccountID.String() != request.AccountId {
 				return NBAgentResponse{}, errors.New("conversation: user does not have access to this conversation")
 			}
@@ -842,8 +865,42 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			// entry-point handler. It serializes via conv-level lock, resolves the
 			// correct message_id from the agent record, and handles parent bubble-up.
 			// Applied for both WAITING and IN_PROGRESS conversations (#28141).
-			if config.Config.FollowupResumeV2Enabled && request.AgentId != "" && request.Query != "" &&
-				(conversation.Status == ConversationStatusWaiting || conversation.Status == ConversationStatusInProgress) {
+			isFollowupResume := config.Config.FollowupResumeV2Enabled && request.AgentId != "" && request.Query != "" &&
+				(conversation.Status == ConversationStatusWaiting || conversation.Status == ConversationStatusInProgress)
+
+			if !isFollowupResume {
+				// IN_PROGRESS guard: reject new turns submitted while another turn is
+				// already running. Resume requests (client-tool-result, dead-worker
+				// recovery) bypass this guard — they're the workers that just took
+				// over the active conversation, not a competing new submission.
+				// Without IsResume, HandleConversationMessageRequest's call to
+				// markConversationActive would flip the conversation to IN_PROGRESS
+				// and then this guard would immediately reject the very work that
+				// just authorized itself (regression introduced by #29973).
+				if conversation.Status == ConversationStatusInProgress && !request.IsResume {
+					return NBAgentResponse{}, ErrConversationInProgress
+				}
+
+				// A net-new generation (no MessageId) on a conversation whose latest
+				// turn is still WAITING on a followup is rejected. The followup-answer
+				// path above (FollowupResumeV2) already handles the legitimate case
+				// where AgentId is set; reaching here means the user is asking a fresh
+				// question while a prior turn still expects an answer — accepting
+				// would leave that prior turn permanently orphaned.
+				if request.MessageId == "" &&
+					(conversation.Status == ConversationStatusWaiting ||
+						conversation.Status == ConversationStatusWaitingForClientTool) {
+					return NBAgentResponse{}, ErrConversationPendingFollowup
+				}
+			}
+
+			// Only once the turn is going to run. The write is destructive —
+			// blanket and per-tier picks are mutually exclusive, so persisting a
+			// blanket pick clears the stored tier picks — and a rejected turn
+			// must not cost the user their model selection.
+			applyConversationModelConfig(ctx, GetConversationDao(), request.ConversationId, llmProvider, llmModel, llmTierOverrides, request.QueryConfig.LlmConfigSource, request.QueryConfig.LlmConfigReset)
+
+			if isFollowupResume {
 				request.ConversationId = conversation.ID.String()
 				resp, rErr := HandleFollowupAndResumeV2(ctx, request)
 				// Resume returns early here, skipping the SessionId/ConversationId
@@ -856,30 +913,6 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 					return resp, rErr
 				}
 				return resp, nil
-			}
-
-			// IN_PROGRESS guard: reject new turns submitted while another turn is
-			// already running. Resume requests (client-tool-result, dead-worker
-			// recovery) bypass this guard — they're the workers that just took
-			// over the active conversation, not a competing new submission.
-			// Without IsResume, HandleConversationMessageRequest's call to
-			// markConversationActive would flip the conversation to IN_PROGRESS
-			// and then this guard would immediately reject the very work that
-			// just authorized itself (regression introduced by #29973).
-			if conversation.Status == ConversationStatusInProgress && !request.IsResume {
-				return NBAgentResponse{}, ErrConversationInProgress
-			}
-
-			// A net-new generation (no MessageId) on a conversation whose latest
-			// turn is still WAITING on a followup is rejected. The followup-answer
-			// path above (FollowupResumeV2) already handles the legitimate case
-			// where AgentId is set; reaching here means the user is asking a fresh
-			// question while a prior turn still expects an answer — accepting
-			// would leave that prior turn permanently orphaned.
-			if request.MessageId == "" &&
-				(conversation.Status == ConversationStatusWaiting ||
-					conversation.Status == ConversationStatusWaitingForClientTool) {
-				return NBAgentResponse{}, ErrConversationPendingFollowup
 			}
 		}
 	}
@@ -926,7 +959,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 				llmProvider = ""
 				llmModel = ""
 			}
-			id, err := GetConversationDao().SaveConversation(request.ConversationId, sessionId, tenantId, request.AccountId, request.UserId, "", title, ConversationStatusInProgress, source, llmProvider, llmModel, saveTierOverrides)
+			id, err := GetConversationDao().SaveConversation(request.ConversationId, sessionId, tenantId, request.AccountId, request.UserId, "", title, ConversationStatusInProgress, source, llmProvider, llmModel, saveTierOverrides, request.QueryConfig.LlmConfigSource)
 			if err != nil {
 				ctx.GetLogger().Error("conversation: unable to save conversation to DB", "error", err)
 				return NBAgentResponse{}, err
@@ -989,6 +1022,19 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	}
 	if llmTierOverrides.HasAny() {
 		parentContext = context.WithValue(parentContext, ContextKeyLlmTierModelOverrides, llmTierOverrides)
+	}
+	// The pin falls back to the conversation row when the request didn't carry
+	// one. MergeFrom normally inherits it from the previous message, but that
+	// merge is skipped whenever the request supplies its own ToolConfigs — the
+	// column is what keeps a pinned conversation pinned in that case.
+	// On a reset the row was just cleared, but `conversation` was read before
+	// that write — falling back to it would re-pin the turn we are unpinning.
+	effectiveConfigSource := request.QueryConfig.LlmConfigSource
+	if effectiveConfigSource == "" && !request.QueryConfig.LlmConfigReset && conversation.LlmConfigSource != nil {
+		effectiveConfigSource = *conversation.LlmConfigSource
+	}
+	if effectiveConfigSource != "" {
+		parentContext = context.WithValue(parentContext, ContextKeyLlmConfigSourceOverride, effectiveConfigSource)
 	}
 
 	ctx = security.NewRequestContext(

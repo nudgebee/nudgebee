@@ -3,6 +3,12 @@
 export interface ModelConfig {
   llm_provider: string;
   llm_model_name: string;
+  // Pins the request to one configured slot (endpoint / api-key / api-version /
+  // region), so every call in the request tree lands on the same place instead of
+  // resolving per-tier. Format: {layer}:{scope}[:{name}] — e.g. 'env:tier:summary'
+  // or 'db:<integration-uuid>'. Supplied by ai_list_models as llm_config_source;
+  // clients should echo the value back rather than composing it.
+  llm_config_source?: string;
 }
 
 export interface ConversationAttachment {

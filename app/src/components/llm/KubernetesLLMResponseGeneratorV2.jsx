@@ -264,12 +264,13 @@ const KubernetesLLMResponseGenerator = ({
     conversationIdAtDb,
     rawConversation,
     checkConversationExists,
-    availableModels,
+    availableCredentials,
     defaultModel,
     selectedModel,
     setSelectedModel,
     selectedTierModels,
     setSelectedTierModels,
+    clearModelConfig,
     imageSupport,
   } = useLLMInvestigationControl(accountId);
 
@@ -1609,12 +1610,13 @@ const KubernetesLLMResponseGenerator = ({
                           suggestionsAt={enabledAgents}
                           showBorderleft={false}
                           disabled={isConversationLoading || isConversationInProgress}
-                          models={availableModels}
+                          credentials={availableCredentials}
                           defaultModel={defaultModel}
                           selectedModel={selectedModel}
                           onModelSelect={setSelectedModel}
                           selectedTierModels={selectedTierModels}
                           onTierModelsSelect={setSelectedTierModels}
+                          onConfigClear={clearModelConfig}
                           imageSupport={imageSupport}
                           isFollowUp={popup}
                           submitOnModEnter
@@ -1956,7 +1958,7 @@ const KubernetesLLMResponseGenerator = ({
                     maxLength={500000}
                     disabled={isConversationLoading || isConversationInProgress}
                     suggestionsAt={enabledAgents}
-                    models={availableModels}
+                    credentials={availableCredentials}
                     defaultModel={defaultModel}
                     selectedModel={selectedModel}
                     onModelSelect={setSelectedModel}

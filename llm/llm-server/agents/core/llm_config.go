@@ -19,16 +19,12 @@ package core
 // CachedContent layer (different cache slot owners across calls → 403).
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"nudgebee/llm/config"
 	"nudgebee/llm/llms/azure"
 	"nudgebee/llm/llms/bedrock"
@@ -40,6 +36,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -255,18 +252,9 @@ type ForwardedLLMConfig struct {
 // ResolveLLMConfigForForwarding resolves the full, decrypted LLM config for the
 // given account/agent in one call, reusing the canonical resolvers (which apply
 // the DB-beats-ENV precedence and decrypt secrets). It returns nil (no error)
-// only when no provider resolves at all, in which case the caller omits the
-// block and the pod falls back to its global LLM_* secret env. The returned
-// ApiKey is plaintext and MUST NOT be logged.
-//
-// A missing API key is NOT a reason to skip forwarding. Keyless providers are
-// legitimate — Bedrock authenticates through the AWS credential chain, not an
-// API key — and bailing on an empty key also threw away the provider+model
-// llm-server itself resolved and runs on. The pod then fell back to its
-// startup env, which on a deployment whose secret sets no LLM_* keys leaves
-// code-analysis on its built-in default provider: one nobody selected, with no
-// credentials, failing at client construction. Forward what Nubi resolved and
-// let the pod fail on the real problem instead.
+// when there is nothing usable to forward — provider or API key unresolved — in
+// which case the caller omits the block and the pod falls back to its global
+// LLM_* secret env. The returned ApiKey is plaintext and MUST NOT be logged.
 func ResolveLLMConfigForForwarding(ctx *security.RequestContext, accountId, agentName, conversationId string) (*ForwardedLLMConfig, error) {
 	// Fail-safe: without a tenant/account scope there is nothing tenant-specific
 	// to forward (and we must never run an unscoped tenant lookup). Skip
@@ -286,10 +274,14 @@ func ResolveLLMConfigForForwarding(ctx *security.RequestContext, accountId, agen
 		return nil, nil
 	}
 	appendAgentName := agentName != ""
+	apiKey := getLLMApiKey(accountId, provider, agentName, appendAgentName, res)
+	if apiKey == "" {
+		return nil, nil
+	}
 	fwd := &ForwardedLLMConfig{
 		Provider:    provider,
 		Model:       res.Model,
-		ApiKey:      getLLMApiKey(accountId, provider, agentName, appendAgentName, res),
+		ApiKey:      apiKey,
 		ApiEndpoint: getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, res),
 		ApiVersion:  getLLMApiVersion(accountId, provider, agentName, appendAgentName, res),
 		ApiType:     getLLMApiType(accountId, provider, agentName, appendAgentName, res),
@@ -416,6 +408,7 @@ type conversationOverrideEntry struct {
 	provider      string
 	model         string
 	tierOverrides ConversationTierOverrides
+	configSource  string
 	ts            time.Time
 }
 
@@ -425,14 +418,17 @@ var (
 	conversationOverrideCacheTTL   = 5 * time.Minute
 )
 
-// Both zero ⇒ conversation has no override; fall through to lower layers.
-func GetConversationOverride(conversationId string) (string, string, ConversationTierOverrides, error) {
+// Returns the conversation's sticky LLM selections: blanket (provider, model),
+// per-tier overrides, and the pinned config source. All zero ⇒ no override; fall
+// through to lower layers. The config source is independent of the other three —
+// a conversation can pin a slot without pinning a provider/model, and vice versa.
+func GetConversationOverride(conversationId string) (string, string, ConversationTierOverrides, string, error) {
 	conversationOverrideCacheMutex.RLock()
 	entry, found := conversationOverrideCache[conversationId]
 	conversationOverrideCacheMutex.RUnlock()
 
 	if found && time.Since(entry.ts) < conversationOverrideCacheTTL {
-		return entry.provider, entry.model, entry.tierOverrides, nil
+		return entry.provider, entry.model, entry.tierOverrides, entry.configSource, nil
 	}
 
 	// Fail closed if the conversation DAO is unavailable (e.g. DB not reachable):
@@ -442,21 +438,25 @@ func GetConversationOverride(conversationId string) (string, string, Conversatio
 	// a non-nil error as "skip the override and fall through".
 	dao := GetConversationDao()
 	if dao == nil {
-		return "", "", ConversationTierOverrides{}, fmt.Errorf("conversation DAO is unavailable")
+		return "", "", ConversationTierOverrides{}, "", fmt.Errorf("conversation DAO is unavailable")
 	}
 
 	conv, err := dao.GetConversation(conversationId)
 	if err != nil {
-		return "", "", ConversationTierOverrides{}, err
+		return "", "", ConversationTierOverrides{}, "", err
 	}
 
 	provider := ""
 	model := ""
+	configSource := ""
 	if conv.LlmProvider != nil {
 		provider = *conv.LlmProvider
 	}
 	if conv.LlmModel != nil {
 		model = *conv.LlmModel
+	}
+	if conv.LlmConfigSource != nil {
+		configSource = *conv.LlmConfigSource
 	}
 	var tierOverrides ConversationTierOverrides
 	if conv.LlmTierOverrides != nil {
@@ -468,11 +468,12 @@ func GetConversationOverride(conversationId string) (string, string, Conversatio
 		provider:      provider,
 		model:         model,
 		tierOverrides: tierOverrides,
+		configSource:  configSource,
 		ts:            time.Now(),
 	}
 	conversationOverrideCacheMutex.Unlock()
 
-	return provider, model, tierOverrides, nil
+	return provider, model, tierOverrides, configSource, nil
 }
 
 func InvalidateConversationOverrideCache(conversationId string) {
@@ -575,6 +576,10 @@ func readDBTierCredential(tier ModelTier, provider, dbKeyFormat string, dbConfig
 func getLLMApiKey(accountId, provider, agentName string, appendAgentName bool, resolution ...*LLMConfigResolution) string {
 	slog.Debug("Getting LLM API key", "accountId", accountId, "provider", provider, "agentName", agentName, "appendAgentName", appendAgentName)
 
+	if len(resolution) > 0 && resolution[0] != nil && resolution[0].PinnedConfigSource != "" {
+		return resolution[0].PinnedApiKey
+	}
+
 	var dbConfig map[string]string
 	var tier ModelTier
 	if len(resolution) > 0 && resolution[0] != nil {
@@ -670,6 +675,14 @@ func getLLMApiKey(accountId, provider, agentName string, appendAgentName bool, r
 func getLLMApiEndpoint(accountId, provider, agentName string, appendAgentName bool, resolution ...*LLMConfigResolution) string {
 	slog.Debug("Getting LLM API endpoint", "accountId", accountId, "provider", provider, "agentName", agentName, "appendAgentName", appendAgentName)
 
+	// Pinned-source short-circuit: when the request pinned LlmConfigSource,
+	// ResolveLLMConfig already read every credential from exactly that slot
+	// and populated resolution[0].Pinned*. Skip the layered walk so we can't
+	// silently drift to a different endpoint.
+	if len(resolution) > 0 && resolution[0] != nil && resolution[0].PinnedConfigSource != "" {
+		return resolution[0].PinnedEndpoint
+	}
+
 	var dbConfig map[string]string
 	var tier ModelTier
 	if len(resolution) > 0 && resolution[0] != nil {
@@ -758,6 +771,10 @@ func getLLMApiEndpoint(accountId, provider, agentName string, appendAgentName bo
 func getLLMApiVersion(accountId, provider, agentName string, appendAgentName bool, resolution ...*LLMConfigResolution) string {
 	slog.Debug("Getting LLM API version", "accountId", accountId, "provider", provider, "agentName", agentName, "appendAgentName", appendAgentName)
 
+	if len(resolution) > 0 && resolution[0] != nil && resolution[0].PinnedConfigSource != "" {
+		return resolution[0].PinnedApiVersion
+	}
+
 	var dbConfig map[string]string
 	var tier ModelTier
 	if len(resolution) > 0 && resolution[0] != nil {
@@ -834,6 +851,10 @@ func getLLMApiVersion(accountId, provider, agentName string, appendAgentName boo
 func getLLMApiType(accountId, provider, agentName string, appendAgentName bool, resolution ...*LLMConfigResolution) string {
 	slog.Debug("Getting LLM API type", "accountId", accountId, "provider", provider, "agentName", agentName, "appendAgentName", appendAgentName)
 
+	if len(resolution) > 0 && resolution[0] != nil && resolution[0].PinnedConfigSource != "" {
+		return resolution[0].PinnedApiType
+	}
+
 	var dbConfig map[string]string
 	var tier ModelTier
 	if len(resolution) > 0 && resolution[0] != nil {
@@ -909,6 +930,10 @@ func getLLMApiType(accountId, provider, agentName string, appendAgentName bool, 
 
 func getLLMRegion(accountId, provider, agentName string, appendAgentName bool, resolution ...*LLMConfigResolution) string {
 	slog.Debug("Getting LLM region", "accountId", accountId, "provider", provider, "agentName", agentName, "appendAgentName", appendAgentName)
+
+	if len(resolution) > 0 && resolution[0] != nil && resolution[0].PinnedConfigSource != "" {
+		return resolution[0].PinnedRegion
+	}
 
 	var dbConfig map[string]string
 	var tier ModelTier
@@ -1119,128 +1144,6 @@ func GetLlmModelWithProvider(provider string, agentName string, appendAgentName 
 	return GetLLMModel(provider, modelName, agentName, appendAgentName, accountId)
 }
 
-// Anthropic prompt-caching fix (regression from PR #36318).
-//
-// The multi-breakpoint layout places its primary cache breakpoint on the
-// SYSTEM message, but langchaingo v0.1.14's handleSystemMessage unwraps
-// llms.CachedContent and serializes `system` as a plain string — silently
-// dropping the cache_control block. Anthropic only caches a system prompt
-// when `system` is sent as a content-block array. Result: zero cache
-// creation/reads on the anthropic provider since 2026-08-16 (worked in March
-// when the old single breakpoint landed on a Human message, which the client
-// serializes correctly).
-//
-// Until the client is patched/upgraded, this transport restores the intended
-// behavior at the wire: when a /v1/messages body carries `system` as a
-// non-empty string (and caching is enabled), it is rewritten to
-//
-//	"system": [{"type":"text","text":<s>,"cache_control":{"type":"ephemeral"}}]
-//
-// which is the documented cacheable form. Prompts below Anthropic's minimum
-// cacheable size are simply not cached by the API — the form is valid either
-// way. Human-message breakpoints are unaffected (they serialize correctly).
-// Composes with the temperature sanitizer (http_sanitizer.go) as its base.
-type anthropicSystemCacheTransport struct {
-	base http.RoundTripper
-}
-
-func (t *anthropicSystemCacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	base := t.base
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	if req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/messages") || req.Body == nil || !config.Config.LlmEnableCaching {
-		return base.RoundTrip(req)
-	}
-	// Honor the per-request opt-out (custom agents embed dynamic content in
-	// their system messages — caching those creates one-off entries).
-	if disabled, _ := req.Context().Value(ContextKeyDisableCaching).(bool); disabled {
-		return base.RoundTrip(req)
-	}
-	body, err := io.ReadAll(req.Body)
-	_ = req.Body.Close()
-	if err != nil {
-		return nil, err
-	}
-	// Lazy top-level parse: only "system" is inspected; the (large) messages
-	// array stays raw bytes.
-	var payload map[string]json.RawMessage
-	if json.Unmarshal(body, &payload) == nil && payload != nil {
-		var sys string
-		if raw, ok := payload["system"]; ok && json.Unmarshal(raw, &sys) == nil && strings.TrimSpace(sys) != "" {
-			if blocks, mErr := json.Marshal([]map[string]any{{
-				"type":          "text",
-				"text":          sys,
-				"cache_control": map[string]string{"type": "ephemeral"},
-			}}); mErr == nil {
-				payload["system"] = blocks
-				if rewritten, mErr := json.Marshal(payload); mErr == nil {
-					body = rewritten
-				}
-			}
-		}
-	}
-	clone := req.Clone(req.Context())
-	clone.Body = io.NopCloser(bytes.NewReader(body))
-	clone.ContentLength = int64(len(body))
-	clone.Header.Del("Content-Length")
-	clone.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(body)), nil
-	}
-	return base.RoundTrip(clone)
-}
-
-// anthropicCacheHTTPClient carries the system-cache rewrite; passed as the
-// base of newAnthropicHTTPClient so the temperature sanitizer and the cache
-// rewrite compose on one client.
-func anthropicCacheHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout:   defaultLLMHTTPTimeout,
-		Transport: &anthropicSystemCacheTransport{},
-	}
-}
-
-// anthropicChoiceNormalizer fixes Claude 5-family responses under langchaingo
-// v0.1.14: processAnthropicResponse emits one Choice PER CONTENT BLOCK in
-// order, and sonnet-5's adaptive reasoning returns [thinking, text] — so
-// Choices[0] is the thinking block with Content == "", and every caller that
-// reads Choices[0] concludes "llm returned empty content". This decorator
-// moves the first choice carrying actual content (text or tool calls) to the
-// front; thinking-only choices keep riding behind it with their
-// GenerationInfo intact.
-type anthropicChoiceNormalizer struct {
-	inner llms.Model
-}
-
-func wrapAnthropicChoiceNormalizer(inner llms.Model) llms.Model {
-	if inner == nil {
-		return inner
-	}
-	return &anthropicChoiceNormalizer{inner: inner}
-}
-
-func (a *anthropicChoiceNormalizer) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
-	resp, err := a.inner.GenerateContent(ctx, messages, options...)
-	if err != nil || resp == nil || len(resp.Choices) < 2 {
-		return resp, err
-	}
-	if resp.Choices[0] != nil && (strings.TrimSpace(resp.Choices[0].Content) != "" || len(resp.Choices[0].ToolCalls) > 0) {
-		return resp, err
-	}
-	for i := 1; i < len(resp.Choices); i++ {
-		c := resp.Choices[i]
-		if c != nil && (strings.TrimSpace(c.Content) != "" || len(c.ToolCalls) > 0) {
-			resp.Choices[0], resp.Choices[i] = resp.Choices[i], resp.Choices[0]
-			break
-		}
-	}
-	return resp, err
-}
-
-func (a *anthropicChoiceNormalizer) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
-	return llms.GenerateFromSinglePrompt(ctx, a, prompt, options...)
-}
-
 func getAnthropicLLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {
 	slog.Debug("Initializing Anthropic LLM", "provider", provider, "modelName", modelName, "agentName", agentName, "appendAgentName", appendAgentName, "accountId", accountId)
 
@@ -1256,7 +1159,6 @@ func getAnthropicLLM(provider, modelName, agentName string, appendAgentName bool
 	opts := []anthropic.Option{
 		anthropic.WithToken(token),
 		anthropic.WithModel(modelName),
-		anthropic.WithHTTPClient(newAnthropicHTTPClient(anthropicCacheHTTPClient())),
 	}
 	baseUrl := getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, res)
 	if baseUrl != "" {
@@ -1270,8 +1172,7 @@ func getAnthropicLLM(provider, modelName, agentName string, appendAgentName bool
 		return nil, err
 	}
 	slog.Info("Using Anthropic LLM", "model", modelName, "agentName", agentName)
-	// Claude 5 responses lead with a thinking choice; promote the text choice.
-	return wrapAnthropicChoiceNormalizer(llm), nil
+	return llm, nil
 }
 
 func getVertexAILLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {
@@ -1540,7 +1441,7 @@ func getOpenAILLM(provider, modelName, agentName string, appendagentName bool, a
 	slog.Debug("OpenAI configuration", "apiType", apiType, "baseURL", baseURL, "embeddingModel", embeddingModel)
 
 	var responseFormatJSON = &openai.ResponseFormat{Type: "text"}
-	llm, err := openai.New(openai.WithResponseFormat(responseFormatJSON), openai.WithAPIType(apiType), openai.WithToken(token), openai.WithModel(modelName), openai.WithEmbeddingModel(embeddingModel), openai.WithBaseURL(baseURL), openai.WithHTTPClient(newOpenAIHTTPClient()))
+	llm, err := openai.New(openai.WithResponseFormat(responseFormatJSON), openai.WithAPIType(apiType), openai.WithToken(token), openai.WithModel(modelName), openai.WithEmbeddingModel(embeddingModel), openai.WithBaseURL(baseURL))
 	if err != nil {
 		slog.Error("Failed to create OpenAI LLM", "error", err, "modelName", modelName)
 		return nil, err
@@ -1609,7 +1510,31 @@ func getBedrockLLM(provider, modelName, agentName string, appendAgentName bool, 
 type ModelConfig struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
-	Source   string `json:"source"` // "global", "agent", "db", "env"
+	Source   string `json:"source"` // legacy internal label, e.g. "env-tier-reasoning" (kept for backward compat)
+
+	// ConfigSource is the stable machine-readable slot id — the value clients
+	// send back as NBQueryConfig.LlmConfigSource to pin a request to this slot.
+	// Format: {layer}:{scope}[:{name}] — see LlmConfigSource docstring.
+	ConfigSource string `json:"llm_config_source,omitempty"`
+
+	// ConfigName is the human-readable label for this slot, rendered as the
+	// "Config" column in the model picker. Synthesized from ConfigSource + (for
+	// db rows) integrations.name. See ConfigNameFor.
+	ConfigName string `json:"config_name,omitempty"`
+
+	// IsFallback is true when this row was surfaced via a *_fallbacks list
+	// rather than the slot's primary. Display hint only; fallbacks are still
+	// selectable as first-class picks.
+	IsFallback bool `json:"is_fallback,omitempty"`
+}
+
+// MergedSlot names one configured slot that resolves to a credential. Returned
+// as credentials[].sources — not for display, but so a client can map a stored
+// llm_config_source (which may be any of a credential's slots) back to the
+// credential that now represents it.
+type MergedSlot struct {
+	ConfigSource string `json:"llm_config_source"`
+	ConfigName   string `json:"config_name,omitempty"`
 }
 
 // LLMConfigResolution provides detailed information about how LLM model configuration
@@ -1624,6 +1549,40 @@ type LLMConfigResolution struct {
 	MaxContext   int               `json:"max_context,omitempty"` // User-configured context window (tokens); 0 = not set → fall back to the model map
 	Hierarchy    []LLMConfigLayer  `json:"hierarchy"`             // Full resolution chain
 	dbConfig     map[string]string // unexported cache for optimized downstream lookups
+
+	// Pinned* fields are set only when Source == "pinned:<id>" (i.e., the request
+	// carried NBQueryConfig.LlmConfigSource). Downstream credential resolvers
+	// (getLLMApiEndpoint / getLLMApiKey / getLLMApiType / getLLMApiVersion /
+	// getLLMRegion) short-circuit to these values when set, skipping the normal
+	// layered walk. Empty string means "not pinned" — resolver falls through.
+	PinnedConfigSource string `json:"pinned_config_source,omitempty"` // original source id, for cache/semaphore keys and audit logs
+	PinnedEndpoint     string `json:"-"`
+	PinnedApiKey       string `json:"-"`
+	PinnedApiType      string `json:"-"`
+	PinnedApiVersion   string `json:"-"`
+	PinnedRegion       string `json:"-"`
+	// AWS-style credentials and the adapter id complete the destination. Without
+	// them a pinned bedrock/sagemaker slot would still resolve its identity via
+	// the layered walk, so the pin wouldn't actually pin.
+	PinnedAccessKey    string `json:"-"`
+	PinnedSecretKey    string `json:"-"`
+	PinnedSessionToken string `json:"-"`
+	PinnedAdapterId    string `json:"-"`
+}
+
+// credentialIdentity fingerprints every field that decides where a request goes
+// and how it authenticates. Deliberately excludes model: the model is a
+// parameter of the request, not of the connection, so two slots differing only
+// in model are the same credential.
+//
+// Provider is trimmed and lower-cased — dev data contains values like
+// "googleai " with trailing whitespace, which would otherwise read as a
+// separate credential.
+func credentialIdentity(res *LLMConfigResolution) string {
+	return strings.ToLower(strings.TrimSpace(res.Provider)) + "|" +
+		credsFingerprint(res.PinnedApiKey, res.PinnedEndpoint, res.PinnedApiVersion, res.PinnedRegion,
+			res.PinnedAccessKey, res.PinnedSecretKey, res.PinnedSessionToken) + "|" +
+		strings.TrimSpace(res.PinnedApiType) + "|" + strings.TrimSpace(res.PinnedAdapterId)
 }
 
 // LLMConfigLayer represents one layer in the configuration resolution hierarchy
@@ -1754,6 +1713,88 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 	// The category the call opted into, if any (planner / query_generator /
 	// summariser). Empty = no category opted → normal resolution flow.
 	tier := modelTierFromContext(ctx)
+
+	// Pinned-source short-circuit: highest precedence, above every layer below.
+	// When the request carried NBQueryConfig.LlmConfigSource, ContextKeyLlmConfigSourceOverride
+	// is populated and every credential (provider, model, endpoint, api-key,
+	// api-type, api-version, region) is read from exactly that one slot — no
+	// layering, no fallback across sources. Sub-agent calls in the same request
+	// inherit the same context key and hit this branch too, so the entire
+	// request tree lands on the same endpoint regardless of tier tagging.
+	//
+	// Cache scope: this cache is owned by the RequestContext (per-request), so
+	// cache entries never cross requests or tenants. accountId is intentionally
+	// NOT in the key — a single request has one accountId and we want all
+	// sub-agents to share the same cached pinned resolution regardless of the
+	// agent that first primed it. Key IS agentName + tier so each sub-agent
+	// gets its own AgentName / Tier fields on the resolution struct.
+	//
+	// Hierarchy note: unlike the layered walk, pinned resolutions have a
+	// single-entry Hierarchy (the pinned layer). By design — pinning bypasses
+	// layer consideration so there's nothing else to report. UIs that render
+	// Hierarchy should expect this and fall back to Source / PinnedConfigSource
+	// for the "which config was used" answer.
+	// A tier-tagged call whose pick names its own credential resolves through
+	// that credential, not the conversation-wide pin: in By-task mode each task
+	// carries its own (credential, model) pair, so a blanket pin must not
+	// override it. Untagged calls still use the conversation pin below.
+	pinnedSource, pinnedTierModel := tierPinFor(ctx, conversationId, tier)
+	if pinnedSource == "" {
+		pinnedSource = pinnedConfigSourceFromContext(ctx)
+		// Background work (memory extraction, session extractor, title
+		// generation) runs on a fresh context.Background(), so the stamped key
+		// is gone and those calls would silently resolve through the layered
+		// walk — a different endpoint and api key than the user pinned. The
+		// conversation row is the durable record; the tier layer below already
+		// relies on the same fallback.
+		if pinnedSource == "" && conversationId != "" {
+			if _, _, _, convPin, err := GetConversationOverride(conversationId); err == nil {
+				pinnedSource = convPin
+			}
+		}
+	}
+	if pinnedSource != "" {
+		var pinnedCache *LLMResolutionCache
+		pinnedCacheKey := fmt.Sprintf("pinned:%s:%s:%s", pinnedSource, agentName, tier)
+		if ctx != nil {
+			if goCtx := ctx.GetContext(); goCtx != nil {
+				if val := goCtx.Value(ContextKeyLLMResolution); val != nil {
+					pinnedCache = val.(*LLMResolutionCache)
+					if cached, ok := pinnedCache.Get(pinnedCacheKey); ok {
+						return cached, nil
+					}
+				}
+			}
+		}
+		res, err := resolveFromPinnedSource(ctx, pinnedSource, accountId, agentName, tier)
+		if err != nil {
+			return nil, err
+		}
+		// A tier pick names its own model alongside its credential. The slot's
+		// primary is only the default for calls that didn't ask for one.
+		if pinnedTierModel != "" {
+			res.Model = pinnedTierModel
+			res.Hierarchy[0].Model = pinnedTierModel
+		}
+		res.AgentName = agentName
+		res.Tier = tier
+		if pinnedCache != nil {
+			pinnedCache.Set(pinnedCacheKey, res)
+		}
+		// Info level here (once per unique source/agent/tier combo per request,
+		// enforced by the cache above) so ops keeps a prod audit trail of which
+		// pinned config was actually resolved without spamming the sub-agent
+		// callers each time — those go through the cache-hit branch above and
+		// don't log.
+		slog.Info("llm_config_source pinned resolution",
+			"source", pinnedSource,
+			"provider", res.Provider,
+			"model", res.Model,
+			"agentName", agentName,
+			"tier", string(tier),
+			"accountId", accountId)
+		return res, nil
+	}
 
 	// Optimization: Check per-request cache if context is provided
 	var cache *LLMResolutionCache
@@ -1960,7 +2001,7 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 	//                substitute — that's a UX choice; the UI warns about
 	//                it when the user picks per-category mode).
 	if conversationId != "" {
-		if p, m, tierOverrides, err := GetConversationOverride(conversationId); err == nil {
+		if p, m, tierOverrides, _, err := GetConversationOverride(conversationId); err == nil {
 			// Blanket conversation override.
 			if p != "" && m != "" {
 				result.Hierarchy = append(result.Hierarchy, LLMConfigLayer{
@@ -2114,62 +2155,87 @@ func GetAllConfiguredModels(accountId string) ([]ModelConfig, error) {
 	var models []ModelConfig
 	seen := make(map[string]bool)
 
-	addModel := func(provider, model, source string) {
+	// Dedupe key includes the source id so the same (provider, model) at
+	// multiple configured slots (e.g. HF Qwen on env:tier:reasoning AND
+	// env:tier:summary with different endpoints) shows up as distinct rows.
+	// Both primary and fallback rows get a ConfigSource + ConfigName so
+	// clients can pin either — fallback rows carry IsFallback=true so the UI
+	// can render them differently and their ConfigName gets a "(fallback)"
+	// suffix for extra clarity.
+	//
+	// Source-id derivation from the internal label (":"-separated, see the
+	// ENV emission block below for the shape): strip trailing ":fallback"
+	// and validate the remainder is a legal source-id. integrationName is the
+	// owning integration's name for db:* rows and "" for env:* rows.
+	addModel := func(provider, model, source string, isFallback bool, integrationName string) {
 		if provider == "" || model == "" {
 			return
 		}
-		key := fmt.Sprintf("%s:%s", provider, model)
+		key := fmt.Sprintf("%s:%s:%s", provider, model, source)
 		if seen[key] {
 			return
 		}
-		models = append(models, ModelConfig{
-			Provider: provider,
-			Model:    model,
-			Source:   source,
-		})
+		configSource := deriveConfigSource(source, isFallback)
+		row := ModelConfig{
+			Provider:     provider,
+			Model:        model,
+			Source:       source,
+			ConfigSource: configSource,
+			IsFallback:   isFallback,
+		}
+		if configSource != "" {
+			name := ConfigNameFor(configSource, integrationName)
+			if isFallback {
+				name += " (fallback)"
+			}
+			row.ConfigName = name
+		}
+		models = append(models, row)
 		seen[key] = true
 	}
 
-	addFallbacks := func(provider, fallbackStr, source string) {
+	addFallbacks := func(provider, fallbackStr, source string, integrationName string) {
 		if provider == "" || fallbackStr == "" {
 			return
 		}
 		for _, model := range strings.Split(fallbackStr, ",") {
-			addModel(provider, strings.TrimSpace(model), source)
-		}
-	}
-
-	// Load the account's DB config once. Subsequent DB walks reuse this.
-	var dbConfig map[string]string
-	if accountId != "" {
-		if cfg, err := getLLMIntegrationConfig(nil, accountId); err == nil && cfg != nil {
-			dbConfig = cfg
-		}
-	}
-
-	// Resolve the effective global provider — DB wins over ENV when both set.
-	globalProvider := config.Config.LlmProvider
-	if dbConfig != nil {
-		if p, ok := dbConfig["llm_provider"]; ok && p != "" {
-			globalProvider = p
+			addModel(provider, strings.TrimSpace(model), source, true, integrationName)
 		}
 	}
 
 	tiers := []string{"reasoning", "retrieval", "summary"}
 
 	// ─── ENV ──────────────────────────────────────────────────────────────────
+	//
+	// Emitted labels use ":" as separator (matches the wire-format source-id
+	// schema — see NBQueryConfig.LlmConfigSource) with a trailing ":fallback"
+	// suffix on fallback rows. This makes deriveConfigSource a single strip
+	// instead of an ordered prefix-match ladder (which was subtle to reason
+	// about and one bad rename away from an ambiguity bug). Names — tier
+	// (reasoning/retrieval/summary) and agent (snake_case) — can never contain
+	// ":", so the split is unambiguous.
+	//
+	// Fallback-skip guard: only emit fallback rows when the slot's primary
+	// (provider + model) is actually populated. A slot with only fallbacks set
+	// has no endpoint/api-key to serve them with, and the resolver would error
+	// at pin time — so we don't surface those in the picker.
 
 	// ENV global + global fallbacks
-	addModel(config.Config.LlmProvider, config.Config.LlmModel, "env-global")
-	addFallbacks(config.Config.LlmProvider, config.Config.LlmModelFallbacks, "env-fallback")
+	if config.Config.LlmProvider != "" && config.Config.LlmModel != "" {
+		addModel(config.Config.LlmProvider, config.Config.LlmModel, "env:global", false, "")
+		addFallbacks(config.Config.LlmProvider, config.Config.LlmModelFallbacks, "env:global:fallback", "")
+	}
 
 	// ENV tier + tier fallbacks (tier provider falls back to ENV-global)
 	for _, tier := range tiers {
 		tierProvider := config.Config.GetString(fmt.Sprintf(llmTierProviderFormat, tier), config.Config.LlmProvider)
 		tierModel := config.Config.GetString(fmt.Sprintf(llmTierModelFormat, tier), "")
-		addModel(tierProvider, tierModel, fmt.Sprintf("env-tier-%s", tier))
+		if tierProvider == "" || tierModel == "" {
+			continue
+		}
+		addModel(tierProvider, tierModel, fmt.Sprintf("env:tier:%s", tier), false, "")
 		tierFb := config.Config.GetString(fmt.Sprintf(llmTierModelFallbackFormat, tier), "")
-		addFallbacks(tierProvider, tierFb, fmt.Sprintf("env-tier-fallback-%s", tier))
+		addFallbacks(tierProvider, tierFb, fmt.Sprintf("env:tier:%s:fallback", tier), "")
 	}
 
 	// ENV per-agent — dynamic env-var suffix scan (no hardcoded agent list).
@@ -2221,52 +2287,89 @@ func GetAllConfiguredModels(accountId string) ([]ModelConfig, error) {
 		}
 		agentName := strings.ToLower(upperSuffix)
 		model := config.Config.GetString(fmt.Sprintf(llmModelFormat, agentName), "")
-		addModel(provider, model, fmt.Sprintf("env-agent-%s", agentName))
+		if model == "" {
+			continue
+		}
+		addModel(provider, model, fmt.Sprintf("env:agent:%s", agentName), false, "")
 		fb := config.Config.GetString(fmt.Sprintf(llmModelFallbackFormat, agentName), "")
-		addFallbacks(provider, fb, fmt.Sprintf("env-fallback-%s", agentName))
+		addFallbacks(provider, fb, fmt.Sprintf("env:agent:%s:fallback", agentName), "")
 	}
 
 	// ─── DB ───────────────────────────────────────────────────────────────────
+	//
+	// Emitted per integration rather than off the merged config map the layered
+	// resolver uses: the merge collapses every visible integration into one map
+	// and drops the integration id, leaving nothing for a client to pin. Labels
+	// embed the uuid — db:<uuid>[:tier|:agent:<name>][:fallback] — which is what
+	// resolveFromPinnedSource looks up.
 
-	if dbConfig == nil {
+	integrations, err := getLLMIntegrationsForAccount(nil, accountId)
+	if err != nil {
+		// The picker is still useful with ENV rows alone, so degrade rather than
+		// fail the whole list.
+		slog.Warn("GetAllConfiguredModels: unable to load LLM integrations; listing ENV slots only",
+			"error", err, "accountId", accountId)
 		return models, nil
 	}
 
-	// DB global + global fallbacks
-	addModel(dbConfig["llm_provider"], dbConfig["llm_model_name"], "db-global")
-	addFallbacks(globalProvider, dbConfig["llm_model_fallbacks"], "db-fallback")
+	for _, integ := range integrations {
+		cfg, name := integ.Config, integ.Name
+		integrationProvider := cfg["llm_provider"]
 
-	// DB tier + tier fallbacks (tier provider falls back to DB-global, then ENV-global)
-	for _, tier := range tiers {
-		tierProvider := dbConfig[fmt.Sprintf(llmTierProviderFormat, tier)]
-		if tierProvider == "" {
-			tierProvider = globalProvider
+		// Integration global + global fallbacks
+		if integrationProvider != "" && cfg["llm_model_name"] != "" {
+			addModel(integrationProvider, cfg["llm_model_name"], fmt.Sprintf("db:%s", integ.Id), false, name)
+			addFallbacks(integrationProvider, cfg["llm_model_fallbacks"], fmt.Sprintf("db:%s:fallback", integ.Id), name)
 		}
-		addModel(tierProvider, dbConfig[fmt.Sprintf(llmTierModelFormat, tier)], fmt.Sprintf("db-tier-%s", tier))
-		addFallbacks(tierProvider, dbConfig[fmt.Sprintf(llmTierModelFallbackFormat, tier)], fmt.Sprintf("db-tier-fallback-%s", tier))
+
+		// Tier + tier fallbacks (tier provider falls back to the integration's global)
+		for _, tier := range tiers {
+			tierProvider := cfg[fmt.Sprintf(llmTierProviderFormat, tier)]
+			if tierProvider == "" {
+				tierProvider = integrationProvider
+			}
+			tierModel := cfg[fmt.Sprintf(llmTierModelFormat, tier)]
+			if tierProvider == "" || tierModel == "" {
+				continue
+			}
+			addModel(tierProvider, tierModel, fmt.Sprintf("db:%s:tier:%s", integ.Id, tier), false, name)
+			addFallbacks(tierProvider, cfg[fmt.Sprintf(llmTierModelFallbackFormat, tier)],
+				fmt.Sprintf("db:%s:tier:%s:fallback", integ.Id, tier), name)
+		}
+
+		// Per-agent — scan llm_provider_<agent> keys, excluding credential
+		// suffixes that share the same prefix.
+		agentNames := make([]string, 0, len(cfg))
+		for key := range cfg {
+			if !strings.HasPrefix(key, "llm_provider_") {
+				continue
+			}
+			if strings.HasPrefix(key, "llm_provider_api_") ||
+				strings.HasPrefix(key, "llm_provider_region") ||
+				strings.HasPrefix(key, "llm_provider_require") ||
+				strings.HasPrefix(key, "llm_provider_adapter") {
+				continue
+			}
+			if agentName := strings.TrimPrefix(key, "llm_provider_"); agentName != "" {
+				agentNames = append(agentNames, agentName)
+			}
+		}
+		// Sorted so row order doesn't depend on map iteration order.
+		sort.Strings(agentNames)
+		for _, agentName := range agentNames {
+			model := cfg[fmt.Sprintf(llmModelFormat, agentName)]
+			if model == "" {
+				continue
+			}
+			provider := cfg[fmt.Sprintf(llmProviderFormat, agentName)]
+			addModel(provider, model, fmt.Sprintf("db:%s:agent:%s", integ.Id, agentName), false, name)
+			addFallbacks(provider, cfg[fmt.Sprintf(llmModelFallbackFormat, agentName)],
+				fmt.Sprintf("db:%s:agent:%s:fallback", integ.Id, agentName), name)
+		}
 	}
 
-	// DB per-agent — scan llm_provider_<agent> keys, excluding credential
-	// suffixes that share the same prefix.
-	for key, provider := range dbConfig {
-		if !strings.HasPrefix(key, "llm_provider_") {
-			continue
-		}
-		if strings.HasPrefix(key, "llm_provider_api_") ||
-			strings.HasPrefix(key, "llm_provider_region") ||
-			strings.HasPrefix(key, "llm_provider_require") ||
-			strings.HasPrefix(key, "llm_provider_adapter") {
-			continue
-		}
-		agentName := strings.TrimPrefix(key, "llm_provider_")
-		if agentName == "" {
-			continue
-		}
-		model := dbConfig[fmt.Sprintf(llmModelFormat, agentName)]
-		addModel(provider, model, fmt.Sprintf("db-agent-%s", agentName))
-		addFallbacks(provider, dbConfig[fmt.Sprintf(llmModelFallbackFormat, agentName)], fmt.Sprintf("db-fallback-%s", agentName))
-	}
-
+	// Returned un-collapsed: this is the flat per-slot view. Callers wanting
+	// unique destinations use GetConfiguredCredentials, which owns that logic.
 	return models, nil
 }
 
@@ -2298,50 +2401,660 @@ func IsOpenAIModelWithoutStopSupport(provider, model string) bool {
 	return false
 }
 
-// ModelSupportsTemperature checks if the model supports the 'temperature' parameter.
-// Anthropic reasoning models (claude-sonnet-5, claude-opus-5, claude-5 series) and OpenAI
-// reasoning model families (o1, o3, gpt-5) reject explicit / non-default temperature on the wire.
-func ModelSupportsTemperature(provider, model string) bool {
-	modelLower := strings.ToLower(strings.TrimSpace(model))
-	pLower := strings.ToLower(strings.TrimSpace(provider))
+// ─── Pinned-source resolution ──────────────────────────────────────────────
+//
+// A pinned source is a request-level override that skips the normal layered
+// walk and reads every LLM credential (provider, model, endpoint, api-key,
+// api-type, api-version, region) from exactly one configured slot. Consumers
+// pick it via NBQueryConfig.LlmConfigSource; the value flows into the
+// request context as ContextKeyLlmConfigSourceOverride and every sub-agent
+// call in the request tree inherits it via context propagation.
+//
+// Source-id schema: {layer}:{scope}[:{name}]
+//   env:global                    → LLM_PROVIDER / LLM_MODEL_NAME / LLM_PROVIDER_API_*
+//   env:tier:<t>                  → LLM_TIER_*_<T>   (t = reasoning|retrieval|summary)
+//   env:agent:<agent_name>        → LLM_*_<AGENT>
+//   db:<integration_uuid>[:tier:<t>|:agent:<a>]  → per-tenant integration row
+//
+// db ids name one enabled LLM integration visible to the request's account.
+// Ids the account can't see are rejected, so the pin can never reach another
+// tenant's credentials — see integrationConfigForPin.
 
-	// Check Anthropic reasoning models
-	if pLower == "anthropic" || strings.Contains(modelLower, "claude") {
-		if strings.Contains(modelLower, "claude-sonnet-5") ||
-			strings.Contains(modelLower, "claude-opus-5") ||
-			strings.Contains(modelLower, "claude-5") {
-			return false
+// tierPinFor returns the credential and model a tier-tagged call should use
+// when the active tier's pick names its own credential, or ("", "") otherwise.
+//
+// In By-task mode each task is a complete (credential, model) choice, so its
+// credential must beat the conversation-wide pin — otherwise a blanket pin made
+// on an earlier turn silently serves every tier from one slot's primary model.
+// Picks made before per-tier credentials existed carry no ConfigSource; those
+// return "" so the caller falls back to the conversation pin, preserving
+// behaviour for stored conversations.
+//
+// Reads the request context first, then the conversation row — the same two
+// sources, in the same order, that the layered walk uses for tier overrides, so
+// background work that lost its context still resolves identically.
+func tierPinFor(ctx *security.RequestContext, conversationId string, tier ModelTier) (string, string) {
+	if tier == "" {
+		return "", ""
+	}
+	if ctx != nil && ctx.GetContext() != nil {
+		if v, ok := ctx.GetContext().Value(ContextKeyLlmTierModelOverrides).(ConversationTierOverrides); ok {
+			if pick, found := v.Get(string(tier)); found && pick.ConfigSource != "" {
+				return pick.ConfigSource, pick.Model
+			}
+		}
+	}
+	if conversationId != "" {
+		if _, _, tierOverrides, _, err := GetConversationOverride(conversationId); err == nil {
+			if pick, found := tierOverrides.Get(string(tier)); found && pick.ConfigSource != "" {
+				return pick.ConfigSource, pick.Model
+			}
+		}
+	}
+	return "", ""
+}
+
+// pinnedConfigSourceFromContext returns the pinned source id stamped into ctx,
+// or "" if none. Used by ResolveLLMConfig to short-circuit its layered walk.
+func pinnedConfigSourceFromContext(ctx *security.RequestContext) string {
+	if ctx == nil {
+		return ""
+	}
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		return ""
+	}
+	v, _ := goCtx.Value(ContextKeyLlmConfigSourceOverride).(string)
+	return v
+}
+
+// parsedConfigSource is the decoded form of a source-id string.
+type parsedConfigSource struct {
+	Layer           string // "env" | "db"
+	Scope           string // "global" | "tier" | "agent"
+	Name            string // tier name or agent name (empty for global)
+	IntegrationUuid string // db only
+}
+
+// parseConfigSourceId splits a source-id string into (layer, scope, name,
+// integration_uuid). Returns an error if malformed. The caller must still
+// validate that the parsed slot actually has data — parsing succeeds even for
+// slots that reference a tier/agent that isn't configured.
+func parseConfigSourceId(sourceId string) (*parsedConfigSource, error) {
+	// Trim before splitting: the id is client-supplied, and stray whitespace
+	// would otherwise fail as an unknown layer or an unavailable integration —
+	// errors that point at the wrong thing. Messages keep the raw value.
+	parts := strings.Split(strings.TrimSpace(sourceId), ":")
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("invalid llm_config_source %q: expected {layer}:{scope}[:{name}]", sourceId)
+	}
+	p := &parsedConfigSource{Layer: parts[0]}
+	switch p.Layer {
+	case "env":
+		// env:global | env:tier:<t> | env:agent:<a>
+		p.Scope = parts[1]
+		switch p.Scope {
+		case "global":
+			if len(parts) != 2 {
+				return nil, fmt.Errorf("invalid llm_config_source %q: env:global takes no name", sourceId)
+			}
+		case "tier", "agent":
+			if len(parts) != 3 || parts[2] == "" {
+				return nil, fmt.Errorf("invalid llm_config_source %q: env:%s requires a name", sourceId, p.Scope)
+			}
+			p.Name = parts[2]
+		default:
+			return nil, fmt.Errorf("invalid llm_config_source %q: unknown env scope %q", sourceId, p.Scope)
+		}
+	case "db":
+		// db:<uuid> | db:<uuid>:tier:<t> | db:<uuid>:agent:<a>
+		if len(parts) < 2 || parts[1] == "" {
+			return nil, fmt.Errorf("invalid llm_config_source %q: db requires an integration uuid", sourceId)
+		}
+		p.IntegrationUuid = parts[1]
+		if len(parts) == 2 {
+			p.Scope = "global"
+		} else if len(parts) == 4 && (parts[2] == "tier" || parts[2] == "agent") && parts[3] != "" {
+			p.Scope = parts[2]
+			p.Name = parts[3]
+		} else {
+			return nil, fmt.Errorf("invalid llm_config_source %q: db shape is db:<uuid>[:tier|:agent:<name>]", sourceId)
+		}
+	default:
+		return nil, fmt.Errorf("invalid llm_config_source %q: unknown layer %q (expected env|db)", sourceId, p.Layer)
+	}
+	return p, nil
+}
+
+// resolveFromPinnedSource reads all credentials from the specific slot named by
+// sourceId. Returns a fully-populated LLMConfigResolution with Pinned* fields
+// set so downstream resolvers short-circuit. Errors when the slot is malformed,
+// missing required keys, or (for db) references a different tenant's config.
+//
+// Provider/model reconciliation with the request:
+//   - The slot's PRIMARY (provider, model) is the default effective pair.
+//   - When the request also sent LlmProvider / LlmModelName via ctx (stamped as
+//     ContextKeyLlmProviderOverride / ContextKeyLlmModelOverride), we validate
+//     they're consistent with the slot: provider must match, and model must be
+//     either the primary OR in the slot's fallback list. A model in the fallback
+//     list is honoured (returned as res.Model) so clients can pin the slot's
+//     endpoint / api-key while picking a fallback model. Mismatches return an
+//     error — no silent slot-primary substitution, no wrong endpoint drift.
+func resolveFromPinnedSource(ctx *security.RequestContext, sourceId, accountId, agentName string, tier ModelTier) (*LLMConfigResolution, error) {
+	parsed, err := parseConfigSourceId(sourceId)
+	if err != nil {
+		return nil, err
+	}
+
+	res := &LLMConfigResolution{
+		Source:             "pinned:" + sourceId,
+		IsOverridden:       true,
+		PinnedConfigSource: sourceId,
+		Hierarchy: []LLMConfigLayer{{
+			Level:  "pinned:" + sourceId,
+			Active: true,
+		}},
+	}
+
+	var slotFallbacks []string
+	switch parsed.Layer {
+	case "env":
+		var err error
+		if slotFallbacks, err = readEnvSlotInto(res, parsed); err != nil {
+			return nil, err
+		}
+	case "db":
+		cfg, err := integrationConfigForPin(ctx, accountId, parsed.IntegrationUuid)
+		if err != nil {
+			return nil, err
+		}
+		if slotFallbacks, err = readDbSlotInto(res, cfg, parsed); err != nil {
+			return nil, err
 		}
 	}
 
-	// Check OpenAI reasoning models across any provider, including namespaced proxy/deployment IDs.
-	if isOpenAIReasoningModel(modelLower) {
-		return false
+	// Reconcile with request-level provider/model overrides.
+	reqProvider := contextString(ctx, ContextKeyLlmProviderOverride)
+	reqModel := contextString(ctx, ContextKeyLlmModelOverride)
+	if reqProvider != "" || reqModel != "" {
+		// Half-set is ambiguous — either both or neither.
+		if reqProvider == "" || reqModel == "" {
+			return nil, fmt.Errorf("llm_config_source %q: request has llm_provider=%q and llm_model_name=%q — either both or neither must be set alongside a pinned source",
+				sourceId, reqProvider, reqModel)
+		}
+		// Trim before comparing: dev and prod integration rows carry provider
+		// values with trailing whitespace ("googleai "), and credentialIdentity
+		// already trims when grouping — so an untrimmed compare here would
+		// reject a request for the very credential the picker offered, with an
+		// error naming two providers that look identical. Compared via locals
+		// so the message keeps the raw values (%q makes the whitespace visible).
+		if !strings.EqualFold(strings.TrimSpace(reqProvider), strings.TrimSpace(res.Provider)) {
+			return nil, fmt.Errorf("llm_config_source %q pins provider %q; request sent llm_provider %q — refresh model list and re-pick",
+				sourceId, res.Provider, reqProvider)
+		}
+		if reqModel != res.Model {
+			if !containsString(slotFallbacks, reqModel) {
+				accepted := append([]string{res.Model}, slotFallbacks...)
+				return nil, fmt.Errorf("llm_config_source %q cannot serve model %q (accepted: primary=%q, fallbacks=%v)",
+					sourceId, reqModel, res.Model, accepted[1:])
+			}
+			// Fallback picked — use the request's model with the slot's endpoint.
+			res.Model = reqModel
+		}
 	}
 
-	return true
+	// Populate active layer's provider/model for display.
+	res.Hierarchy[0].Provider = res.Provider
+	res.Hierarchy[0].Model = res.Model
+	slog.Debug("resolved pinned llm config source",
+		"source", sourceId,
+		"provider", res.Provider,
+		"model", res.Model,
+		"agentName", agentName,
+		"tier", string(tier),
+		"accountId", accountId)
+	return res, nil
 }
 
-func isOpenAIReasoningModel(model string) bool {
-	for _, family := range []string{"o1", "o3", "gpt-5"} {
-		for offset := 0; offset < len(model); {
-			index := strings.Index(model[offset:], family)
-			if index < 0 {
-				break
-			}
-			index += offset
-			beforeFamily := index == 0 || isModelNamespaceSeparator(model[index-1])
-			afterIndex := index + len(family)
-			afterFamily := afterIndex == len(model) || isModelNamespaceSeparator(model[afterIndex])
-			if beforeFamily && afterFamily {
-				return true
-			}
-			offset = index + len(family)
+// integrationConfigForPin returns the config map of the integration a db:<uuid>
+// source names, or an error if the account can't see it. Tenant isolation comes
+// from getLLMIntegrationsForAccount's visibility filter — an integration
+// belonging to another tenant is never in the returned list, so an unrecognised
+// uuid is rejected here rather than silently resolving to someone else's
+// credentials.
+func integrationConfigForPin(ctx *security.RequestContext, accountId, integrationUuid string) (map[string]string, error) {
+	if accountId == "" {
+		return nil, fmt.Errorf("llm_config_source db:%s requires an account context", integrationUuid)
+	}
+	integrations, err := getLLMIntegrationsForAccount(ctx, accountId)
+	if err != nil {
+		return nil, fmt.Errorf("llm_config_source db:%s: unable to load LLM integrations: %w", integrationUuid, err)
+	}
+	for _, integ := range integrations {
+		if integ.Id == integrationUuid {
+			// Safe to hand out: getLLMIntegrationsForAccount already returns a
+			// deep copy, so this map is not the cached one.
+			return integ.Config, nil
+		}
+	}
+	return nil, fmt.Errorf("llm_config_source db:%s is not an LLM integration available to this account — refresh model list and re-pick", integrationUuid)
+}
+
+// contextString extracts a string-typed value from ctx by key; returns "" for a
+// nil ctx or missing/mistyped key. Kept private because it's specific to the
+// LLMContextKey space we control here.
+func contextString(ctx *security.RequestContext, key LLMContextKey) string {
+	if ctx == nil {
+		return ""
+	}
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		return ""
+	}
+	v, _ := goCtx.Value(key).(string)
+	return v
+}
+
+// containsString is a small helper avoiding a slices import at this file's use
+// site (some legacy files here still target the pre-1.21 slices package).
+func containsString(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
 		}
 	}
 	return false
 }
 
-func isModelNamespaceSeparator(char byte) bool {
-	return char == ':' || char == '/' || char == '.' || char == '_' || char == '-'
+// readEnvSlotInto populates res with credentials read from an env: slot and
+// returns the slot's fallback model list (empty if none configured). The caller
+// has already parsed sourceId; this function only touches ENV.
+func readEnvSlotInto(res *LLMConfigResolution, p *parsedConfigSource) ([]string, error) {
+	var fallbackStr string
+	switch p.Scope {
+	case "global":
+		res.Provider = config.Config.LlmProvider
+		res.Model = config.Config.LlmModel
+		res.PinnedEndpoint = config.Config.LlmProviderApiEndpoint
+		res.PinnedApiKey = config.Config.LlmProviderApiKey
+		res.PinnedApiType = config.Config.LlmProviderApiType
+		res.PinnedApiVersion = config.Config.LlmProviderApiVersion
+		res.PinnedRegion = config.Config.LlmProviderRegion
+		res.PinnedAccessKey = config.Config.LlmProviderAccessKey
+		res.PinnedSecretKey = config.Config.LlmProviderSecretKey
+		res.PinnedSessionToken = config.Config.LlmProviderSessionToken
+		fallbackStr = config.Config.LlmModelFallbacks
+	case "tier":
+		res.Provider = config.Config.GetString(fmt.Sprintf(llmTierProviderFormat, p.Name), "")
+		res.Model = config.Config.GetString(fmt.Sprintf(llmTierModelFormat, p.Name), "")
+		res.PinnedEndpoint = config.Config.GetString(fmt.Sprintf(llmTierApiEndpointFormat, p.Name), "")
+		res.PinnedApiKey = config.Config.GetString(fmt.Sprintf(llmTierApiKeyFormat, p.Name), "")
+		res.PinnedApiType = config.Config.GetString(fmt.Sprintf(llmTierApiTypeFormat, p.Name), "")
+		res.PinnedApiVersion = config.Config.GetString(fmt.Sprintf(llmTierApiVersionFormat, p.Name), "")
+		res.PinnedRegion = config.Config.GetString(fmt.Sprintf(llmTierRegionFormat, p.Name), "")
+		res.PinnedAccessKey = config.Config.GetString(fmt.Sprintf(llmTierAccessKeyFormat, p.Name), "")
+		res.PinnedSecretKey = config.Config.GetString(fmt.Sprintf(llmTierSecretKeyFormat, p.Name), "")
+		res.PinnedSessionToken = config.Config.GetString(fmt.Sprintf(llmTierSessionTokenFormat, p.Name), "")
+		fallbackStr = config.Config.GetString(fmt.Sprintf(llmTierModelFallbackFormat, p.Name), "")
+	case "agent":
+		res.Provider = config.Config.GetString(fmt.Sprintf(llmProviderFormat, p.Name), "")
+		res.Model = config.Config.GetString(fmt.Sprintf(llmModelFormat, p.Name), "")
+		res.PinnedEndpoint = config.Config.GetString(fmt.Sprintf(llmProviderApiEndpointFormat, p.Name), "")
+		res.PinnedApiKey = config.Config.GetString(fmt.Sprintf(llmProviderApiKeyFormat, p.Name), "")
+		res.PinnedApiType = config.Config.GetString(fmt.Sprintf(llmProviderApiTypeFormat, p.Name), "")
+		res.PinnedApiVersion = config.Config.GetString(fmt.Sprintf(llmProviderApiVersionFormat, p.Name), "")
+		res.PinnedRegion = config.Config.GetString(fmt.Sprintf(llmProviderRegionFormat, p.Name), "")
+		res.PinnedAccessKey = config.Config.GetString(fmt.Sprintf(llmProviderAccessKeyFormat, p.Name), "")
+		res.PinnedSecretKey = config.Config.GetString(fmt.Sprintf(llmProviderSecretKeyFormat, p.Name), "")
+		res.PinnedSessionToken = config.Config.GetString(fmt.Sprintf(llmProviderSessionTokenFormat, p.Name), "")
+		res.PinnedAdapterId = config.Config.GetString(fmt.Sprintf(llmModelAdapterFormat, p.Name), "")
+		fallbackStr = config.Config.GetString(fmt.Sprintf(llmModelFallbackFormat, p.Name), "")
+	default:
+		return nil, fmt.Errorf("readEnvSlotInto: unknown scope %q", p.Scope)
+	}
+
+	// Fill anything this slot doesn't define from ENV-global — same rule as the
+	// db branch below, and the same rule the layered resolver applies when the
+	// request isn't pinned. Values the slot DOES define always win, so the
+	// two-HF-endpoints case (each tier naming its own endpoint) is unaffected:
+	// inheritance only fills gaps, it never overrides.
+	if p.Scope != "global" {
+		inheritSlotDefaults(res, slotDefaults{
+			provider: config.Config.LlmProvider, endpoint: config.Config.LlmProviderApiEndpoint, apiKey: config.Config.LlmProviderApiKey,
+			apiType: config.Config.LlmProviderApiType, apiVersion: config.Config.LlmProviderApiVersion, region: config.Config.LlmProviderRegion,
+			accessKey: config.Config.LlmProviderAccessKey, secretKey: config.Config.LlmProviderSecretKey, sessionToken: config.Config.LlmProviderSessionToken,
+		})
+	}
+
+	return finishSlotRead(res, p, fallbackStr)
+}
+
+// readDbSlotInto is readEnvSlotInto's db twin: it populates res from a single
+// tenant-configured LLM integration's config map. integration_config_values
+// stores the same key names as the ENV formats, lowercased, so the slot shapes
+// line up one-for-one with the env branch above.
+func readDbSlotInto(res *LLMConfigResolution, cfg map[string]string, p *parsedConfigSource) ([]string, error) {
+	var fallbackStr string
+	switch p.Scope {
+	case "global":
+		res.Provider = cfg["llm_provider"]
+		res.Model = cfg["llm_model_name"]
+		res.PinnedEndpoint = cfg["llm_provider_api_endpoint"]
+		res.PinnedApiKey = cfg["llm_provider_api_key"]
+		res.PinnedApiType = cfg["llm_provider_api_type"]
+		res.PinnedApiVersion = cfg["llm_provider_api_version"]
+		res.PinnedRegion = cfg["llm_provider_region"]
+		res.PinnedAccessKey = cfg["llm_provider_access_key"]
+		res.PinnedSecretKey = cfg["llm_provider_secret_key"]
+		res.PinnedSessionToken = cfg["llm_provider_session_token"]
+		fallbackStr = cfg["llm_model_fallbacks"]
+	case "tier":
+		res.Provider = cfg[fmt.Sprintf(llmTierProviderFormat, p.Name)]
+		res.Model = cfg[fmt.Sprintf(llmTierModelFormat, p.Name)]
+		res.PinnedEndpoint = cfg[fmt.Sprintf(llmTierApiEndpointFormat, p.Name)]
+		res.PinnedApiKey = cfg[fmt.Sprintf(llmTierApiKeyFormat, p.Name)]
+		res.PinnedApiType = cfg[fmt.Sprintf(llmTierApiTypeFormat, p.Name)]
+		res.PinnedApiVersion = cfg[fmt.Sprintf(llmTierApiVersionFormat, p.Name)]
+		res.PinnedRegion = cfg[fmt.Sprintf(llmTierRegionFormat, p.Name)]
+		res.PinnedAccessKey = cfg[fmt.Sprintf(llmTierAccessKeyFormat, p.Name)]
+		res.PinnedSecretKey = cfg[fmt.Sprintf(llmTierSecretKeyFormat, p.Name)]
+		res.PinnedSessionToken = cfg[fmt.Sprintf(llmTierSessionTokenFormat, p.Name)]
+		fallbackStr = cfg[fmt.Sprintf(llmTierModelFallbackFormat, p.Name)]
+	case "agent":
+		res.Provider = cfg[fmt.Sprintf(llmProviderFormat, p.Name)]
+		res.Model = cfg[fmt.Sprintf(llmModelFormat, p.Name)]
+		res.PinnedEndpoint = cfg[fmt.Sprintf(llmProviderApiEndpointFormat, p.Name)]
+		res.PinnedApiKey = cfg[fmt.Sprintf(llmProviderApiKeyFormat, p.Name)]
+		res.PinnedApiType = cfg[fmt.Sprintf(llmProviderApiTypeFormat, p.Name)]
+		res.PinnedApiVersion = cfg[fmt.Sprintf(llmProviderApiVersionFormat, p.Name)]
+		res.PinnedRegion = cfg[fmt.Sprintf(llmProviderRegionFormat, p.Name)]
+		res.PinnedAccessKey = cfg[fmt.Sprintf(llmProviderAccessKeyFormat, p.Name)]
+		res.PinnedSecretKey = cfg[fmt.Sprintf(llmProviderSecretKeyFormat, p.Name)]
+		res.PinnedSessionToken = cfg[fmt.Sprintf(llmProviderSessionTokenFormat, p.Name)]
+		res.PinnedAdapterId = cfg[fmt.Sprintf(llmModelAdapterFormat, p.Name)]
+		fallbackStr = cfg[fmt.Sprintf(llmModelFallbackFormat, p.Name)]
+	default:
+		return nil, fmt.Errorf("readDbSlotInto: unknown scope %q", p.Scope)
+	}
+
+	// Fill anything this slot doesn't define from the integration's global slot.
+	// A tenant integration normally carries one api key and per-tier models, so
+	// without this a pinned tier slot resolves with an EMPTY key and the request
+	// fails — pinning would behave differently from not pinning, which is the
+	// opposite of the point. Values the slot DOES define always win, so a slot
+	// with its own endpoint still overrides.
+	if p.Scope != "global" {
+		inheritSlotDefaults(res, slotDefaults{
+			provider: cfg["llm_provider"], endpoint: cfg["llm_provider_api_endpoint"], apiKey: cfg["llm_provider_api_key"],
+			apiType: cfg["llm_provider_api_type"], apiVersion: cfg["llm_provider_api_version"], region: cfg["llm_provider_region"],
+			accessKey: cfg["llm_provider_access_key"], secretKey: cfg["llm_provider_secret_key"], sessionToken: cfg["llm_provider_session_token"],
+		})
+	}
+
+	return finishSlotRead(res, p, fallbackStr)
+}
+
+// inheritSlotDefaults fills each empty credential on res from the layer's global
+// slot. Per-field, so a slot that overrides only its endpoint keeps the shared
+// key rather than losing it.
+func inheritSlotDefaults(res *LLMConfigResolution, g slotDefaults) {
+	if res.Provider == "" {
+		res.Provider = g.provider
+	}
+	// Credentials are only interchangeable within one provider. A slot that
+	// names a different provider than the layer's global (openai global with an
+	// azure reasoning tier, say) must not gap-fill from it: it would pair an
+	// azure model with an openai endpoint, or — worse, when the tier sets no key
+	// — send the request with the global provider's api key. That is the leak in
+	// #35000 / #34834, on the pinned path. Leaving the field empty makes the
+	// misconfiguration fail loudly instead.
+	if !strings.EqualFold(strings.TrimSpace(res.Provider), strings.TrimSpace(g.provider)) {
+		return
+	}
+	if res.PinnedEndpoint == "" {
+		res.PinnedEndpoint = g.endpoint
+	}
+	if res.PinnedApiKey == "" {
+		res.PinnedApiKey = g.apiKey
+	}
+	if res.PinnedApiType == "" {
+		res.PinnedApiType = g.apiType
+	}
+	if res.PinnedApiVersion == "" {
+		res.PinnedApiVersion = g.apiVersion
+	}
+	if res.PinnedRegion == "" {
+		res.PinnedRegion = g.region
+	}
+	if res.PinnedAccessKey == "" {
+		res.PinnedAccessKey = g.accessKey
+	}
+	if res.PinnedSecretKey == "" {
+		res.PinnedSecretKey = g.secretKey
+	}
+	if res.PinnedSessionToken == "" {
+		res.PinnedSessionToken = g.sessionToken
+	}
+}
+
+// slotDefaults is a layer's global credentials, used to fill gaps in a
+// tier/agent slot. Grouped into a struct because passing nine positional
+// strings is how you end up silently swapping the secret and the session token.
+type slotDefaults struct {
+	provider, endpoint, apiKey, apiType, apiVersion, region string
+	accessKey, secretKey, sessionToken                      string
+}
+
+// finishSlotRead validates that a slot read produced a servable (provider,
+// model) pair and splits its comma-separated fallback list. Shared by the env
+// and db readers so both reject empty slots identically.
+func finishSlotRead(res *LLMConfigResolution, p *parsedConfigSource, fallbackStr string) ([]string, error) {
+	if res.Provider == "" {
+		return nil, fmt.Errorf("pinned llm_config_source has no provider set for %s:%s:%s", p.Layer, p.Scope, p.Name)
+	}
+	if res.Model == "" {
+		return nil, fmt.Errorf("pinned llm_config_source has no model set for %s:%s:%s", p.Layer, p.Scope, p.Name)
+	}
+
+	var fallbacks []string
+	for _, m := range strings.Split(fallbackStr, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			fallbacks = append(fallbacks, m)
+		}
+	}
+	return fallbacks, nil
+}
+
+// deriveConfigSource maps the internal per-slot source label used inside
+// GetAllConfiguredModels to the stable wire-format source id that clients
+// send back as NBQueryConfig.LlmConfigSource.
+//
+// Both primary and fallback rows resolve to the SAME source id — because a
+// fallback shares its parent slot's endpoint/api-key. When the user picks a
+// fallback row from the picker, the request sends the parent slot as
+// LlmConfigSource + the fallback's model as LlmModelName, and
+// resolveFromPinnedSource validates the combo (model must be in the slot's
+// fallback list) and uses the fallback model with the parent's endpoint.
+//
+// The internal labels are ":"-separated by design: names ("reasoning",
+// "soul_consolidate", etc.) cannot contain ":", so the parser splits
+// unambiguously. Fallback rows carry a trailing ":fallback" suffix that we
+// strip ONLY when the caller tells us the row is a fallback — trusting the
+// label alone breaks for an agent literally named "fallback" (its primary
+// label "env:agent:fallback" would then be indistinguishable from the strip
+// output of the fallback of some other slot). Since addModel already has
+// isFallback in scope, threading it here costs nothing.
+func deriveConfigSource(source string, isFallback bool) string {
+	id := source
+	if isFallback {
+		id = strings.TrimSuffix(id, ":fallback")
+	}
+	if _, err := parseConfigSourceId(id); err != nil {
+		return ""
+	}
+	return id
+}
+
+// LLMCredential is one distinct place requests can be sent — a unique
+// combination of provider and every field that decides routing and auth. The
+// models reachable through it are attached; the slots that configure it are
+// listed so the UI can name it in the user's own terms.
+type LLMCredential struct {
+	// Id is a stable non-reversible fingerprint. Safe to render, but it means
+	// nothing to a human — Name is what the UI shows.
+	Id string `json:"id"`
+	// Name is how the user configured it: "System default", "piyush-llm",
+	// "piyush-llm · Summary tier".
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	// ConfigSource is the slot a pin should use for this credential.
+	ConfigSource string `json:"llm_config_source"`
+	// Sources lists every slot that resolves here, including ConfigSource. More
+	// than one means several configured slots share these credentials.
+	Sources []MergedSlot `json:"sources,omitempty"`
+	// Models reachable through this credential, in configuration order.
+	Models []CredentialModel `json:"models"`
+}
+
+// CredentialModel is one model reachable through a credential.
+//
+// Deliberately carries no is_fallback flag. Whether a model was configured as a
+// slot's primary or as one of its fallbacks changes nothing about picking it —
+// resolveFromPinnedSource serves either through the same endpoint — so it is
+// configuration provenance, not something the user acts on. It was also
+// unreliable after deduping: a model that is one slot's primary and another
+// slot's fallback within the same credential took whichever flag the walk
+// happened to see first.
+type CredentialModel struct {
+	Model string `json:"model"`
+}
+
+// buildCredentials collapses the flat slot rows into unique credentials.
+//
+// Identity is credentialIdentity — provider plus every routing/auth field, and
+// explicitly NOT the model, so slots that differ only in which model they name
+// fold into one credential carrying both models. That is the whole point: a
+// tenant integration with one api key is one place to send requests, however
+// many tiers name a model on it.
+//
+// Rows whose slot cannot be resolved are skipped rather than guessed at; they
+// still appear in the flat model list.
+func buildCredentials(ctx *security.RequestContext, accountId string, models []ModelConfig) []LLMCredential {
+	type acc struct {
+		cred      LLMCredential
+		seenSlot  map[string]bool
+		seenModel map[string]bool
+	}
+	byId := map[string]*acc{}
+	var order []string
+
+	for _, m := range models {
+		if m.ConfigSource == "" {
+			continue
+		}
+		res, err := resolveFromPinnedSource(ctx, m.ConfigSource, accountId, "", "")
+		if err != nil {
+			slog.Debug("buildCredentials: slot did not resolve; omitting from credential list",
+				"config_source", m.ConfigSource, "error", err)
+			continue
+		}
+		id := credentialIdentity(res)
+
+		// A fallback row's ConfigName carries a " (fallback)" suffix, but it names
+		// the same slot as its primary — so strip it rather than letting a
+		// credential end up called "piyush-llm (fallback)" depending on which
+		// row the walk reached first.
+		name := strings.TrimSuffix(m.ConfigName, " (fallback)")
+
+		a, seen := byId[id]
+		if !seen {
+			a = &acc{
+				cred:      LLMCredential{Id: id, Name: name, Provider: res.Provider, ConfigSource: m.ConfigSource},
+				seenSlot:  map[string]bool{},
+				seenModel: map[string]bool{},
+			}
+			byId[id] = a
+			order = append(order, id)
+		}
+		// The shortest slot id represents the credential, so a parent slot wins
+		// over its own tier variants and the name stays the one the user
+		// recognises.
+		if len(m.ConfigSource) < len(a.cred.ConfigSource) {
+			a.cred.ConfigSource = m.ConfigSource
+			a.cred.Name = name
+		}
+		if !a.seenSlot[m.ConfigSource] {
+			a.seenSlot[m.ConfigSource] = true
+			a.cred.Sources = append(a.cred.Sources, MergedSlot{ConfigSource: m.ConfigSource, ConfigName: m.ConfigName})
+		}
+		if !a.seenModel[m.Model] {
+			a.seenModel[m.Model] = true
+			a.cred.Models = append(a.cred.Models, CredentialModel{Model: m.Model})
+		}
+	}
+
+	out := make([]LLMCredential, 0, len(order))
+	for _, id := range order {
+		c := byId[id].cred
+		sort.Slice(c.Sources, func(i, j int) bool { return c.Sources[i].ConfigSource < c.Sources[j].ConfigSource })
+		out = append(out, c)
+	}
+	return out
+}
+
+// GetConfiguredCredentials returns the unique credentials an account can send
+// requests through — system (ENV) and every visible LLM integration, across
+// global, per-tier and per-agent slots — each carrying the models reachable
+// through it. This is the shape the model picker consumes; it does no grouping
+// of its own because only the server can see endpoints and api keys.
+func GetConfiguredCredentials(accountId string) ([]LLMCredential, error) {
+	models, err := GetAllConfiguredModels(accountId)
+	if err != nil {
+		return nil, err
+	}
+	return buildCredentials(nil, accountId, models), nil
+}
+
+// BuildCredentialsFrom is GetConfiguredCredentials for callers that already hold
+// the flat list, so the slot walk isn't repeated.
+func BuildCredentialsFrom(accountId string, models []ModelConfig) []LLMCredential {
+	return buildCredentials(nil, accountId, models)
+}
+
+// ConfigNameFor returns a human-readable label for a slot-id — used by the
+// model picker UI so operators recognize which slot they're picking. env slots
+// are owned by the operator and read as "System · <scope>"; db slots belong to
+// a tenant-configured integration and read as "<integration name> · <scope>",
+// so integrationName must be supplied for db ids (ignored for env ids).
+func ConfigNameFor(sourceId, integrationName string) string {
+	p, err := parseConfigSourceId(sourceId)
+	if err != nil {
+		return sourceId // fall back to raw id so the UI still shows something
+	}
+	owner := "System"
+	if p.Layer == "db" {
+		if integrationName == "" {
+			return sourceId
+		}
+		owner = integrationName
+	}
+	switch p.Scope {
+	case "global":
+		if p.Layer == "db" {
+			return owner
+		}
+		return owner + " · Default"
+	case "tier":
+		// Title-case the first byte manually; the tier names we emit
+		// ("reasoning", "retrieval", "summary") are ASCII, so
+		// avoiding cases.Title keeps the dependency list unchanged.
+		label := p.Name
+		if label != "" && label[0] >= 'a' && label[0] <= 'z' {
+			label = string(label[0]-32) + label[1:]
+		}
+		return owner + " · " + label + " tier"
+	case "agent":
+		return fmt.Sprintf("%s · Agent: %s", owner, p.Name)
+	}
+	return sourceId
 }

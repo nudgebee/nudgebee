@@ -3,7 +3,7 @@ import TextareaAutosize, { type TextareaAutosizeProps } from '@mui/material/Text
 import { useForkRef } from '@mui/material/utils';
 import { Avatar, Box, ButtonBase as MuiButtonBase, ClickAwayListener, Popper, styled, Typography } from '@mui/material';
 import type { Theme } from '@mui/material/styles';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRightWhiteIcon, CustomAgentBlueIcon } from '@assets';
 import { ds } from 'src/utils/colors';
 import { getIcon } from '@components/llm/common/AgentIcon';
@@ -84,11 +84,50 @@ export const Textarea = styled(TextareaAutosize, { shouldForwardProp: (prop) => 
   `
 );
 
+// A selection: which credential serves the request, and which model to ask for.
+// configSource is the value sent as config.llm_config_source.
 interface ModelOption {
   provider: string;
   model: string;
-  source?: string;
+  configSource?: string;
+  configName?: string;
 }
+
+// One distinct destination the server resolved — provider plus every routing
+// and auth field. Model is deliberately NOT part of a credential's identity, so
+// each carries the models reachable through it.
+export interface LLMCredential {
+  id: string;
+  name: string;
+  provider: string;
+  configSource: string;
+  // Every configured slot resolving to this credential. Not for display — used
+  // to match a stored pin (which may name any of them) back to this entry.
+  sources: string[];
+  models: { model: string }[];
+}
+
+// A selection is (credential, model). configSource identifies the credential,
+// so two entries for the same model on different credentials stay distinct.
+//
+// Exception for selections restored from conversations that predate pinning:
+// they carry a provider/model but no configSource. Comparing strictly would
+// leave the user's own saved pick unhighlighted, so a missing configSource on
+// either side falls back to matching provider+model alone.
+const isSameModelOption = (a?: ModelOption | null, b?: ModelOption | null): boolean => {
+  if (!a || !b) return false;
+  if (a.provider !== b.provider || a.model !== b.model) return false;
+  if (!a.configSource || !b.configSource) return true;
+  return a.configSource === b.configSource;
+};
+
+// Finds the credential a selection belongs to. Matches on sources[], not just
+// configSource, so a conversation pinned to a tier slot that has since been
+// folded into its parent credential still resolves.
+const credentialForSelection = (option: ModelOption | null | undefined, credentials: LLMCredential[]): LLMCredential | undefined => {
+  if (!option?.configSource) return undefined;
+  return credentials.find((c) => c.configSource === option.configSource || c.sources.includes(option.configSource as string));
+};
 
 // SKUs that may struggle with the planner step — fires an advisory hint
 // when picked for Reasoning or the blanket model. Heuristic, not a block.
@@ -116,8 +155,17 @@ const PICKER_TIER_LABELS: Record<PickerTierKey, string> = {
 };
 type TierModelMap = Partial<Record<PickerTierKey, ModelOption>>;
 
-const pickerButtonLabel = (selectedModel?: ModelOption | null, selectedTierModels?: TierModelMap | null): string => {
-  if (selectedModel) return selectedModel.model;
+const pickerButtonLabel = (
+  selectedModel?: ModelOption | null,
+  selectedTierModels?: TierModelMap | null,
+  credentials: LLMCredential[] = []
+): string => {
+  if (selectedModel) {
+    // The credential is part of the identity, so the trigger names it — two
+    // entries reading just 'Qwen3.6-35B' would be indistinguishable.
+    const cred = credentialForSelection(selectedModel, credentials);
+    return cred ? `${selectedModel.model} · ${cred.name}` : selectedModel.model;
+  }
   if (selectedTierModels && Object.keys(selectedTierModels).length > 0) return 'By task';
   return 'Model';
 };
@@ -155,20 +203,21 @@ interface AutoSuggestTextareaProps {
   buttonProperties: {
     show: boolean;
     enable: boolean;
-    onClick: (e: string, config?: { llm_provider?: string; llm_model_name?: string }, images?: OutgoingImage[]) => void;
+    onClick: (e: string, config?: { llm_provider?: string; llm_model_name?: string; llm_config_source?: string }, images?: OutgoingImage[]) => void;
     onClickStop: () => void;
   };
   chatScreen?: boolean;
   isFollowUp?: boolean;
   disabled?: boolean;
   allowStop?: boolean;
-  models?: ModelOption[];
+  credentials?: LLMCredential[];
   defaultModel?: { provider: string; model: string };
   selectedModel?: ModelOption | null;
   onModelSelect?: (model: ModelOption | null) => void;
   // Mutually exclusive with selectedModel (reducer enforces).
   selectedTierModels?: TierModelMap | null;
   onTierModelsSelect?: (picks: TierModelMap | null) => void;
+  onConfigClear?: () => void;
   popupInitial?: boolean;
   imageSupport?: ImageSupport;
   externalAgentsLoading?: boolean;
@@ -176,20 +225,24 @@ interface AutoSuggestTextareaProps {
 }
 
 interface ModelPickerPopoverProps {
-  models: ModelOption[];
+  credentials: LLMCredential[];
   selectedModel?: ModelOption | null;
   onModelSelect?: (model: ModelOption | null) => void;
   selectedTierModels?: TierModelMap | null;
   onTierModelsSelect?: (picks: TierModelMap | null) => void;
+  onConfigClear?: () => void;
   disabled?: boolean;
 }
 
 export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
-  models,
+  // Defaulted because this component is exported: callers inside this file
+  // guard on a non-empty list, but an external consumer needn't.
+  credentials = [],
   selectedModel,
   onModelSelect,
   selectedTierModels,
   onTierModelsSelect,
+  onConfigClear,
   disabled = false,
 }) => {
   const [open, setOpen] = useState(false);
@@ -198,6 +251,10 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   const [stagedBlanket, setStagedBlanket] = useState<ModelOption | null>(null);
   const [stagedTier, setStagedTier] = useState<TierModelMap>({});
   const [activeTier, setActiveTier] = useState<PickerTierKey>('reasoning');
+  // Which model the right-hand pane is showing. Held as a key rather than an
+  // index so a search that reorders or drops entries can't point it at the
+  // wrong one — a stale key simply falls back to the first.
+  const [activeModelKey, setActiveModelKey] = useState<string>('');
   const [search, setSearch] = useState('');
 
   const openPopover = () => {
@@ -213,6 +270,9 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
     }
     setActiveTier('reasoning');
     setSearch('');
+    // Open on the model the current selection uses, so reopening lands where
+    // the user left it rather than on the first model.
+    setActiveModelKey(selectedModel ? `${selectedModel.provider}\u0000${selectedModel.model}` : '');
     setOpen(true);
   };
 
@@ -235,23 +295,82 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   const handleClear = () => {
     onModelSelect?.(null);
     onTierModelsSelect?.(null);
+    // Nulling both selections is indistinguishable from never having picked
+    // one, and that state inherits the conversation's stored config. Clearing
+    // has to say so explicitly or the old pick comes straight back.
+    onConfigClear?.();
     setOpen(false);
   };
 
-  const filteredModels = search.trim()
-    ? models.filter((m) => {
-        const q = search.toLowerCase();
-        return m.model.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q);
+  // Search matches a credential's name/provider, or any model it serves — a
+  // credential survives if either side hits, so searching a model name narrows
+  // to the credentials that can actually serve it.
+  const filteredCredentials = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return credentials;
+    return credentials
+      .map((c) => {
+        const credentialHit = c.name.toLowerCase().includes(q) || c.provider.toLowerCase().includes(q);
+        const models = credentialHit ? c.models : c.models.filter((m) => m.model.toLowerCase().includes(q));
+        return { ...c, models };
       })
-    : models;
+      .filter((c) => c.models.length > 0);
+  }, [credentials, search]);
+
+  // Inverts the credential list into models — the left pane — each carrying the
+  // credentials that can serve it, shown on the right.
+  //
+  // Model-first because that is the choice a user comes to make; the credential
+  // only matters when a model is reachable through more than one. This is a
+  // regrouping of data the server already resolved, not a second opinion about
+  // it: no deduping or identity decisions happen here, only a change of axis.
+  // Keyed by provider+model so the same model name under two providers stays
+  // two entries.
+  const modelEntries = useMemo(() => {
+    const byKey = new Map<string, { key: string; model: string; provider: string; credentials: LLMCredential[] }>();
+    for (const c of filteredCredentials) {
+      for (const m of c.models) {
+        // NUL separator, not a space: dev data contains providers stored with
+        // trailing whitespace, which a space could collide across.
+        const key = `${c.provider}\u0000${m.model}`;
+        const entry = byKey.get(key) ?? { key, model: m.model, provider: c.provider, credentials: [] };
+        entry.credentials.push(c);
+        byKey.set(key, entry);
+      }
+    }
+    return [...byKey.values()];
+  }, [filteredCredentials]);
+
+  // A stale key (search dropped the model, list reloaded) resolves to the first
+  // entry rather than leaving an empty pane.
+  const activeModel = modelEntries.find((e) => e.key === activeModelKey) ?? modelEntries[0];
 
   const isRowSelected = (m: ModelOption): boolean => {
-    if (mode === 'blanket') {
-      return !!stagedBlanket && stagedBlanket.provider === m.provider && stagedBlanket.model === m.model;
-    }
-    const cur = stagedTier[activeTier];
-    return !!cur && cur.provider === m.provider && cur.model === m.model;
+    const staged = mode === 'blanket' ? stagedBlanket : stagedTier[activeTier];
+    if (isSameModelOption(staged, m)) return true;
+    // A stored pin may name a slot that has since been folded into a credential
+    // (e.g. '…:tier:summary' when the credential's canonical source is its
+    // parent). Comparing the raw strings would miss it, so resolve both sides
+    // to their credential and compare that.
+    if (!staged || staged.provider !== m.provider || staged.model !== m.model) return false;
+    const a = credentialForSelection(staged, credentials);
+    const b = credentialForSelection(m, credentials);
+    return !!a && !!b && a.id === b.id;
   };
+
+  // Turns a credential + one of its models into the selection shape sent to the
+  // server: the credential's configSource is the pin.
+  const optionFor = (cred: LLMCredential, model: string): ModelOption => ({
+    provider: cred.provider,
+    model,
+    configSource: cred.configSource,
+    configName: cred.name,
+  });
+
+  // Lets the left pane mark which model holds the staged pick, so the user
+  // doesn't have to open each one to find it.
+  const modelHasSelection = (entry: { model: string; credentials: LLMCredential[] }): boolean =>
+    entry.credentials.some((c) => isRowSelected(optionFor(c, entry.model)));
 
   const handleRowPick = (m: ModelOption) => {
     if (mode === 'blanket') {
@@ -296,7 +415,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
             maxWidth: ds.space.mul(0, 40),
           }}
         >
-          {pickerButtonLabel(selectedModel, selectedTierModels)}
+          {pickerButtonLabel(selectedModel, selectedTierModels, credentials)}
         </Typography>
         <ArrowDropDownIcon sx={{ fontSize: 'var(--ds-text-title)' }} />
       </Box>
@@ -306,8 +425,14 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
           anchorEl={anchorRef.current}
           placement='top-start'
           modifiers={[
-            { name: 'flip', enabled: true, options: { fallbackPlacements: ['bottom-start'] } },
-            { name: 'preventOverflow', enabled: true, options: { padding: 8 } },
+            // Prefer opening upward, but fall back around the anchor rather than
+            // running off the top — this surface is tall enough that the space
+            // above the composer often isn't enough for it.
+            { name: 'flip', enabled: true, options: { fallbackPlacements: ['bottom-start', 'top-end', 'bottom-end'], padding: 8 } },
+            // altAxis lets it slide vertically to stay on screen; tether:false
+            // allows it to detach from the anchor edge when that's the only way
+            // to keep the whole surface visible.
+            { name: 'preventOverflow', enabled: true, options: { padding: 8, altAxis: true, tether: false } },
           ]}
           sx={{ zIndex: 9999 }}
         >
@@ -323,7 +448,14 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                 borderRadius: 'var(--ds-radius-md)',
                 backgroundColor: 'var(--ds-background-100)',
                 boxShadow: 'var(--ds-overlay-shadow)',
-                width: ds.space.mul(0, 190),
+                // ~560px: the two-pane list needs room for an endpoint column
+                // plus model names without either side truncating.
+                width: ds.space.mul(0, 280),
+                // Never taller than the viewport. The list below is the only
+                // flexible part, so it absorbs the shrink and keeps the mode
+                // toggle, search box and Apply/Clear row always reachable.
+                maxHeight: 'calc(100vh - 16px)',
+                maxWidth: 'calc(100vw - 16px)',
               }}
             >
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
@@ -366,64 +498,159 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
 
               <Input size='sm' type='text' placeholder='Search models…' value={search} onChange={(v) => setSearch(v)} aria-label='Search models' />
 
+              {/* Two panes: endpoints on the left, that endpoint's models on the
+                  right. Splitting them makes the two decisions independent —
+                  "which endpoint serves this" and "which model" — instead of
+                  nesting one inside the other, which forced everyone through the
+                  endpoint concept just to pick a model. */}
               <Box
-                role='listbox'
-                aria-label={mode === 'blanket' ? 'Models' : `Models for ${PICKER_TIER_LABELS[activeTier]}`}
                 sx={{
-                  maxHeight: ds.space.mul(0, 54),
-                  overflowY: 'auto',
+                  display: 'flex',
+                  // Grows with content up to ~280px, and shrinks below that on a
+                  // short viewport (minHeight:0 is what allows a flex child to
+                  // shrink past its content). The panes scroll inside it.
+                  flex: '0 1 auto',
+                  minHeight: 0,
+                  maxHeight: `min(${ds.space.mul(0, 140)}, 40vh)`,
                   border: '1px solid var(--ds-gray-200)',
-                  borderRadius: 'var(--ds-radius-sm)',
+                  borderRadius: 'var(--ds-radius-md)',
+                  overflow: 'hidden',
                 }}
               >
-                {filteredModels.length === 0 && (
-                  <Box sx={{ padding: 'var(--ds-space-3)', textAlign: 'center', color: 'var(--ds-gray-500)', fontSize: 'var(--ds-text-caption)' }}>
+                {modelEntries.length === 0 ? (
+                  <Box
+                    sx={{
+                      flex: 1,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: 'var(--ds-gray-500)',
+                      fontSize: 'var(--ds-text-caption)',
+                    }}
+                  >
                     No models match
                   </Box>
-                )}
-                {filteredModels.map((m, i) => {
-                  const selected = isRowSelected(m);
-                  return (
-                    <MuiButtonBase
-                      key={`${m.provider}-${m.model}-${i}`}
-                      role='option'
-                      aria-selected={selected}
-                      onClick={() => handleRowPick(m)}
+                ) : (
+                  <>
+                    {/* Left: the models, deduplicated across credentials.
+                        Right: the credentials that can serve the highlighted
+                        one — that is where the pick is made, because the
+                        credential is what the request is pinned to. */}
+                    <Box
+                      role='listbox'
+                      aria-label={mode === 'blanket' ? 'Models' : `Models for ${PICKER_TIER_LABELS[activeTier]}`}
+                      data-testid='model-pane'
                       sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        width: '100%',
-                        textAlign: 'left',
-                        padding: 'var(--ds-overlay-item-padding-md, var(--ds-space-2) var(--ds-space-3))',
-                        gap: 'var(--ds-space-2)',
-                        backgroundColor: selected ? 'var(--ds-overlay-item-selected-bg, var(--ds-blue-100))' : 'transparent',
-                        '&:hover': {
-                          backgroundColor: selected
-                            ? 'var(--ds-overlay-item-selected-bg, var(--ds-blue-100))'
-                            : 'var(--ds-overlay-item-hover-bg, var(--ds-gray-100))',
-                        },
+                        width: ds.space.mul(0, 118),
+                        flexShrink: 0,
+                        overflowY: 'auto',
+                        borderRight: '1px solid var(--ds-gray-200)',
                       }}
                     >
-                      <Typography
-                        sx={{
-                          fontSize: 'var(--ds-text-small)',
-                          fontWeight: selected ? 500 : 400,
-                          color: selected ? 'var(--ds-blue-600)' : 'var(--ds-gray-700)',
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                        }}
-                      >
-                        {m.model}
-                      </Typography>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', flexShrink: 0 }}>
-                        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>{m.provider}</Typography>
-                        {selected && <CheckIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-blue-600)' }} />}
-                      </Box>
-                    </MuiButtonBase>
-                  );
-                })}
+                      {modelEntries.map((entry) => {
+                        const isActive = activeModel?.key === entry.key;
+                        const holdsSelection = modelHasSelection(entry);
+                        return (
+                          <MuiButtonBase
+                            key={entry.key}
+                            role='option'
+                            aria-selected={isActive}
+                            onClick={() => setActiveModelKey(entry.key)}
+                            sx={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'flex-start',
+                              width: '100%',
+                              textAlign: 'left',
+                              gap: '1px',
+                              padding: 'var(--ds-space-2) var(--ds-space-3)',
+                              borderLeft: `2px solid ${isActive ? 'var(--ds-blue-600)' : 'transparent'}`,
+                              backgroundColor: isActive ? 'var(--ds-blue-100)' : 'transparent',
+                              '&:hover': {
+                                backgroundColor: isActive ? 'var(--ds-blue-100)' : 'var(--ds-overlay-item-hover-bg, var(--ds-gray-100))',
+                              },
+                            }}
+                          >
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', width: '100%', minWidth: 0 }}>
+                              <Typography
+                                sx={{
+                                  flex: 1,
+                                  minWidth: 0,
+                                  fontSize: 'var(--ds-text-small)',
+                                  fontWeight: isActive ? 'var(--ds-font-weight-semibold)' : 400,
+                                  color: isActive ? 'var(--ds-blue-600)' : 'var(--ds-gray-700)',
+                                  whiteSpace: 'nowrap',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                }}
+                              >
+                                {entry.model}
+                              </Typography>
+                              {holdsSelection && <CheckIcon sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-blue-600)', flexShrink: 0 }} />}
+                            </Box>
+                            <Typography
+                              sx={{
+                                fontSize: 'var(--ds-text-caption)',
+                                color: 'var(--ds-gray-500)',
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                maxWidth: '100%',
+                              }}
+                            >
+                              {entry.provider}
+                              {entry.credentials.length > 1 ? ` · ${entry.credentials.length} configs` : ''}
+                            </Typography>
+                          </MuiButtonBase>
+                        );
+                      })}
+                    </Box>
+
+                    <Box role='listbox' aria-label='Credentials' data-testid='credential-pane' sx={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
+                      {(activeModel?.credentials ?? []).map((cred) => {
+                        const option = activeModel ? optionFor(cred, activeModel.model) : null;
+                        const selected = !!option && isRowSelected(option);
+                        return (
+                          <MuiButtonBase
+                            key={`${activeModel?.key}-${cred.id}`}
+                            role='option'
+                            aria-selected={selected}
+                            onClick={() => option && handleRowPick(option)}
+                            sx={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              width: '100%',
+                              textAlign: 'left',
+                              padding: 'var(--ds-overlay-item-padding-md, var(--ds-space-2) var(--ds-space-3))',
+                              gap: 'var(--ds-space-2)',
+                              backgroundColor: selected ? 'var(--ds-overlay-item-selected-bg, var(--ds-blue-100))' : 'transparent',
+                              '&:hover': {
+                                backgroundColor: selected
+                                  ? 'var(--ds-overlay-item-selected-bg, var(--ds-blue-100))'
+                                  : 'var(--ds-overlay-item-hover-bg, var(--ds-gray-100))',
+                              },
+                            }}
+                          >
+                            <Typography
+                              sx={{
+                                fontSize: 'var(--ds-text-small)',
+                                fontWeight: selected ? 500 : 400,
+                                color: selected ? 'var(--ds-blue-600)' : 'var(--ds-gray-700)',
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                              }}
+                            >
+                              {cred.name}
+                            </Typography>
+                            {selected && <CheckIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-blue-600)', flexShrink: 0 }} />}
+                          </MuiButtonBase>
+                        );
+                      })}
+                    </Box>
+                  </>
+                )}
               </Box>
 
               {mode === 'blanket' && stagedBlanket && isLowerTierForReasoning(stagedBlanket.provider, stagedBlanket.model) && (
@@ -526,12 +753,13 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
     isFollowUp = false,
     disabled = false,
     allowStop = false,
-    models = [],
+    credentials = [],
     defaultModel: _defaultModel,
     selectedModel,
     onModelSelect,
     selectedTierModels,
     onTierModelsSelect,
+    onConfigClear,
     popupInitial = false,
     imageSupport,
     externalAgentsLoading = false,
@@ -617,7 +845,13 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
   // Single send path used by every submit affordance so text + image clearing
   // and the outgoing payload stay consistent.
   const handleSend = () => {
-    const config = selectedModel ? { llm_provider: selectedModel.provider, llm_model_name: selectedModel.model } : undefined;
+    const config = selectedModel
+      ? {
+          llm_provider: selectedModel.provider,
+          llm_model_name: selectedModel.model,
+          ...(selectedModel.configSource && { llm_config_source: selectedModel.configSource }),
+        }
+      : undefined;
     const images: OutgoingImage[] = attachedImages.map(({ data, mime_type }) => ({ data, mime_type }));
     buttonProperties.onClick(text, config, images.length ? images : undefined);
     setText('');
@@ -983,15 +1217,16 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
           {/* Model Selector for chat screen — popover supports both
               "Blanket" (one model) and "Per category" (one model per tier)
               modes; mutually exclusive at the hook level. */}
-          {models && models.length > 0 && (
+          {credentials && credentials.length > 0 && (
             <>
               <Box sx={{ width: '1px', height: ds.space[5], backgroundColor: 'var(--ds-brand-200)', mx: 'var(--ds-space-3)' }} />
               <ModelPickerPopover
-                models={models}
+                credentials={credentials}
                 selectedModel={selectedModel}
                 onModelSelect={onModelSelect}
                 selectedTierModels={selectedTierModels}
                 onTierModelsSelect={onTierModelsSelect}
+                onConfigClear={onConfigClear}
                 disabled={disabled}
               />
             </>
@@ -1192,13 +1427,14 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
           {/* Model Selector — popover variant for non-chat (popup) flow.
               Same component as the chat-screen path; renders the same two
               modes (Blanket / Per category) with mutual exclusivity. */}
-          {models && models.length > 0 && (
+          {credentials && credentials.length > 0 && (
             <ModelPickerPopover
-              models={models}
+              credentials={credentials}
               selectedModel={selectedModel}
               onModelSelect={onModelSelect}
               selectedTierModels={selectedTierModels}
               onTierModelsSelect={onTierModelsSelect}
+              onConfigClear={onConfigClear}
               disabled={disabled}
             />
           )}

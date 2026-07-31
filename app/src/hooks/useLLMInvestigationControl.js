@@ -398,6 +398,21 @@ const parseConversationMessages = (conversationMessages, accountId) => {
   return { allMessages };
 };
 
+// Each task pick is a complete (credential, model) choice, so the credential
+// travels with it — otherwise the task resolves its model through whatever
+// credential the conversation-wide pin names.
+const serializeTierModels = (picks) =>
+  Object.fromEntries(
+    Object.entries(picks).map(([tier, m]) => [
+      tier,
+      {
+        provider: m.provider,
+        model: m.model,
+        ...(m.configSource && { llm_config_source: m.configSource }),
+      },
+    ])
+  );
+
 // --- Reducer ---
 
 const initialState = {
@@ -409,12 +424,16 @@ const initialState = {
   conversationTitle: '',
   conversationIdAtDb: '',
   isLoading: false,
-  availableModels: [],
+  availableCredentials: [],
   defaultModel: null,
   // selectedModel and selectedTierModels are mutually exclusive — the
   // reducer clears one when the other is set.
   selectedModel: null,
   selectedTierModels: null,
+  // "Clear all" in the picker. Distinct from both selections being null, which
+  // is also the never-picked state and inherits the conversation's stored
+  // config. Rides along with the next submitted turn, then resets.
+  configCleared: false,
   // Server-advertised image capability (from ai_list_models). Defaults to
   // disabled so the attach UI stays hidden until the backend confirms support.
   imageSupport: { enabled: false, maxPerMessage: 0, maxSizeMb: 0, allowedMimeTypes: [] },
@@ -438,13 +457,27 @@ function investigationReducer(state, action) {
     case 'SET_IS_LOADING':
       return { ...state, isLoading: action.payload };
     case 'SET_SELECTED_MODEL':
-      return { ...state, selectedModel: action.payload, selectedTierModels: null };
+      return {
+        ...state,
+        selectedModel: action.payload,
+        selectedTierModels: null,
+        configCleared: action.payload ? false : state.configCleared,
+      };
     case 'SET_SELECTED_TIER_MODELS':
-      return { ...state, selectedTierModels: action.payload, selectedModel: null };
+      return {
+        ...state,
+        selectedTierModels: action.payload,
+        selectedModel: null,
+        configCleared: action.payload ? false : state.configCleared,
+      };
+    case 'SET_CONFIG_CLEARED':
+      // Clearing is one transition, not three: nulling both selections here
+      // means callers can't half-apply it by firing only some of the callbacks.
+      return action.payload ? { ...state, configCleared: true, selectedModel: null, selectedTierModels: null } : { ...state, configCleared: false };
     case 'SET_MODELS':
       return {
         ...state,
-        availableModels: action.availableModels,
+        availableCredentials: action.availableCredentials,
         defaultModel: action.defaultModel,
         imageSupport: action.imageSupport ?? state.imageSupport,
       };
@@ -457,7 +490,7 @@ function investigationReducer(state, action) {
       return {
         ...initialState,
         // Preserve loaded model list + capabilities across resets
-        availableModels: state.availableModels,
+        availableCredentials: state.availableCredentials,
         defaultModel: state.defaultModel,
         imageSupport: state.imageSupport,
       };
@@ -478,10 +511,11 @@ export const useLLMInvestigationControl = (accountId) => {
     conversationTitle,
     conversationIdAtDb,
     isLoading,
-    availableModels,
+    availableCredentials,
     defaultModel,
     selectedModel,
     selectedTierModels,
+    configCleared,
     imageSupport,
   } = state;
 
@@ -532,7 +566,24 @@ export const useLLMInvestigationControl = (accountId) => {
       .listModels(accountId)
       .then((res) => {
         if (!isMountedRef.current || cancelled) return;
-        const availableModels = res?.data?.models || [];
+        // credentials[] is the server's collapsed view: one entry per distinct
+        // destination (provider + endpoint + key + type + version + region +
+        // aws creds + adapter), each carrying the models reachable through it.
+        // Only the server can compute this — endpoints and api keys are never
+        // serialized — so no grouping happens here.
+        //
+        // sources[] is not for display. It maps every configured slot that
+        // resolves to this credential, so a conversation pinned to e.g.
+        // '…:tier:summary' still resolves to the credential that now
+        // represents it.
+        const availableCredentials = (res?.data?.credentials || []).map((c) => ({
+          id: c.id,
+          name: c.name,
+          provider: c.provider,
+          configSource: c.llm_config_source,
+          sources: (c.sources || []).map((s) => s.llm_config_source),
+          models: (c.models || []).map((m) => ({ model: m.model })),
+        }));
         const defaultModel = res?.data?.default || null;
         const rawImageSupport = res?.data?.image_support;
         const imageSupport = rawImageSupport
@@ -543,7 +594,7 @@ export const useLLMInvestigationControl = (accountId) => {
               allowedMimeTypes: rawImageSupport.allowed_mime_types || [],
             }
           : undefined;
-        dispatch({ type: 'SET_MODELS', availableModels, defaultModel, imageSupport });
+        dispatch({ type: 'SET_MODELS', availableCredentials, defaultModel, imageSupport });
       })
       .catch((err) => console.error('Failed to fetch models', err));
 
@@ -603,12 +654,14 @@ export const useLLMInvestigationControl = (accountId) => {
         ...(selectedModel && {
           llm_provider: selectedModel.provider,
           llm_model_name: selectedModel.model,
+          ...(selectedModel.configSource && { llm_config_source: selectedModel.configSource }),
         }),
         ...(!selectedModel &&
           selectedTierModels &&
           Object.keys(selectedTierModels).length > 0 && {
-            llm_tier_models: selectedTierModels,
+            llm_tier_models: serializeTierModels(selectedTierModels),
           }),
+        ...(configCleared && !selectedModel && !selectedTierModels && { llm_config_reset: true }),
         ...(workflowId && { workflow_id: workflowId }),
         ...(!workflowId && workflowDefinition && { workflow_definition: workflowDefinition }),
         // Default the automation to the cluster/account the user is currently viewing so the
@@ -653,11 +706,15 @@ export const useLLMInvestigationControl = (accountId) => {
       });
       dispatch({ type: 'SET_MESSAGES', payload: (prev) => [...prev, ...newMessages] });
 
+      // One-shot, same as the chat path above.
+      if (configCleared) {
+        dispatch({ type: 'SET_CONFIG_CLEARED', payload: false });
+      }
       if (onSuccess) {
         onSuccess(sessionIdToUse);
       }
     },
-    [accountId, conversationIdAtDb, selectedModel, selectedTierModels]
+    [accountId, conversationIdAtDb, selectedModel, selectedTierModels, configCleared]
   );
 
   const handleInvestigationGeneration = useCallback(
@@ -673,11 +730,16 @@ export const useLLMInvestigationControl = (accountId) => {
         requestPayload.config = {
           llm_provider: selectedModel.provider,
           llm_model_name: selectedModel.model,
+          ...(selectedModel.configSource && { llm_config_source: selectedModel.configSource }),
         };
       } else if (selectedTierModels && Object.keys(selectedTierModels).length > 0) {
         requestPayload.config = {
-          llm_tier_models: selectedTierModels,
+          llm_tier_models: serializeTierModels(selectedTierModels),
         };
+      } else if (configCleared) {
+        // Carries the picker's "Clear all" to the server. Sending nothing would
+        // leave the conversation's stored config in force.
+        requestPayload.config = { llm_config_reset: true };
       }
 
       if (categorySource) {
@@ -702,11 +764,17 @@ export const useLLMInvestigationControl = (accountId) => {
       }
 
       dispatch({ type: 'SET_CONVERSATION_STATUS', payload: 'IN_PROGRESS' });
+      // The reset is one-shot: it has reached the server, and re-sending it on
+      // every later turn would keep clearing a config the user may have since
+      // re-picked elsewhere.
+      if (configCleared) {
+        dispatch({ type: 'SET_CONFIG_CLEARED', payload: false });
+      }
       if (onSuccess) {
         onSuccess(llmSessionId);
       }
     },
-    [accountId, selectedModel, selectedTierModels]
+    [accountId, selectedModel, selectedTierModels, configCleared]
   );
 
   const startInvestigation = useCallback(
@@ -877,12 +945,38 @@ export const useLLMInvestigationControl = (accountId) => {
                 : await apiAskNudgebee.getModelConfig(accountId, conversationResponses[0].id, signal);
               if (!isStale() && modelConfigRes?.data && !modelConfigRes?.errors?.length) {
                 const modelConfig = modelConfigRes.data;
-                if (modelConfig.is_custom && modelConfig.current) {
+                const tierOverrides = modelConfig.tier_overrides;
+                if (tierOverrides && Object.keys(tierOverrides).length > 0) {
+                  // Per-task mode. The server reports `current` as the default
+                  // model here, not a pick — hydrating it as a blanket
+                  // selection would show a model the user never chose and, on
+                  // the next turn, overwrite these picks.
+                  dispatch({
+                    type: 'SET_SELECTED_TIER_MODELS',
+                    payload: Object.fromEntries(
+                      Object.entries(tierOverrides).map(([tier, p]) => [
+                        tier,
+                        {
+                          provider: p.provider,
+                          model: p.model,
+                          ...(p.llm_config_source && { configSource: p.llm_config_source }),
+                        },
+                      ])
+                    ),
+                  });
+                } else if (modelConfig.is_custom && modelConfig.current) {
                   dispatch({
                     type: 'SET_SELECTED_MODEL',
                     payload: {
                       provider: modelConfig.current.provider,
                       model: modelConfig.current.model,
+                      // config_source is reported independently of current —
+                      // it lives in the message config, not on the conversation
+                      // row — so a conversation can be pinned to a slot with or
+                      // without a provider/model override. The picker resolves
+                      // the slot's display name from the loaded rows, which may
+                      // still be in flight at this point.
+                      ...(modelConfig.config_source && { configSource: modelConfig.config_source }),
                     },
                   });
                 }
@@ -1017,12 +1111,13 @@ export const useLLMInvestigationControl = (accountId) => {
     fetchConversation,
     resetInvestigationState,
     checkConversationExists,
-    availableModels,
+    availableCredentials,
     defaultModel,
     selectedModel,
     setSelectedModel,
     selectedTierModels,
     setSelectedTierModels: (picks) => dispatch({ type: 'SET_SELECTED_TIER_MODELS', payload: picks }),
+    clearModelConfig: () => dispatch({ type: 'SET_CONFIG_CLEARED', payload: true }),
     imageSupport,
   };
 };

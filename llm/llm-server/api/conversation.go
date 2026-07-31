@@ -124,7 +124,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		// of picks under "tier_overrides". Both modes are mutually exclusive
 		// at the conversation row level.
 		if request.ConversationId != "" {
-			convProvider, convModel, tierOverrides, err := core.GetConversationOverride(request.ConversationId)
+			convProvider, convModel, tierOverrides, pinnedSource, err := core.GetConversationOverride(request.ConversationId)
 			if err == nil && convProvider != "" && convModel != "" {
 				response["current"] = map[string]string{
 					"provider": convProvider,
@@ -139,6 +139,15 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 				// No custom model, current = default
 				response["current"] = response["default"]
 			}
+
+			// A pinned config source is orthogonal to the provider/model override
+			// above — a conversation can carry either, both, or neither — so it's
+			// reported separately. The client matches it against the
+			// ai_list_models rows to recover the slot's display name.
+			if err == nil && pinnedSource != "" {
+				response["config_source"] = pinnedSource
+				response["is_custom"] = true
+			}
 		} else {
 			// No conversation, current = default
 			response["current"] = response["default"]
@@ -146,7 +155,8 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 
 		logger.Info("api: model config retrieved",
 			"conversation_id", request.ConversationId,
-			"is_custom", response["is_custom"])
+			"is_custom", response["is_custom"],
+			"config_source", response["config_source"])
 
 		c.JSON(200, buildApiResponse(response, nil))
 	})
@@ -227,7 +237,14 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		// support itself is always on — "enabled" is kept for API
 		// compatibility with clients already reading it.
 		response := map[string]any{
+			// models: flat one-row-per-(slot, model) list. Kept for the
+			// workflow node picker, which only reads provider/model.
 			"models": models,
+			// credentials: the same information collapsed into unique
+			// destinations, each with the models reachable through it. Only the
+			// server can compute this — endpoints and api keys are never
+			// serialized — so clients must not attempt their own grouping.
+			"credentials": core.BuildCredentialsFrom(request.AccountId, models),
 			"default": map[string]string{
 				"provider": defaultProvider,
 				"model":    defaultModel,

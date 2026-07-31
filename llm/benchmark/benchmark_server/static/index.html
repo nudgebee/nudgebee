@@ -290,11 +290,38 @@ tailwind.config = {
           </select>
         </div>
         <div>
-          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Log Backend</label>
-          <label class="flex items-center gap-2 text-[12px] text-gray-600 py-2 cursor-pointer" title="Pin the log backend to kubectl for this run (sends log_provider_override=k8s to the llm-server)">
-            <input type="checkbox" id="bm-force-k8s-logs" class="rounded border-gray-300 accent-amber-500"> Force kubectl logs
-          </label>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="bm-k8s-mode">K8s Orchestrator</label>
+          <select id="bm-k8s-mode" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all"
+            title="Force a specific K8s orchestrator variant for this run (sends config.k8s_orchestrator_mode to the llm-server). 'Default' defers to the llm-server env (LLM_SERVER_K8S_ORCHESTRATOR_MODE).">
+            <option value="">Default (defer to env)</option>
+            <option value="delegating">Delegating (v1, kubectl sub-agent)</option>
+            <option value="direct">Direct (v2, kubectl_execute + full sub-agents)</option>
+            <option value="lean">Lean (minimal prompt, direct kubectl)</option>
+            <option value="native">Native (kubectl-first, lean tool set)</option>
+          </select>
         </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="bm-llm-cred">LLM Credential</label>
+          <select id="bm-llm-cred" onchange="bmOnCredChange()" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all"
+            title="Pin every request in this run to one configured LLM credential (sends config.llm_config_source). 'Default' lets the llm-server resolve normally, which can pick a different credential per tier.">
+            <option value="">Default (llm-server resolves)</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="bm-llm-model">Model</label>
+          <select id="bm-llm-model" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all"
+            title="Model to use through the credential above. 'Default' uses whichever model that credential's slot names."
+            disabled>
+            <option value="">Default (credential's model)</option>
+          </select>
+        </div>
+      </div>
+      <div class="mb-4">
+        <label class="flex items-center gap-2 text-[11px] text-gray-500 cursor-pointer select-none">
+          <input type="checkbox" id="bm-llm-per-tier" onchange="bmOnPerTierToggle()" class="rounded" />
+          <span>Pin per task instead &mdash; choose a separate credential and model for each tier</span>
+        </label>
+        <div id="bm-llm-tier-rows" class="hidden mt-3 grid grid-cols-1 md:grid-cols-3 gap-4"></div>
       </div>
       <div id="bm-test-selector" class="hidden mb-4">
         <div class="flex items-center justify-between mb-2">
@@ -1022,6 +1049,31 @@ function renderRunsList() {
 // ============================================================
 // Run Detail
 // ============================================================
+const _bmCredNames = {};
+
+function bmCredLabel(source, tenantId, accountId) {
+  if (!source) return 'default';
+  const m = _bmCredNames[`${tenantId}|${accountId}`];
+  // Falls back to the raw id: an integration that's since been deleted has no
+  // name to show, and the id is still the truthful answer.
+  return (m && m[source]) || source;
+}
+
+async function bmPatchCredNames(tenantId, accountId) {
+  const key = `${tenantId}|${accountId}`;
+  if (!tenantId || !accountId) return;
+  if (!_bmCredNames[key]) {
+    const d = await api('GET', `/dashboard/models?account_id=${accountId}&tenant_id=${tenantId}`);
+    const map = {};
+    for (const c of (d && d.credentials) || []) map[c.llm_config_source] = c.name;
+    _bmCredNames[key] = map;
+  }
+  document.querySelectorAll('.bm-cred-name').forEach(el => {
+    const name = _bmCredNames[key][el.dataset.src];
+    if (name) el.textContent = name;
+  });
+}
+
 async function loadRunDetail(runId, silent) {
   if (!silent) detailTestPageNum = 1;
   const s = await api('GET', `/agent-benchmark/${runId}/status`);
@@ -1037,6 +1089,26 @@ async function loadRunDetail(runId, silent) {
   const tenant = await resolveName('tenant', s.tenant_id);
   const account = await resolveName('account', s.account_id);
   const dur = fmtDuration(s.duration_seconds);
+  // Per-phase totals across all tests — surfaced only on hover so the visible
+  // Duration cell stays the wall-clock number the user already knows. LLM
+  // phase is 0 on reruns (only duration_seconds is populated then), so the
+  // tooltip labels it accordingly rather than showing a misleading "0s".
+  const _durTests = s.test_results || [];
+  const sumField = (f) => _durTests.reduce((acc, t) => acc + (t[f] || 0), 0);
+  const execSecs = sumField('duration_seconds');
+  const llmSecs = sumField('llm_duration');
+  const setupSecs = sumField('setup_duration');
+  const teardownSecs = sumField('teardown_duration');
+  const tooltipLines = [
+    `Wall-clock (run start → completed): ${dur}`,
+    `Exec total (Σ per-test duration): ${fmtDuration(execSecs)}`,
+    llmSecs > 0 ? `LLM (Σ per-test llm_duration): ${fmtDuration(llmSecs)}` : `LLM: not recorded (Σ = 0 — reruns don't populate the phase field)`,
+    setupSecs > 0 ? `Setup (Σ per-test setup_duration): ${fmtDuration(setupSecs)}` : `Setup: not recorded`,
+    teardownSecs > 0 ? `Teardown (Σ per-test teardown_duration): ${fmtDuration(teardownSecs)}` : `Teardown: not recorded`,
+  ];
+  // HTML-attribute-safe join: escape double-quotes so the title attr renders cleanly.
+  const durTooltip = tooltipLines.join('\n').replace(/"/g, '&quot;');
+  const durValue = `<span title="${durTooltip}" class="cursor-help border-b border-dotted border-gray-300">${dur}</span>`;
   const models = (s.model_names || []).join(', ') || '—';
   const [cur, tot] = (s.progress || '0/0').split('/').map(Number);
   const pct = tot > 0 ? Math.round(cur/tot*100) : 0;
@@ -1046,7 +1118,7 @@ async function loadRunDetail(runId, silent) {
   const summary = s.test_results_summary || {};
   const metaItems = [
     {label: 'Started', value: fmtDate(s.started_at || s.created_at)},
-    {label: 'Duration', value: dur},
+    {label: 'Duration', value: durValue},
     {label: 'Progress', value: s.progress},
     {label: 'Tenant', value: `${tenant} / ${account}`},
   ];
@@ -1071,6 +1143,17 @@ async function loadRunDetail(runId, silent) {
   if (s.max_tests) filterChips.push(`<span class="inline-block bg-purple-50 text-purple-700 border border-purple-200 rounded-full px-2 py-0.5 text-[10px] font-medium">max: ${s.max_tests}</span>`);
   if (s.test_filter) filterChips.push(`<span class="inline-block bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-2 py-0.5 text-[10px] font-medium">-k ${s.test_filter}</span>`);
   if (s.parallel_workers && s.parallel_workers > 1) filterChips.push(`<span class="inline-block bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full px-2 py-0.5 text-[10px] font-medium">parallel: ${s.parallel_workers}</span>`);
+  if (s.k8s_orchestrator_mode) filterChips.push(`<span class="inline-block bg-cyan-50 text-cyan-700 border border-cyan-200 rounded-full px-2 py-0.5 text-[10px] font-medium" title="Per-request K8s orchestrator mode: routes to k8s_orchestrator_${s.k8s_orchestrator_mode}">k8s: ${s.k8s_orchestrator_mode}</span>`);
+  // Pinned LLM config. Distinct from the "Model" meta above, which is derived
+  // from token metrics after the fact — these render immediately and say what
+  // the run asked for, which is what you need while it's still running.
+  const _credChip = (src, label) => `<span class="inline-block bg-rose-50 text-rose-700 border border-rose-200 rounded-full px-2 py-0.5 text-[10px] font-medium" title="llm_config_source: ${escAttr(src)}">${label}</span>`;
+  if (s.llm_config_source) filterChips.push(_credChip(s.llm_config_source, `cred: <span class="bm-cred-name" data-src="${escAttr(s.llm_config_source)}">${esc(bmCredLabel(s.llm_config_source, s.tenant_id, s.account_id))}</span>`));
+  if (s.llm_model_name) filterChips.push(`<span class="inline-block bg-rose-50 text-rose-700 border border-rose-200 rounded-full px-2 py-0.5 text-[10px] font-medium" title="Blanket model pinned for every request in this run">model: ${esc(s.llm_model_name)}</span>`);
+  for (const [tier, pick] of Object.entries(s.llm_tier_models || {})) {
+    const label = `${tier}: ${esc(pick.model || 'default')}`;
+    filterChips.push(_credChip(pick.llm_config_source || '', `<span class="bm-cred-name" data-src="${escAttr(pick.llm_config_source || '')}" data-suffix="${escAttr(label)}">${esc(bmCredLabel(pick.llm_config_source, s.tenant_id, s.account_id))}</span> &middot; ${label}`));
+  }
   const filtersHtml = filterChips.length
     ? `<div class="bg-white/80 border border-gray-200/80 rounded-xl px-4 py-2.5 mb-2 flex items-center flex-wrap gap-1.5">
          <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mr-2">Filters</span>
@@ -1460,6 +1543,9 @@ async function loadRunDetail(runId, silent) {
   hide('detail-loading');
   hide('detail-error');
   show('detail-content');
+  // Deliberately not awaited — the chips already show the truthful source id,
+  // and this only upgrades them to the friendlier name.
+  bmPatchCredNames(s.tenant_id, s.account_id);
 }
 
 function setDetailTestPage(p) { detailTestPageNum = p; renderDetailTests(); }
@@ -2016,6 +2102,7 @@ async function bmOnTenantChange() {
     $('bm-account').innerHTML = '<option value="">Select tenant first</option>';
     $('bm-account').disabled = true;
     $('bm-tool-config').innerHTML = '<option value="">Select account first</option>';
+    bmResetLlmPickers();
     return;
   }
   // Show loader, disable account select. The user dropdown was removed —
@@ -2030,9 +2117,9 @@ async function bmOnTenantChange() {
   const accountOpts = (accounts?.accounts||[]);
   $('bm-account').innerHTML = accountOpts.map(a => `<option value="${a.id}">${a.account_name} (${a.cloud_provider})</option>`).join('') || '<option value="">No accounts</option>';
   $('bm-account').disabled = false;
-  $('bm-account').onchange = () => { bmLoadToolConfigs(); validateBmForm(); };
+  $('bm-account').onchange = () => { bmLoadToolConfigs(); bmLoadCredentials(); validateBmForm(); };
   // Auto-load tool configs if account has values
-  if (accountOpts.length) bmLoadToolConfigs();
+  if (accountOpts.length) { bmLoadToolConfigs(); bmLoadCredentials(); }
   validateBmForm();
 }
 
@@ -2045,6 +2132,118 @@ async function bmLoadToolConfigs() {
   const d = await api('GET', `/dashboard/tool-configs?account_id=${aid}&tenant_id=${tid}`);
   hide('bm-toolconfig-loader');
   $('bm-tool-config').innerHTML = '<option value="">Default</option>' + (d?.configs||[]).map(c => `<option value="${c.name}">${c.name} (${c.type||''})</option>`).join('');
+}
+
+// LLM credential pinning. A credential is one distinct destination (provider +
+// endpoint + key + region + ...) with the models reachable through it; the
+// llm-server computes that grouping because endpoints and keys are never
+// serialized here. Pinning keeps a run on one credential so two runs are
+// comparable instead of drifting with the resolver's layered walk.
+let _bmCredentials = [];
+const BM_TIERS = ['reasoning', 'retrieval', 'summary'];
+
+function bmResetLlmPickers() {
+  _bmCredentials = [];
+  const cred = $('bm-llm-cred'), model = $('bm-llm-model');
+  if (cred) cred.innerHTML = '<option value="">Default (llm-server resolves)</option>';
+  if (model) { model.innerHTML = '<option value="">Default (credential\'s model)</option>'; model.disabled = true; }
+  const rows = $('bm-llm-tier-rows');
+  if (rows) rows.innerHTML = '';
+}
+
+function _bmCredOptions(selected) {
+  return '<option value="">Default</option>' + _bmCredentials.map(c =>
+    `<option value="${escAttr(c.llm_config_source)}"${c.llm_config_source === selected ? ' selected' : ''}>${esc(c.name)} (${esc(c.provider)})</option>`
+  ).join('');
+}
+
+function _bmModelOptions(configSource) {
+  const cred = _bmCredentials.find(c => c.llm_config_source === configSource);
+  const models = (cred && cred.models) || [];
+  return '<option value="">Default</option>' + models.map(m =>
+    `<option value="${escAttr(m.model)}">${esc(m.model)}</option>`
+  ).join('');
+}
+
+async function bmLoadCredentials() {
+  const [aid, tid] = [$('bm-account').value, $('bm-tenant').value];
+  if (!aid || !tid) return;
+  const d = await api('GET', `/dashboard/models?account_id=${aid}&tenant_id=${tid}`);
+  _bmCredentials = (d && d.credentials) || [];
+  $('bm-llm-cred').innerHTML = _bmCredOptions('');
+  $('bm-llm-model').innerHTML = '<option value="">Default (credential\'s model)</option>';
+  $('bm-llm-model').disabled = true;
+  bmRenderTierRows();
+}
+
+function bmOnCredChange() {
+  const src = $('bm-llm-cred').value;
+  const model = $('bm-llm-model');
+  // Without a credential there is no model list to offer — the llm-server
+  // picks both.
+  model.disabled = !src;
+  model.innerHTML = src
+    ? _bmModelOptions(src)
+    : '<option value="">Default (credential\'s model)</option>';
+}
+
+function bmRenderTierRows() {
+  const rows = $('bm-llm-tier-rows');
+  if (!rows) return;
+  rows.innerHTML = BM_TIERS.map(t => `
+    <div>
+      <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">${t}</label>
+      <select id="bm-tier-cred-${t}" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all mb-2"
+        onchange="bmOnTierCredChange('${t}')">${_bmCredOptions('')}</select>
+      <select id="bm-tier-model-${t}" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all" disabled>
+        <option value="">Default</option>
+      </select>
+    </div>`).join('');
+}
+
+function bmOnTierCredChange(tier) {
+  const src = $(`bm-tier-cred-${tier}`).value;
+  const model = $(`bm-tier-model-${tier}`);
+  model.disabled = !src;
+  model.innerHTML = src ? _bmModelOptions(src) : '<option value="">Default</option>';
+}
+
+function bmOnPerTierToggle() {
+  const on = $('bm-llm-per-tier').checked;
+  // The two modes are mutually exclusive at the conversation row, so the UI
+  // can't offer both at once without one silently losing.
+  $('bm-llm-tier-rows').classList.toggle('hidden', !on);
+  $('bm-llm-cred').disabled = on;
+  $('bm-llm-model').disabled = on || !$('bm-llm-cred').value;
+  if (on) bmRenderTierRows();
+}
+
+// Collects the pin into the run payload. Returns {} when nothing is pinned so
+// the run behaves exactly as it did before this field existed.
+function bmLlmPayload() {
+  if ($('bm-llm-per-tier')?.checked) {
+    const picks = {};
+    for (const t of BM_TIERS) {
+      const src = $(`bm-tier-cred-${t}`)?.value;
+      if (!src) continue;
+      const cred = _bmCredentials.find(c => c.llm_config_source === src);
+      const pick = { llm_config_source: src, provider: (cred && cred.provider) || '' };
+      const m = $(`bm-tier-model-${t}`)?.value;
+      if (m) pick.model = m;
+      picks[t] = pick;
+    }
+    return Object.keys(picks).length ? { llm_tier_models: picks } : {};
+  }
+  const src = $('bm-llm-cred')?.value;
+  if (!src) return {};
+  const out = { llm_config_source: src };
+  const model = $('bm-llm-model')?.value;
+  if (model) {
+    const cred = _bmCredentials.find(c => c.llm_config_source === src);
+    out.llm_provider = (cred && cred.provider) || '';
+    out.llm_model_name = model;
+  }
+  return out;
 }
 
 async function bmOnAgentChange() {
@@ -2244,7 +2443,8 @@ function bmPayload() {
     tag_filter: tags || null,
     parallel_workers: parseInt($('bm-parallel-workers').value) || 1,
     run_name: $('bm-run-name').value.trim() || null,
-    log_provider_override: $('bm-force-k8s-logs')?.checked ? 'k8s' : null,
+    k8s_orchestrator_mode: $('bm-k8s-mode')?.value || null,
+    ...bmLlmPayload(),
   };
   // Tenant override is honoured only for super_admin (the only role that
   // can switch tenants); the server validates and ignores it for others.

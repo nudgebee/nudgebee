@@ -56,11 +56,19 @@ type Conversation struct {
 	LlmProvider      *string                    `json:"llm_provider,omitempty" db:"llm_provider"`
 	LlmModel         *string                    `json:"llm_model,omitempty" db:"llm_model"`
 	LlmTierOverrides *ConversationTierOverrides `json:"llm_tier_overrides,omitempty" db:"llm_tier_overrides"`
+	// Pinned config slot ({layer}:{scope}[:{name}]). Orthogonal to the three
+	// above: a conversation can pin a slot with or without also pinning a
+	// provider/model, so the blanket/tier mutual exclusivity doesn't apply.
+	LlmConfigSource *string `json:"llm_config_source,omitempty" db:"llm_config_source"`
 }
 
 type TierModelPick struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	// ConfigSource is the credential this task resolves through. Empty for
+	// picks made before per-tier credentials existed; those fall back to the
+	// conversation-wide pin.
+	ConfigSource string `json:"llm_config_source,omitempty"`
 }
 
 // Typed view of the llm_conversations.llm_tier_overrides jsonb column.
@@ -222,10 +230,12 @@ type IConversationDao interface {
 	UpdateConversationModel(conversationId, provider, model string) error
 	UpdateConversationModelBlanket(conversationId, provider, model string) error
 	UpdateConversationTierOverrides(conversationId string, overrides ConversationTierOverrides) error
+	UpdateConversationConfigSource(conversationId, configSource string) error
+	ClearConversationModelConfig(conversationId string) error
 	UpdateMessageAcknowledgement(messageId, accountId, ackMessage string) error
 	UpdateConversationContext(conversationId string, context map[string]any) error
 	GetConversation(conversationId string) (Conversation, error)
-	SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *ConversationTierOverrides) (uuid.UUID, error)
+	SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *ConversationTierOverrides, llmConfigSource string) (uuid.UUID, error)
 	UpdateConversationStatus(conversationId string, status ConversationStatus) error
 	ListConversationMessages(status ConversationStatus, workerName string, conversationId string, deadWorker bool) ([]ConversationMessage, error)
 	SaveConversationMessage(id, conversationId, accountID, userId string, role MessageRole, messageType MessageType, message, response, agentName string, parentAgentId uuid.UUID, messageConfig any, messageContext string, llmProvider, llmModel string, status ConversationStatus) (uuid.UUID, error)
@@ -233,6 +243,7 @@ type IConversationDao interface {
 	CleanupConversationMessage(id, accountId string) error
 	UpdateConversationMessageContext(messageId string, context map[string]any) error
 	UpdateConversationMessage(id, response string, status ConversationStatus) error
+	UpdateConversationMessageMetadata(id string, metadata map[string]any) error
 	UpdateConversationMessageAsync(id, response string, status ConversationStatus)
 	UpdateMessageCompactResponse(context *security.RequestContext, messageId, compactResponse string) error
 	UpdateConversationMessageMetrics(id string, metrics string) error
@@ -269,14 +280,14 @@ type IConversationDao interface {
 	GetConversationCosts(models []string) (map[string]modelPricing, error)
 	GetImageSupportCatalog() (map[string]bool, error)
 	GetConversationTokenUsageDetailed(conversationId, accountId string) ([]TokenUsageDetailedRecord, error)
-	GetConversationToolCallAgents(conversationId string) ([]ToolCallAgent, error)
-	ResolveSessionId(idOrSessionId string) string
 	GetConversationLifecycleStorageCost(conversationId string, tenantId string) (float64, error)
 	GetConversationToolCallsStats(conversationId, accountId string) (ToolCallsStats, error)
+	GetConversationToolCallAgents(conversationId, accountId string) ([]ToolCallAgent, error)
+	ResolveSessionId(idOrSessionId string) string
 	GetConversationTimeBreakdown(conversationId, accountId string) (TimeBreakdown, error)
 	GetConversationTimeAggregates(filter ConversationTimeAggregatesFilter) (ConversationTimeAggregates, error)
 	GetUsageMetrics(filter UsageMetricsFilter, dims []string, topN int, granularity string) (UsageMetrics, error)
-	GetUsageFilters(filter UsageMetricsFilter, readableAccountIDs, selectedAccountIDs []string) (UsageFilters, error)
+	GetUsageFilters(filter UsageMetricsFilter) (UsageFilters, error)
 	ListConversationCosts(filter UsageMetricsFilter, sortBy, sortDir string, limit, offset int) (ConversationCostList, error)
 	GetConversationTree(sessionID, accountID string) (ConversationTree, error)
 	GetConversationAgentDetail(sessionID, accountID, agentID, modelCallID string) (AgentDetail, error)
@@ -594,7 +605,7 @@ func (chat *ConversationDao) ListAgentReferences(accountId, conversationId strin
 		// existed — literal "null"/"none"/"n/a", template fragments, etc. —
 		// stops being surfaced in the panel.
 		if ref.Type == AgentReferenceTypeMemory {
-			if ok, _ := isAcceptableMemoryFact(trimmedContent); !ok {
+			if ok, _ := isAcceptableMemoryFact(MemoryFact{Content: trimmedContent}); !ok {
 				continue
 			}
 		}
@@ -948,6 +959,53 @@ func (chat *ConversationDao) UpdateConversationModelBlanket(conversationId, prov
 	return nil
 }
 
+// UpdateConversationConfigSource persists the pinned config slot. Deliberately
+// does NOT touch llm_provider / llm_model / llm_tier_overrides: a pin selects
+// which configured slot serves the request, which is independent of which model
+// the user picked, so the blanket-vs-tier exclusivity above doesn't apply here.
+// An empty source clears the pin.
+func (chat *ConversationDao) UpdateConversationConfigSource(conversationId, configSource string) error {
+	if conversationId == "" {
+		return errors.New("history: conversationId is required")
+	}
+
+	query := `UPDATE llm_conversations
+	          SET llm_config_source = $2,
+	              updated_at = now()
+	          WHERE id = $1`
+	_, err := chat.dbManager.Db.Exec(query, conversationId, sql.NullString{String: configSource, Valid: configSource != ""})
+	if err != nil {
+		// No log here: applyConversationModelConfig warns with the request
+		// context attached (trace_id, conversation_id), which this bare slog
+		// call lacks — and it treats the write as best-effort, so an Error-level
+		// line would alert on something already handled.
+		return fmt.Errorf("history: unable to update conversation config source: %w", err)
+	}
+	return nil
+}
+
+// ClearConversationModelConfig drops every stored model choice at once —
+// blanket, per-tier and pin. One UPDATE rather than three calls because the
+// three columns are one user-visible selection: a partial clear would leave the
+// conversation in a state the picker has no way to show.
+func (chat *ConversationDao) ClearConversationModelConfig(conversationId string) error {
+	if conversationId == "" {
+		return errors.New("history: conversationId is required")
+	}
+
+	query := `UPDATE llm_conversations
+	          SET llm_provider = NULL, llm_model = NULL,
+	              llm_tier_overrides = NULL, llm_config_source = NULL,
+	              updated_at = now()
+	          WHERE id = $1`
+	_, err := chat.dbManager.Db.Exec(query, conversationId)
+	if err != nil {
+		// See UpdateConversationConfigSource — the caller logs with context.
+		return fmt.Errorf("history: unable to clear conversation model config: %w", err)
+	}
+	return nil
+}
+
 // Clears llm_provider and llm_model in the same UPDATE — see
 // UpdateConversationModelBlanket for the mutual-exclusivity rule.
 func (chat *ConversationDao) UpdateConversationTierOverrides(conversationId string, overrides ConversationTierOverrides) error {
@@ -973,7 +1031,7 @@ func (chat *ConversationDao) UpdateConversationModel(conversationId, provider, m
 	return chat.UpdateConversationModelBlanket(conversationId, provider, model)
 }
 
-func (chat *ConversationDao) SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *ConversationTierOverrides) (uuid.UUID, error) {
+func (chat *ConversationDao) SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *ConversationTierOverrides, llmConfigSource string) (uuid.UUID, error) {
 	if accountID == "" || tenantId == "" {
 		return uuid.Nil, errors.New("history: accountID and tenantId are required")
 	}
@@ -1001,18 +1059,23 @@ func (chat *ConversationDao) SaveConversation(id, sessionID, tenantId, accountID
 		Valid:  llmModel != "",
 	}
 
+	llmConfigSourceSql := sql.NullString{
+		String: llmConfigSource,
+		Valid:  llmConfigSource != "",
+	}
+
 	var tierOverridesArg any
 	if llmTierOverrides != nil {
 		tierOverridesArg = *llmTierOverrides
 	}
 
 	query := `
-    INSERT INTO llm_conversations (id, session_id, tenant_id, account_id, user_id, context, status, source, title, updated_at, llm_provider, llm_model, llm_tier_overrides)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10, $11, $12)
+    INSERT INTO llm_conversations (id, session_id, tenant_id, account_id, user_id, context, status, source, title, updated_at, llm_provider, llm_model, llm_tier_overrides, llm_config_source)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10, $11, $12, $13)
     ON CONFLICT (session_id, user_id, account_id)
-    DO UPDATE SET context = EXCLUDED.context, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at, llm_provider = EXCLUDED.llm_provider, llm_model = EXCLUDED.llm_model, llm_tier_overrides = EXCLUDED.llm_tier_overrides RETURNING llm_conversations.id;`
+    DO UPDATE SET context = EXCLUDED.context, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at, llm_provider = EXCLUDED.llm_provider, llm_model = EXCLUDED.llm_model, llm_tier_overrides = EXCLUDED.llm_tier_overrides, llm_config_source = EXCLUDED.llm_config_source RETURNING llm_conversations.id;`
 	var lastId uuid.UUID
-	err := chat.dbManager.Db.QueryRow(query, id, sessionID, tenantId, accountID, userIdSql, context, status, source, title, llmProviderSql, llmModelSql, tierOverridesArg).Scan(&lastId)
+	err := chat.dbManager.Db.QueryRow(query, id, sessionID, tenantId, accountID, userIdSql, context, status, source, title, llmProviderSql, llmModelSql, tierOverridesArg, llmConfigSourceSql).Scan(&lastId)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("history: failed to save conversation: %w", err)
 	}
@@ -1277,7 +1340,7 @@ func (chat *ConversationDao) GetConversationBySession(accountID, sessionID strin
 	if accountID == "" {
 		return Conversation{}, errors.New("history: accountID is required")
 	}
-	query := `SELECT id, user_id, session_id, account_id, context::text, status, tenant_id::text, title, source, llm_provider, llm_model, llm_tier_overrides FROM llm_conversations
+	query := `SELECT id, user_id, session_id, account_id, context::text, status, tenant_id::text, title, source, llm_provider, llm_model, llm_tier_overrides, llm_config_source FROM llm_conversations
 	WHERE session_id = $1 AND account_id = $2`
 	rows, err := chat.dbManager.Db.Queryx(query, sessionID, accountID)
 	if err != nil {
@@ -1295,10 +1358,10 @@ func (chat *ConversationDao) GetConversationBySession(accountID, sessionID strin
 	var status ConversationStatus
 	var source *ConversationSource
 	var cntxt sql.NullString
-	var llmProvider, llmModel *string
+	var llmProvider, llmModel, llmConfigSource *string
+	var tierOverrides ConversationTierOverrides
 	for rows.Next() {
-		var tierOverrides ConversationTierOverrides
-		if err := rows.Scan(&id, &userId, &sessionId, &accoundId, &cntxt, &status, &tenantId, &title, &source, &llmProvider, &llmModel, &tierOverrides); err != nil {
+		if err := rows.Scan(&id, &userId, &sessionId, &accoundId, &cntxt, &status, &tenantId, &title, &source, &llmProvider, &llmModel, &tierOverrides, &llmConfigSource); err != nil {
 			return Conversation{}, fmt.Errorf("history: failed to scan conversation: %w", err)
 		}
 		var context map[string]any
@@ -1313,17 +1376,18 @@ func (chat *ConversationDao) GetConversationBySession(accountID, sessionID strin
 			userIdUUID = uuid.MustParse(*userId)
 		}
 		conversation = Conversation{
-			ID:          uuid.MustParse(id),
-			SessionID:   sessionId,
-			AccountID:   uuid.MustParse(accoundId),
-			UserID:      userIdUUID,
-			Context:     context,
-			Status:      status,
-			TenantID:    uuid.MustParse(tenantId),
-			Title:       title,
-			Source:      source,
-			LlmProvider: llmProvider,
-			LlmModel:    llmModel,
+			ID:              uuid.MustParse(id),
+			SessionID:       sessionId,
+			AccountID:       uuid.MustParse(accoundId),
+			UserID:          userIdUUID,
+			Context:         context,
+			Status:          status,
+			TenantID:        uuid.MustParse(tenantId),
+			Title:           title,
+			Source:          source,
+			LlmProvider:     llmProvider,
+			LlmModel:        llmModel,
+			LlmConfigSource: llmConfigSource,
 		}
 		if tierOverrides.HasAny() {
 			to := tierOverrides
@@ -1338,7 +1402,7 @@ func (chat *ConversationDao) GetConversationBySession(accountID, sessionID strin
 }
 
 func (chat *ConversationDao) GetConversation(conversationId string) (Conversation, error) {
-	query := `SELECT id::text, user_id, session_id, account_id, context::text, status, tenant_id::text, title, source, llm_provider, llm_model, llm_tier_overrides FROM llm_conversations WHERE id = $1`
+	query := `SELECT id::text, user_id, session_id, account_id, context::text, status, tenant_id::text, title, source, llm_provider, llm_model, llm_tier_overrides, llm_config_source FROM llm_conversations WHERE id = $1`
 	rows, err := chat.dbManager.Db.Queryx(query, conversationId)
 	if err != nil {
 		return Conversation{}, fmt.Errorf("history: failed to load conversation: %w", err)
@@ -1354,10 +1418,10 @@ func (chat *ConversationDao) GetConversation(conversationId string) (Conversatio
 	var status ConversationStatus
 	var source *ConversationSource
 	var cntxt sql.NullString
-	var llmProvider, llmModel *string
+	var llmProvider, llmModel, llmConfigSource *string
+	var tierOverrides ConversationTierOverrides
 	for rows.Next() {
-		var tierOverrides ConversationTierOverrides
-		if err := rows.Scan(&id, &userId, &sessionId, &accoundId, &cntxt, &status, &tenantId, &title, &source, &llmProvider, &llmModel, &tierOverrides); err != nil {
+		if err := rows.Scan(&id, &userId, &sessionId, &accoundId, &cntxt, &status, &tenantId, &title, &source, &llmProvider, &llmModel, &tierOverrides, &llmConfigSource); err != nil {
 			return Conversation{}, fmt.Errorf("history: failed to scan conversation: %w", err)
 		}
 		var context map[string]any
@@ -1373,17 +1437,18 @@ func (chat *ConversationDao) GetConversation(conversationId string) (Conversatio
 			userIdUUID = uuid.MustParse(*userId)
 		}
 		conversation = Conversation{
-			ID:          uuid.MustParse(id),
-			SessionID:   sessionId,
-			AccountID:   uuid.MustParse(accoundId),
-			UserID:      userIdUUID,
-			Context:     context,
-			Status:      status,
-			TenantID:    uuid.MustParse(tenantId),
-			Title:       title,
-			Source:      source,
-			LlmProvider: llmProvider,
-			LlmModel:    llmModel,
+			ID:              uuid.MustParse(id),
+			SessionID:       sessionId,
+			AccountID:       uuid.MustParse(accoundId),
+			UserID:          userIdUUID,
+			Context:         context,
+			Status:          status,
+			TenantID:        uuid.MustParse(tenantId),
+			Title:           title,
+			Source:          source,
+			LlmProvider:     llmProvider,
+			LlmModel:        llmModel,
+			LlmConfigSource: llmConfigSource,
 		}
 		if tierOverrides.HasAny() {
 			to := tierOverrides
@@ -1537,6 +1602,41 @@ func (chat *ConversationDao) UpdateConversationMessage(id, response string, stat
 	_, err := chat.dbManager.Db.Exec(query, id, response, string(status), config.Config.ServerName, isTerminal)
 	if err != nil {
 		return fmt.Errorf("history: failed to update message: %w", err)
+	}
+	return nil
+}
+
+// UpdateConversationMessageMetadata merges the supplied keys into the
+// metadata jsonb column on the llm_conversation_messages row. The column
+// is a generic per-message attachment slot — first consumer is the
+// outbound egressfilter (writes under the "egressfilter" key); future
+// per-message subsystems (e.g. PII tokenization) write under their own
+// top-level keys. The column was added in migration V761
+// (1781680308449_V761_add_metadata_to_llm_conversation_messages).
+//
+// We MERGE rather than overwrite (`COALESCE(metadata, '{}') || $2::jsonb`)
+// because multiple subsystems can each write independently for the same
+// message; a `SET metadata = $2` would let a later writer wipe an earlier
+// writer's namespace. The merge is shallow (top-level keys), which matches
+// the convention: each subsystem owns one top-level key and the value
+// underneath is opaque to other subsystems.
+//
+// An empty or nil metadata is treated as a no-op so callers can call
+// unconditionally without an empty-check at the call site.
+func (chat *ConversationDao) UpdateConversationMessageMetadata(id string, metadata map[string]any) error {
+	if id == "" || len(metadata) == 0 {
+		return nil
+	}
+	b, err := common.MarshalJson(metadata)
+	if err != nil {
+		return fmt.Errorf("history: failed to marshal message metadata: %w", err)
+	}
+	query := `UPDATE llm_conversation_messages
+              SET metadata   = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,
+                  updated_at = now()
+              WHERE id = $1`
+	if _, err := chat.dbManager.Db.Exec(query, id, string(b)); err != nil {
+		return fmt.Errorf("history: failed to update message metadata: %w", err)
 	}
 	return nil
 }
@@ -2779,10 +2879,6 @@ type TokenUsageDetailedRecord struct {
 	RequestStatus       string
 	LatencySeconds      sql.NullFloat64
 	CreatedAt           time.Time
-	// Cost persisted at insert time. NULL on legacy rows (and on calls with no
-	// pricing entry then), which fall back to a live recompute — same preference
-	// as GetConversationTokenUsage and usage_analytics.perCallCostExpr.
-	CostUsd sql.NullFloat64
 }
 
 // GetConversationTokenUsageDetailed returns all individual token usage records for detailed analysis
@@ -2802,8 +2898,7 @@ func (chat *ConversationDao) GetConversationTokenUsageDetailed(conversationId, a
 			COALESCE(t.thinking_tokens, 0) as ThinkingTokens,
 			t.request_status as RequestStatus,
 			t.latency_seconds as LatencySeconds,
-			t.created_at as CreatedAt,
-			t.cost_usd as CostUsd
+			t.created_at as CreatedAt
 		FROM llm_conversation_token_usage t
 		INNER JOIN llm_conversations c ON c.id = t.conversation_id
 		WHERE c.session_id = $1 AND c.account_id = $2::uuid
@@ -2871,15 +2966,15 @@ func (chat *ConversationDao) ResolveSessionId(idOrSessionId string) string {
 // GetConversationToolCallAgents returns the tool_call_id, agent_id and created_at for
 // each tool call in a conversation (looked up by session_id, matching the other
 // usage-metric queries), ordered chronologically for time-based reasoning attribution.
-func (chat *ConversationDao) GetConversationToolCallAgents(conversationId string) ([]ToolCallAgent, error) {
+func (chat *ConversationDao) GetConversationToolCallAgents(conversationId, accountId string) ([]ToolCallAgent, error) {
 	query := `
 		SELECT tc.id::text as ToolCallID, tc.agent_id::text as AgentID, tc.created_at as CreatedAt
 		FROM llm_conversation_tool_calls tc
 		INNER JOIN llm_conversations c ON c.id = tc.conversation_id
-		WHERE c.session_id = $1 AND tc.agent_id IS NOT NULL
+		WHERE c.session_id = $1 AND c.account_id = $2::uuid AND tc.agent_id IS NOT NULL
 		ORDER BY tc.created_at ASC;`
 
-	rows, err := chat.dbManager.Db.Queryx(query, conversationId)
+	rows, err := chat.dbManager.Db.Queryx(query, conversationId, accountId)
 	if err != nil {
 		slog.Error("executing tool call agents query", "error", err)
 		return nil, err
@@ -3240,9 +3335,19 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 		)
 	`
 
+	// Background-job rows (memory consolidators, maintenance) have no owning
+	// conversation or account — they're system cost, not customer-billable.
+	// Pass NULL for those columns so the insert succeeds; V760 made both
+	// nullable on llm_conversation_token_usage. Budget rollups that INNER
+	// JOIN llm_conversations naturally exclude these rows.
+	convID := nullableUUID(record.ConversationID)
+	acctID := nullableUUID(record.AccountID)
+	msgID := nullableUUID(record.MessageID)
+	usrID := nullableUUID(record.UserID)
+
 	_, err := chat.dbManager.Db.Exec(query,
-		record.ConversationID, record.MessageID, record.AgentID, record.AgentName,
-		record.AccountID, record.UserID,
+		convID, msgID, record.AgentID, record.AgentName,
+		acctID, usrID,
 		record.LLMProvider, record.LLMModel,
 		record.InputTokens, record.OutputTokens, record.CachedInputTokens, record.CacheCreationTokens,
 		record.IsCacheHit, record.CacheHitRate,
@@ -3263,8 +3368,8 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			slog.Warn("InsertTokenUsage: agent_id FK violation, retrying with NULL agent_id", "agent_id", *record.AgentID, "agent_name", record.AgentName)
 			record.AgentID = nil
 			_, retryErr := chat.dbManager.Db.Exec(query,
-				record.ConversationID, record.MessageID, record.AgentID, record.AgentName,
-				record.AccountID, record.UserID,
+				convID, msgID, record.AgentID, record.AgentName,
+				acctID, usrID,
 				record.LLMProvider, record.LLMModel,
 				record.InputTokens, record.OutputTokens, record.CachedInputTokens, record.CacheCreationTokens,
 				record.IsCacheHit, record.CacheHitRate,
@@ -3286,6 +3391,16 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 	}
 
 	return nil
+}
+
+// nullableUUID converts an empty string to a nil interface so the postgres
+// driver inserts SQL NULL instead of trying to parse "" as a uuid.
+// Returns the original string when non-empty.
+func nullableUUID(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func (chat *ConversationDao) GetLatestConversationBySessionID(sessionID string, accountId string) (Conversation, error) {

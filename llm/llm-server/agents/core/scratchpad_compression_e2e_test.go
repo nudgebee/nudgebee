@@ -97,7 +97,7 @@ func newCompressionFixture(t *testing.T, env compressionE2EEnv, keep bool) *comp
 		uuid.NewString(), sessionID, env.tenant, env.account, env.user,
 		"", "compression e2e", status,
 		ConversationSourceUserInvestigation,
-		config.Config.LlmProvider, config.Config.LlmModel, nil)
+		config.Config.LlmProvider, config.Config.LlmModel, nil, "")
 	require.NoError(t, err, "SaveConversation must succeed (DB reachable + tenant/account valid)")
 	convID := convUUID.String()
 

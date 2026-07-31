@@ -16,6 +16,7 @@ import (
 	"nudgebee/llm/security/egressfilter"
 	toolcore "nudgebee/llm/tools/core"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -60,8 +61,27 @@ var (
 	})
 	llmTenantConfigCacheMutex sync.RWMutex
 
+	// Per-integration view of the same rows, keyed by accountId. Shares the TTL
+	// and the invalidation path with the caches above.
+	llmIntegrationsCache = make(map[string]struct {
+		integrations []llmIntegration
+		ts           time.Time
+	})
+	llmIntegrationsCacheMutex sync.RWMutex
+
 	modelSemaphores sync.Map // map[string]chan struct{}
 )
+
+// llmIntegration is one enabled LLM integration visible to an account, with its
+// config values already decrypted. getLLMIntegrationConfig merges every visible
+// integration into a single map for the layered resolver, which loses the
+// integration id; pinning needs each integration addressable on its own, so
+// this keeps them separate. See NBQueryConfig.LlmConfigSource ("db:<uuid>").
+type llmIntegration struct {
+	Id     string
+	Name   string
+	Config map[string]string
+}
 
 func getLlmSemaphore(accountId, provider, model string) chan struct{} {
 	// Key pattern: accountId:provider:model.
@@ -103,6 +123,10 @@ func InvalidateLLMIntegrationConfigCache(accountId string) {
 	delete(llmIntegrationConfigCache, accountId)
 	llmIntegrationConfigCacheMutex.Unlock()
 
+	llmIntegrationsCacheMutex.Lock()
+	delete(llmIntegrationsCache, accountId)
+	llmIntegrationsCacheMutex.Unlock()
+
 	// Also invalidate tenant-level cache and all sibling accounts that may be
 	// using the tenant-level fallback config.
 	if tenantId, err := security.GetTenantIdFromAccountId(accountId); err == nil && tenantId != "" {
@@ -113,6 +137,11 @@ func InvalidateLLMIntegrationConfigCache(accountId string) {
 		// Clear account-level cache entries for all accounts under this tenant
 		// so they re-resolve on next call (they may have cached the old tenant config).
 		if siblingAccounts, err := security.GetAccountIdsForTenant(tenantId); err == nil {
+			// One cache at a time. Holding both would be the only place in the
+			// package that does, so it'd be the lock-ordering rule everything
+			// else has to remember — and it buys nothing: readers take a single
+			// mutex, so they can already see one cache fresh and the other
+			// stale no matter how invalidation locks.
 			llmIntegrationConfigCacheMutex.Lock()
 			for _, siblingId := range siblingAccounts {
 				if siblingId != accountId {
@@ -120,6 +149,14 @@ func InvalidateLLMIntegrationConfigCache(accountId string) {
 				}
 			}
 			llmIntegrationConfigCacheMutex.Unlock()
+
+			llmIntegrationsCacheMutex.Lock()
+			for _, siblingId := range siblingAccounts {
+				if siblingId != accountId {
+					delete(llmIntegrationsCache, siblingId)
+				}
+			}
+			llmIntegrationsCacheMutex.Unlock()
 
 			// Invalidate LLM client cache for all sibling accounts
 			for _, siblingId := range siblingAccounts {
@@ -147,6 +184,14 @@ const (
 	// Value type: ConversationTierOverrides (passing the typed struct keeps
 	// callers from having to convert maps at the boundary).
 	ContextKeyLlmTierModelOverrides LLMContextKey = "llm_tier_model_overrides"
+	// ContextKeyLlmConfigSourceOverride pins the entire LLM connection (endpoint,
+	// api-key, api-type, api-version, region) to a specific configured slot for
+	// the request and every sub-agent call it spawns — regardless of the
+	// sub-agent's ContextKeyModelTier. When set, ResolveLLMConfig short-circuits
+	// its normal layered walk and reads all credentials directly from the pinned
+	// slot. Value type: string, format {layer}:{scope}[:{name}] — see
+	// NBQueryConfig.LlmConfigSource for the schema.
+	ContextKeyLlmConfigSourceOverride LLMContextKey = "llm_config_source_override"
 	// ContextKeyDisableCaching disables provider-level prompt caching for the current
 	// request subtree. Set to true for AgentPlannerTypeCustom agents whose LLM calls
 	// embed dynamic content (query text, log data) directly in the system message,
@@ -2063,7 +2108,7 @@ func handleTransientError(rc *retryContext, maxAttempts int) (*llms.ContentRespo
 			// fallback model from the account default.
 			conversationHasExplicitModel := false
 			if rc.conversationId != "" {
-				if p, m, tierOverrides, err := GetConversationOverride(rc.conversationId); err == nil {
+				if p, m, tierOverrides, _, err := GetConversationOverride(rc.conversationId); err == nil {
 					if (p != "" && m != "") || tierOverrides.HasAny() {
 						conversationHasExplicitModel = true
 						ctx.GetLogger().Info("Conversation has explicit model, skipping fallbacks in retry",
@@ -3069,6 +3114,149 @@ func getLLMIntegrationConfig(ctx *security.RequestContext, accountId string, ove
 		slog.Debug("No LLM integration config found (account or tenant)", "accountId", accountId)
 	}
 	return configMap, nil
+}
+
+// getLLMIntegrationsForAccount returns every enabled LLM integration the account
+// can see, one entry per integration, with encrypted values decrypted. Backs the
+// db:<uuid> source ids: GetAllConfiguredModels emits a pickable row per slot per
+// integration, and resolveFromPinnedSource accepts only ids present in this list.
+//
+// Visibility is the union of getLLMIntegrationConfig's two lookups — integrations
+// linked to this cloud account, plus tenant-level integrations not linked to any
+// account. Another tenant's integration can never appear here, which is what makes
+// the pin path tenant-safe without a second authorization check.
+// cloneIntegrations deep-copies cached integrations before they leave the
+// accessor. Slices and maps are reference types, so handing out the cached ones
+// makes every caller a potential cache mutator — and a write while another
+// goroutine reads is a fatal concurrent-map panic, not a subtle bug. Copying
+// here rather than at each call site means callers can't get it wrong, and the
+// cost is trivial: a handful of integrations, read a few times per request.
+func cloneIntegrations(src []llmIntegration) []llmIntegration {
+	out := make([]llmIntegration, len(src))
+	for i, integ := range src {
+		out[i] = llmIntegration{
+			Id:     integ.Id,
+			Name:   integ.Name,
+			Config: make(map[string]string, len(integ.Config)),
+		}
+		for k, v := range integ.Config {
+			out[i].Config[k] = v
+		}
+	}
+	return out
+}
+
+func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string) ([]llmIntegration, error) {
+	if accountId == "" {
+		return nil, nil
+	}
+
+	llmIntegrationsCacheMutex.RLock()
+	entry, found := llmIntegrationsCache[accountId]
+	llmIntegrationsCacheMutex.RUnlock()
+	if found && time.Since(entry.ts) < llmIntegrationConfigCacheTTL {
+		return cloneIntegrations(entry.integrations), nil
+	}
+
+	tenantId, err := security.GetTenantIdFromAccountId(accountId)
+	if err != nil {
+		return nil, fmt.Errorf("getLLMIntegrationsForAccount: failed to resolve tenant for account %s: %w", accountId, err)
+	}
+	// Bind NULL rather than "" when the account has no tenant — tenant_id is a
+	// uuid column and an empty string fails to cast.
+	var tenantParam any
+	if tenantId != "" {
+		tenantParam = tenantId
+	}
+
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("getLLMIntegrationsForAccount: failed to get database manager: %w", err)
+	}
+
+	// i.name and icv.name are aliased apart — the scan below is positional, but
+	// two columns called "name" is a trap worth removing.
+	query := `SELECT i.id AS integration_id, i.name AS integration_name,
+					 icv.name AS config_key, icv.value AS config_value, icv.is_encrypted
+			  FROM integrations i
+			  JOIN integration_config_values icv ON i.id = icv.integration_id
+			  WHERE i."type" = 'llm' AND i.status = 'enabled'
+				AND (EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
+							 WHERE ia.integration_id = i.id AND ia.cloud_account_id = :ac_id)
+					 OR (i.tenant_id = :tenant_id
+						 AND NOT EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
+										 WHERE ia.integration_id = i.id)))`
+	params := map[string]any{"ac_id": accountId, "tenant_id": tenantParam}
+
+	var rows *sqlx.Rows
+	if ctx != nil {
+		rows, err = dbManager.Db.NamedQueryContext(ctx.GetContext(), query, params)
+	} else {
+		rows, err = dbManager.Db.NamedQuery(query, params)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("getLLMIntegrationsForAccount: query failed for account %s: %w", accountId, err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Warn("LLM Integration: unable to close rows", "error", err)
+		}
+	}()
+
+	byId := map[string]*llmIntegration{}
+	for rows.Next() {
+		var id string
+		var integrationName, key, value sql.NullString
+		var isEncrypted sql.NullBool
+		if err := rows.Scan(&id, &integrationName, &key, &value, &isEncrypted); err != nil {
+			return nil, fmt.Errorf("getLLMIntegrationsForAccount: failed to scan row for account %s: %w", accountId, err)
+		}
+		if !key.Valid || key.String == "" {
+			slog.Warn("LLM integration config: row has empty name; skipping", "accountId", accountId, "integrationId", id)
+			continue
+		}
+		plain := value.String
+		if isEncrypted.Valid && isEncrypted.Bool && plain != "" {
+			decrypted, decErr := common.Decrypt(plain)
+			if decErr != nil {
+				slog.Warn("LLM integration config: failed to decrypt encrypted field; skipping row",
+					"error", decErr, "accountId", accountId, "integrationId", id, "key", key.String)
+				continue
+			}
+			plain = decrypted
+		}
+		integ, ok := byId[id]
+		if !ok {
+			integ = &llmIntegration{Id: id, Name: integrationName.String, Config: map[string]string{}}
+			byId[id] = integ
+		}
+		integ.Config[key.String] = plain
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("getLLMIntegrationsForAccount: failed iterating rows for account %s: %w", accountId, err)
+	}
+
+	// Sorted so the model picker's row order is stable across calls.
+	integrations := make([]llmIntegration, 0, len(byId))
+	for _, integ := range byId {
+		integrations = append(integrations, *integ)
+	}
+	sort.Slice(integrations, func(a, b int) bool {
+		if integrations[a].Name != integrations[b].Name {
+			return integrations[a].Name < integrations[b].Name
+		}
+		return integrations[a].Id < integrations[b].Id
+	})
+
+	llmIntegrationsCacheMutex.Lock()
+	llmIntegrationsCache[accountId] = struct {
+		integrations []llmIntegration
+		ts           time.Time
+	}{integrations: integrations, ts: time.Now()}
+	llmIntegrationsCacheMutex.Unlock()
+
+	slog.Debug("Loaded LLM integrations for account", "accountId", accountId, "count", len(integrations))
+	return integrations, nil
 }
 
 // fetchLLMIntegrationConfigByAccount queries LLM integration config linked to a specific cloud account.

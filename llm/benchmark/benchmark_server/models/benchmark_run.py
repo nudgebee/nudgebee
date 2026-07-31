@@ -37,6 +37,19 @@ class BenchmarkRun(Base):
     # (e.g. "k8s" forces kubectl logs). Persisted so rerun/restart honour it.
     log_provider_override = Column(String(32), nullable=True)
 
+    # Which configured LLM slot every call in the run resolves through, as
+    # {layer}:{scope}[:{name}] (env:global, db:<uuid>:tier:summary, ...). Pins
+    # endpoint/api-key/region so two runs are comparable rather than drifting
+    # with whatever the resolver's layered walk picks up.
+    llm_config_source = Column(String(128), nullable=True)
+    # Blanket model for the run. Mutually exclusive with llm_tier_models below,
+    # same rule the conversation row enforces.
+    llm_provider = Column(String(64), nullable=True)
+    llm_model_name = Column(String(128), nullable=True)
+    # Per-tier picks: {"reasoning": {"provider", "model", "llm_config_source"}}.
+    # Lets a run pin only the tier under test and leave the rest on defaults.
+    llm_tier_models = Column(JSONB, nullable=True)
+
     # Timestamps
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(

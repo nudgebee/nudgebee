@@ -59,7 +59,7 @@ func TestReproStaleFollowupAfterDeadWorkerCleanup(t *testing.T) {
 
 	convId, err := dao.SaveConversation("", sessionId, tenantId, accountId, userId, "",
 		"repro", core.ConversationStatusInProgress,
-		core.ConversationSourceUserInvestigation, "", "", nil)
+		core.ConversationSourceUserInvestigation, "", "", nil, "")
 	assert.NoError(t, err)
 
 	humanMsgId, err := dao.SaveConversationMessage("", convId.String(), accountId, userId,

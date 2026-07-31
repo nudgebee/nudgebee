@@ -21,9 +21,17 @@ var ErrUnableToFetchData = errors.New("error: unable to fetch data")
 var ErrUserNotAuthorized = errors.New("error: user is not authoirized to perform this action")
 
 // Lives in tools/core (not agents/core) to avoid a circular import.
+// TierModelPick is one task's choice: which credential serves it and which
+// model to ask for. ConfigSource makes the pair complete — without it a
+// per-tier pick would inherit whatever credential the conversation was pinned
+// to, which is a different choice than the user made.
 type TierModelPick struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	// ConfigSource is the credential this task resolves through. Empty for
+	// picks made before per-tier credentials existed; those fall back to the
+	// conversation-wide pin.
+	ConfigSource string `json:"llm_config_source,omitempty"`
 }
 
 // NBQueryConfig holds structured configuration for agent requests and tool contexts.
@@ -55,10 +63,12 @@ type NBQueryConfig struct {
 	// Query filtering labels (e.g. nb_cloud_account_id for AWS timeseries)
 	Labels map[string]any `json:"labels,omitempty"`
 
-	// Log provider override: outranks LLM_SERVER_LOG_PROVIDER_OVERRIDE and account
-	// routing ("k8s" = kubectl path). Case-sensitive — api-server spells ES "ES".
-	// Sticky within a conversation via MergeFrom's fill-if-zero, like LlmProvider.
-	LogProviderOverride string `json:"log_provider_override,omitempty"`
+	// K8sOrchestratorMode selects a K8s orchestrator variant per-request:
+	// "native" routes to k8s_orchestrator_native (kubectl-first, lean tool set).
+	// Empty defers to config.Config.K8sOrchestratorMode (boot-time default).
+	// Case-insensitive at read time. Sticky within a conversation via
+	// MergeFrom's fill-if-zero, like LlmProvider.
+	K8sOrchestratorMode string `json:"k8s_orchestrator_mode,omitempty"`
 
 	// LLM provider overrides (per-request)
 	LlmProvider  string `json:"llm_provider,omitempty"`
@@ -66,6 +76,26 @@ type NBQueryConfig struct {
 
 	// Mutually exclusive with LlmProvider+LlmModelName above.
 	LlmTierModels map[string]TierModelPick `json:"llm_tier_models,omitempty"`
+
+	// LlmConfigSource pins the LLM call to a specific configured slot so
+	// endpoint/api-key/api-type/api-version/region are deterministic and don't
+	// drift across sub-agent tier context. Format: {layer}:{scope}[:{name}]
+	// where layer = env | db, scope = global | tier | agent. For db-scoped
+	// values, the integration UUID follows: db:<uuid>[:tier:<t>|:agent:<a>].
+	// Higher precedence than LlmProvider+LlmModelName alone — when set, all
+	// downstream credential lookups short-circuit to the pinned slot.
+	// Sticky within a conversation via MergeFrom's fill-if-zero, like LlmProvider.
+	LlmConfigSource string `json:"llm_config_source,omitempty"`
+
+	// LlmConfigReset drops every stored model choice on the conversation —
+	// blanket, per-tier and pin — so the turn and everything after it fall back
+	// to the resolver's normal layered walk. Set by the picker's "Clear all",
+	// which needs a signal distinct from "this turn made no choice": the latter
+	// inherits the stored config, which is the whole point of stickiness.
+	//
+	// One-shot: it applies to the turn that carries it and is never inherited
+	// by later turns (see MergeFrom).
+	LlmConfigReset bool `json:"llm_config_reset,omitempty"`
 
 	// Original user query — preserved across sub-agent boundaries so that
 	// config selection strategies can access natural-language hints (e.g. "dev-aws")
@@ -85,10 +115,10 @@ func (q NBQueryConfig) IsEmpty() bool {
 	return q.EventId == "" && q.RecommendationId == "" && q.Namespace == "" &&
 		q.Workload == "" && q.GitRepo == "" && q.AccountId == "" &&
 		q.WorkflowId == "" && q.ExecutionId == "" && len(q.WorkflowDefinition) == 0 && len(q.Labels) == 0 &&
-		q.CurrentCluster == "" && q.CurrentClusterId == "" && q.LogProviderOverride == "" &&
-		q.LlmProvider == "" && q.LlmModelName == "" && len(q.LlmTierModels) == 0 && len(q.ToolConfigs) == 0 &&
+		q.CurrentCluster == "" && q.CurrentClusterId == "" && q.K8sOrchestratorMode == "" &&
+		q.LlmProvider == "" && q.LlmModelName == "" && len(q.LlmTierModels) == 0 && q.LlmConfigSource == "" && !q.LlmConfigReset && len(q.ToolConfigs) == 0 &&
 		len(q.ClientTools) == 0 && q.Capabilities.IsEmpty() && len(q.ToolConfirmations) == 0 &&
-		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == ""
+		len(q.ToolConfigMetadata) == 0
 }
 
 // MergeFrom copies fields from src into q only when q's field is the zero value.
@@ -130,20 +160,40 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	if src.Labels != nil {
 		q.Labels = lo.Assign(src.Labels, q.Labels)
 	}
-	if q.LogProviderOverride == "" {
-		q.LogProviderOverride = src.LogProviderOverride
+	if q.K8sOrchestratorMode == "" {
+		q.K8sOrchestratorMode = src.K8sOrchestratorMode
 	}
-	if q.LlmProvider == "" {
-		q.LlmProvider = src.LlmProvider
-	}
-	if q.LlmModelName == "" {
-		q.LlmModelName = src.LlmModelName
-	}
-	if q.LogProviderOverride == "" {
-		q.LogProviderOverride = src.LogProviderOverride
-	}
-	if len(q.LlmTierModels) == 0 && len(src.LlmTierModels) > 0 {
-		q.LlmTierModels = src.LlmTierModels
+	// Blanket (provider+model) and per-tier picks are mutually exclusive: the
+	// conversation row enforces it by nulling one when the other is written
+	// (UpdateConversationModelBlanket / UpdateConversationTierOverrides). Fill-
+	// if-zero must respect that, or a turn switching modes inherits the mode it
+	// just replaced and the two fight — a request carrying tier picks would
+	// resurrect the previous turn's blanket model, which then wins for calls the
+	// tier picks were meant to govern.
+	//
+	// So each side only inherits when this request hasn't chosen the other.
+	//
+	// A reset turn inherits none of it — stickiness is exactly what it is
+	// undoing. The flag itself never inherits either, so the turn after a reset
+	// is an ordinary turn against a now-empty config.
+	if !q.LlmConfigReset {
+		if len(q.LlmTierModels) == 0 {
+			if q.LlmProvider == "" {
+				q.LlmProvider = src.LlmProvider
+			}
+			if q.LlmModelName == "" {
+				q.LlmModelName = src.LlmModelName
+			}
+		}
+		if len(q.LlmTierModels) == 0 && src.LlmTierModels != nil && q.LlmProvider == "" && q.LlmModelName == "" {
+			q.LlmTierModels = src.LlmTierModels
+		}
+		// The pinned config source is orthogonal to both — it selects the
+		// credential, not the model — so it inherits regardless of which mode
+		// the turn uses.
+		if q.LlmConfigSource == "" {
+			q.LlmConfigSource = src.LlmConfigSource
+		}
 	}
 	if src.ToolConfigs != nil {
 		q.ToolConfigs = lo.Assign(src.ToolConfigs, q.ToolConfigs)
@@ -177,7 +227,7 @@ type NbToolContext struct {
 	ToolCallId     string
 	AccountPrompt  string
 	// SessionId is the top-level conversation session ID. Propagated from parent
-	// agents so sub-agents (e.g. agent_code_2) can pass it to external services
+	// agents so sub-agents (e.g. code_analyzer) can pass it to external services
 	// like the workspace pod for conversation linking.
 	SessionId string
 	// InheritSkillsFromAgents is the chain of ancestor agent names whose mapped KBs
