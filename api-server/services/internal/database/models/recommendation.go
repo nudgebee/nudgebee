@@ -59,6 +59,12 @@ type RecommendationResolution struct {
 	PRLifecycleState  *string                              `json:"pr_lifecycle_state" mapstructure:"pr_lifecycle_state"  db:"pr_lifecycle_state"`
 	LastPRCheckAt     *time.Time                           `json:"last_pr_check_at" mapstructure:"last_pr_check_at"  db:"last_pr_check_at"`
 	PRFollowupPending *bool                                `json:"pr_followup_pending" mapstructure:"pr_followup_pending"  db:"pr_followup_pending"`
+	// ValueRefreshCount and LastValueRefreshAt bound how often an already-open
+	// pull request may be rewritten when its recommendation moves (#34959): a
+	// cooldown so a workload hovering near the threshold cannot rewrite hourly,
+	// and a cap so one that never settles is eventually left for a human.
+	ValueRefreshCount  int        `json:"value_refresh_count" mapstructure:"value_refresh_count" db:"value_refresh_count"`
+	LastValueRefreshAt *time.Time `json:"last_value_refresh_at" mapstructure:"last_value_refresh_at" db:"last_value_refresh_at"`
 }
 
 const (

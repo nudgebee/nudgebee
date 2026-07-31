@@ -59,6 +59,13 @@ const (
 	RecommendationResolutionStatusFailed     RecommendationResolutionStatus = "Failed"
 )
 
+// RecommendationResolutionResolverTypeAutoOptimize mirrors the api-server
+// resolver type (models.RecommendationResolutionResolverTypeAutoOptimize) for a
+// resolution a scheduled auto optimize raised and therefore owns end to end.
+// Only these pull requests are eligible for an in-place value refresh; one a
+// person raised by hand is left alone (#34959).
+const RecommendationResolutionResolverTypeAutoOptimize = "AutoOptimize"
+
 type RecommendationStatus string
 
 const (

@@ -49,11 +49,13 @@ func (n nearNow) Match(v driver.Value) bool {
 	return delta <= n.tolerance
 }
 
-// TestGetActiveResolutions_TreatsOpenPRWithFailedStatusAsActive covers the exact
-// state that caused the wedge: status Failed, but a real PR URL and a lifecycle
+// TestGetActiveResolutions_TreatsForeignOpenPRAsActive covers a pull request the
+// auto optimize does not own: status Failed, but a real PR URL and a lifecycle
 // the api-server's open-PR guard still counts as open. The optimizer must return
-// it, so the run skips instead of executing into the duplicate.
-func TestGetActiveResolutions_TreatsOpenPRWithFailedStatusAsActive(t *testing.T) {
+// it, so the run skips rather than executing into the duplicate that caused the
+// wedge (#34943). We do not rewrite a pull request a person raised by hand, so
+// for these there is nothing to do but wait.
+func TestGetActiveResolutions_TreatsForeignOpenPRAsActive(t *testing.T) {
 	dao, mock, cleanup := newMockDao(t)
 	defer cleanup()
 
@@ -66,7 +68,7 @@ func TestGetActiveResolutions_TreatsOpenPRWithFailedStatusAsActive(t *testing.T)
 		"pr_iteration_count", "pr_lifecycle_state", "last_pr_check_at",
 	}).AddRow(
 		uuid.New(), recID, "PullRequest", nil, "Failed", prURL,
-		"AutoOptimize", uuid.New(), time.Now().UTC(), nil, "stale sweep",
+		"User", uuid.New(), time.Now().UTC(), nil, "stale sweep",
 		5, "stale", nil,
 	)
 
@@ -83,8 +85,9 @@ func TestGetActiveResolutions_TreatsOpenPRWithFailedStatusAsActive(t *testing.T)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestGetActiveResolutions_QueryCarriesGuardVocabulary pins the arguments so the
-// lifecycle arm cannot be quietly narrowed back to a status-only check.
+// TestGetActiveResolutions_QueryCarriesGuardVocabulary pins the arguments so
+// neither arm can be quietly narrowed: the lifecycle arm back to a status-only
+// check (#34943), or the resolver exclusion away entirely (#34959).
 func TestGetActiveResolutions_QueryCarriesGuardVocabulary(t *testing.T) {
 	dao, mock, cleanup := newMockDao(t)
 	defer cleanup()
@@ -96,6 +99,7 @@ func TestGetActiveResolutions_QueryCarriesGuardVocabulary(t *testing.T) {
 			string(model.RecommendationResolutionStatusInProgress),
 			string(model.RecommendationResolutionTypePullRequest),
 			sqlmock.AnyArg(), // terminal lifecycle states
+			model.RecommendationResolutionResolverTypeAutoOptimize,
 		).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "recommendation_id", "type", "data", "status", "type_reference_id",
@@ -109,6 +113,39 @@ func TestGetActiveResolutions_QueryCarriesGuardVocabulary(t *testing.T) {
 
 	assert.Equal(t, []string{"merged", "closed", "unresolvable"}, model.PRLifecycleTerminalStates,
 		"these mirror the api-server open-PR guard; changing one side without the other reopens #34943")
+}
+
+// TestGetActiveResolutions_ExcludesOwnOpenPRAndInFlightCreation pins the two
+// halves of the #34959 change in the SQL itself:
+//
+//   - an open pull request the auto optimize raised does NOT block, so the run
+//     can recompute values and let the api-server guard decide whether to refresh
+//     that pull request in place;
+//   - a resolution still InProgress with no pull request URL DOES block, because
+//     creation is genuinely in flight and there is nothing to compare yet.
+func TestGetActiveResolutions_ExcludesOwnOpenPRAndInFlightCreation(t *testing.T) {
+	dao, mock, cleanup := newMockDao(t)
+	defer cleanup()
+
+	recID := uuid.New()
+
+	// sqlmock cannot evaluate SQL, so the contract is asserted on the predicate
+	// itself: both clauses must be present, in this order. Dropping either one
+	// silently reverts a behaviour — the first would re-block a refreshable pull
+	// request, the second would let a run act while creation is still in flight.
+	bothClauses := regexp.QuoteMeta(`type_reference_id NOT LIKE 'http%'`) +
+		`(?s).*` + regexp.QuoteMeta(`resolver_type <> `)
+
+	mock.ExpectQuery(bothClauses).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "recommendation_id", "type", "data", "status", "type_reference_id",
+			"resolver_type", "resolver_id", "created_at", "updated_at", "status_message",
+			"pr_iteration_count", "pr_lifecycle_state", "last_pr_check_at",
+		}))
+
+	_, err := dao.GetActiveResolutionsForRecommendations(context.Background(), []uuid.UUID{recID})
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 // TestGetActiveTasks_BoundsScheduledByAge covers the second half: a task left in

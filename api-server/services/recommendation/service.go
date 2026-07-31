@@ -52,7 +52,8 @@ func ListRecommendationResolutions(context *security.RequestContext, rescommenda
 	// Also exclude any stuck > 2 hours (safety mechanism to prevent duplicate creation)
 	r, err := databaseManager.Db.Queryx(`
 		SELECT id, created_at, updated_at, recommendation_id, type, data, status, type_reference_id,
-			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
+			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at,
+			value_refresh_count, last_value_refresh_at
 		FROM recommendation_resolution
 		WHERE recommendation_id = $1
 		AND type = $2
@@ -106,7 +107,8 @@ func findOpenPRResolution(recommendationId string) (*models.RecommendationResolu
 	}
 	row := databaseManager.Db.QueryRowx(`
 		SELECT id, created_at, updated_at, recommendation_id, type, data, status, type_reference_id,
-			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
+			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at,
+			value_refresh_count, last_value_refresh_at
 		FROM recommendation_resolution
 		WHERE recommendation_id = $1
 		AND type = $2
@@ -326,14 +328,30 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 			if existingPR.PRLifecycleState != nil {
 				lifecycleState = *existingPR.PRLifecycleState
 			}
-			ctx.GetLogger().Info("skipping duplicate PR: recommendation already has an open PR",
+
+			// The open PR stays the only PR — but it should not be allowed to go on
+			// proposing numbers that are no longer true. When the recommendation has
+			// moved materially since this PR was raised, rewrite it in place rather
+			// than leaving it stale (#34959). Anything the refresh cannot establish
+			// leaves the PR exactly as it was.
+			decision := maybeRefreshOpenPR(ctx, existingPR, newValuesFromApplyRequest(query), query.RefreshOpenPRChangePct)
+
+			ctx.GetLogger().Info("recommendation already has an open PR",
 				"recommendation_id", r.Id,
 				"existing_resolution_id", existingPR.Id,
 				"pr_url", existingPR.TypeReferenceId,
-				"pr_lifecycle_state", lifecycleState)
+				"pr_lifecycle_state", lifecycleState,
+				"refreshed", decision.Refreshed,
+				"decision", decision.Reason)
+
+			message := fmt.Sprintf("a pull request is already open for this recommendation - %s", existingPR.TypeReferenceId)
+			if decision.Refreshed {
+				message = fmt.Sprintf("%s - %s", existingPR.TypeReferenceId, decision.Reason)
+			}
+
 			return RecommendationApplyResponse{
 				Data: []any{map[string]any{
-					"message": fmt.Sprintf("a pull request is already open for this recommendation - %s", existingPR.TypeReferenceId),
+					"message": message,
 					"pr_url":  existingPR.TypeReferenceId,
 				}},
 				Resolution: *existingPR,
@@ -457,7 +475,8 @@ func RetryRecommendationResolution(ctx *security.RequestContext, query RetryReco
 	// Get the existing resolution
 	var resolution models.RecommendationResolution
 	row := dbms.Db.QueryRowx(`SELECT id, created_at, updated_at, recommendation_id, type, data, status, type_reference_id,
-			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
+			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at,
+			value_refresh_count, last_value_refresh_at
 		FROM recommendation_resolution WHERE id = $1`, query.ResolutionId)
 	if err := row.StructScan(&resolution); err != nil {
 		ctx.GetLogger().Error("error getting recommendation resolution", "error", err)
@@ -601,7 +620,8 @@ func RetryRecommendationResolution(ctx *security.RequestContext, query RetryReco
 
 	// Refresh resolution data
 	row = dbms.Db.QueryRowx(`SELECT id, created_at, updated_at, recommendation_id, type, data, status, type_reference_id,
-			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
+			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at,
+			value_refresh_count, last_value_refresh_at
 		FROM recommendation_resolution WHERE id = $1`, resolution.Id)
 	_ = row.StructScan(&resolution)
 

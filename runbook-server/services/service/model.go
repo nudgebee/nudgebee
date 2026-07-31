@@ -369,4 +369,16 @@ type RecommendationResolutionRequest struct {
 	ProviderConfig   ProviderConfig `json:"provider_config"`
 	ResolverType     string         `json:"resolver_type"`
 	ResolverID       string         `json:"resolver_id"`
+	// RefreshOpenPRChangePct maps a resource dimension ("cpu", "memory") to the
+	// percentage change that makes an already-open pull request's values stale
+	// enough to rewrite in place rather than leave alone (#34959).
+	//
+	// This carries the auto optimize rule's own trigger threshold, so there is one
+	// number a user has to reason about rather than a second hidden one. Per
+	// dimension because the rule allows cpu and memory to differ; collapsing them
+	// to a single value would silently apply one dimension's threshold to the other.
+	//
+	// Empty or absent means never refresh, which is the behaviour for every caller
+	// that does not opt in.
+	RefreshOpenPRChangePct map[string]float64 `json:"refresh_open_pr_change_pct,omitempty"`
 }
