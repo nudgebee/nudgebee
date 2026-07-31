@@ -469,7 +469,8 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// redundantly reach the same conclusion internally and no-op.
 	imagesUnsupportedByModel := false
 	if len(request.Images) > 0 {
-		if _, ok := resolveVisionCapableTier(config.Config.LlmProvider); !ok {
+		provider, model := resolveEffectiveVisionProvider(ctx, request.AccountId, agent.GetName(), request.ConversationId)
+		if _, ok := resolveVisionCapableTier(provider, model); !ok {
 			imagesUnsupportedByModel = true
 		}
 	}

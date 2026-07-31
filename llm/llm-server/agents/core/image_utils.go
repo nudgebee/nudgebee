@@ -394,11 +394,28 @@ func AppendImagesToLastHumanMessage(mcList []llms.MessageContent, images []Image
 // Prefers the lite model (cheaper/faster) when it's vision-capable; falls
 // back to the main model. ok is false if neither model supports vision —
 // callers should skip the vision call entirely in that case.
-func resolveVisionCapableTier(provider string) (useLite bool, ok bool) {
+func resolveVisionCapableTier(provider, model string) (useLite bool, ok bool) {
 	if liteModel := config.Config.LlmModelLite; liteModel != "" && IsVisionCapableModel(provider, liteModel) {
 		return true, true
 	}
-	return false, IsVisionCapableModel(provider, config.Config.LlmModel)
+	return false, IsVisionCapableModel(provider, model)
+}
+
+// resolveEffectiveVisionProvider returns the provider/model that will actually
+// generate this request's response — honoring any per-request or
+// conversation-level override via ResolveLLMConfig — falling back to the raw
+// global default only if resolution errors. The vision-capability gate must
+// check this, not config.Config.LlmProvider/LlmModel directly: a conversation
+// can be pinned to an explicitly-chosen vision-capable model while the
+// process-wide default is a different (non-vision) fallback model, and
+// checking the global default alone wrongly blocks image attachments in that
+// case even though the model that will actually handle the request supports
+// them.
+func resolveEffectiveVisionProvider(ctx *security.RequestContext, accountId, agentName, conversationId string) (provider, model string) {
+	if res, err := ResolveLLMConfig(ctx, accountId, agentName, conversationId); err == nil {
+		return res.Provider, res.Model
+	}
+	return config.Config.LlmProvider, config.Config.LlmModel
 }
 
 // --- Image Context Extraction (Pre-Planner) ---
@@ -448,12 +465,12 @@ func ExtractImageContext(ctx *security.RequestContext, request NBAgentRequest) s
 		return request.Query
 	}
 
-	provider := config.Config.LlmProvider
+	provider, model := resolveEffectiveVisionProvider(ctx, request.AccountId, "", request.ConversationId)
 
-	useLite, ok := resolveVisionCapableTier(provider)
+	useLite, ok := resolveVisionCapableTier(provider, model)
 	if !ok {
 		ctx.GetLogger().Debug("image: skipping context extraction, model not vision-capable",
-			"provider", provider, "model", config.Config.LlmModel)
+			"provider", provider, "model", model)
 		return request.Query
 	}
 
@@ -617,9 +634,9 @@ Be factual and specific. Do not speculate beyond what is visible. Keep the descr
 // generateImageDescription uses a lightweight LLM call to describe a single image.
 // Returns an empty string if the description cannot be generated or the model lacks vision.
 func generateImageDescription(ctx *security.RequestContext, accountId, conversationId, messageId, userId string, img ImageAttachment) string {
-	provider := config.Config.LlmProvider
+	provider, model := resolveEffectiveVisionProvider(ctx, accountId, "", conversationId)
 
-	useLite, ok := resolveVisionCapableTier(provider)
+	useLite, ok := resolveVisionCapableTier(provider, model)
 	if !ok {
 		ctx.GetLogger().Debug("image: skipping description generation, no vision-capable model available")
 		return ""
