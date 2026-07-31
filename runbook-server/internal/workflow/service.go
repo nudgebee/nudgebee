@@ -3344,6 +3344,9 @@ func convertSchemaPropertiesToMapAny(properties map[string]types.Property) map[s
 		if v.SubType != "" {
 			propMap["sub_type"] = v.SubType
 		}
+		if len(v.SubTypes) > 0 {
+			propMap["sub_types"] = v.SubTypes
+		}
 		if len(v.Options) > 0 {
 			propMap["options"] = v.Options
 		}

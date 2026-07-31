@@ -34,6 +34,7 @@ export interface SchemaProperty {
   integration_type?: string;
   is_encrypted?: boolean;
   sub_type?: string;
+  sub_types?: string[];
   schema?: {
     properties?: Record<string, SchemaProperty>;
   };
@@ -127,6 +128,22 @@ export const getCodeLanguage = (fieldName: string, subType?: string): 'bash' | '
   return 'bash';
 };
 
+// Narrow a ticket-integration option list to the integration types a field
+// accepts. Backends declare that as `sub_type` (single, e.g. github) or
+// `sub_types` (a set, e.g. the incident-only tasks that take pagerduty /
+// zenduty). Without a declaration every configured ticket integration is
+// offered, which is how unsupported providers used to reach the action and
+// fail at execution time.
+export const filterTicketOptionsBySubType = <T extends { tool?: string }>(
+  options: T[],
+  fieldSchema: { sub_type?: string; sub_types?: string[] }
+): T[] => {
+  const allowed = fieldSchema.sub_types?.length ? fieldSchema.sub_types : fieldSchema.sub_type ? [fieldSchema.sub_type] : [];
+  if (allowed.length === 0) return options;
+  const allowedSet = new Set(allowed.map((t) => t.toLowerCase()));
+  return options.filter((o) => allowedSet.has((o.tool || '').toLowerCase()));
+};
+
 // Utility functions
 export const formatFieldLabel = (fieldName: string): string => {
   return fieldName.charAt(0).toUpperCase() + fieldName.slice(1).replace(/_/g, ' ');
@@ -209,7 +226,7 @@ export const getDropdownOptionsForField = (
     cloudAccounts: { label: string; value: string; cloud_provider?: string; account_type?: string }[];
     integrations: { label: string; value: string }[];
     notifications: { label: string; value: string }[];
-    ticketConfigurations: { label: string; value: string; icon?: any }[];
+    ticketConfigurations: { label: string; value: string; tool?: string; icon?: any }[];
     namespaces: { label: string; value: string }[];
     resourceTypes: { label: string; value: string }[];
     workloadKinds: { label: string; value: string }[];
@@ -226,7 +243,7 @@ export const getDropdownOptionsForField = (
     return data.notifications;
   }
   if (fieldSchema.type === 'ticket') {
-    return data.ticketConfigurations;
+    return filterTicketOptionsBySubType(data.ticketConfigurations, fieldSchema);
   }
   if (fieldName.toLowerCase() === 'namespace') {
     return data.namespaces;

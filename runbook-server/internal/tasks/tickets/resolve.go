@@ -97,6 +97,7 @@ func (t *TicketsResolveTask) InputSchema() *types.Schema {
 				Description: "Incident management integration (PagerDuty or ZenDuty only)",
 				Required:    true,
 				Order:       2,
+				SubTypes:    incidentPlatforms,
 			},
 			"ticket_id": {
 				Type:        types.PropertyTypeString,

@@ -3,6 +3,8 @@ package tickets
 import (
 	"testing"
 
+	"nudgebee/runbook/internal/tasks/types"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -59,6 +61,27 @@ func TestExtractRequiredStringSlice(t *testing.T) {
 			}
 			assert.NoError(t, err)
 			assert.Equal(t, tc.expected, got)
+		})
+	}
+}
+
+// The incident-only tasks must advertise their supported platforms on the
+// integration_id field so the workflow UI can filter the dropdown; without it
+// users could pick GitHub/GitLab/Jira and only find out at execution time
+// (nudgebee-enterprise#34946).
+func TestIncidentTasksDeclareSupportedPlatforms(t *testing.T) {
+	tasks := map[string]interface{ InputSchema() *types.Schema }{
+		"acknowledge": &TicketsAcknowledgeTask{},
+		"escalate":    &TicketsEscalateTask{},
+		"resolve":     &TicketsResolveTask{},
+	}
+
+	for name, task := range tasks {
+		t.Run(name, func(t *testing.T) {
+			prop, ok := task.InputSchema().Properties["integration_id"]
+			assert.True(t, ok, "integration_id must be present in the input schema")
+			assert.Equal(t, types.PropertyTypeTicket, prop.Type)
+			assert.Equal(t, incidentPlatforms, prop.SubTypes)
 		})
 	}
 }
