@@ -689,6 +689,7 @@ const LogQueryBuilderAutocomplete = ({
 
   useEffect(() => {
     if (!activeSelectedMetric) return;
+    let cancelled = false;
     const fetchLabels = async () => {
       if (
         (logProvider === 'prometheus' ||
@@ -707,13 +708,15 @@ const LogQueryBuilderAutocomplete = ({
             return;
           }
           const responseAttributes = (response?.data?.data?.metrics_list_labels || []).filter((l) => l !== '__name__');
-          if (responseAttributes.length > 0) {
+          if (!cancelled && responseAttributes.length > 0) {
             setLabels(responseAttributes);
           }
         } catch (err) {
           snackbar.error(`Failed to fetch labels - ${err.message}`);
         } finally {
-          setLoadingLabels(false);
+          if (!cancelled) {
+            setLoadingLabels(false);
+          }
         }
       } else if (logProvider == 'ES' && providerType == 'metrics') {
         try {
@@ -724,13 +727,15 @@ const LogQueryBuilderAutocomplete = ({
             return;
           }
           const responseAttributes = response?.data?.data?.metrics_list_labels || [];
-          if (responseAttributes.length > 0) {
+          if (!cancelled && responseAttributes.length > 0) {
             setLabels(responseAttributes);
           }
         } catch (err) {
           snackbar.error(`Failed to fetch labels - ${err.message}`);
         } finally {
-          setLoadingLabels(false);
+          if (!cancelled) {
+            setLoadingLabels(false);
+          }
         }
       } else if (logProvider == 'ES') {
         try {
@@ -741,18 +746,26 @@ const LogQueryBuilderAutocomplete = ({
             return;
           }
           const responseAttributes = response?.data?.data?.logs_list_labels || [];
-          if (responseAttributes.length > 0) {
+          if (!cancelled && responseAttributes.length > 0) {
             setLabels(responseAttributes);
           }
         } catch (err) {
           snackbar.error(`Failed to fetch labels - ${err.message}`);
         } finally {
-          setLoadingLabels(false);
+          if (!cancelled) {
+            setLoadingLabels(false);
+          }
         }
       }
     };
     fetchLabels();
-  }, [logProvider, activeBlockId, activeSelectedMetric]);
+    return () => {
+      cancelled = true;
+    };
+    // accountId is the fetch argument and providerType picks the branch, so both
+    // must re-run the effect. The two sibling label effects in this file already
+    // key on accountId; this one was the outlier.
+  }, [logProvider, accountId, providerType, activeBlockId, activeSelectedMetric]);
 
   useEffect(() => {
     if (

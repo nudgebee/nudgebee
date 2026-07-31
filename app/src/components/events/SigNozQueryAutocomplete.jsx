@@ -45,6 +45,7 @@ const SigNozQueryAutocomplete = ({ accountId, onQueryChange, queryItems }) => {
   const chipIdCounter = useRef(0);
 
   useEffect(() => {
+    let cancelled = false;
     observability
       .fetchLogLabels({
         account_id: accountId,
@@ -52,11 +53,16 @@ const SigNozQueryAutocomplete = ({ accountId, onQueryChange, queryItems }) => {
       })
       .then((res) => {
         const responseAttributes = res?.data?.data?.logs_list_labels || [];
-        if (responseAttributes.length > 0) {
+        if (!cancelled && responseAttributes.length > 0) {
           setLabels(responseAttributes);
         }
       });
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+    // accountId gates the fetch itself — without it the effect kept the labels of
+    // whichever account was mounted first when the user switched accounts.
+  }, [accountId]);
 
   const mockOperators = [
     { value: '=', label: '= (equals)', description: 'Exact match' },
