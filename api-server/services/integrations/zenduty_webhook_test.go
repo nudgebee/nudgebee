@@ -101,7 +101,7 @@ func newTestCtx() *security.RequestContext {
 // Test 1: Grafana-via-Zenduty (matches the bug-report payload shape).
 // Locks in the fix for all four reported bugs:
 //   - subject_name no longer leaks "Sample Service"
-//   - fingerprint populated from IncidentKey
+//   - fingerprint derived from the alert's identity, not from IncidentKey
 //   - RuleId derived from alertname (not the per-incident UniqueID)
 //   - inner Alertmanager labels reach Investigation.Labels
 func TestZenduty_GrafanaRouted_FixesAllFourBugs(t *testing.T) {
@@ -118,8 +118,13 @@ func TestZenduty_GrafanaRouted_FixesAllFourBugs(t *testing.T) {
 	assert.Equal(t, "DatasourceNoData", inv.RuleId, "RuleId should be alertname, not per-incident UniqueID")
 	assert.Equal(t, "DatasourceNoData", inv.RuleName)
 
-	// Bug 2: Fingerprint populated from Zenduty's stable IncidentKey
-	assert.Equal(t, "ZDFAKEKEY00000000001", inv.Fingerprint)
+	// Bug 2: Fingerprint derived from the alert's identity. IncidentKey is NOT
+	// used — Zenduty auto-generates it per incident, so keying on it gave every
+	// repeat firing its own occurrence chain.
+	assert.NotEqual(t, "ZDFAKEKEY00000000001", inv.Fingerprint, "IncidentKey must not become the fingerprint")
+	assert.Equal(t, core.CanonicalFingerprint(
+		"zenduty", "DatasourceNoData", got.EventSubjectNamespace, got.EventSubjectName,
+	), inv.Fingerprint)
 
 	// Bug 4: Inner Alertmanager labels reach Investigation.Labels
 	assert.Equal(t, "DatasourceNoData", inv.Labels["alertname"])
@@ -194,8 +199,10 @@ func TestZenduty_PrometheusRouted_ResolvesSubjectFromLabels(t *testing.T) {
 	assert.Equal(t, "KubePodCrashLooping", inv.RuleId)
 	assert.Equal(t, "KubePodCrashLooping", inv.RuleName)
 
-	// Fingerprint from IncidentKey
-	assert.Equal(t, "prom-KubePodCrashLooping-checkout-api", inv.Fingerprint)
+	// Fingerprint from the resolved alert identity, not IncidentKey
+	assert.Equal(t, core.CanonicalFingerprint(
+		"zenduty", "KubePodCrashLooping", got.EventSubjectNamespace, got.EventSubjectName,
+	), inv.Fingerprint)
 
 	// Severity refinement: critical → High
 	assert.Equal(t, event.EventPriorityHigh, inv.Severity)
@@ -227,9 +234,9 @@ func TestZenduty_CustomPayload_PreventsServiceNameLeak(t *testing.T) {
 	// Zenduty grouping safely preserved under nb_ prefix
 	assert.Equal(t, "Database Team", inv.Labels["nb_zenduty_service_name"])
 
-	// Fallback values when summary has no alertname/IncidentKey
+	// Fallback values when summary has no alertname and no subject resolved
 	assert.Equal(t, "ZD-999", inv.RuleId, "falls back to UniqueID when alertname/rulename absent")
-	assert.Equal(t, "ZD-999", inv.Fingerprint, "falls back to UniqueID when IncidentKey empty")
+	assert.Equal(t, "ZD-999", inv.Fingerprint, "falls back to UniqueID when there is no alert identity and no IncidentKey")
 
 	// Title preserved (no annotation_summary to override with)
 	assert.Equal(t, "Disk full on prod-db-1", got.EventTitle)
@@ -287,4 +294,107 @@ func TestZenduty_DedupStableAcrossStatusTransitions(t *testing.T) {
 	// Status should still differ correctly
 	assert.Equal(t, event.EventStatusFiring, triggered[0].Investigation.Status)
 	assert.Equal(t, event.EventStatusResolved, resolved[0].Investigation.Status)
+}
+
+// Test 5: Two separate Zenduty incidents for the same underlying alert must share
+// a fingerprint. This is the production shape: Zenduty mints a fresh unique_id AND
+// a fresh random incident_key for every incident it raises, so the pair below is
+// exactly what two firings of one recurring alert look like on the wire. Keying on
+// incident_key put each firing in its own occurrence chain — 81 firings of
+// HighP95Latency on one workload came through as 81 distinct fingerprints.
+func TestZenduty_RepeatFiringsShareFingerprint(t *testing.T) {
+	zd := newZendutyIntegration(t)
+	ctx := newTestCtx()
+	acct := os.Getenv("TEST_ACCOUNT")
+
+	secondFiring := strings.NewReplacer(
+		`"unique_id": "ZD-PROM-99"`, `"unique_id": "ZD-PROM-100"`,
+		`"incident_key": "prom-KubePodCrashLooping-checkout-api"`, `"incident_key": "aBcDeFgHiJkLmNoPqRsTuV"`,
+	).Replace(zendutyPrometheusPayload)
+
+	first, err := zd.ProcessEventWebook(ctx, []core.IntegrationConfigValue{}, acct, zendutyPrometheusPayload)
+	assert.NoError(t, err)
+	assert.Len(t, first, 1)
+
+	second, err := zd.ProcessEventWebook(ctx, []core.IntegrationConfigValue{}, acct, secondFiring)
+	assert.NoError(t, err)
+	assert.Len(t, second, 1)
+
+	assert.Equal(t, first[0].Investigation.Fingerprint, second[0].Investigation.Fingerprint,
+		"repeat firings of the same alert must land in one occurrence chain")
+	assert.NotEqual(t, "aBcDeFgHiJkLmNoPqRsTuV", second[0].Investigation.Fingerprint,
+		"a Zenduty-generated incident_key must never become the fingerprint")
+}
+
+// Test 6: IncidentKey survives as a fallback for the shape where nothing else
+// identifies the alert — no alertname, no rulename, no resolvable subject.
+// A caller that pushes through Zenduty's Events API supplies its own stable
+// incident_key there, and it beats the per-incident UniqueID.
+func TestZenduty_NoAlertIdentity_FallsBackToIncidentKey(t *testing.T) {
+	zd := newZendutyIntegration(t)
+
+	payload := strings.Replace(zendutyCustomPayload,
+		`"unique_id": "ZD-999",`,
+		`"unique_id": "ZD-999", "incident_key": "caller-supplied-disk-full-prod-db-1",`, 1)
+
+	out, err := zd.ProcessEventWebook(newTestCtx(), []core.IntegrationConfigValue{}, os.Getenv("TEST_ACCOUNT"), payload)
+	assert.NoError(t, err)
+	assert.Len(t, out, 1)
+
+	assert.Equal(t, "", out[0].EventSubjectName, "guard: this payload must not resolve a subject")
+	assert.Equal(t, "caller-supplied-disk-full-prod-db-1", out[0].Investigation.Fingerprint)
+}
+
+// Test 7: the dedup-key precedence, exercised directly. The webhook unit tests
+// above cannot reach tier 1 — nb_alert_fingerprint only appears once the raw
+// payload has been recovered from Zenduty's API, which needs a live integration.
+func TestZendutyFingerprint_Precedence(t *testing.T) {
+	amFP := map[string]string{"nb_alert_fingerprint": "000fd06b1274d965"}
+
+	t.Run("upstream Alertmanager fingerprint wins", func(t *testing.T) {
+		assert.Equal(t, "000fd06b1274d965",
+			zendutyFingerprint(amFP, "HighP95Latency", "nudgebee", "cloud-collector-server", "zd-key", "zd-uid"))
+	})
+
+	// Two sibling alerts on ONE workload, told apart only by a label the resolved
+	// subject cannot see. The upstream fingerprint keeps them in separate chains;
+	// the canonical fallback below cannot, which is exactly why it is the fallback.
+	t.Run("sibling alerts on one workload stay apart", func(t *testing.T) {
+		detect := zendutyFingerprint(map[string]string{"nb_alert_fingerprint": "b8d86a653803d8e0"},
+			"NBLLMEgressFilterFlagging", "nudgebee", "llm-server", "", "zd-1")
+		redacted := zendutyFingerprint(map[string]string{"nb_alert_fingerprint": "bd0d9149542ad5f3"},
+			"NBLLMEgressFilterFlagging", "nudgebee", "llm-server", "", "zd-2")
+		assert.NotEqual(t, detect, redacted)
+
+		merged := zendutyFingerprint(nil, "NBLLMEgressFilterFlagging", "nudgebee", "llm-server", "", "zd-1")
+		assert.Equal(t, merged,
+			zendutyFingerprint(nil, "NBLLMEgressFilterFlagging", "nudgebee", "llm-server", "", "zd-2"),
+			"documents the known coarseness of the no-payload fallback")
+	})
+
+	t.Run("canonical when no payload was recovered", func(t *testing.T) {
+		assert.Equal(t,
+			core.CanonicalFingerprint("zenduty", "HighP95Latency", "nudgebee", "cloud-collector-server"),
+			zendutyFingerprint(nil, "HighP95Latency", "nudgebee", "cloud-collector-server", "zd-key", "zd-uid"))
+	})
+
+	t.Run("repeat firings share a key at every tier", func(t *testing.T) {
+		// Same alert, two incidents: Zenduty mints a fresh unique_id and a fresh
+		// random incident_key for each. Neither may leak into the key.
+		a := zendutyFingerprint(amFP, "HighP95Latency", "nudgebee", "svc", "key-a", "uid-a")
+		b := zendutyFingerprint(amFP, "HighP95Latency", "nudgebee", "svc", "key-b", "uid-b")
+		assert.Equal(t, a, b)
+
+		c := zendutyFingerprint(nil, "HighP95Latency", "nudgebee", "svc", "key-a", "uid-a")
+		d := zendutyFingerprint(nil, "HighP95Latency", "nudgebee", "svc", "key-b", "uid-b")
+		assert.Equal(t, c, d)
+	})
+
+	t.Run("incident_key only without any alert identity", func(t *testing.T) {
+		assert.Equal(t, "zd-key", zendutyFingerprint(nil, "", "", "", "zd-key", "zd-uid"))
+	})
+
+	t.Run("unique_id is the last resort", func(t *testing.T) {
+		assert.Equal(t, "zd-uid", zendutyFingerprint(nil, "", "", "", "", "zd-uid"))
+	})
 }

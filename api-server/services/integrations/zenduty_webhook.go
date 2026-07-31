@@ -314,16 +314,12 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	// collated incident. Cached per incident; fails soft on any API error.
 	enrichWithZendutyAPI(sc, &alert, incident.UniqueID, incident.Summary)
 
-	// Fingerprint: prefer Zenduty's stable IncidentKey (its documented dedup key).
-	// When absent — the norm, since the parser does not populate it — leave it
-	// empty here and derive a canonical fingerprint from the alert's identity
-	// after subject resolution below. Keying on the per-incident UniqueID (the
-	// previous fallback) fragments repeat incidents for the same alert into
-	// separate occurrence chains; finding_id already carries UniqueID, so rows are
-	// unaffected either way.
-	if incident.IncidentKey != "" {
-		alert.Fingerprint = incident.IncidentKey
-	}
+	// Fingerprint is derived after subject resolution below — see the block that
+	// calls core.CanonicalFingerprint. Nothing Zenduty puts on the incident is a
+	// usable dedup key: incident_key reads like one but Zenduty auto-generates it
+	// per incident (a second random id alongside unique_id) whenever the upstream
+	// integration does not supply its own, so keying on it fragmented every repeat
+	// firing into its own occurrence chain.
 
 	// RuleId / RuleName: derive from the extracted alertname so multiple firings
 	// of the same underlying rule share an aggregation_key. Reads from alert.Labels
@@ -425,28 +421,20 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		}
 	}
 
-	// If Zenduty gave no stable dedup key (IncidentKey), derive a canonical
-	// fingerprint from the alert's identity now that the subject is resolved, so
-	// repeat incidents for the same alert collapse into one occurrence chain
-	// instead of fragmenting on the per-incident UniqueID. Use the stable alert
-	// name (not RuleId, which itself falls back to UniqueID). Require a real
-	// alert-type or subject to avoid over-merging distinct alerts; otherwise keep
-	// the per-incident id.
+	// Pick the dedup key now that the subject is resolved.
 	if parsedPayload.Investigation.Fingerprint == "" {
 		alertType := alertname
 		if alertType == "" {
 			alertType = rulename
 		}
-		if alertType != "" || parsedPayload.EventSubjectName != "" {
-			parsedPayload.Investigation.Fingerprint = core.CanonicalFingerprint(
-				"zenduty",
-				alertType,
-				parsedPayload.EventSubjectNamespace,
-				parsedPayload.EventSubjectName,
-			)
-		} else {
-			parsedPayload.Investigation.Fingerprint = incident.UniqueID
-		}
+		parsedPayload.Investigation.Fingerprint = zendutyFingerprint(
+			parsedPayload.Investigation.Labels,
+			alertType,
+			parsedPayload.EventSubjectNamespace,
+			parsedPayload.EventSubjectName,
+			incident.IncidentKey,
+			incident.UniqueID,
+		)
 	}
 
 	// Auto-learn: save confirmed title → service mapping for future LLM prompts.
@@ -465,6 +453,41 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 
 	parsedPayload.AccountId = accountId
 	return []core.EventIncomingWebhook{parsedPayload}, nil
+}
+
+// zendutyFingerprint picks the dedup key that decides which occurrence chain a
+// Zenduty alert joins, in descending order of how well each candidate identifies
+// "the same alert firing again".
+//
+//  1. The upstream Alertmanager fingerprint, recovered from the raw payload by
+//     enrichWithZendutyAPI. This is the monitoring system's own per-series dedup
+//     key and needs no interpretation from us: it separates the label sets that
+//     are genuinely different alerts (agent=code_analyzer vs
+//     agent=k8s_orchestrator_lean, status=detect vs status=redacted) and holds
+//     steady across firings of one series. Used bare rather than folded into a
+//     nudgebee-namespaced hash so the same alert reaching us through more than one
+//     transport lands in one chain.
+//  2. A canonical key over the alert's resolved identity, for alerts that arrived
+//     without a recoverable payload (a non-Alertmanager integration, or the
+//     payload endpoint failing). Coarser than (1) — it cannot see the labels that
+//     distinguish sibling alerts on one workload — but stable, which is the point.
+//  3. incident_key, only when nothing above identifies the alert. Zenduty
+//     auto-generates it per incident, so it is worthless as a dedup key for
+//     incidents Zenduty raised itself; it is a real key only when the caller
+//     supplied one through Zenduty's Events API.
+//  4. The per-incident unique_id — a guaranteed-unique last resort, which means no
+//     grouping at all.
+func zendutyFingerprint(labels map[string]string, alertType, namespace, subject, incidentKey, uniqueID string) string {
+	if fp := labels["nb_alert_fingerprint"]; fp != "" {
+		return fp
+	}
+	if alertType != "" || subject != "" {
+		return core.CanonicalFingerprint("zenduty", alertType, namespace, subject)
+	}
+	if incidentKey != "" {
+		return incidentKey
+	}
+	return uniqueID
 }
 
 // mapZenDutyStatusToString converts ZenDuty numeric status to Nudgebee standard status.
