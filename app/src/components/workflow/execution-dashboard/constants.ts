@@ -13,15 +13,18 @@ export const EXECUTION_STATUS_OPTIONS = [
 
 export const TABLE_HEADERS = [
   { name: 'Date/Time', width: '12%' },
-  { name: 'Automation', width: '18%' },
+  { name: 'Automation', width: '21%' },
   // A page spans accounts now, and automation names are only unique within
   // one — without this column two rows can read identically.
-  { name: 'Account', width: '11%' },
-  { name: 'Execution ID', width: '10%' },
-  { name: 'Status', width: '9%' },
-  { name: 'User', width: '12%' },
+  { name: 'Account', width: '12%' },
+  { name: 'Status', width: '10%' },
+  // Carries the trigger as a second line: how a run started is only ever read
+  // together with who started it, and it does not earn a column of its own.
+  { name: 'User', width: '13%' },
   { name: 'Duration', width: '8%' },
-  'Details',
+  // Failures only. A success has no error, and putting the trigger type here
+  // as a stand-in made the column read as two unrelated things.
+  'Error',
 ];
 
 /**

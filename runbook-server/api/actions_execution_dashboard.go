@@ -25,7 +25,7 @@ func (s *Server) handleListAccountExecutions(c *gin.Context, sc *security.Reques
 
 	req := model.ListAccountExecutionsRequest{
 		ExecutionDashboardFilter: filter,
-		// Default on: the "Details" column is meant to explain a failure
+		// Default on: the "Error" column is meant to explain a failure
 		// without a second click. Callers that only need rows can opt out.
 		IncludeFailureReason: true,
 	}

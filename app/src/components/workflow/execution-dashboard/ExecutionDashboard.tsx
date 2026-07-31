@@ -9,6 +9,7 @@ import CustomTable from '@shared/tables/CustomTable';
 import Datetime from '@shared/format/Datetime';
 import { Label } from '@ui/Label';
 import { Button } from '@ui/Button';
+import Tooltip from '@ui/Tooltip';
 import { ds } from '@utils/colors';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import type { AccountExecutionItem } from '@api1/workflow/types';
@@ -17,9 +18,19 @@ import useExecutionDashboard from './useExecutionDashboard';
 import ExecutionSummaryCards from './ExecutionSummaryCards';
 import MostFailedAutomations from './MostFailedAutomations';
 import ExecutionDetailDrawer from './ExecutionDetailDrawer';
-import { EXECUTION_STATUS_OPTIONS, MAX_PAGEABLE_ROWS, TABLE_HEADERS, executionUserLabel } from './constants';
+import { EXECUTION_STATUS_OPTIONS, TABLE_HEADERS, executionUserLabel } from './constants';
 
 const TABLE_ID = 'execution-dashboard-table';
+
+/** Two lines of error text, then ellipsis — the rest lives in the tooltip. */
+const ERROR_CELL_CLAMP = {
+  fontSize: 'var(--ds-text-small)',
+  display: '-webkit-box',
+  WebkitBoxOrient: 'vertical' as const,
+  WebkitLineClamp: 2,
+  overflow: 'hidden',
+  wordBreak: 'break-word' as const,
+};
 
 const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
@@ -43,6 +54,7 @@ const ExecutionDashboard: React.FC = () => {
     changePage,
     executions,
     totalRows,
+    pageableRows,
     loading,
     error,
     aggregate,
@@ -63,7 +75,13 @@ const ExecutionDashboard: React.FC = () => {
   const tableData = useMemo(
     () =>
       executions.map((execution) => [
-        { component: <Datetime value={execution.start_time} baseDate={new Date()} /> },
+        {
+          component: <Datetime value={execution.start_time} baseDate={new Date()} />,
+          // Merged into the object CustomTable hands to onRowClick. Lives on
+          // the first cell now that the Execution ID column is gone — the id
+          // itself is drawer-only detail, not something to scan a column of.
+          drilldownQuery: { executionId: execution.id },
+        },
         {
           // The builder needs an account, and a visibility record written
           // before nb_account_id existed carries none — link only when the row
@@ -129,33 +147,36 @@ const ExecutionDashboard: React.FC = () => {
             </Box>
           ),
         },
-        {
-          component: (
-            <Typography
-              title={execution.id}
-              sx={{ fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)' }}
-            >
-              {execution.id.slice(0, 8)}
-            </Typography>
-          ),
-          // Merged into the object CustomTable hands to onRowClick.
-          drilldownQuery: { executionId: execution.id },
-        },
         { component: <Label text={execution.status.toUpperCase()} tone={getStatusTone(execution.status)} /> },
         {
           component: (
-            <Typography
-              title={executionUserLabel(execution.user_name, execution.triggered_by)}
-              sx={{
-                fontSize: 'var(--ds-text-small)',
-                color: 'var(--ds-gray-700)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {executionUserLabel(execution.user_name, execution.triggered_by)}
-            </Typography>
+            <Box sx={{ minWidth: 0 }}>
+              <Typography
+                title={executionUserLabel(execution.user_name, execution.triggered_by)}
+                sx={{
+                  fontSize: 'var(--ds-text-small)',
+                  color: 'var(--ds-gray-700)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {executionUserLabel(execution.user_name, execution.triggered_by)}
+              </Typography>
+              {/* How the run started. Used to sit in the Details column, where
+                  it read as an error's peer on rows that had no error. */}
+              <Typography
+                sx={{
+                  fontSize: 'var(--ds-text-caption)',
+                  color: 'var(--ds-gray-500)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {execution.trigger_type || 'Manual'}
+              </Typography>
+            </Box>
           ),
         },
         {
@@ -166,39 +187,45 @@ const ExecutionDashboard: React.FC = () => {
           ),
         },
         {
-          component: (
-            <Typography
-              title={execution.failure_reason || execution.trigger_type || ''}
-              sx={{
-                fontSize: 'var(--ds-text-small)',
-                color: execution.failure_reason ? 'var(--ds-red-600)' : 'var(--ds-gray-600)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {execution.failure_reason || execution.trigger_type || 'Manual'}
-            </Typography>
+          // Failures only. Errors run long — clamp to two lines, put the whole
+          // message in a tooltip, and leave the full text (with stack) to the
+          // drawer rather than letting one row stretch the table.
+          component: execution.failure_reason ? (
+            <Tooltip title={execution.failure_reason} variant='explainer' desc='Open the row for the full error.'>
+              <Typography sx={{ ...ERROR_CELL_CLAMP, color: 'var(--ds-red-600)' }}>{execution.failure_reason}</Typography>
+            </Tooltip>
+          ) : (
+            <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>—</Typography>
           ),
         },
       ]),
     [executions, accounts]
   );
 
-  // The server refuses to page past MAX_PAGEABLE_ROWS, so don't render page
-  // numbers the user would only get an error from.
-  const pageableRows = Math.min(totalRows, MAX_PAGEABLE_ROWS);
-
   return (
     <Box>
-      <ExecutionSummaryCards aggregate={aggregate} loading={loading} retentionDays={retentionDays} />
+      {/* Headline left, breakdown right. The failure count and the automations
+          it came from are one question, so they sit on one row; the right panel
+          drops away when there are no failures to attribute. */}
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', md: '360px minmax(0, 1fr)' },
+          gap: 'var(--ds-space-3)',
+          padding: 'var(--ds-space-4) 0',
+          // Default `stretch`: the two cards are one row of information and a
+          // ragged bottom edge reads as a rendering bug.
+        }}
+      >
+        <ExecutionSummaryCards aggregate={aggregate} loading={loading} retentionDays={retentionDays} />
 
-      <MostFailedAutomations
-        entries={aggregate?.top_failed || []}
-        approximate={!!aggregate?.top_failed_is_approximate}
-        retentionDays={retentionDays}
-        onSelectAutomation={(workflowId) => updateFilters({ workflowIds: [workflowId] })}
-      />
+        <MostFailedAutomations
+          entries={aggregate?.top_failed || []}
+          approximate={!!aggregate?.top_failed_is_approximate}
+          totalFailures={aggregate?.failed || 0}
+          onSelectAutomation={(workflowId) => updateFilters({ workflowIds: [workflowId] })}
+        />
+      </Box>
 
       <ListingLayout id='execution-dashboard'>
         <ListingLayout.Toolbar
@@ -275,6 +302,14 @@ const ExecutionDashboard: React.FC = () => {
                 too. The rest still narrow only the table. */}
             {`Account applies to the whole page; the other filters apply to this table only. Sorted newest first.${
               retentionDays > 0 ? ` Execution history is retained for ${retentionDays} days.` : ''
+            }${
+              // The pager can only address what the server will serve: a jump
+              // lands anywhere in the first MAX_PAGEABLE_ROWS rows, and past
+              // that only stepping forward works. Say so rather than showing a
+              // total the page numbers silently contradict.
+              totalRows > pageableRows
+                ? ` ${totalRows.toLocaleString()} executions match — page numbers reach the first ${pageableRows.toLocaleString()}; step forward page by page to go deeper, or narrow the filters.`
+                : ''
             }`}
           </Typography>
         </Box>

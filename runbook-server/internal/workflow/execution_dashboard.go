@@ -311,6 +311,7 @@ func (s *Service) AggregateExecutions(ctx *security.RequestContext, req model.Ag
 		Succeeded:            countFor(intersectStatuses(req.Statuses, []model.WorkflowExecutionStatus{model.WorkflowExecutionStatusCompleted})),
 		Failed:               countFor(failedStatuses),
 		Running:              countFor(intersectStatuses(req.Statuses, []model.WorkflowExecutionStatus{model.WorkflowExecutionStatusRunning})),
+		TimedOut:             countFor(intersectStatuses(req.Statuses, []model.WorkflowExecutionStatus{model.WorkflowExecutionStatusTimedOut})),
 		CountsAreApproximate: true,
 		TopFailed:            []model.FailedAutomationCount{},
 		RetentionDays:        s.executionRetentionDays(ctx.GetContext()),

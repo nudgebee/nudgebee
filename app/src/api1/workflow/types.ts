@@ -198,6 +198,8 @@ export interface ExecutionAggregateResponse {
   succeeded: number;
   failed: number;
   running: number;
+  /** Subset of `failed` — runs that hit the execution timeout rather than erroring. */
+  timed_out: number;
   counts_are_approximate: boolean;
   top_failed: FailedAutomationCount[];
   top_failed_is_approximate: boolean;

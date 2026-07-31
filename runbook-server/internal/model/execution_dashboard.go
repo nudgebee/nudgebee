@@ -118,6 +118,9 @@ type AggregateExecutionsResponse struct {
 	Succeeded int64 `json:"succeeded"`
 	Failed    int64 `json:"failed"`
 	Running   int64 `json:"running"`
+	// TimedOut is a subset of Failed, broken out because "ran too long" and
+	// "the automation broke" are different problems with different fixes.
+	TimedOut int64 `json:"timed_out"`
 	// CountsAreApproximate mirrors Temporal's own caveat on CountWorkflow.
 	CountsAreApproximate bool                    `json:"counts_are_approximate"`
 	TopFailed            []FailedAutomationCount `json:"top_failed"`

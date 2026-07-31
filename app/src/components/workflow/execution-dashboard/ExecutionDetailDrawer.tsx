@@ -5,6 +5,8 @@ import { Button } from '@ui/Button';
 import { Label } from '@ui/Label';
 import Datetime from '@shared/format/Datetime';
 import { Skeleton } from '@ui/Skeleton';
+import { CodeBlock } from '@ui/CodeBlock';
+import CopyButton from '@shared/buttons/CopyButton';
 import apiWorkflow from '@api1/workflow';
 import type { AccountExecutionItem } from '@api1/workflow/types';
 import { getDuration, getStatusTone } from '../utils/executionStatus';
@@ -73,7 +75,12 @@ const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution
         </Box>
 
         <Field label='Execution ID'>
-          <Typography sx={{ fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-text-caption)' }}>{execution.id}</Typography>
+          {/* The table no longer shows the id, so this is the only place to
+              read or copy it from. */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
+            <Typography sx={{ fontFamily: 'var(--ds-font-mono)', fontSize: 'var(--ds-text-caption)' }}>{execution.id}</Typography>
+            <CopyButton text={execution.id} size='xs' />
+          </Box>
         </Field>
         <Field label='Started'>
           <Datetime value={execution.start_time} />
@@ -89,23 +96,10 @@ const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution
             <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-red-600)' }}>
               Execution error
             </Typography>
-            <Box
-              sx={{
-                mt: 'var(--ds-space-1)',
-                fontFamily: 'monospace',
-                fontSize: 'var(--ds-text-caption)',
-                color: 'var(--ds-red-600)',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                backgroundColor: 'var(--ds-red-100)',
-                padding: 'var(--ds-space-2)',
-                borderRadius: 'var(--ds-radius-sm)',
-                border: '1px solid var(--ds-red-200)',
-                maxHeight: '260px',
-                overflow: 'auto',
-              }}
-            >
-              {detail.error}
+            <Box sx={{ mt: 'var(--ds-space-1)' }}>
+              {/* The row only carries a clamped one-liner; the whole message
+                  (with stack) is read here — wrapped, scrollable, copyable. */}
+              <CodeBlock code={detail.error} wrap maxHeight={260} copyToast='Error copied.' />
             </Box>
           </Box>
         )}
