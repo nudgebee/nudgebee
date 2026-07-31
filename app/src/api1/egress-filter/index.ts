@@ -64,8 +64,9 @@ export interface EgressFilterConfig {
   has_override: boolean;
   custom_patterns: EgressCustomPattern[];
 
-  // --- PII sibling detector (tri-state: null = inherit env; otherwise explicit) ---
-  /** null → inherit env_pii_enabled; true/false → explicit override */
+  // --- PII sibling detector (per-tenant opt-in) ---
+  /** null / false → off; true → tenant opted in. No env fallback; the
+   * platform-level enable flag was removed 2026-07-30. */
   pii_enabled: boolean | null;
   /** '' → inherit env_pii_default_mode; 'detect' / 'enforce' → explicit */
   pii_mode: '' | PIIMode;
@@ -78,7 +79,10 @@ export interface EgressFilterConfig {
   master_enabled: boolean; // whole egress subsystem on/off at the platform level
   secrets_enabled: boolean; // secret detector on/off at the platform level
   env_default_mode: EgressFilterMode; // mode applied when no tenant override exists
-  env_pii_enabled: boolean; // process-level PII master (hard gate — false = wrapper never installed)
+  // Platform PII defaults surfaced as "Use platform default (X)" in the UI's
+  // tri-state overrides for mode / NER. Note: env_pii_enabled was removed
+  // 2026-07-30 — PII is now a per-tenant opt-in (no platform enable/disable
+  // flag); the master toggles the whole subsystem.
   env_pii_ner_enabled: boolean;
   env_pii_default_mode: PIIMode;
 }

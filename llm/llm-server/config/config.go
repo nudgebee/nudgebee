@@ -105,20 +105,17 @@ type appConfig struct {
 	RAGServerUrl      string `mapstructure:"rag_server_url"`
 	RAGServerToken    string `mapstructure:"rag_server_token"`
 
-	// PII detector within the egressfilter family. When enabled, every
-	// outgoing LLM prompt is PII/PHI-scrubbed (reversible) and every response
-	// rehydrated, per-call, in the model-client wrapper installed by
-	// GetLLMModel. This is the PII sibling of the secrets detector above; it
-	// shares the egressfilter master switch (LlmServerEgressFilterEnabled) so
-	// ops reason about one "outbound payload inspection" family, not two.
+	// PII detector within the egressfilter family. When the master
+	// LlmServerEgressFilterEnabled is on, the wrapper is installed for every
+	// LLM call — but PII scrubbing itself is a per-tenant opt-in (see the
+	// tenant_config `pii_enabled` column and EffectivePIIEnabled). Env-level
+	// PII enable/disable was removed 2026-07-30 in favor of tenant control;
+	// operators toggle the whole subsystem via the master switch.
 	//
-	// Gating: the wrapper is installed only when BOTH the master switch AND
-	// PIIEnabled are true. PIIEnabled defaults false (introduces a runtime
-	// dependency on ml-k8s-server); flipping it on is an explicit ops
-	// decision. NER is opt-in for the same reasons it is on the scrubber
-	// itself — fuzzy on ops text. Secrets stay owned by the egressfilter
-	// secrets detector, so the PII scrub request never sets scrub_secrets.
-	LlmServerEgressFilterPIIEnabled        bool `mapstructure:"llm_server_egressfilter_pii_enabled"`
+	// NER default and timeout below are the platform-wide baseline shown to
+	// tenants as "Use platform default (X)" — a tenant admin can override on
+	// their own config row. Secrets stay owned by the egressfilter secrets
+	// detector, so the PII scrub request never sets scrub_secrets.
 	LlmServerEgressFilterPIINerEnabled     bool `mapstructure:"llm_server_egressfilter_pii_ner_enabled"`
 	LlmServerEgressFilterPIITimeoutSeconds int  `mapstructure:"llm_server_egressfilter_pii_timeout_seconds"`
 	// Outage policy for the PII scrubber. Same vocabulary as the secrets
@@ -908,7 +905,6 @@ func init() {
 	viper.SetDefault("logs_stream_to_fetch", 5)
 	viper.SetDefault("rag_server_url", "http://127.0.0.1:9999")
 	viper.SetDefault("rag_server_token", "")
-	viper.SetDefault("llm_server_egressfilter_pii_enabled", false)
 	viper.SetDefault("llm_server_egressfilter_pii_ner_enabled", false)
 	viper.SetDefault("llm_server_egressfilter_pii_timeout_seconds", 10)
 	viper.SetDefault("llm_server_egressfilter_pii_mode", "detect")

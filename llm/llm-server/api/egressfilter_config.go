@@ -160,11 +160,13 @@ func egressConfigResponse(cfg *egressfilter.TenantConfig, mode egressfilter.Mode
 		"pii_ner_enabled":         piiNerEnabled,
 		"pii_disabled_categories": piiCats,
 		// Read-only platform context (from env), so the UI can explain when a
-		// tenant setting has no effect.
+		// tenant setting has no effect and render "Use platform default (X)"
+		// for tri-state overrides. Note: env_pii_enabled was removed
+		// 2026-07-30 — PII is now a per-tenant opt-in with no platform-level
+		// enable/disable flag (the master toggles the whole subsystem).
 		"master_enabled":       config.Config.LlmServerEgressFilterEnabled,
 		"secrets_enabled":      config.Config.LlmServerEgressFilterSecretsEnabled,
 		"env_default_mode":     string(egressfilter.ParseMode(config.Config.LlmServerEgressFilterSecretsMode)),
-		"env_pii_enabled":      config.Config.LlmServerEgressFilterPIIEnabled,
 		"env_pii_ner_enabled":  config.Config.LlmServerEgressFilterPIINerEnabled,
 		"env_pii_default_mode": envPIIMode(),
 	}
@@ -266,6 +268,17 @@ func egressConfigUpdate(c *gin.Context, context *security.RequestContext, payloa
 		slog.Error("egressfilter config: error binding request", "error", err)
 		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
+	}
+	// DecodeMapToStruct uses mapstructure (reflection) which BYPASSES the
+	// custom UnmarshalJSON on egressConfigRequest — so presentKeys stays
+	// empty and isPresent() lies about every field. Populate presence
+	// directly from the payload map we already have: keys present in the
+	// map = keys present in the request body (mapstructure preserves the
+	// key set including explicit-null values). Fixes the silent no-op on
+	// nullable PII writes from the tenant-scoped RPC (2026-07-30 bug).
+	request.presentKeys = make(map[string]struct{}, len(payload))
+	for k := range payload {
+		request.presentKeys[k] = struct{}{}
 	}
 
 	cfg, err := loadOrDefault(c, tenantID)
