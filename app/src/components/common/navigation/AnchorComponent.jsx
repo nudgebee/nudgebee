@@ -244,26 +244,25 @@ const AnchorComponent = ({
       const options = filterOptions[activeDropdownTab]?.tabOptions || [];
       const totalLength = options.length;
 
-      if (activeDropdownTab === 5) {
-        if (activeDropdownSubtab >= 0 && activeDropdownSubtab <= 2) {
-          setRange([0, 3]);
-        } else if (activeDropdownSubtab >= 3 && activeDropdownSubtab <= 6) {
-          setRange([3, 7]);
-        } else {
-          setRange([0, totalLength]);
+      // In grouped mode the row is sliced down to the group the active sub-tab
+      // belongs to, and Tabs.jsx labels that row from tabOptions[0].tabName.
+      // Derive the slice from the active option's own tabName (groups are stored
+      // contiguously) instead of hardcoded index windows — those silently fell
+      // through to "show every sub-tab under the first group's label" whenever a
+      // sub-tab was added past the last window.
+      const activeIndex = options.findIndex((option) => option.value === activeDropdownSubtab);
+      const activeTabName = activeIndex >= 0 ? options[activeIndex].tabName : undefined;
+
+      if (activeTabName) {
+        let start = activeIndex;
+        while (start > 0 && options[start - 1].tabName === activeTabName) {
+          start -= 1;
         }
-      } else if (activeDropdownTab === 4) {
-        if (activeDropdownSubtab >= 0 && activeDropdownSubtab <= 1) {
-          setRange([0, 2]);
-        } else if (activeDropdownSubtab >= 2 && activeDropdownSubtab <= 3) {
-          setRange([2, 4]);
-        } else if (activeDropdownSubtab >= 4 && activeDropdownSubtab <= 7) {
-          setRange([4, 8]);
-        } else if (activeDropdownSubtab >= 8 && activeDropdownSubtab <= 9) {
-          setRange([8, 10]);
-        } else {
-          setRange([0, totalLength]);
+        let end = activeIndex + 1;
+        while (end < options.length && options[end].tabName === activeTabName) {
+          end += 1;
         }
+        setRange([start, end]);
       } else {
         setRange([0, totalLength]);
       }
