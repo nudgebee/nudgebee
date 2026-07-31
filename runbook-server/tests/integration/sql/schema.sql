@@ -10,9 +10,11 @@ CREATE TABLE IF NOT EXISTS workflows (
     tenant_id uuid NOT NULL,
     account_id uuid NOT NULL,
     name VARCHAR(255) NOT NULL,
+    description text, -- Human-facing description (top-level `description:` in workflow YAML)
     definition JSONB NOT NULL,
     tags JSONB NOT NULL,
     status VARCHAR(50) NOT NULL, -- Administrative status (e.g., Active, Inactive)
+    ai_invocable boolean NOT NULL DEFAULT false, -- Opt-in: may the AI assistant invoke this workflow
     last_execution_status VARCHAR(50), -- Status of the last execution (e.g., RUNNING, COMPLETED)
     last_execution_status_message text,
     last_execution_time TIMESTAMP WITHOUT TIME ZONE,

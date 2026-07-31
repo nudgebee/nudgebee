@@ -21,6 +21,19 @@ type WorkflowDefinition struct {
 	RetryPolicy *WorkflowRetryPolicy `yaml:"retry_policy,omitempty" json:"retry_policy,omitempty"`
 	// Workflow-level timeout (overrides per-task if set), e.g. "30m"
 	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty" validate:"omitempty,duration"`
+	// LLMDescription tells the AI assistant what this automation does and, more
+	// importantly, WHEN to reach for it (e.g. "Restarts the payment consumers and
+	// drains the stuck queue. Use when payment-service pods are crashlooping with
+	// RabbitMQ timeouts."). Required before Workflow.AIInvocable can be set.
+	//
+	// This lives in the definition — not on the workflow row — because it is
+	// content: it snapshots with a published version, so the AI sees what is live
+	// rather than a half-finished draft.
+	LLMDescription string `yaml:"llm_description,omitempty" json:"llm_description,omitempty"`
+	// LLMKeywords are extra search terms for AI capability discovery, for
+	// automations whose name and description do not contain the words an
+	// operator would actually type (discovery matching is lexical). Optional.
+	LLMKeywords []string `yaml:"llm_keywords,omitempty" json:"llm_keywords,omitempty"`
 	// Presentation-only canvas layout (per-task coords live on Task.Layout / Trigger.Layout).
 	Layout *WorkflowDefinitionLayout `yaml:"layout,omitempty" json:"layout,omitempty"`
 }
@@ -76,12 +89,28 @@ type Workflow struct {
 	LastExecutionTime          *time.Time              `json:"last_execution_time,omitempty" yaml:"last_execution_time,omitempty"`
 	LastExecutionVersion       *int                    `json:"last_execution_version,omitempty" yaml:"last_execution_version,omitempty"`
 	Name                       string                  `json:"name" yaml:"name" validate:"required,workflowname"`
-	CreatedBy                  string                  `json:"created_by,omitempty" yaml:"created_by,omitempty"`
-	CreatedByUser              *WorkflowUser           `json:"created_by_user,omitempty" yaml:"created_by_user,omitempty"`
-	UpdatedBy                  string                  `json:"updated_by,omitempty" yaml:"updated_by,omitempty"`
-	UpdatedByUser              *WorkflowUser           `json:"updated_by_user,omitempty" yaml:"updated_by_user,omitempty"`
-	CreatedAt                  time.Time               `json:"created_at,omitempty" yaml:"created_at,omitempty"`
-	UpdatedAt                  time.Time               `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+	// Description is the human-facing workflow description. Workflow YAML has
+	// always accepted a top-level `description:` key; before this field existed
+	// yaml.v3 silently discarded it.
+	Description *string `json:"description,omitempty" yaml:"description,omitempty"`
+	// AIInvocable opts this workflow in to invocation by the AI assistant.
+	// Default false — the AI cannot run an automation nobody opted in.
+	//
+	// Workflow-level rather than part of the versioned definition so that
+	// revocation is immediate: unchecking it stops AI runs at once instead of
+	// waiting for a publish + make-live, and a version rollback cannot silently
+	// re-expose an automation. Enforced server-side on every AI-originated
+	// trigger, so it is a real boundary and not merely a discovery filter.
+	//
+	// Setting it requires the definition to carry a non-empty LLMDescription and
+	// a manual trigger (see validateWorkflowStructLevel).
+	AIInvocable   bool          `json:"ai_invocable" yaml:"ai_invocable,omitempty"`
+	CreatedBy     string        `json:"created_by,omitempty" yaml:"created_by,omitempty"`
+	CreatedByUser *WorkflowUser `json:"created_by_user,omitempty" yaml:"created_by_user,omitempty"`
+	UpdatedBy     string        `json:"updated_by,omitempty" yaml:"updated_by,omitempty"`
+	UpdatedByUser *WorkflowUser `json:"updated_by_user,omitempty" yaml:"updated_by_user,omitempty"`
+	CreatedAt     time.Time     `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt     time.Time     `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
 	// CreatedFromSessionID is the LLM conversation session_id that produced this
 	// workflow. Set on create only; never overwritten by Update so the UI can always
 	// deep-link back to the original chat. NULL for UI/manual workflows.
@@ -297,6 +326,22 @@ type Trigger struct {
 	Params   map[string]any      `yaml:"params" json:"params,omitempty"`
 	Internal *TriggerInternal    `yaml:"-" json:"internal,omitempty"`
 	Layout   *WorkflowTaskLayout `yaml:"layout,omitempty" json:"layout,omitempty"`
+}
+
+// HasManualTrigger reports whether the definition declares a manual trigger.
+//
+// AI invocation is restricted to manually-triggerable automations: a schedule /
+// webhook / event-driven automation already has its own trigger contract, and
+// firing one out of band from a chat turn is not what its author signed up for.
+// Used both by validation (before AIInvocable can be set) and by the
+// AI-trigger gate, which re-checks it against the LIVE version at run time.
+func (d WorkflowDefinition) HasManualTrigger() bool {
+	for _, t := range d.Triggers {
+		if t.Type == WorkflowTriggerManual {
+			return true
+		}
+	}
+	return false
 }
 
 // Validate performs struct-level validation for Trigger.
@@ -607,6 +652,11 @@ type ListWorkflowRequest struct {
 	LastExecutionStatus WorkflowExecutionStatus `json:"last_execution_status,omitempty"`
 	TriggerType         string                  `json:"trigger_type,omitempty"`
 	CreatedBy           string                  `json:"created_by,omitempty"`
+	// AIInvocable filters to workflows opted in to (or out of) AI invocation.
+	// A pointer so that "unset" stays distinct from "explicitly false" — the
+	// AI-tool discovery listing asks for true, while the normal UI listing sends
+	// nothing and keeps seeing every workflow.
+	AIInvocable *bool `json:"ai_invocable,omitempty"`
 }
 
 type ListWorkflowResponse struct {

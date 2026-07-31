@@ -175,7 +175,28 @@ func buildContextFromRequestPayload(ctx context.Context, c *gin.Context, request
 	}
 
 	childLogger := logger.With("trace_id", span.SpanContext().TraceID().String())
-	return security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter), nil
+	rc := security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter)
+	rc.SetAITriggered(isAITriggeredRequest(c))
+	return rc, nil
+}
+
+// HeaderTriggerSource identifies what originated a request. llm-server sets it
+// to TriggerSourceAI on every call it makes on the AI assistant's behalf.
+//
+// This is a trusted-network header, exactly like x-tenant-id / x-user-id: it
+// cannot be used to gain privileges, only to lose them. Claiming "ai" subjects
+// the request to the AI-invocation gate's extra restrictions; omitting it just
+// leaves the caller with the permissions its identity already carries.
+const (
+	HeaderTriggerSource = "X-Trigger-Source"
+	TriggerSourceAI     = "ai"
+)
+
+func isAITriggeredRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(c.Request.Header.Get(HeaderTriggerSource)), TriggerSourceAI)
 }
 
 type ActionRequestAction struct {
@@ -309,5 +330,7 @@ func buildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionReque
 
 	span := trace.SpanFromContext(ctx)
 	childLogger := logger.With("tenant_id", tenantId, "user_id", userId, "trace_id", span.SpanContext().TraceID().String())
-	return security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter), nil
+	rc := security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter)
+	rc.SetAITriggered(isAITriggeredRequest(c))
+	return rc, nil
 }

@@ -991,6 +991,16 @@ func (s *Service) ExecuteWorkflow(ctx *security.RequestContext, accountId, id st
 	// Run the live version snapshot; the Memo stamps its identity so the
 	// execution detail UI can render exactly what ran.
 	wf.Definition = execDef
+
+	// AI-originated runs face extra restrictions on top of the caller's own
+	// permissions. Checked after the live definition is resolved so the gate
+	// inspects what will actually run, not the draft.
+	if ctx.IsAITriggered() {
+		if err := s.assertAIInvocationAllowed(ctx, accountId, wf); err != nil {
+			return "", err
+		}
+	}
+
 	return s.runWorkflow(ctx, accountId, id, wf, memo, triggerType, inputs)
 }
 
@@ -1009,6 +1019,16 @@ func (s *Service) TriggerWorkflowFromDraft(ctx *security.RequestContext, account
 	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
 		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return "", common.ErrorUnauthorized("account not accessible")
+	}
+
+	// The AI never runs drafts. This path deliberately skips the live-version
+	// pointer, so allowing it would let an AI caller sidestep every check in
+	// assertAIInvocationAllowed that reads the published definition simply by
+	// asking for the draft. AI exposure is tied to what has been published.
+	if ctx.IsAITriggered() {
+		ctx.GetLogger().Warn("refused AI-originated draft workflow run",
+			"workflow_id", id, "account_id", accountId)
+		return "", common.ErrorUnauthorized("the AI assistant cannot run draft workflows")
 	}
 
 	wf, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
@@ -1072,6 +1092,14 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	// GetDetailedWorkflowExecution for display, never a filter.
 	if memo == nil {
 		memo = map[string]any{}
+	}
+
+	// Stamp AI-initiated runs so their blast radius is measurable — the whole
+	// point of shipping this behind a flag is being able to see what it did.
+	// Set here, on the shared tail, so no execution path can start an AI run
+	// without the marker.
+	if ctx.IsAITriggered() {
+		memo[model.MemoWorkflowAITriggered] = true
 	}
 
 	// Determine workflow timeout

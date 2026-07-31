@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"nudgebee/runbook/config"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -188,6 +189,13 @@ func (s *Server) listWorkflows(c *gin.Context) {
 	}
 	if typeParam := c.Query("type"); typeParam != "" {
 		search.TriggerType = typeParam
+	}
+	// The AI-tool discovery listing filters on this; an unparseable value is
+	// ignored rather than rejected, matching how the other filters here behave.
+	if aiParam := c.Query("ai_invocable"); aiParam != "" {
+		if parsed, err := strconv.ParseBool(strings.TrimSpace(aiParam)); err == nil {
+			search.AIInvocable = &parsed
+		}
 	}
 
 	if nextPageToken := c.Query("next_page_token"); nextPageToken != "" {

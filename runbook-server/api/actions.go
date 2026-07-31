@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -253,6 +254,15 @@ func (s *Server) handleListWorkflows(c *gin.Context, sc *security.RequestContext
 	}
 	if createdBy, ok := args["created_by"].(string); ok {
 		search.CreatedBy = createdBy
+	}
+	// Accepts a real bool or the string form, since this filter is also reached
+	// over REST query params where everything arrives as text.
+	if aiInvocable, ok := args["ai_invocable"].(bool); ok {
+		search.AIInvocable = &aiInvocable
+	} else if raw, ok := args["ai_invocable"].(string); ok {
+		if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil {
+			search.AIInvocable = &parsed
+		}
 	}
 	if nextPageToken, ok := args["next_page_token"].(string); ok {
 		search.NextPageToken = nextPageToken

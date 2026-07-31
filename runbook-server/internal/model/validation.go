@@ -31,6 +31,29 @@ func init() {
 	_ = validate.RegisterValidation("setvars", ValidateSetVars)                 // New custom validation for SetVars field
 	validate.RegisterStructValidation(validateTriggerStructLevel, Trigger{})
 	validate.RegisterStructValidation(validateWorkflowDefinitionStructLevel, WorkflowDefinition{})
+	validate.RegisterStructValidation(validateWorkflowStructLevel, Workflow{})
+}
+
+// validateWorkflowStructLevel enforces the preconditions for opting a workflow
+// in to AI invocation. Both live on Workflow rather than WorkflowDefinition
+// because the flag itself is a workflow-level column while the things it
+// depends on live inside the definition.
+//
+// Note this validates the DRAFT definition — the one being saved. The run-time
+// gate re-checks the same two conditions against the LIVE (published) version,
+// because that is the snapshot an execution actually runs. Checking here as
+// well means the user finds out at save time, not at the first failed run.
+func validateWorkflowStructLevel(sl validator.StructLevel) {
+	wf, ok := sl.Current().Interface().(Workflow)
+	if !ok || !wf.AIInvocable {
+		return
+	}
+	if strings.TrimSpace(wf.Definition.LLMDescription) == "" {
+		sl.ReportError(wf.AIInvocable, "ai_invocable", "AIInvocable", "ai_invocable_needs_llm_description", "")
+	}
+	if !wf.Definition.HasManualTrigger() {
+		sl.ReportError(wf.AIInvocable, "ai_invocable", "AIInvocable", "ai_invocable_needs_manual_trigger", "")
+	}
 }
 
 // ValidateSetVars is a custom validator for the polymorphic SetVars field.
