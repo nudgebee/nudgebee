@@ -84,6 +84,27 @@ func (a AgentEventsV2) GetSummaryToolName() string {
 	return ToolEventSummary
 }
 
+// ShouldSummarizeNow mirrors AgentEvents.ShouldSummarizeNow (agent_events.go)
+// so events_v2 gets the same planner-skipping shortcut on raw-SQL fallback
+// calls. get_event_by_id is deliberately excluded — it's step 1 of this
+// agent's dominant example (single-event detail then get_triage_explanation,
+// see the Examples slice below), and summarizing immediately would skip that
+// second call.
+func (a AgentEventsV2) ShouldSummarizeNow(toolName string, observation string) bool {
+	if !strings.EqualFold(strings.TrimSpace(toolName), strings.TrimSpace(tools.ToolEventExecuteSql)) && !strings.EqualFold(strings.TrimSpace(toolName), strings.TrimSpace(tools.ToolAnomalyExecuteSql)) {
+		return false
+	}
+
+	count := countEventsInResponse(observation)
+	if count < 1 || count > 3 {
+		return false
+	}
+	if strings.Contains(observation, `"available_evidence_types"`) {
+		return false
+	}
+	return true
+}
+
 // UpdateToolResponseForPlanner reduces raw events.Event rows down to
 // reduceEventData's curated shape before they enter the scratchpad — the same
 // cleanup agent_events.go applies to events_execute. Only tools that return
