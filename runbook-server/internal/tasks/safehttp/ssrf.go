@@ -30,10 +30,39 @@ import (
 	"time"
 )
 
+var restrictedCIDRs = []string{
+	"100.64.0.0/10",   // CGNAT (RFC 6598) — default pod/node range for AWS VPC CNI, Tailscale
+	"198.18.0.0/15",   // Benchmark testing (RFC 2544)
+	"192.0.0.0/24",    // IETF Protocol Assignments
+	"192.0.2.0/24",    // TEST-NET-1 (RFC 5737)
+	"198.51.100.0/24", // TEST-NET-2 (RFC 5737)
+	"203.0.113.0/24",  // TEST-NET-3 (RFC 5737)
+	"240.0.0.0/4",     // Reserved (RFC 1112)
+}
+
+var (
+	restrictedNets []*net.IPNet
+	nat64WellKnown *net.IPNet // 64:ff9b::/96 (RFC 6052)
+	nat64LocalUse  *net.IPNet // 64:ff9b:1::/48 (RFC 8215)
+)
+
+func init() {
+	for _, cidr := range restrictedCIDRs {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			panic(fmt.Sprintf("invalid restricted CIDR %q: %v", cidr, err))
+		}
+		restrictedNets = append(restrictedNets, ipNet)
+	}
+	_, nat64WellKnown, _ = net.ParseCIDR("64:ff9b::/96")
+	_, nat64LocalUse, _ = net.ParseCIDR("64:ff9b:1::/48")
+}
+
 // IsRestrictedIP reports whether the given IP must never be the target of an
 // outbound request originating from a runbook task. Covers loopback, RFC1918
 // private ranges, link-local (incl. cloud metadata 169.254.169.254),
-// multicast, unspecified, and interface-local multicast addresses.
+// multicast, unspecified, interface-local multicast, CGNAT (RFC 6598),
+// NAT64 (RFC 6052 / RFC 8215), and other reserved ranges.
 //
 // When running under `go test`, loopback (127.0.0.0/8 and ::1) is allowed so
 // that tests using httptest.NewServer (which binds to 127.0.0.1) can exercise
@@ -44,9 +73,37 @@ func IsRestrictedIP(ip net.IP) bool {
 	if testing.Testing() && ip.IsLoopback() {
 		return false
 	}
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+	return isRestricted(ip)
+}
+
+func isRestricted(ip net.IP) bool {
+	// NAT64 well-known prefix (64:ff9b::/96, RFC 6052): the embedded IPv4
+	// sits in bytes 12-15. Extract it and re-check so public destinations
+	// (e.g. 64:ff9b::808:808 → 8.8.8.8) pass while restricted ones
+	// (e.g. 64:ff9b::a9fe:a9fe → 169.254.169.254) are still blocked.
+	if ip16 := ip.To16(); ip16 != nil && nat64WellKnown.Contains(ip16) {
+		return isRestricted(net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15]))
+	}
+	// NAT64 local-use prefix (64:ff9b:1::/48, RFC 8215): IPv4 embedding
+	// offset depends on the operator's chosen prefix length, so we cannot
+	// reliably extract it — block the entire range.
+	if ip16 := ip.To16(); ip16 != nil && nat64LocalUse.Contains(ip16) {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() ||
-		ip.IsInterfaceLocalMulticast()
+		ip.IsInterfaceLocalMulticast() {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		ip = ip4
+	}
+	for _, rNet := range restrictedNets {
+		if rNet.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateURL parses rawURL and rejects when:
