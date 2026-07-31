@@ -149,7 +149,7 @@ const SelectField: React.FC<SelectFieldProps> = ({
         previousTasks={previousTasks}
         workflowInputs={workflowInputs}
         workflowConfigs={workflowConfigs}
-        onSearch={isUserField ? (q: string) => onSearchField(fieldKey, q) : undefined}
+        onSearch={isUserField && fieldMeta.autoCompleteUrl ? (q: string) => onSearchField(fieldKey, q) : undefined}
       />
     </Box>
   </Box>
