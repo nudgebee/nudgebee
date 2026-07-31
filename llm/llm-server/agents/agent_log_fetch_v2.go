@@ -8,7 +8,6 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
-	"slices"
 	"sort"
 	"strings"
 )
@@ -45,7 +44,7 @@ func newFetchLogsAgentV2(accountId string) *FetchLogsAgentV2 {
 
 // canonicalEnabled reports whether the canonical v2 path is enabled for this
 // deploy, via the LLM_SERVER_LOG_AGENT_V2_ENABLED env var. It is a global
-// per-environment toggle (default true); there is no per-account granularity.
+// per-environment toggle (default false); there is no per-account granularity.
 func (a *FetchLogsAgentV2) canonicalEnabled(ctx *security.RequestContext) bool {
 	return config.Config.LogAgentV2Enabled
 }
@@ -192,9 +191,6 @@ func (a *FetchLogsAgentV2) generateCanonicalLogQueryAndExecute(ctx *security.Req
 	if err != nil {
 		return errorResponse(a.GetName(), fmt.Errorf("canonical query extraction: %w", err)), "", nil
 	}
-	if provider.DefaultIndex != "" {
-		jsonQuery = injectDefaultIndexIfMissing(jsonQuery, provider.DefaultIndex)
-	}
 	logs, toolRefs, err := callTool(ctx, a.accountId, request, tools.ToolLogsExecuteV2, jsonQuery)
 	if err != nil {
 		return errorResponse(a.GetName(), fmt.Errorf("logs_execute_v2: %w", err)), jsonQuery, nil
@@ -265,27 +261,6 @@ func generateCanonicalLogQuery(ctx *security.RequestContext, request core.NBAgen
 		return "", fmt.Errorf("empty LLM response")
 	}
 	return strings.TrimSpace(res.Choices[0].Content), nil
-}
-
-// injectDefaultIndexIfMissing parses jsonQuery and, if top-level "index" is empty or missing,
-// sets "index" to defaultIndex and marshals it back.
-func injectDefaultIndexIfMissing(jsonQuery string, defaultIndex string) string {
-	if strings.TrimSpace(defaultIndex) == "" {
-		return jsonQuery
-	}
-	var doc map[string]any
-	if err := json.Unmarshal([]byte(jsonQuery), &doc); err != nil {
-		return jsonQuery
-	}
-	if idx, ok := doc["index"].(string); ok && strings.TrimSpace(idx) != "" {
-		return jsonQuery
-	}
-	doc["index"] = defaultIndex
-	b, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return jsonQuery
-	}
-	return string(b)
 }
 
 // buildCanonicalLogQueryPrompt assembles the byte-stable system prompt for the
@@ -403,7 +378,7 @@ func buildCanonicalLogQueryPrompt(provider services_server.ObservabilityProvider
 	b.WriteString("- Read the caller's ORIGINAL user question (when provided) to classify intent.\n")
 
 	b.WriteString("\n**Examples:**\n")
-	examples := canonicalQueryExamples(supportedOperators)
+	examples := canonicalQueryExamples()
 	if !useCanonical {
 		if pe := providerSpecificQueryExamples(providerName); len(pe) > 0 {
 			examples = pe
@@ -421,19 +396,9 @@ func buildCanonicalLogQueryPrompt(provider services_server.ObservabilityProvider
 
 // defaultLogQueryOperators is the comparison-operator set advertised to the
 // LLM when get_default_provider omits capabilities.supported_operators (older
-// backends, fetch failure).
-//
-// It must stay the INTERSECTION of what every backend can execute, because it is
-// used precisely when we do not know which backend we are talking to. `_ilike` is
-// excluded for that reason: it is not universal (Signoz rejects it), and a rejected
-// query costs a full agent iteration to discover. `_like` is the portable spelling.
-//
-// Elasticsearch DOES execute `_ilike` — natively, via a case-insensitive wildcard —
-// and advertises it, so an ES account receives it through capabilities rather than
-// through this fallback. The fallback only applies when the backend told us nothing.
-//
-// Combinators are added separately by resolveQueryOperators.
-var defaultLogQueryOperators = []string{"_eq", "_neq", "_gt", "_gte", "_lt", "_lte", "_in", "_not_in", "_like", "_nlike", "_is_null"}
+// backends, fetch failure). Combinators are added separately by
+// resolveQueryOperators.
+var defaultLogQueryOperators = []string{"_eq", "_neq", "_gt", "_gte", "_lt", "_lte", "_in", "_not_in", "_like", "_ilike", "_nlike", "_is_null"}
 
 // logQueryCombinators are the structural JSON combinators the where-schema
 // relies on. They are not provider comparison operators, so the backend's
@@ -479,16 +444,7 @@ func resolveQueryOperators(providerOperators []string) []string {
 // e.g. a backend whose canonical keys are `app`/`content`). The examples teach
 // query shape (operators, _or, time_range/limit, when to add an error filter);
 // the field list above teaches which name to substitute.
-func canonicalQueryExamples(supportedOperators []string) []core.NBAgentPromptExample {
-	// The few-shots are the strongest signal in this prompt — stronger than the
-	// operator list a few lines above it. Hardcoding `_ilike` here meant the model
-	// emitted it against Elasticsearch, which rejects it outright, even though the
-	// advertised operator list correctly omitted it. So the examples must be built
-	// from the SAME set the backend advertises.
-	contains := `_ilike`
-	if !slices.Contains(supportedOperators, "_ilike") {
-		contains = `_like`
-	}
+func canonicalQueryExamples() []core.NBAgentPromptExample {
 	return []core.NBAgentPromptExample{
 		{
 			Question:    "show me recent logs for the checkout workload",
@@ -497,12 +453,12 @@ func canonicalQueryExamples(supportedOperators []string) []core.NBAgentPromptExa
 		},
 		{
 			Question:    "errors in the checkout workload in the last hour",
-			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "<LOG_TEXT_FIELD>": {"` + contains + `": "%error%"}}, "time_range": "1h", "limit": 5000}`,
+			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "<LOG_TEXT_FIELD>": {"_ilike": "%error%"}}, "time_range": "1h", "limit": 5000}`,
 			Explanation: "Replace <LOG_TEXT_FIELD> with the canonical_name for the log body. The question says 'last hour' → set time_range to \"1h\" EXACTLY; never widen a window the user gave (use the 24h default ONLY when the question gives no window). 'checkout' is illustrative — substitute the real workload name from the question.",
 		},
 		{
 			Question:    "warn or error logs for checkout",
-			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "_or": [{"<LOG_TEXT_FIELD>": {"` + contains + `": "%warn%"}}, {"<LOG_TEXT_FIELD>": {"` + contains + `": "%error%"}}]}, "time_range": "24h", "limit": 5000}`,
+			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "_or": [{"<LOG_TEXT_FIELD>": {"_ilike": "%warn%"}}, {"<LOG_TEXT_FIELD>": {"_ilike": "%error%"}}]}, "time_range": "24h", "limit": 5000}`,
 			Explanation: "Multiple values for the same concept → _or over the log-body canonical_name.",
 		},
 		{
