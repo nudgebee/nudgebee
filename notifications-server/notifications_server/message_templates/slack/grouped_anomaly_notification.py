@@ -161,9 +161,9 @@ def get_grouped_anomaly_alerts_template(input_data: List[AnomalyAlertParams]) ->
         lines.append(" · ".join(bit for bit in facts_bits if bit))
 
         actions = None
-        if alert.finding_id:
+        if alert.id:
             details_url = settings.urls.investigate_url(
-                alert.cloud_account_id, alert.finding_id, utm_source=URLRoutes.UTMSource.SLACK
+                alert.cloud_account_id, alert.id, utm_source=URLRoutes.UTMSource.SLACK
             )
             actions = [link_button("Details", details_url, style="primary")]
 

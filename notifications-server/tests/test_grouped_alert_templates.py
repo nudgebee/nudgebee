@@ -267,7 +267,7 @@ class TestGroupedAnomaly:
         assert "2 anomalies detected in prod-aws" in text
         assert "High priority" in text and "nat-gw (network)" in text and "Acct: prod-aws" in text
         urls = [b["url"] for b in _buttons(msg)]
-        assert any("id=find-0" in u for u in urls) and any("id=find-1" in u for u in urls)
+        assert any("id=a-0" in u for u in urls) and any("id=a-1" in u for u in urls)
 
     def test_cap_and_overflow(self):
         text = _text(get_grouped_anomaly_alerts_template([_anomaly(i) for i in range(8)]))
