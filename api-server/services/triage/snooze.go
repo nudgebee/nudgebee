@@ -2,8 +2,10 @@ package triage
 
 import (
 	"encoding/json"
+	"fmt"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -49,23 +51,37 @@ func ProcessExpiredSnoozes(ctx *security.RequestContext) error {
 
 	ctx.GetLogger().Info("snooze_expiry: transitioned expired snoozed events to OPEN", "count", len(unsnoozed))
 
-	// Log each status change to event_history
+	// Batch-insert history records (same pattern as bulk_operations.go)
 	oldValue, _ := json.Marshal(map[string]string{"nb_status": NBStatusSnoozed})
 	newValue, _ := json.Marshal(map[string]string{"nb_status": NBStatusOpen})
+	oldStr, newStr := string(oldValue), string(newValue)
 
-	for _, evt := range unsnoozed {
-		historyID := uuid.New().String()
-		_, histErr := db.Exec(`
-			INSERT INTO event_history (
-				id, event_id, cloud_account_id, tenant_id,
-				change_type, old_value, new_value, change_reason
-			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8
-			)
-		`, historyID, evt.ID, evt.CloudAccountID, evt.TenantID,
-			"status", string(oldValue), string(newValue), "snooze_expired")
-		if histErr != nil {
-			ctx.GetLogger().Warn("snooze_expiry: failed to log history", "event_id", evt.ID, "error", histErr)
+	const batchSize = 100
+	for i := 0; i < len(unsnoozed); i += batchSize {
+		end := i + batchSize
+		if end > len(unsnoozed) {
+			end = len(unsnoozed)
+		}
+		batch := unsnoozed[i:end]
+
+		var sb strings.Builder
+		sb.Grow(150 + len(batch)*60)
+		sb.WriteString(`INSERT INTO event_history (id, event_id, cloud_account_id, tenant_id, change_type, old_value, new_value, change_reason) VALUES `)
+		args := make([]interface{}, 0, len(batch)*8)
+		for j, evt := range batch {
+			if j > 0 {
+				sb.WriteString(", ")
+			}
+			base := j * 8
+			fmt.Fprintf(&sb, "($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+				base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8)
+			args = append(args, uuid.New().String(), evt.ID, evt.CloudAccountID, evt.TenantID,
+				"status", oldStr, newStr, "snooze_expired")
+		}
+
+		if _, err := db.Exec(sb.String(), args...); err != nil {
+			ctx.GetLogger().Warn("snooze_expiry: failed to batch-insert history",
+				"error", err, "batch_size", len(batch))
 		}
 	}
 
