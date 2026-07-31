@@ -325,6 +325,26 @@ const KubernetesLLMResponseGenerator = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages]);
 
+  // Anchor for the "still working" loader's elapsed-time stopwatch — the latest
+  // question's created_at (the same timestamp the "Xm ago" label next to the question
+  // renders from). A per-task-row `response_status === 'in_progress'` anchor was tried
+  // first, but that status is transient — by the time a poll response reaches the
+  // client the row has often already flipped to 'success', so there's no reliable
+  // window where it reads 'in_progress'. The question's created_at has no such race:
+  // it exists the instant the question is submitted and doesn't change for the rest
+  // of that turn, so the stopwatch survives a page refresh with real elapsed time
+  // instead of resetting to 0:00.
+  const activeQuestionStartedAt = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      const type = m?.tool ?? m?.type;
+      if (type === 'question' && m?.created_at) {
+        return m.created_at;
+      }
+    }
+    return null;
+  }, [messages]);
+
   const activeFollowupKey = activeWaitingFollowup
     ? `${activeWaitingFollowup.response?.message_id || ''}:${activeWaitingFollowup.response?.agent_id || ''}`
     : null;
@@ -1827,7 +1847,7 @@ const KubernetesLLMResponseGenerator = ({
                   mb={popup ? ds.space.mul(1, 5) : ds.space.mul(0, 35)}
                   sx={{ width: '100%', minWidth: popup ? ds.space.mul(1, 100) : 0, boxSizing: 'border-box' }}
                 >
-                  <ConversationLoader query={currentlyProcessingQuestion} />
+                  <ConversationLoader query={currentlyProcessingQuestion} startedAt={activeQuestionStartedAt} />
                 </Box>
               );
             })()}

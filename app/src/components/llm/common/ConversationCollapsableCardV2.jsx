@@ -225,7 +225,7 @@ function ConversationCollapsableCard({
               }}
             >
               {conversationCreatedAt && conversationUpdatedAt && !['planner', 'response'].includes(toolData.tool || toolData.type) && (
-                <Duration createdAt={conversationCreatedAt} updatedAt={conversationUpdatedAt} />
+                <Duration createdAt={conversationCreatedAt} updatedAt={conversationUpdatedAt} live={toolData.response_status === 'in_progress'} />
               )}
               {headerActions}
             </Box>

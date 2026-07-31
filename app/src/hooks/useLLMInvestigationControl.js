@@ -215,6 +215,11 @@ const parseConversationMessages = (conversationMessages, accountId) => {
                 // (those live in `toolParameters` and render as the "Query" box).
                 log: (t.thought || '').split('\n\nAction:')[0],
                 thought: t.thought,
+                // getCardTitle's in_progress branch reads `query`, not `text` — without
+                // this, the row renders an empty title (just "-") for every poll between
+                // this tool_call being created and its `child_agent_id` getting linked to
+                // the spawned agent (whose own row does carry `query` and replaces this one).
+                query: t.parameters,
                 tool: t.tool_name,
                 tool_id: t.id,
                 type: 'tool_call',
