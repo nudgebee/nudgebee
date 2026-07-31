@@ -18,7 +18,9 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
-import { hasWriteAccess, hasFeatureAccess, getUserSession } from '@lib/auth';
+import { hasWriteAccess, hasFeatureAccess, getUserSession, getCurrentTenant } from '@lib/auth';
+import { readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
+import { readPersistedAccounts, writePersistedAccounts } from './utils/accountFilterPersistence';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { action } from 'src/utils/actionStyles';
 import TriggerWorkflowModal from './components/TriggerWorkflowModal';
@@ -108,6 +110,22 @@ const readAccountFilterFromQuery = (query: Record<string, any>): string[] => {
 };
 
 const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
+// Filters the user picked here, remembered across visits. The sidebar links
+// back to a bare /automation, so without this every return trip resets the
+// view. Same mechanism the troubleshoot Events table uses.
+const WORKFLOW_FILTER_STORAGE_KEY = 'automation:workflows:filters:v1';
+
+interface PersistedWorkflowFilters {
+  // Index signature so this satisfies the helpers' Record<string, unknown>.
+  [key: string]: unknown;
+  status?: string;
+  last_execution_status?: string;
+  type?: string;
+  name?: string;
+  tags?: string;
+  created_by?: string;
+}
 
 interface WorkflowActionsCellProps {
   workflow: any;
@@ -258,16 +276,53 @@ const WorkflowListing: React.FC = () => {
   const [selectedWorkflow, setSelectedWorkflow] = useState<any>({ id: '', name: '' });
   const [triggerLoading, setTriggerLoading] = useState<boolean>(false);
   const router = useRouter();
+  // Scoped by tenant: an account or created-by filter from one tenant is
+  // meaningless after switching to another. No tenant yet ⇒ null key ⇒ every
+  // read/write below is a no-op.
+  const persistKey = useMemo(() => {
+    const tenantId = getCurrentTenant()?.id;
+    return tenantId ? `${WORKFLOW_FILTER_STORAGE_KEY}:${tenantId}` : null;
+  }, []);
+  // The "Created By" filter is sourced from the tenant user list
+  // (users_list_by_tenant), which only tenant-level roles can read. Hide it for
+  // everyone else (e.g. account_admin) instead of rendering an empty, broken
+  // filter — they'd otherwise just see "All".
+  const sessionRoles: string[] = getUserSession()?.roles || [];
+  const canFilterByCreatedBy = sessionRoles.includes('tenant_admin') || sessionRoles.includes('tenant_admin_readonly');
+  const [persistedSeed] = useState<PersistedWorkflowFilters>(() => {
+    const stored = readPersistedFilters<PersistedWorkflowFilters>(persistKey);
+    // localStorage is per-browser, not per-user. A created_by saved by a tenant
+    // admin must not narrow the listing for the next account_admin to sign in
+    // on the same machine, who has no control to see or clear it.
+    return canFilterByCreatedBy ? stored : { ...stored, created_by: undefined };
+  });
+  // Held in a ref as well: the router.query sync effect below falls back to it
+  // on every query change, and a value frozen at mount would restore a filter
+  // the user has since cleared.
+  const persistedRef = useRef<PersistedWorkflowFilters>(persistedSeed);
+  const persistFilters = useCallback(
+    (patch: PersistedWorkflowFilters) => {
+      persistedRef.current = { ...persistedRef.current, ...patch };
+      writePersistedFilters(persistKey, patch);
+    },
+    [persistKey]
+  );
   // Account filter. The page is tenant-level, so `[]` means "every account I
   // can read" — not "none". Seeded from `?account=` (repeated, the shape the
   // Optimize page uses) or a legacy single `?accountId=`, which every
-  // `/automation?accountId=` deep link still scattered through the app sends.
-  const [selectedAccounts, setSelectedAccounts] = useState<string[]>(() => readAccountFilterFromQuery(router.query));
+  // `/automation?accountId=` deep link still scattered through the app sends,
+  // then from the last saved selection.
+  const [selectedAccounts, setSelectedAccounts] = useState<string[]>(() => {
+    const fromQuery = readAccountFilterFromQuery(router.query);
+    return fromQuery.length ? fromQuery : readPersistedAccounts();
+  });
   // id → { name, cloud_provider } for the filter options and the Account column.
   const [accounts, setAccounts] = useState<Record<string, AccountInfo>>({});
-  const [selectedStatus, setSelectedStatus] = useState<string>((router?.query?.status as string) || 'All');
-  const [selectedLastExecutionStatus, setSelectedLastExecutionStatus] = useState<string>((router?.query?.last_execution_status as string) || 'All');
-  const [selectedTriggerType, setSelectedTriggerType] = useState<string>((router?.query?.type as string) || '');
+  const [selectedStatus, setSelectedStatus] = useState<string>((router?.query?.status as string) || persistedSeed.status || 'All');
+  const [selectedLastExecutionStatus, setSelectedLastExecutionStatus] = useState<string>(
+    (router?.query?.last_execution_status as string) || persistedSeed.last_execution_status || 'All'
+  );
+  const [selectedTriggerType, setSelectedTriggerType] = useState<string>((router?.query?.type as string) || persistedSeed.type || '');
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [rowsPerPage, setRowsPerPage] = useState<number>(10);
   const [totalRows, setTotalRows] = useState<number>(0);
@@ -358,14 +413,14 @@ const WorkflowListing: React.FC = () => {
     };
   }, []);
 
-  const [searchName, setSearchName] = useState<string>((router?.query?.name as string) || '');
-  const [selectedTags, setSelectedTags] = useState<string>((router?.query?.tags as string) || '');
-  const [selectedCreatedBy, setSelectedCreatedBy] = useState<string>((router?.query?.created_by as string) || 'All');
+  const [searchName, setSearchName] = useState<string>((router?.query?.name as string) || persistedSeed.name || '');
+  const [selectedTags, setSelectedTags] = useState<string>((router?.query?.tags as string) || persistedSeed.tags || '');
+  const [selectedCreatedBy, setSelectedCreatedBy] = useState<string>((router?.query?.created_by as string) || persistedSeed.created_by || 'All');
   const [createdByOptions, setCreatedByOptions] = useState<string[]>(['All']);
 
   // Committed search values — only update on Enter or Clear, not on every keystroke.
-  const [committedSearchName, setCommittedSearchName] = useState<string>((router?.query?.name as string) || '');
-  const [committedSelectedTags, setCommittedSelectedTags] = useState<string>((router?.query?.tags as string) || '');
+  const [committedSearchName, setCommittedSearchName] = useState<string>((router?.query?.name as string) || persistedSeed.name || '');
+  const [committedSelectedTags, setCommittedSelectedTags] = useState<string>((router?.query?.tags as string) || persistedSeed.tags || '');
 
   const getTriggerIcon = (triggerType: string) => {
     const type = triggerType?.toLowerCase();
@@ -1465,17 +1520,25 @@ const WorkflowListing: React.FC = () => {
   // immediately triggers the search without requiring an Enter press.
   useEffect(() => {
     const { status, last_execution_status, type, name, tags, created_by } = router.query;
+    // Saved filters are the fallback for a param the URL doesn't carry — the
+    // sidebar navigates to a bare /automation, and that must not read as
+    // "the user cleared everything".
+    const persisted = persistedRef.current;
 
-    setSelectedStatus((status as string) || 'All');
-    setSelectedLastExecutionStatus((last_execution_status as string) || 'All');
-    setSelectedTriggerType((type as string) || '');
-    setSearchName((name as string) || '');
-    setCommittedSearchName((name as string) || '');
-    setSelectedTags((tags as string) || '');
-    setCommittedSelectedTags((tags as string) || '');
-    setSelectedCreatedBy((created_by as string) || 'All');
+    setSelectedStatus((status as string) || persisted.status || 'All');
+    setSelectedLastExecutionStatus((last_execution_status as string) || persisted.last_execution_status || 'All');
+    setSelectedTriggerType((type as string) || persisted.type || '');
+    setSearchName((name as string) || persisted.name || '');
+    setCommittedSearchName((name as string) || persisted.name || '');
+    setSelectedTags((tags as string) || persisted.tags || '');
+    setCommittedSelectedTags((tags as string) || persisted.tags || '');
+    setSelectedCreatedBy((created_by as string) || persisted.created_by || 'All');
 
-    const nextAccounts = readAccountFilterFromQuery(router.query);
+    const fromQuery = readAccountFilterFromQuery(router.query);
+    // Read fresh rather than from a mount-time snapshot: the Executions tab
+    // writes this store too, and a tab switch does not remount this component's
+    // seed.
+    const nextAccounts = fromQuery.length ? fromQuery : readPersistedAccounts();
     // Compare by value: this effect runs on every router.query identity change,
     // and handing back a fresh array each time would restart the listing fetch
     // (selectedAccounts is a listWorkflows dependency) on unrelated filter edits.
@@ -1486,9 +1549,6 @@ const WorkflowListing: React.FC = () => {
   // (users_list_by_tenant), which only tenant-level roles can read. Hide it for
   // everyone else (e.g. account_admin) instead of rendering an empty, broken
   // filter — they'd otherwise just see "All".
-  const sessionRoles: string[] = getUserSession()?.roles || [];
-  const canFilterByCreatedBy = sessionRoles.includes('tenant_admin') || sessionRoles.includes('tenant_admin_readonly');
-
   // Fetch active users for the "Created By" filter. Only tenant-level roles can
   // read the tenant user list; skip the call for others to avoid a 403.
   useEffect(() => {
@@ -1579,6 +1639,18 @@ const WorkflowListing: React.FC = () => {
         /* names degrade to ids */
       });
   }, []);
+
+  // Drop saved account ids the user can no longer see (account deleted, access
+  // revoked, tenant data changed). Left in place they'd filter the listing to
+  // nothing with no visible chip to explain why.
+  useEffect(() => {
+    if (!Object.keys(accounts).length || !selectedAccounts.length) return;
+    const valid = selectedAccounts.filter((id) => accounts[id]);
+    if (valid.length === selectedAccounts.length) return;
+    setSelectedAccounts(valid);
+    writePersistedAccounts(valid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accounts, selectedAccounts]);
 
   // Grouped by cloud provider so the dropdown renders a collapsible header per
   // provider, matching the Account filter on Troubleshoot / Optimize.
@@ -1679,10 +1751,13 @@ const WorkflowListing: React.FC = () => {
     setConfigModalOpen(false);
   };
 
+  // Only committed searches are saved — persisting each keystroke would restore
+  // a half-typed query on the next visit.
   const onNameSearchChange = (next: string) => {
     if (searchName.trim() !== '' && next.trim() === '') {
       setCommittedSearchName('');
       applyFiltersOnRouter(router, { name: '' });
+      persistFilters({ name: '' });
     }
     setSearchName(next);
   };
@@ -1690,18 +1765,21 @@ const WorkflowListing: React.FC = () => {
   const onNameEnterPress = () => {
     setCommittedSearchName(searchName);
     applyFiltersOnRouter(router, { name: searchName });
+    persistFilters({ name: searchName });
   };
 
   const onNameClear = () => {
     setSearchName('');
     setCommittedSearchName('');
     applyFiltersOnRouter(router, { name: '' });
+    persistFilters({ name: '' });
   };
 
   const onTagsSearchChange = (next: string) => {
     if (selectedTags.trim() !== '' && next.trim() === '') {
       setCommittedSelectedTags('');
       applyFiltersOnRouter(router, { tags: '' });
+      persistFilters({ tags: '' });
     }
     setSelectedTags(next);
   };
@@ -1709,16 +1787,19 @@ const WorkflowListing: React.FC = () => {
   const onTagsEnterPress = () => {
     setCommittedSelectedTags(selectedTags);
     applyFiltersOnRouter(router, { tags: selectedTags });
+    persistFilters({ tags: selectedTags });
   };
 
   const onTagsClear = () => {
     setSelectedTags('');
     setCommittedSelectedTags('');
     applyFiltersOnRouter(router, { tags: '' });
+    persistFilters({ tags: '' });
   };
 
   const onAccountFilterChange = (next: string[]) => {
     setSelectedAccounts(next);
+    writePersistedAccounts(next);
     // Empty → drop the param entirely rather than writing `?account=`, so the
     // URL for "all accounts" is the same clean /automation the sidebar links to.
     // `accountId` is cleared alongside it: once the user touches the filter, the
@@ -1997,6 +2078,7 @@ const WorkflowListing: React.FC = () => {
                 onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
                   setSelectedCreatedBy(e?.target?.value);
                   applyFiltersOnRouter(router, { created_by: e?.target?.value });
+                  persistFilters({ created_by: e?.target?.value });
                 }}
               />
             )}
@@ -2008,6 +2090,7 @@ const WorkflowListing: React.FC = () => {
               onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
                 setSelectedStatus(e?.target?.value);
                 applyFiltersOnRouter(router, { status: e?.target?.value });
+                persistFilters({ status: e?.target?.value });
               }}
             />
             <FilterDropdown
@@ -2018,6 +2101,7 @@ const WorkflowListing: React.FC = () => {
               onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
                 setSelectedLastExecutionStatus(e?.target?.value);
                 applyFiltersOnRouter(router, { last_execution_status: e?.target?.value });
+                persistFilters({ last_execution_status: e?.target?.value });
               }}
             />
             <FilterDropdown
@@ -2029,6 +2113,7 @@ const WorkflowListing: React.FC = () => {
                 const next = e?.target?.value || '';
                 setSelectedTriggerType(next);
                 applyFiltersOnRouter(router, { type: next });
+                persistFilters({ type: next });
               }}
             />
           </ListingLayout.Toolbar>

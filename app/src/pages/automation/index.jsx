@@ -20,21 +20,21 @@ const Automation = () => {
 
   const [selectedFilter, setSelectedFilter] = React.useState(0);
 
-  // Executions is appended rather than inserted first: selectedFilter defaults
-  // to 0 and the render block below is index-based, so putting it first would
-  // silently change which tab everyone lands on.
+  // `value` and the render block below are index-based and must stay in step:
+  // reordering these entries reorders the tabs, so every value/render pair has
+  // to move together. Automations stays at 0 — selectedFilter defaults to it.
   const filterOptions = [
     { name: 'Automations', id: 'automations', value: 0, fragment: 'automations', icon: AutomateBlue },
+    { name: 'Executions', id: 'executions', value: 1, fragment: 'executions', icon: dashboardIcon1 },
     {
       name: 'Task Runner',
       id: 'task-runner',
-      value: 1,
+      value: 2,
       fragment: 'task-runner',
       disabled: !canRunTasks,
       disabledTooltip: missingPermissionMessage('workflows:Execute'),
       icon: PlayCircleIcon,
     },
-    { name: 'Executions', id: 'executions', value: 2, fragment: 'executions', icon: dashboardIcon1 },
   ];
 
   useEffect(() => {
@@ -66,8 +66,8 @@ const Automation = () => {
           {/* Tenant-level: each tab resolves its own accounts. The listing and
               Executions carry an Account filter; Task Runner an account picker. */}
           {selectedFilter === 0 && <WorkflowListing />}
-          {selectedFilter === 1 && canRunTasks && <TaskRunner />}
-          {selectedFilter === 2 && <ExecutionDashboard />}
+          {selectedFilter === 1 && <ExecutionDashboard />}
+          {selectedFilter === 2 && canRunTasks && <TaskRunner />}
         </ErrorBoundary>
       </Box>
     </>

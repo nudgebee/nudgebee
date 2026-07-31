@@ -5,7 +5,9 @@ import apiHome from '@api1/home';
 import apiUser from '@api1/user';
 import type { AccountExecutionItem, AccountExecutionListRequest, ExecutionAggregateResponse } from '@api1/workflow/types';
 import { isExecutionCompleted } from '../utils/executionStatus';
-import { getUserSession } from '@lib/auth';
+import { getUserSession, getCurrentTenant } from '@lib/auth';
+import { readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
+import { readPersistedAccounts, writePersistedAccounts } from '../utils/accountFilterPersistence';
 import {
   AUTOMATION_OPTIONS_LIMIT,
   DASHBOARD_POLL_INTERVAL_MS,
@@ -35,6 +37,21 @@ export interface FilterOption {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// Filter selections remembered across visits, keyed per tenant — the sidebar
+// links back to a bare /automation, so without this every return trip resets
+// the view. The date range is deliberately not saved: it is relative by
+// default, and restoring a week-old absolute window silently shows a stale
+// page. Page size already comes from the shared table-page-size preference.
+const EXECUTIONS_FILTER_STORAGE_KEY = 'automation:executions:filters:v1';
+
+interface PersistedExecutionFilters {
+  // Index signature so this satisfies the helpers' Record<string, unknown>.
+  [key: string]: unknown;
+  workflowIds?: string[];
+  triggeredBy?: string[];
+  statuses?: string[];
+}
+
 const toCsv = (values: string[]) => (values.length ? values.join(',') : undefined);
 const fromCsv = (raw: unknown): string[] => (typeof raw === 'string' && raw ? raw.split(',').filter(Boolean) : []);
 
@@ -54,6 +71,12 @@ const parseDate = (raw: unknown, fallback: Date): Date => {
  */
 export function useExecutionDashboard() {
   const router = useRouter();
+
+  const persistKey = useMemo(() => {
+    const tenantId = getCurrentTenant()?.id;
+    return tenantId ? `${EXECUTIONS_FILTER_STORAGE_KEY}:${tenantId}` : null;
+  }, []);
+  const [persisted] = useState<PersistedExecutionFilters>(() => readPersistedFilters<PersistedExecutionFilters>(persistKey));
 
   const [filters, setFilters] = useState<ExecutionDashboardFilters>(() => ({
     startDate: new Date(Date.now() - DEFAULT_RANGE_DAYS * DAY_MS),
@@ -81,6 +104,7 @@ export function useExecutionDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [aggregate, setAggregate] = useState<ExecutionAggregateResponse | null>(null);
   const [automationOptions, setAutomationOptions] = useState<FilterOption[]>([]);
+  const [automationOptionsLoaded, setAutomationOptionsLoaded] = useState(false);
   const [tenantUserOptions, setTenantUserOptions] = useState<FilterOption[]>([]);
   // Deepest page a forward cursor is known for. Random-access paging is capped
   // server-side (MaxExecutionDeepPageRows), but the token path is not — so
@@ -115,13 +139,25 @@ export function useExecutionDashboard() {
   useEffect(() => {
     if (!router.isReady || seeded) return;
     const { from, to, accounts: accountsParam, accountId, automations, users, statuses, page: pageParam, size } = router.query;
+    // Per field: the URL wins where it says something, the saved selection
+    // fills the rest. A shared link therefore still reproduces its own view.
+    const pick = (raw: unknown, saved?: string[]) => {
+      const fromQuery = fromCsv(raw);
+      return fromQuery.length ? fromQuery : saved || [];
+    };
+    // `?account=` (repeated) is the shape the Automations tab writes; accept it
+    // too so a link copied from that tab lands on the same accounts here.
+    const repeatedAccount = router.query.account;
+    const fromRepeated = (Array.isArray(repeatedAccount) ? repeatedAccount : [repeatedAccount]).filter(Boolean) as string[];
+    const queryAccounts = fromCsv(accountsParam).length ? fromCsv(accountsParam) : fromRepeated.length ? fromRepeated : fromCsv(accountId);
     setFilters((prev) => ({
       startDate: parseDate(from, prev.startDate),
       endDate: parseDate(to, prev.endDate),
-      accountIds: fromCsv(accountsParam).length ? fromCsv(accountsParam) : fromCsv(accountId),
-      workflowIds: fromCsv(automations),
-      triggeredBy: fromCsv(users),
-      statuses: fromCsv(statuses),
+      // Account is shared with the Automations tab (see accountFilterPersistence).
+      accountIds: queryAccounts.length ? queryAccounts : readPersistedAccounts(),
+      workflowIds: pick(automations, persisted.workflowIds),
+      triggeredBy: pick(users, persisted.triggeredBy),
+      statuses: pick(statuses, persisted.statuses),
     }));
     const parsedPage = Number(pageParam);
     if (Number.isFinite(parsedPage) && parsedPage > 0) setPage(parsedPage);
@@ -258,10 +294,15 @@ export function useExecutionDashboard() {
   // lists automations, not executions, so it doesn't move with the date range.
   useEffect(() => {
     let cancelled = false;
+    // Tracked separately from the option list itself: "no automations in this
+    // account" is a loaded state, and the prune below has to be able to tell it
+    // apart from "not fetched yet".
+    setAutomationOptionsLoaded(false);
     apiWorkflow.listWorkflows(filters.accountIds, undefined, undefined, undefined, AUTOMATION_OPTIONS_LIMIT).then((response: any) => {
       if (cancelled || !isMountedRef.current) return;
       const workflows = response?.data?.workflow_list?.workflows || [];
       setAutomationOptions(workflows.map((workflow: any) => ({ value: workflow.id, label: workflow.name || workflow.id })));
+      setAutomationOptionsLoaded(true);
     });
     return () => {
       cancelled = true;
@@ -280,6 +321,33 @@ export function useExecutionDashboard() {
         /* names degrade to ids */
       });
   }, []);
+
+  // Same for a saved Automation selection the current account doesn't contain.
+  // The option list is account-scoped, so its chip would render empty while the
+  // filter still narrowed the table — an invisible filter reading as "no
+  // executions". Runs once the options have loaded — including when they loaded
+  // empty, which is exactly the account that would otherwise keep a stale
+  // selection forever — but never when the list came back at the cap, since a
+  // truncated list is not evidence that the selected automation is gone.
+  useEffect(() => {
+    if (!automationOptionsLoaded || automationOptions.length >= AUTOMATION_OPTIONS_LIMIT || !filters.workflowIds.length) return;
+    const known = new Set(automationOptions.map((option) => option.value));
+    const valid = filters.workflowIds.filter((id) => known.has(id));
+    if (valid.length === filters.workflowIds.length) return;
+    setFilters((prev) => ({ ...prev, workflowIds: valid }));
+    writePersistedFilters(persistKey, { workflowIds: valid });
+  }, [automationOptionsLoaded, automationOptions, filters.workflowIds, persistKey]);
+
+  // Drop saved account ids the user can no longer see. setFilters directly
+  // rather than updateFilters: this is a correction, not a user choice, and
+  // must not start mirroring state into the URL.
+  useEffect(() => {
+    if (!Object.keys(accounts).length || !filters.accountIds.length) return;
+    const valid = filters.accountIds.filter((id) => accounts[id]);
+    if (valid.length === filters.accountIds.length) return;
+    setFilters((prev) => ({ ...prev, accountIds: valid }));
+    writePersistedAccounts(valid);
+  }, [accounts, filters.accountIds]);
 
   const accountOptions = useMemo(
     () =>
@@ -364,13 +432,25 @@ export function useExecutionDashboard() {
   );
 
   // Any filter change invalidates the cursor ledger and returns to page 1.
-  const updateFilters = useCallback((update: Partial<ExecutionDashboardFilters>) => {
-    userChangedFiltersRef.current = true;
-    pageTokensRef.current = {};
-    setDeepestTokenPage(1);
-    setPage(1);
-    setFilters((prev) => ({ ...prev, ...update }));
-  }, []);
+  const updateFilters = useCallback(
+    (update: Partial<ExecutionDashboardFilters>) => {
+      userChangedFiltersRef.current = true;
+      pageTokensRef.current = {};
+      setDeepestTokenPage(1);
+      setPage(1);
+      setFilters((prev) => ({ ...prev, ...update }));
+      // Dates are excluded on purpose — see EXECUTIONS_FILTER_STORAGE_KEY.
+      const { accountIds, workflowIds, triggeredBy, statuses } = update;
+      // Account is page-level and shared with the Automations tab.
+      if (accountIds) writePersistedAccounts(accountIds);
+      const patch: PersistedExecutionFilters = {};
+      if (workflowIds) patch.workflowIds = workflowIds;
+      if (triggeredBy) patch.triggeredBy = triggeredBy;
+      if (statuses) patch.statuses = statuses;
+      if (Object.keys(patch).length) writePersistedFilters(persistKey, patch);
+    },
+    [persistKey]
+  );
 
   const changePage = useCallback(
     (nextPage: number, nextPageSize?: number) => {
