@@ -831,3 +831,84 @@ func TestDefaultProviderLogFields(t *testing.T) {
 	assert.Equal(t, []string{"_body", "namespace", "pod"}, defaultProviderLogFields("loki"))
 	assert.Equal(t, []string{"_body", "namespace", "pod"}, defaultProviderLogFields(""))
 }
+
+func TestIsNotFoundReason(t *testing.T) {
+	cases := []struct {
+		name   string
+		reason string
+		want   bool
+	}{
+		{"kubectl NotFound", `error: error from server (NotFound): pods "llm-server" not found in namespace "nudgebee-agent"`, true},
+		{"lowercase notfound", "resource notfound in cluster", true},
+		{"forbidden must not trigger discovery", `error: error from server (Forbidden): pods "x" is forbidden`, false},
+		{"unauthorized must not trigger discovery", "Unauthorized", false},
+		{"connection refused must not trigger discovery", "dial tcp: connection refused", false},
+		{"empty reason", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isNotFoundReason(tc.reason))
+		})
+	}
+}
+
+func TestExtractKubectlStdout(t *testing.T) {
+	t.Run("unwraps stdout/stderr envelope", func(t *testing.T) {
+		got := extractKubectlStdout(`{"stdout":"nudgebee  pod/relay-server-abc123-xyz\n","stderr":""}`)
+		assert.Equal(t, "nudgebee  pod/relay-server-abc123-xyz", got)
+	})
+
+	t.Run("falls back to raw string for non-JSON input", func(t *testing.T) {
+		got := extractKubectlStdout("nudgebee  pod/relay-server-abc123-xyz")
+		assert.Equal(t, "nudgebee  pod/relay-server-abc123-xyz", got)
+	})
+
+	t.Run("empty stdout field falls back to raw trimmed input", func(t *testing.T) {
+		got := extractKubectlStdout(`{"stdout":"","stderr":"some stderr"}`)
+		assert.Equal(t, `{"stdout":"","stderr":"some stderr"}`, got)
+	})
+}
+
+func TestParseKubectlDiscoveryCandidates(t *testing.T) {
+	t.Run("parses multi-type -A output into namespace/name (kind)", func(t *testing.T) {
+		stdout := "nudgebee   pod/relay-server-68868457d8-62cwv   1/1   Running   0   3d\n" +
+			"nudgebee   deployment.apps/relay-server   1/1   1   1   3d\n"
+		got := parseKubectlDiscoveryCandidates(stdout)
+		assert.Equal(t, []string{
+			"nudgebee/relay-server-68868457d8-62cwv (pod)",
+			"nudgebee/relay-server (deployment.apps)",
+		}, got)
+	})
+
+	t.Run("skips malformed lines without a kind/name split", func(t *testing.T) {
+		stdout := "nudgebee   not-a-kind-slash-name\nnudgebee   pod/ok-pod   1/1   Running   0   1d"
+		got := parseKubectlDiscoveryCandidates(stdout)
+		assert.Equal(t, []string{"nudgebee/ok-pod (pod)"}, got)
+	})
+
+	t.Run("caps at discoveryCandidateCap", func(t *testing.T) {
+		var b strings.Builder
+		for i := 0; i < discoveryCandidateCap+5; i++ {
+			b.WriteString("nudgebee   pod/relay-server-" + string(rune('a'+i)) + "   1/1   Running   0   1d\n")
+		}
+		got := parseKubectlDiscoveryCandidates(b.String())
+		assert.Len(t, got, discoveryCandidateCap)
+	})
+
+	t.Run("empty input yields no candidates", func(t *testing.T) {
+		assert.Nil(t, parseKubectlDiscoveryCandidates(""))
+	})
+}
+
+func TestFormatDiscoveryHint(t *testing.T) {
+	t.Run("no candidates yields empty hint", func(t *testing.T) {
+		assert.Equal(t, "", formatDiscoveryHint(nil))
+	})
+
+	t.Run("renders candidates into a retry-oriented sentence", func(t *testing.T) {
+		hint := formatDiscoveryHint([]string{"nudgebee/relay-server-68868457d8-62cwv (pod)"})
+		assert.Contains(t, hint, "Similar resources found via discovery:")
+		assert.Contains(t, hint, "nudgebee/relay-server-68868457d8-62cwv (pod)")
+		assert.Contains(t, hint, "retry fetch_logs with the corrected namespace/resource name")
+	})
+}

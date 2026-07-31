@@ -120,6 +120,11 @@ func (a *FetchLogsAgent) generateKubeCtlLogQueryAndExecute(ctx *security.Request
 		return errorResponse(a.GetName(), fmt.Errorf("kubectl_execute: %w", err)), nil
 	}
 	if matched, reason := looksLikeFetchError("kubectl", logs); matched {
+		if isNotFoundReason(reason) {
+			if hint := discoverKubectlCandidates(ctx, a.accountId, request, intent); hint != "" {
+				return errorResponse(a.GetName(), fmt.Errorf("kubectl fetch failed: %s. %s", reason, hint)), nil
+			}
+		}
 		return errorResponse(a.GetName(), fmt.Errorf("kubectl fetch failed: %s", reason)), nil
 	}
 	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, "kubectl", logs)
@@ -128,6 +133,86 @@ func (a *FetchLogsAgent) generateKubeCtlLogQueryAndExecute(ctx *security.Request
 		return core.NBAgentResponse{}, err
 	}
 	return makeFetchResponse(a.GetName(), cmd, logs, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
+}
+
+// isNotFoundReason excludes forbidden/unauthorized/connection errors, which a
+// different resource guess can't fix.
+func isNotFoundReason(reason string) bool {
+	low := strings.ToLower(reason)
+	return strings.Contains(low, "notfound") || strings.Contains(low, "not found")
+}
+
+// discoverKubectlCandidates surfaces similarly-named resources as a hint on a
+// NotFound — it never retries or substitutes the target itself; the planner
+// decides whether to retry with corrected coordinates.
+func discoverKubectlCandidates(ctx *security.RequestContext, accountId string, request core.NBAgentRequest, intent kubectlLogQuery) string {
+	term := strings.TrimSpace(intent.ResourceName)
+	if idx := strings.LastIndex(term, "/"); idx != -1 {
+		term = term[idx+1:]
+	}
+	if term == "" {
+		return ""
+	}
+	cmd := fmt.Sprintf(
+		"kubectl get pods,deployments,statefulsets,daemonsets --all-namespaces --no-headers | grep -F -i -- '%s' | head -5",
+		escapeShellSingleQuoted(term),
+	)
+	out, _, err := callTool(ctx, accountId, request, tools.ToolExecuteKubectlCommand, cmd)
+	if err != nil {
+		ctx.GetLogger().Warn("fetch_logs: kubectl discovery call failed", "error", err, "resource_name", term)
+		return ""
+	}
+
+	return formatDiscoveryHint(parseKubectlDiscoveryCandidates(extractKubectlStdout(out)))
+}
+
+// extractKubectlStdout unwraps kubectl_execute's {"stdout":...} envelope,
+// falling back to the raw string when it isn't that JSON shape.
+func extractKubectlStdout(out string) string {
+	var env struct {
+		Stdout string `json:"stdout"`
+	}
+	if json.Unmarshal([]byte(out), &env) == nil && env.Stdout != "" {
+		return strings.TrimSpace(env.Stdout)
+	}
+	return strings.TrimSpace(out)
+}
+
+const discoveryCandidateCap = 5
+
+// parseKubectlDiscoveryCandidates parses `kubectl get <types> -A --no-headers`
+// lines ("<namespace> <kind>/<name> ...") into "<namespace>/<name> (<kind>)".
+func parseKubectlDiscoveryCandidates(stdout string) []string {
+	if stdout == "" {
+		return nil
+	}
+	candidates := make([]string, 0, discoveryCandidateCap)
+	for _, line := range strings.Split(stdout, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		namespace := fields[0]
+		typeName := strings.SplitN(fields[1], "/", 2)
+		if len(typeName) != 2 {
+			continue
+		}
+		candidates = append(candidates, fmt.Sprintf("%s/%s (%s)", namespace, typeName[1], typeName[0]))
+		if len(candidates) >= discoveryCandidateCap {
+			break
+		}
+	}
+	return candidates
+}
+
+func formatDiscoveryHint(candidates []string) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"Similar resources found via discovery: %s. If one of these matches your intent, retry fetch_logs with the corrected namespace/resource name.",
+		strings.Join(candidates, ", "),
+	)
 }
 
 func (a *FetchLogsAgent) generateLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider) (core.NBAgentResponse, error) {
