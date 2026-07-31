@@ -88,7 +88,8 @@ const CATEGORY_CONFIG: Record<OptimizeCategory, CategoryConfig> = {
     showAccountFilter: true,
     getRecommendationText: (details, item) => details.description || item.recommendation?.reason,
     recommendationsTooltip: 'CPU and memory adjustments for over- or under-provisioned resources, derived from observed usage.',
-    savingsTooltip: 'Total estimated annual savings if all right-sizing recommendations are applied',
+    savingsTooltip:
+      'Estimated annual savings (monthly savings × 12) if right-sizing recommendations are applied. Alternative options for the same resource (e.g. multiple Savings Plan terms) are counted once, so this can be less than the sum of the rows below.',
   },
   Configuration: {
     tableId: 'cloudaccount-optimize-configuration-change',
@@ -124,7 +125,8 @@ const CATEGORY_CONFIG: Record<OptimizeCategory, CategoryConfig> = {
     showAccountFilter: false,
     getRecommendationText: (details, item) => details.recommendations?.[0] || item.recommendation?.reason,
     recommendationsTooltip: 'Upgrade recommendations for outdated engine versions, deprecated platforms, and end-of-life instance families.',
-    savingsTooltip: 'Total estimated annual savings if all infrastructure upgrade recommendations are applied',
+    savingsTooltip:
+      'Estimated annual savings (monthly savings × 12) if infrastructure upgrade recommendations are applied. Alternative options for the same resource are counted once, so this can be less than the sum of the rows below.',
   },
 };
 
@@ -523,9 +525,11 @@ const CloudOptimizeRecommendationsTable = (props: {
       data: recommendationValue,
     });
 
-    // Savings (RightSizing and InfraUpgrade only)
+    // Savings (RightSizing and InfraUpgrade only). estimated_savings is stored
+    // per month (see SavingsFooter "Projected Monthly Savings" in the drilldown);
+    // the summary card above annualizes it, so label rows /mo — not /yr.
     if (config.showSavings) {
-      data.push({ component: <Currency value={item.estimated_savings} precison={1} prefix={currencySymbol || '$'} suffix='/yr' /> });
+      data.push({ component: <Currency value={item.estimated_savings} precison={1} prefix={currencySymbol || '$'} suffix='/mo' /> });
     }
 
     // Actions menu (Ask NuBi + per-row dropdown)
