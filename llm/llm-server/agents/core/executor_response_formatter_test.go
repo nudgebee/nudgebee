@@ -250,3 +250,38 @@ func TestFormatterTemplate_GatesCausalityOnQuery(t *testing.T) {
 	assert.NotContains(t, inv, "{{")
 	assert.NotContains(t, qry, "{{")
 }
+
+// TestBasePromptTemplate_GatesRcaFrameworkOnQuery pins that the PLANNER base prompt
+// (not just the formatter) drops the investigation RCA answer-format spec on a query
+// turn — so the planner never emits a Causality Chain for a simple question in the
+// first place (the formatter's query-branch can prevent adding one but not reliably
+// strip one already generated). Gated on the same is_investigation signal.
+func TestBasePromptTemplate_GatesRcaFrameworkOnQuery(t *testing.T) {
+	raw := prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactBase3)
+	inv := renderFormatterTemplate(raw, map[string]interface{}{"is_investigation": true})
+	qry := renderFormatterTemplate(raw, map[string]interface{}{"is_investigation": false})
+
+	// Investigation keeps the full RCA framework.
+	assert.Contains(t, inv, "ROOT CAUSE ANALYSIS FRAMEWORK")
+	assert.Contains(t, inv, "Causality Chain (Root Cause)")
+	assert.Contains(t, inv, "SYMPTOM VS. ROOT CAUSE CHECK")
+
+	// Query drops the entire RCA framework — the planner is never told how to build one.
+	// (The retained "Question type" line legitimately still MENTIONS the term to say
+	// "do NOT use Causality Chain / Evidence Chain for queries" — that is guidance, not
+	// the build spec, so we assert on the spec markers, not the bare term.)
+	assert.NotContains(t, qry, "ROOT CAUSE ANALYSIS FRAMEWORK")
+	assert.NotContains(t, qry, "Causality Chain (Root Cause)")
+	assert.NotContains(t, qry, "SYMPTOM VS. ROOT CAUSE CHECK")
+	// The retained guidance still tells the model not to use the RCA format for queries.
+	assert.Contains(t, qry, "Do NOT use the investigation output format")
+
+	// ...but the GENERAL final-answer mechanics stay for BOTH (not inside the gate).
+	assert.Contains(t, inv, "single `<final_answer>` block")
+	assert.Contains(t, qry, "single `<final_answer>` block")
+	assert.Contains(t, qry, "GREETING & SIMPLE QUERIES")
+
+	// No leftover template tokens on either branch (balanced {{if}}/{{end}}).
+	assert.NotContains(t, inv, "{{")
+	assert.NotContains(t, qry, "{{")
+}

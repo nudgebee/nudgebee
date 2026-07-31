@@ -2293,11 +2293,23 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	// ContextKeyPromptVariant the cache key uses keeps the prompt shape and its
 	// cache slot in lockstep. executorMode is untouched (only top-level turns get
 	// the lean variant, and a top-level turn is never an executor sub-agent).
-	if promptVariantFromCtx(ctx) == promptVariantLean {
+	promptVariant := promptVariantFromCtx(ctx)
+	if promptVariant == promptVariantLean {
 		notebookEnabled = false
 		hypothesisModeEnabled = false
 		orchestratorMode = false
 	}
+
+	// is_investigation gates the investigation-only RCA answer-format spec
+	// (Causality Chain / Evidence / Root-Cause framework) in planner_react_3_base.txt.
+	// A top-level query turn carries a query variant (lean OR query) and drops the
+	// spec so a simple question is not answered as an investigation; investigations
+	// and sub-agents carry variant "" and keep it. Derived from the already-stamped
+	// variant (applyPromptVariant) — the single classification source — so the prompt
+	// content and its cache slot never disagree. Mirrors the formatter's programmatic
+	// gate (executor_response_formatter.go), which prose-instruction alone could not
+	// reliably enforce.
+	isInvestigation := promptVariant != promptVariantLean && promptVariant != promptVariantQuery
 
 	// Only declare template variables actually referenced in planner_react_3_base.txt.
 	// Dynamic vars (history, conversation_context, input, scratchpad) are in the human
@@ -2316,6 +2328,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 				"hypothesis_mode_enabled",
 				"orchestrator_mode",
 				"executor_mode",
+				"is_investigation",
 				"conversation_context_enabled",
 				"context_management_rules",
 				"time_handling_rules",
@@ -2444,6 +2457,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"hypothesis_mode_enabled":      hypothesisModeEnabled,
 		"orchestrator_mode":            orchestratorMode,
 		"executor_mode":                executorMode,
+		"is_investigation":             isInvestigation,
 		"conversation_context_enabled": config.Config.ConversationContextEnabled,
 		"context_management_rules":     prompts_repo.GetPrompt(prompts_repo.PromptContextContinuity),
 		"time_handling_rules":          prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),

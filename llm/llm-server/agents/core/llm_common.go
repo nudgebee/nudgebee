@@ -223,6 +223,17 @@ func tierAttributionForRecord(ctx *security.RequestContext) (modelTier *string, 
 // key suffix. Kept short because it is appended to the Google AI cache key.
 const promptVariantLean = "lean"
 
+// promptVariantQuery marks a top-level query turn when the lean-prompt flag is
+// OFF. It is a lighter variant than lean: it drops ONLY the investigation RCA
+// answer-format spec (Causality Chain / Evidence / Root-Cause framework) so a
+// simple query is not answered as an investigation — it keeps the notebook,
+// hypothesis, and orchestrator overlays that lean also strips. Crucially it is a
+// DISTINCT cache-key suffix, so query turns get their own stable cache slot
+// instead of alternating content under the investigation ("") slot and busting
+// it. Both query variants (lean and query) mean "not an investigation" for the
+// RCA gate; they differ only in how much else they strip.
+const promptVariantQuery = "query"
+
 // promptVariantFromCtx returns the ContextKeyPromptVariant value on ctx, or ""
 // when unset (the full/default prompt).
 func promptVariantFromCtx(ctx *security.RequestContext) string {

@@ -150,19 +150,28 @@ func resolveModelTier(agent NBAgent, request NBAgentRequest) ModelTier {
 	return base
 }
 
-// promptVariantForRequest returns promptVariantLean for a top-level plain-retrieval
-// turn when the query-lean prompt is enabled, else "" (full/default prompt).
-// Classification uses OriginalQuery (the user's verbatim top-level question,
-// falling back to Query) so a delegated sub-agent brief never drives the shape;
-// sub-agents always resolve to "" and keep the full prompt and their cache slots.
+// promptVariantForRequest returns the prompt/cache variant for a turn. Only a
+// TOP-LEVEL plain-retrieval (query) turn gets a non-default variant; investigations,
+// sub-agents, and degenerate queries resolve to "" (full/default prompt + its cache
+// slot). Query turns fork the prompt shape AND the cache slot:
+//   - lean-prompt flag ON  → promptVariantLean: drops the heavy investigation overlays
+//     (notebook / hypothesis / orchestrator contract) AND the RCA answer-format spec.
+//   - lean-prompt flag OFF → promptVariantQuery: drops ONLY the RCA answer-format spec,
+//     so a simple query is not answered as an investigation, while keeping every other
+//     overlay identical to today.
+//
+// Either way the variant keys a DISTINCT cache slot from investigation turns, so the
+// two prompt shapes coexist instead of alternating content under one slot and busting it.
+// Classification uses isTopLevelPlainRetrievalTurn — the same canonical signal that
+// drives the model-tier downshift — so prompt variant, cache slot, and tier agree.
 func promptVariantForRequest(request NBAgentRequest) string {
-	if !config.Config.LlmServerReact3QueryLeanPromptEnabled {
+	if !isTopLevelPlainRetrievalTurn(request) {
 		return ""
 	}
-	if isTopLevelPlainRetrievalTurn(request) {
+	if config.Config.LlmServerReact3QueryLeanPromptEnabled {
 		return promptVariantLean
 	}
-	return ""
+	return promptVariantQuery
 }
 
 // isTopLevelPlainRetrievalTurn reports whether this is a TOP-LEVEL, non-investigation

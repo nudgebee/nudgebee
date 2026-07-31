@@ -34,7 +34,7 @@ func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnab
 	vars := []string{
 		"tool_names", "tool_descriptions", "workspace_enabled", "shell_tool_enabled",
 		"delegate_agent_enabled", "notebook_enabled", "hypothesis_mode_enabled",
-		"orchestrator_mode", "executor_mode",
+		"orchestrator_mode", "executor_mode", "is_investigation",
 		"conversation_context_enabled", "context_management_rules", "time_handling_rules",
 		"data_protection_rules", "code_analysis_rules", "security_rules",
 		"memory_consumption_rules", "async_completion_rules",
@@ -50,6 +50,7 @@ func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnab
 		"hypothesis_mode_enabled":      hypothesisModeEnabled,
 		"orchestrator_mode":            orchestratorMode,
 		"executor_mode":                executorMode,
+		"is_investigation":             true, // keep the full (investigation) prompt for these role/hypothesis fences
 		"conversation_context_enabled": false,
 		"context_management_rules":     "",
 		"time_handling_rules":          "",
