@@ -74,20 +74,63 @@ func (a *FetchLogsAgentV2) Execute(ctx *security.RequestContext, request core.NB
 	// which stays on its proven facet-syntax path (the v1 datadog executor).
 	var resp core.NBAgentResponse
 	var err error
+	var canonicalQuery string
 	if providerName == "datadog" {
 		resp, err = a.generateDatadogLogQueryAndExecute(ctx, request)
 	} else {
-		resp, err = a.generateCanonicalLogQueryAndExecute(ctx, request, provider)
+		resp, canonicalQuery, err = a.generateCanonicalLogQueryAndExecute(ctx, request, provider)
 	}
 	if err != nil {
 		return resp, err
 	}
 
-	// Fall back to kubectl when services-server errored or returned no logs.
-	if resp.Status == core.ConversationStatusFailed || fetchResponseIsEmpty(resp) {
+	if shouldFallbackToKubectl(resp, canonicalQuery) {
 		return a.kubectlFallback(ctx, request, provider, resp)
 	}
 	return resp, nil
+}
+
+// shouldFallbackToKubectl decides whether Execute should fall back to the
+// kubectl log path after the primary services-server fetch.
+//
+// `kubectl logs --tail` has no time filtering at all — it returns whatever is
+// currently in the pod's log buffer, which can easily be hours or days old.
+// When the primary backend actually SUCCEEDED and authoritatively found zero
+// rows in an explicit historical window (start_time set — e.g. "between
+// 10:00 and 10:05 today"), that is a real, honest answer for that window;
+// replacing it with kubectl's unrelated buffered content misleads the LLM
+// into treating stale logs as if they were the requested window (traced to a
+// live incident where this fed the shell_execute file-ref hallucination
+// class). No such guard is needed when the primary itself errored — kubectl
+// remains the safety net for a genuine backend/config failure — or when no
+// explicit window was given, since a now-anchored default window is a
+// plausible match for kubectl's current-buffer semantics.
+func shouldFallbackToKubectl(resp core.NBAgentResponse, canonicalQuery string) bool {
+	if resp.Status == core.ConversationStatusFailed {
+		return true
+	}
+	if !fetchResponseIsEmpty(resp) {
+		return false
+	}
+	return !queryHasExplicitTimeAnchor(canonicalQuery)
+}
+
+// queryHasExplicitTimeAnchor reports whether the canonical query carries an
+// explicit start_time — an absolute historical anchor that plain `kubectl
+// logs --tail` cannot honor (see shouldFallbackToKubectl). Empty or
+// unparseable input is treated as "no anchor" so callers default to the
+// pre-existing fallback behaviour.
+func queryHasExplicitTimeAnchor(canonicalQuery string) bool {
+	if strings.TrimSpace(canonicalQuery) == "" {
+		return false
+	}
+	var q struct {
+		StartTime string `json:"start_time"`
+	}
+	if err := json.Unmarshal([]byte(canonicalQuery), &q); err != nil {
+		return false
+	}
+	return strings.TrimSpace(q.StartTime) != ""
 }
 
 // kubectlFallback runs the kubectl log path after a services-server fetch errored
@@ -137,27 +180,36 @@ func fetchResponseIsEmpty(resp core.NBAgentResponse) bool {
 	return false
 }
 
-func (a *FetchLogsAgentV2) generateCanonicalLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider) (core.NBAgentResponse, error) {
+// The returned string is the canonical (pre-translation) query JSON this
+// agent generated — used by Execute's kubectl-fallback guard to check for an
+// explicit start_time. It is returned even on an error/failure response so
+// callers can inspect it consistently; it is empty when generation itself
+// failed (no query was ever produced).
+func (a *FetchLogsAgentV2) generateCanonicalLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider) (core.NBAgentResponse, string, error) {
 	fields, indices := a.labelsAndIndices(provider)
 	jsonQuery, err := generateCanonicalLogQuery(ctx, request, provider, fields, indices)
 	if err != nil {
-		return errorResponse(a.GetName(), fmt.Errorf("canonical query extraction: %w", err)), nil
+		return errorResponse(a.GetName(), fmt.Errorf("canonical query extraction: %w", err)), "", nil
 	}
 	if provider.DefaultIndex != "" {
 		jsonQuery = injectDefaultIndexIfMissing(jsonQuery, provider.DefaultIndex)
 	}
 	logs, toolRefs, err := callTool(ctx, a.accountId, request, tools.ToolLogsExecuteV2, jsonQuery)
 	if err != nil {
-		return errorResponse(a.GetName(), fmt.Errorf("logs_execute_v2: %w", err)), nil
+		return errorResponse(a.GetName(), fmt.Errorf("logs_execute_v2: %w", err)), jsonQuery, nil
 	}
 	if matched, reason := looksLikeFetchError(provider.Provider, logs); matched {
-		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", provider.Provider, reason)), nil
+		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", provider.Provider, reason)), jsonQuery, nil
 	}
 	if strings.EqualFold(provider.Provider, "loki") {
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 	}
 	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
-	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, fileRef, mergeRefs(toolRefs, fileRefs)), nil
+	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
+	if err != nil {
+		return core.NBAgentResponse{}, jsonQuery, err
+	}
+	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), jsonQuery, nil
 }
 
 // executedLogQuery pulls the provider query the backend actually ran out of the

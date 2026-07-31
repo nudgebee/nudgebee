@@ -83,6 +83,47 @@ func TestIsNoMatchExit(t *testing.T) {
 	}
 }
 
+// TestLooksLikeMissingDynamicFile uses the exact response text captured in
+// production (llm_conversation_tool_calls, conversation dc975df2, tool_call
+// 21509804 — a `grep A FILE | grep B` pipeline against a not-yet-created
+// fetch_logs file_ref) to confirm the piped-command masking case is caught:
+// isNoMatchExit alone would reclassify this as a benign no-match (the tail
+// grep saw empty input and exited 1), silently hiding the real "file not
+// found" — this check is what routes it to the error/hint path instead.
+func TestLooksLikeMissingDynamicFile(t *testing.T) {
+	cases := []struct {
+		name     string
+		response string
+		want     bool
+	}{
+		{
+			name:     "real production response from a piped Call B against an unfetched file_ref",
+			response: "grep: logs_kubectl_1784552026142158849.txt: No such file or directory\n",
+			want:     true,
+		},
+		{
+			name:     "genuine empty no-match result",
+			response: "",
+			want:     false,
+		},
+		{
+			name:     "missing file that isn't dynamic-workspace-shaped",
+			response: "cat: /tmp/notes.txt: No such file or directory\n",
+			want:     false,
+		},
+		{
+			name:     "dynamic-shaped filename present but no missing-file signal",
+			response: "some_field: logs_kubectl_1784552005015449081.txt\n",
+			want:     false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, looksLikeMissingDynamicFile(c.response))
+		})
+	}
+}
+
 // --- Change 2: empty / JSON-envelope rejection ---
 
 func TestLooksLikeJSONEnvelope(t *testing.T) {
@@ -154,6 +195,26 @@ func TestShellErrorHint(t *testing.T) {
 			rawError:    `kubectl: /tmp/missing.yaml: No such file or directory`,
 			command:     "kubectl apply -f /tmp/missing.yaml",
 			wantHintSub: "", // first token is kubectl, not a file reader
+		},
+		// Dynamic workspace filename (logs_/metrics_/traces_ + unix-nano) — the
+		// fetch_logs file_ref race. See agent_log_fetch.go:saveLogsToWorkspace.
+		{
+			name:        "no such file on grep against a fetch_logs-shaped filename gets the dynamic-file hint",
+			rawError:    `grep: logs_kubectl_1784552026142158849.txt: No such file or directory`,
+			command:     `grep -nE "ERROR" logs_kubectl_1784552026142158849.txt`,
+			wantHintSub: "only known once that tool call actually completes",
+		},
+		{
+			name:        "no such file on grep against a metrics-shaped filename also gets the dynamic-file hint",
+			rawError:    `grep: metrics_prometheus_1784552026142158849.json: No such file or directory`,
+			command:     `grep -nE "cpu" metrics_prometheus_1784552026142158849.json`,
+			wantHintSub: "only known once that tool call actually completes",
+		},
+		{
+			name:        "no such file on a plain filename that merely resembles the pattern falls back to the generic hint",
+			rawError:    `grep: logs_kubectl.txt: No such file or directory`,
+			command:     `grep -nE "ERROR" logs_kubectl.txt`,
+			wantHintSub: "workspace pod is per-account", // no unix-nano segment — not a dynamic-file guess
 		},
 		{
 			name:        "command not found",

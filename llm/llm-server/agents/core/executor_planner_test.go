@@ -189,6 +189,74 @@ func TestDoIterationParallel_ContextBuilding(t *testing.T) {
 	assert.Contains(t, tool2.CapturedCtx, expectedPart, "Parallel execution context for dependent tool should contain dependency result")
 }
 
+// TestDoIterationParallel_NoDependency_BlindExecution reproduces the logs-agent
+// file_ref bug structurally (see agent_log_fetch.go:458, agent_log.go:251-253):
+// planner_react_3.go's processToolActions never populates Dependency for a live
+// <actions> block, so when the model batches a fetch_logs-style action and a
+// dependent shell_execute-style action in the same turn, both land here with
+// Dependency: []string{} — exactly like Plan1/Plan2 below. Contrast with
+// TestDoIterationParallel_ContextBuilding, where declaring Dependency: []string
+// {"Plan1"} threads FETCH_LOGS's real output into SHELL_EXECUTE's context. With
+// zero Dependency, that never happens: SHELL_EXECUTE runs blind to FETCH_LOGS's
+// real (runtime-generated) output, which is why a model-guessed filename can
+// never match the file fetch_logs actually saves.
+func TestDoIterationParallel_NoDependency_BlindExecution(t *testing.T) {
+	// FETCH_LOGS stands in for the real tool: its output (a file_ref) is only
+	// known once it actually runs — it is not derivable in advance.
+	tool1 := &MockContextCapturingTool{NameVal: "FETCH_LOGS", ReturnOutput: `{"file_ref":"logs_pinot_1784552556131489668.txt"}`, ReturnStatus: toolcore.NBToolResponseStatusSuccess}
+	// SHELL_EXECUTE stands in for shell_execute grepping a *guessed* file_ref —
+	// exactly what the model has to write when it plans this in the same turn.
+	tool2 := &MockContextCapturingTool{NameVal: "SHELL_EXECUTE", ReturnOutput: "grep: logs_kubectl_1784552026142158849.txt: No such file or directory", ReturnStatus: toolcore.NBToolResponseStatusSuccess}
+	nameToTool := map[string]toolcore.NBTool{
+		"FETCH_LOGS":    tool1,
+		"SHELL_EXECUTE": tool2,
+	}
+
+	ctx := security.NewRequestContextForTenantAccountAdmin("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", []string{"cccccccc-cccc-cccc-cccc-cccccccccccc"})
+	mockAgent := &MockAgent{SupportedTools: []toolcore.NBTool{tool1, tool2}}
+	agentRequest := NBAgentRequest{
+		AccountId:      "cccccccc-cccc-cccc-cccc-cccccccccccc",
+		UserId:         "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+		ConversationId: "conv_id",
+		MessageId:      "msg_id",
+		AgentId:        "agent_id",
+	}
+
+	executor := &plannerExecutor{
+		ctx:             ctx,
+		agent:           mockAgent,
+		agentRequest:    agentRequest,
+		summaryToolName: "SHELL_EXECUTE", // Bypass rewriteToolInput, matching reality — it only fires when len(Dependency) > 0 anyway (executor_planner.go:3805-3806).
+		toolCallCache:   turnToolCallCache{cache: make(map[string]NBAgentPlannerToolActionStep)},
+	}
+
+	// Mirrors exactly what processToolActions constructs for a live multi-action
+	// turn: no Dependency on either action.
+	actions := []NBAgentPlannerToolAction{
+		{ToolID: "Plan1", Tool: "FETCH_LOGS", ToolInput: "fetch rabbitmq-0 logs", Dependency: []string{}},
+		{ToolID: "Plan2", Tool: "SHELL_EXECUTE", ToolInput: `grep ERROR logs_kubectl_1784552026142158849.txt`, Dependency: []string{}},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_, _, err := executor.doIterationParallel(context.Background(), nil, nameToTool, actions)
+		assert.NoError(t, err)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// success
+	case <-time.After(5 * time.Second):
+		t.Fatal("doIterationParallel timed out")
+	}
+
+	// The real FETCH_LOGS output never reaches SHELL_EXECUTE's context. This is
+	// the structural root cause: nothing about the model's request is checked
+	// here — the same-wave dispatch alone guarantees the grep runs blind.
+	assert.NotContains(t, tool2.CapturedCtx, "file_ref", "SHELL_EXECUTE should never see FETCH_LOGS's real output when no Dependency is declared — this is why a same-turn guessed filename can't match")
+}
+
 func TestDoIterationParallel_SelfDependency(t *testing.T) {
 	// Setup tools
 	tool1 := &MockContextCapturingTool{NameVal: "TOOL1", ReturnOutput: "Output1", ReturnStatus: toolcore.NBToolResponseStatusSuccess}

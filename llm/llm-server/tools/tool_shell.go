@@ -10,6 +10,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
+	"regexp"
 	"strings"
 
 	"github.com/google/shlex"
@@ -202,7 +203,16 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 		// grep/find/jq/etc exit with status 1 when they ran successfully but found
 		// no matches. That is normal Unix semantics, not a tool failure — surface
 		// it as success-with-no-matches so the LLM doesn't retry the same command.
-		if isNoMatchExit(err, originalCommand) {
+		//
+		// Exception: a piped command whose FIRST segment fails on a missing
+		// dynamic-workspace file (e.g. `grep A logs_kubectl_<nano>.txt | grep B`)
+		// also exits 1 here — the tail segment "succeeds" with zero matches
+		// because it never received real input, silently masking the file-not-
+		// found error as a benign no-match. Route that case to the error path
+		// below instead, so the dynamic-file hint in shellErrorHint actually
+		// fires (this is the dominant real-world shape of the fetch_logs
+		// file_ref race — Call A/Call B are piped by design, see agent_log.go).
+		if isNoMatchExit(err, originalCommand) && !looksLikeMissingDynamicFile(response) {
 			nbRequestContext.Ctx.GetLogger().Info("shell: reclassifying exit 1 as no-matches",
 				"command_preview", cmdLog, "first_token", firstShellToken(strings.ToLower(originalCommand)))
 			return successResponseNoMatches(nbRequestContext, response)
@@ -387,12 +397,33 @@ func wrapShellError(rawError, originalCommand string) string {
 	return wrapCliError(rawError, shellErrorHint(rawError, originalCommand))
 }
 
+// dynamicWorkspaceFilePattern matches the <label>_<unix-nano>.<ext> shape that
+// fetch_logs (and the metrics_*/traces_* tools sharing this working directory
+// per the doc comment above) use for saved output. The <unix-nano> segment is
+// generated from time.Now().UnixNano() when the producing tool call actually
+// completes, so it cannot be known in advance — a missing file matching this
+// shape is very likely a same-turn guess at a file whose producing call
+// hasn't finished yet, not a stale cross-conversation file.
+var dynamicWorkspaceFilePattern = regexp.MustCompile(`\b(?:logs|metrics|traces)_[a-zA-Z0-9]+_\d{15,19}\.(?:txt|json)\b`)
+
+// looksLikeMissingDynamicFile reports whether response carries a "no such
+// file or directory" signal for a dynamic-workspace-shaped filename. In a
+// piped command, an upstream segment failing this way still lets the tail
+// segment "succeed" with zero matches (empty input, no match), so the
+// overall exit code alone can't distinguish "genuinely no matches" from
+// "the file never existed" — this checks the captured output text instead.
+func looksLikeMissingDynamicFile(response string) bool {
+	return strings.Contains(strings.ToLower(response), "no such file or directory") && dynamicWorkspaceFilePattern.MatchString(response)
+}
+
 func shellErrorHint(rawError, originalCommand string) string {
 	lower := strings.ToLower(rawError)
 	switch {
 	case strings.Contains(lower, "unterminated quoted string"),
 		strings.Contains(lower, "syntax error: unterminated"):
 		return "Your command has unbalanced quotes. Common cause: nested escaping (\\\" inside a JSON-in-shell value). Try simpler quoting, write the payload to a /tmp/ file with cat <<'EOF', or split the command into two steps."
+	case strings.Contains(lower, "no such file or directory") && firstTokenIsFileReader(originalCommand) && dynamicWorkspaceFilePattern.MatchString(originalCommand):
+		return "File not found. This filename matches the pattern fetch_logs/metrics/traces tools use for saved output — its exact name is only known once that tool call actually completes. If you called the producing tool in the SAME batch as this command, that is why: wait for it to finish and use the exact file_ref from its result, in a later iteration. Run `ls -t logs_*.txt metrics_*.json traces_*.json 2>/dev/null | head -5` to see what's actually available right now."
 	case strings.Contains(lower, "no such file or directory") && firstTokenIsFileReader(originalCommand):
 		return "File not found. The workspace pod is per-account and persists across turns in the same conversation, but files created in a different conversation will NOT exist here. Recreate the file with the upstream command (e.g. `kubectl get ... > /tmp/...`) before grepping/catting it."
 	case strings.Contains(lower, "command not found"),
