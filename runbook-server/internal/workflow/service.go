@@ -29,6 +29,7 @@ import (
 	"github.com/google/uuid"
 	jsonata "github.com/xiatechs/jsonata-go"
 	"go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
@@ -3642,6 +3643,54 @@ func (s *Service) ResolveTemporalWorkflowID(reqCtx *security.RequestContext, acc
 	return "", common.ErrorNotFound(fmt.Sprintf("workflow execution not found for definition ID '%s' and run ID '%s'", workflowDefinitionID, runID))
 }
 
+// formatTemporalFailure renders a Temporal failure into the single-line
+// message shape the executions panel already displays for activity failures.
+func formatTemporalFailure(failure *failurepb.Failure, fallback string) string {
+	if failure == nil {
+		return fallback
+	}
+	var sb strings.Builder
+	sb.WriteString(failure.GetMessage())
+	if cause := failure.GetCause(); cause != nil {
+		if causeMsg := cause.GetMessage(); causeMsg != "" {
+			sb.WriteString(" | Cause: ")
+			sb.WriteString(causeMsg)
+		}
+	}
+	if stack := failure.GetStackTrace(); stack != "" {
+		sb.WriteString(" | StackTrace: ")
+		sb.WriteString(stack)
+	}
+	return sb.String()
+}
+
+// resolveChildParentTaskID recovers the parent task ID a child workflow was
+// spawned for. The ID lives in the child's Memo (set by the executor); the
+// Workflow ID is parsed as a fallback for runs started before the memo existed.
+func (s *Service) resolveChildParentTaskID(ctx *security.RequestContext, childWorkflowID, childRunID string) (string, bool) {
+	childDescribe, err := s.temporalClient.DescribeWorkflowExecution(ctx.GetContext(), childWorkflowID, childRunID)
+	if err == nil {
+		if memo, ok := childDescribe.GetWorkflowExecutionInfo().GetMemo().GetFields()["parent_task_id"]; ok {
+			var parentTaskID string
+			if err := s.dataConverter.FromPayload(memo, &parentTaskID); err == nil {
+				return parentTaskID, true
+			}
+		}
+	}
+
+	parts := strings.Split(childWorkflowID, "/")
+	if len(parts) > 0 {
+		compositeID := parts[len(parts)-1]
+		if len(compositeID) > 74 {
+			remaining := compositeID[37:]
+			if len(remaining) > 37 {
+				return remaining[:len(remaining)-37], true
+			}
+		}
+	}
+	return "", false
+}
+
 func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID string, historyIterator client.HistoryEventIterator, wfDef model.WorkflowDefinition) (*model.WorkflowExecutionDetails, error) {
 	logger := ctx.GetLogger()
 	workflowDetails := &model.WorkflowExecutionDetails{
@@ -3677,6 +3726,59 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 		}
 	}
 	buildDefinedTaskIDs(wfDef.Tasks)
+
+	// Steps selected by a case-routing task (core.switch) do not run under their
+	// own ID: the executor hydrates them into the switch's inline child workflow
+	// as "{switchID}-{branchID}" (executor.go, originalToRenamedID). History
+	// events therefore carry the renamed ID, which matches no node in the
+	// definition. switchBranchOwner maps branchID -> switchID so those runtime
+	// IDs can be resolved back to the graph node the user drew.
+	// branchIDByRuntimeID is the same relation keyed by the runtime ID
+	// ("{switchID}-{branchID}") so resolution is a single map lookup.
+	switchBranchOwner := make(map[string]string)
+	branchIDByRuntimeID := make(map[string]string)
+	var buildSwitchBranchOwners func(tasks []model.Task)
+	buildSwitchBranchOwners = func(tasks []model.Task) {
+		own := func(switchID, branchID string) {
+			if branchID == "" {
+				return
+			}
+			switchBranchOwner[branchID] = switchID
+			branchIDByRuntimeID[switchID+"-"+branchID] = branchID
+		}
+		for _, task := range tasks {
+			if cases, ok := task.Params["cases"].([]any); ok {
+				for _, c := range cases {
+					cm, ok := c.(map[string]any)
+					if !ok {
+						continue
+					}
+					next, _ := cm["next"].(string)
+					own(task.ID, next)
+				}
+			}
+			defaultNext, _ := task.Params["default_next"].(string)
+			own(task.ID, defaultNext)
+			if len(task.Tasks) > 0 {
+				buildSwitchBranchOwners(task.Tasks)
+			}
+		}
+	}
+	buildSwitchBranchOwners(wfDef.Tasks)
+
+	// resolveGraphTaskID maps a runtime task ID back to the definition node it
+	// belongs to. Only "{switchID}-{branchID}" pairs that the definition actually
+	// declares are rewritten, so a task whose own ID contains a dash is left
+	// alone. Returns the input unchanged when it is already a defined ID.
+	resolveGraphTaskID := func(runtimeID string) string {
+		if _, ok := definedTaskIDs[runtimeID]; ok {
+			return runtimeID
+		}
+		if branchID, ok := branchIDByRuntimeID[runtimeID]; ok {
+			return branchID
+		}
+		return runtimeID
+	}
 
 	for historyIterator.HasNext() {
 		event, err := historyIterator.Next()
@@ -3885,12 +3987,18 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 			}
 
 			if found {
-				if _, ok := definedTaskIDs[parentTaskID]; ok {
+				// A switch-selected branch spawns its child workflow under the
+				// hydrated ID "{switchID}-{branchID}", which is absent from the
+				// definition. Resolve it so the branch is kept (it used to be
+				// dropped here, leaving the step statusless) and so its Type and
+				// Params are read from the node it belongs to.
+				graphTaskID := resolveGraphTaskID(parentTaskID)
+				if _, ok := definedTaskIDs[graphTaskID]; ok {
 					// Prefer the real task Type/Params from the definition so the UI can render
 					// a typed icon, schema-aware input panel, and the right detail label.
 					// Falls back to the legacy "uses" placeholder when the parent task
 					// isn't found in the definition (e.g. mid-edit workflow).
-					defTask, hasDef := definedTaskByID[parentTaskID]
+					defTask, hasDef := definedTaskByID[graphTaskID]
 					taskType := "uses"
 					if hasDef && defTask.Type != "" {
 						taskType = defTask.Type
@@ -4048,6 +4156,37 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 					}
 				}
 			}
+
+		case enums.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_FAILED, enums.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_TIMED_OUT:
+			// Without these the step that spawned a child workflow (a branch of a
+			// switch, or any core.call-workflow) stays SCHEDULED forever once the
+			// child fails — the run view then shows a completed workflow with a
+			// step stuck mid-flight.
+			var childWorkflowId, childRunId, errMsg string
+			status := model.TaskStatusFailed
+			if event.GetEventType() == enums.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_FAILED {
+				attrs := event.GetChildWorkflowExecutionFailedEventAttributes()
+				childWorkflowId = attrs.GetWorkflowExecution().GetWorkflowId()
+				childRunId = attrs.GetWorkflowExecution().GetRunId()
+				errMsg = formatTemporalFailure(attrs.GetFailure(), "Child workflow failed (no details)")
+			} else {
+				attrs := event.GetChildWorkflowExecutionTimedOutEventAttributes()
+				childWorkflowId = attrs.GetWorkflowExecution().GetWorkflowId()
+				childRunId = attrs.GetWorkflowExecution().GetRunId()
+				status = model.TaskStatusTimedOut
+				errMsg = "Child workflow timed out"
+			}
+
+			parentTaskID, found := s.resolveChildParentTaskID(ctx, childWorkflowId, childRunId)
+			if !found {
+				logger.Error("Failed to resolve parent task ID for failed child workflow", "workflowID", childWorkflowId)
+				continue
+			}
+			if parentTask, ok := taskMap[parentTaskID]; ok {
+				parentTask.Status = status
+				parentTask.EndTime = timestampPBToTimestamp(event.GetEventTime())
+				parentTask.Error = errMsg
+			}
 		}
 	}
 
@@ -4120,6 +4259,12 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 	//                                    already populated and is folded back into the
 	//                                    synthesized container below.
 	containerTasks := make(map[string]bool)
+	// Case-routing containers are handled differently from task-list containers:
+	// their branches are nodes the user drew on the canvas, so they are hoisted
+	// back to the top level under their original ID instead of being nested as
+	// children of the switch. That is what lets the run view give the selected
+	// branch its own status.
+	caseRoutingContainers := make(map[string]bool)
 	for _, t := range wfDef.Tasks {
 		if len(t.Tasks) > 0 {
 			containerTasks[t.ID] = true
@@ -4127,6 +4272,7 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 			containerTasks[t.ID] = true
 		} else if _, ok := t.Params["cases"]; ok {
 			containerTasks[t.ID] = true
+			caseRoutingContainers[t.ID] = true
 		}
 	}
 
@@ -4146,10 +4292,21 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 				continue
 			}
 			matchedContainer := ""
-			// Find if task belongs to any container
-			for containerID := range containerTasks {
-				prefix := containerID + "-"
-				if strings.HasPrefix(t.ID, prefix) {
+			// A task the definition declares under this exact ID ran in its own
+			// right — never treat it as a container child, even when its name
+			// happens to start with a container's ID ("dispatch-report").
+			if _, isDefined := definedTaskIDs[t.ID]; !isDefined {
+				// Find if task belongs to any container
+				for containerID := range containerTasks {
+					prefix := containerID + "-"
+					if !strings.HasPrefix(t.ID, prefix) {
+						continue
+					}
+					// Case-routing containers only own the branches they declare,
+					// so an unrelated "{switchID}-…" task is not adopted.
+					if caseRoutingContainers[containerID] && switchBranchOwner[strings.TrimPrefix(t.ID, prefix)] != containerID {
+						continue
+					}
 					// Check if it's the longest match (handle nested naming if ambiguous)
 					if len(containerID) > len(matchedContainer) {
 						matchedContainer = containerID
@@ -4160,7 +4317,14 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 			if matchedContainer != "" {
 				child := t
 				child.ID = strings.TrimPrefix(t.ID, matchedContainer+"-")
-				containerChildren[matchedContainer] = append(containerChildren[matchedContainer], child)
+				if caseRoutingContainers[matchedContainer] {
+					// Branch selected by a switch: keep it at the top level under the
+					// graph node's own ID so the run view and the API report its real
+					// status instead of leaving the node blank.
+					newTasks = append(newTasks, child)
+				} else {
+					containerChildren[matchedContainer] = append(containerChildren[matchedContainer], child)
+				}
 			} else {
 				newTasks = append(newTasks, t)
 			}
@@ -4343,6 +4507,60 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 			newTasks = append(newTasks, containerTask)
 		}
 		tasks = newTasks
+	}
+
+	// Branches a switch did NOT take never reach Temporal, so history carries no
+	// event for them and they would otherwise be indistinguishable from a step
+	// that ran without reporting. Derive their outcome from the switch's own
+	// `routed_to` output and stamp them SKIPPED.
+	if len(switchBranchOwner) > 0 {
+		present := make(map[string]bool, len(tasks))
+		taskByID := make(map[string]model.TaskExecutionDetails, len(tasks))
+		for _, t := range tasks {
+			present[t.ID] = true
+			taskByID[t.ID] = t
+		}
+
+		var skippedIDs []string
+		for branchID, switchID := range switchBranchOwner {
+			if present[branchID] {
+				continue
+			}
+			switchTask, ok := taskByID[switchID]
+			if !ok || switchTask.Status != model.TaskStatusCompleted {
+				continue // switch never resolved — nothing to infer from
+			}
+			out, ok := switchTask.Output.(map[string]any)
+			if !ok {
+				continue
+			}
+			routed, ok := out["routed_to"].([]any)
+			if !ok {
+				continue // legacy switch shape (embedded_tasks) — leave as-is
+			}
+			wasRouted := false
+			for _, r := range routed {
+				if id, ok := r.(string); ok && id == branchID {
+					wasRouted = true
+					break
+				}
+			}
+			if wasRouted {
+				continue // selected branch missing for some other reason; don't mislabel
+			}
+			skippedIDs = append(skippedIDs, branchID)
+		}
+
+		sort.Strings(skippedIDs) // map iteration order would otherwise vary per call
+		for _, branchID := range skippedIDs {
+			defTask := definedTaskByID[branchID]
+			tasks = append(tasks, model.TaskExecutionDetails{
+				ID:     branchID,
+				Type:   defTask.Type,
+				Status: model.TaskStatusSkipped,
+				Input:  defTask.Params,
+			})
+		}
 	}
 
 	workflowDetails.Tasks = tasks
