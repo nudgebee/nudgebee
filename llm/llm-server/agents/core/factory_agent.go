@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
-	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -243,19 +242,16 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 			useAgentResponse = true
 		}
 		if !useAgentResponse {
-			slices.Reverse(resp.AgentStepResponse)
-			for _, invocation := range resp.AgentStepResponse {
-				if invocation.Response.Content != "" && invocation.Response.Content != "[]" && invocation.Response.Content != "{}" {
-					return toolcore.NBToolResponse{
-						Data:              invocation.Response.Content,
-						Type:              toolcore.NBToolResponseTypeJson,
-						Status:            toolcore.NBToolResponseStatusSuccess,
-						IsTerminal:        resp.IsTerminal,
-						AdditionalDetails: additionalDetails,
-						References:        resp.References,
-						SubAgentEvidence:  subAgentEvidence,
-					}, nil
-				}
+			if content, ok := lastNonTrivialStepContent(resp.AgentStepResponse); ok {
+				return toolcore.NBToolResponse{
+					Data:              content,
+					Type:              toolcore.NBToolResponseTypeJson,
+					Status:            toolcore.NBToolResponseStatusSuccess,
+					IsTerminal:        resp.IsTerminal,
+					AdditionalDetails: additionalDetails,
+					References:        resp.References,
+					SubAgentEvidence:  subAgentEvidence,
+				}, nil
 			}
 		}
 		return toolcore.NBToolResponse{
@@ -267,21 +263,18 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 			References:        resp.References,
 			SubAgentEvidence:  subAgentEvidence,
 		}, nil
-	} else if resp.AgentStepResponse != nil {
-		// Sometimes LLMs are not able to analyze the responses, so return data as-is for the next step.
-		slices.Reverse(resp.AgentStepResponse)
-		for _, invocation := range resp.AgentStepResponse {
-			if invocation.Response.Content != "" && invocation.Response.Content != "[]" && invocation.Response.Content != "{}" {
-				return toolcore.NBToolResponse{
-					Data:              invocation.Response.Content,
-					Type:              toolcore.NBToolResponseTypeJson,
-					AdditionalDetails: additionalDetails,
-					Status:            toolcore.NBToolResponseStatusSuccess,
-					IsTerminal:        resp.IsTerminal,
-					References:        resp.References,
-				}, nil
-			}
-		}
+	} else if content, ok := lastNonTrivialStepContent(resp.AgentStepResponse); ok {
+		// No synthesized answer — return the last raw observation, but mark it
+		// failed so callers don't mistake it for a result.
+		return toolcore.NBToolResponse{
+			Data:              content,
+			Type:              toolcore.NBToolResponseTypeJson,
+			AdditionalDetails: additionalDetails,
+			Status:            toolcore.NBToolResponseStatusError,
+			IsTerminal:        resp.IsTerminal,
+			References:        resp.References,
+			SubAgentEvidence:  subAgentEvidence,
+		}, nil
 	}
 
 	return toolcore.NBToolResponse{
@@ -291,6 +284,19 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 		Status:            toolcore.NBToolResponseStatusError,
 		References:        resp.References,
 	}, toolcore.ErrUnableToFetchData
+}
+
+// lastNonTrivialStepContent scans steps newest-first and returns the content of
+// the most recent tool invocation whose response isn't empty or an empty JSON
+// container ("[]"/"{}"/"null"). ok is false if no step qualifies.
+func lastNonTrivialStepContent(steps []ToolInvocation) (content string, ok bool) {
+	for i := len(steps) - 1; i >= 0; i-- {
+		c := strings.TrimSpace(steps[i].Response.Content)
+		if c != "" && c != "[]" && c != "{}" && c != "null" {
+			return steps[i].Response.Content, true
+		}
+	}
+	return "", false
 }
 
 func ExecuteAgentToolCall(nbRequestContext toolcore.NbToolContext, agent NBAgent, query toolcore.NBToolCallRequest) (NBAgentResponse, error) {
