@@ -795,21 +795,20 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		egressFilterEventsMu.Unlock()
 	}))
 
-	// Sibling reporter for the EE PII scrubber (ee/scrubbing). Same
-	// accumulate-per-turn / persist-at-message-end shape as egressfilter;
-	// both slices merge into the SAME metadata.egressfilter[] JSONB array
-	// below, discriminated by each event's `detector` field ("secrets" vs
-	// "pii"). No-op unless the EE wrapper is installed AND a call actually
-	// tokenized something.
-	var (
-		piiScrubEvents   []egressfilter.PIIScrubEvent
-		piiScrubEventsMu sync.Mutex
-	)
-	ctx.SetContext(egressfilter.WithPIIScrubEventReporter(ctx.GetContext(), func(e egressfilter.PIIScrubEvent) {
-		piiScrubEventsMu.Lock()
-		piiScrubEvents = append(piiScrubEvents, e)
-		piiScrubEventsMu.Unlock()
-	}))
+	// Sibling accumulator for the EE PII scrubber (ee/scrubbing). Unlike the
+	// egressfilter reporter above, PII uses a per-turn DISTINCT-value
+	// accumulator (2026-07-31) so the chip count reflects unique values
+	// rather than sum-of-hit_counts across every wrapper call. A react loop
+	// of many calls that reference the same email would otherwise show
+	// e.g. "95 PII scrubbed" for what is really 1-few distinct values.
+	//
+	// Values live only in the accumulator's in-memory map for the duration
+	// of this turn — never serialized or persisted. Same risk profile as
+	// the per-call mapping the wrapper already holds for rehydration.
+	// At message-end we call Consolidated() to build ONE PIIScrubEvent
+	// with the true-distinct hit_count + union of categories + agent list.
+	piiAccumulator := egressfilter.NewPIIValueAccumulator()
+	ctx.SetContext(egressfilter.WithPIIValueAccumulator(ctx.GetContext(), piiAccumulator))
 
 	var agentResponse NBAgentResponse
 	var executeErr error
@@ -1348,28 +1347,35 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		egressFilterEventsMu.Lock()
 		eventsSnapshot := append([]egressfilter.FilterEvent(nil), egressFilterEvents...)
 		egressFilterEventsMu.Unlock()
-		piiScrubEventsMu.Lock()
-		piiSnapshot := append([]egressfilter.PIIScrubEvent(nil), piiScrubEvents...)
-		piiScrubEventsMu.Unlock()
+
+		// Consolidate PII into ONE event per message from the accumulator
+		// (2026-07-31, see WithPIIValueAccumulator). Nil when nothing was
+		// scrubbed this turn (clean turn or PII disabled for tenant).
+		piiConsolidated := piiAccumulator.Consolidated()
+
 		// Secrets (egressfilter) and PII (scrubber) are sibling detectors in
 		// the "outbound payload inspection" family — they share the same JSONB
 		// slot under `metadata.egressfilter[]`, and consumers switch on each
 		// event's `detector` field ("secrets" vs "pii"). One array, N detector
 		// types — capped at one key even if we add more detectors later
 		// (prompt-injection, jailbreak, ...).
-		if total := len(eventsSnapshot) + len(piiSnapshot); total > 0 {
+		piiCount := 0
+		if piiConsolidated != nil {
+			piiCount = 1
+		}
+		if total := len(eventsSnapshot) + piiCount; total > 0 {
 			combined := make([]any, 0, total)
 			for _, e := range eventsSnapshot {
 				combined = append(combined, e)
 			}
-			for _, e := range piiSnapshot {
-				combined = append(combined, e)
+			if piiConsolidated != nil {
+				combined = append(combined, *piiConsolidated)
 			}
 			metadata := map[string]any{"egressfilter": combined}
 			if mdErr := GetConversationDao().UpdateConversationMessageMetadata(request.MessageId, metadata); mdErr != nil {
 				ctx.GetLogger().Warn("conversation: unable to persist message metadata",
 					"error", mdErr, "message_id", request.MessageId,
-					"secrets_events", len(eventsSnapshot), "pii_events", len(piiSnapshot))
+					"secrets_events", len(eventsSnapshot), "pii_events", piiCount)
 			}
 		}
 

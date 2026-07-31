@@ -2,7 +2,9 @@ package egressfilter
 
 import (
 	"context"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 )
@@ -78,7 +80,7 @@ func NewPIIScrubEvent(mapping map[string]string, reversible bool, payloadBytes i
 	for c := range catSet {
 		cats = append(cats, c)
 	}
-	sortPIICategories(cats)
+	slices.Sort(cats)
 	return PIIScrubEvent{
 		AuditID:      newPIIAuditID(),
 		Detector:     DetectorPII,
@@ -138,17 +140,6 @@ func piiTokenCategory(token string) string {
 	return inner[:i]
 }
 
-// sortPIICategories is a tiny insertion sort — categories are at most 4
-// elements (PERSON, LOCATION, EMAIL, PHONE), so this avoids pulling in sort
-// for a hot-ish path and keeps the output deterministic for tests/dashboards.
-func sortPIICategories(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
-}
-
 // newPIIAuditID mirrors newAuditID (12 hex of a UUIDv4) with a "scrub-"
 // prefix so PII audit IDs are visually distinct from "egress-" ones in
 // tailed logs.
@@ -157,8 +148,147 @@ func newPIIAuditID() string {
 	return "scrub-" + id[:12]
 }
 
+// PIIValueAccumulator collects distinct PII values scrubbed across all
+// wrapper calls in a single conversation turn, so the message-end
+// consolidator can emit ONE PIIScrubEvent with a true-distinct hit_count.
+// Multiple react-loop calls that reference the same values otherwise
+// inflate the sum-of-hit_count chip label — a react turn with 9 wrapper
+// calls could easily produce 95 "hits" for what is really 1-few distinct
+// values, per the 2026-07-30 UI review.
+//
+// Values live in memory only for the duration of one turn — the
+// accumulator is ctx-scoped and never serialized. Same risk profile as
+// the per-call mapping the wrapper already holds for rehydration. The
+// accumulator is safe for concurrent use (parallel plan execution can
+// invoke the wrapper from multiple goroutines under one turn).
+type PIIValueAccumulator struct {
+	mu           sync.Mutex
+	values       map[string]string // raw value -> category (first-seen wins)
+	payloadBytes int
+	agentNames   map[string]struct{}
+}
+
+// NewPIIValueAccumulator returns an empty accumulator ready to be attached
+// to ctx via WithPIIValueAccumulator.
+func NewPIIValueAccumulator() *PIIValueAccumulator {
+	return &PIIValueAccumulator{
+		values:     make(map[string]string),
+		agentNames: make(map[string]struct{}),
+	}
+}
+
+// Add contributes a per-call scrub mapping to the accumulator. Called by
+// the EE wrapper after each successful /scrub call. Deduplicates by raw
+// value across all prior calls in the turn.
+//
+// A value's category is stable in practice (an email is always EMAIL);
+// first-seen wins if a value ever changes category, which should not
+// happen but is defended against so the accumulator degrades gracefully.
+func (a *PIIValueAccumulator) Add(mapping map[string]string, agentName string, payloadBytes int) {
+	if a == nil || len(mapping) == 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Lazy-init so a caller using &PIIValueAccumulator{} (bypassing
+	// NewPIIValueAccumulator) still works — nil-map assignment would
+	// otherwise panic. Cheap; hit on first Add per accumulator.
+	if a.values == nil {
+		a.values = make(map[string]string)
+	}
+	if a.agentNames == nil {
+		a.agentNames = make(map[string]struct{})
+	}
+	for token, value := range mapping {
+		if _, seen := a.values[value]; !seen {
+			a.values[value] = piiTokenCategory(token)
+		}
+	}
+	a.payloadBytes += payloadBytes
+	if agentName != "" {
+		a.agentNames[agentName] = struct{}{}
+	}
+}
+
+// Consolidated returns a single PIIScrubEvent summarising every distinct
+// value the wrapper saw this turn. HitCount is the true-distinct count
+// across all wrapper calls. Categories is the sorted union. AgentName
+// carries the sorted comma-joined list of contributing agents so the
+// chip tooltip can surface which agents touched PII. Returns nil for an
+// empty accumulator (nothing to report).
+func (a *PIIValueAccumulator) Consolidated() *PIIScrubEvent {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.values) == 0 {
+		return nil
+	}
+	catSet := make(map[string]struct{}, 4)
+	for _, cat := range a.values {
+		if cat != "" {
+			catSet[cat] = struct{}{}
+		}
+	}
+	cats := make([]string, 0, len(catSet))
+	for c := range catSet {
+		cats = append(cats, c)
+	}
+	slices.Sort(cats)
+
+	agents := make([]string, len(a.agentNames))
+	i := 0
+	for name := range a.agentNames {
+		agents[i] = name
+		i++
+	}
+	slices.Sort(agents)
+
+	return &PIIScrubEvent{
+		AuditID:      newPIIAuditID(),
+		Detector:     DetectorPII,
+		HitCount:     len(a.values),
+		Categories:   cats,
+		Reversible:   true,
+		PayloadBytes: a.payloadBytes,
+		AgentName:    strings.Join(agents, ","),
+	}
+}
+
+// piiValueAccumulatorKey attaches an accumulator to ctx for the wrapper
+// to find on each call.
+type piiValueAccumulatorKey struct{}
+
+// WithPIIValueAccumulator attaches acc to ctx. conversation.go creates
+// the accumulator at turn start and reads it back at message-end to
+// build the consolidated event.
+func WithPIIValueAccumulator(ctx context.Context, acc *PIIValueAccumulator) context.Context {
+	if acc == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, piiValueAccumulatorKey{}, acc)
+}
+
+// PIIValueAccumulatorFromContext returns the accumulator attached via
+// WithPIIValueAccumulator, or nil when none is attached (background jobs,
+// non-conversation callers). Wrapper calls Add on a nil accumulator as a
+// no-op, so the "no accumulator" path is safe.
+func PIIValueAccumulatorFromContext(ctx context.Context) *PIIValueAccumulator {
+	if v, ok := ctx.Value(piiValueAccumulatorKey{}).(*PIIValueAccumulator); ok {
+		return v
+	}
+	return nil
+}
+
 // piiScrubEventReporterKey is the unexported context key for the per-request
 // reporter callback.
+//
+// DEPRECATED (2026-07-31): superseded by PIIValueAccumulator, which
+// produces one consolidated event per message instead of one per call.
+// The reporter type + Report/With helpers are kept for backward compat
+// (a few tests still use them) but the wrapper no longer calls
+// ReportPIIScrubEvent — see ee/scrubbing/scrubllm.go.
 type piiScrubEventReporterKey struct{}
 
 // WithPIIScrubEventReporter attaches a callback the EE scrub wrapper invokes
