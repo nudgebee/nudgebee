@@ -1,4 +1,4 @@
-// Fire-and-forget client-error beacon → POST /api/client-errors → Loki.
+// Fire-and-forget client-error beacon → POST /api/client-errors → server logs.
 //
 // Why this is deliberately NOT built on HttpService/axios: the reporter must
 // never route through the instrumented API client. A failing API call reports
@@ -9,7 +9,7 @@
 //
 // Captures: uncaught JS errors, unhandled promise rejections, React error
 // boundaries, explicitly-handled errors, and API-call failures. The server
-// route logs each to stdout and best-effort pushes to Loki.
+// route emits each as a JSON log line, which the cluster log shipper picks up.
 
 export type ClientErrorKind = 'js-error' | 'unhandled-rejection' | 'react-boundary' | 'handled' | 'api-failure';
 
