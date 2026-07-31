@@ -33,6 +33,12 @@ type metricsListCacheEntry struct {
 
 var metricsListCache sync.Map
 
+// metricsLabelValuesCache caches metrics_label_values results. It is deliberately
+// separate from metricsListCache: a struct key cannot collide the way a delimited
+// string one can. Prometheus recording-rule metric names contain colons
+// (`cluster:node_cpu:ratio`) and the filter is free-form, so joining the fields
+// with ':' would make (filter "a:b", metric "c") and (filter "a", metric "b:c")
+// the same key and serve one lookup's values for the other.
 type labelValuesCacheKey struct {
 	accountId string
 	provider  string
@@ -60,6 +66,11 @@ const ToolSearchMetrics = "search_metrics"
 
 // maxPrometheusMetricsInResponse caps the number of metrics returned by metrics_list when LLM filtering is active.
 const maxPrometheusMetricsInResponse = 100
+
+// maxPrometheusLabelValuesInResponse caps metrics_label_values output. Labels like
+// `instance` or `pod` are high-cardinality; an uncapped list would blow the
+// scratchpad budget for no benefit, since the agent only needs enough values to
+// recognise the naming scheme and pick the one it is looking for.
 const maxPrometheusLabelValuesInResponse = 100
 
 func init() {
@@ -71,6 +82,9 @@ func init() {
 	})
 	core.RegisterNBToolFactory(ToolMetricsLabelsList, func(accountId string) (core.NBTool, error) {
 		return ListMetricsLabelsTool{}, nil
+	})
+	core.RegisterNBToolFactory(ToolMetricsLabelValues, func(accountId string) (core.NBTool, error) {
+		return ListMetricsLabelValuesTool{}, nil
 	})
 	core.RegisterNBToolFactory(ToolSearchMetrics, func(accountId string) (core.NBTool, error) {
 		return SearchMetricsTool{}, nil
@@ -127,6 +141,18 @@ func (m PrometheusExecuteTool) InputSchema() core.ToolSchema {
 	}
 }
 
+// prometheusNoDataMessage is the guidance returned when every query in a batch
+// comes back empty. This is the exact point where the agent would otherwise start
+// guessing successive label names, so it must route each named-resource shape to
+// the discovery tool that can actually resolve it.
+func prometheusNoDataMessage(query string) string {
+	return fmt.Sprintf("No data found for query: %s. The metric may not exist, labels may be incorrect, or there is no data in the selected time range."+
+		" If this is for a named workload, call %s (workload + namespace) to get the families that actually have series for it, then rebuild the query."+
+		" For any other named resource (a node, an instance, a device), do NOT guess another label name — call %s with the label you are filtering on to see the values it actually takes, then filter on a real value."+
+		" Otherwise use %s/%s for keyword discovery.",
+		query, ToolMetricsSeriesMatch, ToolMetricsLabelValues, ToolMetricsList, ToolSearchMetrics)
+}
+
 // promQLParser is a shared, stateless PromQL parser. ParseExpr builds a fresh
 // internal parser per call from the (immutable) Options, so a single package-level
 // instance is safe to reuse concurrently and avoids per-call allocations.
@@ -165,6 +191,12 @@ func validatePromQLSyntax(query string) string {
 				"If the query already IS PromQL, check metric name spelling and label syntax: labels must use '=', '!=', '=~', '!~' inside '{}'."
 		case strings.Contains(msg, "parse error") && strings.Contains(msg, "["):
 			hint = "Hint: Duration format is invalid. Use 's', 'm', 'h', 'd' suffixes (e.g., [5m], [1h])."
+		case strings.Contains(msg, "unknown function") && strings.Contains(msg, "label_values"):
+			// label_values() is a Grafana template-variable function, not PromQL. The
+			// model reaches for it when it needs a label's values, so name the tool
+			// that actually provides them rather than listing PromQL functions.
+			hint = "Hint: `label_values()` is a Grafana template function, not PromQL — it will never parse here. " +
+				"To list the values a label takes, call the " + ToolMetricsLabelValues + " tool instead (label, optional filter)."
 		case strings.Contains(msg, "unknown function"):
 			hint = "Hint: Unknown PromQL function. Common functions: rate(), irate(), increase(), sum(), avg(), max(), min(), histogram_quantile()."
 		default:
@@ -395,7 +427,7 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 	if allEmpty {
 		slog.Info("prometheus: all queries returned empty data", "query", input.Command, "parentAgentId", nbRequestContext.ParentAgentId)
 		return core.NBToolResponse{
-			Data:       fmt.Sprintf("No data found for query: %s. The metric may not exist, labels may be incorrect, or there is no data in the selected time range. If this is for a named workload, call metrics_series_match (workload + namespace) to get the families that actually have series for it, then rebuild the query. Otherwise use metrics_list/search_metrics for keyword discovery.", input.Command),
+			Data:       prometheusNoDataMessage(input.Command),
 			Status:     core.NBToolResponseStatusSuccess,
 			References: []core.NBToolResponseReference{core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"monitoring", "query"}, "Query Prometheus", map[string]string{"tab": "4", "subtab": "2"}, input.Command)},
 		}, nil
@@ -611,8 +643,7 @@ func sanitizeFloats(v any) any {
 }
 
 type MetricsListTool struct {
-	Provider     string
-	DefaultIndex string
+	Provider string
 }
 
 func (m MetricsListTool) Name() string {
@@ -627,10 +658,6 @@ func (m MetricsListTool) Description() string {
 	return `Returns List of Available metrics.
 		Usage:
 		* Input: REQUIRED — a keyword to search metrics (e.g. 'cpu', 'memory').
-		  For Elasticsearch/Opensearch you may instead pass an index pattern containing a
-		  wildcard (e.g. 'metricbeat-*') to list every metric in that index; without a
-		  wildcard the input is treated as a keyword and the account's configured metric
-		  index is used.
 		* Output: The tool will return the list of metrics.
 
 		Purpose: Use this tool to search for available metrics.
@@ -648,72 +675,6 @@ func (m MetricsListTool) InputSchema() core.ToolSchema {
 		},
 		Required: []string{"command"},
 	}
-}
-
-// esMetricNameField is the metric-name field used by the OTel / Data Prepper pipeline,
-// where each document is one {name, value} pair. Beats-family indices have no such
-// field: there, one document carries many numeric fields and the metric identity IS the
-// field path. See esDiscoverMetricNames.
-const esMetricNameField = "name"
-
-// esNumericFieldTypes are the mapping types that denote a metric VALUE path, as opposed
-// to a dimension. Kept explicit rather than "not keyword" so an unfamiliar type is
-// treated as a dimension instead of being offered as a metric.
-var esNumericFieldTypes = map[string]bool{
-	"long": true, "integer": true, "short": true, "byte": true,
-	"double": true, "float": true, "half_float": true, "scaled_float": true,
-	"unsigned_long": true,
-}
-
-// esDiscoverMetricNames returns the metric names available in an ES index, and how they
-// were derived.
-//
-// Two pipelines, two answers:
-//
-//   - OTel / Data Prepper writes {name, value} documents, so the distinct values of
-//     `name` are the metric names.
-//   - Beats / Elastic Agent writes one document per metricset with many numeric fields,
-//     so the NUMERIC FIELD PATHS are the metric names. That is not a reinterpretation:
-//     the api-server flattens exactly those paths into the `__name__` label it returns
-//     on every series, so this list and what the caller sees in results agree by
-//     construction.
-//
-// Querying only `name` — as this did — returned an empty list on every Beats index while
-// the data sat there in plain sight.
-func esDiscoverMetricNames(nbRequestContext core.NbToolContext, provider, indexPattern string) ([]core.ObservabilityMetricsSeries, string, error) {
-	labelValuesResp, err := services_server.ListMetricsSeriesLabelValues(
-		*nbRequestContext.Ctx, nbRequestContext.AccountId, provider, esMetricNameField,
-		map[string]any{"request": map[string]any{"metric_name": indexPattern}},
-	)
-	if err == nil && len(labelValuesResp.Values) > 0 {
-		series := make([]core.ObservabilityMetricsSeries, 0, len(labelValuesResp.Values))
-		for _, v := range labelValuesResp.Values {
-			series = append(series, core.ObservabilityMetricsSeries{Metric: v.Value})
-		}
-		return series, "name", nil
-	}
-	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Info("metrics: ES name-field lookup failed, falling back to mapping field paths",
-			"index", indexPattern, "error", err.Error())
-	}
-
-	// Beats-family: the numeric field paths are the metric names.
-	fieldsResp, ferr := services_server.ListMetricsSeriesLabels(
-		*nbRequestContext.Ctx, nbRequestContext.AccountId, provider, indexPattern)
-	if ferr != nil {
-		if err != nil {
-			return nil, "", err
-		}
-		return nil, "", ferr
-	}
-	series := make([]core.ObservabilityMetricsSeries, 0, len(fieldsResp.Labels))
-	for _, l := range fieldsResp.Labels {
-		t, _ := l.Attributes["type"].(string)
-		if esNumericFieldTypes[t] {
-			series = append(series, core.ObservabilityMetricsSeries{Metric: l.Label})
-		}
-	}
-	return series, "numeric field paths", nil
 }
 
 func (m MetricsListTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
@@ -746,50 +707,26 @@ func (m MetricsListTool) Call(nbRequestContext core.NbToolContext, input core.NB
 
 	var metricsResponse core.ObservabilityMetricsSeriesResponse
 
-	// esQueryIsIndexPattern records whether the caller's input was consumed as an index
-	// pattern rather than as a search keyword, so the keyword filter below knows whether
-	// there is a keyword left to apply.
-	esQueryIsIndexPattern := false
-
 	if strings.EqualFold(provider, "ES") {
-		// ES has no metrics_list endpoint, so metric names are discovered as the distinct
-		// values of whichever field carries metric identity in this index.
-		indexPattern := m.DefaultIndex
-		if strings.Contains(query, "*") || strings.Contains(query, "?") {
-			indexPattern = query
-			esQueryIsIndexPattern = true
-		}
-		if indexPattern == "" {
-			if obsProvider, err := services_server.GetObservabilityProvider(*nbRequestContext.Ctx, nbRequestContext.AccountId, "metrics"); err == nil && obsProvider.DefaultIndex != "" {
-				indexPattern = obsProvider.DefaultIndex
-			}
-		}
-
-		series, identityField, err := esDiscoverMetricNames(nbRequestContext, provider, indexPattern)
+		// ES doesn't support metrics_list; use metrics_list_label_values with label="name"
+		// and the index pattern passed in a nested "request" object (matching the GraphQL schema).
+		indexPattern := query
+		labelValuesResp, err := services_server.ListMetricsSeriesLabelValues(
+			*nbRequestContext.Ctx, nbRequestContext.AccountId, provider, "name",
+			map[string]any{"request": map[string]any{"metric_name": indexPattern}},
+		)
 		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("metrics: unable to fetch ES metric names", "index", indexPattern, "error", err.Error())
+			nbRequestContext.Ctx.GetLogger().Error("metrics: unable to fetch ES metric names via label values", "error", err.Error())
 			return core.NBToolResponse{
 				Data:   err.Error(),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}
-		if len(series) == 0 {
-			// Do not return an empty list here. An empty list is indistinguishable from
-			// "this environment has no metrics", which is how an introspection failure
-			// gets reported to the user as absent data. Name what was tried instead.
-			data := fmt.Sprintf(
-				"Could not enumerate metrics in index %q: it exposes neither a %q field nor any numeric fields. "+
-					"This is an introspection failure, NOT evidence that the environment has no metrics. "+
-					"Fetch a sample document (`{\"index\":%q,\"query\":{\"query\":{\"match_all\":{}},\"size\":1}}`) "+
-					"and read the field names from it before concluding anything.",
-				indexPattern, esMetricNameField, indexPattern)
-			return core.NBToolResponse{
-				Data:   data,
-				Status: core.NBToolResponseStatusError,
-			}, nil
+		// Convert label values to MetricsSeries format for downstream processing.
+		series := make([]core.ObservabilityMetricsSeries, 0, len(labelValuesResp.Values))
+		for _, v := range labelValuesResp.Values {
+			series = append(series, core.ObservabilityMetricsSeries{Metric: v.Value})
 		}
-		nbRequestContext.Ctx.GetLogger().Info("metrics: resolved ES metric identity field",
-			"index", indexPattern, "identity_field", identityField, "num_metrics", len(series))
 		metricsResponse = core.ObservabilityMetricsSeriesResponse{Series: series}
 	} else {
 		var err error
@@ -803,11 +740,8 @@ func (m MetricsListTool) Call(nbRequestContext core.NbToolContext, input core.NB
 		}
 	}
 
-	// Filter by the caller's keyword. Previously skipped for ES on the assumption that
-	// the input was always an index pattern — it is only an index pattern when it holds
-	// a wildcard, so every other ES call silently discarded the keyword and returned the
-	// same unfiltered list for `cpu` as for `memory`.
-	if query != "" && !esQueryIsIndexPattern {
+	// For ES provider, query is an index pattern — skip keyword filtering.
+	if query != "" && !strings.EqualFold(provider, "ES") {
 		// Choose filtering method based on config
 		if config.Config.EnableLLMMetricsFiltering {
 			// Use LLM to intelligently filter metrics based on user question
@@ -862,15 +796,6 @@ func (m MetricsListTool) Call(nbRequestContext core.NbToolContext, input core.NB
 	}
 
 	responseData := string(dataResponse)
-	// Distinguish "nothing matched your keyword" from "we could not read this index".
-	// The latter is handled above as an error; saying so here keeps the caller from
-	// reading a legitimately-empty filter result as an absence of metrics.
-	if len(deduped) == 0 && query != "" && !esQueryIsIndexPattern {
-		responseData = fmt.Sprintf(
-			"No metric name matched %q. The index was read successfully, so metrics do exist — "+
-				"retry with a broader keyword, or pass the index pattern (with a wildcard) to list all metric names.",
-			query)
-	}
 	if totalFamilies > maxMetricsResults {
 		responseData = fmt.Sprintf("Note: Showing %d of %d metric families. Use a more specific keyword to narrow results.\n\n%s", maxMetricsResults, totalFamilies, responseData)
 	}
@@ -1108,8 +1033,7 @@ func parseMetricNamesFromLLMResponse(content string) []string {
 }
 
 type ListMetricsLabelsTool struct {
-	Provider     string
-	DefaultIndex string
+	Provider string
 }
 
 func (m ListMetricsLabelsTool) Name() string {
@@ -1160,15 +1084,7 @@ func (m ListMetricsLabelsTool) Call(nbRequestContext core.NbToolContext, input c
 		provider = m.Provider
 	}
 
-	seriesName := query
-	if strings.EqualFold(provider, "ES") {
-		idxPattern := getESMetricIndexPattern(nbRequestContext, m.DefaultIndex)
-		if idxPattern != "" && !strings.Contains(query, "*") && !strings.Contains(query, "?") {
-			seriesName = idxPattern
-		}
-	}
-
-	labelsResponse, err := services_server.ListMetricsSeriesLabels(*nbRequestContext.Ctx, nbRequestContext.AccountId, provider, seriesName)
+	labelsResponse, err := services_server.ListMetricsSeriesLabels(*nbRequestContext.Ctx, nbRequestContext.AccountId, provider, query)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("unable to fetch metrics labels", "error", err.Error())
 		return core.NBToolResponse{
@@ -1213,8 +1129,7 @@ func (m ListMetricsLabelsTool) Call(nbRequestContext core.NbToolContext, input c
 // the iteration budget runs out and the run reports "no data" for a resource that is
 // in fact fully instrumented. Enumerating the values ends the loop in one call.
 type ListMetricsLabelValuesTool struct {
-	Provider     string
-	DefaultIndex string
+	Provider string
 }
 
 func (m ListMetricsLabelValuesTool) Name() string {
@@ -1322,11 +1237,6 @@ func (m ListMetricsLabelValuesTool) Call(nbRequestContext core.NbToolContext, in
 	var extraRequest []map[string]any
 	if metric != "" {
 		extraRequest = append(extraRequest, map[string]any{"request": map[string]any{"metric_name": metric}})
-	} else if strings.EqualFold(provider, "ES") {
-		idxPattern := getESMetricIndexPattern(nbRequestContext, m.DefaultIndex)
-		if idxPattern != "" {
-			extraRequest = append(extraRequest, map[string]any{"request": map[string]any{"metric_name": idxPattern}})
-		}
 	}
 
 	valuesResponse, err := services_server.ListMetricsSeriesLabelValues(
@@ -1481,16 +1391,4 @@ func (s SearchMetricsTool) Call(nbRequestContext core.NbToolContext, input core.
 		Data:   sb.String(),
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil
-}
-
-func getESMetricIndexPattern(nbRequestContext core.NbToolContext, defaultIndex string) string {
-	if defaultIndex != "" {
-		return defaultIndex
-	}
-	if nbRequestContext.Ctx != nil {
-		if obsProvider, err := services_server.GetObservabilityProvider(*nbRequestContext.Ctx, nbRequestContext.AccountId, "metrics"); err == nil && obsProvider.DefaultIndex != "" {
-			return obsProvider.DefaultIndex
-		}
-	}
-	return ""
 }

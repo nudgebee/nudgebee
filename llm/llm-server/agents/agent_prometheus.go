@@ -108,6 +108,8 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 		" - The metric templates above are ONE possible instrumentation. The metric name that carries a signal (requests/latency/errors) and the label that identifies a workload both differ across environments (agent-based, SDK-based, service-mesh, custom exporters). Do NOT treat any specific metric name or label as guaranteed.",
 		" - If a query returns empty for a KNOWN workload, do NOT conclude 'no data'. Call `metrics_series_match` with the workload (and namespace) — it returns the metric families that actually have series for it, grouped by the labels that identify the workload. Pick a family from a group and filter it by THAT group's `namespace_label`/`workload_label` (a `prefix` match means use `=~\"<workload>.*\"`). Do not mix labels across groups.",
 		" - Use `metrics_list` (keyword) and `metrics_labels_list` only when you do NOT have a concrete workload name (e.g. discovering custom exporters like redis/kafka/jvm). For a named workload, `metrics_series_match` is the deterministic path.",
+		" - `metrics_series_match` matches WORKLOADS only. For a node, instance, disk or other non-workload resource it will return unrelated families — do not use it, and do not read meaning into what it returns.",
+		" - For a named NON-workload resource (most often a node), the failure is almost always that you filtered on a label the metric does not carry, or on a value spelled differently than the human name. Do NOT guess a second label name. Call `metrics_label_values` for the label you are filtering on (pass `filter` to narrow it) and filter on a value you can actually see. Node example: node_* series are commonly labelled by `instance` holding an IP:port, so `instance=~\"<node-name>.*\"` and `kubernetes_node=\"<node-name>\"` both return empty even though the node is fully instrumented.",
 		" - Discovery is a catalog/series lookup: run it once, then build the query from the result. Don't re-run the same scan or retry many fixed variants — your ReAct iteration budget is bounded.",
 	)
 
@@ -130,8 +132,13 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 		}, tools.ToolMetricsLabelsList: {
 			"OPTIONAL: Fetches available labels for a specific metric. Use only when you need label names to construct a filter.",
 			"Input: (required) exact metric name.",
-			"Output: List of label names for that metric.",
+			"Output: List of label names (NOT their values — use metrics_label_values for those).",
 			"If this tool fails, proceed with the metric name and {__CLUSTER__} labels.",
+		}, tools.ToolMetricsLabelValues: {
+			"Returns the actual VALUES a label takes in this environment.",
+			"Use when a filter on a named resource (node, instance, device) returns no data — read the real values instead of guessing another label name.",
+			"Input: label (required); filter (optional substring, recommended for high-cardinality labels like 'instance' or 'pod'); metric (optional).",
+			"Output: {label, values[], matched, truncated}. Filter on a value you can see in the output.",
 		}, tools.ToolMetricsSeriesMatch: {
 			"DETERMINISTIC discovery for a NAMED workload: returns the metric families that actually have series for it, grouped by the labels that identify the workload.",
 			"Use this (not metrics_list) when a templated query returns empty for a workload you can name.",
@@ -298,6 +305,10 @@ func (p PrometheusAgent) GetSupportedTools(ctx *security.RequestContext) []toolc
 		tools.SearchMetricsTool{},
 		tools.MetricsListTool{Provider: "prometheus"},
 		tools.ListMetricsLabelsTool{Provider: "prometheus"},
+		// Label VALUES, not just names: lets the agent resolve a resource it can
+		// name (node, instance, device) to how that resource is actually spelled,
+		// instead of guessing successive label names until the budget runs out.
+		tools.ListMetricsLabelValuesTool{Provider: "prometheus"},
 		// Deterministic workload-scoped metric discovery; lets the agent resolve a
 		// workload's real metric families on an empty templated query instead of N/A.
 		tools.MetricsSeriesMatchTool{Provider: "prometheus"},

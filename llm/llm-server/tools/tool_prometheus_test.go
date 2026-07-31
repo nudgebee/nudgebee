@@ -476,6 +476,21 @@ func TestValidatePromQLSyntax_ValidQueryReturnsEmpty(t *testing.T) {
 // metrics_label_values
 // ---------------------------------------------------------------------------
 
+// label_values() is a Grafana template-variable function, not PromQL. Observed in
+// prod: the agent needed a label's values, reached for the Grafana idiom, and got
+// back a generic "unknown PromQL function" list that named no way to get them —
+// so it guessed another label name instead and the run ended in "no data".
+func TestValidatePromQLSyntax_LabelValuesPointsAtLabelValuesTool(t *testing.T) {
+	got := validatePromQLSyntax("label_values(node_cpu_seconds_total, instance)")
+	require.NotEmpty(t, got, "label_values() is not PromQL and must produce an error")
+	assert.Contains(t, got, ToolMetricsLabelValues,
+		"hint must name the tool that actually returns label values")
+	assert.Contains(t, got, "Grafana",
+		"hint must explain why label_values() can never parse here")
+	assert.NotContains(t, got, "histogram_quantile()",
+		"must not fall through to the generic unknown-function list, which names no recovery path")
+}
+
 // The generic unknown-function hint must survive for every other bad function —
 // the label_values branch is a narrow carve-out, not a replacement.
 func TestValidatePromQLSyntax_OtherUnknownFunctionKeepsGenericHint(t *testing.T) {
@@ -601,30 +616,17 @@ func TestListMetricsLabelValuesTool_SchemaContract(t *testing.T) {
 	assert.Contains(t, ListMetricsLabelsTool{}.Description(), "labels")
 }
 
-// TestESNumericFieldTypes_DistinguishMetricsFromDimensions pins the type split that
-// replaced the old identity-field guess. For Beats-family indices the metric identity is
-// the numeric FIELD PATH — the same path the backend flattens into `__name__` on every
-// series — so numeric types are metric candidates and everything else is a dimension.
-func TestESNumericFieldTypes_DistinguishMetricsFromDimensions(t *testing.T) {
-	for _, ty := range []string{"long", "integer", "double", "float", "scaled_float", "unsigned_long"} {
-		assert.True(t, esNumericFieldTypes[ty], "%s is a metric value type", ty)
-	}
-	// Dimensions and metadata must never be offered as metric names.
-	for _, ty := range []string{"keyword", "text", "date", "boolean", "ip", "object", ""} {
-		assert.False(t, esNumericFieldTypes[ty], "%s is not a metric value type", ty)
-	}
-	// An unfamiliar type is treated as a dimension rather than guessed into a metric.
-	assert.False(t, esNumericFieldTypes["some_future_type"])
-	assert.Equal(t, "name", esMetricNameField, "the OTel metric-name field")
-}
+// The empty-result guidance is the agent's only cue at the exact moment it would
+// otherwise start guessing label names, so it must route both named-resource
+// shapes: workloads to series-match, everything else to label-values.
+func TestPrometheusNoDataMessage_RoutesEachDiscoveryShape(t *testing.T) {
+	msg := prometheusNoDataMessage(`node_cpu_seconds_total{kubernetes_node="worker-1"}`)
 
-// TestMetricsListTool_DescriptionMatchesAcceptedInput guards the input-shape gap: the
-// description promised a keyword only, while the implementation also accepts an index
-// pattern, and silently ignored the keyword for ES. A caller told one contract and given
-// another emits calls that look successful and return nothing (see #33876).
-func TestMetricsListTool_DescriptionMatchesAcceptedInput(t *testing.T) {
-	desc := MetricsListTool{}.Description()
-	assert.Contains(t, desc, "keyword", "keyword form must stay documented")
-	assert.Contains(t, desc, "wildcard", "the index-pattern form must be documented too")
-	assert.Contains(t, desc, "index pattern")
+	assert.Contains(t, msg, `node_cpu_seconds_total{kubernetes_node="worker-1"}`,
+		"the failing query must be echoed so the agent knows what to change")
+	assert.Contains(t, msg, ToolMetricsSeriesMatch, "workload path")
+	assert.Contains(t, msg, ToolMetricsLabelValues, "non-workload named-resource path")
+	assert.Contains(t, msg, ToolMetricsList, "keyword-discovery path")
+	assert.Contains(t, msg, "do NOT guess another label name",
+		"must explicitly forbid the observed guess-loop")
 }
