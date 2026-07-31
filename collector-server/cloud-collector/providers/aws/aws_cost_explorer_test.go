@@ -43,6 +43,33 @@ func TestParseFloat64(t *testing.T) {
 	}
 }
 
+func TestLookbackToMonthly(t *testing.T) {
+	t.Run("30-day lookback costs reconcile with AWS monthly savings (issue #27489)", func(t *testing.T) {
+		// Real values from the reported recommendation: AWS returned on-demand
+		// 211.6749 and total cost 100.08 as 720h lookback totals, alongside
+		// 113.144829775 monthly savings (730h basis). After normalization the
+		// cost difference must equal the monthly savings.
+		onDemand := lookbackToMonthly(211.6749006304, cetypes.LookbackPeriodInDaysThirtyDays)
+		spCost := lookbackToMonthly(100.08, cetypes.LookbackPeriodInDaysThirtyDays)
+
+		assert.InDelta(t, 214.6148, onDemand, 0.0001)
+		assert.InDelta(t, 101.47, spCost, 0.0001)
+		assert.InDelta(t, 113.144829775, onDemand-spCost, 0.000001)
+	})
+
+	t.Run("7-day lookback RI cost converts to amortized monthly cost", func(t *testing.T) {
+		// Real values from a live RDS RI recommendation: 34.3479 reservation cost
+		// over the default 7-day lookback corresponds to a $1791 all-upfront
+		// 1-year RI, i.e. 1791/12 = 149.25 per month.
+		riCost := lookbackToMonthly(34.3479452064, cetypes.LookbackPeriodInDaysSevenDays)
+		assert.InDelta(t, 149.25, riCost, 0.0001)
+	})
+
+	t.Run("unknown lookback period returns value unchanged", func(t *testing.T) {
+		assert.InDelta(t, 100.0, lookbackToMonthly(100.0, cetypes.LookbackPeriodInDays("")), 0.0001)
+	})
+}
+
 func TestExtractInstanceDetails(t *testing.T) {
 	ce := &awsCostExplorer{}
 
