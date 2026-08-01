@@ -215,6 +215,13 @@ type appConfig struct {
 	LLMServerAgentObservabilityTimeoutSeconds int `mapstructure:"llm_server_agent_observability_timeout_seconds"`
 	// LlmServerAgentPromqlCacheTTLMinutes defines the lifespan of PromQL query results in the cache.
 	LlmServerAgentPromqlCacheTTLMinutes int `mapstructure:"llm_server_agent_promql_metrics_cache_ttl_minutes"`
+	// LlmServerLlmConfigCacheTTLMinutes defines the lifespan of the cached LLM
+	// integration configs (per-account, per-tenant, and the per-integration
+	// list). Saving a config through the API publishes an invalidation, so this
+	// TTL only bounds staleness when rows change underneath the server — which
+	// is exactly what editing the DB directly does. Set to 0 to disable the
+	// caches and read through on every call.
+	LlmServerLlmConfigCacheTTLMinutes int `mapstructure:"llm_server_llm_config_cache_ttl_minutes"`
 	// LlmServerAgentSeriesMatchCacheTTLMinutes defines the lifespan of metrics_series_match
 	// (workload family discovery) results in the cache. Defaults to 30m — series for a workload
 	// change far slower than metric values, so a long TTL is cheap and cuts repeat lookups.
@@ -921,6 +928,7 @@ func init() {
 	viper.SetDefault("llm_server_agent_observability_max_iterations", 7)
 	viper.SetDefault("llm_server_agent_observability_timeout_seconds", 180)
 	viper.SetDefault("llm_server_agent_promql_metrics_cache_ttl_minutes", 5)
+	viper.SetDefault("llm_server_llm_config_cache_ttl_minutes", 30)
 	viper.SetDefault("llm_server_agent_series_match_cache_ttl_minutes", 30)
 	viper.SetDefault("llm_server_agent_promql_max_tool_response_chars", 4000)
 	viper.SetDefault("llm_server_agent_prometheus_max_inline_data_points", 5) // reduced from 10; above this threshold raw values are replaced with a stats summary to avoid context bloat

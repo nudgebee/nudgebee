@@ -8,6 +8,7 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import { Modal } from '@ui/Modal';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
+import { Checkbox } from '@ui/Checkbox';
 import { Button } from '@ui/Button';
 import { Divider } from '@ui/Divider';
 import { toast as snackbar } from '@ui/Toast';
@@ -211,6 +212,11 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const [accounts, setAccounts] = useState([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [selectedAccountIds, setSelectedAccountIds] = useState([]);
+  // Whether this config serves requests that don't pin one. An account may
+  // have several enabled LLM configs; the one flagged here is what llm-server
+  // resolves to by default, and with none flagged it falls back to the
+  // system ENV credential.
+  const [isDefault, setIsDefault] = useState(false);
 
   // Agent list — fetched dynamically from llm-server's registered agents so
   // the dropdown stays in sync without enumerating agents in Go or
@@ -423,6 +429,15 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           ? editData.integrations_cloud_accounts.map((a) => a?.cloud_account_id).filter(Boolean)
           : []
       );
+      // The flag is per (config, account) link row, but the form offers one
+      // checkbox for all selected accounts — so a config that is default for
+      // any of its accounts shows as checked, and re-saving applies that
+      // answer to every selected account.
+      setIsDefault(
+        Array.isArray(editData.integrations_cloud_accounts)
+          ? editData.integrations_cloud_accounts.some((a) => a?.default_llm_provider === true)
+          : false
+      );
       setConfigName(editData.name || '');
       setProvider(cfg.llm_provider || '');
       setModel(cfg.llm_model_name || '');
@@ -586,6 +601,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setTestMessage('');
     } else {
       setSelectedAccountIds([]);
+      setIsDefault(false);
       setConfigName('');
       setProvider('');
       setModel('');
@@ -979,6 +995,11 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     const out = [
       { name: 'llm_provider', value: provider },
       { name: 'llm_model_name', value: model.trim() },
+      // Always sent, both ways: 'false' is what clears the flag when the user
+      // unchecks it, which is how an account is handed back to the ENV
+      // credential. Stored on the account link row, not as a config value —
+      // see DefaultLLMProvider in api-server integration_config.go.
+      { name: 'default_llm_provider', value: isDefault ? 'true' : 'false' },
     ];
     if (fallbacks.trim()) {
       out.push({ name: 'llm_model_fallbacks', value: fallbacks.trim() });
@@ -1206,6 +1227,15 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
             required
             error={errors.accounts}
             help='At least one account must be selected. Auto-populated from listAccounts. The configuration applies to all selected accounts.'
+          />
+
+          <Checkbox
+            id='llm-config-default-provider'
+            size='sm'
+            checked={isDefault}
+            onChange={setIsDefault}
+            label='Default LLM provider for the selected accounts'
+            description='Used for requests that do not pick a specific provider. Marking this one clears the flag from any other provider on the same account. With none marked, the system falls back to the environment credential.'
           />
 
           <Input

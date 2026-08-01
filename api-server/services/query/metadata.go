@@ -6440,7 +6440,8 @@ var table_metadata = map[string]TableDefinition{
 						'cloud_account_name', ca.account_name,
 						'default_log_provider', ica.default_log_provider,
 						'default_traces_provider', ica.default_traces_provider,
-						'default_metrics_provider', ica.default_metrics_provider
+						'default_metrics_provider', ica.default_metrics_provider,
+						'default_llm_provider', ica.default_llm_provider
 					)) as cloud_accounts
 				FROM integrations_cloud_accounts ica
 				LEFT JOIN cloud_accounts ca ON ca.id = ica.cloud_account_id

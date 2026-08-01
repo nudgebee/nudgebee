@@ -51,7 +51,6 @@ var (
 		ts     time.Time
 	})
 	llmIntegrationConfigCacheMutex sync.RWMutex
-	llmIntegrationConfigCacheTTL   = 30 * time.Minute
 
 	// Separate cache for tenant-level LLM configs (keyed by tenantId).
 	// Avoids duplicating the same tenant config for every account under the tenant.
@@ -71,6 +70,13 @@ var (
 
 	modelSemaphores sync.Map // map[string]chan struct{}
 )
+
+// llmIntegrationConfigCacheTTL is read per call rather than captured at init:
+// package vars initialise before config is loaded, so capturing it would pin
+// the compiled-in default and ignore the env. 0 disables the caches entirely.
+func llmIntegrationConfigCacheTTL() time.Duration {
+	return time.Duration(config.Config.LlmServerLlmConfigCacheTTLMinutes) * time.Minute
+}
 
 // llmIntegration is one enabled LLM integration visible to an account, with its
 // config values already decrypted. getLLMIntegrationConfig merges every visible
@@ -3044,9 +3050,9 @@ func getLLMIntegrationConfig(ctx *security.RequestContext, accountId string, ove
 	llmIntegrationConfigCacheMutex.RLock()
 	cacheEntry, found := llmIntegrationConfigCache[accountId]
 	llmIntegrationConfigCacheMutex.RUnlock()
-	if found && time.Since(cacheEntry.ts) < llmIntegrationConfigCacheTTL {
+	if found && time.Since(cacheEntry.ts) < llmIntegrationConfigCacheTTL() {
 		slog.Debug("LLM integration config found in cache", "accountId", accountId, "configKeys", len(cacheEntry.config))
-		return cacheEntry.config, nil
+		return cloneConfigMap(cacheEntry.config), nil
 	}
 	slog.Debug("LLM integration config not in cache or expired, fetching from DB", "accountId", accountId)
 
@@ -3075,9 +3081,13 @@ func getLLMIntegrationConfig(ctx *security.RequestContext, accountId string, ove
 			llmTenantConfigCacheMutex.RLock()
 			tenantEntry, tenantFound := llmTenantConfigCache[tenantId]
 			llmTenantConfigCacheMutex.RUnlock()
-			if tenantFound && time.Since(tenantEntry.ts) < llmIntegrationConfigCacheTTL {
+			if tenantFound && time.Since(tenantEntry.ts) < llmIntegrationConfigCacheTTL() {
 				slog.Debug("LLM integration config found in tenant cache", "tenantId", tenantId, "configKeys", len(tenantEntry.config))
-				configMap = tenantEntry.config
+				// Copied so the tenant and account caches don't end up holding the
+				// same map: this value is cached again under the account key below,
+				// and two entries aliasing one map means a future write through
+				// either corrupts both.
+				configMap = cloneConfigMap(tenantEntry.config)
 			} else {
 				slog.Debug("No account-level LLM config, trying tenant-level", "accountId", accountId, "tenantId", tenantId)
 				configMap, err = fetchLLMIntegrationConfigByTenant(ctx, dbManager, tenantId)
@@ -3113,7 +3123,25 @@ func getLLMIntegrationConfig(ctx *security.RequestContext, accountId string, ove
 	if configMap == nil {
 		slog.Debug("No LLM integration config found (account or tenant)", "accountId", accountId)
 	}
-	return configMap, nil
+	// Copied on the way out for the same reason as the cache-hit path: the map
+	// just went into the cache, so handing the caller this reference would let a
+	// write reach shared state. The tenant rung is covered too — its map is
+	// cached here under the account key.
+	return cloneConfigMap(configMap), nil
+}
+
+// cloneConfigMap shallow-copies a cached config map so callers can never write
+// through to shared state. Values are strings, so a shallow copy is a full one.
+// nil in, nil out — callers distinguish "no config" from "empty config".
+func cloneConfigMap(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]string, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 // getLLMIntegrationsForAccount returns every enabled LLM integration the account
@@ -3154,7 +3182,7 @@ func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string
 	llmIntegrationsCacheMutex.RLock()
 	entry, found := llmIntegrationsCache[accountId]
 	llmIntegrationsCacheMutex.RUnlock()
-	if found && time.Since(entry.ts) < llmIntegrationConfigCacheTTL {
+	if found && time.Since(entry.ts) < llmIntegrationConfigCacheTTL() {
 		return cloneIntegrations(entry.integrations), nil
 	}
 
@@ -3260,11 +3288,93 @@ func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string
 }
 
 // fetchLLMIntegrationConfigByAccount queries LLM integration config linked to a specific cloud account.
+//
+// An account may have several enabled LLM integrations, so the integration is
+// chosen first and its config read second — see selectAccountLLMIntegration for
+// the choice rules. When no single integration can be chosen this returns
+// (nil, nil), which walks the caller down to the tenant rung and then ENV.
 func fetchLLMIntegrationConfigByAccount(ctx *security.RequestContext, dbManager *common.DatabaseManager, accountId string) (map[string]string, error) {
-	query := `SELECT i.id, icv.name, icv.value, icv.is_encrypted FROM integrations i JOIN integrations_cloud_accounts ia ON i.id = ia.integration_id
+	integrationId, err := selectAccountLLMIntegration(ctx, dbManager, accountId)
+	if err != nil || integrationId == "" {
+		return nil, err
+	}
+	query := `SELECT i.id, icv.name, icv.value, icv.is_encrypted FROM integrations i
 			  JOIN integration_config_values icv ON i.id = icv.integration_id
+			  WHERE i.id = :integration_id`
+	return execLLMIntegrationConfigQuery(ctx, dbManager, query, map[string]any{"integration_id": integrationId}, accountId)
+}
+
+// selectAccountLLMIntegration picks which of an account's enabled LLM
+// integrations to resolve against, returning "" when there is no single answer.
+//
+// The choice is, in order:
+//
+//  1. the integration flagged default_llm_provider on its account link row;
+//  2. the account's only enabled LLM integration, when nothing is flagged —
+//     this is the shape every account had before multiple configs were allowed,
+//     so single-config accounts keep resolving without needing a backfill;
+//  3. otherwise nothing.
+//
+// Case 3 covers both "several configs, none marked default" and the racy
+// "several marked default". Neither has a right answer, and picking one anyway
+// would silently bind an account to a credential its operator didn't choose —
+// so both fall through to ENV, which is the documented final fallback.
+func selectAccountLLMIntegration(ctx *security.RequestContext, dbManager *common.DatabaseManager, accountId string) (string, error) {
+	query := `SELECT i.id, ia.default_llm_provider FROM integrations i
+			  JOIN integrations_cloud_accounts ia ON i.id = ia.integration_id
 			  WHERE i."type" = 'llm' AND i.status = 'enabled' AND ia.cloud_account_id = :ac_id`
-	return execLLMIntegrationConfigQuery(ctx, dbManager, query, map[string]any{"ac_id": accountId}, accountId)
+	params := map[string]any{"ac_id": accountId}
+
+	var rows *sqlx.Rows
+	var err error
+	if ctx != nil {
+		rows, err = dbManager.Db.NamedQueryContext(ctx.GetContext(), query, params)
+	} else {
+		rows, err = dbManager.Db.NamedQuery(query, params)
+	}
+	if err != nil {
+		slog.Error("Failed to list LLM integrations for account", "error", err, "accountId", accountId)
+		return "", err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Warn("LLM Integration: unable to close rows", "error", err)
+		}
+	}()
+
+	var all, defaults []string
+	for rows.Next() {
+		var id string
+		var isDefault sql.NullBool
+		if err := rows.Scan(&id, &isDefault); err != nil {
+			slog.Error("Failed to scan LLM integration row", "error", err, "accountId", accountId)
+			return "", err
+		}
+		all = append(all, id)
+		if isDefault.Valid && isDefault.Bool {
+			defaults = append(defaults, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("iterating LLM integration rows", "error", err, "accountId", accountId)
+		return "", err
+	}
+
+	switch {
+	case len(defaults) == 1:
+		return defaults[0], nil
+	case len(defaults) > 1:
+		slog.Error("LLM config: account has multiple integrations flagged default; falling back to ENV",
+			"accountId", accountId, "defaultCount", len(defaults))
+		return "", nil
+	case len(all) == 1:
+		return all[0], nil
+	case len(all) > 1:
+		slog.Warn("LLM config: account has multiple integrations but none flagged default; falling back to ENV",
+			"accountId", accountId, "count", len(all))
+		return "", nil
+	}
+	return "", nil
 }
 
 // fetchLLMIntegrationConfigByTenant queries LLM integration config at the tenant level —
@@ -3301,6 +3411,7 @@ func execLLMIntegrationConfigQuery(ctx *security.RequestContext, dbManager *comm
 	}()
 	var configMap map[string]string
 	var foundRow bool
+	var seenId string
 	for rows.Next() {
 		var id string
 		// name, value, is_encrypted are NULL-able in integration_config_values; scan
@@ -3310,6 +3421,13 @@ func execLLMIntegrationConfigQuery(ctx *security.RequestContext, dbManager *comm
 		if err := rows.Scan(&id, &name, &value, &isEncrypted); err != nil {
 			slog.Error("Failed to scan LLM integration config row", "error", err, "id", logId)
 			return nil, err
+		}
+		if seenId == "" {
+			seenId = id
+		} else if id != seenId {
+			slog.Error("LLM integration config: result set spans multiple integrations; refusing to merge",
+				"id", logId, "integrationId", seenId, "otherIntegrationId", id)
+			return nil, ErrAmbiguousLLMConfig
 		}
 		if !name.Valid || name.String == "" {
 			slog.Warn("LLM integration config: row has empty name; skipping", "id", logId, "integrationId", id)

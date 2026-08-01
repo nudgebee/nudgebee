@@ -112,6 +112,15 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				AutoGenerateFunc: "",
 				Priority:         21,
 			},
+			core.DefaultLLMProvider: {
+				Type: core.ToolSchemaTypeBoolean,
+				// An account may have several enabled LLM configs; this marks the
+				// one used when a request doesn't pin a specific config.
+				Description:      "Make this the default LLM config for the selected accounts",
+				Default:          false,
+				AutoGenerateFunc: "",
+				Priority:         23,
+			},
 			"llm_provider": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Name of the LLM provider (e.g., openai, bedrock, sagemaker, huggingface, azure, googleai, vertexai, anthropic).",

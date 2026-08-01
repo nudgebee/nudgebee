@@ -58,9 +58,15 @@ const (
 	DefaultTraceProvider   = "default_traces_provider"
 	DefaultLogProvider     = "default_log_provider"
 	DefaultMetricsProvider = "default_metrics_provider"
-	AccountId              = "account_id"
-	IntegrationConfigName  = "integration_config_name"
-	AuthType               = "auth_type"
+	// DefaultLLMProvider marks which LLM integration an account resolves to
+	// when several are enabled. Like the other default_* flags it lives on the
+	// integrations_cloud_accounts link row, not in integration_config_values —
+	// llm-server reads that table as the credential itself, so a stray
+	// default_llm_provider row there would be merged into the credential map.
+	DefaultLLMProvider    = "default_llm_provider"
+	AccountId             = "account_id"
+	IntegrationConfigName = "integration_config_name"
+	AuthType              = "auth_type"
 
 	// IntegrationConfigRCAWritebackEnabled is the per-tenant toggle that opts a
 	// ticketing integration (e.g. ZenDuty) into posting NudgeBee RCA analysis
@@ -250,12 +256,19 @@ func CreateIntegrationConfig(
 	//     `IdentifyConfig` (llm-server/tools/) and each action injects its
 	//     own `k8s_secret` via `injectK8sSecret` (relay-server/workspace.go),
 	//     so multiple per account work end-to-end.
+	//   - llm: an account may keep several credentials and pick one per
+	//     request; which one serves an unpinned request is decided by the
+	//     `default_llm_provider` flag on the account link row rather than by
+	//     there being only one. llm-server resolves that flag explicitly and
+	//     falls back to ENV when no single config is marked, so more than one
+	//     per account is unambiguous.
 	//
 	// (`isProxy` is kept above because it's still consumed by the proxy-
 	// connectivity test path further down — that path IS config-aware.)
 	if len(accountIds) > 0 &&
 		intgerationType != "vm_agent" &&
 		intgerationType != "workflow_webhook" &&
+		intgerationType != "llm" &&
 		!IsProxyIntegrationType(intgerationType) {
 		// Defense-in-depth: refuse the check (and therefore the save) if the
 		// request has no tenant. The duplicate SELECT below filters by
@@ -447,11 +460,18 @@ func CreateIntegrationConfig(
 
 	// Remove existing account mappings for integrations of the same type
 	// so the new integration can take over those accounts.
-	// Skip for vm_agent, workflow_webhook, mcp, rabbitmq, and proxy integrations — multiple per
+	// Skip for vm_agent, workflow_webhook, mcp, rabbitmq, llm, and proxy integrations — multiple per
 	// account are legitimate (each represents a distinct backend), so existing mappings must not be
 	// detached. rabbitmq is k8s-secret-only (isProxy stays false) yet multiple-per-account like
 	// mcp-direct, so it must be listed explicitly here. Reuses isProxy from above.
-	if len(accountIds) > 0 && intgerationType != "vm_agent" && intgerationType != "workflow_webhook" && intgerationType != "mcp" && intgerationType != "rabbitmq" && !isProxy {
+	//
+	// llm belongs here for the same reason it is skipped by the duplicate checks
+	// on create and enable: an account may hold several credentials and choose
+	// between them per request. This take-over is the second half of the old
+	// one-per-account rule — without it listed, adding a config silently
+	// detaches every sibling config from the account, which is data loss the
+	// operator never asked for and cannot see.
+	if len(accountIds) > 0 && intgerationType != "vm_agent" && intgerationType != "workflow_webhook" && intgerationType != "mcp" && intgerationType != "rabbitmq" && intgerationType != "llm" && !isProxy {
 		effectiveSource := source
 		if effectiveSource == "" {
 			effectiveSource = "user"
@@ -576,7 +596,7 @@ func CreateIntegrationConfig(
 		}
 	}
 
-	parameters := []string{DefaultLogProvider, DefaultMetricsProvider, DefaultTraceProvider}
+	parameters := []string{DefaultLogProvider, DefaultMetricsProvider, DefaultTraceProvider, DefaultLLMProvider}
 	// insert config values
 	for i, v := range integrationConfigValues {
 		value := v.Value
@@ -734,6 +754,8 @@ func CreateIntegrationConfig(
 			column = "default_traces_provider"
 		case DefaultMetricsProvider:
 			column = "default_metrics_provider"
+		case DefaultLLMProvider:
+			column = "default_llm_provider"
 		}
 		if column != "" {
 
@@ -1670,10 +1692,11 @@ func UpdateIntegrationConfigStatus(
 	// `mcp` is intentionally NOT in the explicit skip list: it's already in
 	// `dualModeProxyMapping`, so `IsProxyIntegrationType("mcp")` returns true
 	// and the trailing predicate skips the check. Keeping the explicit list
-	// to types that aren't proxy-eligible (vm_agent, workflow_webhook).
+	// to types that aren't proxy-eligible (vm_agent, workflow_webhook, llm).
 	if integrationStatus == "enabled" &&
 		integrationType != "vm_agent" &&
 		integrationType != "workflow_webhook" &&
+		integrationType != "llm" &&
 		!IsProxyIntegrationType(integrationType) {
 		// Defense-in-depth: refuse the check (and therefore the enable) if
 		// the request has no tenant. Without a tenant filter the duplicate
@@ -2063,7 +2086,7 @@ func GetIntegrationByConfigNameValues(
 
 	var rows *sqlx.Rows
 
-	if configName == DefaultLogProvider || configName == DefaultTraceProvider || configName == DefaultMetricsProvider {
+	if configName == DefaultLogProvider || configName == DefaultTraceProvider || configName == DefaultMetricsProvider || configName == DefaultLLMProvider {
 		column := ""
 		switch configName {
 		case DefaultLogProvider:
@@ -2072,6 +2095,8 @@ func GetIntegrationByConfigNameValues(
 			column = "default_traces_provider"
 		case DefaultMetricsProvider:
 			column = "default_metrics_provider"
+		case DefaultLLMProvider:
+			column = "default_llm_provider"
 		}
 
 		// Use BuildInClause to safely interpolate values into the query string

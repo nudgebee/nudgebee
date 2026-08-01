@@ -54,7 +54,8 @@ describe('ModelPickerPopover', () => {
   function openPicker() {
     fireEvent.click(screen.getByTestId('model-picker-trigger'));
   }
-  /** Left pane — models, deduplicated across credentials. Clicking navigates. */
+  /** Left pane — models, deduplicated across credentials. Clicking navigates,
+   *  and also stages the model when only one credential can serve it. */
   const modelPane = () => within(screen.getByTestId('model-pane'));
   /** Right pane — credentials serving the active model. Clicking selects. */
   const credentialPane = () => within(screen.getByTestId('credential-pane'));
@@ -253,5 +254,47 @@ describe('ModelPickerPopover', () => {
 
     expect(screen.getByText('No models match')).toBeInTheDocument();
     expect(screen.queryByTestId('model-pane')).not.toBeInTheDocument();
+  });
+
+  // ─── one click is the whole choice when there's nothing to choose ─────────
+
+  it('A model with one config is staged by the left click alone', () => {
+    render(<ModelPickerPopover credentials={CREDENTIALS} onModelSelect={onModelSelect} onTierModelsSelect={onTierModelsSelect} />);
+    openPicker();
+
+    // gemini-2.5-flash is reachable only through piyush-llm. Deliberately no
+    // credential-pane click here: that second step is what users were missing,
+    // and Apply used to commit null and wipe the selection.
+    focusModel('gemini-2.5-flash');
+    fireEvent.click(screen.getByText('Apply'));
+
+    expect(onModelSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'googleai', model: 'gemini-2.5-flash', configSource: 'db:182f5d24', configName: 'piyush-llm' })
+    );
+  });
+
+  it('A model with several configs prompts for one and blocks Apply until picked', () => {
+    render(<ModelPickerPopover credentials={CREDENTIALS} onModelSelect={onModelSelect} onTierModelsSelect={onTierModelsSelect} />);
+    openPicker();
+
+    // gemini-3-flash-preview is served by both credentials, so the click can't
+    // resolve to one and the question has to be put to the user.
+    focusModel('gemini-3-flash-preview');
+    expect(screen.getByTestId('credential-choice-prompt')).toBeInTheDocument();
+    expect(screen.getByText('Apply').closest('button')).toBeDisabled();
+
+    chooseCredential('piyush-llm');
+    expect(screen.queryByTestId('credential-choice-prompt')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Apply'));
+    expect(onModelSelect).toHaveBeenCalledWith(expect.objectContaining({ model: 'gemini-3-flash-preview', configSource: 'db:182f5d24' }));
+  });
+
+  it('Apply stays disabled while nothing is staged, so it cannot silently clear', () => {
+    render(<ModelPickerPopover credentials={CREDENTIALS} onModelSelect={onModelSelect} onTierModelsSelect={onTierModelsSelect} />);
+    openPicker();
+
+    expect(screen.getByText('Apply').closest('button')).toBeDisabled();
+    expect(onModelSelect).not.toHaveBeenCalled();
   });
 });

@@ -380,6 +380,38 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
     setStagedTier({ ...stagedTier, [activeTier]: m });
   };
 
+  // Clicking a model used to only move the right-hand pane, which reads as
+  // "selected" — so Apply then committed nothing and silently wiped the pick.
+  // When a model is reachable through exactly one config there is no choice
+  // left to make, so the click is the whole selection. With more than one, the
+  // pane stays a genuine question and requiresCredentialChoice below says so.
+  const handleModelFocus = (entry: { key: string; model: string; credentials: LLMCredential[] }) => {
+    setActiveModelKey(entry.key);
+    if (entry.credentials.length === 1) {
+      handleRowPick(optionFor(entry.credentials[0], entry.model));
+    }
+  };
+
+  // True while the active model needs a config picked and none is staged for it.
+  //
+  // Drives the prompt only, deliberately not Apply. Apply commits what is
+  // staged, and merely looking at another model doesn't unstage it — gating on
+  // this would block committing a deliberate pick just because the right-hand
+  // pane moved, which is the same focus/selection conflation that made Apply
+  // silently clear the selection in the first place. In by-task mode it would
+  // also block committing picks already made for the other tiers.
+  // Empty when there is no active model at all — the list is empty, or a search
+  // matched nothing. Entries themselves always carry an array (`modelEntries`
+  // builds `credentials: []` and pushes), so the default is really guarding
+  // `activeModel`, not the field.
+  const { credentials: activeCredentials = [] } = activeModel || {};
+  const requiresCredentialChoice =
+    !!activeModel && activeCredentials.length > 1 && !activeCredentials.some((c) => isRowSelected(optionFor(c, activeModel.model)));
+
+  // Blanket mode commits exactly one model, so applying with nothing staged is
+  // never what the user meant — "Clear all" is the way to drop a selection.
+  const applyDisabled = mode === 'blanket' && !stagedBlanket;
+
   const handleClearTier = (t: PickerTierKey) => {
     const next: TierModelMap = { ...stagedTier };
     delete next[t];
@@ -555,7 +587,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                             key={entry.key}
                             role='option'
                             aria-selected={isActive}
-                            onClick={() => setActiveModelKey(entry.key)}
+                            onClick={() => handleModelFocus(entry)}
                             sx={{
                               display: 'flex',
                               flexDirection: 'column',
@@ -607,6 +639,18 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                     </Box>
 
                     <Box role='listbox' aria-label='Credentials' data-testid='credential-pane' sx={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
+                      {requiresCredentialChoice && (
+                        <Typography
+                          data-testid='credential-choice-prompt'
+                          sx={{
+                            fontSize: 'var(--ds-text-caption)',
+                            color: 'var(--ds-gray-600)',
+                            padding: 'var(--ds-space-2) var(--ds-space-3)',
+                          }}
+                        >
+                          Served by {activeModel?.credentials.length} configs — pick one to use
+                        </Typography>
+                      )}
                       {(activeModel?.credentials ?? []).map((cred) => {
                         const option = activeModel ? optionFor(cred, activeModel.model) : null;
                         const selected = !!option && isRowSelected(option);
@@ -725,7 +769,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                 <Button size='sm' tone='secondary' onClick={handleClear}>
                   Clear all
                 </Button>
-                <Button size='sm' onClick={handleApply}>
+                <Button size='sm' onClick={handleApply} disabled={applyDisabled}>
                   Apply
                 </Button>
               </Box>

@@ -23,6 +23,7 @@ import { ds } from 'src/utils/colors';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { Box, Stack, Typography } from '@mui/material';
 import Tooltip from '@ui/Tooltip';
+import { Chip } from '@ui/Chip';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/router';
 import { useEffect, useMemo, useState } from 'react';
@@ -136,6 +137,8 @@ const ListIntegrations = ({ integrationName }) => {
     integrationName === 'vm_agent' ||
     integrationName?.endsWith('_webhook') ||
     integrationWebhooks.includes(integrationName);
+  // This page passes the LLM type as 'LLM' while other types are lowercase.
+  const isLLMIntegration = String(integrationName || '').toLowerCase() === 'llm';
   const headers = hideConnectionInfo
     ? ['Name', 'Account', 'Created By', 'Updated By', 'Status', '']
     : ['Name', 'Connection Info', 'Account', 'Created By', 'Updated By', 'Status', ''];
@@ -216,6 +219,15 @@ const ListIntegrations = ({ integrationName }) => {
     }
   };
 
+  const linkedAccounts = (item) => (Array.isArray(item?.integrations_cloud_accounts) ? item.integrations_cloud_accounts : []);
+
+  const defaultAccountCount = (item) => linkedAccounts(item).filter((a) => a?.default_llm_provider === true).length;
+
+  const isDefaultForAllAccounts = (item) => {
+    const accounts = linkedAccounts(item);
+    return accounts.length > 0 && defaultAccountCount(item) === accounts.length;
+  };
+
   const getMenuItems = (item) => {
     if (!hasWriteAccess()) return [];
     const status = item.status || 'enabled';
@@ -249,6 +261,15 @@ const ListIntegrations = ({ integrationName }) => {
       }
       if (integrationName === 'vm_agent' && status !== 'disabled') {
         items.push({ label: 'Regenerate Token', id: 'regenerate' });
+      }
+      // Setting the default through Edit is not a real option: Save is gated on
+      // a passing Test Connection, so it costs a live provider call, and a
+      // config whose key has been rotated could never be made default at all.
+      // Offered only where it can take effect — a disabled config is skipped by
+      // resolution — and hidden once this config already serves every account
+      // it is linked to.
+      if (isLLMIntegration && status !== 'disabled' && !isDefaultForAllAccounts(item)) {
+        items.push({ label: 'Set as default', id: 'set-default' });
       }
     }
     const isItemTestable = (() => {
@@ -285,6 +306,44 @@ const ListIntegrations = ({ integrationName }) => {
     }
   };
 
+  // Sends ONLY the default flag. The save loop upserts the values it is given
+  // and never deletes ones it isn't, so omitting provider/model/credentials
+  // leaves them untouched — and avoids the trap that the list response redacts
+  // secrets to '', which the LLM save path reads as "delete this row".
+  // skip_validation is set for the same reason: there are no field values here
+  // to validate. The backend clears the previous default itself.
+  const setAsDefaultLLM = async (item) => {
+    const accountIds = linkedAccounts(item)
+      .map((a) => a?.cloud_account_id)
+      .filter(Boolean);
+    if (accountIds.length === 0) {
+      snackbar.error('This LLM config is not linked to an account, so it cannot be made default');
+      return;
+    }
+    try {
+      const response = await apiIntegrations.addIntegrations({
+        integration_id: item.id,
+        integration_name: 'llm',
+        integration_config_name: item.name,
+        account_ids: accountIds,
+        source: item?.source || 'user',
+        skip_validation: true,
+        integration_config_values: [{ name: 'default_llm_provider', value: 'true' }],
+      });
+      const gqlErrors = response?.data?.errors;
+      if (Array.isArray(gqlErrors) && gqlErrors.length > 0) {
+        snackbar.error(gqlErrors[0]?.message || 'Failed to set default LLM provider');
+        return;
+      }
+      snackbar.success(`"${item.name}" is now the default LLM provider`);
+      listIntegrationConfiguration();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('ListIntegrations: set default threw', err);
+      snackbar.error('Failed to set default LLM provider');
+    }
+  };
+
   const onMenuClick = async (menuItem, item) => {
     if (menuItem.id === 'edit') {
       // AddLLMConfigModal consumes the raw integration row directly; the
@@ -306,6 +365,8 @@ const ListIntegrations = ({ integrationName }) => {
         });
       }
       setOpenModal(true);
+    } else if (menuItem.id === 'set-default') {
+      await setAsDefaultLLM(item);
     } else if (menuItem.id === 'delete' || menuItem.id === 'disable') {
       if (integrationName === 'workflow_webhook') {
         const workflow = await findAssociatedWorkflowForWebhook(item);
@@ -358,13 +419,67 @@ const ListIntegrations = ({ integrationName }) => {
     };
   };
 
+  const accountNamesText = (item) => {
+    const names = linkedAccounts(item)
+      .map((d) => d?.cloud_account_name)
+      .filter(Boolean);
+    return names.join(', ') || '-';
+  };
+
+  // The marker sits on the config's own name rather than in a column, because
+  // it is a property of this config, not of any one account it serves.
+  //
+  // The UI applies one default to every account a config is linked to, so the
+  // normal state is all-or-nothing and a bare chip says it. A mixed state can
+  // only arrive through the API (the write path accepts a per-account map); it
+  // shows the count rather than being rounded to a plain "Default", which would
+  // misstate the accounts it excludes.
+  const nameCell = (item) => {
+    const linked = linkedAccounts(item);
+    const marked = linked.filter((a) => a?.default_llm_provider === true).length;
+    if (!isLLMIntegration || marked === 0) {
+      return { text: item.name };
+    }
+    return {
+      component: (
+        <Stack direction='row' spacing={0.5} alignItems='center' useFlexGap flexWrap='wrap'>
+          <span>{item.name}</span>
+          <Chip size='sm' variant='tag' tone='success'>
+            {marked === linked.length ? 'Default' : `Default (${marked} of ${linked.length})`}
+          </Chip>
+          <Tooltip title='Accounts added here use this provider by default.'>
+            <InfoOutlinedIcon sx={{ fontSize: ds.text.body, color: ds.gray[500], cursor: 'help' }} />
+          </Tooltip>
+        </Stack>
+      ),
+    };
+  };
+
+  // LLM only: other integration types are one-per-account, so they keep the
+  // plain text list and gain nothing from chips.
+  const accountChips = (item) => {
+    const linked = linkedAccounts(item).filter((a) => a?.cloud_account_name);
+    if (linked.length === 0) {
+      return <span>-</span>;
+    }
+    return (
+      <Stack direction='row' spacing={0.5} useFlexGap flexWrap='wrap'>
+        {linked.map((acc, i) => (
+          <Chip key={`${acc.cloud_account_name}-${i}`} size='sm' variant='tag' tone='neutral'>
+            {acc.cloud_account_name}
+          </Chip>
+        ))}
+      </Stack>
+    );
+  };
+
   const buildIntegrationRow = (item) => {
     const connectionInfoCell = {
       text: getConnectionInfo(integrationName === 'postgres' ? 'postgresql' : integrationName, item.integration_config_values),
     };
     const baseRow = [
-      { text: item.name },
-      { text: item?.integrations_cloud_accounts?.map((d) => d?.cloud_account_name)?.join(', ') || '-' },
+      nameCell(item),
+      isLLMIntegration ? { component: accountChips(item) } : { text: accountNamesText(item) },
       { text: item?.source == 'agent' ? 'agent' : item?.created_by_display_name || '-' },
       { text: item?.source == 'agent' ? 'agent' : item?.updated_by_display_name || '-' },
       { component: <Label text={item.status || '-'} /> },
