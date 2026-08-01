@@ -261,6 +261,12 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 		if obs == "" {
 			obs = "No data found. The tool returned an empty response."
 		}
+		// A repeated (turn-cached) call: prefix a render-only notice so the planner
+		// sees it already ran this and stops re-deciding. Kept out of plan.Observation
+		// so it never leaks to the terminal response, the UI, or the summarizer.
+		if plan.IsDuplicateCacheHit {
+			obs = duplicateCallNotice + obs
+		}
 
 		// PRUNING: Minimize fixed failures
 		if plan.Status == ToolStatusFailure {

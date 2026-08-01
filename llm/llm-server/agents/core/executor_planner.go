@@ -1777,6 +1777,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		e.ctx.GetLogger().Info("plannerexecutor: returning cached result for duplicate tool call",
 			"tool", action.Tool, "toolId", action.ToolID, "phase", "pre-rewrite")
 		cachedStep.Action.ToolID = action.ToolID
+		cachedStep.IsDuplicateCacheHit = !cachedStep.IsTerminal
 		return cachedStep, nil, nil
 	}
 	originalInput := action.ToolInput
@@ -1804,8 +1805,10 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				e.ctx.GetLogger().Info("plannerexecutor: returning cached result for duplicate tool call",
 					"tool", action.Tool, "toolId", action.ToolID, "phase", "post-rewrite")
 				cachedStep.Action.ToolID = action.ToolID
-				// Also cache under original input for future pre-rewrite hits
+				// Also cache under original input for future pre-rewrite hits. Cache the
+				// step BEFORE flagging it, so the stored entry stays a clean result.
 				e.toolCallCache.Put(action.Tool, originalInput, cachedStep)
+				cachedStep.IsDuplicateCacheHit = !cachedStep.IsTerminal
 				return cachedStep, nil, nil
 			}
 		}

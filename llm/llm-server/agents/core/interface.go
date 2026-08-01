@@ -214,12 +214,18 @@ type NBAgentPlannerToolActionMemoryRef struct {
 }
 
 type NBAgentPlannerToolActionStep struct {
-	Action      NBAgentPlannerToolAction           `json:"action"`
-	Observation string                             `json:"observation"`
-	Status      ToolStatus                         `json:"status"`
-	IsTerminal  bool                               `json:"is_terminal"`
-	References  []toolcore.NBToolResponseReference `json:"references"`
-	Followup    *FollowupRequest                   `json:"followup,omitempty"`
+	Action      NBAgentPlannerToolAction `json:"action"`
+	Observation string                   `json:"observation"`
+	Status      ToolStatus               `json:"status"`
+	IsTerminal  bool                     `json:"is_terminal"`
+	// IsDuplicateCacheHit marks a step whose result came from the per-turn tool-call
+	// cache (a repeated call). It is transient (in-memory, live turn only) and drives
+	// a scratchpad-render-time "already executed — don't repeat" notice for the planner
+	// WITHOUT polluting the stored Observation (so it never reaches the terminal
+	// response, GetToolInvocations/UI, or the summarizer). Never set on terminal steps.
+	IsDuplicateCacheHit bool                               `json:"-"`
+	References          []toolcore.NBToolResponseReference `json:"references"`
+	Followup            *FollowupRequest                   `json:"followup,omitempty"`
 	// Metadata carries tool-execution telemetry (exit status, duration,
 	// stderr, truncation) used by the prompt-assembly seams to append a
 	// trailing `[exitStatus: N | executionDuration: Xms]` footer to the

@@ -52,6 +52,16 @@ func (c *turnToolCallCache) Stats() (hits, misses, entries int64) {
 	return c.hits.Load(), c.misses.Load(), c.entries.Load()
 }
 
+// duplicateCallNotice is the render-only prefix shown in the PLANNER's scratchpad for
+// a turn-cache hit (a step with IsDuplicateCacheHit). The cache silently prevented a
+// redundant EXECUTION, but the LLM iteration that chose to repeat the call still
+// happened — and without a signal the planner keeps re-deciding the same call
+// (observed: events sub-agents re-issued identical queries ~55% of the time, driving
+// deep-turn LLM-call blowups). Making the repeat VISIBLE breaks that loop. Injected at
+// scratchpad-build time (ConstructScratchPad), NOT baked into the step's Observation,
+// so it never reaches the terminal response, GetToolInvocations/UI, or the summarizer.
+const duplicateCallNotice = "⚠️ ALREADY EXECUTED THIS TURN: this tool call (or a normalized-equivalent one) was already run earlier in this turn and the result below is UNCHANGED. Do NOT repeat it — reason from this result, take a DIFFERENT action, or finalize your answer.\n\n"
+
 // whitespaceRegex matches one or more whitespace characters.
 var whitespaceRegex = regexp.MustCompile(`\s+`)
 
