@@ -123,9 +123,10 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
       stageRadius: 8,
       overlayColor: 'rgba(15, 23, 42, 0.55)',
       popoverClass: 'nb-tour-popover',
-      // The spotlit element stays interactive so users can type into the field
-      // being explained. (driver.js default, set explicitly for intent.)
-      disableActiveInteraction: false,
+      // The spotlit element is view-only during a tour — clicks/typing on it are
+      // blocked so the user can't accidentally submit forms or trigger actions
+      // outside the tour's own onBeforeNext side-effects.
+      disableActiveInteraction: true,
       onDestroyed: () => {
         document.removeEventListener('keydown', onKeyDown);
         driverRef.current = null;
