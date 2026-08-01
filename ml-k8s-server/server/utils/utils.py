@@ -244,6 +244,68 @@ class OTELConfig:
     service_name = os.environ.get("OTEL_SERVICE_NAME", "ml-k8s-server")
 
 
+class ScrubConfig:
+    """Configuration for the universal data-scrubbing API.
+
+    Tier-1 regex is always applied when ``enabled``. Tier-2 NER is requested
+    per HTTP call but uses the model/lang configured here. ``reversible_types``
+    is the set of soft-PII types eligible for reversible tokenisation;
+    secrets are always irreversible regardless.
+    """
+
+    enabled = os.environ.get("SCRUB_ENABLED", "true").lower() == "true"
+    ner_model = os.environ.get("SCRUB_NER_MODEL", "en_core_web_sm")
+    ner_lang = os.environ.get("SCRUB_NER_LANG", "en")
+    # Comma-separated subset of PERSON,LOCATION,EMAIL,PHONE.
+    reversible_types = frozenset(
+        t.strip().upper()
+        for t in os.environ.get("SCRUB_REVERSIBLE_TYPES", "PERSON,LOCATION,EMAIL,PHONE").split(",")
+        if t.strip()
+    )
+    # Regexes (matched against an NER span's text) that mark a hit as an
+    # infrastructure identifier to PRESERVE rather than redact — whole-token
+    # cases like deployments/hosts named after envs or DNS. Sub-token cases
+    # (a name inside a compound id) are handled separately in the scrubber.
+    # Override with SCRUB_INFRA_ALLOWLIST (pipe-separated regexes).
+    #
+    # Additions 2026-08-01 driven by curl evidence against dev — on a
+    # user's "hello" turn the scrubber found 47 hits, dominated by:
+    #   - spaCy tagging bare ops-tool names ("grafana") as PERSON
+    #   - spaCy tagging bare English infra vocab ("node") as LOCATION
+    # These require whole-span allowlist entries (the existing entries
+    # only match tokens that already have a separator or a suffix like
+    # "-prod", so bare words fall through).
+    _default_infra_allowlist = [
+        # Env-suffixed identifiers: nginx-prod, api-staging, checkout-canary.
+        r"(?i).*-(prod|dev|develop|staging|stage|qa|uat|canary|test|sandbox)\b",
+        # DNS-shaped infra hostnames: my-svc.svc.cluster.local, api.internal.
+        r"(?i).*\.(svc|local|internal|cluster\.local)\b",
+        # k8s owner-ref prefixes: pod/nginx, deployment.apps/api, ns/prod.
+        r"(?i)^(pod|deployment|deployment\.apps|replicaset|statefulset|daemonset"
+        r"|cronjob|job|ns|namespace|svc|service|node)/",
+        # Well-known ops / observability tool names — spaCy routinely tags
+        # these as PERSON/LOCATION on SRE text ("grafana" observed hitting
+        # PERSON in dev; "prometheus" and "alertmanager" happen to be safe
+        # today but not guaranteed across model versions, so allowlist them
+        # explicitly).
+        r"(?i)^(grafana|prometheus|alertmanager|nginx|httpd|apache|"
+        r"mysql|postgres(?:ql)?|mongo(?:db)?|redis|memcached|kafka|zookeeper|"
+        r"rabbitmq|elasticsearch|opensearch|kibana|logstash|fluent(?:d|bit)|"
+        r"jaeger|zipkin|envoy|istio|argo(?:cd)?|linkerd|consul|vault|nomad|"
+        r"traefik|calico|cilium|weave|coredns|kube-proxy|kubelet|"
+        r"kube-apiserver|etcd)$",
+        # Bare k8s / cloud vocabulary words that spaCy mis-tags as
+        # LOCATION or PERSON when they appear standalone in English text
+        # ("check node ip-...", "restart pod X").
+        r"(?i)^(node|pod|service|cluster|namespace|container|deployment|"
+        r"replica(?:set)?|statefulset|daemonset|cronjob|job|ingress|"
+        r"configmap|secret|volume|region|zone|az)$",
+    ]
+    infra_allowlist = [
+        p for p in os.environ.get("SCRUB_INFRA_ALLOWLIST", "").split("|") if p.strip()
+    ] or _default_infra_allowlist
+
+
 class DatabaseEngine:
     _instance: Optional[Engine] = None
 
