@@ -1,3 +1,4 @@
+import * as React from 'react';
 import dayjs from 'dayjs';
 import { Box } from '@mui/material';
 import PropTypes from 'prop-types';
@@ -6,6 +7,7 @@ import { ds } from '@utils/colors';
 import { Chip } from '@ui/Chip';
 import Tooltip from '@ui/Tooltip';
 import { MessageTokenUsage } from './TokenUsageDisplay';
+import EgressFilterDetailModal from './EgressFilterDetailModal';
 
 const formatDuration = (createdAt, updatedAt) => {
   if (!createdAt || !updatedAt) {
@@ -122,7 +124,7 @@ const countItem = (key, tone, count, onClick) => {
 // `rule_ids` and would silently corrupt the tallies).
 // Legacy compat: rows persisted before the `detector` field landed lack
 // the key; absent === "secrets" so historical events keep rendering.
-const egressfilterItem = (events) => {
+const egressfilterItem = (events, onClickDetails) => {
   if (!Array.isArray(events) || events.length === 0) {
     return null;
   }
@@ -181,12 +183,16 @@ const egressfilterItem = (events) => {
   }
   const tooltip = tooltipParts.join('. ') || label;
 
+  // Tooltip hints at click affordance so users know there's more detail
+  // than the compact chip surfaces.
+  const clickHint = onClickDetails ? ' — click to see details' : '';
+
   return {
     key: 'egressfilter',
     node: (
-      <Tooltip title={tooltip} placement='top'>
+      <Tooltip title={tooltip + clickHint} placement='top'>
         <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center' }}>
-          <Chip variant='count' tone={tone} count={totalHits} aria-label={tooltip} size='xs'>
+          <Chip variant='count' tone={tone} count={totalHits} aria-label={tooltip + clickHint} size='xs' onClick={onClickDetails}>
             {label}
           </Chip>
         </Box>
@@ -203,7 +209,7 @@ const egressfilterItem = (events) => {
 // detected (`EMAIL, PERSON`) + audit ids for support correlation.
 // Deliberately does NOT surface payload_bytes or agent_name in the chip —
 // those are for dashboards, not the message rail.
-const piiScrubItem = (events) => {
+const piiScrubItem = (events, onClickDetails) => {
   if (!Array.isArray(events) || events.length === 0) {
     return null;
   }
@@ -243,13 +249,14 @@ const piiScrubItem = (events) => {
   }
   const label = totalHits === 1 ? 'PII scrubbed' : 'PII values scrubbed';
   const tooltip = tooltipParts.join('. ') || label;
+  const clickHint = onClickDetails ? ' — click to see details' : '';
 
   return {
     key: 'pii',
     node: (
-      <Tooltip title={tooltip} placement='top'>
+      <Tooltip title={tooltip + clickHint} placement='top'>
         <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center' }}>
-          <Chip variant='count' tone='warning' count={totalHits} aria-label={tooltip} size='xs'>
+          <Chip variant='count' tone='warning' count={totalHits} aria-label={tooltip + clickHint} size='xs' onClick={onClickDetails}>
             {label}
           </Chip>
         </Box>
@@ -274,7 +281,7 @@ const buildItems = (props) => {
   if (props.memoryCount > 0 && props.onOpenMemories) {
     items.push(countItem('memories', 'savings', props.memoryCount, props.onOpenMemories));
   }
-  const filterItem = egressfilterItem(props.egressfilterEvents);
+  const filterItem = egressfilterItem(props.egressfilterEvents, props.onOpenEgressDetails);
   if (filterItem) {
     items.push(filterItem);
   }
@@ -282,7 +289,7 @@ const buildItems = (props) => {
   // independent — a turn can trigger secrets only, PII only, both, or
   // neither. Order: secrets then PII so the higher-severity/policy chip
   // (secrets, which can carry an 'enforce' verdict) reads first left-to-right.
-  const piiItem = piiScrubItem(props.egressfilterEvents);
+  const piiItem = piiScrubItem(props.egressfilterEvents, props.onOpenEgressDetails);
   if (piiItem) {
     items.push(piiItem);
   }
@@ -339,6 +346,12 @@ const ResponseMetaRail = ({
   const duration = formatDuration(createdAt, updatedAt);
   const absoluteTime = formatAbsoluteTime(updatedAt || createdAt);
 
+  // Modal state lives here (not in the chip factories) so the chips can
+  // stay pure render functions and the modal is a single instance per rail.
+  const [detailsOpen, setDetailsOpen] = React.useState(false);
+  const hasEgressEvents = Array.isArray(egressfilterEvents) && egressfilterEvents.length > 0;
+  const onOpenEgressDetails = hasEgressEvents ? () => setDetailsOpen(true) : undefined;
+
   const items = buildItems({
     taskCount,
     contextCount,
@@ -352,6 +365,7 @@ const ResponseMetaRail = ({
     onTokenUsageHover,
     isFetchingTokenData,
     egressfilterEvents,
+    onOpenEgressDetails,
     duration,
     absoluteTime,
   });
@@ -360,27 +374,36 @@ const ResponseMetaRail = ({
     return null;
   }
 
+  // Pre-split for the modal so it doesn't re-do the filter every render.
+  const secretEvents = hasEgressEvents ? egressfilterEvents.filter((e) => e?.detector === 'secrets' || !e?.detector) : [];
+  const piiEvents = hasEgressEvents ? egressfilterEvents.filter((e) => e?.detector === 'pii') : [];
+
   return (
-    <Box
-      sx={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        gap: ds.space[2],
-        rowGap: ds.space.mul(0, 3),
-        justifyContent: 'flex-end',
-        '@media (max-width: 768px)': {
-          justifyContent: 'flex-start',
-        },
-      }}
-    >
-      {items.map((item, idx) => (
-        <Box key={item.key} sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
-          {item.node}
-          {idx < items.length - 1 && (item.boundary ? <Bar /> : <Dot />)}
-        </Box>
-      ))}
-    </Box>
+    <>
+      <Box
+        sx={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          gap: ds.space[2],
+          rowGap: ds.space.mul(0, 3),
+          justifyContent: 'flex-end',
+          '@media (max-width: 768px)': {
+            justifyContent: 'flex-start',
+          },
+        }}
+      >
+        {items.map((item, idx) => (
+          <Box key={item.key} sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
+            {item.node}
+            {idx < items.length - 1 && (item.boundary ? <Bar /> : <Dot />)}
+          </Box>
+        ))}
+      </Box>
+      {detailsOpen && (
+        <EgressFilterDetailModal open={detailsOpen} onClose={() => setDetailsOpen(false)} secretEvents={secretEvents} piiEvents={piiEvents} />
+      )}
+    </>
   );
 };
 

@@ -2,6 +2,7 @@ package egressfilter
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -62,7 +63,25 @@ type PIIScrubEvent struct {
 	PayloadBytes int `json:"payload_bytes"`
 
 	// AgentName carries the running agent (e.g. "k8s_debug") when known.
+	// When produced by the per-message consolidator, this is the sorted
+	// comma-joined list of every contributing agent — see AgentCounts
+	// below for the machine-friendlier per-agent breakdown.
 	AgentName string `json:"agent_name,omitempty"`
+
+	// CategoryCounts breaks HitCount down per category ({"EMAIL": 3,
+	// "PERSON": 20, "LOCATION": 12}). Present on consolidated events
+	// (PIIValueAccumulator.Consolidated) so the UI can render "3 emails,
+	// 20 names, 12 locations" instead of a flat number and a category
+	// set. Omitted from per-call events (NewPIIScrubEvent) — those still
+	// live for backward compat but aren't the write path any more.
+	CategoryCounts map[string]int `json:"category_counts,omitempty"`
+
+	// AgentCounts breaks the distinct-value count down per contributing
+	// agent — number of NEW distinct values each agent's wrapper call
+	// contributed to the accumulator this turn. Answers "which agent
+	// generated the most PII" for the diagnostic view without exposing
+	// values. Present only on consolidated events.
+	AgentCounts map[string]int `json:"agent_counts,omitempty"`
 }
 
 // NewPIIScrubEvent builds an event from a scrub result. mapping is the
@@ -165,15 +184,21 @@ type PIIValueAccumulator struct {
 	mu           sync.Mutex
 	values       map[string]string // raw value -> category (first-seen wins)
 	payloadBytes int
-	agentNames   map[string]struct{}
+	// agentContributions tracks how many NEW distinct values each agent's
+	// wrapper call contributed to `values` (i.e., values the agent was
+	// first to introduce this turn). Answers the diagnostic question
+	// "which agent generated the most PII" without exposing raw values.
+	// A value seen by agent A and then again by agent B counts only for
+	// A — B's call added zero net-new distinct values.
+	agentContributions map[string]int
 }
 
 // NewPIIValueAccumulator returns an empty accumulator ready to be attached
 // to ctx via WithPIIValueAccumulator.
 func NewPIIValueAccumulator() *PIIValueAccumulator {
 	return &PIIValueAccumulator{
-		values:     make(map[string]string),
-		agentNames: make(map[string]struct{}),
+		values:             make(map[string]string),
+		agentContributions: make(map[string]int),
 	}
 }
 
@@ -196,17 +221,22 @@ func (a *PIIValueAccumulator) Add(mapping map[string]string, agentName string, p
 	if a.values == nil {
 		a.values = make(map[string]string)
 	}
-	if a.agentNames == nil {
-		a.agentNames = make(map[string]struct{})
+	if a.agentContributions == nil {
+		a.agentContributions = make(map[string]int)
 	}
+	newFromThisCall := 0
 	for token, value := range mapping {
 		if _, seen := a.values[value]; !seen {
 			a.values[value] = piiTokenCategory(token)
+			newFromThisCall++
 		}
 	}
 	a.payloadBytes += payloadBytes
-	if agentName != "" {
-		a.agentNames[agentName] = struct{}{}
+	if agentName != "" && newFromThisCall > 0 {
+		// Attribute the new-value count to this agent. An agent that only
+		// re-touched already-seen values contributes 0 — matches the
+		// diagnostic intent "which agent introduced PII we hadn't seen".
+		a.agentContributions[agentName] += newFromThisCall
 	}
 }
 
@@ -237,22 +267,37 @@ func (a *PIIValueAccumulator) Consolidated() *PIIScrubEvent {
 	}
 	slices.Sort(cats)
 
-	agents := make([]string, len(a.agentNames))
-	i := 0
-	for name := range a.agentNames {
-		agents[i] = name
-		i++
+	agents := make([]string, 0, len(a.agentContributions))
+	for name := range a.agentContributions {
+		agents = append(agents, name)
 	}
 	slices.Sort(agents)
 
+	// Per-category counts derived from the deduped values map — cheap
+	// (bounded by the ~4 known categories × distinct-value count) and
+	// gives the UI a breakdown without a schema round-trip.
+	categoryCounts := make(map[string]int, len(catSet))
+	for _, cat := range a.values {
+		if cat != "" {
+			categoryCounts[cat]++
+		}
+	}
+
+	// Copy agentContributions so callers can't mutate the accumulator's
+	// internal state via the returned event.
+	agentCounts := make(map[string]int, len(a.agentContributions))
+	maps.Copy(agentCounts, a.agentContributions)
+
 	return &PIIScrubEvent{
-		AuditID:      newPIIAuditID(),
-		Detector:     DetectorPII,
-		HitCount:     len(a.values),
-		Categories:   cats,
-		Reversible:   true,
-		PayloadBytes: a.payloadBytes,
-		AgentName:    strings.Join(agents, ","),
+		AuditID:        newPIIAuditID(),
+		Detector:       DetectorPII,
+		HitCount:       len(a.values),
+		Categories:     cats,
+		Reversible:     true,
+		PayloadBytes:   a.payloadBytes,
+		AgentName:      strings.Join(agents, ","),
+		CategoryCounts: categoryCounts,
+		AgentCounts:    agentCounts,
 	}
 }
 
