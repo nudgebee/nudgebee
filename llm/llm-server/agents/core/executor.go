@@ -270,6 +270,23 @@ func applyTaskTypeAttribution(ctx *security.RequestContext, request NBAgentReque
 	)
 }
 
+// orchestratorSkillScopeName returns the canonical orchestrator name whose KB
+// mappings a mode-variant handle should ALSO resolve, or "" for a non-variant name.
+// Orchestrators are registered under one canonical name (<cloud>_orchestrator) and
+// several @-invocable mode handles (<cloud>_orchestrator_lean / _direct / _native /
+// _delegating). The organic default runs under the canonical name (so KBs mapped to it
+// resolve), but a handle's GetName()+aliases do NOT include the canonical name — so a
+// skill mapped to <cloud>_orchestrator is invisible when the orchestrator runs/tests
+// under any of its handles. Scoping handles back to their canonical base makes skill
+// mappings work uniformly across every planner mode and cloud (k8s/aws/gcp/azure/…).
+// Additive only: fetchAgentKBs dedups, so returning the base is harmless when unmapped.
+func orchestratorSkillScopeName(agentName string) string {
+	if i := strings.Index(agentName, "_orchestrator_"); i != -1 {
+		return agentName[:i+len("_orchestrator")]
+	}
+	return ""
+}
+
 func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) (NBAgentResponse, error) {
 	// --- Metrics: record start time
 	start := time.Now()
@@ -506,6 +523,13 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// log_default → query_generator, ...) so a sub-agent's lazy <skill-lists> can
 	// also see KBs the user mapped to its custom-planner parent.
 	ownSkillNames := append([]string{agent.GetName()}, agent.GetNameAliases()...)
+	// Mode-variant orchestrator handles (@k8s_orchestrator_lean, @aws_orchestrator_direct,
+	// …) also resolve KBs mapped to their canonical <cloud>_orchestrator, so a skill works
+	// under every planner mode/cloud — not only the organic default (which runs under the
+	// canonical name). See orchestratorSkillScopeName.
+	if base := orchestratorSkillScopeName(agentName); base != "" {
+		ownSkillNames = append(ownSkillNames, base)
+	}
 	skillAgentNames := make([]string, 0, len(ownSkillNames)+len(request.InheritSkillsFromAgents))
 	skillAgentNames = append(skillAgentNames, ownSkillNames...)
 	skillAgentNames = append(skillAgentNames, request.InheritSkillsFromAgents...)
