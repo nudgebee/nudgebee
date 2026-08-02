@@ -300,6 +300,65 @@ class ScrubConfig:
         r"(?i)^(node|pod|service|cluster|namespace|container|deployment|"
         r"replica(?:set)?|statefulset|daemonset|cronjob|job|ingress|"
         r"configmap|secret|volume|region|zone|az)$",
+        # Additions 2026-08-02 driven by empirical /scrub run against the
+        # k8s_orchestrator_lean system-prompt corpus (55KB). 16 of the
+        # observed PERSON/LOCATION hits were false-fires on ops vocabulary
+        # NOT covered by the existing entries above. The extensions below
+        # are curated to preserve zero recall on real names — every
+        # regex is a whole-token match, and case-sensitive where the
+        # false-fire pattern is UPPERCASE (SQL keywords, short acronyms,
+        # k8s state names). Ambiguous English words that ARE also given
+        # names (Mark, Max, Running as name) were deliberately NOT added.
+        #
+        # CI/CD, VCS, build, container, IaC tools. False-fires observed:
+        # Git → PERSON_1, Helm → PERSON_14, k8s / K8s → PERSON_6/PERSON_13.
+        # Case-insensitive whole-token — "GitHub Actions" (two-token span)
+        # is not matched by ^github$.
+        r"(?i)^(git|github|gitlab|bitbucket|helm|kubectl|oc|crictl|"
+        r"kustomize|k8s|k3s|k9s|kind|minikube|rancher|openshift|"
+        r"docker|podman|buildah|kaniko|containerd|"
+        r"terraform|tofu|pulumi|ansible|chef|puppet|jenkins|tekton|"
+        r"drone|circleci|spinnaker|flux|"
+        r"npm|pnpm|yarn|pip|poetry|cargo|gradle|maven|bazel|make|cmake|"
+        r"vim|nvim|emacs)$",
+        # Data-format / protocol / short-acronym vocabulary — same class
+        # of bare-word false-fires (JSON → PERSON_3, DB → PERSON_9,
+        # METADATA → PERSON_2, H1 → PERSON_7 in the corpus). Upper-case
+        # whole-token only — real names never look like "JSON".
+        r"^(JSON|XML|YAML|YML|HCL|TOML|INI|CSV|TSV|HTML|CSS|SCSS|"
+        r"SQL|DDL|DML|CRUD|REST|GraphQL|gRPC|RPC|API|SDK|CLI|TUI|GUI|"
+        r"HTTP|HTTPS|TCP|UDP|TLS|SSL|SSH|DNS|DHCP|NTP|SMTP|IMAP|"
+        r"FTP|SFTP|JWT|OAuth|SAML|LDAP|MFA|SSO|OTP|RBAC|ACL|"
+        r"DB|IP|IO|OS|UI|UX|QA|VM|VPC|VPN|CDN|CORS|CSRF|CSP|"
+        r"DTO|POJO|ETL|ELT|OLAP|OLTP|CQRS|BFF|SPA|SSR|SSG|"
+        r"H1|H2|H3|H4|H5|H6|METADATA)$",
+        # SQL keywords as bare UPPERCASE tokens — the exact false-fire
+        # pattern in query plans / prompt examples (EXPLAIN → PERSON_11
+        # in the corpus). Zero recall risk (no real name is "SELECT").
+        r"^(SELECT|INSERT|UPDATE|DELETE|EXPLAIN|ANALYZE|VACUUM|"
+        r"CREATE|DROP|ALTER|TRUNCATE|COMMIT|ROLLBACK|SAVEPOINT|"
+        r"BEGIN|GRANT|REVOKE|DECLARE|RETURN|RETURNS|"
+        r"JOIN|INNER|OUTER|LEFT|RIGHT|CROSS|WHERE|FROM|GROUP|BY|"
+        r"ORDER|LIMIT|OFFSET|HAVING|UNION|INTERSECT|EXCEPT|EXISTS|"
+        r"CASCADE|RESTRICT|COALESCE|CAST|WITH|RECURSIVE|OVER|"
+        r"PARTITION|WINDOW|LATERAL|LANGUAGE|IMMUTABLE|VOLATILE|STABLE|"
+        r"NULL|TRUE|FALSE|AND|OR|NOT|IN|IS|AS|ON)$",
+        # K8s pod-lifecycle state / event names — CamelCase compound
+        # tokens that spaCy tags as LOCATION on their own
+        # (CrashLoopBackOff → LOCATION_1, OOMKilled → LOCATION_2 in the
+        # corpus). Case-sensitive: these are literals from kubectl
+        # output, not free-text English.
+        r"^(CrashLoopBackOff|OOMKilled|ImagePullBackOff|ErrImagePull|"
+        r"ContainerCreating|PodInitializing|Terminating|Pending|"
+        r"Succeeded|Failed|Completed|Evicted|Preempted|"
+        r"CreateContainerConfigError|CreateContainerError|"
+        r"RunContainerError|InvalidImageName|KillingContainer|"
+        r"RegisteredNode|NodeNotReady|NodeReady|"
+        r"NodeHasSufficientMemory|NodeHasNoDiskPressure|"
+        r"NodeHasSufficientPID|BackOff|Unhealthy|Killing|Pulling|"
+        r"Pulled|Started|Created|Scheduled|SuccessfulCreate|"
+        r"SuccessfulDelete|FailedScheduling|FailedMount|"
+        r"FailedAttachVolume|FailedCreatePodSandBox)$",
     ]
     infra_allowlist = [
         p for p in os.environ.get("SCRUB_INFRA_ALLOWLIST", "").split("|") if p.strip()

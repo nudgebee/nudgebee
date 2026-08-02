@@ -379,6 +379,113 @@ def test_is_infra_identifier_real_name_is_not(scrubber):
     assert scrubber._is_infra_identifier(text, 0, len("Alice Johnson")) is False
 
 
+# --- 2026-08-02 allowlist extension ---
+# Empirical /scrub run against the k8s_orchestrator_lean system-prompt
+# corpus (55KB) produced 16 PERSON/LOCATION false-fires. The extended
+# _default_infra_allowlist entries below suppress each observed class.
+# Every test asserts the token is preserved AND that the "Alice Johnson"
+# real-name invariant still holds (no allowlist entry is broad enough
+# to match a real given-name/surname pair).
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "Git",  # measured PERSON_1
+        "git",
+        "Helm",  # measured PERSON_14
+        "helm",
+        "k8s",  # measured PERSON_13
+        "K8s",  # measured PERSON_6
+        "kubectl",
+        "docker",
+        "terraform",
+        "ansible",
+        "GitHub",
+        "GitLab",
+    ],
+)
+def test_is_infra_identifier_cicd_and_build_tools(scrubber, token):
+    text = f"{token} did something"
+    assert scrubber._is_infra_identifier(text, 0, len(token)) is True, f"{token!r} should be allowlisted"
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "JSON",  # measured PERSON_3
+        "DB",  # measured PERSON_9
+        "METADATA",  # measured PERSON_2
+        "H1",  # measured PERSON_7
+        "XML",
+        "YAML",
+        "SQL",
+        "API",
+        "JWT",
+        "OAuth",
+        "VPC",
+        "HTTP",
+        "TLS",
+    ],
+)
+def test_is_infra_identifier_data_format_and_acronym(scrubber, token):
+    text = f"return {token} response"
+    i = text.index(token)
+    assert scrubber._is_infra_identifier(text, i, i + len(token)) is True, f"{token!r} should be allowlisted"
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "EXPLAIN",  # measured PERSON_11
+        "SELECT",
+        "INSERT",
+        "ANALYZE",
+        "VACUUM",
+        "JOIN",
+        "WHERE",
+        "GROUP",
+    ],
+)
+def test_is_infra_identifier_sql_keyword(scrubber, token):
+    text = f"{token} plan"
+    assert scrubber._is_infra_identifier(text, 0, len(token)) is True, f"{token!r} should be allowlisted"
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "CrashLoopBackOff",  # measured LOCATION_1
+        "OOMKilled",  # measured LOCATION_2
+        "ImagePullBackOff",
+        "ErrImagePull",
+        "ContainerCreating",
+        "PodInitializing",
+        "Pending",
+        "Failed",
+        "Terminating",
+        "NodeNotReady",
+    ],
+)
+def test_is_infra_identifier_k8s_pod_state(scrubber, token):
+    text = f"pod stuck in {token}"
+    i = text.index(token)
+    assert scrubber._is_infra_identifier(text, i, i + len(token)) is True, f"{token!r} should be allowlisted"
+
+
+def test_extended_allowlist_still_redacts_real_names(scrubber):
+    # Cross-category invariant: none of the new entries should be broad
+    # enough to preserve a real given-name/surname pair. Whole-token
+    # regexes (^...$) mean "Alice Johnson" span never matches ^git$,
+    # ^JSON$, ^EXPLAIN$, ^CrashLoopBackOff$, etc. This test pins that.
+    text = "Alice Johnson approved"
+    assert scrubber._is_infra_identifier(text, 0, len("Alice Johnson")) is False
+    # Single-token real given name — also not preserved (the allowlist
+    # covers ops/tool/keyword vocabulary specifically; "Alice" is not on it).
+    text2 = "Alice paged the oncall"
+    assert scrubber._is_infra_identifier(text2, 0, 5) is False
+
+
 # --- Tier-2 NER (opt-in; skipped without presidio) ----------------------
 
 
