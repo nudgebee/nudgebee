@@ -26,7 +26,6 @@ const RBAC_TABS = {
   tabOptions: [
     { value: 'tenant', text: 'Tenant' },
     { value: 'account', text: 'Account' },
-    { value: 'k8s_namespace', text: 'K8s Namespace' },
   ],
 };
 
@@ -46,11 +45,6 @@ const ACCOUNT_ROLE_OPTIONS = [
 // scoped to the account ("Group G holds Role R on Account A").
 const ACCOUNT_BUILTIN_ROLES = new Set(ACCOUNT_ROLE_OPTIONS.map((o) => o.value));
 const isBuiltinAccountRole = (role) => ACCOUNT_BUILTIN_ROLES.has(role);
-
-const NAMESPACE_ROLE_OPTIONS = [
-  { label: 'Admin', value: 'k8s_namespace_admin' },
-  { label: 'ReadOnly Admin', value: 'k8s_namespace_admin_readonly' },
-];
 
 const MEMBER_FILTER_TABS = [
   { value: 'active', label: 'Active' },
@@ -248,15 +242,9 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
   const [accountOptions, setAccountOptions] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [showSelectedAccounts, setShowSelectedAccounts] = useState([]);
-  const [selectedAccount, setSelectedAccount] = useState('');
-  // Account RBAC tab supports selecting multiple accounts at once (single select
-  // `selectedAccount` above is still used by the K8s Namespace tab).
+  // Account RBAC tab supports selecting multiple accounts at once.
   const [selectedAccounts, setSelectedAccounts] = useState([]);
   const [selectedAccountRole, setSelectedAccountRole] = useState('');
-  const [accountNamespaceOptions, setAccountNamespaceOptions] = useState([]);
-  const [showSelectedAccountNamespaces, setShowSelectedAccountNamespaces] = useState([]);
-  const [selectedAccountNamespace, setSelectedAccountNamespace] = useState('');
-  const [selectedAccountNamespaceRole, setSelectedAccountNamespaceRole] = useState('');
   // Dynamic-RBAC custom roles: full role objects (with group_ids) for the diff,
   // and the ids currently picked in the multi-select.
   const [customRolesList, setCustomRolesList] = useState([]);
@@ -304,13 +292,8 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
     setAccountOptions([]);
     setAccounts([]);
     setShowSelectedAccounts([]);
-    setSelectedAccount('');
     setSelectedAccounts([]);
     setSelectedAccountRole('');
-    setAccountNamespaceOptions([]);
-    setShowSelectedAccountNamespaces([]);
-    setSelectedAccountNamespace('');
-    setSelectedAccountNamespaceRole('');
     setCustomRolesList([]);
     setPendingScopedRoleRows([]);
     setSelectedCustomRoles([]);
@@ -389,15 +372,11 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
       tenantRole: groupRoles.find((gr) => gr.entity_type === 'tenant')?.role ?? '',
       customRoleIds: customRolesList.filter((r) => (r.group_ids ?? []).includes(groupData?.id)).map((r) => r.id),
       accountKeys,
-      namespaceKeys: groupRoles.filter((gr) => gr.entity_type === 'k8s_namespace').map((gr) => `${gr.entity_id}|${gr.role}`),
       ...savedBaseline,
     };
   }, [groupData, customRolesList, savedBaseline]);
 
   const currentAccountKeys = showSelectedAccounts.map((a) => `${a[0].drilldownQuery.id}|${a[1].roleValue}`);
-  const currentNamespaceKeys = showSelectedAccountNamespaces.map(
-    (n) => `${n[0].drilldownQuery.id}:${n[0].drilldownQuery.namespace}|${n[0].drilldownQuery.role}`
-  );
 
   // A binding whose account isn't in the (active-only) accounts list can't render
   // — handleAccountSelection drops ids it can't resolve — so it never appears in
@@ -410,21 +389,15 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
   const knownAccountIds = useMemo(() => new Set((accounts ?? []).map((a) => a.id)), [accounts]);
   const accountIdOfKey = (key) => key.slice(0, key.lastIndexOf('|'));
   const unresolvedAccountKeys = baseline.accountKeys.filter((k) => !knownAccountIds.has(accountIdOfKey(k)));
-  const unresolvedNamespaceKeys = baseline.namespaceKeys.filter((k) => !knownAccountIds.has(k.slice(0, k.indexOf(':'))));
 
   const infoDirty = (groupNameValue ?? '') !== baseline.name || (groupDescValue ?? '') !== baseline.description;
   const tenantDirty = (groupRole ?? '') !== baseline.tenantRole || !sameIdSet(selectedCustomRoles, baseline.customRoleIds);
   const accountDirty = !sameIdSet([...currentAccountKeys, ...unresolvedAccountKeys], baseline.accountKeys);
-  const namespaceDirty = !sameIdSet([...currentNamespaceKeys, ...unresolvedNamespaceKeys], baseline.namespaceKeys);
   const membersDirty = userAdded.size > 0 || userRemoved.size > 0;
 
-  const dirtySections = [
-    infoDirty && 'Group Info',
-    tenantDirty && 'Tenant roles',
-    accountDirty && 'Account roles',
-    namespaceDirty && 'Namespace roles',
-    membersDirty && 'Members',
-  ].filter(Boolean);
+  const dirtySections = [infoDirty && 'Group Info', tenantDirty && 'Tenant roles', accountDirty && 'Account roles', membersDirty && 'Members'].filter(
+    Boolean
+  );
 
   // Runs one section's write, reporting success/failure for that section alone.
   async function runSectionSave(section, work, successMessage, baselinePatch) {
@@ -563,27 +536,6 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
     );
   }
 
-  async function handleSaveNamespace() {
-    const rows = showSelectedAccountNamespaces.map((n) => ({
-      account_id: n[0].drilldownQuery.id,
-      namespace: n[0].drilldownQuery.namespace,
-      role: n[0].drilldownQuery.role,
-    }));
-    // Preserve namespace bindings on unlistable accounts (see unresolvedNamespaceKeys).
-    for (const key of unresolvedNamespaceKeys) {
-      const [idNs, role] = key.split('|');
-      const sep = idNs.indexOf(':');
-      rows.push({ account_id: idNs.slice(0, sep), namespace: idNs.slice(sep + 1), role });
-    }
-    const writtenNamespaceKeys = rows.map((r) => `${r.account_id}:${r.namespace}|${r.role}`);
-    await runSectionSave(
-      'namespace',
-      () => apiUserManagement.upsertGroupAccountNamespaceRoles({ group_id: groupData.id, k8saccount_namespace_roles: rows }),
-      'Namespace permissions updated',
-      () => ({ namespaceKeys: writtenNamespaceKeys })
-    );
-  }
-
   async function handleSaveMembers() {
     const added = [...userAdded];
     const removed = [...userRemoved];
@@ -682,11 +634,6 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
           setAccountsLoaded(true);
         });
       }
-      if (isEdit && rbacType == 'k8s_namespace') {
-        apiUserManagement.listK8sNamespaces().then((res) => {
-          setAccountNamespaceOptions(res?.k8s_namespaces?.rows ?? []);
-        });
-      }
     }
   }, [open, rbacType, isEdit]);
 
@@ -706,9 +653,6 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
               if (prevRole === undefined || gr.role === 'account_admin') {
                 accountRoleByEntity.set(gr.entity_id, gr.role);
               }
-            } else if (gr.entity_type == 'k8s_namespace') {
-              let entitySplits = gr.entity_id.split(':');
-              handleAccountNamespaceSelection(entitySplits[0], entitySplits[1], gr.role);
             }
           }
           for (const [entityId, role] of accountRoleByEntity) {
@@ -897,61 +841,11 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
       }
       return [...prev, newAccount];
     });
-    setSelectedAccount('');
     setSelectedAccountRole('');
-  }
-
-  function handleAccountNamespaceSelection(accountId, namespace, namespaceRole) {
-    if (!accountId || !namespaceRole || !namespace) return;
-    const filterAccount = accounts.find((u) => u.id === accountId);
-    if (!filterAccount) return;
-    setShowSelectedAccountNamespaces((prev) => {
-      // Dedup key is (account, namespace, role). Same (account, namespace) with different roles
-      // is allowed; only block exact tuple duplicates.
-      if (
-        prev.some(
-          (n) => n[0].drilldownQuery.id === accountId && n[0].drilldownQuery.namespace === namespace && n[0].drilldownQuery.role === namespaceRole
-        )
-      ) {
-        return prev;
-      }
-      const newRow = [
-        {
-          text: filterAccount.account_name,
-          drilldownQuery: { id: filterAccount.id, namespace, role: namespaceRole },
-        },
-        { text: namespace },
-        { text: namespaceRole },
-        {
-          component: (
-            <IconButton sx={trashBtnSx} onClick={() => handleAccountNamespaceDelete(accountId, namespace, namespaceRole)}>
-              <SafeIcon alt='delete icon' src={DeleteIcon} height='20' width='20' />
-            </IconButton>
-          ),
-        },
-      ];
-      return [...prev, newRow];
-    });
-    setSelectedAccount('');
-    setSelectedAccountNamespace('');
-    setSelectedAccountNamespaceRole('');
   }
 
   function handleAccountDelete(id, role) {
     setShowSelectedAccounts((prev) => prev.filter((account) => !(account[0].drilldownQuery.id === id && account[1].roleValue === role)));
-  }
-
-  function handleAccountNamespaceDelete(accountId, namespace, namespaceRole) {
-    setShowSelectedAccountNamespaces((prev) =>
-      prev.filter(
-        (account) =>
-          !(
-            account[0].drilldownQuery.id == accountId &&
-            account[0].drilldownQuery.namespace == namespace &&
-            account[0].drilldownQuery.role == namespaceRole
-          )
-      )
-    );
   }
 
   // Users already added to the group are listed in the members table below (with a
@@ -1107,8 +1001,8 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
               <CardHeader
                 title='Assign Roles'
                 action={
-                  /* One save per tab: tenant, account and namespace grants are
-                     three disjoint RPCs, so the button acts on the open tab only. */
+                  /* One save per tab: tenant and account grants are two disjoint
+                     RPCs, so the button acts on the open tab only. */
                   rbacType === 'tenant' ? (
                     <SectionSave
                       dirty={tenantDirty}
@@ -1117,21 +1011,13 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
                       onSave={handleSaveTenant}
                       testId='save-tenant-roles'
                     />
-                  ) : rbacType === 'account' ? (
+                  ) : (
                     <SectionSave
                       dirty={accountDirty}
                       saving={savingSection === 'account'}
                       disabled={!!savingSection || !accountsLoaded || !customRolesLoaded}
                       onSave={handleSaveAccount}
                       testId='save-account-roles'
-                    />
-                  ) : (
-                    <SectionSave
-                      dirty={namespaceDirty}
-                      saving={savingSection === 'namespace'}
-                      disabled={!!savingSection || !accountsLoaded}
-                      onSave={handleSaveNamespace}
-                      testId='save-namespace-roles'
                     />
                   )
                 }
@@ -1250,98 +1136,6 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
                           { name: '', width: '8%' },
                         ]}
                         id='selected-accounts'
-                        showExpandable={false}
-                        loading={loading}
-                        showEmptyStateText={true}
-                      />
-                    </Box>
-                  )}
-                </Box>
-              )}
-
-              {rbacType === 'k8s_namespace' && (
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
-                  <Box
-                    sx={{
-                      display: 'grid',
-                      gridTemplateColumns: '1fr 1fr 1fr auto',
-                      gap: 'var(--ds-space-2)',
-                      alignItems: 'flex-end',
-                      '& > *': { minWidth: 0 },
-                    }}
-                  >
-                    <Box>
-                      {fieldLabel('K8s account')}
-                      <Select
-                        id='group-k8s-account'
-                        value={selectedAccount || ''}
-                        options={accountOptions?.filter((a) => a.cloud_provider == 'K8s')}
-                        onChange={(next) => setSelectedAccount(next)}
-                        placeholder='Select K8s account'
-                        minWidth='100%'
-                      />
-                    </Box>
-                    <Box>
-                      {fieldLabel('Namespace')}
-                      <Select
-                        id='group-k8s-namespace'
-                        value={selectedAccountNamespace || ''}
-                        options={accountNamespaceOptions
-                          ?.filter((a) => a.account_id == selectedAccount)
-                          .map((a) => ({ label: a.name, value: a.name }))}
-                        onChange={(next) => setSelectedAccountNamespace(next)}
-                        placeholder='Select namespace'
-                        minWidth='100%'
-                      />
-                    </Box>
-                    <Box>
-                      {fieldLabel('Role')}
-                      <Select
-                        id='group-k8s-role'
-                        value={selectedAccountNamespaceRole || ''}
-                        options={NAMESPACE_ROLE_OPTIONS}
-                        onChange={(next) => setSelectedAccountNamespaceRole(next)}
-                        placeholder='Select role'
-                        minWidth='100%'
-                      />
-                    </Box>
-                    <Box sx={{ flexShrink: 0 }}>
-                      <Button
-                        type='button'
-                        size='md'
-                        onClick={() => {
-                          const isDup = showSelectedAccountNamespaces.some(
-                            (n) =>
-                              n[0].drilldownQuery.id === selectedAccount &&
-                              n[0].drilldownQuery.namespace === selectedAccountNamespace &&
-                              n[0].drilldownQuery.role === selectedAccountNamespaceRole
-                          );
-                          if (isDup) {
-                            handleSnackBarData({
-                              message: 'This namespace already has this role assigned.',
-                              severity: 'warning',
-                            });
-                            return;
-                          }
-                          handleAccountNamespaceSelection(selectedAccount, selectedAccountNamespace, selectedAccountNamespaceRole);
-                        }}
-                        disabled={!selectedAccount || !selectedAccountNamespace || !selectedAccountNamespaceRole}
-                      >
-                        Add
-                      </Button>
-                    </Box>
-                  </Box>
-                  {showSelectedAccountNamespaces.length > 0 && (
-                    <Box sx={tableWrapperSx}>
-                      <CustomTable
-                        tableData={showSelectedAccountNamespaces}
-                        headers={[
-                          { name: 'Account', width: '35%' },
-                          { name: 'Namespace', width: '27%' },
-                          { name: 'Role', width: '30%' },
-                          { name: '', width: '8%' },
-                        ]}
-                        id='selected-account-namespaces'
                         showExpandable={false}
                         loading={loading}
                         showEmptyStateText={true}

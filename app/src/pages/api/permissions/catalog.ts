@@ -15,6 +15,12 @@ import { deriveSystemRoleGrants, DERIVED_SYSTEM_ROLE_KEYS, SYSTEM_ROLE_LABELS } 
 // Both are computed from actions.yaml (same classifyAction the gateway uses), so
 // there is no generated artifact to drift. Tenant-admin gated.
 
+// Built-in roles hidden from the Roles & Permissions "Built-in roles" table.
+// Presentation only: these roles still exist, are still seeded, and are still
+// enforced by every backend service — they are simply no longer surfaced as
+// something an admin picks or inspects in the UI.
+const HIDDEN_SYSTEM_ROLE_KEYS = new Set<string>(['k8s_namespace_admin', 'k8s_namespace_admin_readonly']);
+
 type SystemRoleView = { systemKey: string; label: string; permissions: Array<{ module: string; class: PermissionClass }> };
 type CatalogResponse = { catalog: CatalogEntry[]; systemRoles: SystemRoleView[] };
 
@@ -34,7 +40,7 @@ function getCatalog(): CatalogResponse {
   const byKey = new Map<string, Array<{ module: string; class: PermissionClass }>>();
   for (const k of DERIVED_SYSTEM_ROLE_KEYS) byKey.set(k, []);
   for (const r of rows) byKey.get(r.systemKey)?.push({ module: r.module, class: r.class });
-  const systemRoles: SystemRoleView[] = DERIVED_SYSTEM_ROLE_KEYS.map((k) => ({
+  const systemRoles: SystemRoleView[] = DERIVED_SYSTEM_ROLE_KEYS.filter((k) => !HIDDEN_SYSTEM_ROLE_KEYS.has(k)).map((k) => ({
     systemKey: k,
     label: SYSTEM_ROLE_LABELS[k] ?? k,
     permissions: byKey.get(k) ?? [],
