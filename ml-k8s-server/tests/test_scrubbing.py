@@ -473,6 +473,108 @@ def test_is_infra_identifier_k8s_pod_state(scrubber, token):
     assert scrubber._is_infra_identifier(text, i, i + len(token)) is True, f"{token!r} should be allowlisted"
 
 
+# --- 2026-08-02 (third pass) allowlist extension ---
+# Post-#35440 measurement on session 17276ae7 showed 11 remaining PII
+# hits on a "Hello" turn. Live /scrub probes surfaced these classes:
+#   1. Observability tools missing from the tool regex (Loki, Cortex,
+#      Honeycomb, ...)
+#   2. Multi-word cloud service names spaCy treats as one PERSON span
+#      (Cloud Logging, Cloud SQL, New Relic, ...)
+#   3. Linux distribution codenames (Bullseye, Debian Bookworm)
+#   4. K8s state name variant not in the previous list
+#      (ContainerStatusUnknown)
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "Loki",
+        "loki",
+        "Cortex",
+        "Tempo",
+        "Mimir",
+        "Thanos",
+        "Honeycomb",
+        "Dynatrace",
+        "Chronosphere",
+        "Datadog",
+        "Splunk",
+        "Sentry",
+        "PagerDuty",
+        "CloudWatch",
+        "Stackdriver",
+    ],
+)
+def test_is_infra_identifier_extended_observability_tools(scrubber, token):
+    text = f"{token} handles that"
+    assert scrubber._is_infra_identifier(text, 0, len(token)) is True, f"{token!r} should be allowlisted"
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "Cloud Logging",
+        "Cloud SQL",
+        "Cloud Storage",
+        "Cloud Run",
+        "Cloud Functions",
+        "Cloud Trace",
+        "Cloud Monitoring",
+        "Cloud Build",
+        "Cloud Spanner",
+        "Cloud Bigtable",
+        "Cloud Dataflow",
+        "Cloud Composer",
+        "New Relic",
+        "Sumo Logic",
+        "Elastic Cloud",
+        "Grafana Cloud",
+        "Kafka Connect",
+        "Kafka Streams",
+        "Cosmos DB",
+        "Service Bus",
+        "Event Grid",
+        "App Service",
+        "Application Insights",
+    ],
+)
+def test_is_infra_identifier_multi_word_cloud_service(scrubber, token):
+    text = f"{token} was reachable"
+    assert scrubber._is_infra_identifier(text, 0, len(token)) is True, f"{token!r} should be allowlisted"
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "Bullseye",
+        "Bookworm",
+        "Trixie",
+        "Sid",
+        "Buster",
+        "Jammy",
+        "Focal",
+        "Bionic",
+        "Noble",
+        "Alpine",
+        "Debian Bookworm",
+        "Debian Bullseye",
+        "Ubuntu Jammy",
+        "Ubuntu Focal",
+    ],
+)
+def test_is_infra_identifier_linux_release_codename(scrubber, token):
+    text = f"{token} base image"
+    assert scrubber._is_infra_identifier(text, 0, len(token)) is True, f"{token!r} should be allowlisted"
+
+
+def test_is_infra_identifier_container_status_unknown(scrubber):
+    # 2026-08-02 measured on dev — was tagged PERSON despite being a
+    # k8s state literal.
+    text = "pod state ContainerStatusUnknown"
+    i = text.index("ContainerStatusUnknown")
+    assert scrubber._is_infra_identifier(text, i, i + len("ContainerStatusUnknown")) is True
+
+
 def test_extended_allowlist_still_redacts_real_names(scrubber):
     # Cross-category invariant: none of the new entries should be broad
     # enough to preserve a real given-name/surname pair. Whole-token

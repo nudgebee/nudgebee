@@ -293,7 +293,13 @@ class ScrubConfig:
         r"rabbitmq|elasticsearch|opensearch|kibana|logstash|fluent(?:d|bit)|"
         r"jaeger|zipkin|envoy|istio|argo(?:cd)?|linkerd|consul|vault|nomad|"
         r"traefik|calico|cilium|weave|coredns|kube-proxy|kubelet|"
-        r"kube-apiserver|etcd)$",
+        r"kube-apiserver|etcd|"
+        # Additions 2026-08-02 measured on session 17276ae7 remainders:
+        # Loki, Cortex, Honeycomb (all NER-tagged despite being obs tools).
+        r"loki|tempo|mimir|thanos|cortex|victoria(?:metrics)?|"
+        r"chronosphere|honeycomb|dynatrace|appdynamics|wavefront|"
+        r"splunk|datadog|sentry|pagerduty|opsgenie|victorops|xmatters|"
+        r"cloudwatch|stackdriver|sumo(?:logic)?)$",
         # Bare k8s / cloud vocabulary words that spaCy mis-tags as
         # LOCATION or PERSON when they appear standalone in English text
         # ("check node ip-...", "restart pod X").
@@ -358,7 +364,38 @@ class ScrubConfig:
         r"NodeHasSufficientPID|BackOff|Unhealthy|Killing|Pulling|"
         r"Pulled|Started|Created|Scheduled|SuccessfulCreate|"
         r"SuccessfulDelete|FailedScheduling|FailedMount|"
-        r"FailedAttachVolume|FailedCreatePodSandBox)$",
+        r"FailedAttachVolume|FailedCreatePodSandBox|"
+        # Additions 2026-08-02 measured on session 17276ae7:
+        # ContainerStatusUnknown seen as PERSON in dev.
+        r"ContainerStatusUnknown|ContainerCannotRun|ImageInspectError)$",
+        # Multi-word cloud service names — spaCy tags "Cloud Logging"
+        # etc. as a single PERSON span. Case-sensitive because the
+        # provider-branded forms are always Title-Case ("cloud storage"
+        # lowercase is generic English). Covers the GCP "Cloud X" family
+        # + a handful of well-known compound names across clouds.
+        r"^(Cloud (?:Logging|SQL|Storage|Run|Functions|Trace|Monitoring|"
+        r"Build|Spanner|Bigtable|Dataflow|Composer|Armor|NAT|CDN|DNS|"
+        r"KMS|IAM|Pub/Sub|Datastore|Tasks|Scheduler|Endpoints|Endpoint|"
+        r"Load Balancing|Interconnect|Router|VPN)|"
+        r"New Relic|Sumo Logic|Elastic Cloud|Grafana Cloud|"
+        r"Elastic Beanstalk|CloudFront Origin|"
+        r"Kafka (?:Connect|Streams|Broker)|"
+        r"Cosmos DB|Service Bus|Event Grid|Event Hub|Blob Storage|"
+        r"App Service|Application Insights|Log Analytics|"
+        r"Container Instances|Container Apps|Container Registry|"
+        r"App Engine)$",
+        # Linux distribution / release codenames — spaCy tags these as
+        # LOCATION (Bullseye, Bookworm are Debian releases; Bionic /
+        # Focal / Jammy are Ubuntu). Compound "Debian Bookworm" is
+        # spanned as PERSON.
+        r"(?i)^(bullseye|bookworm|trixie|sid|buster|stretch|jessie|wheezy|" r"squeeze|"
+        # Ubuntu release codenames — bare word or with "Ubuntu" prefix.
+        r"noble|mantic|jammy|focal|bionic|xenial|trusty|precise|"
+        # Fedora / RHEL / Alpine — codenames + short "el7/el8" family.
+        r"alpine|centos|rocky|almalinux|amazonlinux|"
+        r"debian bookworm|debian bullseye|debian trixie|debian sid|"
+        r"debian buster|debian stretch|"
+        r"ubuntu noble|ubuntu jammy|ubuntu focal|ubuntu bionic)$",
     ]
     infra_allowlist = [
         p for p in os.environ.get("SCRUB_INFRA_ALLOWLIST", "").split("|") if p.strip()
