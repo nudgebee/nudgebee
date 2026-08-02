@@ -61,8 +61,9 @@ type NBQueryConfig struct {
 	LogProviderOverride string `json:"log_provider_override,omitempty"`
 
 	// LLM provider overrides (per-request)
-	LlmProvider  string `json:"llm_provider,omitempty"`
-	LlmModelName string `json:"llm_model_name,omitempty"`
+	LlmProvider         string `json:"llm_provider,omitempty"`
+	LlmModelName        string `json:"llm_model_name,omitempty"`
+	LogProviderOverride string `json:"log_provider_override,omitempty"`
 
 	// Mutually exclusive with LlmProvider+LlmModelName above.
 	LlmTierModels map[string]TierModelPick `json:"llm_tier_models,omitempty"`
@@ -88,7 +89,7 @@ func (q NBQueryConfig) IsEmpty() bool {
 		q.CurrentCluster == "" && q.CurrentClusterId == "" && q.LogProviderOverride == "" &&
 		q.LlmProvider == "" && q.LlmModelName == "" && len(q.LlmTierModels) == 0 && len(q.ToolConfigs) == 0 &&
 		len(q.ClientTools) == 0 && q.Capabilities.IsEmpty() && len(q.ToolConfirmations) == 0 &&
-		len(q.ToolConfigMetadata) == 0
+		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == ""
 }
 
 // MergeFrom copies fields from src into q only when q's field is the zero value.
@@ -138,6 +139,9 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	}
 	if q.LlmModelName == "" {
 		q.LlmModelName = src.LlmModelName
+	}
+	if q.LogProviderOverride == "" {
+		q.LogProviderOverride = src.LogProviderOverride
 	}
 	if len(q.LlmTierModels) == 0 && len(src.LlmTierModels) > 0 {
 		q.LlmTierModels = src.LlmTierModels

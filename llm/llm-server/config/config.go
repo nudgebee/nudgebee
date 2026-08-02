@@ -129,6 +129,9 @@ type appConfig struct {
 	LlmCacheTTLMinutes int  `mapstructure:"llm_cache_ttl_minutes"`
 	LlmEnableCaching   bool `mapstructure:"llm_enable_caching"`
 
+	// Observability log provider override escape hatch
+	LLMServerLogProviderOverride string `mapstructure:"llm_server_log_provider_override"`
+
 	// Outbound egressfilter master switch. When false, the LLM factory does NOT
 	// install the egressfilter decorator at all — GetLLMModel returns the raw
 	// provider unchanged, no payload serialization, no metric emission. Per-
