@@ -978,9 +978,14 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		ctx.GetLogger().Error("error updating recommendation status", "error", err)
 	}
 
-	// only check resolutions that are in progress and are user resolutions
-	// only check resolutions that are in progress and are user or auto-optimize resolutions
-	rows, err := dbms.Db.Queryx("select * from recommendation_resolution where status = $1 and resolver_type IN ($2, $3)", models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionResolverTypeUser, models.RecommendationResolutionResolverTypeAutoOptimize)
+	// Poll every in-progress resolution regardless of who raised it — agent
+	// (NBLLM) and runbook (AutoRunbook) rows previously never advanced because
+	// only User/AutoOptimize were selected here, leaving their recommendations
+	// stuck InProgress with the webhook as the only way out. Ticket resolutions
+	// are excluded instead: no adapter can poll a ticket's state, so they would
+	// only log an adapter-not-found error every run; they settle via the
+	// ticket-status sync.
+	rows, err := dbms.Db.Queryx("select * from recommendation_resolution where status = $1 and type <> $2", models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionTypeTicket)
 	if err != nil {
 		ctx.GetLogger().Error("error getting recommendation resolutions", "error", err)
 		return err

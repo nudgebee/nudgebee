@@ -171,6 +171,76 @@ func handleRecommendationAction(actionPayload *ActionRequest, c *gin.Context, tr
 
 		c.JSON(200, resp)
 		return
+	case "recommendations_create_ticket_resolution":
+		var request recommendation.RecommendationTicketResolutionRequest
+		var err error
+		if mlRequest["object"] == nil {
+			err = common.UnmarshalMapToStruct(mlRequest, &request)
+		} else if objMap, ok := mlRequest["object"].(map[string]interface{}); ok {
+			err = common.UnmarshalMapToStruct(objMap, &request)
+		} else {
+			c.JSON(400, []common.Error{
+				{
+					Message: "invalid 'object' field type: expected map",
+				},
+			})
+			return
+		}
+
+		if err != nil {
+			c.JSON(400, []common.Error{
+				{
+					Message: err.Error(),
+				},
+			})
+			return
+		}
+
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(500, []common.Error{
+				{
+					Message: err.Error(),
+				},
+			})
+			return
+		}
+
+		auditEvent := audit.Audit{
+			UserId:         ctx.GetSecurityContext().GetUserId(),
+			TenantId:       ctx.GetSecurityContext().GetTenantId(),
+			AccountId:      request.AccountId,
+			EventTime:      time.Now().UTC(),
+			EventCategory:  audit.EventCategoryRecommendation,
+			EventTarget:    request.RecommendationId,
+			EventType:      audit.EventTypeRecommendationApply,
+			EventState:     request,
+			EventPrevState: nil,
+			EventActor:     audit.EventActorUiService,
+			EventAction:    audit.EventActionCreate,
+			EventStatus:    audit.EventStatusSuccess,
+			EventAttr:      map[string]any{"action": "ticket_resolution"},
+		}
+
+		resp, err := recommendation.RecordTicketResolution(ctx, request)
+		defer func() {
+			err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{auditEvent}})
+			if err != nil {
+				ctx.GetLogger().Error("failed to create audit event", "error", err)
+			}
+		}()
+		if err != nil {
+			c.JSON(400, []common.Error{
+				{
+					Message: err.Error(),
+				},
+			})
+			auditEvent.EventStatus = audit.EventStatusFailure
+			return
+		}
+
+		c.JSON(200, resp)
+		return
 	case "recommendation_resolution_retry", "retry_recommendation_resolution":
 		var request recommendation.RetryRecommendationResolutionRequest
 		var err error
