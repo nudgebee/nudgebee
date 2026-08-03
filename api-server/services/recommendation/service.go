@@ -943,6 +943,34 @@ func CreateRecommendationJob(ctx *security.RequestContext, query RecommendationJ
 	}, nil
 }
 
+// reopenOrphanedInProgressRecommendations returns InProgress recommendations that have
+// no resolution behind them to Open. Every writer that claims a recommendation inserts
+// its recommendation_resolution row before flipping the status (ApplyRecommendation,
+// CreateTicketResolution), so InProgress with no resolution at all means nobody is
+// working it. Such a row is unreachable: the settle statement in UpdateResolutionStatus
+// joins recommendation_resolution and never sees it, and every retirement path skips
+// InProgress — so it stays visible in Optimise indefinitely, outliving the workload it
+// points at. Open is the safe landing state; it hands the row back to its producer's
+// normal archive cycle, which retires it when the resource is gone.
+func reopenOrphanedInProgressRecommendations(ctx *security.RequestContext, dbms *database.DatabaseManager) error {
+	res, err := dbms.Db.Exec(`update recommendation r
+	set
+		status = $1,
+		updated_at = NOW()
+	where
+		r.status = $2
+		and not exists (select 1 from recommendation_resolution rr where rr.recommendation_id = r.id)`,
+		models.RecommendationStatusOpen, models.RecommendationStatusInProgress)
+	if err != nil {
+		return err
+	}
+	if count, err := res.RowsAffected(); err == nil && count > 0 {
+		ctx.GetLogger().Info("reopened orphaned in-progress recommendations", "count", count)
+	}
+
+	return nil
+}
+
 func UpdateResolutionStatus(ctx *security.RequestContext) error {
 	t0 := time.Now()
 	defer func() {
@@ -976,6 +1004,10 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		models.RecommendationStatusInProgress, models.RecommendationResolutionStatusInProgress)
 	if err != nil {
 		ctx.GetLogger().Error("error updating recommendation status", "error", err)
+	}
+
+	if err := reopenOrphanedInProgressRecommendations(ctx, dbms); err != nil {
+		ctx.GetLogger().Error("error reopening orphaned in-progress recommendations", "error", err)
 	}
 
 	// Poll every in-progress resolution regardless of who raised it — agent

@@ -102,3 +102,66 @@ func TestArchiveRecommendationsForInactiveResources(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, string(models.RecommendationStatusOpen), status)
 }
+
+func TestReopenOrphanedInProgressRecommendations(t *testing.T) {
+	testenv.RequireMetastore(t)
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant, account, user := testenv.RequireTenant(t)
+	ctxt := security.NewRequestContextForUserTenant(user, tenant, nil, nil, nil)
+
+	// Registered before the first insert and appended to as rows are created, so a
+	// t.Fatal partway through seeding still cleans up what already landed.
+	var seeded []string
+	defer func() {
+		for _, id := range seeded {
+			_, _ = dbms.Db.Exec(`delete from recommendation_resolution where recommendation_id = $1`, id)
+			_, _ = dbms.Db.Exec(`delete from recommendation where id = $1`, id)
+		}
+	}()
+
+	seedRecommendation := func(objectId string, status models.RecommendationStatus) string {
+		var id string
+		err := dbms.Db.Get(&id, `insert into recommendation (tenant_id, cloud_account_id, category, rule_name, account_object_id, recommendation, recommendation_action, status)
+			values ($1, $2, 'RightSizing', 'reopen_orphaned_inprogress_test', $3, '{}', 'Modify', $4) returning id::varchar`,
+			tenant, account, objectId, status)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seeded = append(seeded, id)
+		return id
+	}
+	seedResolution := func(recommendationId string) {
+		_, err := dbms.Db.Exec(`insert into recommendation_resolution (recommendation_id, type, status, type_reference_id, resolver_type, resolver_id)
+			values ($1, $2, $3, '', $4, $5)`,
+			recommendationId, models.RecommendationResolutionTypePullRequest,
+			models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionResolverTypeUser, user)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	orphan := seedRecommendation("reopen-orphan", models.RecommendationStatusInProgress)
+	claimed := seedRecommendation("reopen-claimed", models.RecommendationStatusInProgress)
+	untouched := seedRecommendation("reopen-open", models.RecommendationStatusOpen)
+	seedResolution(claimed)
+
+	err = reopenOrphanedInProgressRecommendations(ctxt, dbms)
+	assert.Nil(t, err)
+
+	statusOf := func(id string) string {
+		var status string
+		err := dbms.Db.Get(&status, `select status from recommendation where id = $1`, id)
+		assert.Nil(t, err)
+		return status
+	}
+
+	// No resolution behind it — nobody is working it, so it returns to Open.
+	assert.Equal(t, string(models.RecommendationStatusOpen), statusOf(orphan))
+	// A real in-flight resolution must keep its claim.
+	assert.Equal(t, string(models.RecommendationStatusInProgress), statusOf(claimed))
+	// Rows that were never InProgress are out of scope.
+	assert.Equal(t, string(models.RecommendationStatusOpen), statusOf(untouched))
+}

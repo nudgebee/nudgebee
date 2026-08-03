@@ -87,6 +87,10 @@ class DBRecommendation(Recommendation):
                 }
                 if self.persist_recommendation:
                     logger.info(f"Persisting recommendation to DB for the deployment :{self.deployment_name}")
+                    # Written Open, not InProgress. InProgress means "a resolution is in flight"
+                    # everywhere else in the system, and every retirement path exempts it
+                    # (clearRecommendationData, archiveRecommendationsForInactiveResources, the
+                    # KRR and PVC archivers) — a row written InProgress can never be retired.
                     # Use parameterized query to prevent SQL injection (was f-string interpolation)
                     query = psql.SQL(
                         "INSERT INTO public.{table}(id, created_at, updated_at, tenant_id, cloud_account_id,"
@@ -94,7 +98,7 @@ class DBRecommendation(Recommendation):
                         " status, category, rule_name, dismissed_reason, is_dismissed, account_object_id)"
                         " VALUES(gen_random_uuid(), now(), now(), %s, %s,"
                         " %s, %s, 'Modify'::text, '', 'High'::text,"
-                        " 0, 'InProgress'::text, 'RightSizing'::text, 'replica_right_sizing'::text, '', false, '') ON"
+                        " 0, 'Open'::text, 'RightSizing'::text, 'replica_right_sizing'::text, '', false, '') ON"
                         " CONFLICT ON CONSTRAINT recommendation_cloud_account_id_rule_name_resource_id_category_ DO"
                         " UPDATE SET recommendation= EXCLUDED.recommendation, updated_at = EXCLUDED.updated_at;"
                     ).format(table=psql.Identifier(self.table))
@@ -114,11 +118,14 @@ class DBRecommendation(Recommendation):
         with get_trace(__name__).start_as_current_span("get_recommendations"):
             try:
                 # Use parameterized query to prevent SQL injection (was string concatenation)
+                # The refresh working set is the Open rows: a row that has moved to InProgress
+                # has a resolution in flight (PR / ticket) and must not be rewritten underneath
+                # it, and Archive/Closed rows are retired.
                 base_query = (
                     "select r.id as recomm_id,r.tenant_id, r.cloud_account_id as account_id"
                     ", r.resource_id, cr.resourse_id as qualified_name, cr.name, recommendation "
                     "from recommendation r join cloud_resourses cr "
-                    "on r.resource_id = cr.id where r.status ='InProgress' and rule_name='replica_right_sizing' "
+                    "on r.resource_id = cr.id where r.status ='Open' and rule_name='replica_right_sizing' "
                     "and category ='RightSizing' and cr.status = 'Active'"
                 )
                 params = {}
