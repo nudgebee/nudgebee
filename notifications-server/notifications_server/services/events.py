@@ -238,6 +238,31 @@ class Events:
                     self.cache.update_event_entry(thread_ts, user_id=user_id)
                     cached_entry["user_id"] = user_id
 
+                # A cached entry can exist without account_id/tenant_id if account
+                # resolution never completed (e.g. the account-context call failed
+                # or the user never finished cluster selection). Re-trigger account
+                # resolution immediately instead of falling through to
+                # _process_event, which would just reply "session expired" and
+                # force the user to mention the bot a third time.
+                if not (cached_entry.get("account_id") and cached_entry.get("tenant_id")):
+                    self.cache.remove_event_entry(thread_ts)
+                    self._handle_new_conversation(
+                        channel_id,
+                        text,
+                        event_context,
+                        event_id,
+                        team_id,
+                        thread_ts,
+                        user_email,
+                        thread_ts != event_ts,
+                        slack_user_id,
+                    )
+                    return
+
+                if slack_user_id and cached_entry.get("slack_user_id") != slack_user_id:
+                    self.cache.update_event_entry(thread_ts, slack_user_id=slack_user_id)
+                    cached_entry["slack_user_id"] = slack_user_id
+
                 if self._has_pending_text_followup(cached_entry):
                     self._submit_followup(cached_entry, channel_id, team_id, thread_ts, slack_user_id, text)
                     return
@@ -763,6 +788,14 @@ class Events:
         cached_entry = self.cache.get_event_entry(thread_ts)
         if not cached_entry:
             self.reply(channel_id, team_id, thread_ts, get_session_expired_message())
+            return
+
+        # Failsafe: execute_event already re-triggers account resolution when a
+        # cached entry is missing account_id/tenant_id, so this should only be
+        # reached via an edge case or race. No reply here to avoid a redundant/
+        # confusing message on top of whatever execute_event already sent.
+        if not (cached_entry.get("account_id") and cached_entry.get("tenant_id")):
+            self.cache.remove_event_entry(thread_ts)
             return
 
         # If it's a thread: fetch full conversation and update cache

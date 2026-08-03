@@ -88,6 +88,8 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
         channel_id = data["channel"]["id"]
         team_id = data["team"]["id"]
         slack_user_id = data["user"]["id"]
+        # See SlackEventsService.execute_event for why this is set here.
+        self.common_service.app_id = data.get("api_app_id")
         try:
             error_message, user_email = self.get_user_email(slack_user_id, team_id)
             if not user_email:
@@ -446,6 +448,10 @@ class SlackEventsService(SlackActionsBaseService):
         event = data["event"]
         event_type = event.get("type")
         channel_id = event.get("channel")
+        # Disambiguates get_slack_installation when multiple apps share a
+        # team_id, so replies come from the app that actually received the
+        # mention rather than always preferring an Integration-backed install.
+        self.common_service.app_id = data.get("api_app_id")
 
         if event_type == "app_mention":
             self._handle_app_mention(event, team_id, event_id, event_context, channel_id)

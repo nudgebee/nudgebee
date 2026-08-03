@@ -62,6 +62,11 @@ class CommonService:
         self._scoped_session = BaseDB.session(self.engine)
         self.session = self._scoped_session()
         self.teams_adapter = None
+        # Set per-request by the event/interactive dispatcher (from the incoming
+        # payload's api_app_id) so get_slack_installation can disambiguate when
+        # multiple apps are installed to the same team_id. None means "unknown",
+        # preserving the original team-only lookup.
+        self.app_id = None
 
     def close(self):
         """Close and remove the scoped session, returning the connection to the pool."""
@@ -1693,7 +1698,7 @@ class CommonService:
         return text
 
     def get_slack_installation(self, team_id):
-        return load_installation_by_team(self.session, team_id, "slack")
+        return load_installation_by_team(self.session, team_id, "slack", app_id=self.app_id)
 
     def get_slack_user_display_name(self, team_id, user_id):
         """

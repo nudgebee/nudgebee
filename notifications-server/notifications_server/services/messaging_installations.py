@@ -225,10 +225,18 @@ def load_installation(session, tenant_id, platform: str) -> Optional[MessagingPl
     return installs[0] if installs else None
 
 
-def load_installation_by_team(session, team_id, platform: str, contains: bool = False) -> Optional[MessagingPlatform]:
+def load_installation_by_team(
+    session, team_id, platform: str, contains: bool = False, app_id: Optional[str] = None
+) -> Optional[MessagingPlatform]:
     """Resolve a single install by its workspace/account id (integrations.name for
     integration installs, messaging_platforms.team_id for legacy). `contains` does a
-    substring match (MS Teams resolves by a partial AAD account id)."""
+    substring match (MS Teams resolves by a partial AAD account id).
+
+    `app_id` disambiguates when more than one app is installed to the same
+    team_id (e.g. two sandbox Slack apps sharing a workspace): the install
+    whose app_id matches the event that's actually being replied to wins,
+    instead of always preferring Integration-backed installs. When app_id is
+    omitted or matches nothing, behavior is unchanged from before."""
     # Empty team_id with contains=True would be LIKE '%%' and match any tenant's row.
     if not team_id:
         return None
@@ -237,18 +245,35 @@ def load_installation_by_team(session, team_id, platform: str, contains: bool = 
         Integration.status != "disabled",
     )
     query = query.filter(Integration.name.contains(team_id) if contains else Integration.name == team_id)
-    integ = query.first()
-    if integ:
-        rows = session.query(IntegrationConfigValue).filter(IntegrationConfigValue.integration_id == integ.id).all()
-        return build_installation(platform, integ, _decrypt_config(rows))
+    integrations = query.all()
+
     legacy_query = session.query(MessagingPlatform).filter(MessagingPlatform.platform == platform)
     legacy_query = legacy_query.filter(
         MessagingPlatform.team_id.contains(team_id) if contains else MessagingPlatform.team_id == team_id
     )
-    legacy = legacy_query.first()
-    if legacy:
+    legacy_candidates = legacy_query.all()
+
+    if app_id:
+        for integ in integrations:
+            rows = session.query(IntegrationConfigValue).filter(IntegrationConfigValue.integration_id == integ.id).all()
+            cfg = _decrypt_config(rows)
+            if cfg.get("app_id") == app_id:
+                return build_installation(platform, integ, cfg)
+        for legacy in legacy_candidates:
+            if legacy.app_id == app_id:
+                legacy._origin = ORIGIN_LEGACY
+                return legacy
+
+    # No app_id given, or no match found by app_id — original priority order.
+    if integrations:
+        integ = integrations[0]
+        rows = session.query(IntegrationConfigValue).filter(IntegrationConfigValue.integration_id == integ.id).all()
+        return build_installation(platform, integ, _decrypt_config(rows))
+    if legacy_candidates:
+        legacy = legacy_candidates[0]
         legacy._origin = ORIGIN_LEGACY
-    return legacy
+        return legacy
+    return None
 
 
 # ---------------------------------------------------------------------------
