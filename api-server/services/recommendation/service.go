@@ -991,6 +991,12 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		ctx.GetLogger().Error("error reconciling settled recommendations", "error", err)
 	}
 
+	// Ticket delegations settle from the local tickets table — the poll below
+	// deliberately skips Ticket rows because no adapter can poll a ticket.
+	if err := SyncTicketResolutions(ctx); err != nil {
+		ctx.GetLogger().Error("error syncing ticket resolutions", "error", err)
+	}
+
 	if err := reopenOrphanedInProgressRecommendations(ctx, dbms); err != nil {
 		ctx.GetLogger().Error("error reopening orphaned in-progress recommendations", "error", err)
 	}
