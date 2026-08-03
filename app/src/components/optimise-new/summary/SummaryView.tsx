@@ -45,7 +45,7 @@ import ResolveModal from '../ResolveModal';
 import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
-import { buildKubectlCommand, formatRuleName, getRecommendationBrief, getResourceDisplayName } from '../utils';
+import { buildKubectlCommand, formatRuleName, getRecommendationBrief, getResourceDisplayName, safeParseJSON } from '../utils';
 import { useSummaryData } from './useSummaryData';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
@@ -213,6 +213,7 @@ const SummaryView = () => {
         accountName: accountInfo?.account_name || '',
         estimatedSavings: rec.estimated_savings || undefined,
         brief: getRecommendationBrief(rec) || undefined,
+        alarmConfig: safeParseJSON(rec.recommendation)?.alarm_config || undefined,
       });
       setNubiQuery(prompt);
       setNubiAccountId(rec.account_id || '');

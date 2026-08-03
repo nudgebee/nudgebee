@@ -84,6 +84,19 @@ export function buildNubiChartPrompt(ctx: ChartDataPointContext): string {
   return lines.join('\n');
 }
 
+// Subset of the recommendation's alarm_config (providers.AlarmCreationConfig JSON)
+// relevant for grounding assistant answers. All providers share these keys.
+export interface AlarmConfigPromptContext {
+  metric_name?: string;
+  statistic?: string;
+  threshold?: number;
+  comparison_operator?: string;
+  period?: number;
+  evaluation_periods?: number;
+  datapoints_to_alarm?: number;
+  metrics?: { label?: string; expression?: string; return_data?: boolean }[];
+}
+
 export interface OptimizationRecommendationContext {
   ruleName: string;
   category: string;
@@ -94,6 +107,82 @@ export interface OptimizationRecommendationContext {
   accountName?: string;
   estimatedSavings?: number;
   brief?: string;
+  alarmConfig?: AlarmConfigPromptContext;
+}
+
+const COMPARISON_OPERATOR_SYMBOLS: Record<string, string> = {
+  GreaterThanThreshold: '>',
+  COMPARISON_GT: '>',
+  GreaterThanOrEqualToThreshold: '>=',
+  COMPARISON_GE: '>=',
+  LessThanThreshold: '<',
+  COMPARISON_LT: '<',
+  LessThanOrEqualToThreshold: '<=',
+  COMPARISON_LE: '<=',
+};
+
+function formatSeconds(seconds: number): string {
+  if (seconds > 0 && seconds % 60 === 0) {
+    return `${seconds / 60} min`;
+  }
+  return `${seconds}s`;
+}
+
+// Renders the alarm parameters the Create button will actually apply, so the
+// assistant's explanations and any policy JSON/CLI it emits match the product
+// behavior instead of documentation defaults.
+function buildAlarmConfigSection(cfg: AlarmConfigPromptContext): string[] {
+  const lines: string[] = [];
+
+  lines.push('');
+  lines.push('### Alert Configuration (authoritative)');
+  lines.push('These are the exact parameters used when this alert is created from the recommendation:');
+
+  const expressionMetric = cfg.metrics?.find((m) => m.return_data && m.expression);
+  const metricLabel = expressionMetric ? expressionMetric.label || 'metric-math expression' : cfg.metric_name;
+  if (metricLabel) {
+    lines.push(`- **Metric:** ${metricLabel}`);
+  }
+  if (cfg.statistic) {
+    lines.push(`- **Statistic:** ${cfg.statistic}`);
+  }
+  if (cfg.comparison_operator && cfg.threshold != null) {
+    const operator = COMPARISON_OPERATOR_SYMBOLS[cfg.comparison_operator] || cfg.comparison_operator;
+    lines.push(`- **Condition:** value ${operator} ${cfg.threshold}`);
+  }
+
+  const period = cfg.period || 0;
+  const evalPeriods = cfg.evaluation_periods || 0;
+  if (period > 0 && evalPeriods > 0) {
+    lines.push(`- **Evaluation period:** ${formatSeconds(period)}`);
+    const datapoints = cfg.datapoints_to_alarm || 0;
+    if (datapoints > 0 && datapoints < evalPeriods) {
+      lines.push(
+        `- **Effective trigger:** at least ${datapoints} of ${evalPeriods} evaluation periods (${formatSeconds(
+          period
+        )} each) must breach within ${formatSeconds(period * evalPeriods)} before the alert fires`
+      );
+    } else if (evalPeriods === 1) {
+      lines.push(`- **Effective trigger:** the condition must hold for ${formatSeconds(period)} (a single evaluation period) before the alert fires`);
+    } else {
+      lines.push(
+        `- **Effective trigger:** the condition must hold for ${formatSeconds(
+          period * evalPeriods
+        )} total (${evalPeriods} consecutive ${formatSeconds(
+          period
+        )} periods) before the alert fires — e.g. a GCP alert policy encodes this as duration (retest window) = ${
+          period * evalPeriods
+        }s, not ${period}s`
+      );
+    }
+  }
+
+  lines.push('');
+  lines.push(
+    'If you output any alert configuration (JSON, CLI, Terraform), derive every field from the values above — do not substitute typical documentation defaults.'
+  );
+
+  return lines;
 }
 
 export function buildNubiOptimizePrompt(ctx: OptimizationRecommendationContext): string {
@@ -123,6 +212,10 @@ export function buildNubiOptimizePrompt(ctx: OptimizationRecommendationContext):
     lines.push('');
     lines.push('### Summary');
     lines.push(ctx.brief);
+  }
+
+  if (ctx.alarmConfig) {
+    lines.push(...buildAlarmConfigSection(ctx.alarmConfig));
   }
 
   lines.push('');

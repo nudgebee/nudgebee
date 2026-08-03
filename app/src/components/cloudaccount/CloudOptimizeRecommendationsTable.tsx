@@ -370,6 +370,7 @@ const CloudOptimizeRecommendationsTable = (props: {
       accountName: getAccountName(item.account_id),
       estimatedSavings: item.estimated_savings || undefined,
       brief: recommenedationDetails?.description || item.recommendation?.reason || undefined,
+      alarmConfig: item.recommendation?.alarm_config || undefined,
     });
     setNubiQuery(prompt);
     setNubiAccountId(item.account_id || selectedAccountId);

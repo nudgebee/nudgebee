@@ -1053,6 +1053,7 @@ const OptimizeNewPage = () => {
         accountName: accountInfo?.name || '',
         estimatedSavings: rec.estimated_savings || undefined,
         brief: getRecommendationBrief(rec) || undefined,
+        alarmConfig: safeParseJSON(rec.recommendation)?.alarm_config || undefined,
       });
       setNubiQuery(prompt);
       setNubiAccountId(rec.account_id || '');
@@ -1640,6 +1641,7 @@ const OptimizeNewPage = () => {
             accountName: accountInfo?.name || '',
             estimatedSavings: rec.estimated_savings || undefined,
             brief: getRecommendationBrief(rec) || undefined,
+            alarmConfig: safeParseJSON(rec.recommendation)?.alarm_config || undefined,
           });
           setNubiQuery(prompt);
           setNubiAccountId(rec.account_id || '');
