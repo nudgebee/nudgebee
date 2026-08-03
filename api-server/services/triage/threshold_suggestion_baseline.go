@@ -305,12 +305,11 @@ func diagnoseWithBaseline(alertDef *AlertDefinition, mh *MetricHistory, interval
 		return s, true
 	}
 
-	// Phase D — measurability gate: a histogram_quantile() alert whose firing-window distribution is
-	// flat at its top (p95 == p99) is saturated at the largest finite bucket boundary. Any threshold
-	// derived from it is invented; abstain.
-	if isHistogramSaturated(alertDef, decomp.Firing) {
+	// Phase D — measurability gate: a histogram_quantile() alert whose values pile up on the largest
+	// finite bucket boundary is saturated there. Any threshold derived from it is invented; abstain.
+	if saturated, ceiling := isHistogramSaturated(alertDef, full); saturated {
 		s.RecommendationType = "insufficient_data"
-		s.Reason = fmt.Sprintf("Latency histogram is saturated at ~%.2f (p95 == p99 in the firing window) — the true distribution is unmeasurable past the top bucket. Add higher histogram buckets, or convert this alert to a burn-rate/SLO form; the threshold cannot be tuned from this data.", decomp.Firing.P99)
+		s.Reason = histogramSaturatedReason(ceiling)
 		return s, true
 	}
 
@@ -580,14 +579,53 @@ func boundsFor(alertDef *AlertDefinition, baseline DistStats) (bounded bool, upp
 	return false, 0, 0
 }
 
-// isHistogramSaturated reports whether a histogram_quantile() alert's firing distribution is pinned
-// at the top finite bucket (p95 == p99 > 0), meaning the true value is unmeasurable past that boundary.
-func isHistogramSaturated(alertDef *AlertDefinition, firing DistStats) bool {
-	if alertDef == nil || firing.Count == 0 {
-		return false
+// histogramSaturationShare is the fraction of samples that must sit exactly at the largest observed
+// value before a histogram_quantile() series is treated as pinned at its top finite bucket. Set
+// deliberately low: abstaining when we needn't costs one un-tuned suggestion, while the opposite
+// error publishes an invented number as confident advice — the failure this gate exists to stop.
+const histogramSaturationShare = 0.01
+
+// isHistogramSaturated reports whether a histogram_quantile() alert's observed values are pinned at
+// the top finite bucket, and returns that ceiling. histogram_quantile() cannot interpolate into
+// +Inf, so every observation past the largest finite `le` collapses onto that boundary: the true
+// distribution is unmeasurable there, and any threshold derived from it is invented.
+//
+// The signature is a repeated maximum. A continuous quantile does not keep returning the identical
+// value; a clamped one returns nothing else. (A wholly flat series scores share 1.0 and is likewise
+// untunable, so it correctly abstains too.)
+//
+// This replaces an earlier `firing.P95 == firing.P99` test that only caught TOTAL saturation. The
+// dev HighP95Latency rule is partially saturated — firing p95=9.3 vs p99=10, baseline p95=7.75 vs
+// p99=10, ceiling 10 in every band — so it passed that test and was published as "safe / medium
+// confidence, raise 5 → 7.1", a number read straight off bucket interpolation. Testing the whole
+// history rather than the firing band alone is what closes the gap: the ceiling is a property of
+// the metric's bucket layout, not of any one band.
+func isHistogramSaturated(alertDef *AlertDefinition, samples []float64) (bool, float64) {
+	if alertDef == nil || len(samples) == 0 {
+		return false, 0
 	}
 	if !strings.Contains(strings.ToLower(alertDef.MetricName), "histogram_quantile(") {
-		return false
+		return false, 0
 	}
-	return firing.P95 == firing.P99 && firing.P99 > 0
+	ceiling := 0.0
+	for _, v := range samples {
+		if v > ceiling {
+			ceiling = v
+		}
+	}
+	if ceiling <= 0 {
+		return false, 0
+	}
+	atCeiling := 0
+	for _, v := range samples {
+		if v == ceiling {
+			atCeiling++
+		}
+	}
+	return float64(atCeiling)/float64(len(samples)) >= histogramSaturationShare, ceiling
+}
+
+// histogramSaturatedReason is shared by both tuner paths so the wording can't drift apart.
+func histogramSaturatedReason(ceiling float64) string {
+	return fmt.Sprintf("Latency histogram is saturated at ~%.2f — its largest finite bucket. histogram_quantile() cannot measure past that boundary, so the values this alert fires on are bucket interpolation rather than measurements and no threshold can be derived from them. Add higher histogram buckets, or convert this alert to a burn-rate/SLO form.", ceiling)
 }

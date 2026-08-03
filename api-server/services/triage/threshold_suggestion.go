@@ -1849,6 +1849,21 @@ func computeSuggestion(alertDef *AlertDefinition, metricHistory *MetricHistory, 
 	copy(sorted, metricHistory.Values)
 	sort.Float64s(sorted)
 
+	// Measurability gate — the same rule diagnoseWithBaseline applies. A histogram_quantile() alert
+	// whose values pile up on the largest finite bucket cannot be tuned: everything past that
+	// boundary is clamped onto it. Without this the legacy tuner reads the clamp as a real
+	// distribution — prod's HighP95Latency was handed 14.5 off a series that tops out at 10, a
+	// threshold the metric can never reach, which would have silenced the alert permanently.
+	if saturated, ceiling := isHistogramSaturated(alertDef, sorted); saturated {
+		return &ThresholdSuggestion{
+			RecommendationType: "insufficient_data",
+			Confidence:         "low",
+			SuggestedThreshold: alertDef.CurrentThreshold,
+			EstimatedReduction: 0,
+			Reason:             histogramSaturatedReason(ceiling),
+		}
+	}
+
 	p50 := percentile(sorted, 50)
 	p90 := percentile(sorted, 90)
 	p95 := percentile(sorted, 95)
