@@ -14,6 +14,9 @@ interface FilterDropdownProps {
   grouped?: boolean;
   groupIcon?: (groupKey: string) => React.ReactNode;
   freeSolo?: boolean;
+  clearable?: boolean;
+  disablePortal?: boolean;
+  showSelectedIcon?: boolean;
   onSelect?: (event: any, value: any) => void;
   onOpen?: () => void;
   disabled?: boolean;

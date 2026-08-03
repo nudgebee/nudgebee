@@ -24,7 +24,7 @@ import apiHome from '@api1/home';
 import useRecommendationExport from '@hooks/useRecommendationExport';
 import Link from '@ui/Link';
 import SafeIcon from '@shared/icons/SafeIcon';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import Tooltip from '@ui/Tooltip';
@@ -84,10 +84,7 @@ const KubernetesRightSizing = ({ enabledSummary = true, enabledFilters = true, i
   const [kubernetesTotalCost, setKubernetesTotalCost] = useState('-');
   const [kubernetesFixedCount, setKubernetesFixedCount] = useState(0);
   const [listAutoPilots, setListAutoPilots] = useState();
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiAccountId, setNubiAccountId] = useState('');
-  const [nubiConversationId, setNubiConversationId] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
   const [accounts, setAccounts] = useState([]);
   const [selectedAccountId, setSelectedAccountId] = useState(props?.kubernetes?.id || selectedCluster?.value);
 
@@ -392,10 +389,12 @@ const KubernetesRightSizing = ({ enabledSummary = true, enabledFilters = true, i
                           namespace,
                           estimatedSavings: item.estimated_savings || undefined,
                         });
-                        setNubiQuery(prompt);
-                        setNubiAccountId(item.account_id || selectedAccountId);
-                        setNubiConversationId(`recom_${item.id}`);
-                        setNubiSidebarVisible(true);
+                        openNubiChat({
+                          accountId: item.account_id || selectedAccountId,
+                          sessionId: `recom_${item.id}`,
+                          query: prompt,
+                          categorySource: 'Optimize',
+                        });
                       }}
                     />
                   </span>
@@ -767,18 +766,6 @@ const KubernetesRightSizing = ({ enabledSummary = true, enabledFilters = true, i
           />
         </ListingLayout.Body>
       </ListingLayout>
-
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        accountId={nubiAccountId}
-        queryPrefix={nubiQuery}
-        context={{ type: 'cluster', data: { conversationId: nubiConversationId } }}
-        apiMode='investigate'
-        categorySource='Optimize'
-        position='right'
-        mode='overlay'
-      />
     </>
   );
 };

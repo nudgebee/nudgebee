@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ListingLayout from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import { Label } from '@ui/Label';
 import { Button as DsButton } from '@ui/Button';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import dynamic from 'next/dynamic';
-const KubernetesUtilizationCharts = dynamic(() => import('@components/k8s/common/KubernetesTable2').then((m) => m.KubernetesUtilizationCharts));
+const KubernetesUtilizationCharts = dynamic(() => import('@components/k8s/common/KubernetesTable').then((m) => m.KubernetesUtilizationCharts));
 import { useRouter } from 'next/router';
 import {
   type SortOrderObject,
@@ -30,8 +30,8 @@ import KubernetesLogs from './KubernetesLogs';
 import CloudTraceLogs from '@components/k8s/common/CloudTraceLogs';
 import apiUser from '@api1/user';
 import { applyFiltersOnRouter } from '@lib/router';
-import ConversationPopup from '@components/llm/ConversationPopup';
-import CustomTable from '@shared/tables/CustomTable2';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
+import CustomTable from '@shared/tables/CustomTable';
 import WidgetCard from '@ui/WidgetCard';
 import { useData } from '@context/DataContext';
 import { KubernetesTraceServiceOperation } from '@components/k8s/common/KubernetesTraceServiceOperation';
@@ -317,9 +317,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   const [selectedTracesSource, setSelectedTracesSource] = useState<string>('');
   const [traceId, setTraceId] = useState<string>('');
   const [inputTraceId, setInputTraceId] = useState<string>('');
-  const [analysisQuery, setAnalysisQuery] = useState<string>('');
-  const [isConversationPopupOpen, setIsConversationPopupOpen] = useState(false);
-  const [sessionId, setSessionId] = useState<string>('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
   const [traceProvider, setTraceProvider] = useState('');
   const [services, setServices] = useState<string[]>([]);
   // ES-only trace index picker: the chosen index (default resolved from the
@@ -391,7 +389,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
       // Reuse the shared ES index-list API (logs_list_labels). The lister is no
       // longer type-filtered, so one endpoint serves logs/metrics/traces; force the
       // ES provider so it resolves even when ES isn't the account's default log provider.
-      const res = await observability.logIndexList(selectedK8sAccount, 'ES');
+      const res = await observability.fetchLogLabels({ account_id: selectedK8sAccount, log_provider: 'ES' });
       const indexes = (res?.data?.data?.logs_list_labels || []).map((l: any) => l?.label).filter(Boolean);
       setEsIndexList(indexes);
     } catch {
@@ -867,9 +865,11 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
           namespace: item?.cloud_resourse?.namespace,
         }));
         const agent = determineTypeOfAgent(item, data);
-        setAnalysisQuery(`Optimize the following ${agent} query: \n\n` + item.resource);
-        setIsConversationPopupOpen(true);
-        setSessionId(item.trace_id);
+        openNubiChat({
+          accountId,
+          sessionId: item.trace_id,
+          query: `Optimize the following ${agent} query: \n\n` + item.resource,
+        });
       }
     } catch (error) {
       console.error('Error fetching framework resources:', error);
@@ -890,12 +890,6 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
       agent = dbms.type;
     }
     return agent;
-  };
-
-  const handleCloseConversationPopup = () => {
-    setIsConversationPopupOpen(false);
-    setSessionId('');
-    setAnalysisQuery('');
   };
 
   const okErrorOptions =
@@ -1208,14 +1202,6 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
 
   return (
     <>
-      <ConversationPopup
-        open={isConversationPopupOpen}
-        handleClose={() => handleCloseConversationPopup()}
-        query={analysisQuery}
-        sessionId={sessionId}
-        accountId={accountId}
-        title='Query Optimization'
-      />
       {fixedTrace && (
         <SourceDestinationView
           namespace={namespace}
@@ -1372,7 +1358,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                       }}
                       size='sm'
                     />
-                    <CustomSearch
+                    <SearchInput
                       id='k8s-traces-search-resource'
                       label='Search By Resource'
                       value={inputResource}
@@ -1394,7 +1380,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                       }}
                       minWidth={ds.space.mul(0, 75)}
                     />
-                    <CustomSearch
+                    <SearchInput
                       id='k8s-traces-search-trace-id'
                       label='Search By Trace Id'
                       value={inputTraceId}
@@ -1428,7 +1414,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                         size='sm'
                       />
                     ) : (
-                      <CustomSearch
+                      <SearchInput
                         id='k8s-traces-search-span-name'
                         label='Search By Span Name'
                         value={inputSelectedHttpSpan}
@@ -1552,7 +1538,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                       }}
                       size='sm'
                     />
-                    <CustomSearch
+                    <SearchInput
                       id='k8s-traces-search-resource'
                       label='Search By Resource'
                       value={inputResource}
@@ -1574,7 +1560,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                       }}
                       minWidth={ds.space.mul(0, 90)}
                     />
-                    <CustomSearch
+                    <SearchInput
                       id='k8s-traces-search-headers'
                       label='Search By Headers'
                       value={inputHeader}
@@ -1596,7 +1582,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                       }}
                       minWidth={ds.space.mul(0, 90)}
                     />
-                    <CustomSearch
+                    <SearchInput
                       id='k8s-traces-search-trace-id'
                       label='Search By Trace Id'
                       value={inputTraceId}

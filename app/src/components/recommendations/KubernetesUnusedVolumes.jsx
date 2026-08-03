@@ -12,13 +12,13 @@ import { useData } from '@context/DataContext';
 import RecommendationResolution from '@components/k8s/common/RecommendationResolution';
 import apiUser from '@api1/user';
 import Text from '@shared/format/Text';
-import { colors, ds } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import { toast as snackbar } from '@ui/Toast';
 import apiHome from '@api1/home';
 import { applyFiltersOnRouter } from '@lib/router';
-import CustomTicketLink from '@shared/CustomTicketLink';
+import TicketLink from '@shared/links/TicketLink';
 import { Link as CustomLink } from '@ui/Link';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { latestUpdatedAt } from 'src/utils/common';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
@@ -32,7 +32,7 @@ import WidgetCard from '@ui/WidgetCard';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Stat } from '@ui/Stat';
 import { CostCallout } from '@ui/CostCallout';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { ScanRefreshButton } from './ScanRefreshButton';
@@ -74,10 +74,7 @@ const KubernetesUnusedVolumes = ({ isOptimisePage = false, resourceIds, groupNam
   const [recommendationStatus, setRecommendationStatus] = useState('Open');
   const [accounts, setAccounts] = useState([]);
   const [selectedAccountId, setSelectedAccountId] = useState(props?.kubernetes?.id);
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiAccountId, setNubiAccountId] = useState('');
-  const [nubiConversationId, setNubiConversationId] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
 
   useEffect(() => {
     setSelectedAccountId(props?.kubernetes?.id);
@@ -86,6 +83,7 @@ const KubernetesUnusedVolumes = ({ isOptimisePage = false, resourceIds, groupNam
   const kubernetesUnusedVolumeTable = 'kubernetesUnusedVolumeTable';
   const { allCluster } = useData();
   const accountsRef = useRef(accounts);
+  const rawUnusedVolumesRef = useRef([]);
 
   const { handleExportDownload } = useRecommendationExport({
     accountId: selectedAccountId,
@@ -163,6 +161,127 @@ const KubernetesUnusedVolumes = ({ isOptimisePage = false, resourceIds, groupNam
     return filteredAcc?.account_name || id || '-';
   };
 
+  const buildRow = (item) => {
+    let data = [];
+
+    data.push({
+      component: (
+        <>
+          <Text value={item.recommendation?.metadata?.name} sx={{ color: ds.blue[500] }} />
+          {isOptimisePage && (
+            <Box sx={{ display: 'flex', gap: 'var(--ds-space-1)' }}>
+              <Text value={'acc: '} secondaryText />
+              <CustomLink
+                href={{
+                  pathname: `/kubernetes/details/${item.account_id}`,
+                }}
+                target='_blank'
+                secondaryText
+              >
+                {getAccountName(item.account_id)}
+              </CustomLink>
+            </Box>
+          )}
+          {item.ticket && <TicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} />}
+        </>
+      ),
+      drilldownQuery: {
+        recommendation: item,
+      },
+    });
+    data.push({
+      component: <Text value={item.recommendation?.spec?.claimRef?.namespace} showAutoEllipsis />,
+    });
+    data.push({
+      component: <Text value={item.recommendation?.spec?.claimRef?.name} showAutoEllipsis />,
+    });
+    data.push({
+      component: <Text value={item.recommendation?.spec?.capacity?.storage} />,
+    });
+    data.push({ component: <Currency value={item.estimated_savings} precison={1} /> });
+    data.push({
+      component: <Datetime value={item.recommendation?.metadata?.creationTimestamp} />,
+    });
+    data.push({ component: <Datetime value={item.updated_at} /> });
+    data.push({
+      component: (
+        <Box
+          onClick={(e) => e.stopPropagation()}
+          sx={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--ds-space-1)' }}
+        >
+          {hasWriteAccess(item.account_id || selectedAccountId) && recommendationStatus !== 'InProgress' && (
+            <DsButton
+              tone='secondary'
+              size='xs'
+              id={`uv-resolve-${item.id}`}
+              trailingAccent={<ArrowForwardIcon />}
+              onClick={() => resolveUnusedVolume(item)}
+            >
+              Optimize
+            </DsButton>
+          )}
+          <CustomTooltip title={`Ask ${assistantName}`} placement='top'>
+            <span>
+              <DsButton
+                tone='ghost'
+                size='xs'
+                composition='icon-only'
+                aria-label={`Ask ${assistantName}`}
+                id={`unused-vol-ask-nubi-${item.id}`}
+                icon={<SafeIcon src={getNubiIconUrl()} alt='' width={16} height={16} />}
+                onClick={() => {
+                  const prompt = buildNubiOptimizePrompt({
+                    ruleName: 'Unused PVC',
+                    category: 'RightSizing',
+                    severity: item.severity || 'Info',
+                    resourceName: item.recommendation?.metadata?.name || '',
+                    resourceType: 'PersistentVolume',
+                    namespace: item.recommendation?.spec?.claimRef?.namespace || '',
+                    accountName: isOptimisePage ? getAccountName(item.account_id) : undefined,
+                    estimatedSavings: item.estimated_savings || undefined,
+                    brief: `Volume ${item.recommendation?.metadata?.name} appears unused. Last claim: ${
+                      item.recommendation?.spec?.claimRef?.name || 'N/A'
+                    }, Size: ${item.recommendation?.spec?.capacity?.storage || 'N/A'}.`,
+                  });
+                  openNubiChat({
+                    accountId: item.account_id || selectedAccountId,
+                    sessionId: `recom_${item.id}`,
+                    query: prompt,
+                    categorySource: 'Optimize',
+                  });
+                }}
+              />
+            </span>
+          </CustomTooltip>
+          <DsDropdownMenu
+            align='end'
+            size='sm'
+            items={[
+              {
+                id: `uv-action-ticket-${item.id}`,
+                label: item.ticket?.ticket_id ? `Ticket: ${item.ticket.ticket_id}` : 'Create ticket',
+                icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: ds.text.title }} />,
+                disabled: !!item.ticket?.ticket_id,
+                onSelect: () => openTicketForData(item),
+              },
+            ]}
+            trigger={
+              <DsButton
+                tone='ghost'
+                size='xs'
+                composition='icon-only'
+                icon={<MoreVertIcon />}
+                aria-label='More actions'
+                id={`uv-action-menu-${item.id}`}
+              />
+            }
+          />
+        </Box>
+      ),
+    });
+    return data;
+  };
+
   const listUnusedVolumes = () => {
     if (!selectedAccountId && !isOptimisePage) {
       return;
@@ -187,125 +306,8 @@ const KubernetesUnusedVolumes = ({ isOptimisePage = false, resourceIds, groupNam
         setLoading(false);
         const rawItems = res?.data?.recommendation || [];
         setLastRefreshed(latestUpdatedAt(rawItems));
-        let k8sRecommendationData = rawItems.map((item) => {
-          let data = [];
-
-          data.push({
-            component: (
-              <>
-                <Text value={item.recommendation?.metadata?.name} sx={{ color: colors.text.primary }} />
-                {isOptimisePage && (
-                  <Box sx={{ display: 'flex', gap: 'var(--ds-space-1)' }}>
-                    <Text value={'acc: '} secondaryText />
-                    <CustomLink
-                      href={{
-                        pathname: `/kubernetes/details/${item.account_id}`,
-                      }}
-                      target='_blank'
-                      secondaryText
-                    >
-                      {getAccountName(item.account_id)}
-                    </CustomLink>
-                  </Box>
-                )}
-                {item.ticket && <CustomTicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} />}
-              </>
-            ),
-            drilldownQuery: {
-              recommendation: item,
-            },
-          });
-          data.push({
-            component: <Text value={item.recommendation?.spec?.claimRef?.namespace} showAutoEllipsis />,
-          });
-          data.push({
-            component: <Text value={item.recommendation?.spec?.claimRef?.name} showAutoEllipsis />,
-          });
-          data.push({
-            component: <Text value={item.recommendation?.spec?.capacity?.storage} />,
-          });
-          data.push({ component: <Currency value={item.estimated_savings} precison={1} /> });
-          data.push({
-            component: <Datetime value={item.recommendation?.metadata?.creationTimestamp} />,
-          });
-          data.push({ component: <Datetime value={item.updated_at} /> });
-          data.push({
-            component: (
-              <Box
-                onClick={(e) => e.stopPropagation()}
-                sx={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--ds-space-1)' }}
-              >
-                {hasWriteAccess(item.account_id || selectedAccountId) && recommendationStatus !== 'InProgress' && (
-                  <DsButton
-                    tone='secondary'
-                    size='xs'
-                    id={`uv-resolve-${item.id}`}
-                    trailingAccent={<ArrowForwardIcon />}
-                    onClick={() => resolveUnusedVolume(item)}
-                  >
-                    Optimize
-                  </DsButton>
-                )}
-                <CustomTooltip title={`Ask ${assistantName}`} placement='top'>
-                  <span>
-                    <DsButton
-                      tone='ghost'
-                      size='xs'
-                      composition='icon-only'
-                      aria-label={`Ask ${assistantName}`}
-                      id={`unused-vol-ask-nubi-${item.id}`}
-                      icon={<SafeIcon src={getNubiIconUrl()} alt='' width={16} height={16} />}
-                      onClick={() => {
-                        const prompt = buildNubiOptimizePrompt({
-                          ruleName: 'Unused PVC',
-                          category: 'RightSizing',
-                          severity: item.severity || 'Info',
-                          resourceName: item.recommendation?.metadata?.name || '',
-                          resourceType: 'PersistentVolume',
-                          namespace: item.recommendation?.spec?.claimRef?.namespace || '',
-                          accountName: isOptimisePage ? getAccountName(item.account_id) : undefined,
-                          estimatedSavings: item.estimated_savings || undefined,
-                          brief: `Volume ${item.recommendation?.metadata?.name} appears unused. Last claim: ${
-                            item.recommendation?.spec?.claimRef?.name || 'N/A'
-                          }, Size: ${item.recommendation?.spec?.capacity?.storage || 'N/A'}.`,
-                        });
-                        setNubiQuery(prompt);
-                        setNubiAccountId(item.account_id || selectedAccountId);
-                        setNubiConversationId(`recom_${item.id}`);
-                        setNubiSidebarVisible(true);
-                      }}
-                    />
-                  </span>
-                </CustomTooltip>
-                <DsDropdownMenu
-                  align='end'
-                  size='sm'
-                  items={[
-                    {
-                      id: `uv-action-ticket-${item.id}`,
-                      label: item.ticket?.ticket_id ? `Ticket: ${item.ticket.ticket_id}` : 'Create ticket',
-                      icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: 16 }} />,
-                      disabled: !!item.ticket?.ticket_id,
-                      onSelect: () => openTicketForData(item),
-                    },
-                  ]}
-                  trigger={
-                    <DsButton
-                      tone='ghost'
-                      size='xs'
-                      composition='icon-only'
-                      icon={<MoreVertIcon />}
-                      aria-label='More actions'
-                      id={`uv-action-menu-${item.id}`}
-                    />
-                  }
-                />
-              </Box>
-            ),
-          });
-          return data;
-        });
-        setKubernetesUnusedVolume(k8sRecommendationData);
+        rawUnusedVolumesRef.current = rawItems;
+        setKubernetesUnusedVolume(rawItems.map(buildRow));
         setKubernetesUnusedVolumeCount(res?.data?.recommendation_aggregate?.aggregate?.count || 0);
       })
       .catch(() => {
@@ -335,8 +337,16 @@ const KubernetesUnusedVolumes = ({ isOptimisePage = false, resourceIds, groupNam
       });
   }, [selectedAccountId, resourceIds]);
 
-  const handleTicketSuccess = () => {
-    listUnusedVolumes();
+  const handleTicketSuccess = ({ ticketId, url } = {}) => {
+    const idx = rawUnusedVolumesRef.current.findIndex((item) => item.id === ticketData.id);
+    if (idx === -1) return;
+    const updatedItem = { ...rawUnusedVolumesRef.current[idx], ticket: { ticket_id: ticketId, url } };
+    rawUnusedVolumesRef.current[idx] = updatedItem;
+    setKubernetesUnusedVolume((prev) => {
+      const next = [...prev];
+      next[idx] = buildRow(updatedItem);
+      return next;
+    });
   };
 
   const handleTicketFailure = (res) => {
@@ -495,7 +505,7 @@ const KubernetesUnusedVolumes = ({ isOptimisePage = false, resourceIds, groupNam
         </ListingLayout.Toolbar>
 
         <ListingLayout.Body>
-          <CustomTable2
+          <CustomTable
             id={kubernetesUnusedVolumeTable}
             headers={tableHeaders}
             tableData={kubernetesUnusedVolume}
@@ -517,18 +527,6 @@ const KubernetesUnusedVolumes = ({ isOptimisePage = false, resourceIds, groupNam
           />
         </ListingLayout.Body>
       </ListingLayout>
-
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        accountId={nubiAccountId}
-        queryPrefix={nubiQuery}
-        context={{ type: 'cluster', data: { conversationId: nubiConversationId } }}
-        apiMode='investigate'
-        categorySource='Optimize'
-        position='right'
-        mode='overlay'
-      />
     </>
   );
 };

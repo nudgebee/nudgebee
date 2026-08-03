@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { useRouter } from 'next/router';
 import { usePagination } from '@hooks/usePagination';
@@ -164,10 +164,7 @@ const CloudOptimizeRecommendationsTable = (props: {
   const [loading, setLoading] = useState(false);
   const [loadingTotal, setLoadingTotal] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiAccountId, setNubiAccountId] = useState('');
-  const [nubiConversationId, setNubiConversationId] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
   const { page, rowsPerPage, changePage, setPage } = usePagination(10);
   const { allCluster, selectedCluster } = useData();
 
@@ -350,10 +347,12 @@ const CloudOptimizeRecommendationsTable = (props: {
       brief: recommenedationDetails?.description || item.recommendation?.reason || undefined,
       alarmConfig: item.recommendation?.alarm_config || undefined,
     });
-    setNubiQuery(prompt);
-    setNubiAccountId(item.account_id || selectedAccountId);
-    setNubiConversationId(`recom_${item.id}`);
-    setNubiSidebarVisible(true);
+    openNubiChat({
+      accountId: item.account_id || selectedAccountId,
+      sessionId: `recom_${item.id}`,
+      query: prompt,
+      categorySource: 'Optimize',
+    });
   };
 
   const handleTicketFailure = (error: string) => {
@@ -862,18 +861,6 @@ const CloudOptimizeRecommendationsTable = (props: {
         }}
         ticketUrl={{}}
         reference={{ id: ticketData?.id, type: (props.provider || (selectedCluster as any)?.cloud_provider || 'aws').toLowerCase() }}
-      />
-
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        accountId={nubiAccountId}
-        query={nubiQuery}
-        context={{ type: 'general', data: { conversationId: nubiConversationId } }}
-        apiMode='investigate'
-        categorySource='Optimize'
-        position='right'
-        mode='overlay'
       />
 
       {config.showAlarmModal && selectedRecommendation && (

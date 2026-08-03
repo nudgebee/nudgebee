@@ -1,7 +1,7 @@
 import { Box, Typography } from '@mui/material';
 import { useEffect, useState, useCallback, useRef, useMemo, memo } from 'react';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { useRouter } from 'next/router';
 import { ds } from 'src/utils/colors';
 import { useData } from '@context/DataContext';
@@ -454,11 +454,8 @@ const OptimizeNewPage = () => {
   const [resolveModalRec, setResolveModalRec] = useState<any>(null);
   const [cliModalRec, setCliModalRec] = useState<any>(null);
 
-  // NuBi sidebar state
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiAccountId, setNubiAccountId] = useState('');
-  const [nubiConversationId, setNubiConversationId] = useState('');
+  // NuBi chat — opens the global drawer preloaded with the row's context.
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
 
   // Sync filters to URL
   const updateUrl = useCallback((newFilters: FilterState) => {
@@ -1055,12 +1052,14 @@ const OptimizeNewPage = () => {
         brief: getRecommendationBrief(rec) || undefined,
         alarmConfig: safeParseJSON(rec.recommendation)?.alarm_config || undefined,
       });
-      setNubiQuery(prompt);
-      setNubiAccountId(rec.account_id || '');
-      setNubiConversationId(`recom_${rec.id}`);
-      setNubiSidebarVisible(true);
+      openNubiChat({
+        accountId: rec.account_id || '',
+        sessionId: `recom_${rec.id}`,
+        query: prompt,
+        categorySource: 'Optimize',
+      });
     },
-    [] // reads accounts via accountsRef — stable across account reloads
+    [openNubiChat] // reads accounts via accountsRef — stable across account reloads
   );
 
   const { assistantName } = useTenantBranding();
@@ -1643,11 +1642,13 @@ const OptimizeNewPage = () => {
             brief: getRecommendationBrief(rec) || undefined,
             alarmConfig: safeParseJSON(rec.recommendation)?.alarm_config || undefined,
           });
-          setNubiQuery(prompt);
-          setNubiAccountId(rec.account_id || '');
-          setNubiConversationId(`recom_${rec.id}`);
           setDetailOpen(false);
-          setNubiSidebarVisible(true);
+          openNubiChat({
+            accountId: rec.account_id || '',
+            sessionId: `recom_${rec.id}`,
+            query: prompt,
+            categorySource: 'Optimize',
+          });
         }}
       />
 
@@ -1708,20 +1709,6 @@ const OptimizeNewPage = () => {
 
       {/* CLI Command modal */}
       {cliModalRec && <CliCommandModal rec={cliModalRec} onClose={() => setCliModalRec(null)} />}
-
-      {/* NuBi AI sidebar */}
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        accountId={nubiAccountId}
-        query={nubiQuery}
-        context={{ type: 'general', data: { conversationId: nubiConversationId } }}
-        apiMode='investigate'
-        categorySource='Optimize'
-        position='right'
-        mode='overlay'
-        width='720px'
-      />
     </Box>
   );
 };

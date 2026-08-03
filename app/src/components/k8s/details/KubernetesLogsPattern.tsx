@@ -28,7 +28,7 @@ import Datetime from '@shared/format/Datetime';
 import { Button as DsButton } from '@ui/Button';
 import CopyButton from '@shared/buttons/CopyButton';
 import SafeIcon from '@shared/icons/SafeIcon';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import apiKubernetes1 from '@api1/kubernetes1';
 import observability from '@api1/observability';
 import { md5 } from '@lib/encode';
@@ -126,9 +126,7 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
   const [ticketData, setTicketData] = useState({});
   const [count, setCount] = useState(0);
   const [allowInActivePod, setAllowInActivePod] = useState(false);
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiSessionId, setNubiSessionId] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
   const { providerCapabilities } = useData();
   const logsProviderEntry = providerCapabilities.find((e: any) => e.provider_type === 'logs');
   const logsCaps = logsProviderEntry?.capabilities;
@@ -272,11 +270,13 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
     const pod = containerIds?.[3] ?? item?.workload ?? item?.container ?? '';
     const workloadName = extractWorkloadName(pod);
 
-    setNubiQuery(
-      `@loganalysis analyse the following log and provide the root cause and possible actions to resolve the issue.\n namespace: ${namespace}, pod - ${pod}, workload - ${workloadName}  \n\n Log - ${item.sample}`
-    );
-    setNubiSessionId(md5([item?.pattern_hash ?? item?.sample ?? '']));
-    setNubiSidebarVisible(true);
+    openNubiChat({
+      accountId,
+      sessionId: md5([item?.pattern_hash ?? item?.sample ?? '']),
+      query: `@loganalysis analyse the following log and provide the root cause and possible actions to resolve the issue.\n namespace: ${namespace}, pod - ${pod}, workload - ${workloadName}  \n\n Log - ${item.sample}`,
+      source: 'log_pattern_analysis',
+      aboveModal: nubiAboveModal,
+    });
   };
 
   const handleSubmit = () => {
@@ -477,19 +477,6 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
 
   return (
     <div>
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        accountId={accountId}
-        query={nubiQuery}
-        context={{ type: 'cluster', data: { conversationId: nubiSessionId } }}
-        apiMode='investigate'
-        source='log_pattern_analysis'
-        position='right'
-        mode='overlay'
-        width='500px'
-        aboveModal={nubiAboveModal}
-      />
       <TicketCreatePopupForm
         open={isTicketCreateFormOpen}
         handleClose={closeTicketCreateForm}

@@ -1,5 +1,5 @@
 import { Box, Grid, Typography } from '@mui/material';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import recommendationApi, { RECOMMENDATION_STATUS } from '@api1/recommendation';
 import k8sApi from '@api1/kubernetes';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
@@ -7,12 +7,12 @@ import Currency from '@shared/format/Currency';
 import Text from '@shared/format/Text';
 import Datetime from '@shared/format/Datetime';
 import PropTypes from 'prop-types';
-import LineChart from '@shared/charts/LineCharts';
+import Chart from '@ui/Chart';
 import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
 import apiUser from '@api1/user';
-import CustomTicketLink from '@shared/CustomTicketLink';
-import { colors, ds } from 'src/utils/colors';
+import TicketLink from '@shared/links/TicketLink';
+import { ds } from 'src/utils/colors';
 import { timeFormatIn24Hours } from '@lib/datetime';
 import { toast as snackbar } from '@ui/Toast';
 import { Modal } from '@ui/Modal';
@@ -27,7 +27,7 @@ import { Link as CustomLink } from '@ui/Link';
 import useRecommendationExport from '@hooks/useRecommendationExport';
 import EmptyData from '@shared/EmptyData';
 import Link from 'next/link';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import CustomTooltip from '@ui/Tooltip';
@@ -36,7 +36,7 @@ import WidgetCard from '@ui/WidgetCard';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Stat } from '@ui/Stat';
 import { CostCallout } from '@ui/CostCallout';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -63,16 +63,16 @@ const KubernetesReplicaRightSizingDrilldown = (props) => {
       sx={{
         width: '100%',
         overflow: 'hidden',
-        backgroundColor: colors.background.white,
-        border: `1px solid ${colors.border.secondaryLight}`,
+        backgroundColor: ds.background[100],
+        border: `1px solid ${ds.gray[200]}`,
         borderRadius: 'var(--ds-radius-md)',
         p: 'var(--ds-space-3)',
       }}
     >
       <Grid container sx={{ mb: 'var(--ds-space-5)' }} spacing={2}>
         <Grid item xs={6}>
-          <LineChart
-            colors={[colors.text.cpuRecommendation]}
+          <Chart.Line
+            colors={[ds.green[500]]}
             data={
               Array.isArray(props?.data?.recommendation?.recommendation?.allocated)
                 ? props.data.recommendation.recommendation.allocated.map((v) => v.replicas)
@@ -96,8 +96,8 @@ const KubernetesReplicaRightSizingDrilldown = (props) => {
           />
         </Grid>
         <Grid item xs={6}>
-          <LineChart
-            colors={[colors.text.red]}
+          <Chart.Line
+            colors={[ds.red[500]]}
             data={
               Array.isArray(props?.data?.recommendation?.recommendation?.recommended)
                 ? props.data.recommendation.recommendation.recommended.map((v) => v.replicas)
@@ -123,8 +123,8 @@ const KubernetesReplicaRightSizingDrilldown = (props) => {
       </Grid>
       <Grid container sx={{ mb: 'var(--ds-space-5)' }} spacing={2}>
         <Grid item xs={6}>
-          <LineChart
-            colors={[colors.text.cpuUsage]}
+          <Chart.Line
+            colors={[ds.amber[400]]}
             data={
               Array.isArray(props?.data?.recommendation?.recommendation.evidence)
                 ? props.data.recommendation.recommendation.evidence.map((v) => v.cpu)
@@ -140,8 +140,8 @@ const KubernetesReplicaRightSizingDrilldown = (props) => {
           />
         </Grid>
         <Grid item xs={6}>
-          <LineChart
-            colors={[colors.text.memoryRecommendation]}
+          <Chart.Line
+            colors={[ds.green[500]]}
             data={
               Array.isArray(props?.data?.recommendation?.recommendation.evidence)
                 ? props.data.recommendation.recommendation.evidence.map((v) => v.memory)
@@ -159,8 +159,8 @@ const KubernetesReplicaRightSizingDrilldown = (props) => {
       </Grid>
       <Grid container sx={{ mb: 'var(--ds-space-5)' }} spacing={2}>
         <Grid item xs={6}>
-          <LineChart
-            colors={[colors.text.tertiary]}
+          <Chart.Line
+            colors={[ds.gray[600]]}
             data={
               Array.isArray(props?.data?.recommendation?.recommendation.evidence)
                 ? props.data.recommendation.recommendation.evidence.map((v) => v.rps)
@@ -176,8 +176,8 @@ const KubernetesReplicaRightSizingDrilldown = (props) => {
           />
         </Grid>
         <Grid item xs={6}>
-          <LineChart
-            colors={[colors.text.purple]}
+          <Chart.Line
+            colors={[ds.purple[500]]}
             data={
               Array.isArray(props?.data?.recommendation?.recommendation.evidence)
                 ? props.data.recommendation.recommendation.evidence.map((v) => v.latency)
@@ -240,10 +240,8 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
   const [isGoogleChannelsLoading, setIsGoogleChannelsLoading] = useState(false);
   const [accounts, setAccounts] = useState([]);
   const [selectedAccountId, setSelectedAccountId] = useState(props?.kubernetes?.id);
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiAccountId, setNubiAccountId] = useState('');
-  const [nubiConversationId, setNubiConversationId] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
+  const rawReplicaRef = useRef([]);
 
   useEffect(() => {
     setSelectedAccountId(props?.kubernetes?.id);
@@ -456,6 +454,194 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
     }
   };
 
+  const buildRow = (item) => {
+    let data = [];
+    let hasAutopilotConfigured = false;
+    let autoPilotId;
+    let autoPilotCategory;
+    const itemName = item?.recommendation?.metadata?.name;
+    const itemNamespace = item?.recommendation?.metadata?.namespace;
+
+    for (let a of listAutoPilots) {
+      for (let r of a.auto_optimize_resource_maps) {
+        if (r?.resource_identifier?.name == itemName && r?.resource_identifier?.namespace == itemNamespace) {
+          hasAutopilotConfigured = true;
+          autoPilotId = a.id;
+          autoPilotCategory = a.category;
+          break;
+        }
+        if (r?.resource_identifier?.name == null && r?.resource_identifier?.namespace == itemNamespace) {
+          hasAutopilotConfigured = true;
+          autoPilotId = a.id;
+          autoPilotCategory = a.category;
+          break;
+        }
+      }
+      if (hasAutopilotConfigured) {
+        break;
+      }
+    }
+
+    item.hasAutopilotConfigured = hasAutopilotConfigured;
+    item.autoPilotCategory = autoPilotCategory;
+    let name = item?.recommendation?.metadata?.name;
+    let nameSpace = item?.recommendation?.metadata?.namespace;
+
+    data.push({
+      component: (
+        <>
+          <Text value={name} showAutoEllipsis />
+          {isOptimisePage && (
+            <Box sx={{ display: 'flex', gap: 'var(--ds-space-1)' }}>
+              <Text value={'acc: '} secondaryText />
+              <CustomLink
+                href={{
+                  pathname: `/kubernetes/details/${item.account_id}`,
+                }}
+                target='_blank'
+                secondaryText
+              >
+                {getAccountName(item.account_id)}
+              </CustomLink>
+            </Box>
+          )}
+          {item.ticket !== undefined ? <TicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} /> : ''}
+          {item?.recommendation?.recommendation?.error !== undefined && (
+            <Text
+              sx={{ color: ds.red[500], fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-medium)' }}
+              value={item?.recommendation?.recommendation?.error}
+            />
+          )}
+        </>
+      ),
+      drilldownQuery: {
+        data: item,
+        name: name,
+      },
+    });
+    data.push({ component: <Text value={nameSpace || '-'} showAutoEllipsis /> });
+    const allocatedReplicas = getRecommendedReplicas(item?.recommendation?.recommendation, 'allocated');
+    const recommendedReplicas = getRecommendedReplicas(item?.recommendation?.recommendation, 'recommended');
+    data.push({
+      component: (
+        <DsComparisonGroup spacing='xs'>
+          <DsComparison
+            size='sm'
+            polarity='lower-is-better'
+            before={{ value: typeof allocatedReplicas === 'number' ? allocatedReplicas : Number(allocatedReplicas) || null }}
+            after={{ value: typeof recommendedReplicas === 'number' ? recommendedReplicas : Number(recommendedReplicas) || null }}
+          />
+        </DsComparisonGroup>
+      ),
+      data: recommendedReplicas,
+    });
+    data.push({
+      component: <Text value={getRecommendedTypeText(item?.recommendation?.recommendation?.recommended_type)} showAutoEllipsis />,
+      data: getRecommendedTypeText(item?.recommendation?.recommendation?.recommended_type),
+    });
+    data.push({
+      component: getRecommendedTypeComponent(item?.recommendation?.recommendation?.recommended_type, item),
+      data: getRecommendedTypeText(item?.recommendation?.recommendation?.recommended_type),
+    });
+    data.push({
+      component: <Text value={(item?.recommendation?.duration || '7') + ' D'} />,
+    });
+    data.push({
+      component: <Currency value={item?.estimated_savings || '-'} precison={1} />,
+      data: item?.estimated_savings,
+    });
+    data.push({ component: <Datetime value={item.updated_at} /> });
+    const autoPilotIdRef = autoPilotId;
+    const hasAutopilotConfiguredRef = hasAutopilotConfigured;
+    data.push({
+      component: (
+        <Box
+          onClick={(e) => e.stopPropagation()}
+          sx={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--ds-space-1)' }}
+        >
+          {hasWriteAccess(item.account_id || selectedAccountId) && (
+            <DsButton
+              tone='secondary'
+              size='xs'
+              id={`rrs-resolve-${item.id}`}
+              trailingAccent={<ArrowForwardIcon />}
+              onClick={() => {
+                handleResolved({
+                  id: autoPilotIdRef,
+                  resourceId: item.cloud_resourse.id,
+                  data: item,
+                  category: autoPilotCategory,
+                });
+              }}
+            >
+              {hasAutopilotConfiguredRef ? 'Configured' : 'Optimize'}
+            </DsButton>
+          )}
+          <CustomTooltip title={`Ask ${assistantName}`} placement='top'>
+            <span>
+              <DsButton
+                tone='ghost'
+                size='xs'
+                composition='icon-only'
+                aria-label={`Ask ${assistantName}`}
+                id={`replica-rs-ask-nubi-${item.id}`}
+                icon={<SafeIcon src={getNubiIconUrl()} alt='' width={16} height={16} />}
+                onClick={() => {
+                  const prompt = buildNubiOptimizePrompt({
+                    ruleName: 'Replica Right Sizing',
+                    category: 'RightSizing',
+                    severity: item.severity || 'Info',
+                    resourceName: name || '',
+                    namespace: nameSpace || '',
+                    accountName: isOptimisePage ? getAccountName(item.account_id) : undefined,
+                    estimatedSavings: item.estimated_savings || undefined,
+                    brief: `${getRecommendedTypeText(
+                      item?.recommendation?.recommendation?.recommended_type
+                    )}: Current replicas: ${allocatedReplicas}, Recommended: ${recommendedReplicas}.`,
+                  });
+                  openNubiChat({
+                    accountId: item.account_id || selectedAccountId,
+                    sessionId: `recom_${item.id}`,
+                    query: prompt,
+                    categorySource: 'Optimize',
+                  });
+                }}
+              />
+            </span>
+          </CustomTooltip>
+          <DsDropdownMenu
+            align='end'
+            size='sm'
+            items={[
+              {
+                id: `rrs-action-ticket-${item.id}`,
+                label: item.ticket?.ticket_id ? `Ticket: ${item.ticket.ticket_id}` : 'Create ticket',
+                icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: ds.text.title }} />,
+                disabled: !!item.ticket?.ticket_id,
+                onSelect: () => {
+                  setTicketData(item);
+                  setIsTicketCreateFormOpen(true);
+                },
+              },
+            ]}
+            trigger={
+              <DsButton
+                tone='ghost'
+                size='xs'
+                composition='icon-only'
+                icon={<MoreVertIcon />}
+                aria-label='More actions'
+                id={`rrs-action-menu-${item.id}`}
+              />
+            }
+          />
+        </Box>
+      ),
+    });
+
+    return data;
+  };
+
   const listRecommendations = () => {
     if (!selectedAccountId && !isOptimisePage) {
       return;
@@ -479,195 +665,10 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
       .then((res) => {
         setLoading(false);
         const rawItems = res?.data?.recommendation || [];
+        rawReplicaRef.current = rawItems;
         setKubernetesAbandonedWorkloadsCount(res?.data?.recommendation_aggregate?.aggregate?.count || 0);
-        let rIds = [];
-        let k8sRecommendationData = rawItems.map((item) => {
-          let data = [];
-          let hasAutopilotConfigured = false;
-          let autoPilotId;
-          let autoPilotCategory;
-          const itemName = item?.recommendation?.metadata?.name;
-          const itemNamespace = item?.recommendation?.metadata?.namespace;
-
-          for (let a of listAutoPilots) {
-            for (let r of a.auto_optimize_resource_maps) {
-              if (r?.resource_identifier?.name == itemName && r?.resource_identifier?.namespace == itemNamespace) {
-                hasAutopilotConfigured = true;
-                autoPilotId = a.id;
-                autoPilotCategory = a.category;
-                break;
-              }
-              if (r?.resource_identifier?.name == null && r?.resource_identifier?.namespace == itemNamespace) {
-                hasAutopilotConfigured = true;
-                autoPilotId = a.id;
-                autoPilotCategory = a.category;
-                break;
-              }
-            }
-            if (hasAutopilotConfigured) {
-              break;
-            }
-          }
-
-          item.hasAutopilotConfigured = hasAutopilotConfigured;
-          item.autoPilotCategory = autoPilotCategory;
-          let name = item?.recommendation?.metadata?.name;
-          let nameSpace = item?.recommendation?.metadata?.namespace;
-          rIds.push(item.cloud_resourse.id);
-
-          data.push({
-            component: (
-              <>
-                <Text value={name} showAutoEllipsis />
-                {isOptimisePage && (
-                  <Box sx={{ display: 'flex', gap: 'var(--ds-space-1)' }}>
-                    <Text value={'acc: '} secondaryText />
-                    <CustomLink
-                      href={{
-                        pathname: `/kubernetes/details/${item.account_id}`,
-                      }}
-                      target='_blank'
-                      secondaryText
-                    >
-                      {getAccountName(item.account_id)}
-                    </CustomLink>
-                  </Box>
-                )}
-                {item.ticket !== undefined ? <CustomTicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} /> : ''}
-                {item?.recommendation?.recommendation?.error !== undefined && (
-                  <Text
-                    sx={{ color: colors.text.red, fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-medium)' }}
-                    value={item?.recommendation?.recommendation?.error}
-                  />
-                )}
-              </>
-            ),
-            drilldownQuery: {
-              data: item,
-              name: name,
-            },
-          });
-          data.push({ component: <Text value={nameSpace || '-'} showAutoEllipsis /> });
-          const allocatedReplicas = getRecommendedReplicas(item?.recommendation?.recommendation, 'allocated');
-          const recommendedReplicas = getRecommendedReplicas(item?.recommendation?.recommendation, 'recommended');
-          data.push({
-            component: (
-              <DsComparisonGroup spacing='xs'>
-                <DsComparison
-                  size='sm'
-                  polarity='lower-is-better'
-                  before={{ value: typeof allocatedReplicas === 'number' ? allocatedReplicas : Number(allocatedReplicas) || null }}
-                  after={{ value: typeof recommendedReplicas === 'number' ? recommendedReplicas : Number(recommendedReplicas) || null }}
-                />
-              </DsComparisonGroup>
-            ),
-            data: recommendedReplicas,
-          });
-          data.push({
-            component: <Text value={getRecommendedTypeText(item?.recommendation?.recommendation?.recommended_type)} showAutoEllipsis />,
-            data: getRecommendedTypeText(item?.recommendation?.recommendation?.recommended_type),
-          });
-          data.push({
-            component: getRecommendedTypeComponent(item?.recommendation?.recommendation?.recommended_type, item),
-            data: getRecommendedTypeText(item?.recommendation?.recommendation?.recommended_type),
-          });
-          data.push({
-            component: <Text value={(item?.recommendation?.duration || '7') + ' D'} />,
-          });
-          data.push({
-            component: <Currency value={item?.estimated_savings || '-'} precison={1} />,
-            data: item?.estimated_savings,
-          });
-          data.push({ component: <Datetime value={item.updated_at} /> });
-          const autoPilotIdRef = autoPilotId;
-          const hasAutopilotConfiguredRef = hasAutopilotConfigured;
-          data.push({
-            component: (
-              <Box
-                onClick={(e) => e.stopPropagation()}
-                sx={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--ds-space-1)' }}
-              >
-                {hasWriteAccess(item.account_id || selectedAccountId) && (
-                  <DsButton
-                    tone='secondary'
-                    size='xs'
-                    id={`rrs-resolve-${item.id}`}
-                    trailingAccent={<ArrowForwardIcon />}
-                    onClick={() => {
-                      handleResolved({
-                        id: autoPilotIdRef,
-                        resourceId: item.cloud_resourse.id,
-                        data: item,
-                        category: autoPilotCategory,
-                      });
-                    }}
-                  >
-                    {hasAutopilotConfiguredRef ? 'Configured' : 'Optimize'}
-                  </DsButton>
-                )}
-                <CustomTooltip title={`Ask ${assistantName}`} placement='top'>
-                  <span>
-                    <DsButton
-                      tone='ghost'
-                      size='xs'
-                      composition='icon-only'
-                      aria-label={`Ask ${assistantName}`}
-                      id={`replica-rs-ask-nubi-${item.id}`}
-                      icon={<SafeIcon src={getNubiIconUrl()} alt='' width={16} height={16} />}
-                      onClick={() => {
-                        const prompt = buildNubiOptimizePrompt({
-                          ruleName: 'Replica Right Sizing',
-                          category: 'RightSizing',
-                          severity: item.severity || 'Info',
-                          resourceName: name || '',
-                          namespace: nameSpace || '',
-                          accountName: isOptimisePage ? getAccountName(item.account_id) : undefined,
-                          estimatedSavings: item.estimated_savings || undefined,
-                          brief: `${getRecommendedTypeText(
-                            item?.recommendation?.recommendation?.recommended_type
-                          )}: Current replicas: ${allocatedReplicas}, Recommended: ${recommendedReplicas}.`,
-                        });
-                        setNubiQuery(prompt);
-                        setNubiAccountId(item.account_id || selectedAccountId);
-                        setNubiConversationId(`recom_${item.id}`);
-                        setNubiSidebarVisible(true);
-                      }}
-                    />
-                  </span>
-                </CustomTooltip>
-                <DsDropdownMenu
-                  align='end'
-                  size='sm'
-                  items={[
-                    {
-                      id: `rrs-action-ticket-${item.id}`,
-                      label: item.ticket?.ticket_id ? `Ticket: ${item.ticket.ticket_id}` : 'Create ticket',
-                      icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: 16 }} />,
-                      disabled: !!item.ticket?.ticket_id,
-                      onSelect: () => {
-                        setTicketData(item);
-                        setIsTicketCreateFormOpen(true);
-                      },
-                    },
-                  ]}
-                  trigger={
-                    <DsButton
-                      tone='ghost'
-                      size='xs'
-                      composition='icon-only'
-                      icon={<MoreVertIcon />}
-                      aria-label='More actions'
-                      id={`rrs-action-menu-${item.id}`}
-                    />
-                  }
-                />
-              </Box>
-            ),
-          });
-
-          return data;
-        });
-        setKubernetesAbandonedWorkloads(k8sRecommendationData);
+        const rIds = rawItems.map((item) => item.cloud_resourse.id);
+        setKubernetesAbandonedWorkloads(rawItems.map(buildRow));
         setResourceIds(rIds);
       })
       .catch(() => {
@@ -754,8 +755,15 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
       });
   }, [selectedAccountId, recommendationStatus]);
 
-  const handleTicketSuccess = () => {
-    listRecommendations();
+  const handleTicketSuccess = ({ ticketId, url } = {}) => {
+    const idx = rawReplicaRef.current.findIndex((item) => item.id === ticketData.id);
+    if (idx === -1) return;
+    rawReplicaRef.current[idx] = { ...rawReplicaRef.current[idx], ticket: { ticket_id: ticketId, url } };
+    setKubernetesAbandonedWorkloads((prev) => {
+      const next = [...prev];
+      next[idx] = buildRow(rawReplicaRef.current[idx]);
+      return next;
+    });
   };
 
   const handleTicketFailure = (res) => {
@@ -957,7 +965,7 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
         </ListingLayout.Toolbar>
 
         <ListingLayout.Body>
-          <CustomTable2
+          <CustomTable
             id={kubernetesRightSizingTable}
             headers={tableHeaders}
             tableData={kubernetesAbandonedWorkloads}
@@ -984,18 +992,6 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
           />
         </ListingLayout.Body>
       </ListingLayout>
-
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        accountId={nubiAccountId}
-        queryPrefix={nubiQuery}
-        context={{ type: 'cluster', data: { conversationId: nubiConversationId } }}
-        apiMode='investigate'
-        categorySource='Optimize'
-        position='right'
-        mode='overlay'
-      />
     </>
   );
 };

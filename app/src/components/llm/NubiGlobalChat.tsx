@@ -4,29 +4,28 @@ import HistoryIcon from '@mui/icons-material/History';
 import CloseIcon from '@mui/icons-material/Close';
 import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import FullscreenExitIcon from '@mui/icons-material/FullscreenExit';
-import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { useEffect, useMemo, useState, useRef } from 'react';
+import { useRouter } from 'next/router';
 import { createPortal } from 'react-dom';
 import CustomDrawer from '@shared/CustomDrawer';
 import SafeIcon from '@shared/icons/SafeIcon';
-import CloudProviderIcon from '@shared/icons/CloudIcon';
 import NubiWatchingIcon from '@shared/NubiWatchingIcon';
-import Chip from '@ui/Chip';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+import FilterDropdown from '@ui/FilterDropdown';
 import Tooltip from '@ui/Tooltip';
 import KubernetesLLMResponseGenerator from '@components/llm/KubernetesLLMResponseGeneratorV2';
 import { useTenantBranding, useBrandingConfig } from '@hooks/useTenantBranding';
 import { useData } from '@context/DataContext';
 import { useUpdateAllClusterOption } from '@shared/layout/UpdateDataContext';
-import { useNubiGlobalChat, NUBI_GLOBAL_CHAT_SHORTCUT_LABEL } from '@context/NubiGlobalChatContext';
+import { useNubiGlobalChat, NUBI_GLOBAL_CHAT_SHORTCUT_LABEL, isNubiFullPageRoute, isNubiLauncherHiddenRoute } from '@context/NubiGlobalChatContext';
 import { buildNubiWelcomeTemplates } from '@components/llm/NubiWelcome';
 import { ds } from '@utils/colors';
 
 const LAUNCHER_SIZE = 56;
 
-const ACCOUNT_SCOPE_HINT = 'Scoped to this account — from the page, or your last visit. Change it from the page.';
-
 const NubiGlobalChat: React.FC = () => {
-  const { isOpen, open, close, wipCount, completedWhileClosed, accountId } = useNubiGlobalChat();
+  const router = useRouter();
+  const { isOpen, open, close, wipCount, completedWhileClosed, accountId, chatContext, clearChatContext, setChatAccount } = useNubiGlobalChat();
   const { assistantName, nubiIconUrl } = useTenantBranding();
   // The animated mascot is Nudgebee-specific — white-label tenants keep their
   // branded icon. Gate on `loading` too so the mascot never flashes before the
@@ -61,7 +60,32 @@ const NubiGlobalChat: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, allCluster]);
 
-  const account = useMemo(() => (accountId ? (allCluster || []).find((c: any) => c.value === accountId) : null), [allCluster, accountId]);
+  const accountOptions = useMemo(
+    () =>
+      (allCluster || []).map((c: any) => ({
+        value: c.value,
+        label: c.label,
+        group: c.cloud_provider || 'Other',
+        icon: <CloudProviderIcon cloud_provider={c.cloud_provider} width='16px' height='16px' />,
+        searchText: c.label,
+      })),
+    [allCluster]
+  );
+
+  // Reset to a fresh chat when the account changes; the first resolution is a load, not a change.
+  // Skipped when the caller supplied a conversation (a row trigger carrying its own account):
+  // that conversation IS the new thread, and resetting would wipe what it just loaded.
+  const prevAccountRef = useRef(accountId);
+  useEffect(() => {
+    const previous = prevAccountRef.current;
+    if (previous === accountId) {
+      return;
+    }
+    prevAccountRef.current = accountId;
+    if (previous && accountId && !chatContext?.sessionId) {
+      setNewChatSignal((n) => (n ?? 0) + 1);
+    }
+  }, [accountId, chatContext?.sessionId]);
 
   const [showReadySlate, setShowReadySlate] = useState(false);
   useEffect(() => {
@@ -73,7 +97,9 @@ const NubiGlobalChat: React.FC = () => {
     return () => clearTimeout(timer);
   }, [completedWhileClosed]);
 
-  if (!mounted) {
+  // The dedicated Nubi page is this same chat at full size — don't stack a
+  // launcher/drawer on top of it.
+  if (!mounted || isNubiFullPageRoute(router.pathname)) {
     return null;
   }
 
@@ -115,6 +141,7 @@ const NubiGlobalChat: React.FC = () => {
 
   const launcher =
     !isOpen &&
+    !isNubiLauncherHiddenRoute(router.pathname) &&
     createPortal(
       <Box
         sx={{
@@ -422,7 +449,7 @@ const NubiGlobalChat: React.FC = () => {
             <SafeIcon src={nubiIconUrl} alt={assistantName} width={28} height={28} />
             <Typography
               sx={{
-                fontSize: 'var(--ds-text-title)',
+                fontSize: 'var(--ds-text-heading)',
                 fontWeight: 'var(--ds-font-weight-semibold)',
                 color: ds.brand[500],
                 fontFamily: ds.font.sans,
@@ -436,21 +463,42 @@ const NubiGlobalChat: React.FC = () => {
           </Box>
         </Tooltip>
 
-        {account && (
+        {(allCluster || []).length > 0 && (
           <Box data-testid='nubi-global-chat-account' sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', minWidth: 0 }}>
-            <Chip
-              variant='tag'
-              tone='info'
-              size='xs'
-              icon={<CloudProviderIcon cloud_provider={account.cloud_provider} width='12px' height='12px' />}
-              displayTooltip
-              tooltipCharLimit={18}
-            >
-              {account.label}
-            </Chip>
-            <Tooltip title={ACCOUNT_SCOPE_HINT} placement='bottom'>
-              <InfoOutlinedIcon aria-label='How this account is chosen' sx={{ fontSize: 14, color: ds.gray[400], cursor: 'help', flexShrink: 0 }} />
-            </Tooltip>
+            <FilterDropdown
+              id='nubi-global-chat-account-select'
+              label=''
+              placeholder='Account'
+              size='sm'
+              grouped
+              clearable={false}
+              showSelectedIcon
+              // Portal out: the drawer is a MUI Modal with an overflow-hidden paper.
+              disablePortal={false}
+              options={accountOptions}
+              value={accountOptions.find((o: { value: string }) => o.value === accountId) || null}
+              onSelect={(_e: any, item: any) => setChatAccount(item?.value || '')}
+              groupIcon={(groupKey: string) => <CloudProviderIcon cloud_provider={groupKey} width='14px' height='14px' />}
+              searchPlaceholder='Search accounts'
+              // Chip-styled trigger; tokens mirror ds/Chip variant='tag' tone='info'.
+              sx={{
+                minWidth: 'unset',
+                maxWidth: ds.space.mul(0, 80),
+                height: 'auto',
+                padding: `2px var(--ds-space-2)`,
+                borderRadius: 'var(--ds-radius-pill)',
+                backgroundColor: 'var(--ds-blue-100)',
+                border: '1px solid var(--ds-blue-200)',
+                boxShadow: 'none',
+                fontSize: 'var(--ds-text-caption)',
+                fontWeight: 'var(--ds-font-weight-medium)',
+                color: 'var(--ds-blue-700)',
+                '&:hover': {
+                  backgroundColor: 'var(--ds-blue-200)',
+                  borderColor: 'var(--ds-blue-300)',
+                },
+              }}
+            />
           </Box>
         )}
       </Box>
@@ -459,7 +507,12 @@ const NubiGlobalChat: React.FC = () => {
         <Tooltip title='New chat' placement='bottom'>
           <IconButton
             size='small'
-            onClick={() => setNewChatSignal((n) => (n ?? 0) + 1)}
+            onClick={() => {
+              // Drop the preloaded conversation too, or the generator would be handed
+              // the old session id / query again right after resetting.
+              clearChatContext();
+              setNewChatSignal((n) => (n ?? 0) + 1);
+            }}
             aria-label='New chat'
             data-testid='nubi-global-chat-new-chat'
             sx={{ color: ds.brand[500] }}
@@ -508,6 +561,7 @@ const NubiGlobalChat: React.FC = () => {
       bare
       variant='modern'
       storageKey='nb.nubiGlobalChat.width'
+      aboveModal={chatContext?.aboveModal}
     >
       <Box
         // Signals other global shortcut handlers (e.g. Cmd/Ctrl+K page search) that the chat is open.
@@ -521,7 +575,10 @@ const NubiGlobalChat: React.FC = () => {
               accountId={accountId}
               popup
               showBorder={false}
-              source='ask_nudgbee_chat'
+              source={chatContext?.source || 'ask_nudgbee_chat'}
+              sessionId={chatContext?.sessionId || ''}
+              query={chatContext?.query || ''}
+              categorySource={chatContext?.categorySource || ''}
               newChatSignal={newChatSignal as any}
               historySignal={historySignal as any}
               historyButtonRef={historyButtonRef as any}

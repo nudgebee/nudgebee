@@ -17,6 +17,7 @@ import RunAutomationMenu from '@components/workflow/components/RunAutomationMenu
 import apiWorkflow from '@api1/workflow';
 import { SparklesIconBG } from '@assets';
 import { getNubiIconUrl, useTenantBranding, DEFAULT_TITLE } from '@hooks/useTenantBranding';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { Label } from '@ui/Label';
 import apiRecommendations from '@api1/recommendation';
 import apiTriage from '@api1/triage';
@@ -265,6 +266,7 @@ const Investigate = () => {
   const handleGenerateRCARef = useRef(null);
   const { selectedCluster, allCluster, setAllCluster } = useData();
   const { assistantName } = useTenantBranding();
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
 
   // Track timeouts for cleanup
   const trackTimeout = useCallback((fn, delay) => {
@@ -2576,10 +2578,12 @@ const Investigate = () => {
                             disabled={!row.fingerprint}
                             onClick={() => {
                               if (row.fingerprint) {
-                                let href = `/ask-nudgebee?accountId=${row.cloud_account_id || router.query.accountId}&session_id=event-${
-                                  row.fingerprint
-                                }`;
-                                window.open(href, '_blank');
+                                // Same conversation the full page would have opened, in the
+                                // global drawer — the investigation stays on screen behind it.
+                                openNubiChat({
+                                  accountId: row.cloud_account_id || router.query.accountId,
+                                  sessionId: `event-${row.fingerprint}`,
+                                });
                               }
                             }}
                             data-testid='continue-with-analysis-btn'

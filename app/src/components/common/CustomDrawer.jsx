@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import PropTypes from 'prop-types';
-import { Drawer, Box, Typography, Paper } from '@mui/material';
+import { Drawer, Box, Typography, Paper, useTheme } from '@mui/material';
 import { useForkRef } from '@mui/material/utils';
 import { Button } from '@ui/Button';
 import { Transition } from 'react-transition-group';
@@ -265,10 +265,16 @@ const CustomDrawer = ({
   bare = false,
   storageKey = STORAGE_KEY,
   nonModal = false,
+  aboveModal = false,
 }) => {
+  const theme = useTheme();
   const { width: drawerWidth, handleMouseDown } = useDrawerResize(width, storageKey, resizable);
   const effectiveWidth = drawerWidth;
   const isModern = variant === 'modern';
+  // Opened from inside a Dialog, the default 1200 loses to theme.zIndex.modal (1300)
+  // and the drawer renders behind the modal that launched it. The host Dialog must
+  // also pass `disableEnforceFocus`, or its focus trap steals every keystroke.
+  const drawerZIndex = aboveModal ? theme.zIndex.modal + 1 : 1200;
 
   useEffect(() => {
     onWidthChange?.(effectiveWidth);
@@ -283,7 +289,7 @@ const CustomDrawer = ({
       // In non-modal mode the Modal root would still cover the viewport and
       // swallow clicks, so make the root click-through and re-enable pointer
       // events on the Paper only — letting the user work with the page behind.
-      sx={{ zIndex: 1200, ...(nonModal && { pointerEvents: 'none' }) }}
+      sx={{ zIndex: drawerZIndex, ...(nonModal && { pointerEvents: 'none' }) }}
       TransitionComponent={SoftDrawerTransition}
       transitionDuration={DRAWER_MS}
       hideBackdrop={nonModal}
@@ -353,6 +359,7 @@ CustomDrawer.propTypes = {
   bare: PropTypes.bool,
   storageKey: PropTypes.string,
   nonModal: PropTypes.bool,
+  aboveModal: PropTypes.bool,
 };
 
 const SecondaryDrawer = ({ open, onClose, title, rightOffset = 0, defaultWidth = '40%', children, variant = 'default' }) => {

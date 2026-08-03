@@ -42,7 +42,7 @@ import {
 } from './insights';
 import RecommendationDetailPanel from '../RecommendationDetailPanel';
 import ResolveModal from '../ResolveModal';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { buildKubectlCommand, formatRuleName, getRecommendationBrief, getResourceDisplayName, safeParseJSON } from '../utils';
@@ -165,13 +165,8 @@ const SummaryView = () => {
   // ── Action modal state ──
   const [resolveModalRec, setResolveModalRec] = useState<any>(null);
   const [ticketRec, setTicketRec] = useState<any>(null);
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiAccountId, setNubiAccountId] = useState('');
-  const [nubiConversationId, setNubiConversationId] = useState('');
-  // Bumped on every "Ask Nubi" click so the sidebar re-expands even when it's already visible
-  // (user collapsed it, then re-asked on the same or a different entry).
-  const [nubiOpenSignal, setNubiOpenSignal] = useState(0);
+  // NuBi chat — opens the global drawer preloaded with the entry's context.
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
 
   // ── Handlers ──
   const handleOpenResource = useCallback((id: string) => {
@@ -215,13 +210,14 @@ const SummaryView = () => {
         brief: getRecommendationBrief(rec) || undefined,
         alarmConfig: safeParseJSON(rec.recommendation)?.alarm_config || undefined,
       });
-      setNubiQuery(prompt);
-      setNubiAccountId(rec.account_id || '');
-      setNubiConversationId(`recom_${rec.id}`);
-      setNubiSidebarVisible(true);
-      setNubiOpenSignal((n) => n + 1);
+      openNubiChat({
+        accountId: rec.account_id || '',
+        sessionId: `recom_${rec.id}`,
+        query: prompt,
+        categorySource: 'Optimize',
+      });
     },
-    [accounts]
+    [accounts, openNubiChat]
   );
 
   const handleAskNubiFromCard = useCallback(
@@ -694,11 +690,12 @@ const SummaryView = () => {
                     const firstAccountId = Object.keys(accounts)[0] || '';
                     const critCount = filtered.filter((i) => i.severity === 'critical').length;
                     const prompt = `I have ${filtered.length} optimization findings across my infrastructure (${critCount} critical). Give me a prioritized action plan — what should I tackle first and why?`;
-                    setNubiQuery(prompt);
-                    setNubiAccountId(firstAccountId);
-                    setNubiConversationId('optimize_summary_overview');
-                    setNubiSidebarVisible(true);
-                    setNubiOpenSignal((n) => n + 1);
+                    openNubiChat({
+                      accountId: firstAccountId,
+                      sessionId: 'optimize_summary_overview',
+                      query: prompt,
+                      categorySource: 'Optimize',
+                    });
                   }}
                 >
                   Ask {assistantName || 'Nubi'} about any of this →
@@ -731,20 +728,6 @@ const SummaryView = () => {
         onResolve={handleResolve}
         onCopyCli={handleCopyCli}
         onAskNubi={handleAskNubi}
-      />
-
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        openSignal={nubiOpenSignal}
-        accountId={nubiAccountId}
-        query={nubiQuery}
-        context={{ type: 'general', data: { conversationId: nubiConversationId } }}
-        apiMode='investigate'
-        categorySource='Optimize'
-        position='right'
-        mode='overlay'
-        width='720px'
       />
 
       {resolveModalRec && (

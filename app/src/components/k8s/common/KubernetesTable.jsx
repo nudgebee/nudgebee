@@ -25,7 +25,6 @@ import {
   redK8sErrorCodes as redBanner,
   calculateTimeRange,
   generateRandomUUID,
-  convertStringCase,
   formatDateForPlusMinusDuration,
   toSeverityLevel,
   safeJSONParse,
@@ -49,14 +48,14 @@ import Text from '@shared/format/Text';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { DEFAULT_TITLE, getNubiIconUrl } from '@hooks/useTenantBranding';
 import Tooltip from '@ui/Tooltip';
-import ConversationPopup from '@components/llm/ConversationPopup';
 const KubernetesLogs = dynamic(() => import('@components/k8s/details/KubernetesLogs'));
 import { FiArrowRight } from 'react-icons/fi';
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import KubernetesPlusMinusLogsGradual from '@components/k8s/details/KubernetesPlusMinusLogsGradual';
 import CodeMirrorDiffViewer from '@shared/viewers/DiffViewer';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
+import { md5 } from '@lib/encode';
 import { buildNubiChartPrompt } from 'src/utils/nubiPromptBuilder';
 import { ds, resolveColor, resolveColors } from 'src/utils/colors';
 import MetricQueryInfo, { K8S_METRIC_QUERY_LABELS, buildPromQueries } from '@shared/MetricQueryInfo';
@@ -516,8 +515,7 @@ export const KubernetesUtilizationCharts2 = ({
   const [memData, setMemData] = useState({ data: [[], [], []], labels: [], timestamps: [] });
   const [diskData, setDiskData] = useState({ data: [[], []], labels: [] });
   const [showLoading, setShowLoading] = useState(false);
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
   const [promQueries, setPromQueries] = useState({});
 
   const handleAskNubi = (dataPointContext) => {
@@ -538,8 +536,14 @@ export const KubernetesUtilizationCharts2 = ({
       workloadKind: query.kind || query.subject_kind || '',
       metricQuery,
     });
-    setNubiQuery(prompt);
-    setNubiSidebarVisible(true);
+    // Hash the prompt itself for the session id: it encodes the clicked data point in
+    // full, so the same point resumes its thread while a different one starts a new
+    // question. A reused id would be swallowed by the chat's once-per-session guard.
+    openNubiChat({
+      accountId,
+      sessionId: md5([prompt]),
+      query: prompt,
+    });
   };
 
   const [dateTimeRange, setDateTimeRange] = useState(
@@ -775,20 +779,6 @@ export const KubernetesUtilizationCharts2 = ({
             </Grid>
           )}
         </Grid>
-        {nubiSidebarVisible && (
-          <NubiChatSidebar
-            isVisible={nubiSidebarVisible}
-            onClose={() => setNubiSidebarVisible(false)}
-            accountId={accountId}
-            queryPrefix={nubiQuery}
-            context={{ type: 'cluster' }}
-            apiMode='investigate'
-            source='ask_nudgbee_chat'
-            position='right'
-            mode='overlay'
-            width={ds.space.mul(0, 250)}
-          />
-        )}
       </ListingLayout.Body>
     </ListingLayout>
   );
@@ -2155,10 +2145,7 @@ export const KubernetesPodProfilerHistory = ({ accountId, query }) => {
 
   const [totalCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(0);
-  const [analysisQuery, setAnalysisQuery] = useState('');
-  const [analysisType, setAnalysisType] = useState('');
-  const [sessionId, setSessionId] = useState('');
-  const [analysisModalOpen, setAnalysisModalOpen] = useState(false);
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
 
   const onPageChange = (page, _limit) => {
     setCurrentPage(page - 1);
@@ -2219,10 +2206,11 @@ export const KubernetesPodProfilerHistory = ({ accountId, query }) => {
         queryPrompt = `@llm Analyse this profiler data on pod ${query?.pod_name} and namespace ${query?.namespace_name}:\n\n${truncatedData}`;
     }
 
-    setAnalysisQuery(queryPrompt);
-    setAnalysisType(type);
-    setSessionId(generateRandomUUID(`${query.pod_name}-${type}`));
-    setAnalysisModalOpen(true);
+    openNubiChat({
+      accountId,
+      sessionId: generateRandomUUID(`${query.pod_name}-${type}`),
+      query: queryPrompt,
+    });
   };
 
   useEffect(() => {
@@ -2378,18 +2366,6 @@ export const KubernetesPodProfilerHistory = ({ accountId, query }) => {
   return (
     <ListingLayout>
       <ListingLayout.Body>
-        <ConversationPopup
-          open={analysisModalOpen}
-          query={analysisQuery}
-          sessionId={sessionId}
-          accountId={accountId}
-          handleClose={() => {
-            setAnalysisQuery('');
-            setSessionId('');
-            setAnalysisModalOpen(false);
-          }}
-          title={analysisType ? `${convertStringCase(analysisType)} Analysis` : 'Analysis'}
-        />
         <CustomTable
           id={'k8s-profiler'}
           totalRows={totalCount}
