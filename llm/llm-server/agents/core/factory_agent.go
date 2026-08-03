@@ -91,6 +91,85 @@ func GetNBAgent(ctx *security.RequestContext, agentName string, accountId string
 	return systemAgent, true
 }
 
+// maxAncestorWalkForAgentResolution caps how many parent_agent_id hops the
+// resolver will follow before giving up. In practice depth is 1 (a delegate
+// sub-agent → its top-level orchestrator); the cap is a runaway-loop backstop
+// for a corrupted parent chain.
+const maxAncestorWalkForAgentResolution = 8
+
+// ResolveAgentByConversationAgentId translates a llm_conversation_agent row's
+// UUID into an executable NBAgent. When the row's agent_name is a registered
+// agent, that agent is returned directly. When it's NOT registered — the case
+// that happens today for sub-agents constructed on-the-fly by tool wrappers
+// (delegate_agent's dynamicReActAgent is the only such wrapper today) — the
+// resolver walks up parent_agent_id until it finds a registered ancestor and
+// returns that instead.
+//
+// Why walk up: on a followup-answer resume, the frontend POSTs the sub-agent's
+// UUID because that's what the persisted followup message pointed at. Naïvely
+// looking up NBAgent by the sub-agent's agent_name would return nil ("agent
+// not found") and the whole request would 400 — leaving the user's approved
+// write silently unexecuted and the message stuck WAITING forever. The
+// registered ancestor is the real orchestrator (e.g. k8s_orchestrator_lean)
+// that made the delegation; resuming it re-invokes its planner, which
+// re-plans the delegation with the same intent. The user's Yes rides through
+// via QueryConfig.ToolConfirmations (propagated from parent to sub-agent's
+// request at factory_agent.go:361), so the sub-agent's re-plan sees the
+// pre-approval and executes the tool for real.
+//
+// Root cause: prod log `api: agent not found agent_name=delegate_agent`
+// at conv 7564e464 (2026-08-01). Every delegated approve-path hung; reject
+// path (493eab2b) worked because reject is short-circuited before this
+// resolver runs.
+//
+// Returns:
+//   - agent: the resolved NBAgent (may be an ancestor if walk-up succeeded)
+//   - resolvedAgentDto: the ConversationAgent row for `agent_uuid` (NOT the
+//     ancestor). The caller needs this for downstream logging/audit and to
+//     keep the request's original agent_id intact when calling
+//     HandleConversationSessionRequest with WithAgentId — the executor's
+//     resume state lookup keys off the ORIGINAL sub-agent's row.
+//   - walkedLevels: how many parent hops were taken (0 when the direct lookup
+//     succeeded); useful for the caller to log the fallback.
+//   - err: non-nil only for DAO failures; when the walk fails to find a
+//     registered ancestor the returned agent is nil with err == nil, so the
+//     caller can distinguish "resolve failed cleanly" (400 to user) from
+//     "DAO exploded" (500 to user).
+func ResolveAgentByConversationAgentId(ctx *security.RequestContext, agentUUID uuid.UUID, accountId string) (agent NBAgent, resolvedAgentDto *ConversationAgent, walkedLevels int, err error) {
+	rows, err := GetConversationDao().ListConversationAgents("", agentUUID.String())
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("ResolveAgentByConversationAgentId: list conversation agents for %s: %w", agentUUID, err)
+	}
+	if len(rows) == 0 {
+		return nil, nil, 0, nil
+	}
+	dto := rows[0]
+	if candidate, ok := GetNBAgent(ctx, dto.AgentName, accountId, AgentStatusEnabled); ok {
+		return candidate, &dto, 0, nil
+	}
+
+	currentID := dto.ParentAgentID
+	for i := 0; i < maxAncestorWalkForAgentResolution && currentID != uuid.Nil; i++ {
+		// DAO errors in the walk are propagated (not swallowed) so a transient
+		// DB failure surfaces as 500 at the API layer instead of getting
+		// laundered into a false "agent not found" 400. len(parents) == 0 is
+		// a clean chain-break — leave the loop and let the caller decide.
+		parents, pErr := GetConversationDao().ListConversationAgents("", currentID.String())
+		if pErr != nil {
+			return nil, &dto, 0, fmt.Errorf("ResolveAgentByConversationAgentId: list parent agents for %s (starting from %s): %w", currentID, agentUUID, pErr)
+		}
+		if len(parents) == 0 {
+			break
+		}
+		parent := parents[0]
+		if candidate, ok := GetNBAgent(ctx, parent.AgentName, accountId, AgentStatusEnabled); ok {
+			return candidate, &dto, i + 1, nil
+		}
+		currentID = parent.ParentAgentID
+	}
+	return nil, &dto, 0, nil
+}
+
 const nbToolCallAdditionalDatailsAgentId = "agent_id"
 const nbToolCallAdditionalDatailsMessageId = "message_id"
 const nbToolCallAdditionalDatailsQuery = "query"

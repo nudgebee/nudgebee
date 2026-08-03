@@ -131,6 +131,62 @@ func HandleFollowupAndResumeV2(ctx *security.RequestContext, req NBAgentRequest)
 		return NBAgentResponse{}, fmt.Errorf("resume_v2: agent %s not found", req.AgentId)
 	}
 	agent := agents[0]
+
+	// If the loaded agent's implementation isn't registered — the case for
+	// sub-agents constructed on-the-fly by tool wrappers (delegate_agent's
+	// dynamicReActAgent today) — resuming that agent directly is impossible:
+	// GetNBAgent by its name returns nil ("resume_v2: agent impl not
+	// registered"), the whole request errors out, and the user's approved
+	// write silently never runs (message stuck WAITING forever, prod bug at
+	// conv 7564e464). Fall back to the closest registered ancestor and treat
+	// this as a parent-resume: the ancestor's planner re-plans the delegation
+	// with the same intent, and the user's Yes rides through via
+	// QueryConfig.ToolConfirmations (already merged into req.QueryConfig
+	// below at line 190) so the re-planned action executes for real.
+	//
+	// Semantically correct because dynamicReActAgent holds no persistent
+	// planner state we could restore — its full state is the (prompt, tools,
+	// max_iterations) tuple captured on the parent's delegate_agent tool_call.
+	// Re-planning is the state.
+	if _, implRegistered := GetNBAgent(ctx, agent.AgentName, req.AccountId, AgentStatusEnabled); !implRegistered {
+		// The helper is called for its `walked > 0` verdict (does a registered
+		// ancestor exist anywhere up the chain?). DAO errors bubble up so a
+		// transient DB failure doesn't get silently converted to "run the
+		// sub-agent directly and error at runAgentResumeV2" — the caller
+		// persists FAILED conversation status on error return, which is the
+		// right shape for a DB failure.
+		_, ancestorDto, walked, resolveErr := ResolveAgentByConversationAgentId(ctx, agent.ID, req.AccountId)
+		if resolveErr != nil {
+			return NBAgentResponse{}, fmt.Errorf("resume_v2: failed to resolve registered ancestor for unregistered sub-agent %s: %w", agent.AgentName, resolveErr)
+		}
+		if walked > 0 && ancestorDto != nil {
+			// walked > 0 guarantees a registered ancestor exists somewhere up
+			// the chain; find its row so we swap the resume target.
+			currentID := agent.ParentAgentID
+			for i := 0; i < maxAncestorWalkForAgentResolution && currentID != uuid.Nil; i++ {
+				parents, pErr := dao.ListConversationAgents("", currentID.String())
+				if pErr != nil {
+					return NBAgentResponse{}, fmt.Errorf("resume_v2: failed to list parent agents for %s while walking to registered ancestor: %w", currentID, pErr)
+				}
+				if len(parents) == 0 {
+					break
+				}
+				if _, ok := GetNBAgent(ctx, parents[0].AgentName, req.AccountId, AgentStatusEnabled); ok {
+					logger.Info("resume_v2: sub-agent impl not registered; routing to registered ancestor",
+						"original_agent_name", agent.AgentName,
+						"original_agent_id", agent.ID.String(),
+						"ancestor_agent_name", parents[0].AgentName,
+						"ancestor_agent_id", parents[0].ID.String(),
+						"walked_levels", i+1)
+					agent = parents[0]
+					req.AgentId = agent.ID.String()
+					break
+				}
+				currentID = parents[0].ParentAgentID
+			}
+		}
+	}
+
 	correctMessageID := agent.MessageID.String()
 	if correctMessageID == "" || correctMessageID == uuid.Nil.String() {
 		return NBAgentResponse{}, fmt.Errorf("resume_v2: agent %s has no message_id", req.AgentId)

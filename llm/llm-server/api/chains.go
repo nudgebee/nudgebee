@@ -429,9 +429,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		//if agentId is available, then populate that agent
 		if agentId.Valid {
-			agents, err := core.GetConversationDao().ListConversationAgents("", agentId.UUID.String())
+			resolvedAgent, dto, walked, err := core.ResolveAgentByConversationAgentId(agentContext, agentId.UUID, request.AccountId)
 			if err != nil {
-				logger.Error("api: error getting router chain", "error", err)
+				logger.Error("api: error resolving agent for followup resume", "error", err, "agent_id", request.AgentId)
 				c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: unable to complete request, Please try again later",
@@ -439,7 +439,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				}))
 				return
 			}
-			if len(agents) == 0 {
+			if dto == nil {
 				logger.Error("api: agent not found", "agent_id", request.AgentId)
 				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
 					common.Error{
@@ -448,10 +448,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				}))
 				return
 			}
-			agentDto := agents[0]
-			agent1, found := core.GetNBAgent(agentContext, agentDto.AgentName, request.AccountId, core.AgentStatusEnabled)
-			if !found {
-				logger.Error("api: agent not found", "agent_name", agentDto.AgentName)
+			if resolvedAgent == nil {
+				logger.Error("api: agent not found", "agent_name", dto.AgentName, "agent_id", dto.ID.String())
 				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: agent not found",
@@ -459,7 +457,18 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				}))
 				return
 			}
-			agent = agent1
+			if walked > 0 {
+				// Sub-agent constructed on-the-fly by a tool wrapper (delegate_agent's
+				// dynamicReActAgent today) — its agent_name isn't registered, so we
+				// resumed via a registered ancestor. See ResolveAgentByConversationAgentId
+				// for the full rationale.
+				logger.Info("api: resumed unregistered dynamic sub-agent via registered ancestor",
+					"original_agent_name", dto.AgentName,
+					"original_agent_id", dto.ID.String(),
+					"ancestor_agent_name", resolvedAgent.GetName(),
+					"walked_levels", walked)
+			}
+			agent = resolvedAgent
 		}
 
 		source := core.ConversationSourceUserInvestigation
