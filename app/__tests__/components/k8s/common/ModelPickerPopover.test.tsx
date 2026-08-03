@@ -21,8 +21,33 @@ jest.mock('@ui/Toast', () => ({ toast: { success: jest.fn(), error: jest.fn() } 
 
 import { ModelPickerPopover } from '@components/k8s/common/TextAreaV2';
 
-// The shape ai_list_models returns: unique credentials, each carrying the models
-// reachable through it. All collapsing happened server-side.
+// ai_list_models `models[]` — one row per configured slot, each keeping the name
+// of the config it belongs to. This is the ungrouped list the picker works from.
+//
+// piyush-llm and hsundar-gemini deliberately share an API key: `credentials[]`
+// folds them into a single entry under one name, which is exactly the collapse
+// the picker must not inherit.
+const MODELS = [
+  { model: 'gemini-3-flash-preview', provider: 'googleai', configSource: 'env:global', configName: 'System · Default' },
+  { model: 'gemini-3.1-pro-preview', provider: 'googleai', configSource: 'env:tier:reasoning', configName: 'System · Reasoning tier' },
+  { model: 'gemini-2.5-pro', provider: 'googleai', configSource: 'env:tier:summary', configName: 'System · Summary tier' },
+
+  { model: 'gemini-3-flash-preview', provider: 'googleai', configSource: 'db:182f5d24', configName: 'piyush-llm' },
+  { model: 'gemini-3-flash-preview', provider: 'googleai', configSource: 'db:182f5d24:tier:retrieval', configName: 'piyush-llm · Retrieval tier' },
+  { model: 'gemini-2.5-flash', provider: 'googleai', configSource: 'db:182f5d24:tier:summary', configName: 'piyush-llm · Summary tier' },
+
+  { model: 'gemini-3.1-pro-preview', provider: 'googleai', configSource: 'db:9a1b2c3d', configName: 'hsundar-gemini' },
+  // Same slot as its primary — a fallback row differs only by model + the flag.
+  {
+    model: 'gemini-2.5-flash-lite',
+    provider: 'googleai',
+    configSource: 'db:9a1b2c3d:tier:summary',
+    configName: 'hsundar-gemini · Summary tier (fallback)',
+    isFallback: true,
+  },
+];
+
+// Only still needed so the trigger can name the config behind a stored pin.
 const CREDENTIALS = [
   {
     id: 'googleai|eba3a87f||',
@@ -30,14 +55,14 @@ const CREDENTIALS = [
     provider: 'googleai',
     configSource: 'env:global',
     sources: ['env:global', 'env:tier:reasoning', 'env:tier:summary'],
-    models: [{ model: 'gemini-3-flash-preview' }, { model: 'gemini-2.5-pro' }, { model: 'gemini-3.1-pro-preview' }],
+    models: [{ model: 'gemini-3-flash-preview' }, { model: 'gemini-3.1-pro-preview' }, { model: 'gemini-2.5-pro' }],
   },
   {
     id: 'googleai|0cc04dd9||',
     name: 'piyush-llm',
     provider: 'googleai',
     configSource: 'db:182f5d24',
-    sources: ['db:182f5d24', 'db:182f5d24:tier:summary'],
+    sources: ['db:182f5d24', 'db:182f5d24:tier:retrieval', 'db:182f5d24:tier:summary', 'db:9a1b2c3d', 'db:9a1b2c3d:tier:summary'],
     models: [{ model: 'gemini-3-flash-preview' }, { model: 'gemini-2.5-flash' }],
   },
 ];
@@ -45,171 +70,350 @@ const CREDENTIALS = [
 describe('ModelPickerPopover', () => {
   let onModelSelect: jest.Mock;
   let onTierModelsSelect: jest.Mock;
+  let onConfigSelect: jest.Mock;
 
   beforeEach(() => {
     onModelSelect = jest.fn();
     onTierModelsSelect = jest.fn();
+    onConfigSelect = jest.fn();
   });
+
+  const renderPicker = (props: Record<string, unknown> = {}) =>
+    render(
+      <ModelPickerPopover
+        credentials={CREDENTIALS}
+        models={MODELS}
+        onModelSelect={onModelSelect}
+        onTierModelsSelect={onTierModelsSelect}
+        onConfigSelect={onConfigSelect}
+        {...props}
+      />
+    );
 
   function openPicker() {
     fireEvent.click(screen.getByTestId('model-picker-trigger'));
   }
-  /** Left pane — models, deduplicated across credentials. Clicking navigates,
-   *  and also stages the model when only one credential can serve it. */
+  /** Left pane — one row per config. Clicking navigates; it never selects. */
+  const configPane = () => within(screen.getByTestId('config-pane'));
+  /** Right pane — the active config's models. Clicking stages the selection. */
   const modelPane = () => within(screen.getByTestId('model-pane'));
-  /** Right pane — credentials serving the active model. Clicking selects. */
-  const credentialPane = () => within(screen.getByTestId('credential-pane'));
 
-  const focusModel = (name: string) => fireEvent.click(modelPane().getByText(name));
-  const chooseCredential = (name: string) => fireEvent.click(credentialPane().getByText(name));
+  const openConfig = (name: string) => fireEvent.click(configPane().getByText(name));
+  const chooseModel = (name: string) => fireEvent.click(modelPane().getByText(name));
+  /** Tier names also appear in the summary panel, so scope to the toggle. */
+  const switchTier = (label: string) => fireEvent.click(within(screen.getByRole('group', { name: 'Active task' })).getByText(label));
 
-  // ─── mutual exclusivity of blanket vs tier mode ──────────────────────────
+  // ─── config axis: one row per config, no credential folding ──────────────
 
-  it('All-calls mode: choosing a model + Apply fires onModelSelect AND onTierModelsSelect(null)', () => {
-    render(<ModelPickerPopover credentials={CREDENTIALS} onModelSelect={onModelSelect} onTierModelsSelect={onTierModelsSelect} />);
+  it('Lists every config, including two the credential fold collapses into one', () => {
+    renderPicker();
     openPicker();
 
-    focusModel('gemini-3.1-pro-preview');
-    chooseCredential('System · Default');
-    fireEvent.click(screen.getByText('Apply'));
-
-    expect(onTierModelsSelect).toHaveBeenCalledWith(null);
-    // The credential's configSource rides along as the pin.
-    expect(onModelSelect).toHaveBeenCalledWith(
-      expect.objectContaining({
-        provider: 'googleai',
-        model: 'gemini-3.1-pro-preview',
-        configSource: 'env:global',
-        configName: 'System · Default',
-      })
-    );
+    // Three configs, even though piyush-llm and hsundar-gemini share a key and
+    // arrive as a single credential.
+    expect(configPane().getAllByRole('option')).toHaveLength(3);
+    expect(configPane().getByText('System')).toBeInTheDocument();
+    expect(configPane().getByText('piyush-llm')).toBeInTheDocument();
+    expect(configPane().getByText('hsundar-gemini')).toBeInTheDocument();
   });
 
-  it('By-task mode: picking per-tier + Apply fires onTierModelsSelect with picks AND onModelSelect(null)', () => {
-    render(<ModelPickerPopover credentials={CREDENTIALS} onModelSelect={onModelSelect} onTierModelsSelect={onTierModelsSelect} />);
+  it("Tier and agent slots fold into their parent config's row", () => {
+    renderPicker();
+    openPicker();
+
+    // piyush-llm owns a base slot plus two tier slots, and is still one row.
+    expect(configPane().queryByText(/Retrieval tier/)).not.toBeInTheDocument();
+    expect(configPane().queryByText(/Summary tier/)).not.toBeInTheDocument();
+  });
+
+  it('A model listed at both the base and a tier slot is one row, not two', () => {
+    renderPicker();
+    openPicker();
+
+    openConfig('piyush-llm');
+    // gemini-3-flash-preview sits on db:182f5d24 AND db:182f5d24:tier:retrieval.
+    expect(modelPane().getAllByRole('option')).toHaveLength(2);
+    expect(modelPane().getAllByText('gemini-3-flash-preview')).toHaveLength(1);
+  });
+
+  // ─── selecting a model ───────────────────────────────────────────────────
+
+  it('Choosing a model + Apply fires onModelSelect AND onTierModelsSelect(null)', () => {
+    renderPicker();
+    openPicker();
+
+    openConfig('piyush-llm');
+    chooseModel('gemini-3-flash-preview');
+    fireEvent.click(screen.getByText('Apply'));
+
+    // Per-task picks are always cleared: a model applies to every call, so a
+    // leftover tier pick would silently override it.
+    expect(onTierModelsSelect).toHaveBeenCalledWith(null);
+    expect(onModelSelect).toHaveBeenCalledWith({
+      provider: 'googleai',
+      model: 'gemini-3-flash-preview',
+      configSource: 'db:182f5d24',
+      configName: 'piyush-llm',
+    });
+  });
+
+  it('The same model under two configs pins the config it was picked from', () => {
+    renderPicker();
+    openPicker();
+
+    // gemini-3-flash-preview exists under System and piyush-llm; the left pane
+    // is what disambiguates them.
+    openConfig('System');
+    chooseModel('gemini-3-flash-preview');
+    fireEvent.click(screen.getByText('Apply'));
+
+    expect(onModelSelect).toHaveBeenCalledWith(expect.objectContaining({ configSource: 'env:global', configName: 'System' }));
+  });
+
+  it('A model only reachable under a tier pins that tier slot', () => {
+    renderPicker();
+    openPicker();
+
+    openConfig('piyush-llm');
+    chooseModel('gemini-2.5-flash');
+    fireEvent.click(screen.getByText('Apply'));
+
+    expect(onModelSelect).toHaveBeenCalledWith(expect.objectContaining({ model: 'gemini-2.5-flash', configSource: 'db:182f5d24:tier:summary' }));
+  });
+
+  it('Fallback models are listed as ordinary choices, with no marking', () => {
+    renderPicker();
+    openPicker();
+
+    openConfig('hsundar-gemini');
+    expect(modelPane().queryByText(/fallback/i)).not.toBeInTheDocument();
+
+    chooseModel('gemini-2.5-flash-lite');
+    fireEvent.click(screen.getByText('Apply'));
+
+    expect(onModelSelect).toHaveBeenCalledWith(expect.objectContaining({ model: 'gemini-2.5-flash-lite', configSource: 'db:9a1b2c3d:tier:summary' }));
+  });
+
+  // ─── by-task mode ────────────────────────────────────────────────────────
+
+  it('By task: each tier is picked from its own config and applied together', () => {
+    renderPicker();
     openPicker();
 
     fireEvent.click(screen.getByText('By task'));
 
-    // Default active tier is Reasoning.
-    focusModel('gemini-3.1-pro-preview');
-    chooseCredential('System · Default');
+    // Reasoning is the tier the picker opens on.
+    openConfig('hsundar-gemini');
+    chooseModel('gemini-3.1-pro-preview');
 
-    // Switch active tier to Retrieval. "Retrieval" also appears in the summary
-    // row below, so scope by the tier-toggle group.
-    const tierToggleGroup = screen.getByRole('group', { name: 'Active task' });
-    fireEvent.click(within(tierToggleGroup).getByText('Retrieval'));
-
-    focusModel('gemini-2.5-flash');
-    chooseCredential('piyush-llm');
+    switchTier('Summary');
+    openConfig('piyush-llm');
+    chooseModel('gemini-2.5-flash');
 
     fireEvent.click(screen.getByText('Apply'));
 
+    // The two modes are mutually exclusive, so the blanket model is cleared.
     expect(onModelSelect).toHaveBeenCalledWith(null);
-    expect(onTierModelsSelect).toHaveBeenCalledTimes(1);
     const picks = onTierModelsSelect.mock.calls[0][0];
-    expect(picks.reasoning).toMatchObject({ model: 'gemini-3.1-pro-preview', configSource: 'env:global' });
-    expect(picks.retrieval).toMatchObject({ model: 'gemini-2.5-flash', configSource: 'db:182f5d24' });
+    expect(picks.reasoning).toMatchObject({ model: 'gemini-3.1-pro-preview', configSource: 'db:9a1b2c3d', configName: 'hsundar-gemini' });
+    expect(picks.summary).toMatchObject({ model: 'gemini-2.5-flash', configSource: 'db:182f5d24:tier:summary', configName: 'piyush-llm' });
+    expect(picks.retrieval).toBeUndefined();
   });
 
-  it('Clear all fires both callbacks with null', () => {
-    render(
-      <ModelPickerPopover
-        credentials={CREDENTIALS}
-        selectedModel={{ provider: 'googleai', model: 'gemini-3.1-pro-preview', configSource: 'env:global' }}
-        onModelSelect={onModelSelect}
-        onTierModelsSelect={onTierModelsSelect}
-      />
-    );
+  it('By task: two configs sharing an API key stay separately pickable', () => {
+    renderPicker();
+    openPicker();
+    fireEvent.click(screen.getByText('By task'));
+
+    // Both serve gemini-3-flash-preview / gemini-3.1-pro-preview through one
+    // folded credential; the config axis is what keeps them distinguishable.
+    openConfig('piyush-llm');
+    chooseModel('gemini-3-flash-preview');
+    switchTier('Retrieval');
+    openConfig('hsundar-gemini');
+    chooseModel('gemini-3.1-pro-preview');
+
+    fireEvent.click(screen.getByText('Apply'));
+
+    const picks = onTierModelsSelect.mock.calls[0][0];
+    expect(picks.reasoning.configSource).toBe('db:182f5d24');
+    expect(picks.retrieval.configSource).toBe('db:9a1b2c3d');
+  });
+
+  it('By task: a tier can be cleared back to the default', () => {
+    renderPicker();
+    openPicker();
+    fireEvent.click(screen.getByText('By task'));
+
+    openConfig('piyush-llm');
+    chooseModel('gemini-2.5-flash');
+    fireEvent.click(screen.getByLabelText('Clear Reasoning'));
+
+    fireEvent.click(screen.getByText('Apply'));
+
+    // Every tier cleared applies as null, not an empty map.
+    expect(onTierModelsSelect).toHaveBeenCalledWith(null);
+  });
+
+  it('Reopening lands in the mode the conversation is already in', () => {
+    renderPicker({
+      selectedTierModels: {
+        reasoning: { provider: 'googleai', model: 'gemini-3.1-pro-preview', configSource: 'db:9a1b2c3d', configName: 'hsundar-gemini' },
+      },
+    });
+    openPicker();
+
+    // …on the By-task tier pane, opened at the config that pick came from.
+    expect(screen.getByRole('group', { name: 'Active task' })).toBeInTheDocument();
+    const config = configPane()
+      .getAllByRole('option')
+      .find((o) => o.textContent?.includes('hsundar-gemini'));
+    expect(config).toHaveAttribute('aria-selected', 'true');
+  });
+
+  // ─── config mode ─────────────────────────────────────────────────────────
+
+  it('Config: selecting a config applies the whole config, not a model', () => {
+    renderPicker();
+    openPicker();
+    fireEvent.click(screen.getByText('Config'));
+
+    openConfig('piyush-llm');
+    fireEvent.click(screen.getByText('Apply'));
+
+    // ':all' is what tells the server to let the config's own tiers choose.
+    expect(onConfigSelect).toHaveBeenCalledWith({ configSource: 'db:182f5d24:all', configName: 'piyush-llm' });
+    // All three modes are mutually exclusive.
+    expect(onModelSelect).toHaveBeenCalledWith(null);
+    expect(onTierModelsSelect).toHaveBeenCalledWith(null);
+  });
+
+  it('Config: the right pane shows what the config will actually do per task', () => {
+    renderPicker();
+    openPicker();
+    fireEvent.click(screen.getByText('Config'));
+
+    openConfig('piyush-llm');
+    const summary = within(screen.getByTestId('config-summary-pane'));
+    expect(summary.getByText('Models this config uses per task')).toBeInTheDocument();
+    // piyush-llm defines retrieval + summary tiers.
+    expect(summary.getByText('Retrieval')).toBeInTheDocument();
+    expect(summary.getByText('Summary')).toBeInTheDocument();
+    // …and the model every untagged call falls back to.
+    expect(summary.getByText('Everything else')).toBeInTheDocument();
+  });
+
+  it('Config: an agent slot is not mistaken for the base model', () => {
+    // db:<uuid>:agent:<name> contains no ':tier:', so a "not a tier" test would
+    // report the agent's model as what every untagged call falls back to.
+    renderPicker({
+      models: [
+        { model: 'base-model', provider: 'googleai', configSource: 'db:mix', configName: 'mixed' },
+        { model: 'agent-only-model', provider: 'googleai', configSource: 'db:mix:agent:memory_compose', configName: 'mixed · Agent: memory_compose' },
+      ],
+    });
+    openPicker();
+    fireEvent.click(screen.getByText('Config'));
+
+    const summary = within(screen.getByTestId('config-summary-pane'));
+    expect(summary.getByText('base-model')).toBeInTheDocument();
+    expect(summary.queryByText('agent-only-model')).not.toBeInTheDocument();
+  });
+
+  it('Config: a config with no per-task models says so', () => {
+    renderPicker({
+      models: [{ model: 'gemini-3-flash-preview', provider: 'googleai', configSource: 'db:flat', configName: 'flat-config' }],
+    });
+    openPicker();
+    fireEvent.click(screen.getByText('Config'));
+
+    const summary = within(screen.getByTestId('config-summary-pane'));
+    expect(summary.getByText('This config sets no per-task models')).toBeInTheDocument();
+    expect(summary.getByText('All calls')).toBeInTheDocument();
+  });
+
+  it('Config: the System config selects as env:all', () => {
+    renderPicker();
+    openPicker();
+    fireEvent.click(screen.getByText('Config'));
+
+    openConfig('System');
+    fireEvent.click(screen.getByText('Apply'));
+
+    expect(onConfigSelect).toHaveBeenCalledWith({ configSource: 'env:all', configName: 'System' });
+  });
+
+  it('Config: Apply is blocked until a config is picked', () => {
+    renderPicker();
+    openPicker();
+    fireEvent.click(screen.getByText('Config'));
+
+    // Opening does not stage the config the pane happens to land on — Apply
+    // would then commit a config the user never clicked.
+    expect(screen.getByText('Apply').closest('button')).toBeDisabled();
+  });
+
+  it('Config: reopening lands back in Config mode on the pinned config', () => {
+    renderPicker({ selectedConfig: { configSource: 'db:9a1b2c3d:all', configName: 'hsundar-gemini' } });
+    openPicker();
+
+    expect(screen.getByTestId('config-summary-pane')).toBeInTheDocument();
+    const row = configPane()
+      .getAllByRole('option')
+      .find((o) => o.textContent?.includes('hsundar-gemini'));
+    expect(row).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('Config: a restored pin is labelled with the config name, not a generic word', () => {
+    // A conversation stores only the source id, so the trigger has to resolve
+    // the name from the loaded configs — otherwise every restored whole-config
+    // conversation reads the same.
+    renderPicker({ selectedConfig: { configSource: 'db:182f5d24:all' } });
+
+    expect(screen.getByTestId('model-picker-trigger')).toHaveTextContent('piyush-llm');
+  });
+
+  it('Clear all fires every callback with null', () => {
+    renderPicker({ selectedModel: { provider: 'googleai', model: 'gemini-2.5-pro', configSource: 'env:tier:summary' } });
     openPicker();
 
     fireEvent.click(screen.getByText('Clear all'));
 
     expect(onModelSelect).toHaveBeenCalledWith(null);
     expect(onTierModelsSelect).toHaveBeenCalledWith(null);
+    expect(onConfigSelect).toHaveBeenCalledWith(null);
   });
 
-  // ─── two-pane structure: credentials left, their models right ────────────
-
-  it('Models are deduplicated on the left; the right pane lists what can serve one', () => {
-    render(<ModelPickerPopover credentials={CREDENTIALS} onModelSelect={onModelSelect} onTierModelsSelect={onTierModelsSelect} />);
+  it('Apply stays disabled while nothing is staged, so it cannot silently clear', () => {
+    renderPicker();
     openPicker();
 
-    // Four unique models across the two credentials, not five rows.
-    expect(modelPane().getAllByRole('option')).toHaveLength(4);
-
-    // gemini-3-flash-preview is first and reachable through both credentials.
-    expect(modelPane().getByText(/2 configs/)).toBeInTheDocument();
-    expect(credentialPane().getAllByRole('option')).toHaveLength(2);
+    expect(screen.getByText('Apply').closest('button')).toBeDisabled();
+    expect(onModelSelect).not.toHaveBeenCalled();
   });
 
-  it('The same model under two credentials resolves to whichever is active', () => {
-    // gemini-3-flash-preview is reachable through both. The active credential
-    // is what makes the pick unambiguous.
-    render(<ModelPickerPopover credentials={CREDENTIALS} onModelSelect={onModelSelect} onTierModelsSelect={onTierModelsSelect} />);
+  // ─── restoring an existing selection ─────────────────────────────────────
+
+  it('Opening lands on the config of the current pick and marks both panes', () => {
+    renderPicker({ selectedModel: { provider: 'googleai', model: 'gemini-2.5-flash', configSource: 'db:182f5d24:tier:summary' } });
     openPicker();
 
-    focusModel('gemini-3-flash-preview');
-    chooseCredential('piyush-llm');
-    fireEvent.click(screen.getByText('Apply'));
-
-    expect(onModelSelect).toHaveBeenCalledWith(expect.objectContaining({ model: 'gemini-3-flash-preview', configSource: 'db:182f5d24' }));
-  });
-
-  it('The model holding the current pick is marked, and opening lands on it', () => {
-    render(
-      <ModelPickerPopover
-        credentials={CREDENTIALS}
-        selectedModel={{ provider: 'googleai', model: 'gemini-2.5-flash', configSource: 'db:182f5d24' }}
-        onModelSelect={onModelSelect}
-        onTierModelsSelect={onTierModelsSelect}
-      />
-    );
-    openPicker();
+    // A tier-slot pin still resolves to its parent config.
+    const config = configPane()
+      .getAllByRole('option')
+      .find((o) => o.textContent?.includes('piyush-llm'));
+    expect(config).toHaveAttribute('aria-selected', 'true');
 
     const row = modelPane()
       .getAllByRole('option')
-      .find((r) => r.textContent?.includes('gemini-2.5-flash'));
+      .find((o) => o.textContent?.includes('gemini-2.5-flash'));
     expect(row).toHaveAttribute('aria-selected', 'true');
-    // …and piyush-llm, the only credential serving it, is the selected one.
-    expect(credentialPane().getByRole('option')).toHaveAttribute('aria-selected', 'true');
-  });
-
-  it('A pin naming a folded slot still resolves to its credential', () => {
-    // Conversations pinned before slots were collapsed carry e.g.
-    // 'db:182f5d24:tier:summary', which is no longer any credential's
-    // configSource — only an entry in sources[].
-    render(
-      <ModelPickerPopover
-        credentials={CREDENTIALS}
-        selectedModel={{ provider: 'googleai', model: 'gemini-2.5-flash', configSource: 'db:182f5d24:tier:summary' }}
-        onModelSelect={onModelSelect}
-        onTierModelsSelect={onTierModelsSelect}
-      />
-    );
-    openPicker();
-
-    expect(credentialPane().getByRole('option')).toHaveAttribute('aria-selected', 'true');
-  });
-
-  it('Provider sits with the model; credential rows carry only the name', () => {
-    render(<ModelPickerPopover credentials={CREDENTIALS} onModelSelect={onModelSelect} onTierModelsSelect={onTierModelsSelect} />);
-    openPicker();
-
-    expect(modelPane().getAllByText(/googleai/).length).toBeGreaterThan(0);
-    expect(credentialPane().queryAllByText('googleai')).toHaveLength(0);
   });
 
   it('A legacy selection with no pin still highlights its model', () => {
-    // Predates pinning entirely: provider/model but no configSource.
-    render(
-      <ModelPickerPopover
-        credentials={CREDENTIALS}
-        selectedModel={{ provider: 'googleai', model: 'gemini-3-flash-preview' }}
-        onModelSelect={onModelSelect}
-        onTierModelsSelect={onTierModelsSelect}
-      />
-    );
+    // Predates pinning entirely: provider/model but no configSource, so it can
+    // only be matched by model — against whichever config opens first.
+    renderPicker({ selectedModel: { provider: 'googleai', model: 'gemini-3-flash-preview' } });
     openPicker();
 
     const row = modelPane()
@@ -220,81 +424,91 @@ describe('ModelPickerPopover', () => {
 
   // ─── search ──────────────────────────────────────────────────────────────
 
-  it('Search narrows to the credentials that can serve a model', () => {
-    render(<ModelPickerPopover credentials={CREDENTIALS} onModelSelect={onModelSelect} onTierModelsSelect={onTierModelsSelect} />);
+  it('Search narrows to the configs that can serve a model', () => {
+    renderPicker();
     openPicker();
 
-    const search = screen.getByPlaceholderText('Search models…') as HTMLInputElement;
+    const search = screen.getByPlaceholderText('Search configs and models…') as HTMLInputElement;
     fireEvent.change(search, { target: { value: 'gemini-2.5-flash' } });
 
-    // Only that model is left, and only piyush-llm can serve it.
-    expect(modelPane().getAllByRole('option')).toHaveLength(1);
-    expect(credentialPane().getAllByRole('option')).toHaveLength(1);
-    expect(credentialPane().getByText('piyush-llm')).toBeInTheDocument();
+    // gemini-2.5-flash is piyush-llm's, gemini-2.5-flash-lite is hsundar-gemini's.
+    expect(configPane().getAllByRole('option')).toHaveLength(2);
+    expect(configPane().queryByText('System')).not.toBeInTheDocument();
   });
 
-  it('Search also matches the credential name, keeping all its models', () => {
-    render(<ModelPickerPopover credentials={CREDENTIALS} onModelSelect={onModelSelect} onTierModelsSelect={onTierModelsSelect} />);
+  it('Search also matches the config name, keeping all of its models', () => {
+    renderPicker();
     openPicker();
 
-    const search = screen.getByPlaceholderText('Search models…') as HTMLInputElement;
+    const search = screen.getByPlaceholderText('Search configs and models…') as HTMLInputElement;
     fireEvent.change(search, { target: { value: 'piyush' } });
 
-    // Matching the credential keeps all of its models.
+    expect(configPane().getAllByRole('option')).toHaveLength(1);
     expect(modelPane().getAllByRole('option')).toHaveLength(2);
-    expect(credentialPane().getAllByRole('option')).toHaveLength(1);
+  });
+
+  it('Search matches any provider in a config, not just its first slot', () => {
+    // A mixed config (Gemini for reasoning, HF for summary) must surface under
+    // either provider — the config row itself no longer names one.
+    renderPicker({
+      models: [
+        { model: 'gemini-3.1-pro-preview', provider: 'googleai', configSource: 'db:mixed', configName: 'gemini-qwen-summary' },
+        {
+          model: 'Qwen/Qwen3.6-35B-A3B-FP8',
+          provider: 'huggingface',
+          configSource: 'db:mixed:tier:summary',
+          configName: 'gemini-qwen-summary · Summary tier',
+        },
+      ],
+    });
+    openPicker();
+
+    const search = screen.getByPlaceholderText('Search configs and models…') as HTMLInputElement;
+    fireEvent.change(search, { target: { value: 'huggingface' } });
+
+    expect(configPane().getByText('gemini-qwen-summary')).toBeInTheDocument();
+  });
+
+  it('A row with no config_name falls back to its source id, not a crash', () => {
+    // config_name is omitempty on the wire, so it can arrive undefined even
+    // though the type says otherwise. A generic placeholder would be worse than
+    // the id: every unnamed config would collapse into one identical row.
+    renderPicker({
+      models: [
+        { model: 'a', provider: 'googleai', configSource: 'db:unnamed' },
+        { model: 'b', provider: 'googleai', configSource: 'db:named', configName: 'has-a-name' },
+      ],
+    });
+    openPicker();
+
+    expect(configPane().getByText('db:unnamed')).toBeInTheDocument();
+    expect(configPane().getByText('has-a-name')).toBeInTheDocument();
+  });
+
+  it('A config is named by the first slot that has a name, whatever the order', () => {
+    // Naming from whichever slot arrives first would label the whole config
+    // with a raw source id just because that one slot lacked a name.
+    renderPicker({
+      models: [
+        { model: 'a', provider: 'googleai', configSource: 'db:late' },
+        { model: 'b', provider: 'googleai', configSource: 'db:late:tier:summary', configName: 'named-later · Summary tier' },
+      ],
+    });
+    openPicker();
+
+    expect(configPane().getByText('named-later')).toBeInTheDocument();
+    expect(configPane().queryByText('db:late')).not.toBeInTheDocument();
   });
 
   it('No matches shows an empty state instead of blank panes', () => {
-    render(<ModelPickerPopover credentials={CREDENTIALS} onModelSelect={onModelSelect} onTierModelsSelect={onTierModelsSelect} />);
+    renderPicker();
     openPicker();
 
-    const search = screen.getByPlaceholderText('Search models…') as HTMLInputElement;
+    const search = screen.getByPlaceholderText('Search configs and models…') as HTMLInputElement;
     fireEvent.change(search, { target: { value: 'no-such-model' } });
 
     expect(screen.getByText('No models match')).toBeInTheDocument();
+    expect(screen.queryByTestId('config-pane')).not.toBeInTheDocument();
     expect(screen.queryByTestId('model-pane')).not.toBeInTheDocument();
-  });
-
-  // ─── one click is the whole choice when there's nothing to choose ─────────
-
-  it('A model with one config is staged by the left click alone', () => {
-    render(<ModelPickerPopover credentials={CREDENTIALS} onModelSelect={onModelSelect} onTierModelsSelect={onTierModelsSelect} />);
-    openPicker();
-
-    // gemini-2.5-flash is reachable only through piyush-llm. Deliberately no
-    // credential-pane click here: that second step is what users were missing,
-    // and Apply used to commit null and wipe the selection.
-    focusModel('gemini-2.5-flash');
-    fireEvent.click(screen.getByText('Apply'));
-
-    expect(onModelSelect).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: 'googleai', model: 'gemini-2.5-flash', configSource: 'db:182f5d24', configName: 'piyush-llm' })
-    );
-  });
-
-  it('A model with several configs prompts for one and blocks Apply until picked', () => {
-    render(<ModelPickerPopover credentials={CREDENTIALS} onModelSelect={onModelSelect} onTierModelsSelect={onTierModelsSelect} />);
-    openPicker();
-
-    // gemini-3-flash-preview is served by both credentials, so the click can't
-    // resolve to one and the question has to be put to the user.
-    focusModel('gemini-3-flash-preview');
-    expect(screen.getByTestId('credential-choice-prompt')).toBeInTheDocument();
-    expect(screen.getByText('Apply').closest('button')).toBeDisabled();
-
-    chooseCredential('piyush-llm');
-    expect(screen.queryByTestId('credential-choice-prompt')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByText('Apply'));
-    expect(onModelSelect).toHaveBeenCalledWith(expect.objectContaining({ model: 'gemini-3-flash-preview', configSource: 'db:182f5d24' }));
-  });
-
-  it('Apply stays disabled while nothing is staged, so it cannot silently clear', () => {
-    render(<ModelPickerPopover credentials={CREDENTIALS} onModelSelect={onModelSelect} onTierModelsSelect={onTierModelsSelect} />);
-    openPicker();
-
-    expect(screen.getByText('Apply').closest('button')).toBeDisabled();
-    expect(onModelSelect).not.toHaveBeenCalled();
   });
 });

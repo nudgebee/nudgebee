@@ -2414,7 +2414,13 @@ func IsOpenAIModelWithoutStopSupport(provider, model string) bool {
 //   env:global                    → LLM_PROVIDER / LLM_MODEL_NAME / LLM_PROVIDER_API_*
 //   env:tier:<t>                  → LLM_TIER_*_<T>   (t = reasoning|retrieval|summary)
 //   env:agent:<agent_name>        → LLM_*_<AGENT>
+//   env:all                       → the whole ENV config; each call reads its own tier
 //   db:<integration_uuid>[:tier:<t>|:agent:<a>]  → per-tenant integration row
+//   db:<integration_uuid>:all     → the whole integration; each call reads its own tier
+//
+// The ":all" scope is the one pin that is NOT a single slot: it names a config
+// and lets the call's tier pick the slot inside it (see slotForWholeConfig).
+// Every other scope resolves to exactly one slot regardless of tier.
 //
 // db ids name one enabled LLM integration visible to the request's account.
 // Ids the account can't see are rejected, so the pin can never reach another
@@ -2491,12 +2497,12 @@ func parseConfigSourceId(sourceId string) (*parsedConfigSource, error) {
 	p := &parsedConfigSource{Layer: parts[0]}
 	switch p.Layer {
 	case "env":
-		// env:global | env:tier:<t> | env:agent:<a>
+		// env:global | env:all | env:tier:<t> | env:agent:<a>
 		p.Scope = parts[1]
 		switch p.Scope {
-		case "global":
+		case "global", "all":
 			if len(parts) != 2 {
-				return nil, fmt.Errorf("invalid llm_config_source %q: env:global takes no name", sourceId)
+				return nil, fmt.Errorf("invalid llm_config_source %q: env:%s takes no name", sourceId, p.Scope)
 			}
 		case "tier", "agent":
 			if len(parts) != 3 || parts[2] == "" {
@@ -2507,23 +2513,49 @@ func parseConfigSourceId(sourceId string) (*parsedConfigSource, error) {
 			return nil, fmt.Errorf("invalid llm_config_source %q: unknown env scope %q", sourceId, p.Scope)
 		}
 	case "db":
-		// db:<uuid> | db:<uuid>:tier:<t> | db:<uuid>:agent:<a>
+		// db:<uuid> | db:<uuid>:all | db:<uuid>:tier:<t> | db:<uuid>:agent:<a>
 		if len(parts) < 2 || parts[1] == "" {
 			return nil, fmt.Errorf("invalid llm_config_source %q: db requires an integration uuid", sourceId)
 		}
 		p.IntegrationUuid = parts[1]
 		if len(parts) == 2 {
 			p.Scope = "global"
+		} else if len(parts) == 3 && parts[2] == "all" {
+			p.Scope = "all"
 		} else if len(parts) == 4 && (parts[2] == "tier" || parts[2] == "agent") && parts[3] != "" {
 			p.Scope = parts[2]
 			p.Name = parts[3]
 		} else {
-			return nil, fmt.Errorf("invalid llm_config_source %q: db shape is db:<uuid>[:tier|:agent:<name>]", sourceId)
+			return nil, fmt.Errorf("invalid llm_config_source %q: db shape is db:<uuid>[:all|:tier:<name>|:agent:<name>]", sourceId)
 		}
 	default:
 		return nil, fmt.Errorf("invalid llm_config_source %q: unknown layer %q (expected env|db)", sourceId, p.Layer)
 	}
 	return p, nil
+}
+
+// slotForWholeConfig turns an ":all" pin — "use this whole config" — into the
+// concrete slot the current call should read: the call's own tier when that
+// tier defines a model, otherwise the config's global slot.
+//
+// The global fallback is what makes ":all" safe on a config that defines no
+// tiers: it resolves exactly like a plain config pin instead of reading an
+// empty tier slot and sending a request with no model. Credentials the chosen
+// tier leaves unset are still filled from the global slot by the readers'
+// inheritSlotDefaults, so a config with per-tier models but one shared api key
+// resolves correctly.
+//
+// Returns a copy — the caller's parsed source must keep naming ":all" so
+// PinnedConfigSource, cache keys and audit logs still record what was pinned
+// rather than the slot it happened to land on for this call.
+func slotForWholeConfig(p *parsedConfigSource, tier ModelTier, tierDefinesModel func(string) bool) *parsedConfigSource {
+	out := *p
+	if tier != "" && tierDefinesModel(string(tier)) {
+		out.Scope, out.Name = "tier", string(tier)
+		return &out
+	}
+	out.Scope, out.Name = "global", ""
+	return &out
 }
 
 // resolveFromPinnedSource reads all credentials from the specific slot named by
@@ -2556,10 +2588,18 @@ func resolveFromPinnedSource(ctx *security.RequestContext, sourceId, accountId, 
 		}},
 	}
 
+	// Recorded before the switch rewrites Scope to the concrete slot.
+	wholeConfig := parsed.Scope == "all"
+
 	var slotFallbacks []string
 	switch parsed.Layer {
 	case "env":
 		var err error
+		if parsed.Scope == "all" {
+			parsed = slotForWholeConfig(parsed, tier, func(t string) bool {
+				return config.Config.GetString(fmt.Sprintf(llmTierModelFormat, t), "") != ""
+			})
+		}
 		if slotFallbacks, err = readEnvSlotInto(res, parsed); err != nil {
 			return nil, err
 		}
@@ -2567,6 +2607,11 @@ func resolveFromPinnedSource(ctx *security.RequestContext, sourceId, accountId, 
 		cfg, err := integrationConfigForPin(ctx, accountId, parsed.IntegrationUuid)
 		if err != nil {
 			return nil, err
+		}
+		if parsed.Scope == "all" {
+			parsed = slotForWholeConfig(parsed, tier, func(t string) bool {
+				return cfg[fmt.Sprintf(llmTierModelFormat, t)] != ""
+			})
 		}
 		if slotFallbacks, err = readDbSlotInto(res, cfg, parsed); err != nil {
 			return nil, err
@@ -2576,6 +2621,14 @@ func resolveFromPinnedSource(ctx *security.RequestContext, sourceId, accountId, 
 	// Reconcile with request-level provider/model overrides.
 	reqProvider := contextString(ctx, ContextKeyLlmProviderOverride)
 	reqModel := contextString(ctx, ContextKeyLlmModelOverride)
+	// A whole-config pin means "let this config's tiers choose the model", so a
+	// model sent alongside it is a contradiction — and one that would resolve
+	// differently per tier, passing validation on some calls and failing on
+	// others. Reject it outright rather than honour one of the two intents.
+	if wholeConfig && (reqProvider != "" || reqModel != "") {
+		return nil, fmt.Errorf("llm_config_source %q selects a whole config; llm_provider/llm_model_name must not be sent with it (got %q/%q)",
+			sourceId, reqProvider, reqModel)
+	}
 	if reqProvider != "" || reqModel != "" {
 		// Half-set is ambiguous — either both or neither.
 		if reqProvider == "" || reqModel == "" {
@@ -3039,6 +3092,9 @@ func ConfigNameFor(sourceId, integrationName string) string {
 		owner = integrationName
 	}
 	switch p.Scope {
+	case "all":
+		// The whole config, so it is named by the config itself — no slot suffix.
+		return owner
 	case "global":
 		if p.Layer == "db" {
 			return owner

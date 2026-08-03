@@ -374,6 +374,114 @@ describe('useLLMInvestigationControl', () => {
       });
     });
 
+    it('sends a whole-config pin with no model, so the config picks per task', async () => {
+      // llm_provider/llm_model_name alongside a ':all' pin is a contradiction —
+      // the server rejects it, because the config is what chooses the model.
+      mockGenerateInvestigate.mockResolvedValue({
+        data: { data: { ai_execute_investigation: { data: { query: 'q', session_id: 'sess-1' } } } },
+      });
+      const { result } = renderHook(() => useLLMInvestigationControl('acc-1'));
+      act(() => result.current.setSelectedConfig({ configSource: 'db:int-1:all', configName: 'piyush-llm' }));
+      await act(async () => {
+        await result.current.startInvestigation({ text: 'q', apiMode: 'investigate' });
+      });
+
+      const { config } = mockGenerateInvestigate.mock.calls[0][0];
+      expect(config).toEqual({ llm_config_source: 'db:int-1:all' });
+    });
+
+    it('a config pick supersedes a model pick, and vice versa', async () => {
+      const { result } = renderHook(() => useLLMInvestigationControl('acc-1'));
+
+      act(() => result.current.setSelectedModel({ provider: 'googleai', model: 'gemini-3-flash', configSource: 'db:int-1' }));
+      act(() => result.current.setSelectedConfig({ configSource: 'db:int-2:all' }));
+      expect(result.current.selectedModel).toBeNull();
+      expect(result.current.selectedConfig).toEqual({ configSource: 'db:int-2:all' });
+
+      act(() => result.current.setSelectedTierModels({ summary: { provider: 'googleai', model: 'x', configSource: 'db:int-3' } }));
+      expect(result.current.selectedConfig).toBeNull();
+
+      act(() => result.current.setSelectedConfig({ configSource: 'db:int-2:all' }));
+      expect(result.current.selectedTierModels).toBeNull();
+    });
+
+    // Switching account refetches the list, but selections are sticky — a db pin
+    // from the previous account would survive and llm-server would reject it as
+    // an integration this account cannot see.
+    const modelsRes = (models) => ({ data: { models, credentials: [], default: null } });
+
+    it('drops a pin the newly-loaded account cannot serve', async () => {
+      mockListModels.mockResolvedValue(modelsRes([{ model: 'a', provider: 'googleai', llm_config_source: 'db:acc1-int' }]));
+      const { result, rerender } = renderHook(({ id }) => useLLMInvestigationControl(id), { initialProps: { id: 'acc-1' } });
+      await act(async () => {});
+      act(() => result.current.setSelectedModel({ provider: 'googleai', model: 'a', configSource: 'db:acc1-int' }));
+
+      mockListModels.mockResolvedValue(modelsRes([{ model: 'b', provider: 'googleai', llm_config_source: 'db:acc2-int' }]));
+      rerender({ id: 'acc-2' });
+      await act(async () => {});
+
+      expect(result.current.selectedModel).toBeNull();
+    });
+
+    it('keeps a pin the new account still serves, and legacy pins with no source', async () => {
+      const shared = [
+        { model: 'a', provider: 'googleai', llm_config_source: 'db:shared:tier:summary' },
+        { model: 'b', provider: 'googleai', llm_config_source: 'env:global' },
+      ];
+      mockListModels.mockResolvedValue(modelsRes(shared));
+      const { result, rerender } = renderHook(({ id }) => useLLMInvestigationControl(id), { initialProps: { id: 'acc-1' } });
+      await act(async () => {});
+
+      // A whole-config pin validates through its parent config, not the raw id —
+      // 'db:shared:all' never appears in models[] but its config does.
+      act(() => result.current.setSelectedConfig({ configSource: 'db:shared:all' }));
+      rerender({ id: 'acc-2' });
+      await act(async () => {});
+      expect(result.current.selectedConfig).toEqual({ configSource: 'db:shared:all' });
+
+      // No configSource at all — nothing account-bound to check, so it stays.
+      act(() => result.current.setSelectedModel({ provider: 'googleai', model: 'legacy' }));
+      rerender({ id: 'acc-3' });
+      await act(async () => {});
+      expect(result.current.selectedModel).toMatchObject({ model: 'legacy' });
+    });
+
+    it('a failed model fetch does not wipe the current selection', async () => {
+      mockListModels.mockResolvedValue(modelsRes([{ model: 'a', provider: 'googleai', llm_config_source: 'db:int-1' }]));
+      const { result, rerender } = renderHook(({ id }) => useLLMInvestigationControl(id), { initialProps: { id: 'acc-1' } });
+      await act(async () => {});
+      act(() => result.current.setSelectedModel({ provider: 'googleai', model: 'a', configSource: 'db:int-1' }));
+
+      mockListModels.mockResolvedValue(modelsRes([]));
+      rerender({ id: 'acc-2' });
+      await act(async () => {});
+
+      expect(result.current.selectedModel).toMatchObject({ configSource: 'db:int-1' });
+    });
+
+    it('prunes only the tier picks the new account lost', async () => {
+      mockListModels.mockResolvedValue(
+        modelsRes([
+          { model: 'x', provider: 'googleai', llm_config_source: 'db:kept' },
+          { model: 'y', provider: 'googleai', llm_config_source: 'db:gone' },
+        ])
+      );
+      const { result, rerender } = renderHook(({ id }) => useLLMInvestigationControl(id), { initialProps: { id: 'acc-1' } });
+      await act(async () => {});
+      act(() =>
+        result.current.setSelectedTierModels({
+          reasoning: { provider: 'googleai', model: 'x', configSource: 'db:kept' },
+          summary: { provider: 'googleai', model: 'y', configSource: 'db:gone' },
+        })
+      );
+
+      mockListModels.mockResolvedValue(modelsRes([{ model: 'x', provider: 'googleai', llm_config_source: 'db:kept' }]));
+      rerender({ id: 'acc-2' });
+      await act(async () => {});
+
+      expect(Object.keys(result.current.selectedTierModels)).toEqual(['reasoning']);
+    });
+
     it('restores task picks on reload instead of the default model', async () => {
       // In per-task mode the server reports `current` as the DEFAULT model, not
       // a pick. Hydrating it as a blanket selection shows a model the user

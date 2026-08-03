@@ -1086,3 +1086,133 @@ func TestResolveFromPinnedSource_SlotWithNoProviderInheritsGlobalAndItsCreds(t *
 	assert.Equal(t, "openai", res.Provider)
 	assert.Equal(t, "sk-openai-global", res.PinnedApiKey)
 }
+
+// ─── whole-config pins (":all") ────────────────────────────────────────────
+//
+// ":all" is the one scope that is not a single slot: it names a config and lets
+// each call's tier choose the slot inside it. Every other scope resolves to the
+// same slot no matter which tier asked.
+
+func TestParseConfigSourceId_AllScope(t *testing.T) {
+	cases := []struct {
+		in   string
+		want parsedConfigSource
+	}{
+		{"env:all", parsedConfigSource{Layer: "env", Scope: "all"}},
+		{"db:int-1:all", parsedConfigSource{Layer: "db", Scope: "all", IntegrationUuid: "int-1"}},
+	}
+	for _, c := range cases {
+		got, err := parseConfigSourceId(c.in)
+		require.NoError(t, err, "parse %q", c.in)
+		assert.Equal(t, c.want, *got, "parsed shape for %q", c.in)
+	}
+
+	// ":all" takes no name — the tier comes from the call, not the id.
+	for _, in := range []string{"env:all:reasoning", "db:int-1:all:reasoning"} {
+		_, err := parseConfigSourceId(in)
+		assert.Error(t, err, "should fail on %q", in)
+	}
+}
+
+func TestConfigNameFor_AllScope(t *testing.T) {
+	// The whole config reads as the config itself — no slot suffix, because no
+	// one slot is being named.
+	assert.Equal(t, "Acme Azure", ConfigNameFor("db:int-1:all", "Acme Azure"))
+	assert.Equal(t, "System", ConfigNameFor("env:all", "ignored"))
+}
+
+func TestResolveFromPinnedSource_AllScope_UsesTheCallersTier(t *testing.T) {
+	seedLLMIntegrations(t, "acct-all", llmIntegration{
+		Id:   "int-all",
+		Name: "Tiered Config",
+		Config: map[string]string{
+			"llm_provider":                "azure",
+			"llm_model_name":              "gpt-4o",
+			"llm_provider_api_key":        "shared-key",
+			"llm_provider_api_endpoint":   "https://acme.openai.azure.com",
+			"llm_tier_provider_reasoning": "azure",
+			"llm_tier_model_reasoning":    "o3-mini",
+			"llm_tier_provider_summary":   "azure",
+			"llm_tier_model_summary":      "gpt-4o-mini",
+		},
+	})
+
+	reasoning, err := resolveFromPinnedSource(nil, "db:int-all:all", "acct-all", "", ModelTierReasoning)
+	require.NoError(t, err)
+	assert.Equal(t, "o3-mini", reasoning.Model, "a tier-tagged call must read that tier's slot")
+	// The tier defines no key of its own, so it inherits the config's — without
+	// this the pin would resolve with an empty key and the request would fail.
+	assert.Equal(t, "shared-key", reasoning.PinnedApiKey)
+	assert.Equal(t, "db:int-all:all", reasoning.PinnedConfigSource,
+		"the pin must still record what was selected, not the slot it landed on")
+
+	summary, err := resolveFromPinnedSource(nil, "db:int-all:all", "acct-all", "", ModelTierSummary)
+	require.NoError(t, err)
+	assert.Equal(t, "gpt-4o-mini", summary.Model)
+
+	// Untagged calls (background work: titles, memory) have no tier to honour,
+	// so they get the config's base model.
+	untagged, err := resolveFromPinnedSource(nil, "db:int-all:all", "acct-all", "", "")
+	require.NoError(t, err)
+	assert.Equal(t, "gpt-4o", untagged.Model)
+}
+
+func TestResolveFromPinnedSource_AllScope_FallsBackWhenTierUndefined(t *testing.T) {
+	// A config with no tier slots is the common case. ":all" on it must behave
+	// exactly like a plain config pin — resolving an empty tier slot would send
+	// a request with no model at all.
+	seedLLMIntegrations(t, "acct-flat", llmIntegration{
+		Id:   "int-flat",
+		Name: "Flat Config",
+		Config: map[string]string{
+			"llm_provider":         "googleai",
+			"llm_model_name":       "gemini-3-flash-preview",
+			"llm_provider_api_key": "g-key",
+		},
+	})
+
+	for _, tier := range []ModelTier{ModelTierReasoning, ModelTierRetrieval, ModelTierSummary, ""} {
+		res, err := resolveFromPinnedSource(nil, "db:int-flat:all", "acct-flat", "", tier)
+		require.NoError(t, err, "tier %q", tier)
+		assert.Equal(t, "gemini-3-flash-preview", res.Model, "tier %q must fall back to the config's base model", tier)
+		assert.Equal(t, "g-key", res.PinnedApiKey, "tier %q", tier)
+	}
+}
+
+func TestResolveFromPinnedSource_AllScope_PartialTiersFallBackPerTier(t *testing.T) {
+	// Only summary is configured. Reasoning must not silently borrow it.
+	seedLLMIntegrations(t, "acct-partial", llmIntegration{
+		Id:   "int-partial",
+		Name: "Summary Only",
+		Config: map[string]string{
+			"llm_provider":              "googleai",
+			"llm_model_name":            "gemini-3.1-pro-preview",
+			"llm_provider_api_key":      "g-key",
+			"llm_tier_provider_summary": "googleai",
+			"llm_tier_model_summary":    "gemini-2.5-flash",
+		},
+	})
+
+	summary, err := resolveFromPinnedSource(nil, "db:int-partial:all", "acct-partial", "", ModelTierSummary)
+	require.NoError(t, err)
+	assert.Equal(t, "gemini-2.5-flash", summary.Model)
+
+	reasoning, err := resolveFromPinnedSource(nil, "db:int-partial:all", "acct-partial", "", ModelTierReasoning)
+	require.NoError(t, err)
+	assert.Equal(t, "gemini-3.1-pro-preview", reasoning.Model, "an undefined tier falls back to the config's base model")
+}
+
+func TestResolveFromPinnedSource_AllScope_RejectsAModelSentAlongside(t *testing.T) {
+	// The two intents contradict: ":all" says the config picks the model. Worse,
+	// honouring both would validate against a different slot per tier, so the
+	// same request would pass on one call and fail on the next.
+	seedLLMIntegrations(t, "acct-rej", llmIntegration{
+		Id:     "int-rej",
+		Name:   "Tiered Config",
+		Config: map[string]string{"llm_provider": "azure", "llm_model_name": "gpt-4o", "llm_provider_api_key": "k"},
+	})
+
+	_, err := resolveFromPinnedSource(ctxWithProviderModel("azure", "gpt-4o"), "db:int-rej:all", "acct-rej", "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "selects a whole config")
+}

@@ -271,13 +271,20 @@ def get_models(
     user: AuthUser = Depends(get_current_user),
     authz=Depends(get_authz),
 ):
-    """Proxy the account's configured LLM credentials from the LLM server.
+    """Proxy the account's configured LLM slots from the LLM server.
 
-    Returns ``credentials`` — one entry per distinct destination (provider +
-    endpoint + key + region + ...), each carrying the models reachable through
-    it and the ``llm_config_source`` id used to pin a run to it. The grouping
-    is the LLM server's to compute; endpoints and api keys are never
-    serialized, so it cannot be done here.
+    Returns two views of the same data:
+
+    ``models`` — one entry per configured slot, each keeping its own config's
+    name and ``llm_config_source``. This is what the run form lists, because it
+    is the only view where two configs that happen to share an API key stay
+    distinguishable.
+
+    ``credentials`` — the same slots folded by destination (provider + endpoint
+    + key + region + ...). Kept because a stored pin naming a slot that has
+    since been folded still resolves through it. The grouping is the LLM
+    server's to compute; endpoints and api keys are never serialized, so it
+    cannot be done here.
     """
     effective_tenant_id = _resolve_tenant_for_account(account_id, tenant_id, authz)
 
@@ -291,12 +298,13 @@ def get_models(
         r.raise_for_status()
         data = r.json().get("data", {}) or {}
         return {
+            "models": data.get("models", []),
             "credentials": data.get("credentials", []),
             "default": data.get("default"),
         }
     except Exception as e:
         logger.error("get_models failed: %s", e)
-        return {"credentials": [], "error": str(e)}
+        return {"models": [], "credentials": [], "error": str(e)}
 
 
 @router.get("/resolve/tenant/{tenant_id}")

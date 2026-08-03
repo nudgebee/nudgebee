@@ -265,11 +265,14 @@ const KubernetesLLMResponseGenerator = ({
     rawConversation,
     checkConversationExists,
     availableCredentials,
+    availableModels,
     defaultModel,
     selectedModel,
     setSelectedModel,
     selectedTierModels,
     setSelectedTierModels,
+    selectedConfig,
+    setSelectedConfig,
     clearModelConfig,
     imageSupport,
   } = useLLMInvestigationControl(accountId);
@@ -1611,11 +1614,14 @@ const KubernetesLLMResponseGenerator = ({
                           showBorderleft={false}
                           disabled={isConversationLoading || isConversationInProgress}
                           credentials={availableCredentials}
+                          models={availableModels}
                           defaultModel={defaultModel}
                           selectedModel={selectedModel}
                           onModelSelect={setSelectedModel}
                           selectedTierModels={selectedTierModels}
                           onTierModelsSelect={setSelectedTierModels}
+                          selectedConfig={selectedConfig}
+                          onConfigSelect={setSelectedConfig}
                           onConfigClear={clearModelConfig}
                           imageSupport={imageSupport}
                           isFollowUp={popup}
@@ -1959,9 +1965,15 @@ const KubernetesLLMResponseGenerator = ({
                     disabled={isConversationLoading || isConversationInProgress}
                     suggestionsAt={enabledAgents}
                     credentials={availableCredentials}
+                    models={availableModels}
                     defaultModel={defaultModel}
                     selectedModel={selectedModel}
                     onModelSelect={setSelectedModel}
+                    selectedTierModels={selectedTierModels}
+                    onTierModelsSelect={setSelectedTierModels}
+                    selectedConfig={selectedConfig}
+                    onConfigSelect={setSelectedConfig}
+                    onConfigClear={clearModelConfig}
                     imageSupport={imageSupport}
                     externalAgentsLoading={loadingAgents}
                     buttonProperties={{

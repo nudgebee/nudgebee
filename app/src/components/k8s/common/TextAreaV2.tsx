@@ -18,6 +18,7 @@ import { Input } from '@ui/Input';
 import Tooltip from '@ui/Tooltip';
 import CheckIcon from '@mui/icons-material/Check';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import { baseConfigSourceFor, configKeyForSource, wholeConfigSourceFor } from '@utils/llmConfigSource';
 
 // Define custom props interface
 interface CustomTextareaProps extends TextareaAutosizeProps {
@@ -107,6 +108,46 @@ export interface LLMCredential {
   models: { model: string }[];
 }
 
+// One configured slot as the server reports it: a (config, model) pair that
+// keeps the config's own name. credentials[] folds these by destination, which
+// collapses configs sharing an API key into one entry under a single name — so
+// the picker lists these instead.
+export interface LLMModelEntry {
+  model: string;
+  provider: string;
+  configSource: string;
+  // Optional because the server sends config_name with omitempty and only
+  // fills it for a slot that has a config source — so it really can arrive
+  // undefined, whatever a required type here would claim.
+  configName?: string;
+  isFallback?: boolean;
+}
+
+// A config as the picker lists it: every slot belonging to one integration (or
+// to the system ENV config), keyed by the source id with any tier/agent/fallback
+// suffix removed.
+interface ConfigEntry {
+  key: string;
+  name: string;
+  entries: LLMModelEntry[];
+}
+
+// Trims the slot decoration the server appends for display —
+// "name · Summary tier (fallback)" is the same config as "name".
+//
+// Falls back to the source id when there is no name, which is what the server
+// itself does for a slot it can't name. A generic placeholder would be worse
+// here: every unnamed config would collapse into one indistinguishable row.
+const configNameForEntry = (entry: LLMModelEntry): string => {
+  const raw = entry.configName || entry.configSource || '';
+  return (
+    raw
+      .replace(/\s*\(fallback\)\s*$/i, '')
+      .replace(/\s+·\s+.*$/, '')
+      .trim() || raw
+  );
+};
+
 // A selection is (credential, model). configSource identifies the credential,
 // so two entries for the same model on different credentials stay distinct.
 //
@@ -158,13 +199,27 @@ type TierModelMap = Partial<Record<PickerTierKey, ModelOption>>;
 const pickerButtonLabel = (
   selectedModel?: ModelOption | null,
   selectedTierModels?: TierModelMap | null,
-  credentials: LLMCredential[] = []
+  credentials: LLMCredential[] = [],
+  selectedConfig?: ConfigOption | null,
+  configs: ConfigEntry[] = []
 ): string => {
+  if (selectedConfig) {
+    // A pin restored from a conversation carries only the source id, so the
+    // name is resolved from the loaded configs rather than stored with it.
+    // Done here rather than at restore time because the model list can still
+    // be in flight then — this way the label fills in once it arrives.
+    const key = configKeyForSource(selectedConfig.configSource);
+    return selectedConfig.configName || configs.find((c) => c.key === key)?.name || 'Config';
+  }
   if (selectedModel) {
-    // The credential is part of the identity, so the trigger names it — two
-    // entries reading just 'Qwen3.6-35B' would be indistinguishable.
-    const cred = credentialForSelection(selectedModel, credentials);
-    return cred ? `${selectedModel.model} · ${cred.name}` : selectedModel.model;
+    // The config is part of the identity, so the trigger names it — two entries
+    // reading just 'Qwen3.6-35B' would be indistinguishable. The selection's own
+    // configName wins: the credential fold puts configs sharing an API key under
+    // a single name, which would label the pick as a config it didn't come from.
+    // Selections restored from older conversations carry no name, so those still
+    // resolve through the credential.
+    const name = selectedModel.configName || credentialForSelection(selectedModel, credentials)?.name;
+    return name ? `${selectedModel.model} · ${name}` : selectedModel.model;
   }
   if (selectedTierModels && Object.keys(selectedTierModels).length > 0) return 'By task';
   return 'Model';
@@ -211,12 +266,15 @@ interface AutoSuggestTextareaProps {
   disabled?: boolean;
   allowStop?: boolean;
   credentials?: LLMCredential[];
+  models?: LLMModelEntry[];
   defaultModel?: { provider: string; model: string };
   selectedModel?: ModelOption | null;
   onModelSelect?: (model: ModelOption | null) => void;
   // Mutually exclusive with selectedModel (reducer enforces).
   selectedTierModels?: TierModelMap | null;
   onTierModelsSelect?: (picks: TierModelMap | null) => void;
+  selectedConfig?: ConfigOption | null;
+  onConfigSelect?: (config: ConfigOption | null) => void;
   onConfigClear?: () => void;
   popupInitial?: boolean;
   imageSupport?: ImageSupport;
@@ -224,12 +282,36 @@ interface AutoSuggestTextareaProps {
   submitOnModEnter?: boolean;
 }
 
+// A whole-config selection: the config decides the model, per task, using its
+// own tier slots. configSource is the ':all' form of the config's source id.
+type PickerMode = 'blanket' | 'tier' | 'config';
+const PICKER_MODE_HELP: Record<PickerMode, string> = {
+  blanket:
+    'The selected model is used for every LLM call in this conversation — including background tasks (memory, titles, light summaries). Its config’s own per-task models are not used.',
+  tier: 'By-task picks apply only to LLM calls tagged with that task. Untagged background calls (memory, titles, light summaries) keep the operator default.',
+  config:
+    'The whole config is used, and it picks the model per task from its own settings. Tasks it does not configure fall back to the config’s default model.',
+};
+
+// A whole-config selection: the config decides the model, per task, using its
+// own tier slots. configSource is the ':all' form of the config's source id.
+export interface ConfigOption {
+  configSource: string;
+  configName?: string;
+}
+
 interface ModelPickerPopoverProps {
   credentials: LLMCredential[];
+  // Ungrouped (config, model) rows. The picker lists configs from these; the
+  // credentials prop stays only so a stored pin can still be matched back to a
+  // credential for the trigger label.
+  models?: LLMModelEntry[];
   selectedModel?: ModelOption | null;
   onModelSelect?: (model: ModelOption | null) => void;
   selectedTierModels?: TierModelMap | null;
   onTierModelsSelect?: (picks: TierModelMap | null) => void;
+  selectedConfig?: ConfigOption | null;
+  onConfigSelect?: (config: ConfigOption | null) => void;
   onConfigClear?: () => void;
   disabled?: boolean;
 }
@@ -238,56 +320,76 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   // Defaulted because this component is exported: callers inside this file
   // guard on a non-empty list, but an external consumer needn't.
   credentials = [],
+  models = [],
   selectedModel,
   onModelSelect,
   selectedTierModels,
   onTierModelsSelect,
+  selectedConfig,
+  onConfigSelect,
   onConfigClear,
   disabled = false,
 }) => {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLDivElement | null>(null);
-  const [mode, setMode] = useState<'blanket' | 'tier'>('blanket');
-  const [stagedBlanket, setStagedBlanket] = useState<ModelOption | null>(null);
+  // 'blanket' stages one model for every call, 'tier' one per task, and
+  // 'config' hands the whole config over so its own per-task models apply. The
+  // three are mutually exclusive, so each keeps its own staged value and Apply
+  // commits whichever mode is showing.
+  const [mode, setMode] = useState<PickerMode>('blanket');
+  const [staged, setStaged] = useState<ModelOption | null>(null);
   const [stagedTier, setStagedTier] = useState<TierModelMap>({});
+  const [stagedConfig, setStagedConfig] = useState<ConfigOption | null>(null);
   const [activeTier, setActiveTier] = useState<PickerTierKey>('reasoning');
-  // Which model the right-hand pane is showing. Held as a key rather than an
+  // Which config the right-hand pane is showing. Held as a key rather than an
   // index so a search that reorders or drops entries can't point it at the
   // wrong one — a stale key simply falls back to the first.
-  const [activeModelKey, setActiveModelKey] = useState<string>('');
+  const [activeConfigKey, setActiveConfigKey] = useState<string>('');
   const [search, setSearch] = useState('');
 
   const openPopover = () => {
     if (disabled) return;
-    if (selectedTierModels && Object.keys(selectedTierModels).length > 0) {
-      setMode('tier');
-      setStagedBlanket(null);
-      setStagedTier({ ...selectedTierModels });
-    } else {
-      setMode('blanket');
-      setStagedBlanket(selectedModel ?? null);
-      setStagedTier({});
-    }
+    const tierPicks = selectedTierModels ?? {};
+    // Reopen in the mode the conversation is actually in, rather than always
+    // in All-calls — landing in another mode reads as the selection vanishing.
+    let startMode: PickerMode = 'blanket';
+    if (selectedConfig) startMode = 'config';
+    else if (!selectedModel && Object.keys(tierPicks).length > 0) startMode = 'tier';
+    setMode(startMode);
+    setStaged(selectedModel ?? null);
+    setStagedTier(tierPicks);
+    setStagedConfig(selectedConfig ?? null);
     setActiveTier('reasoning');
     setSearch('');
-    // Open on the model the current selection uses, so reopening lands where
-    // the user left it rather than on the first model.
-    setActiveModelKey(selectedModel ? `${selectedModel.provider}\u0000${selectedModel.model}` : '');
+    // Open on the config the current selection came from, so reopening lands
+    // where the user left it rather than on the first config.
+    const landOn =
+      startMode === 'blanket' ? selectedModel : startMode === 'config' ? selectedConfig : tierPicks.reasoning ?? Object.values(tierPicks)[0];
+    setActiveConfigKey(landOn?.configSource ? configKeyForSource(landOn.configSource) : '');
     setOpen(true);
   };
 
+  // The three modes are mutually exclusive, so applying one always clears the
+  // other two — a leftover selection would silently outrank what was just
+  // picked.
   const handleApply = () => {
     if (mode === 'blanket') {
       onTierModelsSelect?.(null);
-      onModelSelect?.(stagedBlanket);
-    } else {
+      onConfigSelect?.(null);
+      onModelSelect?.(staged);
+    } else if (mode === 'tier') {
       const cleaned: TierModelMap = {};
       for (const t of PICKER_TIER_KEYS) {
         const p = stagedTier[t];
         if (p && p.provider && p.model) cleaned[t] = p;
       }
       onModelSelect?.(null);
+      onConfigSelect?.(null);
       onTierModelsSelect?.(Object.keys(cleaned).length > 0 ? cleaned : null);
+    } else {
+      onModelSelect?.(null);
+      onTierModelsSelect?.(null);
+      onConfigSelect?.(stagedConfig);
     }
     setOpen(false);
   };
@@ -295,6 +397,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   const handleClear = () => {
     onModelSelect?.(null);
     onTierModelsSelect?.(null);
+    onConfigSelect?.(null);
     // Nulling both selections is indistinguishable from never having picked
     // one, and that state inherits the conversation's stored config. Clearing
     // has to say so explicitly or the old pick comes straight back.
@@ -302,121 +405,130 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
     setOpen(false);
   };
 
-  // Search matches a credential's name/provider, or any model it serves — a
-  // credential survives if either side hits, so searching a model name narrows
-  // to the credentials that can actually serve it.
-  const filteredCredentials = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return credentials;
-    return credentials
-      .map((c) => {
-        const credentialHit = c.name.toLowerCase().includes(q) || c.provider.toLowerCase().includes(q);
-        const models = credentialHit ? c.models : c.models.filter((m) => m.model.toLowerCase().includes(q));
-        return { ...c, models };
-      })
-      .filter((c) => c.models.length > 0);
-  }, [credentials, search]);
-
-  // Inverts the credential list into models — the left pane — each carrying the
-  // credentials that can serve it, shown on the right.
-  //
-  // Model-first because that is the choice a user comes to make; the credential
-  // only matters when a model is reachable through more than one. This is a
-  // regrouping of data the server already resolved, not a second opinion about
-  // it: no deduping or identity decisions happen here, only a change of axis.
-  // Keyed by provider+model so the same model name under two providers stays
-  // two entries.
-  const modelEntries = useMemo(() => {
-    const byKey = new Map<string, { key: string; model: string; provider: string; credentials: LLMCredential[] }>();
-    for (const c of filteredCredentials) {
-      for (const m of c.models) {
-        // NUL separator, not a space: dev data contains providers stored with
-        // trailing whitespace, which a space could collide across.
-        const key = `${c.provider}\u0000${m.model}`;
-        const entry = byKey.get(key) ?? { key, model: m.model, provider: c.provider, credentials: [] };
-        entry.credentials.push(c);
-        byKey.set(key, entry);
-      }
+  // Every slot the server reported, grouped by the config it belongs to. This
+  // is a change of axis over data the server already resolved — no deduping or
+  // identity decisions happen here.
+  const configEntries = useMemo(() => {
+    const byKey = new Map<string, ConfigEntry>();
+    for (const entry of models) {
+      const key = configKeyForSource(entry.configSource);
+      if (!key) continue;
+      const existing = byKey.get(key);
+      if (existing) existing.entries.push(entry);
+      else byKey.set(key, { key, name: '', entries: [entry] });
+    }
+    // Named after grouping, from the first slot that actually carries a name:
+    // naming from whichever slot arrived first would label the whole config
+    // with a raw source id whenever that one slot happened to lack one.
+    for (const cfg of byKey.values()) {
+      cfg.name = configNameForEntry(cfg.entries.find((e) => e.configName) ?? cfg.entries[0]);
     }
     return [...byKey.values()];
-  }, [filteredCredentials]);
+  }, [models]);
 
-  // A stale key (search dropped the model, list reloaded) resolves to the first
+  // Search matches a config's name or any provider/model it serves — a config
+  // survives if either side hits, so searching a model name narrows to the
+  // configs that can actually serve it.
+  const filteredConfigs = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return configEntries;
+    return configEntries
+      .map((c) => {
+        // Every provider in the config, not just the first slot's: a config
+        // can mix them (Gemini for reasoning, HF for summary), and matching
+        // only one would hide it from a search for the other.
+        const configHit = c.name.toLowerCase().includes(q) || c.entries.some((e) => e.provider.toLowerCase().includes(q));
+        return { ...c, entries: configHit ? c.entries : c.entries.filter((e) => e.model.toLowerCase().includes(q)) };
+      })
+      .filter((c) => c.entries.length > 0);
+  }, [configEntries, search]);
+
+  // A stale key (search dropped the config, list reloaded) resolves to the first
   // entry rather than leaving an empty pane.
-  const activeModel = modelEntries.find((e) => e.key === activeModelKey) ?? modelEntries[0];
+  const activeConfig = filteredConfigs.find((c) => c.key === activeConfigKey) ?? filteredConfigs[0];
 
-  const isRowSelected = (m: ModelOption): boolean => {
-    const staged = mode === 'blanket' ? stagedBlanket : stagedTier[activeTier];
-    if (isSameModelOption(staged, m)) return true;
-    // A stored pin may name a slot that has since been folded into a credential
-    // (e.g. '…:tier:summary' when the credential's canonical source is its
-    // parent). Comparing the raw strings would miss it, so resolve both sides
-    // to their credential and compare that.
-    if (!staged || staged.provider !== m.provider || staged.model !== m.model) return false;
-    const a = credentialForSelection(staged, credentials);
-    const b = credentialForSelection(m, credentials);
-    return !!a && !!b && a.id === b.id;
-  };
+  // One row per distinct model in the active config. A model usually appears
+  // more than once — as the config's base model and again under a tier — and
+  // those are the same choice here, since picking a model bypasses tiers. The
+  // slot kept is the one that becomes the pin, so a primary slot always wins
+  // over a fallback.
+  const activeRows = useMemo(() => {
+    const byModel = new Map<string, { model: string; provider: string; source: string; isFallback: boolean }>();
+    for (const e of activeConfig?.entries ?? []) {
+      const row = { model: e.model, provider: e.provider, source: e.configSource, isFallback: !!e.isFallback };
+      const existing = byModel.get(e.model);
+      if (!existing || (existing.isFallback && !row.isFallback)) byModel.set(e.model, row);
+    }
+    return [...byModel.values()];
+  }, [activeConfig]);
 
-  // Turns a credential + one of its models into the selection shape sent to the
-  // server: the credential's configSource is the pin.
-  const optionFor = (cred: LLMCredential, model: string): ModelOption => ({
-    provider: cred.provider,
-    model,
-    configSource: cred.configSource,
-    configName: cred.name,
+  type ModelRow = (typeof activeRows)[number];
+
+  // The selection sent to the server: the slot's own source is the pin, so a
+  // model only reachable under one tier resolves through that tier's credential.
+  const optionForRow = (row: ModelRow): ModelOption => ({
+    provider: row.provider,
+    model: row.model,
+    configSource: row.source,
+    configName: activeConfig?.name,
   });
 
-  // Lets the left pane mark which model holds the staged pick, so the user
-  // doesn't have to open each one to find it.
-  const modelHasSelection = (entry: { model: string; credentials: LLMCredential[] }): boolean =>
-    entry.credentials.some((c) => isRowSelected(optionFor(c, entry.model)));
+  // What a click stages, and what the panes mark, is whichever slot the current
+  // mode is filling — the blanket model, or the tier being edited.
+  const currentPick = mode === 'blanket' ? staged : stagedTier[activeTier];
 
-  const handleRowPick = (m: ModelOption) => {
-    if (mode === 'blanket') {
-      setStagedBlanket(m);
-      return;
-    }
-    setStagedTier({ ...stagedTier, [activeTier]: m });
+  const handleRowPick = (row: ModelRow) => {
+    const option = optionForRow(row);
+    if (mode === 'blanket') setStaged(option);
+    else setStagedTier({ ...stagedTier, [activeTier]: option });
   };
 
-  // Clicking a model used to only move the right-hand pane, which reads as
-  // "selected" — so Apply then committed nothing and silently wiped the pick.
-  // When a model is reachable through exactly one config there is no choice
-  // left to make, so the click is the whole selection. With more than one, the
-  // pane stays a genuine question and requiresCredentialChoice below says so.
-  const handleModelFocus = (entry: { key: string; model: string; credentials: LLMCredential[] }) => {
-    setActiveModelKey(entry.key);
-    if (entry.credentials.length === 1) {
-      handleRowPick(optionFor(entry.credentials[0], entry.model));
-    }
+  const isRowSelected = (row: ModelRow): boolean => isSameModelOption(currentPick, optionForRow(row));
+
+  // Lets the left pane mark which config holds the current pick, so the user
+  // doesn't have to open each one to find it. Selections restored from older
+  // conversations carry no configSource, so those match on the model instead.
+  const configHasSelection = (c: ConfigEntry): boolean => {
+    if (mode === 'config') return stagedConfig?.configSource === wholeConfigSourceFor(c.key);
+    if (!currentPick) return false;
+    if (currentPick.configSource) return configKeyForSource(currentPick.configSource) === c.key;
+    return c.entries.some((e) => e.provider === currentPick.provider && e.model === currentPick.model);
   };
-
-  // True while the active model needs a config picked and none is staged for it.
-  //
-  // Drives the prompt only, deliberately not Apply. Apply commits what is
-  // staged, and merely looking at another model doesn't unstage it — gating on
-  // this would block committing a deliberate pick just because the right-hand
-  // pane moved, which is the same focus/selection conflation that made Apply
-  // silently clear the selection in the first place. In by-task mode it would
-  // also block committing picks already made for the other tiers.
-  // Empty when there is no active model at all — the list is empty, or a search
-  // matched nothing. Entries themselves always carry an array (`modelEntries`
-  // builds `credentials: []` and pushes), so the default is really guarding
-  // `activeModel`, not the field.
-  const { credentials: activeCredentials = [] } = activeModel || {};
-  const requiresCredentialChoice =
-    !!activeModel && activeCredentials.length > 1 && !activeCredentials.some((c) => isRowSelected(optionFor(c, activeModel.model)));
-
-  // Blanket mode commits exactly one model, so applying with nothing staged is
-  // never what the user meant — "Clear all" is the way to drop a selection.
-  const applyDisabled = mode === 'blanket' && !stagedBlanket;
 
   const handleClearTier = (t: PickerTierKey) => {
     const next: TierModelMap = { ...stagedTier };
     delete next[t];
     setStagedTier(next);
   };
+
+  // In Config mode the left pane is the selection, not just navigation.
+  const handleConfigClick = (c: ConfigEntry) => {
+    setActiveConfigKey(c.key);
+    if (mode === 'config') setStagedConfig({ configSource: wholeConfigSourceFor(c.key), configName: c.name });
+  };
+
+  // The tier slots the active config actually defines, so Config mode can show
+  // what "uses its tiers" will mean for this config instead of promising tiers
+  // it doesn't have. A config with none resolves every call to its base model.
+  const activeConfigTiers = useMemo(() => {
+    const out: { tier: PickerTierKey; model: string }[] = [];
+    for (const t of PICKER_TIER_KEYS) {
+      const slot = (activeConfig?.entries ?? []).find((e) => e.configSource.endsWith(`:tier:${t}`) && !e.isFallback);
+      if (slot) out.push({ tier: t, model: slot.model });
+    }
+    return out;
+  }, [activeConfig]);
+
+  // The model every untiered call falls back to — background work (titles,
+  // memory) is never tier-tagged, so this is not a detail.
+  const activeConfigBaseModel = activeConfig
+    ? activeConfig.entries.find((e) => e.configSource === baseConfigSourceFor(activeConfig.key) && !e.isFallback)?.model
+    : undefined;
+
+  // Each mode commits something different, so each has its own empty state:
+  // Blanket needs a model, Config needs a config, By-task may legitimately
+  // apply an empty map (every tier cleared).
+  const applyDisabled = (mode === 'blanket' && !staged) || (mode === 'config' && !stagedConfig);
 
   return (
     <>
@@ -447,7 +559,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
             maxWidth: ds.space.mul(0, 40),
           }}
         >
-          {pickerButtonLabel(selectedModel, selectedTierModels, credentials)}
+          {pickerButtonLabel(selectedModel, selectedTierModels, credentials, selectedConfig, configEntries)}
         </Typography>
         <ArrowDropDownIcon sx={{ fontSize: 'var(--ds-text-title)' }} />
       </Box>
@@ -501,17 +613,14 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                     options={[
                       { value: 'blanket', label: 'All calls' },
                       { value: 'tier', label: 'By task' },
+                      { value: 'config', label: 'Config' },
                     ]}
                   />
                 </Box>
                 <Tooltip
                   placement='top'
                   PopperProps={{ sx: { zIndex: 10000 }, modifiers: [{ name: 'preventOverflow', options: { padding: 8 } }] }}
-                  title={
-                    mode === 'blanket'
-                      ? 'The selected model is used for every LLM call in this conversation — including background tasks (memory, titles, light summaries).'
-                      : 'By-task picks apply only to LLM calls tagged with that task. Untagged background calls (memory, titles, light summaries) keep the operator default.'
-                  }
+                  title={PICKER_MODE_HELP[mode]}
                 >
                   <InfoOutlinedIcon sx={{ fontSize: 16, color: 'var(--ds-gray-500)', cursor: 'help' }} />
                 </Tooltip>
@@ -528,13 +637,19 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                 />
               )}
 
-              <Input size='sm' type='text' placeholder='Search models…' value={search} onChange={(v) => setSearch(v)} aria-label='Search models' />
+              <Input
+                size='sm'
+                type='text'
+                placeholder='Search configs and models…'
+                value={search}
+                onChange={(v) => setSearch(v)}
+                aria-label='Search models'
+              />
 
-              {/* Two panes: endpoints on the left, that endpoint's models on the
-                  right. Splitting them makes the two decisions independent —
-                  "which endpoint serves this" and "which model" — instead of
-                  nesting one inside the other, which forced everyone through the
-                  endpoint concept just to pick a model. */}
+              {/* Two panes: configs on the left, the selected config's models on
+                  the right. The config carries the credential, so naming it
+                  first is what makes two identically-named models from
+                  different configs distinguishable. */}
               <Box
                 sx={{
                   display: 'flex',
@@ -549,7 +664,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                   overflow: 'hidden',
                 }}
               >
-                {modelEntries.length === 0 ? (
+                {filteredConfigs.length === 0 ? (
                   <Box
                     sx={{
                       flex: 1,
@@ -564,14 +679,10 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                   </Box>
                 ) : (
                   <>
-                    {/* Left: the models, deduplicated across credentials.
-                        Right: the credentials that can serve the highlighted
-                        one — that is where the pick is made, because the
-                        credential is what the request is pinned to. */}
                     <Box
                       role='listbox'
-                      aria-label={mode === 'blanket' ? 'Models' : `Models for ${PICKER_TIER_LABELS[activeTier]}`}
-                      data-testid='model-pane'
+                      aria-label='Configs'
+                      data-testid='config-pane'
                       sx={{
                         width: ds.space.mul(0, 118),
                         flexShrink: 0,
@@ -579,22 +690,21 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                         borderRight: '1px solid var(--ds-gray-200)',
                       }}
                     >
-                      {modelEntries.map((entry) => {
-                        const isActive = activeModel?.key === entry.key;
-                        const holdsSelection = modelHasSelection(entry);
+                      {filteredConfigs.map((cfg) => {
+                        const isActive = activeConfig?.key === cfg.key;
+                        const holdsSelection = configHasSelection(cfg);
                         return (
                           <MuiButtonBase
-                            key={entry.key}
+                            key={cfg.key}
                             role='option'
                             aria-selected={isActive}
-                            onClick={() => handleModelFocus(entry)}
+                            onClick={() => handleConfigClick(cfg)}
                             sx={{
                               display: 'flex',
-                              flexDirection: 'column',
-                              alignItems: 'flex-start',
+                              alignItems: 'center',
                               width: '100%',
                               textAlign: 'left',
-                              gap: '1px',
+                              gap: 'var(--ds-space-1)',
                               padding: 'var(--ds-space-2) var(--ds-space-3)',
                               borderLeft: `2px solid ${isActive ? 'var(--ds-blue-600)' : 'transparent'}`,
                               backgroundColor: isActive ? 'var(--ds-blue-100)' : 'transparent',
@@ -603,101 +713,128 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                               },
                             }}
                           >
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', width: '100%', minWidth: 0 }}>
+                            <Typography
+                              sx={{
+                                flex: 1,
+                                minWidth: 0,
+                                fontSize: 'var(--ds-text-small)',
+                                fontWeight: isActive ? 'var(--ds-font-weight-semibold)' : 400,
+                                color: isActive ? 'var(--ds-blue-600)' : 'var(--ds-gray-700)',
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                              }}
+                            >
+                              {cfg.name}
+                            </Typography>
+                            {holdsSelection && <CheckIcon sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-blue-600)', flexShrink: 0 }} />}
+                          </MuiButtonBase>
+                        );
+                      })}
+                    </Box>
+
+                    {mode === 'config' ? (
+                      /* Config mode selects on the left, so the right pane
+                         answers "what will this config actually do" rather than
+                         offering a second choice. */
+                      <Box data-testid='config-summary-pane' sx={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: 'var(--ds-space-3)' }}>
+                        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', mb: ds.space[1] }}>
+                          {activeConfigTiers.length > 0 ? 'Models this config uses per task' : 'This config sets no per-task models'}
+                        </Typography>
+                        {activeConfigTiers.map(({ tier, model }) => (
+                          <Box key={tier} sx={{ display: 'flex', justifyContent: 'space-between', gap: 'var(--ds-space-2)', py: ds.space[0] }}>
+                            <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)', fontWeight: 500 }}>
+                              {PICKER_TIER_LABELS[tier]}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                fontSize: 'var(--ds-text-small)',
+                                color: 'var(--ds-gray-700)',
+                                minWidth: 0,
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                              }}
+                            >
+                              {model}
+                            </Typography>
+                          </Box>
+                        ))}
+                        {activeConfigBaseModel && (
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 'var(--ds-space-2)', py: ds.space[0] }}>
+                            <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>
+                              {activeConfigTiers.length > 0 ? 'Everything else' : 'All calls'}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                fontSize: 'var(--ds-text-small)',
+                                color: 'var(--ds-gray-500)',
+                                minWidth: 0,
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                              }}
+                            >
+                              {activeConfigBaseModel}
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                    ) : (
+                      <Box
+                        role='listbox'
+                        aria-label={mode === 'blanket' ? 'Models' : `Models for ${PICKER_TIER_LABELS[activeTier]}`}
+                        data-testid='model-pane'
+                        sx={{ flex: 1, minWidth: 0, overflowY: 'auto' }}
+                      >
+                        {activeRows.map((row) => {
+                          const selected = isRowSelected(row);
+                          return (
+                            <MuiButtonBase
+                              key={`${activeConfig?.key}-${row.model}`}
+                              role='option'
+                              aria-selected={selected}
+                              onClick={() => handleRowPick(row)}
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                width: '100%',
+                                textAlign: 'left',
+                                padding: 'var(--ds-overlay-item-padding-md, var(--ds-space-2) var(--ds-space-3))',
+                                gap: 'var(--ds-space-2)',
+                                backgroundColor: selected ? 'var(--ds-overlay-item-selected-bg, var(--ds-blue-100))' : 'transparent',
+                                '&:hover': {
+                                  backgroundColor: selected
+                                    ? 'var(--ds-overlay-item-selected-bg, var(--ds-blue-100))'
+                                    : 'var(--ds-overlay-item-hover-bg, var(--ds-gray-100))',
+                                },
+                              }}
+                            >
                               <Typography
                                 sx={{
-                                  flex: 1,
                                   minWidth: 0,
                                   fontSize: 'var(--ds-text-small)',
-                                  fontWeight: isActive ? 'var(--ds-font-weight-semibold)' : 400,
-                                  color: isActive ? 'var(--ds-blue-600)' : 'var(--ds-gray-700)',
+                                  fontWeight: selected ? 500 : 400,
+                                  color: selected ? 'var(--ds-blue-600)' : 'var(--ds-gray-700)',
                                   whiteSpace: 'nowrap',
                                   overflow: 'hidden',
                                   textOverflow: 'ellipsis',
                                 }}
                               >
-                                {entry.model}
+                                {row.model}
                               </Typography>
-                              {holdsSelection && <CheckIcon sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-blue-600)', flexShrink: 0 }} />}
-                            </Box>
-                            <Typography
-                              sx={{
-                                fontSize: 'var(--ds-text-caption)',
-                                color: 'var(--ds-gray-500)',
-                                whiteSpace: 'nowrap',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                maxWidth: '100%',
-                              }}
-                            >
-                              {entry.provider}
-                              {entry.credentials.length > 1 ? ` · ${entry.credentials.length} configs` : ''}
-                            </Typography>
-                          </MuiButtonBase>
-                        );
-                      })}
-                    </Box>
-
-                    <Box role='listbox' aria-label='Credentials' data-testid='credential-pane' sx={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
-                      {requiresCredentialChoice && (
-                        <Typography
-                          data-testid='credential-choice-prompt'
-                          sx={{
-                            fontSize: 'var(--ds-text-caption)',
-                            color: 'var(--ds-gray-600)',
-                            padding: 'var(--ds-space-2) var(--ds-space-3)',
-                          }}
-                        >
-                          Served by {activeModel?.credentials.length} configs — pick one to use
-                        </Typography>
-                      )}
-                      {(activeModel?.credentials ?? []).map((cred) => {
-                        const option = activeModel ? optionFor(cred, activeModel.model) : null;
-                        const selected = !!option && isRowSelected(option);
-                        return (
-                          <MuiButtonBase
-                            key={`${activeModel?.key}-${cred.id}`}
-                            role='option'
-                            aria-selected={selected}
-                            onClick={() => option && handleRowPick(option)}
-                            sx={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              width: '100%',
-                              textAlign: 'left',
-                              padding: 'var(--ds-overlay-item-padding-md, var(--ds-space-2) var(--ds-space-3))',
-                              gap: 'var(--ds-space-2)',
-                              backgroundColor: selected ? 'var(--ds-overlay-item-selected-bg, var(--ds-blue-100))' : 'transparent',
-                              '&:hover': {
-                                backgroundColor: selected
-                                  ? 'var(--ds-overlay-item-selected-bg, var(--ds-blue-100))'
-                                  : 'var(--ds-overlay-item-hover-bg, var(--ds-gray-100))',
-                              },
-                            }}
-                          >
-                            <Typography
-                              sx={{
-                                fontSize: 'var(--ds-text-small)',
-                                fontWeight: selected ? 500 : 400,
-                                color: selected ? 'var(--ds-blue-600)' : 'var(--ds-gray-700)',
-                                whiteSpace: 'nowrap',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                              }}
-                            >
-                              {cred.name}
-                            </Typography>
-                            {selected && <CheckIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-blue-600)', flexShrink: 0 }} />}
-                          </MuiButtonBase>
-                        );
-                      })}
-                    </Box>
+                              {selected && <CheckIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-blue-600)', flexShrink: 0 }} />}
+                            </MuiButtonBase>
+                          );
+                        })}
+                      </Box>
+                    )}
                   </>
                 )}
               </Box>
 
-              {mode === 'blanket' && stagedBlanket && isLowerTierForReasoning(stagedBlanket.provider, stagedBlanket.model) && (
+              {mode === 'blanket' && staged && isLowerTierForReasoning(staged.provider, staged.model) && (
                 <Typography
                   sx={{
                     fontSize: 'var(--ds-text-caption)',
@@ -741,7 +878,10 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                                 textOverflow: 'ellipsis',
                               }}
                             >
-                              {cur ? cur.model : 'Inherit default'}
+                              {/* The config is named too: two configs can serve
+                                  the same model name, so the model alone doesn't
+                                  say which credential the tier will use. */}
+                              {cur ? `${cur.model}${cur.configName ? ` · ${cur.configName}` : ''}` : 'Inherit default'}
                             </Typography>
                             {cur && (
                               <MuiButtonBase
@@ -798,11 +938,14 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
     disabled = false,
     allowStop = false,
     credentials = [],
+    models = [],
     defaultModel: _defaultModel,
     selectedModel,
     onModelSelect,
     selectedTierModels,
     onTierModelsSelect,
+    selectedConfig,
+    onConfigSelect,
     onConfigClear,
     popupInitial = false,
     imageSupport,
@@ -1261,15 +1404,18 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
           {/* Model Selector for chat screen — popover supports both
               "Blanket" (one model) and "Per category" (one model per tier)
               modes; mutually exclusive at the hook level. */}
-          {credentials && credentials.length > 0 && (
+          {(models.length > 0 || credentials.length > 0) && (
             <>
               <Box sx={{ width: '1px', height: ds.space[5], backgroundColor: 'var(--ds-brand-200)', mx: 'var(--ds-space-3)' }} />
               <ModelPickerPopover
                 credentials={credentials}
+                models={models}
                 selectedModel={selectedModel}
                 onModelSelect={onModelSelect}
                 selectedTierModels={selectedTierModels}
                 onTierModelsSelect={onTierModelsSelect}
+                selectedConfig={selectedConfig}
+                onConfigSelect={onConfigSelect}
                 onConfigClear={onConfigClear}
                 disabled={disabled}
               />
@@ -1471,13 +1617,16 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
           {/* Model Selector — popover variant for non-chat (popup) flow.
               Same component as the chat-screen path; renders the same two
               modes (Blanket / Per category) with mutual exclusivity. */}
-          {credentials && credentials.length > 0 && (
+          {(models.length > 0 || credentials.length > 0) && (
             <ModelPickerPopover
               credentials={credentials}
+              models={models}
               selectedModel={selectedModel}
               onModelSelect={onModelSelect}
               selectedTierModels={selectedTierModels}
               onTierModelsSelect={onTierModelsSelect}
+              selectedConfig={selectedConfig}
+              onConfigSelect={onConfigSelect}
               onConfigClear={onConfigClear}
               disabled={disabled}
             />

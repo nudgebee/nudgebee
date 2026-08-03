@@ -300,28 +300,57 @@ tailwind.config = {
             <option value="native">Native (kubectl-first, lean tool set)</option>
           </select>
         </div>
-        <div>
-          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="bm-llm-cred">LLM Credential</label>
-          <select id="bm-llm-cred" onchange="bmOnCredChange()" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all"
-            title="Pin every request in this run to one configured LLM credential (sends config.llm_config_source). 'Default' lets the llm-server resolve normally, which can pick a different credential per tier.">
-            <option value="">Default (llm-server resolves)</option>
-          </select>
-        </div>
-        <div>
-          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="bm-llm-model">Model</label>
-          <select id="bm-llm-model" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all"
-            title="Model to use through the credential above. 'Default' uses whichever model that credential's slot names."
-            disabled>
-            <option value="">Default (credential's model)</option>
-          </select>
-        </div>
       </div>
-      <div class="mb-4">
-        <label class="flex items-center gap-2 text-[11px] text-gray-500 cursor-pointer select-none">
-          <input type="checkbox" id="bm-llm-per-tier" onchange="bmOnPerTierToggle()" class="rounded" />
-          <span>Pin per task instead &mdash; choose a separate credential and model for each tier</span>
-        </label>
-        <div id="bm-llm-tier-rows" class="hidden mt-3 grid grid-cols-1 md:grid-cols-3 gap-4"></div>
+      <div class="mb-4 p-3 rounded-xl border border-gray-100 bg-gray-50/50">
+        <div class="flex items-center justify-between gap-3 mb-3">
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">LLM</span>
+            <div id="bm-llm-loader" class="hidden"><div class="spinner-sm"></div></div>
+            <!-- Segmented, and first: the mode decides what the body below even
+                 asks for, so reading order has to match decision order. -->
+            <div class="inline-flex items-center bg-gray-100 rounded-lg p-0.5" role="group" aria-label="LLM pin mode">
+              <button type="button" id="bm-llm-mode-blanket" onclick="bmSetLlmMode('blanket')" class="bm-seg px-2.5 py-1 rounded-md text-[11px] font-medium transition-all">All calls</button>
+              <button type="button" id="bm-llm-mode-tier" onclick="bmSetLlmMode('tier')" class="bm-seg px-2.5 py-1 rounded-md text-[11px] font-medium transition-all">By task</button>
+              <button type="button" id="bm-llm-mode-config" onclick="bmSetLlmMode('config')" class="bm-seg px-2.5 py-1 rounded-md text-[11px] font-medium transition-all">Config</button>
+            </div>
+          </div>
+          <span id="bm-llm-mode-help" class="text-[11px] text-gray-400 text-right"></span>
+        </div>
+        <input type="hidden" id="bm-llm-mode" value="blanket" />
+
+        <!-- All calls: one config, one model. -->
+        <div id="bm-llm-body-blanket" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="bm-llm-config">Config</label>
+            <select id="bm-llm-config" onchange="bmOnConfigChange()" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+              <option value="">Default (llm-server resolves)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="bm-llm-model">Model</label>
+            <select id="bm-llm-model" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all" disabled>
+              <option value="">Default (config's model)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- By task: the same two questions, once per task. -->
+        <div id="bm-llm-body-tier" class="hidden"></div>
+
+        <!-- Config: choice on the left, what it resolves to on the right —
+             the same shape as the other two bodies. -->
+        <div id="bm-llm-body-config" class="hidden grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5" for="bm-llm-config-whole">Config</label>
+            <select id="bm-llm-config-whole" onchange="bmOnWholeConfigChange()" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+              <option value="">Default (llm-server resolves)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">What it will use</label>
+            <div id="bm-llm-config-summary" class="text-[11px] text-gray-500"></div>
+          </div>
+        </div>
       </div>
       <div id="bm-test-selector" class="hidden mb-4">
         <div class="flex items-center justify-between mb-2">
@@ -1066,6 +1095,14 @@ async function bmPatchCredNames(tenantId, accountId) {
     const d = await api('GET', `/dashboard/models?account_id=${accountId}&tenant_id=${tenantId}`);
     const map = {};
     for (const c of (d && d.credentials) || []) map[c.llm_config_source] = c.name;
+    // Slot-level names win over the credential's: two configs sharing an API
+    // key fold into one credential under a single name, so a run pinned to the
+    // other one would otherwise be labelled with a config it never used.
+    for (const m of (d && d.models) || []) {
+      if (m.llm_config_source && m.config_name) map[m.llm_config_source] = m.config_name;
+    }
+    // Whole-config pins name a config, not a slot, so they have no row above.
+    for (const cfg of bmGroupConfigs((d && d.models) || [])) map[bmWholeConfigSource(cfg.key)] = cfg.name;
     _bmCredNames[key] = map;
   }
   document.querySelectorAll('.bm-cred-name').forEach(el => {
@@ -2093,6 +2130,9 @@ async function loadBenchmarkForm() {
   $('bm-agent').onchange = bmOnAgentChange;
 
   bmOnAgentChange();
+  // Paints the segmented control's active state and shows the matching body —
+  // without it the three segments render identically until one is clicked.
+  bmSetLlmMode('blanket');
   hide('bm-loading'); show('bm-form');
 }
 
@@ -2140,110 +2180,323 @@ async function bmLoadToolConfigs() {
 // serialized here. Pinning keeps a run on one credential so two runs are
 // comparable instead of drifting with the resolver's layered walk.
 let _bmCredentials = [];
+// One row per configured slot, each keeping its own config's name. The picker
+// lists configs from these rather than from credentials[], which folds configs
+// sharing an API key into a single entry under one name.
+let _bmModels = [];
+let _bmConfigs = [];
 const BM_TIERS = ['reasoning', 'retrieval', 'summary'];
 
+// db:<uuid>, db:<uuid>:tier:<t> and db:<uuid>:agent:<a> all belong to the one
+// integration db:<uuid>. Every env slot belongs to the single system config.
+function bmConfigKeyForSource(src) {
+  if (!src) return '';
+  if (src.startsWith('db:')) { const p = src.split(':'); return p.length >= 2 ? `db:${p[1]}` : src; }
+  return 'env';
+}
+// Trims the slot decoration the server appends — "name · Summary tier
+// (fallback)" is the same config as "name".
+// config_name is omitempty on the wire, so it can be absent. Falls back to
+// the source id, which is what the server itself shows for a slot it can't
+// name — an empty label would leave the option looking unselectable.
+function bmConfigName(entry) {
+  const raw = entry.config_name || entry.llm_config_source || '';
+  return raw.replace(/\s*\(fallback\)\s*$/i, '').replace(/\s+·\s+.*$/, '').trim() || raw;
+}
+// The config's own base slot — what a pin means when no tier is involved.
+const bmBaseSource = (key) => (key === 'env' ? 'env:global' : key);
+// ':all' is the one source-id shape that names a config instead of a single
+// slot, letting each call read its own task's model. See the LlmConfigSource
+// schema in llm-server's llm_config.go.
+const bmWholeConfigSource = (key) => (key === 'env' ? 'env:all' : `${key}:all`);
+
+function bmGroupConfigs(models) {
+  const byKey = new Map();
+  for (const m of models) {
+    const key = bmConfigKeyForSource(m.llm_config_source);
+    if (!key) continue;
+    const existing = byKey.get(key);
+    if (existing) existing.entries.push(m);
+    else byKey.set(key, { key, name: '', entries: [m] });
+  }
+  // Named after grouping, from the first slot that actually carries a name:
+  // naming from whichever slot arrived first would label the whole config with
+  // a raw source id whenever that one slot happened to lack one.
+  for (const cfg of byKey.values()) {
+    cfg.name = bmConfigName(cfg.entries.find(e => e.config_name) || cfg.entries[0]);
+  }
+  return [...byKey.values()];
+}
+
+// One row per distinct model in a config. A model usually appears more than
+// once — as the base model and again under a tier — and those are the same
+// choice here. The slot kept becomes the pin, so a primary always beats a
+// fallback.
+function bmConfigRows(key) {
+  const cfg = _bmConfigs.find(c => c.key === key);
+  const byModel = new Map();
+  for (const e of (cfg && cfg.entries) || []) {
+    const row = { model: e.model, provider: e.provider, source: e.llm_config_source, isFallback: !!e.is_fallback };
+    const existing = byModel.get(e.model);
+    if (!existing || (existing.isFallback && !row.isFallback)) byModel.set(e.model, row);
+  }
+  return [...byModel.values()];
+}
+
+// The tier slots a config actually defines, so Config mode can show what
+// "picks per task" will mean for it rather than promising tiers it lacks.
+function bmConfigTiers(key) {
+  const cfg = _bmConfigs.find(c => c.key === key);
+  const out = [];
+  for (const t of BM_TIERS) {
+    const slot = ((cfg && cfg.entries) || []).find(e => e.llm_config_source.endsWith(`:tier:${t}`) && !e.is_fallback);
+    if (slot) out.push({ tier: t, model: slot.model });
+  }
+  return out;
+}
+// Identified by equality with the config's base source, not by "has no
+// :tier:" — an agent slot (db:<uuid>:agent:<name>) has no ':tier:' either and
+// would otherwise be reported as the model every untagged call falls back to.
+function bmConfigBaseModel(key) {
+  const cfg = _bmConfigs.find(c => c.key === key);
+  const base = bmBaseSource(key);
+  const slot = ((cfg && cfg.entries) || []).find(e => e.llm_config_source === base && !e.is_fallback);
+  return slot ? slot.model : '';
+}
+
+const bmLlmMode = () => $('bm-llm-mode')?.value || 'blanket';
+
+const BM_MODE_HELP = {
+  blanket: 'Used for every call in the run, including background work.',
+  tier: 'Untagged background calls keep the operator default.',
+  config: 'The config picks the model per task; tasks it does not set fall back to its default model.',
+};
+
+function bmSetLlmMode(mode) {
+  $('bm-llm-mode').value = mode;
+  for (const m of ['blanket', 'tier', 'config']) {
+    const on = m === mode;
+    const btn = $(`bm-llm-mode-${m}`);
+    if (btn) {
+      btn.className = `bm-seg px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
+        on ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500 hover:text-gray-700'
+      }`;
+      btn.setAttribute('aria-pressed', String(on));
+    }
+    $(`bm-llm-body-${m}`)?.classList.toggle('hidden', !on);
+  }
+  const help = $('bm-llm-mode-help');
+  if (help) help.textContent = BM_MODE_HELP[mode] || '';
+  if (mode === 'tier') bmRenderTierRows();
+  if (mode === 'config') bmRenderConfigSummary();
+}
+
 function bmResetLlmPickers() {
-  _bmCredentials = [];
-  const cred = $('bm-llm-cred'), model = $('bm-llm-model');
-  if (cred) cred.innerHTML = '<option value="">Default (llm-server resolves)</option>';
-  if (model) { model.innerHTML = '<option value="">Default (credential\'s model)</option>'; model.disabled = true; }
-  const rows = $('bm-llm-tier-rows');
+  _bmCredentials = []; _bmModels = []; _bmConfigs = [];
+  for (const id of ['bm-llm-config', 'bm-llm-config-whole']) {
+    const el = $(id);
+    if (el) { el.innerHTML = '<option value="">Default (llm-server resolves)</option>'; el.disabled = false; }
+  }
+  const model = $('bm-llm-model');
+  if (model) { model.innerHTML = '<option value="">Default (config\'s model)</option>'; model.disabled = true; }
+  const rows = $('bm-llm-body-tier');
   if (rows) rows.innerHTML = '';
+  const summary = $('bm-llm-config-summary');
+  if (summary) summary.innerHTML = '';
+  bmSetLlmMode('blanket');
 }
 
-function _bmCredOptions(selected) {
-  return '<option value="">Default</option>' + _bmCredentials.map(c =>
-    `<option value="${escAttr(c.llm_config_source)}"${c.llm_config_source === selected ? ' selected' : ''}>${esc(c.name)} (${esc(c.provider)})</option>`
+function _bmConfigOptions(selected) {
+  return '<option value="">Default</option>' + _bmConfigs.map(c =>
+    `<option value="${escAttr(c.key)}"${c.key === selected ? ' selected' : ''}>${esc(c.name)}</option>`
   ).join('');
 }
 
-function _bmModelOptions(configSource) {
-  const cred = _bmCredentials.find(c => c.llm_config_source === configSource);
-  const models = (cred && cred.models) || [];
-  return '<option value="">Default</option>' + models.map(m =>
-    `<option value="${escAttr(m.model)}">${esc(m.model)}</option>`
+function _bmModelOptions(key) {
+  return '<option value="">Default</option>' + bmConfigRows(key).map(r =>
+    `<option value="${escAttr(r.model)}">${esc(r.model)}</option>`
   ).join('');
 }
+
+// Every select in the LLM section is filled from this one request, so they all
+// wait on it together — a half-populated picker invites a pick that is about to
+// be replaced.
+let _bmCredLoadSeq = 0;
 
 async function bmLoadCredentials() {
   const [aid, tid] = [$('bm-account').value, $('bm-tenant').value];
   if (!aid || !tid) return;
-  const d = await api('GET', `/dashboard/models?account_id=${aid}&tenant_id=${tid}`);
+
+  const seq = ++_bmCredLoadSeq;
+  bmSetLlmLoading(true);
+  let d = null;
+  try {
+    d = await api('GET', `/dashboard/models?account_id=${aid}&tenant_id=${tid}`);
+  } catch (e) {
+    console.error('bmLoadCredentials failed', e);
+  }
+  // Switching account twice in quick succession can land the responses out of
+  // order; without this the older one repopulates the picker for an account the
+  // user already left.
+  if (seq !== _bmCredLoadSeq) return;
+
+  // Populated on failure too: an empty-but-usable picker beats selects stuck
+  // on "Loading…" with the spinner gone.
   _bmCredentials = (d && d.credentials) || [];
-  $('bm-llm-cred').innerHTML = _bmCredOptions('');
-  $('bm-llm-model').innerHTML = '<option value="">Default (credential\'s model)</option>';
+  _bmModels = (d && d.models) || [];
+  _bmConfigs = bmGroupConfigs(_bmModels);
+  bmSetLlmLoading(false);
+  for (const id of ['bm-llm-config', 'bm-llm-config-whole']) {
+    const el = $(id);
+    if (el) { el.innerHTML = _bmConfigOptions(''); el.disabled = false; }
+  }
+  $('bm-llm-model').innerHTML = '<option value="">Default (config\'s model)</option>';
   $('bm-llm-model').disabled = true;
-  bmRenderTierRows();
+  // Not preserved: a different account serves different configs, so any pick
+  // carried over would name one it cannot resolve.
+  bmRenderTierRows(false);
+  bmRenderConfigSummary();
 }
 
-function bmOnCredChange() {
-  const src = $('bm-llm-cred').value;
+// Only sets the loading state — clearing it is the caller's repopulation,
+// which knows the correct enabled/disabled state for each select (the model
+// ones stay disabled until a config is picked).
+function bmSetLlmLoading(on) {
+  $('bm-llm-loader')?.classList.toggle('hidden', !on);
+  if (!on) return;
+  for (const id of ['bm-llm-config', 'bm-llm-config-whole']) {
+    const el = $(id);
+    if (el) { el.innerHTML = '<option value="">Loading configs…</option>'; el.disabled = true; }
+  }
   const model = $('bm-llm-model');
-  // Without a credential there is no model list to offer — the llm-server
-  // picks both.
-  model.disabled = !src;
-  model.innerHTML = src
-    ? _bmModelOptions(src)
-    : '<option value="">Default (credential\'s model)</option>';
+  if (model) { model.innerHTML = '<option value="">Default (config\'s model)</option>'; model.disabled = true; }
+  for (const t of BM_TIERS) {
+    for (const id of [`bm-tier-config-${t}`, `bm-tier-model-${t}`]) {
+      const el = $(id);
+      if (el) el.disabled = true;
+    }
+  }
+  const summary = $('bm-llm-config-summary');
+  if (summary) summary.innerHTML = '<span class="text-gray-400">Loading…</span>';
 }
 
-function bmRenderTierRows() {
-  const rows = $('bm-llm-tier-rows');
+function bmOnConfigChange() {
+  const key = $('bm-llm-config').value;
+  const model = $('bm-llm-model');
+  // Without a config there is no model list to offer — the llm-server picks
+  // both.
+  model.disabled = !key;
+  model.innerHTML = key ? _bmModelOptions(key) : '<option value="">Default (config\'s model)</option>';
+}
+
+function bmOnWholeConfigChange() {
+  bmRenderConfigSummary();
+}
+
+function bmRenderConfigSummary() {
+  const el = $('bm-llm-config-summary');
+  if (!el) return;
+  const key = $('bm-llm-config-whole')?.value;
+  if (!key) {
+    el.innerHTML = '<span class="text-gray-400">Pick a config to see the models it uses.</span>';
+    return;
+  }
+  const tiers = bmConfigTiers(key), base = bmConfigBaseModel(key);
+  const row = (label, model, muted) =>
+    `<div class="flex justify-between gap-3 py-0.5">
+       <span class="${muted ? 'text-gray-400' : 'font-medium text-gray-600'} capitalize">${esc(label)}</span>
+       <span class="${muted ? 'text-gray-400' : 'text-gray-600'} truncate">${esc(model)}</span>
+     </div>`;
+  const rows = tiers.map(({ tier, model }) => row(tier, model, false));
+  // Untagged background work never carries a tier, so the base model is not a
+  // footnote — say what it is.
+  if (base) rows.push(row(tiers.length ? 'Everything else' : 'All calls', base, true));
+  el.innerHTML = tiers.length
+    ? rows.join('')
+    : `<div class="text-gray-400 mb-1">Sets no per-task models.</div>${rows.join('')}`;
+}
+
+// Each task is All-calls repeated: the same two labelled questions, so all
+// three modes read as one shape instead of three.
+//
+// `preserve` keeps picks across a mode switch, where re-rendering would
+// silently wipe them. It must be false when the account changes — those picks
+// name configs the new account cannot serve.
+function bmRenderTierRows(preserve = true) {
+  const rows = $('bm-llm-body-tier');
   if (!rows) return;
-  rows.innerHTML = BM_TIERS.map(t => `
-    <div>
-      <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">${t}</label>
-      <select id="bm-tier-cred-${t}" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all mb-2"
-        onchange="bmOnTierCredChange('${t}')">${_bmCredOptions('')}</select>
-      <select id="bm-tier-model-${t}" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all" disabled>
-        <option value="">Default</option>
-      </select>
-    </div>`).join('');
+  const sel = 'az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all';
+  const lbl = 'block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5';
+  const prev = Object.fromEntries(BM_TIERS.map(t => [t, {
+    config: (preserve && $(`bm-tier-config-${t}`)?.value) || '',
+    model: (preserve && $(`bm-tier-model-${t}`)?.value) || '',
+  }]));
+  rows.innerHTML = `<div class="grid grid-cols-1 md:grid-cols-3 gap-3">` + BM_TIERS.map(t => `
+      <div class="rounded-xl border border-gray-100 bg-white/60 p-3">
+        <div class="text-[11px] font-semibold text-gray-600 capitalize mb-2.5">${t}</div>
+        <label class="${lbl}">Config</label>
+        <select id="bm-tier-config-${t}" class="${sel} mb-2.5" onchange="bmOnTierConfigChange('${t}')">${_bmConfigOptions(prev[t].config)}</select>
+        <label class="${lbl}">Model</label>
+        <select id="bm-tier-model-${t}" class="${sel}"${prev[t].config ? '' : ' disabled'}><option value="">Default</option></select>
+      </div>`).join('') + `</div>`;
+  // Model options depend on the config, so refill them after the DOM exists.
+  for (const t of BM_TIERS) {
+    if (!prev[t].config) continue;
+    const el = $(`bm-tier-model-${t}`);
+    el.innerHTML = _bmModelOptions(prev[t].config);
+    el.value = prev[t].model;
+  }
 }
 
-function bmOnTierCredChange(tier) {
-  const src = $(`bm-tier-cred-${tier}`).value;
+function bmOnTierConfigChange(tier) {
+  const key = $(`bm-tier-config-${tier}`).value;
   const model = $(`bm-tier-model-${tier}`);
-  model.disabled = !src;
-  model.innerHTML = src ? _bmModelOptions(src) : '<option value="">Default</option>';
-}
-
-function bmOnPerTierToggle() {
-  const on = $('bm-llm-per-tier').checked;
-  // The two modes are mutually exclusive at the conversation row, so the UI
-  // can't offer both at once without one silently losing.
-  $('bm-llm-tier-rows').classList.toggle('hidden', !on);
-  $('bm-llm-cred').disabled = on;
-  $('bm-llm-model').disabled = on || !$('bm-llm-cred').value;
-  if (on) bmRenderTierRows();
+  model.disabled = !key;
+  model.innerHTML = key ? _bmModelOptions(key) : '<option value="">Default</option>';
 }
 
 // Collects the pin into the run payload. Returns {} when nothing is pinned so
 // the run behaves exactly as it did before this field existed.
 function bmLlmPayload() {
-  if ($('bm-llm-per-tier')?.checked) {
+  const mode = bmLlmMode();
+  if (mode === 'tier') {
     const picks = {};
     for (const t of BM_TIERS) {
-      const src = $(`bm-tier-cred-${t}`)?.value;
-      if (!src) continue;
-      const cred = _bmCredentials.find(c => c.llm_config_source === src);
-      const pick = { llm_config_source: src, provider: (cred && cred.provider) || '' };
+      const key = $(`bm-tier-config-${t}`)?.value;
+      if (!key) continue;
       const m = $(`bm-tier-model-${t}`)?.value;
-      if (m) pick.model = m;
-      picks[t] = pick;
+      const row = m ? bmConfigRows(key).find(r => r.model === m) : null;
+      // With a model the pick pins that model's own slot, which may be a tier
+      // slot with its own endpoint, and the provider is that slot's own.
+      //
+      // Without a model, send only the source: the server reads the provider
+      // from the pinned slot and ignores anything sent alongside it. Guessing
+      // one from the config's first model was wrong on a mixed config — that
+      // row can belong to a different provider than the base slot.
+      picks[t] = row
+        ? { llm_config_source: row.source, provider: row.provider, model: row.model }
+        : { llm_config_source: bmBaseSource(key) };
     }
     return Object.keys(picks).length ? { llm_tier_models: picks } : {};
   }
-  const src = $('bm-llm-cred')?.value;
-  if (!src) return {};
-  const out = { llm_config_source: src };
-  const model = $('bm-llm-model')?.value;
-  if (model) {
-    const cred = _bmCredentials.find(c => c.llm_config_source === src);
-    out.llm_provider = (cred && cred.provider) || '';
-    out.llm_model_name = model;
+  if (mode === 'config') {
+    const whole = $('bm-llm-config-whole')?.value;
+    // No provider/model: the config's own per-task models decide, and the
+    // server rejects a model sent alongside a whole-config pin.
+    return whole ? { llm_config_source: bmWholeConfigSource(whole) } : {};
   }
-  return out;
+  const key = $('bm-llm-config')?.value;
+  if (!key) return {};
+  const model = $('bm-llm-model')?.value;
+  if (!model) return { llm_config_source: bmBaseSource(key) };
+  // A model with no matching row can only mean the select is stale. Sending it
+  // with a blank provider would be a half-set override, which the server
+  // rejects outright ("either both or neither must be set alongside a pinned
+  // source") — so fall back to pinning the config and letting it name a model,
+  // exactly as picking no model does.
+  const row = bmConfigRows(key).find(r => r.model === model);
+  if (!row) return { llm_config_source: bmBaseSource(key) };
+  return { llm_config_source: row.source, llm_provider: row.provider, llm_model_name: model };
 }
 
 async function bmOnAgentChange() {

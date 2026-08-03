@@ -6,6 +6,7 @@ import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common'; 
 import { buildWorkflowConversationMessages } from '@components/workflow/utils';
 import apiWorkflow from '@api1/workflow';
 import { getUserSession } from '@lib/auth';
+import { configKeyForSource, isWholeConfigSource } from '@utils/llmConfigSource';
 import { getBrandTitle } from '@hooks/useTenantBranding';
 import { getUpstreamStatus, mapUpstreamError } from '@lib/errorMessages';
 
@@ -413,6 +414,32 @@ const serializeTierModels = (picks) =>
     ])
   );
 
+// Drops selections the newly-loaded account cannot serve. Switching account
+// refetches the model list but the picks are sticky, so a db pin from the
+// previous account would survive and be rejected downstream — llm-server
+// refuses an integration uuid the account can't see, so the next turn fails
+// with a confusing error instead of just falling back.
+//
+// Kept deliberately: picks with no configSource (they predate pinning and
+// carry no account-bound id to check), and everything at all when the new list
+// is empty — a failed fetch must not wipe a valid selection.
+function pruneSelectionsForModels(state, models) {
+  if (!models || models.length === 0) return state;
+  const keys = new Set(models.map((m) => configKeyForSource(m.configSource)).filter(Boolean));
+  const servable = (pick) => !pick?.configSource || keys.has(configKeyForSource(pick.configSource));
+
+  const next = {};
+  if (state.selectedModel && !servable(state.selectedModel)) next.selectedModel = null;
+  if (state.selectedConfig && !servable(state.selectedConfig)) next.selectedConfig = null;
+  if (state.selectedTierModels) {
+    const kept = Object.fromEntries(Object.entries(state.selectedTierModels).filter(([, p]) => servable(p)));
+    if (Object.keys(kept).length !== Object.keys(state.selectedTierModels).length) {
+      next.selectedTierModels = Object.keys(kept).length > 0 ? kept : null;
+    }
+  }
+  return Object.keys(next).length > 0 ? { ...state, ...next } : state;
+}
+
 // --- Reducer ---
 
 const initialState = {
@@ -425,11 +452,18 @@ const initialState = {
   conversationIdAtDb: '',
   isLoading: false,
   availableCredentials: [],
+  // Flat (config, model) rows straight from the server. Unlike
+  // availableCredentials this keeps every config's own name, so the picker can
+  // list configs rather than the credential groups they collapse into.
+  availableModels: [],
   defaultModel: null,
-  // selectedModel and selectedTierModels are mutually exclusive — the
-  // reducer clears one when the other is set.
+  // The three selections are mutually exclusive — the reducer clears the other
+  // two when one is set. selectedModel pins one model for every call,
+  // selectedTierModels one per task, and selectedConfig hands the whole config
+  // over so its own per-task models apply.
   selectedModel: null,
   selectedTierModels: null,
+  selectedConfig: null,
   // "Clear all" in the picker. Distinct from both selections being null, which
   // is also the never-picked state and inherits the conversation's stored
   // config. Rides along with the next submitted turn, then resets.
@@ -461,6 +495,7 @@ function investigationReducer(state, action) {
         ...state,
         selectedModel: action.payload,
         selectedTierModels: null,
+        selectedConfig: null,
         configCleared: action.payload ? false : state.configCleared,
       };
     case 'SET_SELECTED_TIER_MODELS':
@@ -468,19 +503,34 @@ function investigationReducer(state, action) {
         ...state,
         selectedTierModels: action.payload,
         selectedModel: null,
+        selectedConfig: null,
+        configCleared: action.payload ? false : state.configCleared,
+      };
+    case 'SET_SELECTED_CONFIG':
+      return {
+        ...state,
+        selectedConfig: action.payload,
+        selectedModel: null,
+        selectedTierModels: null,
         configCleared: action.payload ? false : state.configCleared,
       };
     case 'SET_CONFIG_CLEARED':
       // Clearing is one transition, not three: nulling both selections here
       // means callers can't half-apply it by firing only some of the callbacks.
-      return action.payload ? { ...state, configCleared: true, selectedModel: null, selectedTierModels: null } : { ...state, configCleared: false };
+      return action.payload
+        ? { ...state, configCleared: true, selectedModel: null, selectedTierModels: null, selectedConfig: null }
+        : { ...state, configCleared: false };
     case 'SET_MODELS':
-      return {
-        ...state,
-        availableCredentials: action.availableCredentials,
-        defaultModel: action.defaultModel,
-        imageSupport: action.imageSupport ?? state.imageSupport,
-      };
+      return pruneSelectionsForModels(
+        {
+          ...state,
+          availableCredentials: action.availableCredentials,
+          availableModels: action.availableModels ?? state.availableModels,
+          defaultModel: action.defaultModel,
+          imageSupport: action.imageSupport ?? state.imageSupport,
+        },
+        action.availableModels
+      );
     case 'UPDATE_CONVERSATION_META':
       // Atomic update for title + id + status (used in fetchConversation)
       return { ...state, ...action.fields };
@@ -491,6 +541,7 @@ function investigationReducer(state, action) {
         ...initialState,
         // Preserve loaded model list + capabilities across resets
         availableCredentials: state.availableCredentials,
+        availableModels: state.availableModels,
         defaultModel: state.defaultModel,
         imageSupport: state.imageSupport,
       };
@@ -512,9 +563,11 @@ export const useLLMInvestigationControl = (accountId) => {
     conversationIdAtDb,
     isLoading,
     availableCredentials,
+    availableModels,
     defaultModel,
     selectedModel,
     selectedTierModels,
+    selectedConfig,
     configCleared,
     imageSupport,
   } = state;
@@ -584,6 +637,16 @@ export const useLLMInvestigationControl = (accountId) => {
           sources: (c.sources || []).map((s) => s.llm_config_source),
           models: (c.models || []).map((m) => ({ model: m.model })),
         }));
+        // models[] is the ungrouped view: one row per configured slot, each
+        // naming its own config. credentials[] folds these together by
+        // destination, which loses the per-config names the picker lists.
+        const availableModels = (res?.data?.models || []).map((m) => ({
+          model: m.model,
+          provider: m.provider,
+          configSource: m.llm_config_source,
+          configName: m.config_name,
+          isFallback: !!m.is_fallback,
+        }));
         const defaultModel = res?.data?.default || null;
         const rawImageSupport = res?.data?.image_support;
         const imageSupport = rawImageSupport
@@ -594,7 +657,7 @@ export const useLLMInvestigationControl = (accountId) => {
               allowedMimeTypes: rawImageSupport.allowed_mime_types || [],
             }
           : undefined;
-        dispatch({ type: 'SET_MODELS', availableCredentials, defaultModel, imageSupport });
+        dispatch({ type: 'SET_MODELS', availableCredentials, availableModels, defaultModel, imageSupport });
       })
       .catch((err) => console.error('Failed to fetch models', err));
 
@@ -661,7 +724,10 @@ export const useLLMInvestigationControl = (accountId) => {
           Object.keys(selectedTierModels).length > 0 && {
             llm_tier_models: serializeTierModels(selectedTierModels),
           }),
-        ...(configCleared && !selectedModel && !selectedTierModels && { llm_config_reset: true }),
+        // A whole-config pin carries no model: the config's own per-task models
+        // decide, and the server rejects a model sent alongside it.
+        ...(!selectedModel && !selectedTierModels && selectedConfig && { llm_config_source: selectedConfig.configSource }),
+        ...(configCleared && !selectedModel && !selectedTierModels && !selectedConfig && { llm_config_reset: true }),
         ...(workflowId && { workflow_id: workflowId }),
         ...(!workflowId && workflowDefinition && { workflow_definition: workflowDefinition }),
         // Default the automation to the cluster/account the user is currently viewing so the
@@ -714,7 +780,7 @@ export const useLLMInvestigationControl = (accountId) => {
         onSuccess(sessionIdToUse);
       }
     },
-    [accountId, conversationIdAtDb, selectedModel, selectedTierModels, configCleared]
+    [accountId, conversationIdAtDb, selectedModel, selectedTierModels, selectedConfig, configCleared]
   );
 
   const handleInvestigationGeneration = useCallback(
@@ -736,6 +802,10 @@ export const useLLMInvestigationControl = (accountId) => {
         requestPayload.config = {
           llm_tier_models: serializeTierModels(selectedTierModels),
         };
+      } else if (selectedConfig) {
+        // No provider/model: the config's own per-task models decide, and the
+        // server rejects a model sent alongside a whole-config pin.
+        requestPayload.config = { llm_config_source: selectedConfig.configSource };
       } else if (configCleared) {
         // Carries the picker's "Clear all" to the server. Sending nothing would
         // leave the conversation's stored config in force.
@@ -774,7 +844,7 @@ export const useLLMInvestigationControl = (accountId) => {
         onSuccess(llmSessionId);
       }
     },
-    [accountId, selectedModel, selectedTierModels, configCleared]
+    [accountId, selectedModel, selectedTierModels, selectedConfig, configCleared]
   );
 
   const startInvestigation = useCallback(
@@ -964,6 +1034,14 @@ export const useLLMInvestigationControl = (accountId) => {
                       ])
                     ),
                   });
+                } else if (isWholeConfigSource(modelConfig.config_source)) {
+                  // A ':all' pin hands the whole config over, so there is no
+                  // model to hydrate — `current` here is whatever that config
+                  // resolved for the last call, not a pick.
+                  dispatch({
+                    type: 'SET_SELECTED_CONFIG',
+                    payload: { configSource: modelConfig.config_source },
+                  });
                 } else if (modelConfig.is_custom && modelConfig.current) {
                   dispatch({
                     type: 'SET_SELECTED_MODEL',
@@ -1112,11 +1190,14 @@ export const useLLMInvestigationControl = (accountId) => {
     resetInvestigationState,
     checkConversationExists,
     availableCredentials,
+    availableModels,
     defaultModel,
     selectedModel,
     setSelectedModel,
     selectedTierModels,
     setSelectedTierModels: (picks) => dispatch({ type: 'SET_SELECTED_TIER_MODELS', payload: picks }),
+    selectedConfig,
+    setSelectedConfig: (cfg) => dispatch({ type: 'SET_SELECTED_CONFIG', payload: cfg }),
     clearModelConfig: () => dispatch({ type: 'SET_CONFIG_CLEARED', payload: true }),
     imageSupport,
   };
