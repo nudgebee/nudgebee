@@ -2434,7 +2434,32 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 			ctx.GetLogger().Warn("Empty response retry failed", "attempt", attempt, "error", safeError(retryErr))
 			rc.lastErr = retryErr
 		}
-		ctx.GetLogger().Error("Empty response persisted after fast retries, giving up", "model", rc.currentModel, "agentId", agentId)
+
+		// Same-model retries exhausted. An empty response on the SAME prompt+model tends
+		// to repeat (the model deterministically emits nothing on that input), so more
+		// same-model retries won't help — but a DIFFERENT model usually produces content.
+		// Escalate to the fallback chain (same mechanism as quota handling, minus the
+		// rate-limit bookkeeping: an empty is a model-behaviour fluke, not a quota event).
+		// This recovers the "intermittent empty → internal error" case (e.g. a simple
+		// follow-up on a large scratchpad) instead of hard-failing. tryFallbackModel
+		// reverts rc state on failure, so a fallback that also empties just moves on.
+		for i, model := range fallbackModels {
+			if rc.triedModels[model] {
+				continue
+			}
+			ctx.GetLogger().Warn("Empty response persisted on primary; escalating to fallback model",
+				"primaryModel", rc.currentModel, "fallbackModel", model, "agentId", agentId)
+			completion, fbErr := tryFallbackModel(rc, model, i)
+			if fbErr == nil {
+				ctx.GetLogger().Info("STRATEGY 3a SUCCESS: fallback model produced content after empty primary",
+					"fallbackModel", model, "agentId", agentId)
+				return completion, buildCallMetadata(rc, true), nil
+			}
+			rc.lastErr = fbErr
+		}
+
+		ctx.GetLogger().Error("Empty response persisted after same-model retries and fallbacks, giving up",
+			"model", rc.currentModel, "agentId", agentId)
 		return nil, buildCallMetadata(rc, false), ErrLlmUnableToGenerate(rc.lastErr)
 
 	} else if isTransientError(rc.lastErr) {
