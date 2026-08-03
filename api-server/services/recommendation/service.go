@@ -16,6 +16,7 @@ import (
 	"nudgebee/services/ml"
 	"nudgebee/services/notification"
 	"nudgebee/services/observability"
+	"nudgebee/services/recommendation/coordinator"
 	"nudgebee/services/scan_orchestrator"
 	"nudgebee/services/security"
 	"strings"
@@ -982,28 +983,12 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		return err
 	}
 
-	// Settle in-progress recommendations against their most recent resolution once
-	// it reaches a terminal state: closed when it succeeded, re-opened for another
-	// attempt when it failed. The pull request webhook and the followup cron retire
-	// a resolution row directly, so the per-resolution loop below — which only
-	// reads InProgress rows — never sees those outcomes. The most recent
-	// resolution decides; an earlier failed attempt must not re-open a
-	// recommendation whose retry has since landed.
-	_, err = dbms.Db.Exec(`
-		UPDATE recommendation r
-		SET status = CASE WHEN latest.status = $1 THEN $2 ELSE $3 END, updated_at = NOW()
-		FROM (
-			SELECT DISTINCT ON (rr.recommendation_id) rr.recommendation_id, rr.status
-			FROM recommendation_resolution rr
-			JOIN recommendation rec ON rec.id = rr.recommendation_id
-			WHERE rec.status = $4
-			ORDER BY rr.recommendation_id, rr.created_at DESC NULLS LAST
-		) latest
-		WHERE r.id = latest.recommendation_id AND r.status = $4 AND latest.status <> $5`,
-		models.RecommendationResolutionStatusSuccess, models.RecommendationStatusClosed, models.RecommendationStatusOpen,
-		models.RecommendationStatusInProgress, models.RecommendationResolutionStatusInProgress)
-	if err != nil {
-		ctx.GetLogger().Error("error updating recommendation status", "error", err)
+	// The pull request webhook and the followup cron retire resolution rows
+	// directly, so the per-resolution loop below — which only reads InProgress
+	// rows — never sees those outcomes. The set-based reconcile that settles
+	// their recommendations lives with the coordinator.
+	if err := coordinator.ReconcileSettledRecommendations(ctx); err != nil {
+		ctx.GetLogger().Error("error reconciling settled recommendations", "error", err)
 	}
 
 	if err := reopenOrphanedInProgressRecommendations(ctx, dbms); err != nil {
@@ -1082,11 +1067,21 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		// if recommendation is closed, then close the resolution
 		if recommendation.Status == models.RecommendationStatusClosed {
 			ctx.GetLogger().Info("Closing resolution as recommendation is already closed", "resolution", resolution.Id)
+			if coordinator.Enabled() {
+				if _, err := coordinator.SettleResolution(ctx, resolution.Id, models.RecommendationResolutionStatusSuccess, "recommendation already closed", coordinator.SourcePoll); err != nil {
+					ctx.GetLogger().Error("error settling resolution for closed recommendation", "error", err)
+					return err
+				}
+				continue
+			}
 			_, err = dbms.Db.Exec("UPDATE recommendation_resolution SET status = $2, updated_at = $3 WHERE id = $1", resolution.Id, models.RecommendationResolutionStatusSuccess, time.Now().UTC().Format(time.RFC3339))
 			if err != nil {
 				ctx.GetLogger().Error("error updating recommendation resolution", "error", err)
 				return err
 			}
+			// Settled — polling the adapter now could only overwrite this Success
+			// (and a Failed poll result would even reopen the Closed recommendation).
+			continue
 		}
 
 		adptr := adapter.GetAdapterFromResolutionProvider(resolution.Type)
@@ -1111,6 +1106,29 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 			status = models.RecommendationResolutionStatus(string(resp.Status))
 			statusMsg = resp.StatusMessage
 		}
+		if status == models.RecommendationResolutionStatusInProgress {
+			// Not a transition — refresh the polled message only. Guarded on the
+			// row still being InProgress so a webhook that settled it between our
+			// read and this write is not overwritten back to InProgress.
+			_, err = dbms.Db.Exec("UPDATE recommendation_resolution SET updated_at = $3, status_message = $4 WHERE id = $1 AND status = $2", resolution.Id, models.RecommendationResolutionStatusInProgress, time.Now().UTC().Format(time.RFC3339), statusMsg)
+			if err != nil {
+				ctx.GetLogger().Error("error updating recommendation resolution", "error", err)
+				return err
+			}
+			continue
+		}
+
+		if coordinator.Enabled() {
+			if status == models.RecommendationResolutionStatusFailed {
+				ctx.GetLogger().Error("resolution failed", "resolution", resolution.Id, "status", statusMsg)
+			}
+			if _, err := coordinator.SettleResolution(ctx, resolution.Id, status, statusMsg, coordinator.SourcePoll); err != nil {
+				ctx.GetLogger().Error("error settling recommendation resolution", "error", err)
+				return err
+			}
+			continue
+		}
+
 		if status == models.RecommendationResolutionStatusFailed {
 			// resetting recommendation to open status if resolution failed
 			ctx.GetLogger().Error("resolution failed", "resolution", resolution.Id, "status", statusMsg)
