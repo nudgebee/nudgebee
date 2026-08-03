@@ -36,9 +36,9 @@ func (a *awsAdapter) ApplyRecommendation(ctx AccountAdapterContext, request Appl
 	}
 
 	// Then overlay user-provided data (allows overrides like custom reason)
-	// But skip custom_alarm_name and custom_threshold as they need special handling
+	// But skip the custom_* alarm overrides as they need special handling
 	for k, v := range request.Data {
-		if k != "custom_alarm_name" && k != "custom_threshold" {
+		if k != "custom_alarm_name" && k != "custom_threshold" && k != "custom_notification_targets" {
 			mergedData[k] = v
 		}
 	}
@@ -52,6 +52,9 @@ func (a *awsAdapter) ApplyRecommendation(ctx AccountAdapterContext, request Appl
 			}
 			if customThreshold, ok := request.Data["custom_threshold"]; ok {
 				alarmConfigMap["threshold"] = customThreshold
+			}
+			if customTargets, ok := request.Data["custom_notification_targets"]; ok {
+				alarmConfigMap["notification_targets"] = customTargets
 			}
 			ctx.GetLogger().Info("Merged custom alarm parameters into alarm_config",
 				"custom_alarm_name", request.Data["custom_alarm_name"],

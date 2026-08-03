@@ -7,8 +7,10 @@ import { Banner } from '@ui/Banner';
 import { Chip } from '@ui/Chip';
 import { Accordion } from '@ui/Accordion';
 import { Divider } from '@ui/Divider';
-import { snackbar } from '@shared/snackbarService';
+import { Select } from '@ui/Select';
+import { toast as snackbar } from '@ui/Toast';
 import apiRecommendations from '@api1/recommendation';
+import apiCloudAccount, { CloudNotificationTarget } from '@api1/cloud-account';
 import { ds } from '@utils/colors';
 import type { Recommendation, Metric } from './types';
 
@@ -19,10 +21,52 @@ interface AlarmCreationModalProps {
   accountId: string;
   onSuccess?: () => void;
   accountAccess?: string;
+  provider?: string;
+  region?: string;
 }
 
-const AlarmCreationModal: React.FC<AlarmCreationModalProps> = ({ open, onClose, recommendation, accountId, onSuccess, accountAccess }) => {
+// Provider-specific wording for the notification-target picker. Providers not
+// listed here (or an unknown provider) hide the picker entirely.
+const TARGET_VOCAB: Record<string, { label: string; singular: string; plural: string; empty: string; system: string }> = {
+  aws: {
+    label: 'SNS Topics',
+    singular: 'SNS topic',
+    plural: 'SNS topics',
+    empty: 'No SNS topics exist in this region',
+    system: 'CloudWatch',
+  },
+  gcp: {
+    label: 'Notification Channels',
+    singular: 'notification channel',
+    plural: 'notification channels',
+    empty: 'No notification channels exist in this project',
+    system: 'Cloud Monitoring',
+  },
+  azure: {
+    label: 'Action Groups',
+    singular: 'action group',
+    plural: 'action groups',
+    empty: 'No enabled action groups exist in this subscription',
+    system: 'Azure Monitor',
+  },
+};
+
+const AlarmCreationModal: React.FC<AlarmCreationModalProps> = ({
+  open,
+  onClose,
+  recommendation,
+  accountId,
+  onSuccess,
+  accountAccess,
+  provider,
+  region,
+}) => {
   const alarmConfig = recommendation?.recommendation?.alarm_config;
+  const normalizedProvider = (provider || '').toLowerCase();
+  const targetVocab = TARGET_VOCAB[normalizedProvider];
+  // The alarm is created in the resource's region; list SNS topics for exactly
+  // that region so a picked topic is always attachable.
+  const alarmRegion = region || recommendation?.recommendation?.region || recommendation?.cloud_resourse?.meta?.region || '';
 
   // Generate user-friendly alarm name
   const generateUserFriendlyAlarmName = () => {
@@ -73,6 +117,10 @@ const AlarmCreationModal: React.FC<AlarmCreationModalProps> = ({ open, onClose, 
   const [error, setError] = useState<string | null>(null);
   const [alarmName, setAlarmName] = useState(generateUserFriendlyAlarmName());
   const [threshold, setThreshold] = useState<number>(alarmConfig?.threshold || 0);
+  const [notificationTargets, setNotificationTargets] = useState<CloudNotificationTarget[]>([]);
+  const [selectedTargets, setSelectedTargets] = useState<string[]>([]);
+  const [targetsLoading, setTargetsLoading] = useState(false);
+  const [targetsError, setTargetsError] = useState<string | null>(null);
 
   const isMetricMathAlarm = alarmConfig?.metrics && alarmConfig.metrics.length > 0;
 
@@ -81,8 +129,34 @@ const AlarmCreationModal: React.FC<AlarmCreationModalProps> = ({ open, onClose, 
     if (alarmConfig) {
       setAlarmName(generateUserFriendlyAlarmName());
       setThreshold(alarmConfig.threshold || 0);
+      setSelectedTargets([]);
     }
   }, [alarmConfig, recommendation]);
+
+  React.useEffect(() => {
+    if (!open || !targetVocab || !accountId || accountId === 'demo') {
+      return undefined;
+    }
+    if (normalizedProvider === 'aws' && !alarmRegion) {
+      setTargetsError("Couldn't determine the alarm's region to list SNS topics");
+      return undefined;
+    }
+    let active = true;
+    setTargetsLoading(true);
+    setTargetsError(null);
+    setNotificationTargets([]);
+    apiCloudAccount.listNotificationTargets(accountId, normalizedProvider === 'aws' ? alarmRegion : undefined).then((result) => {
+      if (!active) {
+        return;
+      }
+      setNotificationTargets(result.targets);
+      setTargetsError(result.error || null);
+      setTargetsLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [open, normalizedProvider, accountId, alarmRegion, targetVocab]);
 
   const handleCreateAlarm = async () => {
     // Validate inputs
@@ -100,11 +174,13 @@ const AlarmCreationModal: React.FC<AlarmCreationModalProps> = ({ open, onClose, 
     setError(null);
 
     try {
-      // Send custom_alarm_name and custom_threshold as separate override fields
+      // Send custom_alarm_name, custom_threshold and custom_notification_targets
+      // as separate override fields
       const response = await apiRecommendations.applyRecommendation(accountId, recommendation.id, {
         reason,
         custom_alarm_name: alarmName,
         custom_threshold: threshold,
+        ...(selectedTargets.length > 0 ? { custom_notification_targets: selectedTargets } : {}),
       });
 
       // Check for GraphQL errors in the response
@@ -164,6 +240,53 @@ const AlarmCreationModal: React.FC<AlarmCreationModalProps> = ({ open, onClose, 
     const statistic = alarmConfig.statistic;
 
     return `Alarm triggers when ${metricName} (${statistic}) ${operator} ${threshold} for ${datapointsToAlarm} out of ${evalPeriods} evaluation periods (${periodMinutes} min each)`;
+  };
+
+  const getNotificationExplanation = () => {
+    if (!targetVocab) {
+      return '';
+    }
+    if (selectedTargets.length > 0) {
+      const noun = selectedTargets.length === 1 ? targetVocab.singular : targetVocab.plural;
+      return `${targetVocab.system} will notify ${selectedTargets.length} ${noun} when it fires.`;
+    }
+    return `No notification channel selected — ${targetVocab.system} won't notify anyone when it fires; NudgeBee still tracks the alarm and records its state changes.`;
+  };
+
+  const renderNotificationTargets = () => {
+    if (!targetVocab) {
+      return null;
+    }
+
+    const targetOptions = notificationTargets.map((target) => ({
+      value: target.id,
+      label: normalizedProvider === 'gcp' && target.type ? `${target.name} (${target.type})` : target.name,
+    }));
+
+    return (
+      <Box sx={{ mb: ds.space[4] }}>
+        <Typography variant='subtitle2' sx={{ fontWeight: ds.weight.semibold, mb: ds.space[2], color: ds.gray[700] }}>
+          Notifications
+        </Typography>
+        <Select
+          multiple
+          id='alarm-notification-targets'
+          label={targetVocab.label}
+          size='sm'
+          value={selectedTargets}
+          onChange={setSelectedTargets}
+          options={targetOptions}
+          loading={targetsLoading}
+          error={targetsError || undefined}
+          placeholder={`Select ${targetVocab.plural}...`}
+          help={
+            !targetsLoading && !targetsError && targetOptions.length === 0
+              ? `${targetVocab.empty} — the alarm will be created without cloud-native notifications.`
+              : `Optional — ${targetVocab.system} will notify the selected ${targetVocab.plural} when the alarm fires.`
+          }
+        />
+      </Box>
+    );
   };
 
   const renderSimpleMetricAlarm = () => {
@@ -482,11 +605,18 @@ const AlarmCreationModal: React.FC<AlarmCreationModalProps> = ({ open, onClose, 
       {/* Threshold Configuration */}
       {renderThresholdConfiguration()}
 
+      {targetVocab && (
+        <>
+          <Divider sx={{ my: ds.space[4] }} />
+          {renderNotificationTargets()}
+        </>
+      )}
+
       <Divider sx={{ my: ds.space[4] }} />
 
       {/* Trigger Explanation */}
       <Box sx={{ mb: ds.space[4] }}>
-        <Banner tone='info' surface='section' message={getTriggerExplanation()} />
+        <Banner tone='info' surface='section' message={[getTriggerExplanation(), getNotificationExplanation()].filter(Boolean).join(' ')} />
       </Box>
 
       {/* Reason */}

@@ -809,6 +809,23 @@ type Mutation {
 }
 
 type Mutation {
+  cloud_list_notification_targets(
+    account_id: String!
+    region: String
+  ): CloudNotificationTargetsResponse
+}
+
+type CloudNotificationTarget {
+  id: String!
+  name: String!
+  type: String!
+}
+
+type CloudNotificationTargetsResponse {
+  targets: [CloudNotificationTarget]
+}
+
+type Mutation {
   accounts_sync(
     account_id: String!
   ): TriggerCloudSyncResponse

@@ -112,6 +112,11 @@ type AlarmCreationConfig struct {
 	Threshold          float64 `json:"threshold"`
 	ComparisonOperator string  `json:"comparison_operator"`
 	TreatMissingData   string  `json:"treat_missing_data"`
+
+	// NotificationTargets are attached to the alarm at creation: SNS topic ARNs
+	// (AWS AlarmActions), notification channel resource names (GCP), or action
+	// group resource IDs (Azure). Optional — an empty list creates a silent alarm.
+	NotificationTargets []string `json:"notification_targets,omitempty"`
 }
 
 // MetricQueryConfig represents a metric query for alarm creation (runtime version with resolved dimensions)

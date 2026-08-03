@@ -16,13 +16,14 @@ import { safeParseJSON } from './utils';
 
 interface ActionBarProps {
   fullRecommendation: any;
+  provider?: string;
   onCreateTicket?: (rec: any) => void;
   onResolve?: (rec: any) => void;
   onCopyCli?: (rec: any) => void;
   onAskNubi?: (rec: any) => void;
 }
 
-const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyCli, onAskNubi }: ActionBarProps) => {
+const ActionBar = ({ fullRecommendation: rec, provider, onCreateTicket, onResolve, onCopyCli, onAskNubi }: ActionBarProps) => {
   const { assistantName } = useTenantBranding();
   const [isAlarmModalOpen, setIsAlarmModalOpen] = useState(false);
 
@@ -164,6 +165,7 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
           onClose={() => setIsAlarmModalOpen(false)}
           recommendation={rec}
           accountId={accountId}
+          provider={provider}
           onSuccess={() => {
             setIsAlarmModalOpen(false);
             toast.success('CloudWatch alarm created successfully');

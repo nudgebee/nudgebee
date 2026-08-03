@@ -621,6 +621,25 @@ type AvailableMetric struct {
 	Dimensions []map[string]string `json:"dimensions,omitempty"`
 }
 
+// NotificationTarget is an existing provider-side notification destination an
+// alarm can be wired to at creation time: an SNS topic (AWS), a notification
+// channel (GCP), or an action group (Azure).
+type NotificationTarget struct {
+	Id   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type ListNotificationTargetsRequest struct {
+	// Region scopes the listing for providers with regional targets (AWS SNS
+	// topics). Ignored by GCP (project-wide) and Azure (subscription-wide).
+	Region string `json:"region"`
+}
+
+type ListNotificationTargetsResponse struct {
+	Targets []NotificationTarget `json:"targets"`
+}
+
 type CloudProvider interface {
 	Name() string
 	QueryServiceMap(ctx CloudProviderContext, account Account, query QueryServiceMapRequest) (QueryServiceMapResponse, error)
@@ -638,6 +657,13 @@ type CloudProvider interface {
 	ListEventRules(ctx CloudProviderContext, account Account) (ListEventRules, error)
 	// QueryDatabasePerformance fetches database performance insights (AWS RDS, GCP Cloud SQL, Azure SQL Database)
 	QueryDatabasePerformance(ctx CloudProviderContext, account Account, request DatabasePerformanceRequest) (DatabasePerformanceResponse, error)
+}
+
+// NotificationTargetLister is an optional capability: providers whose alarms can
+// carry notification targets at creation time (AWS, GCP, Azure) implement it.
+// Kept off CloudProvider so providers without alarm support need no stub.
+type NotificationTargetLister interface {
+	ListNotificationTargets(ctx CloudProviderContext, account Account, request ListNotificationTargetsRequest) (ListNotificationTargetsResponse, error)
 }
 
 // DeploymentDiffProvider is an optional capability implemented only by providers

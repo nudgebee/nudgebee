@@ -441,7 +441,14 @@ const RecommendationDetailPanel = ({
           </Box>
         </Box>
 
-        <ActionBar fullRecommendation={rec} onCreateTicket={onCreateTicket} onResolve={onResolve} onCopyCli={onCopyCli} onAskNubi={onAskNubi} />
+        <ActionBar
+          fullRecommendation={rec}
+          provider={accounts[rec.account_id]?.cloud_provider}
+          onCreateTicket={onCreateTicket}
+          onResolve={onResolve}
+          onCopyCli={onCopyCli}
+          onAskNubi={onAskNubi}
+        />
       </Box>
     </CustomDrawer>
   );

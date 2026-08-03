@@ -2316,6 +2316,20 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin_readonly
       - role: account_admin
+  - name: cloud_list_notification_targets
+    comment: List notification destinations (SNS topics, notification channels, action groups) an alarm can be created with
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/cloud'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 30
+    permissions:
+      - role: tenant_admin
+      - role: k8s_namespace_admin
+      - role: account_admin
   - name: accounts_sync
     definition:
       kind: synchronous

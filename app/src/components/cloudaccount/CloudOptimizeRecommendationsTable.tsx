@@ -161,7 +161,6 @@ const CloudOptimizeRecommendationsTable = (props: {
   const [isTicketCreateFormOpen, setIsTicketCreateFormOpen] = useState(false);
   const [isAlarmCreationModalOpen, setIsAlarmCreationModalOpen] = useState(false);
   const [selectedRecommendation, setSelectedRecommendation] = useState<any>(null);
-  const [applyingRecommendationId, setApplyingRecommendationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingTotal, setLoadingTotal] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -336,27 +335,6 @@ const CloudOptimizeRecommendationsTable = (props: {
     setPage(0);
     setRefreshKey((prev) => prev + 1);
     // The useEffect will automatically reload the data
-  };
-
-  const handleApplyAlarmRecommendation = async (row: any) => {
-    if (!row?.id) return;
-    setApplyingRecommendationId(row.id);
-    try {
-      const response = await apiRecommendations.applyRecommendation(row.account_id ?? selectedAccountId, row.id, {
-        reason: 'Creating CloudWatch alarm from Nudgebee recommendation',
-      });
-      if (response?.errors?.length) {
-        snackbar.error(response.errors[0]?.message || 'Failed to create CloudWatch alarm');
-        return;
-      }
-      snackbar.success('CloudWatch alarm created successfully');
-      handleAlarmCreationSuccess();
-    } catch (err) {
-      const message = (err as any)?.response?.data?.message || (err as Error)?.message || 'Failed to create CloudWatch alarm';
-      snackbar.error(message);
-    } finally {
-      setApplyingRecommendationId(null);
-    }
   };
 
   const handleAskNubi = (e: React.MouseEvent, item: any, recommenedationDetails: any, objectName: string, serviceName: string) => {
@@ -818,7 +796,6 @@ const CloudOptimizeRecommendationsTable = (props: {
                       props.accountAccess !== 'readonly' &&
                       hasWriteAccess(row?.account_id ?? selectedAccountId) &&
                       isActionableStatus;
-                    const isApplying = applyingRecommendationId === row?.id;
                     const resolvedProvider = props.provider || (selectedCluster as any)?.cloud_provider || '';
                     const canExecuteCommand =
                       props.accountAccess !== 'readonly' &&
@@ -828,23 +805,15 @@ const CloudOptimizeRecommendationsTable = (props: {
                     const sideActions = canApplyAlarm
                       ? [
                           {
-                            id: 'apply-alarm',
-                            label: isApplying ? 'Creating...' : 'Create Alarm',
-                            onClick: () => handleApplyAlarmRecommendation(row),
-                            tone: 'primary' as const,
-                            size: 'md' as const,
-                            loading: isApplying,
-                            description: 'Auto-create alarm with the default configuration',
-                          },
-                          {
-                            id: 'edit-alarm-config',
-                            label: 'Edit Configuration',
+                            id: 'create-alarm',
+                            label: 'Create Alarm',
                             onClick: () => {
                               setSelectedRecommendation(row);
                               setIsAlarmCreationModalOpen(true);
                             },
-                            tone: 'secondary' as const,
+                            tone: 'primary' as const,
                             size: 'md' as const,
+                            description: 'Review the configuration and notification channels, then create',
                           },
                         ]
                       : [];
@@ -912,7 +881,13 @@ const CloudOptimizeRecommendationsTable = (props: {
           open={isAlarmCreationModalOpen}
           onClose={closeAlarmCreationModal}
           recommendation={selectedRecommendation}
-          accountId={selectedAccountId}
+          accountId={selectedRecommendation?.account_id ?? selectedAccountId}
+          provider={
+            props.provider ||
+            (accounts as any[])?.find((acc: any) => acc.id === (selectedRecommendation?.account_id ?? selectedAccountId))?.cloud_provider ||
+            (selectedCluster as any)?.cloud_provider ||
+            ''
+          }
           onSuccess={handleAlarmCreationSuccess}
           accountAccess={props.accountAccess}
         />

@@ -78,6 +78,11 @@ func CreateAzureMetricAlert(ctx providers.CloudProviderContext, account provider
 	// Convert severity string to Azure severity int (0=Critical, 1=Error, 2=Warning, 3=Informational, 4=Verbose)
 	azureSeverity := convertSeverityToAzure(severity)
 
+	actions := make([]*armmonitor.MetricAlertAction, 0, len(config.NotificationTargets))
+	for _, actionGroupID := range config.NotificationTargets {
+		actions = append(actions, &armmonitor.MetricAlertAction{ActionGroupID: to.Ptr(actionGroupID)})
+	}
+
 	// Build the metric alert resource
 	alertResource := armmonitor.MetricAlertResource{
 		Location: to.Ptr("global"), // Metric alerts are global resources
@@ -90,7 +95,7 @@ func CreateAzureMetricAlert(ctx providers.CloudProviderContext, account provider
 			WindowSize:          to.Ptr(windowSize),
 			Criteria:            criteria,
 			AutoMitigate:        to.Ptr(true),
-			Actions:             []*armmonitor.MetricAlertAction{}, // User must configure action groups separately
+			Actions:             actions,
 		},
 	}
 

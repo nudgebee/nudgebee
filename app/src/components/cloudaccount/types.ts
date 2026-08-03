@@ -40,10 +40,17 @@ export interface AlarmConfig {
 
 export interface Recommendation {
   id: string;
+  account_id?: string;
   resource_name?: string;
   resource_id?: string;
   recommendation?: {
     alarm_config?: AlarmConfig;
     service_name?: string;
+    region?: string;
+  };
+  cloud_resourse?: {
+    meta?: {
+      region?: string;
+    };
   };
 }

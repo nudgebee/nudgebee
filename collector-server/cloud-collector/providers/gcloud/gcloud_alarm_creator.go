@@ -64,7 +64,7 @@ func CreateGCPAlertPolicy(ctx providers.CloudProviderContext, account providers.
 		Conditions:           conditions,
 		Combiner:             monitoringpb.AlertPolicy_OR,
 		Enabled:              wrapperspb.Bool(true),
-		NotificationChannels: []string{}, // User must configure notification channels separately
+		NotificationChannels: config.NotificationTargets,
 	}
 
 	// Set comparison in the first condition

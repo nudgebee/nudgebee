@@ -11,6 +11,23 @@ query GetDistinctRegions($where: CloudResourceGroupingsWhereRequest) {
 }
 `;
 
+const LIST_NOTIFICATION_TARGETS = `
+mutation CloudListNotificationTargets($account_id: String!, $region: String) {
+  cloud_list_notification_targets(account_id: $account_id, region: $region) {
+    targets {
+      id
+      name
+      type
+    }
+  }
+}`;
+
+export interface CloudNotificationTarget {
+  id: string;
+  name: string;
+  type: string;
+}
+
 export const LIST_CLOUD_RESOURCE = `
 query ListCloudResources ($limit:Int, $offset:Int)  {
     cloud_resourses: cloud_resources_list_v2(where: __WHERE__, limit: $limit, offset: $offset, order_by: [{column: "created_at", order: desc}]) {
@@ -775,6 +792,24 @@ const apiCloudAccount = {
     } catch (error) {
       console.log('failed to fetch tag values-', error);
       return [];
+    }
+  },
+  listNotificationTargets: async function (accountId: string, region?: string): Promise<{ targets: CloudNotificationTarget[]; error?: string }> {
+    if (accountId === 'demo') {
+      return { targets: [] };
+    }
+    try {
+      const response = await queryGraphQL(LIST_NOTIFICATION_TARGETS, 'CloudListNotificationTargets', {
+        account_id: accountId,
+        region: region || undefined,
+      });
+      const errors = response?.data?.errors;
+      if (errors && errors.length > 0) {
+        return { targets: [], error: errors[0]?.message || 'Failed to load notification targets' };
+      }
+      return { targets: response?.data?.data?.cloud_list_notification_targets?.targets || [] };
+    } catch (error) {
+      return { targets: [], error: (error as Error)?.message || 'Failed to load notification targets' };
     }
   },
   getDistinctRegions: async function (accountId: string, serviceName?: string): Promise<{ label: string; value: string }[]> {

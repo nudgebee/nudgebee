@@ -31,6 +31,8 @@ func handleCloudAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 	switch actionPayload.Action.Name {
 	case "cloud_metrics", "cloud_list_metrics":
 		handleCloudMetrics(actionPayload, c, ctx)
+	case "cloud_list_notification_targets":
+		handleCloudListNotificationTargets(actionPayload, c, ctx)
 	case "cloud_resources":
 		handleCloudResources(actionPayload, c, ctx)
 	case "cloud_logs":
@@ -82,6 +84,55 @@ func handleCloudMetrics(actionPayload *ActionRequest, c *gin.Context, ctx *secur
 	}
 
 	resp, err := cloud.QueryMetrics(ctx, request)
+	if err != nil {
+		c.JSON(500, []common.Error{
+			{
+				Message: err.Error(),
+			},
+		})
+		return
+	}
+
+	c.JSON(200, resp)
+}
+
+// handleCloudListNotificationTargets lists the notification destinations (SNS
+// topics, notification channels, action groups) an alarm can be created with.
+func handleCloudListNotificationTargets(actionPayload *ActionRequest, c *gin.Context, ctx *security.RequestContext) {
+	var request cloud.ListNotificationTargetsRequest
+	err := common.UnmarshalMapToStruct(actionPayload.Input, &request)
+	if err != nil {
+		slog.Error("cloud_list_notification_targets: failed to decode request", "error", err)
+		c.JSON(400, []common.Error{
+			{
+				Message: err.Error(),
+			},
+		})
+		return
+	}
+
+	err = common.ValidateStruct(request)
+	if err != nil {
+		c.JSON(400, []common.Error{
+			{
+				Message: err.Error(),
+			},
+		})
+		return
+	}
+
+	// Gate on access to the target account. tenant_admin passes for any
+	// account in the tenant; account_admin only for its assigned accounts.
+	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		c.JSON(403, []common.Error{
+			{
+				Message: "access denied for account: " + request.AccountId,
+			},
+		})
+		return
+	}
+
+	resp, err := cloud.ListNotificationTargets(ctx, request)
 	if err != nil {
 		c.JSON(500, []common.Error{
 			{

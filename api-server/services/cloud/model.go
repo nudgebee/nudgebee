@@ -73,6 +73,26 @@ type MetricListItem struct {
 	Dimensions []map[string]string `json:"dimensions,omitempty"`
 }
 
+type ListNotificationTargetsRequest struct {
+	AccountId string `json:"account_id" validate:"required"`
+	// Region scopes the listing for providers with regional targets (AWS SNS
+	// topics). Ignored by GCP and Azure.
+	Region string `json:"region"`
+}
+
+// NotificationTarget is a provider-side notification destination an alarm can
+// be wired to at creation time: an SNS topic (AWS), a notification channel
+// (GCP), or an action group (Azure).
+type NotificationTarget struct {
+	Id   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type ListNotificationTargetsResponse struct {
+	Targets []NotificationTarget `json:"targets"`
+}
+
 type QueryResourceRequest struct {
 	AccountId   string   `json:"account_id,omitempty"`
 	ServiceName string   `json:"service_name" validate:"required"`
