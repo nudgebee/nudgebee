@@ -130,7 +130,24 @@ type appConfig struct {
 	// Any unrecognized value is treated as "detect" so a typo can never
 	// silently escalate a tenant to fail-closed and break traffic.
 	LlmServerEgressFilterPIIMode string `mapstructure:"llm_server_egressfilter_pii_mode"`
-	MLK8sServerURL               string `mapstructure:"ml_k8s_server_url"`
+	// Detection backend for the PII scrub wrapper:
+	//   - "http"      (default) — batch POST to ml-k8s-server /scrub. Runs
+	//                  Python Tier-1 regex + Tier-2 NER + infra allowlist.
+	//                  Higher recall (catches PERSON/LOCATION), higher
+	//                  latency (~50-200ms round-trip), depends on Python
+	//                  service availability.
+	//   - "inprocess" — Go in-process regex only (EMAIL, PHONE). No HTTP
+	//                  hop, sub-ms per call, no remote dependency. Loses
+	//                  NER coverage (PERSON/LOCATION not detected). Right
+	//                  choice for SRE-heavy workloads where free-text
+	//                  names/places are rare and the HTTP hop is pure
+	//                  overhead. Secrets are always handled in-process by
+	//                  the egressfilter secret rules; this knob only
+	//                  affects PII detection.
+	// Unrecognized values are treated as "http" so a typo can never
+	// silently disable coverage.
+	LlmServerEgressFilterPIIBackend string `mapstructure:"llm_server_egressfilter_pii_backend"`
+	MLK8sServerURL                  string `mapstructure:"ml_k8s_server_url"`
 
 	// LLM specific configs
 	LlmProvider               string `mapstructure:"llm_provider"`
@@ -915,6 +932,10 @@ func init() {
 	viper.SetDefault("llm_server_egressfilter_pii_ner_enabled", false)
 	viper.SetDefault("llm_server_egressfilter_pii_timeout_seconds", 10)
 	viper.SetDefault("llm_server_egressfilter_pii_mode", "detect")
+	// PII scrub backend: "http" preserves current behavior (ml-k8s-server
+	// /scrub, NER included); "inprocess" runs regex-only in Go. See the
+	// LlmServerEgressFilterPIIBackend field doc for the trade-off.
+	viper.SetDefault("llm_server_egressfilter_pii_backend", "http")
 	viper.SetDefault("ml_k8s_server_url", "http://ml-k8s-server:9999")
 	viper.SetDefault("llm_server_db_max_connection", 150)
 	viper.SetDefault("llm_server_db_min_connection", 1)
