@@ -33,7 +33,7 @@ func GetRecommendation(context *security.RequestContext, id string) (models.Reco
 	r := databaseManager.Db.QueryRowx(`SELECT id, created_at, updated_at, tenant_id, cloud_account_id, resource_id,
 			recommendation, recommendation_action, severity, estimated_savings, status, category,
 			rule_name, account_object_id, note, dismissed_reason, is_dismissed, updated_by,
-			finops_score, finops_band, finops_score_breakdown, last_nudged_at, dedupe_group
+			finops_score, finops_band, finops_score_breakdown, last_nudged_at, dedupe_group, snoozed_until
 		FROM recommendation WHERE id = $1`, id)
 	if r.Err() != nil {
 		return models.Recommendation{}, r.Err()
@@ -995,6 +995,10 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 	// deliberately skips Ticket rows because no adapter can poll a ticket.
 	if err := SyncTicketResolutions(ctx); err != nil {
 		ctx.GetLogger().Error("error syncing ticket resolutions", "error", err)
+	}
+
+	if _, err := coordinator.ExpireSnoozes(ctx); err != nil {
+		ctx.GetLogger().Error("error expiring snoozed recommendations", "error", err)
 	}
 
 	if err := reopenOrphanedInProgressRecommendations(ctx, dbms); err != nil {

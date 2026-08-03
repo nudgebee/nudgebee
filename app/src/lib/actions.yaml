@@ -1926,6 +1926,19 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin
       - role: tenant_admin
+  - name: recommendations_update_dismissal
+    comment: Dismiss, snooze, or reactivate a recommendation
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/recommendation'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: account_admin
+      - role: tenant_admin
   - name: recommendation_resolution_retry
     comment: Retry a failed recommendation resolution attempt
     definition:

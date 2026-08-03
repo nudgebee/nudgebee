@@ -5,6 +5,7 @@ import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
 import ConfirmationNumberOutlinedIcon from '@mui/icons-material/ConfirmationNumberOutlined';
 import RocketLaunchOutlinedIcon from '@mui/icons-material/RocketLaunchOutlined';
 import AutoFixHighOutlinedIcon from '@mui/icons-material/AutoFixHighOutlined';
+import DoNotDisturbOnOutlinedIcon from '@mui/icons-material/DoNotDisturbOnOutlined';
 import NotificationsActiveOutlinedIcon from '@mui/icons-material/NotificationsActiveOutlined';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { Button } from '@ui/Button';
@@ -21,9 +22,10 @@ interface ActionBarProps {
   onResolve?: (rec: any) => void;
   onCopyCli?: (rec: any) => void;
   onAskNubi?: (rec: any) => void;
+  onDismiss?: (rec: any) => void;
 }
 
-const ActionBar = ({ fullRecommendation: rec, provider, onCreateTicket, onResolve, onCopyCli, onAskNubi }: ActionBarProps) => {
+const ActionBar = ({ fullRecommendation: rec, provider, onCreateTicket, onResolve, onCopyCli, onAskNubi, onDismiss }: ActionBarProps) => {
   const { assistantName } = useTenantBranding();
   const [isAlarmModalOpen, setIsAlarmModalOpen] = useState(false);
 
@@ -131,6 +133,18 @@ const ActionBar = ({ fullRecommendation: rec, provider, onCreateTicket, onResolv
 
         {/* Secondary actions */}
         <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+          {canWrite && rec.status !== 'Dismissed' && (
+            <Button
+              tone='ghost'
+              composition='icon-only'
+              size='sm'
+              icon={<DoNotDisturbOnOutlinedIcon />}
+              tooltip='Dismiss / Snooze'
+              aria-label='Dismiss or snooze'
+              onClick={() => onDismiss?.(rec)}
+              id='action-bar-dismiss'
+            />
+          )}
           {isReplicaRightSizing && canWrite && (
             <Button
               tone='ghost'

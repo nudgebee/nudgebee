@@ -53,6 +53,7 @@ interface RecommendationDetailPanelProps {
   accounts?: Record<string, { name: string; cloud_provider: string; account_access?: string }>;
   initialTab?: number;
   onCreateTicket?: (rec: any) => void;
+  onDismiss?: (rec: any) => void;
   onResolve?: (rec: any) => void;
   onCopyCli?: (rec: any) => void;
   onAskNubi?: (rec: any) => void;
@@ -175,6 +176,7 @@ const RecommendationDetailPanel = ({
   accounts = {},
   initialTab = 0,
   onCreateTicket,
+  onDismiss,
   onResolve,
   onCopyCli,
   onAskNubi,
@@ -445,6 +447,7 @@ const RecommendationDetailPanel = ({
           fullRecommendation={rec}
           provider={accounts[rec.account_id]?.cloud_provider}
           onCreateTicket={onCreateTicket}
+          onDismiss={onDismiss}
           onResolve={onResolve}
           onCopyCli={onCopyCli}
           onAskNubi={onAskNubi}

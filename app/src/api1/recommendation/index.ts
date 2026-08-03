@@ -191,6 +191,16 @@ mutation CreateTicketResolution($account_id: String!, $recommendation_id: String
 }
 `;
 
+export const ETL_UPDATE_RECOMMENDATION_DISMISSAL = `
+mutation UpdateRecommendationDismissal($account_id: String!, $recommendation_id: String!, $dismissed: Boolean!, $reason: String, $snoozed_until: String) {
+  recommendations_update_dismissal(object: {account_id: $account_id, recommendation_id: $recommendation_id, dismissed: $dismissed, reason: $reason, snoozed_until: $snoozed_until }) {
+    status
+    applied
+    message
+  }
+}
+`;
+
 export const ETL_RETRY_RECOMMENDATION_RESOLUTION = `
 mutation RetryRecommendationResolution($account_id: String!, $resolution_id: String!) {
   recommendation_resolution_retry(object: {account_id: $account_id, resolution_id: $resolution_id }) {
@@ -1451,6 +1461,28 @@ const apiRecommendations = {
     });
     return {
       data: response?.data?.data?.recommendations_create_ticket_resolution,
+      errors: response?.data?.errors,
+    };
+  },
+
+  async updateRecommendationDismissal(
+    accountId: string,
+    recommendationId: string,
+    options: { dismissed: boolean; reason?: string; snoozedUntil?: string }
+  ) {
+    if (accountId === 'demo') {
+      return { data: null, errors: [{ message: 'Dismissing recommendations is not supported for Demo account.' }] };
+    }
+    const response = await queryGraphQL(ETL_UPDATE_RECOMMENDATION_DISMISSAL, 'UpdateRecommendationDismissal', {
+      account_id: accountId,
+      recommendation_id: recommendationId,
+      dismissed: options.dismissed,
+      reason: options.reason || '',
+      snoozed_until: options.snoozedUntil || '',
+    });
+    invalidateOptimisationSummaryRecommendations();
+    return {
+      data: response?.data?.data?.recommendations_update_dismissal,
       errors: response?.data?.errors,
     };
   },

@@ -70,6 +70,33 @@ func TestProjectRecommendation(t *testing.T) {
 	}
 }
 
+func TestLegalDismissal(t *testing.T) {
+	tests := []struct {
+		name      string
+		current   models.RecommendationStatus
+		dismissed bool
+		ok        bool
+	}{
+		{"open can be dismissed", models.RecommendationStatusOpen, true, true},
+		{"in-progress work is never dismissed", models.RecommendationStatusInProgress, true, false},
+		{"closed is never dismissed", models.RecommendationStatusClosed, true, false},
+		{"archived is never dismissed", models.RecommendationStatusArchive, true, false},
+		{"dismissed twice is a no-op", models.RecommendationStatusDismissed, true, false},
+		{"dismissed can be reactivated", models.RecommendationStatusDismissed, false, true},
+		{"open cannot be reactivated", models.RecommendationStatusOpen, false, false},
+		{"closed cannot be reactivated", models.RecommendationStatusClosed, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ok, reason := legalDismissal(tt.current, tt.dismissed)
+			assert.Equal(t, tt.ok, ok)
+			if !tt.ok {
+				assert.NotEmpty(t, reason)
+			}
+		})
+	}
+}
+
 func TestTruncateMessage(t *testing.T) {
 	assert.Equal(t, "short", truncateMessage("short"))
 	long := strings.Repeat("x", 900)

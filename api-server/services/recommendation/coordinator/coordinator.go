@@ -197,3 +197,97 @@ func truncateMessage(s string) string {
 	}
 	return s[:maxLen] + " …(truncated)"
 }
+
+// legalDismissal decides whether a dismissal-state change may apply from the
+// recommendation's current status. Dismiss/snooze only takes an Open
+// recommendation out of circulation — never one being worked (InProgress) or
+// already settled; reactivation only applies to a Dismissed one.
+func legalDismissal(current models.RecommendationStatus, dismissed bool) (bool, string) {
+	if dismissed {
+		if current != models.RecommendationStatusOpen {
+			return false, fmt.Sprintf("cannot dismiss a %s recommendation", current)
+		}
+		return true, ""
+	}
+	if current != models.RecommendationStatusDismissed {
+		return false, fmt.Sprintf("cannot reactivate a %s recommendation", current)
+	}
+	return true, ""
+}
+
+// SetDismissal dismisses (snoozedUntil == nil), snoozes (snoozedUntil set), or
+// reactivates (dismissed == false) a recommendation. A snoozed recommendation
+// is a Dismissed one carrying snoozed_until, so every Open-filtering consumer
+// suppresses it with no query changes; ExpireSnoozes returns it to Open.
+func SetDismissal(ctx *security.RequestContext, recommendationId, accountId string, dismissed bool, reason string, snoozedUntil *time.Time, actor string) (SettleResult, error) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return SettleResult{}, err
+	}
+	tx, err := dbms.Db.BeginTxx(ctx.GetContext(), nil)
+	if err != nil {
+		return SettleResult{}, fmt.Errorf("coordinator: begin dismissal transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rec := models.Recommendation{}
+	if err := tx.GetContext(ctx.GetContext(), &rec, `SELECT * FROM recommendation WHERE id = $1 AND cloud_account_id = $2 FOR UPDATE`, recommendationId, accountId); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SettleResult{Reason: "recommendation not found"}, nil
+		}
+		return SettleResult{}, fmt.Errorf("coordinator: load recommendation %s: %w", recommendationId, err)
+	}
+
+	if ok, reason := legalDismissal(rec.Status, dismissed); !ok {
+		ctx.GetLogger().Info("coordinator: dismissal no-op", "recommendation_id", recommendationId, "dismissed", dismissed, "reason", reason)
+		return SettleResult{Reason: reason, RecommendationStatus: rec.Status}, nil
+	}
+
+	now := time.Now().UTC()
+	target := models.RecommendationStatusOpen
+	if dismissed {
+		target = models.RecommendationStatusDismissed
+	}
+	var reasonPtr *string
+	if dismissed && reason != "" {
+		truncated := truncateMessage(reason)
+		reasonPtr = &truncated
+	}
+	if _, err := tx.ExecContext(ctx.GetContext(), `UPDATE recommendation
+		SET status = $2, is_dismissed = $3, dismissed_reason = $4, snoozed_until = $5, updated_at = $6, updated_by = $7
+		WHERE id = $1`,
+		rec.Id, target, dismissed, reasonPtr, snoozedUntil, now, actor); err != nil {
+		return SettleResult{}, fmt.Errorf("coordinator: set dismissal for %s: %w", rec.Id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return SettleResult{}, fmt.Errorf("coordinator: commit dismissal for %s: %w", rec.Id, err)
+	}
+	ctx.GetLogger().Info("coordinator: dismissal updated",
+		"recommendation_id", rec.Id, "dismissed", dismissed, "snoozed_until", snoozedUntil, "actor", actor)
+	return SettleResult{Applied: true, RecommendationStatus: target}, nil
+}
+
+// ExpireSnoozes returns snoozed recommendations whose snooze has lapsed to
+// Open. Set-based and unconditional (not flag-gated): a snooze created while
+// the coordinator was enabled must still expire if the flag is later turned
+// off.
+func ExpireSnoozes(ctx *security.RequestContext) (int64, error) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return 0, err
+	}
+	// updated_by clears to NULL: no user performed this transition, and the
+	// column is a uuid FK to users, so a system marker string cannot be stored.
+	res, err := dbms.Db.ExecContext(ctx.GetContext(), `UPDATE recommendation
+		SET status = $1, is_dismissed = false, dismissed_reason = NULL, snoozed_until = NULL, updated_at = NOW(), updated_by = NULL
+		WHERE status = $2 AND snoozed_until IS NOT NULL AND snoozed_until <= NOW()`,
+		models.RecommendationStatusOpen, models.RecommendationStatusDismissed)
+	if err != nil {
+		return 0, fmt.Errorf("coordinator: expire snoozes: %w", err)
+	}
+	count, _ := res.RowsAffected()
+	if count > 0 {
+		ctx.GetLogger().Info("coordinator: snoozes expired", "count", count)
+	}
+	return count, nil
+}

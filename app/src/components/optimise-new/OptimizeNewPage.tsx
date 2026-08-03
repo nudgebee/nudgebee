@@ -1,7 +1,7 @@
 import { Box, Typography } from '@mui/material';
 import { useEffect, useState, useCallback, useRef, useMemo, memo } from 'react';
+import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
-import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { useRouter } from 'next/router';
 import { ds } from 'src/utils/colors';
 import { useData } from '@context/DataContext';
@@ -11,10 +11,11 @@ import recommendationApi from '@api1/recommendation';
 import { toast as snackbar } from '@ui/Toast';
 import { SeverityIcon, type SeverityLevel as DsSeverityLevel } from '@ui/SeverityIcon';
 import { Skeleton } from '@ui/Skeleton';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { DropdownMenu } from '@ui/DropdownMenu';
 import ConfirmationNumberOutlinedIcon from '@mui/icons-material/ConfirmationNumberOutlined';
 import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
+import DoNotDisturbOnOutlinedIcon from '@mui/icons-material/DoNotDisturbOnOutlined';
 import CloseIcon from '@mui/icons-material/Close';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import OptimizeIcon from 'src/assets/images/home/optimize-icon-button.svg';
@@ -27,7 +28,8 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import CopyButton from '@shared/buttons/CopyButton';
 import Tooltip, { TooltipBody, OverflowTooltip } from '@ui/Tooltip';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
-import CustomTicketLink from '@shared/CustomTicketLink';
+import DismissModal from './DismissModal';
+import TicketLink from '@shared/links/TicketLink';
 import { hasWriteAccess } from '@lib/auth';
 import { formatMemory } from '@lib/formatter';
 import ResolveModal from './ResolveModal';
@@ -37,9 +39,9 @@ import { ListingLayout } from '@ui/ListingLayout';
 import { Stat } from '@ui/Stat';
 import { CostCallout } from '@ui/CostCallout';
 import { Chip } from '@ui/Chip';
-import CustomSearch from '@shared/CustomSearch';
 import NewToggleButtons from '@components/workflow/NewToggleButtons';
 import { safetyBandTone, safetyBandLabel } from './safetyBand';
+import SearchInput from '@ui/SearchInput';
 import FilterDropdown from '@ui/FilterDropdown';
 import { Button } from '@ui/Button';
 import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
@@ -175,7 +177,7 @@ const parseQueryArray = (param: string | string[] | undefined): string[] => {
   return Array.isArray(param) ? param : [param];
 };
 
-// Map between CustomTable2 header labels and backend sort fields.
+// Map between CustomTable header labels and backend sort fields.
 const HEADER_TO_SORT_FIELD: Record<string, SortField> = {
   Severity: 'severity',
   Category: 'category',
@@ -240,7 +242,7 @@ const SAVINGS_HEADER_TOOLTIP = (
 );
 
 // Column headers for the recommendations table. Sortable columns carry
-// `sortEnabled` so CustomTable2 renders the sort affordance. Safety sits 5th
+// `sortEnabled` so CustomTable renders the sort affordance. Safety sits 5th
 // (after Category) so severity → resource → recommendation read first. Safety is
 // not sortable — safety_band is a text band, so an alphabetical sort isn't a
 // meaningful "safest first" ordering.
@@ -308,11 +310,13 @@ interface RowActionsProps {
   onResolve: (rec: any) => void;
   onCreateTicket: (rec: any) => void;
   onCopyCli: (rec: any) => void;
+  onDismiss: (rec: any) => void;
 }
 
-const RowActions = memo(({ rowId, rec, ticketId, assistantName, onAskNubi, onResolve, onCreateTicket, onCopyCli }: RowActionsProps) => {
+const RowActions = memo(({ rowId, rec, ticketId, assistantName, onAskNubi, onResolve, onCreateTicket, onCopyCli, onDismiss }: RowActionsProps) => {
   const showResolve = rec.rule_name === 'pod_right_sizing' && hasWriteAccess(rec.account_id);
   const showCopyCli = rec.rule_name === 'pod_right_sizing';
+  const canDismiss = hasWriteAccess(rec.account_id);
 
   const menuItems: Array<{ label: string; icon: React.ReactNode; onSelect: () => void; disabled?: boolean; id?: string }> = [
     {
@@ -322,6 +326,16 @@ const RowActions = memo(({ rowId, rec, ticketId, assistantName, onAskNubi, onRes
       onSelect: () => onCreateTicket(rec),
       disabled: !!ticketId,
     },
+    ...(canDismiss
+      ? [
+          {
+            id: `action-dismiss-${rowId}`,
+            label: rec.status === 'Dismissed' ? 'Reactivate' : 'Dismiss / snooze',
+            icon: <DoNotDisturbOnOutlinedIcon sx={{ fontSize: 16 }} />,
+            onSelect: () => onDismiss(rec),
+          },
+        ]
+      : []),
     ...(showCopyCli
       ? [
           {
@@ -453,9 +467,13 @@ const OptimizeNewPage = () => {
   const [ticketModalRec, setTicketModalRec] = useState<any>(null);
   const [resolveModalRec, setResolveModalRec] = useState<any>(null);
   const [cliModalRec, setCliModalRec] = useState<any>(null);
+  const [dismissModalRec, setDismissModalRec] = useState<any>(null);
 
-  // NuBi chat — opens the global drawer preloaded with the row's context.
-  const { openWithContext: openNubiChat } = useNubiGlobalChat();
+  // NuBi sidebar state
+  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
+  const [nubiQuery, setNubiQuery] = useState('');
+  const [nubiAccountId, setNubiAccountId] = useState('');
+  const [nubiConversationId, setNubiConversationId] = useState('');
 
   // Sync filters to URL
   const updateUrl = useCallback((newFilters: FilterState) => {
@@ -991,7 +1009,7 @@ const OptimizeNewPage = () => {
     return description;
   };
 
-  // CustomTable2 sort: map header label → backend sort field.
+  // CustomTable sort: map header label → backend sort field.
   const handleTableSort = useCallback((nextSort: { name: string; order: string }) => {
     const field = HEADER_TO_SORT_FIELD[nextSort.name];
     if (!field) return;
@@ -1000,7 +1018,7 @@ const OptimizeNewPage = () => {
     setPage(0);
   }, []);
 
-  // CustomTable2 pagination: 1-based page; same callback handles page + pageSize.
+  // CustomTable pagination: 1-based page; same callback handles page + pageSize.
   const handlePaginationChange = useCallback(
     (nextPage: number, pageSize: number) => {
       if (pageSize !== rowsPerPage) {
@@ -1013,7 +1031,7 @@ const OptimizeNewPage = () => {
     [rowsPerPage]
   );
 
-  // Current sort in CustomTable2 shape.
+  // Current sort in CustomTable shape.
   const sortBy = useMemo(() => ({ name: SORT_FIELD_TO_HEADER[sortField], order: sortDirection }), [sortField, sortDirection]);
 
   // The "Sort by" dropdown reflects the shared sort state: highlight the preset
@@ -1037,6 +1055,32 @@ const OptimizeNewPage = () => {
   }, [accounts]);
 
   // Reused by both the row action menu and the detail panel.
+  // Dismiss/snooze opens the modal; a Dismissed rec reactivates directly.
+  const handleDismissAction = useCallback((rec: any) => {
+    if (rec.status !== 'Dismissed') {
+      setDismissModalRec(rec);
+      return;
+    }
+    recommendationApi
+      .updateRecommendationDismissal(rec.account_id, rec.id, { dismissed: false })
+      .then((res: any) => {
+        if (res?.errors?.length) {
+          snackbar.error(res.errors[0]?.message || 'Failed to reactivate recommendation');
+          return;
+        }
+        // Fail closed: an empty response means the change cannot be confirmed.
+        if (!res?.data || res.data.applied === false) {
+          snackbar.error(res?.data?.message || 'Failed to reactivate recommendation');
+          return;
+        }
+        snackbar.success('Recommendation reactivated');
+        setRecommendations((prev) => prev.map((r: any) => (r.id === rec.id ? { ...r, status: 'Open', snoozed_until: null } : r)));
+      })
+      .catch(() => {
+        snackbar.error('Failed to reactivate recommendation');
+      });
+  }, []);
+
   const askNubiAboutRec = useCallback(
     (rec: any) => {
       const accountInfo = accountsRef.current[rec.account_id];
@@ -1052,19 +1096,17 @@ const OptimizeNewPage = () => {
         brief: getRecommendationBrief(rec) || undefined,
         alarmConfig: safeParseJSON(rec.recommendation)?.alarm_config || undefined,
       });
-      openNubiChat({
-        accountId: rec.account_id || '',
-        sessionId: `recom_${rec.id}`,
-        query: prompt,
-        categorySource: 'Optimize',
-      });
+      setNubiQuery(prompt);
+      setNubiAccountId(rec.account_id || '');
+      setNubiConversationId(`recom_${rec.id}`);
+      setNubiSidebarVisible(true);
     },
-    [openNubiChat] // reads accounts via accountsRef — stable across account reloads
+    [] // reads accounts via accountsRef — stable across account reloads
   );
 
   const { assistantName } = useTenantBranding();
 
-  // CustomTable2 row data. Each row is an array of `{ component }` cell objects,
+  // CustomTable row data. Each row is an array of `{ component }` cell objects,
   // one per TABLE_HEADERS column, holding the same content the DS Table columns
   // rendered. The first cell carries `drilldownQuery` so `onRowClick` receives
   // the recommendation. Closes over handlers + branding.
@@ -1104,7 +1146,7 @@ const OptimizeNewPage = () => {
                 )}
                 {row.ticketId && (
                   <Box>
-                    <CustomTicketLink ticketURL={row.ticketUrl} ticketID={row.ticketId} />
+                    <TicketLink ticketURL={row.ticketUrl} ticketID={row.ticketId} />
                   </Box>
                 )}
               </Box>
@@ -1196,12 +1238,13 @@ const OptimizeNewPage = () => {
                 onResolve={setResolveModalRec}
                 onCreateTicket={setTicketModalRec}
                 onCopyCli={setCliModalRec}
+                onDismiss={handleDismissAction}
               />
             ),
           },
         ];
       }),
-    [tableRows, assistantName, askNubiAboutRec, setResolveModalRec, setTicketModalRec, setCliModalRec]
+    [tableRows, assistantName, askNubiAboutRec, setResolveModalRec, setTicketModalRec, setCliModalRec, handleDismissAction]
   );
 
   return (
@@ -1293,23 +1336,6 @@ const OptimizeNewPage = () => {
             </WidgetCard>
           );
         })}
-
-        <WidgetCard
-          id='optimize-card-savings'
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            mt: 0,
-            padding: `${ds.space[3]} ${ds.space[4]}`,
-          }}
-        >
-          <Stat
-            size='md'
-            label='Total Savings'
-            info={{ tooltip: 'Total estimated monthly savings if all recommendations are applied' }}
-            value={cardsLoading ? '…' : <CostCallout size='md' tone='high-savings' value={totalSavings} period='/ mo' />}
-          />
-        </WidgetCard>
       </Box>
 
       <ListingLayout id='optimize-recommendations' sx={{ mt: ds.space[4] }}>
@@ -1396,7 +1422,7 @@ const OptimizeNewPage = () => {
             width='300px'
             noShadow
           />
-          <CustomSearch
+          <SearchInput
             id='optimize-search'
             value={searchInput}
             onChange={(next: string) => {
@@ -1596,7 +1622,7 @@ const OptimizeNewPage = () => {
         )}
 
         <ListingLayout.Body>
-          <CustomTable2
+          <CustomTable
             id='optimize-recommendations-table'
             headers={TABLE_HEADERS}
             tableData={tableData}
@@ -1626,6 +1652,7 @@ const OptimizeNewPage = () => {
         accounts={accounts}
         initialTab={detailInitialTab}
         onCreateTicket={(rec) => setTicketModalRec(rec)}
+        onDismiss={handleDismissAction}
         onResolve={(rec) => setResolveModalRec(rec)}
         onCopyCli={(rec) => setCliModalRec(rec)}
         onAskNubi={(rec) => {
@@ -1642,15 +1669,26 @@ const OptimizeNewPage = () => {
             brief: getRecommendationBrief(rec) || undefined,
             alarmConfig: safeParseJSON(rec.recommendation)?.alarm_config || undefined,
           });
+          setNubiQuery(prompt);
+          setNubiAccountId(rec.account_id || '');
+          setNubiConversationId(`recom_${rec.id}`);
           setDetailOpen(false);
-          openNubiChat({
-            accountId: rec.account_id || '',
-            sessionId: `recom_${rec.id}`,
-            query: prompt,
-            categorySource: 'Optimize',
-          });
+          setNubiSidebarVisible(true);
         }}
       />
+
+      {/* Dismiss / snooze modal */}
+      {dismissModalRec && (
+        <DismissModal
+          rec={dismissModalRec}
+          onClose={() => setDismissModalRec(null)}
+          onSuccess={(recId: string) => {
+            setDismissModalRec(null);
+            setDetailOpen(false);
+            setRecommendations((prev) => prev.filter((r: any) => r.id !== recId));
+          }}
+        />
+      )}
 
       {/* Direct Create Ticket modal */}
       {ticketModalRec && (
@@ -1709,6 +1747,20 @@ const OptimizeNewPage = () => {
 
       {/* CLI Command modal */}
       {cliModalRec && <CliCommandModal rec={cliModalRec} onClose={() => setCliModalRec(null)} />}
+
+      {/* NuBi AI sidebar */}
+      <NubiChatSidebar
+        isVisible={nubiSidebarVisible}
+        onClose={() => setNubiSidebarVisible(false)}
+        accountId={nubiAccountId}
+        query={nubiQuery}
+        context={{ type: 'general', data: { conversationId: nubiConversationId } }}
+        apiMode='investigate'
+        categorySource='Optimize'
+        position='right'
+        mode='overlay'
+        width='720px'
+      />
     </Box>
   );
 };

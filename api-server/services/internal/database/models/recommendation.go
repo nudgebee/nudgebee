@@ -26,6 +26,10 @@ type Recommendation struct {
 	FinOpsScoreBreakdown Json                 `json:"finops_score_breakdown" mapstructure:"finops_score_breakdown"  db:"finops_score_breakdown"`
 	LastNudgedAt         *time.Time           `json:"last_nudged_at" mapstructure:"last_nudged_at"  db:"last_nudged_at"`
 	DedupeGroup          *string              `json:"dedupe_group" mapstructure:"dedupe_group"  db:"dedupe_group"`
+	// SnoozedUntil set together with status Dismissed means "snoozed": every
+	// Open-filtering consumer suppresses the row, and the expiry sweep returns
+	// it to Open once the timestamp passes. NULL on a plain dismissal.
+	SnoozedUntil *time.Time `json:"snoozed_until" mapstructure:"snoozed_until"  db:"snoozed_until"`
 }
 
 type RecommendationStatus string
