@@ -1,0 +1,334 @@
+name: QA Automation End-to-End Tests
+
+on:
+  push:
+    branches:
+      - test
+    paths:
+      - "app-e2e-tests/tests/**"   # only spec/locator changes inside tests/ trigger CI
+
+  pull_request:
+    branches:
+      - test
+    paths:
+      - "app-e2e-tests/tests/**"   # package.json / config / other infra changes are ignored
+
+  schedule:
+    - cron: "30 3 * * 1-5"   # 9:00 AM IST (UTC+5:30), Monday–Friday
+
+  workflow_dispatch:
+    inputs:
+      test_file:
+        description: "Specific test file(s) to run — comma-separated (e.g. tests/nubi/askNudgebee.spec.ts)"
+        required: false
+        default: ""
+        type: string
+      test_name:
+        description: "Test case name to run (e.g. 'Magic link Sent Successfully', 'Add multiple users from list', 'Create Custom Agent')"
+        required: false
+        default: ""
+        type: string
+      run_all:
+        description: "Run complete test suite (overrides test_file and test_name)"
+        required: false
+        default: false
+        type: boolean
+      cluster_name:
+        description: "Cluster Name (e.g. iteration-test)"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  test:
+    name: E2E Tests
+    runs-on: [self-hosted, X64]
+    timeout-minutes: 240
+
+    permissions:
+      contents: read
+
+    # The self-hosted runner has Datadog APM SSI (single-step instrumentation)
+    # injecting dd-trace into every node process via /opt/datadog/apm/library/js.
+    # dd-trace's require-in-the-middle hook collides with Playwright's TS
+    # loader worker — the worker silently dies, parent exits 0 with no output
+    # and no test report. Disable Datadog auto-instrumentation for this job.
+    env:
+      DD_TRACE_ENABLED: "false"
+      DD_INSTRUMENTATION_TELEMETRY_ENABLED: "false"
+      DD_INJECTION_ENABLED: "false"
+      NODE_OPTIONS: ""
+
+    defaults:
+      run:
+        working-directory: ./app-e2e-tests
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'test' }}
+
+      - name: Install jq
+        working-directory: .
+        run: |
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y jq
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: app-e2e-tests/package-lock.json
+
+      - name: Create .env and Extract Webhook
+        shell: bash
+        run: |
+          printf '%s\n' "${{ secrets.E2E_TEST_ENV }}" > .env
+
+          # Fail early if the secret was empty (prevents misleading test errors later)
+          if [ ! -s .env ]; then
+            echo "::error::E2E_TEST_ENV secret is empty — set it in repo Settings → Secrets"
+            exit 1
+          fi
+
+          echo "✓ .env created ($(grep -c '.' .env) lines)"
+
+          # Export every KEY=VALUE line from .env to the GitHub Actions environment so
+          # Playwright workers inherit them without needing dotenv in playwright.config.ts.
+          # (dotenv imports in playwright.config.ts break on Node 22 native TS stripping.)
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            # Skip blank lines and comments
+            [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+            key="${line%%=*}"
+            value="${line#*=}"
+            # Only export valid shell identifier names
+            [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+            echo "::add-mask::$value"
+            echo "${key}=${value}" >> $GITHUB_ENV
+          done < .env
+
+          echo "✓ All .env vars exported to GitHub Actions environment"
+
+      - name: Load Configuration (Manual Input or .env Defaults)
+        shell: bash
+        run: |
+          ENV_CLUSTER=$(grep -m1 '^CLUSTER=' .env | cut -d '=' -f2- || echo "")
+
+          FINAL_CLUSTER="${{ inputs.cluster_name }}"
+
+          if [ -z "$FINAL_CLUSTER" ]; then
+            FINAL_CLUSTER="$ENV_CLUSTER"
+          fi
+
+          # CLUSTER is required — SWITCH_TENANT is auto-detected by LoginPage.ts
+          if [ -z "$FINAL_CLUSTER" ]; then
+            if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+              echo "ERROR: Missing CLUSTER. Provide cluster_name input or ensure E2E_TEST_ENV secret contains CLUSTER."
+              exit 1
+            else
+              echo "WARNING: CLUSTER not set — tests may fail."
+            fi
+          fi
+
+          echo "CLUSTER=$FINAL_CLUSTER" >> $GITHUB_ENV
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+
+      - name: Validate Environment Variables
+        shell: bash
+        run: |
+          echo "=== Checking required env vars from .env ==="
+          REQUIRED_VARS="BASE_URL LDAP_USERNAME LDAP_PASSWORD CLUSTER"
+          MISSING=""
+          for var in $REQUIRED_VARS; do
+            if grep -q "^${var}=" .env; then
+              echo "  ✓ $var is set"
+            else
+              echo "  ✗ $var is MISSING"
+              MISSING="$MISSING $var"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing required vars in E2E_TEST_ENV secret:$MISSING"
+            exit 1
+          fi
+          echo "All required env vars present."
+
+      - name: Verify Playwright Setup
+        shell: bash
+        run: |
+          echo "=== Runtime versions ==="
+          node --version
+          npm --version
+          echo ""
+          echo "=== Playwright binary ==="
+          ls -la node_modules/.bin/playwright 2>/dev/null \
+            && echo "Binary: found" \
+            || { echo "::error::playwright binary missing from node_modules/.bin/ — npm ci may have failed silently"; exit 1; }
+          echo ""
+          echo "=== Playwright CLI version ==="
+          node node_modules/.bin/playwright --version \
+            || { echo "::error::playwright --version failed — binary is broken or Node.js version mismatch"; exit 1; }
+          echo ""
+          echo "=== Test discovery (first 20 lines) ==="
+          node node_modules/.bin/playwright test --list 2>&1 | head -20 \
+            || echo "WARNING: playwright test --list failed (config or reporter issue — see above)"
+
+      - name: Detect Changed Test Files
+        id: detect-tests
+        shell: bash
+        run: |
+
+          echo "Detecting changed test files..."
+
+          # push to test or schedule/dispatch: SHAs are from test branch history — safe to diff.
+          if [ "${{ github.event_name }}" == "push" ]; then
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.sha }}"
+            # Guard against initial push or force-push (null SHA)
+            if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+              echo "Initial or force push — running full test suite."
+              echo "TEST_FILES=" >> $GITHUB_ENV
+              exit 0
+            fi
+          else
+            BASE=$(git rev-parse HEAD~1 || true)
+            HEAD=$(git rev-parse HEAD || true)
+          fi
+
+          echo "BASE: $BASE"
+          echo "HEAD: $HEAD"
+
+          # Exclude deleted files (--diff-filter=d) so Playwright doesn't try to run non-existent specs
+          CHANGED_FILES=$(git diff --name-only --diff-filter=d "$BASE" "$HEAD" | grep '^app-e2e-tests/.*\.spec\.ts$' || true)
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "TEST_FILES=" >> $GITHUB_ENV
+          else
+            TEST_FILES=$(echo "$CHANGED_FILES" | sed 's|app-e2e-tests/||' | tr '\n' ' ')
+            echo "TEST_FILES=$TEST_FILES" >> $GITHUB_ENV
+          fi
+
+      - name: Run Playwright Tests
+        id: tests
+        shell: bash
+        env:
+          INPUT_TEST_FILE: ${{ inputs.test_file }}
+          INPUT_TEST_NAME: ${{ inputs.test_name }}
+          INPUT_RUN_ALL: ${{ inputs.run_all }}
+        run: |
+          # Clean stale reports from previous runs on the self-hosted runner
+          rm -rf playwright-report
+          mkdir -p playwright-report
+
+          echo "Starting Playwright execution..."
+
+          # Disable exit-on-error so we can inspect exit code and verify report after the run
+          set +e
+
+          SKIP_RUN=false
+
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+
+            if [ "$INPUT_RUN_ALL" == "true" ]; then
+              echo "Running complete test suite (run_all=true)"
+              node node_modules/.bin/playwright test
+
+            elif [ -n "$INPUT_TEST_FILE" ]; then
+              echo "Running specific test file(s): $INPUT_TEST_FILE"
+              FILES=$(echo "$INPUT_TEST_FILE" | tr ',' ' ')
+              node node_modules/.bin/playwright test $FILES
+
+            elif [ -n "$INPUT_TEST_NAME" ]; then
+              echo "Running tests matching name: $INPUT_TEST_NAME"
+              node node_modules/.bin/playwright test --grep "$INPUT_TEST_NAME"
+
+            else
+              echo "No specific target provided — running full test suite"
+              node node_modules/.bin/playwright test
+            fi
+
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "Scheduled run — executing full test suite"
+            node node_modules/.bin/playwright test
+
+          elif [ -n "$TEST_FILES" ]; then
+            echo "Running only changed spec files: $TEST_FILES"
+            node node_modules/.bin/playwright test $TEST_FILES
+
+          else
+            # push/PR where only non-spec files changed inside tests/ (e.g. locator helpers)
+            echo "No .spec.ts files changed — skipping test execution."
+            echo "To run tests manually, trigger this workflow via workflow_dispatch."
+            SKIP_RUN=true
+          fi
+
+          PW_EXIT=$?
+          set -e
+
+          if [ "$SKIP_RUN" == "true" ]; then
+            echo '{"suites":[],"stats":{"expected":0,"skipped":0,"unexpected":0,"flaky":0}}' > playwright-report/results.json
+            exit 0
+          fi
+
+          # Guard: detect silent exit — Playwright exited without generating any report.
+          # This happens when the process crashes during startup (browser init failure,
+          # binary/Node.js mismatch, broken config) and returns exit code 0.
+          if [ ! -f "playwright-report/results.json" ]; then
+            echo "::error::Playwright exited (code: $PW_EXIT) without generating a test report."
+            echo "::error::Zero tests were executed — check 'Verify Playwright Setup' output above for the root cause."
+            exit 1
+          fi
+
+          exit $PW_EXIT
+
+      - name: Upload Playwright Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: app-e2e-tests/playwright-report/
+          retention-days: 5
+
+      # The full report is ~500 MB (traces + screenshots), far too large for an
+      # automation to download just to read the counts. SlackReporter already
+      # writes slack-summary.json (total/passed/failed/skipped + failed test
+      # names); publishing it on its own makes the pass/fail numbers readable
+      # via the artifacts API in a few KB. Consumed by the weekly release
+      # readiness workflow in nudgebee-infra.
+      - name: Upload E2E Summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-summary
+          path: app-e2e-tests/playwright-report/slack-summary.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Cleanup Secrets
+        if: always()
+        run: rm -f .env
+
+      - name: Notify Infrastructure Failure
+        uses: ravsamhq/notify-slack-action@v2
+        if: failure() && steps.tests.outcome != 'failure'
+        continue-on-error: true
+        with:
+          status: ${{ job.status }}
+          notification_title: "🚨 Setup/Infrastructure Failed"
+          message_format: "Tests did not run due to setup failure. <{workflow_url}|Check Logs>"
+          footer: "Linked Repo <{repo_url}|{repo}>"
+          notify_when: "failure"
+          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
