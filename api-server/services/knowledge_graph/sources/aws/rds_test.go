@@ -140,3 +140,47 @@ func TestAWSRDSTopologyEdges(t *testing.T) {
 		t.Error("missing replica -ASSOCIATED_WITH(read_replica)-> primary edge")
 	}
 }
+
+// TestExtractDatabaseMetadata_PrivateIP checks that the endpoint address the
+// collector resolved reaches the node as private_ip_address. VPC Flow Logs
+// identify endpoints by address, so a database without this property is absent
+// from the flow-log IP index and its traffic edges attach to the RDS network
+// interface carrying the same address instead of to the database itself.
+func TestExtractDatabaseMetadata_PrivateIP(t *testing.T) {
+	s := &AWSSource{}
+
+	t.Run("resolved address is carried onto the node", func(t *testing.T) {
+		properties := map[string]interface{}{}
+		s.extractDatabaseMetadata(properties, map[string]interface{}{
+			"PrivateIpAddress": "172.31.4.191",
+			"Endpoint": map[string]interface{}{
+				"Address": "main.ca5yt51qtp3r.us-east-1.rds.amazonaws.com",
+				"Port":    float64(5432),
+			},
+		})
+
+		if got := properties["private_ip_address"]; got != "172.31.4.191" {
+			t.Errorf("private_ip_address = %v, want 172.31.4.191", got)
+		}
+		// The hostname must survive alongside it; the address does not replace it.
+		if got := properties["endpoint_address"]; got != "main.ca5yt51qtp3r.us-east-1.rds.amazonaws.com" {
+			t.Errorf("endpoint_address = %v, want the endpoint hostname", got)
+		}
+	})
+
+	// Resolution is best-effort in the collector, so the field is simply absent
+	// when it failed. That must not surface as an empty string, which would
+	// otherwise be indexed as a bogus address.
+	for name, meta := range map[string]map[string]interface{}{
+		"absent": {"Endpoint": map[string]interface{}{"Address": "db.example.com"}},
+		"empty":  {"PrivateIpAddress": ""},
+	} {
+		t.Run("unresolved is omitted: "+name, func(t *testing.T) {
+			properties := map[string]interface{}{}
+			s.extractDatabaseMetadata(properties, meta)
+			if _, ok := properties["private_ip_address"]; ok {
+				t.Errorf("private_ip_address was set to %v, want it left unset", properties["private_ip_address"])
+			}
+		})
+	}
+}

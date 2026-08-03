@@ -222,3 +222,39 @@ func TestBuildEdgesFromConns(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildPrivateIPIndex_PrefersDatabaseOverRDSENI covers the RDS shape
+// specifically: an RDS instance and the network interface it is attached to
+// share one address, and flow logs only ever report that address. The database
+// has to win, or every "talks to this database" edge terminates on an interface
+// named RDSNetworkInterface and blast radius stops one hop short of the resource
+// an RDS alarm is about.
+func TestBuildPrivateIPIndex_PrefersDatabaseOverRDSENI(t *testing.T) {
+	eni := mkNode("eni-rds", core.NodeTypeNetworkInterface, "RDSNetworkInterface")
+	eni.Properties["private_ips"] = []string{"172.31.4.191"}
+	db := mkNode("db-main", core.NodeTypeDatabase, "main")
+	db.Properties["private_ip_address"] = "172.31.4.191"
+	db.Properties["endpoint_address"] = "main.ca5yt51qtp3r.us-east-1.rds.amazonaws.com"
+
+	// ENI first, mirroring collection order, so rank rather than ordering decides.
+	idx := buildPrivateIPIndex([]*core.DbNode{eni, db}, nil)
+	if got := idx["172.31.4.191"]; got == nil || got.ID != "db-main" {
+		t.Errorf("172.31.4.191 resolved to %v, want the Database db-main", got)
+	}
+}
+
+// Without the resolved address the database cannot be indexed at all, so the
+// interface is the only candidate. This is the behaviour the collector-side
+// resolution exists to prevent; it is pinned here so the fix cannot regress
+// silently to "an ENI is good enough".
+func TestBuildPrivateIPIndex_DatabaseWithoutIPFallsBackToENI(t *testing.T) {
+	eni := mkNode("eni-rds", core.NodeTypeNetworkInterface, "RDSNetworkInterface")
+	eni.Properties["private_ips"] = []string{"172.31.4.191"}
+	db := mkNode("db-main", core.NodeTypeDatabase, "main")
+	db.Properties["endpoint_address"] = "main.ca5yt51qtp3r.us-east-1.rds.amazonaws.com"
+
+	idx := buildPrivateIPIndex([]*core.DbNode{eni, db}, nil)
+	if got := idx["172.31.4.191"]; got == nil || got.ID != "eni-rds" {
+		t.Errorf("172.31.4.191 resolved to %v, want the ENI when the database has no address", got)
+	}
+}

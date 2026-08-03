@@ -743,6 +743,11 @@ func MapIPToAWSResource(
 	}, nil
 }
 
+// rdsEndpointResolveTimeout caps a single endpoint lookup. RDS endpoints are
+// served from public DNS and normally answer in milliseconds, so this only ever
+// trims the pathological case where the resolver is unreachable.
+const rdsEndpointResolveTimeout = 2 * time.Second
+
 // ResolveRDSEndpointToIP resolves an RDS endpoint hostname to an IP address
 // Uses DNS resolution to convert RDS endpoint to actual IP
 func ResolveRDSEndpointToIP(
@@ -751,8 +756,23 @@ func ResolveRDSEndpointToIP(
 ) (string, error) {
 	ctx.GetLogger().Debug("resolving RDS endpoint to IP", "hostname", hostname)
 
-	// Perform DNS lookup
-	ips, err := net.LookupIP(hostname)
+	// Bound the lookup. net.LookupIP takes no context and cannot be cancelled,
+	// so a slow or unreachable resolver blocks the caller indefinitely. That
+	// matters because callers resolve one endpoint per RDS instance in sequence,
+	// so on a large fleet an unresponsive resolver would otherwise stall a whole
+	// collection run rather than costing one field. Under Kubernetes the default
+	// ndots and search-domain expansion make a failing lookup especially slow.
+	//
+	// The deadline hangs off the caller's context, so an aborted run stops
+	// resolving immediately instead of running to the timeout.
+	lookupCtx, cancel := context.WithTimeout(ctx.GetContext(), rdsEndpointResolveTimeout)
+	defer cancel()
+
+	addrs, err := net.DefaultResolver.LookupIPAddr(lookupCtx, hostname)
+	ips := make([]net.IP, 0, len(addrs))
+	for _, a := range addrs {
+		ips = append(ips, a.IP)
+	}
 	if err != nil {
 		ctx.GetLogger().Warn("failed to resolve RDS endpoint",
 			"hostname", hostname,
