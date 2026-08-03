@@ -1857,8 +1857,18 @@ func (s *Service) markInactiveNodes(
 	}
 
 	if len(accountIDs) > 0 {
-		query += fmt.Sprintf(" AND cloud_account_id = ANY($%d::uuid[])", len(args)+1)
-		args = append(args, pq.Array(accountIDs))
+		// cloud_account_id scoping only applies to per-cloud-account sources
+		// (aws/gcp/azure/k8s). Tenant/integration sources stamp cloud_account_id to
+		// the tenant ID or integration ID — never a member of accountIDs — so without
+		// this exception their stale rows could never be tombstoned (#35519).
+		tenantScopedSources := []string{"identity", "ownership", "github", "gitlab", "pagerduty"}
+		accountIdx := len(args) + 1
+		tenantSourceIdx := len(args) + 2
+		query += fmt.Sprintf(` AND (
+			cloud_account_id = ANY($%d::uuid[])
+			OR (properties->>'source') = ANY($%d::text[])
+		)`, accountIdx, tenantSourceIdx)
+		args = append(args, pq.Array(accountIDs), pq.Array(tenantScopedSources))
 	}
 
 	s.logger.Info("marking inactive nodes",
