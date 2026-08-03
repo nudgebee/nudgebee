@@ -325,11 +325,11 @@ const api = {
     );
     return response;
   },
-  async askAiGenerateLokiQuery(data: GenerateQueryRequest) {
+  async askAiGenerateLogQuery(data: GenerateQueryRequest) {
     if (data.account_id === 'demo') return null;
-    const ASK_AI_GENERATE_LOKI_QUERY = `
-        mutation AskAiGenerateLokiQuery {
-          ai_generate_loki_query(request: __REQUEST__) {
+    const ASK_AI_GENERATE_LOG_QUERY = `
+        mutation AskAiGenerateLogQuery {
+          ai_generate_log_query(request: __REQUEST__) {
             data {
               agent_step_response
               response
@@ -345,7 +345,10 @@ const api = {
     query.account_id = data.account_id;
     query.query = data.query;
     query.async = true;
-    const response = await queryGraphQL(ASK_AI_GENERATE_LOKI_QUERY.replace('__REQUEST__', gqlStringify(query)), 'AskAiGenerateLokiQuery', {});
+    if (data.log_provider) {
+      query.log_provider = data.log_provider;
+    }
+    const response = await queryGraphQL(ASK_AI_GENERATE_LOG_QUERY.replace('__REQUEST__', gqlStringify(query)), 'AskAiGenerateLogQuery', {});
     return response;
   },
   async createAiFeedback(data: AiFeedbackCreateRequest) {
@@ -709,29 +712,6 @@ const api = {
       });
     }
 
-    return response;
-  },
-  async askNudgebeeAiGenerateESDsl(data: GenerateQueryRequest) {
-    if (data.account_id === 'demo') return null;
-    const ASK_AI_GENERATE_ES_DSL = `
-        mutation AskNudgebeeAiGenerateESDsl {
-          ai_generate_es_dsl_query(request: __REQUEST__) {
-            data {
-              agent_step_response
-              response
-              query
-              chain_name
-              conversation_id
-              session_id
-            }
-          }
-        }
-        `;
-    const query: any = {};
-    query.account_id = data.account_id;
-    query.query = data.query;
-    query.async = true;
-    const response = await queryGraphQL(ASK_AI_GENERATE_ES_DSL.replace('__REQUEST__', gqlStringify(query)), 'AskNudgebeeAiGenerateESDsl', {});
     return response;
   },
   async getFeedbackForSessionId(data: FeedbackForSessionRequest) {

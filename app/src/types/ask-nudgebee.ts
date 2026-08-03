@@ -90,6 +90,10 @@ export interface ConversationV3ToolCall {
 export interface GenerateQueryRequest {
   account_id: string;
   query: string;
+  // Optional log-provider override (e.g. "loki") for ai_generate_log_query — the
+  // user's "Log Provider:" dropdown selection, when it differs from the
+  // account's default. Ignored by the other AI query-generation actions.
+  log_provider?: string;
 }
 
 export interface InvestigateRequest {

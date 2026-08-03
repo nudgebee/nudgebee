@@ -48,8 +48,7 @@ type ConversationSource string
 const (
 	ConversationSourceUserInvestigation    ConversationSource = "UserInvestigation"
 	ConversationSourcePrometheusQuery      ConversationSource = "PrometheusQuery"
-	ConversationSourceLokiQuery            ConversationSource = "LokiQuery"
-	ConversationSourceESQuery              ConversationSource = "ESQuery"
+	ConversationSourceLogQuery             ConversationSource = "LogQuery"
 	ConversationSourceInvestigation        ConversationSource = "Investigation"
 	ConversationSourceInstantNotification  ConversationSource = "InstantNotification"
 	ConversationSourceWorkflowBuilder      ConversationSource = "WorkflowBuilder"

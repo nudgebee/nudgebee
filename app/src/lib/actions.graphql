@@ -196,15 +196,9 @@ type Mutation {
 }
 
 type Mutation {
-  ai_generate_es_dsl_query(
-    request: AIGetESDslQueryRequest!
-  ): AIGetESDslQueryResponse
-}
-
-type Mutation {
-  ai_generate_loki_query(
-    request: AIGetLokiQueryRequest!
-  ): AIGetLokiQueryResponse
+  ai_generate_log_query(
+    request: AIGetLogQueryRequest!
+  ): AIGetLogQueryResponse
 }
 
 type Mutation {
@@ -3999,11 +3993,12 @@ input AIGetPrometheusQueryRequest {
   async: Boolean
 }
 
-input AIGetLokiQueryRequest {
+input AIGetLogQueryRequest {
   account_id: String!
   query: String!
   user_id: String
   async: Boolean
+  log_provider: String
 }
 
 input AiFeedbackCreateRequest {
@@ -4026,13 +4021,6 @@ input GetInvestigateQueryRequest {
   session_id: String
   async: Boolean!
   config: AIConfigInput
-}
-
-input AIGetESDslQueryRequest {
-  account_id: String!
-  query: String!
-  user_id: String
-  async: Boolean
 }
 
 input auto_pilot_policy_delete_input {
@@ -7453,7 +7441,7 @@ type AIGetPrometheusQuery {
   session_id: String
 }
 
-type AIGetLokiQueryResponse {
+type AIGetLogQueryResponse {
   data: AIGetPrometheusQuery!
 }
 
@@ -7463,10 +7451,6 @@ type GenerateFeedbackResponse {
 
 type FeedbackResponse {
   success: Boolean!
-}
-
-type AIGetESDslQueryResponse {
-  data: AIGetPrometheusQuery!
 }
 
 type auto_pilot_policy_delete_output {

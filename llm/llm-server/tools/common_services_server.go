@@ -177,17 +177,16 @@ func executeFetchLogs(ctx core.NbToolContext, logProvider services_server.Observ
 // provider-native Query); both share parseFetchLogConfigs. Used by the canonical
 // fetch_logs v2 tool (logs_execute_v2).
 //
-// LogProvider/LogProviderSource are intentionally NOT populated here. Unlike the
-// legacy path (which must name the provider it pre-built a native query for), the
-// canonical path forwards an empty Query + structured Where and lets services-server
-// resolve the account's provider+source itself — it already owns that per-account
-// mapping (getLogsMetricsTracesProviderWithIntegration), and a well-formed account
-// has exactly one default log provider (enforced on write), so the resolution is
-// deterministic and matches what the agent saw when building the prompt. Deferring
-// also sidesteps the integration_source echo (services-server resolves the real
-// source rather than us forwarding a stale one). The agent still resolves the
-// provider locally for the LLM prompt's label mappings/operators — that is
-// unaffected; this only drops the redundant routing fields from the wire request.
+// LogProvider/LogProviderSource ARE forwarded from the caller's already-resolved
+// logProvider (mirroring the legacy path) — services-server falls back to its own
+// account-default lookup when they're empty, so this is a no-op for the common
+// case FetchLogsAgentV2 relies on (a well-formed account with exactly one default
+// log provider: services-server would resolve the same provider either way). It
+// stops being a no-op for a per-request provider override (e.g.
+// ai_generate_log_query honoring the user's "Log Provider:" dropdown selection on
+// an account with multiple integrations) — without forwarding these fields,
+// services-server would silently re-resolve its own account default and ignore
+// the override the agent already used to build the prompt.
 func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_server.ObservabilityProvider, where core.QueryWhereClause, configs map[string]any) (core.ObservabilityLogResponse, error) {
 	p, err := parseFetchLogConfigs(configs)
 	if err != nil {
@@ -200,11 +199,6 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		p.limit = newLimit
 	}
 
-	idx := p.index
-	if idx == "" {
-		idx = logProvider.DefaultIndex
-	}
-
 	logRequest := services_server.LogQueryRequest{
 		Query:             "",
 		Limit:             p.limit,
@@ -215,7 +209,7 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		LogProviderSource: logProvider.IntegrationSource,
 		Offset:            p.offset,
 		Request:           p.request,
-		Index:             idx,
+		Index:             p.index,
 		QueryRequest:      &services_server.LogsQueryBuilderRequest{Where: where},
 		// Opt into label-name validation: on an empty/failed result the agent gets
 		// an actionable error naming the mistyped label instead of a silent empty
@@ -224,22 +218,43 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		ValidateRequest: false,
 	}
 
-	// Escape hatch: a pinned provider (env var or per-request override) may have no
-	// integration row for services-server to resolve, so forward it explicitly.
-	if strings.TrimSpace(config.Config.LLMServerLogProviderOverride) != "" ||
-		strings.TrimSpace(ctx.QueryConfig.LogProviderOverride) != "" {
-		logRequest.LogProvider = logProvider.Provider
-		logRequest.LogProviderSource = logProvider.IntegrationSource
-	}
-
-	slog.Info("executeFetchLogsCanonical: sending LogQueryRequest", "account_id", ctx.AccountId, "provider", logProvider.Provider, "where", where, "index", idx)
 	logs, err := services_server.QueryLogs(*ctx.Ctx, logRequest)
 	if err != nil {
-		slog.Warn("executeFetchLogsCanonical: QueryLogs returned error", "error", err)
 		return core.ObservabilityLogResponse{}, err
 	}
-	slog.Info("executeFetchLogsCanonical: QueryLogs complete", "log_count", len(logs.Logs), "suggestion", logs.Suggestion)
 	return logs, nil
+}
+
+// GetLogsQueryPreview resolves a canonical where-clause into the provider-native
+// query text via GetLogsQuery/logs_get_query — no execution against the real
+// backend, no log data fetched. Sibling to executeFetchLogsCanonical, but for
+// callers (ai_generate_log_query) whose job is only to show the resolved query
+// text, not to also validate it by actually running it. Exported for LogQueryAgent,
+// which calls it directly (not through a tool.Call) since there is no log data
+// to fetch or tool-config to resolve — just account/tenant context.
+func GetLogsQueryPreview(ctx *security.RequestContext, accountId string, logProvider services_server.ObservabilityProvider, where core.QueryWhereClause, configs map[string]any) (string, error) {
+	p, err := parseFetchLogConfigs(configs)
+	if err != nil {
+		return "", err
+	}
+
+	logRequest := services_server.LogQueryRequest{
+		StartTime:         p.startTime,
+		EndTime:           p.endTime,
+		Limit:             p.limit,
+		Offset:            p.offset,
+		AccountId:         accountId,
+		LogProvider:       logProvider.Provider,
+		LogProviderSource: logProvider.IntegrationSource,
+		Index:             p.index,
+		QueryRequest:      &services_server.LogsQueryBuilderRequest{Where: where},
+	}
+
+	output, err := services_server.GetLogsQuery(*ctx, logRequest)
+	if err != nil {
+		return "", err
+	}
+	return output.Query, nil
 }
 
 func executeFetchLogLabels(accountId string, logProvider services_server.ObservabilityProvider) (core.ObservabilityLogLabelResponse, error) {
@@ -289,7 +304,7 @@ func FetchTraceLabelKeys(accountId string, traceProvider services_server.Observa
 	return labels
 }
 
-func getProvider(accountId, providerType string) (services_server.ObservabilityProvider, error) {
+func getProvider(accountId, providerType, requestedProvider string) (services_server.ObservabilityProvider, error) {
 	if accountId == "" || providerType == "" {
 		return services_server.ObservabilityProvider{}, fmt.Errorf("accountId or providerType cannot be empty")
 	}
@@ -299,7 +314,7 @@ func getProvider(accountId, providerType string) (services_server.ObservabilityP
 		return services_server.ObservabilityProvider{}, err
 	}
 	securityContext := security.NewRequestContextForTenantAccountAdmin(tenantId, "", []string{accountId})
-	provider, err := services_server.GetObservabilityProvider(*securityContext, accountId, providerType)
+	provider, err := services_server.GetObservabilityProvider(*securityContext, accountId, providerType, requestedProvider)
 	if err != nil {
 		return services_server.ObservabilityProvider{}, err
 	}
@@ -409,7 +424,7 @@ func executeFetchTraceCanonical(ctx core.NbToolContext, queryBuilder core.TraceQ
 }
 
 func GetTraceProvider(accountId string) (services_server.ObservabilityProvider, error) {
-	providerFromServicesServer, err := getProvider(accountId, "traces")
+	providerFromServicesServer, err := getProvider(accountId, "traces", "")
 	if err == nil {
 		if providerFromServicesServer.Provider != "" {
 			return providerFromServicesServer, nil
@@ -428,7 +443,7 @@ func GetTraceProvider(accountId string) (services_server.ObservabilityProvider, 
 
 func GetMetricsProvider(accountId string) (services_server.ObservabilityProvider, error) {
 	metricsConnectionProvider := "prometheus"
-	providerFromServicesServer, err := getProvider(accountId, "metrics")
+	providerFromServicesServer, err := getProvider(accountId, "metrics", "")
 	if err == nil {
 		if providerFromServicesServer.Provider != "" {
 			return providerFromServicesServer, nil
@@ -445,45 +460,9 @@ func GetMetricsProvider(accountId string) (services_server.ObservabilityProvider
 	}, nil
 }
 
-// EffectiveLogProvider returns the provider for one call: request override, else
-// the account-resolved one. Callers MUST keep it a local — log tools/agents are
-// shared via 30-minute caches (custom_agent.go), so writing it back pins the
-// backend for the whole account and races parallel tool calls.
-//
-// Not lowercased, IntegrationSource left empty: api-server's getLogSource switch
-// is case-sensitive ("ES") and resolves the true source itself; forcing "agent"
-// 400s datadog and every other user-source backend.
-func EffectiveLogProvider(resolved services_server.ObservabilityProvider, requestOverride string) services_server.ObservabilityProvider {
-	override := strings.TrimSpace(requestOverride)
-	if override == "" {
-		return resolved
-	}
-	// Same backend restated: keep the resolved value — it carries Capabilities /
-	// DefaultIndex / IntegrationSource that query generation needs.
-	if strings.EqualFold(override, resolved.Provider) {
-		return resolved
-	}
-	return services_server.ObservabilityProvider{Provider: override}
-}
-
 func GetLogProvider(accountId string) (services_server.ObservabilityProvider, error) {
-	// Dev-only override: bypass per-account routing. Normalized for common
-	// operator fumbles (case, whitespace). No allowlist — the authoritative
-	// provider set lives in api-server's dispatch table; mirroring would
-	// drift. Unknown values surface via this Warn and fail on the next query.
-	if override := strings.ToLower(strings.TrimSpace(config.Config.LLMServerLogProviderOverride)); override != "" {
-		slog.Warn("logs: using LLM_SERVER_LOG_PROVIDER_OVERRIDE — bypasses per-account routing; only intended for local dev / debugging",
-			"provider", override,
-			"raw", config.Config.LLMServerLogProviderOverride,
-			"accountId", accountId)
-		return services_server.ObservabilityProvider{
-			Provider:          override,
-			IntegrationSource: "agent",
-		}, nil
-	}
-
 	logConnectionProvider := "k8s"
-	providerFromServicesServer, err := getProvider(accountId, "logs")
+	providerFromServicesServer, err := getProvider(accountId, "logs", "")
 	if err == nil {
 		if providerFromServicesServer.Provider != "" {
 			return providerFromServicesServer, nil
@@ -535,6 +514,29 @@ func GetLogProvider(accountId string) (services_server.ObservabilityProvider, er
 	}
 
 	return services_server.ObservabilityProvider{Provider: logConnectionProvider, IntegrationSource: "agent"}, nil
+}
+
+// GetLogProviderWithOverride resolves the account's log provider, optionally
+// pinned to requestedProvider (e.g. "loki") instead of the account default —
+// mirrors the logs tab's provider switcher (log_provider on observability.fetchLogs).
+// Empty requestedProvider behaves exactly like GetLogProvider. Unlike
+// GetLogProvider, an override that fails to resolve (or isn't configured for
+// this account) is returned as an error rather than silently falling back to
+// the account's default provider — a caller that explicitly asked for a
+// specific provider should be told it isn't available, not served a different
+// one without realizing it.
+func GetLogProviderWithOverride(accountId, requestedProvider string) (services_server.ObservabilityProvider, error) {
+	if requestedProvider == "" {
+		return GetLogProvider(accountId)
+	}
+	provider, err := getProvider(accountId, "logs", requestedProvider)
+	if err != nil {
+		return services_server.ObservabilityProvider{}, fmt.Errorf("logs: unable to resolve requested provider %q: %w", requestedProvider, err)
+	}
+	if provider.Provider == "" {
+		return services_server.ObservabilityProvider{}, fmt.Errorf("logs: requested provider %q is not configured for this account", requestedProvider)
+	}
+	return provider, nil
 }
 
 func HasDatadogIntegration(accountId string) bool {

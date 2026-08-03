@@ -436,11 +436,11 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin_readonly
       - role: account_admin
-  - name: ai_generate_es_dsl_query
-    comment: Generate an Elasticsearch DSL query from a natural-language request
+  - name: ai_generate_log_query
+    comment: Generate and validate a log query for the account's configured log backend, from a natural-language request
     definition:
       kind: synchronous
-      handler: '{{LLM_SERVER_URL}}/v1/completions/elastic-search-query'
+      handler: '{{LLM_SERVER_URL}}/v1/completions/log-query'
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -454,19 +454,6 @@ actions:
       - role: tenant_admin
       - role: tenant_admin_readonly
       - role: tenant_usage
-  - name: ai_generate_loki_query
-    comment: Generate a Loki LogQL query from a natural-language request
-    definition:
-      kind: synchronous
-      handler: '{{LLM_SERVER_URL}}/v1/completions/loki-query'
-      forward_client_headers: true
-      headers:
-        - name: X-ACTION-TOKEN
-          value_from_env: LLM_SERVER_TOKEN
-      timeout: 120
-    permissions:
-      - role: account_admin
-      - role: tenant_admin
   - name: ai_generate_prometheus_query
     definition:
       kind: synchronous
@@ -6713,10 +6700,9 @@ custom_types:
     - name: ApplicationMetricsRequest
     - name: NudgebeeAIGetPrometheusQueryRequest
     - name: AIGetPrometheusQueryRequest
-    - name: AIGetLokiQueryRequest
+    - name: AIGetLogQueryRequest
     - name: AiFeedbackCreateRequest
     - name: GetInvestigateQueryRequest
-    - name: AIGetESDslQueryRequest
     - name: auto_pilot_policy_delete_input
     - name: GetFeedbackWhereRequest
     - name: InsightRequest
@@ -7184,10 +7170,9 @@ custom_types:
     - name: NudgebeeAIGetPrometheusQuery
     - name: AIGetPrometheusQueryResponse
     - name: AIGetPrometheusQuery
-    - name: AIGetLokiQueryResponse
+    - name: AIGetLogQueryResponse
     - name: GenerateFeedbackResponse
     - name: FeedbackResponse
-    - name: AIGetESDslQueryResponse
     - name: auto_pilot_policy_delete_output
     - name: GetFeedbackResponse
     - name: AiFeedbackResponse

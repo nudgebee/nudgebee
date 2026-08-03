@@ -1135,7 +1135,9 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
               options={[
                 ...(logProvider !== 'datadog' ? [{ value: 'build', label: 'Builder' }] : []),
                 { value: 'code', label: 'Code' },
-                ...(logProvider === 'loki' || logProvider === 'signoz' ? [{ value: 'ai', label: 'AI' }] : []),
+                ...(logProvider && !['datadog', 'prometheus', 'chronosphere', 'victoria-metrics'].includes(logProvider)
+                  ? [{ value: 'ai', label: 'AI' }]
+                  : []),
               ]}
             />
           )}

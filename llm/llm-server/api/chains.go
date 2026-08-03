@@ -15,6 +15,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/events"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
 	"sync"
@@ -55,6 +56,11 @@ type ConversationApiRequest struct {
 	// Callers must never merge it into Query — keeping it separate is what lets
 	// the agent treat it as reference material rather than as a request.
 	ChannelContext string `json:"channel_context,omitempty"`
+	// LogProvider optionally pins /log-query resolution to a specific log
+	// provider (e.g. "loki") instead of the account's default — mirrors the
+	// logs tab's "Log Provider:" dropdown override sent as log_provider on
+	// observability.fetchLogs. Ignored by every other handler.
+	LogProvider string `json:"log_provider,omitempty"`
 }
 
 type ConversationTerminateApiRequest struct {
@@ -139,6 +145,17 @@ func handleRequestExecution(
 	} else {
 		resp, err := executeFn(agentContext)
 		if err != nil {
+			// EgressFilter block: surface the user-safe message verbatim with a 400.
+			// The error string is constructed in the egressfilter package to avoid
+			// echoing any matched value or detector internals; SanitizeErrorMessage
+			// would be a no-op on it but we skip it for clarity.
+			if scrubErr, ok := egressfilter.AsError(err); ok {
+				logger.Warn("api: outbound LLM call blocked by egressfilter", "metrics_key", metricsKey, "latency", time.Since(startTime).String(), "audit_id", scrubErr.AuditID, "rule_ids", scrubErr.RuleIDs)
+				c.JSON(http.StatusBadRequest, buildApiResponse(resp, []error{
+					common.Error{Message: scrubErr.Error()},
+				}))
+				return
+			}
 			logger.Error("api: error executing request", "metrics_key", metricsKey, "latency", time.Since(startTime).String(), "error", err)
 			c.JSON(http.StatusInternalServerError, buildApiResponse(resp, []error{
 				common.Error{
@@ -180,7 +197,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -594,7 +614,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -974,7 +997,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -1125,7 +1151,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -1201,7 +1230,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -1278,8 +1310,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		})
 	})
 
-	groupV2.POST("/loki-query", func(c *gin.Context) {
-		common.MetricsApiRequestsTotal("chains_loki_query")
+	groupV2.POST("/log-query", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_log_query")
 		var request ConversationApiRequest
 		var actionRequest ActionRequest
 		err := c.ShouldBindJSON(&actionRequest)
@@ -1292,7 +1324,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
@@ -1330,12 +1365,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		logger.Info("api: processing request", "request", slog.AnyValue(request))
 
-		source := core.ConversationSourceLokiQuery
+		source := core.ConversationSourceLogQuery
 		if request.Source != "" {
 			source = request.Source
 		}
 
-		var logChain = &agents.LokiAgent{}
+		var logQueryChain = agents.NewLogQueryAgent(request.AccountId, request.LogProvider)
 		// Check budget limits for tenant and account
 		module := budget.ModuleUserInvestigation
 		if strings.HasPrefix(request.SessionId, events.SessionIdPrefixEvent) {
@@ -1350,95 +1385,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			request.SessionId = request.ConversationId
 		}
 
-		handleRequestExecution(c, agentContext, request.Async, request.UserId, "chains_loki_query", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
-			return core.HandleConversationSessionRequest(ctx, logChain, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source))
-		}, core.NBAgentResponse{
-			Response:       []string{},
-			Query:          request.Query,
-			ConversationId: request.ConversationId,
-			SessionId:      request.SessionId,
-			Status:         core.ConversationStatusInProgress,
-		})
-	})
-
-	groupV2.POST("/elastic-search-query", func(c *gin.Context) {
-		common.MetricsApiRequestsTotal("chains_elastic_search_query")
-		var request ConversationApiRequest
-		var actionRequest ActionRequest
-		err := c.ShouldBindJSON(&actionRequest)
-		logger := slog.With("account_id", request.AccountId, "conversation_id", request.ConversationId, "user_id", request.UserId)
-		if err != nil {
-			logger.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
-				common.Error{
-					Message: err.Error(),
-				},
-			}))
-			return
-		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
-		err = common.DecodeMapToStruct(actionRequestPayload, &request)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
-				common.Error{
-					Message: err.Error(),
-				},
-			}))
-			return
-		}
-
-		if request.ConversationId == "" {
-			request.ConversationId = uuid.New().String()
-		}
-
-		queryBody := map[string]string{}
-		err = common.UnmarshalJson([]byte(request.Query), &queryBody)
-		if err != nil {
-			slog.Error("elastic: unable unmarshal)", "error", err.Error())
-		}
-		request.Query = queryBody["query"]
-		request.Config = toolcore.NBQueryConfig{} // ES index is handled by the tool directly
-
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{
-				common.Error{
-					Message: err.Error(),
-				},
-			}))
-			return
-		}
-
-		if request.UserId == "" {
-			request.UserId = agentContext.GetSecurityContext().GetUserId()
-		}
-
-		// Check if user has access to account
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
-			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiGeneration) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
-			return
-		}
-
-		// Check budget limits for tenant and account
-		if budget.CheckBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, budget.ModuleUserInvestigation, logger) {
-			return
-		}
-
-		source := core.ConversationSourceESQuery
-		if request.Source != "" {
-			source = request.Source
-		}
-
-		esChain := agents.ESLogAgent{}
-		request.Query = "Generate an Elastic Search DSL query for: " + request.Query
-
-		if request.SessionId == "" {
-			request.SessionId = request.ConversationId
-		}
-
-		handleRequestExecution(c, agentContext, request.Async, request.UserId, "chains_elastic_search_query", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
-			return core.HandleConversationSessionRequest(ctx, esChain, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConfig(request.Config))
+		handleRequestExecution(c, agentContext, request.Async, request.UserId, "chains_log_query", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
+			return core.HandleConversationSessionRequest(ctx, logQueryChain, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source))
 		}, core.NBAgentResponse{
 			Response:       []string{},
 			Query:          request.Query,
@@ -1473,7 +1421,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -1746,7 +1697,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -1815,7 +1769,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -1857,6 +1814,11 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		c.JSON(http.StatusOK, buildApiResponse(data, nil))
 	})
 
+	// usage-metrics backs the AI Cost Analyser Overview + Models screens: KPI
+	// totals plus one cost breakdown per requested group_by dimension
+	// (model/provider/source/agent/status/user/account), all off one filter.
+	// Pass several dimensions for the whole Overview in one call, or one for a
+	// single cut, or none for the KPI cards only.
 	groupV2.POST("/usage-metrics", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal("chains_usage_metrics")
 		requestMap := make(map[string]any)
@@ -2599,7 +2561,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		var request ConversationGetApiRequest
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -2687,7 +2652,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -2762,7 +2730,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}

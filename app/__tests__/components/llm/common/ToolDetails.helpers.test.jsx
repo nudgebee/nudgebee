@@ -11,7 +11,7 @@ import {
 jest.mock('@shared/viewers/MarkDowns', () => () => null);
 jest.mock('@shared/tables/CustomTable', () => () => null);
 jest.mock('@components/k8s/common/KubernetesTable', () => () => null);
-jest.mock('@components/k8s/details/KubernetesLogStash', () => ({ mapToTableData: () => [] }));
+jest.mock('@components/k8s/common/logTableMapper', () => ({ mapToTableData: () => [] }));
 jest.mock('@components/recommendations/security/KubernetesSecurityDetails', () => () => null);
 jest.mock('@ui/DiffViewer', () => ({ DiffViewer: () => null }));
 jest.mock('@ui/Chart', () => ({ Line: () => null }));

@@ -25,7 +25,7 @@ import CustomTable from '@shared/tables/CustomTable';
 import CopyButton from '@shared/buttons/CopyButton';
 import { Divider } from '@ui/Divider';
 import KubernetesTable from '@components/k8s/common/KubernetesTable';
-import { mapToTableData } from '@components/k8s/details/KubernetesLogStash';
+import { mapToTableData } from '@components/k8s/common/logTableMapper';
 import { LogDate } from '@components/k8s/common/LogDate';
 import KubernetesSecurityDetails from '@components/recommendations/security/KubernetesSecurityDetails';
 import { DiffViewer } from '@ui/DiffViewer';

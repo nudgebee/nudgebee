@@ -2146,10 +2146,10 @@ func (a *WorkflowBuilderAgent) buildEnvironmentContext(ctx *security.RequestCont
 	}
 
 	// 3. Default observability providers (log + metrics)
-	if logProvider, err := services_server.GetObservabilityProvider(*ctx, a.accountId, "logs"); err == nil && logProvider.Provider != "" {
+	if logProvider, err := services_server.GetObservabilityProvider(*ctx, a.accountId, "logs", ""); err == nil && logProvider.Provider != "" {
 		parts = append(parts, "Default log provider: "+logProvider.Provider+" (use observability.logs — query syntax depends on provider)")
 	}
-	if metricProvider, err := services_server.GetObservabilityProvider(*ctx, a.accountId, "metrics"); err == nil && metricProvider.Provider != "" {
+	if metricProvider, err := services_server.GetObservabilityProvider(*ctx, a.accountId, "metrics", ""); err == nil && metricProvider.Provider != "" {
 		parts = append(parts, "Default metrics provider: "+metricProvider.Provider+" (use observability.metrics)")
 	}
 
