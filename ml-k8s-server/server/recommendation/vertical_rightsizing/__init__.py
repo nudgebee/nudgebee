@@ -900,7 +900,11 @@ def store_krr_recommendations_to_db(
                         DO UPDATE SET
                             recommendation = EXCLUDED.recommendation,
                             estimated_savings = EXCLUDED.estimated_savings,
-                            status = EXCLUDED.status,
+                            status = CASE
+                                WHEN recommendation.status NOT IN ('Open', 'Archive')
+                                THEN recommendation.status
+                                ELSE EXCLUDED.status
+                            END,
                             severity = EXCLUDED.severity
                     """)
 
