@@ -1622,6 +1622,16 @@ func UpsertFeatureFlags(ctx *security.RequestContext, request FeatureFlagUpsertR
 	}, nil
 }
 
+// pgUniqueViolation reports whether err is a Postgres unique_violation (SQLSTATE
+// 23505) — used to tell a duplicate group name apart from other insert/update
+// failures (FK violation, connection loss) so those aren't masked as a name
+// conflict. user_groups_tenant_name_key backs the KG's NudgebeeGroup unique key,
+// which is now name-based (see ownership_enricher.go buildGroupNodes).
+func pgUniqueViolation(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "23505"
+}
+
 func CreateUserGroup(ctx *security.RequestContext, request UserGroupCreateRequest) (UserGroupCreateResponse, error) {
 	if !ctx.GetSecurityContext().IsTenantAdmin() {
 		return UserGroupCreateResponse{}, common.ErrorUnauthorized("Not Allowed")
@@ -1642,6 +1652,9 @@ func CreateUserGroup(ctx *security.RequestContext, request UserGroupCreateReques
 		request.Name, request.Description, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId(),
 	).Scan(&id)
 	if err != nil {
+		if pgUniqueViolation(err) {
+			return UserGroupCreateResponse{}, common.ErrorConflict("Group name already in use")
+		}
 		ctx.GetLogger().Error("Error creating user group", "error", err)
 		return UserGroupCreateResponse{}, common.ErrorInternal("Error creating user group")
 	}
@@ -1687,6 +1700,9 @@ func UpdateUserGroup(ctx *security.RequestContext, request UserGroupUpdateReques
 		request.Name, request.Description, request.Id,
 	)
 	if err != nil {
+		if pgUniqueViolation(err) {
+			return UserGroupUpdateResponse{}, common.ErrorConflict("Group name already in use")
+		}
 		ctx.GetLogger().Error("Error updating user group", "error", err)
 		return UserGroupUpdateResponse{}, common.ErrorInternal("Error updating user group")
 	}

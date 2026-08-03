@@ -118,10 +118,14 @@ func (e *OwnershipEnricher) EnrichCrossSources(
 }
 
 // buildGroupNodes creates one NudgebeeGroup node per user_groups row for the
-// tenant, keyed by group id for edge-target lookup. The unique key's Name
-// component is the group's id — not its name, which is only unique per
-// (tenant, business_unit) per the user_groups_tenant_business_unit_name_key
-// constraint, so a display name could collide across business units.
+// tenant, keyed by group id for edge-target lookup (byGroupID). The unique
+// key's Name component is the group's name — enforced unique per tenant at
+// the DB level by user_groups_tenant_name_key (see the migration that added
+// it), the same way every other node type's Name segment is a readable,
+// tenant-unique identifier. A rename changes the node's identity (new id on
+// the next build, old one tombstoned — NodeTypeUserGroup is in
+// InfraAuthoritativeNodeTypes for exactly this), matching how a k8s resource
+// rename is really a delete+recreate.
 func (e *OwnershipEnricher) buildGroupNodes(dbms *database.DatabaseManager, tenantID string) ([]*core.DbNode, map[string]*core.DbNode, error) {
 	rows, err := dbms.Query(`SELECT id::text, name FROM user_groups WHERE tenant = $1`, tenantID)
 	if err != nil {
@@ -145,7 +149,7 @@ func (e *OwnershipEnricher) buildGroupNodes(dbms *database.DatabaseManager, tena
 			"name":              name,
 			"nudgebee_group_id": groupID,
 		}
-		uniqueKey := core.BuildUniqueKey(core.CloudProviderExternal, tenantID, "", core.NodeTypeUserGroup, "", groupID)
+		uniqueKey := core.BuildUniqueKey(core.CloudProviderExternal, tenantID, "", core.NodeTypeUserGroup, "", name)
 		node := core.NewNode(core.NodeTypeUserGroup, uniqueKey, properties, tenantID, tenantID, "ownership")
 		nodes = append(nodes, node)
 		byGroupID[groupID] = node
