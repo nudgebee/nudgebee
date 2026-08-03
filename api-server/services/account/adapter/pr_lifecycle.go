@@ -3,12 +3,15 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/internal/database/models"
 	"nudgebee/services/llm"
+	"nudgebee/services/recommendation/coordinator"
 	"nudgebee/services/security"
 )
 
@@ -534,7 +537,45 @@ func markPRResolutionsTerminalByURL(ctx *security.RequestContext, dbms *database
 	state, status, msg := prTerminalFields(merged)
 
 	var total int64
+	var settleErrs error
 	for _, tableName := range tables {
+		// Under the coordinator, recommendation lifecycle status is not this
+		// reconciler's to write: the UPDATE here keeps only the PR-machinery
+		// columns, and the status transition (plus the recommendation
+		// projection) is requested per row — a duplicate webhook/poll delivery
+		// lands as a recorded no-op instead of an overwrite. event_resolution
+		// stays on the legacy path; the coordinator governs recommendations only.
+		if tableName == "recommendation_resolution" && coordinator.Enabled() {
+			outcome := models.RecommendationResolutionStatusFailed
+			if merged {
+				outcome = models.RecommendationResolutionStatusSuccess
+			}
+			dbCtx, cancel := context.WithTimeout(context.Background(), prDBOpTimeout)
+			ids := []string{}
+			err := dbms.Db.SelectContext(dbCtx, &ids,
+				`UPDATE recommendation_resolution SET pr_lifecycle_state = $1,
+					pr_followup_pending = false, last_pr_check_at = $2
+					WHERE data->>'pr_url' = $3 AND pr_lifecycle_state IN ('created', 'needs_followup', 'addressing', 'stale')
+					RETURNING id`,
+				state, time.Now(), prURL)
+			cancel()
+			if err != nil {
+				return total, fmt.Errorf("failed to mark recommendation_resolution rows terminal: %w", err)
+			}
+			for _, id := range ids {
+				// A failure here leaves pr_lifecycle_state terminal with the status
+				// still InProgress; the resolution poll settles such rows on its
+				// next tick, so the pair converges rather than wedges. Errors are
+				// joined instead of short-circuiting, so every row still gets its
+				// settle attempt and no table's marking is skipped.
+				if _, err := coordinator.SettleResolution(ctx, id, outcome, msg, coordinator.SourceWebhook); err != nil {
+					settleErrs = errors.Join(settleErrs, fmt.Errorf("failed to settle recommendation resolution %s: %w", id, err))
+					continue
+				}
+				total++
+			}
+			continue
+		}
 		dbCtx, cancel := context.WithTimeout(context.Background(), prDBOpTimeout)
 		res, execErr := dbms.Db.ExecContext(dbCtx,
 			fmt.Sprintf(`UPDATE %s SET pr_lifecycle_state = $1, status = $2, status_message = $3,
@@ -551,7 +592,7 @@ func markPRResolutionsTerminalByURL(ctx *security.RequestContext, dbms *database
 	}
 	ctx.GetLogger().Info("pr_lifecycle: marked PR resolutions terminal",
 		"pr_url", prURL, "merged", merged, "state", state, "status", status, "rows", total)
-	return total, nil
+	return total, settleErrs
 }
 
 // resurrectStaleResolution returns a cron-retired ('stale') row to active
