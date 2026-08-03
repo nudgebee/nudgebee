@@ -1317,19 +1317,18 @@ const automationFromScratchTour: TourDef = {
  * Recommendations instead, which also makes the guide robust when launched from
  * any tab.
  *
- * Anchors (all pre-existing except #optimize-card-savings, added with this
- * guide):
+ * Anchors:
  *   #anchor-tab-summary|recommendations|resolutions|auto-optimize
  *                          → AnchorComponent renders id=`anchor-tab-<opt.id>`
  *   #optimize-card-savings → the "Total Savings" WidgetCard
- *   [data-testid="severity-summary-bar"] → the category + severity chip bar (the
- *                                          category FilterDropdown became chips in
- *                                          this bar in PR #34425, so there is no
- *                                          separate category step)
- *   [data-testid="top-issues-bar"]       → Top Issues band (data-dependent, so
- *                                          optional: absent when there are none)
+ *   #optimize-card-all     → the "All Recommendations" card — the category
+ *                            stat-cards double as tabs (the category chips and
+ *                            the Top Issues band were folded into the cards +
+ *                            the Rules filter in the filter-bar redesign)
+ *   [data-testid="severity-summary-bar"] → the severity + safety chip bar
  *   #auto-complete-optimize-account-filter
  *                          → FilterDropdown rewrites `id` to `auto-complete-<id>`
+ *   #auto-complete-optimize-rules-filter → the Rules filter (grouped by category)
  *   #optimize-search       → the search input
  *   #optimize-recommendations-table → the recommendations table (renders even
  *                                     while loading/empty, so it's a safe anchor)
@@ -1363,33 +1362,38 @@ const optimizeTour: TourDef = {
     {
       element: '#optimize-card-savings',
       title: 'Your total savings',
-      description:
-        'Estimated monthly savings if every recommendation here were applied. The cards to the left break the same findings down by category.',
+      description: 'Estimated monthly savings if every recommendation here were applied.',
       side: 'bottom',
       align: 'end',
     },
     {
-      element: '[data-testid="severity-summary-bar"]',
-      title: 'Filter by category & severity',
+      element: '#optimize-card-all',
+      title: 'The cards are your category tabs',
       description:
-        'One chip bar, two levers — Category narrows to the kind of change you’re ready to make (Right Sizing, Config, Spot…), Severity to how urgent it is. Start with Critical and High — that’s where the money and the risk usually are.',
+        'Each category card filters the list to that kind of change (Right Sizing, Config, Spot…) — click one to narrow, click it again to unselect. This card brings back everything.',
       side: 'bottom',
       align: 'start',
     },
     {
-      element: '[data-testid="top-issues-bar"]',
-      title: 'Top issues',
+      element: '[data-testid="severity-summary-bar"]',
+      title: 'Filter by severity & safety',
       description:
-        'The rules firing most often right now. Click one to see just those recommendations — the fastest way to fix a whole class of problem at once.',
+        'Two levers — Severity for how urgent a finding is, Safety for its blast radius (Safe means no dependents in the way). Start with Critical and High — that’s where the money and the risk usually are.',
       side: 'bottom',
       align: 'start',
-      // Data-dependent: only renders when there are top issues to show.
-      optional: true,
     },
     {
       element: '#auto-complete-optimize-account-filter',
       title: 'Scope to an account',
       description: 'Narrow the list to a single cloud account or cluster.',
+      side: 'bottom',
+      align: 'start',
+    },
+    {
+      element: '#auto-complete-optimize-rules-filter',
+      title: 'Filter by rule',
+      description:
+        'Every rule with open findings, grouped by category and sorted by how often it fires. Pick one to fix a whole class of problem at once — Savings and Last seen next to it narrow by value and freshness.',
       side: 'bottom',
       align: 'start',
     },

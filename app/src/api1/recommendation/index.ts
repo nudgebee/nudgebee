@@ -39,6 +39,34 @@ query list_k8_recommendation_summary($limit:Int, $offset:Int) {
 const OPTIMISE_SUMMARY_RECS_CACHE_KEY = 'optimise_summary_recommendations';
 const OPTIMISE_SUMMARY_RECS_TTL_SEC = 10 * 60; // 10 minutes — recommendations refresh on a ~6h cron
 
+export interface RecommendationFacetFilters {
+  safetyBand?: string[];
+  savingsGte?: number;
+  savingsLt?: number;
+  updatedAtGte?: string;
+  updatedAtLt?: string;
+}
+
+export function applyFacetFilters(gqlQuery: any, { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt }: RecommendationFacetFilters) {
+  if (safetyBand && safetyBand.length > 0) {
+    if (safetyBand.includes('unknown')) {
+      // Rows never assessed carry no safety_band key in the breakdown JSONB;
+      // the UI renders those as unknown, so the unknown filter matches NULL too.
+      gqlQuery['_or'] = [{ safety_band: { _in: safetyBand } }, { safety_band: { _is_null: true } }];
+    } else {
+      gqlQuery['safety_band'] = { _in: safetyBand };
+    }
+  }
+  const savings: any = {};
+  if (savingsGte !== undefined) savings['_gte'] = savingsGte;
+  if (savingsLt !== undefined) savings['_lt'] = savingsLt;
+  if (Object.keys(savings).length > 0) gqlQuery['estimated_savings'] = savings;
+  const updatedAt: any = {};
+  if (updatedAtGte) updatedAt['_gte'] = updatedAtGte;
+  if (updatedAtLt) updatedAt['_lt'] = updatedAtLt;
+  if (Object.keys(updatedAt).length > 0) gqlQuery['updated_at'] = updatedAt;
+}
+
 export function invalidateOptimisationSummaryRecommendations() {
   cache.delWithSuffix(OPTIMISE_SUMMARY_RECS_CACHE_KEY);
 }
@@ -112,6 +140,16 @@ query k8s_recommendation_summary {
       category
       resource_cloud_service
       severity
+    }
+  }
+}`;
+
+export const LIST_k8_RECOMMENDATION_SAFETY_GROUPS = `
+query k8s_recommendation_safety_groups {
+  recommendation_aggregate: recommendation_groupings_v2(where: __WHERE__){
+    rows{
+      count
+      safety_band
     }
   }
 }`;
@@ -569,6 +607,11 @@ const apiRecommendations = {
     version = 0,
     resource_ids,
     recommendationId,
+    safetyBand,
+    savingsGte,
+    savingsLt,
+    updatedAtGte,
+    updatedAtLt,
   }: {
     accountId?: string;
     category?: string;
@@ -591,7 +634,7 @@ const apiRecommendations = {
     version?: number;
     resource_ids?: string[];
     recommendationId?: string;
-  }) {
+  } & RecommendationFacetFilters) {
     try {
       if (accountId === 'demo') {
         return await getK8sRecommendationMockData({
@@ -685,6 +728,7 @@ const apiRecommendations = {
       if (resource_ids) {
         gqlQuery['resource_id'] = { _in: resource_ids };
       }
+      applyFacetFilters(gqlQuery, { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt });
       let query = LIST_k8_RECOMMENDATIONS;
       if (typeof orderBy === 'string') {
         query = query.replaceAll('__ORDER_BY__', `{column: "${orderBy}", order: ${orderAsc ? 'asc' : 'desc_nulls_last'} }`);
@@ -982,6 +1026,11 @@ const apiRecommendations = {
     serviceName = '',
     resource_ids,
     version = 0,
+    safetyBand,
+    savingsGte,
+    savingsLt,
+    updatedAtGte,
+    updatedAtLt,
   }: {
     accountId: string | string[];
     accountObjectId?: string;
@@ -997,7 +1046,7 @@ const apiRecommendations = {
     serviceName?: string;
     resource_ids?: string[];
     version?: number;
-  }) {
+  } & RecommendationFacetFilters) {
     if (accountId === 'demo') {
       return await getK8sRecommendationSummaryMockData({
         _accountId: accountId,
@@ -1076,6 +1125,7 @@ const apiRecommendations = {
           },
         ];
       }
+      applyFacetFilters(gqlQuery, { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt });
       const query = LIST_k8_RECOMMENDATION_SUMMARY_BY_RULENAME.replace('__WHERE__', gqlStringify(gqlQuery));
 
       const response = await queryGraphQL(query, 'k8s_recommendation_summary', {});
@@ -1083,6 +1133,77 @@ const apiRecommendations = {
     } catch (error) {
       console.log('Your Error is', error);
       return error;
+    }
+  },
+
+  // Per-safety-band counts for the Safety filter chips. Same scoping params as
+  // the rule-name summary above, minus safetyBand itself (a facet's own counts
+  // must not shrink when that facet is selected).
+  async getK8sRecommendationSafetyGroups({
+    accountId,
+    accountObjectId,
+    category,
+    ruleName,
+    excludeRuleName,
+    severity,
+    status = ['Open', 'Assigned'],
+    savingsGte,
+    savingsLt,
+    updatedAtGte,
+    updatedAtLt,
+  }: {
+    accountId: string | string[];
+    accountObjectId?: string;
+    category?: string | string[];
+    ruleName?: string | string[];
+    excludeRuleName?: string[];
+    severity?: string | string[];
+    status?: string[];
+  } & Omit<RecommendationFacetFilters, 'safetyBand'>): Promise<{ count: number; safety_band: string | null }[]> {
+    if (accountId === 'demo') {
+      return [];
+    }
+    try {
+      const gqlQuery: any = {};
+      if (Array.isArray(accountId)) {
+        gqlQuery['account_id'] = { _in: accountId };
+      } else if (accountId) {
+        gqlQuery['account_id'] = { _eq: accountId };
+      }
+      if (accountObjectId) {
+        gqlQuery['account_object_id'] = { _ilike: '%' + accountObjectId + '%' };
+      }
+      if (Array.isArray(category)) {
+        gqlQuery['category'] = { _in: category };
+      } else if (category) {
+        gqlQuery['category'] = { _eq: category };
+      }
+      if (Array.isArray(ruleName) && ruleName.length > 0) {
+        gqlQuery['rule_name'] = { _in: ruleName };
+      } else if (ruleName && !Array.isArray(ruleName)) {
+        gqlQuery['rule_name'] = { _eq: ruleName };
+      } else if (excludeRuleName && excludeRuleName.length > 0) {
+        // See getK8sRecommendation: `_in` and `_not_in` cannot coexist on rule_name.
+        gqlQuery['rule_name'] = { _not_in: excludeRuleName };
+      }
+      if (Array.isArray(severity)) {
+        gqlQuery['severity'] = { _in: severity };
+      } else if (severity) {
+        gqlQuery['severity'] = { _eq: severity };
+      }
+      if (status && status.length > 0) {
+        gqlQuery['status'] = { _in: status };
+      }
+      applyFacetFilters(gqlQuery, { savingsGte, savingsLt, updatedAtGte, updatedAtLt });
+      const query = LIST_k8_RECOMMENDATION_SAFETY_GROUPS.replace('__WHERE__', gqlStringify(gqlQuery));
+      const response = await queryGraphQL(query, 'k8s_recommendation_safety_groups', {});
+      return response?.data?.data?.recommendation_aggregate?.rows || [];
+    } catch (error) {
+      // Rethrown rather than falling back to []: zero counts mute every Safety
+      // chip behind a "No open recommendations" tooltip, which reads as a real
+      // empty result. The caller distinguishes failure and renders countless.
+      console.error('Failed to fetch recommendation safety groups:', error);
+      throw error;
     }
   },
 

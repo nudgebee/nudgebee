@@ -3400,12 +3400,14 @@ input RecommendationGroupingWhereRequest {
   resource_cloud_service: QueryWhereStringRequest
   resource_name: QueryWhereStringRequest
   timestamp: QueryWhereDatetimeRequest
+  updated_at: QueryWhereDatetimeRequest
   estimated_savings: QueryWhereFloatRequest
   account_object_id: QueryWhereStringRequest
   recommendation: QueryWhereStringRequest
   severity: QueryWhereStringRequest
   deleted_version: QueryWhereStringRequest
   deprecated_version: QueryWhereStringRequest
+  safety_band: QueryWhereStringRequest
 }
 
 input auto_runbook_manual_run_request {
@@ -3843,6 +3845,7 @@ input RecommendationWhereRequest {
   deleted_version: QueryWhereStringRequest
   deprecated_version: QueryWhereStringRequest
   is_primary_recommendation: QueryWhereBooleanRequest
+  safety_band: QueryWhereStringRequest
 }
 
 input RecommendationMissConfigGroupingWhereRequest {
@@ -6779,6 +6782,7 @@ type RecommendationGroupingRowResponse {
   count: Int
   sum_estimated_savings: Float
   severity: String
+  safety_band: String
   account_object_id: String
 }
 
@@ -7264,6 +7268,7 @@ type RecommendationRowResponse {
   finops_score: Int
   finops_band: String
   finops_score_breakdown: Json
+  safety_band: String
 }
 
 type generate_cluster_recommendations_output {

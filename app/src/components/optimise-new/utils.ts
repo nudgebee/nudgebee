@@ -74,6 +74,68 @@ export const UPGRADE_PLANNER_RULES = [
   'post_flight',
 ];
 
+// ─── Filter buckets (Savings / Last seen presets) ───
+//
+// Preset buckets shown in the Savings and Last-seen filter dropdowns. The
+// mappers below translate a bucket key into the server-side facet params
+// consumed by getK8sRecommendation / getK8sRecommendationSummaryByRuleName.
+
+export interface SavingsBucket {
+  key: string;
+  label: string;
+  caption?: string;
+  savingsGte?: number;
+  savingsLt?: number;
+}
+
+export const SAVINGS_BUCKETS: SavingsBucket[] = [
+  { key: '', label: 'Any' },
+  { key: 'gte1', label: '≥ $1 /mo', savingsGte: 1 },
+  { key: 'gte5', label: '≥ $5 /mo', savingsGte: 5 },
+  { key: 'gte10', label: '≥ $10 /mo', savingsGte: 10 },
+  { key: 'gte25', label: '≥ $25 /mo', savingsGte: 25 },
+  { key: 'cost-increase', label: 'Cost increase (< $0)', caption: 'Reliability fixes that raise spend', savingsLt: 0 },
+];
+
+export const savingsBucketToParams = (key: string): { savingsGte?: number; savingsLt?: number } => {
+  const bucket = SAVINGS_BUCKETS.find((b) => b.key === key);
+  if (!bucket) return {};
+  const params: { savingsGte?: number; savingsLt?: number } = {};
+  if (bucket.savingsGte !== undefined) params.savingsGte = bucket.savingsGte;
+  if (bucket.savingsLt !== undefined) params.savingsLt = bucket.savingsLt;
+  return params;
+};
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+export interface LastSeenBucket {
+  key: string;
+  label: string;
+  caption?: string;
+  withinMs?: number;
+  olderThanMs?: number;
+}
+
+export const LAST_SEEN_BUCKETS: LastSeenBucket[] = [
+  { key: '', label: 'Any time' },
+  { key: '1h', label: 'Last hour', withinMs: HOUR_MS },
+  { key: '24h', label: 'Last 24 hours', withinMs: DAY_MS },
+  { key: '7d', label: 'Last 7 days', withinMs: 7 * DAY_MS },
+  { key: '30d', label: 'Last 30 days', withinMs: 30 * DAY_MS },
+  { key: 'stale', label: 'Not seen in 30+ days', caption: 'Stale, likely-resolved findings', olderThanMs: 30 * DAY_MS },
+];
+
+// "Last seen" is the row's updated_at: bumped by every re-scan upsert (and by
+// user edits), so buckets are computed against the fetch time, not cached.
+export const lastSeenBucketToParams = (key: string, now: number = Date.now()): { updatedAtGte?: string; updatedAtLt?: string } => {
+  const bucket = LAST_SEEN_BUCKETS.find((b) => b.key === key);
+  if (!bucket) return {};
+  if (bucket.withinMs !== undefined) return { updatedAtGte: new Date(now - bucket.withinMs).toISOString() };
+  if (bucket.olderThanMs !== undefined) return { updatedAtLt: new Date(now - bucket.olderThanMs).toISOString() };
+  return {};
+};
+
 // ─── Shared helpers ───
 
 export const formatRuleName = (ruleName: string): string => {

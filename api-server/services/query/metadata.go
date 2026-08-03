@@ -3069,6 +3069,19 @@ var table_metadata = map[string]TableDefinition{
 				Type: ColumnDefinitionTypeFloat,
 				Def:  "COALESCE(NULLIF(r1.recommendation ->> 'deprecated_version', '')::FLOAT, 0)",
 			},
+			// Alias of "timestamp" above. The frontend list query shares one where
+			// clause between recommendations_list and this aggregate, and the list
+			// view exposes the column as updated_at — both names must resolve here.
+			"updated_at": {
+				Type: ColumnDefinitionTypeDatetime,
+				Def:  "updated_at",
+			},
+			// Mirrors recommendations_v2: safety band is stamped into the finops
+			// breakdown JSONB, not a dedicated column.
+			"safety_band": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "r1.finops_score_breakdown ->> 'safety_band'",
+			},
 		},
 	},
 	"integrations_get_all_accounts": {

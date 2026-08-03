@@ -39,7 +39,6 @@ import { ListingLayout } from '@ui/ListingLayout';
 import { Stat } from '@ui/Stat';
 import { CostCallout } from '@ui/CostCallout';
 import { Chip } from '@ui/Chip';
-import NewToggleButtons from '@components/workflow/NewToggleButtons';
 import { safetyBandTone, safetyBandLabel } from './safetyBand';
 import SearchInput from '@ui/SearchInput';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -52,6 +51,10 @@ import {
   UPGRADE_PLANNER_RULES,
   DEFAULT_STATUS,
   CATEGORY_LABELS,
+  SAVINGS_BUCKETS,
+  LAST_SEEN_BUCKETS,
+  savingsBucketToParams,
+  lastSeenBucketToParams,
   formatRuleName,
   getRecommendationBrief,
   getResourceDisplayName,
@@ -71,8 +74,14 @@ interface SeveritySummaryData {
 interface FilterState {
   severity: SeverityLevel[];
   account: string[];
+  // Single-select in the UI (the category stat-cards act as tabs), but kept as
+  // an array so existing ?category= URLs with multiple values keep working.
   category: string[];
   search: string;
+  safety: string[];
+  rules: string[];
+  savings: string;
+  lastSeen: string;
 }
 
 const SEVERITY_ORDER: SeverityLevel[] = ['Critical', 'High', 'Medium', 'Low', 'Info'];
@@ -81,15 +90,8 @@ const SEVERITY_ORDER: SeverityLevel[] = ['Critical', 'High', 'Medium', 'Low', 'I
 // Also the fallback the Top Issues band and table query use when no severity is chosen.
 const DEFAULT_SEVERITY: SeverityLevel[] = ['Critical', 'High'];
 
-const CATEGORY_FILTER_OPTIONS = [
-  { label: 'Right Sizing', value: 'RightSizing' },
-  { label: 'Infra Upgrade', value: 'InfraUpgrade' },
-  { label: 'Config', value: 'Configuration' },
-  { label: 'Spot Instance', value: 'K8sSpotRecommendation' },
-];
-
-// Leading-dot colour per category, so the category filter chips read as a
-// categorical set alongside the severity chips (which carry their own dots).
+// Leading-dot colour per category — carried on the category stat-card tabs and
+// the group headers inside the Rules filter, so both read as one categorical set.
 const CATEGORY_DOT_COLOR: Record<string, string> = {
   RightSizing: 'var(--ds-blue-500)',
   InfraUpgrade: 'var(--ds-purple-500)',
@@ -97,19 +99,15 @@ const CATEGORY_DOT_COLOR: Record<string, string> = {
   K8sSpotRecommendation: 'var(--ds-green-500)',
 };
 
-// Track segmentation for the Cost / Reliability control.
-type OptimizeTrack = 'cost' | 'reliability' | 'all';
-
-// Which categories belong to each track. Mirrors the codebase's own cost-vs-
-// reliability notion (see interpretation/buildInterpretation.ts: a recommendation
-// counts as "cost" when it carries dollar savings): the spend-optimization families
-// go under Cost, the policy/best-practice hygiene family under Reliability.
-// Swap this mapping if product wants a different split — it drives the table
-// filter, the category chips, and the toggle counts from one place.
-const TRACK_CATEGORIES: Record<OptimizeTrack, string[]> = {
-  cost: ['RightSizing', 'K8sSpotRecommendation', 'InfraUpgrade'],
-  reliability: ['Configuration'],
-  all: ['RightSizing', 'K8sSpotRecommendation', 'InfraUpgrade', 'Configuration'],
+// Display order + dot colours for the Safety filter chips. `unknown` collects
+// rows whose blast radius was never assessed (NULL safety_band included — see
+// applyFacetFilters in @api1/recommendation).
+const SAFETY_ORDER = ['safe', 'review', 'risky', 'unknown'] as const;
+const SAFETY_DOT_COLOR: Record<string, string> = {
+  safe: 'var(--ds-green-500)',
+  review: 'var(--ds-amber-500)',
+  risky: 'var(--ds-red-500)',
+  unknown: 'var(--ds-gray-400)',
 };
 // Sort presets for the "Sort by" control. Each maps to a real backend sort
 // column so the dropdown and the column-header sort share one source of truth
@@ -167,6 +165,32 @@ const WIDGET_CATEGORY_TOOLTIPS: Record<string, string> = {
   InfraUpgrade: 'Infrastructure upgrade recommendations including node groups, instance types, and cluster versions',
   Configuration: 'Configuration best practices and policy compliance recommendations',
   K8sSpotRecommendation: 'Workloads eligible for Spot/preemptible instances to reduce compute costs',
+};
+
+// Shared chrome for the clickable stat-card tabs: the active card carries the
+// same blue ring the filter pills use for their applied state; zero-count cards
+// render muted and inert.
+const cardTabSx = (pressed: boolean, muted: boolean) => ({
+  flex: 1,
+  minWidth: 0,
+  mt: 0,
+  padding: `${ds.space[3]} ${ds.space[4]}`,
+  ...(muted
+    ? { opacity: 0.5 }
+    : {
+        cursor: 'pointer',
+        transition: 'border-color 120ms ease, box-shadow 120ms ease',
+        '&:hover': { borderColor: ds.gray[400] },
+      }),
+  ...(pressed ? { borderColor: ds.blue[300], boxShadow: `0 0 0 3px ${ds.blue[100]}` } : {}),
+});
+
+// Enter/Space activation so the card tabs work as buttons for keyboard users.
+const cardKeyDown = (activate: () => void) => (e: React.KeyboardEvent) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    activate();
+  }
 };
 
 /** Parse a URL query param that may be a string or string[] into a string[] */
@@ -407,11 +431,19 @@ const OptimizeNewPage = () => {
   // Cards: all categories, no search — scoped only by account.
   const [cardRows, setCardRows] = useState<any[]>([]);
   const [cardsLoading, setCardsLoading] = useState(true);
-  // Severity chips + Top Issues: scoped by account, category and search —
-  // matches the table below exactly.
-  const [summaryData, setSummaryData] = useState<SeveritySummaryData[]>([]);
-  const [perSeverityRules, setPerSeverityRules] = useState<Record<string, { rule_name: string; count: number }[]>>({});
+  // Severity chips + Rules filter options: raw per-(rule, severity) aggregate
+  // rows, scoped by account, category, search and the safety/savings/last-seen
+  // facets — matching the table below. Kept raw so the severity chip counts can
+  // be re-derived client-side when the Rules selection changes (no refetch).
+  const [summaryRows, setSummaryRows] = useState<any[]>([]);
   const [severityLoading, setSeverityLoading] = useState(true);
+  // Safety chip counts — separate aggregate because a facet's own counts must
+  // not shrink when that facet is selected.
+  const [safetyRows, setSafetyRows] = useState<{ count: number; safety_band: string | null }[]>([]);
+  const [safetyLoading, setSafetyLoading] = useState(true);
+  // Distinguishes "the aggregate failed" from "every band is empty" — without it
+  // a failed fetch mutes all four chips as if there were nothing to filter.
+  const [safetyError, setSafetyError] = useState(false);
 
   // Table state
   const [recommendations, setRecommendations] = useState<any[]>([]);
@@ -426,10 +458,6 @@ const OptimizeNewPage = () => {
   const [sortField, setSortField] = useState<SortField>('severity');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
-  // Cost / Reliability track toggle. Switching the track scopes the table,
-  // category chips and summary counts to that track's categories.
-  const [track, setTrack] = useState<OptimizeTrack>('all');
-
   // Filters state — initialised from URL query params
   const [filters, setFilters] = useState<FilterState>(() => {
     // Default to Critical + High on first load; an explicit ?severity= in the URL wins.
@@ -439,15 +467,15 @@ const OptimizeNewPage = () => {
       account: parseQueryArray(router.query.account),
       category: parseQueryArray(router.query.category),
       search: (router.query.search as string) || '',
+      safety: parseQueryArray(router.query.safety),
+      rules: parseQueryArray(router.query.rules),
+      savings: (router.query.savings as string) || '',
+      lastSeen: (router.query.seen as string) || '',
     };
   });
 
   // Local search input state — typed value, not yet applied. Mirrors ManualInvestigated pattern.
   const [searchInput, setSearchInput] = useState((router.query.search as string) || '');
-
-  // Top issues bar state
-  const [topIssuesActive, setTopIssuesActive] = useState(false);
-  const [activeRuleName, setActiveRuleName] = useState<string | null>(null);
 
   // Detail panel state
   const [selectedRec, setSelectedRec] = useState<any>(null);
@@ -495,6 +523,18 @@ const OptimizeNewPage = () => {
     if (newFilters.search) {
       query.search = newFilters.search;
     }
+    if (newFilters.safety.length > 0) {
+      query.safety = newFilters.safety;
+    }
+    if (newFilters.rules.length > 0) {
+      query.rules = newFilters.rules;
+    }
+    if (newFilters.savings) {
+      query.savings = newFilters.savings;
+    }
+    if (newFilters.lastSeen) {
+      query.seen = newFilters.lastSeen;
+    }
 
     const currentHash = r.asPath.split('#')[1];
     r.replace({ pathname: r.pathname, query, ...(currentHash ? { hash: `#${currentHash}` } : {}) }, undefined, { shallow: true });
@@ -504,18 +544,15 @@ const OptimizeNewPage = () => {
     (newFilters: FilterState) => {
       setFilters(newFilters);
       setPage(0);
-      setTopIssuesActive(false);
-      setActiveRuleName(null);
       updateUrl(newFilters);
     },
     [updateUrl]
   );
 
-  // Reset every filter (severity, category, account, search) and the top-issues
-  // drill-down back to empty. handleFiltersChange already clears top issues + page.
+  // Reset every filter back to empty (the category card tabs return to All).
   const handleClearAll = useCallback(() => {
     setSearchInput('');
-    handleFiltersChange({ severity: [], account: [], category: [], search: '' });
+    handleFiltersChange({ severity: [], account: [], category: [], search: '', safety: [], rules: [], savings: '', lastSeen: '' });
   }, [handleFiltersChange]);
 
   // Fetch accounts
@@ -538,8 +575,8 @@ const OptimizeNewPage = () => {
       const merged = { ...filters, ...extraFilters };
       const query: any = {};
 
-      // No explicit category chips → scope to the active track's categories.
-      query.category = merged.category.length > 0 ? merged.category : TRACK_CATEGORIES[track];
+      // No category card selected → all optimize categories.
+      query.category = merged.category.length > 0 ? merged.category : NON_SECURITY_CATEGORIES;
       query.status = DEFAULT_STATUS;
       query.excludeRuleName = UPGRADE_PLANNER_RULES;
 
@@ -555,46 +592,24 @@ const OptimizeNewPage = () => {
         query.accountObjectId = merged.search;
       }
 
+      if (merged.safety.length > 0) {
+        query.safetyBand = merged.safety;
+      }
+      Object.assign(query, savingsBucketToParams(merged.savings), lastSeenBucketToParams(merged.lastSeen));
+
       return query;
     },
-    [filters, track]
+    [filters]
   );
 
-  // Process raw severity results into summary and per-severity rule data
-  const processSummaryResults = useCallback((rows: any[]) => {
-    // Group rows by severity
-    const rowsBySeverity: Record<string, any[]> = {};
-    for (const sev of SEVERITY_ORDER) {
-      rowsBySeverity[sev] = [];
-    }
-    for (const r of rows) {
-      if (r.severity && rowsBySeverity[r.severity]) {
-        rowsBySeverity[r.severity].push(r);
-      }
-    }
-
-    const summaryItems: SeveritySummaryData[] = SEVERITY_ORDER.map((sev) => {
-      const sevRows = rowsBySeverity[sev];
+  // Bucket raw per-(rule, severity) aggregate rows into per-severity totals.
+  const processSummaryResults = useCallback((rows: any[]): SeveritySummaryData[] => {
+    return SEVERITY_ORDER.map((sev) => {
+      const sevRows = rows.filter((r: any) => r.severity === sev);
       const count = sevRows.reduce((sum: number, r: any) => sum + (r.count || 0), 0);
       const savings = sevRows.reduce((sum: number, r: any) => sum + (r.sum_estimated_savings || 0), 0);
       return { severity: sev, count, savings };
     });
-
-    // Build per-severity rule data for top issues
-    const sevRules: Record<string, { rule_name: string; count: number }[]> = {};
-    for (const sev of SEVERITY_ORDER) {
-      const ruleCountMap: Record<string, number> = {};
-      for (const r of rowsBySeverity[sev]) {
-        if (r.rule_name) {
-          ruleCountMap[r.rule_name] = (ruleCountMap[r.rule_name] || 0) + (r.count || 0);
-        }
-      }
-      sevRules[sev] = Object.entries(ruleCountMap)
-        .map(([rule_name, count]) => ({ rule_name, count }))
-        .sort((a, b) => b.count - a.count);
-    }
-
-    return { summaryItems, sevRules };
   }, []);
 
   // Fetch summary cards — re-fetches only when the account filter changes.
@@ -647,16 +662,17 @@ const OptimizeNewPage = () => {
     return catData;
   }, [cardRows]);
 
-  // Fetch severity chips + Top Issues — scoped by account, category and
-  // search, matching the table below exactly. This is a separate fetch (not
-  // a client-side slice of cardRows) because the search term is applied
-  // server-side and cardRows above never carries it.
+  // Fetch severity chips + Rules filter options — scoped by account, category,
+  // search and the safety/savings/last-seen facets, matching the table below.
+  // The Rules selection is deliberately NOT applied server-side here: these rows
+  // also feed the Rules dropdown, and a facet's own options must not vanish when
+  // selected. Severity chips get the rules narrowing client-side (see summaryData).
   useEffect(() => {
     let cancelled = false;
     setSeverityLoading(true);
 
     const accountId = filters.account.length > 0 ? filters.account : '';
-    const activeCategories = filters.category.length > 0 ? filters.category : TRACK_CATEGORIES[track];
+    const activeCategories = filters.category.length > 0 ? filters.category : NON_SECURITY_CATEGORIES;
 
     const fetchSeverityRows = async () => {
       try {
@@ -667,13 +683,14 @@ const OptimizeNewPage = () => {
           accountObjectId: filters.search || undefined,
           status: DEFAULT_STATUS,
           severity: [...SEVERITY_ORDER],
+          safetyBand: filters.safety.length > 0 ? filters.safety : undefined,
+          ...savingsBucketToParams(filters.savings),
+          ...lastSeenBucketToParams(filters.lastSeen),
         });
         if (cancelled) {
           return;
         }
-        const { summaryItems, sevRules } = processSummaryResults(Array.isArray(rows) ? rows : []);
-        setSummaryData(summaryItems);
-        setPerSeverityRules(sevRules);
+        setSummaryRows(Array.isArray(rows) ? rows : []);
       } catch {
         if (!cancelled) {
           snackbar.error('Failed to load recommendation summary. Try refreshing.');
@@ -689,25 +706,88 @@ const OptimizeNewPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [filters.account, filters.category, filters.search, track, processSummaryResults]);
+  }, [filters.account, filters.category, filters.search, filters.safety, filters.savings, filters.lastSeen]);
+
+  // Severity chip counts — the raw aggregate narrowed client-side by the Rules
+  // selection, so the chips always predict what clicking them will show.
+  const summaryData = useMemo(() => {
+    const rows = filters.rules.length > 0 ? summaryRows.filter((r: any) => filters.rules.includes(r.rule_name)) : summaryRows;
+    return processSummaryResults(rows);
+  }, [summaryRows, filters.rules, processSummaryResults]);
+
+  // Fetch safety chip counts — same scope as the summary above PLUS the rules
+  // selection, minus the safety facet itself.
+  useEffect(() => {
+    let cancelled = false;
+    setSafetyLoading(true);
+
+    const accountId = filters.account.length > 0 ? filters.account : '';
+    const activeCategories = filters.category.length > 0 ? filters.category : NON_SECURITY_CATEGORIES;
+
+    const fetchSafetyRows = async () => {
+      try {
+        const rows = await recommendationApi.getK8sRecommendationSafetyGroups({
+          accountId,
+          category: activeCategories,
+          ruleName: filters.rules.length > 0 ? filters.rules : undefined,
+          excludeRuleName: UPGRADE_PLANNER_RULES,
+          accountObjectId: filters.search || undefined,
+          status: DEFAULT_STATUS,
+          severity: filters.severity.length > 0 ? [...filters.severity] : [...SEVERITY_ORDER],
+          ...savingsBucketToParams(filters.savings),
+          ...lastSeenBucketToParams(filters.lastSeen),
+        });
+        if (cancelled) {
+          return;
+        }
+        setSafetyRows(Array.isArray(rows) ? rows : []);
+        setSafetyError(false);
+      } catch {
+        // Non-blocking: the safety chips fall back to countless rendering, so
+        // the bands stay clickable instead of looking like empty results.
+        if (!cancelled) {
+          setSafetyRows([]);
+          setSafetyError(true);
+        }
+      } finally {
+        if (!cancelled) {
+          setSafetyLoading(false);
+        }
+      }
+    };
+
+    fetchSafetyRows();
+    return () => {
+      cancelled = true;
+    };
+  }, [filters.account, filters.category, filters.search, filters.severity, filters.rules, filters.savings, filters.lastSeen]);
+
+  // Safety band → count. NULL / unrecognised bands roll into `unknown`, matching
+  // how the table renders unassessed rows and how the unknown filter queries.
+  const safetyCounts = useMemo(() => {
+    const counts: Record<string, number> = { safe: 0, review: 0, risky: 0, unknown: 0 };
+    for (const row of safetyRows) {
+      const band = row.safety_band && counts[row.safety_band] !== undefined ? row.safety_band : 'unknown';
+      counts[band] += row.count || 0;
+    }
+    return counts;
+  }, [safetyRows]);
 
   // Fetch table data — used both by useEffect (with cancellation) and manual refresh calls
   const buildTableQuery = useCallback(() => {
-    const apiQuery = buildFilterQuery();
-    // When top issues filter is active and no explicit severity selected, default to Critical+High
-    if (topIssuesActive && !apiQuery.severity) {
-      apiQuery.severity = DEFAULT_SEVERITY;
-    }
     return {
-      ...apiQuery,
-      ...(topIssuesActive && activeRuleName ? { ruleName: activeRuleName } : {}),
+      ...buildFilterQuery(),
+      // An explicit rule selection replaces the UPGRADE_PLANNER_RULES exclusion
+      // inside the API (`_in` and `_not_in` cannot coexist) — safe, because the
+      // Rules options are sourced from an aggregate that already excludes them.
+      ...(filters.rules.length > 0 ? { ruleName: filters.rules } : {}),
       orderBy: sortField,
       orderAsc: sortDirection === 'asc',
       limit: rowsPerPage,
       offset: page * rowsPerPage,
       fetchTicket: true,
     };
-  }, [buildFilterQuery, topIssuesActive, activeRuleName, sortField, sortDirection, rowsPerPage, page]);
+  }, [buildFilterQuery, filters.rules, sortField, sortDirection, rowsPerPage, page]);
 
   const applyTableResult = useCallback((result: any) => {
     const recs = result?.data?.recommendation || [];
@@ -797,29 +877,73 @@ const OptimizeNewPage = () => {
     URL.revokeObjectURL(url);
   }, [recommendations, accounts]);
 
-  // ─── Computed: Top issues based on severity selection ───
+  // ─── Computed: Rules filter (grouped by category, sorted by open count) ───
 
-  const topIssueData = useMemo(() => {
-    const targetSeverities: string[] = filters.severity.length > 0 ? filters.severity : DEFAULT_SEVERITY;
-
-    const merged: Record<string, number> = {};
-    let total = 0;
-    for (const sev of targetSeverities) {
-      for (const rule of perSeverityRules[sev] || []) {
-        merged[rule.rule_name] = (merged[rule.rule_name] || 0) + rule.count;
-        total += rule.count;
+  // Options come from the same aggregate as the severity chips, merged across
+  // the selected severities (all severities when none are selected), grouped
+  // under their category — the Account-dropdown treatment. The open count rides
+  // in the label; `searchText` keeps the built-in search matching on the name.
+  const rulesFilterOptions = useMemo(() => {
+    const targetSeverities: string[] = filters.severity.length > 0 ? filters.severity : [...SEVERITY_ORDER];
+    const agg: Record<string, { count: number; category: string }> = {};
+    for (const r of summaryRows) {
+      if (!r.rule_name || !targetSeverities.includes(r.severity)) {
+        continue;
       }
+      const entry = agg[r.rule_name] || { count: 0, category: r.category || '' };
+      entry.count += r.count || 0;
+      agg[r.rule_name] = entry;
     }
+    return Object.entries(agg)
+      .sort((a, b) => b[1].count - a[1].count)
+      .map(([ruleName, entry]) => ({
+        label: `${formatRuleName(ruleName)} (${entry.count})`,
+        value: ruleName,
+        group: CATEGORY_LABELS[entry.category] || entry.category || 'Other',
+        searchText: formatRuleName(ruleName),
+      }));
+  }, [summaryRows, filters.severity]);
 
-    const items = Object.entries(merged)
-      .map(([rule_name, count]) => ({ rule_name, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 5);
+  // Selected rules render from filter state, never by filtering the options —
+  // a selected rule stays visible in the trigger even when the shrinking
+  // aggregate drops it from the options list (it would otherwise silently
+  // filter the table with an idle-looking control).
+  const rulesFilterValue = useMemo(
+    () =>
+      filters.rules.map(
+        (ruleName) =>
+          rulesFilterOptions.find((o) => o.value === ruleName) || {
+            label: formatRuleName(ruleName),
+            value: ruleName,
+            group: 'Selected',
+            searchText: formatRuleName(ruleName),
+          }
+      ),
+    [filters.rules, rulesFilterOptions]
+  );
 
-    const severityLabel = (filters.severity.length > 0 ? filters.severity : DEFAULT_SEVERITY).join(' + ');
+  // Preset options for the single-select Savings / Last-seen filters. The ''
+  // ("Any" / "Any time") entry reads as no-selection in FilterDropdown, so
+  // picking it clears the filter.
+  const savingsFilterOptions = useMemo(() => SAVINGS_BUCKETS.map((b) => ({ label: b.label, value: b.key })), []);
+  const lastSeenFilterOptions = useMemo(() => LAST_SEEN_BUCKETS.map((b) => ({ label: b.label, value: b.key })), []);
 
-    return { items, total, severityLabel };
-  }, [perSeverityRules, filters.severity]);
+  // Category label → dot colour for the Rules dropdown group headers.
+  const rulesGroupIcon = useCallback((groupLabel: string) => {
+    const categoryKey = Object.keys(CATEGORY_LABELS).find((k) => CATEGORY_LABELS[k] === groupLabel);
+    return (
+      <Box
+        component='span'
+        sx={{
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          display: 'inline-block',
+          backgroundColor: categoryKey ? CATEGORY_DOT_COLOR[categoryKey] : ds.gray[400],
+        }}
+      />
+    );
+  }, []);
 
   // ─── Computed: Summary widget totals ───
 
@@ -836,29 +960,25 @@ const OptimizeNewPage = () => {
     [accounts]
   );
 
-  // Category chips shown under the toolbar are scoped to the active track's
-  // categories, so the chips never disagree with the Cost/Reliability toggle.
-  const trackCategoryOptions = useMemo(() => CATEGORY_FILTER_OPTIONS.filter((opt) => TRACK_CATEGORIES[track].includes(opt.value)), [track]);
-
   // Card totals: derived from cardRows (unfiltered by category/search) so the
-  // Total Recommendations card stays a static overview, same as the per-category cards above.
-  const cardSummaryData = useMemo(() => processSummaryResults(cardRows).summaryItems, [cardRows, processSummaryResults]);
+  // All Recommendations card stays a static overview, same as the per-category cards.
+  const cardSummaryData = useMemo(() => processSummaryResults(cardRows), [cardRows, processSummaryResults]);
   const totalCount = useMemo(() => cardSummaryData.reduce((sum, s) => sum + s.count, 0), [cardSummaryData]);
   const totalSavings = useMemo(() => cardSummaryData.reduce((sum, s) => sum + s.savings, 0), [cardSummaryData]);
   const criticalCount = useMemo(() => cardSummaryData.find((s) => s.severity === 'Critical')?.count || 0, [cardSummaryData]);
   const highCount = useMemo(() => cardSummaryData.find((s) => s.severity === 'High')?.count || 0, [cardSummaryData]);
 
-  // Per-track totals for the toggle + outcome widgets — summed from the same
-  // unfiltered category counts as the summary cards, so they stay a stable
-  // overview independent of the severity/search filters below.
-  const trackCounts = useMemo(() => {
-    const sumTrack = (t: OptimizeTrack) => TRACK_CATEGORIES[t].reduce((sum, cat) => sum + (categoryCounts?.[cat]?.count || 0), 0);
-    return { cost: sumTrack('cost'), reliability: sumTrack('reliability') };
-  }, [categoryCounts]);
-
   const hasActiveFilter = useMemo(
-    () => filters.severity.length > 0 || filters.account.length > 0 || filters.category.length > 0 || filters.search.length > 0 || topIssuesActive,
-    [filters, topIssuesActive]
+    () =>
+      filters.severity.length > 0 ||
+      filters.account.length > 0 ||
+      filters.category.length > 0 ||
+      filters.search.length > 0 ||
+      filters.safety.length > 0 ||
+      filters.rules.length > 0 ||
+      filters.savings.length > 0 ||
+      filters.lastSeen.length > 0,
+    [filters]
   );
 
   // ─── Computed: Table rows for DS Table ───
@@ -891,22 +1011,42 @@ const OptimizeNewPage = () => {
 
   // ─── Handlers ───
 
-  // Track toggle — switching tracks clears any category-chip narrowing so the
-  // new track shows its full category set rather than carrying a stale category.
-  const handleTrackChange = useCallback(
-    (next: OptimizeTrack) => {
-      if (next === track) {
-        return;
+  // Rule → category, from the unfiltered card aggregate, used to keep the Rules
+  // selection consistent with the category card tabs in both directions.
+  const ruleCategoryMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const r of cardRows) {
+      if (r.rule_name && r.category && !map[r.rule_name]) {
+        map[r.rule_name] = r.category;
       }
-      setTrack(next);
-      handleFiltersChange({ ...filters, category: [] });
+    }
+    return map;
+  }, [cardRows]);
+
+  // Category card tabs: single-select; clicking the active card again unselects
+  // back to All. Narrowing prunes selected rules from other categories (rules
+  // with no known category are kept — better to over-show than silently drop).
+  const handleCategoryCardClick = useCallback(
+    (category: string) => {
+      const isActive = filters.category.length === 1 && filters.category[0] === category;
+      const nextCategory = isActive ? [] : [category];
+      const nextRules =
+        nextCategory.length > 0 ? filters.rules.filter((rule) => !ruleCategoryMap[rule] || ruleCategoryMap[rule] === category) : filters.rules;
+      handleFiltersChange({ ...filters, category: nextCategory, rules: nextRules });
     },
-    [track, filters, handleFiltersChange]
+    [filters, handleFiltersChange, ruleCategoryMap]
   );
 
-  // Multi-select: each click toggles that severity in/out of the filter set,
-  // mirroring the category chips. (Multi-select is group state — the Chip itself
-  // just reflects `pressed`, so nothing is needed on the Chip primitive.)
+  // The All card always selects the full category set (no toggle — there is
+  // nothing narrower to fall back to).
+  const handleAllCardClick = useCallback(() => {
+    if (filters.category.length > 0) {
+      handleFiltersChange({ ...filters, category: [] });
+    }
+  }, [filters, handleFiltersChange]);
+
+  // Multi-select: each click toggles that severity in/out of the filter set.
+  // (Multi-select is group state — the Chip itself just reflects `pressed`.)
   const handleSeverityClick = useCallback(
     (severity: SeverityLevel) => {
       const next = filters.severity.includes(severity) ? filters.severity.filter((s) => s !== severity) : [...filters.severity, severity];
@@ -915,25 +1055,24 @@ const OptimizeNewPage = () => {
     [filters, handleFiltersChange]
   );
 
-  const handleRuleClick = useCallback((ruleName: string | null) => {
-    // Clicking a specific rule activates the top issues filter and sets that rule
-    setTopIssuesActive(true);
-    setActiveRuleName((prev) => (prev === ruleName ? null : ruleName));
-    setPage(0);
-  }, []);
+  const handleSafetyClick = useCallback(
+    (band: string) => {
+      const next = filters.safety.includes(band) ? filters.safety.filter((b) => b !== band) : [...filters.safety, band];
+      handleFiltersChange({ ...filters, safety: next });
+    },
+    [filters, handleFiltersChange]
+  );
 
-  const handleToggleTopIssues = useCallback(() => {
-    if (topIssuesActive && !activeRuleName) {
-      // "All" is selected → deselect top issues filter (show all severities)
-      setTopIssuesActive(false);
-      setActiveRuleName(null);
-    } else {
-      // Either inactive or a specific rule is selected → go back to "All" top issues
-      setTopIssuesActive(true);
-      setActiveRuleName(null);
-    }
-    setPage(0);
-  }, [topIssuesActive, activeRuleName]);
+  // Rules selection — picking a rule outside the active category card widens the
+  // category back to All so the table never silently hides the picked rule.
+  const handleRulesChange = useCallback(
+    (nextRules: string[]) => {
+      const activeCategory = filters.category.length === 1 ? filters.category[0] : '';
+      const crossesCategory = activeCategory && nextRules.some((rule) => ruleCategoryMap[rule] && ruleCategoryMap[rule] !== activeCategory);
+      handleFiltersChange({ ...filters, rules: nextRules, ...(crossesCategory ? { category: [] } : {}) });
+    },
+    [filters, handleFiltersChange, ruleCategoryMap]
+  );
 
   const handleRowClick = (rec: any, tab = 0) => {
     setSelectedRec(rec);
@@ -1268,17 +1407,19 @@ const OptimizeNewPage = () => {
           />
         </WidgetCard>
         <WidgetCard
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            mt: 0,
-            padding: `${ds.space[3]} ${ds.space[4]}`,
-          }}
+          id='optimize-card-all'
+          role='button'
+          tabIndex={0}
+          aria-pressed={filters.category.length === 0}
+          data-testid='optimize-card-all'
+          onClick={handleAllCardClick}
+          onKeyDown={cardKeyDown(handleAllCardClick)}
+          sx={cardTabSx(filters.category.length === 0, false)}
         >
           <Stat
             size='md'
-            label='Total Recommendations'
-            info={{ tooltip: 'Total number of active optimization recommendations across all categories' }}
+            label='All Recommendations'
+            info={{ tooltip: 'Total number of active optimization recommendations across all categories. Click to show every category.' }}
             value={
               cardsLoading ? (
                 '…'
@@ -1308,20 +1449,24 @@ const OptimizeNewPage = () => {
         {WIDGET_CATEGORIES.map((cat) => {
           const catCount = categoryCounts[cat]?.count || 0;
           const catSavings = categoryCounts[cat]?.savings || 0;
-          return (
+          const pressed = filters.category.length === 1 && filters.category[0] === cat;
+          const muted = catCount === 0 && !pressed && !cardsLoading;
+          const card = (
             <WidgetCard
               key={cat}
-              sx={{
-                flex: 1,
-                minWidth: 0,
-                mt: 0,
-                padding: `${ds.space[3]} ${ds.space[4]}`,
-              }}
+              role='button'
+              tabIndex={muted ? -1 : 0}
+              aria-pressed={pressed}
+              aria-disabled={muted || undefined}
+              data-testid={`optimize-card-${cat.toLowerCase()}`}
+              onClick={muted ? undefined : () => handleCategoryCardClick(cat)}
+              onKeyDown={muted ? undefined : cardKeyDown(() => handleCategoryCardClick(cat))}
+              sx={cardTabSx(pressed, muted)}
             >
               <Stat
                 size='md'
                 label={WIDGET_CATEGORY_LABELS[cat]}
-                info={{ tooltip: WIDGET_CATEGORY_TOOLTIPS[cat] }}
+                info={{ tooltip: `${WIDGET_CATEGORY_TOOLTIPS[cat]} Click to filter the list; click again to unselect.` }}
                 value={
                   cardsLoading ? (
                     '…'
@@ -1334,6 +1479,13 @@ const OptimizeNewPage = () => {
                 }
               />
             </WidgetCard>
+          );
+          return muted ? (
+            <Tooltip key={cat} title='No open recommendations' placement='top'>
+              {card}
+            </Tooltip>
+          ) : (
+            card
           );
         })}
       </Box>
@@ -1380,48 +1532,6 @@ const OptimizeNewPage = () => {
             </>
           }
         >
-          <NewToggleButtons
-            size='xs'
-            options={[
-              {
-                value: 'all',
-                label: (
-                  <>
-                    All{' '}
-                    <Box component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[400], fontWeight: ds.weight.regular }}>
-                      ({(trackCounts.cost + trackCounts.reliability).toLocaleString()})
-                    </Box>
-                  </>
-                ),
-              },
-              {
-                value: 'cost',
-                label: (
-                  <>
-                    Cost{' '}
-                    <Box component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[400], fontWeight: ds.weight.regular }}>
-                      ({trackCounts.cost.toLocaleString()})
-                    </Box>
-                  </>
-                ),
-              },
-              {
-                value: 'reliability',
-                label: (
-                  <>
-                    Reliability{' '}
-                    <Box component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[400], fontWeight: ds.weight.regular }}>
-                      ({trackCounts.reliability.toLocaleString()})
-                    </Box>
-                  </>
-                ),
-              },
-            ]}
-            activeValue={track}
-            onChange={(value) => handleTrackChange(value as OptimizeTrack)}
-            width='300px'
-            noShadow
-          />
           <SearchInput
             id='optimize-search'
             value={searchInput}
@@ -1453,9 +1563,48 @@ const OptimizeNewPage = () => {
               handleFiltersChange({ ...filters, account: next });
             }}
           />
+          <FilterDropdown
+            id='optimize-rules-filter'
+            label='Rules'
+            searchPlaceholder='Search rules…'
+            multiple
+            grouped
+            groupIcon={rulesGroupIcon}
+            isOptionsLoading={severityLoading}
+            options={rulesFilterOptions}
+            value={rulesFilterValue}
+            onSelect={(_e: any, items: any) => {
+              handleRulesChange((Array.isArray(items) ? items : []).map((it: any) => it.value));
+            }}
+          />
+          <FilterDropdown
+            id='optimize-savings-filter'
+            label='Savings'
+            options={savingsFilterOptions}
+            value={savingsFilterOptions.find((o) => o.value === filters.savings && o.value !== '') || null}
+            onSelect={(_e: any, item: any) => {
+              const next = (item && typeof item === 'object' ? item.value : item) || '';
+              handleFiltersChange({ ...filters, savings: next });
+            }}
+          />
+          <FilterDropdown
+            id='optimize-last-seen-filter'
+            label='Last seen'
+            options={lastSeenFilterOptions}
+            value={lastSeenFilterOptions.find((o) => o.value === filters.lastSeen && o.value !== '') || null}
+            onSelect={(_e: any, item: any) => {
+              const next = (item && typeof item === 'object' ? item.value : item) || '';
+              handleFiltersChange({ ...filters, lastSeen: next });
+            }}
+          />
+          {hasActiveFilter && (
+            <Button id='optimize-clear-filters' tone='link' size='xs' icon={<CloseIcon sx={{ fontSize: 12 }} />} onClick={handleClearAll}>
+              Clear all
+            </Button>
+          )}
         </ListingLayout.Toolbar>
 
-        {/* Severity row */}
+        {/* Severity + Safety chip row */}
         <Box
           sx={{
             display: 'flex',
@@ -1466,55 +1615,6 @@ const OptimizeNewPage = () => {
           }}
           data-testid='severity-summary-bar'
         >
-          {/* Category chips — only when the active track has more than one
-              category to narrow between (the reliability track is a single one). */}
-          {trackCategoryOptions.length > 1 && (
-            <>
-              <Typography
-                sx={{
-                  fontSize: ds.text.caption,
-                  color: ds.gray[500],
-                  fontWeight: ds.weight.semibold,
-                  letterSpacing: '0.5px',
-                  textTransform: 'uppercase',
-                  mr: ds.space[1],
-                }}
-              >
-                Category
-              </Typography>
-              {severityLoading
-                ? chipSkeletons(trackCategoryOptions.length, 120)
-                : trackCategoryOptions.map((opt) => {
-                    const isActive = filters.category.includes(opt.value);
-                    const count = categoryCounts[opt.value]?.count || 0;
-                    return (
-                      <Chip
-                        key={opt.value}
-                        size='sm'
-                        pressed={isActive}
-                        dot
-                        onClick={() => {
-                          const next = isActive ? filters.category.filter((c) => c !== opt.value) : [...filters.category, opt.value];
-                          handleFiltersChange({ ...filters, category: next });
-                        }}
-                        count={count}
-                        highlightCount
-                        data-testid={`category-chip-${opt.value.toLowerCase()}`}
-                        sx={dotSx(CATEGORY_DOT_COLOR[opt.value])}
-                      >
-                        {opt.label}
-                      </Chip>
-                    );
-                  })}
-
-              {/* Divider between the category and severity chip groups */}
-              <Box
-                aria-hidden='true'
-                sx={{ width: '1px', alignSelf: 'stretch', backgroundColor: ds.gray[200], mx: ds.space[1], minHeight: ds.space[4] }}
-              />
-            </>
-          )}
-
           <Typography
             sx={{
               fontSize: ds.text.caption,
@@ -1531,12 +1631,14 @@ const OptimizeNewPage = () => {
             ? chipSkeletons(5, 88)
             : summaryData.map((item) => {
                 const isActive = filters.severity.includes(item.severity);
-                return (
+                const muted = item.count === 0 && !isActive;
+                const chip = (
                   <Chip
                     key={item.severity}
                     size='sm'
                     pressed={isActive}
-                    onClick={() => handleSeverityClick(item.severity)}
+                    disabled={muted}
+                    onClick={muted ? undefined : () => handleSeverityClick(item.severity)}
                     dot
                     tone={SEVERITY_TONE[item.severity]}
                     count={item.count}
@@ -1547,79 +1649,71 @@ const OptimizeNewPage = () => {
                     {item.severity}
                   </Chip>
                 );
+                return muted ? (
+                  <Tooltip key={item.severity} title='No open recommendations' placement='top'>
+                    <Box component='span' sx={{ display: 'inline-flex' }}>
+                      {chip}
+                    </Box>
+                  </Tooltip>
+                ) : (
+                  chip
+                );
+              })}
+
+          {/* Divider between the severity and safety chip groups */}
+          <Box
+            aria-hidden='true'
+            sx={{ width: '1px', alignSelf: 'stretch', backgroundColor: ds.gray[200], mx: ds.space[1], minHeight: ds.space[4] }}
+          />
+
+          <Typography
+            sx={{
+              fontSize: ds.text.caption,
+              color: ds.gray[500],
+              fontWeight: ds.weight.semibold,
+              letterSpacing: '0.5px',
+              textTransform: 'uppercase',
+              mr: ds.space[1],
+            }}
+          >
+            Safety
+          </Typography>
+          {safetyLoading
+            ? chipSkeletons(4, 88)
+            : SAFETY_ORDER.map((band) => {
+                const isActive = filters.safety.includes(band);
+                // Counts are unknown when the aggregate failed — render the band
+                // countless and clickable rather than muting it as if it were empty.
+                const count = safetyError ? undefined : safetyCounts[band] || 0;
+                const muted = count === 0 && !isActive;
+                const chip = (
+                  <Chip
+                    key={band}
+                    size='sm'
+                    pressed={isActive}
+                    disabled={muted}
+                    onClick={muted ? undefined : () => handleSafetyClick(band)}
+                    dot
+                    tone={safetyBandTone(band)}
+                    count={count}
+                    highlightCount={count !== undefined}
+                    data-testid={`safety-chip-${band}`}
+                    sx={dotSx(SAFETY_DOT_COLOR[band])}
+                  >
+                    {safetyBandLabel(band)}
+                  </Chip>
+                );
+                return muted ? (
+                  <Tooltip key={band} title='No open recommendations' placement='top'>
+                    <Box component='span' sx={{ display: 'inline-flex' }}>
+                      {chip}
+                    </Box>
+                  </Tooltip>
+                ) : (
+                  chip
+                );
               })}
         </Box>
-
-        {/* Top issues row — separate band so the eye reads severity first,
-            then "of those, here are the top rule names". */}
-        {(severityLoading || topIssueData.items.length > 0 || hasActiveFilter) && (
-          <Box
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: ds.space[2],
-              padding: `${ds.space[1]} ${ds.space[4]}`,
-              flexWrap: 'wrap',
-            }}
-            data-testid='top-issues-bar'
-          >
-            {(severityLoading || topIssueData.items.length > 0) && (
-              <>
-                <Box sx={{ display: 'inline-flex', alignItems: 'baseline', gap: ds.space[1], mr: ds.space[1] }}>
-                  <Typography
-                    sx={{
-                      fontSize: ds.text.caption,
-                      color: ds.gray[500],
-                      fontWeight: ds.weight.semibold,
-                      letterSpacing: '0.5px',
-                      textTransform: 'uppercase',
-                    }}
-                  >
-                    Top Issues
-                  </Typography>
-                  <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>({topIssueData.severityLabel})</Typography>
-                </Box>
-                {severityLoading ? (
-                  chipSkeletons(5, 150)
-                ) : (
-                  <>
-                    <Chip
-                      size='sm'
-                      pressed={topIssuesActive && !activeRuleName}
-                      onClick={handleToggleTopIssues}
-                      count={topIssueData.total}
-                      highlightCount
-                    >
-                      All
-                    </Chip>
-                    {topIssueData.items.map((item) => {
-                      const isActive = topIssuesActive && activeRuleName === item.rule_name;
-                      return (
-                        <Chip
-                          key={item.rule_name}
-                          size='sm'
-                          pressed={isActive}
-                          onClick={() => handleRuleClick(item.rule_name)}
-                          count={item.count}
-                          highlightCount
-                        >
-                          {formatRuleName(item.rule_name)}
-                        </Chip>
-                      );
-                    })}
-                  </>
-                )}
-              </>
-            )}
-            {hasActiveFilter && (
-              <Box sx={{ ml: 'auto' }}>
-                <Button id='optimize-clear-filters' tone='link' size='xs' icon={<CloseIcon sx={{ fontSize: 12 }} />} onClick={handleClearAll}>
-                  Clear all
-                </Button>
-              </Box>
-            )}
-          </Box>
-        )}
 
         <ListingLayout.Body>
           <CustomTable
