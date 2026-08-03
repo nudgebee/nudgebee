@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"encoding/json"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
@@ -279,6 +280,90 @@ func TestBuildCanonicalLogQueryPrompt(t *testing.T) {
 		assert.NotContains(t, pn, "Canonical fields for THIS backend")
 		assert.Contains(t, pn, "A window in the question is a HARD constraint")
 		assert.Contains(t, pn, "values come from the QUESTION, never from the examples")
+	})
+}
+
+// TestWithFallbackNote pins the kubectl-fallback observability signal: a
+// successful kubectl response gets a "fallback_note" field injected into its
+// JSON envelope so it's distinguishable from a direct (non-fallback) kubectl
+// fetch, without disturbing the rest of the envelope. Non-JSON bodies (e.g. an
+// error string) are left untouched rather than corrupted.
+func TestWithFallbackNote(t *testing.T) {
+	t.Run("injects the note into a JSON envelope", func(t *testing.T) {
+		resp := makeFetchResponse(FetchLogsAgentName, "kubectl logs pod-x -n ns", `{"stdout":"line1\nline2","stderr":""}`, "logs_kubectl_1.txt", "", nil)
+		out := withFallbackNote(resp, "canonical loki query matched zero rows — retried via kubectl.")
+		require.Len(t, out.Response, 1)
+		var env map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out.Response[0]), &env))
+		assert.Equal(t, "canonical loki query matched zero rows — retried via kubectl.", env["fallback_note"])
+		// Original fields survive untouched.
+		assert.Equal(t, "logs_kubectl_1.txt", env["file_ref"])
+	})
+
+	t.Run("leaves a non-JSON body unchanged", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{"kubectl intent extraction: boom"}, Status: core.ConversationStatusFailed}
+		out := withFallbackNote(resp, "note")
+		assert.Equal(t, resp, out)
+	})
+
+	t.Run("leaves an empty response unchanged", func(t *testing.T) {
+		resp := core.NBAgentResponse{}
+		out := withFallbackNote(resp, "note")
+		assert.Equal(t, resp, out)
+	})
+}
+
+// TestEnvelopeQuery guards a bug caught in code review (gemini-code-assist):
+// kubectlFallback used to call executedLogQuery — which looks for a NESTED
+// metadata.query field, the shape of the raw logs_execute_v2 tool response —
+// directly on the already-built makeFetchResponse envelope, whose "query" is a
+// TOP-LEVEL field instead. That mismatch meant primaryQuery was silently
+// always "", so fallback_note's "(query: ...)" clause could never render.
+// envelopeQuery reads the correct (top-level) shape.
+func TestEnvelopeQuery(t *testing.T) {
+	t.Run("extracts the top-level query field from a real envelope", func(t *testing.T) {
+		resp := makeFetchResponse(FetchLogsAgentName, `{"where":{"app":{"_eq":"checkout"}}}`, `{"logs":[]}`, "", "", nil)
+		assert.Equal(t, `{"where":{"app":{"_eq":"checkout"}}}`, envelopeQuery(resp.Response))
+	})
+
+	t.Run("empty response returns empty string", func(t *testing.T) {
+		assert.Empty(t, envelopeQuery(nil))
+		assert.Empty(t, envelopeQuery([]string{}))
+	})
+
+	t.Run("unparseable body returns empty string", func(t *testing.T) {
+		assert.Empty(t, envelopeQuery([]string{"not-json"}))
+	})
+
+	t.Run("a raw logs_execute_v2 response (nested metadata.query, no top-level query) is not what this reads", func(t *testing.T) {
+		// Documents the exact shape mismatch the bug was about: this is the RAW
+		// backend response shape (what executedLogQuery is for), not the
+		// envelope shape (what envelopeQuery is for) — envelopeQuery correctly
+		// finds nothing here since there's no top-level "query" key.
+		raw := `{"logs":[],"metadata":{"query":"{namespace=\"checkout\"}","provider":"loki"}}`
+		assert.Empty(t, envelopeQuery([]string{raw}))
+	})
+}
+
+// TestFallbackNote pins the wording distinction a live local run caught: when
+// the canonical query outright FAILED (network/backend error), the note must
+// say "failed", not "matched zero rows" — the two are different diagnoses and
+// conflating them misleads whoever reads the envelope. Also pins that an empty
+// primaryQuery (typical of a failure, since executedLogQuery has nothing to
+// extract) omits the query clause instead of rendering "(query: )".
+func TestFallbackNote(t *testing.T) {
+	t.Run("completed-but-empty primary reads as zero rows, with query clause", func(t *testing.T) {
+		note := fallbackNote("loki", core.ConversationStatusCompleted, `{"where":{"namespace":{"_eq":"nudgebee"}}}`)
+		assert.Contains(t, note, "matched zero rows")
+		assert.Contains(t, note, `(query: {"where":{"namespace":{"_eq":"nudgebee"}}})`)
+		assert.NotContains(t, note, "failed")
+	})
+
+	t.Run("failed primary reads as failed, no empty query clause", func(t *testing.T) {
+		note := fallbackNote("loki", core.ConversationStatusFailed, "")
+		assert.Contains(t, note, "canonical loki query failed")
+		assert.NotContains(t, note, "matched zero rows")
+		assert.NotContains(t, note, "(query: )")
 	})
 }
 

@@ -139,8 +139,9 @@ func queryHasExplicitTimeAnchor(canonicalQuery string) bool {
 // (succeeded but empty), the original response is preferred so a real "no logs"
 // answer isn't masked by a kubectl access error.
 func (a *FetchLogsAgentV2) kubectlFallback(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider, primary core.NBAgentResponse) (core.NBAgentResponse, error) {
+	primaryQuery := envelopeQuery(primary.Response)
 	ctx.GetLogger().Info("fetch_logs v2: services-server returned error/empty — falling back to kubectl",
-		"provider", provider.Provider, "primary_status", primary.Status)
+		"provider", provider.Provider, "primary_status", primary.Status, "primary_query", primaryQuery)
 	kresp, err := a.generateKubeCtlLogQueryAndExecute(ctx, request)
 	if err != nil {
 		return kresp, err
@@ -148,7 +149,77 @@ func (a *FetchLogsAgentV2) kubectlFallback(ctx *security.RequestContext, request
 	if kresp.Status == core.ConversationStatusFailed && primary.Status != core.ConversationStatusFailed {
 		return primary, nil
 	}
-	return kresp, nil
+	return withFallbackNote(kresp, fallbackNote(provider.Provider, primary.Status, primaryQuery)), nil
+}
+
+// envelopeQuery extracts the top-level "query" field from a fetch_logs
+// makeFetchResponse envelope (primary.Response[0]) — the query
+// generateCanonicalLogQueryAndExecute/generateDatadogLogQueryAndExecute already
+// resolved (via executedLogQuery, against the RAW backend response) when
+// building the envelope. Do NOT call executedLogQuery on this value again:
+// that function looks for a NESTED metadata.query field — the shape of the
+// raw logs_execute_v2 tool response — which this already-built envelope does
+// not have (its query lives at the top level), so it would always return the
+// fallback ("") and silently drop a perfectly good value. Caught in code
+// review (gemini-code-assist) against an earlier revision of this function.
+// Returns "" on an empty/unparseable response — same fallback semantics as
+// before.
+func envelopeQuery(response []string) string {
+	if len(response) == 0 {
+		return ""
+	}
+	var doc struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal([]byte(response[0]), &doc); err != nil {
+		return ""
+	}
+	return doc.Query
+}
+
+// fallbackNote builds the human-readable explanation for why the canonical
+// query's result didn't reach the caller. Distinguishes an outright failure
+// (primary.Status == Failed — e.g. a network/backend error) from a query that
+// executed successfully but matched zero rows, since conflating the two as
+// "matched zero rows" misdescribes a hard failure. Omits the query clause
+// when empty (a failure often occurs before a query/metadata is available to
+// extract via executedLogQuery).
+func fallbackNote(provider string, primaryStatus core.ConversationStatus, primaryQuery string) string {
+	outcome := "matched zero rows"
+	if primaryStatus == core.ConversationStatusFailed {
+		outcome = "failed"
+	}
+	queryClause := ""
+	if primaryQuery != "" {
+		queryClause = fmt.Sprintf(" (query: %s)", primaryQuery)
+	}
+	return fmt.Sprintf("canonical %s query %s%s — retried via kubectl; this answer came from kubectl, not %s.", provider, outcome, queryClause, provider)
+}
+
+// withFallbackNote injects a "fallback_note" field into a fetch_logs response
+// envelope, best-effort. Used only by kubectlFallback so the returned kubectl
+// answer is distinguishable from a direct kubectl fetch: without it, a
+// canonical query that quietly matched zero rows (e.g. a namespace typo or a
+// stale label mapping) looks identical to "canonical was never attempted",
+// which is exactly what made this class of bug hard to diagnose without
+// grepping raw application logs. Leaves resp unchanged if the body isn't the
+// expected JSON envelope (e.g. an error string) — never blocks the fallback
+// response on a marshal failure.
+func withFallbackNote(resp core.NBAgentResponse, note string) core.NBAgentResponse {
+	if len(resp.Response) == 0 {
+		return resp
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(resp.Response[0]), &envelope); err != nil {
+		return resp
+	}
+	envelope["fallback_note"] = note
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return resp
+	}
+	resp.Response = []string{string(body)}
+	return resp
 }
 
 // fetchResponseIsEmpty reports whether a makeFetchResponse envelope carries no
