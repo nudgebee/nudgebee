@@ -2211,6 +2211,7 @@ const Investigate = () => {
                                 icon={<RefreshIcon fontSize='small' />}
                                 aria-label='Refresh investigation'
                                 tooltip='Refresh investigation'
+                                tooltipPlacement='left'
                                 data-testid='refresh-investigation-btn'
                                 disabled={!matchedOptions.find((o) => o.id === 'AskAiCard')?.isCompleted()}
                                 onClick={() => {
