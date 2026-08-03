@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import apiRecommendations from '@api1/recommendation';
 import apiHome from '@api1/home';
 import apiUser from '@api1/user';
@@ -6,7 +6,8 @@ import Currency from '@shared/format/Currency';
 import Datetime from '@shared/format/Datetime';
 import Text from '@shared/format/Text';
 import { Label, type LabelTone } from '@ui/Label';
-import { Box, Typography } from '@mui/material';
+import { toast as snackbar } from '@ui/Toast';
+import { Box, Button, Typography } from '@mui/material';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { ds } from 'src/utils/colors';
@@ -162,6 +163,28 @@ const ResolutionsView = () => {
   const [recommendationTypes, setRecommendationTypes] = useState<string[]>([]);
   const [resolverTypes, setResolverTypes] = useState<string[]>([]);
 
+  // Retrying a Failed attempt re-dispatches it server-side; refreshKey refetches
+  // the listing so the row reflects its new InProgress state.
+  const [retryingId, setRetryingId] = useState('');
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const handleRetry = useCallback(async (resolutionId: string, accountId: string) => {
+    setRetryingId(resolutionId);
+    try {
+      const res = await apiRecommendations.retryRecommendationResolution(accountId, resolutionId);
+      if (res?.errors?.length) {
+        snackbar.error(res.errors[0]?.message || 'Failed to retry resolution');
+      } else {
+        snackbar.success('Retry started');
+        setRefreshKey((k) => k + 1);
+      }
+    } catch {
+      snackbar.error('Failed to retry resolution');
+    } finally {
+      setRetryingId('');
+    }
+  }, []);
+
   // Load accounts + distinct filter values once.
   useEffect(() => {
     apiHome.getCloudAccounts().then((res: any) => {
@@ -227,7 +250,7 @@ const ResolutionsView = () => {
     return () => {
       active = false;
     };
-  }, [selectedAccounts, selectedStatus, selectedType, selectedResolver, rowsPerPage, page, deepLinkRecId, router.isReady]);
+  }, [selectedAccounts, selectedStatus, selectedType, selectedResolver, rowsPerPage, page, deepLinkRecId, router.isReady, refreshKey]);
 
   // Build table cells from the fetched rows + accounts map. Kept separate from
   // the fetch so Account labels resolve once accounts load without refetching.
@@ -360,6 +383,17 @@ const ResolutionsView = () => {
                 {rr.status_message && (rr.status === 'Failed' || (rr.status === 'Success' && !containsLink(rr.type_reference_id))) && (
                   <Text value={rr.status_message} secondaryText showAutoEllipsis sx={{ fontSize: ds.text.small }} />
                 )}
+                {rr.status === 'Failed' && (
+                  <Button
+                    size='small'
+                    variant='text'
+                    disabled={!!retryingId}
+                    onClick={() => handleRetry(rr.id, rr.account_id)}
+                    sx={{ alignSelf: 'flex-start', p: 0, minWidth: 0, fontSize: ds.text.small, textTransform: 'none' }}
+                  >
+                    {retryingId === rr.id ? 'Retrying…' : 'Retry'}
+                  </Button>
+                )}
               </Box>
             ),
           },
@@ -393,7 +427,7 @@ const ResolutionsView = () => {
           },
         ];
       }),
-    [rawRows, accounts]
+    [rawRows, accounts, retryingId, handleRetry]
   );
 
   return (

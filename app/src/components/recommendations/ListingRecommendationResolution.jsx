@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import apiRecommendations from '@api1/recommendation';
 import apiUser from '@api1/user';
 import Currency from '@shared/format/Currency';
 import Datetime from '@shared/format/Datetime';
 import Text from '@shared/format/Text';
 import { Label } from '@ui/Label';
-import { Box, Typography } from '@mui/material';
+import { toast as snackbar } from '@ui/Toast';
+import { Box, Button, Typography } from '@mui/material';
 import Link from 'next/link';
 import PropTypes from 'prop-types';
 import { ds } from 'src/utils/colors';
@@ -159,6 +160,33 @@ const ListingRecommendationResolution = ({ accountId }) => {
     setRowsPerPage(limit);
   };
 
+  // Retrying a Failed attempt re-dispatches it server-side; the refetch shows
+  // its new InProgress state. The ref guards double-clicks — rows are only
+  // rebuilt on refetch, so a disabled prop could not update in time.
+  const retryingRef = useRef('');
+  const handleRetry = (resolutionId) => {
+    if (retryingRef.current === resolutionId) {
+      return;
+    }
+    retryingRef.current = resolutionId;
+    apiRecommendations
+      .retryRecommendationResolution(accountId, resolutionId)
+      .then((res) => {
+        if (res?.errors?.length) {
+          snackbar.error(res.errors[0]?.message || 'Failed to retry resolution');
+        } else {
+          snackbar.success('Retry started');
+          getResolutionListingData();
+        }
+      })
+      .catch(() => {
+        snackbar.error('Failed to retry resolution');
+      })
+      .finally(() => {
+        retryingRef.current = '';
+      });
+  };
+
   const getResolutionListingData = () => {
     setData([]);
     setLoading(true);
@@ -279,6 +307,16 @@ const ListingRecommendationResolution = ({ accountId }) => {
                         {statusText}
                       </Label>
                       {showMessage && <Text value={rr.status_message} secondaryText showAutoEllipsis sx={{ fontSize: ds.text.small }} />}
+                      {rr.status === 'Failed' && (
+                        <Button
+                          size='small'
+                          variant='text'
+                          onClick={() => handleRetry(rr.id)}
+                          sx={{ alignSelf: 'flex-start', p: 0, minWidth: 0, fontSize: ds.text.small, textTransform: 'none' }}
+                        >
+                          Retry
+                        </Button>
+                      )}
                     </Box>
                   );
                 })(),

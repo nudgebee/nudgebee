@@ -183,6 +183,23 @@ mutation ApplyRecommendation($account_id: String!, $event_id: String!, $data: js
 }
 `;
 
+export const ETL_CREATE_TICKET_RESOLUTION = `
+mutation CreateTicketResolution($account_id: String!, $recommendation_id: String!, $ticket_id: String!, $ticket_key: String) {
+  recommendations_create_ticket_resolution(object: {account_id: $account_id, recommendation_id: $recommendation_id, ticket_id: $ticket_id, ticket_key: $ticket_key }) {
+    status
+  }
+}
+`;
+
+export const ETL_RETRY_RECOMMENDATION_RESOLUTION = `
+mutation RetryRecommendationResolution($account_id: String!, $resolution_id: String!) {
+  recommendation_resolution_retry(object: {account_id: $account_id, resolution_id: $resolution_id }) {
+    status
+    message
+  }
+}
+`;
+
 export const GET_SECURITY_RECOMMENDATION_LISTING_APPS = `
 query get_security_recommendation {
   recommendation_security_groupings_v2(where:__WHERE__, order_by:[{column: "count_image", order: desc}, {column: "count_severity_critical", order: desc},{column: "count_severity_high", order: desc},{column: "count_severity_medium", order: desc},{column: "count_severity_low", order: desc}]) {
@@ -1418,6 +1435,33 @@ const apiRecommendations = {
     invalidateOptimisationSummaryRecommendations();
     return {
       data: response?.data?.data?.recommendations_apply?.data,
+      errors: response?.data?.errors,
+    };
+  },
+
+  async createTicketResolution(accountId: string, recommendationId: string, ticketId: string, ticketKey?: string) {
+    if (accountId === 'demo') {
+      return { data: null, errors: null };
+    }
+    const response = await queryGraphQL(ETL_CREATE_TICKET_RESOLUTION, 'CreateTicketResolution', {
+      account_id: accountId,
+      recommendation_id: recommendationId,
+      ticket_id: ticketId,
+      ticket_key: ticketKey || ticketId,
+    });
+    return {
+      data: response?.data?.data?.recommendations_create_ticket_resolution,
+      errors: response?.data?.errors,
+    };
+  },
+
+  async retryRecommendationResolution(accountId: string, resolutionId: string) {
+    const response = await queryGraphQL(ETL_RETRY_RECOMMENDATION_RESOLUTION, 'RetryRecommendationResolution', {
+      account_id: accountId,
+      resolution_id: resolutionId,
+    });
+    return {
+      data: response?.data?.data?.recommendation_resolution_retry,
       errors: response?.data?.errors,
     };
   },

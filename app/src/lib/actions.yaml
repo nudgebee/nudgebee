@@ -1913,6 +1913,32 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin
       - role: tenant_admin
+  - name: recommendations_create_ticket_resolution
+    comment: Record a created ticket as a resolution attempt on a recommendation
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/recommendation'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: account_admin
+      - role: tenant_admin
+  - name: recommendation_resolution_retry
+    comment: Retry a failed recommendation resolution attempt
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/recommendation'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: account_admin
+      - role: tenant_admin
   - name: audit_groupings_v2
     comment: Aggregate audit-log entries grouped by user, category and time
     definition:

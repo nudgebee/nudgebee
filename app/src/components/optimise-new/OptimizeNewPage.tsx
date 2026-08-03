@@ -1659,9 +1659,18 @@ const OptimizeNewPage = () => {
           onClose={() => setTicketModalRec(null)}
           onSuccess={({ ticketId, url }: { ticketId?: string; url?: string } = {}) => {
             const recId = ticketModalRec?.id;
+            const recAccountId = ticketModalRec?.account_id;
             setTicketModalRec(null);
             if (recId) {
               setRecommendations((prev) => prev.map((rec: any) => (rec.id === recId ? { ...rec, ticket: { ticket_id: ticketId, url } } : rec)));
+            }
+            // Record the ticket as a resolution attempt so the recommendation is
+            // claimed and the Resolutions tab shows the delegation. Best-effort:
+            // the ticket exists either way.
+            if (recId && recAccountId && ticketId) {
+              recommendationApi.createTicketResolution(recAccountId, recId, String(ticketId)).catch((e: unknown) => {
+                console.error('failed to record ticket resolution', e);
+              });
             }
           }}
           onFailure={(error: string) => {
