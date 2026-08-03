@@ -789,7 +789,8 @@ def handle_krr_report(content: dict, tenant: str, cloud_account_id: str, account
         on_conflict = (
             "ON CONFLICT (cloud_account_id, rule_name, resource_id, category,account_object_id) DO UPDATE SET "
             "recommendation =EXCLUDED.recommendation, estimated_savings =EXCLUDED.estimated_savings, "
-            "status = EXCLUDED.status"
+            "status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive') "
+            "THEN recommendation.status ELSE EXCLUDED.status END"
         )
         resource_map = {}
         for resource in resource_list:
@@ -2090,7 +2091,8 @@ def upsert_recommendations(recommendations):
     on_conflict = (
         "ON CONFLICT (cloud_account_id, rule_name, resource_id, category, account_object_id) DO UPDATE SET "
         "recommendation = EXCLUDED.recommendation, estimated_savings =EXCLUDED.estimated_savings, "
-        "status=EXCLUDED.status"
+        "status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive') "
+        "THEN recommendation.status ELSE EXCLUDED.status END"
     )
     try:
         database.insert_data("recommendation", recommendations, on_conflict=on_conflict)
