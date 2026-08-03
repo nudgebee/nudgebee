@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
@@ -263,6 +264,13 @@ func (t GetEventByIdTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 	et := EventsExecuteTool{}
 	et.enrichData(data) // single row → full-evidence path
 
+	for _, row := range data {
+		if investigateData, ok := row["evidences"].(events.InvestigateData); ok {
+			capInvestigateDataEvidence(&investigateData)
+			row["evidences"] = investigateData
+		}
+	}
+
 	bytesData, marshalErr := common.MarshalJson(data)
 	if marshalErr != nil {
 		return core.NBToolResponse{}, marshalErr
@@ -270,6 +278,97 @@ func (t GetEventByIdTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 	resp.Data = string(bytesData)
 	resp.References = eventReferences(nbCtx, data)
 	return resp, nil
+}
+
+// get_event_by_id always selects the `evidences` column (unlike events_execute,
+// where the LLM's own SELECT list usually omits it), so it always takes
+// processRowWithMessages' full-evidence path. Most InvestigateData fields have
+// no size cap there — only LogData/ErrorLogData do — so a single heavy-evidence
+// event (e.g. a crash loop with a flood of pod/node events) can serialize to
+// ~1MB, which then dominates every later turn's input tokens for the rest of
+// the conversation. capInvestigateDataEvidence bounds those fields the same
+// way agent_events.go's reduceEventData already bounds Markdowns/Others
+// (stringify + truncate at maxEvidenceInsightDataChars), plus caps slice
+// length at maxEvidenceInsightEntries. Scoped to this tool only — enrichData/
+// processRowWithMessages (shared with events_execute) are untouched, so the
+// events agent's behavior and cost are unaffected.
+const (
+	maxEvidenceInsightEntries   = 15
+	maxEvidenceInsightDataChars = 3000
+)
+
+// truncateAtRuneBoundary caps s at maxBytes, walking back to the nearest
+// UTF-8 rune boundary so a multi-byte character never gets split (mirrors
+// agents/core/scratchpad.go's TruncateHead — not reused directly since
+// tools can't import agents/core without a cycle).
+func truncateAtRuneBoundary(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return s[:maxBytes]
+}
+
+func capInsight(insight events.InvestigateDataInsight) events.InvestigateDataInsight {
+	if insight.Data != nil {
+		// Evidence data is almost always a string (raw JSON already stringified
+		// upstream); the type switch skips fmt.Sprintf's reflection path for
+		// that common case, which matters here since insight.Data can be up to
+		// ~1MB before capping.
+		var dataStr string
+		switch v := insight.Data.(type) {
+		case string:
+			dataStr = v
+		default:
+			dataStr = fmt.Sprintf("%v", v)
+		}
+		if len(dataStr) > maxEvidenceInsightDataChars {
+			insight.Data = truncateAtRuneBoundary(dataStr, maxEvidenceInsightDataChars) + "\n... (truncated)"
+		}
+	}
+	return insight
+}
+
+func capInsightSlice(insights []events.InvestigateDataInsight) []events.InvestigateDataInsight {
+	if len(insights) > maxEvidenceInsightEntries {
+		insights = insights[:maxEvidenceInsightEntries]
+	}
+	for i, insight := range insights {
+		insights[i] = capInsight(insight)
+	}
+	return insights
+}
+
+func capInvestigateDataEvidence(id *events.InvestigateData) {
+	id.PodMetrics = capInsightSlice(id.PodMetrics)
+	id.NodeMetrics = capInsightSlice(id.NodeMetrics)
+	id.NoisyNeighbours = capInsightSlice(id.NoisyNeighbours)
+	id.ApiFailures = capInsightSlice(id.ApiFailures)
+	id.PodEvents = capInsightSlice(id.PodEvents)
+	id.NodeEvents = capInsightSlice(id.NodeEvents)
+	id.UserActions = capInsightSlice(id.UserActions)
+	id.RDBMSQueryData = capInsightSlice(id.RDBMSQueryData)
+	id.MetricsData = capInsightSlice(id.MetricsData)
+	id.Markdowns = capInsightSlice(id.Markdowns)
+	id.Others = capInsightSlice(id.Others)
+
+	id.PodData = capInsight(id.PodData)
+	id.NodeData = capInsight(id.NodeData)
+	id.Deployment = capInsight(id.Deployment)
+	id.AlertLabels = capInsight(id.AlertLabels)
+	id.JobInformation = capInsight(id.JobInformation)
+	id.JobEvents = capInsight(id.JobEvents)
+	id.JobPodEvents = capInsight(id.JobPodEvents)
+	id.RelatedEvents = capInsight(id.RelatedEvents)
+	id.ContainerMetrics = capInsight(id.ContainerMetrics)
+	id.Traces = capInsight(id.Traces)
+	id.AlertData = capInsight(id.AlertData)
+	id.ServiceMap = capInsight(id.ServiceMap)
 }
 
 // ---------------------------------------------------------------------------
