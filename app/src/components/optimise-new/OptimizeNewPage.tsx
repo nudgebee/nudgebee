@@ -168,8 +168,8 @@ const WIDGET_CATEGORY_TOOLTIPS: Record<string, string> = {
 };
 
 // Shared chrome for the clickable stat-card tabs: the active card carries the
-// same blue ring the filter pills use for their applied state; zero-count cards
-// render muted and inert.
+// same blue border + tint the Troubleshoot summary widgets use for their active
+// drill-down; zero-count cards render muted and inert.
 const cardTabSx = (pressed: boolean, muted: boolean) => ({
   flex: 1,
   minWidth: 0,
@@ -179,10 +179,15 @@ const cardTabSx = (pressed: boolean, muted: boolean) => ({
     ? { opacity: 0.5 }
     : {
         cursor: 'pointer',
-        transition: 'border-color 120ms ease, box-shadow 120ms ease',
-        '&:hover': { borderColor: ds.gray[400] },
+        // Stat and Chip pin their own `cursor: default`, which would otherwise leave
+        // the hand pointer showing only on the card's bare padding. `&&` outranks them.
+        '&& *': { cursor: 'pointer' },
+        transition: `border-color ${ds.motion.micro} ${ds.motion.ease}, background-color ${ds.motion.micro} ${ds.motion.ease}`,
+        // Re-assert the blue border on hover for the active card — the gray hover
+        // border would otherwise mask its highlight while hovering.
+        '&:hover': { borderColor: pressed ? ds.blue[400] : ds.gray[400] },
       }),
-  ...(pressed ? { borderColor: ds.blue[300], boxShadow: `0 0 0 3px ${ds.blue[100]}` } : {}),
+  ...(pressed ? { borderColor: ds.blue[400], backgroundColor: ds.blue[100] } : {}),
 });
 
 // Enter/Space activation so the card tabs work as buttons for keyboard users.
