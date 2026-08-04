@@ -4872,6 +4872,9 @@ var table_metadata = map[string]TableDefinition{
 			"is_dismissed": {
 				Type: ColumnDefinitionTypeBoolean,
 			},
+			"snoozed_until": {
+				Type: ColumnDefinitionTypeDatetime,
+			},
 			"account_object_id": {
 				Type: ColumnDefinitionTypeString,
 			},
