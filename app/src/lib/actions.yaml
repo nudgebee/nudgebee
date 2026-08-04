@@ -1399,6 +1399,32 @@ actions:
       - role: tenant_admin
       - role: account_admin
     comment: Remove a row when `id` is set; wipe the (layer, scope) when `id` is omitted. Includes the GDPR full-wipe path (layer=all, scope=user).
+  - name: ai_memory_confirm
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: tenant_admin
+      - role: account_admin
+    comment: Keep an inferred preference — makes it explicit so agents inject it, while retaining its evidence and inferred origin so it stays reviewable and reversible. Preferences layer, user scope only.
+  - name: ai_memory_unconfirm
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory_v2'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: tenant_admin
+      - role: account_admin
+    comment: Unkeep a previously kept preference, returning it to the unreviewed pool. Only affects rows of inferred origin, so a user-authored preference can never be downgraded by this path.
   - name: ai_memory_create_decision
     definition:
       kind: "synchronous"
