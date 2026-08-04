@@ -1562,7 +1562,7 @@ func getEventWorkload(event playbooks.PlaybookEvent) string {
 func (a *observabilityLogAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
 	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
 	source, err := getLogSourceForAccount(requestCtx, ctx.GetAccountId(), "", "")
-	namespace := "nudgebee"
+	namespace := getEventNamespace(ctx.GetEvent())
 	if err != nil || source == nil {
 		// No configured log source — allow relay fallback only for non-cloud events
 		if ctx.GetEvent().SubjectName != "" && namespace != "" && !isCloudEventSource(ctx.GetEvent().Source) {
