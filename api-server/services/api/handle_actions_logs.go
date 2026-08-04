@@ -52,7 +52,9 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			return
 		}
 
-		resp, err := observability.FetchLogs(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityLogsQueryTimeout, func() (observability.FetchLogsResult, error) {
+			return observability.FetchLogs(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -85,7 +87,9 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			return
 		}
 
-		resp, err := observability.GetLogsQuery(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityLogsQueryTimeout, func() (observability.OutputLogQuery, error) {
+			return observability.GetLogsQuery(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -109,9 +113,28 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			return
 		}
 
-		// FetchLogLabelsOrIndexFields owns the fetch_index fork, so the mode is
-		// decided in one testable place rather than split across the handler.
-		resp, err := observability.FetchLogLabelsOrIndexFields(ctx, request)
+		if request.FetchIndex {
+			indexFields, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name+":index", observabilityMetadataActionTimeout, func() ([]observability.OutputLogLabelFields, error) {
+				return observability.FetchLogIndexFields(ctx, request)
+			})
+			if err != nil {
+				c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+				return
+			}
+			labels := make([]observability.OutputLogLabel, len(indexFields))
+			for i, f := range indexFields {
+				labels[i] = observability.OutputLogLabel{
+					Label:      f.Field,
+					Attributes: f.Attributes,
+				}
+			}
+			c.JSON(200, labels)
+			return
+		}
+
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() ([]observability.OutputLogLabel, error) {
+			return observability.FetchLogLabels(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -136,7 +159,9 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			return
 		}
 
-		resp, err := observability.FetchLogLabelValues(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() ([]observability.OutputLogLabelValue, error) {
+			return observability.FetchLogLabelValues(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -161,7 +186,9 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			return
 		}
 
-		resp, err := observability.FetchLogGroup(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() (observability.LogGroupOutput, error) {
+			return observability.FetchLogGroup(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return

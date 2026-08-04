@@ -43,7 +43,9 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			return
 		}
 
-		resp, err := observability.FetchMetricsQuery(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetricsQueryTimeout, func() (any, error) {
+			return observability.FetchMetricsQuery(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -75,7 +77,9 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			return
 		}
 
-		resp, err := observability.FetchMetricsList(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() ([]observability.OutputMetrics, error) {
+			return observability.FetchMetricsList(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -107,7 +111,9 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			return
 		}
 
-		resp, err := observability.FetchMetricLabelsList(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() ([]observability.OutputMetricLabels, error) {
+			return observability.FetchMetricLabelsList(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -138,7 +144,9 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			return
 		}
 
-		resp, err := observability.FetchMetricLabelValues(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() ([]observability.OutputMetricsLabelValues, error) {
+			return observability.FetchMetricLabelValues(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -173,7 +181,9 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			return
 		}
 
-		resp, err := observability.FetchMetricUtilisation(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetricsQueryTimeout, func() (observability.OutputMetricQuery, error) {
+			return observability.FetchMetricUtilisation(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -214,7 +224,9 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			return
 		}
 
-		resp, err := observability.FetchMetricSeries(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() (observability.MetricSeriesResult, error) {
+			return observability.FetchMetricSeries(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -253,7 +265,9 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
-		resp, err := observability.GetMetricsQuery(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetricsQueryTimeout, func() (any, error) {
+			return observability.GetMetricsQuery(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
