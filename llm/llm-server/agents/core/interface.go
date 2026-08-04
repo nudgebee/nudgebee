@@ -243,6 +243,13 @@ type NBAgentPlannerToolActionStep struct {
 	// It is intentionally excluded from the scratchpad's compression-activation byte
 	// count so it never drags the window-pressure threshold. Empty for non-agent steps.
 	SubAgentEvidence string `json:"sub_agent_evidence,omitempty"`
+	// IsCircuitOpen mirrors toolcore.NBToolResponse.IsCircuitOpen: this step's
+	// Status is ToolStatusFailure because the tool's circuit breaker
+	// fast-failed the call, not because the tool itself failed. Consulted so
+	// a circuit-open step doesn't count toward the consecutive-failed-iteration
+	// abort counter or the summarizer's hasAnyFailure signal the same way a
+	// genuine tool failure does.
+	IsCircuitOpen bool `json:"is_circuit_open,omitempty"`
 }
 
 type ToolStatus string

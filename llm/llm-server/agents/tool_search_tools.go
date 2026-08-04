@@ -81,7 +81,7 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 	// source) has no such guard — so enforce it here before enumerating either.
 	if !ctx.Ctx.GetSecurityContext().HasAccountAccess(t.accountId, security.SecurityAccessTypeRead) {
 		ctx.Ctx.GetLogger().Warn("tool: search_tools unauthorized — no account read access", "account_id", t.accountId)
-		common.MetricsToolOperationsTotal(t.Name(), "error", ctx.AccountId)
+		common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, t.Name(), "error", ctx.AccountId)
 		return toolcore.NBToolResponse{
 			Status: toolcore.NBToolResponseStatusError,
 			Data:   "not authorized to search capabilities for this account",
@@ -90,7 +90,7 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 
 	query := parseSearchToolsQuery(input)
 	if query == "" {
-		common.MetricsToolOperationsTotal(t.Name(), "error", ctx.AccountId)
+		common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, t.Name(), "error", ctx.AccountId)
 		return toolcore.NBToolResponse{
 			Status: toolcore.NBToolResponseStatusError,
 			Data:   "query is required",
@@ -103,7 +103,7 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 	matched := scoreAndRankSearchTools(query, candidates, searchToolsMaxResults)
 
 	if len(matched) == 0 {
-		common.MetricsToolOperationsTotal(t.Name(), "not_found", ctx.AccountId)
+		common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, t.Name(), "not_found", ctx.AccountId)
 		return toolcore.NBToolResponse{
 			Status: toolcore.NBToolResponseStatusSuccess,
 			Data:   "No matching capabilities found. Try a broader query, or use the tools already in your list.",
@@ -121,7 +121,7 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 	core.RecordDiscoveredTools(ctx.ConversationId, discovered)
 
 	ctx.Ctx.GetLogger().Info("tool: search_tools success", "query", query, "match_count", len(matched))
-	common.MetricsToolOperationsTotal(t.Name(), "success", ctx.AccountId)
+	common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, t.Name(), "success", ctx.AccountId)
 	return toolcore.NBToolResponse{
 		Status: toolcore.NBToolResponseStatusSuccess,
 		Data:   renderSearchToolsOutput(matched),

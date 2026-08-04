@@ -16,8 +16,42 @@ type nbCustomContainerTool struct {
 	tool ToolDto
 }
 
+// containerImplType is the metric-label value for custom container
+// tools. Same shape as MCP — every call hits one relay endpoint with
+// one set of credentials, so the breaker's "any non-nil err = infra"
+// default classifier is correct.
+const containerImplType = "container"
+
 func (c nbCustomContainerTool) Name() string {
 	return c.tool.Name
+}
+
+// GetImplType labels metrics emitted on behalf of this tool so
+// dashboards can slice container vs MCP vs builtin tool traffic.
+func (c nbCustomContainerTool) GetImplType() string {
+	return containerImplType
+}
+
+// CircuitBreakerKey opts custom container tools into the generic
+// circuit breaker. Keyed per (account, tool UUID): two containers in
+// the same account fail independently; the same tool ID across
+// accounts also fails independently (account is part of the bucket).
+// The breaker check happens in the planner's tool.Call wrapper.
+func (c nbCustomContainerTool) CircuitBreakerKey(ctx NbToolContext, _ NBToolCallRequest) (CircuitBreakerKey, bool) {
+	if ctx.AccountId == "" || c.tool.Id == "" {
+		return CircuitBreakerKey{}, false
+	}
+	return CircuitBreakerKey{AccountId: ctx.AccountId, InstanceId: c.tool.Id}, true
+}
+
+// IsInfrastructureFailure classifies a Call outcome for the breaker.
+// The only error path in Call is relay.Execute returning err — relay
+// unreachable, pod scheduling failure, or transport error. Logical
+// failures (the container script returning a non-zero finding code,
+// say) come back as a successful Call with normal NBToolResponse, so
+// they don't reach this classifier.
+func (c nbCustomContainerTool) IsInfrastructureFailure(err error, _ NBToolResponse) bool {
+	return err != nil
 }
 
 func (c nbCustomContainerTool) Description() string {

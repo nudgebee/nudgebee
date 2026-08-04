@@ -30,10 +30,70 @@ var mcpIntegrationToolCacheInstance = &mcpIntegrationToolCache{
 	}),
 }
 
+// mcpImplType is the metric-label value emitted for MCP integration tools.
+// Kept as a package-level const so call sites stay self-describing and
+// future tool types can add their own constants alongside.
+const mcpImplType = "mcp"
+
+// mcpDiscoveryImplType is a circuit-breaker toolType distinct from
+// mcpImplType, used only for discoverMCPTools' RecordSuccess/RecordFailure
+// bookkeeping. Deliberately separate from the Call breaker: a successful
+// discovery doesn't prove Call will succeed (auth can be scoped per-tool,
+// an MCP shim can list tools it can't execute), and a failed discovery
+// never registers a callable tool in the first place, so there's nothing
+// for the Call breaker to protect. Recording discovery outcomes under this
+// key keeps the two failure domains independent while reusing the same
+// breaker and the same nb_llm_tool_healthy gauge (as its own type=
+// mcp_discovery series). Nothing calls IsHealthy with this toolType — it's
+// observability-only bookkeeping, not a fast-fail gate.
+const mcpDiscoveryImplType = "mcp_discovery"
+
 func init() {
 	RegisterToolCacheInvalidator(func(accountId string) {
 		mcpIntegrationToolCacheInstance.delete(accountId)
 	})
+	// Wire the cache into the nb_llm_tools_available observable gauge
+	// (with type="mcp") so dashboards can see how many MCP tools each
+	// (account, integration) is currently exposing. Common can't import
+	// tools/core (cycle), so the snapshot fn flows through a registration
+	// hook.
+	common.RegisterToolsAvailableSnapshot(mcpToolsAvailableSnapshot)
+}
+
+// mcpToolsAvailableSnapshot walks the per-account MCP tool cache and
+// reports tool counts grouped by (account, integration_id). Only entries
+// whose TTL has not expired are reported. Used by the
+// nb_llm_tools_available observable gauge.
+func mcpToolsAvailableSnapshot() []common.ToolsAvailableEntry {
+	mcpIntegrationToolCacheInstance.mutex.RLock()
+	defer mcpIntegrationToolCacheInstance.mutex.RUnlock()
+
+	now := time.Now()
+	type counterKey struct{ account, integration string }
+	counts := make(map[counterKey]int)
+	for accountId, item := range mcpIntegrationToolCacheInstance.data {
+		if !now.Before(item.expiry) {
+			continue
+		}
+		for _, t := range item.tools {
+			mcpTool, ok := t.(mcpIntegrationTool)
+			if !ok {
+				continue
+			}
+			counts[counterKey{accountId, mcpTool.config.IntegrationID}]++
+		}
+	}
+
+	out := make([]common.ToolsAvailableEntry, 0, len(counts))
+	for k, c := range counts {
+		out = append(out, common.ToolsAvailableEntry{
+			Type:          mcpImplType,
+			AccountId:     k.account,
+			IntegrationId: k.integration,
+			ToolCount:     c,
+		})
+	}
+	return out
 }
 
 // InvalidateAccountIntegrationCache busts every llm-server cache that
@@ -56,12 +116,16 @@ func InvalidateAccountIntegrationCache(accountId string) {
 	InvalidateToolCache(accountId)
 }
 
+// get returns a defensive copy of the cached slice so callers can never
+// mutate the shared backing array underneath a concurrent reader/writer.
 func (c *mcpIntegrationToolCache) get(accountId string) ([]NBTool, bool) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 	item, exists := c.data[accountId]
 	if exists && time.Now().Before(item.expiry) {
-		return item.tools, true
+		tools := make([]NBTool, len(item.tools))
+		copy(tools, item.tools)
+		return tools, true
 	}
 	return nil, false
 }
@@ -136,11 +200,53 @@ func (m mcpIntegrationTool) GetType() NBToolType {
 	return NBToolTypeTool
 }
 
+// GetImplType reports the tool implementation class for metrics labeling.
+// MCP integration tools share an HTTP/relay path and per-integration
+// credentials, so dashboards group them under type="mcp".
+func (m mcpIntegrationTool) GetImplType() string {
+	return mcpImplType
+}
+
+// CircuitBreakerKey opts MCP tools into the generic circuit breaker
+// keyed per (account, integration). Two integrations on the same
+// account fail independently; the same integration ID across accounts
+// also fails independently because the breaker namespaces by account.
+//
+// Deliberately per-integration, not per-tool: a broken integration server
+// is far more common than one broken tool on an otherwise-healthy server,
+// and keying per-tool would mean N separate 3-strike counters for one
+// dead process. The cost is blast radius — a single chronically-failing
+// tool trips the circuit for every other tool the same integration
+// exposes on that account until cooldown elapses.
+func (m mcpIntegrationTool) CircuitBreakerKey(ctx NbToolContext, _ NBToolCallRequest) (CircuitBreakerKey, bool) {
+	if ctx.AccountId == "" || m.config.IntegrationID == "" {
+		return CircuitBreakerKey{}, false
+	}
+	return CircuitBreakerKey{AccountId: ctx.AccountId, InstanceId: m.config.IntegrationID}, true
+}
+
+// IsInfrastructureFailure classifies an MCP Call outcome for the
+// breaker. Every error path in Call comes from executeMCPViaRelay —
+// relay transport failure, HTTP/JSON-RPC decode failure, upstream MCP
+// server unreachable — which is exactly the "infra is broken" signal
+// the breaker is designed to short-circuit on. A logical failure (the
+// LLM picking a tool that's not registered with the server, say) is
+// reported back through the JSON-RPC payload as a successful Call with
+// a normal NBToolResponse; that path stays unaffected.
+func (m mcpIntegrationTool) IsInfrastructureFailure(err error, _ NBToolResponse) bool {
+	return err != nil
+}
+
 func (m mcpIntegrationTool) Call(ctx NbToolContext, input NBToolCallRequest) (NBToolResponse, error) {
 	log := ctx.Ctx.GetLogger().With("toolName", m.toolName, "integrationId", m.config.IntegrationID, "accountId", ctx.AccountId)
+
 	log.Info("mcp-integration: executing tool")
 
-	// Build tool call arguments
+	// Build tool call arguments. Per-call latency and operation count
+	// are recorded by the planner's central tool.Call choke point; the
+	// circuit-breaker check + recording is also handled there via the
+	// CircuitBreakerKeyer / CircuitBreakerFailureClassifier interfaces
+	// this type implements. This method just does the work.
 	args := input.Arguments
 	if args == nil {
 		args = make(map[string]any)
@@ -167,7 +273,7 @@ func (m mcpIntegrationTool) Call(ctx NbToolContext, input NBToolCallRequest) (NB
 			Status: NBToolResponseStatusError,
 			Data:   string(errJSON),
 			Type:   NBToolResponseTypeText,
-		}, nil
+		}, err
 	}
 
 	return NBToolResponse{
@@ -299,8 +405,10 @@ func ListMCPIntegrationTools(accountId string) []NBTool {
 	}
 
 	if tools, ok := mcpIntegrationToolCacheInstance.get(accountId); ok {
+		common.MetricsToolCacheLookup(mcpImplType, "hit")
 		return tools
 	}
+	common.MetricsToolCacheLookup(mcpImplType, "miss")
 
 	tools := loadMCPIntegrationToolsFromDB(accountId)
 	// Only cache successful discoveries — don't cache nil/empty on failure
@@ -530,9 +638,15 @@ func (t mcpUnavailableTool) Call(_ NbToolContext, _ NBToolCallRequest) (NBToolRe
 // discoverMCPTools calls tools/list on an MCP server via relay and returns NBTools.
 func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 	log := slog.With("integration_id", cfg.IntegrationID, "integration_name", cfg.IntegrationName, "account_id", accountId)
+	start := time.Now()
+	defer func() {
+		common.MetricsToolDiscoveryLatency(mcpImplType, accountId, cfg.IntegrationID, time.Since(start).Seconds())
+	}()
 
 	response, err := executeMCPViaRelay(context.Background(), accountId, cfg, "tools/list", nil, time.Duration(config.Config.LlmServerMCPDiscoveryTimeoutSeconds)*time.Second)
 	if err != nil {
+		toolCircuitBreakerInstance.RecordFailure(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
+		common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "failure")
 		log.Error("mcp-integration: failed to discover tools", "error", err)
 		// Keep the integration visible (and consistently reported) instead of
 		// silently vanishing, which makes the agent improvise. See A2 fix.
@@ -565,11 +679,15 @@ func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 	response = unwrapSSEIfPresent(response)
 
 	if err := json.Unmarshal([]byte(response), &rpcResp); err != nil {
+		toolCircuitBreakerInstance.RecordFailure(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
+		common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "parse_error")
 		log.Error("mcp-integration: failed to parse tools/list response", "error", err, "response", truncate(response, 500))
 		return []NBTool{newMCPUnavailableTool(cfg, "invalid_response")}
 	}
 
 	if rpcResp.Error != nil {
+		toolCircuitBreakerInstance.RecordFailure(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
+		common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "json_rpc_error")
 		log.Error("mcp-integration: tools/list returned error", "code", rpcResp.Error.Code, "message", rpcResp.Error.Message)
 		return []NBTool{newMCPUnavailableTool(cfg, "discovery_error")}
 	}
@@ -627,6 +745,8 @@ func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 		})
 	}
 
+	toolCircuitBreakerInstance.RecordSuccess(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
+	common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "success")
 	log.Info("mcp-integration: discovered tools", "count", len(tools))
 	return tools
 }

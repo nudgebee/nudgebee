@@ -35,6 +35,32 @@ type NBMultiCommandTool interface {
 	GetSubCommands() ([]NBToolCommand, error)
 }
 
+// ToolImplTypeBuiltin is the default tool-implementation label emitted on
+// metrics for tools that don't override it via NBToolImplTypeProvider.
+const ToolImplTypeBuiltin = "tool"
+
+// NBToolImplTypeProvider is an optional interface tools can implement to
+// report their implementation class as a metric label (e.g. "mcp" for
+// MCP integration tools). Tools that don't implement it are labeled
+// ToolImplTypeBuiltin. Used by the planner when emitting tool-operation
+// metrics so dashboards can group calls by tool family.
+type NBToolImplTypeProvider interface {
+	GetImplType() string
+}
+
+// ImplTypeFor returns the metric label identifying a tool's
+// implementation class. Falls back to ToolImplTypeBuiltin when the tool
+// does not implement NBToolImplTypeProvider, or when nil.
+func ImplTypeFor(tool NBTool) string {
+	if tool == nil {
+		return ToolImplTypeBuiltin
+	}
+	if p, ok := tool.(NBToolImplTypeProvider); ok {
+		return p.GetImplType()
+	}
+	return ToolImplTypeBuiltin
+}
+
 // MissingFieldsResponder lets a tool override the generic
 // "<tool>: missing required fields — <field> (<type>): <description>"
 // line the planner emits when schema-Required validation fails, without
@@ -105,6 +131,11 @@ type NBToolResponse struct {
 	// compression, so the distilled artifacts survive even when the raw
 	// observation is summarized as it ages. Empty for normal tools.
 	SubAgentEvidence string `json:"sub_agent_evidence,omitempty"`
+	// IsCircuitOpen marks a response built by NewCircuitOpenResponse — the
+	// tool's circuit breaker fast-failed the call before it ran. Lets callers
+	// (the planner's investigation-abort counter, tool-call metrics) treat
+	// this distinctly from a genuine tool failure.
+	IsCircuitOpen bool `json:"is_circuit_open,omitempty"`
 }
 
 // NBToolResponseMetadata is the typed seam for tool-execution metadata. New

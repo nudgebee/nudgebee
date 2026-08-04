@@ -476,6 +476,22 @@ type appConfig struct {
 	LlmServerMCPDiscoveryTimeoutSeconds int `mapstructure:"llm_server_mcp_discovery_timeout_seconds"`
 	// LlmServerMCPExecutionTimeoutSeconds caps the time allowed for MCP tools/call execution.
 	LlmServerMCPExecutionTimeoutSeconds int `mapstructure:"llm_server_mcp_execution_timeout_seconds"`
+	// LlmServerToolCircuitBreakerEnabled controls whether the per-tool
+	// circuit breaker is active. When false, IsHealthy always returns
+	// true and RecordFailure/RecordSuccess are no-ops. Default false
+	// (ship dark; enable per-env after validating metrics).
+	LlmServerToolCircuitBreakerEnabled bool `mapstructure:"llm_server_tool_circuit_breaker_enabled"`
+	// LlmServerToolCircuitBreakerFailureThreshold is the consecutive
+	// infrastructure-failure count after which a participating tool's
+	// circuit opens and Calls fast-fail until the cooldown elapses. 0 or
+	// negative values fall back to the hardcoded default (3). Applies to
+	// every tool that opts in via CircuitBreakerKeyer — currently MCP
+	// integrations and custom container tools.
+	LlmServerToolCircuitBreakerFailureThreshold int `mapstructure:"llm_server_tool_circuit_breaker_failure_threshold"`
+	// LlmServerToolCircuitBreakerCooldownSeconds is the duration the
+	// circuit stays open before a probe call is allowed again. 0 falls
+	// back to the hardcoded default (60s).
+	LlmServerToolCircuitBreakerCooldownSeconds int `mapstructure:"llm_server_tool_circuit_breaker_cooldown_seconds"`
 
 	LlmServerLlmRetryAttempts int `mapstructure:"llm_server_llm_retry_attempts"`
 	// LlmServerLlmInitialBackoffSeconds defines the starting delay for exponential backoff during LLM retries.
@@ -1144,6 +1160,9 @@ func init() {
 	viper.SetDefault("llm_server_relay_pod_execution_timeout_seconds", 120)
 	viper.SetDefault("llm_server_mcp_discovery_timeout_seconds", 15)
 	viper.SetDefault("llm_server_mcp_execution_timeout_seconds", 120)
+	viper.SetDefault("llm_server_tool_circuit_breaker_enabled", false)
+	viper.SetDefault("llm_server_tool_circuit_breaker_failure_threshold", 3)
+	viper.SetDefault("llm_server_tool_circuit_breaker_cooldown_seconds", 60)
 
 	viper.SetDefault("security_context_retry_attempts", 3)
 	viper.SetDefault("security_context_initial_backoff_seconds", 1)

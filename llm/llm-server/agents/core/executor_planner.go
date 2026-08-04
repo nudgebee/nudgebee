@@ -452,9 +452,23 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 		// Fast-fail: if the LLM returned no parseable actions OR only failures,
 		// count consecutive bad iterations. Breaking after 2 prevents burning
 		// 5+ iterations × 16s on a stuck model.
+		//
+		// NOTE (pre-existing, not introduced by the circuit breaker work):
+		// allFailed is seeded from len(steps)==0, so for any non-empty steps
+		// it starts false and the loop below can only ever leave it false —
+		// the "every step in this iteration failed" branch is dead today;
+		// only the zero-actions case reaches consecutiveFailedIters++. The
+		// `|| s.IsCircuitOpen` guard is therefore inert too. Left in place
+		// (rather than removed as dead code) because it's the correct
+		// exclusion for the moment someone fixes the seed — a circuit-open
+		// step is the breaker fast-failing, not the LLM spinning on a
+		// genuinely broken action, and shouldn't count toward this abort.
+		// Fixing the seed itself would revive a long-dormant abort path
+		// across every agent, which is a behavior change well beyond this
+		// PR's scope — tracked as separate follow-up, not done here.
 		allFailed := len(steps) == 0
 		for _, s := range steps {
-			if s.Status != ToolStatusFailure {
+			if s.Status != ToolStatusFailure || s.IsCircuitOpen {
 				allFailed = false
 				break
 			}
@@ -485,7 +499,9 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 // summarizer prompt and returns whether any genuine FAILURE was observed.
 //
 // Status mapping:
-//   - ToolStatusFailure     → "FAILED"            (counts as failure)
+//   - ToolStatusFailure     → "FAILED"            (counts as failure), unless
+//     IsCircuitOpen is set → "TEMPORARILY_UNAVAILABLE" (NOT a failure — the
+//     breaker fast-failed the call, the tool itself never ran)
 //   - ToolStatusEmptyResult → "SUCCESS_NO_OUTPUT" (NOT a failure — exit 0
 //     with empty stdout is the normal success signal for write/mutation
 //     CLIs like `gh run rerun`, `kubectl apply`, `helm upgrade`,
@@ -506,13 +522,15 @@ func buildToolCallSummary(steps []NBAgentPlannerToolActionStep) (string, bool) {
 	hasAnyFailure := false
 	for i, step := range steps {
 		status := "SUCCESS"
-		switch step.Status {
-		case ToolStatusFailure:
+		switch {
+		case step.Status == ToolStatusFailure && step.IsCircuitOpen:
+			status = "TEMPORARILY_UNAVAILABLE"
+		case step.Status == ToolStatusFailure:
 			status = "FAILED"
 			hasAnyFailure = true
-		case ToolStatusEmptyResult:
+		case step.Status == ToolStatusEmptyResult:
 			status = "SUCCESS_NO_OUTPUT"
-		case ToolStatusWaiting, ToolStatusWaitingForClient:
+		case step.Status == ToolStatusWaiting, step.Status == ToolStatusWaitingForClient:
 			status = "WAITING"
 		}
 		toolName := step.Action.Tool
@@ -1891,8 +1909,8 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		// so the executor doesn't fail with "tool not found".
 		if isNotebookToolName(action.Tool) {
 			e.ctx.GetLogger().Info("plannerexecutor: notebook tool call intercepted as no-op", "tool", action.Tool)
-			common.MetricsToolOperationsTotal(toolName, "success", accountID)
-			common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
+			common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, toolName, "success", accountID)
+			common.MetricsToolLatencySeconds(toolcore.ToolImplTypeBuiltin, toolName, accountID, time.Since(start).Seconds())
 			return NBAgentPlannerToolActionStep{
 				Action:      action,
 				Observation: "Notebook content noted. Use the <update_notebook> XML tag instead of a tool call for notebook updates. Continue with your investigation.",
@@ -1914,9 +1932,9 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		if err != nil {
 			e.ctx.GetLogger().Error("plannerexecutor: failed to save agent call to DB", "error", err.Error())
 		}
-		// Metrics: record fail
-		common.MetricsToolOperationsTotal(toolName, "fail", accountID)
-		common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
+		// Metrics: record fail (tool not resolved, so impl type is unknown — label as builtin)
+		common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, toolName, "fail", accountID)
+		common.MetricsToolLatencySeconds(toolcore.ToolImplTypeBuiltin, toolName, accountID, time.Since(start).Seconds())
 
 		// Provide helpful observation with available tools list
 		// Sanitize tool name to prevent CDATA breakout in scratchpad XML
@@ -1937,17 +1955,18 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	}
 
 	// validate user access
+	implType := toolcore.ImplTypeFor(tool)
 	finish2, requestType, err2 := IsAgentToolAuthorizedToProcessRequest(e.ctx, e.agent, e.agentRequest, action)
 	if err2 != nil {
 		// Metrics: record fail
-		common.MetricsToolOperationsTotal(toolName, "fail", accountID)
-		common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
+		common.MetricsToolOperationsTotal(implType, toolName, "fail", accountID)
+		common.MetricsToolLatencySeconds(implType, toolName, accountID, time.Since(start).Seconds())
 		return NBAgentPlannerToolActionStep{}, nil, err2
 	}
 	if finish2 != nil {
 		// Metrics: record success (finish2 is a finish action, not an error)
-		common.MetricsToolOperationsTotal(toolName, "success", accountID)
-		common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
+		common.MetricsToolOperationsTotal(implType, toolName, "success", accountID)
+		common.MetricsToolLatencySeconds(implType, toolName, accountID, time.Since(start).Seconds())
 		return NBAgentPlannerToolActionStep{}, finish2, nil
 	}
 
@@ -2054,7 +2073,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				if custom := responder.OnMissingRequiredFields(request, missing); custom != nil && custom.Data != "" {
 					e.ctx.GetLogger().Warn("plannerexecutor: tool input missing required fields (responder-emitted)",
 						"tool", action.Tool, "toolId", action.ToolID, "missing", missing)
-					common.MetricsToolOperationsTotal(toolName, "fail_validation", accountID)
+					common.MetricsToolOperationsTotal(implType, toolName, "fail_validation", accountID)
 					// Deliberately NOT recording MetricsToolLatencySeconds here:
 					// no Call() ran, so a near-zero latency sample would skew
 					// the p50/p99 downward for tools like `think` and pollute
@@ -2071,7 +2090,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		if validationErr := toolcore.ValidateToolInput(tool, action.ToolInput); validationErr != nil {
 			e.ctx.GetLogger().Warn("plannerexecutor: tool input failed schema validation",
 				"tool", action.Tool, "toolId", action.ToolID, "error", *validationErr)
-			common.MetricsToolOperationsTotal(toolName, "fail_validation", accountID)
+			common.MetricsToolOperationsTotal(implType, toolName, "fail_validation", accountID)
 			// Deliberately NOT recording MetricsToolLatencySeconds here — see
 			// the responder branch above for the rationale.
 			// ToolStatusFailure (not a new status): downstream consumers treat it
@@ -2138,8 +2157,8 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 
 	if err != nil {
 		// Metrics: record fail
-		common.MetricsToolOperationsTotal(toolName, "fail", accountID)
-		common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
+		common.MetricsToolOperationsTotal(implType, toolName, "fail", accountID)
+		common.MetricsToolLatencySeconds(implType, toolName, accountID, time.Since(start).Seconds())
 		return NBAgentPlannerToolActionStep{}, nil, err
 	}
 
@@ -2188,8 +2207,8 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 
 	if observation.Status == toolcore.NBToolResponseStatusWaiting || observation.Status == toolcore.NBToolResponseStatusWaitingForClient {
 		// Metrics: record waiting
-		common.MetricsToolOperationsTotal(toolName, "waiting", accountID)
-		common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
+		common.MetricsToolOperationsTotal(implType, toolName, "waiting", accountID)
+		common.MetricsToolLatencySeconds(implType, toolName, accountID, time.Since(start).Seconds())
 
 		// check if it's a client tool and return specific waiting status
 		if _, isClientTool := tool.(*toolcore.ClientToolWrapper); isClientTool || observation.Status == toolcore.NBToolResponseStatusWaitingForClient {
@@ -2239,9 +2258,18 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			}, nil
 	}
 
-	// Metrics: record success
-	common.MetricsToolOperationsTotal(toolName, "success", accountID)
-	common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
+	// Metrics: record outcome. Tools that report failure via
+	// NBToolResponseStatusError + nil err (the MCP integration pattern)
+	// were previously mis-attributed as "success" because we only
+	// checked err. Use the classified status set above instead.
+	metricStatus := "success"
+	if observation.IsCircuitOpen {
+		metricStatus = "circuit_open"
+	} else if status == ToolStatusFailure {
+		metricStatus = "fail"
+	}
+	common.MetricsToolOperationsTotal(implType, toolName, metricStatus, accountID)
+	common.MetricsToolLatencySeconds(implType, toolName, accountID, time.Since(start).Seconds())
 
 	result := NBAgentPlannerToolActionStep{
 		Action:           action,
@@ -2251,6 +2279,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		References:       observation.References,
 		Metadata:         observation.Metadata,
 		SubAgentEvidence: observation.SubAgentEvidence,
+		IsCircuitOpen:    observation.IsCircuitOpen,
 	}
 
 	// Cache successful results under both original and rewritten inputs
@@ -3417,8 +3446,29 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 		}
 	}
 
+	implType := toolcore.ImplTypeFor(tool)
+
 	if resp := validateToolInput(tool, request); resp != nil {
 		return *resp, nil
+	}
+
+	// Circuit-breaker pre-check. A tool opts in by implementing
+	// CircuitBreakerKeyer; tools that don't implement it never touch the
+	// breaker. When the circuit is open we short-circuit before the
+	// (relay) round-trip and surface a uniform circuit_open response so
+	// the LLM sees a consistent "upstream temporarily unavailable"
+	// signal regardless of tool type. doAction (the sole caller) records
+	// the circuit_open outcome on the generic nb_llm_tool_operations
+	// counter via NBToolResponse.IsCircuitOpen — not recorded here, to
+	// avoid double-counting the same call.
+	var breakerKey toolcore.CircuitBreakerKey
+	breakerActive := false
+	if keyer, ok := tool.(toolcore.CircuitBreakerKeyer); ok {
+		breakerKey, breakerActive = keyer.CircuitBreakerKey(toolContext, request)
+		if breakerActive && !toolcore.ToolCircuitBreaker().IsHealthy(implType, breakerKey) {
+			nbRequestContext.GetLogger().Warn("plannerexecutor: skipping call — circuit open", "tool", tool.Name(), "account_id", breakerKey.AccountId, "instance_id", breakerKey.InstanceId, "impl_type", implType)
+			return toolcore.NewCircuitOpenResponse(tool.Name(), toolcore.ToolCircuitBreaker().Threshold()), nil
+		}
 	}
 
 	t0 := time.Now()
@@ -3430,7 +3480,21 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	nbRequestContext.GetLogger().Info("tool execution time", "tool", tool.Name(), "time", latency, "input", input)
 	// Record tool latency metric
 	// Use context.Background() for metrics, as security.RequestContext does not expose context.Context
-	common.MetricsToolLatencySeconds(tool.Name(), agentRequest.AccountId, latency)
+	common.MetricsToolLatencySeconds(implType, tool.Name(), agentRequest.AccountId, latency)
+
+	// Circuit-breaker post-record. Only opt-in tools (breakerActive) get
+	// recorded. The classifier decides whether the outcome counts: tools
+	// with a clean transport/logic separation (MCP, custom_container)
+	// can use the default "any non-nil err = infra" rule; tools wrapping
+	// CLIs MUST implement CircuitBreakerFailureClassifier so the breaker
+	// doesn't trip on logical errors like resource-not-found.
+	if breakerActive {
+		if toolcore.ClassifyAsInfraFailure(tool, err, data) {
+			toolcore.ToolCircuitBreaker().RecordFailure(implType, breakerKey)
+		} else {
+			toolcore.ToolCircuitBreaker().RecordSuccess(implType, breakerKey)
+		}
+	}
 	if err != nil {
 		nbRequestContext.GetLogger().Error("tool execution error", "error", err, "tool", tool.Name())
 		responseData := data.Data
