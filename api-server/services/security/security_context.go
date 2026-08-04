@@ -639,6 +639,12 @@ func NewSecurityContext(tenantId string, userId string) (*SecurityContext, error
 		}
 		accumulate(role, entity_type, entity_id)
 	}
+	// A mid-stream read error ends the loop exactly like end-of-rows, so without
+	// this check a truncated read would build — and cache for 30 minutes — an
+	// under-privileged context. Same reason for every rows.Err() below.
+	if err = rows2.Err(); err != nil {
+		return nil, err
+	}
 
 	// Groups roles for the user
 	rows3, err := dbms.Db.Queryx(`select group_id, role, entity_id, entity_type
@@ -666,6 +672,9 @@ func NewSecurityContext(tenantId string, userId string) (*SecurityContext, error
 			return nil, err
 		}
 		accumulate(role, entity_type, entity_id)
+	}
+	if err = rows3.Err(); err != nil {
+		return nil, err
 	}
 
 	roles = lo.Uniq(roles)
@@ -717,6 +726,9 @@ func NewSecurityContext(tenantId string, userId string) (*SecurityContext, error
 			}
 		}
 	}
+	if err = rows4.Err(); err != nil {
+		return nil, err
+	}
 
 	// get account level default user/group and merge that user groups
 	if len(accountIds) > 0 {
@@ -746,6 +758,9 @@ func NewSecurityContext(tenantId string, userId string) (*SecurityContext, error
 			} else if name == "k8s_group:default" && value != "" && len(k8sGroups[cloudAccountId]) == 0 {
 				k8sGroups[cloudAccountId] = strings.Split(value, ",")
 			}
+		}
+		if err = rows5.Err(); err != nil {
+			return nil, err
 		}
 	}
 
@@ -788,6 +803,9 @@ func GetAccountIdsByTenantId(tenantId string) ([]string, error) {
 			return nil, err
 		}
 		accountIdStr = append(accountIdStr, accountId)
+	}
+	if err = rows1.Err(); err != nil {
+		return nil, err
 	}
 	return accountIdStr, nil
 }
