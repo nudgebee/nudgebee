@@ -121,6 +121,33 @@ const StateLabel = ({ color, label, value, onClick }: { color: string; label: st
   </Box>
 );
 
+const getInstanceType = (resource: any) => {
+  if (resource.meta?.InstanceType) return resource.meta.InstanceType;
+  const gcpMachineType = resource.meta?.machine_type || resource.meta?.machineType;
+  if (gcpMachineType) return gcpMachineType.includes('/') ? gcpMachineType.split('/').pop() : gcpMachineType;
+  if (resource.machineType || resource.machine_type) {
+    const machineType = resource.machineType || resource.machine_type;
+    return machineType.includes('/') ? machineType.split('/').pop() : machineType;
+  }
+  if (resource.meta?.hardwareProfile?.vmSize) return resource.meta.hardwareProfile.vmSize;
+  return resource.resourceType || resource.service_name || resource.serviceName || 'N/A';
+};
+
+const isSpotInstance = (resource: any) =>
+  resource.meta?.InstanceLifecycle === 'spot' || resource.meta?.scheduling?.preemptible === true || resource.meta?.priority === 'Spot';
+
+const getInstanceState = (resource: any) => {
+  if (resource.meta?.State?.Name) return resource.meta.State.Name;
+  if (resource.meta?.powerState) return resource.meta.powerState;
+  const instanceViewStatuses = resource.meta?.properties?.instanceView?.statuses || resource.meta?.instanceView?.statuses;
+  if (instanceViewStatuses) {
+    const powerState = instanceViewStatuses.find((s: any) => s.code?.startsWith('PowerState/'));
+    if (powerState?.displayStatus) return powerState.displayStatus.toLowerCase();
+  }
+  if (resource.status) return resource.status.toLowerCase();
+  return '';
+};
+
 const ClusterSummary = ({ accountId, ec2Summary = {}, serviceName = '' }: any) => {
   const labels = getCloudLabels(serviceName);
   const router = useRouter();
@@ -134,54 +161,69 @@ const ClusterSummary = ({ accountId, ec2Summary = {}, serviceName = '' }: any) =
     []
   );
 
-  // Multi-cloud helper: get instance type from different meta structures
-  const getInstanceType = (resource: any) => {
-    if (resource.meta?.InstanceType) return resource.meta.InstanceType;
-    const gcpMachineType = resource.meta?.machine_type || resource.meta?.machineType;
-    if (gcpMachineType) return gcpMachineType.includes('/') ? gcpMachineType.split('/').pop() : gcpMachineType;
-    if (resource.machineType || resource.machine_type) {
-      const machineType = resource.machineType || resource.machine_type;
-      return machineType.includes('/') ? machineType.split('/').pop() : machineType;
+  // Single-pass derivation over cloud_resourses: instance types, spot count, and
+  // per-state counts. Replaces 8 separate .filter()/.map() full-array scans that
+  // each invoked getInstanceState() (O(8n) → O(n) per render).
+  const {
+    uniqueInstanceTypes,
+    spotInstances,
+    runningInstanceCount,
+    stoppedInstanceCount,
+    pendingInstanceCount,
+    stoppingInstanceCount,
+    shuttingdownInstanceCount,
+    terminatedInstanceCount,
+  } = useMemo(() => {
+    const resources: any[] | undefined = ec2Summary?.cloud_resourses;
+    if (!resources || resources.length === 0) {
+      return {
+        uniqueInstanceTypes: new Set<string>(),
+        spotInstances: 0,
+        runningInstanceCount: 0,
+        stoppedInstanceCount: 0,
+        pendingInstanceCount: 0,
+        stoppingInstanceCount: 0,
+        shuttingdownInstanceCount: 0,
+        terminatedInstanceCount: 0,
+      };
     }
-    if (resource.meta?.hardwareProfile?.vmSize) return resource.meta.hardwareProfile.vmSize;
-    return resource.resourceType || resource.service_name || resource.serviceName || 'N/A';
-  };
-
-  const isSpotInstance = (resource: any) =>
-    resource.meta?.InstanceLifecycle === 'spot' || resource.meta?.scheduling?.preemptible === true || resource.meta?.priority === 'Spot';
-
-  const getInstanceState = (resource: any) => {
-    if (resource.meta?.State?.Name) return resource.meta.State.Name;
-    if (resource.meta?.powerState) return resource.meta.powerState;
-    const instanceViewStatuses = resource.meta?.properties?.instanceView?.statuses || resource.meta?.instanceView?.statuses;
-    if (instanceViewStatuses) {
-      const powerState = instanceViewStatuses.find((s: any) => s.code?.startsWith('PowerState/'));
-      if (powerState?.displayStatus) return powerState.displayStatus.toLowerCase();
+    const uniqueTypes = new Set<string>();
+    let spot = 0,
+      running = 0,
+      stopped = 0,
+      pending = 0,
+      stopping = 0,
+      shuttingdown = 0,
+      terminated = 0;
+    for (const resource of resources) {
+      const type = getInstanceType(resource);
+      if (type !== 'N/A' && type !== 'Unknown' && type !== 'Compute Engine') uniqueTypes.add(type);
+      if (isSpotInstance(resource)) spot++;
+      const state = getInstanceState(resource);
+      if (state === 'running' || state === 'active') running++;
+      else if (state === 'stopped' || state === 'deallocated' || state === 'inactive') stopped++;
+      else if (state === 'pending' || state === 'provisioning' || state === 'staging') pending++;
+      else if (state === 'stopping' || state === 'suspending') stopping++;
+      else if (state === 'shutting-down' || state === 'deleting') shuttingdown++;
+      else if (state === 'terminated' || state === 'deleted') terminated++;
     }
-    if (resource.status) return resource.status.toLowerCase();
-    return '';
-  };
-
-  const instanceTypes = ec2Summary?.cloud_resourses?.map((resource: any) => getInstanceType(resource)) || [];
-  const uniqueInstanceTypes = new Set(instanceTypes.filter((t: string) => t !== 'N/A' && t !== 'Unknown' && t !== 'Compute Engine'));
+    return {
+      uniqueInstanceTypes: uniqueTypes,
+      spotInstances: spot,
+      runningInstanceCount: running,
+      stoppedInstanceCount: stopped,
+      pendingInstanceCount: pending,
+      stoppingInstanceCount: stopping,
+      shuttingdownInstanceCount: shuttingdown,
+      terminatedInstanceCount: terminated,
+    };
+  }, [ec2Summary?.cloud_resourses]);
   const ebsVolumeCount = ec2Summary?.ebs_count?.aggregate?.count || 0;
   const nicsCount = ec2Summary?.nics_count?.aggregate?.count || ec2Summary?.cluster_data?.daemonSet || 0;
   const instancesCount = ec2Summary?.cloud_resourses_count || ec2Summary?.cloud_resourses?.length || 0;
   const [loading, _setLoading] = useState(false);
   const [instanceData, setInstanceData] = useState([]);
-  const spotInstances = ec2Summary?.cloud_resourses?.filter((b: any) => isSpotInstance(b))?.length || 0;
   const reservedInstances = instancesCount - spotInstances;
-  const runningInstanceCount = ec2Summary?.cloud_resourses?.filter((b: any) => ['running', 'active'].includes(getInstanceState(b)))?.length || 0;
-  const stoppedInstanceCount =
-    ec2Summary?.cloud_resourses?.filter((b: any) => ['stopped', 'deallocated', 'inactive'].includes(getInstanceState(b)))?.length || 0;
-  const pendingInstanceCount =
-    ec2Summary?.cloud_resourses?.filter((b: any) => ['pending', 'provisioning', 'staging'].includes(getInstanceState(b)))?.length || 0;
-  const stoppingInstanceCount =
-    ec2Summary?.cloud_resourses?.filter((b: any) => ['stopping', 'suspending'].includes(getInstanceState(b)))?.length || 0;
-  const shuttingdownInstanceCount =
-    ec2Summary?.cloud_resourses?.filter((b: any) => ['shutting-down', 'deleting'].includes(getInstanceState(b)))?.length || 0;
-  const terminatedInstanceCount =
-    ec2Summary?.cloud_resourses?.filter((b: any) => ['terminated', 'deleted'].includes(getInstanceState(b)))?.length || 0;
 
   // "View all instances" deeplink — subtab=2 + `#…/instances` hash convention
   // shared across cloud-account Summary tabs. Populated post-mount via useEffect
