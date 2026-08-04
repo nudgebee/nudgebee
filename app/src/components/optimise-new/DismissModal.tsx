@@ -1,18 +1,25 @@
 import { useState } from 'react';
-import { Box, MenuItem, TextField, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
+import FilterDropdown from '@ui/FilterDropdown';
+import CustomTextField from '@shared/forms/CustomTextField';
 import { toast as snackbar } from '@ui/Toast';
 import { ds } from 'src/utils/colors';
 import recommendationApi from '@api1/recommendation';
 import { getResourceDisplayName } from './utils';
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Keep labels short — the dropdown trigger ellipsises a selected label past ~90px.
 const SNOOZE_OPTIONS = [
-  { label: "Don't snooze — dismiss permanently", days: 0 },
-  { label: 'Snooze for 7 days', days: 7 },
-  { label: 'Snooze for 30 days', days: 30 },
-  { label: 'Snooze for 90 days', days: 90 },
+  { label: 'Permanent', value: 0 },
+  { label: '7 days', value: 7 },
+  { label: '30 days', value: 30 },
+  { label: '90 days', value: 90 },
 ];
+
+const snoozeUntil = (days: number) => new Date(Date.now() + days * DAY_MS);
 
 interface DismissModalProps {
   rec: any;
@@ -38,7 +45,7 @@ const DismissModal = ({ rec, onClose, onSuccess }: DismissModalProps) => {
   const submit = async () => {
     setSubmitting(true);
     try {
-      const snoozedUntil = snoozeDays > 0 ? new Date(Date.now() + snoozeDays * 24 * 60 * 60 * 1000).toISOString() : undefined;
+      const snoozedUntil = snoozeDays > 0 ? snoozeUntil(snoozeDays).toISOString() : undefined;
       const res = await recommendationApi.updateRecommendationDismissal(rec.account_id, rec.id, {
         dismissed: true,
         reason: reason.trim(),
@@ -69,23 +76,36 @@ const DismissModal = ({ rec, onClose, onSuccess }: DismissModalProps) => {
         and the FinOps score; a snoozed one returns automatically when the period ends.
       </Typography>
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[3] }}>
-        <TextField
-          id='dismiss-snooze-select'
-          select
-          size='small'
-          label='Duration'
-          value={snoozeDays}
-          onChange={(e) => setSnoozeDays(Number(e.target.value))}
-        >
-          {SNOOZE_OPTIONS.map((opt) => (
-            <MenuItem key={opt.days} value={opt.days}>
-              {opt.label}
-            </MenuItem>
-          ))}
-        </TextField>
-        <TextField
+        <Box>
+          <FilterDropdown
+            id='dismiss-snooze-select'
+            label='Duration'
+            options={SNOOZE_OPTIONS}
+            value={SNOOZE_OPTIONS.find((o) => o.value === snoozeDays) || null}
+            clearable={false}
+            // Panel must portal to body — the Modal body clips an inline one.
+            disablePortal={false}
+            onSelect={(_e: any, item: any) => {
+              // Read through a primitive too: a bare value would make `item?.value`
+              // undefined and silently turn a requested snooze into a permanent dismiss.
+              const next = item && typeof item === 'object' ? item.value : item;
+              setSnoozeDays(Number(next ?? 0));
+            }}
+            sx={{ width: '100%' }}
+          />
+          <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], mt: ds.space[1] }}>
+            {snoozeDays > 0
+              ? `Returns to the open list on ${snoozeUntil(snoozeDays).toLocaleDateString('en-US', {
+                  month: 'short',
+                  day: 'numeric',
+                  year: 'numeric',
+                })}.`
+              : 'Stays dismissed until someone reactivates it.'}
+          </Typography>
+        </Box>
+        <CustomTextField
           id='dismiss-reason'
-          label='Reason (optional)'
+          label='Reason'
           size='small'
           multiline
           minRows={2}

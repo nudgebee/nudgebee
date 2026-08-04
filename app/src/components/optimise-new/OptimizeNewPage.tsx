@@ -1219,6 +1219,9 @@ const OptimizeNewPage = () => {
         }
         snackbar.success('Recommendation reactivated');
         setRecommendations((prev) => prev.map((r: any) => (r.id === rec.id ? { ...r, status: 'Open', snoozed_until: null } : r)));
+        // A Dismissed rec is absent from the table (default status filter), so the
+        // list update above can't reach the open drawer — update it directly.
+        setSelectedRec((prev: any) => (prev?.id === rec.id ? { ...prev, status: 'Open', snoozed_until: null } : prev));
       })
       .catch(() => {
         snackbar.error('Failed to reactivate recommendation');

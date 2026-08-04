@@ -87,6 +87,7 @@ query list_k8_recommendation($limit:Int, $offset:Int) {
       recommendation
       estimated_savings
       account_object_id
+      status
       updated_at
       created_at
       id

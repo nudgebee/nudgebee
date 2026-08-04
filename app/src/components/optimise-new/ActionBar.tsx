@@ -6,6 +6,7 @@ import ConfirmationNumberOutlinedIcon from '@mui/icons-material/ConfirmationNumb
 import RocketLaunchOutlinedIcon from '@mui/icons-material/RocketLaunchOutlined';
 import AutoFixHighOutlinedIcon from '@mui/icons-material/AutoFixHighOutlined';
 import DoNotDisturbOnOutlinedIcon from '@mui/icons-material/DoNotDisturbOnOutlined';
+import RestartAltOutlinedIcon from '@mui/icons-material/RestartAltOutlined';
 import NotificationsActiveOutlinedIcon from '@mui/icons-material/NotificationsActiveOutlined';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { Button } from '@ui/Button';
@@ -47,6 +48,7 @@ const ActionBar = ({ fullRecommendation: rec, provider, onCreateTicket, onResolv
   const recData = safeParseJSON(rec.recommendation);
   const hasAlarmConfig = recData?.alarm_config != null;
   const canWrite = hasWriteAccess(accountId);
+  const isDismissed = rec.status === 'Dismissed';
 
   const handleNavigateToDetail = () => {
     const detailUrl = `/kubernetes/details/${accountId}#optimize/right-sizing`;
@@ -129,22 +131,26 @@ const ActionBar = ({ fullRecommendation: rec, provider, onCreateTicket, onResolv
           >
             Ask {assistantName}
           </Button>
+          {/* Ghost tone keeps it subordinate to the actions above; it stays in this
+              row rather than the icon cluster so the label isn't clipped by the
+              floating chat button anchored over the drawer's bottom-right corner. */}
+          {canWrite && (
+            <Button
+              tone='ghost'
+              size='sm'
+              icon={isDismissed ? <RestartAltOutlinedIcon /> : <DoNotDisturbOnOutlinedIcon />}
+              iconPlacement='start'
+              tooltip={isDismissed ? 'Return this recommendation to the open list' : 'Suppress it permanently or until a chosen date'}
+              onClick={() => onDismiss?.(rec)}
+              id='action-bar-dismiss'
+            >
+              {isDismissed ? 'Reactivate' : 'Dismiss / Snooze'}
+            </Button>
+          )}
         </Box>
 
         {/* Secondary actions */}
         <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
-          {canWrite && rec.status !== 'Dismissed' && (
-            <Button
-              tone='ghost'
-              composition='icon-only'
-              size='sm'
-              icon={<DoNotDisturbOnOutlinedIcon />}
-              tooltip='Dismiss / Snooze'
-              aria-label='Dismiss or snooze'
-              onClick={() => onDismiss?.(rec)}
-              id='action-bar-dismiss'
-            />
-          )}
           {isReplicaRightSizing && canWrite && (
             <Button
               tone='ghost'
