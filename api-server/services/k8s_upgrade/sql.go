@@ -81,8 +81,11 @@ func StoreUpgradePlan(ctx *security.RequestContext, tenantID string, template Up
 
 	for _, step := range template.Steps {
 		stepId := uuid.New().String()
-		_, err := tx.Exec(`
-			INSERT INTO upgrade_plan_steps 
+		// NOTE: `=`, not `:=` — a loop-scoped err would shadow the function-level
+		// err the deferred rollback above guards on, leaking the transaction
+		// (connection stuck `idle in transaction`) when an insert fails.
+		_, err = tx.Exec(`
+			INSERT INTO upgrade_plan_steps
 				(id, tenant_id, account_id, plan_id, title, sequence, description, status)
 			VALUES 
 				($1, $2, $3, $4, $5, $6, $7, $8)
@@ -94,7 +97,8 @@ func StoreUpgradePlan(ctx *security.RequestContext, tenantID string, template Up
 		for _, task := range step.Tasks {
 			action := sql.NullString{String: task.Action, Valid: task.Action != ""}
 			resourceType := sql.NullString{String: task.ResourceType, Valid: task.ResourceType != ""}
-			_, err := tx.Exec(`
+			// `=`, not `:=` — same rollback-guard reason as the step insert above.
+			_, err = tx.Exec(`
 				INSERT INTO upgrade_plan_tasks
 					(step_id, sequence, title, description, action, status, is_required, resource_type)
 				VALUES
