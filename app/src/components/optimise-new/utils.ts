@@ -47,6 +47,18 @@ export const RULE_LABELS: Record<string, string> = {
   unassociated_public_ip: 'Unassociated Public IP',
 };
 
+// Labels for rules whose framing depends on the category the row landed under.
+// A pod_right_sizing row lands under Configuration when no container declares
+// any cpu/memory request — a scheduling-hygiene defect worth $0, so the sizing
+// wording misreads there. The rule_name stays one value on purpose: same KRR
+// detector, same payload, same apply path, and category is already the
+// discriminator in the upsert conflict key.
+export const CATEGORY_RULE_LABELS: Record<string, Record<string, string>> = {
+  Configuration: {
+    pod_right_sizing: 'Missing Resource Requests',
+  },
+};
+
 export const NON_SECURITY_CATEGORIES = ['RightSizing', 'InfraUpgrade', 'Configuration', 'K8sSpotRecommendation'];
 export const DEFAULT_STATUS = ['Open', 'InProgress'];
 
@@ -161,7 +173,13 @@ export const lastSeenBucketToParams = (key: string, now: number = Date.now()): {
 
 // ─── Shared helpers ───
 
-export const formatRuleName = (ruleName: string): string => {
+// `category` is optional because some surfaces name a rule with no row in hand
+// (the Rules filter, workflow triggers) — those keep the rule-level label.
+export const formatRuleName = (ruleName: string, category?: string): string => {
+  const scoped = category ? CATEGORY_RULE_LABELS[category]?.[ruleName] : undefined;
+  if (scoped) {
+    return scoped;
+  }
   if (RULE_LABELS[ruleName]) {
     return RULE_LABELS[ruleName];
   }
@@ -171,6 +189,16 @@ export const formatRuleName = (ruleName: string): string => {
     .replace(/^aws /i, 'AWS ')
     .replace(/^azure /i, 'Azure ')
     .replace(/^gcp /i, 'GCP ');
+};
+
+// Every label a rule can carry, for search matching. The Rules filter shows one
+// option per rule_name, so a rule with a category-scoped label would otherwise
+// be unfindable by the name the table actually renders.
+export const ruleNameSearchText = (ruleName: string): string => {
+  const aliases = Object.values(CATEGORY_RULE_LABELS)
+    .map((byRule) => byRule[ruleName])
+    .filter(Boolean);
+  return Array.from(new Set([formatRuleName(ruleName), ...aliases])).join(' ');
 };
 
 export const daysSince = (dateStr: string | null): string => {

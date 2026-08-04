@@ -199,7 +199,7 @@ const SummaryView = () => {
 
       const accountInfo = accounts[rec.account_id];
       const prompt = buildNubiOptimizePrompt({
-        ruleName: formatRuleName(rec.rule_name || ''),
+        ruleName: formatRuleName(rec.rule_name || '', rec.category),
         category: rec.category || '',
         severity: rec.severity || 'Info',
         resourceName: getResourceDisplayName(rec, ''),

@@ -169,7 +169,7 @@ const getAgenticDescription = (apiRec: any): string => {
   if (rule === 'image_scan') return describeImageScan(recData);
 
   const cat = mapCategoryForFallback(apiRec.category);
-  const brief = getRecommendationBrief(apiRec) || formatRuleName(rule);
+  const brief = getRecommendationBrief(apiRec) || formatRuleName(rule, apiRec.category);
   const fallback = CATEGORY_FALLBACK_SUFFIX[cat];
   if (fallback?.[0]) return withSavings(brief + '.', fallback[0], savingsStr);
   if (fallback) return brief + fallback[1];
@@ -260,7 +260,7 @@ export function transformApiToInsight(
   // action line) are the canonical card/list text; `summary` is the full prose, kept
   // for the hover tooltip and ticket subject. Consolidating these is tracked separately.
   const ruleName = apiRec.rule_name || '';
-  const title = catalogTitle(apiRec.category || '', ruleName) || formatRuleName(ruleName);
+  const title = catalogTitle(apiRec.category || '', ruleName) || formatRuleName(ruleName, apiRec.category);
   const brief = getRecommendationBrief(apiRec);
 
   return {

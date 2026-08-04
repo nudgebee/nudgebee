@@ -410,7 +410,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
   const fallback = extractFallbackContent(recData, effectiveRecommendation);
 
   // Resolved values — catalog wins, fallback fills the gaps
-  const title = details?.title || fallback.title || formatRuleName(ruleName);
+  const title = details?.title || fallback.title || formatRuleName(ruleName, category);
   const serviceName = details?.serviceName || fallback.serviceName || '';
   const description = details?.description || fallback.description || '';
   const remediation = fallback.remediation || '';

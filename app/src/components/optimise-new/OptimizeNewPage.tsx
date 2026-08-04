@@ -56,6 +56,7 @@ import {
   savingsBucketToParams,
   lastSeenBucketToParams,
   formatRuleName,
+  ruleNameSearchText,
   getRecommendationBrief,
   getResourceDisplayName,
   safeParseJSON,
@@ -888,7 +889,7 @@ const OptimizeNewPage = () => {
       return [
         rec.severity || '',
         getResourceDisplayName(rec, ''),
-        formatRuleName(rec.rule_name || ''),
+        formatRuleName(rec.rule_name || '', rec.category),
         rec.category || '',
         safetyBandLabel(rec.safety_band),
         accountInfo?.name || '',
@@ -931,7 +932,7 @@ const OptimizeNewPage = () => {
         label: `${formatRuleName(ruleName)} (${entry.count})`,
         value: ruleName,
         group: CATEGORY_LABELS[entry.category] || entry.category || 'Other',
-        searchText: formatRuleName(ruleName),
+        searchText: ruleNameSearchText(ruleName),
       }));
   }, [summaryRows, filters.severity]);
 
@@ -947,7 +948,7 @@ const OptimizeNewPage = () => {
             label: formatRuleName(ruleName),
             value: ruleName,
             group: 'Selected',
-            searchText: formatRuleName(ruleName),
+            searchText: ruleNameSearchText(ruleName),
           }
       ),
     [filters.rules, rulesFilterOptions]
@@ -1029,7 +1030,7 @@ const OptimizeNewPage = () => {
           resourceName: getResourceDisplayName(rec),
           resourceType: rec.cloud_resourse?.type || '',
           cloudService: rec.resource_cloud_service || '',
-          ruleName: formatRuleName(rec.rule_name || ''),
+          ruleName: formatRuleName(rec.rule_name || '', rec.category),
           brief: getRecommendationBrief(rec) || '',
           category: rec.category || '',
           accountName: accountInfo?.name || '',
@@ -1046,13 +1047,18 @@ const OptimizeNewPage = () => {
 
   // ─── Handlers ───
 
-  // Rule → category, from the unfiltered card aggregate, used to keep the Rules
-  // selection consistent with the category card tabs in both directions.
+  // Rule → the categories it appears under, from the unfiltered card aggregate,
+  // used to keep the Rules selection consistent with the category card tabs in
+  // both directions. A rule can span categories (pod_right_sizing is
+  // Configuration when a workload declares no requests at all, RightSizing
+  // otherwise), so this is a set: collapsing it to the first category seen makes
+  // the card click prune a rule that does belong to that category, and makes
+  // picking that rule reset the card to All for no reason.
   const ruleCategoryMap = useMemo(() => {
-    const map: Record<string, string> = {};
+    const map: Record<string, Set<string>> = {};
     for (const r of cardRows) {
-      if (r.rule_name && r.category && !map[r.rule_name]) {
-        map[r.rule_name] = r.category;
+      if (r.rule_name && r.category) {
+        (map[r.rule_name] ||= new Set()).add(r.category);
       }
     }
     return map;
@@ -1066,7 +1072,7 @@ const OptimizeNewPage = () => {
       const isActive = filters.category.length === 1 && filters.category[0] === category;
       const nextCategory = isActive ? [] : [category];
       const nextRules =
-        nextCategory.length > 0 ? filters.rules.filter((rule) => !ruleCategoryMap[rule] || ruleCategoryMap[rule] === category) : filters.rules;
+        nextCategory.length > 0 ? filters.rules.filter((rule) => !ruleCategoryMap[rule] || ruleCategoryMap[rule].has(category)) : filters.rules;
       handleFiltersChange({ ...filters, category: nextCategory, rules: nextRules });
     },
     [filters, handleFiltersChange, ruleCategoryMap]
@@ -1103,7 +1109,7 @@ const OptimizeNewPage = () => {
   const handleRulesChange = useCallback(
     (nextRules: string[]) => {
       const activeCategory = filters.category.length === 1 ? filters.category[0] : '';
-      const crossesCategory = activeCategory && nextRules.some((rule) => ruleCategoryMap[rule] && ruleCategoryMap[rule] !== activeCategory);
+      const crossesCategory = activeCategory && nextRules.some((rule) => ruleCategoryMap[rule] && !ruleCategoryMap[rule].has(activeCategory));
       handleFiltersChange({ ...filters, rules: nextRules, ...(crossesCategory ? { category: [] } : {}) });
     },
     [filters, handleFiltersChange, ruleCategoryMap]
@@ -1269,7 +1275,7 @@ const OptimizeNewPage = () => {
     (rec: any) => {
       const accountInfo = accountsRef.current[rec.account_id];
       const prompt = buildNubiOptimizePrompt({
-        ruleName: formatRuleName(rec.rule_name || ''),
+        ruleName: formatRuleName(rec.rule_name || '', rec.category),
         category: rec.category || '',
         severity: rec.severity || 'Info',
         resourceName: getResourceDisplayName(rec, ''),
@@ -1817,7 +1823,7 @@ const OptimizeNewPage = () => {
         onAskNubi={(rec) => {
           const accountInfo = accounts[rec.account_id];
           const prompt = buildNubiOptimizePrompt({
-            ruleName: formatRuleName(rec.rule_name || ''),
+            ruleName: formatRuleName(rec.rule_name || '', rec.category),
             category: rec.category || '',
             severity: rec.severity || 'Info',
             resourceName: rec.resource_name || rec.cloud_resourse?.name || rec.account_object_id || '',
