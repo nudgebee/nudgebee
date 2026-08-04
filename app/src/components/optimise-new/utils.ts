@@ -50,6 +50,29 @@ export const RULE_LABELS: Record<string, string> = {
 export const NON_SECURITY_CATEGORIES = ['RightSizing', 'InfraUpgrade', 'Configuration', 'K8sSpotRecommendation'];
 export const DEFAULT_STATUS = ['Open', 'InProgress'];
 
+// Options for the Status filter. An empty selection means DEFAULT_STATUS, so the
+// page's default view is unchanged; Dismissed covers snoozed rows too (a snooze
+// is stored as Dismissed + snoozed_until).
+export const STATUS_FILTER_OPTIONS = [
+  { label: 'Open', value: 'Open' },
+  { label: 'In progress', value: 'InProgress' },
+  { label: 'Dismissed / snoozed', value: 'Dismissed' },
+];
+
+// Label for a Dismissed recommendation's badge: distinguishes a live snooze
+// ("Snoozed until Aug 11, 2026") from a permanent dismissal. An elapsed
+// snoozed_until reads as plain "Dismissed" — the expiry sweep returns the row
+// to Open on its next pass.
+export const dismissalLabel = (snoozedUntil?: string | null): string => {
+  if (snoozedUntil) {
+    const until = new Date(snoozedUntil);
+    if (!Number.isNaN(until.getTime()) && until.getTime() > Date.now()) {
+      return `Snoozed until ${until.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+    }
+  }
+  return 'Dismissed';
+};
+
 // InfraUpgrade rules that belong to the cluster-upgrade feature rather than to
 // cost optimisation. Each already has a dedicated surface — the Upgrade Planner
 // cards, the Cluster Upgrade tab, or the Helm Upgrade tab — so optimise excludes

@@ -88,6 +88,8 @@ query list_k8_recommendation($limit:Int, $offset:Int) {
       estimated_savings
       account_object_id
       status
+      snoozed_until
+      dismissed_reason
       updated_at
       created_at
       id

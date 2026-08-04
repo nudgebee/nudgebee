@@ -59,6 +59,8 @@ import {
   getRecommendationBrief,
   getResourceDisplayName,
   safeParseJSON,
+  STATUS_FILTER_OPTIONS,
+  dismissalLabel,
   type SortField,
   type SortDirection,
 } from './utils';
@@ -80,6 +82,9 @@ interface FilterState {
   search: string;
   safety: string[];
   rules: string[];
+  // Empty = the default working view (DEFAULT_STATUS); an explicit selection can
+  // surface Dismissed/snoozed rows, which the default deliberately hides.
+  status: string[];
   savings: string;
   lastSeen: string;
 }
@@ -345,7 +350,10 @@ interface RowActionsProps {
 const RowActions = memo(({ rowId, rec, ticketId, assistantName, onAskNubi, onResolve, onCreateTicket, onCopyCli, onDismiss }: RowActionsProps) => {
   const showResolve = rec.rule_name === 'pod_right_sizing' && hasWriteAccess(rec.account_id);
   const showCopyCli = rec.rule_name === 'pod_right_sizing';
-  const canDismiss = hasWriteAccess(rec.account_id);
+  // Only offer what the backend legality matrix accepts: dismiss from Open,
+  // reactivate from Dismissed. Other statuses (InProgress, Closed, Archive) get
+  // no menu entry rather than a guaranteed error toast.
+  const canDismiss = hasWriteAccess(rec.account_id) && (!rec.status || rec.status === 'Open' || rec.status === 'Dismissed');
 
   const menuItems: Array<{ label: string; icon: React.ReactNode; onSelect: () => void; disabled?: boolean; id?: string }> = [
     {
@@ -450,6 +458,10 @@ const OptimizeNewPage = () => {
   // a failed fetch mutes all four chips as if there were nothing to filter.
   const [safetyError, setSafetyError] = useState(false);
 
+  // Bumped after a dismiss/reactivate so the severity/safety chip aggregates
+  // re-fetch and stop counting the row under its old status.
+  const [aggRefreshTick, setAggRefreshTick] = useState(0);
+
   // Table state
   const [recommendations, setRecommendations] = useState<any[]>([]);
   const [tableTotal, setTableTotal] = useState(0);
@@ -474,6 +486,7 @@ const OptimizeNewPage = () => {
       search: (router.query.search as string) || '',
       safety: parseQueryArray(router.query.safety),
       rules: parseQueryArray(router.query.rules),
+      status: parseQueryArray(router.query.status),
       savings: (router.query.savings as string) || '',
       lastSeen: (router.query.seen as string) || '',
     };
@@ -534,6 +547,9 @@ const OptimizeNewPage = () => {
     if (newFilters.rules.length > 0) {
       query.rules = newFilters.rules;
     }
+    if (newFilters.status.length > 0) {
+      query.status = newFilters.status;
+    }
     if (newFilters.savings) {
       query.savings = newFilters.savings;
     }
@@ -557,7 +573,7 @@ const OptimizeNewPage = () => {
   // Reset every filter back to empty (the category card tabs return to All).
   const handleClearAll = useCallback(() => {
     setSearchInput('');
-    handleFiltersChange({ severity: [], account: [], category: [], search: '', safety: [], rules: [], savings: '', lastSeen: '' });
+    handleFiltersChange({ severity: [], account: [], category: [], search: '', safety: [], rules: [], status: [], savings: '', lastSeen: '' });
   }, [handleFiltersChange]);
 
   // Fetch accounts
@@ -582,7 +598,7 @@ const OptimizeNewPage = () => {
 
       // No category card selected → all optimize categories.
       query.category = merged.category.length > 0 ? merged.category : NON_SECURITY_CATEGORIES;
-      query.status = DEFAULT_STATUS;
+      query.status = merged.status.length > 0 ? merged.status : DEFAULT_STATUS;
       query.excludeRuleName = UPGRADE_PLANNER_RULES;
 
       if (merged.account.length > 0) {
@@ -686,7 +702,7 @@ const OptimizeNewPage = () => {
           category: activeCategories as any,
           excludeRuleName: UPGRADE_PLANNER_RULES,
           accountObjectId: filters.search || undefined,
-          status: DEFAULT_STATUS,
+          status: filters.status.length > 0 ? filters.status : DEFAULT_STATUS,
           severity: [...SEVERITY_ORDER],
           safetyBand: filters.safety.length > 0 ? filters.safety : undefined,
           ...savingsBucketToParams(filters.savings),
@@ -711,7 +727,7 @@ const OptimizeNewPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [filters.account, filters.category, filters.search, filters.safety, filters.savings, filters.lastSeen]);
+  }, [filters.account, filters.category, filters.search, filters.safety, filters.status, filters.savings, filters.lastSeen, aggRefreshTick]);
 
   // Severity chip counts — the raw aggregate narrowed client-side by the Rules
   // selection, so the chips always predict what clicking them will show.
@@ -737,7 +753,7 @@ const OptimizeNewPage = () => {
           ruleName: filters.rules.length > 0 ? filters.rules : undefined,
           excludeRuleName: UPGRADE_PLANNER_RULES,
           accountObjectId: filters.search || undefined,
-          status: DEFAULT_STATUS,
+          status: filters.status.length > 0 ? filters.status : DEFAULT_STATUS,
           severity: filters.severity.length > 0 ? [...filters.severity] : [...SEVERITY_ORDER],
           ...savingsBucketToParams(filters.savings),
           ...lastSeenBucketToParams(filters.lastSeen),
@@ -765,7 +781,17 @@ const OptimizeNewPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [filters.account, filters.category, filters.search, filters.severity, filters.rules, filters.savings, filters.lastSeen]);
+  }, [
+    filters.account,
+    filters.category,
+    filters.search,
+    filters.severity,
+    filters.rules,
+    filters.status,
+    filters.savings,
+    filters.lastSeen,
+    aggRefreshTick,
+  ]);
 
   // Safety band → count. NULL / unrecognised bands roll into `unknown`, matching
   // how the table renders unassessed rows and how the unknown filter queries.
@@ -981,6 +1007,7 @@ const OptimizeNewPage = () => {
       filters.search.length > 0 ||
       filters.safety.length > 0 ||
       filters.rules.length > 0 ||
+      filters.status.length > 0 ||
       filters.savings.length > 0 ||
       filters.lastSeen.length > 0,
     [filters]
@@ -995,6 +1022,9 @@ const OptimizeNewPage = () => {
         return {
           id: rec.id,
           rec,
+          status: rec.status || '',
+          snoozedUntil: rec.snoozed_until || '',
+          dismissedReason: rec.dismissed_reason || '',
           severity: (rec.severity || 'Info') as SeverityLevel,
           resourceName: getResourceDisplayName(rec),
           resourceType: rec.cloud_resourse?.type || '',
@@ -1200,33 +1230,40 @@ const OptimizeNewPage = () => {
 
   // Reused by both the row action menu and the detail panel.
   // Dismiss/snooze opens the modal; a Dismissed rec reactivates directly.
-  const handleDismissAction = useCallback((rec: any) => {
-    if (rec.status !== 'Dismissed') {
-      setDismissModalRec(rec);
-      return;
-    }
-    recommendationApi
-      .updateRecommendationDismissal(rec.account_id, rec.id, { dismissed: false })
-      .then((res: any) => {
-        if (res?.errors?.length) {
-          snackbar.error(res.errors[0]?.message || 'Failed to reactivate recommendation');
-          return;
-        }
-        // Fail closed: an empty response means the change cannot be confirmed.
-        if (!res?.data || res.data.applied === false) {
-          snackbar.error(res?.data?.message || 'Failed to reactivate recommendation');
-          return;
-        }
-        snackbar.success('Recommendation reactivated');
-        setRecommendations((prev) => prev.map((r: any) => (r.id === rec.id ? { ...r, status: 'Open', snoozed_until: null } : r)));
-        // A Dismissed rec is absent from the table (default status filter), so the
-        // list update above can't reach the open drawer — update it directly.
-        setSelectedRec((prev: any) => (prev?.id === rec.id ? { ...prev, status: 'Open', snoozed_until: null } : prev));
-      })
-      .catch(() => {
-        snackbar.error('Failed to reactivate recommendation');
-      });
-  }, []);
+  const handleDismissAction = useCallback(
+    (rec: any) => {
+      if (rec.status !== 'Dismissed') {
+        setDismissModalRec(rec);
+        return;
+      }
+      recommendationApi
+        .updateRecommendationDismissal(rec.account_id, rec.id, { dismissed: false })
+        .then((res: any) => {
+          if (res?.errors?.length) {
+            snackbar.error(res.errors[0]?.message || 'Failed to reactivate recommendation');
+            return;
+          }
+          // Fail closed: an empty response means the change cannot be confirmed.
+          if (!res?.data || res.data.applied === false) {
+            snackbar.error(res?.data?.message || 'Failed to reactivate recommendation');
+            return;
+          }
+          snackbar.success('Recommendation reactivated');
+          setRecommendations((prev) => prev.map((r: any) => (r.id === rec.id ? { ...r, status: 'Open', snoozed_until: null } : r)));
+          // A Dismissed rec is absent from the table (default status filter), so the
+          // list update above can't reach the open drawer — update it directly.
+          setSelectedRec((prev: any) => (prev?.id === rec.id ? { ...prev, status: 'Open', snoozed_until: null } : prev));
+          // Re-fetch so the row leaves a Dismissed-filtered view (or joins an Open
+          // one), and the chip aggregates stop counting it under its old status.
+          fetchTableData();
+          setAggRefreshTick((t) => t + 1);
+        })
+        .catch(() => {
+          snackbar.error('Failed to reactivate recommendation');
+        });
+    },
+    [fetchTableData]
+  );
 
   const askNubiAboutRec = useCallback(
     (rec: any) => {
@@ -1295,6 +1332,15 @@ const OptimizeNewPage = () => {
                   <Box>
                     <TicketLink ticketURL={row.ticketUrl} ticketID={row.ticketId} />
                   </Box>
+                )}
+                {row.status === 'Dismissed' && (
+                  <Tooltip title={row.dismissedReason ? `Reason: ${row.dismissedReason}` : ''} placement='top'>
+                    <Box component='span' sx={{ alignSelf: 'flex-start' }}>
+                      <Chip variant='status' size='2xs' tone='neutral' dot>
+                        {dismissalLabel(row.snoozedUntil)}
+                      </Chip>
+                    </Box>
+                  </Tooltip>
                 )}
               </Box>
             ),
@@ -1605,6 +1651,17 @@ const OptimizeNewPage = () => {
               handleFiltersChange({ ...filters, lastSeen: next });
             }}
           />
+          <FilterDropdown
+            id='optimize-status-filter'
+            label='Status'
+            multiple
+            options={STATUS_FILTER_OPTIONS}
+            value={STATUS_FILTER_OPTIONS.filter((o) => filters.status.includes(o.value))}
+            onSelect={(_e: any, items: any) => {
+              const next = (Array.isArray(items) ? items : []).map((it: any) => it.value);
+              handleFiltersChange({ ...filters, status: next });
+            }}
+          />
           {hasActiveFilter && (
             <Button id='optimize-clear-filters' tone='link' size='xs' icon={<CloseIcon sx={{ fontSize: 12 }} />} onClick={handleClearAll}>
               Clear all
@@ -1788,6 +1845,9 @@ const OptimizeNewPage = () => {
             setDismissModalRec(null);
             setDetailOpen(false);
             setRecommendations((prev) => prev.filter((r: any) => r.id !== recId));
+            // Keep the pagination total and the chip aggregates honest.
+            fetchTableData();
+            setAggRefreshTick((t) => t + 1);
           }}
         />
       )}

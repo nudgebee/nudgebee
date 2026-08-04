@@ -7252,6 +7252,7 @@ type RecommendationRowResponse {
   rule_name: String
   dismissed_reason: String
   is_dismissed: Boolean
+  snoozed_until: Datetime
   account_object_id: String
   updated_by: String
   resource_k8s_namespace: String

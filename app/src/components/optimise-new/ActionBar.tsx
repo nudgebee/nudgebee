@@ -49,6 +49,10 @@ const ActionBar = ({ fullRecommendation: rec, provider, onCreateTicket, onResolv
   const hasAlarmConfig = recData?.alarm_config != null;
   const canWrite = hasWriteAccess(accountId);
   const isDismissed = rec.status === 'Dismissed';
+  // Only offer what the backend legality matrix accepts: dismiss from Open,
+  // reactivate from Dismissed. Other statuses (InProgress, Closed, Archive)
+  // would just earn an error toast.
+  const showDismissAction = canWrite && (isDismissed || !rec.status || rec.status === 'Open');
 
   const handleNavigateToDetail = () => {
     const detailUrl = `/kubernetes/details/${accountId}#optimize/right-sizing`;
@@ -134,7 +138,7 @@ const ActionBar = ({ fullRecommendation: rec, provider, onCreateTicket, onResolv
           {/* Ghost tone keeps it subordinate to the actions above; it stays in this
               row rather than the icon cluster so the label isn't clipped by the
               floating chat button anchored over the drawer's bottom-right corner. */}
-          {canWrite && (
+          {showDismissAction && (
             <Button
               tone='ghost'
               size='sm'
