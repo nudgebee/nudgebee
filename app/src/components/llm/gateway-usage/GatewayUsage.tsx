@@ -195,6 +195,13 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
     setDateResetNonce((n) => n + 1);
   }, []);
 
+  // Offered from an empty Requests view: widen the window to the last 30 days so a
+  // sparse/inactive gateway isn't a dead end.
+  const onExpandRange = React.useCallback(() => {
+    setFilters((f) => ({ ...f, startDate: iso(Date.now() - 29 * DAY_MS), endDate: iso(Date.now()) }));
+    setDateResetNonce((n) => n + 1);
+  }, []);
+
   // Drill-in from the Users tab: scope Requests to this user and jump to it.
   const onSelectUser = React.useCallback((id: string, name: string) => {
     setSelectedUser({ id, name });
@@ -303,6 +310,7 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
           sessionFilter={selectedSession}
           onSelectSession={onSelectSession}
           onClearSession={onClearSession}
+          onExpandRange={onExpandRange}
         />
       )}
       {tab === 'sessions' && <SessionsView filters={filters} onDrillSession={onDrillSession} />}
