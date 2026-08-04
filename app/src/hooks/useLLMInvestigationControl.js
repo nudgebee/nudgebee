@@ -12,6 +12,92 @@ import { getUpstreamStatus, mapUpstreamError } from '@lib/errorMessages';
 
 const NULL_AGENT_ID = '00000000-0000-0000-0000-000000000000';
 
+const parseReferences = (raw) => {
+  const parsed = typeof raw === 'string' ? safeJSONParse(raw) : raw;
+  return Array.isArray(parsed) ? parsed : [];
+};
+const buildDrawerTasks = (agents, message) => {
+  const list = (agents || []).filter((agent) => agent.agent_name !== 'router');
+
+  // child agent id -> the tool call that spawned it, so a sub-agent nests under its invocation.
+  const spawnerToolByChildAgent = new Map();
+  list.forEach((agent) => {
+    (agent.llm_conversation_tool_calls || []).forEach((t) => {
+      if (t.child_agent_id) {
+        spawnerToolByChildAgent.set(String(t.child_agent_id), String(t.id));
+      }
+    });
+  });
+
+  const tasks = [];
+
+  if (message?.ack_message?.trim()) {
+    tasks.push({
+      id: message.id + '-acknowledgment',
+      tool_id: message.id + '-acknowledgment',
+      parentId: null,
+      type: 'acknowledgment',
+      text: message.ack_message,
+      content: message.ack_message,
+      created_at: message.created_at,
+      updated_at: message.updated_at,
+      user: message?.user?.display_name || 'System',
+    });
+  }
+
+  list.forEach((agent) => {
+    const toolCalls = agent.llm_conversation_tool_calls || [];
+    const agentReferences = toolCalls.flatMap((t) => parseReferences(t.references)).concat(parseReferences(agent.references));
+    const parentAgentId = agent.parent_agent_id && agent.parent_agent_id !== NULL_AGENT_ID ? String(agent.parent_agent_id) : null;
+    const parentId = spawnerToolByChildAgent.get(String(agent.id)) || parentAgentId;
+    const isRootAgent = !parentId; // the top-level orchestrator — the drawer renders it as a container header
+    tasks.push({
+      id: agent.id,
+      tool_id: agent.id,
+      parentId,
+      nodeKind: 'agent',
+      type: 'tool_call',
+      tool: agent.agent_name,
+      agentName: isRootAgent ? undefined : agent.agent_name,
+      text: isRootAgent ? agent.agent_name : undefined,
+      response_status: agent.status,
+      response_summary: agent.response_summary,
+      log: (agent.thought || '').split('\n\nAction:')[0],
+      thought: agent.thought,
+      query: agent.query,
+      response: { type: 'tool_call_response', text: agent.response },
+      references: agentReferences.length > 0 ? agentReferences : undefined,
+      created_at: agent.created_at,
+      updated_at: agent.updated_at,
+    });
+
+    toolCalls.forEach((t) => {
+      if (!t.id) {
+        return;
+      }
+      const toolRefs = parseReferences(t.references);
+      tasks.push({
+        id: t.id,
+        tool_id: t.id,
+        parentId: agent.id,
+        nodeKind: 'tool',
+        type: 'tool_call',
+        tool: t.tool_name,
+        response_status: t.status,
+        log: (t.thought || '').split('\n\nAction:')[0],
+        thought: t.thought,
+        text: t.parameters,
+        toolParameters: safeJSONParse(t.parameters) || {},
+        references: toolRefs.length > 0 ? toolRefs : undefined,
+        response: { type: 'tool_call_response', text: t.response },
+        created_at: t.created_at,
+        updated_at: t.updated_at,
+      });
+    });
+  });
+  return tasks;
+};
+
 const parseConversationMessages = (conversationMessages, accountId) => {
   const allMessages = [];
   const collapsedIndexes = {}; // To track which items should be auto-collapsed
@@ -228,10 +314,6 @@ const parseConversationMessages = (conversationMessages, accountId) => {
                 references: t.references,
                 created_at: t.created_at,
                 updated_at: t.updated_at,
-                // Lineage for the Tasks-drawer tree only (inline stream ignores these):
-                // this tool call belongs to the orchestrator `agent`, so the drawer nests
-                // it under a synthesized collapsible group for that orchestrator.
-                orchestratorParent: { id: agent.id, name: agent.agent_name, created_at: agent.created_at, status: agent.status },
                 response: { type: 'tool_call_response', text: t.response },
               };
               messageSequence.push(t.tool_id);
@@ -301,7 +383,6 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           }
         }
         const parentAgentsList = getParentAgents(agent);
-        const rawParentAgent = agent.parent_agent_id && agent.parent_agent_id !== NULL_AGENT_ID ? agentIdMap[agent.parent_agent_id] : null;
         toolRequestResponse[agent.id] = {
           // Map Agent to Message
           response_text: agent.response,
@@ -316,15 +397,6 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           thought: agent.thought,
           query: agent.query,
           parentAgents: parentAgentsList,
-          // Raw lineage for the Tasks-drawer tree only (inline stream ignores these).
-          // parentAgentId nests this task under its parent task when that parent is
-          // also rendered; orchestratorParent lets the drawer synthesize a collapsible
-          // group when the (hidden) parent is an orchestrator whose children are hoisted.
-          parentAgentId: rawParentAgent ? rawParentAgent.id : null,
-          orchestratorParent:
-            rawParentAgent && isOrchestratorAgent(rawParentAgent.agent_name)
-              ? { id: rawParentAgent.id, name: rawParentAgent.agent_name, created_at: rawParentAgent.created_at, status: rawParentAgent.status }
-              : undefined,
           plannerId: plannerIdChildMapping[agent.id],
           type: 'tool_call',
           toolParameters: parameters,
@@ -387,6 +459,9 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           // this passthrough the chip never renders because this hook rebuilds
           // the UI object from scratch and drops every field it doesn't list.
           metadata: conversationMessage.metadata,
+          // Full per-call tree for the Tasks drawer (every agent + tool call, parent-linked). The
+          // inline stream renders the curated task cards above; the drawer renders this fuller view.
+          drawerTasks: buildDrawerTasks(conversationMessage.llm_conversation_agents, conversationMessage),
         };
       }
       const finalData = messageSequence.map((s) => toolRequestResponse[s]).filter(Boolean);

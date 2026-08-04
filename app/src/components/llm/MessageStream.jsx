@@ -335,10 +335,13 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
         return;
       }
 
-      // Completed group — open the drawer.
+      // Completed group — open the drawer with the full per-call tree (all agents + tool calls),
+      // falling back to the curated tasks if the response predates drawerTasks.
+      const response = group.children.find((c) => (c.tool ?? c.type) === 'response');
+      const drawerTasks = response?.drawerTasks ?? tasks;
       const target = tasks.find((t) => t.originalIndex === taskOriginalIndex);
       const expandedTaskKey = target?.id || target?.tool_id;
-      openTasksDrawer({ tasks, expandedTaskKey });
+      openTasksDrawer({ tasks: drawerTasks, expandedTaskKey });
     },
     [groupedMessages, openTasksDrawer, setCollapsedObj]
   );
@@ -348,6 +351,9 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
       {groupedMessages.map((group, groupIndex) => {
         const response = group.children.find((c) => (c.tool ?? c.type) === 'response');
         const tasks = group.children.filter((c) => (c.tool ?? c.type) !== 'question' && (c.tool ?? c.type) !== 'response');
+        // The drawer shows the full per-call tree (every agent + tool call); the inline stream and
+        // its curated `tasks` are unchanged. Fall back to `tasks` for responses predating drawerTasks.
+        const drawerTasks = response?.drawerTasks ?? tasks;
         const extra = response ? additionalData[response.id] : null;
         const references = extra?.references || [];
         const memories = extra?.memories || [];
@@ -363,11 +369,11 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
 
         const responseMeta = response
           ? {
-              taskCount: tasks.length,
+              taskCount: drawerTasks.length,
               contextCount: references.length,
               memoryCount: memories.length,
               watchCount: watchesForThisGroup,
-              onOpenTasks: tasks.length > 0 ? () => openTasksDrawer({ tasks }) : undefined,
+              onOpenTasks: drawerTasks.length > 0 ? () => openTasksDrawer({ tasks: drawerTasks }) : undefined,
               onOpenContexts: references.length > 0 ? () => openContextsDrawer(references) : undefined,
               onOpenMemories: memories.length > 0 ? () => openMemoriesDrawer(memories) : undefined,
               onOpenWatches: watchesForThisGroup > 0 ? openWatchesDrawer : undefined,

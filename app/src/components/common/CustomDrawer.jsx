@@ -326,7 +326,10 @@ const CustomDrawer = ({
                 height: 'auto',
                 borderRadius: `${MODERN_RADIUS}px`,
                 backgroundColor: ds.background[200],
-                boxShadow: `0 ${ds.space[3]} ${ds.space[4]} color-mix(in srgb, ${ds.gray[700]} 16%, transparent)`,
+                boxShadow: `0 ${ds.space[1]} ${ds.space[3]} color-mix(in srgb, ${ds.gray[700]} 14%, transparent), 0 ${ds.space[4]} ${ds.space.mul(
+                  6,
+                  2
+                )} color-mix(in srgb, ${ds.gray[700]} 24%, transparent)`,
               }
             : {
                 boxShadow: `${ds.space.mul(1, -1)} 0 ${ds.space[3]} ${ds.gray.alpha[200]}`,
@@ -438,7 +441,10 @@ const SecondaryDrawer = ({ open, onClose, title, rightOffset = 0, defaultWidth =
           ...(isModern
             ? {
                 borderRadius: `${MODERN_RADIUS}px`,
-                boxShadow: `0 ${ds.space[3]} ${ds.space[6]} color-mix(in srgb, ${ds.gray[700]} 16%, transparent)`,
+                boxShadow: `0 ${ds.space[1]} ${ds.space[3]} color-mix(in srgb, ${ds.gray[700]} 14%, transparent), 0 ${ds.space[5]} ${ds.space.mul(
+                  6,
+                  2
+                )} color-mix(in srgb, ${ds.gray[700]} 30%, transparent)`,
               }
             : {
                 boxShadow: `${ds.space.mul(1, -1)} 0 ${ds.space[3]} ${ds.gray.alpha[200]}`,
