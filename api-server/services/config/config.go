@@ -43,6 +43,21 @@ type appConfig struct {
 	ClickhouseDatabase string `mapstructure:"clickhouse_database"`
 	ClickhouseEnabled  bool   `mapstructure:"clickhouse_enabled"`
 
+	// Pool bounds for the ClickHouse warehouse. Kept separate from the
+	// app_database_* (Postgres) values because the two backends have different
+	// server-side connection budgets.
+	ClickhouseMaxConnection          int `mapstructure:"clickhouse_max_connection"`
+	ClickhouseMinConnection          int `mapstructure:"clickhouse_min_connection"`
+	ClickhouseIdleMinutes            int `mapstructure:"clickhouse_idle_minutes"`
+	ClickhouseConnMaxLifetimeMinutes int `mapstructure:"clickhouse_conn_max_lifetime_minutes"`
+
+	// Pool bounds for the relay-backed agent warehouse managers (ClickHouse,
+	// BigQuery, Chronosphere).
+	AgentWarehouseMaxConnection          int `mapstructure:"agent_warehouse_max_connection"`
+	AgentWarehouseMinConnection          int `mapstructure:"agent_warehouse_min_connection"`
+	AgentWarehouseIdleMinutes            int `mapstructure:"agent_warehouse_idle_minutes"`
+	AgentWarehouseConnMaxLifetimeMinutes int `mapstructure:"agent_warehouse_conn_max_lifetime_minutes"`
+
 	RabbitMqUsername string `mapstructure:"rabbit_mq_username"`
 	RabbitMqPassword string `mapstructure:"rabbit_mq_password"`
 	RabbitMqHost     string `mapstructure:"rabbit_mq_host"`
@@ -278,6 +293,15 @@ func init() {
 	viper.SetDefault("clickhouse_database", "nudgebee")
 	viper.SetDefault("clickhouse_password", "default")
 	viper.SetDefault("clickhouse_enabled", false)
+	viper.SetDefault("clickhouse_max_connection", "20")
+	viper.SetDefault("clickhouse_min_connection", "2")
+	viper.SetDefault("clickhouse_idle_minutes", "5")
+	viper.SetDefault("clickhouse_conn_max_lifetime_minutes", "5")
+
+	viper.SetDefault("agent_warehouse_max_connection", "20")
+	viper.SetDefault("agent_warehouse_min_connection", "2")
+	viper.SetDefault("agent_warehouse_idle_minutes", "5")
+	viper.SetDefault("agent_warehouse_conn_max_lifetime_minutes", "5")
 
 	viper.SetDefault("rabbit_mq_username", "user")
 	viper.SetDefault("rabbit_mq_password", "")
