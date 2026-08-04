@@ -43,6 +43,15 @@ func newMetricsAgent(ctx *security.RequestContext, accountId string, provider se
 		} else {
 			slog.Warn("metrics: elasticsearch metrics agent not found, falling back to prometheus", "accountId", accountId)
 		}
+	case "gcp":
+		// Cloud-only GCP account with no first-class metrics provider — read Cloud
+		// Monitoring via the gcloud CLI (GetMetricsProvider resolves this from the
+		// account's cloud type; see cloudFallbackProvider).
+		primaryAgent = newGcpMetricsAgent(accountId)
+	case "azure":
+		// Cloud-only Azure account with no first-class metrics provider — read Azure
+		// Monitor via the az CLI.
+		primaryAgent = newAzureMetricsAgent(accountId)
 	}
 
 	if primaryAgent == nil {

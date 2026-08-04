@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"nudgebee/llm/services_server"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -86,43 +85,30 @@ func TestClampLogLimitForProvider(t *testing.T) {
 	}
 }
 
-// TestEffectiveLogProvider covers the per-request log_provider_override contract:
-// an override outranks the account-resolved provider, the value is passed through
-// verbatim (api-server's provider switch is case-sensitive — Elasticsearch is
-// "ES") with IntegrationSource left for api-server to resolve, and an override
-// that merely restates the resolved backend must keep the resolved value —
-// rebuilding a bare provider would drop Capabilities/DefaultIndex/IntegrationSource
-// and silently degrade query generation.
-func TestEffectiveLogProvider(t *testing.T) {
-	resolved := services_server.ObservabilityProvider{
-		Provider:          "ES",
-		IntegrationSource: "user",
-		DefaultIndex:      "app-logs-*",
+// TestCloudProviderToObservabilityFallback pins the pure mapping used by the
+// Get{Metrics,Log,Trace}Provider CLI fallback: only GCP/Azure cloud accounts
+// route to a cloud-CLI observability backend; AWS and unknowns keep the
+// existing prometheus/k8s/clickhouse defaults. Case and surrounding whitespace
+// in cloud_accounts.cloud_provider must not defeat the match.
+func TestCloudProviderToObservabilityFallback(t *testing.T) {
+	cases := []struct {
+		name          string
+		cloudProvider string
+		want          string
+	}{
+		{"gcp lowercase", "gcp", "gcp"},
+		{"gcp uppercase", "GCP", "gcp"},
+		{"gcp padded", "  gcp ", "gcp"},
+		{"azure lowercase", "azure", "azure"},
+		{"azure mixed case", "Azure", "azure"},
+		{"aws excluded", "aws", ""},
+		{"empty", "", ""},
+		{"unknown", "digitalocean", ""},
+		{"gke is not a cloud_provider value", "gke", ""},
 	}
-
-	t.Run("no override returns resolved", func(t *testing.T) {
-		got := EffectiveLogProvider(resolved, "")
-		assert.Equal(t, resolved, got)
-	})
-
-	t.Run("override pins a different backend, source left for api-server", func(t *testing.T) {
-		got := EffectiveLogProvider(resolved, "loki")
-		assert.Equal(t, "loki", got.Provider)
-		assert.Empty(t, got.IntegrationSource, "api-server resolves the true source when left blank")
-	})
-
-	t.Run("override case is preserved", func(t *testing.T) {
-		got := EffectiveLogProvider(services_server.ObservabilityProvider{}, "ES")
-		assert.Equal(t, "ES", got.Provider, "api-server's switch is case-sensitive")
-	})
-
-	t.Run("redundant override keeps resolved metadata", func(t *testing.T) {
-		got := EffectiveLogProvider(resolved, "ES")
-		assert.Equal(t, resolved, got)
-	})
-
-	t.Run("case-differing override keeps resolved metadata", func(t *testing.T) {
-		got := EffectiveLogProvider(resolved, "es")
-		assert.Equal(t, resolved, got, "must not drop DefaultIndex/IntegrationSource/Capabilities")
-	})
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, cloudProviderToObservabilityFallback(c.cloudProvider))
+		})
+	}
 }

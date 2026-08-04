@@ -51,13 +51,17 @@ func newTracesAgent(ctx *security.RequestContext, accountId string, primaryAgent
 	provider := strings.ToLower(primaryAgent.Provider)
 	isClickhouse := provider == "clickhouse" || provider == "otel_clickhouse" || provider == "last9"
 	isDatadog := provider == "datadog"
+	// Cloud-only GCP/Azure accounts (no first-class trace provider) read traces
+	// via the cloud CLI/REST API, not the canonical services-server path — so
+	// they stay on their dedicated agents like ClickHouse/Datadog.
+	isCloudCLI := provider == "gcp" || provider == "azure"
 
 	// Integration-agnostic (v2) routing: when enabled, every where-clause-capable
 	// provider goes through the canonical TracesDefaultAgentV2 (llm-server emits one
 	// canonical query; services-server translates it per provider). ClickHouse (raw-SQL
 	// aggregations) and Datadog (facet syntax) can't be expressed canonically, so they
 	// stay on their dedicated agents. Flag off → the v1 switch below, byte-identical.
-	if traceAgentV2Enabled() && !isClickhouse && !isDatadog {
+	if traceAgentV2Enabled() && !isClickhouse && !isDatadog && !isCloudCLI {
 		return &fallbackTracesAgent{
 			accountId: accountId,
 			agents:    []core.NBAgent{newTracesDefaultAgentV2(accountId, primaryAgent)},
@@ -79,6 +83,14 @@ func newTracesAgent(ctx *security.RequestContext, accountId string, primaryAgent
 		agentsToTry = append(agentsToTry, TracesChronosphereAgent{accountId: accountId})
 	case "datadog":
 		agentsToTry = append(agentsToTry, NewDatadogTracesAgent(accountId))
+	case "gcp":
+		// Cloud-only GCP account — read Cloud Trace via the v1 REST API (gcloud
+		// token + curl). GetTraceProvider resolves this from the account's cloud
+		// type (see cloudFallbackProvider).
+		agentsToTry = append(agentsToTry, newGcpTracesAgent(accountId))
+	case "azure":
+		// Cloud-only Azure account — read distributed traces via Application Insights.
+		agentsToTry = append(agentsToTry, newAzureTracesAgent(accountId))
 	default:
 		// Any provider without a dedicated agent (e.g. Dynatrace) falls through to
 		// the generic default agent, which sends the unified JSON query schema to

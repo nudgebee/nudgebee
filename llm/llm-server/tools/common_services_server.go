@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // lokiMaxLogLimit is the per-query cap Loki enforces (HTTP 400 above this).
@@ -434,6 +436,19 @@ func GetTraceProvider(accountId string) (services_server.ObservabilityProvider, 
 	if err != nil {
 		slog.Warn("trace: could not fetch provider from services-server, falling back to default provider", "error", err, "accountId", accountId)
 	}
+
+	// No first-class trace provider configured. For a cloud-ONLY GCP/Azure account
+	// (no connected k8s agent) the ClickHouse default can't answer, so fall back to
+	// the account's cloud CLI (Cloud Trace / Application Insights). The
+	// hasConnectedK8sAgent guard keeps a GKE/AKS account on its in-cluster
+	// ClickHouse. AWS/unknown keep the clickhouse default.
+	if cloud := cloudFallbackProvider(accountId); cloud != "" && !hasConnectedK8sAgent(accountId) {
+		return services_server.ObservabilityProvider{
+			IntegrationSource: "agent",
+			Provider:          cloud,
+		}, nil
+	}
+
 	traceProvider := "clickhouse"
 	return services_server.ObservabilityProvider{
 		IntegrationSource: "agent",
@@ -454,10 +469,85 @@ func GetMetricsProvider(accountId string) (services_server.ObservabilityProvider
 		slog.Warn("metrics: could not fetch provider from services-server, falling back to local DB", "error", err, "accountId", accountId)
 	}
 
+	// No first-class metrics provider (Prometheus / Datadog / Elasticsearch) is
+	// configured. For a cloud-ONLY GCP/Azure account (no connected k8s agent) the
+	// in-cluster Prometheus default can't answer, so fall back to the account's
+	// cloud CLI (Cloud Monitoring / Azure Monitor). The hasConnectedK8sAgent guard
+	// keeps a GKE/AKS account that merely also has cloud creds on its cluster's
+	// Prometheus. AWS and unknown providers keep the prometheus default.
+	if cloud := cloudFallbackProvider(accountId); cloud != "" && !hasConnectedK8sAgent(accountId) {
+		return services_server.ObservabilityProvider{
+			Provider:          cloud,
+			IntegrationSource: "agent",
+		}, nil
+	}
+
 	return services_server.ObservabilityProvider{
 		Provider:          metricsConnectionProvider,
 		IntegrationSource: "agent",
 	}, nil
+}
+
+// cloudFallbackProvider returns "gcp" or "azure" when the account is a GCP/Azure
+// cloud account, else "". It is the shared "decide the fallback observability
+// backend from the account's cloud type" hook used by the Get*Provider resolvers
+// when no first-class observability provider (Loki/Prometheus/Datadog/…) is
+// configured. AWS is intentionally excluded — it has no CLI-based observability
+// fallback wired here and keeps the existing k8s/prometheus/clickhouse defaults.
+// A lookup failure degrades to "" (no fallback) so provider resolution never
+// blocks on a missing cloud_accounts row.
+func cloudFallbackProvider(accountId string) string {
+	if _, err := uuid.Parse(accountId); err != nil {
+		return ""
+	}
+	creds, err := GetCloudAccountCredentials(accountId)
+	if err != nil {
+		slog.Warn("observability: could not resolve cloud type for CLI fallback", "error", err, "accountId", accountId)
+		return ""
+	}
+	return cloudProviderToObservabilityFallback(creds.CloudProvider)
+}
+
+// cloudProviderToObservabilityFallback maps a cloud_accounts.cloud_provider value
+// to the observability fallback provider name, or "" when the cloud has no
+// CLI-based fallback wired here. Pure (no DB) so the mapping — including the
+// case/whitespace normalization and the deliberate AWS/unknown exclusion — is
+// unit-testable in isolation from GetCloudAccountCredentials.
+func cloudProviderToObservabilityFallback(cloudProvider string) string {
+	switch strings.ToLower(strings.TrimSpace(cloudProvider)) {
+	case "gcp":
+		return "gcp"
+	case "azure":
+		return "azure"
+	}
+	return ""
+}
+
+// hasConnectedK8sAgent reports whether the account has a CONNECTED in-cluster
+// Kubernetes agent. When it does, in-cluster observability (Prometheus /
+// ClickHouse / streamed pod logs) is authoritative for the account's workloads,
+// so the cloud-CLI observability fallback must NOT fire — otherwise a GKE/AKS
+// account that also has GCP/Azure cloud creds connected would be pulled off its
+// cluster's Prometheus/ClickHouse and onto gcloud monitoring / Azure Monitor,
+// where the pod-level data the k8s orchestrator wants does not live. Mirrors the
+// connected-agent probe in tools/core/tool_config.go. Fails closed (treats a DB
+// error as "agent present") so a transient error never silently enables the
+// hijack this guard exists to prevent.
+func hasConnectedK8sAgent(accountId string) bool {
+	if _, err := uuid.Parse(accountId); err != nil {
+		return false
+	}
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		slog.Warn("observability: could not check k8s agent presence; assuming present", "error", err, "accountId", accountId)
+		return true
+	}
+	var connectedCount int
+	if err := dbms.Db.Get(&connectedCount, "select count(*) from agent where status = 'CONNECTED' and cloud_account_id = $1", accountId); err != nil {
+		slog.Warn("observability: k8s agent presence query failed; assuming present", "error", err, "accountId", accountId)
+		return true
+	}
+	return connectedCount > 0
 }
 
 func GetLogProvider(accountId string) (services_server.ObservabilityProvider, error) {
@@ -473,13 +563,17 @@ func GetLogProvider(accountId string) (services_server.ObservabilityProvider, er
 		slog.Warn("logs: could not fetch provider from services-server, falling back to local DB", "error", err, "accountId", accountId)
 	}
 
+	if _, err := uuid.Parse(accountId); err != nil {
+		return services_server.ObservabilityProvider{Provider: logConnectionProvider, IntegrationSource: "agent"}, nil
+	}
+
 	// Fallback to fetching from DB
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
 		slog.Error("logs: unable to fetch dbms", "error", err)
 		return services_server.ObservabilityProvider{}, err
 	}
-	rows, err := dbms.Db.Queryx("select connection_status::text from agent where cloud_account_id = $1", accountId)
+	rows, err := dbms.Db.Queryx("select connection_status::text, status from agent where cloud_account_id = $1", accountId)
 	if err != nil {
 		slog.Error("logs: unable to fetch dbms", "error", err)
 		return services_server.ObservabilityProvider{}, err
@@ -490,12 +584,18 @@ func GetLogProvider(accountId string) (services_server.ObservabilityProvider, er
 		}
 	}()
 
+	explicitlySet := false
+	hasConnectedAgent := false
 	for rows.Next() {
 		var connectionStatusString *string
-		err := rows.Scan(&connectionStatusString)
+		var agentStatus string
+		err := rows.Scan(&connectionStatusString, &agentStatus)
 		if err != nil {
 			slog.Error("logs: unable to scan rows", "error", err)
 			break
+		}
+		if agentStatus == "CONNECTED" {
+			hasConnectedAgent = true
 		}
 		connectionStatus := map[string]any{}
 		if connectionStatusString != nil {
@@ -506,10 +606,25 @@ func GetLogProvider(accountId string) (services_server.ObservabilityProvider, er
 			}
 		}
 		logConnectionProvider1 := connectionStatus["logsConnectionProvider"]
-		if logConnectionProvider1 != nil {
-			logConnectionProvider = logConnectionProvider1.(string)
+		if s, ok := logConnectionProvider1.(string); ok {
+			logConnectionProvider = s
+			explicitlySet = true
 		} else {
 			slog.Info("logs: unable to find log connection provider, will be using default")
+		}
+	}
+
+	// No log provider was explicitly configured (neither services-server nor the
+	// agent connection_status named one). For a cloud-ONLY GCP/Azure account (no
+	// connected k8s agent) the bare "k8s" default can't read logs, so fall back to
+	// the account's cloud CLI (Cloud Logging / Log Analytics). Both gates matter: an
+	// explicit provider (even "k8s" from a GKE/AKS agent that streams logs) is
+	// respected via explicitlySet, and the hasConnectedAgent check additionally
+	// covers a connected agent whose status omitted logsConnectionProvider.
+	// AWS/unknown keep the k8s default.
+	if !explicitlySet {
+		if cloud := cloudFallbackProvider(accountId); cloud != "" && !hasConnectedAgent {
+			return services_server.ObservabilityProvider{Provider: cloud, IntegrationSource: "agent"}, nil
 		}
 	}
 

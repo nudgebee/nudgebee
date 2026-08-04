@@ -95,6 +95,16 @@ func getLogAgent(ctx *security.RequestContext, accountId string) (core.NBAgent, 
 		ctx.GetLogger().Warn("log: unable to resolve log provider, defaulting to kubectl-only path", "error", err)
 		provider = services_server.ObservabilityProvider{}
 	}
+	// Cloud-only GCP/Azure accounts with no first-class log provider read logs
+	// via the cloud CLI (Cloud Logging / Log Analytics) instead of the generic
+	// LogAgent's kubectl/Loki path. GetLogProvider resolves these from the
+	// account's cloud type (see cloudFallbackProvider).
+	switch strings.ToLower(strings.TrimSpace(provider.Provider)) {
+	case "gcp":
+		return newGcpLogsAgent(accountId), nil
+	case "azure":
+		return newAzureLogsAgent(accountId), nil
+	}
 	if provider.Provider == "k8s" {
 		provider = services_server.ObservabilityProvider{}
 	}
