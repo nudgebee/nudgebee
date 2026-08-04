@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,17 +31,15 @@ func validateURL(rawURL string) error {
 		return fmt.Errorf("invalid scheme: %s", u.Scheme)
 	}
 
-	host, _, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		host = u.Host
-	}
-
+	host := u.Hostname()
 	if host == "" {
 		return fmt.Errorf("empty hostname")
 	}
 
 	// Resolve IP address — fail-closed: if we can't verify the IP is safe, reject the URL.
-	ips, err := net.LookupIP(host)
+	resolveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIPAddr(resolveCtx, host)
 	if err != nil {
 		return fmt.Errorf("unable to resolve host %q: %w", host, err)
 	}
@@ -48,9 +47,9 @@ func validateURL(rawURL string) error {
 		return fmt.Errorf("host %q resolved to zero addresses", host)
 	}
 
-	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
-			return fmt.Errorf("URL resolves to a restricted IP: %s", ip.String())
+	for _, ipa := range ips {
+		if common.IsPrivateOrLoopbackIP(ipa.IP) {
+			return fmt.Errorf("URL resolves to a restricted IP: %s", ipa.IP.String())
 		}
 	}
 

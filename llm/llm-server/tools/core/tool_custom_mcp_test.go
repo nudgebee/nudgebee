@@ -30,6 +30,9 @@ func TestValidateMCPURL(t *testing.T) {
 		{"unsupported scheme ftp", "ftp://example.com/file", true},
 		{"unsupported scheme file", "file:///etc/passwd", true},
 		{"unspecified 0.0.0.0", "http://0.0.0.0:8080/mcp", true},
+		{"CGNAT", "http://100.100.100.100/internal", true},
+		{"NAT64 metadata", "http://[64:ff9b::a9fe:a9fe]/", true},
+		{"NAT64 private", "http://[64:ff9b::a00:1]/", true},
 	}
 
 	for _, tt := range tests {
@@ -44,6 +47,47 @@ func TestValidateMCPURL(t *testing.T) {
 	}
 }
 
+func TestIsRestrictedIP_NAT64(t *testing.T) {
+	tests := []struct {
+		name       string
+		ip         string
+		restricted bool
+	}{
+		{"NAT64 metadata endpoint", "64:ff9b::a9fe:a9fe", true},
+		{"NAT64 loopback", "64:ff9b::7f00:1", true},
+		{"NAT64 RFC1918 10.x", "64:ff9b::a00:1", true},
+		{"NAT64 public IPv4 still blocked via prefix", "64:ff9b::808:808", true},
+		{"local-use NAT64 prefix", "64:ff9b:1::a9fe:a9fe", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			assert.NotNil(t, ip, "failed to parse test IP %q", tt.ip)
+			assert.Equal(t, tt.restricted, isRestrictedIP(ip))
+		})
+	}
+}
+
+func TestIsRestrictedIP_CGNAT(t *testing.T) {
+	tests := []struct {
+		name       string
+		ip         string
+		restricted bool
+	}{
+		{"CGNAT start", "100.64.0.1", true},
+		{"CGNAT mid", "100.100.100.100", true},
+		{"CGNAT end", "100.127.255.254", true},
+		{"just outside CGNAT", "100.128.0.1", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			assert.NotNil(t, ip, "failed to parse test IP %q", tt.ip)
+			assert.Equal(t, tt.restricted, isRestrictedIP(ip))
+		})
+	}
+}
+
 func TestPinnedSafeDialContext_LiteralRestrictedIP(t *testing.T) {
 	tests := []struct {
 		name string
@@ -54,6 +98,8 @@ func TestPinnedSafeDialContext_LiteralRestrictedIP(t *testing.T) {
 		{"private 10.x", "10.0.0.1:80"},
 		{"link-local metadata", "169.254.169.254:80"},
 		{"unspecified", "0.0.0.0:80"},
+		{"CGNAT", "100.64.0.1:80"},
+		{"NAT64 metadata", "[64:ff9b::a9fe:a9fe]:80"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

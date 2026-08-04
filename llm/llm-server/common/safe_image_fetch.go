@@ -23,6 +23,30 @@ type SafeFetchOptions struct {
 	AllowedMIMEPrefixes []string
 }
 
+var restrictedCIDRs = []string{
+	"100.64.0.0/10",   // CGNAT (RFC 6598)
+	"198.18.0.0/15",   // Benchmark testing (RFC 2544)
+	"192.0.0.0/24",    // IETF Protocol Assignments
+	"192.0.2.0/24",    // TEST-NET-1 (RFC 5737)
+	"198.51.100.0/24", // TEST-NET-2 (RFC 5737)
+	"203.0.113.0/24",  // TEST-NET-3 (RFC 5737)
+	"240.0.0.0/4",     // Reserved (RFC 1112)
+	"64:ff9b::/96",    // Well-known NAT64 prefix (RFC 6052)
+	"64:ff9b:1::/48",  // Local-use NAT64 prefix (RFC 8215)
+}
+
+var restrictedNets []*net.IPNet
+
+func init() {
+	for _, cidr := range restrictedCIDRs {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			panic(fmt.Sprintf("invalid restricted CIDR %q: %v", cidr, err))
+		}
+		restrictedNets = append(restrictedNets, ipNet)
+	}
+}
+
 var (
 	safeImageHTTPClientOnce sync.Once
 	safeImageHTTPClient     *http.Client
@@ -209,8 +233,9 @@ func IsBlockedImageHost(host string) bool {
 }
 
 // IsPrivateOrLoopbackIP is the canonical IP check used at dial time. It
-// rejects loopback, IPv4/IPv6 private ranges, link-local, multicast, and
-// unspecified addresses, plus the IPv6 ULA range used by AWS for IMDS.
+// rejects loopback, IPv4/IPv6 private ranges, link-local, multicast,
+// unspecified addresses, CGNAT (RFC 6598), NAT64 (RFC 6052/8215), and
+// other reserved ranges.
 func IsPrivateOrLoopbackIP(ip net.IP) bool {
 	if ip == nil {
 		return true
@@ -229,6 +254,14 @@ func IsPrivateOrLoopbackIP(ip net.IP) bool {
 	// this is belt-and-suspenders.
 	if v6 := ip.To16(); v6 != nil && ip.To4() == nil {
 		if v6[0] == 0xfc || v6[0] == 0xfd {
+			return true
+		}
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		ip = ip4
+	}
+	for _, rNet := range restrictedNets {
+		if rNet.Contains(ip) {
 			return true
 		}
 	}
