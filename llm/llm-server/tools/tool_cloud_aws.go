@@ -44,7 +44,8 @@ func (t AwsCliTool) Description() string {
 		**Usage:**
 
 		* **Prioritize this tool:**  When interacting with AWS, use this tool to retrieve information or perform actions.
-		* **Input:**  A valid 'aws' CLI command string.  Include necessary options and arguments. Be explicit about regions. Single command only — no shell loops, pipes into shells, '&&', or '$()'.
+		* **Prioritize this tool:**  When interacting with AWS, use this tool to retrieve information or perform actions.
+		* **Input:**  A valid 'aws' CLI command string.  Include necessary options and arguments. Be explicit about regions.
 		* **Output:**  The raw output of the executed 'aws' CLI command.
 
 		**Examples:**
@@ -57,7 +58,6 @@ func (t AwsCliTool) Description() string {
 
 		* Ensure correct command formatting and arguments. Always specify the region.
 		* Do not include AWS credentials in commands.  Assume they are configured correctly in the environment.
-		* For complex queries, use tools like 'jq' to parse and filter the JSON output.  Indicate this in the command.
 		`
 }
 
@@ -81,10 +81,6 @@ func (t AwsCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 	}
 
 	command := strings.TrimSpace(input.Command)
-
-	if !strings.HasPrefix(command, "aws") {
-		command = "aws " + command // Ensure "aws" prefix
-	}
 
 	accountId := ""
 	for _, v := range nbRequestContext.ToolConfig.Values {
@@ -143,12 +139,15 @@ func (t AwsCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 	}
 
 	// Reject shell syntax in non-workspace mode — cloud.Execute only supports single CLI commands.
-	// When workspace is enabled (above), commands run in an isolated pod where shell syntax is safe.
 	if isShellSyntax(command) {
 		return core.NBToolResponse{
-			Data:   "ERROR: aws_execute accepts a single AWS CLI command, not shell scripts or loops. Call aws_execute once per command instead of using for-loops or pipes.",
+			Data:   "ERROR: aws_execute accepts a single AWS CLI command in non-workspace mode, not shell scripts or loops. Call aws_execute once per command instead of using for-loops or pipes.",
 			Status: core.NBToolResponseStatusError,
 		}, nil
+	}
+
+	if !strings.HasPrefix(command, "aws") {
+		command = "aws " + command
 	}
 
 	tenant := nbRequestContext.Ctx.GetSecurityContext().GetTenantId()

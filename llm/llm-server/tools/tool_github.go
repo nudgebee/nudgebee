@@ -128,8 +128,13 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 		// Use nbRequestContext.AccountId as it is guaranteed to be populated from the session
 		response, err = wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, env)
 	} else {
-		// Enforce 'gh ' prefix for local execution for security
-		if !strings.HasPrefix(command, "gh ") {
+		if isShellSyntax(command) {
+			return core.NBToolResponse{
+				Data:   "ERROR: github_execute accepts a single gh command in non-workspace mode, not shell scripts or loops.",
+				Status: core.NBToolResponseStatusError,
+			}, nil
+		}
+		if !strings.HasPrefix(command, "gh") {
 			command = "gh " + command
 		}
 		// execute gh cli command locally

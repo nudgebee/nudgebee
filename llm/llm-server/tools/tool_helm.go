@@ -66,9 +66,6 @@ func (m HelmExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NB
 
 	nbRequestContext.Ctx.GetLogger().Info("helm: executing executeShellCommand tool call", "query", input.Command)
 	command := strings.TrimSpace(input.Command)
-	if !strings.HasPrefix(command, "helm") {
-		command = "helm " + command
-	}
 
 	if config.Config.LlmServerWorkspaceEnabled {
 		wm := workspace.NewWorkspaceManager()
@@ -115,6 +112,17 @@ func (m HelmExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NB
 			Type:   core.NBToolResponseTypeText,
 			Status: core.NBToolResponseStatusSuccess,
 		}, nil
+	}
+
+	if isShellSyntax(command) {
+		return core.NBToolResponse{
+			Data:   "ERROR: helm_execute accepts a single helm command in non-workspace mode, not shell scripts or loops.",
+			Status: core.NBToolResponseStatusError,
+		}, nil
+	}
+
+	if !strings.HasPrefix(command, "helm") {
+		command = "helm " + command
 	}
 
 	response, err := ExecuteContainerJob(nbRequestContext, RelayJobHelm, command, nbRequestContext.AccountId, map[string]any{}, false)

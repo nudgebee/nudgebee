@@ -79,10 +79,6 @@ func (t AzureCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToo
 	command = strings.ReplaceAll(command, "\\\r\n", " ")
 	command = strings.ReplaceAll(command, "\\\n", " ")
 
-	if !strings.HasPrefix(command, "az") {
-		command = "az " + command // Ensure "az" prefix
-	}
-
 	// Denylist auth and account state-changing commands
 	args, err := shlex.Split(command)
 	if err != nil {
@@ -156,6 +152,17 @@ func (t AzureCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToo
 			Type:   core.NBToolResponseTypeText,
 			Status: core.NBToolResponseStatusSuccess,
 		}, nil
+	}
+
+	if isShellSyntax(command) {
+		return core.NBToolResponse{
+			Data:   "ERROR: az_execute accepts a single Azure CLI command in non-workspace mode, not shell scripts or loops. Call az_execute once per command instead of using for-loops or pipes.",
+			Status: core.NBToolResponseStatusError,
+		}, nil
+	}
+
+	if !strings.HasPrefix(command, "az") {
+		command = "az " + command
 	}
 
 	tenant := nbRequestContext.Ctx.GetSecurityContext().GetTenantId()

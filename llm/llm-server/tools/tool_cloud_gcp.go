@@ -80,24 +80,6 @@ func (t GcpCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 	command = strings.ReplaceAll(command, "\\\r\n", " ")
 	command = strings.ReplaceAll(command, "\\\n", " ")
 
-	// Route-hint guard: catch tool-mismatched inputs at the door.
-	// Without this, the auto-prefix below silently rewrites `curl ...` to
-	// `gcloud curl ...`, gcloud emits "Invalid choice: 'curl'", and the model
-	// wastes a retry round trying to fix a command that never belonged here.
-	// gsutil is legitimately allowed (see agent prompt: "For Cloud Storage
-	// ACLs, prefer using 'gsutil acl get'") — the auto-prefix below also
-	// skips it. Same for `gcloud` itself.
-	if guardErr := rejectNonGcloudShapes(command); guardErr != "" {
-		return core.NBToolResponse{
-			Data:   cliRecoveryEnvelope(guardErr, guardErr, "gcloud", "gcloud <command> --help"),
-			Status: core.NBToolResponseStatusError,
-		}, nil
-	}
-
-	if !strings.HasPrefix(command, "gcloud") && !strings.HasPrefix(command, "gsutil") {
-		command = "gcloud " + command // Ensure "gcloud" prefix
-	}
-
 	// Denylist auth commands
 	args, err := shlex.Split(command)
 	if err != nil {
@@ -151,6 +133,24 @@ func (t GcpCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 			Type:   core.NBToolResponseTypeText,
 			Status: core.NBToolResponseStatusSuccess,
 		}, nil
+	}
+
+	if guardErr := rejectNonGcloudShapes(command); guardErr != "" {
+		return core.NBToolResponse{
+			Data:   cliRecoveryEnvelope(guardErr, guardErr, "gcloud", "gcloud <command> --help"),
+			Status: core.NBToolResponseStatusError,
+		}, nil
+	}
+
+	if isShellSyntax(command) {
+		return core.NBToolResponse{
+			Data:   "ERROR: gcloud_execute accepts a single GCP CLI command in non-workspace mode, not shell scripts or loops. Call gcloud_execute once per command instead of using for-loops or pipes.",
+			Status: core.NBToolResponseStatusError,
+		}, nil
+	}
+
+	if !strings.HasPrefix(command, "gcloud") && !strings.HasPrefix(command, "gsutil") {
+		command = "gcloud " + command
 	}
 
 	tenant := nbRequestContext.Ctx.GetSecurityContext().GetTenantId()

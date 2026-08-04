@@ -81,9 +81,6 @@ func (m ArgoCDExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 	}
 
 	command := strings.TrimSpace(input.Command)
-	if !strings.HasPrefix(command, "argocd") {
-		command = "argocd " + command
-	}
 
 	if config.Config.LlmServerWorkspaceEnabled {
 		wm := workspace.NewWorkspaceManager()
@@ -128,6 +125,17 @@ func (m ArgoCDExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 			Type:   core.NBToolResponseTypeText,
 			Status: core.NBToolResponseStatusSuccess,
 		}, nil
+	}
+
+	if isShellSyntax(command) {
+		return core.NBToolResponse{
+			Data:   "ERROR: argocd_execute accepts a single argocd command in non-workspace mode, not shell scripts or loops.",
+			Status: core.NBToolResponseStatusError,
+		}, nil
+	}
+
+	if !strings.HasPrefix(command, "argocd") {
+		command = "argocd " + command
 	}
 
 	response, err := ExecuteContainerJob(nbRequestContext, RelayJobArgoCD, command, nbRequestContext.AccountId, map[string]any{}, false)

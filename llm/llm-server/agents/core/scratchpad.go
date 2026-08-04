@@ -266,6 +266,14 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 		// so it never leaks to the terminal response, the UI, or the summarizer.
 		if plan.IsDuplicateCacheHit {
 			obs = duplicateCallNotice + obs
+		} else if plan.RepeatedResultCount > 1 {
+			obs = repeatedResultNotice(plan.RepeatedResultCount) + obs
+		} else if plan.TrivialResultRepeatCount > 1 {
+			// Trivial-result loop: same tool returned empty/null enough times this
+			// turn to trip the threshold. Notice explicitly names "no matches" as
+			// a valid conclusion so a legit multi-region sweep terminates on it
+			// too — same signal for both the retry-loop and legit-sweep endings.
+			obs = trivialResultNotice(plan.Action.Tool, plan.TrivialResultRepeatCount) + obs
 		}
 
 		// PRUNING: Minimize fixed failures

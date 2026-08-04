@@ -2281,6 +2281,38 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		SubAgentEvidence: observation.SubAgentEvidence,
 		IsCircuitOpen:    observation.IsCircuitOpen,
 	}
+	if !observation.IsTerminal && status != ToolStatusEmptyResult {
+		if n := e.countIdenticalPriorObservations(action, observation.Data); n > 0 {
+			result.RepeatedResultCount = n + 1 // this occurrence included
+			e.ctx.GetLogger().Warn("plannerexecutor: tool returned a result identical to earlier calls with different input",
+				"tool", action.Tool, "toolId", action.ToolID, "occurrences", result.RepeatedResultCount)
+			common.MetricsToolOperationsTotal(implType, toolName, "repeated_result", accountID)
+		}
+	}
+	// Separate signal: same tool returning trivial (`[]`, `null`, "no data")
+	// output repeatedly. countIdenticalPriorObservations deliberately skips
+	// trivial to protect the legit multi-region sweep case (a scan over regions
+	// where most come back empty), but a specific pathological pattern still
+	// slips through: the model keeps retrying the SAME query with varied
+	// filter/format flags (`--output table` → `--output json` → `--output text`
+	// → jq) on empty output, believing the OUTPUT FORMAT is broken rather than
+	// concluding "no matches" or "field name is mis-cased." This class hit
+	// every non-Gemini production loop in the 7d sweep (session 9ac1beed had
+	// 12 aws_execute + shell_execute calls all returning trivial on a mis-cased
+	// `--query DbInstanceIdentifier` — 2 wasted turns for a 1-char typo). The
+	// counter fires at trivialResultThreshold; the sweep case is preserved
+	// because the notice text explicitly names "no matches" as a valid
+	// conclusion, which is exactly what a legitimate sweep should conclude.
+	// Tool-agnostic by construction — works for shell/kubectl/postgres/github/
+	// aws/gcp/az uniformly.
+	if !observation.IsTerminal && isTrivialObservation(observation.Data) {
+		if n := e.countTrivialResultsForTool(action); n >= trivialResultThreshold {
+			result.TrivialResultRepeatCount = n + 1
+			e.ctx.GetLogger().Warn("plannerexecutor: tool returned trivial/empty result repeatedly this turn",
+				"tool", action.Tool, "toolId", action.ToolID, "occurrences", result.TrivialResultRepeatCount)
+			common.MetricsToolOperationsTotal(implType, toolName, "trivial_result_loop", accountID)
+		}
+	}
 
 	// Cache successful results under both original and rewritten inputs
 	if status == ToolStatusSuccess || status == ToolStatusEmptyResult {
@@ -2292,6 +2324,73 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 
 	return result, nil, nil
 }
+
+// isTrivialObservation reports whether an observation carries no findings — an empty
+// body, the no-data sentinel, or an empty JSON container. Repeats of these are normal:
+// a sweep across regions or namespaces where most come back empty produces the same
+// `[]` over and over, and flagging that would train the planner to abandon a scan that
+// is working correctly.
+func isTrivialObservation(observation string) bool {
+	switch strings.TrimSpace(observation) {
+	case "", "[]", "{}", "null", plannerToolNoData:
+		return true
+	}
+	return false
+}
+
+// countIdenticalPriorObservations returns how many earlier steps in this run drove the
+// same tool with a DIFFERENT input yet produced the byte-identical observation — the
+// signal that the model is rewriting its command without changing the outcome.
+//
+// The COUNT matters, not just the fact. A static hint does not break these loops: a
+// 7-day DB sweep found a run where shell_execute returned the same "File not found"
+// recovery hint to 16 different commands and the model kept going. Escalating with an
+// explicit occurrence number is a different signal from repeating the same sentence.
+//
+// Callers must also skip ToolStatusEmptyResult steps, which additionally covers the
+// structured no-match envelope; this helper only sees the observation text.
+func (e *plannerExecutor) countIdenticalPriorObservations(action NBAgentPlannerToolAction, observation string) int {
+	if isTrivialObservation(observation) {
+		return 0
+	}
+	n := 0
+	for _, s := range e.steps {
+		if s.Action.Tool == action.Tool && s.Action.ToolInput != action.ToolInput && s.Observation == observation {
+			n++
+		}
+	}
+	return n
+}
+
+// countTrivialResultsForTool returns how many prior steps in this run used the
+// same tool AND produced a trivial observation. Independent from
+// countIdenticalPriorObservations — this counts across the trivial short-circuit
+// that the other helper enforces to protect legit multi-region sweeps. Only
+// gated behind trivialResultThreshold at the call site so the sweep case
+// (many regions, most empty) still fires the notice, but at a threshold that
+// matches "you're clearly stuck retrying" not "you're scanning correctly."
+// Model reads the notice, sees `no matches` as a valid conclusion, and
+// terminates the scan — same behavior we'd want for both the retry-loop
+// and legit-sweep outcomes.
+func (e *plannerExecutor) countTrivialResultsForTool(action NBAgentPlannerToolAction) int {
+	n := 0
+	for _, s := range e.steps {
+		if s.Action.Tool == action.Tool && isTrivialObservation(s.Observation) {
+			n++
+		}
+	}
+	return n
+}
+
+// trivialResultThreshold is the count at which we start injecting the
+// trivial-result loop notice. Set to 3 so the FOURTH trivial-result call
+// (n=3 prior + this one) is the first with the notice. Chosen empirically:
+// the 7d loop sweep showed the median problematic pattern hits 4-5 identical
+// empty responses before the model breaks out on its own; firing at 4 catches
+// the tail without noisy false positives on 2-3 turn legit checks
+// (e.g. "check both prod and staging namespaces — both empty" is 2 trivials
+// and shouldn't fire).
+const trivialResultThreshold = 3
 
 func (e *plannerExecutor) followupForToolOperationConfirmation(action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType) ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
 	followupRequest, err := FollowupRequestForToolOperationConfirmation(e.ctx, e.agentRequest, e.agent, action, toolRequestType)

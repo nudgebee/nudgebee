@@ -443,9 +443,6 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 
 	nbRequestContext.Ctx.GetLogger().Info("k8s: executing executeShellCommand tool call", "query", input.Command)
 	command := strings.TrimSpace(input.Command)
-	if !strings.HasPrefix(command, "kubectl") {
-		command = "kubectl " + command
-	}
 
 	command1 := strings.ToLower(command)
 	// Block secret-bearing resource kinds. Uses a shell-aware tokenizer
@@ -565,6 +562,17 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 			resp.Metadata = &core.NBToolResponseMetadata{Stderr: stderr}
 		}
 		return resp, nil
+	}
+
+	if isShellSyntax(command) {
+		return core.NBToolResponse{
+			Data:   "ERROR: kubectl_execute accepts a single kubectl command in non-workspace mode, not shell scripts or loops.",
+			Status: core.NBToolResponseStatusError,
+		}, nil
+	}
+
+	if !strings.HasPrefix(command, "kubectl") {
+		command = "kubectl " + command
 	}
 
 	response, err := ExecuteContainerJob(nbRequestContext, RelayJobKubectl, command, effectiveAccountId, map[string]any{}, false)
