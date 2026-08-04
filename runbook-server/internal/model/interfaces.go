@@ -53,6 +53,11 @@ type WorkflowStore interface {
 	SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status WorkflowExecutionStatus, executionTime time.Time, statusMessage string, version *int) error
 	CountWorkflows(ctx context.Context, tenantID string, accountIDs []string, status WorkflowStatus, triggerType string) (int64, error)
 	GetWorkflowNames(ctx context.Context, tenantID string, accountIDs []string, ids []string) (map[string]string, error)
+	// ListWorkflowIDNames returns id -> name for every workflow in scope, up to
+	// limit rows. The most-failed leaderboard counts failures per automation
+	// rather than scanning failures, so it needs the automations first — and
+	// only their names, not their definitions.
+	ListWorkflowIDNames(ctx context.Context, tenantID string, accountIDs []string, limit int) (map[string]string, error)
 	// GetUserNames resolves user ids to display names. The execution dashboard
 	// needs it because Temporal only records the triggering user's id.
 	// Unknown ids are simply absent from the result.

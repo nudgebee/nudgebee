@@ -34,9 +34,6 @@ export const TABLE_HEADERS = [
  */
 export const DEFAULT_PAGE_SIZE = 20;
 
-/** Server refuses paging past this many rows (model.MaxExecutionDeepPageRows). */
-export const MAX_PAGEABLE_ROWS = 1000;
-
 /**
  * How far back the table looks by default. Mirrors the deployed Temporal
  * namespace retention so an unfiltered table lines up with the summary header,

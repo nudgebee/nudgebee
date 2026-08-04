@@ -40,8 +40,10 @@ const (
 //
 //   - No ORDER BY. The visibility store is SQL (postgres12), which rejects it —
 //     see the disabled ORDER BY cases in tests/integration/workflow_api_test.go.
-//     Temporal's default ordering is StartTime DESC, which is what the
-//     dashboard wants anyway.
+//     Its own ordering is open runs first, then closed runs by CloseTime DESC,
+//     which is the newest-first the dashboard wants anyway. That order is not
+//     just cosmetic now: seekPageBoundary addresses a deep page by close time,
+//     so anything that changes it changes which rows a page number returns.
 //   - Multi-value filters render as OR groups rather than IN. OR is what the
 //     rest of this service already emits against this store.
 //
@@ -183,27 +185,49 @@ func (s *Service) ListAccountExecutions(ctx *security.RequestContext, req model.
 	}
 
 	// Temporal only offers a forward-only cursor, but the table lets users
-	// click a page number. When a token is available it is used directly;
-	// otherwise page N is served by one over-fetch of N*limit rows which is
-	// then sliced. That is a single round trip, not N of them.
+	// click a page number. When a token is available it is used directly.
+	// Otherwise there are two ways to serve page N, and which one is cheaper
+	// depends on how deep it is:
+	//
+	//   - Shallow: one over-fetch of N*limit rows, then slice. A single round
+	//     trip, and the fastest thing available while N*limit stays small.
+	//   - Deep: seek to the page's close-time boundary (seekPageBoundary) and
+	//     fetch one small page from there. A handful of counts instead of a
+	//     multi-megabyte read, and flat in depth.
+	listQuery := query
 	pageSize := limit
 	skip := 0
 	if req.NextPageToken == "" && req.Page > 1 {
-		if req.Page*limit > model.MaxExecutionDeepPageRows {
-			return model.ListAccountExecutionsResponse{}, common.ErrorBadRequest(
-				fmt.Sprintf("page too deep — at most %d rows can be paged through; narrow the date range or filters", model.MaxExecutionDeepPageRows))
+		targetRank := (req.Page - 1) * limit
+		if targetRank+limit <= model.MaxExecutionDeepPageRows {
+			pageSize = targetRank + limit
+			skip = targetRank
+		} else {
+			boundary, rank, seekErr := s.seekPageBoundary(ctx.GetContext(), query, req.ExecutionDashboardFilter, int64(targetRank), int64(limit))
+			if seekErr != nil {
+				return model.ListAccountExecutionsResponse{}, seekErr
+			}
+			// The count that produced `rank` is strictly `CloseTime > boundary`,
+			// so `CloseTime <= boundary` picks up exactly where it left off —
+			// rows sharing the boundary microsecond land on one side only, and
+			// the pair can neither drop nor duplicate a row.
+			listQuery = query + fmt.Sprintf(" AND CloseTime <= '%s'", boundary.UTC().Format(time.RFC3339Nano))
+			skip = int(int64(targetRank) - rank)
+			if skip+limit > model.MaxExecutionDeepPageRows {
+				return model.ListAccountExecutionsResponse{}, common.ErrorBadRequest(
+					"could not locate that page — narrow the date range or filters")
+			}
+			pageSize = skip + limit
 		}
-		pageSize = req.Page * limit
-		skip = (req.Page - 1) * limit
 	}
 
 	resp, err := s.temporalClient.ListWorkflow(ctx.GetContext(), &workflowservice.ListWorkflowExecutionsRequest{
-		Query:         query,
+		Query:         listQuery,
 		PageSize:      int32(pageSize),
 		NextPageToken: []byte(req.NextPageToken),
 	})
 	if err != nil {
-		slog.Error("failed to list account executions", "error", err, "query", query)
+		slog.Error("failed to list account executions", "error", err, "query", listQuery)
 		return model.ListAccountExecutionsResponse{}, fmt.Errorf("failed to list executions: %w", err)
 	}
 
@@ -260,6 +284,148 @@ func (s *Service) ListAccountExecutions(ctx *security.RequestContext, req model.
 		TotalCount:         total,
 		TotalIsApproximate: true,
 	}, nil
+}
+
+// seekPageBoundary locates the close time that page `targetRank` starts at,
+// and returns it with the rank it actually landed on.
+//
+// The visibility store has no OFFSET, so a deep page cannot be addressed by
+// position — but it can be addressed by value. Rows are ordered open-first then
+// close_time DESC, and both halves of that order are queryable: counting
+// `CloseTime > T` gives the rank of T, and listing `CloseTime <= T` starts at
+// that rank. So the search is over close times, not over rows, and its cost is
+// independent of how deep the page is.
+//
+// The returned rank is always <= targetRank; the caller slices the difference
+// off the front of its page.
+func (s *Service) seekPageBoundary(
+	ctx context.Context,
+	query string,
+	filter model.ExecutionDashboardFilter,
+	targetRank int64,
+	limit int64,
+) (time.Time, int64, error) {
+	count := func(q string) (int64, error) {
+		resp, err := s.temporalClient.CountWorkflow(ctx, &workflowservice.CountWorkflowExecutionsRequest{Query: q})
+		if err != nil {
+			return 0, fmt.Errorf("failed to count executions while seeking page: %w", err)
+		}
+		return resp.GetCount(), nil
+	}
+
+	// Open runs have no close time, so no CloseTime predicate can see them —
+	// yet they sort ahead of every closed row. Their count is the constant
+	// offset between "rows before T" and "closed rows before T".
+	openRows, err := count(query + " AND ExecutionStatus='Running'")
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+	total, err := count(query)
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+
+	rankBefore := func(boundary time.Time) (int64, error) {
+		closedAhead, countErr := count(query + fmt.Sprintf(" AND CloseTime > '%s'", boundary.UTC().Format(time.RFC3339Nano)))
+		if countErr != nil {
+			return 0, countErr
+		}
+		return openRows + closedAhead, nil
+	}
+
+	// A page that starts inside the open runs cannot be addressed by close time
+	// at all — they have none. Reaching this needs more concurrently-running
+	// executions than MaxExecutionDeepPageRows, which is its own problem.
+	if targetRank < openRows {
+		return time.Time{}, 0, common.ErrorBadRequest(
+			"could not locate that page — narrow the date range or filters")
+	}
+
+	// The bracket needs no probes to seed. A row cannot close before it starts
+	// and the query already floors StartTime, so every row lies after `oldest`
+	// — rank(oldest) is the whole result set. Nothing has closed in the future,
+	// so rank(newest) is just the open runs.
+	oldest := time.Unix(0, 0).UTC()
+	if filter.StartDate != nil {
+		oldest = filter.StartDate.UTC()
+	}
+	// A page number past the end of the result set — a hand-edited URL, or a
+	// filter that narrowed under a stale pager. There is no boundary to find,
+	// so searching for one would spend the whole probe budget to arrive at the
+	// oldest row anyway.
+	if targetRank >= total {
+		return oldest, total, nil
+	}
+	newest := time.Now().UTC().Add(time.Minute)
+
+	return seekRankByCloseTime(targetRank, limit, oldest, total, newest, openRows, rankBefore, model.MaxExecutionSeekProbes)
+}
+
+// seekRankByCloseTime searches the close-time axis for a boundary whose rank is
+// at most targetRank and no more than `tolerance` short of it.
+//
+// Rank falls as the boundary moves later in time, and executions are dense
+// enough that rank is close to linear in time — so this interpolates rather
+// than bisecting. A bisection to microsecond precision over a 10-day window
+// would need ~30 probes; interpolation converges in a handful. When a guess
+// fails to move the bracket it falls back to the midpoint, which bounds the
+// worst case to plain bisection instead of a stall.
+//
+// Returns the best boundary found if the probe budget runs out. That result is
+// still correct — the rows from it are contiguous and in order — only further
+// from the requested page than the caller asked for, which the caller checks.
+func seekRankByCloseTime(
+	targetRank, tolerance int64,
+	oldest time.Time, rankAtOldest int64,
+	newest time.Time, rankAtNewest int64,
+	rankBefore func(time.Time) (int64, error),
+	maxProbes int,
+) (time.Time, int64, error) {
+	// lo/hi bracket the answer in time: rank(lo) >= targetRank >= rank(hi).
+	// rank(newest) is not zero when runs are still open — they sort ahead of
+	// every closed row and no close-time boundary can move past them.
+	lo, rankLo := oldest, rankAtOldest
+	hi, rankHi := newest, rankAtNewest
+	if targetRank-rankHi <= tolerance {
+		return hi, rankHi, nil
+	}
+
+	for probe := 0; probe < maxProbes; probe++ {
+		if !hi.After(lo.Add(time.Microsecond)) {
+			break
+		}
+		span := hi.Sub(lo)
+		guess := hi.Add(-span / 2)
+		if rankLo > rankHi {
+			// Where along the bracket the target rank should fall, measured
+			// from the high (later, lower-rank) end.
+			fraction := float64(targetRank-rankHi) / float64(rankLo-rankHi)
+			guess = hi.Add(-time.Duration(fraction * float64(span)))
+		}
+		// Microsecond is the store's own resolution; anything finer cannot
+		// move the result and would burn probes.
+		guess = guess.Truncate(time.Microsecond)
+		if !guess.After(lo) || !guess.Before(hi) {
+			guess = lo.Add(span / 2).Truncate(time.Microsecond)
+		}
+
+		rank, err := rankBefore(guess)
+		if err != nil {
+			return time.Time{}, 0, err
+		}
+		if rank <= targetRank {
+			hi, rankHi = guess, rank
+			if targetRank-rank <= tolerance {
+				return hi, rankHi, nil
+			}
+		} else {
+			lo, rankLo = guess, rank
+		}
+	}
+
+	// hi only ever holds a probe whose rank was <= targetRank, so this is the
+	// closest safe boundary seen.
+	return hi, rankHi, nil
 }
 
 // AggregateExecutions returns the dashboard's summary metrics plus the
@@ -320,7 +486,7 @@ func (s *Service) AggregateExecutions(ctx *security.RequestContext, req model.Ag
 	// A count of zero for an intersected-away bucket is correct, not a bug: a
 	// user filtering to COMPLETED genuinely has no failures in view.
 	if len(failedStatuses) > 0 {
-		topFailed, approximate, err := s.topFailedAutomations(ctx, tenantID, req.ExecutionDashboardFilter, failedStatuses, topFailedLimit)
+		topFailed, approximate, err := s.topFailedAutomations(ctx, tenantID, req.ExecutionDashboardFilter, failedStatuses, response.Failed, topFailedLimit)
 		if err != nil {
 			slog.Warn("failed to build most-failed leaderboard", "error", err)
 		} else {
@@ -332,24 +498,79 @@ func (s *Service) AggregateExecutions(ctx *security.RequestContext, req model.Ag
 	return response, nil
 }
 
-// topFailedAutomations ranks automations by failure count within the filter.
+// topFailedAutomations ranks automations by failure count within the filter,
+// and reports whether the ranking is approximate.
 //
-// Temporal cannot GROUP BY a custom search attribute, and one CountWorkflow per
-// automation would be 50-200 gRPC calls. Instead a single ListWorkflow pulls
-// the failures and they are tallied in-process. That is exact whenever the
-// window holds no more than MaxLeaderboardScanRows failures, which is the
-// normal case; beyond that the caller is told the ranking is approximate.
+// Temporal cannot GROUP BY a custom search attribute, so the ranking is
+// assembled client-side from whichever of two exact strategies is cheaper for
+// this tenant's shape. Both cost about the same per round trip, so the choice
+// is simply which needs fewer: one call per 1,000 failures, or one call per
+// automation. See the leaderboard block in model/execution_dashboard.go.
+//
+// The old single-page tally survives as the last resort, for the tenant that
+// fits neither. It is the only path that returns approximate = true.
 func (s *Service) topFailedAutomations(
 	ctx *security.RequestContext,
 	tenantID string,
 	filter model.ExecutionDashboardFilter,
 	failedStatuses []model.WorkflowExecutionStatus,
+	failedTotal int64,
 	limit int,
 ) ([]model.FailedAutomationCount, bool, error) {
 	filter.Statuses = failedStatuses
 	query, err := buildExecutionQuery(tenantID, filter)
 	if err != nil {
 		return nil, false, err
+	}
+
+	// One over the cap, so "more automations than we will fan out to" is
+	// visible from the result size without a second query.
+	automations, namesErr := s.store.ListWorkflowIDNames(ctx.GetContext(), tenantID, filter.AccountIDs, model.MaxLeaderboardFanOut+1)
+	if namesErr != nil {
+		ctx.GetLogger().Warn("failed to list automations for leaderboard", "error", namesErr)
+		automations = nil
+	}
+	if len(automations) > model.MaxLeaderboardFanOut {
+		// Truncated by the LIMIT, so it is neither a complete list to count nor
+		// a trustworthy name source — an automation past the cut would render
+		// as a blank row. Drop it and let the name lookup handle the few ids
+		// that actually make the ranking.
+		automations = nil
+	}
+	// The query already restricts to the user's automation filter, so counting
+	// the ones it excludes would return zeroes at full price.
+	if len(automations) > 0 && len(filter.WorkflowIDs) > 0 {
+		selected := make(map[string]string, len(filter.WorkflowIDs))
+		for _, workflowID := range filter.WorkflowIDs {
+			if name, ok := automations[workflowID]; ok {
+				selected[workflowID] = name
+			}
+		}
+		automations = selected
+	}
+
+	scanPages := int((failedTotal + model.MaxLeaderboardScanRows - 1) / model.MaxLeaderboardScanRows)
+	canScan := scanPages <= model.MaxLeaderboardScanPages
+	canFanOut := len(automations) > 0
+
+	// Prefer whichever costs fewer round trips. On a tenant with 8,000 failures
+	// across 300 automations that is 8 calls instead of 300.
+	if canScan && (!canFanOut || scanPages <= len(automations)) {
+		tally, scanErr := s.tallyFailuresByScan(ctx.GetContext(), query, scanPages)
+		if scanErr == nil {
+			return s.nameRanked(ctx, tenantID, filter, automations, rankFailedAutomations(tally, limit)), false, nil
+		}
+		slog.Warn("failed to tally failures by paging, trying per-automation counts", "error", scanErr)
+	}
+
+	if canFanOut {
+		if ranked, complete := s.countFailuresPerAutomation(ctx.GetContext(), query, automations, limit); complete {
+			return ranked, false, nil
+		}
+		// A ranking built from some of the counts is not a smaller truth, it is
+		// a wrong order — the automation whose count timed out could have been
+		// first. Fall through to the approximation, which at least says so.
+		slog.Warn("leaderboard fan-out incomplete, falling back to first-page tally", "automations", len(automations))
 	}
 
 	resp, err := s.temporalClient.ListWorkflow(ctx.GetContext(), &workflowservice.ListWorkflowExecutionsRequest{
@@ -367,11 +588,159 @@ func (s *Service) topFailedAutomations(
 		}
 	}
 
+	ranked := s.nameRanked(ctx, tenantID, filter, automations, rankFailedAutomations(tally, limit))
+	return ranked, len(resp.GetNextPageToken()) > 0, nil
+}
+
+// tallyFailuresByScan pages through every failure the filter matches and counts
+// them per automation.
+//
+// One call covers 1,000 failures, which makes this far cheaper than one call
+// per automation whenever a tenant has more automations than it has thousands
+// of failures — the common shape, since automations accumulate slowly and
+// failures accumulate fast.
+func (s *Service) tallyFailuresByScan(ctx context.Context, query string, maxPages int) (map[string]int64, error) {
+	tally := map[string]int64{}
+	var token []byte
+	// One page past the estimate: the count that produced it is approximate by
+	// Temporal's own admission, and running one page short would silently drop
+	// failures from the ranking.
+	for page := 0; page <= maxPages; page++ {
+		resp, err := s.temporalClient.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
+			Query:         query,
+			PageSize:      model.MaxLeaderboardScanRows,
+			NextPageToken: token,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to page failed executions: %w", err)
+		}
+		for _, info := range resp.GetExecutions() {
+			if workflowID := s.searchAttrString(info.GetSearchAttributes(), model.SearchAttrWorkflowID); workflowID != "" {
+				tally[workflowID]++
+			}
+		}
+		token = resp.GetNextPageToken()
+		if len(token) == 0 {
+			return tally, nil
+		}
+	}
+	// More pages than the count said there would be. Reporting a tally that
+	// stopped early as exact is the bug this whole path exists to fix.
+	return nil, fmt.Errorf("failures did not fit in %d pages", maxPages)
+}
+
+// nameRanked fills in workflow names, preferring the automation list already in
+// hand and falling back to a lookup when it could not be read.
+func (s *Service) nameRanked(
+	ctx *security.RequestContext,
+	tenantID string,
+	filter model.ExecutionDashboardFilter,
+	automations map[string]string,
+	ranked []model.FailedAutomationCount,
+) []model.FailedAutomationCount {
+	if len(ranked) == 0 {
+		return ranked
+	}
+	if len(automations) > 0 {
+		for i := range ranked {
+			ranked[i].WorkflowName = automations[ranked[i].WorkflowID]
+		}
+		return ranked
+	}
+	ids := make([]string, 0, len(ranked))
+	for _, entry := range ranked {
+		ids = append(ids, entry.WorkflowID)
+	}
+	names, nameErr := s.store.GetWorkflowNames(ctx.GetContext(), tenantID, filter.AccountIDs, ids)
+	if nameErr != nil {
+		ctx.GetLogger().Error("failed to get workflow names for leaderboard", "error", nameErr)
+		return ranked
+	}
+	for i := range ranked {
+		ranked[i].WorkflowName = names[ranked[i].WorkflowID]
+	}
+	return ranked
+}
+
+// countFailuresPerAutomation asks the visibility store how many failures each
+// automation has, one CountWorkflow each, and ranks the answers.
+//
+// Cost scales with the number of automations rather than the number of
+// failures, and each call returns a single integer instead of a page of
+// visibility rows — so this stays the same size whether the window holds a
+// hundred failures or a hundred thousand.
+//
+// An automation that no longer exists is absent from `automations` and so
+// drops out of the ranking. The scan showed those with a blank name, which was
+// not more useful.
+//
+// The bool reports whether every count came back. It is false as soon as one
+// did not: a ranking assembled from a subset of the counts is not a partial
+// answer, it is a wrong order, and the caller must not present it as exact.
+func (s *Service) countFailuresPerAutomation(
+	ctx context.Context,
+	query string,
+	automations map[string]string,
+	limit int,
+) ([]model.FailedAutomationCount, bool) {
+	var mu sync.Mutex
+	tally := map[string]int64{}
+	complete := true
+
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, model.LeaderboardCountConcurrency)
+	for workflowID := range automations {
+		wg.Add(1)
+		go func(workflowID string) {
+			defer wg.Done()
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				mu.Lock()
+				complete = false
+				mu.Unlock()
+				return
+			}
+			defer func() { <-slots }()
+
+			scoped := query + fmt.Sprintf(" AND %s='%s'", model.SearchAttrWorkflowID, escapeTemporalString(workflowID))
+			resp, err := s.temporalClient.CountWorkflow(ctx, &workflowservice.CountWorkflowExecutionsRequest{Query: scoped})
+			if err != nil {
+				slog.Warn("failed to count failures for automation", "error", err, "workflow_id", workflowID)
+				mu.Lock()
+				complete = false
+				mu.Unlock()
+				return
+			}
+			// Zero-failure automations are the majority and would only pad the
+			// ranking with empty rows.
+			if count := resp.GetCount(); count > 0 {
+				mu.Lock()
+				tally[workflowID] = count
+				mu.Unlock()
+			}
+		}(workflowID)
+	}
+	wg.Wait()
+
+	if !complete {
+		return nil, false
+	}
+	ranked := rankFailedAutomations(tally, limit)
+	for i := range ranked {
+		ranked[i].WorkflowName = automations[ranked[i].WorkflowID]
+	}
+	return ranked, true
+}
+
+// rankFailedAutomations orders a tally by failure count, descending, and keeps
+// the top `limit`. Ties break on workflow id so the ranking is stable across
+// refreshes rather than reshuffling on every poll.
+func rankFailedAutomations(tally map[string]int64, limit int) []model.FailedAutomationCount {
 	ranked := make([]model.FailedAutomationCount, 0, len(tally))
 	for workflowID, count := range tally {
 		ranked = append(ranked, model.FailedAutomationCount{WorkflowID: workflowID, FailureCount: count})
 	}
-	// Ties break on workflow id so the ranking is stable across refreshes.
 	sort.Slice(ranked, func(i, j int) bool {
 		if ranked[i].FailureCount != ranked[j].FailureCount {
 			return ranked[i].FailureCount > ranked[j].FailureCount
@@ -381,23 +750,7 @@ func (s *Service) topFailedAutomations(
 	if len(ranked) > limit {
 		ranked = ranked[:limit]
 	}
-
-	if len(ranked) > 0 {
-		ids := make([]string, 0, len(ranked))
-		for _, entry := range ranked {
-			ids = append(ids, entry.WorkflowID)
-		}
-		names, nameErr := s.store.GetWorkflowNames(ctx.GetContext(), tenantID, filter.AccountIDs, ids)
-		if nameErr != nil {
-			ctx.GetLogger().Error("failed to get workflow names for leaderboard", "error", nameErr)
-		} else {
-			for i := range ranked {
-				ranked[i].WorkflowName = names[ranked[i].WorkflowID]
-			}
-		}
-	}
-
-	return ranked, len(resp.GetNextPageToken()) > 0, nil
+	return ranked
 }
 
 // executionSummaryFromInfo maps a visibility record onto the shared summary

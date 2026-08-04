@@ -518,6 +518,41 @@ func (s *WorkflowDao) GetWorkflowNames(ctx context.Context, tenantID string, acc
 	return out, nil
 }
 
+// ListWorkflowIDNames returns id -> name for every workflow in scope, capped at
+// limit rows. Callers pass one more than they can handle so an overflow is
+// detectable from the result size alone.
+func (s *WorkflowDao) ListWorkflowIDNames(ctx context.Context, tenantID string, accountIDs []string, limit int) (map[string]string, error) {
+	out := map[string]string{}
+	if limit <= 0 {
+		return out, nil
+	}
+	if tenantID == "" || len(accountIDs) == 0 {
+		return nil, fmt.Errorf("tenantID and at least one accountID are required")
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id::text, name FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) ORDER BY id LIMIT $3`,
+		tenantID, pq.Array(accountIDs), limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list workflow names: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			log.Printf("workflow_dao: failed to close rows: %v", cerr)
+		}
+	}()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("failed to scan workflow name row: %w", err)
+		}
+		out[id] = name
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed iterating workflow name rows: %w", err)
+	}
+	return out, nil
+}
+
 // GetUserNames resolves user ids to display names. Ids with no matching user
 // row are simply absent from the result, so callers render whatever fallback
 // suits them (executions triggered by a schedule carry no user id at all).

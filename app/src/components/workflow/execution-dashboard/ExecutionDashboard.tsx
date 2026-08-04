@@ -54,7 +54,6 @@ const ExecutionDashboard: React.FC = () => {
     changePage,
     executions,
     totalRows,
-    pageableRows,
     loading,
     error,
     aggregate,
@@ -302,14 +301,6 @@ const ExecutionDashboard: React.FC = () => {
                 too. The rest still narrow only the table. */}
             {`Account applies to the whole page; the other filters apply to this table only. Sorted newest first.${
               retentionDays > 0 ? ` Execution history is retained for ${retentionDays} days.` : ''
-            }${
-              // The pager can only address what the server will serve: a jump
-              // lands anywhere in the first MAX_PAGEABLE_ROWS rows, and past
-              // that only stepping forward works. Say so rather than showing a
-              // total the page numbers silently contradict.
-              totalRows > pageableRows
-                ? ` ${totalRows.toLocaleString()} executions match — page numbers reach the first ${pageableRows.toLocaleString()}; step forward page by page to go deeper, or narrow the filters.`
-                : ''
             }`}
           </Typography>
         </Box>
@@ -322,7 +313,7 @@ const ExecutionDashboard: React.FC = () => {
             loading={loading}
             rowsPerPage={pageSize}
             pageNumber={page}
-            totalRows={pageableRows}
+            totalRows={totalRows}
             onPageChange={(nextPage: number, nextPageSize: number) => changePage(nextPage, nextPageSize)}
             onRowClick={(query: any) => {
               const match = executions.find((execution) => execution.id === query?.executionId);

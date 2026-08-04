@@ -13,7 +13,6 @@ import {
   DASHBOARD_POLL_INTERVAL_MS,
   DEFAULT_PAGE_SIZE,
   DEFAULT_RANGE_DAYS,
-  MAX_PAGEABLE_ROWS,
   SYSTEM_USER_ID,
   SYSTEM_USER_LABEL,
   TOP_FAILED_LIMIT,
@@ -106,10 +105,6 @@ export function useExecutionDashboard() {
   const [automationOptions, setAutomationOptions] = useState<FilterOption[]>([]);
   const [automationOptionsLoaded, setAutomationOptionsLoaded] = useState(false);
   const [tenantUserOptions, setTenantUserOptions] = useState<FilterOption[]>([]);
-  // Deepest page a forward cursor is known for. Random-access paging is capped
-  // server-side (MaxExecutionDeepPageRows), but the token path is not — so
-  // every page the user walks to extends how far the pager may reach.
-  const [deepestTokenPage, setDeepestTokenPage] = useState(1);
 
   const isMountedRef = useRef(true);
   const requestIdRef = useRef(0);
@@ -262,7 +257,6 @@ export function useExecutionDashboard() {
         setTotalRows(payload.total_count || 0);
         if (payload.next_page_token) {
           pageTokensRef.current[page + 1] = payload.next_page_token;
-          setDeepestTokenPage((prev) => Math.max(prev, page + 1));
         }
       }
       if (!isPolling) setLoading(false);
@@ -417,26 +411,11 @@ export function useExecutionDashboard() {
     return Array.from(byId, ([value, label]) => ({ value, label }));
   }, [tenantUserOptions, executions, filters.triggeredBy]);
 
-  /**
-   * How many rows the pager may address.
-   *
-   * The server refuses a random-access jump past MaxExecutionDeepPageRows
-   * (Temporal has no OFFSET, so page N without a cursor costs an N*limit
-   * over-fetch). Paging *forward* with a cursor has no such cost and no such
-   * cap, so every page walked to raises this ceiling — the user can keep
-   * stepping past the first 1000 rows, they just cannot jump there directly.
-   */
-  const pageableRows = useMemo(
-    () => Math.min(totalRows, Math.max(MAX_PAGEABLE_ROWS, deepestTokenPage * pageSize)),
-    [totalRows, deepestTokenPage, pageSize]
-  );
-
   // Any filter change invalidates the cursor ledger and returns to page 1.
   const updateFilters = useCallback(
     (update: Partial<ExecutionDashboardFilters>) => {
       userChangedFiltersRef.current = true;
       pageTokensRef.current = {};
-      setDeepestTokenPage(1);
       setPage(1);
       setFilters((prev) => ({ ...prev, ...update }));
       // Dates are excluded on purpose — see EXECUTIONS_FILTER_STORAGE_KEY.
@@ -458,7 +437,6 @@ export function useExecutionDashboard() {
       // Resizing the page invalidates every cursor, which are per page size.
       if (nextPageSize && nextPageSize !== pageSize) {
         pageTokensRef.current = {};
-        setDeepestTokenPage(1);
         setPageSize(nextPageSize);
       }
       setPage(nextPage);
@@ -468,7 +446,6 @@ export function useExecutionDashboard() {
 
   const refresh = useCallback(() => {
     pageTokensRef.current = {};
-    setDeepestTokenPage(1);
     fetchExecutions();
     fetchAggregate();
   }, [fetchExecutions, fetchAggregate]);
@@ -481,7 +458,6 @@ export function useExecutionDashboard() {
     changePage,
     executions,
     totalRows,
-    pageableRows,
     loading,
     error,
     aggregate,

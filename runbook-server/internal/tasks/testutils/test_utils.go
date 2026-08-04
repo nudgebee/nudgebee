@@ -191,6 +191,9 @@ func (m *MockWorkflowStore) CountWorkflows(ctx context.Context, tenantID string,
 func (m *MockWorkflowStore) GetWorkflowNames(ctx context.Context, tenantID string, accountIDs []string, ids []string) (map[string]string, error) {
 	return map[string]string{}, nil
 }
+func (m *MockWorkflowStore) ListWorkflowIDNames(ctx context.Context, tenantID string, accountIDs []string, limit int) (map[string]string, error) {
+	return map[string]string{}, nil
+}
 func (m *MockWorkflowStore) GetUserNames(ctx context.Context, ids []string) (map[string]string, error) {
 	return map[string]string{}, nil
 }
