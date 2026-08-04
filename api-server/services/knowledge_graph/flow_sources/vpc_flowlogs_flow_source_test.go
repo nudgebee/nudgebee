@@ -191,6 +191,7 @@ func TestBuildEdgesFromConns(t *testing.T) {
 
 	if rejects == nil {
 		t.Fatal("missing checkout→orders-db CONNECTION_REJECTED edge")
+		return
 	}
 	if ports := rejects.Properties["dst_ports"].([]int); len(ports) != 1 || ports[0] != 3306 {
 		t.Errorf("REJECT dst_ports = %v, want [3306]", ports)
@@ -198,6 +199,7 @@ func TestBuildEdgesFromConns(t *testing.T) {
 
 	if syncGapCalls == nil {
 		t.Fatal("missing sync-gap→orders-db CALLS edge for the unresolved source IP")
+		return
 	}
 	if syncGapCalls.Properties["resolution_source_src"] != "unresolved" {
 		t.Errorf("sync-gap edge src provenance = %v, want unresolved", syncGapCalls.Properties["resolution_source_src"])

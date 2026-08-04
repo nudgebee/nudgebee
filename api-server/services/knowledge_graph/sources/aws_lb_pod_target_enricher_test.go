@@ -20,6 +20,7 @@ func TestAWSLBPodTargetEnricherRegistered(t *testing.T) {
 	}
 	if enricher == nil {
 		t.Fatal("expected non-nil enricher")
+		return
 	}
 	if got := enricher.GetName(); got != "aws_lb_pod_target" {
 		t.Errorf("GetName() = %q, want %q", got, "aws_lb_pod_target")
