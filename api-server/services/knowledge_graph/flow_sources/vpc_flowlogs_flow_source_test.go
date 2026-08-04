@@ -172,6 +172,7 @@ func TestBuildEdgesFromConns(t *testing.T) {
 
 	if calls == nil {
 		t.Fatal("missing checkout→orders-db CALLS edge")
+		return
 	}
 	if got := calls.Properties["total_bytes"].(int64); got != 150 {
 		t.Errorf("CALLS total_bytes = %d, want 150 (two ACCEPT rows aggregated)", got)
