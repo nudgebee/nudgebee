@@ -133,11 +133,23 @@ func persistArchive(tx *sqlx.Tx, ctx *security.RequestContext, account ScanAccou
 		// a NULL account_object_id permanently un-archived. That is not hypothetical:
 		// dev carries one such row today, status 'Open', which the narrowed form
 		// would strand forever.
+		//
+		// rule_name is spelled as a literal rather than bound so the planner can
+		// prove the second conjunct of V902's partial predicate (category='Security'
+		// AND rule_name='image_scan') without depending on plan type. With
+		// `rule_name = $4` the proof needs a CUSTOM plan; lib/pq issues unnamed
+		// prepared statements, which Postgres does plan with the actual values, so
+		// it works today — but a move to a driver with statement caching (pgx) or a
+		// named statement would silently fall back to a generic plan and lose the
+		// index again. Verified: under force_generic_plan the planner drops to
+		// idx_recommendation_tenant_account_status and filters image_name post-scan.
+		// The literal is a no-op on the result set — this branch runs only for
+		// image_scanner, whose RuleName is the ImageScanRuleName constant.
 		_, err := tx.Exec(
 			`UPDATE recommendation SET status = 'Archive', updated_at = $1
 			 WHERE tenant_id = $2 AND cloud_account_id = $3 AND category = 'Security'
-			   AND rule_name = $4 AND recommendation->>'image_name' = $5 AND status = 'Open'`,
-			time.Now(), account.TenantID, account.AccountID, scanner.RuleName, account.TargetImage,
+			   AND rule_name = 'image_scan' AND recommendation->>'image_name' = $4 AND status = 'Open'`,
+			time.Now(), account.TenantID, account.AccountID, account.TargetImage,
 		)
 		if err != nil {
 			ctx.GetLogger().Error("scan_orchestrator: image_scan archive failed",
