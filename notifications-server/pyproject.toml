@@ -25,7 +25,7 @@ exclude = '''
 [tool.poetry.dependencies]
 python = "^3.11"
 python-dotenv = "^1.2.2"
-fastapi = "0.140.7"
+fastapi = "0.141.1"
 slack-bolt = "1.30.0"
 # Direct dep: webhook_auth.py uses slack_sdk.signature.SignatureVerifier for the
 # inbound Slack HMAC gate. Pinned explicitly (not just transitively via slack-bolt)
@@ -33,7 +33,7 @@ slack-bolt = "1.30.0"
 slack-sdk = "3.43.0"
 sqlalchemy = "^2.0.48"
 aio_pika = "10.0.1"
-uvicorn = ">=0.34.2,<0.52.0"
+uvicorn = ">=0.34.2,<0.53.0"
 psycopg2-binary = "^2.9.11"
 asyncpg = "^0.31.0"
 requests = "2.34.2"
