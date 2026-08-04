@@ -1169,6 +1169,14 @@ func ListMetricsSeriesMatch(ctx security.RequestContext, accountId, provider, na
 	return response, nil
 }
 
+// metricsLabelValuesRequestTimeout bounds the RPC round-trip for a single
+// metrics_list_label_values call. Package-level for test override; do not
+// mutate at runtime. 60s picks a value comfortably above the ~0.1s median
+// and above p95 for legitimate calls, while still short enough that the
+// LLM sees the error mid-investigation and can pivot (versus stalling the
+// whole conversation until its TTL reap — the observed prod bug pattern).
+var metricsLabelValuesRequestTimeout = 60 * time.Second
+
 // ListMetricsSeriesLabelValues fetches values for a given label. For ES/Opensearch, pass
 // request with metric_name set to the index pattern (e.g. {"metric_name": "metrics-*"}).
 func ListMetricsSeriesLabelValues(ctx security.RequestContext, accountId, provider, label string, request ...map[string]any) (core.ObservabilityMetricsLabelValuesResponse, error) {
@@ -1202,13 +1210,18 @@ func ListMetricsSeriesLabelValues(ctx security.RequestContext, accountId, provid
 		return core.ObservabilityMetricsLabelValuesResponse{}, errors.New("tenant id is empty")
 	}
 
+	// Bound the round-trip so a wedged provider (a direct-API Datadog call that
+	// skips relay's own 180s×3 budget, or a relay path that somehow escapes it —
+	// the two 85-min hangs at 2026-08-03 conv 9591d843 + a9ea0c9e both exceeded
+	// relay's ~554s theoretical max) surfaces as an actionable tool error
+	// instead of stalling the conversation until its TTL reap.
 	resp, err := common.HttpPost(fmt.Sprintf("%s/rpc/metrics", config.Config.ServiceEndpoint), common.HttpWithHeaders(map[string]string{
 		"Content-Type":   contentTypeJson,
 		"Accept":         contentTypeJson,
 		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
 		"x-tenant-id":    tenant,
 		"x-user-id":      ctx.GetSecurityContext().EffectiveUserIdForRPC(),
-	}), common.HttpWithJsonBody(queryPayload))
+	}), common.HttpWithJsonBody(queryPayload), common.HttpWithTimeout(metricsLabelValuesRequestTimeout))
 
 	if err != nil {
 		return core.ObservabilityMetricsLabelValuesResponse{}, fmt.Errorf("services: loglabels, unable to process request: %v", err)
