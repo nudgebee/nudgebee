@@ -26,20 +26,22 @@ import (
 // HandleConversationSessionRequest + HandleConversationMessageRequest).
 //
 // Turn 1: send an explicit "use delegate_agent with kubectl_execute to run
-//   `kubectl create configmap …`" query to k8s_orchestrator. The parent LLM
-//   routes through delegate_agent → dynamicReActAgent → kubectl_execute →
-//   InferToolRequestType classifies `create` as write → confirmation gate
-//   fires. Assert the outer response comes back status=WAITING with a
-//   populated FollowupRequest (validates PR-α's Waiting propagation from
-//   delegate wrapper up through the top-level).
+//
+//	`kubectl create configmap …`" query to k8s_orchestrator. The parent LLM
+//	routes through delegate_agent → dynamicReActAgent → kubectl_execute →
+//	InferToolRequestType classifies `create` as write → confirmation gate
+//	fires. Assert the outer response comes back status=WAITING with a
+//	populated FollowupRequest (validates PR-α's Waiting propagation from
+//	delegate wrapper up through the top-level).
 //
 // Turn 2: user answers "Yes" via HandleFollowupResponse +
-//   HandleConversationMessageRequest — the SAME flow api/chains.go uses for
-//   real followup-answer requests. Assert the sub-agent's pending write
-//   ACTUALLY executes — proven by a kubectl_execute tool_call whose parameters
-//   contain the ConfigMap name AND whose response text contains real kubectl
-//   output (`configmap/<name> created` or similar), NOT the "User responded
-//   to … with Yes" shortcut string.
+//
+//	HandleConversationMessageRequest — the SAME flow api/chains.go uses for
+//	real followup-answer requests. Assert the sub-agent's pending write
+//	ACTUALLY executes — proven by a kubectl_execute tool_call whose parameters
+//	contain the ConfigMap name AND whose response text contains real kubectl
+//	output (`configmap/<name> created` or similar), NOT the "User responded
+//	to … with Yes" shortcut string.
 //
 // This test USED to bypass the top-level agent (called delegate_agent tool
 // directly). That setup was unrealistic and appeared to prove a resume-broken
