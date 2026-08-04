@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 from db import database
 
@@ -10,12 +10,22 @@ event_rule_on_conflict = (
 )
 
 
+def _dedup_rules(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Deduplicate by unique-constraint keys so a single batch INSERT with
+    ON CONFLICT DO UPDATE doesn't hit PostgreSQL's 'cannot affect row a
+    second time' error. Last-seen rule wins, matching prior sequential behavior."""
+    seen: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for r in rules:
+        seen[(r["account_id"], r["tenant_id"], r["alert"])] = r
+    return list(seen.values())
+
+
 def handle_api_based_rules(rules: Dict[str, Any], tenant: str, cloud_account_id: str):
     alert_rules_list = []
     for group in rules.get("groups"):
         group_name = group.get("name")
         for rule in group.get("rules"):
-            if rule.get("type") != "alerting":
+            if rule.get("type") != "alerting" or not rule.get("name"):
                 continue
             severity = rule.get("labels", {}).get("severity", "warning").lower()
             if severity not in ("critical", "warning"):
@@ -34,8 +44,10 @@ def handle_api_based_rules(rules: Dict[str, Any], tenant: str, cloud_account_id:
                 "enabled": True,
                 "is_editable": False,
             }
-            database.insert_data("event_rules", [alert_rule], on_conflict=event_rule_on_conflict)
             alert_rules_list.append(alert_rule)
+    if alert_rules_list:
+        alert_rules_list = _dedup_rules(alert_rules_list)
+        database.insert_data("event_rules", alert_rules_list, on_conflict=event_rule_on_conflict)
     return alert_rules_list
 
 
@@ -68,8 +80,10 @@ def handle_crd_based_rules(rules: Dict[str, Any], tenant: str, cloud_account_id:
                     "namespace": namespace,
                     "name": prometheus_rule_name,
                 }
-                database.insert_data("event_rules", [alert_rule], on_conflict=event_rule_on_conflict)
                 alert_rules_list.append(alert_rule)
+    if alert_rules_list:
+        alert_rules_list = _dedup_rules(alert_rules_list)
+        database.insert_data("event_rules", alert_rules_list, on_conflict=event_rule_on_conflict)
     return alert_rules_list
 
 
@@ -87,6 +101,8 @@ def handle_alert_rules(rules: Dict[str, Any], tenant: str, cloud_account_id: str
 def handle_chrono_monitors(monitors: Dict[str, Any], tenant: str, cloud_account_id: str):
     alert_rules = []
     for rule in monitors.get("monitors", []):
+        if not rule.get("slug"):
+            continue
         series_conditions = rule.get("series_conditions", {}).get("defaults", {})
         severity = next(iter(series_conditions), None)
 
@@ -116,5 +132,7 @@ def handle_chrono_monitors(monitors: Dict[str, Any], tenant: str, cloud_account_
             "name": rule.get("slug"),
         }
         alert_rules.append(alert_rule)
-    database.insert_data("event_rules", alert_rules, on_conflict=event_rule_on_conflict)
+    if alert_rules:
+        alert_rules = _dedup_rules(alert_rules)
+        database.insert_data("event_rules", alert_rules, on_conflict=event_rule_on_conflict)
     return alert_rules
