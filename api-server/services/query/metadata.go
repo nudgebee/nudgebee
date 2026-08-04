@@ -2839,53 +2839,123 @@ var table_metadata = map[string]TableDefinition{
 			// needed (e.g. pure count queries like count_recommendations), skip the CTE
 			// entirely and scan recommendation directly. This avoids the LEFT JOINs to
 			// cloud_resourses / cloud_accounts and the ROW_NUMBER() window function.
+			//
+			// joinRequiringCols is only the columns projected out of the cloud_resourses /
+			// cloud_accounts joins. The two dedup columns are tracked separately in
+			// windowRequiringCols: they need the ROW_NUMBER() window but not the
+			// cloud_resourses join, so a savings roll-up (count + sum over
+			// is_primary_recommendation — no display column anywhere in it) gets a CTE
+			// without it instead of the full one.
+			//
+			// This does not change any plan Postgres picks: when no display column is
+			// referenced, remove_unused_subquery_outputs() nulls them out and the LEFT
+			// JOIN on cloud_resourses.id — a primary key, so join removal is legal —
+			// is dropped anyway. Measured on PG 17.9 over a 218904-row tenant, the full
+			// and lean CTEs produce identical buffers (shared read 250635 vs 250539),
+			// identical temp spill (2503 vs 2504 blocks) and identical cost; only
+			// planning time moves (5.1ms -> 3.4ms). The split is here so the emitted SQL
+			// says what it means rather than leaning on that rewrite. The 6074ms mean in
+			// #35107 is the parallel seq scan over recommendation, not this join — see
+			// #35172.
 			joinRequiringCols := map[string]bool{
-				"resource_name":             true,
-				"account_name":              true,
-				"account_cloud_provider":    true,
-				"resource_cloud_service":    true,
-				"resource_region":           true,
-				"resource_k8s_namespace":    true,
-				"resource_meta":             true,
-				"resource_type":             true,
+				"resource_name":          true,
+				"account_name":           true,
+				"account_cloud_provider": true,
+				"resource_cloud_service": true,
+				"resource_region":        true,
+				"resource_k8s_namespace": true,
+				"resource_meta":          true,
+				"resource_type":          true,
+				"resource_names":         true, // aggregates resource_name, which only the join supplies
+			}
+			windowRequiringCols := map[string]bool{
 				"sum_estimated_savings":     true, // uses is_primary_recommendation — needs window fn
-				"is_primary_recommendation": true, // fast path hardcodes TRUE; slow path uses window fn
-				"resource_names":            true, // aggregates resource_name, which only the join supplies
+				"is_primary_recommendation": true, // fast path hardcodes TRUE; window paths compute it
 			}
-			needsJoin := false
-			for _, col := range request.Columns {
-				if joinRequiringCols[col.Name] {
-					needsJoin = true
-					break
+			// Deliberately not the shared requestReferencesColumns helper: that one also
+			// inspects Having and treats an empty Columns list as "references everything",
+			// either of which would re-route requests that take the fast path today. This
+			// closure performs exactly the checks the previous inline loops did, so
+			// needsJoin is unchanged for every request.
+			references := func(cols map[string]bool) bool {
+				for _, col := range request.Columns {
+					if cols[col.Name] {
+						return true
+					}
 				}
-			}
-			if !needsJoin {
 				for _, col := range request.GroupBy {
-					if joinRequiringCols[col] {
-						needsJoin = true
-						break
+					if cols[col] {
+						return true
 					}
 				}
-			}
-			if !needsJoin {
-				needsJoin = whereReferencesColumns(request.Where, joinRequiringCols)
-			}
-			if !needsJoin {
+				if whereReferencesColumns(request.Where, cols) {
+					return true
+				}
 				for _, ob := range request.OrderBy {
-					if joinRequiringCols[ob.Column] {
-						needsJoin = true
-						break
+					if cols[ob.Column] {
+						return true
 					}
 				}
+				return false
 			}
+			needsJoin := references(joinRequiringCols)
+			needsWindow := references(windowRequiringCols)
 
-			if !needsJoin {
+			if !needsJoin && !needsWindow {
 				def := `(
 		SELECT
 			r.*,
 			TRUE AS is_primary_recommendation
 		FROM recommendation r
 		WHERE r.cloud_account_id IN (SELECT id FROM cloud_accounts WHERE status = 'active')` + pushdownFilters + `
+	) as r1`
+				return def, request, nil
+			}
+
+			if !needsJoin {
+				// Window-only path: the dedup rank is needed but no display column is.
+				// Computes the identical ROW_NUMBER() over the identical row set, minus
+				// the cloud_resourses join and the display projection.
+				//
+				// cloud_accounts stays joined — the PARTITION BY's Azure branch gates on
+				// ca.cloud_provider, so dropping it would change resource_rank. It is one
+				// indexed row per account and is the same join the fast path expresses as
+				// an IN (SELECT id FROM cloud_accounts WHERE status = 'active') subquery.
+				//
+				// Dropping cloud_resourses cannot change the result: it is a LEFT JOIN on
+				// cr.id, the table's primary key, so it adds and removes no rows, and no
+				// surviving expression references cr. resource_rank, and therefore
+				// is_primary_recommendation, are byte-for-byte identical.
+				def := `(
+		WITH all_recommendations AS (
+			SELECT
+				r.*,
+				ROW_NUMBER() OVER (
+					PARTITION BY
+						CASE
+							WHEN r.dedupe_group IS NOT NULL AND r.dedupe_group <> '' THEN r.dedupe_group
+							WHEN r.resource_id IS NOT NULL THEN r.resource_id::text
+							WHEN LOWER(ca.cloud_provider) = 'azure' AND r.recommendation->>'recommendation_type_id' IS NOT NULL
+								THEN r.cloud_account_id::text || ':'
+									|| COALESCE(r.recommendation->>'recommendation_type_id', '') || ':'
+									|| COALESCE(r.recommendation->>'ext_subid', r.recommendation->>'subscription_id', '') || ':'
+									|| COALESCE(r.recommendation->>'ext_sku', '')
+							ELSE r.id::text
+						END,
+						r.category
+					ORDER BY r.estimated_savings DESC, r.updated_at DESC, r.id
+				) AS resource_rank
+			FROM recommendation r
+			LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
+			WHERE ca.status = 'active'` + pushdownFilters + `
+		)
+		SELECT
+			a.*,
+			CASE
+				WHEN a.resource_rank = 1 THEN TRUE
+				ELSE FALSE
+			END AS is_primary_recommendation
+		FROM all_recommendations a
 	) as r1`
 				return def, request, nil
 			}
